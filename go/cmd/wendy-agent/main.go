@@ -977,6 +977,15 @@ func main() {
 	// on disk persistence (the manifest queue lives on disk) and, inside Run, on
 	// provisioning completion (it needs the cloud identity).
 	dataTransferWorker := services.NewDataTransferWorker(logger, dataManager, provisioningSvc)
+	// WENDY_DATA_INGEST_URL redirects episode uploads to a different
+	// DataIngestService endpoint (for example a dev cloud deployment) without
+	// touching the device's enrollment; identity still comes from the enrolled
+	// asset certificate.
+	if v := os.Getenv("WENDY_DATA_INGEST_URL"); v != "" {
+		dataTransferWorker.SetIngestHostOverride(v)
+		logger.Info("data transfer worker: ingest endpoint override set",
+			zap.String("url", v))
+	}
 	if telemetryBuf.DiskEnabled() {
 		wg.Add(1)
 		go func() {

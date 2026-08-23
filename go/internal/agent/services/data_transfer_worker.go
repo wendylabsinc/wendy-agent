@@ -66,6 +66,11 @@ type DataTransferWorker struct {
 	factory         ingestClientFactory  // set in tests; production builds one from provisioningSvc
 
 	maxAttempts int
+	// ingestHostOverride, when non-empty, replaces the provisioning cloud host
+	// as the DataIngestService dial target. Enrollment is still required (the
+	// asset identity and client certificate come from provisioning); only the
+	// destination changes. Set from WENDY_DATA_INGEST_URL in main.
+	ingestHostOverride string
 	// onWiFi reports whether the device is currently on Wi-Fi, gating campaigns
 	// whose upload.when is "wifi". When nil, no network-type signal is wired and
 	// "wifi" is treated as "always" (see resolveShouldUpload).
@@ -90,6 +95,36 @@ func NewDataTransferWorker(logger *zap.Logger, manager *data.Manager, provisioni
 	}
 	w.factory = w.dialFactory
 	return w
+}
+
+// SetIngestHostOverride points the worker's uploads at host instead of the
+// provisioning cloud host. host may be a bare host, host:port, or an
+// http(s):// URL; the scheme and any path are stripped and the default port
+// (443) is applied by the dialer. An empty host clears the override.
+func (w *DataTransferWorker) SetIngestHostOverride(host string) {
+	w.ingestHostOverride = normalizeIngestOverride(host)
+}
+
+// normalizeIngestOverride reduces an override value to the host[:port] form
+// dialCloudMTLS expects, tolerating URL-shaped input such as the Cloud Run
+// service URL copied from gcloud.
+func normalizeIngestOverride(host string) string {
+	host = strings.TrimSpace(host)
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	return host
+}
+
+// ingestDialHost resolves the host the current pass should dial: the override
+// when set, the enrolled cloud host otherwise.
+func (w *DataTransferWorker) ingestDialHost(cloudHost string) string {
+	if w.ingestHostOverride != "" {
+		return w.ingestHostOverride
+	}
+	return cloudHost
 }
 
 // contextSleeper returns a sleep function that returns early when ctx is done,
@@ -118,7 +153,7 @@ func (w *DataTransferWorker) dialFactory(ctx context.Context) (cloudpb.DataInges
 	certPEM, chainPEM, keyData := w.provisioningSvc.ProvisioningCerts()
 	conn, err := func() (*grpc.ClientConn, error) {
 		defer zeroBytes(keyData)
-		return dialCloudMTLS(cloudHost, certPEM, chainPEM, keyData)
+		return dialCloudMTLS(w.ingestDialHost(cloudHost), certPEM, chainPEM, keyData)
 	}()
 	if err != nil {
 		return nil, 0, 0, nil, err

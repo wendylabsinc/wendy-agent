@@ -442,3 +442,36 @@ func TestDataTransferWorker_AtLeastOnceDuplicateSafe(t *testing.T) {
 		t.Errorf("commit called %d times on already-complete replay, want 0", srv.commitCalls)
 	}
 }
+
+// TestIngestHostOverride verifies that SetIngestHostOverride redirects the
+// dial target (tolerating URL-shaped input) and that clearing it restores the
+// enrolled cloud host.
+func TestIngestHostOverride(t *testing.T) {
+	w := &DataTransferWorker{}
+
+	if got := w.ingestDialHost("cloud.wendy.sh"); got != "cloud.wendy.sh" {
+		t.Fatalf("no override: got %q, want cloud.wendy.sh", got)
+	}
+
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"https://wendy-data-dev-abc-uc.a.run.app", "wendy-data-dev-abc-uc.a.run.app"},
+		{"https://wendy-data-dev-abc-uc.a.run.app/", "wendy-data-dev-abc-uc.a.run.app"},
+		{"http://localhost:9800", "localhost:9800"},
+		{"ingest.example.com:50052", "ingest.example.com:50052"},
+		{"  ingest.example.com  ", "ingest.example.com"},
+	}
+	for _, c := range cases {
+		w.SetIngestHostOverride(c.in)
+		if got := w.ingestDialHost("cloud.wendy.sh"); got != c.want {
+			t.Errorf("override %q: got %q, want %q", c.in, got, c.want)
+		}
+	}
+
+	w.SetIngestHostOverride("")
+	if got := w.ingestDialHost("cloud.wendy.sh"); got != "cloud.wendy.sh" {
+		t.Fatalf("cleared override: got %q, want cloud.wendy.sh", got)
+	}
+}
