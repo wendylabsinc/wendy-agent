@@ -452,6 +452,25 @@ var (
 	ipcamCredentialPath = "/var/lib/wendy/camera-credentials.json"
 )
 
+// cameraLoopback is the seam VideoService uses to reach the v4l2loopback node
+// manager (ipcam.Loopback): every method here matches ipcam.Loopback's
+// exported API verbatim, so *ipcam.Loopback satisfies it unmodified, while
+// tests inject a fake that records calls instead of touching the kernel
+// module. The field this backs is nil-safe at every call site, the same way
+// registry/credentials are, so a VideoService built without one (or with it
+// cleared out from under it, as a test may do) behaves exactly as it did
+// before the v4l2loopback manager existed.
+type cameraLoopback interface {
+	Available() error
+	EnsureNodes(ctx context.Context) error
+	NodePath(camID uint32) (string, bool)
+	AcquireView(camID uint32) func()
+	SetContainerConsumers(containerIDs []string)
+	CredentialsChanged(camID uint32)
+	RemoveCamera(camID uint32)
+	Shutdown()
+}
+
 // VideoService implements agentpb.WendyVideoServiceServer.
 type VideoService struct {
 	agentpb.UnimplementedWendyVideoServiceServer
@@ -466,6 +485,7 @@ type VideoService struct {
 	credentials *ipcam.CredentialStore
 	discoverer  *ipcam.Discoverer
 	links       *ipcam.LinkManager
+	loopback    cameraLoopback
 
 	// runGStreamer is the injection seam for the network capture subprocess.
 	runGStreamer func(ctx context.Context, args []string, onFrame func([]byte)) error
@@ -473,6 +493,12 @@ type VideoService struct {
 	// cameraReachable tests a camera's RTSP port before a stream is started.
 	// Injectable so preflight is testable without a socket.
 	cameraReachable func(address string) bool
+
+	// probeCamera validates a network camera's stored credentials by dialing
+	// its RTSP port directly (see ipcam.ProbeCredentials). It backs
+	// TestCameraCredentials; injectable so that RPC is testable without a
+	// socket, the same way cameraReachable is for StreamVideo's preflight.
+	probeCamera func(ctx context.Context, cam ipcam.Camera, cred ipcam.Credential) (ipcam.ProbeResult, string)
 
 	// CSI/ribbon-camera seams (injectable for tests). classifyTransport maps a
 	// /dev/videoN base to its transport (USB/CSI/Unknown); enumerateLibcamera
@@ -547,6 +573,16 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 	svc.links = ipcam.NewLinkManager(svc.registry, logger)
 	svc.runGStreamer = svc.gstreamerFrames
 	svc.cameraReachable = ipcam.Reachable
+	svc.probeCamera = ipcam.ProbeCredentials
+	// The pump closure reads svc.runGStreamer through the receiver at call
+	// time, not the value assigned above at construction: a test that swaps
+	// s.runGStreamer after NewVideoService returns (the usual pattern; see
+	// captureIPPipelineArgs) still reaches its stub when the loopback
+	// supervisor starts a pump.
+	svc.loopback = ipcam.NewLoopback(svcCtx, logger, svc.registry, svc.credentials,
+		func(ctx context.Context, args []string) error {
+			return svc.runGStreamer(ctx, args, func([]byte) {})
+		})
 	return svc
 }
 
@@ -592,7 +628,18 @@ func (s *VideoService) StartDiscovery() {
 }
 
 // Shutdown cancels all active producer goroutines and waits for them to exit.
+// The loopback manager is shut down first, and through its own Shutdown
+// method rather than only by cancelling the shared context it was built on:
+// that method sets its shuttingDown flag before cancelling and waiting (see
+// ipcam.Loopback's doc comment on the field), which guarantees no pump or
+// idle-grace goroutine can start after this call begins. Cancelling s.ctx
+// first would race that guarantee — a reconcile already past its own
+// shuttingDown check could still start a new supervisor moments after ctx
+// cancellation fires but before Loopback.Shutdown gets a chance to run.
 func (s *VideoService) Shutdown() {
+	if s.loopback != nil {
+		s.loopback.Shutdown()
+	}
 	s.cancel()
 	s.wg.Wait()
 }
@@ -618,6 +665,14 @@ func (s *VideoService) listCameras(ctx context.Context) ([]*agentpb.VideoDevice,
 		numStr := strings.TrimPrefix(base, "video")
 		id, err := strconv.ParseUint(numStr, 10, 32)
 		if err != nil {
+			continue
+		}
+		// A v4l2loopback node lives at /dev/video<cameraID>, numbered from the
+		// same reserved band resolveSource treats as a network camera. Once
+		// EnsureNodes has created one, it would otherwise glob-enumerate here
+		// too and double-list the camera: once (correctly) from listIPCameras
+		// below and once (bogusly) as an indistinguishable local device.
+		if id >= uint64(ipcam.IDBandStart) && id <= uint64(ipcam.IDBandEnd) {
 			continue
 		}
 		if !s.hasVideoCapture(path) {
@@ -672,7 +727,7 @@ func (s *VideoService) listIPCameras() []*agentpb.VideoDevice {
 		if name == "" {
 			name = "network camera"
 		}
-		out = append(out, &agentpb.VideoDevice{
+		dev := &agentpb.VideoDevice{
 			Id:             c.ID,
 			Name:           name,
 			Transport:      agentpb.VideoTransport_VIDEO_TRANSPORT_IP,
@@ -681,7 +736,13 @@ func (s *VideoService) listIPCameras() []*agentpb.VideoDevice {
 			Mac:            c.MAC,
 			HasCredentials: s.credentials != nil && s.credentials.Has(c.MAC),
 			Online:         c.Online,
-		})
+		}
+		if s.loopback != nil {
+			if path, ok := s.loopback.NodePath(c.ID); ok {
+				dev.Path = path
+			}
+		}
+		out = append(out, dev)
 	}
 	return out
 }
@@ -736,6 +797,13 @@ func (s *VideoService) SetCameraCredentials(_ context.Context, req *agentpb.SetC
 	}); err != nil {
 		return nil, status.Errorf(codes.Internal, "storing credentials: %v", err)
 	}
+	// Nudge the loopback supervisor: a pump already demanded but blocked on
+	// missing credentials can start now, and a running one picks up changed
+	// credentials on its next attempt rather than an existing connection with
+	// the old login silently going stale.
+	if s.loopback != nil {
+		s.loopback.CredentialsChanged(cam.ID)
+	}
 	return &agentpb.SetCameraCredentialsResponse{}, nil
 }
 
@@ -758,7 +826,33 @@ func (s *VideoService) ForgetCamera(_ context.Context, req *agentpb.ForgetCamera
 	if !s.registry.Forget(req.GetDeviceId()) {
 		return nil, status.Errorf(codes.Internal, "removing camera %d failed", req.GetDeviceId())
 	}
+	if s.loopback != nil {
+		s.loopback.RemoveCamera(cam.ID)
+	}
 	return &agentpb.ForgetCameraResponse{}, nil
+}
+
+// EnsureCameraNodes creates a v4l2loopback node for every registered network
+// camera that does not already have one. It is a pass-through to the loopback
+// manager, exported for the containerd-side camera provider (Task C6) to call
+// before entitling a container to `/dev/video*`; nil-safe like every other
+// loopback call site, so a build without the module just does nothing.
+func (s *VideoService) EnsureCameraNodes(ctx context.Context) error {
+	if s.loopback == nil {
+		return nil
+	}
+	return s.loopback.EnsureNodes(ctx)
+}
+
+// SetCameraContainerConsumers tells the loopback manager which entitled
+// containers are currently running, so it can start or stop camera pumps to
+// match. Pass-through for Task C6's containerd-side provider; nil-safe like
+// every other loopback call site.
+func (s *VideoService) SetCameraContainerConsumers(ctx context.Context, containerIDs []string) {
+	if s.loopback == nil {
+		return
+	}
+	s.loopback.SetContainerConsumers(containerIDs)
 }
 
 // RefreshCameras runs one discovery round and returns the full camera listing.
@@ -774,6 +868,59 @@ func (s *VideoService) RefreshCameras(ctx context.Context, _ *agentpb.RefreshCam
 		return nil, status.Errorf(codes.Internal, "listing cameras: %v", err)
 	}
 	return &agentpb.RefreshCamerasResponse{Devices: devices}, nil
+}
+
+// TestCameraCredentials validates a network camera's stored login by probing
+// its RTSP port directly (ipcam.ProbeCredentials), without starting a capture
+// pipeline. It exists as a dedicated RPC rather than reusing StreamVideo's
+// preflight because that preflight only distinguishes reachable from
+// unreachable — actually learning "bad password" would mean starting a hub
+// and its GStreamer pipeline just to observe a 401, conflating a credentials
+// problem with a pipeline-failure one. Validation runs device-side because
+// the camera is only reachable from the device's own link, which the CLI may
+// be remote from over the tunnel.
+//
+// OK/AUTH_FAILED/UNREACHABLE are all returned as ordinary response data, not
+// gRPC errors: each is an expected, actionable outcome of a credentials test.
+// The one exception is a camera with no stored login at all, which reuses
+// ipCameraCredentials verbatim (FailedPrecondition + ErrorInfo{Reason:
+// IP_CAMERA_NO_CREDENTIALS}) so cameraStreamDiagnostic on the CLI side prints
+// the established `camera login` hint with zero new mapping.
+func (s *VideoService) TestCameraCredentials(ctx context.Context, req *agentpb.TestCameraCredentialsRequest) (*agentpb.TestCameraCredentialsResponse, error) {
+	src, err := s.resolveSource(req.GetDeviceId())
+	if err != nil {
+		return nil, err
+	}
+	if src.kind != sourceIP {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"camera %d is a local camera; it has no stored credentials to test", req.GetDeviceId())
+	}
+	cred, err := s.ipCameraCredentials(src.camera)
+	if err != nil {
+		return nil, err
+	}
+	result, detail := s.probeCamera(ctx, src.camera, cred)
+	return &agentpb.TestCameraCredentialsResponse{
+		Result:  probeResultToProto(result),
+		Address: src.camera.Address,
+		Detail:  detail,
+	}, nil
+}
+
+// probeResultToProto maps ipcam.ProbeCredentials' outcome onto the wire enum.
+// Every ipcam.ProbeResult value has a case; the default only guards against a
+// future ProbeResult this switch has not been updated for.
+func probeResultToProto(r ipcam.ProbeResult) agentpb.TestCameraCredentialsResponse_Result {
+	switch r {
+	case ipcam.ProbeOK:
+		return agentpb.TestCameraCredentialsResponse_RESULT_OK
+	case ipcam.ProbeAuthFailed:
+		return agentpb.TestCameraCredentialsResponse_RESULT_AUTH_FAILED
+	case ipcam.ProbeUnreachable:
+		return agentpb.TestCameraCredentialsResponse_RESULT_UNREACHABLE
+	default:
+		return agentpb.TestCameraCredentialsResponse_RESULT_UNSPECIFIED
+	}
 }
 
 // ipCameraCredentials returns the stored login, or a FailedPrecondition carrying
@@ -1259,6 +1406,15 @@ func (s *VideoService) streamIPCamera(stream grpc.ServerStreamingServer[agentpb.
 	// that dies immediately afterwards.
 	if err := s.preflightIPCamera(src.camera); err != nil {
 		return err
+	}
+
+	// Counts this viewer toward loopback pump demand for the duration of the
+	// stream (spec: a pump runs "when `camera view` attaches"), best-effort:
+	// AcquireView's returned release func is always safe to call, even when
+	// the v4l2loopback module is unavailable, so this never gates the direct
+	// hub path streamed below.
+	if s.loopback != nil {
+		defer s.loopback.AcquireView(src.camera.ID)()
 	}
 
 	h, id, ch, err := s.getOrCreateHub(stream.Context(), src.key, req)

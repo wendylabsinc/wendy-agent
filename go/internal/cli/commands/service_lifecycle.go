@@ -43,6 +43,20 @@ type serviceHookRunner struct {
 // readiness.tcpSocket — must still get an actual readiness wait and an
 // auto-opened browser tab, not just the announceReachableURL text that
 // already (via effectiveReadiness) assumes readiness was probed.
+//
+// The dial target for both readiness and the hook is resolveHookHost's
+// result, not r.conn.Host directly — same reasoning as run.go's
+// single-container path (see resolveHookHost): a cloud connection's Host is
+// the tunnel's unresolvable asset name, and an IPv6-literal Host may be a
+// rotating temporary address, so both prefer the agent-reported IP when one
+// is available. resolveHookHost's announceReachableURL call also replaces
+// the old readiness-gated announce call below — it now runs before the
+// readiness wait (not after a successful one), which mirrors run.go's
+// documented tradeoff: the "App reachable at" line prints regardless of
+// whether this service's probe later fails, in exchange for a probe that can
+// actually reach a cloud device at all. A cfg with no usable host (a cloud
+// conn with no reported IP) skips readiness and the hook entirely instead of
+// dialing a dead asset name.
 func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.AppConfig) {
 	if cfg == nil {
 		return
@@ -53,8 +67,17 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 		return
 	}
 
+	hookHost, hostOK := resolveHookHost(ctx, r.conn, cfg)
+	if !hostOK {
+		// cfg.ServiceName is "" for the app-level fallback config (see
+		// appLevelLifecycleConfig); containerDisplayName falls back to the
+		// bare AppID in that case rather than printing a dangling "for :".
+		cliNotice("Skipping postStart hook for %s: no routable device address reported; open the app manually once the device IP is known.", containerDisplayName(cfg))
+		return
+	}
+
 	readinessSucceeded := true
-	if err := waitForReadiness(ctx, readiness, r.conn.Host); err != nil {
+	if err := waitForReadiness(ctx, readiness, hookHost); err != nil {
 		if ctx.Err() != nil {
 			// Canceled (e.g. Ctrl+C, or the run ending) — stay silent and skip
 			// the hook entirely; this is not a readiness failure to report.
@@ -72,10 +95,6 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 		return
 	}
 
-	if readinessSucceeded {
-		announceReachableURL(ctx, r.conn, cfg)
-	}
-
 	effectiveCfg := cfg
 	// A failed probe must not synthesize an automatic browser open from an HTTP
 	// entitlement. Explicit hooks retain the established multi-service behavior
@@ -86,7 +105,7 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 		effectiveCfg = &clone
 	}
 
-	cmd := startPostStartHook(hookCtx, effectiveCfg, r.conn.Host, cfg.ServiceName)
+	cmd := startPostStartHook(hookCtx, effectiveCfg, hookHost, cfg.ServiceName)
 	if cmd != nil {
 		r.mu.Lock()
 		r.cmds = append(r.cmds, cmd)

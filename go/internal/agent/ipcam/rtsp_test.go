@@ -141,6 +141,44 @@ func TestPipelineArgsDepayloadsWithoutTranscode(t *testing.T) {
 	}
 }
 
+// Unlike PipelineArgs, the loopback pipeline decodes: a v4l2loopback CAPTURE
+// side needs raw frames, since nothing consuming it as a normal camera device
+// can be expected to speak compressed H.264.
+func TestLoopbackPipelineArgsDecodesToDevice(t *testing.T) {
+	args := strings.Join(LoopbackPipelineArgs("rtsp://admin:p@10.98.0.50:554/x", "/dev/video203"), " ")
+	for _, want := range []string{"rtspsrc", "rtph264depay", "h264parse", "config-interval=-1", "avdec_h264", "videoconvert", "v4l2sink", "device=/dev/video203"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("pipeline missing %q: %s", want, args)
+		}
+	}
+	if strings.Contains(args, "fdsink") {
+		t.Fatalf("loopback pipeline has an fd sink; the v4l2loopback node is the sink: %s", args)
+	}
+	if !strings.Contains(args, "protocols=tcp") {
+		t.Fatalf("pipeline does not force TCP: %s", args)
+	}
+}
+
+// The loopback pipeline's location= token must redact exactly like
+// PipelineArgs's does: this is the one place SecretsIn/RedactText have to
+// keep working for Task C3's supervisor to log a pump failure safely.
+func TestLoopbackPipelineArgsRedactsCredentials(t *testing.T) {
+	args := LoopbackPipelineArgs("rtsp://admin:hunter2@10.98.0.50:554/h264Preview_01_sub", "/dev/video203")
+
+	diagnostic := "ERROR from element rtspsrc0: Could not open resource for reading and writing.\n" +
+		"gstrtspsrc.c(9105): gst_rtspsrc_retrieve_sdp (): location=rtsp://admin:hunter2@10.98.0.50:554/h264Preview_01_sub\n" +
+		"Failed to connect. (Timeout while waiting for server response)"
+
+	got := RedactText(diagnostic, SecretsIn(args)...)
+
+	if strings.Contains(got, "hunter2") {
+		t.Fatalf("password survived redaction: %s", got)
+	}
+	if !strings.Contains(got, "Failed to connect") || !strings.Contains(got, "10.98.0.50") {
+		t.Fatalf("redaction destroyed the diagnostic: %s", got)
+	}
+}
+
 func TestChooseStream(t *testing.T) {
 	cases := []struct {
 		width uint32

@@ -169,12 +169,12 @@ func containerDisplayName(appCfg *appconfig.AppConfig) string {
 	return tui.App(appCfg.ContainerName())
 }
 
-func cliLog(format string, args ...any) {
-	fmt.Print(cliStyle.Render(fmt.Sprintf(format, args...)))
-}
-
+// cliLogln prints a human status line. It writes to stderr: --json is a global
+// persistent flag (root.go) and is auto-enabled when the terminal is
+// non-interactive, so any status line on stdout can corrupt machine-read output.
+// Real payloads (JSON, listings) print via fmt.Println/encoders and stay on stdout.
 func cliLogln(format string, args ...any) {
-	fmt.Println(cliStyle.Render(fmt.Sprintf(format, args...)))
+	fmt.Fprintln(os.Stderr, cliStyle.Render(fmt.Sprintf(format, args...)))
 }
 
 func cliNotice(format string, args ...any) {
@@ -183,8 +183,10 @@ func cliNotice(format string, args ...any) {
 
 var cliSuccessStyle = lipgloss.NewStyle().Foreground(tui.ColorPrimary)
 
+// cliSuccess prints a styled success status line. Writes to stderr for the
+// same reason as cliLogln above — it is a status line, not a payload.
 func cliSuccess(format string, args ...any) {
-	fmt.Println(cliSuccessStyle.Render(fmt.Sprintf(format, args...)))
+	fmt.Fprintln(os.Stderr, cliSuccessStyle.Render(fmt.Sprintf(format, args...)))
 }
 
 func unpackProgressTitle(progress *agentpb.CreateContainerProgress) string {
@@ -1819,7 +1821,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// while "force" uses it with no registry-push fallback on failure.
 	var ociHint *ociReuseHint
 	if chunkDiffWillRun {
-		diffIDs, hint, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts)
+		// stats is filled by deployByChunkDiff as soon as it has read the built
+		// image's layers, even on a later failure, so the fallback branch below
+		// can size the registry push it's about to fall back to (WDY-2432).
+		var stats chunkDeployStats
+		diffIDs, hint, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts, &stats)
 		ociHint = hint
 		if err == nil {
 			if hashErr == nil {
@@ -1829,10 +1835,13 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
 			}
 			return nil
-		} else if ctx.Err() != nil {
-			// The deploy was cancelled (e.g. `wendy watch` superseded it with a
-			// newer change, or the user hit Ctrl-C). Don't fall back to a full
-			// registry push — just surface the cancellation.
+		} else if isChunkDeployCancellation(ctx, err) {
+			// The deploy was cancelled — either the context (e.g. `wendy watch`
+			// superseded it with a newer change) or the user backing out of the
+			// interactive chunk-push progress bar (ErrUserCancelled; ctx itself
+			// is NOT cancelled there). Don't fall back to a full registry push,
+			// which is often a BIGGER upload than the one just cancelled — just
+			// surface the cancellation.
 			return err
 		} else if opts.chunking == chunkingForce {
 			// --chunking=force opts out of the registry-push fallback so the
@@ -1854,7 +1863,15 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// PATH" failure from the fallback.
 			return fmt.Errorf("on-device deploy failed and no Docker fallback is possible inside the container; the chunk-diff error was: %w", err)
 		} else {
-			cliLogln("Fast deploy unavailable; using registry push.")
+			// Surface the chunk-diff error instead of dropping it — it used to be
+			// silently discarded here, leaving no trail for why a deploy suddenly
+			// fell back to the slower path.
+			cliNotice("%s", formatRegistryFallbackNotice(err, stats.imageBytes))
+			if registryFallbackPlan(stats.imageBytes, isInteractiveTerminal(), opts.yes) == fallbackConfirm {
+				if !confirmFn("Continue with the full registry push?") {
+					return fmt.Errorf("registry-push fallback declined; pass --chunking=off to skip chunk-diff and go straight to a registry push next time, or resolve the chunk-diff failure: %w", err)
+				}
+			}
 		}
 	}
 
@@ -2300,6 +2317,35 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 	return ip
 }
 
+// resolveHookHost returns the host the developer-side readiness probe and
+// postStart hook should target. conn.Host is perfect for LAN connections, but
+// a cloud tunnel sets it to the ASSET NAME (cloud_tunnel.go: agentConn.Host =
+// asset.GetName()), which does not resolve from this machine — and an IPv6
+// literal needs the agent-reported IP too, since it is often an RFC 4941
+// temporary (privacy) address that rotates away. In both cases prefer the
+// routable IP the agent reports via GetAgentVersion (announceReachableURL).
+//
+// conn.Reconnect != nil is the cloud marker: it is the sole assignment
+// (cloud_tunnel.go, on the connection cloud_tunnel.go builds) for a
+// transport where the connection identity can't be re-derived from Host
+// alone. conn.Addr can't be used instead — it is empty for NewFromConn
+// conns, cloud tunnels included.
+//
+// ok=false means no usable host exists (a cloud conn with no reported IP):
+// the caller must skip host-side probes/hooks with guidance instead of
+// dialing a dead asset name.
+func resolveHookHost(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) (host string, ok bool) {
+	ip := announceReachableURL(ctx, conn, appCfg)
+	isCloud := conn.Reconnect != nil
+	if ip != "" && (isCloud || isIPv6Literal(conn.Host)) {
+		return ip, true
+	}
+	if isCloud && ip == "" {
+		return "", false
+	}
+	return conn.Host, true
+}
+
 // synthesizedOpenURLHook returns appCfg.Hooks unchanged when the app already
 // configures an explicit openURL. Otherwise, when the app declares an `http`
 // entitlement, it returns a copied HooksConfig whose postStart opens that port
@@ -2354,7 +2400,37 @@ func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig 
 func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
 	rp := phaseTimer()
 	readiness := effectiveReadiness(appCfg)
-	err := waitForReadiness(ctx, readiness, conn.Host)
+	hooks := synthesizedOpenURLHook(appCfg)
+
+	// Nothing to probe or fire: an app with no TCP readiness (explicit or
+	// http-entitlement-synthesized) and no postStart hook (explicit or
+	// http-entitlement-synthesized) has nothing for this function to do.
+	// Returning before resolveHookHost matters specifically for cloud
+	// connections: resolveHookHost's isCloud branch would otherwise still run
+	// and, since announceReachableURL short-circuits to "" without ever
+	// querying the agent when there's no hookURL/port to build a URL from,
+	// report "no reported IP" and print a "Skipping postStart hook" notice
+	// for a hook that was never configured. Mirrors
+	// service_lifecycle.go's serviceHookRunner.runOne guard.
+	if readiness == nil && hooks == nil {
+		return nil
+	}
+
+	// Resolve the host BEFORE probing readiness: for a cloud connection,
+	// conn.Host is the tunnel's asset name, which does not resolve from this
+	// machine — dialing it always fails, so the postStart hook logic below
+	// would never even be reached unless the probe target is swapped too.
+	// This also means the "App reachable at ..." line (printed inside
+	// resolveHookHost/announceReachableURL) now prints before readiness is
+	// confirmed rather than after — acceptable since it is the same URL the
+	// user watches for regardless of when the probe finishes.
+	hookHost, hostOK := resolveHookHost(ctx, conn, appCfg)
+	if !hostOK {
+		cliNotice("Skipping postStart hook: no routable device address reported; open the app manually once the device IP is known.")
+		return nil
+	}
+
+	err := waitForReadiness(ctx, readiness, hookHost)
 	rp("  ↳ runcontainer: readiness wait")
 	if err != nil {
 		if ctx.Err() == nil {
@@ -2369,16 +2445,8 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 	if ctx.Err() != nil {
 		return nil
 	}
-	hookHost := conn.Host
-	if ip := announceReachableURL(ctx, conn, appCfg); ip != "" && isIPv6Literal(conn.Host) {
-		// The CLI dialed the device at a bare IPv6 literal — often an RFC 4941
-		// temporary (privacy) address picked up from mDNS that rotates away.
-		// Point the hook at the device's best self-reported IP (IPv4-preferred)
-		// so the URL it opens matches the "App reachable at" line.
-		hookHost = ip
-	}
 	effectiveCfg := appCfg
-	if hooks := synthesizedOpenURLHook(appCfg); hooks != appCfg.Hooks {
+	if hooks != appCfg.Hooks {
 		clone := *appCfg
 		clone.Hooks = hooks
 		effectiveCfg = &clone
@@ -2579,6 +2647,71 @@ func shouldDumpChunkDiffBuildLog(chunking string) func(error) bool {
 // instead of requiring the caller to set it by hand.
 const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
 
+// chunkDeployStats is an out-param sink so the caller of deployByChunkDiff
+// knows what a registry-push fallback would cost even though the chunk-diff
+// deploy failed. Filled as soon as the built image's layers are read; stays
+// zero when the failure preceded (or prevented) a successful layer read.
+type chunkDeployStats struct {
+	imageBytes int64
+}
+
+// isChunkDeployCancellation reports whether a deployByChunkDiff failure was a
+// cancellation rather than a genuine deploy failure — either the context was
+// cancelled (e.g. `wendy watch` superseded the deploy with a newer change, or
+// the user hit Ctrl-C before the interactive chunk-push progress bar started)
+// or the user backed out of that progress bar itself. Bubble Tea captures
+// Ctrl-C as a key event there (see pushLayersWithProgress), so the parent ctx
+// is NOT cancelled in that case — err is the only signal, via ErrUserCancelled.
+// Either way, the fallback ladder must never proceed to a registry push (often
+// a bigger upload than the one just cancelled) after the user said stop.
+func isChunkDeployCancellation(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, ErrUserCancelled)
+}
+
+// largeRegistryFallbackBytes is the (decimal) image-size threshold above which
+// a registry-push fallback is treated as "large" — big enough that silently
+// re-uploading every layer is worth interrupting an interactive user to
+// confirm, rather than just logging a line they might miss.
+const largeRegistryFallbackBytes = 500 * 1000 * 1000
+
+// registryFallbackAction is the decision registryFallbackPlan hands back: log
+// loudly and proceed, or stop and confirm first.
+type registryFallbackAction int
+
+const (
+	fallbackProceedLoud registryFallbackAction = iota
+	fallbackConfirm
+)
+
+// registryFallbackPlan decides whether a chunk-diff failure can fall back to a
+// full registry push with just a loud notice, or must be confirmed first.
+// Confirmation is gated on all three of: the fallback being large, a human
+// being present to answer (interactive), and the caller not having already
+// pre-approved every prompt (--yes). Non-interactive runs (CI, `wendy watch`)
+// and --yes always proceed on the notice alone — this path must never hard-fail
+// an unattended deploy.
+func registryFallbackPlan(imageBytes int64, interactive, assumeYes bool) registryFallbackAction {
+	if imageBytes >= largeRegistryFallbackBytes && interactive && !assumeYes {
+		return fallbackConfirm
+	}
+	return fallbackProceedLoud
+}
+
+// formatRegistryFallbackNotice explains why the chunk-diff (fast) deploy path
+// failed and what the registry-push fallback is about to do next — the
+// chunk-diff error used to be dropped silently here, leaving no trail for why
+// a deploy suddenly got slower. Large fallbacks (imageBytes unknown/zero counts
+// as small) get a louder, more specific message: re-uploading gigabytes of
+// otherwise-unchanged layers is expensive enough that "using registry push"
+// alone undersells what is about to happen.
+func formatRegistryFallbackNotice(chunkErr error, imageBytes int64) string {
+	if imageBytes >= largeRegistryFallbackBytes {
+		size := tui.ByteProgress{Current: imageBytes}.String()
+		return fmt.Sprintf("Fast deploy unavailable (%v). Falling back to a FULL registry push — ~%s will be re-uploaded.", chunkErr, size)
+	}
+	return fmt.Sprintf("Fast deploy unavailable (%v); falling back to registry push.", chunkErr)
+}
+
 // ociReuseHint carries the on-disk location of the OCI-layout image the
 // chunk-diff deploy just built, so a registry-push fallback triggered by a
 // LATER failure (e.g. the device rejecting chunk-diff entirely) can push that
@@ -2602,7 +2735,12 @@ type ociReuseHint struct {
 // skipping a rebuild (WDY-1824). It also returns an *ociReuseHint (see its doc
 // comment) so a caller that has to fall back to a registry push after a
 // failure here can reuse the image already built rather than rebuilding it.
-func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions) ([]string, *ociReuseHint, error) {
+//
+// stats, when non-nil, is filled with the built image's size/layer count as
+// soon as a layer read succeeds — including on failure paths below that point
+// — so a caller whose overall deploy still fails can decide how to handle a
+// registry-push fallback without re-reading the layers itself.
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions, stats *chunkDeployStats) ([]string, *ociReuseHint, error) {
 	mark := phaseTimer()
 	var hint *ociReuseHint
 
@@ -2640,6 +2778,15 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 
 	var layers []localLayer
 	var imageConfig []byte
+	// fillStats snapshots the current layers into the caller's out-param
+	// (A7/WDY-2432). Called after every point below where a layer read just
+	// succeeded, so stats reflects the most recent successful read even if a
+	// later step (another rebuild, the chunk push, RunContainer) fails.
+	fillStats := func() {
+		if stats != nil {
+			stats.imageBytes = totalCompressedLayerBytes(layers)
+		}
+	}
 	if exportMode == "dir" {
 		releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
 		if err != nil {
@@ -2699,6 +2846,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 				return nil, hint, err
 			}
 		}
+		fillStats()
 		if nativeEligible && !nativeDone {
 			// After a buildx build, take ownership of the app layers: replace them
 			// with deterministic native rebuilds (verified against the buildx
@@ -2707,6 +2855,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 				if layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform); err != nil {
 					return nil, hint, err
 				}
+				fillStats()
 			}
 		}
 		// The layout directory now holds a known-good, freshly built image —
@@ -2734,9 +2883,15 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		if err != nil {
 			return nil, hint, err
 		}
+		fillStats()
 	}
 	mark("read+decompress layers")
 
+	sizeClause := ""
+	if compressedTotal := totalCompressedLayerBytes(layers); compressedTotal > 0 {
+		sizeClause = fmt.Sprintf(" (%s compressed)", tui.Value(tui.ByteProgress{Current: compressedTotal}.String()))
+	}
+	cliLogln("Diffing %s layer(s)%s against device...", tui.Value(fmt.Sprintf("%d", len(layers))), sizeClause)
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {
 		return nil, hint, err
@@ -2746,18 +2901,30 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		return nil, hint, fmt.Errorf("reading image signature from %s: %w", imageSignaturePathEnv, err)
 	}
 	imageName := strings.ToLower(appCfg.AppID) + ":latest"
-	prepare := func(prepareCtx context.Context, headers []*agentpb.RunContainerLayerHeader) error {
-		_, prepareErr := conn.ContainerService.PrepareImage(prepareCtx, &agentpb.RunContainerLayersRequest{
-			ImageName:      imageName,
-			Layers:         headers,
-			ImageConfig:    imageConfig,
-			ImageSignature: imageSignature,
-		})
-		return prepareErr
+	// prepareFor builds the device-side preparation func against a specific
+	// client: pushLayersResumingTunnelDrops re-derives it per attempt so a
+	// post-drop retry's PrepareImage rides the reconnected tunnel, not the
+	// dead one (WDY-2433).
+	prepareFor := func(cs agentpb.WendyContainerServiceClient) imagePrepareFunc {
+		return func(prepareCtx context.Context, headers []*agentpb.RunContainerLayerHeader) error {
+			_, prepareErr := cs.PrepareImage(prepareCtx, &agentpb.RunContainerLayersRequest{
+				ImageName:      imageName,
+				Layers:         headers,
+				ImageConfig:    imageConfig,
+				ImageSignature: imageSignature,
+			})
+			return prepareErr
+		}
 	}
 
-	cliLogln("Diffing %s layer(s) against device...", tui.Value(fmt.Sprintf("%d", len(layers))))
-	headers, err := pushLayersByChunksWithPrepare(ctx, conn.ContainerService, layers, prepare)
+	// pushConn may differ from conn: a tunnel drop mid-transfer reconnects to a
+	// fresh connection (WDY-2433), and everything from here on — RunContainer,
+	// its response stream, and the post-start hook — must ride that live
+	// connection rather than the one that just dropped.
+	pushConn, headers, err := pushLayersResumingTunnelDrops(ctx, conn, layers, prepareFor)
+	if pushConn != conn {
+		defer pushConn.Close()
+	}
 	if err != nil {
 		return nil, hint, err
 	}
@@ -2765,12 +2932,15 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	// Carry the post-start agent-hook metadata so the agent runs the in-container
 	// hook on start, matching the registry path's StartContainer call.
 	runCtx := contextWithPostStartAgentHook(ctx, appCfg)
+	// The log subscription rides pushConn for the same reason RunContainer
+	// does: after a mid-transfer tunnel drop, conn is dead and pushConn is the
+	// live reconnected connection (WDY-2433).
 	var logSub *runLogSubscription
 	if !opts.deploy && !opts.detach {
-		logSub = startRunLogSubscription(ctx, conn, appCfg.AppID, os.Stdout, runLogStreamWarning)
+		logSub = startRunLogSubscription(ctx, pushConn, appCfg.AppID, os.Stdout, runLogStreamWarning)
 		defer logSub.stop()
 	}
-	stream, err := conn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
+	stream, err := pushConn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
 		ImageName:      imageName,
 		AppName:        appCfg.AppID,
 		Layers:         headers,
@@ -2784,7 +2954,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err != nil {
 		return nil, hint, err
 	}
-	if err := streamRunContainer(ctx, conn, stream, appCfg, opts); err != nil {
+	if err := streamRunContainer(ctx, pushConn, stream, appCfg, opts); err != nil {
 		mark("runcontainer (assemble+create+start[+readiness])")
 		return nil, hint, err
 	}

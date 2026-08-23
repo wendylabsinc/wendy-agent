@@ -75,6 +75,7 @@ type entitlementQuestion struct {
 
 type initOptions struct {
 	appID               string
+	here                bool
 	target              string
 	language            string
 	template            string
@@ -135,6 +136,9 @@ func newInitCmd() *cobra.Command {
 		Use:   "init [app-id]",
 		Short: "Initialize a new Wendy project",
 		Long: "Interactively create a new Wendy project with scaffolding, entitlements, and optional AI assistant setup.\n\n" +
+			"An [app-id] argument (or --app-id) creates a new subdirectory of that name by default; pass --here to " +
+			"scaffold into the current directory instead (with no app ID, --here infers one from the current " +
+			"directory's name).\n\n" +
 			"wendy.json also supports a separate, top-level \"frameworks\" key for framework-level config " +
 			"(currently ROS 2: domain ID, RMW middleware, discovery scope). Enable it with --framework " +
 			"(see the ROS 2 example below), through the interactive prompt on a WendyOS target, or by hand-editing " +
@@ -154,6 +158,9 @@ func newInitCmd() *cobra.Command {
 
   # Use a template from a specific branch of the templates repo
   wendy init --template simple-api --branch feature/new-template
+
+  # Scaffold into the current (already-existing, empty) directory
+  wendy init --here my-api --template simple-api
 
   # Fully non-interactive WendyOS Python app with persist storage
   wendy init \
@@ -248,6 +255,7 @@ func newInitCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.appID, "app-id", "", "Application ID to write into wendy.json")
+	cmd.Flags().BoolVar(&opts.here, "here", false, "Scaffold into the current directory instead of creating a subdirectory")
 	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos (writes \"linux\" to wendy.json), wendy-lite, or darwin")
 	cmd.Flags().StringVar(&opts.language, "language", "", "Project language: python, swift, rust, node, or cpp")
 	cmd.Flags().StringVar(&opts.template, "template", "", "Project template (e.g. simple-api, fullstack)")
@@ -785,6 +793,16 @@ func downloadTemplateArchiveWithUI(language, tmpl, branch string) (map[string][]
 // runTemplateFlow handles init when a template is selected.
 // destDir is the resolved project directory (either cwd or a new subdir).
 func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, opts initOptions) error {
+	// Scaffolding into cwd (most commonly via --here, WDY-2439) must not
+	// silently clobber an existing project. Checked first, before any
+	// network calls or filesystem mutation, mirroring the non-template
+	// wizard's own wendy.json-exists guard.
+	if filepath.Clean(destDir) == filepath.Clean(cwd) {
+		if _, err := os.Stat(filepath.Join(destDir, "wendy.json")); err == nil {
+			return fmt.Errorf("wendy.json already exists here; run from an empty directory or remove it first")
+		}
+	}
+
 	language, err := resolveTemplateLanguage(target, tmpl, meta, opts)
 	if err != nil {
 		return err
@@ -944,7 +962,31 @@ var promptInitProjectName = func() (string, error) {
 // both; otherwise the user is asked on an interactive terminal. Flags that
 // answer other questions (--target, entitlement flags, ...) never suppress
 // these prompts (WDY-1805).
+//
+// --here scaffolds into cwd instead of creating a subdirectory (WDY-2439):
+// this is what fixes `wendy init cctv-demo` run inside an already-existing,
+// empty `cctv-demo/` from nesting a redundant `cctv-demo/cctv-demo/`. With an
+// explicit app ID it behaves exactly like the case without --here except the
+// destination is cwd rather than a new subdirectory; with no app ID it
+// infers one from cwd's basename the same way the interactive "use current
+// directory?" prompt does, but without needing a TTY.
 func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, string, error) {
+	if opts.here {
+		if len(args) > 0 || opts.appIDSet {
+			appID, err := resolveInitAppID(cwd, args, opts)
+			if err != nil {
+				return "", "", err
+			}
+			return cwd, appID, nil
+		}
+
+		appID := strings.TrimSpace(filepath.Base(cwd))
+		if err := validateNewProjectName(appID); err != nil {
+			return "", "", fmt.Errorf("current directory name %q is not a valid app id: %w; pass one explicitly: wendy init --here <name>", appID, err)
+		}
+		return cwd, appID, nil
+	}
+
 	// Explicit app ID provided: always create a new subdirectory.
 	if len(args) > 0 || opts.appIDSet {
 		appID, err := resolveInitAppID(cwd, args, opts)

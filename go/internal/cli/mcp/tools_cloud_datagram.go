@@ -26,11 +26,13 @@ import (
 // from package mcp directly (an interface with unexported methods, like
 // pingSession/datagramSender, can only be satisfied by types defined in the
 // same package as the interface). tools_cloud.go already established the
-// convention for this situation with mcpDialCloudBroker/mcpOpenBrokerTunnel/
-// mcpServeTunnelConn/mcpTunnelDialer: rather than exporting the CLI helpers
-// or introducing a shared internal package, it keeps a package-private MCP
-// mirror of the logic it needs. This file does the same for the datagram
-// session and ping loop needed by cloud_tunnel's /udp path and cloud_ping.
+// convention for this situation with mcpOpenBrokerTunnel/mcpServeTunnelConn/
+// mcpTunnelDialer: rather than exporting the CLI helpers or introducing a
+// shared internal package, it keeps a package-private MCP mirror of the logic
+// it needs. (The broker dial itself is the exception: both packages now share
+// clouddefaults.DialBroker, WDY-2434.) This file does the same for the
+// datagram session and ping loop needed by cloud_tunnel's /udp path and
+// cloud_ping.
 
 // mcpUDPFlowIdleTimeout is the client-edge flow lifetime: a local UDP peer
 // that stays silent this long is forgotten (the agent side keeps a 2min

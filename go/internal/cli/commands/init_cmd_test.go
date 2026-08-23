@@ -18,6 +18,7 @@ func TestNewInitCmd_Flags(t *testing.T) {
 
 	expectedFlags := []string{
 		"app-id",
+		"here",
 		"target",
 		"language",
 		"entitlement",
@@ -189,6 +190,85 @@ func TestResolveInitDestAndID_NonInteractiveWithoutAppIDFails(t *testing.T) {
 	}
 }
 
+// WDY-2439: `wendy init --here` scaffolds into the current directory instead
+// of nesting a subdirectory named after an explicit app ID (the reporter's
+// `wendy init cctv-demo` inside an existing empty `cctv-demo/` repro).
+
+func TestResolveInitDestAndID_HereWithExplicitAppIDUsesCwd(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/cctv-demo", nil, initOptions{
+		here:     true,
+		appID:    "cctv-demo",
+		appIDSet: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != "/tmp/cctv-demo" || appID != "cctv-demo" {
+		t.Fatalf("destDir, appID = %q, %q, want (%q, %q)", destDir, appID, "/tmp/cctv-demo", "cctv-demo")
+	}
+}
+
+func TestResolveInitDestAndID_HereWithPositionalAppIDUsesCwd(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/cctv-demo", []string{"cctv-demo"}, initOptions{
+		here: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != "/tmp/cctv-demo" || appID != "cctv-demo" {
+		t.Fatalf("destDir, appID = %q, %q, want (%q, %q)", destDir, appID, "/tmp/cctv-demo", "cctv-demo")
+	}
+}
+
+func TestResolveInitDestAndID_HereWithoutNameUsesValidatedBasename(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/demo-app", nil, initOptions{here: true})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != "/tmp/demo-app" || appID != "demo-app" {
+		t.Fatalf("destDir, appID = %q, %q, want (%q, %q)", destDir, appID, "/tmp/demo-app", "demo-app")
+	}
+}
+
+func TestResolveInitDestAndID_HereWithoutNameRejectsInvalidBasename(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	_, _, err := resolveInitDestAndID("/tmp/Demo App", nil, initOptions{here: true})
+	if err == nil {
+		t.Fatal("expected invalid directory basename to fail as app ID")
+	}
+	if !strings.Contains(err.Error(), `"Demo App"`) || !strings.Contains(err.Error(), "wendy init --here <name>") {
+		t.Fatalf("error = %q, want mention of basename and %q", err, "wendy init --here <name>")
+	}
+}
+
+// --here must work with no TTY attached at all: today the no-name path
+// hard-errors without an app ID when isInteractiveTerminalFn is false, but
+// --here answers the destination/name question itself and must never reach
+// that check.
+func TestResolveInitDestAndID_HereWorksNonInteractively(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/demo-app", nil, initOptions{
+		here:        true,
+		targetSet:   true,
+		languageSet: true,
+		templateSet: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != "/tmp/demo-app" || appID != "demo-app" {
+		t.Fatalf("destDir, appID = %q, %q, want (%q, %q)", destDir, appID, "/tmp/demo-app", "demo-app")
+	}
+}
+
 func TestPathHasPrefix_IsCaseSensitiveOnUnix(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows paths are intentionally compared case-insensitively")
@@ -304,6 +384,24 @@ func TestTemplateNextSteps(t *testing.T) {
 				t.Fatalf("templateNextSteps(%q, %q, %q) = %#v, want %#v", tt.cwd, tt.destDir, tt.appID, got, tt.want)
 			}
 		})
+	}
+}
+
+// WDY-2439: the template flow must refuse to scaffold into a directory that
+// already has a wendy.json when dest == cwd (the --here case), and must fail
+// before any filesystem mutation (MkdirAll, template download/render).
+func TestRunTemplateFlow_HereGuardsExistingWendyJSON(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "wendy.json"), []byte(`{"appId":"existing"}`), 0o644); err != nil {
+		t.Fatalf("writing existing wendy.json: %v", err)
+	}
+
+	err := runTemplateFlow(tempDir, tempDir, "demo-app", "simple-api", targetWendyOS, &repoMeta{}, initOptions{here: true})
+	if err == nil {
+		t.Fatal("expected runTemplateFlow to fail when wendy.json already exists in the current directory")
+	}
+	if got, want := err.Error(), "wendy.json already exists here; run from an empty directory or remove it first"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 
