@@ -1,6 +1,7 @@
-# Campaign for the WendyDataModelApp reference app. Deploy with:
+# Telemetry-only variant of the WendyDataModelApp reference campaign, for a
+# device with a single camera that the app itself holds open. Deploy with:
 #
-#   wendy data campaign deploy campaign.yaml
+#   wendy data campaign deploy campaign-telemetry-only.yaml
 #
 # The app's prediction and event records arrive over the data socket and
 # arm these triggers; the "applications" source is always captured, so
@@ -10,9 +11,9 @@ version: 1
 name: model-harness-demo
 
 sources:
-  # Hubert's only camera (/dev/video0) is held open by the app itself, so
-  # the campaign captures the telemetry stream instead; the "applications"
-  # source (predictions and events) is always captured regardless.
+  # The device's only camera is held open by the app itself, so the campaign
+  # captures the telemetry stream instead; the "applications" source
+  # (predictions and events) is always captured regardless.
   - telemetry: true
 
 capture:
