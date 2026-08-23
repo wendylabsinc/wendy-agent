@@ -101,6 +101,12 @@ far enough that the harness has to drop samples before it, the sample
 carries `dropped_before` and the app logs a warning — a gap in the sample
 identifiers is always explained, never silent.
 
+`encoding` is a per-sample field, not a per-stream one, so the decoder
+follows the samples: it is rebuilt whenever the encoding changes, and
+anything the retired decoder still holds is drained first and attributed to
+the samples that produced it. A decoder pinned to whichever encoding
+arrived first would decode nothing at all after a mid-stream switch.
+
 ## Run on a dev box (no GPU, no ROS 2)
 
 The default image is CPU-only and needs no ROS 2 stack:

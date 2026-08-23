@@ -221,5 +221,127 @@ class TestSampleAttribution(unittest.TestCase):
         self.assertEqual([f.dropped_before for f in frames], [3, 0, 0])
 
 
+class TestDecoderFollowsTheEncoding(unittest.TestCase):
+    """The proto sets `encoding` per sample, not per stream. A decoder built
+    once from the first sample decodes nothing at all after a mid-stream switch,
+    which loses every frame from that point on without saying so."""
+
+    _sensors = staticmethod(TestSampleAttribution._sensors)
+    _Sample = TestSampleAttribution._Sample
+    _Decoder = TestSampleAttribution._Decoder
+    _Decoded = TestSampleAttribution._Decoded
+
+    class _Buffering:
+        """Turns no packet into a frame, but holds one back for the flush."""
+
+        def parse(self, payload):
+            return [payload]
+
+        def decode(self, packet):
+            if packet is None:
+                return [TestSampleAttribution._Decoded()]
+            return []
+
+    def test_a_mid_stream_encoding_change_rebuilds_the_decoder(self):
+        sensors = self._sensors()
+        asked_for = []
+
+        def make_decoder(encoding):
+            asked_for.append(encoding)
+            return self._Decoder(per_packet=1)
+
+        frames = list(
+            sensors.decode_samples(
+                [
+                    self._Sample(1, encoding="h264"),
+                    self._Sample(2, encoding="h264"),
+                    self._Sample(3, encoding="vp8"),
+                ],
+                make_decoder,
+            )
+        )
+        # One decoder per encoding, not one per sample and not one per stream.
+        self.assertEqual(asked_for, ["h264", "vp8"])
+        self.assertEqual([f.sample_ids for f in frames], [[1], [2], [3]])
+
+    def test_an_empty_first_encoding_does_not_pin_the_decoder(self):
+        sensors = self._sensors()
+        asked_for = []
+
+        def make_decoder(encoding):
+            asked_for.append(encoding)
+            return self._Decoder(per_packet=1)
+
+        frames = list(
+            sensors.decode_samples(
+                [
+                    self._Sample(1, encoding=""),
+                    self._Sample(2, encoding="h264"),
+                    self._Sample(3, encoding="vp8"),
+                ],
+                make_decoder,
+            )
+        )
+        # The empty encoding resolves to the documented default, so the explicit
+        # "h264" that follows is the same codec and must not rebuild anything.
+        self.assertEqual(asked_for, ["h264", "vp8"])
+        self.assertEqual([f.sample_ids for f in frames], [[1], [2], [3]])
+
+    def test_the_retired_decoder_is_flushed_with_its_own_attribution(self):
+        sensors = self._sensors()
+        built = []
+
+        def make_decoder(encoding):
+            decoder = self._Buffering() if encoding == "h264" else self._Decoder(per_packet=1)
+            built.append(encoding)
+            return decoder
+
+        frames = list(
+            sensors.decode_samples(
+                [
+                    self._Sample(1, encoding="h264", dropped_before=2),
+                    self._Sample(2, encoding="h264"),
+                    self._Sample(3, encoding="vp8"),
+                ],
+                make_decoder,
+            )
+        )
+        self.assertEqual(built, ["h264", "vp8"])
+        self.assertEqual(len(frames), 2)
+        # The flushed frame belongs to the samples that fed the old decoder, and
+        # carries their drop count and the timestamp of the last of them, not
+        # those of the first sample under the new encoding.
+        self.assertEqual(frames[0].sample_ids, [1, 2])
+        self.assertEqual(frames[0].dropped_before, 2)
+        self.assertEqual(frames[0].boottime_nanos, 2 * 1000)
+        # The bytes buffered under the old codec are not credited to the new one.
+        self.assertEqual(frames[1].sample_ids, [3])
+        self.assertEqual(frames[1].dropped_before, 0)
+
+    def test_a_decoder_that_cannot_be_flushed_does_not_end_the_stream(self):
+        sensors = self._sensors()
+
+        class Unflushable:
+            def parse(self, payload):
+                return [payload]
+
+            def decode(self, packet):
+                if packet is None:
+                    raise RuntimeError("this codec cannot be flushed")
+                return []
+
+        def make_decoder(encoding):
+            return Unflushable() if encoding == "h264" else self._Decoder(per_packet=1)
+
+        with self.assertLogs("wendysensors", level="WARNING"):
+            frames = list(
+                sensors.decode_samples(
+                    [self._Sample(1, encoding="h264"), self._Sample(2, encoding="vp8")],
+                    make_decoder,
+                )
+            )
+        self.assertEqual([f.sample_ids for f in frames], [[2]])
+
+
 if __name__ == "__main__":
     unittest.main()

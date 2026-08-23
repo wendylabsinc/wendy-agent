@@ -26,6 +26,10 @@ PyAV's parser, which handles both shapes, so a decoded frame may be the
 product of more than one sample; `SensorFrame.sample_ids` lists every
 sample that contributed to it, which is exactly what the prediction
 record's `inputs` list is for.
+
+`encoding` is per sample, not per stream, so the decoder is rebuilt
+whenever it changes rather than being pinned by whichever sample happened
+to arrive first.
 """
 
 from __future__ import annotations
@@ -42,6 +46,13 @@ from wendy.agent.services.v2 import sensor_service_pb2_grpc as sensorgrpc
 log = logging.getLogger("wendysensors")
 
 DEFAULT_SOCKET_PATH = "/run/wendy/sensors/sensors.sock"
+
+# The encoding assumed when a sample leaves the field empty. Normalizing here
+# rather than in the decoder factory keeps the value the decoder was built for
+# comparable to the value the next sample declares; if the two disagreed, an
+# empty encoding followed by an explicit "h264" would rebuild the decoder for
+# no reason and throw away the bytes it had buffered.
+DEFAULT_ENCODING = "h264"
 
 
 def socket_path() -> str:
@@ -113,7 +124,7 @@ class SensorClient:
         request = sensorpb.SensorSubscribeRequest(source_ids=[self.source_id], model=self.model)
         yield from decode_samples(
             stub.Subscribe(request),
-            lambda encoding: av.CodecContext.create(encoding or "h264", "r"),
+            lambda encoding: av.CodecContext.create(encoding, "r"),
         )
 
 
@@ -126,13 +137,40 @@ def decode_samples(samples, make_decoder):
     wrong loses the join key silently rather than loudly.
     """
     decoder = None
+    # The encoding the current decoder was built for. The proto allows this to
+    # change from sample to sample ("h264" or "vp8"), and a stream that switches
+    # decodes to nothing at all under the decoder the first sample happened to
+    # ask for, so the decoder follows the samples rather than the other way round.
+    decoder_encoding = None
     pending_ids: list[int] = []
     pending_drops = 0
+    # The most recent sample the pending bytes end at, so frames recovered by a
+    # flush are timestamped by the sample that actually produced them and not by
+    # the first sample of the next encoding.
+    pending_tail = None
     for sample in samples:
-        if decoder is None:
-            decoder = make_decoder(sample.encoding)
+        encoding = sample.encoding or DEFAULT_ENCODING
+        if decoder is None or encoding != decoder_encoding:
+            if decoder is not None:
+                log.info(
+                    "sample encoding changed from %s to %s; rebuilding the decoder",
+                    decoder_encoding,
+                    encoding,
+                )
+                yield from _flush_decoder(decoder, pending_ids, pending_drops, pending_tail)
+                # Whatever the retired decoder could not turn into a frame was
+                # encoded by the codec being replaced, so the new decoder can
+                # never produce a frame from it. Dropping the accumulation here
+                # is what keeps the next codec's frames from being credited with
+                # sample identifiers they were not computed from.
+                pending_ids = []
+                pending_drops = 0
+                pending_tail = None
+            decoder = make_decoder(encoding)
+            decoder_encoding = encoding
         pending_ids.append(sample.sample_id)
         pending_drops += sample.dropped_before
+        pending_tail = sample
         emitted = False
         for packet in decoder.parse(sample.payload):
             for decoded in decoder.decode(packet):
@@ -159,3 +197,43 @@ def decode_samples(samples, make_decoder):
             # whole path exists to carry.
             pending_ids = []
             pending_drops = 0
+            pending_tail = None
+
+
+def _flush_decoder(decoder, sample_ids, dropped_before, tail):
+    """Drain the frames a decoder still holds before it is replaced.
+
+    Called only at an encoding change. The buffered bytes belong to the codec
+    being retired, so this is the last moment anything can be decoded from them,
+    and the samples that fed them are still known: a frame recovered here keeps
+    the same attribution it would have had on the next sample. A decoder that
+    cannot be flushed loses the buffered samples, which is logged rather than
+    allowed to end the stream.
+    """
+    if not sample_ids or tail is None:
+        return
+    try:
+        drained = list(decoder.decode(None))
+    except Exception as exc:  # noqa: BLE001 - any codec failure here is survivable
+        log.warning(
+            "could not flush the decoder at an encoding change; %d buffered sample(s) produced no frame: %s",
+            len(sample_ids),
+            exc,
+        )
+        return
+    emitted = False
+    for decoded in drained:
+        yield SensorFrame(
+            source_id=tail.source_id,
+            sample_ids=list(sample_ids),
+            boottime_nanos=tail.boottime_nanos,
+            uncertainty_nanos=tail.timestamp_uncertainty_nanos,
+            dropped_before=0 if emitted else dropped_before,
+            image=decoded.to_ndarray(format="bgr24"),
+        )
+        emitted = True
+    if not emitted:
+        log.info(
+            "%d buffered sample(s) produced no frame before the encoding change",
+            len(sample_ids),
+        )
