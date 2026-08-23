@@ -21,6 +21,10 @@ import (
 
 const CampaignVersion = 1
 
+// ErrInvalidCampaignName marks a syntactically invalid campaign name so RPC
+// handlers can return InvalidArgument rather than NotFound.
+var ErrInvalidCampaignName = errors.New("invalid campaign name")
+
 // SourceCapture is an optional per-source capture policy. The camera adapter
 // implements the "continuous" (default) and "snapshot" modes; other
 // combinations are validated so authored plans are portable, and deployment
@@ -356,7 +360,7 @@ func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
 
 func (m *Manager) Campaign(name string) (Campaign, error) {
 	if name == "" || safeName(name) != name {
-		return Campaign{}, errors.New("invalid campaign name")
+		return Campaign{}, ErrInvalidCampaignName
 	}
 	var campaign Campaign
 	b, err := os.ReadFile(filepath.Join(m.campaignDir(), name+".json"))

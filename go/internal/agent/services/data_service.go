@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,41 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// dataStatusError maps a data-manager error onto a precise gRPC status code.
+// An earlier revision collapsed every episode-lookup failure to NotFound,
+// which hid malformed requests and genuine I/O or seal failures behind the
+// same code. The mapping is:
+//
+//   - InvalidArgument: the request itself is malformed (bad episode id,
+//     out-of-range download offset, malformed or escaping file path).
+//   - NotFound: the episode, manifest, or requested file is genuinely absent.
+//   - FailedPrecondition: the episode exists but is not currently serviceable
+//     (no active episode, or a manifest entry that is not a regular file).
+//   - Internal: everything else, which is an I/O, decode, or seal failure.
+//
+// Messages are the underlying error text, which is generated agent-side and
+// carries no client-supplied secrets or host paths beyond episode-relative
+// names.
+func dataStatusError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, data.ErrInvalidEpisodeID),
+		errors.Is(err, data.ErrInvalidDownloadOffset),
+		errors.Is(err, data.ErrInvalidEpisodePath),
+		errors.Is(err, data.ErrEpisodePathEscapes),
+		errors.Is(err, data.ErrInvalidCampaignName):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, os.ErrNotExist):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, data.ErrNoActiveEpisode),
+		errors.Is(err, data.ErrEpisodeEntryNotRegular):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	default:
+		return status.Error(codes.Internal, err.Error())
+	}
+}
 
 type DataService struct {
 	agentpbv2.UnimplementedDataServiceServer
@@ -248,7 +284,7 @@ func (s *DataService) Campaigns(context.Context, *agentpbv2.DataCampaignsRequest
 func (s *DataService) CampaignInspect(_ context.Context, req *agentpbv2.DataCampaignInspectRequest) (*agentpbv2.DataCampaign, error) {
 	campaign, err := s.manager.Campaign(req.GetName())
 	if err != nil {
-		return nil, status.Error(codes.NotFound, err.Error())
+		return nil, dataStatusError(err)
 	}
 	message, err := campaignMessage(campaign)
 	if err != nil {
@@ -260,7 +296,7 @@ func (s *DataService) CampaignInspect(_ context.Context, req *agentpbv2.DataCamp
 func (s *DataService) CampaignTrigger(ctx context.Context, req *agentpbv2.DataCampaignTriggerRequest) (*agentpbv2.DataEpisode, error) {
 	campaign, err := s.manager.Campaign(req.GetName())
 	if err != nil {
-		return nil, status.Error(codes.NotFound, err.Error())
+		return nil, dataStatusError(err)
 	}
 	reason := strings.TrimSpace(req.GetReason())
 	if reason == "" {
@@ -376,7 +412,7 @@ func (s *DataService) Episodes(context.Context, *agentpbv2.DataEpisodesRequest) 
 func (s *DataService) Inspect(_ context.Context, req *agentpbv2.DataInspectRequest) (*agentpbv2.DataInspectResponse, error) {
 	m, failures, err := s.manager.Inspect(req.GetEpisode(), req.GetVerify())
 	if err != nil {
-		return nil, status.Error(codes.NotFound, err.Error())
+		return nil, dataStatusError(err)
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -390,7 +426,7 @@ func (s *DataService) Download(req *agentpbv2.DataDownloadRequest, stream agentp
 	defer s.manager.EndDownload(req.GetEpisode())
 	f, meta, err := s.manager.OpenFile(req.GetEpisode(), req.GetPath(), req.GetOffset())
 	if err != nil {
-		return status.Error(codes.NotFound, err.Error())
+		return dataStatusError(err)
 	}
 	defer f.Close()
 	buf := make([]byte, 256*1024)
