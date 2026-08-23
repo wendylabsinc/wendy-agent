@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -236,11 +237,33 @@ func propUint(props map[string]json.RawMessage, key string) uint64 {
 	return v
 }
 
-// parseDump extracts audio sinks and sources, and the current defaults.
-func parseDump(data []byte) ([]Node, Defaults, error) {
+// decodeDump unmarshals pw-dump output into the objects both scans below walk.
+func decodeDump(data []byte) ([]pwObject, error) {
 	var objects []pwObject
 	if err := json.Unmarshal(data, &objects); err != nil {
-		return nil, Defaults{}, fmt.Errorf("parsing pw-dump output: %w", err)
+		return nil, fmt.Errorf("parsing pw-dump output: %w", err)
+	}
+	return objects, nil
+}
+
+// nodeProps returns o's properties and media.class if o is a Node of one of classes. Device
+// and Port objects share the id space and carry media.class too, but only a Node is streamable.
+func nodeProps(o pwObject, classes ...string) (map[string]json.RawMessage, string, bool) {
+	if o.Type != "PipeWire:Interface:Node" {
+		return nil, "", false
+	}
+	class := propString(o.Info.Props, "media.class")
+	if !slices.Contains(classes, class) {
+		return nil, "", false
+	}
+	return o.Info.Props, class, true
+}
+
+// parseDump extracts audio sinks and sources, and the current defaults.
+func parseDump(data []byte) ([]Node, Defaults, error) {
+	objects, err := decodeDump(data)
+	if err != nil {
+		return nil, Defaults{}, err
 	}
 
 	var nodes []Node
@@ -265,29 +288,23 @@ func parseDump(data []byte) ([]Node, Defaults, error) {
 			continue
 		}
 
-		// Only Node objects are addressable by wpctl and pw-record; Device and
-		// Port objects share the id space and can carry a media.class.
-		if o.Type != "PipeWire:Interface:Node" {
+		// Exactly "Audio/Sink" or "Audio/Source": monitor and virtual nodes carry a
+		// further suffix and are not devices anyone chose to install.
+		props, class, ok := nodeProps(o, "Audio/Sink", "Audio/Source")
+		if !ok {
 			continue
 		}
-
-		// Exactly "Audio/Sink" or "Audio/Source". Monitor and virtual nodes
-		// carry a further suffix and are not devices anyone chose to install.
-		class := propString(o.Info.Props, "media.class")
-		if class != "Audio/Sink" && class != "Audio/Source" {
-			continue
-		}
-		name := propString(o.Info.Props, "node.name")
+		name := propString(props, "node.name")
 		if name == "" {
 			continue
 		}
-		description := propString(o.Info.Props, "node.description")
+		description := propString(props, "node.description")
 		if description == "" {
 			description = name
 		}
 		nodes = append(nodes, Node{
 			ID:          o.ID,
-			Serial:      propUint(o.Info.Props, "object.serial"),
+			Serial:      propUint(props, "object.serial"),
 			Name:        name,
 			Description: description,
 			IsSink:      class == "Audio/Sink",

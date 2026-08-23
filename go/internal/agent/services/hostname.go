@@ -19,6 +19,13 @@ const explicitHostnamePath = "/etc/wendy-agent/hostname"
 // maxHostnameLen is the RFC 1035 limit for a single DNS label.
 const maxHostnameLen = 63
 
+// avahiServiceFile is the mDNS advertisement the agent edits at runtime. Unlike
+// explicitHostnamePath it is NOT persistent: it lives on the rootfs, so it is
+// per-OTA-slot, and wendyos-identity.service rewrites its name/displayname TXT
+// records from /etc/wendyos/device-name on every boot. See
+// ReassertHostnameAdvertisement.
+const avahiServiceFile = "/etc/avahi/services/wendyos-mdns.service"
+
 // validHostname reports whether name is a valid DNS label suitable for use as a
 // literal hostname: 1–63 characters, starting with a lowercase letter, followed
 // by lowercase letters, digits, or hyphens, and not ending in a hyphen.
@@ -116,32 +123,112 @@ func updateEtcHosts(logger *zap.Logger, hostname string) {
 // avoid an import cycle (configpartition imports this package). Keep the avahi
 // service-file format in sync between them.
 func updateAvahiHostname(logger *zap.Logger, hostname string) {
-	const serviceFile = "/etc/avahi/services/wendyos-mdns.service"
-
-	data, err := os.ReadFile(serviceFile)
+	data, err := os.ReadFile(avahiServiceFile)
 	if err != nil {
-		logger.Warn("Could not read avahi service file", zap.String("path", serviceFile), zap.Error(err))
+		logger.Warn("Could not read avahi service file", zap.String("path", avahiServiceFile), zap.Error(err))
 		return
 	}
 
-	content := replaceAvahiTXTRecord(string(data), "name", hostname)
-	content = replaceAvahiTXTRecord(content, "displayname", avahiDisplayName(hostname))
-	content = replaceAvahiTXTRecord(content, "fqdn", "sh.wendy."+hostname)
+	content := avahiContentForHostname(string(data), hostname)
+	if err := os.WriteFile(avahiServiceFile, []byte(content), 0o644); err != nil {
+		logger.Warn("Could not write avahi service file", zap.String("path", avahiServiceFile), zap.Error(err))
+		return
+	}
+
+	// Unconditional restart, unlike the re-assert path: here the hostname itself
+	// just changed, so avahi must re-read gethostname() even when the TXT records
+	// happen to be unchanged.
+	if restartAvahiDaemon(logger) {
+		logger.Info("Restarted avahi-daemon with new hostname", zap.String("hostname", hostname))
+	}
+}
+
+// ReassertHostnameAdvertisement re-publishes the mDNS TXT records for a hostname
+// previously set via SetHostname ('wendy device rename'). Call it once at agent
+// startup, after the boot-time identity units have run.
+//
+// A rename persists the hostname itself (explicitHostnamePath is bind-mounted to
+// /data and generate-hostname.sh prefers it), but the advertisement carrying the
+// name/displayname TXT records is rootfs state that gets reverted underneath us
+// two ways: wendyos-identity.service re-derives those records from
+// /etc/wendyos/device-name on every boot, and an A/B OTA brings back a fresh
+// service file from the new slot. Either way the device goes on resolving as
+// <name>.local while 'wendy device list' shows the pre-rename name again.
+//
+// Best-effort and quiet by design: with no rename in effect, or when the records
+// already agree, it touches nothing and leaves avahi-daemon alone — this runs on
+// every agent start, and a needless restart would drop the advertisement.
+func ReassertHostnameAdvertisement(logger *zap.Logger) {
+	reassertHostnameAdvertisement(logger, explicitHostnamePath, avahiServiceFile, func() bool {
+		return restartAvahiDaemon(logger)
+	})
+}
+
+// reassertHostnameAdvertisement is the testable core of
+// ReassertHostnameAdvertisement, with the paths and the avahi restart injected.
+func reassertHostnameAdvertisement(logger *zap.Logger, hostnamePath, serviceFile string, restartAvahi func() bool) {
+	data, err := os.ReadFile(hostnamePath)
+	if err != nil {
+		// A missing file is the normal "never renamed" case, not a problem.
+		if !os.IsNotExist(err) {
+			logger.Warn("Could not read persisted hostname", zap.String("path", hostnamePath), zap.Error(err))
+		}
+		return
+	}
+
+	hostname := strings.TrimSpace(string(data))
+	if !validHostname(hostname) {
+		logger.Warn("Ignoring invalid persisted hostname; leaving the mDNS advertisement as-is",
+			zap.String("path", hostnamePath), zap.String("hostname", hostname))
+		return
+	}
+
+	service, err := os.ReadFile(serviceFile)
+	if err != nil {
+		// Absent on a non-WendyOS host (e.g. the Linux desktop install), where
+		// there is no avahi service file to keep in sync.
+		if !os.IsNotExist(err) {
+			logger.Warn("Could not read avahi service file", zap.String("path", serviceFile), zap.Error(err))
+		}
+		return
+	}
+
+	content := avahiContentForHostname(string(service), hostname)
+	if content == string(service) {
+		return // already advertising the renamed device
+	}
 
 	if err := os.WriteFile(serviceFile, []byte(content), 0o644); err != nil {
 		logger.Warn("Could not write avahi service file", zap.String("path", serviceFile), zap.Error(err))
 		return
 	}
+	if restartAvahi() {
+		logger.Info("Re-applied renamed hostname to the mDNS advertisement",
+			zap.String("hostname", hostname))
+	}
+}
 
-	// A full restart (not --reload) is required so avahi re-reads gethostname()
-	// and re-publishes the %h-based records under the new hostname.
+// avahiContentForHostname returns the avahi service file content with the
+// hostname-derived TXT records set. Only those records are rewritten, so the
+// port and the tls/assetid/orgid records owned by UpdateAvahiForProvisioning
+// survive untouched.
+func avahiContentForHostname(content, hostname string) string {
+	content = replaceAvahiTXTRecord(content, "name", hostname)
+	content = replaceAvahiTXTRecord(content, "displayname", avahiDisplayName(hostname))
+	return replaceAvahiTXTRecord(content, "fqdn", "sh.wendy."+hostname)
+}
+
+// restartAvahiDaemon restarts avahi-daemon so it re-reads both the service file
+// and gethostname(). A full restart is required: --reload (SIGHUP) only
+// refreshes service files, leaving the %h-based records stale.
+func restartAvahiDaemon(logger *zap.Logger) bool {
 	restart := exec.Command("/usr/bin/systemctl", "restart", "avahi-daemon")
 	restart.Env = systemPathEnv()
 	if out, err := restart.CombinedOutput(); err != nil {
 		logger.Warn("systemctl restart avahi-daemon failed", zap.Error(err), zap.String("output", string(out)))
-		return
+		return false
 	}
-	logger.Info("Restarted avahi-daemon with new hostname", zap.String("hostname", hostname))
+	return true
 }
 
 // replaceAvahiTXTRecord replaces the value in a <txt-record>key=...</txt-record> line.

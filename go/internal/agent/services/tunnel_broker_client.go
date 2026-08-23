@@ -267,6 +267,11 @@ func (c *TunnelBrokerClient) handleDialRequest(ctx context.Context, client cloud
 		return
 	}
 
+	if req.GetProtocol() == cloudpb.TunnelProtocol_TUNNEL_PROTOCOL_DATAGRAM {
+		c.handleDatagramDial(ctx, client, req, devMD)
+		return
+	}
+
 	port := int(req.Port)
 	if c.mtlsPort != 0 && port == defaultMTLSPort && c.mtlsPort != defaultMTLSPort {
 		port = c.mtlsPort
@@ -301,6 +306,29 @@ func (c *TunnelBrokerClient) handleDialRequest(ctx context.Context, client cloud
 	}
 
 	c.relay(callCtx, cancel, tcpConn, agentStream)
+}
+
+// handleDatagramDial claims the session and serves a multiplexed datagram
+// relay (UDP flows + ICMP echo). Nothing is dialed upfront; UDP sockets are
+// created per flow on first sight, restricted to loopback like TCP dials.
+func (c *TunnelBrokerClient) handleDatagramDial(ctx context.Context, client cloudpb.TunnelBrokerServiceClient,
+	req *cloudpb.DialRequest, devMD metadata.MD) {
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if devMD != nil {
+		callCtx = metadata.NewOutgoingContext(callCtx, devMD)
+	}
+	agentStream, err := client.AgentTunnel(callCtx)
+	if err != nil {
+		c.logger.Error("failed to open AgentTunnel stream", zap.Error(err))
+		return
+	}
+	if err := agentStream.Send(&cloudpb.TunnelData{SessionId: req.SessionId}); err != nil {
+		c.logger.Error("failed to send join message", zap.Error(err))
+		return
+	}
+	c.logger.Info("serving datagram session", zap.String("session_id", req.SessionId))
+	newDatagramRelay(c.logger, agentStream, datagramFlowIdleTimeout).run(callCtx)
 }
 
 type agentTunnelStream interface {

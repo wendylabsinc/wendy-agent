@@ -47,6 +47,7 @@ tmpfs /run tmpfs rw,nosuid,nodev 0 0
 /dev/mmcblk0p1 /boot vfat rw,relatime 0 0
 cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime 0 0
 overlay /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs overlay rw 0 0
+/dev/loop0 /snap/bare/5 squashfs ro,nodev,relatime 0 0
 /dev/mmcblk0p2 /data ext4 rw,relatime 0 0`
 
 	got := parseProcMounts(content)

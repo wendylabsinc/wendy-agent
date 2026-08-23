@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -841,6 +842,11 @@ func authConfigToJSON(auth *config.AuthConfig) ([]byte, error) {
 // An all-digit selector matches a certificate OrganizationID; otherwise it is a
 // case-insensitive substring of the gRPC endpoint or dashboard URL. It errors
 // when nothing matches or when more than one session matches.
+//
+// Matching is purely local: it only ever sees orgs this machine holds a
+// certificate for. Asking for an org that exists in the cloud but was never
+// logged into here is the common no-match case, so the error says so and points
+// at 'wendy auth login' rather than implying the org does not exist.
 func matchAuthSelector(cfg *config.Config, selector string) (*config.AuthConfig, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
@@ -867,7 +873,7 @@ func matchAuthSelector(cfg *config.Config, selector string) (*config.AuthConfig,
 	}
 	switch len(matches) {
 	case 0:
-		return nil, fmt.Errorf("no auth session matches %q", selector)
+		return nil, noSessionMatchError(cfg, selector)
 	case 1:
 		return matches[0], nil
 	default:
@@ -877,6 +883,41 @@ func matchAuthSelector(cfg *config.Config, selector string) (*config.AuthConfig,
 		}
 		return nil, fmt.Errorf("selector %q matches multiple sessions:%s", selector, b.String())
 	}
+}
+
+// noSessionMatchError explains a failed selector lookup. `wendy auth use` only
+// searches locally stored certificates, so "no match" almost always means "you
+// are not logged into that org on this machine" — not that the org is missing
+// or the selector is malformed. The error therefore names what IS available and
+// gives the exact command that fixes it.
+func noSessionMatchError(cfg *config.Config, selector string) error {
+	var b strings.Builder
+	if orgID, err := strconv.Atoi(selector); err == nil {
+		fmt.Fprintf(&b, "not logged in to org %d on this machine", orgID)
+	} else {
+		fmt.Fprintf(&b, "no auth session matches %q", selector)
+	}
+
+	if labels := authSessionLabels(cfg); len(labels) > 0 {
+		b.WriteString("\n\nSessions stored here:")
+		for _, l := range labels {
+			fmt.Fprintf(&b, "\n  - %s", l)
+		}
+	}
+
+	b.WriteString("\n\n'wendy auth use' only selects between orgs this machine already holds a")
+	b.WriteString("\ncertificate for; it does not query the cloud. To add another org, run")
+	b.WriteString("\n'wendy auth login' and pick it in the browser — existing sessions are kept.")
+	return errors.New(b.String())
+}
+
+// authSessionLabels lists every stored session, most useful identifier first.
+func authSessionLabels(cfg *config.Config) []string {
+	labels := make([]string, 0, len(cfg.Auth))
+	for i := range cfg.Auth {
+		labels = append(labels, authSessionLabel(&cfg.Auth[i]))
+	}
+	return labels
 }
 
 func newAuthUseCmd() *cobra.Command {

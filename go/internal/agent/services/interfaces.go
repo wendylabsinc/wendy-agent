@@ -210,7 +210,7 @@ type ContainerMonitorRegistrar interface {
 	// Unregister removes appName from the monitor.
 	Unregister(appName string)
 	// MarkExplicitStop marks appName as intentionally stopped so it won't be
-	// automatically restarted by an unless-stopped or on-failure policy.
+	// automatically restarted, regardless of restart policy.
 	MarkExplicitStop(appName string)
 	// ClearExplicitStop reverts a prior MarkExplicitStop call, re-enabling
 	// automatic restarts for appName. Used to undo a pre-emptive mark when the
