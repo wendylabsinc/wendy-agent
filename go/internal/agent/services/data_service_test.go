@@ -26,7 +26,8 @@ func TestCampaignDeployTriggerAndTimedFinalization(t *testing.T) {
 	service := NewDataService(manager)
 	adapter := &fakeDataAdapter{}
 	service.addAdapter(adapter)
-	yaml := []byte(`name: test-flight
+	yaml := []byte(`version: 1
+name: test-flight
 fleet: test-lab
 sources:
   - camera: front
@@ -37,7 +38,7 @@ capture:
     - event: emergency_stop
 upload:
   when: wifi
-  destination: s3://example/episodes
+  destination: example-episodes
 export:
   annotation: cvat
 `)
@@ -69,7 +70,7 @@ export:
 	if len(failures) != 0 {
 		t.Fatalf("verification failures: %v", failures)
 	}
-	if manifest.Trigger.CampaignName != "test-flight" || manifest.Trigger.Reason != "hardware_test" || manifest.Upload.Destination != "s3://example/episodes" || manifest.Labeling.Destination != "cvat" {
+	if manifest.Trigger.CampaignName != "test-flight" || manifest.Trigger.Reason != "hardware_test" || manifest.Upload.Destination != "example-episodes" || manifest.Labeling.Destination != "cvat" {
 		t.Fatalf("campaign metadata missing from episode: %+v", manifest)
 	}
 	if manifest.CollectorVersion == "" || manifest.Device.ID == "" {
@@ -88,7 +89,8 @@ func TestCampaignApplicationEventAutomaticallyTriggers(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewDataService(manager)
-	yaml := []byte(`name: event-flight
+	yaml := []byte(`version: 1
+name: event-flight
 sources:
   - telemetry: true
 capture:
@@ -96,7 +98,7 @@ capture:
   after_trigger: 30ms
   triggers:
     - event: emergency_stop
-upload: {when: wifi, destination: s3://example/episodes}
+upload: {when: wifi, destination: example-episodes}
 export: {annotation: cvat}
 `)
 	if _, err = service.CampaignDeploy(context.Background(), &agentpbv2.DataCampaignDeployRequest{CampaignYaml: yaml}); err != nil {
@@ -130,6 +132,112 @@ export: {annotation: cvat}
 	}
 	t.Fatal("application event did not produce a finalized episode")
 }
+func deployEventCampaign(t *testing.T, service *DataService, name, event string) {
+	t.Helper()
+	yaml := []byte(`version: 1
+name: ` + name + `
+sources:
+  - telemetry: true
+capture:
+  buffer: 1s
+  after_trigger: 150ms
+  triggers:
+    - event: ` + event + `
+upload: {when: wifi, destination: example-episodes}
+export: {annotation: cvat}
+`)
+	if _, err := service.CampaignDeploy(context.Background(), &agentpbv2.DataCampaignDeployRequest{CampaignYaml: yaml}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForFinalizedEpisodes(t *testing.T, manager *data.Manager, want int) []data.EpisodeInfo {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		list, err := manager.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) >= want && len(manager.ActiveEpisodeKeys()) == 0 {
+			return list
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d finalized episodes", want)
+	return nil
+}
+
+func TestTwoCampaignsCaptureConcurrently(t *testing.T) {
+	manager, err := data.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewDataService(manager)
+	deployEventCampaign(t, service, "campaign-a", "event_a")
+	deployEventCampaign(t, service, "campaign-b", "event_b")
+	if _, err = manager.RecordApplication("test.app", data.ApplicationRecord{Version: 1, Type: "event", Name: "event_a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = manager.RecordApplication("test.app", data.ApplicationRecord{Version: 1, Type: "event", Name: "event_b"}); err != nil {
+		t.Fatal(err)
+	}
+	// Both campaigns must be recording at the same time before either
+	// finalizes; after_trigger leaves a wide window for this.
+	deadline := time.Now().Add(2 * time.Second)
+	concurrent := false
+	for !concurrent && time.Now().Before(deadline) {
+		keys := manager.ActiveEpisodeKeys()
+		concurrent = len(keys) == 2
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !concurrent {
+		t.Fatal("campaigns did not capture concurrently")
+	}
+	episodes := waitForFinalizedEpisodes(t, manager, 2)
+	campaigns := map[string]bool{}
+	for _, episode := range episodes {
+		manifest, _, err := manager.Inspect(episode.ID, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		campaigns[manifest.Trigger.CampaignName] = true
+	}
+	if len(episodes) != 2 || !campaigns["campaign-a"] || !campaigns["campaign-b"] {
+		t.Fatalf("episodes=%d campaigns=%v", len(episodes), campaigns)
+	}
+}
+
+func TestSameCampaignTriggerDroppedWhileActive(t *testing.T) {
+	manager, err := data.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewDataService(manager)
+	deployEventCampaign(t, service, "single-flight", "event_x")
+	if _, err = manager.RecordApplication("test.app", data.ApplicationRecord{Version: 1, Type: "event", Name: "event_x"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	active := false
+	for !active && time.Now().Before(deadline) {
+		_, active = manager.ActiveSession("single-flight")
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !active {
+		t.Fatal("first trigger did not start an episode")
+	}
+	// A second trigger for the SAME campaign while its episode is active must
+	// be dropped rather than queueing or interrupting the recording.
+	if _, err = manager.RecordApplication("test.app", data.ApplicationRecord{Version: 1, Type: "event", Name: "event_x"}); err != nil {
+		t.Fatal(err)
+	}
+	episodes := waitForFinalizedEpisodes(t, manager, 1)
+	if len(episodes) != 1 {
+		t.Fatalf("episodes = %d, want exactly 1", len(episodes))
+	}
+}
+
 func (f *fakeDataAdapter) Start(_ context.Context, _ data.CaptureSession, selected []data.Source) (runningDataCapture, error) {
 	for _, source := range selected {
 		if source.ID == "fake:camera" {

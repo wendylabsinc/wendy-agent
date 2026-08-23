@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,11 +21,56 @@ import (
 
 const CampaignVersion = 1
 
+// SourceCapture is an optional per-source capture policy. Only the
+// "continuous" mode is implemented by the capture adapters today; the other
+// modes are validated so authored plans are portable, and deployment reports
+// them as not yet implemented rather than silently recording continuously.
+type SourceCapture struct {
+	// Mode is one of continuous (default), snapshot, fragment, or threshold.
+	Mode string `json:"mode,omitempty" yaml:"mode,omitempty"`
+	// Interval is the snapshot period (snapshot mode only).
+	Interval string `json:"interval,omitempty" yaml:"interval,omitempty"`
+	// Rate caps the capture rate in hertz (continuous mode only).
+	Rate float64 `json:"rate,omitempty" yaml:"rate,omitempty"`
+	// Pre and Post bound a fragment around an occurrence (fragment mode only).
+	Pre  string `json:"pre,omitempty" yaml:"pre,omitempty"`
+	Post string `json:"post,omitempty" yaml:"post,omitempty"`
+	// Trigger is a field threshold expression such as "model.uncertainty > 0.9"
+	// or "level_db > -20" (threshold mode only). The 0..1 range applies only to
+	// model.uncertainty; other fields carry their own units.
+	Trigger string `json:"trigger,omitempty" yaml:"trigger,omitempty"`
+	// Fragment is the captured duration per threshold crossing (threshold mode only).
+	Fragment string `json:"fragment,omitempty" yaml:"fragment,omitempty"`
+	// MaxResolution caps camera capture as WxH, for example 1280x720 (camera sources only).
+	MaxResolution string `json:"max_resolution,omitempty" yaml:"max_resolution,omitempty"`
+}
+
+// EffectiveMode returns the declared capture mode, defaulting to continuous.
+func (sc *SourceCapture) EffectiveMode() string {
+	if sc == nil || sc.Mode == "" {
+		return "continuous"
+	}
+	return sc.Mode
+}
+
 type CampaignSource struct {
-	Camera      string `json:"camera,omitempty" yaml:"camera,omitempty"`
-	ROS2        string `json:"ros2,omitempty" yaml:"ros2,omitempty"`
-	Telemetry   bool   `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
-	Calibration string `json:"calibration_revision,omitempty" yaml:"calibration_revision,omitempty"`
+	Camera      string         `json:"camera,omitempty" yaml:"camera,omitempty"`
+	ROS2        string         `json:"ros2,omitempty" yaml:"ros2,omitempty"`
+	Telemetry   bool           `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	Calibration string         `json:"calibration_revision,omitempty" yaml:"calibration_revision,omitempty"`
+	Capture     *SourceCapture `json:"capture,omitempty" yaml:"capture,omitempty"`
+}
+
+func (s CampaignSource) describe() string {
+	switch {
+	case s.Camera != "":
+		return "camera:" + s.Camera
+	case s.ROS2 != "":
+		return "ros2:" + s.ROS2
+	case s.Telemetry:
+		return "telemetry"
+	}
+	return "unknown"
 }
 
 type CampaignTrigger struct {
@@ -39,8 +85,21 @@ type CampaignCapture struct {
 }
 
 type CampaignUpload struct {
-	When        string `json:"when" yaml:"when"`
-	Destination string `json:"destination" yaml:"destination"`
+	// When is one of always, wifi, or manual.
+	When string `json:"when" yaml:"when"`
+	// Destination is an optional logical dataset name the fleet backend maps
+	// to storage. It is not a URL; devices never receive storage credentials
+	// or bucket layouts through campaign plans.
+	Destination string `json:"destination,omitempty" yaml:"destination,omitempty"`
+	// MaxRate caps upload bandwidth in bytes per second. Plain integers and
+	// human-readable rates such as "5MB/s" are accepted.
+	MaxRate string `json:"max_rate,omitempty" yaml:"max_rate,omitempty"`
+}
+
+type CampaignRetention struct {
+	// LocalQuota bounds on-device episode storage in bytes. Plain integers and
+	// human-readable sizes such as "10GiB" are accepted.
+	LocalQuota string `json:"local_quota,omitempty" yaml:"local_quota,omitempty"`
 }
 
 type CampaignExport struct {
@@ -56,12 +115,13 @@ type CampaignPrivacy struct {
 // triggers; it does not require the configured sensors or network destination
 // to be online at deployment time.
 type Campaign struct {
-	Version           int               `json:"version" yaml:"-"`
+	Version           int               `json:"version" yaml:"version"`
 	Name              string            `json:"name" yaml:"name"`
 	Fleet             string            `json:"fleet,omitempty" yaml:"fleet,omitempty"`
 	Sources           []CampaignSource  `json:"sources" yaml:"sources"`
 	Capture           CampaignCapture   `json:"capture" yaml:"capture"`
 	Upload            CampaignUpload    `json:"upload" yaml:"upload"`
+	Retention         CampaignRetention `json:"retention,omitempty" yaml:"retention,omitempty"`
 	Export            CampaignExport    `json:"export" yaml:"export"`
 	Models            map[string]string `json:"models" yaml:"models,omitempty"`
 	Privacy           []CampaignPrivacy `json:"privacy" yaml:"privacy,omitempty"`
@@ -85,7 +145,6 @@ func ParseCampaign(contents []byte) (Campaign, error) {
 	if err := campaign.validate(); err != nil {
 		return Campaign{}, err
 	}
-	campaign.Version = CampaignVersion
 	campaign.State = "armed"
 	if campaign.Models == nil {
 		campaign.Models = map[string]string{}
@@ -102,12 +161,21 @@ func ParseCampaign(contents []byte) (Campaign, error) {
 	return campaign, nil
 }
 
+// planOnly strips deployment state before hashing. The author-declared
+// schema version and every plan field, including per-source capture policy,
+// upload policy, and retention, feed the revision digest.
 func (c Campaign) planOnly() Campaign {
-	c.Version, c.State, c.Revision, c.DeployedUnixNanos, c.Warnings = 0, "", "", 0, nil
+	c.State, c.Revision, c.DeployedUnixNanos, c.Warnings = "", "", 0, nil
 	return c
 }
 
 func (c Campaign) validate() error {
+	if c.Version == 0 {
+		return fmt.Errorf("version is required; this agent supports campaign version %d", CampaignVersion)
+	}
+	if c.Version != CampaignVersion {
+		return fmt.Errorf("campaign version %d is not supported; this agent supports up to version %d", c.Version, CampaignVersion)
+	}
 	if c.Name == "" || safeName(c.Name) != c.Name || len(c.Name) > 128 {
 		return errors.New("campaign name must use only letters, numbers, '.', '-' or '_'")
 	}
@@ -128,6 +196,9 @@ func (c Campaign) validate() error {
 		if kinds != 1 {
 			return fmt.Errorf("sources[%d] must select exactly one of camera, ros2, or telemetry", i)
 		}
+		if err := validateSourceCapture(source); err != nil {
+			return fmt.Errorf("sources[%d].capture: %w", i, err)
+		}
 	}
 	buffer, err := time.ParseDuration(c.Capture.Buffer)
 	if err != nil || buffer < 0 || buffer > preRollWindow {
@@ -145,16 +216,25 @@ func (c Campaign) validate() error {
 			return fmt.Errorf("capture.triggers[%d] must define exactly one event or model.uncertainty", i)
 		}
 		if trigger.ModelUncertainty != "" {
-			if _, _, err := parseThreshold(trigger.ModelUncertainty); err != nil {
+			if _, _, err := parseThreshold("model.uncertainty", trigger.ModelUncertainty); err != nil {
 				return fmt.Errorf("capture.triggers[%d]: %w", i, err)
 			}
 		}
 	}
-	if c.Upload.When == "" {
-		return errors.New("upload.when is required")
+	switch c.Upload.When {
+	case "always", "wifi", "manual":
+	default:
+		return errors.New("upload.when must be one of always, wifi, or manual")
 	}
-	if c.Upload.Destination == "" {
-		return errors.New("upload.destination is required")
+	if c.Upload.MaxRate != "" {
+		if _, err := parseByteRate(c.Upload.MaxRate); err != nil {
+			return fmt.Errorf("upload.max_rate: %w", err)
+		}
+	}
+	if c.Retention.LocalQuota != "" {
+		if _, err := parseByteSize(c.Retention.LocalQuota); err != nil {
+			return fmt.Errorf("retention.local_quota: %w", err)
+		}
 	}
 	if c.Export.Annotation == "" {
 		return errors.New("export.annotation is required")
@@ -192,6 +272,18 @@ func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
 				break
 			}
 		}
+	}
+	var pendingModes []string
+	for i, source := range campaign.Sources {
+		if mode := source.Capture.EffectiveMode(); !implementedCaptureModes[mode] {
+			pendingModes = append(pendingModes, fmt.Sprintf("sources[%d] (%s, mode %s)", i, source.describe(), mode))
+		}
+	}
+	if len(pendingModes) > 0 {
+		campaign.Warnings = append(campaign.Warnings, "capture modes other than continuous are not implemented yet; these sources record continuously for now: "+strings.Join(pendingModes, ", "))
+	}
+	if campaign.Retention.LocalQuota != "" {
+		campaign.Warnings = append(campaign.Warnings, "retention.local_quota is recorded with the plan, but this release enforces only the device-wide storage quota")
 	}
 	dir := m.campaignDir()
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -334,7 +426,7 @@ func (c Campaign) Match(record ApplicationRecord) (string, string, bool) {
 			if !ok {
 				continue
 			}
-			op, threshold, _ := parseThreshold(trigger.ModelUncertainty)
+			op, threshold, _ := parseThreshold("model.uncertainty", trigger.ModelUncertainty)
 			if compareThreshold(value, op, threshold) {
 				return fmt.Sprintf("model_uncertainty:%g", value), "model.uncertainty " + trigger.ModelUncertainty, true
 			}
@@ -370,18 +462,234 @@ func numericValue(value any) (float64, bool) {
 	}
 }
 
-func parseThreshold(expression string) (string, float64, error) {
+// parseThreshold parses an "<operator> <number>" expression for the named
+// field. Value ranges are field dependent: model.uncertainty is a probability
+// clamped to 0..1, while fields such as an audio level_db are legitimately
+// negative and carry no fixed range.
+func parseThreshold(field, expression string) (string, float64, error) {
 	expression = strings.TrimSpace(expression)
 	for _, operator := range []string{"<=", ">=", "==", "<", ">"} {
 		if strings.HasPrefix(expression, operator) {
 			value, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(expression, operator)), 64)
-			if err != nil || value < 0 || value > 1 {
+			if err != nil {
+				return "", 0, fmt.Errorf("%s must compare with a number", field)
+			}
+			// strconv accepts NaN and infinities; a NaN threshold never fires
+			// and an infinite one always or never fires. Reject both.
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return "", 0, fmt.Errorf("%s must compare with a finite number", field)
+			}
+			if field == "model.uncertainty" && (value < 0 || value > 1) {
 				return "", 0, errors.New("model.uncertainty must compare with a number from 0 through 1")
 			}
 			return operator, value, nil
 		}
 	}
-	return "", 0, errors.New("model.uncertainty must begin with <, <=, ==, >=, or >")
+	return "", 0, fmt.Errorf("%s must begin with <, <=, ==, >=, or >", field)
+}
+
+// parseFieldThreshold parses a "<field> <operator> <number>" expression such
+// as "model.uncertainty > 0.9" or "level_db > -20".
+func parseFieldThreshold(expression string) (string, string, float64, error) {
+	expression = strings.TrimSpace(expression)
+	split := strings.IndexAny(expression, "<>=")
+	if split <= 0 {
+		return "", "", 0, errors.New("threshold trigger must have the form \"<field> <operator> <number>\", for example \"model.uncertainty > 0.9\"")
+	}
+	field := strings.TrimSpace(expression[:split])
+	for _, r := range field {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_') {
+			return "", "", 0, fmt.Errorf("threshold trigger field %q must use only letters, numbers, '.' or '_'", field)
+		}
+	}
+	operator, value, err := parseThreshold(field, expression[split:])
+	if err != nil {
+		return "", "", 0, err
+	}
+	return field, operator, value, nil
+}
+
+// validCaptureModes lists the campaign schema's per-source capture modes. The
+// schema accepts them all; DeployCampaign reports which ones the installed
+// adapters do not implement yet.
+var validCaptureModes = []string{"continuous", "snapshot", "fragment", "threshold"}
+
+// implementedCaptureModes is what capture adapters actually honor today.
+var implementedCaptureModes = map[string]bool{"continuous": true}
+
+func validateSourceCapture(source CampaignSource) error {
+	capture := source.Capture
+	if capture == nil {
+		return nil
+	}
+	mode := capture.EffectiveMode()
+	type field struct {
+		name  string
+		set   bool
+		modes []string
+	}
+	fields := []field{
+		{"interval", capture.Interval != "", []string{"snapshot"}},
+		{"rate", capture.Rate != 0, []string{"continuous"}},
+		{"pre", capture.Pre != "", []string{"fragment"}},
+		{"post", capture.Post != "", []string{"fragment"}},
+		{"trigger", capture.Trigger != "", []string{"threshold"}},
+		{"fragment", capture.Fragment != "", []string{"threshold"}},
+	}
+	valid := false
+	for _, candidate := range validCaptureModes {
+		valid = valid || candidate == mode
+	}
+	if !valid {
+		return fmt.Errorf("mode must be one of %s", strings.Join(validCaptureModes, ", "))
+	}
+	for _, f := range fields {
+		if !f.set {
+			continue
+		}
+		allowed := false
+		for _, m := range f.modes {
+			allowed = allowed || m == mode
+		}
+		if !allowed {
+			return fmt.Errorf("%s applies only to %s mode, not %s mode", f.name, strings.Join(f.modes, "/"), mode)
+		}
+	}
+	switch mode {
+	case "continuous":
+		if capture.Rate < 0 {
+			return errors.New("rate must be a positive capture frequency in hertz")
+		}
+	case "snapshot":
+		interval, err := time.ParseDuration(capture.Interval)
+		if capture.Interval == "" || err != nil || interval <= 0 {
+			return errors.New("snapshot mode requires a positive interval duration")
+		}
+	case "fragment":
+		if capture.Pre == "" && capture.Post == "" {
+			return errors.New("fragment mode requires pre and/or post durations")
+		}
+		for name, raw := range map[string]string{"pre": capture.Pre, "post": capture.Post} {
+			if raw == "" {
+				continue
+			}
+			if d, err := time.ParseDuration(raw); err != nil || d < 0 {
+				return fmt.Errorf("%s must be a non-negative duration", name)
+			}
+		}
+	case "threshold":
+		if capture.Trigger == "" {
+			return errors.New("threshold mode requires a trigger expression")
+		}
+		if _, _, _, err := parseFieldThreshold(capture.Trigger); err != nil {
+			return fmt.Errorf("trigger: %w", err)
+		}
+		if capture.Fragment != "" {
+			if d, err := time.ParseDuration(capture.Fragment); err != nil || d <= 0 {
+				return errors.New("fragment must be a positive duration")
+			}
+		}
+	}
+	if capture.MaxResolution != "" {
+		if source.Camera == "" {
+			return errors.New("max_resolution applies only to camera sources")
+		}
+		if err := validateResolution(capture.MaxResolution); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateResolution(resolution string) error {
+	width, height, found := strings.Cut(resolution, "x")
+	w, errW := strconv.Atoi(width)
+	h, errH := strconv.Atoi(height)
+	if !found || errW != nil || errH != nil || w <= 0 || h <= 0 {
+		return fmt.Errorf("max_resolution %q must be WxH, for example 1280x720", resolution)
+	}
+	return nil
+}
+
+// parseByteSize parses a byte count. Plain integers are bytes; decimal (KB,
+// MB, GB, TB) and binary (KiB, MiB, GiB, TiB) suffixes follow the convention
+// used elsewhere in this repository.
+func parseByteSize(raw string) (int64, error) {
+	s := strings.TrimSpace(raw)
+	cut := len(s)
+	for cut > 0 {
+		r := s[cut-1]
+		if r >= '0' && r <= '9' || r == '.' {
+			break
+		}
+		cut--
+	}
+	number := strings.TrimSpace(s[:cut])
+	unit := strings.TrimSpace(s[cut:])
+	value, err := strconv.ParseFloat(number, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("%q is not a byte size; use bytes or a unit such as 500MB or 10GiB", raw)
+	}
+	multiplier := float64(1)
+	switch strings.ToLower(unit) {
+	case "", "b":
+	case "kb":
+		multiplier = 1e3
+	case "kib":
+		multiplier = 1 << 10
+	case "mb":
+		multiplier = 1e6
+	case "mib":
+		multiplier = 1 << 20
+	case "gb":
+		multiplier = 1e9
+	case "gib":
+		multiplier = 1 << 30
+	case "tb":
+		multiplier = 1e12
+	case "tib":
+		multiplier = 1 << 40
+	default:
+		return 0, fmt.Errorf("%q is not a byte size; use bytes or a unit such as 500MB or 10GiB", raw)
+	}
+	total := value * multiplier
+	if total <= 0 {
+		return 0, fmt.Errorf("%q must be a positive byte size", raw)
+	}
+	// Converting a float beyond int64 range is implementation-defined in Go;
+	// reject instead of storing a garbage (possibly negative) byte count.
+	if total >= float64(math.MaxInt64) {
+		return 0, fmt.Errorf("%q is too large for a byte size", raw)
+	}
+	return int64(total), nil
+}
+
+// parseByteRate parses a bytes-per-second rate such as "5MB/s", "5MB", or a
+// plain integer byte count per second.
+func parseByteRate(raw string) (int64, error) {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimSuffix(s, "/s")
+	return parseByteSize(s)
+}
+
+// UploadMaxRateBytes returns the validated upload bandwidth cap in bytes per
+// second, or 0 when unlimited.
+func (c Campaign) UploadMaxRateBytes() int64 {
+	if c.Upload.MaxRate == "" {
+		return 0
+	}
+	rate, _ := parseByteRate(c.Upload.MaxRate)
+	return rate
+}
+
+// LocalQuotaBytes returns the validated on-device retention quota in bytes,
+// or 0 when the device-wide default applies.
+func (c Campaign) LocalQuotaBytes() int64 {
+	if c.Retention.LocalQuota == "" {
+		return 0
+	}
+	quota, _ := parseByteSize(c.Retention.LocalQuota)
+	return quota
 }
 
 func compareThreshold(value float64, operator string, threshold float64) bool {

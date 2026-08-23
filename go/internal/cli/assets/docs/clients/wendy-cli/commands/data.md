@@ -57,11 +57,13 @@ rejected.
 
 | Top-level field | Required | Description |
 |---|---|---|
+| `version` | yes | Campaign schema version the author wrote the file against. This release supports version `1`; higher versions are a deploy-time error. |
 | `name` | yes | Unique device-local name using letters, numbers, `.`, `-`, or `_`; maximum 128 characters. |
 | `fleet` | no | Fleet selector retained with the plan. A direct device deployment applies to the connected device. |
 | `sources` | yes | One or more source entries. |
 | `capture` | yes | Buffer, post-trigger duration, and triggers. |
-| `upload` | yes | Upload condition and destination lifecycle intent. |
+| `upload` | yes | Upload condition, optional logical destination, and optional rate cap. |
+| `retention` | no | Optional on-device storage bounds. |
 | `export` | yes | Annotation integration lifecycle intent. |
 | `models` | no | Map of model name to deployed version, copied into Episodes. |
 | `privacy` | no | List of declared transforms with optional revisions. |
@@ -78,6 +80,26 @@ An optional `calibration_revision` can accompany a source. Application records
 are included automatically because they carry campaign trigger evidence and
 pre-roll.
 
+### Per-source capture policy
+
+Each source may carry an optional `capture` block declaring how it records.
+Fields belonging to a different mode than the declared one are rejected.
+
+| Field | Mode | Description |
+|---|---|---|
+| `mode` | | One of `continuous` (default), `snapshot`, `fragment`, or `threshold`. |
+| `rate` | `continuous` | Optional capture frequency cap in hertz. |
+| `interval` | `snapshot` | Required snapshot period, for example `2s`. |
+| `pre`, `post` | `fragment` | Durations bounding a fragment around an occurrence; at least one is required. |
+| `trigger` | `threshold` | Required expression `<field> <op> <number>`, for example `model.uncertainty > 0.9` or `level_db > -20`. Only `model.uncertainty` is bounded to 0 through 1; other fields carry their own units. |
+| `fragment` | `threshold` | Optional captured duration per threshold crossing. |
+| `max_resolution` | any | Camera sources only: `WxH` cap such as `1280x720`. |
+
+Only `continuous` is implemented by the capture adapters today. Other modes
+validate and deploy, and deployment prints a warning naming each source whose
+requested mode is not implemented yet; those sources record continuously for
+now.
+
 `capture.buffer` must be a Go-style duration from `0s` through `5m`.
 `capture.after_trigger` must be greater than `0s` and no more than `24h`. At
 least one trigger is required, and each trigger selects exactly one condition:
@@ -90,12 +112,26 @@ least one trigger is required, and each trigger selects exactly one condition:
 Prediction uncertainty is read from the structured `uncertainty` attribute
 when present, otherwise from the prediction value.
 
+The `upload` and `retention` blocks:
+
+| Field | Required | Description |
+|---|---|---|
+| `upload.when` | yes | One of `always`, `wifi`, or `manual`. |
+| `upload.destination` | no | Logical dataset name the fleet backend maps to storage. Not a URL; devices never receive bucket layouts or credentials through campaign plans. |
+| `upload.max_rate` | no | Upload bandwidth cap in bytes per second; plain integers and rates such as `5MB/s` are accepted. |
+| `retention.local_quota` | no | Declared on-device episode storage bound in bytes; plain integers and sizes such as `10GiB` are accepted. Stored with the plan; this release enforces only the device-wide quota and deployment prints a warning. |
+
 ```yaml
+version: 1
 name: forklift-failures
 fleet: warehouse-west
 
 sources:
   - camera: front
+    capture:
+      mode: snapshot
+      interval: 2s
+      max_resolution: 1280x720
   - ros2: /lidar/points
   - ros2: /vehicle/odometry
 
@@ -108,7 +144,11 @@ capture:
 
 upload:
   when: wifi
-  destination: s3://acme-ml/forklift
+  destination: forklift-episodes
+  max_rate: 5MB/s
+
+retention:
+  local_quota: 10GiB
 
 export:
   annotation: cvat
@@ -123,10 +163,28 @@ and the achieved offset; campaign deployment prints a warning when sensor
 pre-roll was requested. Unknown drop counts are displayed as unknown, never as
 zero.
 
+## Concurrency and retention
+
+Each campaign records at most one active Episode at a time; a second trigger
+for the same campaign while its Episode is active is dropped. Different
+campaigns capture concurrently, and one ad-hoc `wendy data record` Episode can
+run beside them. `wendy data stop` finalizes the ad-hoc Episode when one is
+running, otherwise the single active campaign Episode.
+
+When the device storage quota is exceeded, the oldest Episodes that are
+already uploaded or were recorded without an upload policy are evicted first.
+Episodes still awaiting upload are evicted only as a last resort, with a
+warning in the agent log naming the Episode and campaign.
+
 ## Current layer boundaries
 
-- `upload.when` and `upload.destination` are stored as durable pending state,
-  but this release does not run an S3 or cloud transfer worker.
+- Upload policy (`upload.when`, `upload.destination`, `upload.max_rate`) is
+  stored as durable pending state, but this release does not run a cloud
+  transfer worker.
+- Per-source capture modes other than `continuous` are validated and stored,
+  but the adapters record continuously; deployment warns per source.
+- `retention.local_quota` is validated and stored, but eviction currently
+  applies only the device-wide quota; deployment warns when it is set.
 - `export.annotation` is stored as labeling lifecycle state, but this release
   does not create CVAT tasks.
 - Fleet catalog search, replay, evaluation, and model redeployment are later

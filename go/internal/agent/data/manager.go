@@ -31,10 +31,15 @@ const (
 
 var ErrNoActiveEpisode = errors.New("no active episode")
 
+// AdHocEpisodeKey is the reserved concurrency key for episodes started
+// without a campaign (for example `wendy data record`). Each campaign may run
+// one active episode at a time, and one ad-hoc episode may run beside them.
+const AdHocEpisodeKey = ""
+
 type Manager struct {
 	mu             sync.Mutex
 	root           string
-	active         *activeEpisode
+	active         map[string]*activeEpisode
 	consensus      func(context.Context) (timesync.Consensus, error)
 	preRoll        []bufferedRecord
 	preRollBytes   int
@@ -42,6 +47,22 @@ type Manager struct {
 	downloads      map[string]int
 	sourceProvider func(context.Context) []Source
 	appObserver    func(string, ApplicationRecord)
+	warn           func(string)
+	quotaForTest   int64
+}
+
+// SetWarnLogger routes operational warnings (for example evicting an episode
+// that has not been uploaded yet) to the agent's logger.
+func (m *Manager) SetWarnLogger(warn func(string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.warn = warn
+}
+
+func (m *Manager) warnf(format string, args ...any) {
+	if m.warn != nil {
+		m.warn(fmt.Sprintf(format, args...))
+	}
 }
 
 // SetSourceProvider adds device-backed sources discovered by capture adapters.
@@ -99,10 +120,14 @@ func (m *Manager) SetConsensusProvider(provider func(context.Context) (timesync.
 }
 
 type activeEpisode struct {
+	key      string
 	dir      string
 	manifest Manifest
 	cancel   context.CancelFunc
 	done     chan struct{}
+	// capturesApplications reports whether the applications source was
+	// selected; episodes that excluded it receive no application records.
+	capturesApplications bool
 }
 
 func NewManager(root string) (*Manager, error) {
@@ -123,7 +148,7 @@ func NewManager(root string) (*Manager, error) {
 			return nil, errors.Join(err, fallbackErr)
 		}
 	}
-	m := &Manager{root: root, downloads: make(map[string]int)}
+	m := &Manager{root: root, downloads: make(map[string]int), active: make(map[string]*activeEpisode)}
 	if err := m.recoverPartials(); err != nil {
 		return nil, err
 	}
@@ -180,11 +205,18 @@ func observeUTC(origin int64, _ string, source string) (UTCObservation, error) {
 	}, nil
 }
 
+// Start begins one episode. Concurrency is keyed per campaign: each campaign
+// may record one active episode at a time, and one ad-hoc (campaign-less)
+// episode may record beside them.
 func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active != nil {
-		return Manifest{}, errors.New("an episode is already active")
+	key := opts.Trigger.CampaignName
+	if m.active[key] != nil {
+		if key == AdHocEpisodeKey {
+			return Manifest{}, errors.New("an episode is already active")
+		}
+		return Manifest{}, fmt.Errorf("an episode is already active for campaign %s", key)
 	}
 	if err := m.enforceQuota(); err != nil {
 		return Manifest{}, err
@@ -288,9 +320,15 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 			manifest.Calibrations = append(manifest.Calibrations, Calibration{Source: source, Revision: revision})
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), nil, 0o640); err != nil {
-		_ = os.RemoveAll(dir)
-		return Manifest{}, err
+	capturesApplications := false
+	for _, source := range selected {
+		capturesApplications = capturesApplications || source.ID == "applications"
+	}
+	if capturesApplications {
+		if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), nil, 0o640); err != nil {
+			_ = os.RemoveAll(dir)
+			return Manifest{}, err
+		}
 	}
 	for _, source := range selected {
 		if source.ID == "telemetry" {
@@ -301,33 +339,44 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 			break
 		}
 	}
-	manifest.PreRollLost = m.preRollLost
-	preRollCount, earliestPreRoll, err := m.flushPreRoll(dir, origin, opts.PreRollDuration)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return Manifest{}, err
-	}
-	for i := range manifest.Sources {
-		if manifest.Sources[i].Source.ID != "applications" {
-			continue
+	if capturesApplications {
+		manifest.PreRollLost = m.preRollLost
+		preRollCount, earliestPreRoll, err := m.flushPreRoll(dir, origin, opts.PreRollDuration)
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			return Manifest{}, err
 		}
-		manifest.Sources[i].Count += preRollCount
-		manifest.Sources[i].DropAccounting = "exact"
-		if earliestPreRoll != nil {
-			manifest.Sources[i].ActualOffset = *earliestPreRoll
+		for i := range manifest.Sources {
+			if manifest.Sources[i].Source.ID != "applications" {
+				continue
+			}
+			manifest.Sources[i].Count += preRollCount
+			manifest.Sources[i].DropAccounting = "exact"
+			if earliestPreRoll != nil {
+				manifest.Sources[i].ActualOffset = *earliestPreRoll
+			}
 		}
 	}
 	if err := writeManifest(dir, manifest); err != nil {
 		_ = os.RemoveAll(dir)
 		return Manifest{}, err
 	}
-	a := &activeEpisode{dir: dir, manifest: manifest}
+	a := &activeEpisode{key: key, dir: dir, manifest: manifest, capturesApplications: capturesApplications}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	a.done = make(chan struct{})
 	go m.sampleEpisode(ctx, a)
-	m.active = a
-	return manifest, nil
+	m.active[key] = a
+	return snapshotManifest(manifest), nil
+}
+
+// snapshotManifest returns a copy whose Sources slice does not share a
+// backing array with the live episode manifest, which the manager keeps
+// mutating (source counters, adapter results) under its lock while callers
+// read the returned value without it.
+func snapshotManifest(v Manifest) Manifest {
+	v.Sources = append([]SourceStats(nil), v.Sources...)
+	return v
 }
 
 // SetApplicationObserver receives validated entitled application records after
@@ -340,27 +389,44 @@ func (m *Manager) SetApplicationObserver(observer func(string, ApplicationRecord
 }
 
 // ActiveSession returns the immutable filesystem and clock context for capture
-// adapters. It is valid only while an episode is recording.
-func (m *Manager) ActiveSession() (CaptureSession, bool) {
+// adapters for the episode keyed by the given campaign name (AdHocEpisodeKey
+// for campaign-less episodes). It is valid only while that episode is recording.
+func (m *Manager) ActiveSession(key string) (CaptureSession, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active == nil {
+	a := m.active[key]
+	if a == nil {
 		return CaptureSession{}, false
 	}
-	return CaptureSession{ID: m.active.manifest.ID, Directory: m.active.dir, RequestBootNanos: m.active.manifest.RequestBootNanos, BootID: m.active.manifest.BootID}, true
+	return CaptureSession{ID: a.manifest.ID, Directory: a.dir, RequestBootNanos: a.manifest.RequestBootNanos, BootID: a.manifest.BootID}, true
+}
+
+// ActiveEpisodeKeys returns the sorted concurrency keys of active episodes.
+// AdHocEpisodeKey marks a campaign-less episode; every other key is a
+// campaign name.
+func (m *Manager) ActiveEpisodeKeys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys := make([]string, 0, len(m.active))
+	for key := range m.active {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // ApplyCaptureResults merges final adapter counters and mapping summaries before
 // sealing. Unknown drops remain absent rather than being rendered as zero.
-func (m *Manager) ApplyCaptureResults(results []CaptureResult) error {
+func (m *Manager) ApplyCaptureResults(key string, results []CaptureResult) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active == nil {
+	a := m.active[key]
+	if a == nil {
 		return ErrNoActiveEpisode
 	}
 	for _, result := range results {
-		for i := range m.active.manifest.Sources {
-			stats := &m.active.manifest.Sources[i]
+		for i := range a.manifest.Sources {
+			stats := &a.manifest.Sources[i]
 			if stats.Source.ID != result.SourceID {
 				continue
 			}
@@ -383,18 +449,18 @@ func (m *Manager) ApplyCaptureResults(results []CaptureResult) error {
 			stats.Mappings = append([]ClockMapping(nil), result.Mappings...)
 		}
 	}
-	return writeManifest(m.active.dir, m.active.manifest)
+	return writeManifest(a.dir, a.manifest)
 }
 
 // Interrupt finalizes an active episode after adapter startup failed. Existing
 // monotonic data is retained for auditability and is never silently deleted.
-func (m *Manager) Interrupt(reason string) (Manifest, error) {
+func (m *Manager) Interrupt(key, reason string) (Manifest, error) {
 	m.mu.Lock()
-	if m.active == nil {
+	a := m.active[key]
+	if a == nil {
 		m.mu.Unlock()
 		return Manifest{}, ErrNoActiveEpisode
 	}
-	a := m.active
 	if a.cancel != nil {
 		a.cancel()
 	}
@@ -404,10 +470,10 @@ func (m *Manager) Interrupt(reason string) (Manifest, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active != a {
+	if m.active[key] != a {
 		return Manifest{}, ErrNoActiveEpisode
 	}
-	return m.finalizeLocked("interrupted", reason)
+	return m.finalizeLocked(a, "interrupted", reason)
 }
 
 func (m *Manager) sampleEpisode(ctx context.Context, a *activeEpisode) {
@@ -429,7 +495,7 @@ func (m *Manager) sampleEpisode(ctx context.Context, a *activeEpisode) {
 			b, _ := json.Marshal(sample)
 			if err = appendJSONL(filepath.Join(a.dir, "telemetry.jsonl"), b); err == nil {
 				m.mu.Lock()
-				if m.active == a {
+				if m.active[a.key] == a {
 					for i := range a.manifest.Sources {
 						if a.manifest.Sources[i].Source.ID == "telemetry" {
 							a.manifest.Sources[i].Count++
@@ -449,7 +515,7 @@ func (m *Manager) sampleEpisode(ctx context.Context, a *activeEpisode) {
 				continue
 			}
 			m.mu.Lock()
-			if m.active == a {
+			if m.active[a.key] == a {
 				a.manifest.Roughtime = append(a.manifest.Roughtime, c)
 				_ = writeManifest(a.dir, a.manifest)
 			}
@@ -469,9 +535,15 @@ func (m *Manager) enforceQuota() error {
 	if quota > maxQuotaBytes {
 		quota = maxQuotaBytes
 	}
+	reserve := reserveBytes
+	if m.quotaForTest > 0 {
+		quota, reserve = m.quotaForTest, 0
+	}
 	type candidate struct {
 		path          string
 		started, size int64
+		id, campaign  string
+		awaitUpload   bool
 	}
 	var candidates []candidate
 	var used int64
@@ -499,13 +571,23 @@ func (m *Manager) enforceQuota() error {
 		})
 		used += size
 		if m.downloads[mf.ID] == 0 {
-			candidates = append(candidates, candidate{dir, mf.StartedUnixNanos, size})
+			candidates = append(candidates, candidate{dir, mf.StartedUnixNanos, size, mf.ID, mf.Trigger.CampaignName, awaitingUpload(mf.Upload.State)})
 		}
 	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].started < candidates[j].started })
+	// Episodes that still await upload are evicted only after every uploaded or
+	// local-only episode; within each group the oldest goes first.
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].awaitUpload != candidates[j].awaitUpload {
+			return !candidates[i].awaitUpload
+		}
+		return candidates[i].started < candidates[j].started
+	})
 	for _, c := range candidates {
-		if used <= quota && free >= reserveBytes {
+		if used <= quota && free >= reserve {
 			break
+		}
+		if c.awaitUpload {
+			m.warnf("evicting episode %s (campaign %s) before its upload completed to preserve the data quota", c.id, c.campaign)
 		}
 		if err := os.RemoveAll(c.path); err != nil {
 			return fmt.Errorf("evicting %s: %w", filepath.Base(c.path), err)
@@ -513,10 +595,21 @@ func (m *Manager) enforceQuota() error {
 		used -= c.size
 		free += c.size
 	}
-	if used > quota || free < reserveBytes {
+	if used > quota || free < reserve {
 		return fmt.Errorf("data quota cannot preserve %d GiB free", reserveBytes>>30)
 	}
 	return nil
+}
+
+// awaitingUpload reports whether an episode's payload has not reached its
+// upload destination yet. Local-only episodes ("local" or empty) never upload
+// and are evictable; "uploaded" episodes already have a durable remote copy.
+func awaitingUpload(state string) bool {
+	switch state {
+	case "", "local", "uploaded":
+		return false
+	}
+	return true
 }
 
 func (m *Manager) BeginDownload(id string) { m.mu.Lock(); defer m.mu.Unlock(); m.downloads[id]++ }
@@ -551,25 +644,29 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 		stamp = record.ClientBootNanos
 	}
 	stored := storedApplicationRecord{ApplicationRecord: record, AppID: appID, AgentReceiptBootNanos: receipt, ClientTimestampAccepted: accepted, TimestampUncertaintyNanos: (after - before + 1) / 2}
-	if m.active != nil {
-		stored.EpisodeNanos = stamp - m.active.manifest.RequestBootNanos
+	// Every active episode that selected the applications source receives the
+	// record on its own timeline; episodes that excluded it are skipped.
+	recorded := false
+	for _, a := range m.active {
+		if !a.capturesApplications {
+			continue
+		}
+		stored.EpisodeNanos = stamp - a.manifest.RequestBootNanos
 		b, _ := json.Marshal(stored)
-		if err := appendJSONL(filepath.Join(m.active.dir, "events.jsonl"), b); err != nil {
+		if err := appendJSONL(filepath.Join(a.dir, "events.jsonl"), b); err != nil {
 			m.mu.Unlock()
 			return "rejected", err
 		}
-		for i := range m.active.manifest.Sources {
-			if m.active.manifest.Sources[i].Source.ID == "applications" {
-				m.active.manifest.Sources[i].Count++
+		for i := range a.manifest.Sources {
+			if a.manifest.Sources[i].Source.ID == "applications" {
+				a.manifest.Sources[i].Count++
 			}
 		}
-		observer := m.appObserver
-		m.mu.Unlock()
-		if observer != nil {
-			observer(appID, record)
-		}
-		return "recorded", nil
+		recorded = true
 	}
+	// The pre-roll ring buffer is maintained continuously so an episode that
+	// starts later still receives its full pre-trigger window, even when
+	// another campaign's episode was recording at the time.
 	stored.EpisodeNanos = 0
 	b, err := json.Marshal(stored)
 	if err != nil {
@@ -584,6 +681,9 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 	if observer != nil {
 		observer(appID, record)
 	}
+	if recorded {
+		return "recorded", nil
+	}
 	return "buffered", nil
 }
 
@@ -595,6 +695,11 @@ func (m *Manager) evictPreRoll(now int64) {
 		m.preRollLost++
 	}
 }
+
+// flushPreRoll copies the buffered records inside the requested window into a
+// starting episode. The ring buffer is not consumed: with per-campaign
+// concurrency another campaign's later episode is entitled to the same
+// pre-trigger records on its own timeline.
 func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration) (uint64, *int64, error) {
 	window := preRollWindow
 	if requested > 0 && requested < window {
@@ -604,7 +709,7 @@ func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration
 	var count uint64
 	var earliest *int64
 	for _, r := range m.preRoll {
-		if r.bootNanos < cutoff {
+		if r.bootNanos < cutoff || r.bootNanos > origin {
 			continue
 		}
 		var stored storedApplicationRecord
@@ -622,8 +727,6 @@ func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration
 		}
 		count++
 	}
-	m.preRoll = nil
-	m.preRollBytes = 0
 	return count, earliest, nil
 }
 func appendJSONL(path string, b []byte) error {
@@ -644,13 +747,15 @@ func abs64(v int64) int64 {
 	return v
 }
 
-func (m *Manager) Stop() (Manifest, error) {
+// Stop finalizes the episode keyed by the given campaign name
+// (AdHocEpisodeKey for campaign-less episodes).
+func (m *Manager) Stop(key string) (Manifest, error) {
 	m.mu.Lock()
-	if m.active == nil {
+	a := m.active[key]
+	if a == nil {
 		m.mu.Unlock()
 		return Manifest{}, ErrNoActiveEpisode
 	}
-	a := m.active
 	if a.cancel != nil {
 		a.cancel()
 	}
@@ -660,14 +765,13 @@ func (m *Manager) Stop() (Manifest, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active != a {
+	if m.active[key] != a {
 		return Manifest{}, ErrNoActiveEpisode
 	}
-	return m.finalizeLocked("complete", "")
+	return m.finalizeLocked(a, "complete", "")
 }
 
-func (m *Manager) finalizeLocked(state, reason string) (Manifest, error) {
-	a := m.active
+func (m *Manager) finalizeLocked(a *activeEpisode, state, reason string) (Manifest, error) {
 	now, err := readBootTime()
 	if err != nil {
 		return Manifest{}, err
@@ -701,17 +805,30 @@ func (m *Manager) finalizeLocked(state, reason string) (Manifest, error) {
 	if err := os.Rename(a.dir, final); err != nil {
 		return Manifest{}, err
 	}
-	m.active = nil
+	delete(m.active, a.key)
 	return a.manifest, nil
 }
 
+// Status reports one active episode for status displays: the ad-hoc episode
+// when present, otherwise the earliest-started campaign episode. Use
+// ActiveEpisodeKeys and ActiveSession to enumerate concurrent episodes.
 func (m *Manager) Status() *Manifest {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active == nil {
+	if a := m.active[AdHocEpisodeKey]; a != nil {
+		v := snapshotManifest(a.manifest)
+		return &v
+	}
+	var earliest *activeEpisode
+	for _, a := range m.active {
+		if earliest == nil || a.manifest.StartedUnixNanos < earliest.manifest.StartedUnixNanos {
+			earliest = a
+		}
+	}
+	if earliest == nil {
 		return nil
 	}
-	v := m.active.manifest
+	v := snapshotManifest(earliest.manifest)
 	return &v
 }
 
