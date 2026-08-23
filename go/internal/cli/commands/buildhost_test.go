@@ -490,3 +490,64 @@ func TestDeliveryOutcome_RecordsFailureReason(t *testing.T) {
 		t.Errorf("the reason must survive; got %q", bad.GetError())
 	}
 }
+
+// TestBuildkitAbsentNotice_SilentWhenBuildable: enabling on a working build host
+// must stay quiet. A note that fires when nothing is wrong trains people to
+// ignore the one that matters.
+func TestBuildkitAbsentNotice_SilentWhenBuildable(t *testing.T) {
+	if got := buildkitAbsentNotice(true, "linux"); got != nil {
+		t.Fatalf("got %v, want no notice when BuildKit is available", got)
+	}
+	if got := buildkitAbsentNotice(true, "darwin"); got != nil {
+		t.Fatalf("got %v, want no notice when BuildKit is available", got)
+	}
+}
+
+// TestBuildkitAbsentNotice_TellsLinuxHostsWhatToInstall covers the case that
+// motivated this: `enable` reports success and points at `wendy run
+// --build-host`, but the device has no build engine.
+func TestBuildkitAbsentNotice_TellsLinuxHostsWhatToInstall(t *testing.T) {
+	got := buildkitAbsentNotice(false, "linux")
+	if len(got) == 0 {
+		t.Fatal("want a notice when BuildKit is absent")
+	}
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "buildkitd") {
+		t.Errorf("notice must name the daemon to install; got %q", joined)
+	}
+	if !strings.Contains(joined, "unix:///run/buildkit/buildkitd.sock") {
+		t.Errorf("notice must name the socket the agent looks at; got %q", joined)
+	}
+}
+
+// A Mac cannot have BuildKit at all, so it must not be told to install one.
+func TestBuildkitAbsentNotice_DoesNotSendMacsAfterADaemon(t *testing.T) {
+	joined := strings.Join(buildkitAbsentNotice(false, "darwin"), "\n")
+	if joined == "" {
+		t.Fatal("want a notice explaining why a Mac cannot build")
+	}
+	if strings.Contains(joined, "Install buildkitd") {
+		t.Errorf("must not tell a Mac to install buildkitd; got %q", joined)
+	}
+	if !strings.Contains(joined, "Apple Container") {
+		t.Errorf("should say why; got %q", joined)
+	}
+}
+
+// TestCheckBuildHostCapabilities_NamesTheRemedy: this is the message a developer
+// actually lands on. The agent's own refusal names the socket and says what to
+// install, but the CLI refuses first -- before any context transfer -- so that
+// more useful wording is unreachable in practice.
+func TestCheckBuildHostCapabilities_NamesTheRemedy(t *testing.T) {
+	err := checkBuildHostCapabilities("spark-office", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuilderEnabled:    true,
+		BuildkitAvailable: false,
+		Os:                "linux",
+	}, "linux/arm64")
+	if err == nil {
+		t.Fatal("a host with no BuildKit must be refused")
+	}
+	if !strings.Contains(err.Error(), "buildkitd") || !strings.Contains(err.Error(), "unix:///run/buildkit/buildkitd.sock") {
+		t.Errorf("the error must say what to install and where; got %q", err)
+	}
+}
