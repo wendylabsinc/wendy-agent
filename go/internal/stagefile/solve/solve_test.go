@@ -364,6 +364,35 @@ func TestOutputExportEntry(t *testing.T) {
 		}
 	})
 
+	t.Run("oci layout directory", func(t *testing.T) {
+		e, err := Output{OCILayoutDir: "/tmp/layout", ImageRef: "wendy/app:dev"}.exportEntry()
+		if err != nil {
+			t.Fatalf("exportEntry: %v", err)
+		}
+		if e.Type != client.ExporterOCI || e.OutputDir != "/tmp/layout" {
+			t.Fatalf("export = %#v", e)
+		}
+		if e.Attrs["tar"] != "false" || e.Attrs["name"] != "wendy/app:dev" {
+			t.Fatalf("Attrs = %v", e.Attrs)
+		}
+	})
+
+	t.Run("docker archive", func(t *testing.T) {
+		e, err := Output{DockerTarPath: "/tmp/img.tar", ImageRef: "wendy/app:dev"}.exportEntry()
+		if err != nil {
+			t.Fatalf("exportEntry: %v", err)
+		}
+		if e.Type != client.ExporterDocker || e.Output == nil {
+			t.Fatalf("export = %#v", e)
+		}
+	})
+
+	t.Run("multiple destinations", func(t *testing.T) {
+		if _, err := (Output{OCILayoutPath: "/tmp/a.tar", OCILayoutDir: "/tmp/layout"}).exportEntry(); err == nil {
+			t.Fatal("expected an error for two output destinations")
+		}
+	})
+
 	t.Run("registry push", func(t *testing.T) {
 		e, err := Output{ImageRef: "reg.example/app:dev", Push: true}.exportEntry()
 		if err != nil {

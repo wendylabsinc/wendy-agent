@@ -1,8 +1,11 @@
 package commands
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 )
 
 // TestStagefileBackendLLB covers the selection order (flag beats env, env
@@ -104,5 +107,37 @@ func TestStagefileBackendLLB(t *testing.T) {
 				t.Fatalf("stagefileBackendLLB(%q, %q) = %v, want %v", tt.flag, tt.builder, got, tt.wantLLB)
 			}
 		})
+	}
+}
+
+func TestDirectStagefileLLBPlanPreservesVariantOptions(t *testing.T) {
+	t.Setenv(stagefileBackendEnvVar, "")
+	dir := t.TempDir()
+	generated, _ := generatedBuildFileFor("prod.stagefile.yaml")
+	opts := []stagefile.Option{
+		stagefile.WithSource("prod.stagefile.yaml"),
+		stagefile.WithGPUArch("sm_87"),
+		stagefile.WithBuildProfile(stagefile.BuildProfileDebug),
+		stagefile.WithROS2Runtime("jazzy", "rmw_cyclonedds_cpp"),
+	}
+	rememberStagefileLLBPlan(dir, generated, "prod.stagefile.yaml", opts)
+
+	ctx := withStagefileBackend(context.Background(), stagefileBackendLLBValue)
+	plan, ok, err := directStagefileLLBPlan(ctx, dir, generated, imageBuilderDocker)
+	if err != nil {
+		t.Fatalf("directStagefileLLBPlan: %v", err)
+	}
+	if !ok || plan.source != "prod.stagefile.yaml" {
+		t.Fatalf("plan = %#v, ok = %v", plan, ok)
+	}
+	if len(plan.options) != len(opts) {
+		t.Fatalf("options = %d, want %d", len(plan.options), len(opts))
+	}
+}
+
+func TestDirectStagefileLLBPlanLeavesDockerfilesAlone(t *testing.T) {
+	ctx := withStagefileBackend(context.Background(), stagefileBackendLLBValue)
+	if _, ok, err := directStagefileLLBPlan(ctx, t.TempDir(), "Dockerfile", imageBuilderDocker); err != nil || ok {
+		t.Fatalf("directStagefileLLBPlan(Dockerfile) = ok %v, err %v", ok, err)
 	}
 }

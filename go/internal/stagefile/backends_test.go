@@ -69,7 +69,7 @@ func TestBothBackendsProduceTheSameLockfile(t *testing.T) {
 	}
 
 	llbDir := writeFixture(t)
-	if _, _, err := compileToLLB(llbDir, "linux/arm64", "", "", resolver, hasher, configs); err != nil {
+	if _, err := compileToLLB(llbDir, SourceName, "linux/arm64", "", "", "", "", resolver, hasher, configs); err != nil {
 		t.Fatalf("compileToLLB: %v", err)
 	}
 	fromLLB, err := os.ReadFile(filepath.Join(llbDir, "build.stagefile.lock.yaml"))
@@ -98,7 +98,7 @@ func TestSecondBackendDoesNotRewriteTheLockfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := compileToLLB(dir, "linux/arm64", "", "", resolver, hasher, configs); err != nil {
+	if _, err := compileToLLB(dir, SourceName, "linux/arm64", "", "", "", "", resolver, hasher, configs); err != nil {
 		t.Fatalf("compileToLLB: %v", err)
 	}
 	after, err := os.ReadFile(lockPath)
@@ -116,7 +116,7 @@ func TestSecondBackendDoesNotRewriteTheLockfile(t *testing.T) {
 func TestCompileToLLBRequiresAPlatform(t *testing.T) {
 	resolver, hasher, configs := fakeResolvers(t)
 	dir := writeFixture(t)
-	if _, _, err := compileToLLB(dir, "", "", "", resolver, hasher, configs); err == nil {
+	if _, err := compileToLLB(dir, SourceName, "", "", "", "", "", resolver, hasher, configs); err == nil {
 		t.Fatal("compileToLLB accepted an empty platform")
 	}
 }
@@ -127,10 +127,11 @@ func TestCompileToLLBDerivesTheImageConfig(t *testing.T) {
 	resolver, hasher, configs := fakeResolvers(t)
 	dir := writeFixture(t)
 
-	_, cfg, err := compileToLLB(dir, "linux/arm64", "", "", resolver, hasher, configs)
+	build, err := compileToLLB(dir, SourceName, "linux/arm64", "", "", "", "", resolver, hasher, configs)
 	if err != nil {
 		t.Fatalf("compileToLLB: %v", err)
 	}
+	cfg := build.Config
 	if len(cfg.Entrypoint) == 0 {
 		t.Error("entrypoint missing from the derived image config")
 	}
@@ -139,6 +140,9 @@ func TestCompileToLLBDerivesTheImageConfig(t *testing.T) {
 	}
 	if cfg.Env["MODE"] != "prod" {
 		t.Errorf("env = %v, want MODE=prod", cfg.Env)
+	}
+	if !strings.Contains(string(build.BaseConfig), `"PATH=/usr/bin"`) {
+		t.Errorf("base config = %s, want the final stage's resolved config", build.BaseConfig)
 	}
 }
 
@@ -175,7 +179,7 @@ stages:
 	// The LLB backend has no text to grep; that it compiles at all under the
 	// same override is what this half checks, alongside the shared-path tests
 	// above which pin that the override is applied before lowering.
-	if _, _, err := compileToLLB(llbDir, "linux/arm64", "", BuildProfileDebug, resolver, hasher, configs); err != nil {
+	if _, err := compileToLLB(llbDir, SourceName, "linux/arm64", "", BuildProfileDebug, "", "", resolver, hasher, configs); err != nil {
 		t.Fatalf("compileToLLB with a build profile: %v", err)
 	}
 }

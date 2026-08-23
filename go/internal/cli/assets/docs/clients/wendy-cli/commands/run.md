@@ -151,6 +151,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--debug` | Enable debug logging and inject debug tooling via `WENDY_DEBUG=true`. For SwiftPM projects (both native macOS and cross-compiled Linux container targets), builds with `-c debug` instead of `-c release`. |
 | `--yes` / `-y` | Accept all device-selection prompts automatically. |
 | `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. Cannot be combined with `--build-host`. |
+| `--stagefile-backend <name>` | Stagefile compiler backend: `dockerfile` (default) or experimental direct `llb`. Direct LLB requires Docker/BuildKit and cannot be combined with Apple Container or `--build-host`. |
 | `--build-host <device>` | Build the image on another WendyOS device instead of this machine. See [Remote build host](#remote-build-host). |
 | `--build-type <type>` | Override build type detection: `docker`, `swift`, or `python`. |
 | `--prefix <dir>` | Run from a project directory other than the current working directory. |
