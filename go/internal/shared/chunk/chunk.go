@@ -25,14 +25,18 @@ import (
 const (
 	MinSize uint64 = 16 << 10
 	AvgSize uint64 = 64 << 10
-	MaxSize uint64 = 256 << 10
+	// Keep each gRPC WriteChunks message at or below 64 KiB. Hardware testing
+	// showed that larger messages fail more readily on some USB-NCM links; the
+	// compressed WriteChunks transport handles content-sensitive stalls, while
+	// this bound limits worst-case per-message flow-control pressure.
+	MaxSize uint64 = 64 << 10
 )
 
 // AlgoVersion identifies the chunking algorithm. Bump it whenever a change here
 // would alter the chunk boundaries or hashes for the same input (gear table,
 // masks, size constants, or region size). Callers that persist chunk manifests
 // use it to reject stale caches produced by an older algorithm.
-const AlgoVersion = 2
+const AlgoVersion = 3
 
 // regionSize is the granularity of parallel chunking. The input is cut into
 // regions of this size and each is chunked independently, so a forced boundary

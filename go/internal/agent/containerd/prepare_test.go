@@ -57,6 +57,42 @@ func TestWaitForChunksHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestWaitForChunksNarrowsRepeatedChecksToMissingHashes(t *testing.T) {
+	all := [][32]byte{{1}, {2}, {3}, {4}}
+	closed := make(chan struct{})
+	close(closed)
+	var checked [][][32]byte
+	responses := [][][32]byte{
+		{{2}, {3}, {4}}, // initial full check
+		{{3}, {4}},      // first arrival: only prior misses are checked
+		nil,             // the narrowed set is now complete
+		nil,             // final full-layer validation
+	}
+	missing := func(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
+		checked = append(checked, append([][32]byte(nil), hashes...))
+		response := responses[len(checked)-1]
+		return response, nil
+	}
+
+	if err := waitForChunksWith(context.Background(), all, func() <-chan struct{} { return closed }, missing); err != nil {
+		t.Fatalf("waitForChunksWith: %v", err)
+	}
+	want := [][][32]byte{all, {{2}, {3}, {4}}, {{3}, {4}}, all}
+	if len(checked) != len(want) {
+		t.Fatalf("checked %d sets, want %d: %v", len(checked), len(want), checked)
+	}
+	for i := range want {
+		if len(checked[i]) != len(want[i]) {
+			t.Fatalf("check %d examined %d hashes, want %d", i, len(checked[i]), len(want[i]))
+		}
+		for j := range want[i] {
+			if checked[i][j] != want[i][j] {
+				t.Fatalf("check %d hash %d = %x, want %x", i, j, checked[i][j], want[i][j])
+			}
+		}
+	}
+}
+
 func TestPrepareChunkHashesRejectsMalformedHash(t *testing.T) {
 	if _, err := prepareChunkHashes([][]byte{{1, 2, 3}}); err == nil {
 		t.Fatal("expected malformed chunk hash error")

@@ -3,11 +3,13 @@ package services
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"io"
 	"testing"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	grpcgzip "google.golang.org/grpc/encoding/gzip"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -163,5 +165,30 @@ func TestWriteChunks(t *testing.T) {
 	}
 	if !bytes.Equal(fake.stagedChunks[0].data, data0) {
 		t.Fatalf("staged data mismatch: got %q, want %q", fake.stagedChunks[0].data, data0)
+	}
+}
+
+func TestWriteChunksAcceptsGzipOverGRPC(t *testing.T) {
+	fake := newFakeContainerd()
+	client, cleanup := startContainerServer(t, fake)
+	defer cleanup()
+
+	data := bytes.Repeat([]byte("compressed-chunk-payload"), 4096)
+	hash := sha256.Sum256(data)
+	stream, err := client.WriteChunks(context.Background(), grpc.UseCompressor(grpcgzip.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Send(&agentpb.WriteChunksRequest{Hash: hash[:], Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.CloseAndRecv(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.stagedChunks) != 1 {
+		t.Fatalf("staged chunks = %d, want 1", len(fake.stagedChunks))
+	}
+	if fake.stagedChunks[0].hash != hash || !bytes.Equal(fake.stagedChunks[0].data, data) {
+		t.Fatal("gzip WriteChunks did not preserve the original hash and data")
 	}
 }

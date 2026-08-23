@@ -111,15 +111,36 @@ func prepareChunkHashes(raw [][]byte) ([][32]byte, error) {
 }
 
 func (c *Client) waitForChunks(ctx context.Context, hashes [][32]byte) error {
+	return waitForChunksWith(ctx, hashes, c.staging.changes, c.MissingChunks)
+}
+
+func waitForChunksWith(ctx context.Context, hashes [][32]byte, changes func() <-chan struct{}, missingChunks func(context.Context, [][32]byte) ([][32]byte, error)) error {
+	pending := hashes
+	validatingAll := true
 	for {
-		changed := c.staging.changes()
-		missing, err := c.MissingChunks(ctx, hashes)
+		changed := changes()
+		missing, err := missingChunks(ctx, pending)
 		if err != nil {
 			return err
 		}
 		if len(missing) == 0 {
-			return nil
+			if validatingAll {
+				return nil
+			}
+			// A different layer preparation can consume a shared staged chunk
+			// after an earlier check. Revalidate the full layer once at the end
+			// so narrowing the hot-path checks never weakens correctness.
+			pending = hashes
+			validatingAll = true
+			continue
 		}
+		// Only recheck hashes that were still absent. The old loop rescanned
+		// every hash after every staged chunk, making a layer with N hashes and
+		// M misses perform O(N*M) filesystem/index checks while WriteChunks was
+		// trying to feed it. Keeping the shrinking missing set makes progress
+		// proportional to the actual delta instead.
+		pending = missing
+		validatingAll = false
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
