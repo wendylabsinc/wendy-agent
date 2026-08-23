@@ -102,6 +102,7 @@ CLOUD_PROTOS=(
     "cloud/apps.proto"
     "cloud/assets.proto"
     "cloud/certificates.proto"
+    "cloud/data_ingest.proto"
     "cloud/deployments.proto"
     "cloud/mesh.proto"
     "cloud/notifications.proto"

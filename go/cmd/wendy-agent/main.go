@@ -971,6 +971,19 @@ func main() {
 		}()
 	}
 
+	// Episode transfer worker: uploads sealed episodes to the cloud ingest
+	// service over the same asset mTLS identity as the telemetry flusher. Gated
+	// on disk persistence (the manifest queue lives on disk) and, inside Run, on
+	// provisioning completion (it needs the cloud identity).
+	dataTransferWorker := services.NewDataTransferWorker(logger, dataManager, provisioningSvc)
+	if telemetryBuf.DiskEnabled() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dataTransferWorker.Run(ctx)
+		}()
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 

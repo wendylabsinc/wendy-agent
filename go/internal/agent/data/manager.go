@@ -837,6 +837,64 @@ func (m *Manager) Status() *Manifest {
 	return &v
 }
 
+// EpisodesAwaitingUpload returns the full manifests of finalized episodes whose
+// upload workflow still needs work: "pending" (queued) or "uploading" (left
+// mid-transfer by a crashed worker and safe to resume). The manifest is the
+// single source of truth for upload progress; the transfer worker consumes this
+// queue and calls UpdateUploadState to persist each transition. Episodes are
+// returned oldest-first so the backlog drains in capture order.
+func (m *Manager) EpisodesAwaitingUpload() ([]Manifest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entries, err := os.ReadDir(m.root)
+	if err != nil {
+		return nil, err
+	}
+	var out []Manifest
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasSuffix(e.Name(), ".partial") {
+			continue
+		}
+		mf, err := readManifest(filepath.Join(m.root, e.Name()))
+		if err != nil {
+			continue
+		}
+		switch mf.Upload.State {
+		case "pending", "uploading":
+			out = append(out, mf)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedUnixNanos < out[j].StartedUnixNanos })
+	return out, nil
+}
+
+// UpdateUploadState atomically rewrites the upload workflow of a finalized
+// episode's manifest. The mutate callback receives the current upload state and
+// may change any field; UpdatedAt is stamped automatically. The rewrite reuses
+// the manifest's atomic tmp-file-plus-rename pattern so a crash mid-write never
+// leaves a torn manifest. Returns the updated manifest.
+func (m *Manager) UpdateUploadState(id string, mutate func(ws *WorkflowState)) (Manifest, error) {
+	if mutate == nil {
+		return Manifest{}, errors.New("mutate callback is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dir, err := m.episodeDir(id)
+	if err != nil {
+		return Manifest{}, err
+	}
+	mf, err := readManifest(dir)
+	if err != nil {
+		return Manifest{}, err
+	}
+	mutate(&mf.Upload)
+	mf.Upload.UpdatedAt = time.Now().UnixNano()
+	if err := writeManifest(dir, mf); err != nil {
+		return Manifest{}, err
+	}
+	return mf, nil
+}
+
 func (m *Manager) List() ([]EpisodeInfo, error) {
 	entries, err := os.ReadDir(m.root)
 	if err != nil {
