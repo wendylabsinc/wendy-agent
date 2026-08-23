@@ -455,8 +455,12 @@ func (w *DataTransferWorker) streamFiles(ctx context.Context, stream grpc.BidiSt
 	buf := make([]byte, transferChunkBytes)
 	for _, file := range mf.Files {
 		start := committed[file.Path]
-		if start >= file.Size {
-			// Already durably stored (or empty file already accounted for); skip.
+		// A non-empty file whose committed offset already covers it is durably
+		// stored, so skip it. A zero-length file must NOT be skipped on a zero
+		// offset: streamOneFile sends it as a single empty EOF chunk so the server
+		// persists the (empty) object. Skipping it here would silently drop a file
+		// the manifest lists, leaving the server unaware it exists.
+		if file.Size > 0 && start >= file.Size {
 			continue
 		}
 		if err := w.streamOneFile(ctx, stream, mf.ID, file, start, buf, limiter); err != nil {
