@@ -326,6 +326,9 @@ func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
 	if err != nil {
 		return Campaign{}, err
 	}
+	if err := m.checkDeployableAudioSources(campaign); err != nil {
+		return Campaign{}, err
+	}
 	campaign.DeployedUnixNanos = time.Now().UnixNano()
 	if campaign.BufferDuration() > 0 {
 		for _, source := range campaign.Sources {
@@ -456,6 +459,62 @@ func (m *Manager) ResolveCampaignSources(campaign Campaign) ([]string, []string,
 	sort.Strings(ids)
 	sort.Strings(topics)
 	return ids, topics, captures, nil
+}
+
+// checkDeployableAudioSources refuses a campaign whose audio selector does not
+// name a healthy source, at deploy rather than at the first trigger.
+//
+// Resolution used to happen only in triggerCampaign, so a plan naming a source
+// that can never yield audio deployed cleanly and failed much later, or worse
+// resolved to an endpoint that streams digital silence forever: a sealed,
+// checksummed, uploaded episode full of nothing, with clean drop accounting and
+// no error at any layer. Deploy is the last moment an operator is present to
+// read the reason, so it is where the refusal belongs.
+//
+// It reuses resolveKindSelector so deploy and trigger cannot disagree about
+// what resolves, and is scoped to audio: camera and ROS 2 selectors keep their
+// existing deploy behavior.
+func (m *Manager) checkDeployableAudioSources(campaign Campaign) error {
+	var all []Source
+	loaded := false
+	for _, requested := range campaign.Sources {
+		if requested.Audio == "" {
+			continue
+		}
+		if !loaded {
+			all, loaded = m.Sources(context.Background()), true
+		}
+		if _, err := resolveKindSelector(all, "audio", requested.Audio); err == nil {
+			continue
+		}
+		// Name the reason, not just the miss: when the selector does match an
+		// enumerated source that is merely unhealthy, its detail already says
+		// why and what to check.
+		if unhealthy, ok := matchUnhealthySource(all, "audio", requested.Audio); ok {
+			return fmt.Errorf("audio source %q resolves to %s, which is unhealthy and would record silence: %s",
+				requested.Audio, unhealthy.ID, unhealthy.Detail)
+		}
+		return fmt.Errorf("audio source %q does not name a healthy capture source on this device", requested.Audio)
+	}
+	return nil
+}
+
+// matchUnhealthySource finds an unhealthy source of the given kind that the
+// selector names, so a refusal can quote the reason the source reported.
+func matchUnhealthySource(all []Source, kind, selector string) (Source, bool) {
+	selector = strings.TrimSpace(selector)
+	for _, source := range all {
+		if source.Kind != kind || source.Healthy {
+			continue
+		}
+		if source.ID == selector || strings.EqualFold(source.ID, selector) {
+			return source, true
+		}
+		if selector != "" && strings.Contains(strings.ToLower(source.Detail), strings.ToLower(selector)) {
+			return source, true
+		}
+	}
+	return Source{}, false
 }
 
 func resolveCameraSelector(all []Source, selector string) (string, error) {

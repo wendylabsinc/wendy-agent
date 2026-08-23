@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,6 +84,55 @@ func (a *audioDataAdapter) defaultOpenStream(ctx context.Context, deviceID uint3
 	return &pcmCapture{c: rec}, nil
 }
 
+// audioHubDMAEndpointReason is appended to the description of an audio-hub DMA
+// endpoint. It has to tell an operator both what is wrong and what would fix
+// it, because the endpoint opens and streams perfectly: the only symptom is
+// that every sample is zero.
+const audioHubDMAEndpointReason = "audio hub DMA endpoint, not a physical input: captures digital silence unless an external I2S codec is wired and the audio hub is routed to it"
+
+// admaifEndpointPattern matches the ALSA device identity that the Tegra Audio
+// Processing Engine's ASoC driver gives an Audio DMA Interface (ADMAIF)
+// front-end, as "arecord -l" renders it. On a Jetson Orin Nano that is
+// "fe.admaif@290f000.ADMAIF1 (*) []" through to ADMAIF20.
+//
+// Matching a driver-formatted string is fragile, which is why it is isolated
+// here behind isAudioHubDMAEndpoint: a future kernel may rename these, and this
+// is the single place to fix. It is nevertheless the right signal, and the two
+// seemingly more authoritative alternatives were measured on hardware and
+// rejected:
+//
+//   - The "(*)" and "[]" in the name do not mean "unrouted". /proc/asound/
+//     card2/pcm0c/info reports id "fe.admaif@290f000.ADMAIF1 (*)" with an empty
+//     name field, and arecord prints "<id> [<name>]" — so "[]" is just the
+//     empty PCM name and "(*)" is ASoC's marker for a dynamic PCM (a DPCM
+//     front-end). Both are structural to an ADMAIF, present routed or not. Only
+//     the "admaif" identity itself carries meaning.
+//
+//   - The audio hub crossbar mixer state is authoritative about routing, but
+//     routing is not the question. On wendyos-hubert the "ADMAIF1 Mux" control
+//     reads I2S2 and "ADMAIF2 Mux" reads I2S4 (NVIDIA's default board config),
+//     yet a one-second capture from the routed plughw:2,0 still returns 192044
+//     bytes containing zero non-zero samples, because /sys/kernel/debug/asoc/
+//     components lists no codec beyond two snd-soc-dummy entries: the I2S ports
+//     terminate in nothing. A mux-based health rule would therefore call
+//     ADMAIF1 and ADMAIF2 healthy while they deliver pure silence, which is the
+//     exact lie this check exists to remove — and it would cost twenty amixer
+//     subprocesses per enumeration to get there.
+//
+// So health is decided on the structural question the identity does answer:
+// this is a memory endpoint of the on-chip audio hub crossbar, not a physical
+// capture input. The endpoint is still enumerated, because someone who wires an
+// I2S codec and routes the hub has a legitimately usable ADMAIF and hiding it
+// would blind us to real hardware. It is reported unhealthy rather than absent,
+// and the reason names what to check.
+var admaifEndpointPattern = regexp.MustCompile(`(?i)admaif@[0-9a-f]+\.admaif[0-9]+`)
+
+// isAudioHubDMAEndpoint reports whether an audio source detail names an on-chip
+// audio-hub DMA endpoint rather than a physical capture device.
+func isAudioHubDMAEndpoint(detail string) bool {
+	return admaifEndpointPattern.MatchString(detail)
+}
+
 func (a *audioDataAdapter) Discover(ctx context.Context) []data.Source {
 	var nodes []audio.Node
 	domain := "PIPEWIRE_CAPTURE/AGENT_RECEIPT"
@@ -105,12 +155,18 @@ func (a *audioDataAdapter) Discover(ctx context.Context) []data.Source {
 		if n.IsSink {
 			continue
 		}
+		detail := strings.TrimSpace(n.Description + " " + n.Name)
+		healthy := true
+		if isAudioHubDMAEndpoint(detail) {
+			healthy = false
+			detail = strings.TrimSpace(detail + "; " + audioHubDMAEndpointReason)
+		}
 		out = append(out, data.Source{
 			ID:          fmt.Sprintf("audio:%d", n.ID),
 			Kind:        "audio",
 			ClockDomain: domain,
-			Healthy:     true,
-			Detail:      strings.TrimSpace(n.Description + " " + n.Name),
+			Healthy:     healthy,
+			Detail:      detail,
 		})
 	}
 	return out
