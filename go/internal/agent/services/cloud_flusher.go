@@ -168,7 +168,7 @@ func zeroBytes(b []byte) {
 // identity over the same trust configuration. Callers own keyData and are
 // responsible for zeroing it; this function does not retain it beyond the
 // X509KeyPair parse.
-func dialCloudMTLS(host, certPEM, chainPEM string, keyData []byte) (*grpc.ClientConn, error) {
+func dialCloudMTLS(host, certPEM, chainPEM string, keyData []byte, extraOpts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	host = normalizeCloudHost(host)
 	// Build client cert PEM bundle: leaf cert + intermediate chain so that
 	// servers can verify the full chain without trusting the leaf directly.
@@ -196,7 +196,8 @@ func dialCloudMTLS(host, certPEM, chainPEM string, keyData []byte) (*grpc.Client
 		RootCAs:      caPool,
 	}
 
-	conn, err := grpc.NewClient(host, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	opts := append([]grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))}, extraOpts...)
+	conn, err := grpc.NewClient(host, opts...)
 	if err != nil {
 		return nil, err
 	}

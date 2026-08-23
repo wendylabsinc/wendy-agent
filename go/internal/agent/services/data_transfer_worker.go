@@ -11,6 +11,7 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
@@ -151,9 +152,30 @@ func (w *DataTransferWorker) dialFactory(ctx context.Context) (cloudpb.DataInges
 		return nil, 0, 0, nil, errors.New("data transfer worker: not provisioned")
 	}
 	certPEM, chainPEM, keyData := w.provisioningSvc.ProvisioningCerts()
+	// When an override endpoint is in use there is no Wendy Envoy ingress in
+	// front of the server to terminate mTLS and re-inject the certificate
+	// identity, so the worker sends the same URI form itself in
+	// x-wendy-client-cert (the header EnvoyCertMetadataExtractor reads; see
+	// the cross-repo end-to-end harness, which injects the identical header).
+	// The identity sent is the one the enrolled asset certificate asserts.
+	var extraOpts []grpc.DialOption
+	if w.ingestHostOverride != "" {
+		header := fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", orgID, assetID)
+		withIdentity := func(ctx context.Context) context.Context {
+			return metadata.AppendToOutgoingContext(ctx, "x-wendy-client-cert", header)
+		}
+		extraOpts = append(extraOpts,
+			grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+				return invoker(withIdentity(ctx), method, req, reply, cc, opts...)
+			}),
+			grpc.WithChainStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+				return streamer(withIdentity(ctx), desc, cc, method, opts...)
+			}),
+		)
+	}
 	conn, err := func() (*grpc.ClientConn, error) {
 		defer zeroBytes(keyData)
-		return dialCloudMTLS(w.ingestDialHost(cloudHost), certPEM, chainPEM, keyData)
+		return dialCloudMTLS(w.ingestDialHost(cloudHost), certPEM, chainPEM, keyData, extraOpts...)
 	}()
 	if err != nil {
 		return nil, 0, 0, nil, err
