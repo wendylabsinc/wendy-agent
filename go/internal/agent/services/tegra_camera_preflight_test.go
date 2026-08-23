@@ -6,9 +6,10 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 )
 
 func TestParseTegraVersions(t *testing.T) {
@@ -27,15 +28,15 @@ func TestTegraCSIPreflightMismatchHasErrorInfo(t *testing.T) {
 	if st.Code() != codes.FailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition", st.Code())
 	}
-	for _, detail := range st.Details() {
-		if info, ok := detail.(*errdetails.ErrorInfo); ok {
-			if info.Reason != tegraFirmwareMismatchReason || info.Metadata["rootfs_l4t"] != "R38.2.0" || info.Metadata["boot_firmware_l4t"] != "R36.4.3" {
-				t.Fatalf("unexpected ErrorInfo: %+v", info)
-			}
-			return
-		}
+	info := streamreason.Info(err)
+	if info == nil {
+		t.Fatal("missing ErrorInfo")
 	}
-	t.Fatal("missing ErrorInfo")
+	if info.GetReason() != tegraFirmwareMismatchReason ||
+		info.GetMetadata()["rootfs_l4t"] != "R38.2.0" ||
+		info.GetMetadata()["boot_firmware_l4t"] != "R36.4.3" {
+		t.Fatalf("unexpected ErrorInfo: %+v", info)
+	}
 }
 
 func TestTegraCSIPreflightUnknownDoesNotBlock(t *testing.T) {

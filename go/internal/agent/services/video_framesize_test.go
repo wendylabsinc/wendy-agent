@@ -86,7 +86,7 @@ func TestBuildGStreamerArgs_USB_PrefersMJPEG(t *testing.T) {
 	withMJPEGProbe(t, func(path string, w, h uint32) bool { return w == 1280 && h == 720 })
 	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720}
 	args, err := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video9", req,
-		"x264enc", true, camera.TransportUSB, "", map[string]bool{"jpegdec": true})
+		"x264enc", true, camera.TransportUSB, "", pipeWireSource{}, map[string]bool{"jpegdec": true})
 	if err != nil {
 		t.Fatalf("buildGStreamerArgs: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestBuildGStreamerArgs_USB_RawWhenNoMJPEG(t *testing.T) {
 	withMJPEGProbe(t, func(string, uint32, uint32) bool { return false })
 	req := &agentpb.StreamVideoRequest{Width: 640, Height: 480}
 	args, err := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video9", req,
-		"x264enc", true, camera.TransportUSB, "", map[string]bool{"jpegdec": true})
+		"x264enc", true, camera.TransportUSB, "", pipeWireSource{}, map[string]bool{"jpegdec": true})
 	if err != nil {
 		t.Fatalf("buildGStreamerArgs: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestBuildGStreamerArgs_USB_RawWhenNoJpegdec(t *testing.T) {
 	withMJPEGProbe(t, func(string, uint32, uint32) bool { return true })
 	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720}
 	args, err := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video9", req,
-		"x264enc", true, camera.TransportUSB, "", map[string]bool{"x264enc": true})
+		"x264enc", true, camera.TransportUSB, "", pipeWireSource{}, map[string]bool{"x264enc": true})
 	if err != nil {
 		t.Fatalf("buildGStreamerArgs: %v", err)
 	}
