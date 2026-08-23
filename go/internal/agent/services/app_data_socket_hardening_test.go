@@ -182,6 +182,75 @@ func TestAppDataPeerCredentialMatchAllowed(t *testing.T) {
 	}
 }
 
+// readRejectAck reads a single ack frame off conn and fails unless it is a
+// rejection. Used by the fail-closed peer-credential tests below.
+func readRejectAck(t *testing.T, conn net.Conn) dataAck {
+	t.Helper()
+	ackBody, err := readDataFrame(conn)
+	if err != nil {
+		t.Fatalf("expected a rejection ack, got read error: %v", err)
+	}
+	var ack dataAck
+	if err := json.Unmarshal(ackBody, &ack); err != nil {
+		t.Fatal(err)
+	}
+	return ack
+}
+
+// TestAppDataPeerCredentialUnreadableCgroupRefused proves the accept-to-/proc
+// TOCTOU is closed. Once SO_PEERCRED yields a pid, a cgroup that cannot be read
+// (the peer exited between accept and the /proc read, or its pid was recycled)
+// must be REFUSED, not admitted. Fail-open here would let a peer that buffered
+// forged records and then exited have those records attributed to this app.
+func TestAppDataPeerCredentialUnreadableCgroupRefused(t *testing.T) {
+	m := newTestDataSocketManager(t)
+	m.peerCred = func(net.Conn) (peerCredentials, error) {
+		return peerCredentials{UID: 0, PID: 4242}, nil
+	}
+	m.cgroupOfPID = func(int32) (string, error) {
+		// The peer has exited by the time verifyPeer reads /proc/<pid>/cgroup.
+		return "", os.ErrNotExist
+	}
+	dir, err := m.Ensure("com.example.a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", filepath.Join(dir, DataSocketFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if ack := readRejectAck(t, conn); ack.State != "rejected" {
+		t.Fatalf("unreadable peer cgroup: state = %q, want rejected (fail closed)", ack.State)
+	}
+}
+
+// TestAppDataPeerCredentialNoScopeRefused proves a peer that resolves to no
+// wendy app scope (a host process, or a recycled pid now held by one) is
+// refused once its credentials are known, rather than admitted under the
+// socket's app identity.
+func TestAppDataPeerCredentialNoScopeRefused(t *testing.T) {
+	m := newTestDataSocketManager(t)
+	m.peerCred = func(net.Conn) (peerCredentials, error) {
+		return peerCredentials{UID: 0, PID: 4242}, nil
+	}
+	m.cgroupOfPID = func(int32) (string, error) {
+		return "0::/user.slice/user-1000.slice/session-3.scope\n", nil
+	}
+	dir, err := m.Ensure("com.example.a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", filepath.Join(dir, DataSocketFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if ack := readRejectAck(t, conn); ack.State != "rejected" {
+		t.Fatalf("no-scope peer: state = %q, want rejected (fail closed)", ack.State)
+	}
+}
+
 // TestAppIDFromCgroup covers the cgroup identity extraction directly.
 func TestAppIDFromCgroup(t *testing.T) {
 	cases := []struct {

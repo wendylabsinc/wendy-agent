@@ -199,16 +199,31 @@ func (m *AppDataSocketManager) serve(s *appDataSocket) {
 // to a different app is refused: it cannot write records attributed to an app
 // it is not.
 //
-// Residual gaps (fail open, never fail closed):
+// Fail-open is confined to the case where SO_PEERCRED itself yields no peer:
+// not a unix socket, an unsupported platform, or the seam being disabled. In
+// those cases the group-2000 gate and the 0750 app-private socket directory
+// remain the baseline.
+//
+// Once a peer pid IS known, verification fails CLOSED: any inability to
+// positively attribute that pid to this app (its /proc cgroup is unreadable,
+// carries no wendy app scope, or names a different app) is a refusal. This is
+// deliberate. The SO_PEERCRED pid is captured by the kernel at connect, but the
+// cgroup is read from /proc by that pid afterwards, so a peer that exits between
+// accept and the read (or whose pid is recycled onto a non-app process) would,
+// under a fail-open policy, have records it buffered before exiting attributed
+// to this app. Refusing an unattributable-but-credentialed peer closes that
+// forgery path; no legitimate caller connects to an app data socket except that
+// app's own containers, whose cgroup always resolves.
+//
+// Residual gaps:
 //   - Granularity is per app, not per service: an app's services legitimately
 //     share one socket, so the service suffix is stripped before comparison.
 //   - The peer UID is read but not used as the discriminator, because app
 //     containers run as UID 0 by default; the cgroup is the identity.
-//   - If the peer is not a wendy-managed container (a host process, the agent
-//     itself, a test harness) its cgroup carries no app scope, so it is not
-//     attributable to an app and the group-2000 gate plus the 0750 app-private
-//     socket directory remain the baseline. The same fail-open applies when
-//     SO_PEERCRED is unavailable (non-Linux) or /proc cannot be read.
+//   - A pid recycled within the accept-to-read window onto a process in the
+//     SAME app's scope still verifies. Closing that last window requires a
+//     kernel primitive that pins the peer identity across the read
+//     (SO_PEERPIDFD, Linux 6.5+); it is left as a follow-up.
 func (m *AppDataSocketManager) verifyPeer(appID string, c net.Conn) error {
 	if m.peerCred == nil {
 		return nil
@@ -222,14 +237,15 @@ func (m *AppDataSocketManager) verifyPeer(appID string, c net.Conn) error {
 	if m.cgroupOfPID == nil {
 		return nil
 	}
+	// From here the peer is a real local process with a kernel-attested pid.
+	// Anything short of a positive match to this app is a refusal (fail closed).
 	cgroup, err := m.cgroupOfPID(creds.PID)
 	if err != nil || cgroup == "" {
-		return nil
+		return fmt.Errorf("peer (pid %d, uid %d) cgroup is unreadable; cannot attribute to app %q", creds.PID, creds.UID, appID)
 	}
 	peerApp, ok := appIDFromCgroup(cgroup)
 	if !ok {
-		// Not a wendy-managed app container; not attributable to any app.
-		return nil
+		return fmt.Errorf("peer (pid %d, uid %d) is not in a wendy app scope; cannot attribute to app %q", creds.PID, creds.UID, appID)
 	}
 	if peerApp != appID {
 		return fmt.Errorf("peer (pid %d, uid %d) belongs to app %q, not %q", creds.PID, creds.UID, peerApp, appID)
