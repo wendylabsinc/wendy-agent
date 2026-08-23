@@ -95,6 +95,12 @@ func (s *DataService) SetVideoService(video *VideoService) {
 	s.addAdapter(newCameraDataAdapter(video))
 }
 
+// SetAudioService enables microphone capture, including level-threshold
+// fragment sealing.
+func (s *DataService) SetAudioService(audioSvc *AudioService) {
+	s.addAdapter(newAudioDataAdapter(audioSvc))
+}
+
 // SetROS2Service enables one managed rosbag2 recorder per live RMW graph.
 func (s *DataService) SetROS2Service(ros2 *ROS2Service) {
 	if ros2 != nil {

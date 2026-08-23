@@ -17,13 +17,15 @@ sources:
       max_resolution: 1280x720
   - ros2: /lidar/points
   - ros2: /vehicle/odometry
-  # An audio source kind does not exist yet. Once it does, a threshold
-  # capture policy will look like this:
-  # - audio: cabin-mic
-  #   capture:
-  #     mode: threshold
-  #     trigger: "level_db > -20"
-  #     fragment: 30s
+  # An audio source with a level-threshold capture policy: when the cabin
+  # microphone's peak level crosses -20 dBFS, the agent seals a 30-second WAV
+  # fragment. level_db is a negative-valued field, so the comparison is against
+  # a negative threshold.
+  - audio: cabin-mic
+    capture:
+      mode: threshold
+      trigger: "level_db > -20"
+      fragment: 30s
 
 capture:
   buffer: 10s

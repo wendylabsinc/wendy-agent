@@ -1135,6 +1135,8 @@ func payloadFormat(path string) (string, string) {
 		return "h265", "video/h265"
 	case ".mp4":
 		return "mp4", "video/mp4"
+	case ".wav":
+		return "wav", "audio/wav"
 	case ".jpg", ".jpeg":
 		return "jpeg", "image/jpeg"
 	case ".png":
@@ -1158,7 +1160,7 @@ func sourceForPath(path string) string {
 		return "telemetry"
 	}
 	parts := strings.Split(path, "/")
-	if len(parts) >= 2 && (parts[0] == "cameras" || parts[0] == "ros2") {
+	if len(parts) >= 2 && (parts[0] == "cameras" || parts[0] == "ros2" || parts[0] == "audio") {
 		return parts[1]
 	}
 	return ""
@@ -1171,6 +1173,7 @@ func associateFileSources(files []File, sources []SourceStats) {
 		}
 		path := strings.TrimPrefix(files[i].Path, "cameras/")
 		path = strings.TrimPrefix(path, "ros2/")
+		path = strings.TrimPrefix(path, "audio/")
 		for _, stats := range sources {
 			encoded := safeName(stats.Source.ID)
 			if path == encoded || path == encoded+".calibration" || strings.HasPrefix(path, encoded+"/") || strings.HasPrefix(path, encoded+"-") {

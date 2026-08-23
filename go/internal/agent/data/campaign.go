@@ -97,6 +97,7 @@ func (sc *SourceCapture) MaxResolutionPixels() (uint32, uint32, bool) {
 
 type CampaignSource struct {
 	Camera      string         `json:"camera,omitempty" yaml:"camera,omitempty"`
+	Audio       string         `json:"audio,omitempty" yaml:"audio,omitempty"`
 	ROS2        string         `json:"ros2,omitempty" yaml:"ros2,omitempty"`
 	Telemetry   bool           `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	Calibration string         `json:"calibration_revision,omitempty" yaml:"calibration_revision,omitempty"`
@@ -107,6 +108,8 @@ func (s CampaignSource) describe() string {
 	switch {
 	case s.Camera != "":
 		return "camera:" + s.Camera
+	case s.Audio != "":
+		return "audio:" + s.Audio
 	case s.ROS2 != "":
 		return "ros2:" + s.ROS2
 	case s.Telemetry:
@@ -119,6 +122,8 @@ func (s CampaignSource) kind() string {
 	switch {
 	case s.Camera != "":
 		return "camera"
+	case s.Audio != "":
+		return "audio"
 	case s.ROS2 != "":
 		return "ros2"
 	case s.Telemetry:
@@ -241,6 +246,9 @@ func (c Campaign) validate() error {
 		if strings.TrimSpace(source.Camera) != "" {
 			kinds++
 		}
+		if strings.TrimSpace(source.Audio) != "" {
+			kinds++
+		}
 		if strings.TrimSpace(source.ROS2) != "" {
 			kinds++
 		}
@@ -248,7 +256,7 @@ func (c Campaign) validate() error {
 			kinds++
 		}
 		if kinds != 1 {
-			return fmt.Errorf("sources[%d] must select exactly one of camera, ros2, or telemetry", i)
+			return fmt.Errorf("sources[%d] must select exactly one of camera, audio, ros2, or telemetry", i)
 		}
 		if err := validateSourceCapture(source); err != nil {
 			return fmt.Errorf("sources[%d].capture: %w", i, err)
@@ -321,7 +329,7 @@ func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
 	campaign.DeployedUnixNanos = time.Now().UnixNano()
 	if campaign.BufferDuration() > 0 {
 		for _, source := range campaign.Sources {
-			if source.Camera != "" || source.ROS2 != "" {
+			if source.Camera != "" || source.Audio != "" || source.ROS2 != "" {
 				campaign.Warnings = append(campaign.Warnings, "pre-trigger buffering is currently exact for application records; sensor streams start at the trigger and report their achieved offset")
 				break
 			}
@@ -430,6 +438,15 @@ func (m *Manager) ResolveCampaignSources(campaign Campaign) ([]string, []string,
 			if requested.Capture != nil {
 				captures[id] = requested.Capture
 			}
+		case requested.Audio != "":
+			id, err := resolveKindSelector(all, "audio", requested.Audio)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			selected[id] = true
+			if requested.Capture != nil {
+				captures[id] = requested.Capture
+			}
 		}
 	}
 	ids := make([]string, 0, len(selected))
@@ -475,6 +492,41 @@ func resolveCameraSelector(all []Source, selector string) (string, error) {
 		return healthy[0].ID, nil
 	}
 	return "", fmt.Errorf("no healthy camera matches %q", selector)
+}
+
+// resolveKindSelector maps a campaign selector onto a healthy source of the
+// given kind by exact ID, then by a case-insensitive substring of the source
+// detail, and finally accepts "default" when exactly one healthy source of the
+// kind exists. It mirrors resolveCameraSelector for non-camera kinds such as
+// audio, which have no /dev alias.
+func resolveKindSelector(all []Source, kind, selector string) (string, error) {
+	selector = strings.TrimSpace(selector)
+	var healthy []Source
+	for _, source := range all {
+		if source.Kind != kind || !source.Healthy {
+			continue
+		}
+		healthy = append(healthy, source)
+		if source.ID == selector || strings.EqualFold(source.ID, selector) {
+			return source.ID, nil
+		}
+	}
+	var matches []string
+	for _, source := range healthy {
+		if selector != "" && strings.Contains(strings.ToLower(source.Detail), strings.ToLower(selector)) {
+			matches = append(matches, source.ID)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("%s selector %q is ambiguous: %s", kind, selector, strings.Join(matches, ", "))
+	}
+	if len(healthy) == 1 && (selector == "default" || selector == "front") {
+		return healthy[0].ID, nil
+	}
+	return "", fmt.Errorf("no healthy %s matches %q", kind, selector)
 }
 
 func (c Campaign) Match(record ApplicationRecord) (string, string, bool) {
@@ -549,6 +601,18 @@ func parseThreshold(field, expression string) (string, float64, error) {
 	return "", 0, fmt.Errorf("%s must begin with <, <=, ==, >=, or >", field)
 }
 
+// ParseFieldThreshold exposes the campaign threshold grammar to capture
+// adapters in other packages, for example the audio adapter's "level_db"
+// trigger. It returns the field name, comparison operator, and numeric value.
+func ParseFieldThreshold(expression string) (string, string, float64, error) {
+	return parseFieldThreshold(expression)
+}
+
+// CompareThreshold applies a parsed threshold operator to a measured value.
+func CompareThreshold(value float64, operator string, threshold float64) bool {
+	return compareThreshold(value, operator, threshold)
+}
+
 // parseFieldThreshold parses a "<field> <operator> <number>" expression such
 // as "model.uncertainty > 0.9" or "level_db > -20".
 func parseFieldThreshold(expression string) (string, string, float64, error) {
@@ -576,11 +640,13 @@ func parseFieldThreshold(expression string) (string, string, float64, error) {
 var validCaptureModes = []string{"continuous", "snapshot", "fragment", "threshold"}
 
 // implementedCaptureModes is what capture adapters actually honor today, by
-// campaign source kind. The camera adapter implements snapshot capture; the
-// ROS 2 and telemetry paths still record continuously regardless of mode, so
-// snapshot deploy-warns for them.
+// campaign source kind. The camera adapter implements snapshot capture and the
+// audio adapter implements threshold capture; the ROS 2 and telemetry paths
+// still record continuously regardless of mode, so other modes deploy-warn for
+// them.
 var implementedCaptureModes = map[string]map[string]bool{
 	"camera":    {"continuous": true, "snapshot": true},
+	"audio":     {"continuous": true, "threshold": true},
 	"ros2":      {"continuous": true},
 	"telemetry": {"continuous": true},
 }
