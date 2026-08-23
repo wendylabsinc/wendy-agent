@@ -101,6 +101,12 @@ far enough that the harness has to drop samples before it, the sample
 carries `dropped_before` and the app logs a warning — a gap in the sample
 identifiers is always explained, never silent.
 
+`encoding` is a per-sample field, not a per-stream one, so the decoder
+follows the samples: it is rebuilt whenever the encoding changes, and
+anything the retired decoder still holds is drained first and attributed to
+the samples that produced it. A decoder pinned to whichever encoding
+arrived first would decode nothing at all after a mid-stream switch.
+
 ## Run on a dev box (no GPU, no ROS 2)
 
 The default image is CPU-only and needs no ROS 2 stack:
@@ -117,10 +123,22 @@ carries onnxruntime, OpenCV, NumPy, grpcio, and PyAV.
 
 Sensor input is not optional the way the data socket is: without
 `WENDY_SENSOR_SOCKET` the app has no frames to score and exits with a
-clear message naming the missing entitlement. Without a data socket
-(running outside WendyOS, or without the `data` entitlement) it keeps
-running and logs each dropped record; without ROS 2 it logs each actuation
-decision.
+clear message naming the missing entitlement.
+
+A socket that was there and whose stream then ends is a different case, and
+is treated as transient: an agent restart or a dropped subscription ends
+`Subscribe` while the app itself is perfectly healthy. The app redials, up
+to `WENDY_SENSOR_RECONNECT_ATTEMPTS` consecutive times (default 5), one
+every `WENDY_SENSOR_RECONNECT_DELAY_SECONDS` (default 2), and the budget is
+refilled by every frame that arrives, so weeks of unrelated restarts do not
+add up to a shutdown. Only once the stream stays gone for the whole budget
+does the app exit, and it says so rather than stopping quietly with the
+campaign still armed. Set the attempts to 0 to exit on the first end of
+stream instead.
+
+Without a data socket (running outside WendyOS, or without the `data`
+entitlement) it keeps running and logs each dropped record; without ROS 2
+it logs each actuation decision.
 
 `proto/wendy/agent/services/v2/sensor_service.proto` is a copy of the
 canonical `Proto/wendy/agent/services/v2/sensor_service.proto`, because the

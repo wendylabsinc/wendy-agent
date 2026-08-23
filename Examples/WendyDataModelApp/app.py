@@ -57,6 +57,13 @@ IOU_THRESHOLD = float(os.environ.get("WENDY_IOU_THRESHOLD", "0.45"))
 # harness delivered the frame, so the episode's model-input ledger records
 # every frame the app received, including the ones it chose not to score.
 PREDICTIONS_PER_SECOND = float(os.environ.get("WENDY_PREDICTIONS_PER_SECOND", "5"))
+# The sensor stream can end while the app is still healthy: the agent
+# restarts, or the subscription is dropped with the socket. The data socket
+# client already reconnects and retries, so the frame source does too, up to
+# this many consecutive attempts (0 disables it and exits on the first end of
+# stream). The budget is refilled by every frame that arrives.
+SENSOR_RECONNECT_ATTEMPTS = int(os.environ.get("WENDY_SENSOR_RECONNECT_ATTEMPTS", "5"))
+SENSOR_RECONNECT_DELAY_SECONDS = float(os.environ.get("WENDY_SENSOR_RECONNECT_DELAY_SECONDS", "2"))
 # Actuation is optional: a plain Jetson demo has no ROS 2 stack. Set
 # WENDY_MODEL_APP_ROS2=1 (and run an image with rclpy) to publish Twists.
 ROS2_REQUESTED = os.environ.get("WENDY_MODEL_APP_ROS2", "0") == "1"
@@ -227,8 +234,11 @@ def main() -> None:
     next_score_at = 0.0
     person_present = False
     skipped = 0
+    frame_stream = wendysensors.frames_with_reconnect(
+        sensors, SENSOR_RECONNECT_ATTEMPTS, SENSOR_RECONNECT_DELAY_SECONDS
+    )
     try:
-        for sensor_frame in sensors.frames():
+        for sensor_frame in frame_stream:
             if sensor_frame.dropped_before:
                 # The harness produced frames this app never received. Say so
                 # rather than leaving a silent gap in the sample identifiers.
@@ -283,6 +293,9 @@ def main() -> None:
 
             angular_z, linear_x = steer_towards(detections, frame.shape[1])
             actuator.act(angular_z, linear_x)
+        # Reached only once the stream stayed gone for the whole reconnect
+        # budget; frames_with_reconnect has already said why.
+        log.info("no more frames from %s; shutting down", source_id)
     except KeyboardInterrupt:
         pass
     finally:

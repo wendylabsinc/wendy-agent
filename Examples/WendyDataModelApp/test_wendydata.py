@@ -221,5 +221,214 @@ class TestSampleAttribution(unittest.TestCase):
         self.assertEqual([f.dropped_before for f in frames], [3, 0, 0])
 
 
+class TestDecoderFollowsTheEncoding(unittest.TestCase):
+    """The proto sets `encoding` per sample, not per stream. A decoder built
+    once from the first sample decodes nothing at all after a mid-stream switch,
+    which loses every frame from that point on without saying so."""
+
+    _sensors = staticmethod(TestSampleAttribution._sensors)
+    _Sample = TestSampleAttribution._Sample
+    _Decoder = TestSampleAttribution._Decoder
+    _Decoded = TestSampleAttribution._Decoded
+
+    class _Buffering:
+        """Turns no packet into a frame, but holds one back for the flush."""
+
+        def parse(self, payload):
+            return [payload]
+
+        def decode(self, packet):
+            if packet is None:
+                return [TestSampleAttribution._Decoded()]
+            return []
+
+    def test_a_mid_stream_encoding_change_rebuilds_the_decoder(self):
+        sensors = self._sensors()
+        asked_for = []
+
+        def make_decoder(encoding):
+            asked_for.append(encoding)
+            return self._Decoder(per_packet=1)
+
+        frames = list(
+            sensors.decode_samples(
+                [
+                    self._Sample(1, encoding="h264"),
+                    self._Sample(2, encoding="h264"),
+                    self._Sample(3, encoding="vp8"),
+                ],
+                make_decoder,
+            )
+        )
+        # One decoder per encoding, not one per sample and not one per stream.
+        self.assertEqual(asked_for, ["h264", "vp8"])
+        self.assertEqual([f.sample_ids for f in frames], [[1], [2], [3]])
+
+    def test_an_empty_first_encoding_does_not_pin_the_decoder(self):
+        sensors = self._sensors()
+        asked_for = []
+
+        def make_decoder(encoding):
+            asked_for.append(encoding)
+            return self._Decoder(per_packet=1)
+
+        frames = list(
+            sensors.decode_samples(
+                [
+                    self._Sample(1, encoding=""),
+                    self._Sample(2, encoding="h264"),
+                    self._Sample(3, encoding="vp8"),
+                ],
+                make_decoder,
+            )
+        )
+        # The empty encoding resolves to the documented default, so the explicit
+        # "h264" that follows is the same codec and must not rebuild anything.
+        self.assertEqual(asked_for, ["h264", "vp8"])
+        self.assertEqual([f.sample_ids for f in frames], [[1], [2], [3]])
+
+    def test_the_retired_decoder_is_flushed_with_its_own_attribution(self):
+        sensors = self._sensors()
+        built = []
+
+        def make_decoder(encoding):
+            decoder = self._Buffering() if encoding == "h264" else self._Decoder(per_packet=1)
+            built.append(encoding)
+            return decoder
+
+        frames = list(
+            sensors.decode_samples(
+                [
+                    self._Sample(1, encoding="h264", dropped_before=2),
+                    self._Sample(2, encoding="h264"),
+                    self._Sample(3, encoding="vp8"),
+                ],
+                make_decoder,
+            )
+        )
+        self.assertEqual(built, ["h264", "vp8"])
+        self.assertEqual(len(frames), 2)
+        # The flushed frame belongs to the samples that fed the old decoder, and
+        # carries their drop count and the timestamp of the last of them, not
+        # those of the first sample under the new encoding.
+        self.assertEqual(frames[0].sample_ids, [1, 2])
+        self.assertEqual(frames[0].dropped_before, 2)
+        self.assertEqual(frames[0].boottime_nanos, 2 * 1000)
+        # The bytes buffered under the old codec are not credited to the new one.
+        self.assertEqual(frames[1].sample_ids, [3])
+        self.assertEqual(frames[1].dropped_before, 0)
+
+    def test_a_decoder_that_cannot_be_flushed_does_not_end_the_stream(self):
+        sensors = self._sensors()
+
+        class Unflushable:
+            def parse(self, payload):
+                return [payload]
+
+            def decode(self, packet):
+                if packet is None:
+                    raise RuntimeError("this codec cannot be flushed")
+                return []
+
+        def make_decoder(encoding):
+            return Unflushable() if encoding == "h264" else self._Decoder(per_packet=1)
+
+        with self.assertLogs("wendysensors", level="WARNING"):
+            frames = list(
+                sensors.decode_samples(
+                    [self._Sample(1, encoding="h264"), self._Sample(2, encoding="vp8")],
+                    make_decoder,
+                )
+            )
+        self.assertEqual([f.sample_ids for f in frames], [[2]])
+
+
+class TestSensorStreamReconnect(unittest.TestCase):
+    """A stream that ends mid-life (an agent restart, a dropped socket) must be
+    redialled, or the app exits while the campaign is still armed. Bounded, so a
+    socket that is gone for good still exits with a diagnosis."""
+
+    _sensors = staticmethod(TestSampleAttribution._sensors)
+
+    class _Client:
+        """Replays a scripted series of subscriptions, one per frames() call."""
+
+        def __init__(self, streams):
+            self.streams = list(streams)
+            self.calls = 0
+            self.closes = 0
+
+        def frames(self):
+            self.calls += 1
+            if not self.streams:
+                return
+            stream = self.streams.pop(0)
+            if isinstance(stream, Exception):
+                raise stream
+            yield from stream
+
+        def close(self):
+            self.closes += 1
+
+    def test_frames_resume_after_the_stream_ends(self):
+        sensors = self._sensors()
+        client = self._Client([["a"], ["b", "c"]])
+        slept = []
+        with self.assertLogs("wendysensors", level="WARNING"):
+            got = list(
+                sensors.frames_with_reconnect(client, attempts=2, delay=0.5, sleep=slept.append)
+            )
+        # The frames from before and after the drop are one stream to the caller.
+        self.assertEqual(got, ["a", "b", "c"])
+        # Redialled after each of the two scripted streams ended, and once more
+        # after the empty third: an end of stream is never assumed to be final.
+        self.assertEqual(slept, [0.5, 0.5, 0.5])
+        self.assertEqual(client.closes, 3)
+        self.assertEqual(client.calls, 4)
+
+    def test_a_failing_stream_is_retried_then_given_up_on(self):
+        sensors = self._sensors()
+        client = self._Client([RuntimeError("socket gone")] * 10)
+        slept = []
+        with self.assertLogs("wendysensors", level="WARNING"):
+            got = list(
+                sensors.frames_with_reconnect(client, attempts=3, delay=0.1, sleep=slept.append)
+            )
+        self.assertEqual(got, [])
+        # Three reconnects, so four subscription attempts in total, and then it
+        # stops rather than spinning on a socket that is not coming back.
+        self.assertEqual(len(slept), 3)
+        self.assertEqual(client.calls, 4)
+
+    def test_the_budget_is_refilled_by_every_frame(self):
+        sensors = self._sensors()
+        # A budget of one, spent by every drop and refilled by every frame. Three
+        # short-lived streams therefore all get through; a lifetime budget of one
+        # would have stopped after the second.
+        client = self._Client([["a"], ["b"], ["c"]])
+        with self.assertLogs("wendysensors", level="WARNING"):
+            got = list(sensors.frames_with_reconnect(client, attempts=1, delay=0, sleep=lambda _: None))
+        self.assertEqual(got, ["a", "b", "c"])
+
+    def test_consecutive_drops_exhaust_the_budget(self):
+        sensors = self._sensors()
+        # The same budget of one, but nothing arrives to refill it: the stream
+        # that ends and the failure after it are two consecutive drops, so the
+        # third subscription is never attempted.
+        client = self._Client([["a"], RuntimeError("socket gone"), ["b"]])
+        with self.assertLogs("wendysensors", level="WARNING"):
+            got = list(sensors.frames_with_reconnect(client, attempts=1, delay=0, sleep=lambda _: None))
+        self.assertEqual(got, ["a"])
+        self.assertEqual(client.calls, 2)
+
+    def test_zero_attempts_exits_on_the_first_end_of_stream(self):
+        sensors = self._sensors()
+        client = self._Client([["a"], ["b"]])
+        with self.assertLogs("wendysensors", level="WARNING"):
+            got = list(sensors.frames_with_reconnect(client, attempts=0, delay=0, sleep=lambda _: None))
+        self.assertEqual(got, ["a"])
+        self.assertEqual(client.calls, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

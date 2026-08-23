@@ -3,8 +3,8 @@
 # A Dockerfile rather than a Stagefile because the model is produced by a
 # build step (an Ultralytics ONNX export) that the Stagefile DSL has no
 # instruction for. The export stage is build-time only: ultralytics and
-# torch never enter the runtime image, which carries just onnxruntime,
-# OpenCV, and NumPy on the CPU.
+# torch never enter the runtime image, which carries onnxruntime, OpenCV,
+# NumPy, grpcio, and PyAV on the CPU (see the runtime stage below).
 #
 # Jetson GPU variant: see README.md. The runtime stage swaps
 # onnxruntime for the onnxruntime-gpu wheel from the Jetson wheel index

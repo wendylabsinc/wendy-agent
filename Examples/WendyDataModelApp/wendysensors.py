@@ -26,12 +26,17 @@ PyAV's parser, which handles both shapes, so a decoded frame may be the
 product of more than one sample; `SensorFrame.sample_ids` lists every
 sample that contributed to it, which is exactly what the prediction
 record's `inputs` list is for.
+
+`encoding` is per sample, not per stream, so the decoder is rebuilt
+whenever it changes rather than being pinned by whichever sample happened
+to arrive first.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 
 import grpc
@@ -42,6 +47,18 @@ from wendy.agent.services.v2 import sensor_service_pb2_grpc as sensorgrpc
 log = logging.getLogger("wendysensors")
 
 DEFAULT_SOCKET_PATH = "/run/wendy/sensors/sensors.sock"
+
+# The encoding assumed when a sample leaves the field empty. Normalizing here
+# rather than in the decoder factory keeps the value the decoder was built for
+# comparable to the value the next sample declares; if the two disagreed, an
+# empty encoding followed by an explicit "h264" would rebuild the decoder for
+# no reason and throw away the bytes it had buffered.
+DEFAULT_ENCODING = "h264"
+
+# How many consecutive times a dropped subscription is redialled before the
+# stream is treated as gone for good, and how long to wait between attempts.
+DEFAULT_RECONNECT_ATTEMPTS = 5
+DEFAULT_RECONNECT_DELAY_SECONDS = 2.0
 
 
 def socket_path() -> str:
@@ -113,7 +130,7 @@ class SensorClient:
         request = sensorpb.SensorSubscribeRequest(source_ids=[self.source_id], model=self.model)
         yield from decode_samples(
             stub.Subscribe(request),
-            lambda encoding: av.CodecContext.create(encoding or "h264", "r"),
+            lambda encoding: av.CodecContext.create(encoding, "r"),
         )
 
 
@@ -126,13 +143,40 @@ def decode_samples(samples, make_decoder):
     wrong loses the join key silently rather than loudly.
     """
     decoder = None
+    # The encoding the current decoder was built for. The proto allows this to
+    # change from sample to sample ("h264" or "vp8"), and a stream that switches
+    # decodes to nothing at all under the decoder the first sample happened to
+    # ask for, so the decoder follows the samples rather than the other way round.
+    decoder_encoding = None
     pending_ids: list[int] = []
     pending_drops = 0
+    # The most recent sample the pending bytes end at, so frames recovered by a
+    # flush are timestamped by the sample that actually produced them and not by
+    # the first sample of the next encoding.
+    pending_tail = None
     for sample in samples:
-        if decoder is None:
-            decoder = make_decoder(sample.encoding)
+        encoding = sample.encoding or DEFAULT_ENCODING
+        if decoder is None or encoding != decoder_encoding:
+            if decoder is not None:
+                log.info(
+                    "sample encoding changed from %s to %s; rebuilding the decoder",
+                    decoder_encoding,
+                    encoding,
+                )
+                yield from _flush_decoder(decoder, pending_ids, pending_drops, pending_tail)
+                # Whatever the retired decoder could not turn into a frame was
+                # encoded by the codec being replaced, so the new decoder can
+                # never produce a frame from it. Dropping the accumulation here
+                # is what keeps the next codec's frames from being credited with
+                # sample identifiers they were not computed from.
+                pending_ids = []
+                pending_drops = 0
+                pending_tail = None
+            decoder = make_decoder(encoding)
+            decoder_encoding = encoding
         pending_ids.append(sample.sample_id)
         pending_drops += sample.dropped_before
+        pending_tail = sample
         emitted = False
         for packet in decoder.parse(sample.payload):
             for decoded in decoder.decode(packet):
@@ -159,3 +203,96 @@ def decode_samples(samples, make_decoder):
             # whole path exists to carry.
             pending_ids = []
             pending_drops = 0
+            pending_tail = None
+
+
+def _flush_decoder(decoder, sample_ids, dropped_before, tail):
+    """Drain the frames a decoder still holds before it is replaced.
+
+    Called only at an encoding change. The buffered bytes belong to the codec
+    being retired, so this is the last moment anything can be decoded from them,
+    and the samples that fed them are still known: a frame recovered here keeps
+    the same attribution it would have had on the next sample. A decoder that
+    cannot be flushed loses the buffered samples, which is logged rather than
+    allowed to end the stream.
+    """
+    if not sample_ids or tail is None:
+        return
+    try:
+        drained = list(decoder.decode(None))
+    except Exception as exc:  # noqa: BLE001 - any codec failure here is survivable
+        log.warning(
+            "could not flush the decoder at an encoding change; %d buffered sample(s) produced no frame: %s",
+            len(sample_ids),
+            exc,
+        )
+        return
+    emitted = False
+    for decoded in drained:
+        yield SensorFrame(
+            source_id=tail.source_id,
+            sample_ids=list(sample_ids),
+            boottime_nanos=tail.boottime_nanos,
+            uncertainty_nanos=tail.timestamp_uncertainty_nanos,
+            dropped_before=0 if emitted else dropped_before,
+            image=decoded.to_ndarray(format="bgr24"),
+        )
+        emitted = True
+    if not emitted:
+        log.info(
+            "%d buffered sample(s) produced no frame before the encoding change",
+            len(sample_ids),
+        )
+
+
+def frames_with_reconnect(
+    client,
+    attempts: int = DEFAULT_RECONNECT_ATTEMPTS,
+    delay: float = DEFAULT_RECONNECT_DELAY_SECONDS,
+    sleep=time.sleep,
+):
+    """Yield frames across a subscription that ends part way through its life.
+
+    `SensorClient.frames()` ends whenever the subscription does, and a
+    subscription ends for reasons that have nothing to do with the app: the
+    agent restarted, or the socket went away with it. The data side already
+    reconnects and retries (`wendydata.DataSocketClient.send`), so the input
+    side has to as well; without it a single agent restart ends the app quietly
+    while the campaign is still armed and there is still an episode to fill.
+
+    Bounded on purpose. A socket that is gone for good has to exit with a
+    diagnosis rather than spin forever, so the budget is finite. It counts
+    *consecutive* failures and is refilled by every frame that arrives, so a
+    long-lived app is not eventually killed by unrelated restarts spread over
+    days.
+
+    The source identifier is kept across reconnects. Harness identifiers are
+    stable, and re-resolving on every drop would let a transient failure move
+    the app onto a different camera without saying so.
+    """
+    remaining = attempts
+    while True:
+        try:
+            for frame in client.frames():
+                remaining = attempts
+                yield frame
+        except Exception as exc:  # noqa: BLE001 - grpc.RpcError and transport errors alike
+            log.warning("sensor stream failed: %s", exc)
+        else:
+            log.warning("sensor stream ended")
+        if remaining <= 0:
+            log.error(
+                "the sensor stream did not come back after %d reconnect attempt(s); giving up",
+                attempts,
+            )
+            return
+        remaining -= 1
+        # Drop the channel so the next Subscribe redials rather than reusing a
+        # connection the agent has already torn down.
+        client.close()
+        log.info(
+            "reconnecting to the sensor socket in %.1fs (%d attempt(s) left after this one)",
+            delay,
+            remaining,
+        )
+        sleep(delay)
