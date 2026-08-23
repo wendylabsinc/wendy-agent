@@ -326,6 +326,14 @@
         },
         {
           "properties": {
+            "type": { "const": "data" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Submit structured event and prediction records to Wendy Data over the app-private data socket (WENDY_DATA_SOCKET). Never exposes the administrative agent socket."
+        },
+        {
+          "properties": {
             "type": { "const": "admin" }
           },
           "required": ["type"],
