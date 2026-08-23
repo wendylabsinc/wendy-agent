@@ -54,6 +54,18 @@ func TestWendyDataModelAppExampleValidates(t *testing.T) {
 			t.Errorf("wendy.schema.json has no entitlement entry for type %q used by the example", e.Type)
 		}
 	}
+
+	// Beyond the example's own entitlements, the schema must enumerate every
+	// entitlement type the Go validator accepts. ValidEntitlementTypes is the
+	// source of truth; a type missing from the schema makes an editor
+	// validating against wendy.schema.json falsely reject a manifest the agent
+	// would happily run. Walking the full list here catches the whole class of
+	// Go/schema drift (this is how the data and mcp gaps went unnoticed).
+	for _, typ := range ValidEntitlementTypes {
+		if !consts[typ] {
+			t.Errorf("wendy.schema.json has no entitlement entry for supported type %q (Go/schema drift)", typ)
+		}
+	}
 }
 
 // schemaEntitlementConsts walks $defs.entitlement.oneOf in the embedded
