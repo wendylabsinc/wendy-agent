@@ -128,6 +128,43 @@ func (w *DataTransferWorker) ingestDialHost(cloudHost string) string {
 	return cloudHost
 }
 
+// ingestCertIdentityHeader carries a certificate identity in the URI= form the
+// cloud's Envoy certificate metadata extractor reads. The extractor PREFERS
+// this header over the X-Forwarded-Client-Cert (XFCC) header that Envoy itself
+// injects, and production Envoy does not strip a client-supplied one, so a
+// device that sent this header on the normal enrolled path would be
+// self-asserting its identity. It must therefore only ever be attached on the
+// override path, which does not go through Envoy at all.
+const ingestCertIdentityHeader = "x-wendy-client-cert"
+
+// ingestDialOptions returns the extra dial options for this pass.
+//
+// On the normal enrolled path it returns nil, so no certificate identity
+// header is attached: Wendy's Envoy ingress terminates mutual Transport Layer
+// Security (mTLS) in front of the broker and injects the identity itself.
+//
+// With an ingest host override in effect there is no Envoy ingress in front of
+// the endpoint to do that, so the worker attaches the identity its enrolled
+// asset certificate asserts (the same URI form the cross-repo end-to-end
+// harness injects). orgID and assetID must come from ProvisioningInfo.
+func (w *DataTransferWorker) ingestDialOptions(orgID, assetID int32) []grpc.DialOption {
+	if w.ingestHostOverride == "" {
+		return nil
+	}
+	header := fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", orgID, assetID)
+	withIdentity := func(ctx context.Context) context.Context {
+		return metadata.AppendToOutgoingContext(ctx, ingestCertIdentityHeader, header)
+	}
+	return []grpc.DialOption{
+		grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			return invoker(withIdentity(ctx), method, req, reply, cc, opts...)
+		}),
+		grpc.WithChainStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			return streamer(withIdentity(ctx), desc, cc, method, opts...)
+		}),
+	}
+}
+
 // contextSleeper returns a sleep function that returns early when ctx is done,
 // so backoff and bandwidth pacing stay responsive to shutdown.
 func contextSleeper(ctx context.Context) func(time.Duration) {
@@ -152,27 +189,10 @@ func (w *DataTransferWorker) dialFactory(ctx context.Context) (cloudpb.DataInges
 		return nil, 0, 0, nil, errors.New("data transfer worker: not provisioned")
 	}
 	certPEM, chainPEM, keyData := w.provisioningSvc.ProvisioningCerts()
-	// When an override endpoint is in use there is no Wendy Envoy ingress in
-	// front of the server to terminate mTLS and re-inject the certificate
-	// identity, so the worker sends the same URI form itself in
-	// x-wendy-client-cert (the header EnvoyCertMetadataExtractor reads; see
-	// the cross-repo end-to-end harness, which injects the identical header).
-	// The identity sent is the one the enrolled asset certificate asserts.
-	var extraOpts []grpc.DialOption
-	if w.ingestHostOverride != "" {
-		header := fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", orgID, assetID)
-		withIdentity := func(ctx context.Context) context.Context {
-			return metadata.AppendToOutgoingContext(ctx, "x-wendy-client-cert", header)
-		}
-		extraOpts = append(extraOpts,
-			grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-				return invoker(withIdentity(ctx), method, req, reply, cc, opts...)
-			}),
-			grpc.WithChainStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-				return streamer(withIdentity(ctx), desc, cc, method, opts...)
-			}),
-		)
-	}
+	// The identity sent, when one is sent at all, is the one the enrolled asset
+	// certificate asserts: it comes from ProvisioningInfo above, never from the
+	// environment or from anything an app on the device can influence.
+	extraOpts := w.ingestDialOptions(orgID, assetID)
 	conn, err := func() (*grpc.ClientConn, error) {
 		defer zeroBytes(keyData)
 		return dialCloudMTLS(w.ingestDialHost(cloudHost), certPEM, chainPEM, keyData, extraOpts...)
