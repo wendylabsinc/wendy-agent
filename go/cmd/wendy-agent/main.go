@@ -294,6 +294,7 @@ func main() {
 	})
 	dataManager.SetWarnLogger(func(msg string) { logger.Warn(msg) })
 	dataSvc := services.NewDataService(dataManager)
+	dataSvc.SetAudioService(audioSvc)
 	// ROS 2 inspection requires the containerd-backed sidecar runtime; the
 	// service is only registered when containerd connected (WDY-1332).
 	var ros2Svc *services.ROS2Service

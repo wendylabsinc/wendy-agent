@@ -31,6 +31,26 @@ const (
 
 var ErrNoActiveEpisode = errors.New("no active episode")
 
+// The following sentinels classify request-shaped failures so RPC handlers can
+// map them to precise gRPC codes (InvalidArgument for a malformed request,
+// FailedPrecondition for a request that is well formed but not currently
+// serviceable) instead of collapsing every failure to NotFound. Genuine
+// absence still surfaces as os.ErrNotExist and read/seal failures surface as
+// their underlying I/O error.
+var (
+	// ErrInvalidEpisodeID marks a syntactically invalid episode identifier.
+	ErrInvalidEpisodeID = errors.New("invalid episode id")
+	// ErrInvalidDownloadOffset marks an out-of-range download offset.
+	ErrInvalidDownloadOffset = errors.New("invalid download offset")
+	// ErrInvalidEpisodePath marks a malformed episode-relative file path.
+	ErrInvalidEpisodePath = errors.New("invalid episode file path")
+	// ErrEpisodePathEscapes marks a path that resolves outside the episode root.
+	ErrEpisodePathEscapes = errors.New("episode path escapes root")
+	// ErrEpisodeEntryNotRegular marks a manifest entry that is not a regular
+	// file on disk; the episode exists but the entry cannot be served.
+	ErrEpisodeEntryNotRegular = errors.New("episode entry is not a regular file")
+)
+
 // AdHocEpisodeKey is the reserved concurrency key for episodes started
 // without a campaign (for example `wendy data record`). Each campaign may run
 // one active episode at a time, and one ad-hoc episode may run beside them.
@@ -974,7 +994,7 @@ func (m *Manager) OpenFile(id, rel string, offset int64) (*os.File, File, error)
 		return nil, File{}, os.ErrNotExist
 	}
 	if offset < 0 || offset > want.Size {
-		return nil, File{}, errors.New("invalid download offset")
+		return nil, File{}, ErrInvalidDownloadOffset
 	}
 	p, err := safeJoin(dir, rel)
 	if err != nil {
@@ -996,7 +1016,7 @@ func (m *Manager) OpenFile(id, rel string, offset int64) (*os.File, File, error)
 
 func (m *Manager) episodeDir(id string) (string, error) {
 	if id == "" || safeName(id) != id {
-		return "", errors.New("invalid episode id")
+		return "", ErrInvalidEpisodeID
 	}
 	p := filepath.Join(m.root, id)
 	if st, err := os.Stat(p); err != nil || !st.IsDir() {
@@ -1094,11 +1114,11 @@ func safeName(s string) string {
 
 func safeJoin(root, rel string) (string, error) {
 	if rel == "" || filepath.IsAbs(rel) || filepath.Clean(rel) != rel || strings.HasPrefix(rel, "..") {
-		return "", errors.New("invalid episode file path")
+		return "", ErrInvalidEpisodePath
 	}
 	p := filepath.Join(root, rel)
 	if !strings.HasPrefix(p, root+string(os.PathSeparator)) {
-		return "", errors.New("episode path escapes root")
+		return "", ErrEpisodePathEscapes
 	}
 	return p, nil
 }
@@ -1109,7 +1129,7 @@ func requireRegularFile(path string) error {
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return errors.New("episode entry is not a regular file")
+		return ErrEpisodeEntryNotRegular
 	}
 	return nil
 }
@@ -1173,6 +1193,8 @@ func payloadFormat(path string) (string, string) {
 		return "h265", "video/h265"
 	case ".mp4":
 		return "mp4", "video/mp4"
+	case ".wav":
+		return "wav", "audio/wav"
 	case ".jpg", ".jpeg":
 		return "jpeg", "image/jpeg"
 	case ".png":
@@ -1196,7 +1218,7 @@ func sourceForPath(path string) string {
 		return "telemetry"
 	}
 	parts := strings.Split(path, "/")
-	if len(parts) >= 2 && (parts[0] == "cameras" || parts[0] == "ros2") {
+	if len(parts) >= 2 && (parts[0] == "cameras" || parts[0] == "ros2" || parts[0] == "audio") {
 		return parts[1]
 	}
 	return ""
@@ -1209,6 +1231,7 @@ func associateFileSources(files []File, sources []SourceStats) {
 		}
 		path := strings.TrimPrefix(files[i].Path, "cameras/")
 		path = strings.TrimPrefix(path, "ros2/")
+		path = strings.TrimPrefix(path, "audio/")
 		for _, stats := range sources {
 			encoded := safeName(stats.Source.ID)
 			if path == encoded || path == encoded+".calibration" || strings.HasPrefix(path, encoded+"/") || strings.HasPrefix(path, encoded+"-") {

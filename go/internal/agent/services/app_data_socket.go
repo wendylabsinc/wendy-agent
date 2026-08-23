@@ -13,12 +13,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	sharedenv "github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"go.uber.org/zap"
 )
 
@@ -26,7 +28,17 @@ const (
 	DataSocketFilename    = "data.sock"
 	dataProtocolMaxRecord = 64 << 10
 	dataSocketGroupGID    = 2000
+	// dataRatePerSecond bounds records accepted per app across all of the
+	// app's connections combined (see appDataSocket.limiter).
+	dataRatePerSecond = 200
 )
+
+// peerCredentials identifies the process on the far end of a data-socket
+// connection, read from SO_PEERCRED at accept time.
+type peerCredentials struct {
+	UID uint32
+	PID int32
+}
 
 var AppDataSocketRootPath = "/var/lib/wendy/app-data"
 
@@ -34,6 +46,9 @@ type appDataSocket struct {
 	appID    string
 	listener net.Listener
 	owners   map[string]struct{}
+	// limiter is shared by every connection the app opens, so the rate limit
+	// is enforced per app rather than per connection.
+	limiter *notificationRateLimiter
 }
 type AppDataSocketManager struct {
 	ctx     context.Context
@@ -41,10 +56,30 @@ type AppDataSocketManager struct {
 	capture *data.Manager
 	mu      sync.Mutex
 	sockets map[string]*appDataSocket
+	// newLimiter builds the per-app record rate limiter. It is a field so
+	// tests can install a deterministic bucket; production uses a 200 rec/s
+	// token bucket.
+	newLimiter func() *notificationRateLimiter
+	// peerCred and cgroupOfPID are seams over the SO_PEERCRED lookup and the
+	// /proc cgroup read so peer-credential verification is testable without
+	// real unix-socket credentials or a live cgroup hierarchy.
+	peerCred    func(net.Conn) (peerCredentials, error)
+	cgroupOfPID func(pid int32) (string, error)
 }
 
 func NewAppDataSocketManager(ctx context.Context, logger *zap.Logger, capture *data.Manager) *AppDataSocketManager {
-	m := &AppDataSocketManager{ctx: ctx, logger: logger, capture: capture, sockets: map[string]*appDataSocket{}}
+	m := &AppDataSocketManager{
+		ctx:     ctx,
+		logger:  logger,
+		capture: capture,
+		sockets: map[string]*appDataSocket{},
+		newLimiter: func() *notificationRateLimiter {
+			l := newNotificationRateLimiter(dataRatePerSecond, time.Second/dataRatePerSecond)
+			return &l
+		},
+		peerCred:    readPeerCredentials,
+		cgroupOfPID: readProcCgroup,
+	}
 	go func() { <-ctx.Done(); m.stopAll() }()
 	return m
 }
@@ -92,7 +127,7 @@ func (m *AppDataSocketManager) Ensure(appID, service string) (string, error) {
 			return "", err
 		}
 	}
-	s := &appDataSocket{appID: appID, listener: l, owners: map[string]struct{}{owner: {}}}
+	s := &appDataSocket{appID: appID, listener: l, owners: map[string]struct{}{owner: {}}, limiter: m.newLimiter()}
 	m.sockets[key] = s
 	go m.serve(s)
 	return dir, nil
@@ -150,8 +185,98 @@ func (m *AppDataSocketManager) serve(s *appDataSocket) {
 			}
 			return
 		}
-		go m.serveConn(s.appID, c)
+		go m.serveConn(s, c)
 	}
+}
+
+// verifyPeer binds a connection to the app the socket belongs to using the
+// peer's kernel-reported credentials.
+//
+// Identity achieved: the accepted connection's peer PID is read via
+// SO_PEERCRED, and that PID's cgroup is compared against the app the socket was
+// created for. Every app container runs in a systemd scope named by client.go
+// as "<systemd-service>-<appID>[@<service>].scope", so a process that belongs
+// to a different app is refused: it cannot write records attributed to an app
+// it is not.
+//
+// Fail-open is confined to the case where SO_PEERCRED itself yields no peer:
+// not a unix socket, an unsupported platform, or the seam being disabled. In
+// those cases the group-2000 gate and the 0750 app-private socket directory
+// remain the baseline.
+//
+// Once a peer pid IS known, verification fails CLOSED: any inability to
+// positively attribute that pid to this app (its /proc cgroup is unreadable,
+// carries no wendy app scope, or names a different app) is a refusal. This is
+// deliberate. The SO_PEERCRED pid is captured by the kernel at connect, but the
+// cgroup is read from /proc by that pid afterwards, so a peer that exits between
+// accept and the read (or whose pid is recycled onto a non-app process) would,
+// under a fail-open policy, have records it buffered before exiting attributed
+// to this app. Refusing an unattributable-but-credentialed peer closes that
+// forgery path; no legitimate caller connects to an app data socket except that
+// app's own containers, whose cgroup always resolves.
+//
+// Residual gaps:
+//   - Granularity is per app, not per service: an app's services legitimately
+//     share one socket, so the service suffix is stripped before comparison.
+//   - The peer UID is read but not used as the discriminator, because app
+//     containers run as UID 0 by default; the cgroup is the identity.
+//   - A pid recycled within the accept-to-read window onto a process in the
+//     SAME app's scope still verifies. Closing that last window requires a
+//     kernel primitive that pins the peer identity across the read
+//     (SO_PEERPIDFD, Linux 6.5+); it is left as a follow-up.
+func (m *AppDataSocketManager) verifyPeer(appID string, c net.Conn) error {
+	if m.peerCred == nil {
+		return nil
+	}
+	creds, err := m.peerCred(c)
+	if err != nil {
+		// Peer credentials are unavailable (not a unix socket, or an
+		// unsupported platform). Fall back to the group/directory gate.
+		return nil
+	}
+	if m.cgroupOfPID == nil {
+		return nil
+	}
+	// From here the peer is a real local process with a kernel-attested pid.
+	// Anything short of a positive match to this app is a refusal (fail closed).
+	cgroup, err := m.cgroupOfPID(creds.PID)
+	if err != nil || cgroup == "" {
+		return fmt.Errorf("peer (pid %d, uid %d) cgroup is unreadable; cannot attribute to app %q", creds.PID, creds.UID, appID)
+	}
+	peerApp, ok := appIDFromCgroup(cgroup)
+	if !ok {
+		return fmt.Errorf("peer (pid %d, uid %d) is not in a wendy app scope; cannot attribute to app %q", creds.PID, creds.UID, appID)
+	}
+	if peerApp != appID {
+		return fmt.Errorf("peer (pid %d, uid %d) belongs to app %q, not %q", creds.PID, creds.UID, peerApp, appID)
+	}
+	return nil
+}
+
+// appIDFromCgroup extracts the wendy app identity from a /proc/<pid>/cgroup
+// body. Container scopes are named "<systemd-service>-<appID>[@<service>].scope"
+// (see client.go's CgroupsPath assignment). The service suffix is stripped so
+// the result is the app identity the socket is keyed by. It returns false when
+// no such scope component is present, which is the signal that the peer is not
+// a wendy-managed app container.
+func appIDFromCgroup(cgroup string) (string, bool) {
+	prefix := sharedenv.SystemdServiceName() + "-"
+	for _, line := range strings.Split(cgroup, "\n") {
+		for _, segment := range strings.Split(line, "/") {
+			segment = strings.TrimSuffix(segment, ".scope")
+			if !strings.HasPrefix(segment, prefix) {
+				continue
+			}
+			id := strings.TrimPrefix(segment, prefix)
+			if at := strings.IndexByte(id, '@'); at >= 0 {
+				id = id[:at]
+			}
+			if id != "" {
+				return id, true
+			}
+		}
+	}
+	return "", false
 }
 
 type dataAck struct {
@@ -160,18 +285,21 @@ type dataAck struct {
 	Error   string `json:"error,omitempty"`
 }
 
-func (m *AppDataSocketManager) serveConn(appID string, c net.Conn) {
+func (m *AppDataSocketManager) serveConn(s *appDataSocket, c net.Conn) {
 	defer c.Close()
-	r := bufio.NewReader(c)
-	window := time.Now()
-	count := 0
-	for {
-		if time.Since(window) >= time.Second {
-			window = time.Now()
-			count = 0
+	appID := s.appID
+	if err := m.verifyPeer(appID, c); err != nil {
+		if m.logger != nil {
+			m.logger.Warn("app data socket refused connection with mismatched peer", zap.String("app_id", appID), zap.Error(err))
 		}
-		count++
-		if count > 200 {
+		_ = writeDataFrame(c, dataAck{Version: 1, State: "rejected", Error: "peer credentials do not match this app"})
+		return
+	}
+	r := bufio.NewReader(c)
+	for {
+		// The token bucket lives on the socket, so every connection the app
+		// opens draws from one per-app budget.
+		if !s.limiter.allow(time.Now()) {
 			_ = writeDataFrame(c, dataAck{Version: 1, State: "rejected", Error: "rate limit exceeded"})
 			return
 		}
@@ -228,18 +356,37 @@ func writeDataFrame(w io.Writer, v any) error {
 	_, err = w.Write(b)
 	return err
 }
+// recordKindValidator checks the kind-specific required fields of a record.
+type recordKindValidator func(data.ApplicationRecord) error
+
+// applicationRecordKinds is the registry of accepted record kinds. Adding a
+// new kind is a one-line addition here; an unknown kind is rejected with a
+// clean ack rather than killing the connection.
+var applicationRecordKinds = map[string]recordKindValidator{
+	"event": func(r data.ApplicationRecord) error {
+		if r.Name == "" {
+			return errors.New("event name is required")
+		}
+		return nil
+	},
+	"prediction": func(r data.ApplicationRecord) error {
+		if r.Model == "" {
+			return errors.New("prediction model is required")
+		}
+		return nil
+	},
+}
+
 func validateApplicationRecord(r data.ApplicationRecord) error {
 	if r.Version != 1 {
 		return fmt.Errorf("unsupported protocol version %d", r.Version)
 	}
-	if r.Type != "event" && r.Type != "prediction" {
-		return errors.New("type must be event or prediction")
+	validate, ok := applicationRecordKinds[r.Type]
+	if !ok {
+		return fmt.Errorf("unknown record kind %q", r.Type)
 	}
-	if r.Type == "event" && r.Name == "" {
-		return errors.New("event name is required")
-	}
-	if r.Type == "prediction" && r.Model == "" {
-		return errors.New("prediction model is required")
+	if err := validate(r); err != nil {
+		return err
 	}
 	if len(r.Attributes) > 128 {
 		return errors.New("too many attributes")
