@@ -81,7 +81,7 @@ func TestPersistedCampaignsFromOlderAgentsSurviveUpgrade(t *testing.T) {
 		if !matched || reason == "" || expression == "" {
 			t.Fatalf("campaign %s no longer matches its trigger after upgrade", campaign.Name)
 		}
-		if _, _, err := m.ResolveCampaignSources(campaign); err != nil {
+		if _, _, _, err := m.ResolveCampaignSources(campaign); err != nil {
 			t.Fatalf("campaign %s sources no longer resolve: %v", campaign.Name, err)
 		}
 	}

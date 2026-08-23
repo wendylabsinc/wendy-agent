@@ -21,10 +21,21 @@ import (
 
 const CampaignVersion = 1
 
-// SourceCapture is an optional per-source capture policy. Only the
-// "continuous" mode is implemented by the capture adapters today; the other
-// modes are validated so authored plans are portable, and deployment reports
-// them as not yet implemented rather than silently recording continuously.
+// SourceCapture is an optional per-source capture policy. The camera adapter
+// implements the "continuous" (default) and "snapshot" modes; other
+// combinations are validated so authored plans are portable, and deployment
+// reports them as not yet implemented rather than silently recording
+// continuously.
+//
+// Snapshot stills and the continuous-mode rate cap additionally require a
+// camera transport that delivers whole encoded access units, which today
+// means a local V4L2 camera with native H.264 output. IP cameras and
+// GStreamer-encoded pipelines (CSI sensors, USB cameras without native H.264)
+// deliver byte-stream chunks that cannot be cut into standalone files without
+// corruption, so those sources record continuously at the stream rate and the
+// episode manifest's source detail records that the policy was not applied.
+// Which case applies is only knowable once the stream is running, so this is
+// reported per episode rather than warned at deployment.
 type SourceCapture struct {
 	// Mode is one of continuous (default), snapshot, fragment, or threshold.
 	Mode string `json:"mode,omitempty" yaml:"mode,omitempty"`
@@ -53,6 +64,33 @@ func (sc *SourceCapture) EffectiveMode() string {
 	return sc.Mode
 }
 
+// IntervalDuration returns the validated snapshot interval, or zero when the
+// policy declares none.
+func (sc *SourceCapture) IntervalDuration() time.Duration {
+	if sc == nil || sc.Interval == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(sc.Interval)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// MaxResolutionPixels returns the validated WxH resolution cap.
+func (sc *SourceCapture) MaxResolutionPixels() (uint32, uint32, bool) {
+	if sc == nil || sc.MaxResolution == "" {
+		return 0, 0, false
+	}
+	width, height, found := strings.Cut(sc.MaxResolution, "x")
+	w, errW := strconv.Atoi(width)
+	h, errH := strconv.Atoi(height)
+	if !found || errW != nil || errH != nil || w <= 0 || h <= 0 {
+		return 0, 0, false
+	}
+	return uint32(w), uint32(h), true
+}
+
 type CampaignSource struct {
 	Camera      string         `json:"camera,omitempty" yaml:"camera,omitempty"`
 	ROS2        string         `json:"ros2,omitempty" yaml:"ros2,omitempty"`
@@ -67,6 +105,18 @@ func (s CampaignSource) describe() string {
 		return "camera:" + s.Camera
 	case s.ROS2 != "":
 		return "ros2:" + s.ROS2
+	case s.Telemetry:
+		return "telemetry"
+	}
+	return "unknown"
+}
+
+func (s CampaignSource) kind() string {
+	switch {
+	case s.Camera != "":
+		return "camera"
+	case s.ROS2 != "":
+		return "ros2"
 	case s.Telemetry:
 		return "telemetry"
 	}
@@ -275,12 +325,12 @@ func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
 	}
 	var pendingModes []string
 	for i, source := range campaign.Sources {
-		if mode := source.Capture.EffectiveMode(); !implementedCaptureModes[mode] {
+		if mode := source.Capture.EffectiveMode(); !implementedCaptureModes[source.kind()][mode] {
 			pendingModes = append(pendingModes, fmt.Sprintf("sources[%d] (%s, mode %s)", i, source.describe(), mode))
 		}
 	}
 	if len(pendingModes) > 0 {
-		campaign.Warnings = append(campaign.Warnings, "capture modes other than continuous are not implemented yet; these sources record continuously for now: "+strings.Join(pendingModes, ", "))
+		campaign.Warnings = append(campaign.Warnings, "these capture modes are not implemented yet for their source kind; the sources record continuously for now: "+strings.Join(pendingModes, ", "))
 	}
 	if campaign.Retention.LocalQuota != "" {
 		campaign.Warnings = append(campaign.Warnings, "retention.local_quota is recorded with the plan, but this release enforces only the device-wide storage quota")
@@ -344,9 +394,13 @@ func (m *Manager) Campaigns() ([]Campaign, error) {
 // ResolveCampaignSources maps semantic campaign selectors onto the current
 // device source inventory. ROS topic selectors intentionally select the local
 // ROS graph recorder, which preserves the requested topics in the manifest.
-func (m *Manager) ResolveCampaignSources(campaign Campaign) ([]string, []string, error) {
+// Camera capture policies are returned keyed by resolved source ID so the
+// capture adapter can honor them; ROS 2 and telemetry policies are not plumbed
+// because those adapters implement only continuous capture (deployment warns).
+func (m *Manager) ResolveCampaignSources(campaign Campaign) ([]string, []string, map[string]*SourceCapture, error) {
 	all := m.Sources(context.Background())
 	selected := map[string]bool{"applications": true}
+	captures := map[string]*SourceCapture{}
 	var topics []string
 	for _, requested := range campaign.Sources {
 		switch {
@@ -361,14 +415,17 @@ func (m *Manager) ResolveCampaignSources(campaign Campaign) ([]string, []string,
 				}
 			}
 			if !found {
-				return nil, nil, fmt.Errorf("no healthy ROS 2 graph is available for topic %s", requested.ROS2)
+				return nil, nil, nil, fmt.Errorf("no healthy ROS 2 graph is available for topic %s", requested.ROS2)
 			}
 		case requested.Camera != "":
 			id, err := resolveCameraSelector(all, requested.Camera)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			selected[id] = true
+			if requested.Capture != nil {
+				captures[id] = requested.Capture
+			}
 		}
 	}
 	ids := make([]string, 0, len(selected))
@@ -377,7 +434,7 @@ func (m *Manager) ResolveCampaignSources(campaign Campaign) ([]string, []string,
 	}
 	sort.Strings(ids)
 	sort.Strings(topics)
-	return ids, topics, nil
+	return ids, topics, captures, nil
 }
 
 func resolveCameraSelector(all []Source, selector string) (string, error) {
@@ -514,8 +571,15 @@ func parseFieldThreshold(expression string) (string, string, float64, error) {
 // adapters do not implement yet.
 var validCaptureModes = []string{"continuous", "snapshot", "fragment", "threshold"}
 
-// implementedCaptureModes is what capture adapters actually honor today.
-var implementedCaptureModes = map[string]bool{"continuous": true}
+// implementedCaptureModes is what capture adapters actually honor today, by
+// campaign source kind. The camera adapter implements snapshot capture; the
+// ROS 2 and telemetry paths still record continuously regardless of mode, so
+// snapshot deploy-warns for them.
+var implementedCaptureModes = map[string]map[string]bool{
+	"camera":    {"continuous": true, "snapshot": true},
+	"ros2":      {"continuous": true},
+	"telemetry": {"continuous": true},
+}
 
 func validateSourceCapture(source CampaignSource) error {
 	capture := source.Capture

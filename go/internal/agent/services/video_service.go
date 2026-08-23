@@ -326,6 +326,15 @@ type videoFrame struct {
 	nativeFlags   uint32
 	sequence      uint32
 	sequenceValid bool
+	// auAligned reports that data holds exactly one whole encoded access unit.
+	// Only the native V4L2 path delivers this (one V4L2 buffer per encoded
+	// frame); the GStreamer and IP camera producers read a byte stream from a
+	// pipe, so their frames are arbitrary chunk-sized slices of the stream that
+	// can begin or end mid-access-unit. Consumers that cut the stream at frame
+	// boundaries (snapshot stills, GOP-granularity rate capping) must require
+	// this flag: a chunk that merely contains an SPS/PPS/IDR prefix may still
+	// be truncated mid-IDR.
+	auAligned bool
 }
 
 type frameTimestamp struct {
@@ -335,6 +344,7 @@ type frameTimestamp struct {
 	nativeFlags   uint32
 	sequence      uint32
 	sequenceValid bool
+	auAligned     bool
 }
 
 func realtimeFrameTimestamp(now time.Time) frameTimestamp {
@@ -932,13 +942,38 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 	return h, id, ch, nil
 }
 
+// subscribeExistingHub joins the live hub for path at whatever stream
+// parameters it is already running with, asserting none of its own. It returns
+// ok=false (and no error) when no live hub exists or the hub is shutting down,
+// in which case the caller should create one via getOrCreateHub. Episode
+// capture uses this to coexist with a live viewer instead of failing the
+// episode when the viewer's stream parameters differ from the campaign's caps.
+func (s *VideoService) subscribeExistingHub(path string) (h *deviceHub, id int, ch chan *videoFrame, width, height, framerate uint32, ok bool, err error) {
+	s.mu.Lock()
+	h, exists := s.hubs[path]
+	if !exists || h.ctx.Err() != nil {
+		s.mu.Unlock()
+		return nil, 0, nil, 0, 0, 0, false, nil
+	}
+	id, ch, err = h.subscribe()
+	s.mu.Unlock()
+	if err != nil {
+		if st, _ := status.FromError(err); st.Code() == codes.Unavailable {
+			// The hub began shutting down between the map lookup and subscribe.
+			return nil, 0, nil, 0, 0, 0, false, nil
+		}
+		return nil, 0, nil, 0, 0, 0, false, err
+	}
+	return h, id, ch, h.width, h.height, h.framerate, true, nil
+}
+
 // runProducer drives the capture loop for a single device hub.
 // It tries native V4L2 H.264 first, falling back to GStreamer when unsupported.
 // When the hub loses its last subscriber the context is cancelled and this goroutine exits.
 func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path string, req *agentpb.StreamVideoRequest) {
 	defer s.wg.Done()
 	broadcast := func(payload []byte, stamp frameTimestamp, codec agentpb.VideoCodec) bool {
-		return h.broadcast(&videoFrame{data: payload, tsNs: stamp.wallNs, codec: codec, nativeNs: stamp.nativeNs, nativeClock: stamp.nativeClock, nativeFlags: stamp.nativeFlags, sequence: stamp.sequence, sequenceValid: stamp.sequenceValid})
+		return h.broadcast(&videoFrame{data: payload, tsNs: stamp.wallNs, codec: codec, nativeNs: stamp.nativeNs, nativeClock: stamp.nativeClock, nativeFlags: stamp.nativeFlags, sequence: stamp.sequence, sequenceValid: stamp.sequenceValid, auAligned: stamp.auAligned})
 	}
 
 	// The hub key carries the source kind: network cameras key on "ip:<id>" and
@@ -1438,6 +1473,12 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 			stamp.nativeFlags = dqbuf.flags()
 			stamp.sequence = dqbuf.sequence()
 			stamp.sequenceValid = true
+			// V4L2 compressed capture delivers exactly one encoded frame per
+			// dequeued buffer, so this is the one producer whose frames are
+			// whole access units. The maxFrameBytes cap below can truncate a
+			// pathologically large frame, in which case the alignment promise
+			// no longer holds.
+			stamp.auAligned = n == dqbuf.bytesUsed()
 			const v4l2TimestampMask = uint32(0x0000e000)
 			const v4l2TimestampMonotonic = uint32(0x00002000)
 			if stamp.nativeFlags&v4l2TimestampMask == v4l2TimestampMonotonic {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 const exampleCampaignYAML = `version: 1
@@ -204,12 +205,10 @@ func TestCampaignPersistsAndResolvesSemanticSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	modeWarning := false
 	for _, warning := range campaign.Warnings {
-		modeWarning = modeWarning || strings.Contains(warning, "not implemented yet") && strings.Contains(warning, "camera:front")
-	}
-	if !modeWarning {
-		t.Fatalf("snapshot mode deploy warning missing: %v", campaign.Warnings)
+		if strings.Contains(warning, "not implemented yet") && strings.Contains(warning, "camera:front") {
+			t.Fatalf("camera snapshot mode still deploy-warns: %v", campaign.Warnings)
+		}
 	}
 	stored, err := manager.Campaign(campaign.Name)
 	if err != nil {
@@ -218,7 +217,7 @@ func TestCampaignPersistsAndResolvesSemanticSources(t *testing.T) {
 	if stored.Revision != campaign.Revision || stored.DeployedUnixNanos == 0 {
 		t.Fatalf("campaign was not durably stored: %+v", stored)
 	}
-	sources, topics, err := manager.ResolveCampaignSources(stored)
+	sources, topics, captures, err := manager.ResolveCampaignSources(stored)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,5 +227,41 @@ func TestCampaignPersistsAndResolvesSemanticSources(t *testing.T) {
 	}
 	if len(wantSources) != 0 || len(topics) != 2 {
 		t.Fatalf("sources=%v topics=%v missing=%v", sources, topics, wantSources)
+	}
+	capture := captures["v4l2:/dev/video2"]
+	if capture == nil || capture.EffectiveMode() != "snapshot" || capture.IntervalDuration() != 2*time.Second {
+		t.Fatalf("camera capture policy was not resolved: %+v", capture)
+	}
+	if w, h, ok := capture.MaxResolutionPixels(); !ok || w != 1280 || h != 720 {
+		t.Fatalf("max_resolution not resolved: %dx%d %v", w, h, ok)
+	}
+}
+
+func TestDeployWarnsUnimplementedModesPerSourceKind(t *testing.T) {
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	warned := func(source string) []string {
+		campaign, err := manager.DeployCampaign(minimalCampaign(1, source, "wifi"))
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		var modeWarnings []string
+		for _, warning := range campaign.Warnings {
+			if strings.Contains(warning, "not implemented yet") {
+				modeWarnings = append(modeWarnings, warning)
+			}
+		}
+		return modeWarnings
+	}
+	if warnings := warned("camera: front\n    capture: {mode: snapshot, interval: 2s}"); len(warnings) != 0 {
+		t.Fatalf("camera snapshot mode deploy-warns although the camera adapter implements it: %v", warnings)
+	}
+	if warnings := warned("ros2: /lidar/points\n    capture: {mode: snapshot, interval: 2s}"); len(warnings) != 1 || !strings.Contains(warnings[0], "ros2:/lidar/points") {
+		t.Fatalf("ros2 snapshot mode must still deploy-warn: %v", warnings)
+	}
+	if warnings := warned("camera: front\n    capture: {mode: threshold, trigger: \"model.uncertainty > 0.9\"}"); len(warnings) != 1 {
+		t.Fatalf("camera threshold mode must still deploy-warn: %v", warnings)
 	}
 }

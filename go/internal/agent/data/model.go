@@ -39,6 +39,11 @@ type Source struct {
 	ClockDomain string `json:"clock_domain"`
 	Healthy     bool   `json:"healthy"`
 	Detail      string `json:"detail,omitempty"`
+	// Capture is the per-episode capture policy a campaign attached to this
+	// source, nil when none applies. It is deliberately excluded from the
+	// manifest: the policy lives in the campaign plan, while the manifest
+	// records the behavior the adapter actually achieved.
+	Capture *SourceCapture `json:"-"`
 }
 
 type SourceStats struct {
@@ -174,9 +179,12 @@ type Manifest struct {
 }
 
 type StartOptions struct {
-	Name                  string
-	Sources               []string
-	ExcludeSources        []string
+	Name           string
+	Sources        []string
+	ExcludeSources []string
+	// SourceCaptures carries per-source capture policies keyed by resolved
+	// source ID (see Manager.ResolveCampaignSources).
+	SourceCaptures        map[string]*SourceCapture
 	RequireUTCUncertainty time.Duration
 	Calibrations          map[string][]byte
 	CalibrationRevisions  map[string]string
