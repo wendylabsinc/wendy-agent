@@ -158,20 +158,24 @@ cd <wendyos-checkout>/Examples/WendyDataModelApp
 <wendyos-checkout>/go/bin/wendy-demo data campaign trigger model-harness-demo --device <device-hostname>
 ```
 
-### The camera conflict
+### One camera, two consumers
 
-The checked-in `campaign.yaml` declares a `camera: front` snapshot source, but
-on a single-camera device the app itself holds that camera open through OpenCV.
-The campaign's capture adapter then gets `VIDIOC_S_FMT: device busy` and the
-trigger fails. Two ways out:
+`campaign.yaml` declares a `camera: front` source and the app consumes the same
+camera, on a single-camera device, at the same time. That works because the app
+does not open the device: it holds the `sensors` entitlement and subscribes to
+the agent's camera producer, which the campaign's capture adapter subscribes to
+as well. Video4Linux2 admits one holder of a capture device, and the agent is
+it.
 
-- Attach a second camera, and leave `campaign.yaml` as it is: the app keeps the
-  first camera and the campaign snapshots the second.
-- Deploy `campaign-telemetry-only.yaml` instead, which replaces the camera
-  source with `- telemetry: true` and keeps the triggers, upload policy, and
-  model pin unchanged. The `applications` source (every prediction and event
-  record) is always captured regardless, so episodes still carry the model's
-  outputs; they just carry no camera frames.
+Earlier revisions of this demo needed a `campaign-telemetry-only.yaml` variant
+because the app opened `/dev/video0` itself and the capture adapter then failed
+with `VIDIOC_S_FMT: device busy`. That variant is gone; `campaign.yaml` is the
+only campaign the example needs.
+
+Beyond removing the conflict, the subscription is what makes an episode usable
+as training data: each sample the app receives carries a `sample_id`, the
+episode records the same identifier for the bytes it kept, and each prediction
+names the samples it was computed from. See "What to expect in the episode".
 
 ### Verify, in order
 
@@ -197,6 +201,21 @@ fires the edge-triggered `person_detected` trigger instead. Each trigger seals
 one episode (10 seconds of pre-trigger buffer, 20 seconds after) which uploads
 within seconds. An episode of that length carries on the order of a hundred
 prediction records at the CPU path's 5 predictions per second.
+
+To pair those outcomes with the frames that produced them:
+
+- `model_inputs.jsonl` lists every sample the harness handed to the model,
+  as `{source_id, sample_id, episode_nanos, payload_bytes, dropped_before}`.
+- `cameras/<source>/index.jsonl` carries the same `sample_id` on each frame the
+  episode kept, together with the segment file and byte offset holding it.
+- each `prediction` record in `events.jsonl` carries an `inputs` list of
+  `{source_id, sample_id}`.
+
+Join on `(source_id, sample_id)` and every prediction resolves to the exact
+bytes the model saw. The manifest's `model_io` block states this contract,
+counts the predictions that named their inputs, and — per source — whether the
+episode retains payloads for all of the consumed samples or only the subset the
+capture policy kept.
 
 ## Pitfalls discovered on the way (all hit for real)
 

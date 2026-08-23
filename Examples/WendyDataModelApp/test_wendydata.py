@@ -75,5 +75,33 @@ class TestRecords(unittest.TestCase):
         self.assertLessEqual(len(wendydata.frame_record(record)), wendydata.MAX_RECORD_BYTES)
 
 
+class TestInputReferences(unittest.TestCase):
+    """A prediction must be able to name the harness samples it came from;
+    that binding is what lets an episode be replayed as (input, outcome)."""
+
+    def test_prediction_without_inputs_omits_the_field(self):
+        record = wendydata.build_prediction("yolov8n", "8.3.63", 1.0, [])
+        self.assertNotIn("inputs", record)
+
+    def test_prediction_carries_input_references(self):
+        record = wendydata.build_prediction(
+            "yolov8n", "8.3.63", 0.4, [], inputs=[{"source_id": "v4l2:/dev/video0", "sample_id": 17}]
+        )
+        self.assertEqual(record["inputs"], [{"source_id": "v4l2:/dev/video0", "sample_id": 17}])
+
+    def test_input_references_are_normalized(self):
+        record = wendydata.build_prediction(
+            "yolov8n", "8.3.63", 0.4, [], inputs=[{"source_id": "cam", "sample_id": "5"}]
+        )
+        self.assertEqual(record["inputs"], [{"source_id": "cam", "sample_id": 5}])
+
+    def test_input_references_are_capped_to_the_agent_limit(self):
+        refs = [{"source_id": "cam", "sample_id": i} for i in range(100)]
+        record = wendydata.build_prediction("yolov8n", "8.3.63", 0.4, [], inputs=refs)
+        self.assertEqual(len(record["inputs"]), wendydata.MAX_INPUT_REFS)
+        # The newest references are the ones worth keeping.
+        self.assertEqual(record["inputs"][-1]["sample_id"], 99)
+
+
 if __name__ == "__main__":
     unittest.main()

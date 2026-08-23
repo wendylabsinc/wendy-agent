@@ -8,7 +8,7 @@ import (
 
 // TestWendyDataModelAppExampleValidates guards the real
 // Examples/WendyDataModelApp app config: the reference app for the model
-// harness must parse, validate, declare exactly the camera and data
+// harness must parse, validate, declare exactly the sensors and data
 // entitlements it documents, and produce no ValidateJSON warnings. It fails
 // when the example and the config schema drift apart.
 func TestWendyDataModelAppExampleValidates(t *testing.T) {
@@ -28,20 +28,29 @@ func TestWendyDataModelAppExampleValidates(t *testing.T) {
 		t.Fatalf("model app wendy.json produced warnings: %v", warnings)
 	}
 
-	var camera, data bool
+	var sensors, data, camera bool
 	for _, e := range cfg.Entitlements {
 		switch e.Type {
-		case EntitlementCamera:
-			camera = true
+		case EntitlementSensors:
+			sensors = true
 		case EntitlementData:
 			data = true
+		case EntitlementCamera:
+			camera = true
 		}
 	}
-	if !camera {
-		t.Error("missing camera entitlement (sensors-in contract)")
+	if !sensors {
+		t.Error("missing sensors entitlement (sensors-in contract)")
 	}
 	if !data {
 		t.Error("missing data entitlement (predictions-out contract)")
+	}
+	// The reference app must demonstrate the first-class path, not the raw
+	// one. Holding the camera entitlement would let it open /dev/videoN and
+	// reintroduce the device conflict the sensors entitlement removes — the
+	// whole reason this example once needed a telemetry-only campaign.
+	if camera {
+		t.Error("the reference app must not hold the camera entitlement: it consumes frames through the harness")
 	}
 
 	// The published JSON schema must accept every entitlement type the
@@ -99,4 +108,27 @@ func schemaEntitlementConsts(t *testing.T) map[string]bool {
 		t.Fatal("wendy.schema.json declares no entitlement type consts")
 	}
 	return consts
+}
+
+// TestExampleSensorProtoMatchesCanonical keeps the reference app's build-time
+// copy of the sensor proto identical to the canonical one. The example
+// generates its Python stubs from the copy (its Docker build context is the
+// example directory, which cannot reach Proto/), so a silent divergence would
+// give the app stubs for a contract the agent no longer serves.
+func TestExampleSensorProtoMatchesCanonical(t *testing.T) {
+	const (
+		canonical = "../../../../Proto/wendy/agent/services/v2/sensor_service.proto"
+		copied    = "../../../../Examples/WendyDataModelApp/proto/wendy/agent/services/v2/sensor_service.proto"
+	)
+	want, err := os.ReadFile(canonical)
+	if err != nil {
+		t.Fatalf("reading the canonical sensor proto: %v", err)
+	}
+	got, err := os.ReadFile(copied)
+	if err != nil {
+		t.Fatalf("reading the example's sensor proto copy: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("Examples/WendyDataModelApp/proto/.../sensor_service.proto has drifted from Proto/.../sensor_service.proto; copy the canonical file over it")
+	}
 }

@@ -322,6 +322,66 @@ app's records.
   never exposes the separate administrative `WENDY_AGENT_SOCKET`.
 </Callout>
 
+### Sensors Entitlement
+
+The sensors entitlement is the first-class model-input path: the harness feeds
+the app sensor samples instead of the app opening a device.
+
+```json
+{
+  "type": "sensors"
+}
+```
+
+The agent mounts the app-private socket directory at `/run/wendy/sensors` and
+injects `WENDY_SENSOR_SOCKET=/run/wendy/sensors/sensors.sock`. That socket
+serves exactly one gRPC service, `wendy.agent.services.v2.SensorService`, with
+two methods: `Sources` lists the sensor sources the app may subscribe to (the
+same identifiers `wendy data sources` reports), and `Subscribe` streams their
+samples.
+
+Each sample carries the source id, a per-source `sample_id` that increases
+monotonically, the agent's bracketed `CLOCK_BOOTTIME` receipt, the payload, and
+the count of samples the app missed since the previous one. Two properties
+follow:
+
+- **No device conflict.** A subscriber joins the same producer the episode
+  capture adapter consumes. Video4Linux2 admits one holder of a capture device;
+  the agent is that holder, and everything else subscribes.
+- **The episode holds the model's actual input.** While an episode is
+  recording, every sample delivered to a subscriber is recorded in the
+  episode's `model_inputs.jsonl` under the same `sample_id`, and the capture's
+  own index carries that `sample_id` on the bytes it kept. A `prediction`
+  record may name the samples it was computed from, so `(input, outcome)` pairs
+  can be reconstructed offline.
+
+An optional allowlist restricts the grant to named source ids, the way the
+camera entitlement's allowlist restricts device nodes. Sources outside it are
+neither listed nor subscribable:
+
+```json
+{
+  "type": "sensors",
+  "allowlist": ["v4l2:/dev/video0"]
+}
+```
+
+Omit `allowlist` and the app may subscribe to any sensor source the device
+offers. In a multi-service app all services share one socket, so the socket
+permits the union of what they declared — a service that declares no allowlist
+widens the grant to every source.
+
+This entitlement grants **no device nodes**. An app that wants the raw
+`/dev/videoN` node still asks for `camera`, and gets that entitlement's
+single-holder semantics; the two can be held together.
+
+<Callout type="warning">
+  **Security**: `sensors` is read-only. The socket cannot start or stop
+  episodes, deploy campaigns, or download recorded data — those live on
+  `DataService`, which this socket does not serve — and it never exposes the
+  administrative `WENDY_AGENT_SOCKET`.
+</Callout>
+
 ### Admin Entitlement
 
 The admin entitlement grants the container the wendy-agent's full gRPC over a local unix socket (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with no authentication.

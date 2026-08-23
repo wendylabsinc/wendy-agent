@@ -311,12 +311,22 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The video service is constructed before the app socket managers because it
+	// owns the camera producer the sensor sockets subscribe apps to, and every
+	// per-app sensor socket must be built with that provider already registered.
+	videoSvc := services.NewVideoService(ctx, logger)
+	dataSvc.SetVideoService(videoSvc)
+	defer videoSvc.Shutdown()
+
 	notificationSender := services.NewCloudNotificationSender(logger, provisioningSvc)
 	systemAPISocketManager := services.NewAppSystemAPISocketManager(ctx, logger, notificationSender)
 	appDataSocketManager := services.NewAppDataSocketManager(ctx, logger, dataManager)
+	appSensorSocketManager := services.NewAppSensorSocketManager(ctx, logger, dataManager)
+	appSensorSocketManager.AddProvider(videoSvc)
 	if ctrdClient != nil {
 		ctrdClient.SetAppSystemAPISocketProvider(systemAPISocketManager)
 		ctrdClient.SetAppDataSocketProvider(appDataSocketManager)
+		ctrdClient.SetAppSensorSocketProvider(appSensorSocketManager)
 		ctrdClient.RestoreAppSystemAPISockets(ctx)
 	}
 
@@ -325,9 +335,6 @@ func main() {
 
 	startROS2BatteryMonitor(ctx, logger, configPath)
 
-	videoSvc := services.NewVideoService(ctx, logger)
-	dataSvc.SetVideoService(videoSvc)
-	defer videoSvc.Shutdown()
 	// Network cameras have to be found before they can be listed, so probe
 	// periodically rather than only when a client asks.
 	videoSvc.StartDiscovery()

@@ -3,9 +3,15 @@
 
 Demonstrates the three harness contracts end to end:
 
-  1. Sensors in    — webcam frames via Open Computer Vision (OpenCV) and
-                     Video4Linux2 (V4L2), granted by the camera entitlement.
-  2. Predictions out — one "prediction" record per processed frame, plus a
+  1. Sensors in    — camera frames FED BY THE HARNESS over the app-private
+                     sensor socket granted by the sensors entitlement. The
+                     app opens no device: it subscribes to the same
+                     producer the episode capture adapter consumes, so the
+                     two never fight over the camera, and every frame the
+                     model sees is recorded into the active episode under
+                     the identifier the app was given.
+  2. Predictions out — one "prediction" record per processed frame, naming
+                     the sample identifiers it was computed from, plus a
                      "person_detected" event, over the app-private data
                      socket granted by the data entitlement.
   3. Actuation out — a Robot Operating System 2 (ROS 2) Twist command on
@@ -30,6 +36,7 @@ import numpy as np
 import onnxruntime as ort
 
 import wendydata
+import wendysensors
 
 log = logging.getLogger("model-app")
 
@@ -37,12 +44,18 @@ MODEL_NAME = "yolov8n"
 # Pinned in the Dockerfile export stage; keep the two in sync.
 MODEL_VERSION = os.environ.get("WENDY_MODEL_VERSION", "8.3.63")
 MODEL_PATH = os.environ.get("WENDY_MODEL_PATH", os.path.join(os.path.dirname(__file__), "yolov8n.onnx"))
-CAMERA_DEVICE = os.environ.get("WENDY_CAMERA_DEVICE", "/dev/video0")
+# The harness source to consume, as reported by `wendy data sources`
+# (for example "v4l2:/dev/video0" or "ipcamera:200"). Empty means "pick the
+# first subscribable camera the harness offers", which is what a
+# single-camera demo device wants.
+CAMERA_SOURCE = os.environ.get("WENDY_CAMERA_SOURCE", "")
 CONFIDENCE_THRESHOLD = float(os.environ.get("WENDY_CONFIDENCE_THRESHOLD", "0.25"))
 IOU_THRESHOLD = float(os.environ.get("WENDY_IOU_THRESHOLD", "0.45"))
-# Rate-limit friendliness: the agent caps a connection at 200 records per
-# second; this app samples frames so it sends at most this many
-# predictions per second (default 5).
+# Rate-limit friendliness: the agent caps an app at 200 records per second
+# across its connections; this app skips frames so it sends at most this
+# many predictions per second (default 5). Skipping happens AFTER the
+# harness delivered the frame, so the episode's model-input ledger records
+# every frame the app received, including the ones it chose not to score.
 PREDICTIONS_PER_SECOND = float(os.environ.get("WENDY_PREDICTIONS_PER_SECOND", "5"))
 # Actuation is optional: a plain Jetson demo has no ROS 2 stack. Set
 # WENDY_MODEL_APP_ROS2=1 (and run an image with rclpy) to publish Twists.
@@ -172,15 +185,26 @@ def detect(session: ort.InferenceSession, input_name: str, frame: np.ndarray) ->
     return detections
 
 
-def open_camera() -> cv2.VideoCapture:
-    capture = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
-    if not capture.isOpened():
-        # Fall back to the default backend for non-V4L2 dev machines.
-        capture = cv2.VideoCapture(CAMERA_DEVICE)
-    if not capture.isOpened():
-        log.error("cannot open camera %s; is the camera entitlement granted and a webcam attached?", CAMERA_DEVICE)
+def resolve_camera_source(client: wendysensors.SensorClient) -> str:
+    """Pick the camera source to subscribe to, reporting honestly when the
+    harness has none to give."""
+    if CAMERA_SOURCE:
+        return CAMERA_SOURCE
+    try:
+        sources = client.sources()
+    except Exception as exc:  # grpc.RpcError and connection failures alike
+        log.error("cannot reach the sensor socket at %s (%s); is the sensors entitlement granted?", client.target, exc)
         sys.exit(1)
-    return capture
+    cameras = [s for s in sources if s.kind == "camera" and s.subscribable and s.healthy]
+    if not cameras:
+        for source in sources:
+            if source.kind == "camera":
+                log.error("camera %s is not available to models: %s", source.id, source.detail)
+        log.error("no subscribable camera source; set WENDY_CAMERA_SOURCE to choose one explicitly")
+        sys.exit(1)
+    if len(cameras) > 1:
+        log.info("several cameras available; using %s (set WENDY_CAMERA_SOURCE to choose)", cameras[0].id)
+    return cameras[0].id
 
 
 def main() -> None:
@@ -193,18 +217,36 @@ def main() -> None:
     client = wendydata.DataSocketClient()
     log.info("data socket: %s", client.path)
     actuator = Actuator()
-    capture = open_camera()
+
+    sensors = wendysensors.SensorClient("", model=MODEL_NAME)
+    source_id = resolve_camera_source(sensors)
+    sensors.source_id = source_id
+    log.info("sensor socket: %s, source: %s", sensors.target, source_id)
 
     interval = 1.0 / max(PREDICTIONS_PER_SECOND, 0.1)
+    next_score_at = 0.0
     person_present = False
+    skipped = 0
     try:
-        while True:
-            started = time.monotonic()
-            ok, frame = capture.read()
-            if not ok:
-                log.warning("camera read failed; retrying")
-                time.sleep(1.0)
+        for sensor_frame in sensors.frames():
+            if sensor_frame.dropped_before:
+                # The harness produced frames this app never received. Say so
+                # rather than leaving a silent gap in the sample identifiers.
+                log.warning(
+                    "the harness dropped %d sample(s) before %s#%s: the model is not keeping up",
+                    sensor_frame.dropped_before,
+                    sensor_frame.source_id,
+                    sensor_frame.sample_ids[-1] if sensor_frame.sample_ids else "?",
+                )
+            now = time.monotonic()
+            if now < next_score_at:
+                # Frame skipping keeps predictions at or under the configured
+                # rate. The skipped frames were still delivered, so the
+                # episode's ledger holds them.
+                skipped += 1
                 continue
+            next_score_at = now + interval
+            frame = sensor_frame.image
 
             detections = detect(session, input_name, frame)
             uncertainty = wendydata.uncertainty_score(
@@ -216,8 +258,15 @@ def main() -> None:
                 MODEL_VERSION,
                 uncertainty,
                 detections[:TOP_DETECTIONS],
-                {"frame_width": frame.shape[1], "frame_height": frame.shape[0]},
+                {
+                    "frame_width": frame.shape[1],
+                    "frame_height": frame.shape[0],
+                    "sensor_boottime_nanos": sensor_frame.boottime_nanos,
+                    "frames_skipped_since_last_prediction": skipped,
+                },
+                inputs=sensor_frame.input_refs(),
             )
+            skipped = 0
             client.send(record)
 
             # Edge-trigger the demo event so a person standing in front of
@@ -234,13 +283,10 @@ def main() -> None:
 
             angular_z, linear_x = steer_towards(detections, frame.shape[1])
             actuator.act(angular_z, linear_x)
-
-            # Frame sampling keeps predictions at or under the configured rate.
-            time.sleep(max(0.0, interval - (time.monotonic() - started)))
     except KeyboardInterrupt:
         pass
     finally:
-        capture.release()
+        sensors.close()
         client.close()
         actuator.close()
 

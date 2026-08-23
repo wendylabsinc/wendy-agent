@@ -13,6 +13,12 @@ running agent. The protocol matches the agent's application-record socket
   - Records carry {"version": 1, "type": "event"|"prediction", ...} plus
     CLOCK_BOOTTIME nanoseconds and the kernel boot id so the agent can
     place them on the device timeline.
+  - A prediction may carry an optional "inputs" list naming the harness
+    samples it was computed from, as [{"source_id", "sample_id"}]. The
+    identifiers come from SensorService.Subscribe (see wendysensors.py);
+    the agent records the same identifiers in the episode, so an outcome
+    can be paired with the exact input bytes offline. The field is
+    optional and a prediction without it is still accepted.
   - Every record is acknowledged with {"version": 1, "state": ...} where
     state is "buffered", "recorded", or "rejected".
 """
@@ -95,10 +101,26 @@ def _base_record(record_type: str) -> dict:
     }
 
 
-def build_prediction(model: str, model_version: str, uncertainty: float, detections, attributes: dict | None = None) -> dict:
+MAX_INPUT_REFS = 32
+
+
+def build_prediction(
+    model: str,
+    model_version: str,
+    uncertainty: float,
+    detections,
+    attributes: dict | None = None,
+    inputs=None,
+) -> dict:
     """A "prediction" record. The agent requires the model name; the
     uncertainty rides in attributes where campaign model.uncertainty
-    triggers read it."""
+    triggers read it.
+
+    `inputs` binds the outcome to the harness samples the model consumed,
+    as an iterable of {"source_id", "sample_id"} mappings. Pass the value
+    of wendysensors.SensorFrame.input_refs(). It is optional — a
+    prediction with no inputs is accepted and recorded, and counted in the
+    episode manifest as an outcome whose input is unknown."""
     record = _base_record("prediction")
     record["model"] = model
     attrs = {
@@ -109,6 +131,13 @@ def build_prediction(model: str, model_version: str, uncertainty: float, detecti
     if attributes:
         attrs.update(attributes)
     record["attributes"] = attrs
+    if inputs:
+        refs = [{"source_id": str(r["source_id"]), "sample_id": int(r["sample_id"])} for r in inputs]
+        if len(refs) > MAX_INPUT_REFS:
+            # The agent rejects more than this; keep the newest references
+            # rather than losing the whole record.
+            refs = refs[-MAX_INPUT_REFS:]
+        record["inputs"] = refs
     return record
 
 

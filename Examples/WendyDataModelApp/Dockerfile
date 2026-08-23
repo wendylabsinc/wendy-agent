@@ -26,14 +26,31 @@ WORKDIR /export
 # opset 12 keeps the graph loadable by every onnxruntime this app targets.
 RUN yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12
 
+# The sensor client speaks gRPC to the app-private sensor socket, so it needs
+# stubs for wendy.agent.services.v2.SensorService. They are generated here and
+# copied in, keeping grpcio-tools out of the runtime image. proto/ holds a copy
+# of the canonical Proto/wendy/agent/services/v2/sensor_service.proto; a Go test
+# (TestExampleSensorProtoMatchesCanonical) fails if the two ever drift.
+FROM python:3.11-slim-bookworm AS protos
+RUN pip install --no-cache-dir grpcio-tools
+WORKDIR /gen
+COPY proto ./proto
+RUN python3 -m grpc_tools.protoc -Iproto --python_out=. --grpc_python_out=. \
+        proto/wendy/agent/services/v2/sensor_service.proto \
+    && find wendy -type d -exec touch {}/__init__.py \;
+
 FROM python:3.11-slim-bookworm
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir onnxruntime opencv-python-headless "numpy<3"
+# av decodes the encoded samples the harness delivers (H.264 access units on
+# the native Video4Linux2 path, byte-stream chunks elsewhere); grpcio carries
+# the sensor subscription. Neither needs a camera device node.
+RUN pip install --no-cache-dir onnxruntime opencv-python-headless "numpy<3" grpcio "av<15"
 WORKDIR /app
 COPY --from=export /export/yolov8n.onnx ./yolov8n.onnx
-COPY app.py wendydata.py ./
+COPY --from=protos /gen/wendy ./wendy
+COPY app.py wendydata.py wendysensors.py ./
 ENV PYTHONUNBUFFERED=1 \
     WENDY_MODEL_VERSION=8.3.63
 CMD ["python3", "app.py"]

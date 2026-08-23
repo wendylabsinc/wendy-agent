@@ -1,0 +1,133 @@
+"""Wendy sensor client: model input through the harness.
+
+The harness feeds the model instead of the model opening a device. This
+module wraps `wendy.agent.services.v2.SensorService` on the app-private
+socket the `sensors` entitlement mounts, and turns the identified encoded
+samples it streams into decoded frames while keeping track of which
+sample identifiers produced each frame.
+
+Why this replaces `cv2.VideoCapture("/dev/video0")`:
+
+  - Video4Linux2 admits one holder of a capture device. An app that opens
+    the node itself takes it away from the episode capture adapter (and
+    from any other reader), which is why this example used to need a
+    telemetry-only campaign variant.
+  - Subscribing makes the app one more consumer of the producer episode
+    capture already consumes, so both get the same frames.
+  - Every sample carries (source_id, sample_id). The episode records the
+    same identifiers, so a prediction that names them can be paired with
+    the exact bytes the model consumed. That pairing is what turns an
+    episode into training data.
+
+Samples arrive as encoded video (H.264 access units on the native V4L2
+path, arbitrary byte-stream chunks on the GStreamer and network-camera
+paths — `payload_self_contained` says which). Decoding is done here with
+PyAV's parser, which handles both shapes, so a decoded frame may be the
+product of more than one sample; `SensorFrame.sample_ids` lists every
+sample that contributed to it, which is exactly what the prediction
+record's `inputs` list is for.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass, field
+
+import grpc
+
+from wendy.agent.services.v2 import sensor_service_pb2 as sensorpb
+from wendy.agent.services.v2 import sensor_service_pb2_grpc as sensorgrpc
+
+log = logging.getLogger("wendysensors")
+
+DEFAULT_SOCKET_PATH = "/run/wendy/sensors/sensors.sock"
+
+
+def socket_path() -> str:
+    """The agent-injected sensor socket path, with the documented default."""
+    return os.environ.get("WENDY_SENSOR_SOCKET", DEFAULT_SOCKET_PATH)
+
+
+def channel_target(path: str | None = None) -> str:
+    """A gRPC target for the app-private unix socket."""
+    return "unix:" + (path or socket_path())
+
+
+@dataclass
+class SensorFrame:
+    """One decoded frame plus the harness identity of its input samples."""
+
+    source_id: str
+    # Every sample identifier that contributed to this decoded frame, in
+    # arrival order. Usually one; more when the transport delivers a byte
+    # stream rather than whole access units.
+    sample_ids: list[int]
+    # CLOCK_BOOTTIME nanoseconds of the last contributing sample, with the
+    # agent's bracket half-width.
+    boottime_nanos: int
+    uncertainty_nanos: int
+    # Samples the harness produced but this subscriber never saw, summed
+    # over the contributing samples. Non-zero means the model is not
+    # keeping up, and the gap in sample_ids is explained rather than silent.
+    dropped_before: int
+    image: object = field(repr=False, default=None)
+
+    def input_refs(self) -> list[dict]:
+        """The prediction record's `inputs` value for this frame."""
+        return [{"source_id": self.source_id, "sample_id": i} for i in self.sample_ids]
+
+
+class SensorClient:
+    """Subscribes to one sensor source and yields decoded frames."""
+
+    def __init__(self, source_id: str, model: str = "", path: str | None = None):
+        self.source_id = source_id
+        self.model = model
+        self.target = channel_target(path)
+        self._channel: grpc.Channel | None = None
+
+    def sources(self) -> list[sensorpb.SensorSource]:
+        """Every source this app may subscribe to, subscribable or not."""
+        stub = sensorgrpc.SensorServiceStub(self._connect())
+        return list(stub.Sources(sensorpb.SensorSourcesRequest()).sources)
+
+    def _connect(self) -> grpc.Channel:
+        if self._channel is None:
+            # A sample is one encoded frame; the agent caps it at 2 MiB.
+            self._channel = grpc.insecure_channel(
+                self.target, options=[("grpc.max_receive_message_length", 4 * 1024 * 1024)]
+            )
+        return self._channel
+
+    def close(self) -> None:
+        if self._channel is not None:
+            self._channel.close()
+            self._channel = None
+
+    def frames(self):
+        """Yield SensorFrame objects until the stream ends."""
+        import av  # Imported here so the pure helpers stay importable without PyAV.
+
+        stub = sensorgrpc.SensorServiceStub(self._connect())
+        request = sensorpb.SensorSubscribeRequest(source_ids=[self.source_id], model=self.model)
+        decoder = None
+        pending_ids: list[int] = []
+        pending_drops = 0
+        for sample in stub.Subscribe(request):
+            if decoder is None:
+                decoder = av.CodecContext.create(sample.encoding or "h264", "r")
+            pending_ids.append(sample.sample_id)
+            pending_drops += sample.dropped_before
+            for packet in decoder.parse(sample.payload):
+                for decoded in decoder.decode(packet):
+                    yield SensorFrame(
+                        source_id=sample.source_id,
+                        sample_ids=list(pending_ids),
+                        boottime_nanos=sample.boottime_nanos,
+                        uncertainty_nanos=sample.timestamp_uncertainty_nanos,
+                        dropped_before=pending_drops,
+                        image=decoded.to_ndarray(format="bgr24"),
+                    )
+                    pending_ids = []
+                    pending_drops = 0
