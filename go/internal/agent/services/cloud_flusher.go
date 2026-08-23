@@ -151,12 +151,25 @@ func (f *CloudFlusher) sleep(ctx context.Context, attempt int) {
 // dial establishes a TLS 1.3 gRPC connection. keyData is zeroed on return as
 // best-effort protection; crypto/tls may retain additional internal copies.
 func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string, keyData []byte) (*grpc.ClientConn, error) {
+	defer zeroBytes(keyData)
+	return dialCloudMTLS(host, certPEM, chainPEM, keyData)
+}
+
+// zeroBytes overwrites b in place as best-effort key-material hygiene.
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+// dialCloudMTLS builds a TLS 1.3 mTLS gRPC client for the cloud host using the
+// device's asset client certificate. It is shared by every cloud-facing agent
+// worker (telemetry flusher, episode transfer worker) so they present the same
+// identity over the same trust configuration. Callers own keyData and are
+// responsible for zeroing it; this function does not retain it beyond the
+// X509KeyPair parse.
+func dialCloudMTLS(host, certPEM, chainPEM string, keyData []byte) (*grpc.ClientConn, error) {
 	host = normalizeCloudHost(host)
-	defer func() {
-		for i := range keyData {
-			keyData[i] = 0
-		}
-	}()
 	// Build client cert PEM bundle: leaf cert + intermediate chain so that
 	// servers can verify the full chain without trusting the leaf directly.
 	certBundle := []byte(certPEM)
@@ -166,7 +179,7 @@ func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string,
 	}
 	cert, err := tls.X509KeyPair(certBundle, keyData)
 	if err != nil {
-		return nil, fmt.Errorf("cloud flusher: parse key pair: %w", err)
+		return nil, fmt.Errorf("cloud dial: parse key pair: %w", err)
 	}
 
 	caPool, err := x509.SystemCertPool()

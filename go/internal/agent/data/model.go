@@ -145,6 +145,16 @@ type WorkflowState struct {
 	State       string `json:"state"`
 	Destination string `json:"destination,omitempty"`
 	UpdatedAt   int64  `json:"updated_unix_nanos,omitempty"`
+	// Attempts counts the transfer attempts made so far for this workflow. It
+	// drives the bounded retry ceiling; a successful transfer leaves it at the
+	// value reached, a permanent failure records the final count.
+	Attempts int `json:"attempts,omitempty"`
+	// LastError records the human-readable reason for the most recent retryable
+	// failure or the permanent failure that moved the workflow to "failed".
+	LastError string `json:"last_error,omitempty"`
+	// NextAttemptUnixNanos is the earliest wall-clock time the transfer worker
+	// should retry a "pending" workflow after a retryable failure (backoff).
+	NextAttemptUnixNanos int64 `json:"next_attempt_unix_nanos,omitempty"`
 }
 
 type Manifest struct {
