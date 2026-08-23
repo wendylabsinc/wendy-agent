@@ -157,6 +157,24 @@ func (s *DataService) Stop(ctx context.Context, _ *agentpbv2.DataStopRequest) (*
 func (s *DataService) stopCapture(ctx context.Context, key string) (*agentpbv2.DataEpisode, error) {
 	s.captureMu.Lock()
 	defer s.captureMu.Unlock()
+	return s.stopCaptureLocked(ctx, key)
+}
+
+// stopCaptureIfCurrent finalizes the episode keyed by key only while the
+// given episode is still the active one. The check runs under captureMu so a
+// stale auto-stop timer that raced a manual stop plus an immediate re-trigger
+// cannot finalize the campaign's new episode.
+func (s *DataService) stopCaptureIfCurrent(ctx context.Context, key, episodeID string) {
+	s.captureMu.Lock()
+	defer s.captureMu.Unlock()
+	session, ok := s.manager.ActiveSession(key)
+	if !ok || session.ID != episodeID {
+		return
+	}
+	_, _ = s.stopCaptureLocked(ctx, key)
+}
+
+func (s *DataService) stopCaptureLocked(ctx context.Context, key string) (*agentpbv2.DataEpisode, error) {
 	if cancel := s.autoStopCancel[key]; cancel != nil {
 		cancel()
 		delete(s.autoStopCancel, key)
@@ -304,11 +322,7 @@ func (s *DataService) triggerCampaign(ctx context.Context, campaign data.Campaig
 		case <-timerContext.Done():
 			return
 		case <-timer.C:
-			session, ok := s.manager.ActiveSession(campaign.Name)
-			if !ok || session.ID != episodeID {
-				return
-			}
-			_, _ = s.stopCapture(context.Background(), campaign.Name)
+			s.stopCaptureIfCurrent(context.Background(), campaign.Name, episodeID)
 		}
 	}(episode.GetId(), campaign.AfterTriggerDuration())
 	return episode, nil

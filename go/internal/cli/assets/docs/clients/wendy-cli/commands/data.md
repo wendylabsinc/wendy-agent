@@ -119,7 +119,7 @@ The `upload` and `retention` blocks:
 | `upload.when` | yes | One of `always`, `wifi`, or `manual`. |
 | `upload.destination` | no | Logical dataset name the fleet backend maps to storage. Not a URL; devices never receive bucket layouts or credentials through campaign plans. |
 | `upload.max_rate` | no | Upload bandwidth cap in bytes per second; plain integers and rates such as `5MB/s` are accepted. |
-| `retention.local_quota` | no | On-device episode storage bound in bytes; plain integers and sizes such as `10GiB` are accepted. |
+| `retention.local_quota` | no | Declared on-device episode storage bound in bytes; plain integers and sizes such as `10GiB` are accepted. Stored with the plan; this release enforces only the device-wide quota and deployment prints a warning. |
 
 ```yaml
 version: 1
@@ -183,6 +183,8 @@ warning in the agent log naming the Episode and campaign.
   transfer worker.
 - Per-source capture modes other than `continuous` are validated and stored,
   but the adapters record continuously; deployment warns per source.
+- `retention.local_quota` is validated and stored, but eviction currently
+  applies only the device-wide quota; deployment warns when it is set.
 - `export.annotation` is stored as labeling lifecycle state, but this release
   does not create CVAT tasks.
 - Fleet catalog search, replay, evaluation, and model redeployment are later

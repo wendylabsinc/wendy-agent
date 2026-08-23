@@ -125,6 +125,9 @@ type activeEpisode struct {
 	manifest Manifest
 	cancel   context.CancelFunc
 	done     chan struct{}
+	// capturesApplications reports whether the applications source was
+	// selected; episodes that excluded it receive no application records.
+	capturesApplications bool
 }
 
 func NewManager(root string) (*Manager, error) {
@@ -317,9 +320,15 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 			manifest.Calibrations = append(manifest.Calibrations, Calibration{Source: source, Revision: revision})
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), nil, 0o640); err != nil {
-		_ = os.RemoveAll(dir)
-		return Manifest{}, err
+	capturesApplications := false
+	for _, source := range selected {
+		capturesApplications = capturesApplications || source.ID == "applications"
+	}
+	if capturesApplications {
+		if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), nil, 0o640); err != nil {
+			_ = os.RemoveAll(dir)
+			return Manifest{}, err
+		}
 	}
 	for _, source := range selected {
 		if source.ID == "telemetry" {
@@ -330,27 +339,29 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 			break
 		}
 	}
-	manifest.PreRollLost = m.preRollLost
-	preRollCount, earliestPreRoll, err := m.flushPreRoll(dir, origin, opts.PreRollDuration)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return Manifest{}, err
-	}
-	for i := range manifest.Sources {
-		if manifest.Sources[i].Source.ID != "applications" {
-			continue
+	if capturesApplications {
+		manifest.PreRollLost = m.preRollLost
+		preRollCount, earliestPreRoll, err := m.flushPreRoll(dir, origin, opts.PreRollDuration)
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			return Manifest{}, err
 		}
-		manifest.Sources[i].Count += preRollCount
-		manifest.Sources[i].DropAccounting = "exact"
-		if earliestPreRoll != nil {
-			manifest.Sources[i].ActualOffset = *earliestPreRoll
+		for i := range manifest.Sources {
+			if manifest.Sources[i].Source.ID != "applications" {
+				continue
+			}
+			manifest.Sources[i].Count += preRollCount
+			manifest.Sources[i].DropAccounting = "exact"
+			if earliestPreRoll != nil {
+				manifest.Sources[i].ActualOffset = *earliestPreRoll
+			}
 		}
 	}
 	if err := writeManifest(dir, manifest); err != nil {
 		_ = os.RemoveAll(dir)
 		return Manifest{}, err
 	}
-	a := &activeEpisode{key: key, dir: dir, manifest: manifest}
+	a := &activeEpisode{key: key, dir: dir, manifest: manifest, capturesApplications: capturesApplications}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	a.done = make(chan struct{})
@@ -633,9 +644,13 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 		stamp = record.ClientBootNanos
 	}
 	stored := storedApplicationRecord{ApplicationRecord: record, AppID: appID, AgentReceiptBootNanos: receipt, ClientTimestampAccepted: accepted, TimestampUncertaintyNanos: (after - before + 1) / 2}
-	// Every active episode receives the record on its own timeline.
+	// Every active episode that selected the applications source receives the
+	// record on its own timeline; episodes that excluded it are skipped.
 	recorded := false
 	for _, a := range m.active {
+		if !a.capturesApplications {
+			continue
+		}
 		stored.EpisodeNanos = stamp - a.manifest.RequestBootNanos
 		b, _ := json.Marshal(stored)
 		if err := appendJSONL(filepath.Join(a.dir, "events.jsonl"), b); err != nil {

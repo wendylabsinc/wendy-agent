@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -281,6 +282,9 @@ func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
 	if len(pendingModes) > 0 {
 		campaign.Warnings = append(campaign.Warnings, "capture modes other than continuous are not implemented yet; these sources record continuously for now: "+strings.Join(pendingModes, ", "))
 	}
+	if campaign.Retention.LocalQuota != "" {
+		campaign.Warnings = append(campaign.Warnings, "retention.local_quota is recorded with the plan, but this release enforces only the device-wide storage quota")
+	}
 	dir := m.campaignDir()
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return Campaign{}, err
@@ -470,6 +474,11 @@ func parseThreshold(field, expression string) (string, float64, error) {
 			if err != nil {
 				return "", 0, fmt.Errorf("%s must compare with a number", field)
 			}
+			// strconv accepts NaN and infinities; a NaN threshold never fires
+			// and an infinite one always or never fires. Reject both.
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return "", 0, fmt.Errorf("%s must compare with a finite number", field)
+			}
 			if field == "model.uncertainty" && (value < 0 || value > 1) {
 				return "", 0, errors.New("model.uncertainty must compare with a number from 0 through 1")
 			}
@@ -646,6 +655,11 @@ func parseByteSize(raw string) (int64, error) {
 	total := value * multiplier
 	if total <= 0 {
 		return 0, fmt.Errorf("%q must be a positive byte size", raw)
+	}
+	// Converting a float beyond int64 range is implementation-defined in Go;
+	// reject instead of storing a garbage (possibly negative) byte count.
+	if total >= float64(math.MaxInt64) {
+		return 0, fmt.Errorf("%q is too large for a byte size", raw)
 	}
 	return int64(total), nil
 }
