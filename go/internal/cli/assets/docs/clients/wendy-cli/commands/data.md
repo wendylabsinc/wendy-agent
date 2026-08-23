@@ -11,7 +11,7 @@ sizes, formats, and SHA-256 checksums.
 
 | Command | Description |
 |---|---|
-| `wendy data sources` | List camera, ROS 2, application, and telemetry sources. |
+| `wendy data sources` | List camera, audio, ROS 2, application, and telemetry sources. |
 | `wendy data record` | Start one detached Episode. With no source flags, every healthy discovered source is selected. |
 | `wendy data stop` | Stop and seal the active Episode. |
 | `wendy data episodes` | List finalized Episodes. |
@@ -32,6 +32,40 @@ wendy data stop
 wendy data episodes
 wendy data inspect <episode-id>
 wendy data download <episode-id> --output ./commissioning-episode
+```
+
+`sources` prints an aligned table whose `DETAIL` column carries the device's own
+description of each source, truncated to keep the table readable. A single kind
+can dominate a board: an NVIDIA Jetson exposes 20 internal audio-DMA routing
+channels alongside its real microphone, so when more than six sources share a
+kind the first six are listed and the remainder are counted in a note. Nothing
+is hidden from `--json`.
+
+```text
+SOURCE            KIND         CLOCK                       STATUS   DETAIL
+applications      application  CLOCK_BOOTTIME              healthy
+audio:16777217    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  C920 [HD Pro Webcam C920], device 0: USB Audi...
+audio:16777729    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  APE [NVIDIA Jetson Orin Nano APE], device 0: ...
+audio:16777730    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  APE [NVIDIA Jetson Orin Nano APE], device 1: ...
+audio:16777731    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  APE [NVIDIA Jetson Orin Nano APE], device 2: ...
+audio:16777732    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  APE [NVIDIA Jetson Orin Nano APE], device 3: ...
+audio:16777733    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  APE [NVIDIA Jetson Orin Nano APE], device 4: ...
+telemetry         telemetry    CLOCK_BOOTTIME              healthy
+v4l2:/dev/video0  camera       V4L2_BUFFER_TIMESTAMP       healthy  HD Pro Webcam C920: HD Pro Webc VIDEO_TRANSPO...
+
+... 15 more audio sources not listed (--kind audio to list all, --json for everything)
+```
+
+Narrow the table with `--kind`, which is repeatable or comma-separated and
+matches case-insensitively. A kind named there is never summarised, because
+asking for a kind is asking to see all of it. Without `--kind`, `--json` stays
+the full unfiltered response the device sent, so existing scripts keep working;
+with `--kind` it carries the filtered set.
+
+```sh
+wendy data sources --kind camera
+wendy data sources --kind camera,telemetry
+wendy data sources --kind audio            # every audio source, nothing summarised
 ```
 
 Episode IDs are stable opaque identifiers. Their readable UTC prefix is only a
