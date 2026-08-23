@@ -367,8 +367,14 @@ func TestPredictionInputCorrelationReachesTheManifest(t *testing.T) {
 	if io.Predictions != 3 || io.PredictionsWithInputs != 2 || io.ReferencesOutsideDelivered != 1 {
 		t.Fatalf("model_io = %+v", io)
 	}
-	if io.OutcomeLog != "events.jsonl" || len(io.JoinKeys) != 2 || io.PayloadLocator == "" {
+	if io.OutcomeLog != "events.jsonl" || io.PayloadLocator == "" {
 		t.Fatalf("manifest does not describe the reconstruction: %+v", io)
+	}
+	// app_id belongs in the join. Sources are shared, so two apps can be
+	// delivered the same (source_id, sample_id); a join without app_id would
+	// pair one app's prediction with another app's input.
+	if got, want := strings.Join(io.JoinKeys, ","), "app_id,source_id,sample_id"; got != want {
+		t.Fatalf("join_keys = %q, want %q", got, want)
 	}
 	// The reference itself must survive into the stored outcome, or the
 	// manifest counters would be the only trace of the correlation.

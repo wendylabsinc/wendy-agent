@@ -108,6 +108,13 @@ Omit it and the app may subscribe to any sensor source the device offers. All
 services of a multi-service app share one socket, so it permits the union of
 what they declared.
 
+Source ids must be written exactly as `wendy data sources` reports them.
+Near-miss spellings are refused rather than resolved: `ipcamera:0` and
+`v4l2:/dev/video00` do not name `v4l2:/dev/video0`. An allowlist entry must not
+silently grant a different camera than the one it names, and the Episode joins a
+model's inputs to the captured bytes on the source id, so a second spelling for
+one camera would produce ledger entries nothing can resolve.
+
 The entitlement is read-only: it cannot start or stop Episodes, deploy
 campaigns, or download recorded data. Raw device access remains the separate
 `camera` entitlement, which is unchanged; an app may hold both.

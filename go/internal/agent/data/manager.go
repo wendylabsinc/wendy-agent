@@ -1103,12 +1103,17 @@ func (m *Manager) recoverPartials() error {
 		}
 		mf.State, mf.Interruption = "interrupted", reason
 		mf.RecoveryActions = append(mf.RecoveryActions, "truncated incomplete JSONL tail", "recomputed sealed-file checksums")
-		// The model-input ledger outlives the in-memory summary counters, so an
-		// interrupted episode still says where its model inputs are even though
-		// the counters it lost cannot be reconstructed without re-reading it.
-		if _, statErr := os.Stat(filepath.Join(dir, ModelInputLedgerFile)); statErr == nil {
-			mf.ModelIO.InputLedger = ModelInputLedgerFile
-			mf.RecoveryActions = append(mf.RecoveryActions, "model-input summary counters were lost with the interrupted episode; "+ModelInputLedgerFile+" is authoritative")
+		// The summary counters are folded in memory and written only at seal, so
+		// an interrupted episode arrives here with all of them at zero while its
+		// ledger and outcome log are intact on disk. Publishing those zeros would
+		// be a manifest that lies about what the model consumed, so recompute
+		// them from the files that survived rather than annotating the lie.
+		reconciled, reconcileErr := reconcileModelIO(dir, &mf)
+		if reconcileErr != nil {
+			return fmt.Errorf("recovering episode %s: reconciling model input/outcome accounting: %w", mf.ID, reconcileErr)
+		}
+		if reconciled {
+			mf.RecoveryActions = append(mf.RecoveryActions, "recomputed model input/outcome counters from "+ModelInputLedgerFile+" and "+mf.ModelIO.OutcomeLog)
 		}
 		mf.Files, err = sealFiles(dir)
 		if err != nil {

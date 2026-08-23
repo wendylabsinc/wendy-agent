@@ -2,20 +2,55 @@ package services
 
 import (
 	"context"
+	"fmt"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
+// canonicalCameraSourceID rebuilds the identifier `wendy data sources` publishes
+// for an already-resolved camera.
+//
+// cameraDeviceID is lossy on purpose — it exists to turn an identifier into a
+// device number — so several spellings collapse onto one device: "ipcamera:0",
+// "v4l2:/dev/video00" and "v4l2:/dev/video0" all yield device 0, and only IDs
+// inside the IP band resolve to a network camera. Accepting an alias here would
+// be wrong twice over. The episode's model-input ledger joins to the capture
+// index on source_id, so a ledger line written under an alias names a source no
+// index and no manifest entry can resolve, and the manifest would additionally
+// report the camera as not_captured_by_this_episode while the episode was in
+// fact capturing it. It is also an entitlement question: an allowlist naming
+// "ipcamera:0" must not silently grant /dev/video0.
+func canonicalCameraSourceID(src videoSource, devID uint32) string {
+	if src.kind == sourceIP {
+		return fmt.Sprintf("ipcamera:%d", devID)
+	}
+	return "v4l2:" + src.path
+}
+
+// resolveSensorSource resolves a sensor source identifier to its camera,
+// refusing any spelling that is not the canonical identifier for that camera.
+func (s *VideoService) resolveSensorSource(sourceID string) (videoSource, error) {
+	devID, ok := cameraDeviceID(sourceID)
+	if !ok {
+		return videoSource{}, status.Errorf(codes.NotFound, "source %q is not a camera", sourceID)
+	}
+	src, err := s.resolveSource(devID)
+	if err != nil {
+		return videoSource{}, err
+	}
+	if canonical := canonicalCameraSourceID(src, devID); canonical != sourceID {
+		return videoSource{}, status.Errorf(codes.NotFound,
+			"source %q is not a camera identifier; this camera is %q", sourceID, canonical)
+	}
+	return src, nil
+}
+
 // SupportsSensorSource reports whether a `wendy data sources` identifier names
 // a camera this service can hand to a model subscriber.
 func (s *VideoService) SupportsSensorSource(sourceID string) bool {
-	devID, ok := cameraDeviceID(sourceID)
-	if !ok {
-		return false
-	}
-	_, err := s.resolveSource(devID)
+	_, err := s.resolveSensorSource(sourceID)
 	return err == nil
 }
 
@@ -28,14 +63,11 @@ func (s *VideoService) SupportsSensorSource(sourceID string) bool {
 // running with different stream parameters, this joins it at the parameters it
 // has rather than failing or restarting it.
 func (s *VideoService) SubscribeSensor(ctx context.Context, sourceID string) (sensorSubscription, error) {
-	devID, ok := cameraDeviceID(sourceID)
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "source %q is not a camera", sourceID)
-	}
-	src, err := s.resolveSource(devID)
+	src, err := s.resolveSensorSource(sourceID)
 	if err != nil {
 		return nil, err
 	}
+	devID, _ := cameraDeviceID(sourceID)
 	if src.kind == sourceIP {
 		if err := s.preflightIPCamera(src.camera); err != nil {
 			return nil, err

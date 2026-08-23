@@ -119,6 +119,14 @@ type ModelIO struct {
 	// ReferencesOutsideDelivered counts sample references that name a source
 	// this episode delivered nothing for, or a sample_id outside the range it
 	// delivered. Such a reference cannot be resolved inside this episode.
+	//
+	// It is deliberately a range check over the whole episode, and it is NOT
+	// proof that a reference names a sample the referring app was actually
+	// handed: an in-range identifier that fell in a gap, or one delivered to a
+	// different app subscribed to the same source, is not counted here. A
+	// consumer that needs exact attribution must join the input ledger on
+	// app_id as well (see ModelIO.JoinKeys), because the ledger records which
+	// app each sample went to and this counter cannot.
 	ReferencesOutsideDelivered uint64 `json:"input_references_outside_delivered_range"`
 	// Uncaptured accounts for sources that fed a model during this episode but
 	// are not among the episode's own sources. The ledger records what the

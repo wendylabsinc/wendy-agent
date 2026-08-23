@@ -9,6 +9,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -189,5 +193,122 @@ func TestCameraCaptureIndexCarriesSampleIdentity(t *testing.T) {
 	}
 	if record.Segment == "" || record.ByteSize == 0 {
 		t.Fatalf("index entry does not locate the payload: %+v", record)
+	}
+}
+
+// TestSensorSourceIDAliasesAreRefused is the join-key integrity guard.
+// cameraDeviceID is deliberately lossy — it turns an identifier into a device
+// number — so several spellings collapse onto one device. Accepting an alias
+// would write model-input ledger lines under a source_id that no capture index
+// and no manifest source entry carries, and would additionally make the
+// manifest report a camera as not captured by an episode that was capturing it.
+// It is also an entitlement question: an allowlist naming "ipcamera:0" must not
+// silently grant /dev/video0.
+func TestSensorSourceIDAliasesAreRefused(t *testing.T) {
+	svc := NewVideoService(context.Background(), zap.NewNop())
+	defer svc.Shutdown()
+
+	if !svc.SupportsSensorSource("v4l2:/dev/video0") {
+		t.Fatal("the canonical camera identifier is not supported")
+	}
+	for _, alias := range []string{
+		"v4l2:/dev/video00",
+		"v4l2:/dev/video000",
+		"ipcamera:0",
+		"ipcamera:00",
+		"V4L2:/dev/video0",
+		"v4l2:/dev/video0 ",
+	} {
+		if svc.SupportsSensorSource(alias) {
+			t.Errorf("alias %q is accepted as a camera source identifier", alias)
+		}
+		if _, err := svc.SubscribeSensor(context.Background(), alias); status.Code(err) != codes.NotFound {
+			t.Errorf("SubscribeSensor(%q) = %v, want NotFound", alias, err)
+		}
+	}
+}
+
+// TestCanonicalCameraSourceIDMatchesThePublishedIdentifier pins the canonical
+// form to the one cameraDataAdapter.Sources publishes, because the two must
+// agree for the ledger and the capture index to join at all.
+func TestCanonicalCameraSourceIDMatchesThePublishedIdentifier(t *testing.T) {
+	v4l2 := videoSource{kind: sourceV4L2, key: "/dev/video3", path: "/dev/video3"}
+	if got, want := canonicalCameraSourceID(v4l2, 3), "v4l2:/dev/video3"; got != want {
+		t.Errorf("canonical V4L2 id = %q, want %q", got, want)
+	}
+	ip := videoSource{kind: sourceIP, key: "ip:200"}
+	if got, want := canonicalCameraSourceID(ip, 200), "ipcamera:200"; got != want {
+		t.Errorf("canonical IP camera id = %q, want %q", got, want)
+	}
+}
+
+// TestCaptureAndModelSubscriberShareOneProducer is the falsifiable form of the
+// claim that deleting campaign-telemetry-only.yaml made: an episode capture and
+// a model subscriber can consume the same camera at the same time, and they
+// agree on the identity of every frame.
+//
+// Video4Linux2 admits one holder of a capture device, which is why the reference
+// app used to need a telemetry-only campaign variant. The fix is that neither
+// consumer opens the device: both are subscribers of the one producer hub. If
+// this test can be made to fail — either consumer starved, or the two disagreeing
+// on a sample id — the workaround was deleted prematurely.
+func TestCaptureAndModelSubscriberShareOneProducer(t *testing.T) {
+	hub, cancel := newSampleHub(new(atomic.Uint64))
+	defer cancel()
+
+	// The episode capture adapter's subscription.
+	captureID, captureFrames, err := hub.subscribe()
+	if err != nil {
+		t.Fatalf("episode capture could not join the producer: %v", err)
+	}
+	// The model's subscription, joining the SAME hub afterwards.
+	modelID, modelFrames, err := hub.subscribe()
+	if err != nil {
+		t.Fatalf("a model subscriber could not join a producer an episode already holds: %v", err)
+	}
+	if captureID == modelID {
+		t.Fatal("the two consumers were given the same subscriber id")
+	}
+	subscription := &cameraSensorSubscription{hub: hub, subID: modelID, frames: modelFrames}
+
+	const frames = 3
+	for i := 0; i < frames; i++ {
+		if !hub.broadcast(&videoFrame{
+			data:      []byte{0, 0, 0, 1, 0x67, byte(i)},
+			codec:     agentpb.VideoCodec_VIDEO_CODEC_H264,
+			auAligned: true,
+		}) {
+			t.Fatalf("the producer was told to stop while two consumers were attached")
+		}
+	}
+
+	// Both consumers see every frame, and the identity is the same on both
+	// sides — that identity is the only thing joining the episode's payload
+	// bytes to the model's input ledger.
+	for i := 0; i < frames; i++ {
+		sample, err := subscription.Next(context.Background())
+		if err != nil {
+			t.Fatalf("model subscriber frame %d: %v", i, err)
+		}
+		captured, ok := <-captureFrames
+		if !ok {
+			t.Fatalf("episode capture was starved at frame %d", i)
+		}
+		if sample.SampleID != captured.sampleID {
+			t.Fatalf("frame %d: the model saw sample %d while the capture recorded %d",
+				i, sample.SampleID, captured.sampleID)
+		}
+		if sample.SampleID != uint64(i+1) {
+			t.Fatalf("frame %d has sample id %d, want %d", i, sample.SampleID, i+1)
+		}
+		if sample.DroppedBefore != 0 {
+			t.Errorf("frame %d reported %d drops with both consumers keeping up", i, sample.DroppedBefore)
+		}
+	}
+
+	// One consumer leaving must not stop the producer for the other.
+	subscription.Close()
+	if !hub.broadcast(&videoFrame{data: []byte{1}, codec: agentpb.VideoCodec_VIDEO_CODEC_H264}) {
+		t.Fatal("the producer stopped when the model unsubscribed, starving the episode capture")
 	}
 }

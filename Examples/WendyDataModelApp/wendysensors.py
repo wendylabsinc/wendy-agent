@@ -111,23 +111,51 @@ class SensorClient:
 
         stub = sensorgrpc.SensorServiceStub(self._connect())
         request = sensorpb.SensorSubscribeRequest(source_ids=[self.source_id], model=self.model)
-        decoder = None
-        pending_ids: list[int] = []
-        pending_drops = 0
-        for sample in stub.Subscribe(request):
-            if decoder is None:
-                decoder = av.CodecContext.create(sample.encoding or "h264", "r")
-            pending_ids.append(sample.sample_id)
-            pending_drops += sample.dropped_before
-            for packet in decoder.parse(sample.payload):
-                for decoded in decoder.decode(packet):
-                    yield SensorFrame(
-                        source_id=sample.source_id,
-                        sample_ids=list(pending_ids),
-                        boottime_nanos=sample.boottime_nanos,
-                        uncertainty_nanos=sample.timestamp_uncertainty_nanos,
-                        dropped_before=pending_drops,
-                        image=decoded.to_ndarray(format="bgr24"),
-                    )
-                    pending_ids = []
-                    pending_drops = 0
+        yield from decode_samples(
+            stub.Subscribe(request),
+            lambda encoding: av.CodecContext.create(encoding or "h264", "r"),
+        )
+
+
+def decode_samples(samples, make_decoder):
+    """Turn identified samples into decoded frames that keep their sample ids.
+
+    Separated from the gRPC call so the attribution rule below is testable
+    without a live agent, a codec, or the generated stubs: it is the step that
+    decides which sample identifiers a prediction may name, and getting it
+    wrong loses the join key silently rather than loudly.
+    """
+    decoder = None
+    pending_ids: list[int] = []
+    pending_drops = 0
+    for sample in samples:
+        if decoder is None:
+            decoder = make_decoder(sample.encoding)
+        pending_ids.append(sample.sample_id)
+        pending_drops += sample.dropped_before
+        emitted = False
+        for packet in decoder.parse(sample.payload):
+            for decoded in decoder.decode(packet):
+                yield SensorFrame(
+                    source_id=sample.source_id,
+                    sample_ids=list(pending_ids),
+                    boottime_nanos=sample.boottime_nanos,
+                    uncertainty_nanos=sample.timestamp_uncertainty_nanos,
+                    # Counted once per byte run. Several decoded frames can
+                    # come out of the same samples, and repeating the drop
+                    # count on each would overstate what was lost.
+                    dropped_before=0 if emitted else pending_drops,
+                    image=decoded.to_ndarray(format="bgr24"),
+                )
+                emitted = True
+        if emitted:
+            # Cleared once the sample has been fully decoded, not after the
+            # first frame it yielded. A packet can decode to several frames
+            # (a reorder flush, or several frames in one packet), and every one
+            # of them really was computed from these samples. Clearing per
+            # frame left the second and later frames with no sample_ids at all,
+            # so input_refs() returned nothing and their predictions shipped
+            # with no `inputs` field at all — silently losing the join key this
+            # whole path exists to carry.
+            pending_ids = []
+            pending_drops = 0

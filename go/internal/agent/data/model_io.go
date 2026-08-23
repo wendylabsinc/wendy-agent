@@ -1,6 +1,8 @@
 package data
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -24,9 +26,15 @@ var ErrTooManySampleRefs = errors.New("too many input sample references")
 // episode so a consumer never has to guess how inputs and outcomes join.
 func newModelIO() ModelIO {
 	return ModelIO{
-		OutcomeLog:     "events.jsonl",
-		JoinKeys:       []string{"source_id", "sample_id"},
-		PayloadLocator: "a ledger entry's payload bytes are the ones this episode's own capture wrote for the same (source_id, sample_id); for camera sources that is the cameras/<source>/index.jsonl entry with the matching sample_id, which names its segment file and byte offset. A ledger entry with no matching index entry means the capture policy did not keep that sample's payload.",
+		OutcomeLog: "events.jsonl",
+		// app_id is part of the join, not decoration: sources are shared, so two
+		// apps can be delivered the same (source_id, sample_id). Joining without
+		// app_id would let one app's prediction be paired with another app's
+		// input, which is exactly the mis-attribution a training set must not
+		// inherit. The manifest's reference counters are a per-episode range
+		// check and cannot catch that; the ledger's app_id can.
+		JoinKeys:       []string{"app_id", "source_id", "sample_id"},
+		PayloadLocator: "a ledger entry's payload bytes are the ones this episode's own capture wrote for the same (source_id, sample_id); for camera sources that is the cameras/<source>/index.jsonl entry with the matching sample_id, which names its segment file and byte offset. The index entry's byte_size is authoritative for how many bytes to read and may be smaller than the ledger entry's payload_bytes: a frame that opens a segment has any bytes before its first parameter set trimmed. A ledger entry with no matching index entry means the capture policy did not keep that sample's payload.",
 	}
 }
 
@@ -181,6 +189,184 @@ func (a *activeEpisode) deliveredSample(ref SampleRef) bool {
 		for i := range a.manifest.ModelIO.Uncaptured {
 			if a.manifest.ModelIO.Uncaptured[i].SourceID == ref.SourceID {
 				stats = &a.manifest.ModelIO.Uncaptured[i]
+				break
+			}
+		}
+	}
+	if stats == nil || stats.Delivered == 0 {
+		return false
+	}
+	return ref.SampleID >= stats.FirstSampleID && ref.SampleID <= stats.LastSampleID
+}
+
+// reconcileModelIO rebuilds an interrupted episode's model input/outcome
+// accounting from the files that survived on disk.
+//
+// The counters are folded in memory and written only at seal, so an interrupted
+// episode reaches recovery with every one of them at zero while its ledger holds
+// thousands of lines. Leaving them there would publish a manifest that says
+// samples_delivered=0 next to a populated model_inputs.jsonl, and a consumer has
+// no reason to disbelieve a number. A note saying "the ledger is authoritative"
+// does not repair a field that reads zero. Both files are already walked during
+// recovery to truncate torn tails, so recomputing from them costs one more pass
+// and makes the manifest true instead of merely annotated.
+//
+// A torn final line is skipped rather than guessed at: truncateJSONL has already
+// removed it, and any residue that will not parse is not evidence of anything.
+func reconcileModelIO(dir string, mf *Manifest) (bool, error) {
+	inputs, err := reconcileModelInputs(dir, mf)
+	if err != nil {
+		return false, err
+	}
+	outcomes, err := reconcileOutcomes(dir, mf)
+	if err != nil {
+		return false, err
+	}
+	return inputs || outcomes, nil
+}
+
+// reconcileModelInputs recounts the model-input ledger into the manifest's
+// per-source and episode-wide delivery counters.
+func reconcileModelInputs(dir string, mf *Manifest) (bool, error) {
+	f, err := os.Open(filepath.Join(dir, ModelInputLedgerFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer f.Close()
+
+	mf.ModelIO.InputLedger = ModelInputLedgerFile
+	mf.ModelIO.SamplesDelivered = 0
+	mf.ModelIO.Uncaptured = nil
+	for i := range mf.Sources {
+		mf.Sources[i].ModelInputs = nil
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLedgerLineBytes)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var input ModelInput
+		if err := json.Unmarshal(line, &input); err != nil {
+			continue
+		}
+		stats := manifestModelInputs(mf, input.SourceID)
+		if stats.Delivered == 0 {
+			stats.FirstSampleID = input.SampleID
+		}
+		stats.Delivered++
+		stats.SubscriberDrops += input.DroppedBefore
+		stats.LastSampleID = input.SampleID
+		mf.ModelIO.SamplesDelivered++
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// reconcileOutcomes recounts the prediction records and their input references.
+func reconcileOutcomes(dir string, mf *Manifest) (bool, error) {
+	name := mf.ModelIO.OutcomeLog
+	if name == "" {
+		name = "events.jsonl"
+	}
+	f, err := os.Open(filepath.Join(dir, name))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer f.Close()
+
+	mf.ModelIO.Predictions = 0
+	mf.ModelIO.PredictionsWithInputs = 0
+	mf.ModelIO.ReferencesOutsideDelivered = 0
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLedgerLineBytes)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var record ApplicationRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if record.Type != "prediction" {
+			continue
+		}
+		mf.ModelIO.Predictions++
+		if len(record.Inputs) == 0 {
+			continue
+		}
+		mf.ModelIO.PredictionsWithInputs++
+		for _, ref := range record.Inputs {
+			if !manifestDeliveredSample(mf, ref) {
+				mf.ModelIO.ReferencesOutsideDelivered++
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// maxLedgerLineBytes bounds one JSONL line during recovery. A line longer than
+// this is not something this package wrote, so refusing to buffer it is the
+// correct response rather than a limitation.
+const maxLedgerLineBytes = 1 << 20
+
+// manifestModelInputs is sourceModelInputs against a manifest being recovered
+// rather than a live episode: the same placement rule (beside the capture's own
+// counters for a captured source, in the uncaptured list otherwise) so a
+// recovered manifest is shaped exactly like a sealed one.
+func manifestModelInputs(mf *Manifest, sourceID string) *SourceModelInputs {
+	for i := range mf.Sources {
+		stats := &mf.Sources[i]
+		if stats.Source.ID != sourceID {
+			continue
+		}
+		if stats.ModelInputs == nil {
+			retention, note := capturedRetention(stats.Source.Capture)
+			stats.ModelInputs = &SourceModelInputs{SourceID: sourceID, PayloadRetention: retention, Note: note}
+		}
+		return stats.ModelInputs
+	}
+	for i := range mf.ModelIO.Uncaptured {
+		if mf.ModelIO.Uncaptured[i].SourceID == sourceID {
+			return &mf.ModelIO.Uncaptured[i]
+		}
+	}
+	mf.ModelIO.Uncaptured = append(mf.ModelIO.Uncaptured, SourceModelInputs{
+		SourceID:         sourceID,
+		PayloadRetention: RetentionNotCaptured,
+		Note:             "a model consumed this source during the episode, but the episode does not capture it: the ledger records which samples the model saw and this episode holds none of their payload bytes",
+	})
+	return &mf.ModelIO.Uncaptured[len(mf.ModelIO.Uncaptured)-1]
+}
+
+// manifestDeliveredSample is deliveredSample against a recovered manifest.
+func manifestDeliveredSample(mf *Manifest, ref SampleRef) bool {
+	var stats *SourceModelInputs
+	for i := range mf.Sources {
+		if mf.Sources[i].Source.ID == ref.SourceID {
+			stats = mf.Sources[i].ModelInputs
+			break
+		}
+	}
+	if stats == nil {
+		for i := range mf.ModelIO.Uncaptured {
+			if mf.ModelIO.Uncaptured[i].SourceID == ref.SourceID {
+				stats = &mf.ModelIO.Uncaptured[i]
 				break
 			}
 		}
