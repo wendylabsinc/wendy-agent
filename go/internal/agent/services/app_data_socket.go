@@ -368,6 +368,7 @@ func writeDataFrame(w io.Writer, v any) error {
 	_, err = w.Write(b)
 	return err
 }
+
 // recordKindValidator checks the kind-specific required fields of a record.
 type recordKindValidator func(data.ApplicationRecord) error
 
