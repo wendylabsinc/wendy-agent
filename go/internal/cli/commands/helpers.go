@@ -1388,7 +1388,20 @@ var lanBrowseFn func(ctx context.Context, timeout time.Duration) ([]models.LANDe
 
 func init() {
 	lanBrowseFn = func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error) {
-		return discovery.CollectLAN(ctx, cliLANStreamOptions(), timeout)
+		services, err := discovery.BrowseMDNSServices(ctx, "_wendyos._udp", timeout)
+		if err != nil {
+			return nil, err
+		}
+		devices := make([]models.LANDevice, 0, len(services))
+		for _, svc := range services {
+			devices = append(devices, models.LANDevice{
+				Hostname:         svc.Hostname,
+				IPAddress:        svc.IPAddress,
+				Port:             svc.Port,
+				NetworkInterface: svc.InterfaceName,
+			})
+		}
+		return devices, nil
 	}
 }
 
@@ -1440,7 +1453,8 @@ func stripZone(host string) string {
 
 // orderDialCandidates de-duplicates ips and orders them by how likely a dial to
 // each is to reach a device on an ordinary LAN: IPv4 first, then routable IPv6,
-// then link-local and ULA IPv6 last.
+// then link-local and ULA IPv6 last. Connect paths add host-interface preference
+// with orderRoutedDialCandidates below.
 //
 // The ordering is a preference *within an exhaustive walk*, not a filter. The
 // single-address resolvers this replaced also preferred IPv4, but they THREW
@@ -1448,6 +1462,14 @@ func stripZone(host string) string {
 // look unreachable. Anything unparseable is dropped rather than passed through:
 // a non-address in this list can only produce a dial that cannot succeed.
 func orderDialCandidates(ips []string) []string {
+	ordered := orderDialCandidatesUnbounded(ips)
+	if len(ordered) > maxDialCandidates {
+		ordered = ordered[:maxDialCandidates]
+	}
+	return ordered
+}
+
+func orderDialCandidatesUnbounded(ips []string) []string {
 	var v4, v6Global, v6Local []string
 	seen := map[string]bool{}
 	for _, raw := range ips {
@@ -1473,6 +1495,14 @@ func orderDialCandidates(ips []string) []string {
 	ordered = append(ordered, v4...)
 	ordered = append(ordered, v6Global...)
 	ordered = append(ordered, v6Local...)
+	return ordered
+}
+
+// orderRoutedDialCandidates adds host-interface preference to the ordinary
+// address-family ordering. It runs before the candidate cap so a wired answer
+// cannot be dropped merely because several Wi-Fi/IPv6 records arrived first.
+func orderRoutedDialCandidates(ips []string) []string {
+	ordered := preferWiredDialCandidates(orderDialCandidatesUnbounded(ips))
 	if len(ordered) > maxDialCandidates {
 		ordered = ordered[:maxDialCandidates]
 	}
@@ -1492,19 +1522,33 @@ func resolveHostAllMDNSFallback(ctx context.Context, host string) []string {
 	rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	ips, err := osLookupHostFn(rctx, host)
 	cancel()
-	if err == nil {
-		// A resolver that answers with nothing usable is treated as a failure
-		// so the mDNS browse still gets its turn; the old single-address form
-		// returned early on a non-empty-but-unparseable answer.
-		if ordered := orderDialCandidates(ips); len(ordered) > 0 {
-			return ordered
+	if err != nil {
+		ips = nil
+	}
+
+	ordered := orderRoutedDialCandidates(ips)
+	// A .local hostname can legitimately answer once per interface. When the
+	// discovery cache tells us its saved path is Wi-Fi or internally inconsistent
+	// (for example en7 metadata with an en0-routed IP), merge interface-scoped
+	// DNS-SD sightings even though the system resolver returned an answer. Once a
+	// correct wired address is cached, the last-known-good path avoids this browse.
+	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	needsInterfaceBrowse := len(ordered) == 0
+	if !needsInterfaceBrowse && strings.HasSuffix(normalized, ".local") {
+		if cached, ok := cachedDeviceHostEntry(host); ok {
+			needsInterfaceBrowse = !shouldUseCachedDeviceAddress(cached.InterfaceName, cached.IP)
 		}
 	}
-	return orderDialCandidates(resolveMDNSHostAll(ctx, host))
+	if needsInterfaceBrowse && strings.HasSuffix(normalized, ".local") {
+		ips = append(ips, resolveMDNSHostAll(ctx, host)...)
+	}
+	return orderRoutedDialCandidates(ips)
 }
 
 // resolveAddrOnce resolves a host:port whose host is a DNS/mDNS name to an
-// IPv4-preferred IP:port, so the dials below target a literal IP. gRPC
+// preferred IP:port, so the dials below target a literal IP. A wired host route
+// outranks Wi-Fi; within equal/unknown transports IPv4 keeps its usual lead.
+// gRPC
 // otherwise resolves the name separately for every ClientConn we open (mTLS
 // port, mTLS port+1, plaintext), and an mDNS ".local" name that resolves to
 // both IPv6 and IPv4 can cost a multi-second IPv6 connect timeout per dial on
@@ -1516,7 +1560,7 @@ func resolveAddrOnce(ctx context.Context, addr string) string {
 }
 
 // resolveAddrCandidates is resolveAddrOnce's list-returning form: every address
-// the host answers to, each joined back to port, in orderDialCandidates order.
+// the host answers to, each joined back to port, in routed-candidate order.
 // It never returns an empty slice — on any resolution failure the sole element
 // is addr unchanged, so gRPC's own resolver remains the last fallback exactly as
 // before.
@@ -1803,9 +1847,11 @@ func defaultDeviceUnreachableError(hostname string, err error) error {
 
 // connectWithAutoTLSDiagnostics resolves plaintextAddr and runs the mTLS/
 // plaintext dial ladder (see dialAgentLadder) against it. A DNS/mDNS-name host
-// with a device-cache entry (any age; see cachedDeviceEntry) skips resolution
-// entirely and dials the cached IP directly — the "instant connect" fast
-// path. That cached IP can be stale (the device moved, rebooted onto a new
+// with a device-cache entry (any age; see cachedDeviceEntry) normally skips
+// resolution and dials the cached IP directly — the "instant connect" fast
+// path. A row positively observed on Wi-Fi is re-resolved so a simultaneous
+// Ethernet answer can win; legacy/unknown and wired rows stay instant. The
+// cached IP can be stale (the device moved, rebooted onto a new
 // DHCP lease, etc.), so this distinguishes a dead cached IP from a live one
 // that simply failed its handshake:
 //
@@ -1851,7 +1897,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 	pinKey := pinKeyForAddr(originalAddr)
 	fromCache := false
 	if plainHost, plainPort, splitErr := net.SplitHostPort(plaintextAddr); splitErr == nil && net.ParseIP(plainHost) == nil {
-		if e, ok := cachedDeviceHostEntry(plainHost); ok && e.IP != "" {
+		if e, ok := cachedDeviceHostEntry(plainHost); ok && shouldUseCachedDeviceAddress(e.InterfaceName, e.IP) {
 			cachedAddr := net.JoinHostPort(e.IP, plainPort)
 			switch {
 			case e.MTLS && e.Port > 0:
@@ -2046,10 +2092,11 @@ func cacheConnectSuccess(originalAddr string, conn *grpcclient.AgentConnection) 
 		return
 	}
 	entry := discoverycache.Entry{
-		Hostname: cacheHostnameForStorage(host),
-		IP:       conn.Host,
-		Port:     port,
-		MTLS:     conn.IsMTLS,
+		Hostname:      cacheHostnameForStorage(host),
+		IP:            conn.Host,
+		Port:          port,
+		MTLS:          conn.IsMTLS,
+		InterfaceName: routeInterfaceForIP(conn.Host),
 	}
 	if org, ok := conn.ObservedServerOrg(); ok {
 		entry.OrgID = org

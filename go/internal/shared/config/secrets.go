@@ -223,14 +223,23 @@ func hasInlineSecrets(cfg *Config) bool {
 	return countInlineSecrets(cfg) > 0
 }
 
-// MigrateSecretsIfNeeded moves pre-existing plaintext secrets into the
-// platform store. Called once per invocation from the root command's
-// synchronous pre-run zone; organic Saves elsewhere migrate silently, so
-// this hook exists to (a) migrate users who never run a config-saving
-// command and (b) own the one-line notice. Returns true when a migration
-// actually reduced the number of inline secrets on disk.
+// MigrateSecretsIfNeeded reconciles pre-existing credentials with the current
+// storage policy. When dehydration is enabled it moves inline secrets into the
+// platform store. When file storage is enabled it resolves legacy Keychain
+// references back into config.json. References that cannot be resolved are
+// preserved by Save, so migration never discards the only copy of a secret.
+//
+// Called once per invocation from the root command's synchronous pre-run zone;
+// organic Saves elsewhere also apply the selected policy. Returns true when it
+// changed the on-disk representation.
 func MigrateSecretsIfNeeded(cfg *Config) bool {
-	if !dehydrateEnabled() || !hasInlineSecrets(cfg) {
+	beforeInline := countInlineSecrets(cfg)
+	beforeRefs := countSecretRefs(cfg)
+	if dehydrateEnabled() {
+		if beforeInline == 0 {
+			return false
+		}
+	} else if beforeRefs == 0 {
 		return false
 	}
 	if err := Save(cfg); err != nil {
@@ -240,7 +249,10 @@ func MigrateSecretsIfNeeded(cfg *Config) bool {
 	if err != nil {
 		return false
 	}
-	return countInlineSecrets(reloaded) < countInlineSecrets(cfg)
+	if dehydrateEnabled() {
+		return countInlineSecrets(reloaded) < beforeInline
+	}
+	return countSecretRefs(reloaded) < beforeRefs
 }
 
 func countInlineSecrets(cfg *Config) int {
@@ -251,6 +263,21 @@ func countInlineSecrets(cfg *Config) int {
 		}
 		for _, c := range a.Certificates {
 			if c.PemPrivateKey != "" && !isRef(c.PemPrivateKey) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func countSecretRefs(cfg *Config) int {
+	n := 0
+	for _, a := range cfg.Auth {
+		if isRef(a.APIKey) {
+			n++
+		}
+		for _, c := range a.Certificates {
+			if isRef(c.PemPrivateKey) {
 				n++
 			}
 		}

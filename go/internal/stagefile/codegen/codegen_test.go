@@ -95,8 +95,9 @@ func TestGenerateAptInstall(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM debian:12@sha256:abc123 AS app\n" +
-		"RUN apt-get update && apt-get install -y --no-install-recommends 'curl' 'git' \\\n" +
-		"    && rm -rf /var/lib/apt/lists/*\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-apt-lists-068acc661142d56e,target=/var/lib/apt/lists \\\n" +
+		"    --mount=type=cache,sharing=locked,id=stagefile-apt-archives-068acc661142d56e,target=/var/cache/apt \\\n" +
+		"    rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y --no-install-recommends 'curl' 'git'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
@@ -116,8 +117,9 @@ func TestGenerateAptInstallWithRecommends(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM debian:12@sha256:abc123 AS app\n" +
-		"RUN apt-get update && apt-get install -y 'curl' \\\n" +
-		"    && rm -rf /var/lib/apt/lists/*\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-apt-lists-068acc661142d56e,target=/var/lib/apt/lists \\\n" +
+		"    --mount=type=cache,sharing=locked,id=stagefile-apt-archives-068acc661142d56e,target=/var/cache/apt \\\n" +
+		"    rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y 'curl'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
@@ -176,12 +178,17 @@ func TestGeneratePipInstallFromRequirements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
-		"COPY requirements.txt requirements.txt\n" +
-		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
-		"USER 65532\n"
-	if out != want {
-		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
+	for _, want := range []string{
+		"FROM python:3.12-slim@sha256:abc123 AS stagefile-pip-deps-0",
+		"COPY requirements.txt requirements.txt",
+		"pip install --root '/opt/stagefile/pip/root' -r 'requirements.txt'",
+		"FROM python:3.12-slim@sha256:abc123 AS app",
+		"COPY --link --from=stagefile-pip-deps-0 /opt/stagefile/pip/root/ /",
+		"USER 65532",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
 	}
 }
 
@@ -199,13 +206,10 @@ func TestGeneratePipInstallCopyPrecedesExplicitCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
-		"COPY requirements.txt requirements.txt\n" +
-		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
-		"COPY app.py app.py\n" +
-		"USER 65532\n"
-	if out != want {
-		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
+	overlayAt := strings.Index(out, "COPY --link --from=stagefile-pip-deps-0")
+	appCopyAt := strings.Index(out, "COPY app.py app.py")
+	if overlayAt < 0 || appCopyAt < 0 || overlayAt > appCopyAt {
+		t.Fatalf("pip overlay must precede the explicit app copy:\n%s", out)
 	}
 }
 
@@ -221,11 +225,9 @@ func TestGeneratePipInstallFromPackages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
-		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install 'flask' 'gunicorn'\n" +
-		"USER 65532\n"
-	if out != want {
-		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
+	want := "pip install --root '/opt/stagefile/pip/root' 'flask' 'gunicorn'"
+	if !strings.Contains(out, want) {
+		t.Fatalf("missing %q in:\n%s", want, out)
 	}
 }
 
@@ -473,8 +475,9 @@ func TestGenerateAptInstallQuotesPackageNames(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM debian:12@sha256:abc123 AS app\n" +
-		"RUN apt-get update && apt-get install -y --no-install-recommends 'curl && echo pwned' \\\n" +
-		"    && rm -rf /var/lib/apt/lists/*\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-apt-lists-068acc661142d56e,target=/var/lib/apt/lists \\\n" +
+		"    --mount=type=cache,sharing=locked,id=stagefile-apt-archives-068acc661142d56e,target=/var/cache/apt \\\n" +
+		"    rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y --no-install-recommends 'curl && echo pwned'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
@@ -493,11 +496,9 @@ func TestGeneratePipInstallQuotesVersionSpecifiers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
-		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install 'flask>=2.0,<3.0'\n" +
-		"USER 65532\n"
-	if out != want {
-		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
+	want := "pip install --root '/opt/stagefile/pip/root' 'flask>=2.0,<3.0'"
+	if !strings.Contains(out, want) {
+		t.Fatalf("missing %q in:\n%s", want, out)
 	}
 }
 
@@ -544,12 +545,20 @@ func TestGenerateLocksEveryCacheMount(t *testing.T) {
 	// legitimately declare several — a Swift build mounts its object tree and
 	// SwiftPM's download cache separately.
 	blocks := strings.Split(strings.TrimSpace(out), "\n\n")
-	if len(blocks) != len(f.Stages) {
-		t.Fatalf("got %d stage blocks, want %d", len(blocks), len(f.Stages))
+	if len(blocks) != len(f.Stages)+1 {
+		t.Fatalf("got %d stage blocks, want %d (including pip's generated dependency stage)", len(blocks), len(f.Stages)+1)
 	}
-	for i, block := range blocks {
+	for _, block := range blocks {
+		// pipdeps is now only the linked-overlay consumer; its cache belongs to
+		// the generated sibling stage immediately before it.
+		if strings.Contains(block, " AS pipdeps\n") {
+			if !strings.Contains(block, "COPY --link --from=stagefile-pip-deps-0") {
+				t.Errorf("pip consumer does not link its generated dependency stage:\n%s", block)
+			}
+			continue
+		}
 		if !strings.Contains(block, "type=cache") {
-			t.Errorf("stage %q emits no cache mount:\n%s", f.Stages[i].Name, block)
+			t.Errorf("stage block emits no cache mount:\n%s", block)
 		}
 	}
 }

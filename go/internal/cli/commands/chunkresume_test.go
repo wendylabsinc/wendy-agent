@@ -125,7 +125,7 @@ func TestPushLayersResumingTunnelDropsReconnectsAndRetries(t *testing.T) {
 		return nil, nil
 	}
 
-	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers)
+	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestPushLayersResumingTunnelDropsDoesNotRetryUnimplemented(t *testing.T) {
 		return nil, nil
 	}
 
-	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), conn, nil)
+	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), conn, nil, nil)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -216,7 +216,7 @@ func TestPushLayersResumingTunnelDropsGivesUpAfterAttempts(t *testing.T) {
 		return nil, nil
 	}
 
-	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, nil)
+	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, nil, nil)
 	if err == nil {
 		t.Fatal("expected an error after exhausting all attempts")
 	}

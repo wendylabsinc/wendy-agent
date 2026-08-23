@@ -85,6 +85,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceRenameCmd(),
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
+		newDeviceCacheCmd(),
 		newVolumesCmd(),
 	)
 	addToGroup("hardware",
@@ -347,6 +348,13 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					}
 					out["partitions"] = parts
 				}
+				if alert, ok := highDiskUsage(partitions, diskUsedBytes, diskTotalBytes); ok {
+					out["diskWarning"] = map[string]any{
+						"mountpoint":       alert.Mountpoint,
+						"usedPercent":      alert.UsedPercent,
+						"thresholdPercent": diskWarningThresholdPercent,
+					}
+				}
 				if gpuVendor != "" {
 					out["gpuVendor"] = gpuVendor
 				}
@@ -413,6 +421,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				fmt.Print(formatPartitionTable(partitions))
 			} else if diskUsedBytes != nil && diskTotalBytes != nil {
 				fmt.Printf("%s %s\n", tui.Dim("Disk Usage:"), tui.Value(formatDiskUsage(*diskUsedBytes, *diskTotalBytes)))
+			}
+			if alert, ok := highDiskUsage(partitions, diskUsedBytes, diskTotalBytes); ok {
+				fmt.Println(tui.WarningMessage(diskUsageWarningText(alert)))
 			}
 			if len(netInterfaces) > 0 {
 				fmt.Print(formatNetworkInterfaces(netInterfaces))

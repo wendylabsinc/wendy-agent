@@ -18,21 +18,23 @@ import (
 // goroutines only mutate shared counters — so a ticker is the render loop.
 const chunkPushInteractiveTickInterval = 200 * time.Millisecond
 
-// pushLayersWithProgress wraps pushLayersByChunks with live progress: a
+// pushLayersWithProgress wraps the chunk push with live progress: a
 // periodic heartbeat line on non-interactive terminals (CI/piped output,
 // same shape as tui.NewBuildPlainRenderer's heartbeat), or an interactive
 // Bubble Tea progress bar on a real terminal, mirroring
 // createContainerWithProgressTUI's plain/interactive split. Either way, a
 // resume-legible Summary() line is printed once the push completes.
+// prepare, when non-nil, runs device-side image preparation concurrently
+// with the upload (see pushLayersByChunksWithPrepare).
 //
 // Detach needs no branch here: it only diverges after Started, downstream
 // of this call.
-func pushLayersWithProgress(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer) ([]*agentpb.RunContainerLayerHeader, error) {
+func pushLayersWithProgress(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc) ([]*agentpb.RunContainerLayerHeader, error) {
 	prog := newChunkPushProgress()
 
 	if !buildProgressInteractive() {
 		stop := startChunkPushHeartbeat(prog, buildProgressOut, tui.PlainHeartbeatInterval)
-		headers, err := pushLayersByChunks(ctx, cs, layers, prog)
+		headers, err := pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, nil, false, prog)
 		stop()
 		if err != nil {
 			return nil, err
@@ -57,7 +59,7 @@ func pushLayersWithProgress(ctx context.Context, cs agentpb.WendyContainerServic
 	)
 	go func() {
 		defer close(done)
-		h, err := pushLayersByChunks(pushCtx, cs, layers, prog)
+		h, err := pushLayersByChunksWithPrepareMode(pushCtx, cs, layers, prepare, nil, false, prog)
 		headers, pushErr = h, err
 		tp.Send(tui.ProgressDoneMsg{Err: err})
 	}()

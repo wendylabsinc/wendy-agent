@@ -21,10 +21,11 @@ import (
 )
 
 // deployFingerprint records what was last successfully deployed for a given app
-// to a given device from this machine. It lets `wendy run --detach` skip the
+// or service to a given device from this machine. It lets run paths skip the
 // whole build → OCI export → chunk-diff → reassemble pipeline when nothing that
-// could affect the image has changed: instead of rebuilding, we just ensure the
-// already-deployed container is running.
+// could affect the image or effective service configuration has changed. The
+// single-container detached path also uses it to ensure the existing container
+// is running without recreating it.
 //
 // This is intentionally a local-only, best-effort optimization (WDY fast path):
 // the fingerprint is trusted as-is, and the device is only consulted to confirm
@@ -33,7 +34,8 @@ import (
 // can never deploy the wrong code — at worst it triggers an unnecessary build.
 type deployFingerprint struct {
 	// InputHash is computed by computeBuildInputHash over everything that can
-	// affect the built image (Dockerfile, build context, build args, platform).
+	// affect a single built image, or by a service desired-state hash that also
+	// includes its create-time configuration.
 	InputHash string `json:"inputHash"`
 	// AppVersion is the wendy.json version at deploy time, used as a cheap
 	// cross-check against the version the device reports.

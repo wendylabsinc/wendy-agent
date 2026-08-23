@@ -57,6 +57,8 @@ type options struct {
 	gpuArch      string
 	buildProfile string
 	source       string
+	ros2Distro   string
+	ros2RMW      string
 }
 
 // WithSource names which Stagefile in dir to compile, for a project that
@@ -107,6 +109,18 @@ func WithBuildProfile(profile string) Option {
 	}
 }
 
+// WithROS2Runtime teaches the compiler about the runtime framework selected in
+// wendy.json. Stagefiles describe application dependencies; they should not
+// have to repeat the middleware package implied by frameworks.ros2. The CLI
+// passes resolved, validated values here and the compiler idempotently adds the
+// matching package to the final stage's APT install.
+func WithROS2Runtime(distro, rmw string) Option {
+	return func(o *options) {
+		o.ros2Distro = strings.ToLower(strings.TrimSpace(distro))
+		o.ros2RMW = strings.ToLower(strings.TrimSpace(rmw))
+	}
+}
+
 // CompileFile reads a Stagefile from dir — the canonical build.stagefile.yaml
 // unless WithSource names a variant — resolves any missing lockfile image refs
 // against a live registry (existing pins are never touched — only an explicit
@@ -136,7 +150,7 @@ func CompileFile(dir, platform string, opts ...Option) (dockerfile, dockerignore
 			return sharedHasher(url)
 		}
 	}
-	return compileFile(dir, source, platform, o.gpuArch, o.buildProfile, sharedResolver, hasher)
+	return compileFileWithFramework(dir, source, platform, o.gpuArch, o.buildProfile, o.ros2Distro, o.ros2RMW, sharedResolver, hasher)
 }
 
 // NeedsGPUTarget reports whether ANY Stagefile in dir declares a cuda: stage,
@@ -220,6 +234,10 @@ func resolveCUDAProfile(f *spec.File, arch string, l *lock.File) (*gpu.Profile, 
 // CompileFile, allowing tests to exercise it with a fake resolver and hasher
 // instead of a live registry and live URLs.
 func compileFile(dir, source, platform, gpuArch, buildProfile string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
+	return compileFileWithFramework(dir, source, platform, gpuArch, buildProfile, "", "", resolver, hasher)
+}
+
+func compileFileWithFramework(dir, source, platform, gpuArch, buildProfile, ros2Distro, ros2RMW string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
 	sourcePath := filepath.Join(dir, source)
 	raw, err := os.ReadFile(sourcePath)
 	if err != nil {
@@ -230,6 +248,7 @@ func compileFile(dir, source, platform, gpuArch, buildProfile string, resolver l
 		return "", "", err
 	}
 	applyBuildProfile(f, buildProfile)
+	applyROS2Runtime(f, ros2Distro, ros2RMW)
 
 	lockPath := filepath.Join(dir, LockName(source))
 	existing, err := lock.Load(lockPath)
@@ -271,6 +290,51 @@ func compileFile(dir, source, platform, gpuArch, buildProfile string, resolver l
 	}
 	dockerignore = dockerignorepkg.Derive(dockerignorepkg.LocalPaths(f))
 	return dockerfile, dockerignore, nil
+}
+
+// applyROS2Runtime appends the RMW implementation package implied by the
+// framework config. The final stage is the runnable image; build-only stages do
+// not need the middleware. Package names are constructed only from values the
+// appconfig validator has already reduced to its fixed RMW allowlist.
+func applyROS2Runtime(f *spec.File, distro, rmw string) {
+	if f == nil || len(f.Stages) == 0 || distro == "" || rmw == "" {
+		return
+	}
+	// Keep the compiler-side boundary closed even though normal CLI callers
+	// already pass values validated by appconfig. WithROS2Runtime is a public
+	// library option and must not turn arbitrary strings into APT packages.
+	packageSuffix := map[string]string{
+		"rmw_cyclonedds_cpp": "rmw-cyclonedds-cpp",
+		"rmw_fastrtps_cpp":   "rmw-fastrtps-cpp",
+		"rmw_connextdds":     "rmw-connextdds",
+		"rmw_gurumdds_cpp":   "rmw-gurumdds-cpp",
+	}[rmw]
+	if packageSuffix == "" || !validROS2Distro(distro) {
+		return
+	}
+	pkg := "ros-" + distro + "-" + packageSuffix
+	final := &f.Stages[len(f.Stages)-1]
+	if final.Install == nil {
+		final.Install = &spec.Install{}
+	}
+	if final.Install.Apt == nil {
+		final.Install.Apt = &spec.AptInstall{}
+	}
+	for _, existing := range final.Install.Apt.Packages {
+		if existing == pkg {
+			return
+		}
+	}
+	final.Install.Apt.Packages = append(final.Install.Apt.Packages, pkg)
+}
+
+func validROS2Distro(distro string) bool {
+	for i, r := range distro {
+		if (r < 'a' || r > 'z') && (i == 0 || r < '0' || r > '9') {
+			return false
+		}
+	}
+	return distro != ""
 }
 
 // applyBuildProfile overrides the compile profile of every build stage that has
@@ -319,15 +383,18 @@ func downloadURLs(f *spec.File) []string {
 
 func imageRefs(f *spec.File) []string {
 	seen := map[string]bool{}
+	priorStages := map[string]bool{}
 	var refs []string
 	for _, s := range f.Stages {
-		if s.Pin != nil && !*s.Pin {
+		if priorStages[s.From] || s.Pin != nil && !*s.Pin {
+			priorStages[s.Name] = true
 			continue
 		}
 		if !seen[s.From] {
 			seen[s.From] = true
 			refs = append(refs, s.From)
 		}
+		priorStages[s.Name] = true
 	}
 	return refs
 }

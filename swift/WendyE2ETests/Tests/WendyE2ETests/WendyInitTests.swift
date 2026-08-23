@@ -50,9 +50,10 @@ struct `'wendy init'` {
                     + " --no-extra-entitlements --assistant skip --git-init no"
             ) { result in
                 #expect(result.status.isSuccess)
-                #expect(result.stdout.contains("Created wendy.json for demo-app"))
-                #expect(result.stdout.contains("Your project is ready!"))
-                #expect(result.stderr == "")
+                // Status lines print to stderr (WDY-2435): stdout is reserved
+                // for machine-readable payloads.
+                #expect(result.stderr.contains("Created wendy.json for demo-app"))
+                #expect(result.stderr.contains("Your project is ready!"))
             }
 
             try await cli.sh(
@@ -146,8 +147,8 @@ struct `'wendy init'` {
                     + " --no-extra-entitlements --assistant skip --git-init no"
             ) { result in
                 #expect(result.status.isSuccess)
-                #expect(result.stdout.contains("Your project is ready!"))
-                #expect(!result.stdout.contains("Launching"))
+                #expect(result.stderr.contains("Your project is ready!"))
+                #expect(!result.stderr.contains("Launching"))
             }
 
             try await cli.sh(

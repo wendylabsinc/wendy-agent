@@ -198,6 +198,12 @@ type CMakeInstall struct {
 type PipInstall struct {
 	Requirements string   `yaml:"requirements,omitempty"`
 	Packages     []string `yaml:"packages,omitempty"`
+	// BuildPackages are OS packages needed only while pip builds wheels (for
+	// example, a compiler or development headers). The compiler installs them
+	// in pip's independent dependency stage, so they never enter the runtime
+	// image. Package names follow the stage's declared apt or apk manager; apt
+	// is the fallback when the stage declares neither.
+	BuildPackages []string `yaml:"buildPackages,omitempty"`
 	// Index replaces the default package index (--index-url), e.g. a
 	// Jetson wheel index. ExtraIndex appends additional indexes
 	// (--extra-index-url), searched alongside the primary index.
