@@ -309,6 +309,37 @@ func TestAppDataPeerCredentialCgroupfsMismatchRefused(t *testing.T) {
 	}
 }
 
+// TestAppDataRealCgroupOfTestProcessRefused pins the platform truth that every
+// other socket-level test here stubs away: with the PRODUCTION cgroup reader in
+// place, a peer that is a real local process outside any wendy app scope is
+// refused. The go-test process itself is such a peer, so this asserts the same
+// fail-closed outcome on both platforms without branching on either: on Linux
+// readProcCgroup reads /proc/<pid>/cgroup and finds no wendy app scope, and on
+// non-Linux it reports the lookup unsupported, which is equally unattributable.
+//
+// This is the case a socket-level happy-path test must inject around, and the
+// reason macOS-only verification cannot see the hardened behavior at all.
+func TestAppDataRealCgroupOfTestProcessRefused(t *testing.T) {
+	m := newTestDataSocketManager(t)
+	// Only the SO_PEERCRED lookup is stubbed, and it reports this very process.
+	// cgroupOfPID stays at the production readProcCgroup.
+	m.peerCred = func(net.Conn) (peerCredentials, error) {
+		return peerCredentials{UID: uint32(os.Getuid()), PID: int32(os.Getpid())}, nil
+	}
+	dir, err := m.Ensure("com.example.a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", filepath.Join(dir, DataSocketFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if ack := readRejectAck(t, conn); ack.State != "rejected" {
+		t.Fatalf("test process as peer: state = %q, want rejected (the go-test process is in no wendy app scope)", ack.State)
+	}
+}
+
 // TestAppIDFromCgroup covers the cgroup identity extraction directly.
 func TestAppIDFromCgroup(t *testing.T) {
 	cases := []struct {

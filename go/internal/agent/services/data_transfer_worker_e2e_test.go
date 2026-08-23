@@ -200,10 +200,10 @@ func TestE2EDataPlatformHappyPath(t *testing.T) {
 	snapshot := deterministicBytes(3000, 0x22)
 	events := []byte("{\"t\":1,\"event\":\"start\"}\n{\"t\":2,\"event\":\"stop\"}\n")
 	mf := sealRealEpisode(t, mgr, map[string][]byte{
-		"camera.h264":     camera,
-		"snapshot.jpg":    snapshot,
+		"camera.h264":      camera,
+		"snapshot.jpg":     snapshot,
 		"app/events.jsonl": events,
-		"marker.empty":    {},
+		"marker.empty":     {},
 	})
 
 	t.Logf("sealed episode id=%s files=%d", mf.ID, len(mf.Files))

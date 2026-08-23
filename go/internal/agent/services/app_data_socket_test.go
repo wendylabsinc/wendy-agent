@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
+	sharedenv "github.com/wendylabsinc/wendy/go/internal/shared/env"
 )
 
 func TestDataProtocolLengthLimit(t *testing.T) {
@@ -38,6 +40,19 @@ func TestAppDataSocketIsPrivateAndRecordsIdentity(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	manager := NewAppDataSocketManager(ctx, nil, capture)
+	// The data socket is hardened: once SO_PEERCRED yields a peer pid,
+	// verifyPeer fails closed unless that pid's cgroup resolves to the socket's
+	// own app. The go-test process is not in a wendy app scope, so on Linux (the
+	// target platform, where SO_PEERCRED succeeds) an uninjected dial is
+	// correctly refused, while on macOS the no-peer fail-open branch hides that.
+	// Inject the same seams the D6 hardening tests use so the happy path is
+	// exercised deterministically on both platforms.
+	manager.peerCred = func(net.Conn) (peerCredentials, error) {
+		return peerCredentials{UID: 0, PID: 4242}, nil
+	}
+	manager.cgroupOfPID = func(int32) (string, error) {
+		return fmt.Sprintf("0::/system.slice/%s-com.example.a.scope\n", sharedenv.SystemdServiceName()), nil
+	}
 	dirA, err := manager.Ensure("com.example.a", "")
 	if err != nil {
 		t.Fatal(err)

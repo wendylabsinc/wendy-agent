@@ -53,8 +53,8 @@ type audioStream interface {
 type pcmCapture struct{ c *capture }
 
 func (p *pcmCapture) Read(b []byte) (int, error) { return p.c.stdout.Read(b) }
-func (p *pcmCapture) Close()                      { p.c.Close() }
-func (p *pcmCapture) Err() string                 { return p.c.Err() }
+func (p *pcmCapture) Close()                     { p.c.Close() }
+func (p *pcmCapture) Err() string                { return p.c.Err() }
 
 type audioDataAdapter struct {
 	audio *AudioService
