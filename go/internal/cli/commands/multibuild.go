@@ -1021,15 +1021,10 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 			}
 		}
 		cliLogln("App group %s running in detached mode.", appID)
-		// Every container is up: fire each service's readiness→announce→postStart
-		// sequentially in dependency order, then the app-level fallback. hookCtx
-		// is context.Background() so cli hooks outlive the detaching CLI; readiness
-		// failures only warn (non-fatal), so we still return nil. No reap: there is
-		// nothing left to wait on once we detach.
-		for _, name := range ordered {
-			runner.runOne(runCtx, context.Background(), svcLifecycleCfgs[name])
-		}
-		runner.runOne(runCtx, context.Background(), appLevelCfg)
+		// No host-side lifecycle work: detached runs do not wait for readiness,
+		// announce the app URL, or fire host postStart hooks — see
+		// runPostStartIfReady's doc comment (WDY-2041). The agent-side hooks
+		// attached to the start RPCs above still run on the device.
 		return nil
 	}
 

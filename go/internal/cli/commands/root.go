@@ -113,7 +113,7 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	root.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
-	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname")
+	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname; `wendy run` accepts a comma-separated list to deploy one build to several devices (needs --build-host and --detach)")
 
 	// Render the top-level command groups in the deliberate order below rather
 	// than alphabetically, so e.g. "project" lists before "device".

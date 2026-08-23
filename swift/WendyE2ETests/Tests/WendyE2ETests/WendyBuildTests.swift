@@ -23,6 +23,7 @@ struct `'wendy build'` {
                 #expect(stdout.contains("--build-type"))
                 #expect(stdout.contains("--builder"))
                 #expect(stdout.contains("--dockerfile"))
+                #expect(!stdout.contains("--build-host"))
                 #expect(stdout.contains("--json"))
                 #expect(result.stderr == "")
             }
@@ -101,6 +102,22 @@ struct `'wendy build'` {
                 #expect(
                     result.stderr.contains("--dockerfile cannot be used with --build-type=swift")
                 )
+            }
+        }
+    }
+
+    /**
+     Keeps the friendly redirect for callers that try remote building while
+     avoiding advertising an option this command cannot honour.
+     */
+    @Test
+    func `redirects unsupported remote builds to wendy run`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy build --build-host spark-office") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("supported by `wendy run`, not `wendy build`"))
+                #expect(result.stderr.contains("use `wendy run --build-host` instead"))
             }
         }
     }

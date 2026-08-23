@@ -1,6 +1,7 @@
 package containerd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -593,6 +594,20 @@ func TestInjectOTELEnvSetsServiceNameAndResourceAttrs(t *testing.T) {
 	}
 	if !wantAttrs {
 		t.Errorf("env missing OTEL_RESOURCE_ATTRIBUTES=wendy.app.name=my-app; got %v", env)
+	}
+}
+
+func TestInjectOTELEnvUsesContainerNameForMultiServiceIdentity(t *testing.T) {
+	cfg := hostNetworkCfgWithID("robot")
+	cfg.ServiceName = "listener"
+
+	env := injectOTELEnvIfNeeded(nil, cfg, "robot")
+
+	if !slices.Contains(env, "OTEL_SERVICE_NAME=robot_listener") {
+		t.Errorf("env missing multi-service OTEL_SERVICE_NAME; got %v", env)
+	}
+	if !slices.Contains(env, "OTEL_RESOURCE_ATTRIBUTES=wendy.app.name=robot") {
+		t.Errorf("env missing owning app resource attribute; got %v", env)
 	}
 }
 
@@ -1418,6 +1433,17 @@ func TestSuppressRestartsNoopWhenNoMonitor(t *testing.T) {
 		t.Fatal("suppressRestarts returned a nil func with no monitor wired")
 	}
 	resume() // must not panic
+}
+
+func TestStartContainerRejectsStartWhileAppStopping(t *testing.T) {
+	c := &Client{
+		namespace:   "default",
+		appStopping: map[string]bool{"com.example.app": true},
+	}
+	_, err := c.StartContainer(context.Background(), "com.example.app", "", nil)
+	if !errors.Is(err, errAppStopping) {
+		t.Fatalf("StartContainer error = %v; want errAppStopping", err)
+	}
 }
 
 // TestSuppressRestartsDelegatesToMonitor verifies suppressRestarts forwards

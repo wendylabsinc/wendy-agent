@@ -15,9 +15,8 @@ import (
 	"golang.org/x/term"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
-	"google.golang.org/grpc/status"
 )
 
 func newCameraCmd() *cobra.Command {
@@ -322,23 +321,20 @@ func (s *cameraDiagnosticStream) Recv() (*agentpb.VideoFrame, error) {
 // cameraStreamDiagnostic turns machine-readable agent errors into the action the
 // operator should take. Every reason the agent can attach names its own fix.
 func cameraStreamDiagnostic(err error) error {
-	st, ok := status.FromError(err)
-	if !ok {
+	info := streamreason.Info(err)
+	if info == nil {
 		return err
 	}
-	for _, detail := range st.Details() {
-		info, ok := detail.(*errdetails.ErrorInfo)
-		if !ok {
-			continue
-		}
-		switch info.GetReason() {
-		case "TEGRA_FIRMWARE_MISMATCH":
-			rootfs, boot := info.GetMetadata()["rootfs_l4t"], info.GetMetadata()["boot_firmware_l4t"]
-			return fmt.Errorf("Jetson CSI camera is unavailable because the rootfs (%s) and boot firmware (%s) are from different L4T families. Run `wendy os install`, choose this Jetson, and perform full USB recovery (do not use --rootfs-only)", rootfs, boot)
-		case "IP_CAMERA_NO_CREDENTIALS":
-			id := info.GetMetadata()["device_id"]
-			return fmt.Errorf("camera %s has no stored credentials. Run `wendy device camera login %s`", id, id)
-		}
+	switch info.GetReason() {
+	case streamreason.TegraFirmwareMismatch:
+		rootfs, boot := info.GetMetadata()["rootfs_l4t"], info.GetMetadata()["boot_firmware_l4t"]
+		return fmt.Errorf("Jetson CSI camera is unavailable because the rootfs (%s) and boot firmware (%s) are from different L4T families. Run `wendy os install`, choose this Jetson, and perform full USB recovery (do not use --rootfs-only)", rootfs, boot)
+	case streamreason.IPCameraNoCredentials:
+		id := info.GetMetadata()["device_id"]
+		return fmt.Errorf("camera %s has no stored credentials. Run `wendy device camera login %s`", id, id)
+	case streamreason.CameraInUse:
+		device := info.GetMetadata()["device"]
+		return fmt.Errorf("camera %s is held by another application on this device and could not be shared with it. Stop the app holding it, then retry", device)
 	}
 	return err
 }
