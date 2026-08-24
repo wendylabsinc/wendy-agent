@@ -154,9 +154,10 @@ type JedecID struct {
 
 // espFlasher handles serial communication with the ESP32 bootloader.
 type espFlasher struct {
-	port serial.Port
-	chip chipModel
-	regs *chipRegs
+	port        serial.Port
+	chip        chipModel
+	regs        *chipRegs
+	readTimeout time.Duration
 }
 
 func isPermissionDenied(err error) bool {
@@ -250,7 +251,11 @@ func slipEncode(data []byte) []byte {
 // of an error).
 func (f *espFlasher) readByte() (byte, error) {
 	buf := make([]byte, 1)
-	deadline := time.Now().Add(espCmdTimeout)
+	timeout := f.readTimeout
+	if timeout <= 0 {
+		timeout = espCmdTimeout
+	}
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		n, err := f.port.Read(buf)
 		if err != nil {
@@ -262,6 +267,14 @@ func (f *espFlasher) readByte() (byte, error) {
 		// n == 0: port timeout, but our deadline hasn't passed — retry.
 	}
 	return 0, fmt.Errorf("serial read timed out")
+}
+
+func (f *espFlasher) setReadTimeout(timeout time.Duration) {
+	f.readTimeout = timeout
+	// Preserve the existing behavior of surfacing any ensuing Read failure;
+	// go.bug.st/serial only reports invalid timeouts here, and all callers use
+	// positive constants.
+	_ = f.port.SetReadTimeout(timeout)
 }
 
 // Ensure that all bytes are sent.
@@ -314,21 +327,20 @@ func (f *espFlasher) slipDecode() ([]byte, error) {
 
 			switch b {
 			case slipEnd:
-				// End of frame. Skip empty frames (consecutive 0xC0 bytes).
+				// End of frame. With consecutive delimiters this byte is also
+				// the start of the next frame, so remain inside the frame-reading
+				// loop. Returning to the outer start-marker scan would consume the
+				// next frame's data as garbage and discard its closing delimiter.
 				if len(frame) > 0 {
 					return frame, nil
 				}
-				// Empty frame — the outer loop will look for the next one.
-				// But this 0xC0 could itself be the start of the next frame,
-				// so break out of the inner loop and fall through.
-				goto nextFrame
+				continue
 			case slipEsc:
 				escaped = true
 			default:
 				frame = append(frame, b)
 			}
 		}
-	nextFrame:
 	}
 }
 
@@ -394,16 +406,15 @@ func (f *espFlasher) sendCommand(opcode byte, data []byte, checksum byte) ([]byt
 	return nil, fmt.Errorf("no valid response for 0x%02x after 10 frames", opcode)
 }
 
-// drain discards any pending data in the serial receive buffer.
-func (f *espFlasher) drain() {
-	f.port.SetReadTimeout(50 * time.Millisecond)
-	buf := make([]byte, 512)
-	for {
-		n, _ := f.port.Read(buf)
-		if n == 0 {
-			break
-		}
+// drain discards any pending data in the serial receive buffer. Using the
+// driver's purge operation is important here: a running application may emit
+// serial output continuously, so reading until a quiet interval can loop
+// forever when a reset failed to enter the ROM bootloader.
+func (f *espFlasher) drain() error {
+	if err := f.port.ResetInputBuffer(); err != nil {
+		return fmt.Errorf("resetting serial input buffer: %w", err)
 	}
+	return nil
 }
 
 // sync synchronizes with the ESP32 bootloader.
@@ -419,12 +430,14 @@ func (f *espFlasher) sync() error {
 	}
 
 	for attempt := 0; attempt < 10; attempt++ {
-		f.port.SetReadTimeout(espSyncTimeout)
+		f.setReadTimeout(espSyncTimeout)
 		_, err := f.sendCommand(espCmdSync, data, 0)
 		if err == nil {
 			// Drain extra sync responses (bootloader sends multiple).
-			f.drain()
-			f.port.SetReadTimeout(espCmdTimeout)
+			if err := f.drain(); err != nil {
+				return err
+			}
+			f.setReadTimeout(espCmdTimeout)
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -435,17 +448,17 @@ func (f *espFlasher) sync() error {
 
 // changeBaudRate switches the bootloader to a faster baud rate.
 func (f *espFlasher) changeBaudRate(newBaud int) error {
-	data := make([]byte, 8)
-	binary.LittleEndian.PutUint32(data[0:4], uint32(newBaud))
-	binary.LittleEndian.PutUint32(data[4:8], uint32(initialBaudRate))
+	data := changeBaudCommandData(newBaud)
 
-	f.port.SetReadTimeout(espCmdTimeout)
+	f.setReadTimeout(espCmdTimeout)
 	if _, err := f.sendCommand(espCmdChangeBaud, data, 0); err != nil {
 		return fmt.Errorf("changing baud rate: %w", err)
 	}
 
 	// Drain any data still at the old baud rate before switching.
-	f.drain()
+	if err := f.drain(); err != nil {
+		return err
+	}
 
 	// Reconfigure the serial port to the new baud rate.
 	if err := f.port.SetMode(&serial.Mode{
@@ -460,9 +473,21 @@ func (f *espFlasher) changeBaudRate(newBaud int) error {
 	// Wait for the bootloader to settle at the new rate, then drain
 	// any transition garbage.
 	time.Sleep(100 * time.Millisecond)
-	f.drain()
+	if err := f.drain(); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func changeBaudCommandData(newBaud int) []byte {
+	data := make([]byte, 8)
+	binary.LittleEndian.PutUint32(data[0:4], uint32(newBaud))
+	// The second argument is the old baud only when talking to an uploaded
+	// flasher stub. Wendy talks directly to the ROM bootloader, which requires
+	// this field to be zero (matching esptool's ESPLoader.change_baud).
+	binary.LittleEndian.PutUint32(data[4:8], 0)
+	return data
 }
 
 // detectChip sends GET_SECURITY_INFO (0x14), extracts the chip_id from the
@@ -480,7 +505,7 @@ func (f *espFlasher) changeBaudRate(newBaud int) error {
 //	  [20:24] api_version
 //	[24:26] status bytes (esptool places them after the data)
 func (f *espFlasher) detectChip() error {
-	f.port.SetReadTimeout(espCmdTimeout)
+	f.setReadTimeout(espCmdTimeout)
 	resp, err := f.sendCommand(espCmdGetSecurityInfo, nil, 0)
 	if err != nil {
 		return fmt.Errorf("get security info: %w", err)
@@ -514,7 +539,7 @@ func (f *espFlasher) detectChip() error {
 func (f *espFlasher) readReg(addr uint32) (uint32, error) {
 	data := make([]byte, 4)
 	binary.LittleEndian.PutUint32(data, addr)
-	f.port.SetReadTimeout(espCmdTimeout)
+	f.setReadTimeout(espCmdTimeout)
 	result, err := f.sendCommand(espCmdReadReg, data, 0)
 	if err != nil {
 		return 0, err
@@ -536,7 +561,7 @@ func (f *espFlasher) writeReg(addr, value, mask, delay uint32) error {
 	binary.LittleEndian.PutUint32(data[4:8], value)
 	binary.LittleEndian.PutUint32(data[8:12], mask)
 	binary.LittleEndian.PutUint32(data[12:16], delay)
-	f.port.SetReadTimeout(espCmdTimeout)
+	f.setReadTimeout(espCmdTimeout)
 	_, err := f.sendCommand(espCmdWriteReg, data, 0)
 	return err
 }
@@ -544,7 +569,7 @@ func (f *espFlasher) writeReg(addr, value, mask, delay uint32) error {
 // spiAttach attaches the SPI flash.
 func (f *espFlasher) spiAttach() error {
 	data := make([]byte, 8)
-	f.port.SetReadTimeout(espCmdTimeout)
+	f.setReadTimeout(espCmdTimeout)
 	_, err := f.sendCommand(espCmdSPIAttach, data, 0)
 	return err
 }
@@ -783,7 +808,7 @@ func (f *espFlasher) spiSetParams(totalSize uint32) error {
 	binary.LittleEndian.PutUint32(data[16:20], 256)     // page size
 	binary.LittleEndian.PutUint32(data[20:24], 0xFFFF)  // status mask
 
-	f.port.SetReadTimeout(espCmdTimeout)
+	f.setReadTimeout(espCmdTimeout)
 	_, err := f.sendCommand(espCmdSPISetParams, data, 0)
 	return err
 }
@@ -797,7 +822,7 @@ func (f *espFlasher) flashBegin(size, blockCount, blockSize, offset uint32) erro
 	binary.LittleEndian.PutUint32(data[12:16], offset)
 	binary.LittleEndian.PutUint32(data[16:20], 0) // 0 = no encryption
 
-	f.port.SetReadTimeout(30 * time.Second) // erase can be slow
+	f.setReadTimeout(30 * time.Second) // erase can be slow
 	_, err := f.sendCommand(espCmdFlashBegin, data, 0)
 	return err
 }
@@ -818,7 +843,7 @@ func (f *espFlasher) flashData(block []byte, seq uint32) error {
 		checksum ^= b
 	}
 
-	f.port.SetReadTimeout(espCmdTimeout)
+	f.setReadTimeout(espCmdTimeout)
 	_, err := f.sendCommand(espCmdFlashData, data, checksum)
 	return err
 }
@@ -830,27 +855,47 @@ func (f *espFlasher) flashEnd(reboot bool) error {
 		binary.LittleEndian.PutUint32(data, 1) // 1 = don't reboot
 	}
 
-	f.port.SetReadTimeout(espCmdTimeout)
+	f.setReadTimeout(espCmdTimeout)
 	_, err := f.sendCommand(espCmdFlashEnd, data, 0)
 	return err
 }
 
-// Reset the chip and eventually enter download mode.
-// It uses the ESP32 USB-Serial/JTAG peripheral. ESP-IDF's USB-JTAG driver watches for this
-// specific DTR/RTS pattern and triggers a software reset into download mode.
-// This matches esptool's USBJTAGSerialReset strategy.
-func espResetViaUsbJtag(port serial.Port, enterBootloader bool) {
-	port.SetDTR(false)
-	port.SetRTS(false)
+// espResetViaUSBJTAG matches esptool's USBJTAGSerialReset strategy for the
+// ESP32's native USB Serial/JTAG peripheral.
+func espResetViaUSBJTAG(port serial.Port, enterBootloader bool) error {
+	if err := port.SetRTS(false); err != nil {
+		return fmt.Errorf("setting RTS idle: %w", err)
+	}
+	if err := port.SetDTR(false); err != nil {
+		return fmt.Errorf("setting DTR idle: %w", err)
+	}
 	time.Sleep(100 * time.Millisecond)
-	port.SetDTR(enterBootloader) // GPIO0=LOW (download mode selected)
-	port.SetRTS(false)
+	if err := port.SetDTR(enterBootloader); err != nil {
+		return fmt.Errorf("setting DTR boot mode: %w", err)
+	}
+	if err := port.SetRTS(false); err != nil {
+		return fmt.Errorf("holding RTS idle: %w", err)
+	}
 	time.Sleep(100 * time.Millisecond)
-	port.SetRTS(true) // EN=LOW (assert reset)
-	port.SetDTR(false)
+	if err := port.SetRTS(true); err != nil {
+		return fmt.Errorf("asserting reset: %w", err)
+	}
+	if err := port.SetDTR(false); err != nil {
+		return fmt.Errorf("releasing boot mode: %w", err)
+	}
+	// Repeat RTS for Windows usbser.sys, which may only propagate the updated
+	// DTR value when RTS is set again.
+	if err := port.SetRTS(true); err != nil {
+		return fmt.Errorf("holding reset: %w", err)
+	}
 	time.Sleep(100 * time.Millisecond)
-	port.SetRTS(false) // EN=HIGH (release reset → boots into download mode)
-	time.Sleep(50 * time.Millisecond)
+	if err := port.SetDTR(false); err != nil {
+		return fmt.Errorf("holding DTR idle: %w", err)
+	}
+	if err := port.SetRTS(false); err != nil {
+		return fmt.Errorf("releasing reset: %w", err)
+	}
+	return nil
 }
 
 // flashFirmware is the main entry point: flash a .bin file to the ESP32.
@@ -899,15 +944,19 @@ func flashFirmwareBytes(portPath string, firmware []byte, progressFn func(pct fl
 	defer func() { f.port.Close() }()
 
 	// Step 1: Enter bootloader.
-	espResetViaUsbJtag(port, true)
+	if err := espResetViaUSBJTAG(port, true); err != nil {
+		return fmt.Errorf("entering bootloader: %w", err)
+	}
 	f.port.Close()
-	time.Sleep(1500 * time.Millisecond) // wait for USB re-enumeration
+	time.Sleep(1500 * time.Millisecond) // wait for native USB re-enumeration
 	newPort, err := serial.Open(portPath, mode)
 	if err != nil {
 		return fmt.Errorf("reopening port after reset: %w", err)
 	}
 	f.port = newPort
-	f.drain()
+	if err := f.drain(); err != nil {
+		return fmt.Errorf("draining serial input before sync: %w", err)
+	}
 
 	// Verify that the bootloader is responding
 	if err := f.sync(); err != nil {
@@ -988,7 +1037,9 @@ func flashFirmwareBytes(portPath string, firmware []byte, progressFn func(pct fl
 
 	// Step 9: Reboot.
 	// Please note that we never succeeded in using flashEnd() here.
-	espResetViaUsbJtag(f.port, false)
+	if err := espResetViaUSBJTAG(f.port, false); err != nil {
+		return fmt.Errorf("resetting after flash: %w", err)
+	}
 
 	return nil
 }
