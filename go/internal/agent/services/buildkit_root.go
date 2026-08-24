@@ -1,0 +1,153 @@
+package services
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"syscall"
+)
+
+// defaultBuildkitRoot is buildkitd's own default for --root.
+//
+// On a general-purpose Linux box this is unremarkable. On an image-based OS it
+// is the A/B root filesystem: measured on a Jetson AGX Thor running WendyOS,
+// 12 GB with 4.6 GB free, beside a /data partition with 862 GB. A TensorRT build
+// cache fills the partition the OS boots from, so getting this wrong damages a
+// device rather than failing a build.
+const defaultBuildkitRoot = "/var/lib/buildkit"
+
+// buildkitConfigPath is where buildkitd looks for its config unless told
+// otherwise, per `buildkitd --help`.
+const buildkitConfigPath = "/etc/buildkit/buildkitd.toml"
+
+// procRootFlag matches `--root <path>` or `--root=<path>` in a NUL-separated
+// /proc cmdline.
+var procRootFlag = regexp.MustCompile(`--root[=\x00]([^\x00]+)`)
+
+// buildkitRoot reports where the RUNNING buildkitd keeps its state, preferring
+// evidence over assumption:
+//
+//  1. the daemon's own command line — authoritative, because a flag beats any
+//     file it might also have read;
+//  2. the config file's `root =` — what a daemon started without the flag uses;
+//  3. buildkitd's documented default.
+//
+// The order matters. Reading only the config would report a path the daemon is
+// not using the moment someone passes --root, which is exactly what a WendyOS
+// install has to do — and a wrong path here produces a confident, wrong
+// free-space number, which is worse than no number at all.
+//
+// An empty return means "could not determine", and callers must not read that
+// as safe.
+func buildkitRoot(procDir string) string {
+	if p := rootFromRunningDaemon(procDir); p != "" {
+		return p
+	}
+	if p := rootFromConfig(buildkitConfigPath); p != "" {
+		return p
+	}
+	return defaultBuildkitRoot
+}
+
+// rootFromRunningDaemon scans /proc for a buildkitd process and returns the
+// --root it was started with, if any. A daemon running without the flag returns
+// empty rather than the default, so the caller can fall through to the config.
+//
+// Known limit: with more than one buildkitd running, this reports the first one
+// /proc yields, which is not necessarily the one holding the socket the agent
+// builds through. Observed while testing, by starting a second daemon by hand.
+// Not worth resolving by parsing --addr and matching the socket: two daemons on
+// one host is a broken state either way, and a wrong-but-plausible root here is
+// still better than the alternative of reporting nothing.
+func rootFromRunningDaemon(procDir string) string {
+	entries, err := os.ReadDir(procDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(procDir, e.Name(), "cmdline"))
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		// argv[0] only: matching anywhere would also hit the `buildctl` client
+		// and any shell that merely mentions buildkitd.
+		argv0 := string(raw)
+		if i := strings.IndexByte(argv0, 0); i >= 0 {
+			argv0 = argv0[:i]
+		}
+		if filepath.Base(argv0) != "buildkitd" {
+			continue
+		}
+		if m := procRootFlag.FindSubmatch(raw); m != nil {
+			return strings.TrimSpace(string(m[1]))
+		}
+		// Found the daemon, started without --root. Let the config decide.
+		return ""
+	}
+	return ""
+}
+
+// rootFromConfig reads `root = "..."` out of buildkitd.toml.
+//
+// Deliberately a line scan rather than a TOML parser: this is one top-level
+// key, the agent has no TOML dependency, and a malformed file must degrade to
+// "unknown" instead of failing the capabilities RPC that a developer is using
+// to find out what is wrong.
+func rootFromConfig(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Only the top-level key. A `root` inside a [worker.*] table means
+		// something else, and tables always come after it.
+		if strings.HasPrefix(line, "[") {
+			break
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(k) != "root" {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(v), `"'`)
+	}
+	return ""
+}
+
+// buildkitRootSpace reports total and available bytes for the filesystem
+// holding path, walking up to the nearest existing ancestor.
+//
+// The walk matters: the state directory does not exist until the daemon's first
+// build, and reporting zero for a path that is merely absent would look
+// identical to a full disk.
+//
+// Named for its caller rather than "diskUsage", which is already a struct in
+// this package describing used/total for the device-info path.
+func buildkitRootSpace(path string) (total, free uint64) {
+	if path == "" {
+		return 0, 0
+	}
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		var st syscall.Statfs_t
+		if err := syscall.Statfs(p, &st); err == nil {
+			bs := uint64(st.Bsize)
+			// Available-to-unprivileged, not free: buildkitd runs as root here,
+			// but reporting the larger number would overstate headroom on any
+			// filesystem with reserved blocks.
+			if bs == 0 {
+				return 0, 0
+			}
+			return st.Blocks * bs, st.Bavail * bs
+		}
+		if p == "/" || p == "." {
+			return 0, 0
+		}
+	}
+}

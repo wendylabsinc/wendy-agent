@@ -319,6 +319,13 @@ func (s *BuildService) GetBuildCapabilities(_ context.Context, _ *agentpbv2.GetB
 		// fast CLI refusal into a slow, mysterious remote failure.
 		resp.NativePlatforms = []string{runtime.GOOS + "/" + runtime.GOARCH}
 		resp.BuildkitVersion = buildctlVersion()
+
+		// Where the cache lands, and how much room is there. Reported even when
+		// it looks fine, so a client can decide rather than guess -- see
+		// buildkitRoot for why the default is dangerous on an image-based OS.
+		root := buildkitRoot("/proc")
+		resp.BuildkitRoot = root
+		resp.BuildkitRootTotalBytes, resp.BuildkitRootFreeBytes = buildkitRootSpace(root)
 	}
 	return resp, nil
 }

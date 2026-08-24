@@ -551,3 +551,82 @@ func TestCheckBuildHostCapabilities_NamesTheRemedy(t *testing.T) {
 		t.Errorf("the error must say what to install and where; got %q", err)
 	}
 }
+
+// TestCheckBuildkitRootSpace_RefusesADangerouslyFullFilesystem is the case that
+// motivated this: a Jetson AGX Thor whose default cache location had 4.6 GB free
+// on the A/B root filesystem, beside a data partition with 862 GB. A build cache
+// there fills the partition the OS boots from.
+func TestCheckBuildkitRootSpace_RefusesADangerouslyFullFilesystem(t *testing.T) {
+	err := checkBuildkitRootSpace("joannis-agx-thor", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuildkitRoot:           "/var/lib/buildkit",
+		BuildkitRootFreeBytes:  4600 * 1000 * 1000,
+		BuildkitRootTotalBytes: 12 * 1000 * 1000 * 1000,
+	})
+	if err == nil {
+		t.Fatal("want a refusal when the cache filesystem is nearly full")
+	}
+	for _, want := range []string{"/var/lib/buildkit", "--root", "joannis-agx-thor"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must name %q so it is actionable; got %q", want, err)
+		}
+	}
+}
+
+// A roomy filesystem must pass silently.
+func TestCheckBuildkitRootSpace_AllowsARoomyFilesystem(t *testing.T) {
+	if err := checkBuildkitRootSpace("spark3", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuildkitRoot:           "/data/buildkit/root",
+		BuildkitRootFreeBytes:  800 << 30,
+		BuildkitRootTotalBytes: 900 << 30,
+	}); err != nil {
+		t.Fatalf("a large partition must be accepted: %v", err)
+	}
+}
+
+// TestCheckBuildkitRootSpace_SilentWhenTheAgentCannotAnswer: an agent predating
+// these fields reports nothing. Treating unknown as empty would refuse every
+// existing build host — turning a safety check into an outage.
+func TestCheckBuildkitRootSpace_SilentWhenTheAgentCannotAnswer(t *testing.T) {
+	if err := checkBuildkitRootSpace("older-agent", &agentpbv2.GetBuildCapabilitiesResponse{}); err != nil {
+		t.Fatalf("an agent that cannot report must not be refused: %v", err)
+	}
+	// Root known but the filesystem unreadable: still not evidence of a problem.
+	if err := checkBuildkitRootSpace("older-agent", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuildkitRoot: "/var/lib/buildkit",
+	}); err != nil {
+		t.Fatalf("an unreadable filesystem must not be refused: %v", err)
+	}
+}
+
+// TestCheckBuildHostCapabilities_ExplainsAVanishedDaemon: on an image-based OS
+// the opt-in marker lives on the data partition and survives an OS update, while
+// a buildkitd installed on the A/B rootfs does not — so "enabled but no
+// BuildKit" is a specific, diagnosable state rather than a generic absence.
+func TestCheckBuildHostCapabilities_ExplainsAVanishedDaemon(t *testing.T) {
+	err := checkBuildHostCapabilities("joannis-agx-thor", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuilderEnabled:    true,
+		BuildkitAvailable: false,
+		Os:                "wendyos",
+	}, "linux/arm64")
+	if err == nil {
+		t.Fatal("want a refusal when the daemon is gone")
+	}
+	if !strings.Contains(err.Error(), "OS update") {
+		t.Errorf("the error should name the likely cause; got %q", err)
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	for _, tc := range []struct {
+		in   uint64
+		want string
+	}{
+		{4600 * 1000 * 1000, "4.3 GiB"},
+		{800 << 20, "800 MiB"},
+		{512, "512 B"},
+	} {
+		if got := humanBytes(tc.in); got != tc.want {
+			t.Errorf("humanBytes(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
