@@ -1,0 +1,6 @@
+{
+  "appId": "sh.wendy.examples.esp32c6-neopixel-wasm",
+  "version": "0.1.0",
+  "platform": "wendy-lite",
+  "entitlements": []
+}

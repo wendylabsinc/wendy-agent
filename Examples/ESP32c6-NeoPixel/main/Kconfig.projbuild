@@ -1,0 +1,31 @@
+menu "NeoPixel Configuration"
+
+    config NEOPIXEL_GPIO
+        int "NeoPixel data GPIO"
+        range 0 30
+        default 8
+        help
+            GPIO connected to the NeoPixel data input. GPIO 8 is the onboard
+            addressable LED on common ESP32-C6-DevKitC-1 boards.
+
+    config NEOPIXEL_COUNT
+        int "Number of pixels"
+        range 1 256
+        default 1
+        help
+            Number of pixels connected in the strip.
+
+    config NEOPIXEL_BRIGHTNESS
+        int "Channel brightness"
+        range 1 255
+        default 32
+        help
+            Active RGB channel value. The conservative default limits current
+            draw while still being clearly visible.
+
+    config NEOPIXEL_STEP_DELAY_MS
+        int "Delay between colors (milliseconds)"
+        range 10 60000
+        default 750
+
+endmenu
