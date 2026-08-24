@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -13,7 +14,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	grpcgzip "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/status"
 )
 
@@ -25,6 +28,12 @@ import (
 // already parallelized across cores (chunk.ChunkReaderAt), so this need not
 // equal the core count.
 const maxConcurrentLayerPush = 4
+
+// maxChunksPerWriteStream bounds one client-streaming WriteChunks RPC. Closing
+// each small batch gets an application-level acknowledgement, limits how much
+// progress can be reported before the receiver confirms it, and starts a fresh
+// HTTP/2 stream at negligible overhead (at most 4 MiB per batch).
+const maxChunksPerWriteStream = 64
 
 // chunkTransferProgressWriter is implemented by interactive build output
 // adapters that can display chunk-upload bytes directly. Keeping this as an
@@ -619,7 +628,7 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 	orderedHashes := r.header.GetChunkHashes()
 	qresp, err := cs.QueryChunks(ctx, &agentpb.QueryChunksRequest{ChunkHashes: orderedHashes})
 	if err != nil {
-		return err
+		return fmt.Errorf("querying missing chunks for layer %s: %w", r.header.GetDiffId(), err)
 	}
 	missing := make(map[[32]byte]bool, len(qresp.GetMissingHashes()))
 	for _, hb := range qresp.GetMissingHashes() {
@@ -645,30 +654,59 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 		}
 		transferProgress.addTotal(missingBytes)
 		prog.LayerPlanned(len(orderedHashes), len(missing), missingBytes)
-		wc, err := cs.WriteChunks(ctx)
-		if err != nil {
-			return err
-		}
-		for _, ref := range r.refs {
+		var wc grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]
+		chunksInStream := 0
+		for chunkIndex, ref := range r.refs {
 			if !missing[ref.Hash] {
 				continue
 			}
-			buf := make([]byte, ref.Len) // ref.Len <= chunk.MaxSize (256 KiB)
+			if wc == nil {
+				// Hardware reproduction showed that particular raw chunk payloads can
+				// stall a USB-NCM link while the compressed registry path succeeds.
+				// Give the fast path the same property; gRPC decompresses the message
+				// before the agent hashes and stages the original bytes.
+				wc, err = cs.WriteChunks(ctx, grpc.UseCompressor(grpcgzip.Name))
+				if err != nil {
+					return fmt.Errorf("opening chunk upload for layer %s: %w", r.header.GetDiffId(), err)
+				}
+			}
+			buf := make([]byte, ref.Len) // ref.Len <= chunk.MaxSize (64 KiB)
 			if _, err := r.dl.f.ReadAt(buf, int64(ref.Offset)); err != nil {
-				return err
+				return fmt.Errorf("reading chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
 			}
 			hb := ref.Hash // copy
 			if err := wc.Send(&agentpb.WriteChunksRequest{
 				Hash: hb[:],
 				Data: buf,
 			}); err != nil {
-				return err
+				// grpc-go reports io.EOF from Send when the server has already
+				// closed a client-streaming RPC. CloseAndRecv carries the actual
+				// terminal status (for example ResourceExhausted or InvalidArgument);
+				// without this read the CLI hides the actionable agent error behind
+				// a bare EOF and incorrectly treats it as a transport drop.
+				if errors.Is(err, io.EOF) {
+					if _, terminalErr := wc.CloseAndRecv(); terminalErr != nil {
+						err = terminalErr
+					}
+				}
+				return fmt.Errorf("sending chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
 			}
 			prog.ChunkSent(len(buf))
 			transferProgress.addSent(int64(len(buf)))
+			chunksInStream++
+			if chunksInStream == maxChunksPerWriteStream {
+				if _, err := wc.CloseAndRecv(); err != nil {
+					return fmt.Errorf("closing chunk upload batch after chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
+				}
+				wc = nil
+				chunksInStream = 0
+			}
 		}
-		if _, err := wc.CloseAndRecv(); err != nil {
-			return err
+		if wc != nil {
+			_, err = wc.CloseAndRecv()
+		}
+		if err != nil {
+			return fmt.Errorf("closing chunk upload for layer %s: %w", r.header.GetDiffId(), err)
 		}
 	} else {
 		prog.LayerPlanned(len(orderedHashes), 0, 0)

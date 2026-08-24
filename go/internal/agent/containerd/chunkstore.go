@@ -22,7 +22,7 @@ import (
 )
 
 // maxStagedChunkBytes bounds a single staged chunk. The CDC chunker emits
-// chunks of at most chunk.MaxSize (256 KiB); this 4 MiB ceiling leaves ample
+// chunks of at most chunk.MaxSize (64 KiB); this 4 MiB ceiling leaves ample
 // headroom for legitimate clients while rejecting absurdly large payloads.
 const maxStagedChunkBytes = 4 << 20
 

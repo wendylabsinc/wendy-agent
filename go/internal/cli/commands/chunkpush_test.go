@@ -28,6 +28,18 @@ type imagePreparationRecorder struct {
 	called chan struct{}
 }
 
+func variedChunkTestData(n int) []byte {
+	data := make([]byte, n)
+	state := uint32(0x6d2b79f5)
+	for i := range data {
+		state ^= state << 13
+		state ^= state >> 17
+		state ^= state << 5
+		data[i] = byte(state)
+	}
+	return data
+}
+
 func (r *imagePreparationRecorder) ReportImagePreparation() {
 	r.once.Do(func() { close(r.called) })
 }
@@ -124,7 +136,9 @@ type fakeContainerClient struct {
 	queryFn                             func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse
 	queryLayersFn                       func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse
 	writeFn                             func(*agentpb.WriteChunksRequest) error
+	closeErr                            error
 	chunksWritten                       int
+	writeStreams                        int
 	writeStarted                        chan struct{}
 	blockWrites                         bool
 	writeOnce                           sync.Once
@@ -313,6 +327,7 @@ func (f *fakeContainerClient) QueryLayers(_ context.Context, in *agentpb.QueryLa
 }
 
 func (f *fakeContainerClient) WriteChunks(ctx context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse], error) {
+	f.writeStreams++
 	return &fakeWriteChunksStream{parent: f, ctx: ctx}, nil
 }
 
@@ -339,7 +354,60 @@ func (s *fakeWriteChunksStream) Send(req *agentpb.WriteChunksRequest) error {
 }
 
 func (s *fakeWriteChunksStream) CloseAndRecv() (*agentpb.WriteChunksResponse, error) {
-	return &agentpb.WriteChunksResponse{}, nil
+	return &agentpb.WriteChunksResponse{}, s.parent.closeErr
+}
+
+func TestPushLayerByChunksSurfacesTerminalWriteStatusAfterSendEOF(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := []byte("one missing chunk")
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{MissingHashes: req.GetChunkHashes()}
+		},
+		writeFn: func(*agentpb.WriteChunksRequest) error { return io.EOF },
+		closeErr: status.Error(codes.ResourceExhausted,
+			"chunk staging exceeds the device limit"),
+	}
+
+	_, err := pushLayerByChunks(context.Background(), fake, localLayer{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("error = %v, want ResourceExhausted terminal status", err)
+	}
+	if !strings.Contains(err.Error(), "chunk staging exceeds the device limit") {
+		t.Fatalf("error = %q, want terminal server detail", err)
+	}
+}
+
+func TestPushLayerByChunksBatchesLongUploads(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := variedChunkTestData((maxChunksPerWriteStream + 8) * int(chunk.MaxSize))
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{MissingHashes: req.GetChunkHashes()}
+		},
+	}
+	if _, err := pushLayerByChunks(context.Background(), fake, localLayer{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.chunksWritten <= maxChunksPerWriteStream {
+		t.Fatalf("fixture wrote %d chunks, want more than one %d-chunk batch", fake.chunksWritten, maxChunksPerWriteStream)
+	}
+	wantStreams := (fake.chunksWritten + maxChunksPerWriteStream - 1) / maxChunksPerWriteStream
+	if fake.writeStreams != wantStreams {
+		t.Fatalf("WriteChunks streams = %d, want %d for %d chunks", fake.writeStreams, wantStreams, fake.chunksWritten)
+	}
 }
 
 func TestPushLayersByChunksWritesOnlyMissing(t *testing.T) {
@@ -348,7 +416,7 @@ func TestPushLayersByChunksWritesOnlyMissing(t *testing.T) {
 	manifestCacheTestDir = t.TempDir()
 	t.Cleanup(func() { manifestCacheTestDir = "" })
 
-	layerTar := bytes.Repeat([]byte("abc"), 300_000) // multi-chunk
+	layerTar := variedChunkTestData(900_000) // multi-chunk with distinct hashes
 	refs, err := chunk.Chunk(bytes.NewReader(layerTar))
 	if err != nil {
 		t.Fatalf("chunk.Chunk: %v", err)
@@ -497,7 +565,7 @@ func TestPushLayersByChunksReportsProgress(t *testing.T) {
 	manifestCacheTestDir = t.TempDir()
 	t.Cleanup(func() { manifestCacheTestDir = "" })
 
-	layerTar := bytes.Repeat([]byte("abc"), 300_000) // multi-chunk
+	layerTar := variedChunkTestData(900_000) // multi-chunk with distinct hashes
 	refs, err := chunk.Chunk(bytes.NewReader(layerTar))
 	if err != nil {
 		t.Fatalf("chunk.Chunk: %v", err)
