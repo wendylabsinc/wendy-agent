@@ -28,6 +28,9 @@ type fakeContainerd struct {
 	migrateCalls  int
 	rebuildCalls  int
 	probeCalls    int
+	// listedBoot records that the boot listing has happened, so a test can pin
+	// that the DNS wait comes first.
+	listedBoot bool
 }
 
 func (f *fakeContainerd) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
@@ -35,6 +38,7 @@ func (f *fakeContainerd) ListContainers(ctx context.Context) ([]*agentpb.AppCont
 }
 
 func (f *fakeContainerd) ListBootContainers(ctx context.Context) ([]services.BootContainer, error) {
+	f.listedBoot = true
 	return f.bootContainers, nil
 }
 
@@ -475,5 +479,45 @@ func TestProbeExposedPortsInvokesProber(t *testing.T) {
 	defer f.mu.Unlock()
 	if f.probeCalls != 1 {
 		t.Fatalf("WarnPubliclyExposedPorts called %d times, want 1", f.probeCalls)
+	}
+}
+
+// TestReconcileBootContainersWaitsForDNS pins the ordering that matters: the
+// wait happens BEFORE anything starts a container. An app started before the
+// host has a resolver inherits an empty resolv.conf on a read-only tmpfs and
+// can never resolve a hostname, so waiting afterwards would be no better than
+// not waiting at all.
+func TestReconcileBootContainersWaitsForDNS(t *testing.T) {
+	orig := waitForHostDNS
+	t.Cleanup(func() { waitForHostDNS = orig })
+
+	var waitedBeforeListing bool
+	cd := &fakeContainerd{}
+	waitForHostDNS = func(context.Context, time.Duration, func(), func()) bool {
+		waitedBeforeListing = !cd.listedBoot
+		return true
+	}
+
+	m := NewContainerMonitor(zap.NewNop(), cd, nil, time.Minute)
+	m.ReconcileBootContainers(context.Background())
+
+	if !waitedBeforeListing {
+		t.Error("the DNS wait must happen before any container is listed or started")
+	}
+}
+
+// A device that never gets a resolver must still start its apps: plenty are
+// deliberately offline, and refusing to reconcile would strand them.
+func TestReconcileBootContainersProceedsWithoutDNS(t *testing.T) {
+	orig := waitForHostDNS
+	t.Cleanup(func() { waitForHostDNS = orig })
+	waitForHostDNS = func(context.Context, time.Duration, func(), func()) bool { return false }
+
+	cd := &fakeContainerd{}
+	m := NewContainerMonitor(zap.NewNop(), cd, nil, time.Minute)
+	m.ReconcileBootContainers(context.Background())
+
+	if !cd.listedBoot {
+		t.Error("apps must still be reconciled on a host with no DNS")
 	}
 }

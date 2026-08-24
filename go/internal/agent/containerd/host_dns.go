@@ -1,43 +1,10 @@
 package containerd
 
 import (
-	"os"
-	"strings"
-
 	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/hostdns"
 )
-
-// hostResolvConf is the file a container without gateway DNS ends up seeing:
-// containerd propagates the host's, and the container keeps that copy for its
-// whole life.
-const hostResolvConf = "/etc/resolv.conf"
-
-// resolvConfHasNameserver reports whether a resolv.conf names any resolver.
-//
-// Content, not existence. A resolv.conf can exist, be readable, and be useless:
-// systemd-resolved writes "# No DNS servers known." with no nameserver line
-// before it has learned an upstream, and a NetworkManager box has an empty file
-// until DHCP completes.
-func resolvConfHasNameserver(data string) bool {
-	for _, line := range strings.Split(data, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-		field, rest, ok := strings.Cut(line, " ")
-		if !ok {
-			// Also accept a tab-separated line.
-			field, rest, ok = strings.Cut(line, "\t")
-		}
-		if !ok || !strings.EqualFold(strings.TrimSpace(field), "nameserver") {
-			continue
-		}
-		if strings.TrimSpace(rest) != "" {
-			return true
-		}
-	}
-	return false
-}
 
 // warnIfHostHasNoDNS logs when a container is about to start against a host
 // resolv.conf that names no resolver.
@@ -72,22 +39,11 @@ func (c *Client) warnIfHostHasNoDNS(appID string) {
 	if c.logger == nil {
 		return
 	}
-	data, err := os.ReadFile(hostResolvConf)
-	if err != nil {
-		// Absent is as broken as empty, and worth the same warning.
-		c.logger.Warn("container will start with no host DNS configuration; hostname lookups inside it will fail",
-			zap.String("app_id", appID),
-			zap.String("resolv_conf", hostResolvConf),
-			zap.String("reason", "unreadable: "+err.Error()),
-			zap.String("remedy", "give the host a working resolver, then restart this app so it re-reads it"))
-		return
-	}
-	if resolvConfHasNameserver(string(data)) {
+	if hostdns.Configured() {
 		return
 	}
 	c.logger.Warn("container will start with no host DNS configuration; hostname lookups inside it will fail while raw IPs still work",
 		zap.String("app_id", appID),
-		zap.String("resolv_conf", hostResolvConf),
-		zap.String("reason", "no nameserver line"),
+		zap.String("resolv_conf", hostdns.ResolvConf),
 		zap.String("remedy", "give the host a working resolver, then restart this app -- the container keeps a read-only copy and will not pick up a later fix on its own"))
 }

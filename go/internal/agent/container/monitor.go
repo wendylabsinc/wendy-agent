@@ -9,6 +9,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/hostdns"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -287,6 +288,11 @@ func (m *ContainerMonitor) RestartStatuses() map[string]services.RestartStatus {
 	return out
 }
 
+// waitForHostDNS is the seam tests replace, in the style of this repo's other
+// injectable lookups. Without it, a build sandbox with no /etc/resolv.conf would
+// make every boot-reconcile test sit through the full timeout.
+var waitForHostDNS = hostdns.WaitConfigured
+
 // ReconcileBootContainers brings apps back after a device boot. containerd
 // keeps container definitions across a reboot but loses their tasks, so without
 // this every app sits stopped until manually started. It registers each
@@ -298,6 +304,40 @@ func (m *ContainerMonitor) RestartStatuses() map[string]services.RestartStatus {
 // Apps deployed with the default policy (unless-stopped) come back; apps
 // deployed with --no-restart, and apps the user explicitly stopped, stay down.
 func (m *ContainerMonitor) ReconcileBootContainers(ctx context.Context) {
+	// Hold off until the host has a resolver.
+	//
+	// A container that gets no written resolv.conf inherits the host's on a
+	// read-only tmpfs and keeps that copy for its whole life. Starting apps
+	// before DHCP completes therefore does not delay their DNS -- it removes it
+	// permanently, and the app has to be restarted by hand to get it back. The
+	// window is real: wendyos-agent.service orders itself After=network.target,
+	// which means the networking STACK is up, not that an interface has an
+	// address.
+	//
+	// This is the right place for the wait rather than the unit file. Ordering
+	// the whole agent After=network-online.target would leave an offline device
+	// with no agent at all -- no local control and no way to recover it. Here,
+	// the agent is already serving; only app startup waits, and this function
+	// already runs in its own goroutine, so nothing else is held up.
+	//
+	// Bounded, and proceeding on timeout is deliberate: plenty of devices are
+	// deliberately offline and their apps still have to start.
+	if !waitForHostDNS(ctx, hostdns.WaitTimeout,
+		func() {
+			m.logger.Info("Boot reconcile waiting for host DNS before starting apps",
+				zap.String("resolv_conf", hostdns.ResolvConf),
+				zap.Duration("timeout", hostdns.WaitTimeout))
+		},
+		func() {
+			m.logger.Warn("Host still has no DNS; starting apps anyway. Containers started now cannot resolve hostnames and will need restarting once the host has a resolver",
+				zap.String("resolv_conf", hostdns.ResolvConf))
+		},
+	) && ctx.Err() != nil {
+		// Cancelled during the wait: the agent is shutting down, so there is
+		// nothing to reconcile.
+		return
+	}
+
 	// Warm the isolation/service caches from persisted labels before anything
 	// starts a container: after a reboot these in-memory caches are empty, and
 	// StartContainer would otherwise skip CNI networking + mesh egress for
