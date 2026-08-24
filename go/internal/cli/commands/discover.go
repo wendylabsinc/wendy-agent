@@ -870,10 +870,15 @@ func newDiscoverTable(interactive bool) tui.BubbleTable {
 // cloud devices are addressed by name/ID via the broker tunnel, so the IP adds
 // noise. (The interactive `wendy discover` table uses tui.PickerDeviceTableData,
 // not these.) The full address is still available in the clipboard JSON.
+//
+// The Version max must fit a release version in full plus the outdated glyph
+// cloudDiscoverTableRows appends: "2026.08.22-032058 ⚠" is 19 cells, and
+// discoverTableColumns adds 2 for the cell padding. A tighter cap truncated
+// every release version and silently ate the glyph the legend advertises.
 var (
 	discoverTableHeaders   = []string{"", "Name", "Type", "Version"}
 	discoverTableMinWidths = []int{3, 12, 10, 10}
-	discoverTableMaxWidths = []int{3, 33, 20, 16}
+	discoverTableMaxWidths = []int{3, 33, 20, 21}
 )
 
 var deviceTypeNames = map[string]string{
@@ -1012,18 +1017,35 @@ func discoverTableColumns(rows []bubbleTable.Row) []bubbleTable.Column {
 	cols := make([]bubbleTable.Column, len(discoverTableHeaders))
 	for i, title := range discoverTableHeaders {
 		width := lipgloss.Width(title)
+		marked := 0
 		for _, row := range rows {
 			if i >= len(row) {
 				continue
 			}
 			width = max(width, lipgloss.Width(row[i]))
+			if cellCarriesWarningGlyph(row[i]) {
+				marked = max(marked, lipgloss.Width(row[i]))
+			}
 		}
 		width += 2
 		width = max(width, discoverTableMinWidths[i])
 		width = min(width, discoverTableMaxWidths[i])
+		// A warning glyph sits at the end of the cell, so the max width is the
+		// first thing to eat it — and the legend explaining it is derived from
+		// the data, not from what rendered, leaving a documented marker no row
+		// shows. A marked cell therefore overrides the max width.
+		if marked > 0 {
+			width = max(width, marked)
+		}
 		cols[i] = bubbleTable.Column{Title: title, Width: width}
 	}
 	return cols
+}
+
+// cellCarriesWarningGlyph reports whether a rendered cell ends in one of the
+// warning glyphs the table legend documents.
+func cellCarriesWarningGlyph(cell string) bool {
+	return strings.HasSuffix(cell, tui.GlyphOutdated) || strings.HasSuffix(cell, tui.GlyphInsecure)
 }
 
 func discoverTableWidth(cols []bubbleTable.Column) int {
