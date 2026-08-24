@@ -52,10 +52,17 @@ CAMERA_SOURCE = os.environ.get("WENDY_CAMERA_SOURCE", "")
 CONFIDENCE_THRESHOLD = float(os.environ.get("WENDY_CONFIDENCE_THRESHOLD", "0.25"))
 IOU_THRESHOLD = float(os.environ.get("WENDY_IOU_THRESHOLD", "0.45"))
 # Rate-limit friendliness: the agent caps an app at 200 records per second
-# across its connections; this app skips frames so it sends at most this
-# many predictions per second (default 5). Skipping happens AFTER the
-# harness delivered the frame, so the episode's model-input ledger records
-# every frame the app received, including the ones it chose not to score.
+# across its connections; this is the ceiling this app holds itself to
+# (default 5 per second). It is a CEILING, not a target: on a CPU-only
+# Jetson Orin Nano one YOLOv8n inference takes roughly 450 ms, so the loop
+# runs at about 2 predictions per second and this gate never binds. What
+# actually keeps the app current is discarding the backlog rather than
+# draining it (see freshest_frames in wendysensors.py); lower this only to
+# spend less CPU on inference deliberately.
+#
+# Frames the app receives but does not score are still delivered, so the
+# episode's model-input ledger records every one of them, and each
+# prediction reports how many it passed over.
 PREDICTIONS_PER_SECOND = float(os.environ.get("WENDY_PREDICTIONS_PER_SECOND", "5"))
 # The sensor stream can end while the app is still healthy: the agent
 # restarts, or the subscription is dropped with the socket. The data socket
@@ -140,6 +147,30 @@ def steer_towards(detections, frame_width: int) -> tuple[float, float]:
     angular_z = -1.2 * center_offset
     linear_x = 0.1 if abs(center_offset) < 0.15 else 0.0
     return angular_z, linear_x
+
+
+def person_appearance(detections, person_present: bool) -> tuple[bool, float | None]:
+    """Decide whether this frame is the START of a person's appearance.
+
+    Returns (person_present_now, confidence_to_report). `confidence_to_report`
+    is None unless this frame is a rising edge, so the caller emits one
+    `person_detected` event per appearance rather than one per frame.
+
+    Edge-triggering is what makes the event usable as a campaign trigger. A
+    level-triggered event would fire on every frame a person stays in view,
+    and since the campaign starts an episode per trigger, someone walking past
+    would produce a stream of episodes instead of the one clip that actually
+    covers them. Kept as a pure function so that "one episode per appearance"
+    is a tested property rather than an inline claim, and it can be checked
+    without a camera, a model, or an agent.
+    """
+    people = [d for d in detections if d["class_id"] == PERSON_CLASS_ID]
+    if not people:
+        return False, None
+    if person_present:
+        # Still there. The episode already covering them is the right one.
+        return True, None
+    return True, max(d["confidence"] for d in people)
 
 
 def letterbox(frame: np.ndarray) -> tuple[np.ndarray, float, int, int]:
@@ -238,7 +269,18 @@ def main() -> None:
         sensors, SENSOR_RECONNECT_ATTEMPTS, SENSOR_RECONNECT_DELAY_SECONDS
     )
     try:
-        for sensor_frame in frame_stream:
+        # freshest_frames decodes on its own thread and hands over only the most
+        # recent frame, so inference always runs on current input rather than
+        # draining a backlog. Without it the loop falls behind the producer by
+        # however much slower inference is than capture, and the sample
+        # identifiers each prediction references drift out of the range the
+        # episode recorded, which is what makes the join unresolvable.
+        for sensor_frame, discarded in wendysensors.freshest_frames(frame_stream):
+            # Decoded while the previous inference was still running, then
+            # dropped on purpose. Added to the same counter the rate gate feeds
+            # so one field accounts for every frame that arrived and was not
+            # scored, whatever the reason.
+            skipped += discarded
             if sensor_frame.dropped_before:
                 # The harness produced frames this app never received. Say so
                 # rather than leaving a silent gap in the sample identifiers.
@@ -250,9 +292,10 @@ def main() -> None:
                 )
             now = time.monotonic()
             if now < next_score_at:
-                # Frame skipping keeps predictions at or under the configured
-                # rate. The skipped frames were still delivered, so the
-                # episode's ledger holds them.
+                # Holds predictions under PREDICTIONS_PER_SECOND. Rarely binds,
+                # because inference is slower than the ceiling; when it does,
+                # the frame is counted as skipped like any other. It was still
+                # delivered, so the episode's ledger holds it either way.
                 skipped += 1
                 continue
             next_score_at = now + interval
@@ -281,15 +324,10 @@ def main() -> None:
 
             # Edge-trigger the demo event so a person standing in front of
             # the camera fires the campaign once, not once per frame.
-            has_person = any(d["class_id"] == PERSON_CLASS_ID for d in detections)
-            if has_person and not person_present:
-                best = max(
-                    (d for d in detections if d["class_id"] == PERSON_CLASS_ID),
-                    key=lambda d: d["confidence"],
-                )
-                client.send(wendydata.build_event("person_detected", {"confidence": best["confidence"]}))
-                log.info("person detected (confidence %.2f)", best["confidence"])
-            person_present = has_person
+            person_present, confidence = person_appearance(detections, person_present)
+            if confidence is not None:
+                client.send(wendydata.build_event("person_detected", {"confidence": confidence}))
+                log.info("person detected (confidence %.2f)", confidence)
 
             angular_z, linear_x = steer_towards(detections, frame.shape[1])
             actuator.act(angular_z, linear_x)
