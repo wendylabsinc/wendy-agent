@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -57,6 +58,9 @@ type DriverInstallSpec struct {
 	Signature     []byte
 	ArtifactURL   string
 	ModulesLoad   []string
+	// StageOnly stores the add-on for KernelVersion without applying it, so a
+	// rebuild is in place before the OTA that boots into that kernel.
+	StageOnly bool
 }
 
 // DriverService implements WendyDriverService: verify a signed driver add-on
@@ -162,7 +166,7 @@ func (s *DriverService) InstallDriver(stream grpc.BidiStreamingServer[agentpbv2.
 	if err := validateDriverName(spec.GetName()); err != nil {
 		return sendDriverFailure(stream, err.Error())
 	}
-	if err := s.checkKernel(spec.GetName(), spec.GetKernelVersion(), spec.GetArtifactUrl() != ""); err != nil {
+	if err := s.checkKernel(spec.GetName(), spec.GetKernelVersion(), spec.GetArtifactUrl() != "", spec.GetStageOnly()); err != nil {
 		return sendDriverFailure(stream, err.Error())
 	}
 
@@ -188,13 +192,19 @@ func (s *DriverService) InstallDriver(stream grpc.BidiStreamingServer[agentpbv2.
 		Signature:     spec.GetSignature(),
 		ArtifactURL:   spec.GetArtifactUrl(),
 		ModulesLoad:   spec.GetModulesLoad(),
+		StageOnly:     spec.GetStageOnly(),
 	}
 	rebootRequired, err := s.finalize(stream.Context(), install, tmpPath, digest)
 	if err != nil {
 		return sendDriverFailure(stream, err.Error())
 	}
 
-	s.logger.Info("driver add-on installed", zap.String("name", spec.GetName()), zap.String("sha256", hex.EncodeToString(digest)))
+	if install.StageOnly {
+		s.logger.Info("driver add-on staged for a future kernel",
+			zap.String("name", spec.GetName()), zap.String("kernel", spec.GetKernelVersion()))
+	} else {
+		s.logger.Info("driver add-on installed", zap.String("name", spec.GetName()), zap.String("sha256", hex.EncodeToString(digest)))
+	}
 	return sendDriverCompleted(stream, spec.GetName(), rebootRequired)
 }
 
@@ -206,7 +216,7 @@ func (s *DriverService) InstallFromURL(ctx context.Context, spec DriverInstallSp
 	if err := validateDriverName(spec.Name); err != nil {
 		return err
 	}
-	if err := s.checkKernel(spec.Name, spec.KernelVersion, true); err != nil {
+	if err := s.checkKernel(spec.Name, spec.KernelVersion, true, spec.StageOnly); err != nil {
 		return err
 	}
 	if spec.ArtifactURL == "" {
@@ -228,7 +238,15 @@ func (s *DriverService) InstallFromURL(ctx context.Context, spec DriverInstallSp
 // checkKernel rejects a .ko built for another kernel. Remote installs must
 // declare the version: nobody inspected the artifact, so silence is not consent.
 // A local file may omit it - the operator picked the exact bytes.
-func (s *DriverService) checkKernel(name, kernelVersion string, remote bool) error {
+func (s *DriverService) checkKernel(name, kernelVersion string, remote, stageOnly bool) error {
+	if stageOnly {
+		// Staging targets a kernel this device is not running; finalize checks the
+		// image against the kernel it was published for instead.
+		if kernelVersion == "" {
+			return fmt.Errorf("driver %q cannot be staged without a kernel version", name)
+		}
+		return nil
+	}
 	if kernelVersion == "" {
 		if remote {
 			return fmt.Errorf("driver %q does not declare a kernel version; refusing to install it unverified", name)
@@ -283,7 +301,17 @@ func (s *DriverService) finalize(ctx context.Context, spec DriverInstallSpec, tm
 	// The image is the last word on which kernel it targets: a local install
 	// declares nothing, and a manifest can disagree with what it published.
 	// After the signature gate, so a signing key also gates squashfs parsing.
-	if err := verifyImageKernel(tmpPath, spec.Name, spec.KernelVersion, s.unameR()); err != nil {
+	//
+	// A staged add-on targets a kernel this device is not running yet, so it is
+	// checked against the kernel it was published for instead of uname.
+	target := s.unameR()
+	if spec.StageOnly {
+		if spec.KernelVersion == "" {
+			return false, fmt.Errorf("driver %q cannot be staged without a kernel version: there is no bucket to put it in", spec.Name)
+		}
+		target = spec.KernelVersion
+	}
+	if err := verifyImageKernel(tmpPath, spec.Name, spec.KernelVersion, target); err != nil {
 		return false, err
 	}
 	// Sample residency now, before snapshotDriver stashes the conf and before the
@@ -314,6 +342,14 @@ func (s *DriverService) finalize(ctx context.Context, spec DriverInstallSpec, tm
 		s.removePlaced(kernel, spec.Name) // place() may have renamed the .raw before failing
 		snap.restore()
 		return false, err
+	}
+	if spec.StageOnly {
+		// Deliberately no apply: the image is for a kernel that is not running, so
+		// merging it now would do nothing useful and a failure would be reported
+		// against an OS update the operator has not started yet.
+		snap.commit()
+		s.pruneStore(target)
+		return false, nil
 	}
 	if err := s.apply(ctx); err != nil {
 		s.removePlaced(kernel, spec.Name)
@@ -772,6 +808,45 @@ func (s *DriverService) moveInto(kernel, name, from string) error {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// pruneStore drops add-ons for kernels this device has left behind. The running
+// kernel, the unpinned bucket and a freshly staged target are always kept, plus
+// the most recently touched other bucket — that one is the previous kernel, and
+// deleting it would strip the drivers from the slot a rollback returns to.
+// Images are small, so this errs towards keeping too much.
+func (s *DriverService) pruneStore(stagedTarget string) {
+	keep := map[string]bool{s.unameR(): true, unpinnedKernelDir: true}
+	if stagedTarget != "" {
+		keep[stagedTarget] = true
+	}
+	type bucket struct {
+		name    string
+		modTime time.Time
+	}
+	var others []bucket
+	entries, _ := os.ReadDir(s.enabledDir) //nolint:errcheck
+	for _, e := range entries {
+		if !e.IsDir() || keep[e.Name()] || validateKernelDir(e.Name()) != nil {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		others = append(others, bucket{e.Name(), info.ModTime()})
+	}
+	sort.Slice(others, func(i, j int) bool { return others[i].modTime.After(others[j].modTime) })
+	for i, b := range others {
+		if i == 0 {
+			continue // the previous kernel: a rollback still needs it
+		}
+		for _, root := range []string{s.enabledDir, s.modulesDir} {
+			os.RemoveAll(filepath.Join(root, b.name)) //nolint:errcheck // best effort
+		}
+		s.logger.Info("pruned driver add-ons for a kernel this device no longer runs",
+			zap.String("kernel", b.name))
+	}
 }
 
 // installedCopy is one add-on image found in the store, and the bucket it sits

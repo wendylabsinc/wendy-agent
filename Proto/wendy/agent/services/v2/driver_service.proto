@@ -49,6 +49,10 @@ message DriverSpec {
     string artifact_url = 6;
     // Kernel module names to load after merge (written to modules-load.d/<name>.conf).
     repeated string modules_load = 7;
+    // Store the add-on for kernel_version without applying it, so a rebuild can be
+    // put in place before the OTA that reboots into the kernel it targets. The
+    // image must declare that same kernel; nothing is merged or modprobed.
+    bool stage_only = 8;
 }
 
 // Streamed result of an install/remove apply.

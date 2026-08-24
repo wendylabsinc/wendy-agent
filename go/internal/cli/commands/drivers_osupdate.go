@@ -2,7 +2,10 @@ package commands
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"time"
@@ -18,6 +21,10 @@ import (
 
 // An unresponsive driver service must not hold up the OS update.
 const driverListTimeout = 5 * time.Second
+
+// driverStageTimeout bounds one add-on fetch. Generous because the agent
+// downloads the image, but bounded so a stalled registry cannot hold up an OTA.
+const driverStageTimeout = 10 * time.Minute
 
 // installedDriverAddons returns the device's add-ons, or nil when it has none or
 // cannot report them: an older agent answers Unimplemented and an unenrolled
@@ -38,7 +45,7 @@ func installedDriverAddons(ctx context.Context, conn *grpcclient.AgentConnection
 // warnDriverAddonsBeforeUpdate names the installed add-ons and what this update
 // may do to them. An empty targetVersion (a local artifact or --artifact-url
 // resolves no manifest) limits it to the generic warning.
-func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentConnection, deviceType, targetVersion string, pr int) {
+func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentConnection, deviceType, targetVersion string, pr int, stageDrivers bool) {
 	dl := installedDriverAddons(ctx, conn)
 	if dl == nil {
 		return
@@ -74,6 +81,10 @@ func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentCon
 	for _, e := range exts {
 		published[e.Name] = append(published[e.Name], e.KernelVersion)
 	}
+	byName := map[string][]extensionEntry{}
+	for _, e := range exts {
+		byName[e.Name] = append(byName[e.Name], e)
+	}
 	for _, d := range installed {
 		kernels, ok := published[d.GetName()]
 		switch {
@@ -81,9 +92,84 @@ func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentCon
 			cliLogln("  %s: no rebuild published for %s", d.GetName(), targetVersion)
 		case slices.Contains(kernels, dl.GetKernelVersion()):
 			cliLogln("  %s: unaffected — %s publishes it for this kernel", d.GetName(), targetVersion)
+		case stageDrivers:
+			stageRebuild(ctx, conn, d.GetName(), byName[d.GetName()])
 		default:
 			cliLogln("  %s: rebuild published for kernel %s — reinstall after the update",
 				d.GetName(), strings.Join(kernels, ", "))
+		}
+	}
+}
+
+// stageRebuild puts the published rebuild in place for the kernel the update is
+// about to boot into, so the add-on loads on the first boot of the new slot
+// instead of waiting for a manual reinstall. Advisory like the rest of this
+// file: a failure prints and returns, it never fails the OS update.
+func stageRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name string, entries []extensionEntry) {
+	// Every entry here targets a kernel other than the running one, so any of them
+	// is a candidate; more than one means the release ships several kernels and
+	// there is no way to tell from here which the update will boot.
+	if len(entries) != 1 {
+		cliLogln("  %s: rebuild published for several kernels — reinstall after the update", name)
+		return
+	}
+	e := entries[0]
+	if e.Path == "" {
+		cliLogln("  %s: rebuild has no artifact in the manifest — reinstall after the update", name)
+		return
+	}
+	sig, err := base64.StdEncoding.DecodeString(e.Signature)
+	if err != nil {
+		cliLogln("  %s: rebuild has an unreadable signature — reinstall after the update", name)
+		return
+	}
+	spec := &agentpbv2.DriverSpec{
+		Name:          e.Name,
+		Version:       e.Version,
+		KernelVersion: e.KernelVersion,
+		Sha256:        e.SHA256,
+		Signature:     sig,
+		ArtifactUrl:   gcsBaseURL + "/" + e.Path,
+		ModulesLoad:   e.ModulesLoad,
+		StageOnly:     true,
+	}
+	if err := runDriverStage(ctx, conn, spec); err != nil {
+		cliLogln("  %s: could not stage the rebuild (%v) — reinstall after the update", name, err)
+		return
+	}
+	cliLogln("  %s: staged for kernel %s — it will load on the first boot of the new slot", name, e.KernelVersion)
+}
+
+// runDriverStage drives the install stream to completion for a staged add-on.
+// The agent fetches the image itself, so no chunks follow the spec.
+func runDriverStage(ctx context.Context, conn *grpcclient.AgentConnection, spec *agentpbv2.DriverSpec) error {
+	callCtx, cancel := context.WithTimeout(ctx, driverStageTimeout)
+	defer cancel()
+	stream, err := conn.DriverService.InstallDriver(callCtx)
+	if err != nil {
+		return err
+	}
+	if err := stream.Send(&agentpbv2.InstallDriverRequest{
+		RequestType: &agentpbv2.InstallDriverRequest_Spec{Spec: spec},
+	}); err != nil {
+		return err
+	}
+	if err := stream.CloseSend(); err != nil {
+		return err
+	}
+	for {
+		resp, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("stream ended without a result")
+		}
+		if err != nil {
+			return err
+		}
+		if f := resp.GetFailed(); f != nil {
+			return errors.New(f.GetErrorMessage())
+		}
+		if resp.GetCompleted() != nil {
+			return nil
 		}
 	}
 }

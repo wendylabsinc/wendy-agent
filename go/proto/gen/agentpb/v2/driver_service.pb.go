@@ -121,7 +121,11 @@ type DriverSpec struct {
 	// instead of receiving Chunks.
 	ArtifactUrl string `protobuf:"bytes,6,opt,name=artifact_url,json=artifactUrl,proto3" json:"artifact_url,omitempty"`
 	// Kernel module names to load after merge (written to modules-load.d/<name>.conf).
-	ModulesLoad   []string `protobuf:"bytes,7,rep,name=modules_load,json=modulesLoad,proto3" json:"modules_load,omitempty"`
+	ModulesLoad []string `protobuf:"bytes,7,rep,name=modules_load,json=modulesLoad,proto3" json:"modules_load,omitempty"`
+	// Store the add-on for kernel_version without applying it, so a rebuild can be
+	// put in place before the OTA that reboots into the kernel it targets. The
+	// image must declare that same kernel; nothing is merged or modprobed.
+	StageOnly     bool `protobuf:"varint,8,opt,name=stage_only,json=stageOnly,proto3" json:"stage_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -203,6 +207,13 @@ func (x *DriverSpec) GetModulesLoad() []string {
 		return x.ModulesLoad
 	}
 	return nil
+}
+
+func (x *DriverSpec) GetStageOnly() bool {
+	if x != nil {
+		return x.StageOnly
+	}
+	return false
 }
 
 // Streamed result of an install/remove apply.
@@ -774,7 +785,7 @@ const file_wendy_agent_services_v2_driver_service_proto_rawDesc = "" +
 	"\x05chunk\x18\x02 \x01(\v23.wendy.agent.services.v2.InstallDriverRequest.ChunkH\x00R\x05chunk\x1a\x1b\n" +
 	"\x05Chunk\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04dataB\x0e\n" +
-	"\frequest_type\"\xdd\x01\n" +
+	"\frequest_type\"\xfc\x01\n" +
 	"\n" +
 	"DriverSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
@@ -783,7 +794,9 @@ const file_wendy_agent_services_v2_driver_service_proto_rawDesc = "" +
 	"\x06sha256\x18\x04 \x01(\tR\x06sha256\x12\x1c\n" +
 	"\tsignature\x18\x05 \x01(\fR\tsignature\x12!\n" +
 	"\fartifact_url\x18\x06 \x01(\tR\vartifactUrl\x12!\n" +
-	"\fmodules_load\x18\a \x03(\tR\vmodulesLoad\"\xd7\x03\n" +
+	"\fmodules_load\x18\a \x03(\tR\vmodulesLoad\x12\x1d\n" +
+	"\n" +
+	"stage_only\x18\b \x01(\bR\tstageOnly\"\xd7\x03\n" +
 	"\x13DriverApplyResponse\x12S\n" +
 	"\bprogress\x18\x01 \x01(\v25.wendy.agent.services.v2.DriverApplyResponse.ProgressH\x00R\bprogress\x12V\n" +
 	"\tcompleted\x18\x02 \x01(\v26.wendy.agent.services.v2.DriverApplyResponse.CompletedH\x00R\tcompleted\x12M\n" +

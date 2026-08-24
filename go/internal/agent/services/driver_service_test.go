@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -631,9 +632,17 @@ func TestCheckKernel(t *testing.T) {
 		{"mismatch refused locally too", "5.10.0-other", false, true},
 	}
 	for _, tc := range cases {
-		if err := svc.checkKernel("d", tc.kver, tc.remote); (err != nil) != tc.wantErr {
+		if err := svc.checkKernel("d", tc.kver, tc.remote, false); (err != nil) != tc.wantErr {
 			t.Errorf("%s: checkKernel(%q, remote=%v) = %v, wantErr=%v", tc.what, tc.kver, tc.remote, err, tc.wantErr)
 		}
+	}
+	// Staging targets a kernel the device is not running, so the running-kernel
+	// comparison must not apply - but it still has to say which kernel it is for.
+	if err := svc.checkKernel("d", "5.10.0-other", true, true); err != nil {
+		t.Errorf("staging another kernel = %v, want nil", err)
+	}
+	if err := svc.checkKernel("d", "", true, true); err == nil {
+		t.Error("staging with no kernel version was accepted")
 	}
 }
 
@@ -957,5 +966,152 @@ func TestListDrivers_UnionAcrossKernels(t *testing.T) {
 	}
 	if _, ok := got["nokernel"]; !ok {
 		t.Error("an add-on under another kernel vanished from the listing")
+	}
+}
+
+// Staging puts a rebuild in place for a kernel the device is not running yet, so
+// it must land in that kernel's bucket and must not touch the running system.
+func TestFinalize_StageOnlyPlacesWithoutApplying(t *testing.T) {
+	payload := driverImage(t, "a") // declares 6.6.0-test
+	svc := newTestDriverService(t, payload)
+	svc.unameR = func() string { return "9.9.9-running" } // a different kernel is live
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "applied")
+	script := filepath.Join(dir, "apply.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc.applyScript = script
+
+	digest, staged := stageDriverRaw(t, svc, payload)
+	rebootRequired, err := svc.finalize(context.Background(), DriverInstallSpec{
+		Name:          "wendyos-hello",
+		KernelVersion: testKernel,
+		SHA256:        sha256Hex(payload),
+		StageOnly:     true,
+	}, staged, digest)
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if rebootRequired {
+		t.Error("rebootRequired = true, want false: nothing was applied")
+	}
+	if _, err := os.Stat(svc.rawPath(testKernel, "wendyos-hello")); err != nil {
+		t.Errorf("staged image is not in the target bucket: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the apply script ran; staging must not touch the running system")
+	}
+}
+
+// The manifest and the image have to agree, or a staged rebuild could quietly be
+// filed under a kernel it was not built for.
+func TestFinalize_StageOnlyRejectsAKernelMismatch(t *testing.T) {
+	payload := driverImage(t, "a") // declares 6.6.0-test
+	svc := newTestDriverService(t, payload)
+	digest, staged := stageDriverRaw(t, svc, payload)
+
+	_, err := svc.finalize(context.Background(), DriverInstallSpec{
+		Name:          "wendyos-hello",
+		KernelVersion: "7.7.7-elsewhere",
+		SHA256:        sha256Hex(payload),
+		StageOnly:     true,
+	}, staged, digest)
+	if err == nil || !strings.Contains(err.Error(), "built for kernel") {
+		t.Fatalf("finalize = %v, want a refusal for the kernel mismatch", err)
+	}
+
+	// And it cannot be staged at all without saying which kernel it is for.
+	if _, err := svc.finalize(context.Background(), DriverInstallSpec{
+		Name:      "wendyos-hello",
+		SHA256:    sha256Hex(payload),
+		StageOnly: true,
+	}, staged, digest); err == nil {
+		t.Error("staging without a kernel version was accepted")
+	}
+}
+
+// A rollback returns to the previous kernel, so its bucket has to survive the
+// prune that a fresh staging triggers.
+func TestPruneStore_KeepsThePreviousKernel(t *testing.T) {
+	svc := newTestDriverService(t, nil)
+	for _, k := range []string{testKernel, unpinnedKernelDir, "1.0-oldest", "2.0-previous", "3.0-target"} {
+		if err := os.MkdirAll(filepath.Join(svc.enabledDir, k), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Make "2.0-previous" the most recently touched of the non-kept buckets.
+	now := time.Now()
+	os.Chtimes(filepath.Join(svc.enabledDir, "1.0-oldest"), now.Add(-2*time.Hour), now.Add(-2*time.Hour))     //nolint:errcheck
+	os.Chtimes(filepath.Join(svc.enabledDir, "2.0-previous"), now.Add(-1*time.Minute), now.Add(-time.Minute)) //nolint:errcheck
+
+	svc.pruneStore("3.0-target")
+
+	for _, keep := range []string{testKernel, unpinnedKernelDir, "3.0-target", "2.0-previous"} {
+		if _, err := os.Stat(filepath.Join(svc.enabledDir, keep)); err != nil {
+			t.Errorf("%s was pruned but must be kept: %v", keep, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(svc.enabledDir, "1.0-oldest")); !os.IsNotExist(err) {
+		t.Error("1.0-oldest should have been pruned")
+	}
+}
+
+// End to end through the RPC, so the proto field is proven to reach finalize:
+// a staged add-on is fetched, verified and filed under the kernel it targets
+// without touching the running system.
+func TestInstallDriver_StageOnlyOverTheRPC(t *testing.T) {
+	payload := driverImage(t, "a") // declares 6.6.0-test
+	svc := newTestDriverService(t, payload)
+	svc.unameR = func() string { return "9.9.9-running" }
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "applied")
+	script := filepath.Join(dir, "apply.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc.applyScript = script
+
+	recv := make(chan *agentpbv2.InstallDriverRequest, 1)
+	recv <- &agentpbv2.InstallDriverRequest{
+		RequestType: &agentpbv2.InstallDriverRequest_Spec{Spec: &agentpbv2.DriverSpec{
+			Name:          "wendyos-hello",
+			KernelVersion: testKernel,
+			Sha256:        sha256Hex(payload),
+			ArtifactUrl:   "https://storage.googleapis.com/wendyos-images-public/x.raw",
+			StageOnly:     true,
+		}},
+	}
+	close(recv)
+	stream := &fakeBidiStream[agentpbv2.InstallDriverRequest, agentpbv2.DriverApplyResponse]{
+		ctx: context.Background(), recv: recv,
+	}
+
+	if err := svc.InstallDriver(stream); err != nil {
+		t.Fatalf("InstallDriver: %v", err)
+	}
+	var completed, failed bool
+	for _, r := range stream.sent {
+		if c := r.GetCompleted(); c != nil {
+			completed = true
+			if c.GetRebootRequired() {
+				t.Error("rebootRequired = true, want false: staging applies nothing")
+			}
+		}
+		if f := r.GetFailed(); f != nil {
+			failed = true
+			t.Errorf("stage failed: %s", f.GetErrorMessage())
+		}
+	}
+	if !completed || failed {
+		t.Fatalf("stream did not complete cleanly (completed=%v failed=%v)", completed, failed)
+	}
+	if _, err := os.Stat(svc.rawPath(testKernel, "wendyos-hello")); err != nil {
+		t.Errorf("staged image is not in the target bucket: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the apply script ran; staging must not touch the running system")
 	}
 }

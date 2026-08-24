@@ -235,6 +235,7 @@ func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
 	var prNumber int
+	var noDrivers bool
 
 	cmd := &cobra.Command{
 		Use:   "update [artifact-path]",
@@ -421,7 +422,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 			}
 
 			// Last point before anything transfers, so the operator can still abort.
-			warnDriverAddonsBeforeUpdate(ctx, conn, versionResp.GetDeviceType(), targetVersion, prNumber)
+			warnDriverAddonsBeforeUpdate(ctx, conn, versionResp.GetDeviceType(), targetVersion, prNumber, !noDrivers)
 
 			if err := streamOSUpdate(ctx, conn, artifactURL, ""); err != nil {
 				return err
@@ -439,6 +440,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 
 	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "OS update artifact URL (remote)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both agent and OS")
+	cmd.Flags().BoolVar(&noDrivers, "no-drivers", false, "Do not stage rebuilt driver add-ons for the target kernel before updating")
 	cmd.Flags().IntVar(&prNumber, "pr", 0, "OTA-update to the image built by wendyos-builder PR #N (debug build; mutually exclusive with a positional artifact path and --artifact-url)")
 
 	return cmd
