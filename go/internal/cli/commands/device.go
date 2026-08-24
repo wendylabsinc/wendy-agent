@@ -63,6 +63,7 @@ func newDeviceCmd() *cobra.Command {
 	// the top in rough order of usefulness.
 	addToGroup("common",
 		newAppsCmd(),
+		newDriversCmd(),
 		newDeviceLogsCmd(),
 		newDeviceOSLogsCmd(),
 		newROS2Cmd(),
@@ -2899,8 +2900,14 @@ func agentUpdateTerminalError(recvErr error) error {
 	case codes.Unavailable, codes.Canceled:
 		return fmt.Errorf("%w (%s)", errAgentUpdateUnconfirmed, s.Message())
 	case codes.FailedPrecondition:
-		return fmt.Errorf("%s — if this repeats, a previous update likely applied without the agent restarting; "+
-			"reboot the device to finish it, then retry", s.Message())
+		// The agent names its own cause here, and most have nothing to do with a
+		// half-applied update. Add the reboot hint only where it fits: for the
+		// sysext-overlay refusal a reboot is the one action that makes it worse.
+		if strings.Contains(s.Message(), "update is already in progress") {
+			return fmt.Errorf("%s — if this repeats, a previous update likely applied without the agent restarting; "+
+				"reboot the device to finish it, then retry", s.Message())
+		}
+		return errors.New(s.Message())
 	default:
 		return fmt.Errorf("agent rejected the update: %s", s.Message())
 	}

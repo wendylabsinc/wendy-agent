@@ -310,6 +310,10 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				fmt.Printf("Current OS version: %s\n", preUpdateOSVersion)
 			}
 
+			// Only set when the manifest resolved the target; a local artifact or
+			// --artifact-url leaves it empty and limits the pre-flight to a warning.
+			var targetVersion string
+
 			// No artifact provided — auto-detect from the reported device type.
 			if len(args) == 0 && artifactURL == "" {
 				deviceType := versionResp.GetDeviceType()
@@ -357,6 +361,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 						fmt.Printf("Latest OS version: %s\n", latestVer)
 					}
 					artifactURL = otaURL
+					targetVersion = latestVer
 				}
 			}
 
@@ -414,6 +419,9 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 			if err := osUpdateStackMismatch(versionResp, artifactURL); err != nil {
 				return err
 			}
+
+			// Last point before anything transfers, so the operator can still abort.
+			warnDriverAddonsBeforeUpdate(ctx, conn, versionResp.GetDeviceType(), targetVersion, prNumber)
 
 			if err := streamOSUpdate(ctx, conn, artifactURL, ""); err != nil {
 				return err
@@ -707,6 +715,7 @@ func reportOSUpdateOutcome(ctx context.Context, host, preUpdateOSVersion string)
 
 	msg, outcomeErr := evaluateOSUpdateOutcome(resp, rpcErr, preUpdateOSVersion, postUpdateOSVersion, time.Now())
 	fmt.Println(msg)
+	reportDriverAddonsAfterUpdate(ctx, host)
 	return outcomeErr
 }
 
