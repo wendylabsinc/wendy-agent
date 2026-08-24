@@ -9,6 +9,7 @@ cannot see.
 
 import json
 import struct
+import threading
 import unittest
 
 import wendydata
@@ -428,6 +429,156 @@ class TestSensorStreamReconnect(unittest.TestCase):
             got = list(sensors.frames_with_reconnect(client, attempts=0, delay=0, sleep=lambda _: None))
         self.assertEqual(got, ["a"])
         self.assertEqual(client.calls, 1)
+
+
+class TestPersonAppearance(unittest.TestCase):
+    """`person_detected` is a campaign trigger, and the campaign starts one
+    episode per trigger. So the event must fire once when a person arrives and
+    stay quiet while they remain: level-triggering it would turn one person
+    walking past into a stream of episodes."""
+
+    @staticmethod
+    def _app():
+        """Import app.py with its model and imaging dependencies stubbed.
+
+        The appearance rule needs neither a model nor OpenCV, and a unit test
+        must not require onnxruntime to exercise it."""
+        import sys
+        import types
+
+        TestSampleAttribution._sensors()
+        for name in ("cv2", "numpy", "onnxruntime"):
+            sys.modules.setdefault(name, types.ModuleType(name))
+        import app
+
+        return app
+
+    @staticmethod
+    def _person(confidence):
+        return {"class_id": 0, "class_name": "person", "confidence": confidence}
+
+    @staticmethod
+    def _chair(confidence=0.7):
+        return {"class_id": 56, "class_name": "chair", "confidence": confidence}
+
+    def test_an_empty_frame_reports_nobody(self):
+        app = self._app()
+        self.assertEqual(app.person_appearance([], False), (False, None))
+
+    def test_other_classes_are_not_people(self):
+        app = self._app()
+        # The scene this demo runs in is full of furniture; none of it may fire
+        # the trigger.
+        self.assertEqual(app.person_appearance([self._chair()], False), (False, None))
+
+    def test_arrival_reports_the_best_confidence(self):
+        app = self._app()
+        present, confidence = app.person_appearance(
+            [self._person(0.61), self._chair(), self._person(0.88)], False
+        )
+        self.assertTrue(present)
+        self.assertAlmostEqual(confidence, 0.88)
+
+    def test_staying_in_frame_fires_only_once(self):
+        app = self._app()
+        present, confidence = app.person_appearance([self._person(0.9)], False)
+        self.assertEqual((present, confidence), (True, 0.9))
+        # Every later frame of the same appearance stays silent, so the campaign
+        # gets one episode covering the person rather than one per frame.
+        for _ in range(20):
+            present, confidence = app.person_appearance([self._person(0.9)], present)
+            self.assertTrue(present)
+            self.assertIsNone(confidence)
+
+    def test_leaving_and_returning_fires_again(self):
+        app = self._app()
+        present, first = app.person_appearance([self._person(0.8)], False)
+        self.assertEqual(first, 0.8)
+        present, gone = app.person_appearance([], present)
+        self.assertEqual((present, gone), (False, None))
+        # A second, separate appearance is a second episode, which is correct:
+        # it is a different moment worth recording.
+        present, again = app.person_appearance([self._person(0.7)], present)
+        self.assertEqual((present, again), (True, 0.7))
+
+
+class TestFreshestFrame(unittest.TestCase):
+    """Inference is far slower than capture, so a loop that scores every frame
+    it is handed falls steadily behind and its predictions reference samples the
+    episode has moved past. The backlog has to be discarded, and discarding it
+    has to be counted: an episode that silently drops frames is not honest."""
+
+    _sensors = staticmethod(TestSampleAttribution._sensors)
+
+    def test_every_frame_is_yielded_when_the_consumer_keeps_up(self):
+        sensors = self._sensors()
+        # Nothing is dropped just for passing through: a consumer fast enough to
+        # take each frame as it arrives must still see all of them. The producer
+        # is gated so exactly one frame exists at a time, which makes "kept up"
+        # a fact of the test rather than a race against the reader thread.
+        gate = threading.Semaphore(0)
+
+        def stream():
+            for frame in ("a", "b", "c"):
+                gate.acquire()
+                yield frame
+
+        frames = sensors.freshest_frames(stream())
+        got = []
+        for _ in range(3):
+            gate.release()
+            got.append(next(frames))
+        self.assertEqual([f for f, _ in got], ["a", "b", "c"])
+        self.assertEqual(sum(d for _, d in got), 0)
+
+    def test_a_slow_consumer_gets_the_newest_frame_and_the_discard_count(self):
+        sensors = self._sensors()
+        took_first = threading.Event()
+        produced_rest = threading.Event()
+
+        def stream():
+            yield "a"
+            # Hold until the consumer has taken "a", then produce a burst it
+            # never asked for: the reader running ahead while an inference is
+            # in flight, which is the situation this whole helper exists for.
+            took_first.wait(timeout=5)
+            yield "b"
+            yield "c"
+            yield "d"
+            produced_rest.set()
+
+        frames = sensors.freshest_frames(stream())
+        first = next(frames)
+        self.assertEqual(first, ("a", 0))
+        took_first.set()
+        self.assertTrue(produced_rest.wait(timeout=5))
+        # The consumer skips straight to the newest frame rather than working
+        # through b and c, and is told exactly how many it passed over.
+        self.assertEqual(next(frames), ("d", 2))
+        # Four produced, two yielded, two counted: nothing vanishes unrecorded.
+        self.assertEqual(list(frames), [])
+
+    def test_the_last_frames_survive_the_end_of_the_stream(self):
+        sensors = self._sensors()
+        # A stream that ends immediately still has its frames delivered; the
+        # end of stream must not race the final frame out of the slot.
+        got = list(sensors.freshest_frames(iter(["only"])))
+        self.assertEqual(got, [("only", 0)])
+
+    def test_a_reader_failure_reaches_the_consumer(self):
+        sensors = self._sensors()
+
+        def stream():
+            yield "a"
+            raise RuntimeError("decoder exploded")
+
+        frames = sensors.freshest_frames(stream())
+        # The frame decoded before the failure is still delivered, and the
+        # failure is then raised on the consumer's thread rather than vanishing
+        # into the reader and stalling the app forever.
+        self.assertEqual(next(frames), ("a", 0))
+        with self.assertRaises(RuntimeError):
+            next(frames)
 
 
 if __name__ == "__main__":

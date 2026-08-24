@@ -30,12 +30,20 @@ record's `inputs` list is for.
 `encoding` is per sample, not per stream, so the decoder is rebuilt
 whenever it changes rather than being pinned by whichever sample happened
 to arrive first.
+
+Reading the stream and consuming it run at different speeds. Decoding is
+cheap and inference is not, so a consumer that scores every frame it is
+handed falls steadily behind the producer and ends up predicting on stale
+samples. `freshest_frames` is the fix: it reads and decodes on its own
+thread and keeps only the newest frame, so a prediction always references
+samples the episode still holds.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -243,6 +251,82 @@ def _flush_decoder(decoder, sample_ids, dropped_before, tail):
             "%d buffered sample(s) produced no frame before the encoding change",
             len(sample_ids),
         )
+
+
+def freshest_frames(frames):
+    """Yield the newest decoded frame, discarding whatever queued up behind it.
+
+    A real-time inference loop has to judge the freshest frame available, not
+    drain a queue. The producer keeps running while the model is busy, so
+    anything that accumulated behind the frame being scored is already history
+    by the time the model reaches it. Worse, it is history that compounds: each
+    prediction falls a little further behind than the last, and the references
+    it carries name samples the episode has long since moved past. That is
+    precisely how a model input/outcome join ends up with nothing to pair, even
+    though both sides recorded honestly.
+
+    The backlog lives in the gRPC receive buffer, and the only way to learn
+    what is behind the current sample is to read it. So reading and decoding
+    run on their own thread and the newest decoded frame is kept in a
+    single-entry slot; a consumer that asks for a frame gets the most recent
+    one and the count of frames that were dropped to get there.
+
+    Decoding unconditionally is affordable, which is what makes this work: on a
+    Jetson Orin Nano one 1280x720 H.264 frame decodes in about 7 ms against
+    roughly 450 ms for one YOLOv8n inference on the CPU, so the decoder keeps
+    pace with the producer using a few percent of a core while the consumer
+    scores whatever is newest. Decode is not the expensive step; inference is.
+
+    Yields (frame, discarded) pairs. `discarded` is the number of decoded
+    frames thrown away since the previous yield, so the caller can report what
+    it skipped instead of leaving a silent gap. Frames are dropped here only
+    after being fully decoded, so a yielded frame's `sample_ids` still names
+    exactly the samples it was computed from.
+    """
+    state = threading.Condition()
+    slot: dict = {"frame": None, "discarded": 0, "done": False, "error": None}
+
+    def reader():
+        try:
+            for frame in frames:
+                with state:
+                    if slot["frame"] is not None:
+                        # A frame the consumer never asked for. Counted rather
+                        # than quietly overwritten: the prediction that finally
+                        # lands has to be able to say how much it passed over.
+                        slot["discarded"] += 1
+                    slot["frame"] = frame
+                    state.notify()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the consumer thread
+            with state:
+                slot["error"] = exc
+                state.notify()
+        finally:
+            with state:
+                slot["done"] = True
+                state.notify()
+
+    thread = threading.Thread(target=reader, name="sensor-decode", daemon=True)
+    thread.start()
+    while True:
+        with state:
+            while slot["frame"] is None and not slot["done"]:
+                state.wait()
+            frame = slot["frame"]
+            discarded = slot["discarded"]
+            slot["frame"] = None
+            slot["discarded"] = 0
+            error = slot["error"]
+            done = slot["done"]
+        if frame is not None:
+            # Drained before any end-of-stream or failure is reported, so the
+            # last frames the decoder managed to produce are still scored.
+            yield frame, discarded
+            continue
+        if error is not None:
+            raise error
+        if done:
+            return
 
 
 def frames_with_reconnect(
