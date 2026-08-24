@@ -23,6 +23,7 @@ struct `'wendy os update'` {
                 #expect(stdout.contains("--artifact-url"))
                 #expect(stdout.contains("--nightly"))
                 #expect(stdout.contains("--pr"))
+                #expect(stdout.contains("--no-drivers"))
                 #expect(stdout.contains("--json"))
                 #expect(result.stderr == "")
             }
