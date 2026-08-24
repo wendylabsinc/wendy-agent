@@ -328,6 +328,8 @@ Camera / V4L2 device access.
 
 > **Security:** `user`/`password` set here are stored in **plaintext** in `wendy.json` and deployed as-is. Prefer the interactive `wendy device camera login` command, which keeps credentials out of the app config.
 
+> **Deploy-time push:** `wendy run`/`fleet run`/`watch` push `user`/`password` here to every registered IP camera that has no stored login yet, before the app container is created. A camera that already has credentials is never overwritten, so this is safe to redeploy repeatedly — but it also means rotating the password here alone does not update an already-credentialed camera; run `wendy device camera login <id>` again (or `wendy device camera forget <id>` and redeploy) to apply the change.
+
 ### `audio`
 
 Microphone and speaker access.

@@ -1636,6 +1636,17 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 // runWithAgent is the existing gRPC agent pipeline.
 func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	mark := phaseTimer()
+
+	// Push any wendy.json camera-entitlement credentials before anything else:
+	// every agent deploy shape (single service, multi-service, fleet run,
+	// detached fast path) passes through here, and landing credentials before
+	// container create matters because the phase-3 loopback pump starts at
+	// container create and only a stored credential can unblock it (WDY-2469).
+	// Best-effort — it never returns an error — so it can't turn a deploy that
+	// doesn't even use its camera into a failure.
+	pushCameraCredentialsForDeploy(ctx, conn.VideoService, appCfg)
+	mark("camera credentials push")
+
 	// Multi-service path: when wendy.json has a services map, build all images
 	// in parallel and manage the app group lifecycle.
 	if len(appCfg.Services) > 0 {

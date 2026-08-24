@@ -684,35 +684,24 @@ func TestLoopback_ReacquireWithinGraceKeepsPump(t *testing.T) {
 	}
 }
 
-// AcquireView is the `camera view`-attach half of the reference-counting
-// model: its release func is the other half, and releasing the last view ref
-// must behave exactly like the last container consumer leaving.
-func TestLoopback_ViewRefStartsAndReleasesPump(t *testing.T) {
+// Locks the policy change in WDY-2474: with viewer demand removed entirely,
+// registering a camera that satisfies every other pump precondition (module
+// available, node exists, credentials stored) must never start a pump on its
+// own — only a container consumer can. Nothing here simulates a viewer
+// attaching (that path no longer exists); this proves nothing else in the
+// reconcile path has quietly reintroduced viewer-driven demand.
+func TestLoopback_NoPumpWithoutContainerConsumers(t *testing.T) {
 	h := newLoopbackHarness()
 	h.controlExists = true
 	fc := newFakeClock(time.Unix(1_700_000_000, 0))
 	pump := newFakePump()
 	l, reg, creds := newSupervisedLoopback(t, h, fc, pump.Func())
-	cam := registerReadyCamera(t, l, reg, creds, "ec:71:db:2a:ae:7e", "10.98.0.10")
+	registerReadyCamera(t, l, reg, creds, "ec:71:db:2a:ae:7e", "10.98.0.10")
 
-	release := l.AcquireView(cam.ID)
-	pump.next(t) // attempt 1 starts.
-
-	release()
-
-	fc.blockUntilWaiters(t, 1)
-	if got := fc.pendingDelay(t); got != pumpIdleGrace {
-		t.Fatalf("idle-grace wait = %v, want %v", got, pumpIdleGrace)
+	assertNoFurtherAttemptWithin(t, pump, 200*time.Millisecond)
+	if n := pump.attemptCount(); n != 0 {
+		t.Fatalf("pump attempts = %d with no container consumer ever set, want 0", n)
 	}
-	fc.Advance(pumpIdleGrace)
-	waitDrained(t, l)
-
-	if n := pump.attemptCount(); n != 1 {
-		t.Fatalf("pump attempts = %d after the sole view ref released and grace elapsed, want still 1", n)
-	}
-
-	// Releasing a second time must not panic or double-decrement.
-	release()
 }
 
 // SetContainerConsumers replaces the consumer set wholesale rather than
@@ -864,36 +853,6 @@ func TestLoopback_CredentialsChangedStartsPendingPump(t *testing.T) {
 	l.CredentialsChanged(cam.ID)
 
 	pump.next(t) // the previously pending pump now starts.
-}
-
-// AcquireView must be safe to call, and safe to release, when the
-// v4l2loopback module is unavailable: no pump can start, and nothing panics.
-func TestLoopback_AcquireViewNoopWhenModuleAbsent(t *testing.T) {
-	h := newLoopbackHarness()
-	h.modprobeErr = errors.New("modprobe: FATAL: Module v4l2loopback not found")
-	fc := newFakeClock(time.Unix(1_700_000_000, 0))
-	pump := newFakePump()
-	l, reg, creds := newSupervisedLoopback(t, h, fc, pump.Func())
-	cam, err := reg.Upsert(Camera{MAC: "ec:71:db:2a:ae:7e", Address: "10.98.0.10"})
-	if err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-	if err := creds.Set(cam.MAC, Credential{Username: "admin", Password: "hunter2"}); err != nil {
-		t.Fatalf("set credentials: %v", err)
-	}
-
-	release := l.AcquireView(cam.ID)
-	if n := pump.attemptCount(); n != 0 {
-		t.Fatalf("pump attempts = %d with the module unavailable, want 0", n)
-	}
-	release() // must not panic.
-
-	l.mu.Lock()
-	_, running := l.pumps[cam.ID]
-	l.mu.Unlock()
-	if running {
-		t.Fatal("a supervisor is registered despite the module being unavailable")
-	}
 }
 
 // Shutdown cancels every running pump and waits for their goroutines to

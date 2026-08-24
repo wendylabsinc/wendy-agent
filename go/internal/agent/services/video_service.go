@@ -464,7 +464,6 @@ type cameraLoopback interface {
 	Available() error
 	EnsureNodes(ctx context.Context) error
 	NodePath(camID uint32) (string, bool)
-	AcquireView(camID uint32) func()
 	SetContainerConsumers(containerIDs []string)
 	CredentialsChanged(camID uint32)
 	RemoveCamera(camID uint32)
@@ -1408,15 +1407,10 @@ func (s *VideoService) streamIPCamera(stream grpc.ServerStreamingServer[agentpb.
 		return err
 	}
 
-	// Counts this viewer toward loopback pump demand for the duration of the
-	// stream (spec: a pump runs "when `camera view` attaches"), best-effort:
-	// AcquireView's returned release func is always safe to call, even when
-	// the v4l2loopback module is unavailable, so this never gates the direct
-	// hub path streamed below.
-	if s.loopback != nil {
-		defer s.loopback.AcquireView(src.camera.ID)()
-	}
-
+	// Viewers do not count toward loopback pump demand (WDY-2474): they stream
+	// RTSP directly through the hub below via runIPProducer, and never read
+	// the loopback node, so nothing here touches s.loopback. Demand is
+	// container consumers only — see ipcam.Loopback.reconcile.
 	h, id, ch, err := s.getOrCreateHub(stream.Context(), src.key, req)
 	if err != nil {
 		return err
