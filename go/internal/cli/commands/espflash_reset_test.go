@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"go.bug.st/serial"
 )
 
@@ -64,9 +65,36 @@ func (p *resetTestPort) SetReadTimeout(time.Duration) error                   { 
 func (p *resetTestPort) Close() error                                         { return nil }
 func (p *resetTestPort) Break(time.Duration) error                            { return nil }
 
+func TestResetESP32ViaUARTBridgeEntersBootloader(t *testing.T) {
+	port := &resetTestPort{}
+	if err := resetESP32(port, true, discovery.SerialTransportUARTBridge); err != nil {
+		t.Fatal(err)
+	}
+	want := []modemLineChange{
+		{line: "DTR", value: false},
+		{line: "RTS", value: true},
+		{line: "DTR", value: true},
+		{line: "RTS", value: false},
+		{line: "DTR", value: false},
+	}
+	assertModemLineChanges(t, port.changes, want)
+}
+
+func TestResetESP32ViaUARTBridgeHardResets(t *testing.T) {
+	port := &resetTestPort{}
+	if err := resetESP32(port, false, discovery.SerialTransportUARTBridge); err != nil {
+		t.Fatal(err)
+	}
+	want := []modemLineChange{
+		{line: "RTS", value: true},
+		{line: "RTS", value: false},
+	}
+	assertModemLineChanges(t, port.changes, want)
+}
+
 func TestResetESP32ViaNativeUSBUsesUSBJTAGSequence(t *testing.T) {
 	port := &resetTestPort{}
-	if err := espResetViaUSBJTAG(port, true); err != nil {
+	if err := resetESP32(port, true, discovery.SerialTransportNativeUSB); err != nil {
 		t.Fatal(err)
 	}
 	want := []modemLineChange{

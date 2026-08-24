@@ -103,48 +103,37 @@ static void wendy_free_serial_list(WendySerialList list) {
 import "C"
 
 import (
-	"fmt"
 	"os"
-	"strconv"
-	"strings"
 	"unsafe"
-
-	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // ResolveESP32SerialPorts returns all connected serial ports whose USB VID/PID
-// match the ESP32 constants, along with each device node's plug-in time.
-func ResolveESP32SerialPorts() ([]SerialPortInfo, error) {
-	vid, err := parseHexID(models.ESP32VendorID)
-	if err != nil {
-		return nil, fmt.Errorf("invalid ESP32VendorID %q: %w", models.ESP32VendorID, err)
-	}
-	pid, err := parseHexID(models.ESP32ProductID)
-	if err != nil {
-		return nil, fmt.Errorf("invalid ESP32ProductID %q: %w", models.ESP32ProductID, err)
-	}
-
-	list := C.wendy_find_usb_serial(C.int(vid), C.int(pid))
-	defer C.wendy_free_serial_list(list)
-
-	count := int(list.count)
-	if count == 0 {
-		return nil, nil
-	}
-
-	paths := unsafe.Slice(list.paths, count)
-	result := make([]SerialPortInfo, 0, count)
-	for _, cp := range paths {
-		path := C.GoString(cp)
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
+// match a supported native or USB-to-UART interface, along with each device
+// node's plug-in time.
+func resolveESP32SerialPorts() ([]SerialPortInfo, error) {
+	var result []SerialPortInfo
+	seen := make(map[string]struct{})
+	for _, id := range supportedESP32SerialUSBIDs {
+		list := C.wendy_find_usb_serial(C.int(id.vendorID), C.int(id.productID))
+		count := int(list.count)
+		paths := unsafe.Slice(list.paths, count)
+		for _, cp := range paths {
+			path := C.GoString(cp)
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			seen[path] = struct{}{}
+			result = append(result, SerialPortInfo{
+				Port:           path,
+				ConnectionTime: info.ModTime(),
+				Transport:      id.transport,
+			})
 		}
-		result = append(result, SerialPortInfo{Port: path, ConnectionTime: info.ModTime()})
+		C.wendy_free_serial_list(list)
 	}
 	return result, nil
-}
-
-func parseHexID(s string) (int64, error) {
-	return strconv.ParseInt(strings.TrimPrefix(s, "0x"), 16, 32)
 }

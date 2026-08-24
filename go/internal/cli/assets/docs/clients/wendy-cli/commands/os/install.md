@@ -69,13 +69,15 @@ image path.
 
 ### 1. Device detection
 
-The CLI scans for a connected ESP32 by looking for the Espressif USB serial device (VID `0x303a`, PID `0x1001`):
+The CLI scans for either the ESP32's native USB Serial/JTAG interface (VID `0x303a`, PID `0x1001`) or the Silicon Labs CP210x USB-to-UART bridge (VID `0x10c4`, PID `0xea60`) used on many Espressif development boards:
 
 | Platform | Where it looks | Expected path |
 |----------|----------------|---------------|
-| macOS | `IOKit` framework | `/dev/cu.usbmodem*` |
-| Linux | `/sys/class/tty/ttyACM*` matching VID/PID via sysfs | `/dev/ttyACM0` (typical) |
+| macOS | `IOKit` framework, matching VID/PID | `/dev/cu.usbmodem*` or `/dev/cu.usbserial*` |
+| Linux | `/sys/class/tty/ttyACM*` and `/sys/class/tty/ttyUSB*`, matching VID/PID via sysfs | `/dev/ttyACM0` or `/dev/ttyUSB0` (typical) |
 | Windows | `Win32_PnPEntity` via PowerShell, filtered by VID/PID and `Ports` class | `COMN` (e.g. `COM7`) |
+
+When both transports are connected, the installer always prefers native USB. A CP210x ID identifies a generic UART adapter rather than a confirmed ESP32, so the CLI treats it as an install candidate.
 
 If no device is found, the CLI prints instructions for entering bootloader mode:
 
@@ -104,9 +106,9 @@ The CLI implements the ESP32 ROM bootloader protocol directly over the USB seria
 
 **Bootloader entry sequence**
 
-Historically, many ESP boards were equipped with a USB-to-serial chip, and the DTR and RTS signals were used to drive the ESP's reset and GPIO0 pins. This allowed the host to reset the ESP and put it into download mode. Today, we use the ESP's built-in USB port, so the chip appears directly as an ACM device. We still use virtual DTR and RTS, but with a slightly different sequence.
+Some ESP boards expose the chip's built-in USB port and appear directly as an ACM device. Others use a CP210x USB-to-UART bridge whose DTR and RTS signals drive the ESP's reset and GPIO0 pins. The installer supports both connection styles.
 
-This communication scheme is called `USB-JTAG` because it combines a CDC-ACM serial interface and a JTAG debug interface over a single USB connection.
+On a native interface, the installer uses esptool's `USBJTAGSerialReset` sequence. On a CP210x board, it uses esptool's `ClassicReset` sequence to operate the board's physical auto-reset circuit. These sequences are not interchangeable: using the native sequence through a CP210x bridge leaves the application running instead of entering the ROM bootloader.
 
 Documentation can be found [here](https://docs.espressif.com/projects/esptool/en/latest/esp32c6/advanced-topics/serial-protocol.html#32-bit-readwrite).
 
@@ -124,7 +126,7 @@ Documentation can be found [here](https://docs.espressif.com/projects/esptool/en
 | 8 | Pre-flash eFuse checks | `ReadReg` calls on eFuse and chip-ID registers (result ignored) |
 | 9 | Flash Begin (`0x02`) | Erases the target region (up to 30 s timeout); sends a 20-byte payload (extra 4-byte encryption flag = 0) |
 | 10 | Flash Data (`0x03`) | Sends firmware in **4 KiB** blocks; each block XOR-checksummed (seed `0xEF`), padded with `0xFF` |
-| 11 | USB-JTAG reset | Issues the USB-JTAG DTR/RTS sequence with `enterBootloader=false` to reboot the device normally |
+| 11 | Hardware reset | Issues the transport-appropriate DTR/RTS sequence to reboot the device normally |
 
 Some of these steps are not needed but have been kept to match the esptool sequence as closely as possible.
 

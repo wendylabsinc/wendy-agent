@@ -2408,7 +2408,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 
 	fmt.Println("\nScanning for ESP32 devices...")
 
-	serialPort, err := discovery.ResolveESP32SerialPort()
+	serialDevice, err := discovery.ResolveESP32InstallSerialPort()
 	if err != nil {
 		fmt.Println("\nNo ESP32 device detected.")
 		fmt.Println("Make sure your ESP32 is connected via USB and in bootloader mode.")
@@ -2416,7 +2416,8 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 		return fmt.Errorf("ESP32 not found: %w", err)
 	}
 
-	fmt.Printf("Found ESP32 at %s\n", serialPort)
+	serialPort := serialDevice.Port
+	fmt.Printf("Found ESP32 install candidate at %s\n", serialPort)
 
 	fmt.Println("Fetching latest Wendy Lite firmware...")
 	asset, err := fetchFirmwareFromManifest(chip, nightly)
@@ -2483,7 +2484,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 	fp := tui.NewProgressProgram(flashProg)
 
 	go func() {
-		flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {
+		flashErr := flashFirmwareImage(serialPort, img, serialDevice.Transport, func(pct float64) {
 			fp.Send(tui.ProgressUpdateMsg{Percent: pct})
 		})
 		fp.Send(tui.ProgressDoneMsg{Err: flashErr})

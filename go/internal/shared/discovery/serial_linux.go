@@ -7,21 +7,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
-// ResolveESP32SerialPorts returns all connected serial ports whose USB VID/PID
-// match the ESP32 constants, along with each device node's modification time as
-// a proxy for when the device was plugged in.
-func ResolveESP32SerialPorts() ([]SerialPortInfo, error) {
-	entries, err := filepath.Glob("/sys/class/tty/ttyACM*")
-	if err != nil {
-		return nil, fmt.Errorf("globbing tty entries: %w", err)
-	}
+const linuxSysDevicesRoot = "/sys/devices"
 
-	wantVID := strings.TrimPrefix(models.ESP32VendorID, "0x")
-	wantPID := strings.TrimPrefix(models.ESP32ProductID, "0x")
+// ResolveESP32SerialPorts returns all connected serial ports whose USB VID/PID
+// match a supported native or USB-to-UART interface, along with each device
+// node's modification time as a proxy for when the device was plugged in.
+func resolveESP32SerialPorts() ([]SerialPortInfo, error) {
+	var entries []string
+	for _, pattern := range []string{"/sys/class/tty/ttyACM*", "/sys/class/tty/ttyUSB*"} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("globbing tty entries: %w", err)
+		}
+		entries = append(entries, matches...)
+	}
 
 	var result []SerialPortInfo
 	for _, entry := range entries {
@@ -30,31 +31,49 @@ func ResolveESP32SerialPorts() ([]SerialPortInfo, error) {
 		if err != nil {
 			continue
 		}
-		// Constrain resolved path to sysfs to prevent traversal via adversarial symlinks.
-		if !strings.HasPrefix(resolvedIface, "/sys/devices/") {
-			continue
-		}
-		usbDevPath := filepath.Dir(resolvedIface)
-
-		vid, err := os.ReadFile(filepath.Join(usbDevPath, "idVendor"))
-		if err != nil {
-			continue
-		}
-		pid, err := os.ReadFile(filepath.Join(usbDevPath, "idProduct"))
-		if err != nil {
-			continue
-		}
-
-		if strings.TrimSpace(string(vid)) != wantVID || strings.TrimSpace(string(pid)) != wantPID {
+		usbID, ok := findSupportedESP32SerialUSBID(resolvedIface, linuxSysDevicesRoot)
+		if !ok {
 			continue
 		}
 
 		devPath := "/dev/" + filepath.Base(entry)
-		dev := SerialPortInfo{Port: devPath}
+		dev := SerialPortInfo{Port: devPath, Transport: usbID.transport}
 		if info, statErr := os.Stat(devPath); statErr == nil {
 			dev.ConnectionTime = info.ModTime()
 		}
 		result = append(result, dev)
 	}
 	return result, nil
+}
+
+// findSupportedESP32SerialUSBID walks from a resolved tty sysfs node toward the
+// sysfs device root. Different serial drivers nest tty nodes at different
+// depths, so assuming idVendor/idProduct are exactly one parent away works for
+// some native ACM devices but not reliably for CP210x ttyUSB devices.
+func findSupportedESP32SerialUSBID(start, root string) (serialUSBID, bool) {
+	rel, err := filepath.Rel(root, start)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return serialUSBID{}, false
+	}
+
+	for current := start; ; current = filepath.Dir(current) {
+		vid, vidErr := os.ReadFile(filepath.Join(current, "idVendor"))
+		pid, pidErr := os.ReadFile(filepath.Join(current, "idProduct"))
+		if vidErr == nil && pidErr == nil {
+			vendorID, parseVIDErr := parseUSBID(string(vid))
+			productID, parsePIDErr := parseUSBID(string(pid))
+			if parseVIDErr == nil && parsePIDErr == nil {
+				if id, ok := supportedESP32SerialUSBID(vendorID, productID); ok {
+					return id, true
+				}
+			}
+		}
+		if current == root {
+			return serialUSBID{}, false
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return serialUSBID{}, false
+		}
+	}
 }

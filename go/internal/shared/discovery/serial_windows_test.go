@@ -20,13 +20,36 @@ func TestParseESP32SerialPortJSON_SingleEntry(t *testing.T) {
 
 func TestParseESP32SerialPortJSON_ArrayPicksFirstWithCOM(t *testing.T) {
 	in := `[{"Name":"USB JTAG/serial debug unit (COM3)","PNPDeviceID":"USB\\VID_303A&PID_1001\\A","Caption":"USB JTAG/serial debug unit (COM3)"},` +
-		`{"Name":"USB-SERIAL CH340 (COM12)","PNPDeviceID":"USB\\VID_303A&PID_1001\\B","Caption":"USB-SERIAL CH340 (COM12)"}]`
+		`{"Name":"Silicon Labs CP210x (COM12)","PNPDeviceID":"USB\\VID_10C4&PID_EA60\\B","Caption":"Silicon Labs CP210x (COM12)"}]`
 	got, err := parseESP32SerialPortJSON(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got != "COM3" {
 		t.Fatalf("got %q, want %q", got, "COM3")
+	}
+}
+
+func TestParseESP32SerialPortJSON_CP210x(t *testing.T) {
+	in := `{"Name":"Silicon Labs CP210x (COM12)","PNPDeviceID":"USB\\VID_10C4&PID_EA60\\B","Caption":"Silicon Labs CP210x (COM12)"}`
+	ports, err := parseESP32SerialPortsJSON(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ports) != 1 || ports[0].Port != "COM12" || ports[0].Transport != SerialTransportUARTBridge {
+		t.Fatalf("got %+v, want one CP210x UART bridge on COM12", ports)
+	}
+}
+
+func TestParseESP32SerialPortJSON_IgnoresUnsupportedAdapter(t *testing.T) {
+	in := `[{"Name":"Unrelated adapter (COM4)","PNPDeviceID":"USB\\VID_0403&PID_6001\\A","Caption":"Unrelated adapter (COM4)"},` +
+		`{"Name":"USB JTAG/serial debug unit (COM7)","PNPDeviceID":"USB\\VID_303A&PID_1001\\B","Caption":"USB JTAG/serial debug unit (COM7)"}]`
+	got, err := parseESP32SerialPortJSON(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "COM7" {
+		t.Fatalf("got %q, want %q", got, "COM7")
 	}
 }
 

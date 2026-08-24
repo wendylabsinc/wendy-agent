@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"go.bug.st/serial"
 )
 
@@ -898,8 +899,51 @@ func espResetViaUSBJTAG(port serial.Port, enterBootloader bool) error {
 	return nil
 }
 
+// espResetViaUARTBridge matches esptool's ClassicReset strategy. On boards
+// with a CP210x bridge, DTR drives GPIO0 and RTS drives EN through the board's
+// auto-reset circuit; the native USB-JTAG sequence does not enter download
+// mode on this hardware.
+func espResetViaUARTBridge(port serial.Port, enterBootloader bool) error {
+	if !enterBootloader {
+		if err := port.SetRTS(true); err != nil {
+			return fmt.Errorf("asserting reset: %w", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		if err := port.SetRTS(false); err != nil {
+			return fmt.Errorf("releasing reset: %w", err)
+		}
+		return nil
+	}
+
+	if err := port.SetDTR(false); err != nil {
+		return fmt.Errorf("releasing boot mode: %w", err)
+	}
+	if err := port.SetRTS(true); err != nil {
+		return fmt.Errorf("asserting reset: %w", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := port.SetDTR(true); err != nil {
+		return fmt.Errorf("selecting boot mode: %w", err)
+	}
+	if err := port.SetRTS(false); err != nil {
+		return fmt.Errorf("releasing reset: %w", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := port.SetDTR(false); err != nil {
+		return fmt.Errorf("releasing boot mode: %w", err)
+	}
+	return nil
+}
+
+func resetESP32(port serial.Port, enterBootloader bool, transport discovery.SerialTransport) error {
+	if transport == discovery.SerialTransportUARTBridge {
+		return espResetViaUARTBridge(port, enterBootloader)
+	}
+	return espResetViaUSBJTAG(port, enterBootloader)
+}
+
 // flashFirmware is the main entry point: flash a .bin file to the ESP32.
-func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) error {
+func flashFirmware(portPath, firmwarePath string, transport discovery.SerialTransport, progressFn func(pct float64)) error {
 	info, err := os.Stat(firmwarePath)
 	if err != nil {
 		return fmt.Errorf("reading firmware: %w", err)
@@ -911,14 +955,14 @@ func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) 
 	if err != nil {
 		return fmt.Errorf("reading firmware: %w", err)
 	}
-	return flashFirmwareBytes(portPath, firmware, progressFn)
+	return flashFirmwareBytes(portPath, firmware, transport, progressFn)
 }
 
-func flashFirmwareImage(portPath string, img *EspFlashImage, progressFn func(pct float64)) error {
-	return flashFirmwareBytes(portPath, img.Bytes(), progressFn)
+func flashFirmwareImage(portPath string, img *EspFlashImage, transport discovery.SerialTransport, progressFn func(pct float64)) error {
+	return flashFirmwareBytes(portPath, img.Bytes(), transport, progressFn)
 }
 
-func flashFirmwareBytes(portPath string, firmware []byte, progressFn func(pct float64)) error {
+func flashFirmwareBytes(portPath string, firmware []byte, transport discovery.SerialTransport, progressFn func(pct float64)) error {
 	if len(firmware) > maxFlashSize {
 		return fmt.Errorf("firmware too large (%d bytes, max %d)", len(firmware), maxFlashSize)
 	}
@@ -944,16 +988,21 @@ func flashFirmwareBytes(portPath string, firmware []byte, progressFn func(pct fl
 	defer func() { f.port.Close() }()
 
 	// Step 1: Enter bootloader.
-	if err := espResetViaUSBJTAG(port, true); err != nil {
+	if err := resetESP32(port, true, transport); err != nil {
 		return fmt.Errorf("entering bootloader: %w", err)
 	}
-	f.port.Close()
-	time.Sleep(1500 * time.Millisecond) // wait for native USB re-enumeration
-	newPort, err := serial.Open(portPath, mode)
-	if err != nil {
-		return fmt.Errorf("reopening port after reset: %w", err)
+	if transport == discovery.SerialTransportUARTBridge {
+		// The bridge remains enumerated while it resets the ESP32 itself.
+		time.Sleep(100 * time.Millisecond)
+	} else {
+		f.port.Close()
+		time.Sleep(1500 * time.Millisecond) // wait for native USB re-enumeration
+		newPort, err := serial.Open(portPath, mode)
+		if err != nil {
+			return fmt.Errorf("reopening port after reset: %w", err)
+		}
+		f.port = newPort
 	}
-	f.port = newPort
 	if err := f.drain(); err != nil {
 		return fmt.Errorf("draining serial input before sync: %w", err)
 	}
@@ -1037,7 +1086,7 @@ func flashFirmwareBytes(portPath string, firmware []byte, progressFn func(pct fl
 
 	// Step 9: Reboot.
 	// Please note that we never succeeded in using flashEnd() here.
-	if err := espResetViaUSBJTAG(f.port, false); err != nil {
+	if err := resetESP32(f.port, false, transport); err != nil {
 		return fmt.Errorf("resetting after flash: %w", err)
 	}
 
