@@ -219,10 +219,9 @@ func noDevicesHint() string {
 func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool) error {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		cfg = nil
 	}
 	cloudAuth := devicePickerInitialAuth(cfg)
-
 	for {
 		err := discoverContinuousWithCloudAuth(ctx, opts, includeLocal, cloudAuth, defaultOrgForCloudAuth(cfg, cloudAuth))
 		switch {
