@@ -263,7 +263,9 @@ jobs:
 
   build-go-macos:
     name: ${{ matrix.artifact-name }}
-    runs-on: macos-15
+    runs-on:
+      group: wendy-developer
+      labels: [self-hosted, macOS, ARM64]
     needs: [determine-version]
     # Attest SLSA build provenance in the job that produces the archive, so the
     # provenance reflects the actual build environment (not a downstream job).
@@ -332,7 +334,9 @@ jobs:
 
   build-agent-macos-app:
     name: wendy-agent-macos-app
-    runs-on: macos-26
+    runs-on:
+      group: wendy-developer
+      labels: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
     needs: [determine-version]
     steps:
