@@ -17,7 +17,7 @@ import (
 const backendFixture = `version: 1
 stages:
   - name: app
-    from: python:3.12-slim
+    base: python
     workdir: /srv
     env:
       MODE: prod

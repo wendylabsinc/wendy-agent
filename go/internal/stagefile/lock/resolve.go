@@ -44,8 +44,9 @@ type memoEntry struct {
 // later callers block on the first caller's result.
 //
 // Caching for the process lifetime matches the lockfile's own semantics: a ref
-// is only ever resolved when it has no pin, and once pinned it is never
-// re-resolved until an explicit re-lock. Failures are deliberately NOT cached —
+// is normally resolved only when it has no pin. A managed catalog revision can
+// force one refresh, but a running CLI cannot change its compiled-in catalog,
+// so the process-level answer is still stable. Failures are deliberately NOT cached —
 // a network blip must not poison the ref for the rest of a long-lived
 // `wendy watch` session.
 func Memoize(r Resolver) Resolver {
@@ -87,7 +88,18 @@ func Memoize(r Resolver) Resolver {
 func Resolve(existing *File, sourceHash string, refs []string, forceUpdate map[string]bool, resolver Resolver) (*File, []string, error) {
 	result := &File{Version: 1, SourceHash: sourceHash, Images: map[string]string{}}
 	if existing != nil {
-		maps.Copy(result.Images, existing.Images)
+		// Carry only refs the current Stagefile still declares. This matters for
+		// managed channels because moving (say) Python to a new release line
+		// should replace the old catalog ref instead of accumulating it forever.
+		for _, ref := range refs {
+			if digest, ok := existing.Images[ref]; ok {
+				result.Images[ref] = digest
+			}
+		}
+		if len(existing.ManagedBases) > 0 {
+			result.ManagedBases = map[string]ManagedBase{}
+			maps.Copy(result.ManagedBases, existing.ManagedBases)
+		}
 		if len(existing.Downloads) > 0 {
 			result.Downloads = map[string]string{}
 			maps.Copy(result.Downloads, existing.Downloads)

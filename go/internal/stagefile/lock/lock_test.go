@@ -22,6 +22,9 @@ func TestSaveThenLoadRoundTrips(t *testing.T) {
 		Version:    1,
 		SourceHash: "sha256:abc123",
 		Images:     map[string]string{"debian:12": "sha256:deadbeef"},
+		ManagedBases: map[string]ManagedBase{
+			"debian": {Ref: "debian:12", Revision: 3},
+		},
 	}
 	if err := original.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -35,6 +38,9 @@ func TestSaveThenLoadRoundTrips(t *testing.T) {
 	}
 	if loaded.Images["debian:12"] != "sha256:deadbeef" {
 		t.Fatalf("Images = %+v", loaded.Images)
+	}
+	if loaded.ManagedBases["debian"] != original.ManagedBases["debian"] {
+		t.Fatalf("ManagedBases = %+v", loaded.ManagedBases)
 	}
 }
 

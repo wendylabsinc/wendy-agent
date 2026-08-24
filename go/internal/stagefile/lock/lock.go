@@ -18,6 +18,11 @@ type File struct {
 	Version    int               `yaml:"version"`
 	SourceHash string            `yaml:"sourceHash"`
 	Images     map[string]string `yaml:"images"`
+	// ManagedBases records which revision of Wendy's managed base catalog
+	// selected each image ref. The digest remains in Images; this metadata is
+	// the refresh trigger that lets a newer Wendy release deliberately update a
+	// maintained channel without making it float on every build.
+	ManagedBases map[string]ManagedBase `yaml:"managedBases,omitempty"`
 	// Downloads pins each download URL to the sha256 of the bytes it served
 	// when it was first resolved. Omitted from the file entirely when a
 	// Stagefile declares no downloads, so existing lockfiles don't grow an
@@ -35,6 +40,12 @@ type File struct {
 	// Keyed by gpu_arch ("sm_87"), so one project that deploys to several
 	// boards accumulates one entry per board rather than fighting over one.
 	CUDA map[string]gpu.Profile `yaml:"cuda,omitempty"`
+}
+
+// ManagedBase is the lockfile state for one declarative base: channel.
+type ManagedBase struct {
+	Ref      string `yaml:"ref"`
+	Revision int    `yaml:"revision"`
 }
 
 // ResolveCUDA returns the profile to build arch against: the one already
