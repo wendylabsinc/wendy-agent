@@ -1,0 +1,15 @@
+# ESP-IDF build artifacts
+build/
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
+
+# EIM install artifacts
+eim_config.toml
+
+# Editor/tooling caches
+.cache/
+
+# Secrets (WiFi + OpenAI API key) — copy main/secrets.h.example instead
+main/secrets.h

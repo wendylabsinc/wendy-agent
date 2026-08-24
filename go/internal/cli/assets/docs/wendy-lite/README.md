@@ -14,6 +14,8 @@ The broader Wendy platform targets Linux/macOS edge devices (Raspberry Pi, Jetso
 |--------|--------|
 | ESP32-C6 | CI-built, nightly releases |
 | ESP32-C5 | CI-built, nightly releases |
+| ESP32-S3 | CI-built, nightly releases |
+| ESP32-C61 | CI-built, nightly releases |
 
 All other ESP32 variants (including ESP32-S3, ESP32-P4, and the preview ESP32-S31) are **not currently supported** by wendy-lite. The firmware build image is pinned to `espressif/idf:v5.5.1`; chips that require IDF 6.x / `master` (such as ESP32-S31) cannot be built with this image. There is no camera or display/framebuffer host API — imaging peripherals cannot be driven through a WASM guest today.
 

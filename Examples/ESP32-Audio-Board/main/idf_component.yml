@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=5.1"
+  espressif/esp_codec_dev: "^1.6.2"
+  espressif/esp_websocket_client: "^1.8.0"

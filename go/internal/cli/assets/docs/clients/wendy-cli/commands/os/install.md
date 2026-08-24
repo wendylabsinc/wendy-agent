@@ -4,7 +4,7 @@ Installs WendyOS onto an NVMe or SD card, fully recovers supported Jetsons over 
 
 > **Tip:** [`wendy install`](../install.md) is the recommended, surfaced entry point for this command. `wendy os install` remains available and behaves identically — it is kept for backward compatibility and for discoverability under the `wendy os` group.
 
-The command presents a unified device picker that lists Linux targets (Raspberry Pi, Jetson, ...) and ESP32 targets (C6, C5). Select the device type to take the appropriate path:
+The command presents a unified device picker that lists Linux targets (Raspberry Pi, Jetson, ...) and ESP32 targets (C6, C5, S3, C61). Select the device type to take the appropriate path:
 
 - **Jetson Orin Nano / AGX Orin** -> download a recovery flashpack -> verify the module/carrier -> update QSPI and NVMe/eMMC together
 - **Raspberry Pi targets** -> download OS image -> write to SD/NVMe -> write config partition
@@ -89,7 +89,7 @@ To enter bootloader mode: hold the BOOT button, press RESET, then release BOOT.
 
 Firmware versions are served from the same GCS manifest used for WendyOS images. The manifest is a two-level lookup:
 
-1. **Main manifest** (`firmware` map) — maps chip ID (`esp32c6`, `esp32c5`) to a per-chip manifest path and `latest`/`latest_nightly` version pointers.
+1. **Main manifest** (`firmware` map) — maps chip ID (`esp32c6`, `esp32c5`, `esp32s3`, `esp32c61`) to a per-chip manifest path and `latest`/`latest_nightly` version pointers.
 2. **Per-chip manifest** — contains version entries with `download_url`, file size, and `is_latest` / `is_nightly` flags.
 
 With `--nightly`, `latest_nightly` is used instead of `latest`.
@@ -243,7 +243,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 |------|---------|-------------|
 | `--nightly` | false | Use nightly/pre-release builds |
 | `--pr` | — | Install from wendyos-builder PR #N (mutually exclusive with `--nightly`, `--version`, positional path; Linux disk-image devices only) |
-| `--device-type` | — | Device type from manifest (Linux targets only, e.g. `raspberry-pi-5`) |
+| `--device-type` | — | Device type from manifest (Linux targets only, e.g. `raspberry-pi-5`; not supported for ESP32 targets: `esp32-c6`, `esp32-c5`, `esp32-s3`, `esp32-c61`) |
 | `--version` | latest | WendyOS version to install (Linux only) |
 | `--drive` | interactive | Target drive path (e.g. `/dev/disk4`) |
 | `--rootfs-only` | false | Explicitly write only an Orin SD/NVMe image; QSPI is not updated |
