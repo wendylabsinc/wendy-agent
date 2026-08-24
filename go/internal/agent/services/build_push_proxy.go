@@ -57,6 +57,10 @@ type pushProxy struct {
 	// before serve, which is when the first reader of it can exist.
 	dial func(ctx context.Context) (net.Conn, error)
 
+	// delivered counts bytes forwarded towards the device, so a failure can say
+	// how far it got instead of only that it failed.
+	delivered deliveryCounter
+
 	mu  sync.Mutex
 	err error
 }
@@ -215,22 +219,42 @@ func (p *pushProxy) serve(ctx context.Context) {
 			// The loopback credential is ours, not the registry's. The registry
 			// authenticates us by client certificate.
 			pr.Out.Header.Del("Authorization")
+			// Count the body on its way out. Layers the device already has are
+			// never sent, so this is the figure that explains the elapsed time
+			// -- and it is what tells a cold build cache (every layer new, whole
+			// image on the wire) apart from a warm one.
+			if pr.Out.Body != nil {
+				pr.Out.Body = &deliveryBodyCounter{
+					deliveryReader: &deliveryReader{inner: pr.Out.Body, c: &p.delivered},
+					closer:         pr.Out.Body,
+				}
+			}
 		},
 		Transport: &http.Transport{
+			// Establishing the hop is retried; forwarding bytes is not. A dial
+			// has no side effects, so a mesh connection that fails to come up
+			// can simply be dialled again -- see build_push_retry.go for why a
+			// partially-sent blob cannot be replayed here.
 			DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return p.dial(ctx)
+				return retryingDial(p.dial, nil)(ctx)
 			},
 			// Registry pushes are HTTP/1.1 with sized bodies; the byte relay this
 			// replaces never negotiated h2, so do not start now.
-			ForceAttemptHTTP2:     false,
-			MaxIdleConnsPerHost:   8,
+			ForceAttemptHTTP2:   false,
+			MaxIdleConnsPerHost: 8,
+			// A tunnel that drops leaves pooled connections that look usable and
+			// fail on first write. Retiring them quickly costs one round trip;
+			// being handed a dead one costs the build.
+			IdleConnTimeout:       pushIdleConnTimeout,
 			ResponseHeaderTimeout: 0,
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			// Same reason the byte relay recorded its dial failure: buildkit
 			// would otherwise see only a broken loopback connection, which
 			// cannot distinguish an unreachable peer from a rejected certificate.
-			p.recordError(fmt.Errorf("reaching device %d's registry over the mesh: %w", p.assetID, err))
+			p.recordError(annotateDeliveryFailure(
+				fmt.Errorf("reaching device %d's registry over the mesh: %w", p.assetID, err),
+				p.delivered.bytes()))
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}

@@ -610,6 +610,14 @@ func (s *BuildService) buildAndDeliver(
 
 	buildErr = s.runBuildctl(ctx, stream, args, authDir)
 	if proxyErr := proxy.firstError(); proxyErr != nil {
+		// Say that re-running is cheap when the transfer had started. The build
+		// cache is warm and the device keeps the layers it already received, so
+		// a second run resumes rather than repeating -- which is not obvious
+		// from a bare transport error, and is the difference between retrying
+		// and going to look for another build host.
+		if proxy.delivered.bytes() > 0 {
+			return nil, fmt.Errorf("%w: %w", errDeliveryIncomplete, proxyErr)
+		}
 		return nil, proxyErr
 	}
 	return buildErr, nil
