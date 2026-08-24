@@ -1,8 +1,11 @@
 package data
 
 import (
+	"context"
+
 	"bytes"
 	"encoding/json"
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"os"
 	"path/filepath"
 	"strings"
@@ -334,5 +337,60 @@ func TestSafeJoinRejectsTraversal(t *testing.T) {
 		if _, e := safeJoin("/safe", p); e == nil {
 			t.Errorf("accepted %q", p)
 		}
+	}
+}
+
+// TestStartDoesNotBlockOnRoughtimeConsensus pins the property that made the
+// trigger moment fall out of episode video: a Roughtime server that never
+// answers used to hold Start (and therefore every capture adapter) for the
+// whole query timeout, so the camera began recording seconds after the
+// trigger. The consensus is still recorded, just not on the start path.
+func TestStartDoesNotBlockOnRoughtimeConsensus(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	queried := make(chan struct{}, 4)
+	m.SetConsensusProvider(func(ctx context.Context) (timesync.Consensus, error) {
+		queried <- struct{}{}
+		select {
+		case <-released:
+		case <-ctx.Done():
+			return timesync.Consensus{}, ctx.Err()
+		}
+		return timesync.Consensus{Confidence: "degraded", Quorum: 2, LowerOffsetNanos: 1, UpperOffsetNanos: 2}, nil
+	})
+
+	start := time.Now()
+	started, err := m.Start(StartOptions{Sources: []string{"applications"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Start blocked %s on an unresponsive consensus provider; it must not wait", elapsed)
+	}
+
+	// The query still happens, and its result still reaches the manifest.
+	select {
+	case <-queried:
+	case <-time.After(5 * time.Second):
+		t.Fatal("consensus was never queried in the background")
+	}
+	close(released)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var manifest Manifest
+		b, readErr := os.ReadFile(filepath.Join(m.root, started.ID+".partial", "manifest.json"))
+		if readErr == nil && json.Unmarshal(b, &manifest) == nil && len(manifest.Roughtime) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background consensus never landed in the manifest")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := m.Stop(AdHocEpisodeKey); err != nil {
+		t.Fatal(err)
 	}
 }
