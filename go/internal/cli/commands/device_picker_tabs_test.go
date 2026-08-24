@@ -125,6 +125,29 @@ func TestDevicePickerSelectsCloudAsset(t *testing.T) {
 	}
 }
 
+func TestTagDevicePickerCmdPreservesBatchChildren(t *testing.T) {
+	cmd := tagDevicePickerCmd(tea.Batch(
+		func() tea.Msg { return "first" },
+		func() tea.Msg { return "second" },
+	), devicePickerCloudTab)
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatal("tagged batch returned unexpected message type")
+	}
+	if len(batch) != 2 {
+		t.Fatalf("tagged batch children = %d, want 2", len(batch))
+	}
+	for i, child := range batch {
+		msg, ok := child().(devicePickerCloudMsg)
+		if !ok {
+			t.Fatalf("child %d returned unexpected message type", i)
+		}
+		if msg.msg == nil {
+			t.Fatalf("child %d lost its payload", i)
+		}
+	}
+}
+
 func TestDevicePickerInitialAuthUsesDefaultOrg(t *testing.T) {
 	cfg := &config.Config{
 		DefaultOrgID: 9,

@@ -3534,7 +3534,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 			if err != nil {
 				return nil, fmt.Errorf("loading config: %w", err)
 			}
-			picked, freshCfg, pickErr := switchCloudOrganization(ctx, cfg)
+			picked, _, pickErr := switchCloudOrganization(ctx, cfg)
 			if errors.Is(pickErr, ErrUserCancelled) {
 				continue
 			}
@@ -3542,7 +3542,6 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 				return nil, pickErr
 			}
 			cloudAuth = picked
-			cfg = freshCfg
 		default:
 			return selected, err
 		}
@@ -3589,10 +3588,9 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 		return "Default device cleared."
 	}
 
-	p := tea.NewProgram(newDevicePickerModel(ctx, picker, cloudAuth, defaultOrgID))
-
 	// Cancel continuous discovery when the picker exits.
 	discoverCtx, discoverCancel := context.WithCancel(ctx)
+	p := tea.NewProgram(newDevicePickerModel(discoverCtx, picker, cloudAuth, defaultOrgID))
 
 	sendLANItem := func(dev models.LANDevice, insecure bool, probe tui.ProbeState) {
 		devCopy := dev

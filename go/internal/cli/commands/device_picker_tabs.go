@@ -65,6 +65,13 @@ func tagDevicePickerCmd(cmd tea.Cmd, tab devicePickerTab) tea.Cmd {
 	}
 	return func() tea.Msg {
 		msg := cmd()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			tagged := make(tea.BatchMsg, 0, len(batch))
+			for _, child := range batch {
+				tagged = append(tagged, tagDevicePickerCmd(child, tab))
+			}
+			return tagged
+		}
 		if tab == devicePickerCloudTab {
 			return devicePickerCloudMsg{msg: msg}
 		}
