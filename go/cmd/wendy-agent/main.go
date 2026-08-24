@@ -244,6 +244,10 @@ func main() {
 
 	installer := &services.AgentInstaller{}
 	agentSvc := services.NewAgentService(logger, networkMgr, hwDiscoverer, btManager, installer)
+	// Pin the executable path while the mount topology this process started
+	// under is intact: merging and later removing a driver add-on leaves
+	// /proc/self/exe reporting a path that no longer resolves.
+	agentSvc.PrimeExecPath()
 	agentSvc.WarmBinaryHash()
 
 	var monitor *container.ContainerMonitor
@@ -278,6 +282,7 @@ func main() {
 	wifiSvc := services.NewWiFiService(logger, networkMgr)
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
 	agentUpdateSvc := services.NewAgentUpdateService(logger, installer)
+	agentUpdateSvc.PrimeExecPath()
 	osUpdateSvc := services.NewOSUpdateService(logger)
 	driverSvc := services.NewDriverService(logger)
 	containerSvcV2 := services.NewContainerServiceV2(containerSvc)
