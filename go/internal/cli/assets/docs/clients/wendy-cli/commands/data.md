@@ -188,6 +188,76 @@ export:
   annotation: cvat
 ```
 
+## Playing back camera capture
+
+Camera capture is kept as a raw H.264 Annex-B elementary stream
+(`cameras/<source>/segment-NNNNNN.h264`). An elementary stream has no
+container, so it carries no timing at all, and a player handed one has nothing
+to build a presentation schedule from. Players invent a frame rate instead, so
+the clip runs at the wrong speed and reports the wrong duration. Passing a
+fixed rate with `ffmpeg -r` does not fix this: the capture rate is genuinely
+variable, falling as the device gets busy with inference, so no single number,
+including the measured average, describes more than a fraction of the clip.
+
+The timing is already recorded. `cameras/<source>/index.jsonl` carries one line
+per kept frame with `canonical_episode_nanos`, the frame's position on the
+Episode's canonical `CLOCK_BOOTTIME` timeline, alongside the segment file, byte
+offset and `byte_size` of its payload. The `episode-playable` command remuxes
+those payload bytes into an MP4 that gives every frame the presentation time
+the index recorded for it, so the variable frame rate is represented honestly
+rather than averaged away:
+
+```sh
+# From the repository root.
+CGO_ENABLED=0 go build -o bin/episode-playable ./go/cmd/episode-playable
+
+wendy data download <episode-id> -o /absolute/path/to/episode --device <device-hostname>
+./bin/episode-playable -o /absolute/path/to/playable /absolute/path/to/episode
+```
+
+Note that `wendy data download` needs an absolute `-o` path; a relative one
+fails with "server file path escapes destination".
+
+One `<source>.mp4` is written per camera source into the output directory,
+which must be somewhere other than the Episode. The command prints the index
+line count, the frames written, the segments read, the index's first-to-last
+span, and the minimum, mean and maximum inter-frame interval, which is enough
+to check the conversion numerically without watching it.
+
+Details worth knowing:
+
+- The Episode is only ever read. The elementary stream and its index are
+  checksummed archival truth, and `index.jsonl` addresses frames by byte offset
+  within the stream, so rewriting it in place would break the join between a
+  frame and the model input recorded against it.
+- It is a remux, not a transcode. The coded pictures are copied verbatim, so
+  the output is the same video, only re-framed.
+- MP4 was chosen over Matroska because the output has to play unmodified in
+  both VLC and QuickTime, and QuickTime cannot open Matroska. MP4 states an
+  explicit duration for every sample in its `stts` box, which represents a
+  variable frame rate exactly as precisely as Matroska timestamps do.
+- There is no external dependency. The muxer is pure Go, so no ffmpeg,
+  mkvmerge or PyAV is needed anywhere on the path from an Episode to a playable
+  file.
+- A frame the index names but whose bytes are missing or truncated is reported
+  and skipped rather than written short, because a truncated access unit makes
+  the file undecodable from that point on. A partial trailing index line, the
+  shape an interrupted Episode leaves behind, is counted as unusable and
+  ignored. Multiple segments per source and multiple sources per Episode are
+  both handled.
+- `byte_size` from the index is authoritative for how many bytes belong to a
+  frame. The model-input ledger's `payload_bytes` can exceed it for a frame
+  that opens a segment, because the segment begins at the parameter-set prefix
+  inside that payload rather than at its first byte.
+- The index records frames in capture order, which is coded order. That is
+  exact for the B-frame-free streams the device's encoder produces. A stream
+  containing B slices has a presentation order that differs from its coded
+  order, which the index does not carry, so such a stream is flagged with a
+  warning rather than silently mistimed.
+
+`wendy data export` is the natural future home for this, at which point the
+command becomes a verb on the CLI rather than a separate binary.
+
 ## Pre-trigger behavior
 
 Application pre-roll is exact, device-wide, and bounded by the campaign buffer
