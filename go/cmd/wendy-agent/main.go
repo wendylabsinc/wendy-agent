@@ -279,6 +279,7 @@ func main() {
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
 	agentUpdateSvc := services.NewAgentUpdateService(logger, installer)
 	osUpdateSvc := services.NewOSUpdateService(logger)
+	driverSvc := services.NewDriverService(logger)
 	containerSvcV2 := services.NewContainerServiceV2(containerSvc)
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
@@ -644,6 +645,13 @@ func main() {
 		// plaintext pre-provisioning server (handing anyone on the LAN a host
 		// root shell) and on the local admin socket.
 		agentpb.RegisterWendyShellServiceServer(srv, shellSvc)
+
+		// WendyDriverService installs kernel driver add-ons — loading a module is
+		// ring-0 code execution, as privileged as the root shell above. So it is
+		// registered ONLY here on the mTLS server (authenticated, org-checked),
+		// never via registerAllServices: signature verification guards WHAT runs,
+		// but the transport must still guard WHO may install or remove a driver.
+		agentpbv2.RegisterWendyDriverServiceServer(srv, driverSvc)
 
 		// Compute mTLS port = agentPort + 1.
 		portNum, err := strconv.Atoi(agentPort)
