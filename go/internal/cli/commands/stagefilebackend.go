@@ -1,19 +1,7 @@
 package commands
 
-// Scope note: this file adds the decision of *which* backend a Stagefile
-// should compile through. It deliberately stops there — nothing here calls
-// stagefile.CompileToLLB, solve.Run, or ensurePlaintextBuilder. Actually
-// executing an LLB build still needs: (1) bootstrapping the "wendy" buildx
-// builder before calling solve.Address, since solve.Address resolves an
-// endpoint but never creates one; and (2) routing a push through the correct
-// builder identity — solve.Address always names the plaintext "wendy"
-// builder, while docker.go's own push paths use "wendy-oci" for OCI export
-// and "wendy-mtls" (which carries the registry client certs) for an mTLS
-// registry push. Wiring stagefileBackendLLB's result into the actual
-// build/push call sites without getting that identity wrong is left to a
-// follow-up change; landing it here was out of this task's scope.
-
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -29,6 +17,23 @@ const (
 // stagefileBackendEnvVar is consulted when --stagefile-backend is not given
 // explicitly on the command line.
 const stagefileBackendEnvVar = "WENDY_STAGEFILE_BACKEND"
+
+type stagefileBackendContextKey struct{}
+
+// withStagefileBackend carries the command-line value through the existing
+// build pipeline without adding a backend argument to every deploy helper.
+// Environment selection remains lazy so tests can exercise it independently.
+func withStagefileBackend(ctx context.Context, value string) context.Context {
+	return context.WithValue(ctx, stagefileBackendContextKey{}, value)
+}
+
+func stagefileBackendFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(stagefileBackendContextKey{}).(string)
+	return value
+}
 
 // stagefileBackendLLB decides whether a detected Stagefile should compile
 // through the LLB backend (stagefile.CompileToLLB, solved directly against a

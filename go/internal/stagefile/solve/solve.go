@@ -32,13 +32,20 @@ import (
 )
 
 // Output is where a solved build is written. Exactly one destination is set:
-// an OCI-layout tar on disk (what the chunk-diff deploy path consumes) or a
+// an OCI-layout tar, a persistent OCI layout directory, a Docker archive, or a
 // named image in the daemon's store, optionally pushed.
 type Output struct {
 	// OCILayoutPath, when set, writes the image as an OCI-layout tar there.
 	OCILayoutPath string
-	// ImageRef names the image. It is required for a push and optional for an
-	// OCI layout, where it becomes the name recorded in the layout's index.
+	// OCILayoutDir, when set, writes directly into an OCI content store. Unlike
+	// the tar form, unchanged blobs already present in the directory are reused.
+	OCILayoutDir string
+	// DockerTarPath, when set, writes a Docker image archive suitable for
+	// `docker load`. It is used by `wendy build`, whose contract is a locally
+	// runnable image rather than a deployable OCI layout.
+	DockerTarPath string
+	// ImageRef names the image. It is required for a push and optional for file
+	// and directory exports, where it becomes the name recorded in the archive.
 	ImageRef string
 	// Push publishes ImageRef to its registry.
 	Push bool
@@ -195,42 +202,10 @@ func solveError(addr string, err error) error {
 	return fmt.Errorf("build against buildkitd at %s: %w (if the daemon is unreachable, its buildx builder may not have been created yet, or set BUILDKIT_HOST to a running daemon)", addr, err)
 }
 
-// FinalBaseConfig picks the entry Request.BaseConfig wants out of the map that
-// was handed to llbgen.Emit: the config of the base image the final stage is
-// built on, which is the config the produced image inherits.
-//
-// It exists so a caller does not re-derive "which of these images is the one
-// that matters" by hand. Picking a different stage's base image is not a
-// failure any test would catch — it produces an image whose environment and
-// working directory come from a builder stage that was thrown away.
+// FinalBaseConfig remains as a compatibility facade for callers that used the
+// solver helper before the compiler began returning the value directly.
 func FinalBaseConfig(g *ir.Graph, configs map[string][]byte) ([]byte, error) {
-	if g == nil || len(g.Stages) == 0 {
-		return nil, fmt.Errorf("graph has no stages")
-	}
-	final := g.Stages[len(g.Stages)-1]
-	start := 0
-	if len(g.Stages) > 1 {
-		start = g.Stages[len(g.Stages)-2].Final + 1
-	}
-	if final.Final < start || final.Final >= len(g.Nodes) {
-		return nil, fmt.Errorf("stage %q: final node %d is outside the graph's %d nodes", final.Name, final.Final, len(g.Nodes))
-	}
-
-	for i := start; i <= final.Final; i++ {
-		n := g.Nodes[i]
-		if n.Kind != ir.OpImage {
-			continue
-		}
-		if n.Image == nil {
-			return nil, fmt.Errorf("stage %q: node %d has kind %q but nil Image payload", final.Name, i, n.Kind)
-		}
-		cfg, ok := configs[n.Image.Ref]
-		if !ok {
-			return nil, fmt.Errorf("no resolved image config for %q; resolve it alongside the digest", n.Image.Ref)
-		}
-		return cfg, nil
-	}
-	return nil, fmt.Errorf("stage %q has no base image", final.Name)
+	return llbgen.FinalBaseConfig(g, configs)
 }
 
 // dockerAuthProvider forwards the host's registry credentials to buildkitd over
@@ -251,11 +226,31 @@ func dockerAuthProvider() session.Attachable {
 
 // exportEntry converts o into the single exporter a solve is configured with.
 func (o Output) exportEntry() (client.ExportEntry, error) {
+	destinations := 0
+	for _, set := range []bool{o.OCILayoutPath != "", o.OCILayoutDir != "", o.DockerTarPath != "", o.ImageRef != ""} {
+		if set {
+			destinations++
+		}
+	}
+	// ImageRef labels file/directory exports, so it is not a second destination
+	// in those cases.
+	if o.ImageRef != "" && (o.OCILayoutPath != "" || o.OCILayoutDir != "" || o.DockerTarPath != "") {
+		destinations--
+	}
+	if destinations > 1 {
+		return client.ExportEntry{}, fmt.Errorf("multiple outputs configured; choose one destination")
+	}
 	switch {
-	case o.OCILayoutPath != "" && o.Push:
-		return client.ExportEntry{}, fmt.Errorf("an OCI layout export cannot also push; choose one destination")
+	case (o.OCILayoutPath != "" || o.OCILayoutDir != "" || o.DockerTarPath != "") && o.Push:
+		return client.ExportEntry{}, fmt.Errorf("an archive or layout export cannot also push; choose one destination")
+	case o.OCILayoutDir != "":
+		attrs := map[string]string{"tar": "false", "compression": "uncompressed"}
+		if o.ImageRef != "" {
+			attrs["name"] = o.ImageRef
+		}
+		return client.ExportEntry{Type: client.ExporterOCI, Attrs: attrs, OutputDir: o.OCILayoutDir}, nil
 	case o.OCILayoutPath != "":
-		attrs := map[string]string{}
+		attrs := map[string]string{"compression": "uncompressed"}
 		if o.ImageRef != "" {
 			attrs["name"] = o.ImageRef
 		}
@@ -265,6 +260,17 @@ func (o Output) exportEntry() (client.ExportEntry, error) {
 			Attrs: attrs,
 			// Called once the build succeeds, so a failed build leaves no
 			// truncated tar behind for a later step to mistake for output.
+			Output: func(map[string]string) (io.WriteCloser, error) { return os.Create(path) },
+		}, nil
+	case o.DockerTarPath != "":
+		attrs := map[string]string{}
+		if o.ImageRef != "" {
+			attrs["name"] = o.ImageRef
+		}
+		path := o.DockerTarPath
+		return client.ExportEntry{
+			Type:   client.ExporterDocker,
+			Attrs:  attrs,
 			Output: func(map[string]string) (io.WriteCloser, error) { return os.Create(path) },
 		}, nil
 	case o.ImageRef != "":

@@ -85,6 +85,40 @@ type ImageConfig struct {
 	Healthcheck *ir.Healthcheck
 }
 
+// FinalBaseConfig returns the raw config inherited by the graph's final
+// stage. The solver needs it when it stamps runtime metadata onto the exported
+// image; returning it from the compiler keeps callers from resolving the same
+// image twice or accidentally inheriting a discarded builder stage's config.
+func FinalBaseConfig(g *ir.Graph, configs map[string][]byte) ([]byte, error) {
+	if g == nil || len(g.Stages) == 0 {
+		return nil, fmt.Errorf("graph has no stages")
+	}
+	final := g.Stages[len(g.Stages)-1]
+	start := 0
+	if len(g.Stages) > 1 {
+		start = g.Stages[len(g.Stages)-2].Final + 1
+	}
+	if final.Final < start || final.Final >= len(g.Nodes) {
+		return nil, fmt.Errorf("stage %q: final node %d is outside the graph's %d nodes", final.Name, final.Final, len(g.Nodes))
+	}
+
+	for i := start; i <= final.Final; i++ {
+		n := g.Nodes[i]
+		if n.Kind != ir.OpImage {
+			continue
+		}
+		if n.Image == nil {
+			return nil, fmt.Errorf("stage %q: node %d has kind %q but nil Image payload", final.Name, i, n.Kind)
+		}
+		cfg, ok := configs[n.Image.Ref]
+		if !ok {
+			return nil, fmt.Errorf("no resolved image config for %q; resolve it alongside the digest", n.Image.Ref)
+		}
+		return cfg, nil
+	}
+	return nil, fmt.Errorf("stage %q has no base image", final.Name)
+}
+
 // Options carries the externally-resolved facts Emit needs.
 type Options struct {
 	// Images maps every base-image ref in the graph to its resolved

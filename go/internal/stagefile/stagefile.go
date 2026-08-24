@@ -2,7 +2,8 @@
 // YAML build descriptor (build.stagefile.yaml) that compiles to a real
 // Dockerfile with structural safety guarantees a hand-written Dockerfile
 // doesn't get by default (lockfile digest-pinning, shell-safe quoting, no
-// raw-shell escape hatch). It exposes a single entry point, CompileFile.
+// raw-shell escape hatch). It can emit either a Dockerfile or a direct BuildKit
+// LLB definition from the same lowered graph.
 // Vendored from github.com/joannisorlandos/stagefile (same author) so
 // wendy build/wendy run has no external dependency on that private repo.
 package stagefile
@@ -288,18 +289,46 @@ func compileFileWithFramework(dir, source, platform, gpuArch, buildProfile, ros2
 	return dockerfile, dockerignore, nil
 }
 
-// CompileToLLB reads the canonical Stagefile from dir and compiles it to a
-// BuildKit LLB definition plus the derived image config. It shares
-// CompileFile's parse/lock/resolve path, so both backends use identical pins.
-func CompileToLLB(dir, platform, gpuArch, buildProfile string) (*llb.Definition, *llbgen.ImageConfig, error) {
-	return compileToLLB(dir, platform, gpuArch, buildProfile, sharedResolver, sharedHasher, sharedConfigResolver)
+// LLBBuild is everything solve.Run needs from a Stagefile compilation. Keeping
+// the final base config beside the definition prevents CLI callers from doing
+// a second registry lookup after compilation.
+type LLBBuild struct {
+	Definition *llb.Definition
+	Config     *llbgen.ImageConfig
+	BaseConfig []byte
+}
+
+// CompileToLLB reads a Stagefile from dir and compiles it to a BuildKit LLB
+// definition plus the image metadata needed by the exporter. It accepts the
+// same options as CompileFile, including variants, GPU targets, debug profiles,
+// ROS 2 runtime packages, and download progress.
+func CompileToLLB(dir, platform string, opts ...Option) (*LLBBuild, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	source := o.source
+	if source == "" {
+		source = SourceName
+	}
+	if !IsSourceName(source) {
+		return nil, fmt.Errorf("%q is not a Stagefile name: expected %s or a variant of it such as prod%s", source, SourceName, sourceSuffix)
+	}
+	hasher := sharedHasher
+	if o.progress != nil {
+		hasher = func(url string) (string, error) {
+			o.progress(url)
+			return sharedHasher(url)
+		}
+	}
+	return compileToLLB(dir, source, platform, o.gpuArch, o.buildProfile, o.ros2Distro, o.ros2RMW, sharedResolver, hasher, sharedConfigResolver)
 }
 
 // compileToLLB is the resolver-injectable implementation behind CompileToLLB.
-func compileToLLB(dir, platform, gpuArch, buildProfile string, resolver lock.Resolver, hasher lock.Hasher, configResolver lock.ConfigResolver) (*llb.Definition, *llbgen.ImageConfig, error) {
-	rs, err := resolveSpec(dir, SourceName, gpuArch, buildProfile, "", "", resolver, hasher)
+func compileToLLB(dir, source, platform, gpuArch, buildProfile, ros2Distro, ros2RMW string, resolver lock.Resolver, hasher lock.Hasher, configResolver lock.ConfigResolver) (*LLBBuild, error) {
+	rs, err := resolveSpec(dir, source, gpuArch, buildProfile, ros2Distro, ros2RMW, resolver, hasher)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	absDir, err := filepath.Abs(dir)
@@ -311,18 +340,26 @@ func compileToLLB(dir, platform, gpuArch, buildProfile string, resolver lock.Res
 		CUDAProfile: rs.cudaProfile, CacheScope: absDir,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	configs, err := lock.ResolveConfigs(imageRefs(rs.file), rs.images, platform, configResolver)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	return llbgen.Emit(g, llbgen.Options{
+	def, cfg, err := llbgen.Emit(g, llbgen.Options{
 		Images: rs.images, Configs: configs, Platform: platform,
 		BuildPlatform: hostPlatform(),
 	})
+	if err != nil {
+		return nil, err
+	}
+	baseConfig, err := llbgen.FinalBaseConfig(g, configs)
+	if err != nil {
+		return nil, err
+	}
+	return &LLBBuild{Definition: def, Config: cfg, BaseConfig: baseConfig}, nil
 }
 
 func hostPlatform() string {

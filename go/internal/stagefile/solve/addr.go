@@ -52,7 +52,19 @@ const defaultBuildxBuilder = "wendy"
 // The context is accepted for symmetry with the rest of the package's API and
 // because a future probe of the builder container would need it; resolution
 // itself consults nothing that can block.
-func Address(_ context.Context) (string, error) {
+func Address(ctx context.Context) (string, error) {
+	builder := defaultBuildxBuilder
+	if v, _ := lookupEnv("WENDY_BUILDX_BUILDER"); v != "" {
+		builder = v
+	}
+	return AddressForBuildxBuilder(ctx, builder)
+}
+
+// AddressForBuildxBuilder is Address with an explicit buildx builder name for
+// the off-device fallback. BUILDKIT_HOST and the on-device socket still win;
+// the name matters only when the CLI has bootstrapped a dedicated builder such
+// as "wendy-oci" and must connect to that exact daemon.
+func AddressForBuildxBuilder(_ context.Context, builder string) (string, error) {
 	if v, ok := lookupEnv("BUILDKIT_HOST"); ok && strings.TrimSpace(v) != "" {
 		return v, nil
 	}
@@ -71,9 +83,8 @@ func Address(_ context.Context) (string, error) {
 		return "", fmt.Errorf("no BuildKit daemon: buildx's daemon runs inside a container reached with docker, and docker is not on PATH; set BUILDKIT_HOST to point at a daemon directly")
 	}
 
-	builder := defaultBuildxBuilder
-	if v, _ := lookupEnv("WENDY_BUILDX_BUILDER"); v != "" {
-		builder = v
+	if strings.TrimSpace(builder) == "" {
+		return "", fmt.Errorf("no buildx builder name")
 	}
 	// The docker-container driver names its container buildx_buildkit_<name>0.
 	return "docker-container://buildx_buildkit_" + builder + "0", nil

@@ -109,3 +109,25 @@ func TestAddressWithoutDockerOffDeviceFails(t *testing.T) {
 		t.Fatalf("error should point at the override, got %v", err)
 	}
 }
+
+func TestAddressForBuildxBuilderUsesTheNamedDaemon(t *testing.T) {
+	stubLookups(t, map[string]string{"WENDY_BUILDX_BUILDER": "ignored"}, true)
+	got, err := AddressForBuildxBuilder(context.Background(), "wendy-oci")
+	if err != nil {
+		t.Fatalf("AddressForBuildxBuilder: %v", err)
+	}
+	if got != "docker-container://buildx_buildkit_wendy-oci0" {
+		t.Fatalf("AddressForBuildxBuilder = %q", got)
+	}
+}
+
+func TestAddressForBuildxBuilderStillHonorsBuildkitHost(t *testing.T) {
+	stubLookups(t, map[string]string{"BUILDKIT_HOST": "tcp://builder:1234"}, false)
+	got, err := AddressForBuildxBuilder(context.Background(), "wendy-oci")
+	if err != nil {
+		t.Fatalf("AddressForBuildxBuilder: %v", err)
+	}
+	if got != "tcp://builder:1234" {
+		t.Fatalf("AddressForBuildxBuilder = %q", got)
+	}
+}
