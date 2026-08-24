@@ -333,3 +333,221 @@ func TestRejectUnsupportedBuildHostProject(t *testing.T) {
 		t.Fatalf("got %v, want a clear remote-build support boundary", err)
 	}
 }
+
+// TestCloudFallbackDeviceName_ExplicitWinsOverDeviceFlag is the contract that
+// keeps `wendy run --build-host` honest. Two devices are in flight -- the build
+// host and the deploy target -- and --device names the TARGET. If the cloud
+// fallback preferred the flag, connectBuildHost would tunnel to the target and
+// build there, putting the image on the machine the developer meant to deploy
+// to while reporting success.
+func TestCloudFallbackDeviceName_ExplicitWinsOverDeviceFlag(t *testing.T) {
+	got := cloudFallbackDeviceName("spark-office", "ccr2", "some-default")
+	if got != "spark-office" {
+		t.Fatalf("got %q, want the explicit build host to win over --device", got)
+	}
+}
+
+// A caller with no explicit name is resolving the deploy target itself, where
+// --device IS the device being resolved.
+func TestCloudFallbackDeviceName_FallsBackToFlagThenDefault(t *testing.T) {
+	if got := cloudFallbackDeviceName("", "ccr2", "some-default"); got != "ccr2" {
+		t.Fatalf("got %q, want the --device flag", got)
+	}
+	if got := cloudFallbackDeviceName("", "", "some-default"); got != "some-default" {
+		t.Fatalf("got %q, want the configured default", got)
+	}
+	if got := cloudFallbackDeviceName("", "", ""); got != "" {
+		t.Fatalf("got %q, want empty so the caller reports the original error", got)
+	}
+}
+
+// TestCheckFleetDeliverySupported_RefusesOldAgent: proto3 drops unknown fields,
+// so an agent predating push_targets would receive a spec whose fleet it cannot
+// see and deliver nowhere, while the CLI reported a fleet deploy. Degrading to
+// the first device would be worse: deploying to one machine and claiming
+// several.
+func TestCheckFleetDeliverySupported_RefusesOldAgent(t *testing.T) {
+	old := &agentpbv2.GetBuildCapabilitiesResponse{MultiTargetDelivery: false}
+	if err := checkFleetDeliverySupported("spark-office", old, 3); err == nil {
+		t.Fatal("want a refusal when several devices are requested of an agent that cannot deliver to them")
+	}
+	// One device needs nothing new, so an older agent stays usable.
+	if err := checkFleetDeliverySupported("spark-office", old, 1); err != nil {
+		t.Fatalf("single-device builds must still work against an older agent: %v", err)
+	}
+	newer := &agentpbv2.GetBuildCapabilitiesResponse{MultiTargetDelivery: true}
+	if err := checkFleetDeliverySupported("spark-office", newer, 3); err != nil {
+		t.Fatalf("a capable agent must be accepted: %v", err)
+	}
+}
+
+// TestFleetDeliveryReport_CountsFailures is the rule that keeps a partial fleet
+// deploy from reading as a success.
+func TestFleetDeliveryReport_CountsFailures(t *testing.T) {
+	names := map[int32]string{1: "ccr1", 2: "ccr2", 3: "theta"}
+	lines, failed := fleetDeliveryReport([]*agentpbv2.DeliveryResult{
+		{AssetId: 1, Delivered: true},
+		{AssetId: 2, Delivered: false, Error: "mesh dial failed"},
+		{AssetId: 3, Delivered: true},
+	}, names)
+	if failed != 1 {
+		t.Fatalf("failed = %d, want 1", failed)
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"ccr1", "ccr2", "theta", "mesh dial failed", "FAILED"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("report missing %q; got:\n%s", want, joined)
+		}
+	}
+}
+
+// An agent that reports a failure without a reason must still not be summarised
+// as fine.
+func TestFleetDeliveryReport_FailureWithoutReasonStillFails(t *testing.T) {
+	lines, failed := fleetDeliveryReport([]*agentpbv2.DeliveryResult{
+		{AssetId: 9, Delivered: false},
+	}, nil)
+	if failed != 1 {
+		t.Fatalf("failed = %d, want 1", failed)
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "asset 9") {
+		t.Errorf("an unnamed device must still be identifiable; got %v", lines)
+	}
+}
+
+func TestPartialFleetDeployError_StatesTheSplit(t *testing.T) {
+	err := &errPartialFleetDeploy{failed: 1, total: 3}
+	if !strings.Contains(err.Error(), "2 of 3") {
+		t.Errorf("the message must say how many succeeded; got %q", err.Error())
+	}
+}
+
+// TestSplitFleetDevices_KeepsOrderAndNamesPrimary: the primary is not merely
+// first — it is the device the GPU architecture, agent OS and build-arg hints
+// are read from, so which name lands there decides what image gets built.
+func TestSplitFleetDevices_KeepsOrderAndNamesPrimary(t *testing.T) {
+	primary, extras, err := splitFleetDevices("ccr1, ccr2 ,theta")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if primary != "ccr1" {
+		t.Errorf("primary = %q, want ccr1", primary)
+	}
+	if len(extras) != 2 || extras[0] != "ccr2" || extras[1] != "theta" {
+		t.Errorf("extras = %v, want [ccr2 theta] with whitespace trimmed", extras)
+	}
+}
+
+// A duplicate would report one device twice and hide that another was never
+// named — a fleet that looks larger than it is.
+func TestSplitFleetDevices_RefusesDuplicatesAndBlanks(t *testing.T) {
+	if _, _, err := splitFleetDevices("ccr1,ccr2,ccr1"); err == nil {
+		t.Error("want an error for a repeated device")
+	}
+	if _, _, err := splitFleetDevices("ccr1,,ccr2"); err == nil {
+		t.Error("want an error for an empty entry")
+	}
+}
+
+// A single device must be untouched by any of this.
+func TestSplitFleetDevices_SingleDeviceHasNoExtras(t *testing.T) {
+	primary, extras, err := splitFleetDevices("ccr1")
+	if err != nil || primary != "ccr1" || len(extras) != 0 {
+		t.Fatalf("got (%q, %v, %v), want ccr1 with no extras", primary, extras, err)
+	}
+}
+
+// TestValidateFleetRun_RequiresBuildHostAndDetach: both refusals exist because
+// the alternative is silently doing something other than what was asked —
+// N local builds, or logs from a fleet interleaved into one terminal.
+func TestValidateFleetRun_RequiresBuildHostAndDetach(t *testing.T) {
+	extras := []string{"ccr2"}
+	if err := validateFleetRun(extras, "", true); err == nil {
+		t.Error("a fleet without --build-host must be refused")
+	}
+	if err := validateFleetRun(extras, "spark-office", false); err == nil {
+		t.Error("a fleet without --detach must be refused")
+	}
+	if err := validateFleetRun(extras, "spark-office", true); err != nil {
+		t.Errorf("a valid fleet run must be allowed: %v", err)
+	}
+	// A single device keeps working with no build host and no --detach.
+	if err := validateFleetRun(nil, "", false); err != nil {
+		t.Errorf("ordinary single-device runs must be unaffected: %v", err)
+	}
+}
+
+func TestDeliveryOutcome_RecordsFailureReason(t *testing.T) {
+	ok := deliveryOutcome(7, nil)
+	if !ok.GetDelivered() || ok.GetError() != "" {
+		t.Errorf("got %v, want a clean success", ok)
+	}
+	bad := deliveryOutcome(8, errors.New("container create refused"))
+	if bad.GetDelivered() {
+		t.Error("a failed create must not be recorded as delivered")
+	}
+	if !strings.Contains(bad.GetError(), "container create refused") {
+		t.Errorf("the reason must survive; got %q", bad.GetError())
+	}
+}
+
+// TestBuildkitAbsentNotice_SilentWhenBuildable: enabling on a working build host
+// must stay quiet. A note that fires when nothing is wrong trains people to
+// ignore the one that matters.
+func TestBuildkitAbsentNotice_SilentWhenBuildable(t *testing.T) {
+	if got := buildkitAbsentNotice(true, "linux"); got != nil {
+		t.Fatalf("got %v, want no notice when BuildKit is available", got)
+	}
+	if got := buildkitAbsentNotice(true, "darwin"); got != nil {
+		t.Fatalf("got %v, want no notice when BuildKit is available", got)
+	}
+}
+
+// TestBuildkitAbsentNotice_TellsLinuxHostsWhatToInstall covers the case that
+// motivated this: `enable` reports success and points at `wendy run
+// --build-host`, but the device has no build engine.
+func TestBuildkitAbsentNotice_TellsLinuxHostsWhatToInstall(t *testing.T) {
+	got := buildkitAbsentNotice(false, "linux")
+	if len(got) == 0 {
+		t.Fatal("want a notice when BuildKit is absent")
+	}
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "buildkitd") {
+		t.Errorf("notice must name the daemon to install; got %q", joined)
+	}
+	if !strings.Contains(joined, "unix:///run/buildkit/buildkitd.sock") {
+		t.Errorf("notice must name the socket the agent looks at; got %q", joined)
+	}
+}
+
+// A Mac cannot have BuildKit at all, so it must not be told to install one.
+func TestBuildkitAbsentNotice_DoesNotSendMacsAfterADaemon(t *testing.T) {
+	joined := strings.Join(buildkitAbsentNotice(false, "darwin"), "\n")
+	if joined == "" {
+		t.Fatal("want a notice explaining why a Mac cannot build")
+	}
+	if strings.Contains(joined, "Install buildkitd") {
+		t.Errorf("must not tell a Mac to install buildkitd; got %q", joined)
+	}
+	if !strings.Contains(joined, "Apple Container") {
+		t.Errorf("should say why; got %q", joined)
+	}
+}
+
+// TestCheckBuildHostCapabilities_NamesTheRemedy: this is the message a developer
+// actually lands on. The agent's own refusal names the socket and says what to
+// install, but the CLI refuses first -- before any context transfer -- so that
+// more useful wording is unreachable in practice.
+func TestCheckBuildHostCapabilities_NamesTheRemedy(t *testing.T) {
+	err := checkBuildHostCapabilities("spark-office", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuilderEnabled:    true,
+		BuildkitAvailable: false,
+		Os:                "linux",
+	}, "linux/arm64")
+	if err == nil {
+		t.Fatal("a host with no BuildKit must be refused")
+	}
+	if !strings.Contains(err.Error(), "buildkitd") || !strings.Contains(err.Error(), "unix:///run/buildkit/buildkitd.sock") {
+		t.Errorf("the error must say what to install and where; got %q", err)
+	}
+}

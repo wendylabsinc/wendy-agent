@@ -367,14 +367,18 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 
 	if state == agentpb.AppRunningState_RUNNING {
 		cliLogln("No changes detected; %s is already up to date and running.", containerDisplayName(appCfg))
-		// This detach-only path neither starts the container nor waits for
-		// readiness, so no postStart action runs.
+		// No host-side postStart hook: the fast path only ever runs detached
+		// (see the opts.detach gate on tryDeployFastPath's caller), and
+		// detached deploys don't block on readiness — see
+		// runPostStartIfReady's doc comment. The container is untouched, so the
+		// agent-side hook cannot re-run either.
 		return true, nil
 	}
 
-	// Present but stopped: start it without rebuilding and attach the device-host
-	// postStart hook to the start RPC. Host-side actions require readiness and do
-	// not run on this detach-only path.
+	// Present but stopped — start it without rebuilding. Mirror the normal
+	// detached deploy path so the fast path stays a transparent optimization:
+	// attach the agent-side postStart hook to the start RPC (via context
+	// metadata). Detached deploys do not fire the host-side postStart hook.
 	if _, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
 		AppName:       appCfg.AppID,
 		RestartPolicy: resolveRestartPolicy(opts),

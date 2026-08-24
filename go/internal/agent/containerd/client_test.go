@@ -597,6 +597,20 @@ func TestInjectOTELEnvSetsServiceNameAndResourceAttrs(t *testing.T) {
 	}
 }
 
+func TestInjectOTELEnvUsesContainerNameForMultiServiceIdentity(t *testing.T) {
+	cfg := hostNetworkCfgWithID("robot")
+	cfg.ServiceName = "listener"
+
+	env := injectOTELEnvIfNeeded(nil, cfg, "robot")
+
+	if !slices.Contains(env, "OTEL_SERVICE_NAME=robot_listener") {
+		t.Errorf("env missing multi-service OTEL_SERVICE_NAME; got %v", env)
+	}
+	if !slices.Contains(env, "OTEL_RESOURCE_ATTRIBUTES=wendy.app.name=robot") {
+		t.Errorf("env missing owning app resource attribute; got %v", env)
+	}
+}
+
 func TestInjectOTELEnvSetsIdentityWhenEndpointPreset(t *testing.T) {
 	// An image that presets only the endpoint should still get identity vars so
 	// its direct OTLP logs remain filterable by `wendy device logs --app <id>`.

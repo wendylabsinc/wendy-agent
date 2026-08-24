@@ -317,11 +317,16 @@ Camera / V4L2 device access.
 ```json
 { "type": "camera" }
 { "type": "camera", "allowlist": ["/dev/video0"] }
+{ "type": "camera", "user": "admin", "password": "secret" }
 ```
 
 | Field | Description |
 |-------|-------------|
 | `allowlist` | Restrict access to specific device paths. Omit to allow all cameras. |
+| `user` | Username for a registered IP camera. Ignored for local cameras. |
+| `password` | Password for a registered IP camera. Ignored for local cameras. |
+
+> **Security:** `user`/`password` set here are stored in **plaintext** in `wendy.json` and deployed as-is. Prefer the interactive `wendy device camera login` command, which keeps credentials out of the app config.
 
 ### `audio`
 
@@ -448,7 +453,7 @@ The container must serve the [MCP Streamable HTTP](https://modelcontextprotocol.
 
 ### `http`
 
-Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContainer.http_port`) for any client — including `wendy device apps` and remote management apps — to discover and open. `wendy run` uses it automatically: it waits for the port to accept connections before printing "App reachable at ..." and opens it in your default browser, with no extra `hooks.postStart` configuration required. If readiness times out, the CLI warns but does not print the success message or perform this automatic browser open.
+Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContainer.http_port`) for any client — including `wendy device apps` and remote management apps — to discover and open. An attached `wendy run` uses it automatically: it waits for the port to accept connections before printing "App reachable at ..." and opens it in your default browser, with no extra `hooks.postStart` configuration required. If readiness times out, the CLI warns but does not print the success message or perform this automatic browser open.
 
 ```json
 { "type": "http", "port": 8080 }

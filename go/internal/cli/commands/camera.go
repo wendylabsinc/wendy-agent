@@ -15,9 +15,9 @@ import (
 	"golang.org/x/term"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
-	"google.golang.org/grpc/status"
+	"google.golang.org/grpc"
 )
 
 func newCameraCmd() *cobra.Command {
@@ -33,12 +33,14 @@ func newCameraCmd() *cobra.Command {
 		newCameraWatchCmd(),
 		newCameraLoginCmd(),
 		newCameraForgetCmd(),
+		newCameraTestCmd(),
 	)
 	return cmd
 }
 
 func newCameraListCmd() *cobra.Command {
-	return &cobra.Command{
+	var refresh bool
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List cameras",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -49,44 +51,68 @@ func newCameraListCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			resp, err := conn.VideoService.ListVideoDevices(ctx, &agentpb.ListVideoDevicesRequest{})
-			if err != nil {
-				if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Camera listing"); macErr != nil {
-					return fmt.Errorf("listing cameras: %w", macErr)
-				}
-				return fmt.Errorf("listing cameras: %w", err)
-			}
-
-			devices := resp.GetDevices()
-			if jsonOutput {
-				data, err := json.MarshalIndent(devices, "", "  ")
+			var devices []*agentpb.VideoDevice
+			if refresh {
+				// --refresh runs a discovery round on the device before listing, so a
+				// camera that just came online shows up without waiting for the
+				// agent's own periodic discovery loop.
+				resp, err := conn.VideoService.RefreshCameras(ctx, &agentpb.RefreshCamerasRequest{})
 				if err != nil {
-					return err
+					if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Camera listing"); macErr != nil {
+						return fmt.Errorf("refreshing cameras: %w", macErr)
+					}
+					return fmt.Errorf("refreshing cameras: %w", err)
 				}
-				fmt.Println(string(data))
-				return nil
+				devices = resp.GetDevices()
+			} else {
+				resp, err := conn.VideoService.ListVideoDevices(ctx, &agentpb.ListVideoDevicesRequest{})
+				if err != nil {
+					if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Camera listing"); macErr != nil {
+						return fmt.Errorf("listing cameras: %w", macErr)
+					}
+					return fmt.Errorf("listing cameras: %w", err)
+				}
+				devices = resp.GetDevices()
 			}
 
-			if len(devices) == 0 {
-				fmt.Println("No cameras found.")
-				return nil
-			}
-
-			headers := []string{"ID", "Type", "Name", "Where", "Status"}
-			var rows [][]string
-			for _, d := range devices {
-				rows = append(rows, []string{
-					fmt.Sprintf("%d", d.GetId()),
-					transportLabel(d.GetTransport()),
-					d.GetName(),
-					cameraWhere(d),
-					cameraStatus(d),
-				})
-			}
-			fmt.Print(tui.RenderTable(headers, rows))
-			return nil
+			return renderCameraList(devices)
 		},
 	}
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Run a discovery round on the device before listing")
+	return cmd
+}
+
+// renderCameraList prints a camera listing as JSON or a table. Factored out of
+// newCameraListCmd's RunE so `camera list` and `camera list --refresh` render
+// through identical code no matter which RPC produced the devices.
+func renderCameraList(devices []*agentpb.VideoDevice) error {
+	if jsonOutput {
+		data, err := json.MarshalIndent(devices, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	if len(devices) == 0 {
+		fmt.Println("No cameras found.")
+		return nil
+	}
+
+	headers := []string{"ID", "Type", "Name", "Where", "Status"}
+	var rows [][]string
+	for _, d := range devices {
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", d.GetId()),
+			transportLabel(d.GetTransport()),
+			d.GetName(),
+			cameraWhere(d),
+			cameraStatus(d),
+		})
+	}
+	fmt.Print(tui.RenderTable(headers, rows))
+	return nil
 }
 
 // transportLabel returns a short label for the camera transport column.
@@ -199,6 +225,73 @@ func newCameraForgetCmd() *cobra.Command {
 			cliLogln("Forgot camera %d.", id)
 			return nil
 		},
+	}
+}
+
+// cameraTester is the narrow slice of agentpb.WendyVideoServiceClient that
+// runCameraTest needs, so tests can stub the RPC without a real gRPC
+// connection.
+type cameraTester interface {
+	TestCameraCredentials(ctx context.Context, in *agentpb.TestCameraCredentialsRequest, opts ...grpc.CallOption) (*agentpb.TestCameraCredentialsResponse, error)
+}
+
+// newCameraTestCmd validates a network camera's stored credentials without
+// starting a stream. It exists because `camera view` failing on bad
+// credentials is a roundabout way to find that out — it starts a hub and a
+// capture pipeline first — and because a camera the operator only suspects
+// is misconfigured deserves a direct answer.
+func newCameraTestCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "test <id>",
+		Short: "Validate a network camera's stored credentials",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseCameraID(args[0])
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			return runCameraTest(ctx, conn.VideoService, id, cmd.OutOrStdout())
+		},
+	}
+}
+
+// runCameraTest calls TestCameraCredentials and turns the result into either a
+// printed confirmation or an actionable error.
+//
+// A camera with no stored login at all surfaces as a gRPC error (the same
+// FailedPrecondition + ErrorInfo{IP_CAMERA_NO_CREDENTIALS} StreamVideo
+// returns), so it is routed through cameraStreamDiagnostic and gets the
+// established `camera login` hint for free. AUTH_FAILED and UNREACHABLE
+// arrive as response data instead — expected outcomes of a credentials test,
+// not RPC failures — and are turned into errors here so a non-zero exit
+// status reaches the shell.
+func runCameraTest(ctx context.Context, client cameraTester, id uint32, out io.Writer) error {
+	resp, err := client.TestCameraCredentials(ctx, &agentpb.TestCameraCredentialsRequest{DeviceId: id})
+	if err != nil {
+		return cameraStreamDiagnostic(err)
+	}
+	switch resp.GetResult() {
+	case agentpb.TestCameraCredentialsResponse_RESULT_OK:
+		if detail := resp.GetDetail(); detail != "" {
+			fmt.Fprintf(out, "Camera %d: credentials accepted (%s): %s.\n", id, resp.GetAddress(), detail)
+		} else {
+			fmt.Fprintf(out, "Camera %d: credentials accepted (%s).\n", id, resp.GetAddress())
+		}
+		return nil
+	case agentpb.TestCameraCredentialsResponse_RESULT_AUTH_FAILED:
+		return fmt.Errorf("camera %d rejected the stored credentials; run `wendy device camera login %d`: %s",
+			id, id, resp.GetDetail())
+	case agentpb.TestCameraCredentialsResponse_RESULT_UNREACHABLE:
+		return fmt.Errorf("camera %d: %s", id, resp.GetDetail())
+	default:
+		return fmt.Errorf("camera %d: unexpected test result %v", id, resp.GetResult())
 	}
 }
 
@@ -322,23 +415,20 @@ func (s *cameraDiagnosticStream) Recv() (*agentpb.VideoFrame, error) {
 // cameraStreamDiagnostic turns machine-readable agent errors into the action the
 // operator should take. Every reason the agent can attach names its own fix.
 func cameraStreamDiagnostic(err error) error {
-	st, ok := status.FromError(err)
-	if !ok {
+	info := streamreason.Info(err)
+	if info == nil {
 		return err
 	}
-	for _, detail := range st.Details() {
-		info, ok := detail.(*errdetails.ErrorInfo)
-		if !ok {
-			continue
-		}
-		switch info.GetReason() {
-		case "TEGRA_FIRMWARE_MISMATCH":
-			rootfs, boot := info.GetMetadata()["rootfs_l4t"], info.GetMetadata()["boot_firmware_l4t"]
-			return fmt.Errorf("Jetson CSI camera is unavailable because the rootfs (%s) and boot firmware (%s) are from different L4T families. Run `wendy os install`, choose this Jetson, and perform full USB recovery (do not use --rootfs-only)", rootfs, boot)
-		case "IP_CAMERA_NO_CREDENTIALS":
-			id := info.GetMetadata()["device_id"]
-			return fmt.Errorf("camera %s has no stored credentials. Run `wendy device camera login %s`", id, id)
-		}
+	switch info.GetReason() {
+	case streamreason.TegraFirmwareMismatch:
+		rootfs, boot := info.GetMetadata()["rootfs_l4t"], info.GetMetadata()["boot_firmware_l4t"]
+		return fmt.Errorf("Jetson CSI camera is unavailable because the rootfs (%s) and boot firmware (%s) are from different L4T families. Run `wendy os install`, choose this Jetson, and perform full USB recovery (do not use --rootfs-only)", rootfs, boot)
+	case streamreason.IPCameraNoCredentials:
+		id := info.GetMetadata()["device_id"]
+		return fmt.Errorf("camera %s has no stored credentials. Run `wendy device camera login %s`", id, id)
+	case streamreason.CameraInUse:
+		device := info.GetMetadata()["device"]
+		return fmt.Errorf("camera %s is held by another application on this device and could not be shared with it. Stop the app holding it, then retry", device)
 	}
 	return err
 }

@@ -77,15 +77,15 @@ func ChooseStream(width uint32) StreamChoice {
 // ErrNoAddress is returned when a camera has no known address to dial.
 var ErrNoAddress = errors.New("camera has no known address")
 
-// StreamURL builds the RTSP URL for a camera.
+// streamPath returns the RTSP request path for the requested stream,
+// normalized to a leading slash and falling back to the widely-implemented
+// default when the camera has no stored path for that stream yet.
 //
-// Credentials go through url.UserPassword so they are percent-encoded: a password
-// containing '@' or ':' would otherwise change which host the pipeline connects
-// to.
-func StreamURL(c Camera, cred Credential, choice StreamChoice) (string, error) {
-	if c.Address == "" {
-		return "", ErrNoAddress
-	}
+// Extracted from StreamURL so the URL builder and the credential probe
+// (probe.go, which needs a path to DESCRIBE but has no use for the rest of a
+// stream URL) cannot drift onto two different notions of "the camera's
+// stream path".
+func streamPath(c Camera, choice StreamChoice) string {
 	var path string
 	switch choice {
 	case StreamMainOnly:
@@ -102,10 +102,22 @@ func StreamURL(c Camera, cred Credential, choice StreamChoice) (string, error) {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	return path
+}
+
+// StreamURL builds the RTSP URL for a camera.
+//
+// Credentials go through url.UserPassword so they are percent-encoded: a password
+// containing '@' or ':' would otherwise change which host the pipeline connects
+// to.
+func StreamURL(c Camera, cred Credential, choice StreamChoice) (string, error) {
+	if c.Address == "" {
+		return "", ErrNoAddress
+	}
 	u := &url.URL{
 		Scheme: "rtsp",
 		Host:   net.JoinHostPort(c.Address, strconv.Itoa(defaultRTSPPort)),
-		Path:   path,
+		Path:   streamPath(c, choice),
 	}
 	if cred.Username != "" {
 		u.User = url.UserPassword(cred.Username, cred.Password)
@@ -214,6 +226,32 @@ func PipelineArgs(streamURL string) []string {
 		"!", "h264parse", "config-interval=-1",
 		"!", "video/x-h264,stream-format=byte-stream,alignment=au",
 		"!", "fdsink", "fd=1", "sync=false",
+	}
+}
+
+// LoopbackPipelineArgs returns GStreamer pipeline tokens that decode an RTSP
+// H.264 stream to raw frames and write them into a v4l2loopback node at
+// devicePath. Unlike PipelineArgs there is no fd sink: the node is the sink,
+// and it is the container-facing device Loopback creates and Task C3's
+// supervisor feeds.
+//
+// This does transcode, unlike PipelineArgs — avdec_h264 and videoconvert are
+// required, not optional, because v4l2sink's CAPTURE side needs a real pixel
+// format: nothing consuming /dev/videoN as a normal camera device (a
+// container's own OpenCV, GStreamer, or FFmpeg pipeline) can be expected to
+// speak compressed H.264 off a v4l2 node the way the command-line interface's
+// own broadcast path does.
+//
+// location=streamURL carries the same credential-bearing form PipelineArgs
+// does, so SecretsIn/RedactText — keyed on any "location=" token — scrub a
+// diagnostic from this pipeline exactly the way they already scrub one from
+// PipelineArgs.
+func LoopbackPipelineArgs(streamURL, devicePath string) []string {
+	return []string{
+		"rtspsrc", "location=" + streamURL, "protocols=tcp", "latency=0", "timeout=5000000",
+		"!", "rtph264depay", "!", "h264parse", "config-interval=-1",
+		"!", "avdec_h264", "!", "videoconvert",
+		"!", "v4l2sink", "device=" + devicePath, "sync=false",
 	}
 }
 

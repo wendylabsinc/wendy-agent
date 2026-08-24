@@ -106,7 +106,7 @@ A top-level `readiness`/`hooks` or `http` entitlement in `wendy.json` acts as an
 
 ### Attached vs. detached
 
-In attached mode, each service's readiness→postStart sequence begins after that service starts, so a slow probe does not delay starting the next service. Ctrl-C cancels pending readiness checks and `cli` actions. If every service exits while an action is still waiting for readiness, that action is canceled. In detached mode, readiness is checked in dependency order after every service has started, and `cli` actions may outlive the Wendy command. With `wendy run --watch`, each service's `openURL` and `cli` actions run once per session after its first successful readiness check; later saves do not repeat them. A failed or canceled readiness check can try again after a later redeploy. `--watch --detach` skips these actions. A readiness timeout warns without failing the command: explicitly configured multi-service hooks still run, while the `App reachable` message and any automatic browser open are suppressed.
+In attached mode, each service's readiness→postStart sequence fires asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service. Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. If the run ends on its own — every service's log stream closes — while a hook (per-service or the app-level fallback) is still waiting on readiness, that hook is suppressed rather than fired, so `wendy run` never opens a browser onto a stack that has already exited. In detached mode none of this runs: no readiness wait, no `App reachable` line, and no host-side `postStart` action. Only the agent-side `postStart.agent` hooks, carried on each start RPC, still run on the device. With `wendy run --watch`, each service's `openURL` and `cli` actions run once per session after its first successful readiness check; later saves do not repeat them, while a failed or canceled check may retry after a later deploy. `--watch --detach` skips these actions. A non-cancellation readiness timeout in attached mode warns but does not fail the command: explicitly configured multi-service `postStart` hooks still run, while `App reachable` and any HTTP-entitlement-synthesized browser open are suppressed. Cancellation suppresses the warning, announcement, and hook.
 
 ## How `wendy run` handles multi-service projects
 
@@ -156,7 +156,7 @@ All standard `wendy run` flags apply. The following are particularly relevant fo
 |------|-------------|
 | `--service <name>` | Build and run only the named service and its transitive `dependsOn` dependencies. |
 | `--deploy` | Build and create all containers but do not start them. |
-| `--detach` | Start all containers but do not stream logs. |
+| `--detach` | Start all containers but do not stream logs. See [Attached vs. detached](#attached-vs-detached). |
 | `--keep-going` | Deploy services that build successfully instead of aborting the whole group on the first build/push failure. |
 | `--max-concurrency <n>` | Max service images to build+push at once. 0 = default limit of 4. |
 | `--watch` | Redeploy changed services while continuing to show logs from the whole app. Use `--watch --detach` to skip logs and `openURL`/`cli` actions. |

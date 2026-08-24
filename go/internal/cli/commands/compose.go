@@ -1479,7 +1479,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 	var runErr error
 	if opts.detach {
-		runErr = composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, projectName, opts)
+		runErr = composeStartDetached(ctx, conn, ordered, svcCfgs, projectName)
 	} else if opts.isWatch() {
 		runErr = composeStartWatch(runCtx, conn, ordered, preservedLifecycle, svcCfgs, svcLifecycleCfgs, appLevelCfg, opts)
 	} else {
@@ -1504,10 +1504,13 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 // composeStartDetached starts every compose service in dependency order,
 // waiting for each Started ack, and returns with the containers left running.
-// Each start carries the service's agent-side postStart hook as gRPC metadata.
-// Watch-detached runs skip host lifecycle work. Other detached runs launch it
-// after all services have started and do not wait for CLI hooks to exit.
-func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, projectName string, opts runOptions) error {
+// Each start carries the service's agent-side postStart hook as gRPC metadata,
+// so in-container hooks still run on the device.
+//
+// No host-side lifecycle work: detached runs do not wait for readiness,
+// announce the app URL, or fire host postStart hooks — see
+// runPostStartIfReady's doc comment (WDY-2041).
+func composeStartDetached(ctx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, projectName string) error {
 	for _, name := range ordered {
 		appCfg := svcCfgs[name]
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
@@ -1523,14 +1526,6 @@ func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentCon
 	}
 	cliLogln("All services running in detached mode.")
 	cliLogln("Run 'wendy device logs' to stream logs (filter a service with --app %s-<service>).", projectName)
-	if opts.isWatch() {
-		return nil
-	}
-	runner := &serviceHookRunner{conn: conn}
-	for _, name := range ordered {
-		runner.runOne(runCtx, context.Background(), svcLifecycleCfgs[name])
-	}
-	runner.runOne(runCtx, context.Background(), appLevelCfg)
 	return nil
 }
 
@@ -1601,6 +1596,12 @@ func composeStartWatch(ctx context.Context, conn *grpcclient.AgentConnection, or
 // owns Ctrl+C handling and cancels runCtx after stopping the services.
 func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter, opts runOptions) error {
 	runner := &serviceHookRunner{conn: conn, opts: opts}
+	var appName string
+	if len(ordered) > 0 && svcCfgs[ordered[0]] != nil {
+		appName = svcCfgs[ordered[0]].AppID
+	}
+	logSub := startRunLogSubscription(runCtx, conn, appName, os.Stdout, runLogStreamWarning)
+	defer logSub.stop()
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(ordered))

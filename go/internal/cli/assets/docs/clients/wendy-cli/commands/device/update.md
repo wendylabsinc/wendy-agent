@@ -76,8 +76,13 @@ After the device is back online, `wendy device update` queries the post-reboot c
 
 ```
 Update failed post-reboot healthchecks and was rolled back to WendyOS-0.10.4.
-Reason: wendyos-update commit failed: exit status 4 (health.d/50-containerd.sh exited 1)
+Reason: wendyos-update commit failed: exit status 4 (health hook "50-containerd.sh" failed: exit status 1)
 ```
+
+The first line distinguishes a healthcheck failure from an update that never
+booted (the firmware fell back to the old slot, so `health.d` never ran) and from
+a rollback whose reason the CLI cannot classify. See
+[`wendy os update`](../os/update.md) for all three forms.
 
 On cloud-tunneled (asset) devices the command does not wait for the reboot and does not query the outcome; it prints instructions to reconnect and re-run if needed.
 

@@ -221,6 +221,14 @@
               "type": "array",
               "items": { "type": "string" },
               "description": "Allowed camera device paths. Accepted for compatibility with the deprecated video entitlement."
+            },
+            "user": {
+              "type": "string",
+              "description": "Username for a registered IP camera. Ignored for local cameras."
+            },
+            "password": {
+              "type": "string",
+              "description": "Password for a registered IP camera. Ignored for local cameras. Not read at deploy or container-create time: the CLI consults it only the first time `wendy device camera view` needs a login for that camera. Run `wendy device camera login` (or `camera view` once) so a container-only consumer has it stored before it starts."
             }
           },
           "required": ["type"],
@@ -293,6 +301,20 @@
           "required": ["type", "device"],
           "additionalProperties": false,
           "description": "Serial tty device access (USB-attached servo buses, sensors, microcontrollers)."
+        },
+        {
+          "properties": {
+            "type": { "const": "mcp" },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Port the app's Model Context Protocol (MCP) server listens on."
+            }
+          },
+          "required": ["type", "port"],
+          "additionalProperties": false,
+          "description": "Declares the app's Model Context Protocol (MCP) server port so MCP clients can discover and reach it. At most one per app."
         },
         {
           "properties": {

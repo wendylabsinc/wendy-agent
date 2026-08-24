@@ -82,6 +82,20 @@ func (l localLayer) decompress() ([]byte, error) {
 	return out, nil
 }
 
+// totalCompressedLayerBytes sums the compressed blob sizes of the image's
+// layers (Size for file-backed layers, len(Blob) for in-memory ones).
+func totalCompressedLayerBytes(layers []localLayer) int64 {
+	var total int64
+	for _, l := range layers {
+		if l.TarPath != "" {
+			total += l.Size
+		} else {
+			total += int64(len(l.Blob))
+		}
+	}
+	return total
+}
+
 // ociDescriptor is a descriptor entry as it appears in an OCI index.json or a
 // nested image-index manifest list.
 type ociDescriptor struct {
@@ -937,8 +951,17 @@ func buildImageToOCILayoutWithBuildkit(ctx context.Context, cwd, dockerfile, pla
 	// credentials via --build-arg; use buildctl's `--secret` for those.
 	cmd := exec.CommandContext(ctx, "buildctl", args...)
 	cmd.Dir = cwd
+	// BuildKit writes its build progress to stderr, not stdout (see
+	// tui/buildrawjson.go); only stdout feeds the build parser (stream). Point
+	// cmd.Stderr at the *same* stdout value, not a separate writer, so
+	// os/exec collapses stdout+stderr into a single pipe/copy goroutine (the
+	// same same-writer-value trick buildAndPushImage uses, docker.go
+	// ~:2034-2038) — otherwise the whole build's progress lands in the
+	// setup-log buffer instead of the parser, which WDY-2432's synthetic
+	// builder-setup step then renders as a flood of garbled
+	// "preparing buildx builder" lines.
 	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stderr = stdout
 	if err := cmd.Run(); err != nil {
 		return &imageBuildFailedError{fmt.Errorf("buildctl build (OCI export) failed: %w", err)}
 	}
@@ -1148,7 +1171,17 @@ func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platfor
 	submark("  build: setup (cache/env)")
 
 	fmt.Fprintf(stderr, "[buildx] starting OCI export: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
-	if err := runBuildxOCIExportCommand(ctx, cwd, args, dockerConfigEnv(cleanDockerConfigDir), stdout, stderr); err != nil {
+	// BuildKit writes its build progress to stderr, not stdout (see
+	// tui/buildrawjson.go); only stdout feeds the build parser (stream). Pass
+	// the *same* stdout value for both streams so os/exec collapses
+	// stdout+stderr into a single pipe/copy goroutine (the same
+	// same-writer-value trick buildAndPushImage uses, docker.go ~:2034-2038)
+	// — otherwise the whole build's progress lands in the setup-log buffer
+	// instead of the parser, which WDY-2432's synthetic builder-setup step
+	// then renders as a flood of garbled "preparing buildx builder" lines.
+	// The announce line above stays on the stderr *parameter* directly (it's
+	// genuine setup chatter, unaffected by the command's stream wiring).
+	if err := runBuildxOCIExportCommand(ctx, cwd, args, dockerConfigEnv(cleanDockerConfigDir), stdout, stdout); err != nil {
 		return &imageBuildFailedError{fmt.Errorf("docker buildx build (OCI export) failed: %w", err)}
 	}
 	return nil
@@ -1208,8 +1241,19 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	fmt.Fprintf(stderr, "[apple-container] building OCI image: container %s\n", strings.Join(redactBuildArgsForLog(args), " "))
 	buildCmd := imageBuilderCommandContext(ctx, "container", args...)
 	buildCmd.Dir = buildContext
+	// The container CLI writes its --progress plain build output to stderr,
+	// not stdout; only stdout feeds the build parser (stream). Point
+	// buildCmd.Stderr at the *same* stdout value, not the separate stderr
+	// param, so os/exec collapses stdout+stderr into a single pipe/copy
+	// goroutine (the same same-writer-value trick buildAndPushImage uses,
+	// docker.go ~:2034-2038, and A6 applied to the buildx/buildctl OCI-export
+	// paths above) — otherwise the whole build's progress lands in the
+	// setup-log writer instead of the parser, which WDY-2432's synthetic
+	// builder-setup step then renders as a flood of garbled lines. The
+	// announce line above stays on the stderr *parameter* directly (it's
+	// genuine setup chatter, unaffected by cmd's stdout/stderr wiring).
 	buildCmd.Stdout = stdout
-	buildCmd.Stderr = stderr
+	buildCmd.Stderr = stdout
 	if err := buildCmd.Run(); err != nil {
 		return &imageBuildFailedError{fmt.Errorf("container build (OCI layout) failed: %w", contextMonitor.wrapBuildError(err))}
 	}
@@ -1223,8 +1267,11 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	saveArgs := []string{"image", "save", imageRef, "--platform", platform, "-o", dest}
 	fmt.Fprintf(stderr, "[apple-container] exporting OCI layout: container %s\n", strings.Join(saveArgs, " "))
 	saveCmd := imageBuilderCommandContext(ctx, "container", saveArgs...)
+	// Same same-writer-value trick as buildCmd above, for the same reason:
+	// route saveCmd's stderr into the parser feed (stdout), not the separate
+	// setup-log writer.
 	saveCmd.Stdout = stdout
-	saveCmd.Stderr = stderr
+	saveCmd.Stderr = stdout
 	if err := saveCmd.Run(); err != nil {
 		return fmt.Errorf("container image save (OCI layout) failed: %w", err)
 	}

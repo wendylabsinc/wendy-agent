@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,7 @@ func TestNewInitCmd_Flags(t *testing.T) {
 
 	expectedFlags := []string{
 		"app-id",
+		"here",
 		"target",
 		"language",
 		"entitlement",
@@ -188,6 +190,85 @@ func TestResolveInitDestAndID_NonInteractiveWithoutAppIDFails(t *testing.T) {
 	}
 }
 
+// WDY-2439: `wendy init --here` scaffolds into the current directory instead
+// of nesting a subdirectory named after an explicit app ID (the reporter's
+// `wendy init cctv-demo` inside an existing empty `cctv-demo/` repro).
+
+func TestResolveInitDestAndID_HereWithExplicitAppIDUsesCwd(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/cctv-demo", nil, initOptions{
+		here:     true,
+		appID:    "cctv-demo",
+		appIDSet: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != "/tmp/cctv-demo" || appID != "cctv-demo" {
+		t.Fatalf("destDir, appID = %q, %q, want (%q, %q)", destDir, appID, "/tmp/cctv-demo", "cctv-demo")
+	}
+}
+
+func TestResolveInitDestAndID_HereWithPositionalAppIDUsesCwd(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/cctv-demo", []string{"cctv-demo"}, initOptions{
+		here: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != "/tmp/cctv-demo" || appID != "cctv-demo" {
+		t.Fatalf("destDir, appID = %q, %q, want (%q, %q)", destDir, appID, "/tmp/cctv-demo", "cctv-demo")
+	}
+}
+
+func TestResolveInitDestAndID_HereWithoutNameUsesValidatedBasename(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/demo-app", nil, initOptions{here: true})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != "/tmp/demo-app" || appID != "demo-app" {
+		t.Fatalf("destDir, appID = %q, %q, want (%q, %q)", destDir, appID, "/tmp/demo-app", "demo-app")
+	}
+}
+
+func TestResolveInitDestAndID_HereWithoutNameRejectsInvalidBasename(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	_, _, err := resolveInitDestAndID("/tmp/Demo App", nil, initOptions{here: true})
+	if err == nil {
+		t.Fatal("expected invalid directory basename to fail as app ID")
+	}
+	if !strings.Contains(err.Error(), `"Demo App"`) || !strings.Contains(err.Error(), "wendy init --here <name>") {
+		t.Fatalf("error = %q, want mention of basename and %q", err, "wendy init --here <name>")
+	}
+}
+
+// --here must work with no TTY attached at all: today the no-name path
+// hard-errors without an app ID when isInteractiveTerminalFn is false, but
+// --here answers the destination/name question itself and must never reach
+// that check.
+func TestResolveInitDestAndID_HereWorksNonInteractively(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/demo-app", nil, initOptions{
+		here:        true,
+		targetSet:   true,
+		languageSet: true,
+		templateSet: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != "/tmp/demo-app" || appID != "demo-app" {
+		t.Fatalf("destDir, appID = %q, %q, want (%q, %q)", destDir, appID, "/tmp/demo-app", "demo-app")
+	}
+}
+
 func TestPathHasPrefix_IsCaseSensitiveOnUnix(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows paths are intentionally compared case-insensitively")
@@ -303,6 +384,24 @@ func TestTemplateNextSteps(t *testing.T) {
 				t.Fatalf("templateNextSteps(%q, %q, %q) = %#v, want %#v", tt.cwd, tt.destDir, tt.appID, got, tt.want)
 			}
 		})
+	}
+}
+
+// WDY-2439: the template flow must refuse to scaffold into a directory that
+// already has a wendy.json when dest == cwd (the --here case), and must fail
+// before any filesystem mutation (MkdirAll, template download/render).
+func TestRunTemplateFlow_HereGuardsExistingWendyJSON(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "wendy.json"), []byte(`{"appId":"existing"}`), 0o644); err != nil {
+		t.Fatalf("writing existing wendy.json: %v", err)
+	}
+
+	err := runTemplateFlow(tempDir, tempDir, "demo-app", "simple-api", targetWendyOS, &repoMeta{}, initOptions{here: true})
+	if err == nil {
+		t.Fatal("expected runTemplateFlow to fail when wendy.json already exists in the current directory")
+	}
+	if got, want := err.Error(), "wendy.json already exists here; run from an empty directory or remove it first"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 
@@ -1106,9 +1205,11 @@ func TestResolveBareTemplatePick_NonInteractivePrintsListAndErrors(t *testing.T)
 	isInteractiveTerminalFn = func() bool { return false }
 	t.Cleanup(func() { isInteractiveTerminalFn = orig })
 
+	// Two wendyos templates, so the single-template auto-select cannot kick in.
 	meta := &repoMeta{
 		Templates: []repoMetaTemplate{
 			{Name: "simple-api", Description: "Minimal HTTP API"},
+			{Name: "fullstack", Description: "Full-stack starter"},
 			{Name: "mac-llm", Description: "macOS-only template", Targets: []string{targetDarwin}},
 		},
 	}
@@ -1119,6 +1220,18 @@ func TestResolveBareTemplatePick_NonInteractivePrintsListAndErrors(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "--template requires a value") {
 		t.Fatalf("error = %q, want mention of --template", err)
+	}
+}
+
+func TestResolveBareTemplatePick_SingleTemplateAutoSelected(t *testing.T) {
+	stubNonInteractive(t)
+	meta := &repoMeta{Templates: []repoMetaTemplate{{Name: "go2-rc", Description: "Go2 remote control"}}}
+	name, err := resolveBareTemplatePick(targetWendyOS, meta)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name != "go2-rc" {
+		t.Fatalf("expected go2-rc, got %q", name)
 	}
 }
 
@@ -1598,5 +1711,199 @@ func TestInitCommand_NoFrameworkFlagsLeavesFrameworksNil(t *testing.T) {
 	}
 	if cfg.Frameworks != nil {
 		t.Fatalf("Frameworks = %+v, want nil when no --framework flags were passed", cfg.Frameworks)
+	}
+}
+
+func TestTemplateTargets_DefaultsToWendyOS(t *testing.T) {
+	targets := templateTargets(repoMetaTemplate{Name: "go2-rc"})
+	if len(targets) != 1 || targets[0] != targetWendyOS {
+		t.Fatalf("expected [%s], got %v", targetWendyOS, targets)
+	}
+}
+
+func TestTemplateTargets_DropsUnknownTargets(t *testing.T) {
+	targets := templateTargets(repoMetaTemplate{Name: "x", Targets: []string{"windows", targetDarwin}})
+	if len(targets) != 1 || targets[0] != targetDarwin {
+		t.Fatalf("expected [%s], got %v", targetDarwin, targets)
+	}
+}
+
+func TestInitTargetItemsFor_ReusesSharedItems(t *testing.T) {
+	items := initTargetItemsFor([]string{targetWendyOS, targetDarwin})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].Name != "WendyOS" || items[1].Name != "macOS" {
+		t.Fatalf("expected canonical initTargetItems entries, got %+v", items)
+	}
+}
+
+func TestInitTargetDisplayName(t *testing.T) {
+	if got := initTargetDisplayName(targetWendyOS); got != "WendyOS" {
+		t.Fatalf("expected WendyOS, got %q", got)
+	}
+	if got := initTargetDisplayName("weird"); got != "weird" {
+		t.Fatalf("expected raw passthrough, got %q", got)
+	}
+}
+
+func TestResolveInitTargetForTemplate_SingleTargetSkipsPicker(t *testing.T) {
+	stubNonInteractive(t) // success while non-interactive proves no picker ran
+	target, err := resolveInitTargetForTemplate(repoMetaTemplate{Name: "go2-rc"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if target != targetWendyOS {
+		t.Fatalf("expected %s, got %q", targetWendyOS, target)
+	}
+}
+
+func TestResolveInitTargetForTemplate_ExplicitSingleTarget(t *testing.T) {
+	stubNonInteractive(t)
+	target, err := resolveInitTargetForTemplate(repoMetaTemplate{Name: "mac-llm", Targets: []string{targetDarwin}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if target != targetDarwin {
+		t.Fatalf("expected %s, got %q", targetDarwin, target)
+	}
+}
+
+func TestResolveInitTargetForTemplate_NoSupportedTargetsErrors(t *testing.T) {
+	_, err := resolveInitTargetForTemplate(repoMetaTemplate{Name: "x", Targets: []string{"windows"}})
+	if err == nil || !strings.Contains(err.Error(), "not available for any supported target") {
+		t.Fatalf("expected unsupported-target error, got: %v", err)
+	}
+}
+
+func TestResolveInitTargetForTemplate_MultiTargetNonInteractiveRequiresTarget(t *testing.T) {
+	stubNonInteractive(t)
+	_, err := resolveInitTargetForTemplate(repoMetaTemplate{Name: "x", Targets: []string{targetWendyOS, targetDarwin}})
+	if err == nil || !strings.Contains(err.Error(), "--target is required") {
+		t.Fatalf("expected --target required error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), targetWendyOS) || !strings.Contains(err.Error(), targetDarwin) {
+		t.Fatalf("error should list the template's targets, got: %v", err)
+	}
+}
+
+// stubFetchRepoMeta replaces the template-registry fetch with a canned result
+// so tests never hit the network.
+func stubFetchRepoMeta(t *testing.T, meta *repoMeta, err error) {
+	t.Helper()
+	orig := fetchRepoMetaWithUI
+	fetchRepoMetaWithUI = func(branch string) (*repoMeta, error) { return meta, err }
+	t.Cleanup(func() { fetchRepoMetaWithUI = orig })
+}
+
+func TestResolveInitTargetAndTemplate_SingleTargetTemplateInfersTarget(t *testing.T) {
+	stubNonInteractive(t)
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "go2-rc", Languages: []string{"python"}}},
+		Languages: []repoMetaLanguage{{Key: "python", Name: "Python"}},
+	}
+	stubFetchRepoMeta(t, meta, nil)
+
+	target, tmpl, gotMeta, err := resolveInitTargetAndTemplate(initOptions{template: "go2-rc", templateSet: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if target != targetWendyOS || tmpl != "go2-rc" || gotMeta != meta {
+		t.Fatalf("expected (wendyos, go2-rc, meta), got (%q, %q, %v)", target, tmpl, gotMeta)
+	}
+}
+
+func TestResolveInitTargetAndTemplate_MetaFetchErrorFails(t *testing.T) {
+	stubNonInteractive(t)
+	stubFetchRepoMeta(t, nil, fmt.Errorf("registry unreachable"))
+	_, _, _, err := resolveInitTargetAndTemplate(initOptions{template: "go2-rc", templateSet: true})
+	if err == nil || !strings.Contains(err.Error(), "registry unreachable") {
+		t.Fatalf("expected fetch error to propagate, got: %v", err)
+	}
+}
+
+func TestResolveInitTargetAndTemplate_UnknownTemplateFailsBeforeTargetPrompt(t *testing.T) {
+	stubNonInteractive(t)
+	stubFetchRepoMeta(t, &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "go2-rc"}},
+	}, nil)
+	_, _, _, err := resolveInitTargetAndTemplate(initOptions{template: "nope", templateSet: true})
+	if err == nil || !strings.Contains(err.Error(), `unknown template "nope"`) {
+		t.Fatalf("expected unknown-template error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "--target is required") {
+		t.Fatalf("unknown template must be reported before any target requirement, got: %v", err)
+	}
+}
+
+func TestResolveInitTargetAndTemplate_BareTemplateStillResolvesTargetFirst(t *testing.T) {
+	stubNonInteractive(t)
+	_, _, _, err := resolveInitTargetAndTemplate(initOptions{template: bareTemplatePickSentinel, templateSet: true})
+	if err == nil || !strings.Contains(err.Error(), "--target is required when running non-interactively") {
+		t.Fatalf("bare --template must fall through to target resolution, got: %v", err)
+	}
+}
+
+func TestResolveInitTargetAndTemplate_TargetFlagKeepsExistingValidation(t *testing.T) {
+	stubNonInteractive(t)
+	stubFetchRepoMeta(t, &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "go2-rc"}}, // WendyOS-only
+	}, nil)
+	_, _, _, err := resolveInitTargetAndTemplate(initOptions{
+		template: "go2-rc", templateSet: true,
+		target: targetDarwin, targetSet: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "is not available for target") {
+		t.Fatalf("expected existing target-mismatch error, got: %v", err)
+	}
+}
+
+func TestResolveTemplateLanguage_SingleLanguageAutoSelected(t *testing.T) {
+	stubNonInteractive(t) // success while non-interactive proves no picker ran
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "go2-rc", Languages: []string{"python"}}},
+		Languages: []repoMetaLanguage{{Key: "python", Name: "Python"}},
+	}
+	lang, err := resolveTemplateLanguage(targetWendyOS, "go2-rc", meta, initOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lang != langPython {
+		t.Fatalf("expected python, got %q", lang)
+	}
+}
+
+func TestInitCommand_NonInteractiveTemplateInfersTarget(t *testing.T) {
+	stubNonInteractive(t)
+	stubFetchRepoMeta(t, &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "go2-rc", Languages: []string{"python"}}},
+		Languages: []repoMetaLanguage{{Key: "python", Name: "Python"}},
+	}, nil)
+
+	cmd := newInitCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--template", "go2-rc"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected an app-ID error, got success")
+	}
+	if !strings.Contains(err.Error(), "an app ID is required") {
+		t.Fatalf("expected the run to reach the app-ID step (target inferred, no --target error), got: %v", err)
+	}
+}
+
+func TestResolveTemplateLanguage_NonInteractiveMultiLanguageRequiresFlag(t *testing.T) {
+	stubNonInteractive(t)
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "multi", Languages: []string{"python", "rust"}}},
+		Languages: []repoMetaLanguage{{Key: "python", Name: "Python"}, {Key: "rust", Name: "Rust"}},
+	}
+	_, err := resolveTemplateLanguage(targetWendyOS, "multi", meta, initOptions{})
+	if err == nil || !strings.Contains(err.Error(), "--language is required when running non-interactively") {
+		t.Fatalf("expected --language required error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "python") || !strings.Contains(err.Error(), "rust") {
+		t.Fatalf("error should list the template's languages, got: %v", err)
 	}
 }

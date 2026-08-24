@@ -65,6 +65,18 @@ message GetBuildCapabilitiesResponse {
   // False unless this device is configured as a build host. Default off: being
   // reachable must not be the same as volunteering to run other people's builds.
   bool builder_enabled = 7;
+
+  // True when this agent reads BuildSpec.push_targets, so one build can be
+  // delivered to several devices.
+  //
+  // A client MUST check this before sending push_targets, and refuse rather
+  // than degrade. proto3 discards unknown fields, so an older agent receives a
+  // spec whose push_targets it cannot see and whose push_target is empty: it
+  // would build and deliver nowhere, or take a default, while the client
+  // reported a fleet deploy. That is the wrong-machine failure this feature's
+  // two-explicit-flags design already refuses to allow, so it is closed here
+  // rather than left to the client to notice.
+  bool multi_target_delivery = 8;
 }
 
 // ChunkManifest reconstructs a byte stream from chunks already written through
@@ -109,8 +121,24 @@ message BuildSpec {
   string platform = 2;
   // The build context as an uncompressed tar, addressed by chunk.
   ChunkManifest context = 4;
-  // Where the finished image is pushed.
+  // Where the finished image is pushed. Superseded by push_targets; still read
+  // when that is empty, so a CLI built before fleet delivery keeps working.
   PushTarget push_target = 7;
+
+  // Every device the finished image is delivered to.
+  //
+  // One build, many devices. The build is the expensive stage and it does not
+  // vary per device: deploying one change to four cameras meant four identical
+  // builds, four context uploads and four TensorRT compiles. Delivery is
+  // layer-diffed, so the second device onwards usually transfers almost
+  // nothing.
+  //
+  // Each target is pinned separately — PushTLS takes an asset id — so N targets
+  // means N independently authenticated hops, not one hop trusted N times.
+  //
+  // A server reading this MUST prefer it over push_target and fall back only
+  // when it is empty. A client MUST NOT set both.
+  repeated PushTarget push_targets = 8;
 
   // Field 3 was push_reference, a "host:port/repo:tag" string resolved through
   // DNS. Replaced by push_target — see that message for why.
@@ -144,4 +172,26 @@ message BuildImageResult {
   // Digest of the pushed image, e.g. "sha256:...". This may be empty when the
   // build host's BuildKit version does not report a structured result digest.
   string image_digest = 1;
+
+  // One entry per delivery attempt, in the order the targets were given.
+  //
+  // Delivery outcomes are per device and are NOT collapsed into the stream's
+  // status. A fleet deploy where one device failed is not a failed build and
+  // not a successful deploy, and the distinction has to survive to the CLI:
+  // reporting the whole command as success because the build worked is how a
+  // device silently misses a change. Empty for a single-target build, which
+  // keeps reporting through the stream status as before.
+  repeated DeliveryResult deliveries = 2;
+}
+
+// DeliveryResult is what happened when the finished image was pushed to one
+// device. A failure here is specific to that device — its agent, its mesh
+// reachability, its disk — and says nothing about the others.
+message DeliveryResult {
+  int32 asset_id = 1;
+  bool delivered = 2;
+  // Empty when delivered. Carries the reason otherwise, already phrased for a
+  // developer: the CLI prints it next to the device name rather than
+  // interpreting it.
+  string error = 3;
 }

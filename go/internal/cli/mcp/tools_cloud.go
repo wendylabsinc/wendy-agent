@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -28,8 +27,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
-
-const mcpDefaultBrokerPort = "50052"
 
 type mcpCloseFunc func()
 
@@ -294,9 +291,9 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	brokerConn, err := mcpDialCloudBroker(auth, stringParam(req, "broker_url"))
+	brokerConn, err := clouddefaults.DialBroker(auth, stringParam(req, "broker_url"))
 	if err != nil {
-		return errResult(errCodeDeviceUnreachable, err.Error()), nil
+		return cloudErrResult(err), nil
 	}
 
 	key := fmt.Sprintf("%s:%s:%d:%d", protocol, asset.GetName(), localPort, remotePort)
@@ -396,7 +393,7 @@ func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	brokerConn, err := mcpDialCloudBroker(auth, stringParam(req, "broker_url"))
+	brokerConn, err := clouddefaults.DialBroker(auth, stringParam(req, "broker_url"))
 	if err != nil {
 		return errResult(errCodeDeviceUnreachable, err.Error()), nil
 	}
@@ -537,7 +534,7 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 	if err != nil {
 		return nil, nil, err
 	}
-	brokerConn, err := mcpDialCloudBroker(auth, brokerURL)
+	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -604,15 +601,16 @@ func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig,
 	if err != nil {
 		return nil, err
 	}
-	if len(assets) == 0 {
-		return nil, &cloudResolveErr{code: errCodeNotFound, msg: "no enrolled devices found for this org; enroll a device with cloud_enroll_device"}
-	}
 	if deviceName == "" {
+		if len(assets) == 0 {
+			return nil, &cloudResolveErr{code: errCodeNotFound, msg: "no enrolled devices found for this org; enroll a device with cloud_enroll_device"}
+		}
 		if len(assets) == 1 {
 			return assets[0], nil
 		}
 		return nil, &cloudResolveErr{code: errCodeInvalidArgument, msg: "multiple cloud devices found; pass device_name"}
 	}
+
 	lower := strings.ToLower(deviceName)
 	var matched *cloudpb.Asset
 	for _, a := range assets {
@@ -624,9 +622,59 @@ func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig,
 		}
 	}
 	if matched == nil {
-		return nil, &cloudResolveErr{code: errCodeNotFound, msg: fmt.Sprintf("no device named %q found; call cloud_discover to list devices", deviceName)}
+		// Numeric asset-id fallback: allows targeting unnamed (or
+		// differently-named) devices by id, mirroring resolveCloudAsset's
+		// fallback in commands/cloud_tunnel.go. No ambiguity check here —
+		// ids are unique, unlike names, so unlike the name loop above a
+		// second match can't happen.
+		if id, err := strconv.Atoi(strings.TrimSpace(deviceName)); err == nil {
+			for _, a := range assets {
+				if a.GetId() == int32(id) {
+					matched = a
+					break
+				}
+			}
+		}
 	}
-	return matched, nil
+	if matched != nil {
+		return matched, nil
+	}
+
+	// No match in the online-only listing (by name or id), including the
+	// degenerate case where that listing was empty. Re-check the
+	// offline-inclusive listing before concluding the device doesn't exist:
+	// it may just be enrolled-but-unreachable right now.
+	if err := s.offlineDeviceErr(ctx, auth, deviceName); err != nil {
+		return nil, err
+	}
+	return nil, &cloudResolveErr{code: errCodeNotFound, msg: fmt.Sprintf("no device named %q found; call cloud_discover to list devices", deviceName)}
+}
+
+// offlineDeviceErr distinguishes "enrolled but currently offline" from
+// "never enrolled" once the online-only asset listing has failed to produce
+// a match for deviceName. It re-queries the cloud without the online-only
+// filter; if the device turns up there (by name or numeric id — see
+// clouddefaults.FindAssetByNameOrID), it's enrolled but unreachable right
+// now, so that's reported as errCodeDeviceUnreachable instead of the
+// generic NOT_FOUND the caller would otherwise return. Returns nil (not an
+// error) both when the re-query also misses AND when the re-query itself
+// fails (e.g. a transient cloud-API outage) — in both cases the caller's
+// original NOT_FOUND message is preserved unchanged, mirroring
+// upgradeOfflineResolveErr in commands/cloud_tunnel.go. Surfacing a re-query
+// transport failure here instead would route through
+// cloudErrResult/codeFromGRPC and, for an Unavailable-shaped status,
+// mislabel a cloud-API outage as DEVICE_UNREACHABLE — implying this
+// specific device is known-and-offline, when the lookup itself simply
+// couldn't be completed.
+func (s *mcpServer) offlineDeviceErr(ctx context.Context, auth *config.AuthConfig, deviceName string) error {
+	all, err := mcpListCloudAssets(ctx, auth, "", false)
+	if err != nil {
+		return nil
+	}
+	if clouddefaults.FindAssetByNameOrID(all, deviceName) == nil {
+		return nil
+	}
+	return &cloudResolveErr{code: errCodeDeviceUnreachable, msg: fmt.Sprintf("device %q is enrolled but currently reported offline; check the device's power and network connection, or call cloud_discover with online_only=false to list enrolled devices", deviceName)}
 }
 
 func mcpCreateAssetEnrollmentToken(ctx context.Context, auth *config.AuthConfig, name string) (*cloudpb.CreateAssetEnrollmentTokenResponse, error) {
@@ -720,7 +768,7 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
 	var transport grpc.DialOption
-	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
 		certInfo := auth.Certificates[0]
 		keyPEM, err := certInfo.PrivateKeyPEM()
 		if err != nil {
@@ -742,54 +790,6 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	conn, err := grpc.NewClient(auth.CloudGRPC, transport)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
-	}
-	return conn, nil
-}
-
-func mcpDialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientConn, error) {
-	brokerURL = clouddefaults.BrokerURL(auth.CloudGRPC, brokerURL, mcpDefaultBrokerPort)
-	if len(auth.Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	certInfo := auth.Certificates[0]
-	keyPEM, err := certInfo.PrivateKeyPEM()
-	if err != nil {
-		return nil, fmt.Errorf("loading client key: %w", err)
-	}
-	tlsCfg, err := certs.LoadTLSConfig(
-		certInfo.PemCertificate,
-		certInfo.PemCertificateChain,
-		keyPEM,
-		"",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("loading broker TLS config: %w", err)
-	}
-	// Broker cert CN is localhost and won't match the cloud host — skip hostname
-	// verification but still validate the chain against the Wendy CA.
-	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain)) {
-		return nil, fmt.Errorf("no valid CA certificates in PemCertificateChain")
-	}
-	tlsCfg.InsecureSkipVerify = true //nolint:gosec
-	tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
-		if len(cs.PeerCertificates) == 0 {
-			return fmt.Errorf("broker presented no TLS certificate")
-		}
-		intermediates := x509.NewCertPool()
-		for _, c := range cs.PeerCertificates[1:] {
-			intermediates.AddCert(c)
-		}
-		_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-			Roots:         caPool,
-			Intermediates: intermediates,
-			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		})
-		return err
-	}
-	conn, err := grpc.NewClient(brokerURL, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
-	if err != nil {
-		return nil, fmt.Errorf("connecting to broker at %s: %w", brokerURL, err)
 	}
 	return conn, nil
 }

@@ -121,7 +121,7 @@ On NVIDIA Jetson, the GL/EGL userspace is injected from the host through CDI. On
 
 ### Camera Entitlement
 
-The camera entitlement provides access to video capture devices like USB cameras or CSI cameras.
+The camera entitlement provides access to video capture devices like USB cameras, CSI cameras, and registered network (IP) cameras.
 
 ```json
 {
@@ -132,9 +132,23 @@ The camera entitlement provides access to video capture devices like USB cameras
 The older `{ "type": "video" }` entitlement is still accepted for compatibility, but new projects should use `camera`.
 
 When enabled, this entitlement:
-- Mounts `/dev` to expose all video capture devices (USB and CSI)
+- Mounts `/dev` to expose all video capture devices (USB, CSI, and any network camera's loopback node — see below)
 - Configures device permissions for video capture
 - Enables access to V4L2 (Video4Linux2) and libcamera interfaces
+
+A `camera` entitlement can also carry `user`/`password` fields, but they are not read at deploy or container-create time: the CLI consults them — in place of an interactive prompt — only the first time `wendy device camera view` needs a login for that camera, storing the result on the device from there. A container-only consumer still needs that credential stored on the device before it starts, so run `wendy device camera login <id>` (or `camera view --id <id>` once) first. See the [`camera` entitlement fields](/docs/apps/wendy.json#camera) for the field reference and its plaintext-storage caveat.
+
+<Callout type="info">
+  **Network cameras**: on a WendyOS build that ships the `v4l2loopback` kernel module, each registered network camera is mirrored into a `/dev/video2xx` node (numbered to match the camera's device ID) for as long as a `camera`-entitled container is running, so it appears in-container exactly like a USB or CSI device. The node always carries the camera's sub-stream — there is no way to select the main stream per container. See [IP Cameras](/docs/hardware/camera#ip-cameras) for the device-ID band and discovery/credential CLI.
+</Callout>
+
+<Callout type="warning">
+  **Builds without the module**: container access to a network camera needs `v4l2loopback`. Without it, the agent logs this once and continues — direct `wendy device camera view` on the host is unaffected, only the in-container `/dev/video2xx` mirror is unavailable:
+
+  > running WendyOS build lacks the v4l2loopback module; `camera view` still works
+
+  *(that's the underlying sentinel error's own text; the agent's warning log line paraphrases it rather than quoting it verbatim.)*
+</Callout>
 
 ### Audio Entitlement
 
@@ -581,7 +595,7 @@ Ensure your application writes to the mounted path (e.g., `/data`) and not elsew
 
 ## Readiness Probes
 
-Readiness probes let the CLI know when your application is ready to accept traffic. When configured, `wendy run` will poll the specified port and only proceed (including running any lifecycle hooks) once the application is listening.
+Readiness probes let the CLI know when your application is ready to accept traffic. During an attached `wendy run`, the CLI polls the specified port before announcing that the app is reachable and running readiness-gated host-side lifecycle actions. Detached runs (`--detach` and `--watch`) return after the container starts without polling; deploy-only runs (`--deploy`) do not start the container.
 
 ### TCP Socket Probe
 
@@ -607,7 +621,7 @@ The TCP socket probe checks whether your application is accepting connections on
 | `tcpSocket.port` | The TCP port to probe. Must match the port your application listens on. |
 | `timeoutSeconds` | Maximum time (in seconds) to wait for the port to become available. Defaults to `30`. |
 
-The probe polls every 500ms with a 2-second dial timeout per attempt. If the port is not reachable within `timeoutSeconds`, the deployment will fail with a timeout error.
+The probe polls every 500ms with a 2-second dial timeout per attempt. If the port is not reachable within `timeoutSeconds`, the CLI prints a warning rather than failing the deployment. It suppresses the reachable-app announcement and readiness-gated host-side actions.
 
 ## Lifecycle Hooks
 
@@ -615,7 +629,9 @@ Lifecycle hooks let you run commands at specific points in your application's li
 
 ### postStart Hook
 
-The `postStart` hook runs after the readiness probe passes (or immediately after the container starts if no readiness probe is configured). It is commonly used to automatically open a browser to your application's UI.
+The host-side `postStart` actions (`openURL` and `cli`) run after the readiness probe passes, or immediately after the container starts if no readiness probe is configured. They require an attached run: `--detach` and `--watch` return without firing them, while `--deploy` does not start the container at all.
+
+`hooks.postStart.agent` is different: the CLI carries it on the container start RPC, so it runs on the device whenever Wendy starts the container, in attached or detached mode. It is not gated by the CLI readiness probe and cannot run during `--deploy` because that mode only creates the container.
 
 ```json
 {

@@ -512,19 +512,20 @@ func TestComposeStartAndStream_NaturalEndSuppressesInFlightFallback(t *testing.T
 	}
 }
 
-// TestComposeDetach_HooksSequentialWithMetadata covers ordinary detach mode.
-func TestComposeDetach_HooksSequentialWithMetadata(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("host-side hook uses `touch`, unavailable on Windows")
-	}
+// TestComposeDetach_AgentHookOnlyNoHostSideEffects covers the detach loop: the
+// agent-hook metadata rides only the declaring service's StartContainer
+// context, and nothing host-side runs — no readiness wait, no URL
+// announcement, no postStart cli hook or browser open, matching detached
+// single-container runs (WDY-2041).
+func TestComposeDetach_AgentHookOnlyNoHostSideEffects(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	defer ln.Close()
 	port := testPort(t, ln)
-	sentinel := filepath.Join(t.TempDir(), "webui-cli-ran")
 	browserCalls := swapBrowserOpen(t)
+	hookCommands := swapPostStartExec(t)
 
 	svcCfgs := map[string]*appconfig.AppConfig{
 		"minecraft": {
@@ -538,25 +539,13 @@ func TestComposeDetach_HooksSequentialWithMetadata(t *testing.T) {
 			Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: port}},
 			Hooks: &appconfig.HooksConfig{
 				PostStart: &appconfig.HookCommand{
-					CLI:   fmt.Sprintf("touch %q", sentinel),
+					CLI:   "webui-cli-hook",
 					Agent: "echo hi",
 				},
 			},
 		},
 	}
-	svcLifecycleCfgs := map[string]*appconfig.AppConfig{
-		"minecraft": nil,
-		"webui": {
-			AppID:       "app",
-			ServiceName: "webui",
-			Hooks:       svcCfgs["webui"].Hooks,
-		},
-	}
 	ordered := []string{"minecraft", "webui"}
-	appLevelCfg := &appconfig.AppConfig{
-		AppID:        "app",
-		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: port}},
-	}
 
 	fake := &hookSvcContainerClient{}
 	conn := &grpcclient.AgentConnection{
@@ -564,10 +553,7 @@ func TestComposeDetach_HooksSequentialWithMetadata(t *testing.T) {
 		AgentService:     &lifecycleFakeAgentClient{},
 		ContainerService: fake,
 	}
-
-	runCtx, runCancel := context.WithCancel(context.Background())
-	defer runCancel()
-	if err := composeStartDetached(context.Background(), runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, "proj", runOptions{}); err != nil {
+	if err := composeStartDetached(context.Background(), conn, ordered, svcCfgs, "proj"); err != nil {
 		t.Fatalf("composeStartDetached: %v", err)
 	}
 
@@ -585,13 +571,14 @@ func TestComposeDetach_HooksSequentialWithMetadata(t *testing.T) {
 	if hasAgentHookMetadata(t, mcCtx) {
 		t.Error("app_minecraft StartContainer context unexpectedly carries agent-hook metadata")
 	}
-
-	waitForFile(t, sentinel, 5*time.Second)
-	if len(*browserCalls) != 1 {
-		t.Fatalf("browserOpen fired %d times (%v), want exactly 1 (app-level fallback)", len(*browserCalls), *browserCalls)
+	// Host-side postStart must not run. The readiness port is listening, so a
+	// regression that restores the sequence trips these assertions rather than
+	// stalling on a probe that could never pass.
+	if len(*browserCalls) != 0 {
+		t.Errorf("browserOpen fired %v, want no calls: detached runs do not open the app URL", *browserCalls)
 	}
-	if want := fmt.Sprintf("http://127.0.0.1:%d", port); (*browserCalls)[0] != want {
-		t.Errorf("openURL = %q, want %q", (*browserCalls)[0], want)
+	if len(*hookCommands) != 0 {
+		t.Errorf("postStart cli hook ran %v, want no calls", *hookCommands)
 	}
 }
 
@@ -608,8 +595,7 @@ func TestComposeWatchDetach_AgentHookOnly(t *testing.T) {
 	}
 	fake := &hookSvcContainerClient{}
 	conn := &grpcclient.AgentConnection{Host: "127.0.0.1", AgentService: &lifecycleFakeAgentClient{}, ContainerService: fake}
-	opts := withWatchInvariants(runOptions{detach: true})
-	if err := composeStartDetached(context.Background(), context.Background(), conn, []string{"webui"}, svcCfgs, svcCfgs, svcCfgs["webui"], "proj", opts); err != nil {
+	if err := composeStartDetached(context.Background(), conn, []string{"webui"}, svcCfgs, "proj"); err != nil {
 		t.Fatalf("composeStartDetached: %v", err)
 	}
 	startCtx, ok := fake.startContext("app_webui")

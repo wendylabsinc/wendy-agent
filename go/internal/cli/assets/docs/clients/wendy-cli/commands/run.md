@@ -4,7 +4,7 @@ Runs your app on a Wendy-enabled device:
 2. [Queries the platform and architecture](./device/version.md) of this device
 3. Invokes a [build](./build.md) using the target triple, and injects a [debugger](../../../debugging/) if needed
 4. Uploads the artifact(s) for [Linux](../../../wendy-agent/connectivity/container-registry.md) or [macOS](../../../wendy-agent/macos/)
-5. [Starts the app](./device/apps/start.md), waits for readiness, and prints the reachable URL (when configured)
+5. [Starts the app](./device/apps/start.md), then (attached runs only) waits for readiness and prints the reachable URL
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
 ## Reachable app URLs
@@ -144,7 +144,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | Flag | Description |
 |------|-------------|
 | `--deploy` | Build and create the container but do not start it. |
-| `--detach` | Start the container but do not stream logs. |
+| `--detach` | Start the container and return without streaming logs, waiting for readiness, or opening the app URL. |
 | `--restart-unless-stopped` | Restart the container unless manually stopped. |
 | `--restart-on-failure` | Restart the container on failure. |
 | `--no-restart` | Do not restart the container on exit. |
@@ -396,10 +396,10 @@ In an attached run, `wendy run` runs `openURL` and `cli` postStart actions after
 the app reports readiness. This applies to both registry-push and chunk-diff
 deploys. If readiness fails, Wendy skips these actions and prints a warning.
 
-For a single-container app, `--detach` returns after the container starts and
-does not run `openURL` or `cli`; `postStart.agent` still runs on the device.
-Detached multi-service projects run their configured lifecycle actions after
-all selected services start; see [Readiness and lifecycle hooks](../../../apps/wendy-services.md#readiness-and-lifecycle-hooks).
+`--detach` returns after the selected containers start and does not run
+readiness checks, `openURL`, or `cli`; `postStart.agent` still runs on the
+device. See [Readiness and lifecycle hooks](../../../apps/wendy-services.md#readiness-and-lifecycle-hooks)
+for multi-service details.
 `--deploy` creates the app without starting it, so no postStart action runs.
 
 Under attached `--watch` the host-side actions run after the first successful
@@ -446,9 +446,9 @@ container exits or you press **Ctrl-C**, Wendy cancels the hook and waits for it
 to exit before returning. In watch mode, the hook is tied to the watch session
 and is canceled when you stop watching.
 
-Detached multi-service runs launch `cli` hooks without waiting for them to exit.
-Single-container `--detach` and all `--deploy` runs do not launch host-side
-postStart actions.
+Detached mode (`--detach`), deploy-only mode (`--deploy`), and
+`--watch --detach` do not fire the host-side hook at all, so there is no child
+process to reap. Attached watch hooks are owned and reaped by the watch session.
 
 ## Container image signature
 

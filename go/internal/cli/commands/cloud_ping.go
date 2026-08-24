@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
@@ -69,7 +71,7 @@ func cloudPingCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL stri
 	if err != nil {
 		return err
 	}
-	brokerConn, err := dialCloudBroker(auth, brokerURL)
+	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ import Crypto
 import Darwin
 import Foundation
 import GRPCCore
+import OpenTelemetryGRPC
 import Testing
 import WendyAgentGRPC
 
@@ -871,6 +872,80 @@ struct ContainerServiceTests {
 
         #expect(environment["USER"] == "wendy")
         #expect(environment["LOGNAME"] == "wendy")
+    }
+
+    @Test("Native app environment routes OTLP to the agent and stamps app identity")
+    func nativeAppEnvironmentRoutesOTLPToAgent() {
+        let environment = ContainerService.nativeAppEnvironment(
+            appName: "camera",
+            otelPort: 54321,
+            source: [
+                "PATH": "/usr/bin:/bin",
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://inherited.invalid:4317",
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "https://inherited.invalid/v1/logs",
+                "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/protobuf",
+                "OTEL_SERVICE_NAME": "inherited-agent-name",
+                "OTEL_RESOURCE_ATTRIBUTES": "deployment.environment.name=test",
+            ]
+        )
+
+        #expect(environment["PATH"] == "/usr/bin:/bin")
+        #expect(environment["NSUnbufferedIO"] == "YES")
+        #expect(environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:54321")
+        #expect(environment["OTEL_EXPORTER_OTLP_PROTOCOL"] == "grpc")
+        #expect(environment["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] == nil)
+        #expect(environment["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] == nil)
+        #expect(environment["OTEL_SERVICE_NAME"] == "camera")
+        #expect(
+            environment["OTEL_RESOURCE_ATTRIBUTES"]
+                == "deployment.environment.name=test,wendy.app.name=camera"
+        )
+    }
+
+    @Test("Native app environment corrects an inherited Wendy app resource attribute")
+    func nativeAppEnvironmentCorrectsInheritedAppAttribute() {
+        let environment = ContainerService.nativeAppEnvironment(
+            appName: "camera",
+            otelPort: 4317,
+            source: ["OTEL_RESOURCE_ATTRIBUTES": "wendy.app.name=custom,region=au"]
+        )
+
+        #expect(environment["OTEL_RESOURCE_ATTRIBUTES"] == "wendy.app.name=camera,region=au")
+    }
+
+    @Test("Adapted native process output uses the canonical container log scope")
+    func adaptedNativeOutputUsesContainerScope() throws {
+        let request = ContainerService.containerLogRequest(
+            appName: "camera",
+            text: "hello",
+            stream: "stderr",
+            severity: .warn,
+            timestamp: 123
+        )
+        let resourceLogs = try #require(request.resourceLogs.first)
+        let scopeLogs = try #require(resourceLogs.scopeLogs.first)
+        let record = try #require(scopeLogs.logRecords.first)
+
+        #expect(scopeLogs.scope.name == "wendy.container")
+        #expect(record.body.stringValue == "hello")
+        #expect(record.severityNumber == .warn)
+        #expect(record.timeUnixNano == 123)
+        #expect(
+            record.attributes.contains { attribute in
+                attribute.key == "stream" && attribute.value.stringValue == "stderr"
+            }
+        )
+        #expect(
+            resourceLogs.resource.attributes.contains { attribute in
+                attribute.key == "service.name" && attribute.value.stringValue == "camera"
+            }
+        )
+        #expect(
+            resourceLogs.resource.attributes.contains { attribute in
+                attribute.key == "wendy.app.name" && attribute.value.stringValue == "camera"
+            }
+        )
     }
 
     @Test("Real user name resolves to an existing account")

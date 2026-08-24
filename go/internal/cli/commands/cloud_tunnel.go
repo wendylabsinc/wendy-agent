@@ -3,7 +3,7 @@ package commands
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -28,20 +28,19 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-const (
-	defaultBrokerPort = "50052"
-	maxCloudAssets    = 10_000
+const maxCloudAssets = 10_000
 
-	// cloudKeepalivePing is how often the client sends an HTTP/2 keepalive
-	// ping over the tunnel. It must stay >= the agent's MinTime enforcement
-	// policy (10s) and frequent enough to keep the tunnel/NAT warm.
-	cloudKeepalivePing = 30 * time.Second
-	// cloudKeepaliveACKTimeout is how long to wait for a keepalive ACK before
-	// declaring the connection dead. It is generous because long OS-update
-	// streams run while the device is saturated (artifact download + OS
-	// install), and a busy device can take well over the usual 10s to ACK a
-	// ping; a tighter window tears down the stream mid-install.
-	cloudKeepaliveACKTimeout = 20 * time.Second
+// The tunneled agent conn's keepalive is a slow END-TO-END BACKSTOP, not the
+// liveness probe: its PINGs are payload bytes inside the broker stream, subject
+// to the same flow control as a multi-GB chunk upload, so during a push their
+// RTT measures queue drain, not liveness. Link liveness/NAT warmth belongs to
+// the broker conn (real TCP, stays at 30s/20s), and a dead tunnel already fails
+// fast via broker-stream errors closing the pipe. Ping stays ≥ the agent's
+// enforced MinTime (10s, mtls/server.go:108). Numbers worth measuring against
+// broker behavior before shipping.
+const (
+	tunneledKeepalivePing       = 5 * time.Minute
+	tunneledKeepaliveACKTimeout = 1 * time.Minute
 )
 
 type closeFunc func()
@@ -98,7 +97,7 @@ func connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL s
 }
 
 func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) (*grpcclient.AgentConnection, error) {
-	brokerConn, err := dialCloudBroker(auth, brokerURL)
+	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
 	if err != nil {
 		return nil, err
 	}
@@ -155,8 +154,8 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                cloudKeepalivePing,
-			Timeout:             cloudKeepaliveACKTimeout,
+			Time:                tunneledKeepalivePing,
+			Timeout:             tunneledKeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)
@@ -229,71 +228,6 @@ func waitForCloudAgentRestart(ctx context.Context, auth *config.AuthConfig, asse
 	}
 }
 
-func dialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientConn, error) {
-	brokerURL = clouddefaults.BrokerURL(auth.CloudGRPC, brokerURL, defaultBrokerPort)
-
-	if len(auth.Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	cert := auth.Certificates[0]
-	keyPEM, err := cert.PrivateKeyPEM()
-	if err != nil {
-		return nil, fmt.Errorf("loading client key: %w", err)
-	}
-	tlsCfg, err := certs.LoadTLSConfig(
-		cert.PemCertificate,
-		cert.PemCertificateChain,
-		keyPEM,
-		"",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("loading broker TLS config: %w", err)
-	}
-
-	if !strings.HasSuffix(brokerURL, ":443") {
-		// For non-standard ports (local/on-prem broker) the server presents a cert
-		// signed by the Wendy CA, not a public CA. Skip hostname verification but
-		// validate the chain against the stored Wendy CA bundle.
-		caPool := x509.NewCertPool()
-		if !caPool.AppendCertsFromPEM([]byte(cert.PemCertificateChain)) {
-			return nil, fmt.Errorf("no valid CA certificates in PemCertificateChain")
-		}
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec // Hostname verification is intentionally skipped for non-standard broker endpoints; VerifyConnection validates the chain against the Wendy CA.
-		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 {
-				return fmt.Errorf("broker presented no TLS certificate")
-			}
-			intermediates := x509.NewCertPool()
-			for _, c := range cs.PeerCertificates[1:] {
-				intermediates.AddCert(c)
-			}
-			_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-				Roots:         caPool,
-				Intermediates: intermediates,
-				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-			})
-			return err
-		}
-	}
-
-	conn, err := grpc.NewClient(brokerURL,
-		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-		grpc.WithInitialWindowSize(8*1024*1024),
-		grpc.WithInitialConnWindowSize(16*1024*1024),
-		grpc.WithReadBufferSize(256*1024),
-		grpc.WithWriteBufferSize(256*1024),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                cloudKeepalivePing,
-			Timeout:             cloudKeepaliveACKTimeout,
-			PermitWithoutStream: true,
-		}),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("connecting to broker at %s: %w", brokerURL, err)
-	}
-	return conn, nil
-}
-
 func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) (net.Conn, error) {
 	client := cloudpb.NewTunnelBrokerServiceClient(brokerConn)
 
@@ -341,6 +275,50 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 		}
 	}()
 
+	go runTunnelUplink(remote, func(payload []byte, halfClose bool) error {
+		return stream.Send(&cloudpb.ClientTunnelMessage{
+			Content: &cloudpb.ClientTunnelMessage_Data{
+				Data: &cloudpb.TunnelData{Payload: payload, HalfClose: halfClose},
+			},
+		})
+	}, stream.CloseSend)
+
+	return local, nil
+}
+
+// tunnelUplinkQueueSlots bounds the uplink queue: reads are ≤256KiB, so 128
+// slots ≈ 32MB — 2× the tunneled conn's 16MB connection window, more than gRPC
+// can have in flight before its own flow control pushes back. Derived from the
+// window, not tuned: the queue only guarantees pipe writes (data AND the
+// keepalive PING/ACK control frames queued behind them) keep completing while
+// stream.Send is momentarily blocked on broker flow control.
+const tunnelUplinkQueueSlots = 128
+
+// tunnelUplinkItem is one unit of queued uplink work: either a data payload
+// (halfClose false) or the terminal half-close marker (payload nil,
+// halfClose true) — never both, mirroring net.Pipe's Read contract of never
+// returning n>0 together with an error.
+type tunnelUplinkItem struct {
+	payload   []byte
+	halfClose bool
+}
+
+// runTunnelUplink pumps remote→broker through a bounded queue, decoupling
+// remote.Read from send. Previously one goroutine did both, so a Send stalled
+// on broker flow control blocked net.Pipe writes, starving the tunneled
+// transport's keepalive until the ACK window tore the connection down
+// mid-push (WDY-2433). Closes remote on send failure; closeSend after EOF
+// drain.
+//
+// runTunnelUplink itself is the sender — the sole toucher of send/closeSend,
+// which also fixes a latent Send/CloseSend concurrency hazard from the old
+// single-goroutine pump. It spawns one more goroutine, the reader — the sole
+// toucher of remote.Read — which feeds the bounded queue. A full queue blocks
+// the reader (and, transitively, remote.Read): that backpressure is
+// intentional, not a bug.
+func runTunnelUplink(remote net.Conn, send func(payload []byte, halfClose bool) error, closeSend func() error) {
+	q := make(chan tunnelUplinkItem, tunnelUplinkQueueSlots)
+
 	go func() {
 		buf := make([]byte, 256*1024)
 		for {
@@ -348,29 +326,32 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 			if n > 0 {
 				payload := make([]byte, n)
 				copy(payload, buf[:n])
-				if err := stream.Send(&cloudpb.ClientTunnelMessage{
-					Content: &cloudpb.ClientTunnelMessage_Data{
-						Data: &cloudpb.TunnelData{Payload: payload},
-					},
-				}); err != nil {
-					break
-				}
+				q <- tunnelUplinkItem{payload: payload}
 			}
 			if readErr != nil {
 				if readErr == io.EOF {
-					_ = stream.Send(&cloudpb.ClientTunnelMessage{
-						Content: &cloudpb.ClientTunnelMessage_Data{
-							Data: &cloudpb.TunnelData{HalfClose: true},
-						},
-					})
+					q <- tunnelUplinkItem{halfClose: true}
 				}
-				break
+				close(q)
+				return
 			}
 		}
-		_ = stream.CloseSend()
 	}()
 
-	return local, nil
+	defer closeSend()
+	for item := range q {
+		if err := send(item.payload, item.halfClose); err != nil {
+			// Sole toucher of remote.Close() on this path: unblocks any
+			// caller mid-Write on the local pipe end instead of leaving it
+			// hanging forever behind a reader that has nowhere left to send,
+			// and unblocks the reader itself so it can close q and let this
+			// drain loop (and the deferred closeSend) finish.
+			remote.Close()
+			for range q {
+			}
+			return
+		}
+	}
 }
 
 func fetchCloudAssets(ctx context.Context, auth *config.AuthConfig) ([]*cloudpb.Asset, error) {
@@ -382,9 +363,32 @@ func fetchCloudAssets(ctx context.Context, auth *config.AuthConfig) ([]*cloudpb.
 	return assets, nil
 }
 
+// errNoCloudDevicesEnrolled is the "no --device given, org has zero enrolled
+// devices" miss. Kept as a plain sentinel error (not errCloudDeviceNotFound)
+// because it isn't about one specific device by name; upgradeOfflineResolveErr
+// still recognizes it via errors.Is to offer the "all N devices offline"
+// upgrade when an offline-inclusive re-query finds devices after all.
+var errNoCloudDevicesEnrolled = errors.New("no enrolled devices found for this org; enroll a device with 'wendy device enroll' first")
+
+// errCloudDeviceNotFound is returned by resolveCloudAsset when deviceName
+// was given (or the asset list was empty despite a name being given) but no
+// matching device was found in the queried asset list. It is typed so
+// upgradeOfflineResolveErr can distinguish "not found in this list" (which
+// may just mean "found in the offline-inclusive list instead") from other
+// resolveCloudAsset errors such as ambiguity, which should pass through
+// unchanged.
+type errCloudDeviceNotFound struct{ name string }
+
+func (e *errCloudDeviceNotFound) Error() string {
+	return fmt.Sprintf("no device named or with id %q found; run 'wendy cloud discover --json' to list ids", e.name)
+}
+
 func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Asset, error) {
 	if len(assets) == 0 {
-		return nil, fmt.Errorf("no enrolled devices found for this org; enroll a device with 'wendy device enroll' first")
+		if deviceName != "" {
+			return nil, &errCloudDeviceNotFound{name: deviceName}
+		}
+		return nil, errNoCloudDevicesEnrolled
 	}
 	if deviceName != "" {
 		lower := strings.ToLower(deviceName)
@@ -408,7 +412,7 @@ func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Ass
 				}
 			}
 		}
-		return nil, fmt.Errorf("no device named or with id %q found; run 'wendy cloud discover --json' to list ids", deviceName)
+		return nil, &errCloudDeviceNotFound{name: deviceName}
 	}
 	if len(assets) == 1 {
 		return assets[0], nil
@@ -425,6 +429,39 @@ func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Ass
 		fmt.Fprintf(&b, "%d=%s", a.GetId(), name)
 	}
 	return nil, fmt.Errorf("multiple cloud devices found; rerun with --device <id|name> (%s)", b.String())
+}
+
+// upgradeOfflineResolveErr re-checks a resolveCloudAsset miss against the
+// full (offline-inclusive) asset list, so an enrolled device that merely had
+// a heartbeat flap reads as "offline" rather than "nonexistent". fetchAll is
+// injected (rather than calling fetchCloudAssetsFiltered directly) so this
+// stays a pure function for testing; a fetchAll failure or a still-missing
+// device both keep resolveErr unchanged. Errors that aren't a not-found miss
+// (e.g. ambiguity) pass through without invoking fetchAll at all.
+func upgradeOfflineResolveErr(resolveErr error, deviceName string, fetchAll func() ([]*cloudpb.Asset, error)) error {
+	var notFound *errCloudDeviceNotFound
+	switch {
+	case errors.As(resolveErr, &notFound):
+		allAssets, err := fetchAll()
+		if err != nil {
+			return resolveErr
+		}
+		if clouddefaults.FindAssetByNameOrID(allAssets, deviceName) == nil {
+			return resolveErr
+		}
+		return fmt.Errorf("device %q is enrolled but currently reported offline; check the device's power and network connection, then retry ('wendy cloud discover --all --json' lists all enrolled devices)", deviceName)
+	case errors.Is(resolveErr, errNoCloudDevicesEnrolled):
+		allAssets, err := fetchAll()
+		if err != nil {
+			return resolveErr
+		}
+		if len(allAssets) == 0 {
+			return resolveErr
+		}
+		return fmt.Errorf("all %d enrolled devices are currently reported offline; check their power and network connections, then retry ('wendy cloud discover --all --json' lists all enrolled devices)", len(allAssets))
+	default:
+		return resolveErr
+	}
 }
 
 func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string) (*cloudpb.Asset, error) {
@@ -491,15 +528,25 @@ func pickCloudDeviceWithRelogin(ctx context.Context, auth *config.AuthConfig, de
 		// fall through to picker below
 	} else {
 		asset, err := resolveCloudAsset(assets, deviceName)
-		if err != nil || asset != nil {
+		if err != nil {
+			// The miss may just mean the device is offline: fetchCloudAssets
+			// above only queried online assets. Re-check against the full
+			// (offline-inclusive) list before reporting the device nonexistent.
+			// Bypasses fetchCloudAssets (not fetchCloudAssetsFiltered directly)
+			// so this offline re-query doesn't re-run pin-seeding.
+			return nil, upgradeOfflineResolveErr(err, deviceName, func() ([]*cloudpb.Asset, error) {
+				return fetchCloudAssetsFiltered(ctx, auth, false)
+			})
+		}
+		if asset != nil {
 			// With no --device, resolveCloudAsset picks the org's only enrolled
 			// device without asking. Say so, rather than leaving the target
 			// implicit. Note this is not the configured default device: the
 			// cloud path does not consult that setting.
-			if err == nil && deviceName == "" {
+			if deviceName == "" {
 				noteImplicitDevice(asset.GetName(), implicitSoleCloudDevice)
 			}
-			return asset, err
+			return asset, nil
 		}
 	}
 
@@ -529,7 +576,7 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	}
 	cert := auth.Certificates[0]
 	var transport grpc.DialOption
-	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
 		keyPEM, err := cert.PrivateKeyPEM()
 		if err != nil {
 			return nil, fmt.Errorf("loading client key: %w", err)
@@ -554,8 +601,8 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                cloudKeepalivePing,
-			Timeout:             cloudKeepaliveACKTimeout,
+			Time:                clouddefaults.KeepalivePing,
+			Timeout:             clouddefaults.KeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)
