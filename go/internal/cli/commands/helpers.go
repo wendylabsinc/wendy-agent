@@ -3500,8 +3500,9 @@ func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvide
 	}
 }
 
-// pickDevice runs an interactive TUI that discovers devices across all
-// transports and providers, then lets the user select one.
+// pickDevice runs the interactive Local | Cloud TUI. The local page discovers
+// devices across all transports and providers; the cloud page lists the
+// selected organization's online Wendy Cloud devices.
 // LAN discovery runs continuously so devices that come online after the
 // initial scan still appear in the picker.
 // excludeProviders hides the named provider keys from the picker. Local run
@@ -3510,14 +3511,61 @@ func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvide
 // cannot talk over BLE never show a device they can't use (see
 // IncludeBluetooth).
 func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = nil
+	}
+	cloudAuth := devicePickerInitialAuth(cfg)
+
+	for {
+		selected, err := pickDeviceWithCloudAuth(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck, cloudAuth)
+		switch {
+		case errors.Is(err, errDevicePickerLogin):
+			if err := performLogin(ctx, defaultCloudDashboard, defaultCloudGRPC); err != nil {
+				return nil, err
+			}
+			cfg, err = config.Load()
+			if err != nil {
+				return nil, fmt.Errorf("loading config after login: %w", err)
+			}
+			cloudAuth = devicePickerInitialAuth(cfg)
+		case errors.Is(err, errDevicePickerSwitchOrg):
+			cfg, err = config.Load()
+			if err != nil {
+				return nil, fmt.Errorf("loading config: %w", err)
+			}
+			picked, _, pickErr := switchCloudOrganization(ctx, cfg)
+			if errors.Is(pickErr, ErrUserCancelled) {
+				continue
+			}
+			if pickErr != nil {
+				return nil, pickErr
+			}
+			cloudAuth = picked
+		default:
+			return selected, err
+		}
+	}
+}
+
+var (
+	errDevicePickerLogin     = errors.New("device picker requested cloud login")
+	errDevicePickerSwitchOrg = errors.New("device picker requested organization switch")
+)
+
+func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool, cloudAuth *config.AuthConfig) (*SelectedDevice, error) {
 	excludeProviders = hideLocalProviders(excludeProviders)
 
 	picker := tui.NewPicker()
 	picker.MergeItem = mergePickerItem
 
 	// Load current default device to show ✦ indicator.
-	if loadedCfg, err := config.Load(); err == nil && loadedCfg.DefaultDevice != "" {
-		picker.DefaultKey = strings.ToLower(loadedCfg.DefaultDevice)
+	defaultOrgID := int32(0)
+	if loadedCfg, err := config.Load(); err == nil {
+		defaultOrgID = defaultOrgForCloudAuth(loadedCfg, cloudAuth)
+		if loadedCfg.DefaultDevice != "" {
+			picker.DefaultKey = strings.ToLower(loadedCfg.DefaultDevice)
+		}
 	}
 
 	// Allow 'd' to set default and 'x' to unset default from the picker.
@@ -3540,10 +3588,9 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 		return "Default device cleared."
 	}
 
-	p := tea.NewProgram(picker)
-
 	// Cancel continuous discovery when the picker exits.
 	discoverCtx, discoverCancel := context.WithCancel(ctx)
+	p := tea.NewProgram(newDevicePickerModel(discoverCtx, picker, cloudAuth, defaultOrgID))
 
 	sendLANItem := func(dev models.LANDevice, insecure bool, probe tui.ProbeState) {
 		devCopy := dev
@@ -3554,7 +3601,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 		if probe != tui.ProbePending {
 			hint = lanNoAccessHint(&devCopy, dev.AgentVersion)
 		}
-		p.Send(tui.PickerAddMsg{Items: []tui.PickerItem{{
+		p.Send(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: []tui.PickerItem{{
 			Name:          dev.DisplayName,
 			Type:          "LAN",
 			USB:           dev.USB,
@@ -3577,7 +3624,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 				CPUArchitecture: dev.CPUArchitecture,
 				LAN:             &devCopy,
 			}},
-		}}})
+		}}}})
 	}
 	// Streaming LAN discovery — cached rows appear instantly, live sightings
 	// and probe outcomes follow, and the engine itself handles offline
@@ -3618,7 +3665,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 			continue
 		}
 		go discoverProviderForPicker(discoverCtx, prov, func(items []tui.PickerItem) {
-			p.Send(tui.PickerAddMsg{Items: items})
+			p.Send(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: items}})
 		})
 	}
 
@@ -3655,7 +3702,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 							}},
 						})
 					}
-					p.Send(tui.PickerAddMsg{Items: items})
+					p.Send(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: items}})
 				}
 
 				select {
@@ -3673,14 +3720,29 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 		return nil, fmt.Errorf("device picker: %w", err)
 	}
 
-	pm, ok := finalModel.(tui.PickerModel)
+	dm, ok := finalModel.(devicePickerModel)
 	if !ok {
 		return nil, fmt.Errorf("device picker returned unexpected model %T", finalModel)
 	}
-	if pm.Cancelled() {
+	switch dm.action {
+	case devicePickerLogin:
+		return nil, errDevicePickerLogin
+	case devicePickerSwitchOrg:
+		return nil, errDevicePickerSwitchOrg
+	}
+	if dm.cancelled {
 		return nil, ErrUserCancelled
 	}
-	sel := pm.Selected()
+	if asset := dm.selectedCloud(); asset != nil {
+		cliLogln("Connecting to %s via cloud tunnel...", asset.GetName())
+		conn, err := connectCloudAsset(ctx, cloudAuth, asset, dm.cloud.brokerURL)
+		if err != nil {
+			return nil, err
+		}
+		return &SelectedDevice{Agent: conn}, nil
+	}
+
+	sel := dm.selectedLocal()
 	if sel == nil {
 		return nil, fmt.Errorf("no device selected")
 	}

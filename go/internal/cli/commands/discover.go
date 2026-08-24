@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -35,8 +36,8 @@ func newDiscoverCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "discover",
-		Short: "Discover WendyOS devices on the network",
-		Long:  "Continuously scan for WendyOS devices until Ctrl+C. Use --timeout to scan once for a fixed duration.",
+		Short: "Discover local and cloud WendyOS devices",
+		Long:  "Continuously discover WendyOS devices in Local and Cloud tabs until Ctrl+C. Use --timeout to scan local devices once for a fixed duration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts := discovery.DiscoveryOptions{
 				// The continuous TUI path streams LAN devices directly via
@@ -87,7 +88,7 @@ func newDiscoverCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&discoverType, "type", "all", "Discovery type: usb, lan, bluetooth, external, all")
+	cmd.Flags().StringVar(&discoverType, "type", "all", "Local discovery type: usb, lan, bluetooth, external, all")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "Scan once for this duration then exit")
 
 	return cmd
@@ -216,13 +217,79 @@ func noDevicesHint() string {
 // discoverContinuous runs scans in a loop, refreshing the table until Ctrl+C.
 // includeLocal surfaces local run targets that are hidden by default.
 func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool) error {
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = nil
+	}
+	cloudAuth := devicePickerInitialAuth(cfg)
+	for {
+		err := discoverContinuousWithCloudAuth(ctx, opts, includeLocal, cloudAuth, defaultOrgForCloudAuth(cfg, cloudAuth))
+		switch {
+		case errors.Is(err, errDevicePickerLogin):
+			if err := performLogin(ctx, defaultCloudDashboard, defaultCloudGRPC); err != nil {
+				return err
+			}
+			cfg, err = config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config after login: %w", err)
+			}
+			cloudAuth = devicePickerInitialAuth(cfg)
+		case errors.Is(err, errDevicePickerSwitchOrg):
+			cfg, err = config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+			picked, freshCfg, pickErr := switchCloudOrganization(ctx, cfg)
+			if errors.Is(pickErr, ErrUserCancelled) {
+				continue
+			}
+			if pickErr != nil {
+				return pickErr
+			}
+			cloudAuth = picked
+			cfg = freshCfg
+		default:
+			return err
+		}
+	}
+}
+
+func defaultOrgForCloudAuth(cfg *config.Config, auth *config.AuthConfig) int32 {
+	if cfg == nil {
+		return 0
+	}
+	if cfg.DefaultOrgID != 0 {
+		return cfg.DefaultOrgID
+	}
+	if auth != nil && cfg.DefaultCloudGRPC == auth.CloudGRPC {
+		return cloudAuthOrgID(auth)
+	}
+	return 0
+}
+
+func discoverContinuousWithCloudAuth(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool, cloudAuth *config.AuthConfig, defaultOrg int32) error {
 	opts.Timeout = 3 * time.Second // per-scan timeout
-	m := newDiscoverModel(ctx, opts, includeLocal)
+	discoverCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	local := newDiscoverModel(discoverCtx, opts, includeLocal)
+	m := newDiscoverTabsModel(discoverCtx, local, cloudAuth, defaultOrg)
 	// Alt screen: the table grows to fill the window, and the alternate
 	// buffer restores the user's terminal content when the TUI exits.
 	p := tea.NewProgram(m, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		return fmt.Errorf("TUI error: %w", err)
+	}
+	dm, ok := finalModel.(discoverTabsModel)
+	if !ok {
+		return fmt.Errorf("discover TUI returned unexpected model %T", finalModel)
+	}
+	switch dm.action {
+	case devicePickerLogin:
+		return errDevicePickerLogin
+	case devicePickerSwitchOrg:
+		return errDevicePickerSwitchOrg
 	}
 	return nil
 }
