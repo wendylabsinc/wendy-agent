@@ -77,7 +77,9 @@ The CLI scans for either the ESP32's native USB Serial/JTAG interface (VID `0x30
 | Linux | `/sys/class/tty/ttyACM*` and `/sys/class/tty/ttyUSB*`, matching VID/PID via sysfs | `/dev/ttyACM0` or `/dev/ttyUSB0` (typical) |
 | Windows | `Win32_PnPEntity` via PowerShell, filtered by VID/PID and `Ports` class | `COMN` (e.g. `COM7`) |
 
-When both transports are connected, the installer always prefers native USB. A CP210x ID identifies a generic UART adapter rather than a confirmed ESP32, so the CLI treats it as an install candidate.
+When both transports are connected, the installer always prefers native USB. A CP210x ID identifies a generic UART adapter rather than a confirmed ESP32, so the CLI treats it as an install candidate and verifies the chip model through the ROM bootloader before writing firmware.
+
+UART is a flashing transport only: Wendy Lite's runtime USB connection uses the ESP32's native USB Serial/JTAG interface. The installer warns when it selects UART and, when no Wi-Fi network is configured in an interactive install, requires explicit confirmation before continuing.
 
 If no device is found, the CLI prints instructions for entering bootloader mode:
 

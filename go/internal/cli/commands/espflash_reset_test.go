@@ -163,6 +163,16 @@ func TestChangeBaudCommandDataUsesROMBootloaderLayout(t *testing.T) {
 	}
 }
 
+func TestValidateDetectedChipRejectsWrongFirmwareTarget(t *testing.T) {
+	if err := validateDetectedChip(chipESP32C6, chipESP32C6); err != nil {
+		t.Fatalf("matching chip rejected: %v", err)
+	}
+	err := validateDetectedChip(chipESP32C6, chipESP32C5)
+	if err == nil {
+		t.Fatal("ESP32-C5 was accepted for ESP32-C6 firmware")
+	}
+}
+
 func assertModemLineChanges(t *testing.T, got, want []modemLineChange) {
 	t.Helper()
 	if len(got) != len(want) {

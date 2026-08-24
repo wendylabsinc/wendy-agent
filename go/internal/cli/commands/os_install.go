@@ -2371,6 +2371,11 @@ func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceN
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.
 // chip is e.g. "esp32c6" or "esp32c5".
 func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+	expectedChip, err := chipModelForTarget(chip)
+	if err != nil {
+		return err
+	}
+
 	provCreds, err := resolveWiFiCredentialsList(wifi)
 	if err != nil {
 		return err
@@ -2417,7 +2422,14 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 	}
 
 	serialPort := serialDevice.Port
-	fmt.Printf("Found ESP32 install candidate at %s\n", serialPort)
+	fmt.Println(esp32InstallCandidateMessage(serialDevice))
+	if serialDevice.Transport == discovery.SerialTransportUARTBridge {
+		fmt.Fprintln(os.Stderr, tui.WarningMessage(esp32UARTBridgeInstallWarning(len(provCreds) > 0)))
+		if requiresESP32UARTConfirmation(serialDevice, len(provCreds) > 0, isInteractiveTerminal()) &&
+			!confirmDefaultNoFn("Continue flashing through USB-UART without WiFi?") {
+			return ErrUserCancelled
+		}
+	}
 
 	fmt.Println("Fetching latest Wendy Lite firmware...")
 	asset, err := fetchFirmwareFromManifest(chip, nightly)
@@ -2484,7 +2496,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 	fp := tui.NewProgressProgram(flashProg)
 
 	go func() {
-		flashErr := flashFirmwareImage(serialPort, img, serialDevice.Transport, func(pct float64) {
+		flashErr := flashFirmwareImage(serialPort, img, serialDevice.Transport, expectedChip, func(pct float64) {
 			fp.Send(tui.ProgressUpdateMsg{Percent: pct})
 		})
 		fp.Send(tui.ProgressDoneMsg{Err: flashErr})
@@ -2503,4 +2515,23 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 	fmt.Printf("\nSuccessfully flashed Wendy Lite %s!\n", asset.Version)
 	fmt.Println("The device will reboot automatically.")
 	return nil
+}
+
+func esp32InstallCandidateMessage(device discovery.SerialPortInfo) string {
+	if device.Transport == discovery.SerialTransportUARTBridge {
+		return fmt.Sprintf("Found USB-UART candidate at %s (the ESP32 model will be verified before writing)", device.Port)
+	}
+	return fmt.Sprintf("Found native ESP32 USB candidate at %s (the ESP32 model will be verified before writing)", device.Port)
+}
+
+func esp32UARTBridgeInstallWarning(hasWiFi bool) string {
+	const base = "This USB-UART connection can flash Wendy Lite, but it cannot carry Wendy's runtime USB connection after installation."
+	if hasWiFi {
+		return base + " Wendy will rely on the configured WiFi network, or you can reconnect using the board's native USB port."
+	}
+	return base + " No WiFi network is configured, so reconnect using the board's native USB port or reinstall with WiFi to manage the device."
+}
+
+func requiresESP32UARTConfirmation(device discovery.SerialPortInfo, hasWiFi, interactive bool) bool {
+	return device.Transport == discovery.SerialTransportUARTBridge && !hasWiFi && interactive
 }

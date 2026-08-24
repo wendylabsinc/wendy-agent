@@ -37,6 +37,37 @@ const (
 	chipESP32P4
 )
 
+func chipModelForTarget(target string) (chipModel, error) {
+	switch target {
+	case "esp32c5":
+		return chipESP32C5, nil
+	case "esp32c6":
+		return chipESP32C6, nil
+	default:
+		return chipUnknown, fmt.Errorf("unsupported ESP32 firmware target %q", target)
+	}
+}
+
+func chipModelName(chip chipModel) string {
+	switch chip {
+	case chipESP32C5:
+		return "ESP32-C5"
+	case chipESP32C6:
+		return "ESP32-C6"
+	case chipESP32P4:
+		return "ESP32-P4"
+	default:
+		return "unknown ESP32"
+	}
+}
+
+func validateDetectedChip(expected, detected chipModel) error {
+	if expected != detected {
+		return fmt.Errorf("connected device is %s, but the selected firmware targets %s", chipModelName(detected), chipModelName(expected))
+	}
+	return nil
+}
+
 // chipRegs holds chip-specific peripheral register addresses. Different ESP32
 // variants have incompatible memory maps, so all chip-sensitive code goes
 // through f.regs rather than hardcoded constants.
@@ -943,7 +974,7 @@ func resetESP32(port serial.Port, enterBootloader bool, transport discovery.Seri
 }
 
 // flashFirmware is the main entry point: flash a .bin file to the ESP32.
-func flashFirmware(portPath, firmwarePath string, transport discovery.SerialTransport, progressFn func(pct float64)) error {
+func flashFirmware(portPath, firmwarePath string, transport discovery.SerialTransport, expectedChip chipModel, progressFn func(pct float64)) error {
 	info, err := os.Stat(firmwarePath)
 	if err != nil {
 		return fmt.Errorf("reading firmware: %w", err)
@@ -955,14 +986,14 @@ func flashFirmware(portPath, firmwarePath string, transport discovery.SerialTran
 	if err != nil {
 		return fmt.Errorf("reading firmware: %w", err)
 	}
-	return flashFirmwareBytes(portPath, firmware, transport, progressFn)
+	return flashFirmwareBytes(portPath, firmware, transport, expectedChip, progressFn)
 }
 
-func flashFirmwareImage(portPath string, img *EspFlashImage, transport discovery.SerialTransport, progressFn func(pct float64)) error {
-	return flashFirmwareBytes(portPath, img.Bytes(), transport, progressFn)
+func flashFirmwareImage(portPath string, img *EspFlashImage, transport discovery.SerialTransport, expectedChip chipModel, progressFn func(pct float64)) error {
+	return flashFirmwareBytes(portPath, img.Bytes(), transport, expectedChip, progressFn)
 }
 
-func flashFirmwareBytes(portPath string, firmware []byte, transport discovery.SerialTransport, progressFn func(pct float64)) error {
+func flashFirmwareBytes(portPath string, firmware []byte, transport discovery.SerialTransport, expectedChip chipModel, progressFn func(pct float64)) error {
 	if len(firmware) > maxFlashSize {
 		return fmt.Errorf("firmware too large (%d bytes, max %d)", len(firmware), maxFlashSize)
 	}
@@ -1020,6 +1051,9 @@ func flashFirmwareBytes(portPath string, firmware []byte, transport discovery.Se
 	// Step 3: Identify chip and disable watchdogs.
 	if err := f.detectChip(); err != nil {
 		return fmt.Errorf("detect chip: %w", err)
+	}
+	if err := validateDetectedChip(expectedChip, f.chip); err != nil {
+		return err
 	}
 	if err := f.initChip(); err != nil {
 		return fmt.Errorf("init chip: %w", err)
