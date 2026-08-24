@@ -171,7 +171,14 @@ type activeEpisode struct {
 	// fsynced per sample: at sensor rates that would dominate the write path,
 	// and a torn tail is recovered exactly like every other episode JSONL.
 	modelInputs *os.File
+	// awaitConsensus reports that the episode's opening Roughtime consensus was
+	// moved off the start path and is still to be attached (see Start).
+	awaitConsensus bool
 }
+
+// consensusQueryTimeout bounds one Roughtime consensus query. It is the budget
+// for the slowest server in the pool, so an unreachable server costs this long.
+const consensusQueryTimeout = 5 * time.Second
 
 func NewManager(root string) (*Manager, error) {
 	implicitRoot := root == ""
@@ -277,9 +284,20 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
+	// The Roughtime consensus is a network round trip to several public servers,
+	// and an unreachable server is only known once its 5s timeout expires. On
+	// the critical path it postpones every capture adapter by that timeout, and
+	// the camera cannot record what happened while it waited. It is therefore
+	// queried in the background and attached to the episode when it lands
+	// (deferConsensus), exactly as the in-episode clock sampler already does.
+	//
+	// The one case that still has to block is an episode whose caller demanded a
+	// UTC uncertainty bound: that gate can reject the episode, so its evidence
+	// must exist before recording begins.
+	deferConsensus := m.consensus != nil && opts.RequireUTCUncertainty <= 0
 	var consensus *timesync.Consensus
-	if m.consensus != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if m.consensus != nil && !deferConsensus {
+		ctx, cancel := context.WithTimeout(context.Background(), consensusQueryTimeout)
 		c, queryErr := m.consensus(ctx)
 		cancel()
 		if queryErr == nil {
@@ -414,7 +432,7 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 		_ = os.RemoveAll(dir)
 		return Manifest{}, err
 	}
-	a := &activeEpisode{key: key, dir: dir, manifest: manifest, capturesApplications: capturesApplications}
+	a := &activeEpisode{key: key, dir: dir, manifest: manifest, capturesApplications: capturesApplications, awaitConsensus: deferConsensus}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	a.done = make(chan struct{})
@@ -543,6 +561,11 @@ func (m *Manager) sampleEpisode(ctx context.Context, a *activeEpisode) {
 	defer close(a.done)
 	clockTicker := time.NewTicker(5 * time.Minute)
 	defer clockTicker.Stop()
+	if a.awaitConsensus {
+		// Deliberately not waited on: the episode records while this runs, and
+		// the manifest is rewritten under the manager lock when it lands.
+		go m.queryAndAttachConsensus(ctx, a, true)
+	}
 	telemetryTicker := time.NewTicker(time.Second)
 	defer telemetryTicker.Stop()
 	for {
@@ -568,23 +591,38 @@ func (m *Manager) sampleEpisode(ctx context.Context, a *activeEpisode) {
 				m.mu.Unlock()
 			}
 		case <-clockTicker.C:
-			if m.consensus == nil {
-				continue
-			}
-			queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			c, err := m.consensus(queryCtx)
-			cancel()
-			if err != nil {
-				continue
-			}
-			m.mu.Lock()
-			if m.active[a.key] == a {
-				a.manifest.Roughtime = append(a.manifest.Roughtime, c)
-				_ = writeManifest(a.dir, a.manifest)
-			}
-			m.mu.Unlock()
+			m.queryAndAttachConsensus(ctx, a, false)
 		}
 	}
+}
+
+// queryAndAttachConsensus runs one Roughtime consensus query and records it on
+// the episode, rewriting the manifest. opening marks the episode's first
+// consensus, which also settles system_clock_status the way a blocking
+// start-time query used to; later samples only append evidence.
+func (m *Manager) queryAndAttachConsensus(ctx context.Context, a *activeEpisode, opening bool) {
+	if m.consensus == nil {
+		return
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, consensusQueryTimeout)
+	c, err := m.consensus(queryCtx)
+	cancel()
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active[a.key] != a {
+		return
+	}
+	a.manifest.Roughtime = append(a.manifest.Roughtime, c)
+	if opening {
+		a.awaitConsensus = false
+		if len(a.manifest.UTCObservations) > 0 {
+			a.manifest.SystemClockStatus = clockAgreement(a.manifest.UTCObservations[0], c)
+		}
+	}
+	_ = writeManifest(a.dir, a.manifest)
 }
 
 func (m *Manager) enforceQuota() error {
