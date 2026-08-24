@@ -3,9 +3,9 @@ package data
 import (
 	"context"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"bytes"
 	"encoding/json"
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"os"
 	"path/filepath"
 	"strings"
