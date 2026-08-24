@@ -22,6 +22,10 @@ import (
 // newTestDriverService wires a DriverService against a temp /data store, a fixed
 // kernel, an in-memory artifact fetcher, and /bin/true as the apply script so the
 // verify/place/apply path runs without a device.
+// testKernel is what newTestDriverService reports from uname and what the
+// install-a/install-b fixtures declare, so an install lands in its bucket.
+const testKernel = "6.6.0-test"
+
 func newTestDriverService(t *testing.T, payload []byte) *DriverService {
 	t.Helper()
 	tmp := t.TempDir()
@@ -88,7 +92,7 @@ func TestInstallFromURL_HappyPath(t *testing.T) {
 	}
 
 	// The .raw is placed under the verified name (== extension-release name).
-	got, err := os.ReadFile(filepath.Join(svc.enabledDir, "wendyos-hello.raw"))
+	got, err := os.ReadFile(svc.rawPath(testKernel, "wendyos-hello"))
 	if err != nil {
 		t.Fatalf("reading placed .raw: %v", err)
 	}
@@ -96,7 +100,7 @@ func TestInstallFromURL_HappyPath(t *testing.T) {
 		t.Errorf("placed .raw = %q, want %q", got, payload)
 	}
 	// modules-load.d config lists the modules, one per line.
-	conf, err := os.ReadFile(filepath.Join(svc.modulesDir, "wendyos-hello.conf"))
+	conf, err := os.ReadFile(svc.confPath(testKernel, "wendyos-hello"))
 	if err != nil {
 		t.Fatalf("reading modules conf: %v", err)
 	}
@@ -119,7 +123,7 @@ func TestInstallFromURL_SHA256Mismatch(t *testing.T) {
 		t.Fatal("InstallFromURL: got nil error, want sha256 mismatch")
 	}
 	// Nothing must be placed on a failed verification.
-	if _, statErr := os.Stat(filepath.Join(svc.enabledDir, "wendyos-hello.raw")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(svc.rawPath(testKernel, "wendyos-hello")); !os.IsNotExist(statErr) {
 		t.Errorf(".raw was placed despite sha256 mismatch")
 	}
 }
@@ -195,12 +199,12 @@ func TestListDrivers_BakedInModulesFallback(t *testing.T) {
 	// in (surfaced at the merged path), with no /data override. ListDrivers must
 	// still report the baked-in modules.
 	svc := newTestDriverService(t, nil)
-	for _, d := range []string{svc.enabledDir, svc.bakedModulesDir} {
+	for _, d := range []string{filepath.Dir(svc.rawPath(testKernel, "x")), svc.bakedModulesDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(svc.enabledDir, "wendyos-hello.raw"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(svc.rawPath(testKernel, "wendyos-hello"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(svc.bakedModulesDir, "wendyos-hello.conf"), []byte("wendyos_hello\n"), 0o644); err != nil {
@@ -349,10 +353,10 @@ func TestInstallFromURL_ApplyFailureRollsBack(t *testing.T) {
 		t.Fatal("InstallFromURL: got nil, want apply failure")
 	}
 	// Nothing must remain installed or declared after a failed apply.
-	if _, statErr := os.Stat(filepath.Join(svc.enabledDir, "wendyos-hello.raw")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(svc.rawPath(testKernel, "wendyos-hello")); !os.IsNotExist(statErr) {
 		t.Errorf(".raw was left behind after apply failure")
 	}
-	if _, statErr := os.Stat(filepath.Join(svc.modulesDir, "wendyos-hello.conf")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(svc.confPath(testKernel, "wendyos-hello")); !os.IsNotExist(statErr) {
 		t.Errorf("modules-load conf was left behind after apply failure")
 	}
 }
@@ -391,18 +395,18 @@ func TestInstallFromURL_ApplyFailureRestoresPreviousInstall(t *testing.T) {
 		t.Fatal("InstallFromURL: got nil, want apply failure")
 	}
 
-	got, err := os.ReadFile(filepath.Join(svc.enabledDir, "wendyos-hello.raw"))
+	got, err := os.ReadFile(svc.rawPath(testKernel, "wendyos-hello"))
 	if err != nil {
 		t.Fatalf("previous install was destroyed by the failed upgrade: %v", err)
 	}
 	if !bytes.Equal(got, oldPayload) {
 		t.Errorf("restored .raw = %q, want the previous working payload %q", got, oldPayload)
 	}
-	if _, err := os.Stat(filepath.Join(svc.modulesDir, "wendyos-hello.conf")); err != nil {
+	if _, err := os.Stat(svc.confPath(testKernel, "wendyos-hello")); err != nil {
 		t.Errorf("previous modules-load conf was not restored: %v", err)
 	}
 	// The backup must not linger where the apply script could see it.
-	if entries, _ := os.ReadDir(svc.enabledDir); len(entries) != 1 {
+	if entries, _ := os.ReadDir(filepath.Dir(svc.rawPath(testKernel, "x"))); len(entries) != 1 {
 		t.Errorf("enabled dir = %d entries, want exactly the restored .raw", len(entries))
 	}
 }
@@ -432,14 +436,14 @@ func TestRemoveDriver_ApplyFailureRestoresInstall(t *testing.T) {
 		t.Error("RemoveDriver: expected a Failed response when apply fails")
 	}
 
-	got, err := os.ReadFile(filepath.Join(svc.enabledDir, "wendyos-hello.raw"))
+	got, err := os.ReadFile(svc.rawPath(testKernel, "wendyos-hello"))
 	if err != nil {
 		t.Fatalf("driver was dropped from the store despite the failed unmerge: %v", err)
 	}
 	if !bytes.Equal(got, payload) {
 		t.Errorf("restored .raw = %q, want %q", got, payload)
 	}
-	if _, err := os.Stat(filepath.Join(svc.modulesDir, "wendyos-hello.conf")); err != nil {
+	if _, err := os.Stat(svc.confPath(testKernel, "wendyos-hello")); err != nil {
 		t.Errorf("modules-load conf was not restored: %v", err)
 	}
 }
@@ -459,7 +463,7 @@ func TestInstallFromURL_SuccessLeavesNoBackups(t *testing.T) {
 			t.Fatalf("install %d: %v", i, err)
 		}
 	}
-	entries, _ := os.ReadDir(svc.enabledDir)
+	entries, _ := os.ReadDir(filepath.Dir(svc.rawPath(testKernel, "x")))
 	if len(entries) != 1 || entries[0].Name() != "wendyos-hello.raw" {
 		names := make([]string, len(entries))
 		for i, e := range entries {
@@ -571,7 +575,7 @@ func TestSeedInstall_FailsClosedWithoutSigningKey(t *testing.T) {
 	if !strings.Contains(err.Error(), "cannot be authenticated") {
 		t.Errorf("error = %v, want an authenticity refusal", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(svc.enabledDir, "wendyos-hello.raw")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(svc.rawPath(testKernel, "wendyos-hello")); !os.IsNotExist(statErr) {
 		t.Error("the refused driver was placed on disk anyway")
 	}
 }
@@ -827,7 +831,131 @@ func TestSnapshotDriver_UnreadableStoreIsNotMistakenForEmpty(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(svc.enabledDir, 0o755) }) //nolint:errcheck // best effort
 
-	if _, err := svc.snapshotDriver("acme"); err == nil {
+	if _, err := svc.snapshotDriver(testKernel, "acme"); err == nil {
 		t.Error("snapshotDriver = nil, want an error rather than an empty snapshot")
+	}
+}
+
+func TestKernelKeyedPaths(t *testing.T) {
+	svc := newTestDriverService(t, nil)
+	if got, want := svc.rawPath("6.1-x", "acme"), filepath.Join(svc.enabledDir, "6.1-x", "acme.raw"); got != want {
+		t.Errorf("rawPath = %q, want %q", got, want)
+	}
+	// An add-on pinning no kernel applies to every kernel, so it must not be
+	// trapped in one kernel's bucket.
+	if got, want := svc.rawPath("", "acme"), filepath.Join(svc.enabledDir, unpinnedKernelDir, "acme.raw"); got != want {
+		t.Errorf("unpinned rawPath = %q, want %q", got, want)
+	}
+	if got, want := svc.confPath("6.1-x", "acme"), filepath.Join(svc.modulesDir, "6.1-x", "acme.conf"); got != want {
+		t.Errorf("confPath = %q, want %q", got, want)
+	}
+}
+
+// The kernel comes out of a stored image for migration, so a crafted add-on must
+// not be able to steer a path out of the store.
+func TestValidateKernelDir(t *testing.T) {
+	for _, ok := range []string{"", "6.18.33-v8-16k", "6.1.0+", "5.10_rt"} {
+		if err := validateKernelDir(ok); err != nil {
+			t.Errorf("validateKernelDir(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"..", ".", "../../etc", "a/b", "a\\b", "has space", "a\x00b"} {
+		if err := validateKernelDir(bad); err == nil {
+			t.Errorf("validateKernelDir(%q) = nil, want an error", bad)
+		}
+	}
+}
+
+// Devices updated from an older agent still have a flat store; the agent moves
+// each image into the bucket its own kernel field names.
+func TestMigrateStore(t *testing.T) {
+	svc := newTestDriverService(t, nil)
+	if err := os.MkdirAll(svc.enabledDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(svc.modulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hello, err := os.ReadFile(filepath.Join("testdata", fixtureName+".raw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nokernel, err := os.ReadFile(filepath.Join("testdata", "nokernel.raw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(name string, b []byte) {
+		if err := os.WriteFile(filepath.Join(svc.enabledDir, name+".raw"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(fixtureName, hello)
+	write("nokernel", nokernel)
+	write("broken", []byte("not a squashfs"))
+	if err := os.WriteFile(filepath.Join(svc.modulesDir, fixtureName+".conf"), []byte("wendyos_hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.MigrateStore()
+
+	if _, err := os.Stat(svc.rawPath(fixtureKernel, fixtureName)); err != nil {
+		t.Errorf("%s did not move into its kernel bucket: %v", fixtureName, err)
+	}
+	if _, err := os.Stat(svc.confPath(fixtureKernel, fixtureName)); err != nil {
+		t.Errorf("the /data override did not follow its image: %v", err)
+	}
+	if _, err := os.Stat(svc.rawPath("", "nokernel")); err != nil {
+		t.Errorf("an add-on pinning no kernel did not move to the unpinned bucket: %v", err)
+	}
+	// Nothing says which bucket it belongs in, and guessing would hide it. Left
+	// flat, it stays listed and reported unreadable.
+	if _, err := os.Stat(filepath.Join(svc.enabledDir, "broken.raw")); err != nil {
+		t.Errorf("an unreadable image should stay put, got %v", err)
+	}
+	svc.MigrateStore() // idempotent
+}
+
+// An add-on left behind by an OTA lives under a kernel this device no longer
+// runs. It must still be listed, and a name present under several kernels must
+// resolve to the copy that can actually load.
+func TestListDrivers_UnionAcrossKernels(t *testing.T) {
+	svc := newTestDriverService(t, nil)
+	put := func(kernel, name, fixture string) {
+		body, err := os.ReadFile(filepath.Join("testdata", fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(svc.rawPath(kernel, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(svc.rawPath(kernel, name), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Same add-on in two buckets: the running kernel's build and an older one.
+	put(testKernel, "wendyos-hello", "install-a.raw")
+	put(fixtureKernel, "wendyos-hello", "wendyos-hello.raw")
+	// And one that exists only under a kernel this device does not run.
+	put(fixtureKernel, "nokernel", "nokernel.raw")
+
+	resp, err := svc.ListDrivers(context.Background(), &agentpbv2.ListDriversRequest{})
+	if err != nil {
+		t.Fatalf("ListDrivers: %v", err)
+	}
+	got := map[string]string{}
+	for _, d := range resp.GetInstalled() {
+		if _, dup := got[d.GetName()]; dup {
+			t.Errorf("%s listed twice; the buckets should dedupe by name", d.GetName())
+		}
+		got[d.GetName()] = d.GetKernelVersion()
+	}
+	if len(got) != 2 {
+		t.Fatalf("listed %v, want wendyos-hello and nokernel", got)
+	}
+	if got["wendyos-hello"] != testKernel {
+		t.Errorf("kernel = %q, want the running kernel %q to win the name", got["wendyos-hello"], testKernel)
+	}
+	if _, ok := got["nokernel"]; !ok {
+		t.Error("an add-on under another kernel vanished from the listing")
 	}
 }

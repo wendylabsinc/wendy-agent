@@ -294,20 +294,29 @@ func (s *DriverService) finalize(ctx context.Context, spec DriverInstallSpec, tm
 	declared := modulesUnion(s.declaredModules(spec.Name), spec.ModulesLoad)
 	resident := s.residentModules(modulesUnion(declared, imageModules(tmpPath, spec.Name)))
 
+	// The image decides which bucket it belongs in: one that pins no kernel goes
+	// to the unpinned bucket rather than being trapped in this kernel's, where an
+	// OTA would strand it. verifyImageKernel above already tied it to the running
+	// kernel when it does pin one.
+	kernel, _ := imageKernel(tmpPath, spec.Name)
+	if err := validateKernelDir(kernel); err != nil {
+		return false, err
+	}
+
 	// Roll back to the pre-install state on failure: a reinstall/upgrade that
 	// fails must leave the working version in place, not delete it, and must not
 	// leave the rest of the add-ons unmerged (a failed refresh unmerges all).
-	snap, err := s.snapshotDriver(spec.Name)
+	snap, err := s.snapshotDriver(kernel, spec.Name)
 	if err != nil {
 		return false, err
 	}
-	if err := s.place(spec.Name, tmpPath, spec.ModulesLoad); err != nil {
-		s.removePlaced(spec.Name) // place() may have renamed the .raw before failing
+	if err := s.place(kernel, spec.Name, tmpPath, spec.ModulesLoad); err != nil {
+		s.removePlaced(kernel, spec.Name) // place() may have renamed the .raw before failing
 		snap.restore()
 		return false, err
 	}
 	if err := s.apply(ctx); err != nil {
-		s.removePlaced(spec.Name)
+		s.removePlaced(kernel, spec.Name)
 		snap.restore()
 		s.reapply(ctx)
 		return false, fmt.Errorf("apply failed: %v", err)
@@ -339,6 +348,8 @@ func (s *DriverService) newStagedFile() (*stagedFile, error) {
 	if err := os.MkdirAll(s.enabledDir, 0o755); err != nil {
 		return nil, fmt.Errorf("preparing driver store: %w", err)
 	}
+	// Beside the store, not inside a kernel directory: the rename must stay on one
+	// filesystem, and a stray .tmp must never look like an add-on.
 	f, err := os.CreateTemp(filepath.Dir(s.enabledDir), ".driver-*.raw.tmp")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp file: %w", err)
@@ -435,29 +446,32 @@ func (s *DriverService) stageFromStream(stream grpc.BidiStreamingServer[agentpbv
 // place atomically moves the staged .raw to enabled/<name>.raw and writes the
 // modules-load config. The on-device filename derives from the verified name, so
 // it matches the image's extension-release (systemd-sysext merges by name).
-func (s *DriverService) place(name, tmpPath string, modules []string) error {
-	dst := filepath.Join(s.enabledDir, name+".raw")
+func (s *DriverService) place(kernel, name, tmpPath string, modules []string) error {
+	dst := s.rawPath(kernel, name)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("preparing driver store: %w", err)
+	}
 	if err := os.Chmod(tmpPath, 0o644); err != nil {
 		return fmt.Errorf("setting driver image permissions: %w", err)
 	}
 	if err := os.Rename(tmpPath, dst); err != nil {
 		return fmt.Errorf("placing driver image: %w", err)
 	}
-	if err := os.MkdirAll(s.modulesDir, 0o755); err != nil {
+	conf := s.confPath(kernel, name)
+	if err := os.MkdirAll(filepath.Dir(conf), 0o755); err != nil {
 		return fmt.Errorf("preparing modules-load dir: %w", err)
 	}
-	conf := filepath.Join(s.modulesDir, name+".conf")
 	if len(modules) == 0 {
 		os.Remove(conf) //nolint:errcheck // no modules to autoload for this add-on
-		return fsyncDir(s.enabledDir)
+		return fsyncDir(filepath.Dir(dst))
 	}
 	if err := os.WriteFile(conf, []byte(strings.Join(modules, "\n")+"\n"), 0o644); err != nil {
 		return fmt.Errorf("writing modules-load config: %w", err)
 	}
-	if err := fsyncDir(s.enabledDir); err != nil {
+	if err := fsyncDir(filepath.Dir(dst)); err != nil {
 		return err
 	}
-	return fsyncDir(s.modulesDir)
+	return fsyncDir(filepath.Dir(conf))
 }
 
 // fsyncDir persists a directory entry created by rename or write. /data is the
@@ -482,73 +496,81 @@ func fsyncDir(path string) error {
 // removePlaced deletes a driver add-on's on-disk state (its .raw and modules-load
 // conf), used to roll back a partially-applied install so a failure leaves nothing
 // installed or declared.
-func (s *DriverService) removePlaced(name string) {
-	os.Remove(filepath.Join(s.enabledDir, name+".raw"))  //nolint:errcheck
-	os.Remove(filepath.Join(s.modulesDir, name+".conf")) //nolint:errcheck
+func (s *DriverService) removePlaced(kernel, name string) {
+	os.Remove(s.rawPath(kernel, name))  //nolint:errcheck
+	os.Remove(s.confPath(kernel, name)) //nolint:errcheck
 }
 
 // driverSnapshot holds a driver's pre-operation state so a failed install or
 // remove restores the working version instead of destroying it. Backups are
-// renames to dotted .bak names, which the apply script's globs ignore.
+// renames to dotted .bak names, which the apply script's globs ignore. A remove
+// spans every kernel bucket, so the set is a list rather than one pair.
 type driverSnapshot struct {
-	rawBak, confBak string // "" when the file did not exist
-	raw, conf       string
+	stashed  []stashedFile
+	rawFound bool
 }
 
-// snapshotDriver moves a driver's current state aside. It fails rather than
-// returning a partial snapshot: callers rely on restore() to undo everything,
-// so a half-stashed driver must not reach the mutating step.
-func (s *DriverService) snapshotDriver(name string) (*driverSnapshot, error) {
-	snap := &driverSnapshot{
-		raw:  filepath.Join(s.enabledDir, name+".raw"),
-		conf: filepath.Join(s.modulesDir, name+".conf"),
+type stashedFile struct{ path, bak string }
+
+// snapshotDriver moves one kernel's copy of a driver aside, for an install.
+func (s *DriverService) snapshotDriver(kernel, name string) (*driverSnapshot, error) {
+	return s.snapshotPaths(s.rawPath(kernel, name), s.confPath(kernel, name))
+}
+
+// snapshotDriverAllKernels moves every copy of a driver aside, for a remove:
+// leaving a staged rebuild behind would resurrect the add-on at the next OTA.
+func (s *DriverService) snapshotDriverAllKernels(name string) (*driverSnapshot, error) {
+	var paths []string
+	for _, kernel := range s.storedKernels() {
+		paths = append(paths, s.rawPath(kernel, name), s.confPath(kernel, name))
 	}
-	stash := func(path, bak string) (string, error) {
+	return s.snapshotPaths(paths...)
+}
+
+// snapshotPaths stashes each path that exists. It fails rather than returning a
+// partial snapshot: callers rely on restore() to undo everything, so a
+// half-stashed driver must not reach the mutating step.
+func (s *DriverService) snapshotPaths(paths ...string) (*driverSnapshot, error) {
+	snap := &driverSnapshot{}
+	for _, path := range paths {
 		if _, err := os.Stat(path); err != nil {
 			if os.IsNotExist(err) {
-				return "", nil // nothing installed yet
+				continue // nothing installed here
 			}
 			// Anything else and we cannot tell whether a working copy is there.
 			// Reporting "absent" would let the caller's rollback delete it.
-			return "", fmt.Errorf("checking %s: %w", filepath.Base(path), err)
+			snap.restore()
+			return nil, fmt.Errorf("checking %s: %w", filepath.Base(path), err)
 		}
+		bak := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".bak")
 		if err := os.Rename(path, bak); err != nil {
-			return "", fmt.Errorf("setting %s aside: %w", filepath.Base(path), err)
+			snap.restore()
+			return nil, fmt.Errorf("setting %s aside: %w", filepath.Base(path), err)
 		}
-		return bak, nil
-	}
-	var err error
-	if snap.rawBak, err = stash(snap.raw, filepath.Join(s.enabledDir, "."+name+".raw.bak")); err != nil {
-		return nil, err
-	}
-	if snap.confBak, err = stash(snap.conf, filepath.Join(s.modulesDir, "."+name+".conf.bak")); err != nil {
-		snap.restore() // put the .raw back rather than leave it stashed
-		return nil, err
+		snap.stashed = append(snap.stashed, stashedFile{path: path, bak: bak})
+		if strings.HasSuffix(path, ".raw") {
+			snap.rawFound = true
+		}
 	}
 	return snap, nil
 }
 
 // installed reports whether the driver existed before the operation.
-func (snap *driverSnapshot) installed() bool { return snap.rawBak != "" }
+func (snap *driverSnapshot) installed() bool { return snap.rawFound }
 
 // restore puts the snapshotted state back, replacing whatever the failed
 // operation left behind.
 func (snap *driverSnapshot) restore() {
-	for _, p := range []struct{ bak, dst string }{{snap.rawBak, snap.raw}, {snap.confBak, snap.conf}} {
-		if p.bak == "" {
-			continue
-		}
-		os.Remove(p.dst)        //nolint:errcheck // replaced by the backup below
-		os.Rename(p.bak, p.dst) //nolint:errcheck // best effort; nothing better on failure
+	for _, f := range snap.stashed {
+		os.Remove(f.path)        //nolint:errcheck // replaced by the backup below
+		os.Rename(f.bak, f.path) //nolint:errcheck // best effort; nothing better on failure
 	}
 }
 
 // commit drops the backups once the operation has succeeded.
 func (snap *driverSnapshot) commit() {
-	for _, bak := range []string{snap.rawBak, snap.confBak} {
-		if bak != "" {
-			os.Remove(bak) //nolint:errcheck
-		}
+	for _, f := range snap.stashed {
+		os.Remove(f.bak) //nolint:errcheck
 	}
 }
 
@@ -587,8 +609,7 @@ func (s *DriverService) RemoveDriver(req *agentpbv2.RemoveDriverRequest, stream 
 	if err := validateDriverName(name); err != nil {
 		return sendDriverFailure(stream, err.Error())
 	}
-	raw := filepath.Join(s.enabledDir, name+".raw")
-	if _, err := os.Stat(raw); err != nil {
+	if !s.anyCopyInstalled(name) {
 		return sendDriverFailure(stream, fmt.Sprintf("driver %q is not installed", name))
 	}
 
@@ -601,7 +622,7 @@ func (s *DriverService) RemoveDriver(req *agentpbv2.RemoveDriverRequest, stream 
 	// still merged into /usr, so putting it back keeps /data agreeing with the
 	// running system and lets the operator retry instead of stranding a
 	// merged-but-unlisted driver until reboot.
-	snap, err := s.snapshotDriver(name)
+	snap, err := s.snapshotDriverAllKernels(name)
 	if err != nil {
 		return sendDriverFailure(stream, err.Error())
 	}
@@ -642,24 +663,17 @@ func (s *DriverService) ListDrivers(ctx context.Context, _ *agentpbv2.ListDriver
 		loaded[m] = true
 	}
 
-	entries, _ := os.ReadDir(s.enabledDir) //nolint:errcheck // absent dir => no drivers
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".raw") {
-			continue
-		}
-		name := strings.TrimSuffix(e.Name(), ".raw")
-		mods := readModulesConf(filepath.Join(s.modulesDir, name+".conf"))
-		if len(mods) == 0 {
-			// Self-describing add-on: the module list is baked into the .raw and
-			// surfaces at the merged path once systemd-sysext merges it. Mirror
-			// wendyos-sysext-apply's precedence (/data override, then baked-in) so
-			// the list reflects what actually loads.
-			mods = readModulesConf(filepath.Join(s.bakedModulesDir, name+".conf"))
-		}
+	// Every bucket, not just the running kernel's: an add-on left behind by an
+	// OTA must still be listed and flagged, rather than silently disappearing.
+	for _, c := range s.installedCopies() {
+		// Self-describing add-on: the module list is baked into the .raw and
+		// surfaces at the merged path once systemd-sysext merges it. declaredModules
+		// mirrors wendyos-sysext-apply's precedence (/data override, then baked-in).
+		mods := s.declaredModules(c.name)
 		// Version stays empty: the image carries no version field to read.
-		kernel, readable := imageKernel(filepath.Join(s.enabledDir, e.Name()), name)
+		kernel, readable := imageKernel(c.rawPath, c.name)
 		resp.Installed = append(resp.Installed, &agentpbv2.InstalledDriver{
-			Name:          name,
+			Name:          c.name,
 			KernelVersion: kernel,
 			Unreadable:    !readable,
 			ModulesLoad:   mods,
@@ -670,6 +684,180 @@ func (s *DriverService) ListDrivers(ctx context.Context, _ *agentpbv2.ListDriver
 }
 
 // --- helpers ---
+
+// unpinnedKernelDir holds add-ons that declare no WENDYOS_KERNEL (udev rules,
+// firmware). They apply to every kernel, so they cannot live in one kernel's
+// directory. "any" is not a legal kernel release, so it cannot collide.
+const unpinnedKernelDir = "any"
+
+// rawPath is where an add-on's image lives for a given kernel. The store is keyed
+// by kernel so a rebuild can be staged before the OTA that needs it, and so a
+// rollback still finds the copy built for the slot it returns to.
+func (s *DriverService) rawPath(kernel, name string) string {
+	return filepath.Join(s.enabledDir, kernelDir(kernel), name+".raw")
+}
+
+// confPath is the /data modules-load override for an add-on, keyed alongside its
+// image: two kernels' builds may declare different module names.
+func (s *DriverService) confPath(kernel, name string) string {
+	return filepath.Join(s.modulesDir, kernelDir(kernel), name+".conf")
+}
+
+func kernelDir(kernel string) string {
+	if kernel == "" {
+		return unpinnedKernelDir
+	}
+	return kernel
+}
+
+// MigrateStore moves add-ons from the pre-keyed flat layout into their kernel
+// bucket. It runs in the agent rather than the apply script because only this
+// side can read a squashfs to learn which kernel an image targets. Called at
+// startup; safe to re-run, and a failure leaves the flat copy in place, which
+// the apply script still merges.
+func (s *DriverService) MigrateStore() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entries, _ := os.ReadDir(s.enabledDir) //nolint:errcheck // absent dir => nothing to migrate
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".raw") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".raw")
+		from := filepath.Join(s.enabledDir, e.Name())
+		kernel, readable := imageKernel(from, name)
+		if !readable {
+			// Nothing identifies which bucket it belongs in. Leaving it flat keeps
+			// it listed and reported unreadable rather than hidden in a guess.
+			s.logger.Warn("leaving an unreadable driver add-on in the legacy store layout", zap.String("name", name))
+			continue
+		}
+		if err := validateKernelDir(kernel); err != nil {
+			s.logger.Warn("leaving a driver add-on with an unusable kernel field in place",
+				zap.String("name", name), zap.Error(err))
+			continue
+		}
+		if err := s.moveInto(kernel, name, from); err != nil {
+			s.logger.Warn("could not migrate a driver add-on to the kernel-keyed store",
+				zap.String("name", name), zap.Error(err))
+			continue
+		}
+		s.logger.Info("migrated driver add-on to the kernel-keyed store",
+			zap.String("name", name), zap.String("kernel", kernelDir(kernel)))
+	}
+}
+
+// moveInto relocates one add-on and its /data override into a kernel bucket.
+func (s *DriverService) moveInto(kernel, name, from string) error {
+	dst := s.rawPath(kernel, name)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(from, dst); err != nil {
+		return err
+	}
+	if legacyConf := filepath.Join(s.modulesDir, name+".conf"); fileExists(legacyConf) {
+		conf := s.confPath(kernel, name)
+		if err := os.MkdirAll(filepath.Dir(conf), 0o755); err != nil {
+			return err
+		}
+		if err := os.Rename(legacyConf, conf); err != nil {
+			return err
+		}
+	}
+	return fsyncDir(filepath.Dir(dst))
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// installedCopy is one add-on image found in the store, and the bucket it sits
+// in. dir is carried because the legacy flat layout has no bucket at all.
+type installedCopy struct {
+	name    string
+	rawPath string
+}
+
+// installedCopies returns every add-on in the store, deduped by name with the
+// running kernel's copy preferred, so a name staged for several kernels resolves
+// to the one that can actually load. Top-level entries are the pre-keyed layout,
+// still read until migration has moved them.
+func (s *DriverService) installedCopies() []installedCopy {
+	dirs := []string{filepath.Join(s.enabledDir, s.unameR()), filepath.Join(s.enabledDir, unpinnedKernelDir), s.enabledDir}
+	for _, kernel := range s.storedKernels() {
+		dirs = append(dirs, filepath.Join(s.enabledDir, kernel))
+	}
+	seen := map[string]bool{}
+	var out []installedCopy
+	for _, dir := range dirs {
+		entries, _ := os.ReadDir(dir) //nolint:errcheck // absent bucket => nothing here
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".raw") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".raw")
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, installedCopy{name: name, rawPath: filepath.Join(dir, e.Name())})
+		}
+	}
+	return out
+}
+
+// anyCopyInstalled reports whether the add-on exists under any kernel.
+func (s *DriverService) anyCopyInstalled(name string) bool {
+	for _, c := range s.installedCopies() {
+		if c.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// storedKernels lists the buckets present in the store, running kernel first so
+// callers that dedupe by name prefer the copy that can actually load. The
+// unpinned bucket is always considered, even before it exists.
+func (s *DriverService) storedKernels() []string {
+	seen := map[string]bool{}
+	out := []string{s.unameR(), unpinnedKernelDir}
+	for _, k := range out {
+		seen[k] = true
+	}
+	entries, _ := os.ReadDir(s.enabledDir) //nolint:errcheck // absent dir => no drivers
+	for _, e := range entries {
+		if !e.IsDir() || seen[e.Name()] || validateKernelDir(e.Name()) != nil {
+			continue
+		}
+		seen[e.Name()] = true
+		out = append(out, e.Name())
+	}
+	return out
+}
+
+// validateKernelDir guards the one kernel string that is not ours: migration
+// reads WENDYOS_KERNEL out of a stored image, so a crafted add-on could otherwise
+// steer a path out of the store.
+func validateKernelDir(kernel string) error {
+	if kernel == "" {
+		return nil // the unpinned bucket
+	}
+	for _, r := range kernel {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-', r == '+':
+		default:
+			return fmt.Errorf("invalid kernel version %q", kernel)
+		}
+	}
+	if kernel == "." || kernel == ".." {
+		return fmt.Errorf("invalid kernel version %q", kernel)
+	}
+	return nil
+}
 
 func validateDriverName(name string) error {
 	if name == "" {
@@ -885,10 +1073,20 @@ func parseModulesConf(r io.Reader) []string {
 // script's precedence (/data override, then the list baked into the image).
 // Call it before an apply: the baked copy unmerges with the add-on.
 func (s *DriverService) declaredModules(name string) []string {
-	if mods := readModulesConf(filepath.Join(s.modulesDir, name+".conf")); len(mods) > 0 {
-		return mods
+	// Same precedence the apply script uses: this kernel, then unpinned, then the
+	// pre-keyed flat override, then the list baked into the image.
+	candidates := []string{
+		s.confPath(s.unameR(), name),
+		s.confPath(unpinnedKernelDir, name),
+		filepath.Join(s.modulesDir, name+".conf"),
+		filepath.Join(s.bakedModulesDir, name+".conf"),
 	}
-	return readModulesConf(filepath.Join(s.bakedModulesDir, name+".conf"))
+	for _, path := range candidates {
+		if mods := readModulesConf(path); len(mods) > 0 {
+			return mods
+		}
+	}
+	return nil
 }
 
 // modulesUnion is the set an install can disturb: what the add-on already

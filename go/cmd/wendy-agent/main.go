@@ -285,6 +285,9 @@ func main() {
 	agentUpdateSvc.PrimeExecPath()
 	osUpdateSvc := services.NewOSUpdateService(logger)
 	driverSvc := services.NewDriverService(logger)
+	// Before anything reads the store: devices updated from an older agent still
+	// have add-ons in the pre-keyed flat layout.
+	driverSvc.MigrateStore()
 	containerSvcV2 := services.NewContainerServiceV2(containerSvc)
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
