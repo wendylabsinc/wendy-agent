@@ -548,13 +548,30 @@ func newDataDownloadCmd() *cobra.Command {
 	return c
 }
 
-func downloadOne(ctx context.Context, c agentpbv2.DataServiceClient, id, root, rel string, size int64, wantHash string) error {
+// stagedFilePath resolves a manifest-relative path inside the staging
+// directory and rejects anything that would land outside it. Both sides are
+// made absolute first: filepath.Join cleans its result, so a relative root such
+// as "./ep2.partial" would otherwise never match a "./ep2.partial/" prefix and
+// every file in the manifest would be refused.
+func stagedFilePath(root, rel string) (string, error) {
 	if rel == "" || filepath.IsAbs(rel) || filepath.Clean(rel) != rel || strings.HasPrefix(rel, "..") {
-		return errors.New("server returned unsafe file path")
+		return "", errors.New("server returned unsafe file path")
 	}
-	p := filepath.Join(root, rel)
-	if !strings.HasPrefix(p, root+string(os.PathSeparator)) {
-		return errors.New("server file path escapes destination")
+	base, e := filepath.Abs(root)
+	if e != nil {
+		return "", e
+	}
+	p := filepath.Join(base, rel)
+	if !strings.HasPrefix(p, base+string(os.PathSeparator)) {
+		return "", errors.New("server file path escapes destination")
+	}
+	return p, nil
+}
+
+func downloadOne(ctx context.Context, c agentpbv2.DataServiceClient, id, root, rel string, size int64, wantHash string) error {
+	p, e := stagedFilePath(root, rel)
+	if e != nil {
+		return e
 	}
 	if e := os.MkdirAll(filepath.Dir(p), 0o750); e != nil {
 		return e
