@@ -3055,7 +3055,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	// live reconnected connection (WDY-2433). Watch owns one session-wide
 	// subscription, so it must not also open this per-deploy subscription.
 	var logSub *runLogSubscription
-	if !opts.deploy && !opts.detach && !opts.isWatch() {
+	if runCycleOwnsLogSubscription(opts) {
 		logSub = startRunLogSubscription(ctx, pushConn, appCfg.AppID, os.Stdout, runLogStreamWarning)
 		defer logSub.stop()
 	}
