@@ -759,7 +759,7 @@ func isTextFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".json", ".toml", ".yaml", ".yml", ".md", ".txt", ".html", ".css",
-		".js", ".ts", ".py", ".rs", ".swift", ".go",
+		".js", ".ts", ".py", ".rs", ".swift", ".go", ".mojo",
 		".cpp", ".c", ".h", ".hpp", ".cmake", ".sh", ".bash", ".zsh",
 		".dockerfile", ".gitignore", ".env", ".cfg", ".ini", ".xml",
 		".svg", ".lock":

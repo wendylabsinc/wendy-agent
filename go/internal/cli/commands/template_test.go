@@ -856,3 +856,19 @@ func TestCollectSchemaAnswers_RequiredNoDefaultErrors(t *testing.T) {
 		t.Errorf("error = %q, want it to mention --var for supplying the value", err.Error())
 	}
 }
+
+func TestIsTextFile_CoversTemplateSourceExtensions(t *testing.T) {
+	// Every language the templates repo ships must have its source files
+	// substituted; a miss leaves {{.PORT}}-style tokens in scaffolded code.
+	for _, path := range []string{
+		"main.py", "src/main.rs", "Sources/App/main.swift",
+		"app/index.js", "main.mojo", "pkg/wendynet/net.mojo",
+	} {
+		if !isTextFile(path) {
+			t.Errorf("isTextFile(%q) = false; template tokens would not be substituted", path)
+		}
+	}
+	if isTextFile("assets/logo.jpeg") {
+		t.Error("isTextFile should reject binary assets")
+	}
+}
