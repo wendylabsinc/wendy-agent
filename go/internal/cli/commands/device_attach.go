@@ -91,24 +91,18 @@ func runDeviceAttach(cmd *cobra.Command, app string, execCmd []string) error {
 		return fmt.Errorf("sending exec start: %w", err)
 	}
 
-	if term.IsTerminal(fd) {
+	interactive := term.IsTerminal(fd)
+	if interactive {
 		oldState, rawErr := term.MakeRaw(fd)
 		if rawErr == nil {
 			defer func() { _ = term.Restore(fd, oldState) }()
 		}
-	}
 
-	// Terminal resize -> resize frames. Only wired up on Unix (SIGWINCH);
-	// a no-op on Windows, which has no equivalent signal.
-	winch := make(chan os.Signal, 1)
-	stopResize := notifyTerminalResize(winch)
-	defer stopResize()
-	go func() {
-		for range winch {
-			r, c := termSize(fd)
-			_ = send(winSizeFrame(r, c))
-		}
-	}()
+		// Terminal resize -> resize frames (SIGWINCH on Unix; no-op on
+		// Windows). Only meaningful when we actually own a terminal.
+		stop := watchTerminalResize(fd, func(r, c uint32) { _ = send(winSizeFrame(r, c)) })
+		defer stop()
+	}
 
 	// stdin -> stream.
 	go func() {

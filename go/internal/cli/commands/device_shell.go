@@ -101,15 +101,8 @@ func runDeviceShell(cmd *cobra.Command, shellCmd []string) error {
 
 		// Terminal resize -> resize frames (SIGWINCH on Unix; no-op on
 		// Windows). Only meaningful when we actually own a terminal.
-		winch := make(chan os.Signal, 1)
-		stopResize := notifyTerminalResize(winch)
-		defer stopResize()
-		go func() {
-			for range winch {
-				r, c := termSize(fd)
-				_ = send(shellWinSizeFrame(r, c))
-			}
-		}()
+		stop := watchTerminalResize(fd, func(r, c uint32) { _ = send(shellWinSizeFrame(r, c)) })
+		defer stop()
 	}
 
 	// stdin -> stream.
