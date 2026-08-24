@@ -30,31 +30,48 @@ actor TelemetryService: Wendy_Agent_Services_V1_WendyTelemetryService.SimpleServ
             ]
         )
 
-        let (subscriptionId, stream) = await broadcaster.subscribeLogs()
-        defer {
-            Task {
-                await broadcaster.unsubscribeLogs(id: subscriptionId)
-            }
-        }
-
-        for await logsRequest in stream {
-            // Apply filters if specified
-            let filteredRequest = filterLogs(
-                logsRequest,
-                serviceName: request.hasServiceName ? request.serviceName : nil,
-                minSeverity: request.hasMinSeverity ? request.minSeverity : nil,
-                appName: request.hasAppName ? request.appName : nil
-            )
-
-            // Only send if there are logs after filtering
-            if !filteredRequest.resourceLogs.isEmpty {
-                try await response.write(
-                    Wendy_Agent_Services_V1_StreamLogsResponse.with {
-                        $0.logs = filteredRequest
-                    }
+        let (subscriptionId, recent, stream) = await broadcaster.subscribeLogs()
+        do {
+            for logsRequest in recent {
+                let filteredRequest = filterLogs(
+                    logsRequest,
+                    serviceName: request.hasServiceName ? request.serviceName : nil,
+                    minSeverity: request.hasMinSeverity ? request.minSeverity : nil,
+                    appName: request.hasAppName ? request.appName : nil
                 )
+                if !filteredRequest.resourceLogs.isEmpty {
+                    try await response.write(
+                        Wendy_Agent_Services_V1_StreamLogsResponse.with {
+                            $0.logs = filteredRequest
+                            $0.isHistory = true
+                        }
+                    )
+                }
             }
+
+            for await logsRequest in stream {
+                // Apply filters if specified
+                let filteredRequest = filterLogs(
+                    logsRequest,
+                    serviceName: request.hasServiceName ? request.serviceName : nil,
+                    minSeverity: request.hasMinSeverity ? request.minSeverity : nil,
+                    appName: request.hasAppName ? request.appName : nil
+                )
+
+                // Only send if there are logs after filtering
+                if !filteredRequest.resourceLogs.isEmpty {
+                    try await response.write(
+                        Wendy_Agent_Services_V1_StreamLogsResponse.with {
+                            $0.logs = filteredRequest
+                        }
+                    )
+                }
+            }
+        } catch {
+            await broadcaster.unsubscribeLogs(id: subscriptionId)
+            throw error
         }
+        await broadcaster.unsubscribeLogs(id: subscriptionId)
 
         logger.info("Client disconnected from log stream")
     }

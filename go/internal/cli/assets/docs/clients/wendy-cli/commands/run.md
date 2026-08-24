@@ -161,7 +161,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
 | `--env <KEY=VALUE>` | Set an environment variable in the container. Repeatable. Overrides a `wendy.json` `env` entry of the same key. See [Environment variables](#environment-variables). |
 | `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
-| `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
+| `--watch` | Watch the project directory and redeploy on every change, streaming the app's logs between deploys. Runs non-interactive. See [Watch mode](#watch-mode). |
 | `--debounce <ms>` | Watch mode only: quiet period in milliseconds after the last change before redeploying (default `400`). |
 | `--verbose` | Watch mode only: always show build output. By default build output is hidden unless a build fails. |
 
@@ -278,26 +278,57 @@ wendy run --watch
 wendy run --watch --debounce 800 --verbose
 ```
 
-In watch mode the deployment is always **detached** and **non-interactive**
-(equivalent to `--detach --yes`), so the watch loop never blocks on a prompt. A
-rapid sequence of saves is coalesced by the debounce window (default 400 ms) so a
-single redeploy runs after edits settle. Build output is hidden unless a build
-fails; pass `--verbose` to always show it, or `--debounce <ms>` to tune the quiet
-period.
+Watch mode runs **attached** and **non-interactive** (equivalent to `--yes`), so
+the watch loop never blocks on a prompt. A rapid sequence of saves is coalesced
+by the debounce window (default 400 ms) so a single redeploy runs after edits
+settle. Build output is hidden unless a build fails; pass `--verbose` to always
+show it, or `--debounce <ms>` to tune the quiet period.
+
+Logs remain visible for the whole watch session and continue across redeploys.
+For multi-service apps, this includes output from unchanged services that remain
+running. A new session starts with new output rather than replaying recent lines
+from before watch began. With an older agent, a small number of recent lines may
+appear once at startup. Each cycle reports itself after the changed containers
+have started, readiness has completed, and any first-run actions have launched:
+
+```text
+↻ change detected — redeploying...
+✓ redeployed in 1.98s
+listening on :3000
+```
+
+If you save again during a redeploy, Wendy cancels that redeploy and moves on to
+the latest change once cancellation finishes. Deploys do not overlap.
+
+**`openURL` and `cli` postStart actions run once per watch session for each
+container, after its first successful readiness check.** Later saves do not
+reopen the browser or rerun the local command. If readiness is canceled or
+fails, a later successful redeploy can still run the action. Restart watch to
+run it again. In a multi-service project, each service and the top-level action
+run once independently. `postStart.agent` runs on the device after every
+corresponding container start.
+
+Ctrl-C stops watching and leaves the app running on the device; use
+`wendy device apps stop` to stop it. Add `--detach` to keep watching and
+redeploying without streaming logs or running `openURL` and `cli` actions.
+
+Attached watch requires a Wendy agent target. For provider targets, use
+`--watch --detach`.
 
 For multi-service `wendy.json` and Compose projects deployed to WendyOS, watch
-mode fingerprints each service's build inputs and effective runtime configuration
-independently. After the initial deploy, services that are unchanged and still
-running are left untouched: they are not rebuilt, recreated, or restarted.
-Changed services are redeployed in dependency order. A missing, stopped, or
-otherwise non-running service is not preserved and goes through the normal
-deploy path.
+redeploys only services whose build inputs or runtime configuration changed.
+Unchanged services that are still running are not rebuilt, recreated, or
+restarted. Changed services are redeployed in dependency order. Missing or
+stopped services are deployed again even when their files have not changed.
 When the primary of a `shared-network` or `shared-ipc` group changes, the group
 is restarted together because its other containers share that primary's Linux
 namespaces.
 
-> **Note:** `wendy watch` is kept as a hidden alias for `wendy run --watch` for
-> backward compatibility, but `wendy run --watch` is the supported entry point.
+Watch mode does not forward stdin to a container. Use a plain `wendy run` for
+an app that reads stdin.
+
+> **Note:** `wendy watch` is a hidden alias for `wendy run --watch`. Prefer
+> `wendy run --watch`; both forms accept `--detach`.
 
 ## Deploy path: `--chunking`
 
@@ -361,10 +392,18 @@ Deploy records written before this version carry no layer IDs, so they cannot be
 
 ## postStart hooks
 
-When a `postStart` hook is configured in `wendy.json`, the host-side actions
-(`openURL` and `cli`) fire after the app reports readiness, on either deploy
-path (registry push **or** the default chunk-diff / CBC path). If the readiness
-probe fails, both are skipped and a warning is printed instead.
+In an attached run, `wendy run` runs `openURL` and `cli` postStart actions after
+the app reports readiness. This applies to both registry-push and chunk-diff
+deploys. If readiness fails, Wendy skips these actions and prints a warning.
+
+`--detach` returns after the selected containers start and does not run
+readiness checks, `openURL`, or `cli`; `postStart.agent` still runs on the
+device. See [Readiness and lifecycle hooks](../../../apps/wendy-services.md#readiness-and-lifecycle-hooks)
+for multi-service details.
+`--deploy` creates the app without starting it, so no postStart action runs.
+
+Under attached `--watch` the host-side actions run after the first successful
+readiness check only. `--watch --detach` skips them; see [Watch mode](#watch-mode).
 
 > **Note:** When the CLI connects to the device at an IPv6 address (for example, one discovered via mDNS), the hook targets the device's best self-reported IP address instead — the same address shown in the `App reachable at` line — for both `openURL` and `cli`. This avoids pointing at a rotating RFC 4941 temporary privacy address that may not be reachable later. If the device cannot be queried, the dialed address is used (and bracketed for URL safety in `openURL`).
 
@@ -402,14 +441,14 @@ On **Unix**, the default shell process-group cleanup is sufficient; no additiona
 
 ### Attached-mode hook lifetime
 
-In the default attached mode (no `--detach`), the `cli` hook process is tied to
-the lifetime of the log stream. When the container stream closes — either
-because the container exits or because the user presses **Ctrl-C** — the hook's
-context is cancelled and the CLI waits for the child process to exit before
-returning. This prevents orphaned hook processes from outliving `wendy run`.
+In a normal attached run, the `cli` hook process is tied to the run. When the
+container exits or you press **Ctrl-C**, Wendy cancels the hook and waits for it
+to exit before returning. In watch mode, the hook is tied to the watch session
+and is canceled when you stop watching.
 
-Detached mode (`--detach`), deploy-only mode (`--deploy`), and `--watch` do not
-fire the host-side hook at all, so there is no child process to reap.
+Detached mode (`--detach`), deploy-only mode (`--deploy`), and
+`--watch --detach` do not fire the host-side hook at all, so there is no child
+process to reap. Attached watch hooks are owned and reaped by the watch session.
 
 ## Container image signature
 

@@ -12,6 +12,23 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
+func TestResolveStagefileGPUTargetKeepsWatchTarget(t *testing.T) {
+	dir := t.TempDir()
+	const cudaStagefile = "version: 1\nstages:\n  - name: app\n    from: ubuntu:22.04\n    pin: false\n    cuda: true\n"
+	if err := os.WriteFile(filepath.Join(dir, stagefileSourceName), []byte(cudaStagefile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	watchTarget := &SelectedDevice{}
+
+	got, err := resolveStagefileGPUTarget(context.Background(), dir, watchTarget, runOptions{})
+	if err != nil {
+		t.Fatalf("resolveStagefileGPUTarget: %v", err)
+	}
+	if got != watchTarget {
+		t.Fatal("CUDA Stagefile cycle replaced the watch session's selected target")
+	}
+}
+
 // containerDisplayName must print the real container identity in deploy
 // output: "{appID}_{serviceName}" when the config describes one service of a
 // multi-service app, not the bare appID (WDY-1828). Assertions use

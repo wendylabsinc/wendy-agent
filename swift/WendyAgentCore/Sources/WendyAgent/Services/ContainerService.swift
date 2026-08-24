@@ -22,6 +22,35 @@ typealias PIDExecutablePathLookup = @Sendable (Int32) -> String?
 /// which were not.
 typealias PIDSignalSender = @Sendable (Int32, Int32) -> Void
 
+/// Client-facing view of an app-owned stdout/stderr drain. Finishing this
+/// stream stops delivery to a disconnected RPC without stopping pipe reads or
+/// telemetry broadcast by the app-lifetime task.
+private final class ContainerTaskLifetimeOutput: Sendable {
+    let stream: AsyncStream<Wendy_Agent_Services_V1_RunContainerLayersResponse>
+    private let continuation:
+        AsyncStream<Wendy_Agent_Services_V1_RunContainerLayersResponse>.Continuation
+
+    init() {
+        (self.stream, self.continuation) = AsyncStream.makeStream(
+            of: Wendy_Agent_Services_V1_RunContainerLayersResponse.self,
+            bufferingPolicy: .bufferingNewest(256)
+        )
+    }
+
+    func yield(data: Data, fromStdout: Bool) {
+        var response = Wendy_Agent_Services_V1_RunContainerLayersResponse()
+        var consoleOutput = Wendy_Agent_Services_V1_RunContainerLayersResponse.ConsoleOutput()
+        consoleOutput.data = data
+        response.responseType =
+            fromStdout ? .stdoutOutput(consoleOutput) : .stderrOutput(consoleOutput)
+        self.continuation.yield(response)
+    }
+
+    func finish() {
+        self.continuation.finish()
+    }
+}
+
 actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServiceProtocol {
     private let appsBase: URL
     private let blobsDirectory: String
@@ -645,7 +674,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let broadcaster = self.broadcaster
         let stdout = launched.stdout
         let stderr = launched.stderr
-        Task.detached {
+        Task {
             await withTaskGroup(of: Void.self) { group in
                 group.addTask {
                     for await data in stdout.fileHandleForReading.bytes(for: appName) {
@@ -1821,18 +1850,31 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     /// Builds the streaming RPC response shared by both the native-process and
     /// Linux-container launch paths: sends a `.started` message, then streams
-    /// stdout/stderr as they're produced (also broadcasting them as telemetry
-    /// logs) until the process exits.
+    /// stdout/stderr as they're produced until the process exits. Output is
+    /// drained and broadcast to telemetry on a task whose lifetime belongs to
+    /// the launched app, not to this RPC. That keeps logs flowing (and prevents
+    /// pipe backpressure) after a detached/watch client disconnects at Started.
     private func makeStreamingResponse(
         appName: String,
         process: Foundation.Process,
         stdoutPipe: Pipe,
         stderrPipe: Pipe
     ) -> StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse> {
-        // Capture values for the sendable closure.
-        let broadcaster = self.broadcaster
+        let output = ContainerTaskLifetimeOutput()
+        Self.startTaskLifetimeOutputDrain(
+            output: output,
+            broadcaster: self.broadcaster,
+            appName: appName,
+            stdoutPipe: stdoutPipe,
+            stderrPipe: stderrPipe
+        )
 
         return StreamingServerResponse { writer in
+            // The pipe drain deliberately outlives this RPC, but its client-facing
+            // stream must not. Finishing here makes later yields no-ops instead of
+            // buffering them after a watcher disconnects.
+            defer { output.finish() }
+
             // Send "started" message.
             var started = Wendy_Agent_Services_V1_RunContainerLayersResponse()
             started.responseType = .started(
@@ -1840,52 +1882,57 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
             try await writer.write(started)
 
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                // Stream stdout.
-                group.addTask {
-                    let handle = stdoutPipe.fileHandleForReading
-                    for try await data in handle.bytes(for: appName) {
-                        var response = Wendy_Agent_Services_V1_RunContainerLayersResponse()
-                        response.responseType = .stdoutOutput(.with { $0.data = data })
-                        try await writer.write(response)
-
-                        await Self.broadcastLog(
-                            broadcaster: broadcaster,
-                            appName: appName,
-                            text: String(decoding: data, as: UTF8.self),
-                            stream: "stdout",
-                            severity: .info
-                        )
-                    }
-                }
-
-                // Stream stderr.
-                group.addTask {
-                    let handle = stderrPipe.fileHandleForReading
-                    for try await data in handle.bytes(for: appName) {
-                        var response = Wendy_Agent_Services_V1_RunContainerLayersResponse()
-                        response.responseType = .stderrOutput(.with { $0.data = data })
-                        try await writer.write(response)
-
-                        await Self.broadcastLog(
-                            broadcaster: broadcaster,
-                            appName: appName,
-                            text: String(decoding: data, as: UTF8.self),
-                            stream: "stderr",
-                            severity: .warn
-                        )
-                    }
-                }
-
-                // Wait for process exit.
-                group.addTask {
-                    process.waitUntilExit()
-                }
-
-                try await group.waitForAll()
+            for await response in output.stream {
+                try await writer.write(response)
             }
 
             return Metadata()
+        }
+    }
+
+    private static func startTaskLifetimeOutputDrain(
+        output: ContainerTaskLifetimeOutput,
+        broadcaster: TelemetryBroadcaster,
+        appName: String,
+        stdoutPipe: Pipe,
+        stderrPipe: Pipe
+    ) {
+        Task {
+            async let stdoutDrain: Void = Self.drainTaskLifetimeOutput(
+                stdoutPipe.fileHandleForReading,
+                output: output,
+                broadcaster: broadcaster,
+                appName: appName,
+                fromStdout: true
+            )
+            async let stderrDrain: Void = Self.drainTaskLifetimeOutput(
+                stderrPipe.fileHandleForReading,
+                output: output,
+                broadcaster: broadcaster,
+                appName: appName,
+                fromStdout: false
+            )
+            _ = await (stdoutDrain, stderrDrain)
+            output.finish()
+        }
+    }
+
+    private static func drainTaskLifetimeOutput(
+        _ handle: FileHandle,
+        output: ContainerTaskLifetimeOutput,
+        broadcaster: TelemetryBroadcaster,
+        appName: String,
+        fromStdout: Bool
+    ) async {
+        for await data in handle.bytes(for: appName) {
+            output.yield(data: data, fromStdout: fromStdout)
+            await Self.broadcastLog(
+                broadcaster: broadcaster,
+                appName: appName,
+                text: String(decoding: data, as: UTF8.self),
+                stream: fromStdout ? "stdout" : "stderr",
+                severity: fromStdout ? .info : .warn
+            )
         }
     }
 

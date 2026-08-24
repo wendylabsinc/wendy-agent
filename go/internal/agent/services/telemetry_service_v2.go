@@ -35,11 +35,12 @@ func (s *TelemetryServiceV2) StreamLogs(req *agentpbv2.StreamLogsRequest, stream
 	// telemetry is buffered during replay and not lost, and to avoid duplicate
 	// deliveries from both the disk history and the in-memory ring buffer.
 	var subID string
+	var recent []*collogspb.ExportLogsServiceRequest
 	var ch <-chan *collogspb.ExportLogsServiceRequest
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		subID, ch = s.broadcaster.SubscribeLogsNoPrefill()
 	} else {
-		subID, ch = s.broadcaster.SubscribeLogs()
+		subID, recent, ch = s.broadcaster.SubscribeLogsWithHistory()
 	}
 	defer s.broadcaster.UnsubscribeLogs(subID)
 
@@ -67,6 +68,18 @@ func (s *TelemetryServiceV2) StreamLogs(req *agentpbv2.StreamLogsRequest, stream
 			if err := stream.Send(&agentpbv2.StreamLogsResponse{Logs: logs, IsHistory: true}); err != nil {
 				return err
 			}
+		}
+	}
+
+	for _, logs := range recent {
+		if req.ServiceName != nil || req.MinSeverity != nil || req.AppName != nil {
+			logs = filterLogsV2(logs, req)
+			if logs == nil {
+				continue
+			}
+		}
+		if err := stream.Send(&agentpbv2.StreamLogsResponse{Logs: logs, IsHistory: true}); err != nil {
+			return err
 		}
 	}
 
