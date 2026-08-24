@@ -52,6 +52,12 @@ type DeviceInfo struct {
 	NativeAppSupport bool
 }
 
+// ErrSerialPortUnavailable marks failures that happened before a serial port
+// was successfully opened. Callers that probe for Wendy Lite firmware use it
+// to distinguish a busy/missing/inaccessible port from a port that opened but
+// failed the WendyCom handshake.
+var ErrSerialPortUnavailable = errors.New("serial port unavailable")
+
 type AppType int
 
 // ConfPushMode selects how a pushed configuration combines with the one
@@ -175,7 +181,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 func (c *WendyLiteClient) ConnectToSerial(device string) error {
 	lock, err := seriallock.Acquire(device)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrSerialPortUnavailable, err)
 	}
 	mode := &serial.Mode{
 		BaudRate: 115200,
@@ -186,7 +192,7 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 	port, err := serial.Open(device, mode)
 	if err != nil {
 		lock.Release()
-		return fmt.Errorf("open serial: %w", err)
+		return fmt.Errorf("%w: open serial: %w", ErrSerialPortUnavailable, err)
 	}
 	c.link = &directLink{conn: port, isSerial: true}
 	c.serialLock = lock

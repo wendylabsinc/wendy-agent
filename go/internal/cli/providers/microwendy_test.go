@@ -114,6 +114,25 @@ func TestSerialExternalDeviceResponsive(t *testing.T) {
 	}
 }
 
+func TestConnectableLiteMDNSService(t *testing.T) {
+	tests := []struct {
+		name string
+		svc  discovery.MDNSService
+		want bool
+	}{
+		{name: "resolved", svc: discovery.MDNSService{IPAddress: "192.0.2.10", Port: 5054}, want: true},
+		{name: "stale record without address", svc: discovery.MDNSService{Hostname: "old.local", Port: 5054}, want: false},
+		{name: "missing port", svc: discovery.MDNSService{IPAddress: "192.0.2.10"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := connectableLiteMDNSService(tt.svc); got != tt.want {
+				t.Errorf("connectableLiteMDNSService(%+v) = %v, want %v", tt.svc, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestContendedPortsError(t *testing.T) {
 	tests := []struct {
 		name  string

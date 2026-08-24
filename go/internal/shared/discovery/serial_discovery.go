@@ -39,7 +39,10 @@ var resolvePortsFn = ResolveESP32SerialPorts
 var probeIdentityFn = func(port string) (identity *liteclient.DeviceIdentity, opened bool, err error) {
 	client := liteclient.NewWendyLiteClient()
 	if err := client.ConnectToSerial(port); err != nil {
-		return nil, false, err
+		// ConnectToSerial also performs the WendyCom handshake. A handshake
+		// failure means the port did open and should surface as an unresponsive
+		// (potentially unflashed) ESP32; only a pre-open failure is contention.
+		return nil, !errors.Is(err, liteclient.ErrSerialPortUnavailable), err
 	}
 	defer client.Close()
 	identity, err = client.GetDeviceIdentity(3 * time.Second)

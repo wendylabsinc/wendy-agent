@@ -74,6 +74,9 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 
 	var devices []models.ExternalDevice
 	for _, svc := range services {
+		if !connectableLiteMDNSService(svc) {
+			continue
+		}
 		devices = append(devices, p.mdnsExternalDevice(svc))
 	}
 	for _, dev := range sd.WaitForIdle(serialCtx) {
@@ -146,6 +149,15 @@ func (p *MicroWendyProvider) mdnsExternalDevice(svc discovery.MDNSService) model
 		},
 		IsWendyDevice: true,
 	}
+}
+
+// connectableLiteMDNSService rejects incomplete/stale DNS-SD records. The
+// Wendy Lite LAN connector requires both an IP and a port; presenting a row
+// without them creates a blank-address "LAN (Lite)" device that can never be
+// selected successfully (commonly an offline device lingering in the macOS
+// mDNSResponder cache).
+func connectableLiteMDNSService(svc discovery.MDNSService) bool {
+	return svc.IPAddress != "" && svc.Port > 0
 }
 
 // serialExternalDevice maps a serial-port ESP32 device to an ExternalDevice.
@@ -243,6 +255,9 @@ func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-c
 					// Browse stream died; closing ch lets the consumer fall
 					// back to polling.
 					return
+				}
+				if !connectableLiteMDNSService(svc) {
+					continue
 				}
 				if !send(p.mdnsExternalDevice(svc)) {
 					return
