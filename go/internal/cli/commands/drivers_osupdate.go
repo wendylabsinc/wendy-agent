@@ -102,9 +102,8 @@ func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentCon
 }
 
 // stageRebuild puts the published rebuild in place for the kernel the update is
-// about to boot into, so the add-on loads on the first boot of the new slot
-// instead of waiting for a manual reinstall. Advisory like the rest of this
-// file: a failure prints and returns, it never fails the OS update.
+// about to boot into, so the add-on loads on the first boot of the new slot.
+// Advisory like the rest of this file: a failure prints, it never fails the OTA.
 func stageRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name string, entries []extensionEntry) {
 	// Every entry here targets a kernel other than the running one, so any of them
 	// is a candidate; more than one means the release ships several kernels and

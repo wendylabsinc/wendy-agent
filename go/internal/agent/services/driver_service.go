@@ -322,10 +322,8 @@ func (s *DriverService) finalize(ctx context.Context, spec DriverInstallSpec, tm
 	declared := modulesUnion(s.declaredModules(spec.Name), spec.ModulesLoad)
 	resident := s.residentModules(modulesUnion(declared, imageModules(tmpPath, spec.Name)))
 
-	// The image decides which bucket it belongs in: one that pins no kernel goes
-	// to the unpinned bucket rather than being trapped in this kernel's, where an
-	// OTA would strand it. verifyImageKernel above already tied it to the running
-	// kernel when it does pin one.
+	// The image picks its own bucket: one pinning no kernel goes to the unpinned
+	// bucket rather than being stranded in this kernel's by the next OTA.
 	kernel, _ := imageKernel(tmpPath, spec.Name)
 	if err := validateKernelDir(kernel); err != nil {
 		return false, err
@@ -351,7 +349,7 @@ func (s *DriverService) finalize(ctx context.Context, spec DriverInstallSpec, tm
 		s.pruneStore(target)
 		return false, nil
 	}
-	if err := s.apply(ctx); err != nil {
+	if err := s.apply(ctx, spec.Name); err != nil {
 		s.removePlaced(kernel, spec.Name)
 		snap.restore()
 		s.reapply(ctx)
@@ -614,7 +612,8 @@ func (snap *driverSnapshot) commit() {
 // the module overlay and aborts `systemd-sysext refresh` wholesale, which
 // unmerges every healthy add-on too, so the restored set must be merged again.
 func (s *DriverService) reapply(ctx context.Context) {
-	if err := s.apply(ctx); err != nil {
+	// No subject: this restores every add-on, so any failure is ours to report.
+	if err := s.apply(ctx, ""); err != nil {
 		s.logger.Error("could not restore the previous driver set after a failed operation; a reboot will re-apply it",
 			zap.Error(err))
 	}
@@ -623,10 +622,16 @@ func (s *DriverService) reapply(ctx context.Context) {
 // apply runs the sysext-apply script detached from the caller's cancellation: a
 // CLI Ctrl-C/disconnect must not SIGKILL it mid-merge and leave /usr half-applied.
 // A 2-minute timeout still bounds a hung script.
-func (s *DriverService) apply(ctx context.Context) error {
+// subject names the add-on this apply is for, so the script scopes its exit
+// status to it. Empty when restoring the whole set, where any failure is ours.
+func (s *DriverService) apply(ctx context.Context, subject string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, s.applyScript)
+	args := []string{}
+	if subject != "" {
+		args = append(args, subject)
+	}
+	cmd := exec.CommandContext(ctx, s.applyScript, args...)
 	cmd.Env = driverEnvWithPath()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -667,7 +672,7 @@ func (s *DriverService) RemoveDriver(req *agentpbv2.RemoveDriverRequest, stream 
 	}
 
 	sendDriverProgress(stream, "applying", 70)
-	if err := s.apply(stream.Context()); err != nil {
+	if err := s.apply(stream.Context(), name); err != nil {
 		snap.restore()
 		s.reapply(stream.Context())
 		return sendDriverFailure(stream, fmt.Sprintf("apply failed: %v", err))
@@ -746,11 +751,9 @@ func kernelDir(kernel string) string {
 	return kernel
 }
 
-// MigrateStore moves add-ons from the pre-keyed flat layout into their kernel
-// bucket. It runs in the agent rather than the apply script because only this
-// side can read a squashfs to learn which kernel an image targets. Called at
-// startup; safe to re-run, and a failure leaves the flat copy in place, which
-// the apply script still merges.
+// MigrateStore moves add-ons from the flat layout into their kernel bucket. It
+// lives here rather than in the apply script because only this side can read a
+// squashfs. Re-runnable; a failure leaves the flat copy, which still merges.
 func (s *DriverService) MigrateStore() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -810,11 +813,9 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// pruneStore drops add-ons for kernels this device has left behind. The running
-// kernel, the unpinned bucket and a freshly staged target are always kept, plus
-// the most recently touched other bucket — that one is the previous kernel, and
-// deleting it would strip the drivers from the slot a rollback returns to.
-// Images are small, so this errs towards keeping too much.
+// pruneStore drops add-ons for kernels this device has left behind. It also keeps
+// the most recently touched other bucket: that is the previous kernel, and a
+// rollback would land on a slot with no drivers without it.
 func (s *DriverService) pruneStore(stagedTarget string) {
 	keep := map[string]bool{s.unameR(): true, unpinnedKernelDir: true}
 	if stagedTarget != "" {
@@ -857,9 +858,8 @@ type installedCopy struct {
 }
 
 // installedCopies returns every add-on in the store, deduped by name with the
-// running kernel's copy preferred, so a name staged for several kernels resolves
-// to the one that can actually load. Top-level entries are the pre-keyed layout,
-// still read until migration has moved them.
+// running kernel's copy preferred so a staged name resolves to the one that can
+// load. Top-level entries are the flat layout, read until migration moves them.
 func (s *DriverService) installedCopies() []installedCopy {
 	dirs := []string{filepath.Join(s.enabledDir, s.unameR()), filepath.Join(s.enabledDir, unpinnedKernelDir), s.enabledDir}
 	for _, kernel := range s.storedKernels() {
@@ -940,7 +940,9 @@ func validateDriverName(name string) error {
 	}
 	// A leading dot would install fine but never merge: the apply script's
 	// "$ENABLED"/*.raw globs skip dotfiles, so it would look applied and do nothing.
-	if strings.HasPrefix(name, ".") || strings.ContainsAny(name, "/\\") {
+	// A leading dash becomes the apply script's subject argument, where it matches
+	// no add-on and quietly zeroes the exit status this install is judged by.
+	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "-") || strings.ContainsAny(name, "/\\") {
 		return fmt.Errorf("invalid driver name %q", name)
 	}
 	for _, r := range name {

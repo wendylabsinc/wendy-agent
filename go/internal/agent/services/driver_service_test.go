@@ -69,7 +69,8 @@ func TestValidateDriverName(t *testing.T) {
 			t.Errorf("validateDriverName(%q) = %v, want nil", n, err)
 		}
 	}
-	invalid := []string{"", ".", "..", "a/b", "a\\b", "../evil", "has space", "sneaky.raw/../x"}
+	// A leading dash would become the apply script's subject argument.
+	invalid := []string{"", ".", "..", "a/b", "a\\b", "../evil", "has space", "sneaky.raw/../x", "-x", "--help", "-"}
 	for _, n := range invalid {
 		if err := validateDriverName(n); err == nil {
 			t.Errorf("validateDriverName(%q) = nil, want error", n)
@@ -875,8 +876,7 @@ func TestValidateKernelDir(t *testing.T) {
 	}
 }
 
-// Devices updated from an older agent still have a flat store; the agent moves
-// each image into the bucket its own kernel field names.
+// Devices updated from an older agent still have a flat store.
 func TestMigrateStore(t *testing.T) {
 	svc := newTestDriverService(t, nil)
 	if err := os.MkdirAll(svc.enabledDir, 0o755); err != nil {
@@ -924,9 +924,8 @@ func TestMigrateStore(t *testing.T) {
 	svc.MigrateStore() // idempotent
 }
 
-// An add-on left behind by an OTA lives under a kernel this device no longer
-// runs. It must still be listed, and a name present under several kernels must
-// resolve to the copy that can actually load.
+// An add-on left behind by an OTA must still be listed, and a name under several
+// kernels must resolve to the copy that can load.
 func TestListDrivers_UnionAcrossKernels(t *testing.T) {
 	svc := newTestDriverService(t, nil)
 	put := func(kernel, name, fixture string) {
@@ -969,8 +968,8 @@ func TestListDrivers_UnionAcrossKernels(t *testing.T) {
 	}
 }
 
-// Staging puts a rebuild in place for a kernel the device is not running yet, so
-// it must land in that kernel's bucket and must not touch the running system.
+// Staging targets a kernel the device is not running: it must land in that
+// kernel's bucket and leave the running system alone.
 func TestFinalize_StageOnlyPlacesWithoutApplying(t *testing.T) {
 	payload := driverImage(t, "a") // declares 6.6.0-test
 	svc := newTestDriverService(t, payload)
@@ -1005,8 +1004,8 @@ func TestFinalize_StageOnlyPlacesWithoutApplying(t *testing.T) {
 	}
 }
 
-// The manifest and the image have to agree, or a staged rebuild could quietly be
-// filed under a kernel it was not built for.
+// The manifest and the image must agree, or a rebuild is filed under the wrong
+// kernel.
 func TestFinalize_StageOnlyRejectsAKernelMismatch(t *testing.T) {
 	payload := driverImage(t, "a") // declares 6.6.0-test
 	svc := newTestDriverService(t, payload)
@@ -1032,8 +1031,7 @@ func TestFinalize_StageOnlyRejectsAKernelMismatch(t *testing.T) {
 	}
 }
 
-// A rollback returns to the previous kernel, so its bucket has to survive the
-// prune that a fresh staging triggers.
+// A rollback returns to the previous kernel, so its bucket must survive a prune.
 func TestPruneStore_KeepsThePreviousKernel(t *testing.T) {
 	svc := newTestDriverService(t, nil)
 	for _, k := range []string{testKernel, unpinnedKernelDir, "1.0-oldest", "2.0-previous", "3.0-target"} {
@@ -1058,9 +1056,7 @@ func TestPruneStore_KeepsThePreviousKernel(t *testing.T) {
 	}
 }
 
-// End to end through the RPC, so the proto field is proven to reach finalize:
-// a staged add-on is fetched, verified and filed under the kernel it targets
-// without touching the running system.
+// Through the RPC, so the proto field is proven to reach finalize.
 func TestInstallDriver_StageOnlyOverTheRPC(t *testing.T) {
 	payload := driverImage(t, "a") // declares 6.6.0-test
 	svc := newTestDriverService(t, payload)
