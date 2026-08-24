@@ -1393,6 +1393,13 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			c.logger.Warn("bridge/mesh: resolv.conf setup failed; container keeps image resolv.conf",
 				zap.String("app_id", appID), zap.Error(err))
 		}
+	} else {
+		// No resolv.conf is written for this container, so it inherits the
+		// host's -- and keeps that copy read-only for its whole life. If the
+		// host has no resolver right now, this container will never resolve a
+		// hostname, and nothing about the symptom points at DNS. See
+		// warnIfHostHasNoDNS.
+		c.warnIfHostHasNoDNS(appID)
 	}
 
 	// Apply isolation-specific namespace and shm settings for shared-namespace groups.
