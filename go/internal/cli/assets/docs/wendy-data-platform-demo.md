@@ -217,6 +217,12 @@ counts the predictions that named their inputs, and — per source — whether t
 episode retains payloads for all of the consumed samples or only the subset the
 capture policy kept.
 
+To watch the camera capture rather than join against it, convert the episode
+with `episode-playable`; the camera capture is a raw elementary stream with no
+container, so players otherwise invent a frame rate and the clip runs at the
+wrong speed. See "Playing back camera capture" in the `wendy data` command
+documentation.
+
 ## Pitfalls discovered on the way (all hit for real)
 
 1. Full root disk from accumulated updater backups: see the recon step.
