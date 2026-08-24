@@ -3513,7 +3513,7 @@ func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvide
 func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
+		cfg = nil
 	}
 	cloudAuth := devicePickerInitialAuth(cfg)
 
