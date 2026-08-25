@@ -351,40 +351,23 @@ func oidcContainsString(haystack []string, needle string) bool {
 	return false
 }
 
-// loopbackPorts are the ports the callback server will try, in order.
-//
-// RFC 8252 §7.3 says an authorization server SHOULD ignore the port of a
-// loopback redirect URI, which would let us bind :0 and take any free port.
-// wendy-auth does NOT do that — ClientPolicy.matchesRedirectURI is an exact
-// string comparison:
-//
-//	public func matchesRedirectURI(_ uri: String) -> Bool { redirectURIs.contains(uri) }
-//
-// so every port we might bind has to be registered on the client. A short
-// fixed list keeps registration manageable while still surviving a port that
-// happens to be busy. Every entry here must be registered as a redirect URI.
-var loopbackPorts = []int{8765, 8766, 8767}
+const (
+	oidcCallbackAddr = "127.0.0.1:8765"
+	oidcRedirectURI  = "http://127.0.0.1:8765/callback"
+)
 
-// startLoopbackListener binds the first free port from loopbackPorts and
-// returns the matching redirect URI.
+// startLoopbackListener binds the static OIDC callback port and returns its
+// registered redirect URI.
 //
 // Loopback rather than the device-code grant: wendy-auth does not advertise
 // urn:ietf:params:oauth:grant-type:device_code, and the existing
 // `wendy auth login` already uses a loopback callback, so this keeps one shape.
 func startLoopbackListener() (net.Listener, string, error) {
-	var lastErr error
-	for _, port := range loopbackPorts {
-		addr := fmt.Sprintf("127.0.0.1:%d", port)
-		listener, err := net.Listen("tcp", addr)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		return listener, fmt.Sprintf("http://127.0.0.1:%d/callback", port), nil
+	listener, err := net.Listen("tcp", oidcCallbackAddr)
+	if err != nil {
+		return nil, "", fmt.Errorf("binding OIDC callback server to %s: %w", oidcCallbackAddr, err)
 	}
-	return nil, "", fmt.Errorf(
-		"no free callback port among %v (the redirect URI must be one the client has registered): %w",
-		loopbackPorts, lastErr)
+	return listener, oidcRedirectURI, nil
 }
 
 // exchangeCodeForToken performs the authorization_code exchange with a DPoP

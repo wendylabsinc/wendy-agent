@@ -204,6 +204,15 @@ func TestPKCEVerifierProducesS256Challenge(t *testing.T) {
 	}
 }
 
+func TestOIDCCallbackUsesStaticPort8765(t *testing.T) {
+	if oidcCallbackAddr != "127.0.0.1:8765" {
+		t.Fatalf("callback address = %q, want 127.0.0.1:8765", oidcCallbackAddr)
+	}
+	if oidcRedirectURI != "http://127.0.0.1:8765/callback" {
+		t.Fatalf("redirect URI = %q, want http://127.0.0.1:8765/callback", oidcRedirectURI)
+	}
+}
+
 // aud may be a bare string or an array (RFC 7519 §4.1.3).
 func TestAudienceContains(t *testing.T) {
 	const want = defaultDevCloudResource
