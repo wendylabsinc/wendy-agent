@@ -148,7 +148,11 @@ messages.
 
 Use `.github/workflows/macos-e2e-tart-validation.yml` only from a trusted branch
 and select one scenario at a time. It has read-only repository permissions and
-cannot publish a release.
+cannot publish a release. Before merge, apply one of the same-repository PR labels
+`macos-e2e-tart:smoke`, `macos-e2e-tart:wait-for-cancellation`,
+`macos-e2e-tart:persistence`, `macos-e2e-tart:disk-pressure`, or
+`macos-e2e-tart:watchdog`; fork PRs are rejected. Remove a label before applying
+it again. After merge, use the equivalent workflow-dispatch choice.
 
 1. **Normal completion:** run `smoke`; confirm public egress, no VirtioFS host
    mount, no private-LAN reachability, and successful completion. Then confirm

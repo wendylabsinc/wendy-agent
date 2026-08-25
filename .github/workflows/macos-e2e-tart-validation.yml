@@ -1,6 +1,8 @@
 name: Validate disposable macOS E2E runner
 
 on:
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       scenario:
@@ -22,8 +24,37 @@ permissions:
   contents: read
 
 jobs:
+  select-scenario:
+    name: Select trusted validation scenario
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+           startsWith(github.event.label.name, 'macos-e2e-tart:')) }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    outputs:
+      scenario: ${{ steps.scenario.outputs.value }}
+    steps:
+      - name: Validate selection
+        id: scenario
+        shell: bash
+        env:
+          DISPATCH_SCENARIO: ${{ inputs.scenario || '' }}
+          PR_LABEL: ${{ github.event.label.name || '' }}
+        run: |
+          set -euo pipefail
+          scenario="${DISPATCH_SCENARIO:-${PR_LABEL#macos-e2e-tart:}}"
+          case "$scenario" in
+            smoke|wait-for-cancellation|persistence|disk-pressure|watchdog) ;;
+            *) echo "ERROR: invalid validation scenario" >&2; exit 64 ;;
+          esac
+          echo "value=$scenario" >> "$GITHUB_OUTPUT"
+
   exercise:
-    name: Exercise ${{ inputs.scenario }}
+    name: Exercise ${{ needs.select-scenario.outputs.scenario }}
+    needs: select-scenario
+    if: needs.select-scenario.result == 'success'
     permissions:
       contents: read
     runs-on:
@@ -40,7 +71,7 @@ jobs:
           xcodebuild -version
 
       - name: Verify isolated route
-        if: inputs.scenario == 'smoke'
+        if: needs.select-scenario.outputs.scenario == 'smoke'
         shell: bash
         run: |
           set -euo pipefail
@@ -58,7 +89,7 @@ jobs:
           sudo -n true
 
       - name: Wait for operator cancellation
-        if: inputs.scenario == 'wait-for-cancellation'
+        if: needs.select-scenario.outputs.scenario == 'wait-for-cancellation'
         shell: bash
         run: |
           set -euo pipefail
@@ -66,7 +97,7 @@ jobs:
           sleep 9600
 
       - name: Attempt guest persistence
-        if: inputs.scenario == 'persistence'
+        if: needs.select-scenario.outputs.scenario == 'persistence'
         shell: bash
         run: |
           set -euo pipefail
@@ -93,7 +124,7 @@ jobs:
           test -e '/Library/Application Support/Wendy/tart-persistence-launched'
 
       - name: Exhaust disposable guest disk
-        if: inputs.scenario == 'disk-pressure'
+        if: needs.select-scenario.outputs.scenario == 'disk-pressure'
         shell: bash
         run: |
           set -euo pipefail
@@ -110,7 +141,7 @@ jobs:
           df -h "$RUNNER_TEMP"
 
       - name: Outlive host watchdog
-        if: inputs.scenario == 'watchdog'
+        if: needs.select-scenario.outputs.scenario == 'watchdog'
         shell: bash
         run: |
           set -euo pipefail
@@ -119,10 +150,11 @@ jobs:
 
   verify-fresh:
     name: Verify a fresh guest
-    needs: exercise
+    needs: [select-scenario, exercise]
     if: >-
       ${{ always() && needs.exercise.result == 'success' &&
-          (inputs.scenario == 'persistence' || inputs.scenario == 'disk-pressure') }}
+          (needs.select-scenario.outputs.scenario == 'persistence' ||
+           needs.select-scenario.outputs.scenario == 'disk-pressure') }}
     permissions:
       contents: read
     runs-on:
