@@ -30,7 +30,7 @@ The same flag on [`wendy run`](run.md) and `wendy fleet run` additionally enable
 
 `wendy build` scans the project directory for a build manifest in the following priority order:
 
-1. `wendy.json` with a non-empty `services` map — multi-service build. Takes precedence unconditionally, even over a root-level Compose file, Dockerfile, or other marker below; each service resolves its own build file independently inside its `context` directory, using the same per-directory Stagefile-before-Dockerfile rule as entry 2. See [Multi-service manifests](#multi-service-manifests).
+1. `wendy.json` with a non-empty `services` map — multi-service build. Takes precedence unconditionally, even over a root-level Compose file, Dockerfile, or other marker below; each service resolves its own build file independently inside its `context` directory, using the same per-directory Stagefile-before-Dockerfile rule as the Stagefile entry below. See [Multi-service manifests](#multi-service-manifests).
 2. `docker-compose.yml` / `compose.yml` — multi-service Compose project
 3. `build.stagefile.yaml` / `<name>.stagefile.yaml` — Stagefile, compiled to a digest-pinned Dockerfile at build time. Checked ahead of plain Dockerfiles: a Stagefile is the more explicit build signal, and a project that has one usually keeps a generated Dockerfile beside it.
 4. `Dockerfile` / `Containerfile` (or dot/hyphen variants) — container image build
