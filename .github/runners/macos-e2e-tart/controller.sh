@@ -1,6 +1,8 @@
 #!/bin/bash
 # shellcheck disable=SC2016 # jq and guest scripts intentionally expand elsewhere.
 set -euo pipefail
+# Never permit inherited xtrace to expose short-lived GitHub credentials.
+set +x
 umask 077
 
 CONFIG_PATH="${WENDY_TART_E2E_CONFIG:-/Library/Application Support/Wendy/TartE2E/config.env}"
@@ -134,7 +136,8 @@ base64url() {
 }
 
 github_app_token() {
-  local now issued expires header payload unsigned signature jwt
+  set +x
+  local now issued expires header payload unsigned signature jwt token_request
   now="$(date +%s)"
   issued="$((now - 60))"
   expires="$((now + 540))"
@@ -145,13 +148,22 @@ github_app_token() {
     | "$OPENSSL_BIN" dgst -sha256 -sign "$GITHUB_APP_PRIVATE_KEY" \
     | base64url)"
   jwt="${unsigned}.${signature}"
+  token_request="$($JQ_BIN -cn \
+    --arg repository "$GITHUB_REPOSITORY" \
+    '{repositories: [$repository], permissions: {administration: "write"}}')"
 
-  curl --fail --silent --show-error \
-    --request POST \
-    --header "Accept: application/vnd.github+json" \
-    --header "Authorization: Bearer $jwt" \
-    --header "X-GitHub-Api-Version: 2022-11-28" \
-    "https://api.github.com/app/installations/${GITHUB_APP_INSTALLATION_ID}/access_tokens" \
+  # Feed the short-lived JWT through curl's stdin config, never argv or disk.
+  {
+    printf '%s\n' 'request = "POST"'
+    printf '%s\n' 'header = "Accept: application/vnd.github+json"'
+    printf 'header = "Authorization: Bearer %s"\n' "$jwt"
+    printf '%s\n' 'header = "X-GitHub-Api-Version: 2022-11-28"'
+    printf '%s\n' 'header = "Content-Type: application/json"'
+    printf 'url = "https://api.github.com/app/installations/%s/access_tokens"\n' \
+      "$GITHUB_APP_INSTALLATION_ID"
+  } | curl --fail --silent --show-error \
+    --config - \
+    --data "$token_request" \
     | "$JQ_BIN" -er '.token'
 }
 
@@ -166,14 +178,18 @@ generate_jit_config() {
     --argjson labels "$labels" \
     '{name: $name, runner_group_id: $group, work_folder: "_work", labels: $labels}')"
 
-  curl --fail --silent --show-error \
-    --request POST \
-    --header "Accept: application/vnd.github+json" \
-    --header "Authorization: Bearer $token" \
-    --header "X-GitHub-Api-Version: 2022-11-28" \
-    --header "Content-Type: application/json" \
+  # Feed the installation token through curl's stdin config, never argv or disk.
+  {
+    printf '%s\n' 'request = "POST"'
+    printf '%s\n' 'header = "Accept: application/vnd.github+json"'
+    printf 'header = "Authorization: Bearer %s"\n' "$token"
+    printf '%s\n' 'header = "X-GitHub-Api-Version: 2022-11-28"'
+    printf '%s\n' 'header = "Content-Type: application/json"'
+    printf 'url = "https://api.github.com/repos/%s/%s/actions/runners/generate-jitconfig"\n' \
+      "$GITHUB_OWNER" "$GITHUB_REPOSITORY"
+  } | curl --fail --silent --show-error \
+    --config - \
     --data "$payload" \
-    "https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPOSITORY}/actions/runners/generate-jitconfig" \
     | "$JQ_BIN" -er '.encoded_jit_config'
 }
 

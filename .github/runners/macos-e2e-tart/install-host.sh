@@ -88,6 +88,9 @@ awk \
     $0 == "TART_HOME='\''REQUIRED'\''" { print "TART_HOME='\''" tart_home "'\''"; next }
     { print }
   ' "$script_dir/config.env.example" > "$config_tmp"
+# SECURITY: The operator LaunchAgent must read this non-secret config. Its App,
+# installation and group IDs are public identifiers; the referenced key remains
+# separately protected at 0400 and the root-owned config is not writable.
 install -o root -g wheel -m 0644 "$config_tmp" "$install_root/config.env"
 install -o root -g wheel -m 0644 "$script_dir/org.wendy.macos-e2e-tart.plist" "$launch_agent"
 
