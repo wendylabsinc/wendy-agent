@@ -288,10 +288,15 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
 
       - name: Install libusb
-        run: brew list libusb >/dev/null 2>&1 || brew install libusb
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          brew list libusb >/dev/null 2>&1 || brew install libusb
 
       # build-wendy.sh links libusb statically and fails the build if a dynamic
       # libusb dependency sneaks in — a plain `go build` would produce a binary

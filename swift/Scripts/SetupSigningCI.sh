@@ -21,10 +21,13 @@ KEYCHAIN_PATH="${TEMP_DIR}/wendy-signing.keychain-db"
 KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
 CERT_PATH="${TEMP_DIR}/developer-id-application.cer"
 KEY_PATH="${TEMP_DIR}/developer-id-application.key"
+DEVELOPER_ID_CA_PATH="${TEMP_DIR}/developer-id-g2-ca.cer"
+DEVELOPER_ID_CA_URL="https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer"
+DEVELOPER_ID_CA_SHA256="f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a"
 NOTARY_PROFILE="${NOTARY_PROFILE:-wendy-notary-profile}"
 
 cleanup() {
-  rm -f "$CERT_PATH" "$KEY_PATH"
+  rm -f "$CERT_PATH" "$KEY_PATH" "$DEVELOPER_ID_CA_PATH"
 }
 trap cleanup EXIT
 
@@ -34,6 +37,15 @@ printf '%s' "$DEVELOPER_ID_KEY" | base64 --decode > "$KEY_PATH"
 security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+curl -fsSL "$DEVELOPER_ID_CA_URL" -o "$DEVELOPER_ID_CA_PATH"
+ACTUAL_DEVELOPER_ID_CA_SHA256=$(shasum -a 256 "$DEVELOPER_ID_CA_PATH" | awk '{ print $1 }')
+if [ "$ACTUAL_DEVELOPER_ID_CA_SHA256" != "$DEVELOPER_ID_CA_SHA256" ]; then
+  echo "::error::Apple Developer ID intermediate certificate checksum mismatch"
+  exit 1
+fi
+security import "$DEVELOPER_ID_CA_PATH" -k "$KEYCHAIN_PATH"
+
 security import "$CERT_PATH" \
   -k "$KEYCHAIN_PATH" \
   -T /usr/bin/codesign \
