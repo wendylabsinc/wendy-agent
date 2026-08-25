@@ -387,8 +387,6 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		return false, nil
 	}
 	cliLogln("No changes detected; started existing %s.", containerDisplayName(appCfg))
-	// No host-side postStart hook here either — see runPostStartIfReady's doc
-	// comment for why detached deploys skip it.
 	return true, nil
 }
 

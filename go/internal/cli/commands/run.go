@@ -33,6 +33,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
@@ -441,8 +442,12 @@ func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.We
 // phase updates so the user sees feedback during long image pulls/unpacks.
 // Older agents may not implement the streaming RPC yet, so fall back to the
 // legacy unary CreateContainer call when the server reports Unimplemented.
+func useInteractiveCreateProgress(ctx context.Context) bool {
+	return isInteractiveTerminal() && !watchUsesPlainProgress(ctx)
+}
+
 func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainerServiceClient, req *agentpb.CreateContainerRequest) error {
-	if !isInteractiveTerminal() {
+	if !useInteractiveCreateProgress(ctx) {
 		stream, err := svc.CreateContainerWithProgress(ctx, req)
 		if err != nil {
 			if isUnimplementedRPCError(err) {
@@ -476,6 +481,16 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 	return nil
 }
 
+// resolveStagefileGPUTarget resolves a target only when GPU-aware Stagefile
+// selection actually needs one. Watch sessions pass their already-selected
+// target so every cycle stays pinned to the same device and connection.
+func resolveStagefileGPUTarget(ctx context.Context, cwd string, target *SelectedDevice, opts runOptions) (*SelectedDevice, error) {
+	if target != nil || opts.gpuArch != "" || !stagefile.NeedsGPUTarget(cwd) {
+		return target, nil
+	}
+	return resolveRunTarget(ctx, runResolveOptions(opts)...)
+}
+
 type runOptions struct {
 	buildType  string
 	dockerfile string
@@ -507,13 +522,19 @@ type runOptions struct {
 	// deploys to wire cross-component discovery (e.g. WENDY_FLEET_PEERS) into a
 	// component. They override wendy.json env of the same key.
 	env []string
-	// quietBuild suppresses the image build (buildx) output, surfacing it only
-	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
+	// quietBuild suppresses image-build output unless the build fails. Watch
+	// mode enables it unless --verbose is set.
 	quietBuild bool
 	// watchState tracks the effective per-service state successfully deployed by
 	// this watch session. Multi-service deploys use it to leave unchanged,
-	// already-running containers completely untouched on later cycles.
+	// already-running containers completely untouched on later cycles. It is
+	// non-nil only under `wendy run --watch`, so the deploy paths also read it
+	// as "this run belongs to a watch session".
 	watchState *watchDeployState
+	// watchTarget is resolved once by the watch session and shared by its
+	// serialized deploy cycles. Ordinary runs leave it nil and own the target
+	// they resolve inside runCommand.
+	watchTarget *SelectedDevice
 	// gpuArch overrides the GPU architecture a Stagefile cuda: stage compiles
 	// against. Normally the selected device answers this; the flag exists for
 	// building against a board that isn't the one in front of you.
@@ -574,8 +595,7 @@ func newRunCmd() *cobra.Command {
 				}
 				if watch {
 					// In watch mode, hide build output unless a build fails (unless
-					// --verbose); detached + non-interactive are enforced by
-					// watchCommand. This mirrors `wendy watch`.
+					// --verbose); watchCommand enforces non-interactive behavior.
 					opts.quietBuild = !verbose
 					return watchCommand(runCtx, opts, time.Duration(debounceMS)*time.Millisecond)
 				}
@@ -604,7 +624,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 	cmd.Flags().StringArrayVar(&opts.env, "env", nil, "Set an environment variable in the container as KEY=VALUE; repeatable, and overrides wendy.json env of the same key")
 	cmd.Flags().StringVar(&opts.chunking, "chunking", chunkingAuto, "Content-defined chunking (CBC) deploy path: auto (try chunk-diff, fall back to registry push), force (chunk-diff only, no fallback), or off (registry push only)")
-	cmd.Flags().BoolVar(&watch, "watch", false, "Watch the project directory and redeploy on every change (runs detached; same as 'wendy watch')")
+	cmd.Flags().BoolVar(&watch, "watch", false, "Watch the project directory and redeploy on every change, streaming logs between deploys (same as 'wendy watch')")
 	cmd.Flags().IntVar(&debounceMS, "debounce", 400, "Watch mode (--watch): quiet period in milliseconds after the last change before redeploying")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Watch mode (--watch): always show build output (default: hidden unless the build fails)")
 
@@ -872,9 +892,10 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	// normal run paths; lower-level run helpers do not close it. Declared here
 	// because a GPU project resolves its target earlier than the rest do — see
 	// below.
-	var target *SelectedDevice
+	target := opts.watchTarget
+	ownedTarget := target == nil
 	defer func() {
-		if target != nil && target.Agent != nil {
+		if ownedTarget && target != nil && target.Agent != nil {
 			target.Agent.Close()
 		}
 	}()
@@ -888,11 +909,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		// projects the device has to come first. Only they pay for it, and
 		// only when --gpu-arch didn't already answer the question. Step 2
 		// below reuses whatever is resolved here.
-		if opts.gpuArch == "" && stagefile.NeedsGPUTarget(cwd) {
-			target, err = resolveRunTarget(ctx, runResolveOptions(opts)...)
-			if err != nil {
-				return err
-			}
+		target, err = resolveStagefileGPUTarget(ctx, cwd, target, opts)
+		if err != nil {
+			return err
 		}
 		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal(),
 			resolveGPUArch(ctx, cwd, opts.gpuArch, agentConn(target)),
@@ -1055,9 +1074,14 @@ func preflightMissingAppConfigForMacTarget(ctx context.Context, target *Selected
 // runComposeCommand handles the full device-selection + execution flow for
 // docker-compose projects, bypassing the wendy.json requirement.
 func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
-	target, err := resolveRunTarget(ctx, runResolveOptions(opts)...)
-	if err != nil {
-		return err
+	target := opts.watchTarget
+	ownedTarget := target == nil
+	if target == nil {
+		var err error
+		target, err = resolveRunTarget(ctx, runResolveOptions(opts)...)
+		if err != nil {
+			return err
+		}
 	}
 
 	if target.External != nil && target.Provider != nil {
@@ -1079,7 +1103,9 @@ func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
 		return fmt.Errorf("selected device does not have a reachable WendyOS agent and cannot run 'wendy run'")
 	}
 
-	defer target.Agent.Close()
+	if ownedTarget {
+		defer target.Agent.Close()
+	}
 	return runComposeWithAgent(ctx, target.Agent, cwd, opts)
 }
 
@@ -1152,6 +1178,27 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
+		return nil
+	}
+	if opts.isWatch() {
+		// Watch tails the app through its session-level telemetry subscription.
+		// This RPC is used only as the authoritative start acknowledgement, so
+		// closing it afterwards leaves the native task running on the device.
+		startCtx, startCancel := context.WithCancel(ctx)
+		defer startCancel()
+		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(startCtx, appCfg), &agentpb.StartContainerRequest{
+			AppName: appCfg.ContainerName(),
+		})
+		if err != nil {
+			return fmt.Errorf("starting container: %w", err)
+		}
+		if err := awaitStarted(stream); err != nil {
+			return fmt.Errorf("waiting for container start: %w", err)
+		}
+		startCancel()
+		cliLogln("Application %s started.", containerDisplayName(appCfg))
+		cmd := runPostStartIfReady(ctx, opts.watchState.hookContext(ctx), conn, appCfg, opts)
+		opts.watchState.reapCommand(cmd)
 		return nil
 	}
 
@@ -1567,16 +1614,12 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	if app == nil {
 		cliLogln("Building with %s provider...", p.DisplayName())
 		var err error
-		// Pass the resolved project type and Dockerfile to providers that support it.
-		if db, ok := p.(providers.DockerfileBuilder); ok && opts.dockerfile != "" {
-			app, err = db.BuildWithDockerfile(ctx, device, projectPath, product, projectType, opts.dockerfile, opts.debug)
-		} else if tb, ok := p.(providers.TypedBuilder); ok {
-			app, err = tb.BuildWithType(ctx, device, projectPath, product, projectType, opts.debug)
-		} else {
-			app, err = p.Build(ctx, device, projectPath, projectType, product, opts.debug)
-		}
+		app, err = providerBuild(ctx, p, device, projectPath, projectType, product, opts)
 		if err != nil {
-			return fmt.Errorf("provider build: %w", err)
+			app, err = offerLiteReinstallAndRebuild(ctx, p, device, projectPath, projectType, product, opts, err)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1593,15 +1636,23 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 
 	output := make(chan providers.RunOutput, 64)
 
-	// Ctrl+C handler.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-	go func() {
-		<-sigCh
-		cliLogln("\nStopping application...")
-		p.Stop(context.Background(), app)
-		runCancel()
-	}()
+	// The watch session owns Ctrl-C and leaves the application running. Provider
+	// watch is detached, so each deploy cycle must not install a signal handler.
+	if !opts.isWatch() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt)
+		defer signal.Stop(sigCh)
+		go func() {
+			select {
+			case <-sigCh:
+			case <-runCtx.Done():
+				return
+			}
+			cliLogln("\nStopping application...")
+			p.Stop(context.Background(), app)
+			runCancel()
+		}()
+	}
 
 	// Start the application in a goroutine.
 	errCh := make(chan error, 1)
@@ -1633,9 +1684,154 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	return runErr
 }
 
+// providerBuild dispatches a build to the most specific builder interface the
+// provider implements.
+func providerBuild(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, projectType, product string, opts runOptions) (*providers.BuiltApp, error) {
+	if db, ok := p.(providers.DockerfileBuilder); ok && opts.dockerfile != "" {
+		return db.BuildWithDockerfile(ctx, device, projectPath, product, projectType, opts.dockerfile, opts.debug)
+	}
+	if tb, ok := p.(providers.TypedBuilder); ok {
+		return tb.BuildWithType(ctx, device, projectPath, product, projectType, opts.debug)
+	}
+	return p.Build(ctx, device, projectPath, projectType, product, opts.debug)
+}
+
+// shouldOfferLiteReinstall reports whether a failed provider build should turn
+// into an interactive offer to install (or reinstall) Wendy Lite, and returns
+// the unsupported-requirements error when it should. This fires both when
+// existing firmware rejected the app's requirements and when the device has
+// no Wendy Lite firmware at all yet (see MicroWendyProvider.GetDeviceInfo's
+// needsInstall short-circuit) — either way GetDeviceInfo returns the same
+// error type. The offer only makes sense when reflashing can happen over the
+// same USB cable, and only in a session where a human can answer.
+func shouldOfferLiteReinstall(buildErr error, device models.ExternalDevice, interactive bool) (*providers.AppRequirementsUnsupportedError, bool) {
+	var unsupported *providers.AppRequirementsUnsupportedError
+	if !errors.As(buildErr, &unsupported) {
+		return nil, false
+	}
+	if device.ConnectionType() != "USB" || !interactive {
+		return nil, false
+	}
+	return unsupported, true
+}
+
+// deviceNeedsInstall reports whether device is a serial ESP32 board with no
+// Wendy Lite firmware installed yet, as opposed to one whose existing
+// firmware simply doesn't support what the app requires.
+func deviceNeedsInstall(device models.ExternalDevice) bool {
+	return device.ConnectionInfo["needsInstall"] == "true"
+}
+
+// offerLiteReinstallAndRebuild handles a provider build that failed because
+// the device cannot host the app: either its existing firmware does not
+// support the app's requirements (native or WASM apps), or it has no Wendy
+// Lite firmware installed at all. Either way, it offers to (re)install Wendy
+// Lite (the classic `wendy os install` flow) and, once the device is back,
+// builds again. In every other case — including --yes, which must not
+// silently accept a destructive reinstall — it returns the build error
+// unchanged.
+func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, projectType, product string, opts runOptions, buildErr error) (*providers.BuiltApp, error) {
+	wrapped := fmt.Errorf("provider build: %w", buildErr)
+	unsupported, ok := shouldOfferLiteReinstall(buildErr, device, !opts.yes && isInteractiveTerminal())
+	if !ok {
+		return nil, wrapped
+	}
+
+	freshInstall := deviceNeedsInstall(device)
+	var confirmPrompt string
+	if freshInstall {
+		cliLogln("Device %s has no Wendy Lite firmware installed.", tui.Value(device.DisplayName))
+		confirmPrompt = "Would you like to install Wendy Lite on it now?"
+	} else {
+		cliLogln("Device %s does not support %s.", tui.Value(device.DisplayName), unsupported.Missing)
+		confirmPrompt = "Would you like to reinstall it with a different version of Wendy Lite? This will erase all data on the device."
+	}
+	confirmed, err := tui.Confirm(confirmPrompt)
+	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return nil, ErrUserCancelled
+		}
+		return nil, err
+	}
+	if !confirmed {
+		return nil, wrapped
+	}
+
+	board, err := pickWendyLiteBoard("", false)
+	if err != nil {
+		if errors.Is(err, ErrUserCancelled) {
+			return nil, wrapped
+		}
+		return nil, err
+	}
+
+	serialDevice := discovery.SerialPortInfo{
+		Port:      device.ConnectionInfo["serialPort"],
+		Transport: discovery.SerialTransportNativeUSB,
+	}
+	if err := installESP32Firmware(ctx, false, board, serialDevice, wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollAuto}); err != nil {
+		return nil, fmt.Errorf("reinstalling Wendy Lite: %w", err)
+	}
+
+	// The device now has firmware where it had none (or different firmware),
+	// so the needsInstall short-circuit in GetDeviceInfo must not fire again —
+	// clear it before probing/building against the freshly flashed board.
+	if freshInstall {
+		delete(device.ConnectionInfo, "needsInstall")
+	}
+
+	cliLogln("Waiting for the device to restart...")
+
+	// Give the device time to start booting and be discovered by the OS before
+	// probing it.
+	select {
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	if err := waitForDeviceReady(ctx, p, device, 30*time.Second); err != nil {
+		return nil, fmt.Errorf("device did not come back after reinstall: %w", err)
+	}
+
+	cliLogln("Building with %s provider...", p.DisplayName())
+	app, err := providerBuild(ctx, p, device, projectPath, projectType, product, opts)
+	if err != nil {
+		return nil, fmt.Errorf("provider build: %w", err)
+	}
+	return app, nil
+}
+
+// waitForDeviceReady polls the provider until the device answers again after
+// a reboot, or the timeout elapses.
+func waitForDeviceReady(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if _, err := p.GetDeviceInfo(ctx, device); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 // runWithAgent is the existing gRPC agent pipeline.
 func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	mark := phaseTimer()
+	if opts.isWatch() && !opts.detach {
+		if err := opts.watchState.ensureLogStream(conn, appCfg.AppID); err != nil {
+			return err
+		}
+	}
 	// Multi-service path: when wendy.json has a services map, build all images
 	// in parallel and manage the app group lifecycle.
 	if len(appCfg.Services) > 0 {
@@ -2112,6 +2308,29 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		return nil
 	}
 
+	if opts.isWatch() {
+		// Logs belong to the session-level telemetry follower. This stream exists
+		// only to obtain an authoritative Started acknowledgement; canceling it
+		// afterwards does not stop the task (the agent deliberately detaches task
+		// lifetime from the requesting RPC).
+		startCtx, startCancel := context.WithCancel(ctx)
+		defer startCancel()
+		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(startCtx, appCfg), &agentpb.StartContainerRequest{
+			AppName: appCfg.ContainerName(),
+		})
+		if err != nil {
+			return fmt.Errorf("starting container: %w", err)
+		}
+		if err := awaitStarted(stream); err != nil {
+			return fmt.Errorf("waiting for container start: %w", err)
+		}
+		startCancel()
+		cliLogln("Application %s started.", containerDisplayName(appCfg))
+		cmd := runPostStartIfReady(ctx, opts.watchState.hookContext(ctx), conn, appCfg, opts)
+		opts.watchState.reapCommand(cmd)
+		return nil
+	}
+
 	// Start and stream output using AttachContainer so stdin is forwarded.
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
@@ -2128,8 +2347,13 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	// Set up Ctrl+C handler first so readiness polling is cancellable.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
 	go func() {
-		<-sigCh
+		select {
+		case <-sigCh:
+		case <-runCtx.Done():
+			return
+		}
 		cliLogln("\nStopping container...")
 		_, _ = conn.ContainerService.StopContainer(context.Background(), &agentpb.StopContainerRequest{
 			AppName: appCfg.ContainerName(),
@@ -2137,9 +2361,10 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		runCancel()
 	}()
 
-	// Announce + post-start hook, gated on readiness; the hook is tied to
-	// runCtx so Ctrl+C kills it.
-	postStartCmd := runPostStartIfReady(runCtx, runCtx, conn, appCfg)
+	// Announce + post-start hook, gated on readiness; the hook is tied to runCtx
+	// so Ctrl+C kills it.
+	var postStartCmd *exec.Cmd
+	postStartCmd = runPostStartIfReady(runCtx, runCtx, conn, appCfg, runOptions{})
 
 	gotFirstResponse := false
 	// Set when the stream ends on a genuine failure (as opposed to a clean
@@ -2371,33 +2596,33 @@ func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig 
 	return hooks
 }
 
-// runPostStartIfReady gates `wendy run`'s post-start side effects on the
-// readiness probe: the reachable-URL announcement and the host-side postStart
-// hook fire only when the app actually came up. Firing them after a failed
-// probe reported a success that never happened — "App reachable at ..." and a
-// browser tab pointed at a container that had already exited.
+// runPostStartIfReady waits for readiness, announces the reachable URL, and
+// launches host-side postStart actions. It is used by attached runs; detached
+// paths return after Started without waiting for readiness. In watch mode the
+// actions run once per container after the first successful readiness check.
+// A canceled or failed attempt releases that claim for a later deploy.
 //
-// ATTACHED RUNS ONLY. Detached deploys (--detach, and --watch, which sets
-// opts.detach) never call this. The readiness probe waits out the app's own
-// boot — measured at ~500-660ms for a trivial Python app, several times the
-// CLI's entire remaining overhead — which an attached run can afford because
-// it stays to stream logs anyway, but a detached run cannot: its whole point
-// is to return once the container is started, and --watch paid that wait on
-// every single redeploy.
+// hookCtx controls the lifetime of a CLI hook child process. The returned
+// command must be reaped by the caller; nil means no CLI hook was launched.
 //
-// The host-side hook goes with it rather than being fired early, because it
-// is only meaningful once the app is listening: an app declaring an `http`
-// entitlement gets an openURL hook synthesized automatically (see
-// synthesizedOpenURLHook), so firing it without the gate would open a browser
-// at a port nothing is bound to yet — and in watch mode, one per redeploy.
-//
-// The agent-side (in-container) hook is unaffected: it rides on the
-// RunContainer/StartContainer RPC context and still runs on the device.
-//
-// hookCtx bounds the hook's CLI child process. Attached callers pass their run
-// context so cancellation kills the hook before the CLI returns. Returns the
-// hook's cmd for the caller to reap, nil when no CLI hook ran.
-func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
+// ATTACHED RUNS ONLY. Detached deploys never call this. The readiness probe
+// waits out the app's own boot, which an attached run can afford because it
+// remains to stream logs. An attached watch may call this after multiple
+// deploys, but opts' watch lifecycle lease allows the actions to complete only
+// once per container in the session. The agent-side hook is unaffected: it
+// rides on the RunContainer/StartContainer RPC context and runs on the device.
+func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, opts runOptions) *exec.Cmd {
+	containerName := appCfg.ContainerName()
+	if !opts.beginHostLifecycle(containerName) {
+		return nil
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			opts.abandonHostLifecycle(containerName)
+		}
+	}()
+
 	rp := phaseTimer()
 	readiness := effectiveReadiness(appCfg)
 	hooks := synthesizedOpenURLHook(appCfg)
@@ -2451,6 +2676,11 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 		clone.Hooks = hooks
 		effectiveCfg = &clone
 	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	opts.completeHostLifecycle(containerName)
+	completed = true
 	cmd := startPostStartHook(hookCtx, effectiveCfg, hookHost, appCfg.ServiceName)
 	rp("  ↳ runcontainer: announce + postStart hook")
 	return cmd
@@ -2527,6 +2757,22 @@ func wendyPlatform(deviceType string) string {
 	}
 }
 
+// isWatch reports whether this run is one cycle of a `wendy run --watch`
+// session.
+func (o runOptions) isWatch() bool { return o.watchState != nil }
+
+func (o runOptions) beginHostLifecycle(containerName string) bool {
+	return o.watchState.beginHostLifecycle(containerName)
+}
+
+func (o runOptions) completeHostLifecycle(containerName string) {
+	o.watchState.completeHostLifecycle(containerName)
+}
+
+func (o runOptions) abandonHostLifecycle(containerName string) {
+	o.watchState.abandonHostLifecycle(containerName)
+}
+
 // resolveRestartPolicy converts the flag options into a protobuf RestartPolicy.
 func resolveRestartPolicy(opts runOptions) *agentpb.RestartPolicy {
 	mode := agentpb.RestartPolicyMode_DEFAULT
@@ -2587,14 +2833,17 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
 				return nil
 			}
-			// Attached: mirror startAndStreamContainer's attached branch — wait
-			// for readiness, announce the URL, and fire the host-side postStart
-			// hook — then keep streaming logs. (#1300: this used to be skipped,
-			// so the hook only fired on runs that took the registry-push path.)
+			// Attached runs wait for readiness, announce the URL, and fire the
+			// host-side postStart hook before continuing to stream logs.
 			// hookFired guards against a malformed stream sending Started twice.
 			if !hookFired {
 				hookFired = true
-				postStartCmd = runPostStartIfReady(ctx, hookCtx, conn, appCfg)
+				if opts.isWatch() {
+					cmd := runPostStartIfReady(ctx, opts.watchState.hookContext(ctx), conn, appCfg, opts)
+					opts.watchState.reapCommand(cmd)
+					return nil
+				}
+				postStartCmd = runPostStartIfReady(ctx, hookCtx, conn, appCfg, runOptions{})
 			}
 			continue
 		}
@@ -2929,14 +3178,21 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		return nil, hint, err
 	}
 	mark("chunk+query+write+prepare")
-	// Carry the post-start agent-hook metadata so the agent runs the in-container
+	// Carry the post-start agent-hook metadata so the agent runs the device-host
 	// hook on start, matching the registry path's StartContainer call.
-	runCtx := contextWithPostStartAgentHook(ctx, appCfg)
+	rpcCtx := ctx
+	var rpcCancel context.CancelFunc
+	if opts.isWatch() {
+		rpcCtx, rpcCancel = context.WithCancel(ctx)
+		defer rpcCancel()
+	}
+	runCtx := contextWithPostStartAgentHook(rpcCtx, appCfg)
 	// The log subscription rides pushConn for the same reason RunContainer
 	// does: after a mid-transfer tunnel drop, conn is dead and pushConn is the
-	// live reconnected connection (WDY-2433).
+	// live reconnected connection (WDY-2433). Watch owns one session-wide
+	// subscription, so it must not also open this per-deploy subscription.
 	var logSub *runLogSubscription
-	if !opts.deploy && !opts.detach {
+	if runCycleOwnsLogSubscription(opts) {
 		logSub = startRunLogSubscription(ctx, pushConn, appCfg.AppID, os.Stdout, runLogStreamWarning)
 		defer logSub.stop()
 	}
@@ -2954,7 +3210,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err != nil {
 		return nil, hint, err
 	}
-	if err := streamRunContainer(ctx, pushConn, stream, appCfg, opts); err != nil {
+	if err := streamRunContainer(rpcCtx, pushConn, stream, appCfg, opts); err != nil {
 		mark("runcontainer (assemble+create+start[+readiness])")
 		return nil, hint, err
 	}

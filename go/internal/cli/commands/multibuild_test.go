@@ -422,9 +422,8 @@ func TestMultiServiceCreateConfig_PropagatesReadinessHooks(t *testing.T) {
 }
 
 // The group's top-level readiness/hooks are the app-level fallback, fired once
-// after ALL services start — never per service. Copying them onto every
-// per-service config would run hooks.postStart.agent in every container, so a
-// service that declares nothing must get nil readiness/hooks (WDY-1271).
+// after all services start. A service that declares nothing must therefore get
+// nil readiness/hooks rather than a copy of the group-level values.
 func TestMultiServiceCreateConfig_DoesNotInheritTopLevelHooks(t *testing.T) {
 	appCfg := ros2ExampleAppConfig()
 	appCfg.Readiness = &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: 9090}}

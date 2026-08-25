@@ -19,6 +19,14 @@ type runLogSubscription struct {
 	done   chan struct{}
 }
 
+// runCycleOwnsLogSubscription reports whether an individual deploy cycle
+// should subscribe to native OTel logs. Attached watch owns one subscription
+// for the whole session so preserved services remain visible between cycles;
+// opening another here would render every native record twice.
+func runCycleOwnsLogSubscription(opts runOptions) bool {
+	return !opts.deploy && !opts.detach && !opts.isWatch()
+}
+
 func startRunLogSubscription(ctx context.Context, conn *grpcclient.AgentConnection, appName string, output io.Writer, onError func(error)) *runLogSubscription {
 	if conn == nil || conn.TelemetryService == nil || appName == "" {
 		return nil

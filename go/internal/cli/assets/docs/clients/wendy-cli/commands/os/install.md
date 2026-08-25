@@ -4,7 +4,7 @@ Installs WendyOS onto an NVMe or SD card, fully recovers supported Jetsons over 
 
 > **Tip:** [`wendy install`](../install.md) is the recommended, surfaced entry point for this command. `wendy os install` remains available and behaves identically — it is kept for backward compatibility and for discoverability under the `wendy os` group.
 
-The command presents a unified device picker that lists Linux targets (Raspberry Pi, Jetson, ...) and ESP32 targets (C6, C5). Select the device type to take the appropriate path:
+The command presents a unified device picker that lists Linux targets (Raspberry Pi, Jetson, ...) and ESP32 targets (C5, C6, C61, P4, S3). Select the device type to take the appropriate path:
 
 - **Jetson Orin Nano / AGX Orin** -> download a recovery flashpack -> verify the module/carrier -> update QSPI and NVMe/eMMC together
 - **Raspberry Pi targets** -> download OS image -> write to SD/NVMe -> write config partition
@@ -91,16 +91,17 @@ To enter bootloader mode: hold the BOOT button, press RESET, then release BOOT.
 
 ### 2. Firmware resolution
 
-Firmware versions are served from the same GCS manifest used for WendyOS images. The manifest is a two-level lookup:
+Firmware versions are served from the same GCS manifest used for WendyOS images. Board selection and firmware resolution use the embedded Wendy Lite catalog plus a two-level manifest lookup:
 
-1. **Main manifest** (`firmware` map) — maps chip ID (`esp32c6`, `esp32c5`) to a per-chip manifest path and `latest`/`latest_nightly` version pointers.
-2. **Per-chip manifest** — contains version entries with `download_url`, file size, and `is_latest` / `is_nightly` flags.
+1. **Board catalog** — maps each board model to its ESP32 target and firmware binary ID.
+2. **Main manifest** (`firmware` map) — maps that board-specific firmware ID (for example, `esp32c6_generic`) to a per-firmware manifest path and `latest`/`latest_nightly` version pointers.
+3. **Per-firmware manifest** — contains version entries with `download_url`, file size, and `is_latest` / `is_nightly` flags.
 
 With `--nightly`, `latest_nightly` is used instead of `latest`.
 
-If the detected chip ID is not present in the manifest (for example, `esp32s31` or other unsupported variants), the CLI returns an error: `fetching firmware: chip <chip> not found in manifest`. Wendy Lite currently supports only `esp32c5` and `esp32c6`; the interactive device picker does not offer other ESP32 chips.
+Boards without published firmware are omitted from the picker. Immediately before any chip-specific initialization or flash erase, the ROM bootloader's detected chip model is checked against the selected board's catalog target; a mismatch is rejected before firmware is written. Wendy Lite currently supports ESP32-C5, C6, C61, P4, and S3 catalog targets.
 
-The downloaded `.bin` is a merged firmware image (same format as the CI artifact `wendy_mcu_<chip>.bin`) that covers the full flash from offset 0.
+The downloaded `.bin` is a merged, board-specific firmware image (the catalog's `wendy_mcu_<board>.bin`) that covers the full flash from offset 0.
 
 ### 3. Serial flash protocol
 
@@ -126,7 +127,7 @@ Documentation can be found [here](https://docs.espressif.com/projects/esptool/en
 | 6 | Init flash chip | Issues JEDEC RDID (`0x9F`), RSTEN (`0x66`), and RST (`0x99`) via SPI register writes; returns the flash JEDEC ID |
 | 7 | SPI Set Params (`0x0B`) | Flash size derived automatically from the JEDEC capacity byte (`1 << capacity`); defaults to 4 MB if the capacity byte is 0 |
 | 8 | Pre-flash eFuse checks | `ReadReg` calls on eFuse and chip-ID registers (result ignored) |
-| 9 | Flash Begin (`0x02`) | Erases the target region (up to 30 s timeout); sends a 20-byte payload (extra 4-byte encryption flag = 0) |
+| 9 | Flash Begin (`0x02`) | Erases the target region; timeout scales at 30 s per MB with a 3 s floor; sends a 20-byte payload (extra 4-byte encryption flag = 0) |
 | 10 | Flash Data (`0x03`) | Sends firmware in **4 KiB** blocks; each block XOR-checksummed (seed `0xEF`), padded with `0xFF` |
 | 11 | Hardware reset | Issues the transport-appropriate DTR/RTS sequence to reboot the device normally |
 
@@ -140,7 +141,7 @@ All messages are SLIP-framed (`0xC0` delimiters, `0xDB` escape byte). The CLI dr
 
 ### 4. Post-flash
 
-The device reboots automatically after `flashEnd`. There is no config-partition step for ESP32 — WiFi credentials (`--wifi-ssid`, `--wifi-password`), `--device-name`, and `--pre-enroll` are all silently inapplicable and must not be passed for ESP32 targets.
+The device reboots automatically using the reset sequence appropriate to its native USB or UART transport. Before flashing, the CLI embeds the selected WiFi credentials, device name, and pre-enrollment state into the firmware image's `wendy_conf` partition.
 
 To provision WiFi after first boot, use `wendy device setup` or the BLE provisioning flow — see [BLE connectivity](../../../../wendy-agent/connectivity/ble.md).
 
@@ -247,7 +248,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 |------|---------|-------------|
 | `--nightly` | false | Use nightly/pre-release builds |
 | `--pr` | — | Install from wendyos-builder PR #N (mutually exclusive with `--nightly`, `--version`, positional path; Linux disk-image devices only) |
-| `--device-type` | — | Device type from manifest (Linux targets only, e.g. `raspberry-pi-5`) |
+| `--device-type` | — | Device type from manifest (Linux targets only, e.g. `raspberry-pi-5`; not supported for ESP32 targets: `esp32-c5`, `esp32-c6`, `esp32-c61`, `esp32-p4`, `esp32-s3`) |
 | `--version` | latest | WendyOS version to install (Linux only) |
 | `--drive` | interactive | Target drive path (e.g. `/dev/disk4`) |
 | `--rootfs-only` | false | Explicitly write only an Orin SD/NVMe image; QSPI is not updated |

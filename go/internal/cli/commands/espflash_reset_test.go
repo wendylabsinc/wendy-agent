@@ -173,6 +173,44 @@ func TestValidateDetectedChipRejectsWrongFirmwareTarget(t *testing.T) {
 	}
 }
 
+func TestChipModelForEveryWendyLiteTarget(t *testing.T) {
+	tests := []struct {
+		target string
+		chip   chipModel
+		name   string
+	}{
+		{target: "esp32c5", chip: chipESP32C5, name: "ESP32-C5"},
+		{target: "esp32c6", chip: chipESP32C6, name: "ESP32-C6"},
+		{target: "esp32c61", chip: chipESP32C61, name: "ESP32-C61"},
+		{target: "esp32p4", chip: chipESP32P4, name: "ESP32-P4"},
+		{target: "esp32s3", chip: chipESP32S3, name: "ESP32-S3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.target, func(t *testing.T) {
+			got, err := chipModelForTarget(tt.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.chip {
+				t.Fatalf("chipModelForTarget(%q) = %v, want %v", tt.target, got, tt.chip)
+			}
+			if gotName := chipModelName(got); gotName != tt.name {
+				t.Fatalf("chipModelName(%v) = %q, want %q", got, gotName, tt.name)
+			}
+		})
+	}
+}
+
+func TestFlashBeginUsesScaledTimeoutForDriverAndReader(t *testing.T) {
+	port := &fakeSerialPort{}
+	flasher := &espFlasher{port: port}
+	const imageSize = uint32(15_000_000)
+	_ = flasher.flashBegin(imageSize, 1, espFlashBlockSize, 0)
+	if got, want := flasher.readTimeout, eraseTimeout(imageSize); got != want {
+		t.Fatalf("read timeout = %s, want %s", got, want)
+	}
+}
+
 func assertModemLineChanges(t *testing.T, got, want []modemLineChange) {
 	t.Helper()
 	if len(got) != len(want) {

@@ -842,7 +842,7 @@ func runFourServicesOnlyFrontend(t *testing.T, detach bool) {
 		ContainerService: fake,
 	}
 
-	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
+	err = startAndStreamServices(context.Background(), conn, "app", ordered, nil, runOptions{detach: detach},
 		func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 	if err != nil {
 		t.Fatalf("startAndStreamServices(detach=%v): %v", detach, err)
@@ -992,7 +992,7 @@ func TestStartAndStreamServices_Attached_HookDoesNotBlockStartLoop(t *testing.T)
 		ContainerService: fake,
 	}
 
-	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: false},
+	err = startAndStreamServices(context.Background(), conn, "app", ordered, nil, runOptions{detach: false},
 		func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 	if err != nil {
 		t.Fatalf("startAndStreamServices: %v", err)
@@ -1104,7 +1104,7 @@ func runAppLevelFallback(t *testing.T, detach bool) {
 		ContainerService: fake,
 	}
 
-	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
+	err = startAndStreamServices(context.Background(), conn, "app", ordered, nil, runOptions{detach: detach},
 		func(string) error { return nil }, svcCfgs, svcLifecycleCfgs, appLevelCfg)
 	if err != nil {
 		t.Fatalf("startAndStreamServices(detach=%v): %v", detach, err)
@@ -1214,7 +1214,7 @@ func TestStartAndStreamServices_ServiceAndAppHTTPBothFire(t *testing.T) {
 		AgentService:     &lifecycleFakeAgentClient{},
 		ContainerService: fake,
 	}
-	if err := startAndStreamServices(context.Background(), conn, appCfg.AppID, ordered, runOptions{detach: false},
+	if err := startAndStreamServices(context.Background(), conn, appCfg.AppID, ordered, nil, runOptions{detach: false},
 		func(string) error { return nil }, svcCfgs, svcLifecycleCfgs, appLevelCfg); err != nil {
 		t.Fatalf("startAndStreamServices: %v", err)
 	}
@@ -1266,7 +1266,7 @@ func TestStartAndStreamServices_Detached_NoHostSideWork(t *testing.T) {
 	conn := &grpcclient.AgentConnection{Host: "127.0.0.1", AgentService: &lifecycleFakeAgentClient{}, ContainerService: fake}
 
 	start := time.Now()
-	err = startAndStreamServices(context.Background(), conn, "app", []string{"solo"}, runOptions{detach: true},
+	err = startAndStreamServices(context.Background(), conn, "app", []string{"solo"}, nil, runOptions{detach: true},
 		func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 	elapsed := time.Since(start)
 	if err != nil {
@@ -1318,7 +1318,7 @@ func TestStartAndStreamServices_Attached_ReadinessTimeoutNonFatal(t *testing.T) 
 	conn := newLifecycleTestConn("127.0.0.1", nil)
 	conn.ContainerService = fake
 
-	if err := startAndStreamServices(context.Background(), conn, "app", []string{"solo"}, runOptions{detach: false},
+	if err := startAndStreamServices(context.Background(), conn, "app", []string{"solo"}, nil, runOptions{detach: false},
 		func(string) error { return nil }, svcCfgs, svcCfgs, nil); err != nil {
 		t.Fatalf("startAndStreamServices returned %v, want nil (readiness timeout must be non-fatal)", err)
 	}
@@ -1342,7 +1342,7 @@ func TestStartAndStreamServices_NilAppLevelCfg(t *testing.T) {
 	for _, detach := range []bool{true, false} {
 		fake := &hookSvcContainerClient{}
 		conn := &grpcclient.AgentConnection{Host: "127.0.0.1", AgentService: &lifecycleFakeAgentClient{}, ContainerService: fake}
-		err := startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
+		err := startAndStreamServices(context.Background(), conn, "app", ordered, nil, runOptions{detach: detach},
 			func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 		if err != nil {
 			t.Fatalf("startAndStreamServices(detach=%v) = %v, want nil", detach, err)

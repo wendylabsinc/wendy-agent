@@ -68,6 +68,27 @@ func TestWriteRunLogResponseSkipsHistory(t *testing.T) {
 	}
 }
 
+func TestRunCycleOwnsLogSubscriptionByMode(t *testing.T) {
+	tests := map[string]struct {
+		opts runOptions
+		want bool
+	}{
+		"ordinary attached run": {opts: runOptions{}, want: true},
+		"deploy only":           {opts: runOptions{deploy: true}},
+		"detached run":          {opts: runOptions{detach: true}},
+		"attached watch":        {opts: withWatchInvariants(runOptions{})},
+		"detached watch":        {opts: withWatchInvariants(runOptions{detach: true})},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := runCycleOwnsLogSubscription(tt.opts); got != tt.want {
+				t.Errorf("runCycleOwnsLogSubscription() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStartRunLogSubscriptionRequestsLiveAppLogsAndStopsCleanly(t *testing.T) {
 	stream := &runLogsFakeStream{delivered: make(chan struct{}), response: testRunLogsResponse(false, &logspb.ScopeLogs{
 		Scope:      &commonpb.InstrumentationScope{Name: "swift-otel"},

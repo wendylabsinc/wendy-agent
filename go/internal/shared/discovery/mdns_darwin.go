@@ -184,7 +184,11 @@ func mdnsStreamResolveAndEmit(ctx context.Context, inst browseResult, serviceTyp
 
 	svc, err := resolveServiceFn(resolveCtx, inst, serviceType)
 	if err != nil {
-		if isValidHostnameLabel(inst.instanceName) {
+		// The synthesized .local:50051 identity is specific to the WendyOS
+		// agent service. Applying it to generic services such as
+		// _wendy-lite._tcp fabricates selectable rows for stale mDNS browse
+		// records even though their service cannot be resolved anymore.
+		if serviceType == wendyServiceType && isValidHostnameLabel(inst.instanceName) {
 			emit(MDNSService{
 				InstanceName:  inst.instanceName,
 				Hostname:      inst.instanceName + ".local",

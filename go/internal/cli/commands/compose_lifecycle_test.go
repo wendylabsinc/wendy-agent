@@ -263,7 +263,7 @@ func TestComposeStartAndStream_MetadataOnDeclaringServiceOnly(t *testing.T) {
 
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()
-	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcCfgs, nil, stdoutW, stderrW); err != nil {
+	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcCfgs, nil, stdoutW, stderrW, runOptions{}); err != nil {
 		t.Fatalf("composeStartAndStream: %v", err)
 	}
 
@@ -342,7 +342,7 @@ func TestComposeStartAndStream_UnimplementedFallbackNoDoubleFire(t *testing.T) {
 	stdoutW, stderrW := newServiceLogWriters(ordered)
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()
-	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcCfgs, nil, stdoutW, stderrW); err != nil {
+	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcCfgs, nil, stdoutW, stderrW, runOptions{}); err != nil {
 		t.Fatalf("composeStartAndStream: %v", err)
 	}
 
@@ -419,7 +419,7 @@ func TestComposeStartAndStream_AppLevelFiresOnceAfterAllStarted(t *testing.T) {
 	stdoutW, stderrW := newServiceLogWriters(ordered)
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()
-	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, stdoutW, stderrW); err != nil {
+	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, stdoutW, stderrW, runOptions{}); err != nil {
 		t.Fatalf("composeStartAndStream: %v", err)
 	}
 
@@ -494,7 +494,7 @@ func TestComposeStartAndStream_NaturalEndSuppressesInFlightFallback(t *testing.T
 
 	done := make(chan error, 1)
 	go func() {
-		done <- composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcCfgs, appLevelCfg, stdoutW, stderrW)
+		done <- composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcCfgs, appLevelCfg, stdoutW, stderrW, runOptions{})
 	}()
 
 	select {
@@ -524,7 +524,6 @@ func TestComposeDetach_AgentHookOnlyNoHostSideEffects(t *testing.T) {
 	}
 	defer ln.Close()
 	port := testPort(t, ln)
-
 	browserCalls := swapBrowserOpen(t)
 	hookCommands := swapPostStartExec(t)
 
@@ -554,7 +553,6 @@ func TestComposeDetach_AgentHookOnlyNoHostSideEffects(t *testing.T) {
 		AgentService:     &lifecycleFakeAgentClient{},
 		ContainerService: fake,
 	}
-
 	if err := composeStartDetached(context.Background(), conn, ordered, svcCfgs, "proj"); err != nil {
 		t.Fatalf("composeStartDetached: %v", err)
 	}
@@ -573,7 +571,6 @@ func TestComposeDetach_AgentHookOnlyNoHostSideEffects(t *testing.T) {
 	if hasAgentHookMetadata(t, mcCtx) {
 		t.Error("app_minecraft StartContainer context unexpectedly carries agent-hook metadata")
 	}
-
 	// Host-side postStart must not run. The readiness port is listening, so a
 	// regression that restores the sequence trips these assertions rather than
 	// stalling on a probe that could never pass.
@@ -582,5 +579,33 @@ func TestComposeDetach_AgentHookOnlyNoHostSideEffects(t *testing.T) {
 	}
 	if len(*hookCommands) != 0 {
 		t.Errorf("postStart cli hook ran %v, want no calls", *hookCommands)
+	}
+}
+
+func TestComposeWatchDetach_AgentHookOnly(t *testing.T) {
+	browserCalls := swapBrowserOpen(t)
+	svcCfgs := map[string]*appconfig.AppConfig{
+		"webui": {
+			AppID:       "app",
+			ServiceName: "webui",
+			Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{
+				CLI: "this-command-must-not-run", OpenURL: "http://example.test", Agent: "echo hi",
+			}},
+		},
+	}
+	fake := &hookSvcContainerClient{}
+	conn := &grpcclient.AgentConnection{Host: "127.0.0.1", AgentService: &lifecycleFakeAgentClient{}, ContainerService: fake}
+	if err := composeStartDetached(context.Background(), conn, []string{"webui"}, svcCfgs, "proj"); err != nil {
+		t.Fatalf("composeStartDetached: %v", err)
+	}
+	startCtx, ok := fake.startContext("app_webui")
+	if !ok || !hasAgentHookMetadata(t, startCtx) {
+		t.Error("watch detach did not send the agent-side hook metadata")
+	}
+	if len(*browserCalls) != 0 {
+		t.Fatalf("browserOpen fired under --watch --detach: %v", *browserCalls)
+	}
+	if calls := fake.listContainersCalls(); calls != 0 {
+		t.Fatalf("--watch --detach made %d readiness-related calls, want 0", calls)
 	}
 }
