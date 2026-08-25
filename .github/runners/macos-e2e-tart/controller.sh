@@ -36,7 +36,7 @@ assert_immutable_file() {
   (( (8#$mode & 8#22) == 0 )) || fail "$path must not be group/world writable"
 }
 
-assert_protected_key() {
+assert_protected_secret() {
   local path="$1" owner mode
   owner="$(stat -f '%Su' "$path")"
   mode="$(stat -f '%OLp' "$path")"
@@ -48,9 +48,8 @@ verify_installation() {
   assert_immutable_file "$0"
   assert_immutable_file "$CONFIG_PATH"
   assert_immutable_file "$INSTALL_ROOT/bin/watchdog.sh"
-  assert_protected_key "$GITHUB_APP_PRIVATE_KEY"
-  [[ "$GITHUB_APP_ID" =~ ^[0-9]+$ ]] || fail "GITHUB_APP_ID must be numeric"
-  [[ "$GITHUB_APP_INSTALLATION_ID" =~ ^[0-9]+$ ]] || fail "GITHUB_APP_INSTALLATION_ID must be numeric"
+  assert_protected_secret "$GITHUB_PAT_FILE"
+  [[ -s "$GITHUB_PAT_FILE" ]] || fail "GitHub PAT file must not be empty"
   [[ "$RUNNER_GROUP_ID" =~ ^[0-9]+$ ]] || fail "RUNNER_GROUP_ID must be numeric"
   [[ "$RUNNER_LABEL" =~ ^[A-Za-z0-9._-]+$ ]] || fail "RUNNER_LABEL is invalid"
   [[ "$GOLDEN_IMAGE" =~ ^[A-Za-z0-9._:-]+$ ]] || fail "GOLDEN_IMAGE is invalid"
@@ -61,7 +60,6 @@ verify_installation() {
   [[ "$($SOFTNET_BIN --version)" == "softnet $SOFTNET_VERSION" ]] \
     || fail "expected Softnet $SOFTNET_VERSION"
   "$JQ_BIN" --version >/dev/null
-  "$OPENSSL_BIN" version >/dev/null
   "$TART_BIN" list --source local --quiet | grep -Fxq "$GOLDEN_IMAGE" \
     || fail "golden image is missing: $GOLDEN_IMAGE"
 }
@@ -131,40 +129,13 @@ shutdown() {
 }
 trap shutdown EXIT INT TERM HUP
 
-base64url() {
-  /usr/bin/base64 | tr -d '=\n' | tr '+/' '-_'
-}
-
-github_app_token() {
+github_pat() {
   set +x
-  local now issued expires header payload unsigned signature jwt token_request
-  now="$(date +%s)"
-  issued="$((now - 60))"
-  expires="$((now + 540))"
-  header="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | base64url)"
-  payload="$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' "$issued" "$expires" "$GITHUB_APP_ID" | base64url)"
-  unsigned="${header}.${payload}"
-  signature="$(printf '%s' "$unsigned" \
-    | "$OPENSSL_BIN" dgst -sha256 -sign "$GITHUB_APP_PRIVATE_KEY" \
-    | base64url)"
-  jwt="${unsigned}.${signature}"
-  token_request="$($JQ_BIN -cn \
-    --arg repository "$GITHUB_REPOSITORY" \
-    '{repositories: [$repository], permissions: {administration: "write"}}')"
-
-  # Feed the short-lived JWT through curl's stdin config, never argv or disk.
-  {
-    printf '%s\n' 'request = "POST"'
-    printf '%s\n' 'header = "Accept: application/vnd.github+json"'
-    printf 'header = "Authorization: Bearer %s"\n' "$jwt"
-    printf '%s\n' 'header = "X-GitHub-Api-Version: 2022-11-28"'
-    printf '%s\n' 'header = "Content-Type: application/json"'
-    printf 'url = "https://api.github.com/app/installations/%s/access_tokens"\n' \
-      "$GITHUB_APP_INSTALLATION_ID"
-  } | curl --fail --silent --show-error \
-    --config - \
-    --data "$token_request" \
-    | "$JQ_BIN" -er '.token'
+  local token
+  token="$(< "$GITHUB_PAT_FILE")"
+  [[ "$token" =~ ^github_pat_[A-Za-z0-9_]+$ ]] \
+    || fail "GitHub PAT file has an invalid fine-grained token format"
+  printf '%s' "$token"
 }
 
 generate_jit_config() {
@@ -178,7 +149,7 @@ generate_jit_config() {
     --argjson labels "$labels" \
     '{name: $name, runner_group_id: $group, work_folder: "_work", labels: $labels}')"
 
-  # Feed the installation token through curl's stdin config, never argv or disk.
+  # Feed the PAT through curl's stdin config, never argv or disk.
   {
     printf '%s\n' 'request = "POST"'
     printf '%s\n' 'header = "Accept: application/vnd.github+json"'
@@ -245,7 +216,7 @@ run_one_guest() {
     return 1
   fi
 
-  token="$(github_app_token)"
+  token="$(github_pat)"
   jit_config="$(generate_jit_config "$token" "$runner_name")"
   unset token
 

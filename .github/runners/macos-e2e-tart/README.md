@@ -41,10 +41,11 @@ but cannot claim vendor-attested provenance.
   directory mounts, no clipboard, no audio, and Softnet's default policy.
   Softnet permits public IPv4 egress but blocks private IPv4 destinations and
   guest-initiated host access.
-- A host-only GitHub App creates a repository-level JIT configuration. The app
-  installation is restricted to `wendylabsinc/WendyOS`; its private key never
-  enters the guest. The one-job JIT configuration crosses Tart's control socket
-  on stdin and is not written to host disk or a host process argument.
+- A temporary fine-grained PAT creates each repository-level JIT configuration.
+  It is restricted to `wendylabsinc/WendyOS` with only Administration write,
+  remains on the host, and is revoked after the PoC. The one-job JIT
+  configuration crosses Tart's control socket on stdin and is not written to
+  host disk or a host process argument.
 - The JIT runner joins the existing `wendy-developer` group, but jobs also
   require the unique `wendy-e2e-macos-tart` label. The persistent Mac has only
   the shared `macOS`/`ARM64` labels, so it cannot satisfy this route. Repository
@@ -73,16 +74,16 @@ Do not supply credentials to a workflow or paste them into chat.
 1. Record the numeric ID of the existing `wendy-developer` runner group from its
    GitHub organization settings URL. This is a non-secret value; no new group or
    group-policy change is required.
-2. Create or reuse a GitHub App installed only on WendyOS. Give it repository
-   **Administration: write** (required by the repository JIT-config endpoint)
-   and **Metadata: read**. Do not grant contents, secrets, packages, or org-wide
-   repository access.
-3. Generate one App private key and transfer the file directly to the target
-   host's protected local filesystem. Do not commit it or put it in shell
-   history. Record the App and installation IDs; those IDs are not secrets.
+2. Create a fine-grained personal access token owned by `wendylabsinc`, expiring
+   after the PoC, with access only to `WendyOS` and repository
+   **Administration: write**. Do not grant contents, secrets, packages, or
+   organization permissions.
+3. Transfer the token directly to a mode-0600 file on the target host. Do not
+   commit it, pass it as a command argument, put it in shell history, or paste it
+   into chat. Revoke the token as soon as validation is complete.
 
-The current interactive `gh` token intentionally cannot read runner-group IDs,
-so retrieving that non-secret ID remains a bounded owner action rather than a
+The current interactive `gh` token intentionally cannot administer runners or
+read runner-group IDs, so these remain bounded owner actions rather than a
 reason to broaden a developer token.
 
 ## Install on the M4 Pro host
@@ -101,21 +102,19 @@ softnet --version     # softnet 0.23.0
 ```
 
 Then run the installer from a trusted, reviewed checkout. Pass the **path** to
-the already-transferred App key; never paste key content:
+the already-transferred PAT file; never paste token content:
 
 ```bash
 sudo .github/runners/macos-e2e-tart/install-host.sh \
   --operator-user <logged-in-operator> \
-  --github-app-id <app-id> \
-  --github-app-installation-id <installation-id> \
   --runner-group-id <runner-group-id> \
-  --github-app-key /path/to/transferred-github-app.pem
+  --github-pat-file ~/.config/wendy/macos-e2e-tart.token
 ```
 
-The installer copies immutable scripts/config, copies the App key as operator-owned
-mode 0400, configures the pinned Softnet binary's required setuid bit, and prints the exact
-image-promotion and LaunchAgent commands. It deliberately does not start the
-service before the image exists.
+The installer copies immutable scripts/config, copies the PAT as operator-owned
+mode 0400, configures the pinned Softnet binary's required setuid bit, and prints
+exact image-promotion and LaunchAgent commands. It deliberately does not start
+the service before the image exists.
 
 Image preparation clones the pinned OCI digest, boots with Softnet and no
 mounts, installs only the Wendy E2E dependencies and exact runner archive,
