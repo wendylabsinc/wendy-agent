@@ -526,6 +526,22 @@ entitled container is deleted.
 > **Security:** `notifications` exposes only entitled app-facing APIs. It does
 > not expose `WENDY_AGENT_SOCKET` or any app/device administration RPC.
 
+### `data`
+
+Allows an app to submit structured events and predictions to Wendy Data through
+an app-private Unix socket.
+
+```json
+{ "type": "data" }
+```
+
+The agent mounts `/run/wendy/data` read-only and injects
+`WENDY_DATA_SOCKET=/run/wendy/data/data.sock`. The protocol accepts records up
+to 64 KiB and acknowledges them as `buffered`, `recorded`, or `rejected`.
+Buffered records provide application pre-roll and can trigger deployed Wendy
+Data campaigns. The socket is restored from container labels after agent
+restart; the entitlement never exposes the administrative agent socket.
+
 ### `admin`
 
 Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with **no authentication**.
