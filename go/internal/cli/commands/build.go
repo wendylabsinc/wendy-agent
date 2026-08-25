@@ -62,7 +62,7 @@ func newBuildCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "Build the application in the current directory",
-		Long:  "Detects the project type and builds a Docker image for the target device architecture.",
+		Long:  "Detects the project type and builds a Docker image for the target device architecture. For a wendy.json with a services map, builds one local image per service tagged <appid>-<service>:latest; nothing is pushed or deployed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.dockerfile != "" && opts.buildType != "" && normalizeBuildType(opts.buildType) != "docker" {
 				return fmt.Errorf("--dockerfile cannot be used with --build-type=%s", opts.buildType)
