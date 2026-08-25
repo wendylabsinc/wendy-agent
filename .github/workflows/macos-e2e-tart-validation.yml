@@ -1,0 +1,146 @@
+name: Validate disposable macOS E2E runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Disposable-boundary scenario
+        required: true
+        type: choice
+        options:
+          - smoke
+          - wait-for-cancellation
+          - persistence
+          - disk-pressure
+          - watchdog
+
+concurrency:
+  group: macos-e2e-tart-validation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  exercise:
+    name: Exercise ${{ inputs.scenario }}
+    permissions:
+      contents: read
+    runs-on:
+      group: wendy-e2e-macos-tart
+      labels: [self-hosted, wendy-e2e-macos-tart]
+    timeout-minutes: 170
+    steps:
+      - name: Record disposable guest identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'host=%s\n' "$(scutil --get ComputerName)"
+          sw_vers
+          xcodebuild -version
+
+      - name: Verify isolated route
+        if: inputs.scenario == 'smoke'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if mount | grep -Fq 'com.apple.virtio-fs'; then
+            echo 'ERROR: a host VirtioFS mount is present' >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 15 https://api.github.com/zen >/dev/null
+          for address in 10.255.255.254 172.31.255.254 192.168.255.254; do
+            if nc -G 2 -z "$address" 443 >/dev/null 2>&1; then
+              echo "ERROR: reached private-LAN probe $address" >&2
+              exit 1
+            fi
+          done
+          sudo -n true
+
+      - name: Wait for operator cancellation
+        if: inputs.scenario == 'wait-for-cancellation'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'Cancel this workflow now. No in-guest cleanup step will run.'
+          sleep 9600
+
+      - name: Attempt guest persistence
+        if: inputs.scenario == 'persistence'
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker='/Library/Application Support/Wendy/tart-persistence-marker'
+          plist='/Library/LaunchDaemons/org.wendy.tart-persistence-validation.plist'
+          sudo mkdir -p "$(dirname "$marker")"
+          sudo touch "$marker"
+          cat <<'PLIST' | sudo tee "$plist" >/dev/null
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>Label</key><string>org.wendy.tart-persistence-validation</string>
+            <key>ProgramArguments</key><array>
+              <string>/usr/bin/touch</string>
+              <string>/Library/Application Support/Wendy/tart-persistence-launched</string>
+            </array>
+            <key>RunAtLoad</key><true/>
+          </dict></plist>
+          PLIST
+          sudo chown root:wheel "$plist"
+          sudo chmod 0644 "$plist"
+          sudo launchctl bootstrap system "$plist"
+          test -e "$marker"
+          test -e '/Library/Application Support/Wendy/tart-persistence-launched'
+
+      - name: Exhaust disposable guest disk
+        if: inputs.scenario == 'disk-pressure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          free_kb="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 { print $4 }')"
+          reserve_kb=$((2 * 1024 * 1024))
+          if (( free_kb <= reserve_kb )); then
+            echo "ERROR: guest started with only ${free_kb}KB free" >&2
+            exit 1
+          fi
+          allocate_kb=$((free_kb - reserve_kb))
+          echo "Allocating ${allocate_kb}KB inside the disposable guest"
+          mkfile "${allocate_kb}k" "$RUNNER_TEMP/wendy-disk-pressure"
+          sync
+          df -h "$RUNNER_TEMP"
+
+      - name: Outlive host watchdog
+        if: inputs.scenario == 'watchdog'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'The host watchdog should destroy this guest after 9,300 seconds.'
+          sleep 9600
+
+  verify-fresh:
+    name: Verify a fresh guest
+    needs: exercise
+    if: >-
+      ${{ always() && needs.exercise.result == 'success' &&
+          (inputs.scenario == 'persistence' || inputs.scenario == 'disk-pressure') }}
+    permissions:
+      contents: read
+    runs-on:
+      group: wendy-e2e-macos-tart
+      labels: [self-hosted, wendy-e2e-macos-tart]
+    timeout-minutes: 15
+    steps:
+      - name: Verify prior guest state is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e '/Library/LaunchDaemons/org.wendy.tart-persistence-validation.plist'
+          test ! -e '/Library/Application Support/Wendy/tart-persistence-marker'
+          test ! -e '/Library/Application Support/Wendy/tart-persistence-launched'
+          free_kb="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 { print $4 }')"
+          minimum_kb=$((10 * 1024 * 1024))
+          if (( free_kb < minimum_kb )); then
+            echo "ERROR: fresh guest has less than 10GB free (${free_kb}KB)" >&2
+            exit 1
+          fi
+          printf 'fresh-host=%s free-kb=%s\n' "$(scutil --get ComputerName)" "$free_kb"
