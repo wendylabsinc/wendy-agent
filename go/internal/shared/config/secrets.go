@@ -112,6 +112,11 @@ func tokenAccount(cloudDashboard, cloudGRPC string, orgID int) string {
 	return "token-" + hex.EncodeToString(sum[:8])
 }
 
+func oauthSecretAccount(kind string, a AuthConfig) string {
+	sum := sha256.Sum256([]byte(kind + "|" + a.OAuthIssuer + "|" + a.OAuthClientID + "|" + a.CloudGRPC))
+	return kind + "-" + hex.EncodeToString(sum[:8])
+}
+
 // HasPrivateKey reports whether key material exists — inline or by
 // reference — without touching the Keychain.
 func (c CertificateInfo) HasPrivateKey() bool { return c.PemPrivateKey != "" }
@@ -136,6 +141,22 @@ func (a AuthConfig) BearerToken() (string, error) {
 		return a.APIKey, nil
 	}
 	return resolveSecret(a.APIKey)
+}
+
+// OAuthRefreshToken and OAuthDPoPKey resolve the long-lived OAuth session
+// secrets without exposing their storage representation to callers.
+func (a AuthConfig) OAuthRefreshToken() (string, error) {
+	if !isRef(a.RefreshToken) {
+		return a.RefreshToken, nil
+	}
+	return resolveSecret(a.RefreshToken)
+}
+
+func (a AuthConfig) OAuthDPoPKey() (string, error) {
+	if !isRef(a.DPoPPrivateKey) {
+		return a.DPoPPrivateKey, nil
+	}
+	return resolveSecret(a.DPoPPrivateKey)
 }
 
 // dehydrateEnabled reports whether Save should move inline secrets into the
@@ -176,10 +197,31 @@ func dehydrate(cfg *Config) {
 	for i := range cfg.Auth {
 		a := &cfg.Auth[i]
 		if a.APIKey != "" && !isRef(a.APIKey) {
-			acct := tokenAccount(a.CloudDashboard, a.CloudGRPC, authEntryOrgID(*a))
+			dashboardKey := a.CloudDashboard
+			if a.OAuthIssuer != "" {
+				dashboardKey += "|" + a.OAuthIssuer
+			}
+			acct := tokenAccount(dashboardKey, a.CloudGRPC, authEntryOrgID(*a))
 			if store.Put(acct, []byte(a.APIKey)) == nil {
 				cacheSecret(refPrefixV1+acct, a.APIKey)
 				a.APIKey = refPrefixV1 + acct
+			}
+		}
+		for value, kind := range map[string]string{
+			a.RefreshToken:   "refresh",
+			a.DPoPPrivateKey: "dpop-key",
+		} {
+			if value == "" || isRef(value) {
+				continue
+			}
+			acct := oauthSecretAccount(kind, *a)
+			if store.Put(acct, []byte(value)) == nil {
+				cacheSecret(refPrefixV1+acct, value)
+				if kind == "refresh" {
+					a.RefreshToken = refPrefixV1 + acct
+				} else {
+					a.DPoPPrivateKey = refPrefixV1 + acct
+				}
 			}
 		}
 		for j := range a.Certificates {
@@ -204,6 +246,16 @@ func inlineSecrets(cfg *Config) {
 		if isRef(a.APIKey) {
 			if v, err := resolveSecret(a.APIKey); err == nil {
 				a.APIKey = v
+			}
+		}
+		if isRef(a.RefreshToken) {
+			if v, err := resolveSecret(a.RefreshToken); err == nil {
+				a.RefreshToken = v
+			}
+		}
+		if isRef(a.DPoPPrivateKey) {
+			if v, err := resolveSecret(a.DPoPPrivateKey); err == nil {
+				a.DPoPPrivateKey = v
 			}
 		}
 		for j := range a.Certificates {
@@ -261,6 +313,12 @@ func countInlineSecrets(cfg *Config) int {
 		if a.APIKey != "" && !isRef(a.APIKey) {
 			n++
 		}
+		if a.RefreshToken != "" && !isRef(a.RefreshToken) {
+			n++
+		}
+		if a.DPoPPrivateKey != "" && !isRef(a.DPoPPrivateKey) {
+			n++
+		}
 		for _, c := range a.Certificates {
 			if c.PemPrivateKey != "" && !isRef(c.PemPrivateKey) {
 				n++
@@ -274,6 +332,12 @@ func countSecretRefs(cfg *Config) int {
 	n := 0
 	for _, a := range cfg.Auth {
 		if isRef(a.APIKey) {
+			n++
+		}
+		if isRef(a.RefreshToken) {
+			n++
+		}
+		if isRef(a.DPoPPrivateKey) {
 			n++
 		}
 		for _, c := range a.Certificates {
@@ -306,6 +370,12 @@ func DeleteStoredSecrets(cfg *Config) {
 	for _, a := range cfg.Auth {
 		if isRef(a.APIKey) {
 			deleteRef(a.APIKey)
+		}
+		if isRef(a.RefreshToken) {
+			deleteRef(a.RefreshToken)
+		}
+		if isRef(a.DPoPPrivateKey) {
+			deleteRef(a.DPoPPrivateKey)
 		}
 		for _, c := range a.Certificates {
 			if isRef(c.PemPrivateKey) {

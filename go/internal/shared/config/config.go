@@ -71,6 +71,12 @@ type AuthConfig struct {
 	CloudDashboard string            `json:"cloudDashboard"`
 	CloudGRPC      string            `json:"cloudGRPC"`
 	APIKey         string            `json:"apiKey,omitempty"`
+	OAuthIssuer    string            `json:"oauthIssuer,omitempty"`
+	OAuthClientID  string            `json:"oauthClientId,omitempty"`
+	OAuthResource  string            `json:"oauthResource,omitempty"`
+	OAuthExpiresAt string            `json:"oauthExpiresAt,omitempty"`
+	RefreshToken   string            `json:"refreshToken,omitempty"`
+	DPoPPrivateKey string            `json:"dpopPrivateKey,omitempty"`
 	Certificates   []CertificateInfo `json:"certificates,omitempty"`
 }
 
@@ -242,6 +248,7 @@ func (c *Config) AddAuth(auth AuthConfig) {
 	for i, existing := range c.Auth {
 		if existing.CloudDashboard == auth.CloudDashboard &&
 			existing.CloudGRPC == auth.CloudGRPC &&
+			existing.OAuthIssuer == auth.OAuthIssuer &&
 			authEntryOrgID(existing) == incomingOrg {
 			c.Auth[i] = auth
 			return

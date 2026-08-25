@@ -197,8 +197,12 @@ func TestSaveDehydratesAndLoadResolves(t *testing.T) {
 	t.Cleanup(func() { secretsPlatformDefault = origDefault })
 
 	cfg := &Config{Auth: []AuthConfig{{
-		CloudGRPC: "grpc.wendy.com:443",
-		APIKey:    "tok-123",
+		CloudGRPC:      "grpc.wendy.com:443",
+		APIKey:         "tok-123",
+		OAuthIssuer:    "https://auth.dev.wendy.sh/realms/acme",
+		OAuthClientID:  "wendy-cli",
+		RefreshToken:   "refresh-123",
+		DPoPPrivateKey: "-----BEGIN EC PRIVATE KEY-----\ndpop-secret-material",
 		Certificates: []CertificateInfo{{
 			PemCertificate: "CERT",
 			PemPrivateKey:  "-----BEGIN PRIVATE KEY-----\nabc",
@@ -219,7 +223,7 @@ func TestSaveDehydratesAndLoadResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	for _, secret := range []string{"tok-123", "BEGIN PRIVATE KEY"} {
+	for _, secret := range []string{"tok-123", "refresh-123", "dpop-secret-material", "BEGIN PRIVATE KEY"} {
 		if strings.Contains(string(raw), secret) {
 			t.Errorf("config.json still contains secret %q", secret)
 		}
@@ -232,9 +236,20 @@ func TestSaveDehydratesAndLoadResolves(t *testing.T) {
 	if !isRef(loaded.Auth[0].APIKey) {
 		t.Fatalf("APIKey on disk = %q, want a reference", loaded.Auth[0].APIKey)
 	}
+	if !isRef(loaded.Auth[0].RefreshToken) || !isRef(loaded.Auth[0].DPoPPrivateKey) {
+		t.Fatalf("OAuth secrets on disk = %q / %q, want references", loaded.Auth[0].RefreshToken, loaded.Auth[0].DPoPPrivateKey)
+	}
 	tok, err := loaded.Auth[0].BearerToken()
 	if err != nil || tok != "tok-123" {
 		t.Fatalf("BearerToken = %q, %v", tok, err)
+	}
+	refresh, err := loaded.Auth[0].OAuthRefreshToken()
+	if err != nil || refresh != "refresh-123" {
+		t.Fatalf("OAuthRefreshToken = %q, %v", refresh, err)
+	}
+	dpopKey, err := loaded.Auth[0].OAuthDPoPKey()
+	if err != nil || !strings.Contains(dpopKey, "BEGIN EC PRIVATE KEY") {
+		t.Fatalf("OAuthDPoPKey = %q, %v", dpopKey, err)
 	}
 	key, err := loaded.Auth[0].Certificates[0].PrivateKeyPEM()
 	if err != nil || !strings.Contains(key, "BEGIN PRIVATE KEY") {

@@ -5,11 +5,21 @@
 > session commands (`use`, `default`, `refresh-certs`) remain under
 > `wendy auth`.
 
-Authenticates the CLI with Wendy Cloud. Opens a browser to the cloud dashboard, waits for the OAuth callback, generates a key pair and a CSR (which includes the user's Wendy identity as a URI Subject Alternative Name — `urn:wendy:org:‹org›:user:‹userID›`), then issues and stores an mTLS certificate. Subsequent commands that connect to provisioned devices use this certificate automatically.
+For the new Cloud API authentication flow, provide your email address:
 
-After displaying the login URL, the CLI also prints a QR code in the terminal. You can scan this QR code with the **Wendy iOS app** to authenticate on your phone instead of (or in addition to) the browser flow.
+```bash
+wendy cloud login --email you@example.com
+```
 
-Optionally accepts `--cloud` (dashboard URL) and `--cloud-grpc` (gRPC endpoint) to point at a non-default cloud instance.
+The CLI asks `auth.dev.wendy.sh` for the email's home realm, opens that realm's authorization page, and completes authorization code + PKCE through a loopback callback. It requests the `https://cloud.dev.wendy.sh/api` audience and stores the access token, rotating refresh token, and DPoP key using the platform credential store. API commands connect to `api.dev.wendy.sh:443` with this session and refresh it automatically.
+
+The OAuth client is managed through the wendy-auth dashboard like any other interactive client; the auth service has no CLI-specific client configuration. Register a public, DPoP-bound client (the default client ID is `wendy-cli`) and allow the CLI's loopback redirect URIs. Use `--client-id` when the registered client has another ID.
+
+Use `--auth`, `--cloud`, `--cloud-grpc`, and `--resource` to target another environment. `--issuer` accepts a complete realm issuer and skips email-based realm discovery.
+
+This is currently an API-only session. Broker and direct device operations still require the existing certificate login path. Without `--email` or `--issuer`, the command continues to open the cloud dashboard, receive its enrollment callback, and store an mTLS certificate for those operations.
+
+The legacy dashboard callback also prints a QR code. You can scan it with the **Wendy iOS app** to authenticate on your phone instead of the local browser.
 
 ## Multiple auth sessions
 

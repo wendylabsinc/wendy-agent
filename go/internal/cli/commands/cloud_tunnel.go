@@ -61,10 +61,11 @@ func certXFCC(cert config.CertificateInfo) string {
 }
 
 func cloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context, error) {
-	if len(auth.Certificates) == 0 {
-		return ctx, nil
+	if auth.OAuthIssuer != "" {
+		if err := ensureOAuthAccessToken(ctx, auth); err != nil {
+			return nil, err
+		}
 	}
-	cert := auth.Certificates[0]
 	md := metadata.MD{}
 	if auth.HasAPIKey() {
 		bearerToken, err := auth.BearerToken()
@@ -73,10 +74,12 @@ func cloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context
 		}
 		md.Set("authorization", "Bearer "+bearerToken)
 	}
-	certHeader := certXFCC(cert)
-	if certHeader != "" {
-		md.Set("x-wendy-client-cert", certHeader)
-		md.Set("x-forwarded-client-cert", certHeader)
+	if len(auth.Certificates) > 0 {
+		certHeader := certXFCC(auth.Certificates[0])
+		if certHeader != "" {
+			md.Set("x-wendy-client-cert", certHeader)
+			md.Set("x-forwarded-client-cert", certHeader)
+		}
 	}
 	return metadata.NewOutgoingContext(ctx, md), nil
 }
@@ -571,26 +574,27 @@ func boolPtr(b bool) *bool { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 
 func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
-	if len(auth.Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	cert := auth.Certificates[0]
 	var transport grpc.DialOption
 	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
-		keyPEM, err := cert.PrivateKeyPEM()
-		if err != nil {
-			return nil, fmt.Errorf("loading client key: %w", err)
+		if len(auth.Certificates) > 0 {
+			cert := auth.Certificates[0]
+			keyPEM, err := cert.PrivateKeyPEM()
+			if err != nil {
+				return nil, fmt.Errorf("loading client key: %w", err)
+			}
+			tlsCfg, err := certs.LoadTLSConfig(
+				cert.PemCertificate,
+				cert.PemCertificateChain,
+				keyPEM,
+				"",
+			)
+			if err != nil {
+				return nil, fmt.Errorf("loading TLS config: %w", err)
+			}
+			transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
+		} else {
+			transport = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
 		}
-		tlsCfg, err := certs.LoadTLSConfig(
-			cert.PemCertificate,
-			cert.PemCertificateChain,
-			keyPEM,
-			"",
-		)
-		if err != nil {
-			return nil, fmt.Errorf("loading TLS config: %w", err)
-		}
-		transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
 	} else {
 		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
