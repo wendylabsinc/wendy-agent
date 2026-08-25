@@ -187,10 +187,8 @@ func TestTryDeployFastPath_StoppedRunsAgentHookOnly(t *testing.T) {
 	}
 }
 
-// TestStreamRunContainer_AttachedFiresHostPostStartHook verifies the attached
-// (default `wendy run`) chunk-diff path fires the host-side postStart hook once
-// the container reports Started (#1300: it previously only streamed logs, so
-// the hook fired only on runs that fell back to the registry-push path).
+// TestStreamRunContainer_AttachedFiresHostPostStartHook verifies that an
+// attached chunk-diff run fires its host-side postStart hook after Started.
 func TestStreamRunContainer_AttachedFiresHostPostStartHook(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("host-side hook uses `touch`, unavailable on Windows")

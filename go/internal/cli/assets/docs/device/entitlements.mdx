@@ -121,7 +121,7 @@ On NVIDIA Jetson, the GL/EGL userspace is injected from the host through CDI. On
 
 ### Camera Entitlement
 
-The camera entitlement provides access to video capture devices like USB cameras or CSI cameras.
+The camera entitlement provides access to video capture devices like USB cameras, CSI cameras, and registered network (IP) cameras.
 
 ```json
 {
@@ -132,9 +132,23 @@ The camera entitlement provides access to video capture devices like USB cameras
 The older `{ "type": "video" }` entitlement is still accepted for compatibility, but new projects should use `camera`.
 
 When enabled, this entitlement:
-- Mounts `/dev` to expose all video capture devices (USB and CSI)
+- Mounts `/dev` to expose all video capture devices (USB, CSI, and any network camera's loopback node — see below)
 - Configures device permissions for video capture
 - Enables access to V4L2 (Video4Linux2) and libcamera interfaces
+
+A `camera` entitlement can also carry `user`/`password` fields, but they are not read at deploy or container-create time: the CLI consults them — in place of an interactive prompt — only the first time `wendy device camera view` needs a login for that camera, storing the result on the device from there. A container-only consumer still needs that credential stored on the device before it starts, so run `wendy device camera login <id>` (or `camera view --id <id>` once) first. See the [`camera` entitlement fields](/docs/apps/wendy.json#camera) for the field reference and its plaintext-storage caveat.
+
+<Callout type="info">
+  **Network cameras**: on a WendyOS build that ships the `v4l2loopback` kernel module, each registered network camera is mirrored into a `/dev/video2xx` node (numbered to match the camera's device ID) for as long as a `camera`-entitled container is running, so it appears in-container exactly like a USB or CSI device. The node always carries the camera's sub-stream — there is no way to select the main stream per container. See [IP Cameras](/docs/hardware/camera#ip-cameras) for the device-ID band and discovery/credential CLI.
+</Callout>
+
+<Callout type="warning">
+  **Builds without the module**: container access to a network camera needs `v4l2loopback`. Without it, the agent logs this once and continues — direct `wendy device camera view` on the host is unaffected, only the in-container `/dev/video2xx` mirror is unavailable:
+
+  > running WendyOS build lacks the v4l2loopback module; `camera view` still works
+
+  *(that's the underlying sentinel error's own text; the agent's warning log line paraphrases it rather than quoting it verbatim.)*
+</Callout>
 
 ### Audio Entitlement
 

@@ -25,10 +25,24 @@ type fakeAgentVersionClient struct {
 
 	resp *agentpb.GetAgentVersionResponse
 	err  error
+
+	// calls counts GetAgentVersion invocations, so tests can assert the agent
+	// was never queried at all (e.g. a hook-less/readiness-less app has
+	// nothing to announce and must short-circuit before reaching the agent).
+	calls int
 }
 
 func (f *fakeAgentVersionClient) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVersionRequest, _ ...grpc.CallOption) (*agentpb.GetAgentVersionResponse, error) {
+	f.calls++
 	return f.resp, f.err
+}
+
+// neverReconnect is a non-nil Reconnect stub used to mark an AgentConnection
+// as a cloud connection (conn.Reconnect != nil is the cloud detection
+// signal — see resolveHookHost). It is never actually invoked by these
+// tests, which don't exercise agent-restart reconnection.
+func neverReconnect(context.Context) (*grpcclient.AgentConnection, error) {
+	return nil, errors.New("reconnect not implemented in test")
 }
 
 func testPort(t *testing.T, ln net.Listener) int {
@@ -213,15 +227,20 @@ func TestRunPostStartIfReady_SkipsHookWhenProbeFails(t *testing.T) {
 			},
 		},
 	}
-	// ContainerService backs warnReadiness's exit-detail lookup; AgentService
-	// must not be reached at all when the probe fails (it is nil, so a call
-	// would panic the test).
+	// ContainerService backs warnReadiness's exit-detail lookup. AgentService
+	// must be non-nil: resolveHookHost now resolves the probe/hook host BEFORE
+	// the readiness wait (so a cloud asset name gets swapped before dialing),
+	// which means announceReachableURL runs regardless of whether the probe
+	// later fails — a nil AgentService would panic on that call. The err here
+	// keeps announceReachableURL from printing anything (ip resolves to ""),
+	// matching this test's focus on the failed-probe path, not the announcement.
 	conn := &grpcclient.AgentConnection{
 		Host:             "127.0.0.1",
+		AgentService:     &fakeAgentVersionClient{err: errors.New("not needed for this test")},
 		ContainerService: &fastPathContainerClient{appName: appCfg.AppID, state: agentpb.AppRunningState_STOPPED},
 	}
 
-	cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	if cmd != nil {
 		t.Errorf("runPostStartIfReady returned a hook cmd despite a failed probe")
 	}
@@ -232,13 +251,16 @@ func TestRunPostStartIfReady_SkipsHookWhenProbeFails(t *testing.T) {
 
 // TestRunPostStartIfReady_IPv6HostSwappedForReportedIP verifies that when the
 // CLI dialed the device at an IPv6 literal (often a rotating RFC 4941
-// temporary address from mDNS), the postStart openURL targets the device's
-// best self-reported IP instead — the same address the "App reachable at"
-// line prints.
+// temporary address from mDNS), both the readiness probe and the postStart
+// openURL target the device's best self-reported IP instead — the same
+// address the "App reachable at" line prints. The readiness listener is
+// bound at the reported IP (not the IPv6 literal): resolveHookHost now
+// resolves the swap BEFORE waitForReadiness runs, so the probe itself must
+// dial the swapped host too, not just the hook.
 func TestRunPostStartIfReady_IPv6HostSwappedForReportedIP(t *testing.T) {
-	ln, err := net.Listen("tcp", "[::1]:0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Skipf("IPv6 loopback unavailable: %v", err)
+		t.Fatalf("failed to start listener: %v", err)
 	}
 	defer ln.Close()
 	port := testPort(t, ln)
@@ -261,14 +283,14 @@ func TestRunPostStartIfReady_IPv6HostSwappedForReportedIP(t *testing.T) {
 	conn := &grpcclient.AgentConnection{
 		Host: "::1",
 		AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
-			NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"192.168.0.159"}}},
+			NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"127.0.0.1"}}},
 		}},
 	}
 
-	if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg); cmd != nil {
+	if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{}); cmd != nil {
 		t.Errorf("expected nil cmd for openURL-only hook, got %v", cmd)
 	}
-	if opened != "http://192.168.0.159:3001" {
+	if opened != "http://127.0.0.1:3001" {
 		t.Errorf("openURL = %q, want the device-reported IPv4 URL", opened)
 	}
 }
@@ -305,9 +327,265 @@ func TestRunPostStartIfReady_IPv6FallbackIsBracketed(t *testing.T) {
 		AgentService: &fakeAgentVersionClient{err: errors.New("agent unreachable")},
 	}
 
-	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	if opened != "http://[::1]:3001" {
 		t.Errorf("openURL = %q, want bracketed IPv6 fallback URL", opened)
+	}
+}
+
+// TestResolveHookHost is a pure table test of the host-resolution logic:
+// LAN connections pass conn.Host through unchanged regardless of what the
+// agent reports; an IPv6-literal Host and a cloud connection (conn.Reconnect
+// != nil) both swap in the agent-reported IP when one is available; and a
+// cloud connection with no reported IP reports ok=false so the caller can
+// skip host-side probes/hooks instead of dialing a dead asset name.
+func TestResolveHookHost(t *testing.T) {
+	appCfgWithHook := func() *appconfig.AppConfig {
+		return &appconfig.AppConfig{
+			AppID: "resolve-host-app",
+			Hooks: &appconfig.HooksConfig{
+				PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:80"},
+			},
+		}
+	}
+
+	cases := []struct {
+		name     string
+		conn     *grpcclient.AgentConnection
+		wantHost string
+		wantOK   bool
+	}{
+		{
+			name: "LAN passthrough regardless of reported IP",
+			conn: &grpcclient.AgentConnection{
+				Host: "192.168.1.50",
+				AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+					NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"10.0.0.5"}}},
+				}},
+			},
+			wantHost: "192.168.1.50",
+			wantOK:   true,
+		},
+		{
+			name: "IPv6 literal swapped for reported IP",
+			conn: &grpcclient.AgentConnection{
+				Host: "::1",
+				AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+					NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"192.168.1.77"}}},
+				}},
+			},
+			wantHost: "192.168.1.77",
+			wantOK:   true,
+		},
+		{
+			name: "cloud connection swapped for reported IP",
+			conn: &grpcclient.AgentConnection{
+				Host:      "cctv",
+				Reconnect: neverReconnect,
+				AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+					NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"10.10.10.10"}}},
+				}},
+			},
+			wantHost: "10.10.10.10",
+			wantOK:   true,
+		},
+		{
+			name: "cloud connection with no reported IP is not ok",
+			conn: &grpcclient.AgentConnection{
+				Host:         "cctv",
+				Reconnect:    neverReconnect,
+				AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}},
+			},
+			wantHost: "",
+			wantOK:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			host, ok := resolveHookHost(context.Background(), tc.conn, appCfgWithHook())
+			if host != tc.wantHost || ok != tc.wantOK {
+				t.Errorf("resolveHookHost() = (%q, %v), want (%q, %v)", host, ok, tc.wantHost, tc.wantOK)
+			}
+		})
+	}
+}
+
+// TestRunPostStartIfReady_CloudAssetNameSwappedForReportedIP verifies the
+// core WDY-2440 fix: when the CLI connected via the cloud tunnel, conn.Host
+// is the cloud ASSET NAME (cloud_tunnel.go: agentConn.Host =
+// asset.GetName()), which does not resolve from this machine. The postStart
+// hook must target the agent-reported IP instead of dialing the dead name.
+func TestRunPostStartIfReady_CloudAssetNameSwappedForReportedIP(t *testing.T) {
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	var opened string
+	browserOpen = func(url string) error {
+		opened = url
+		return nil
+	}
+
+	appCfg := &appconfig.AppConfig{
+		AppID: "cloud-app",
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:9999"},
+		},
+	}
+	conn := &grpcclient.AgentConnection{
+		Host:      "cctv",
+		Reconnect: neverReconnect,
+		AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+			NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"10.20.30.40"}}},
+		}},
+	}
+
+	if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{}); cmd != nil {
+		t.Errorf("expected nil cmd for openURL-only hook, got %v", cmd)
+	}
+	if opened != "http://10.20.30.40:9999" {
+		t.Errorf("openURL = %q, want the cloud-reported IP URL, not the unresolvable asset name %q", opened, conn.Host)
+	}
+}
+
+// TestRunPostStartIfReady_CloudNoReportedIPSkipsHook verifies that a cloud
+// connection with no reported IP at all skips the postStart hook (there is
+// no usable host to dial) instead of trying — and failing — to open the
+// asset name, and prints guidance instead.
+func TestRunPostStartIfReady_CloudNoReportedIPSkipsHook(t *testing.T) {
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	opened := false
+	browserOpen = func(string) error {
+		opened = true
+		return nil
+	}
+
+	appCfg := &appconfig.AppConfig{
+		AppID: "cloud-app-no-ip",
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:9999"},
+		},
+	}
+	conn := &grpcclient.AgentConnection{
+		Host:         "cctv",
+		Reconnect:    neverReconnect,
+		AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}},
+	}
+
+	out := captureStderr(t, func() {
+		if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{}); cmd != nil {
+			t.Errorf("expected nil cmd when no host is reported, got %v", cmd)
+		}
+	})
+	if opened {
+		t.Errorf("postStart openURL fired despite no routable device address")
+	}
+	if !strings.Contains(out, "Skipping postStart hook") {
+		t.Errorf("expected guidance notice about the skipped postStart hook; output:\n%s", out)
+	}
+}
+
+// TestRunPostStartIfReady_CloudReadinessDialsReportedIP verifies that the
+// readiness probe itself — not just the postStart hook — targets the
+// agent-reported IP for a cloud connection. Before this fix, waitForReadiness
+// dialed conn.Host (the unresolvable asset name) and always failed first, so
+// the postStart hook logic was never even reached on a cloud run.
+func TestRunPostStartIfReady_CloudReadinessDialsReportedIP(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start listener: %v", err)
+	}
+	defer ln.Close()
+	port := testPort(t, ln)
+
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	var opened string
+	browserOpen = func(url string) error {
+		opened = url
+		return nil
+	}
+
+	appCfg := &appconfig.AppConfig{
+		AppID:     "cloud-readiness-app",
+		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 5},
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:3001"},
+		},
+	}
+	conn := &grpcclient.AgentConnection{
+		// A hostname that cannot resolve, standing in for a real cloud asset
+		// name — the probe must not dial this directly.
+		Host:      "cloud-asset-does-not-resolve.invalid",
+		Reconnect: neverReconnect,
+		AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+			NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"127.0.0.1"}}},
+		}},
+	}
+
+	start := time.Now()
+	cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
+	elapsed := time.Since(start)
+
+	if cmd != nil {
+		t.Errorf("expected nil cmd for openURL-only hook, got %v", cmd)
+	}
+	// The real listener answers almost instantly; dialing the unresolvable
+	// asset name would instead burn the full 5s TimeoutSeconds.
+	if elapsed > 2*time.Second {
+		t.Errorf("took %v, expected near-instant readiness against the reported IP (probe likely dialed %q instead)", elapsed, conn.Host)
+	}
+	if opened != "http://127.0.0.1:3001" {
+		t.Errorf("openURL = %q, want the reported-IP URL", opened)
+	}
+}
+
+// TestRunPostStartIfReady_CloudHooklessAppPrintsNothing is a final-review-fix
+// regression test (WDY-2440): an app with no postStart hook, no TCP
+// readiness, and no http entitlement has nothing for runPostStartIfReady to
+// probe or fire — on a cloud connection, resolveHookHost's isCloud branch
+// used to still run (announceReachableURL short-circuits to "" without
+// querying the agent when there's no hookURL/port to build a URL from),
+// tripping the "no reported IP" guard and printing a "Skipping postStart
+// hook" notice for a hook that was never configured. runPostStartIfReady
+// must short-circuit before any of that — no output, no browserOpen, no
+// agent query at all — mirroring service_lifecycle.go's
+// serviceHookRunner.runOne guard (readiness == nil && hooks == nil).
+func TestRunPostStartIfReady_CloudHooklessAppPrintsNothing(t *testing.T) {
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	opened := false
+	browserOpen = func(string) error {
+		opened = true
+		return nil
+	}
+
+	appCfg := &appconfig.AppConfig{
+		AppID: "cloud-hookless-app",
+		// No Hooks, no Readiness, no http entitlement: nothing to probe or fire.
+	}
+	agentClient := &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+		NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"10.0.0.9"}}},
+	}}
+	conn := &grpcclient.AgentConnection{
+		Host:         "cctv",
+		Reconnect:    neverReconnect,
+		AgentService: agentClient,
+	}
+
+	out := captureStderr(t, func() {
+		if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{}); cmd != nil {
+			t.Errorf("expected nil cmd for a hook-less, readiness-less app, got %v", cmd)
+		}
+	})
+	if opened {
+		t.Errorf("browserOpen called for a hook-less app")
+	}
+	if out != "" {
+		t.Errorf("expected no output for a hook-less, readiness-less cloud app, got:\n%s", out)
+	}
+	if agentClient.calls != 0 {
+		t.Errorf("AgentService.GetAgentVersion called %d times, want 0 (nothing to announce or resolve)", agentClient.calls)
 	}
 }
 
@@ -471,7 +749,7 @@ func TestRunPostStartIfReady_AutoOpensFromHTTPEntitlement(t *testing.T) {
 		}},
 	}
 
-	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	want := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if opened != want {
 		t.Errorf("opened = %q, want %q", opened, want)
@@ -517,8 +795,8 @@ func TestRunPostStartIfReady_ProbesReadinessPortButPresentsHTTPPort(t *testing.T
 	}
 
 	start := time.Now()
-	out := captureStdout(t, func() {
-		runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	out := captureStderr(t, func() {
+		runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	})
 	if elapsed := time.Since(start); elapsed >= time.Second {
 		t.Errorf("run took %v; explicit readiness port should pass immediately instead of probing the closed HTTP port", elapsed)
@@ -567,7 +845,7 @@ func TestRunPostStartIfReady_ExplicitHookNotOverriddenByHTTPEntitlement(t *testi
 		AgentService: &fakeAgentVersionClient{err: errors.New("agent unreachable")},
 	}
 
-	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	if opened != "http://127.0.0.1:9999/custom" {
 		t.Errorf("opened = %q, want the explicit hook URL unchanged", opened)
 	}

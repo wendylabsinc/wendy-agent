@@ -177,7 +177,7 @@ Prefer `openURL` over a `cli` command that shells out to a platform-specific ope
 
 > **Note:** `hooks.postStart.agent` is executed directly on the device, not through a shell. Shell features such as pipes (`|`), redirects (`>`), command chaining (`;`, `&&`), and command substitution (`$(...)`) are **not** interpreted — they are passed through as literal arguments. If you need them, put the logic in a script file (e.g. `/app/post-start.sh`) and invoke that. `${WENDY_APP_ID}`, `${WENDY_HOSTNAME}`, `${WENDY_SERVICE_NAME}` (the declaring service's name; empty for single-container apps), and environment variables are still expanded.
 
-For multi-service apps, declare `hooks` per service under `services.<name>.hooks` instead of (or in addition to) the top-level field. A top-level `hooks` becomes an app-level fallback that fires once after every service has started; its `postStart.agent` is ignored for multi-service apps, since there is no app-level container to run it in — `wendy run` warns about this when it loads `wendy.json`. See [Readiness and lifecycle hooks](./wendy-services.md#readiness-and-lifecycle-hooks) for the full scoping and attached/detached rules.
+For multi-service apps, declare `hooks` per service under `services.<name>.hooks` instead of (or in addition to) the top-level field. A top-level `hooks` becomes an app-level fallback that fires once after every service has started; its `postStart.agent` is ignored for multi-service apps, since there is no single app-level container start to trigger it — `wendy run` warns about this when it loads `wendy.json`. See [Readiness and lifecycle hooks](./wendy-services.md#readiness-and-lifecycle-hooks) for the full scoping and attached/detached rules.
 
 ### `python`
 
@@ -317,11 +317,16 @@ Camera / V4L2 device access.
 ```json
 { "type": "camera" }
 { "type": "camera", "allowlist": ["/dev/video0"] }
+{ "type": "camera", "user": "admin", "password": "secret" }
 ```
 
 | Field | Description |
 |-------|-------------|
 | `allowlist` | Restrict access to specific device paths. Omit to allow all cameras. |
+| `user` | Username for a registered IP camera. Ignored for local cameras. |
+| `password` | Password for a registered IP camera. Ignored for local cameras. |
+
+> **Security:** `user`/`password` set here are stored in **plaintext** in `wendy.json` and deployed as-is. Prefer the interactive `wendy device camera login` command, which keeps credentials out of the app config.
 
 ### `audio`
 

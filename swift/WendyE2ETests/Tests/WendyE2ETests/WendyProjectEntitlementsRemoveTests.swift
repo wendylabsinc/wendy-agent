@@ -48,8 +48,9 @@ struct `'wendy project entitlements remove'` {
 
             try await cli.sh("wendy project entitlements remove network") { result in
                 #expect(result.status.isSuccess)
-                #expect(result.stdout.contains("Removed \"network\" entitlement"))
-                #expect(result.stderr == "")
+                // Status lines print to stderr (WDY-2435): stdout is reserved
+                // for machine-readable payloads.
+                #expect(result.stderr.contains("Removed \"network\" entitlement"))
             }
 
             try await cli.sh(
@@ -123,7 +124,7 @@ struct `'wendy project entitlements remove'` {
 
             try await cli.sh("wendy project entitlements remove network") { result in
                 #expect(result.status.isSuccess)
-                #expect(result.stdout.contains("Removed \"network\" entitlement"))
+                #expect(result.stderr.contains("Removed \"network\" entitlement"))
             }
 
             try await cli.sh(

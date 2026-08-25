@@ -106,6 +106,14 @@ type Client struct {
 	dataSocketProvider      AppDataSocketProvider
 	sensorSocketProvider    AppSensorSocketProvider
 
+	// cameraLoopbackProvider is the VideoService camera-loopback API (Task
+	// C6), injected via SetCameraLoopbackProvider (camera_wiring.go). Nil is
+	// a valid, common state — a build without the ipcam module, or before
+	// main.go wires it in — and every camera-loopback call site tolerates it
+	// as "camera sync unavailable, skip silently", mirroring
+	// systemAPISocketProvider's nil-tolerant treatment above.
+	cameraLoopbackProvider CameraLoopbackProvider
+
 	// appServices caches the services map for multi-service apps, keyed by appID.
 	// Populated on CreateContainerWithProgress; used by resolveStopOrder.
 	appServices map[string]map[string]*appconfig.ServiceConfig
@@ -1345,6 +1353,26 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	entCfg := *appCfg
 	entCfg.AppID = appID
 	entCfg.ServiceName = serviceName
+
+	// Pre-create v4l2loopback camera nodes before ApplyEntitlements runs, for
+	// apps with the camera entitlement or its deprecated alias, video
+	// (shouldEnsureCameraNodes). This works even though the node is created
+	// before applyCamera's mounts/cgroup rules are added to spec below:
+	// applyCamera (entitlements.go:773-851, cited at client.go:195-197) both
+	// bind-mounts the host's live /dev tree into the container AND allows the
+	// whole V4L2 major (81) with the minor left unrestricted, so any node
+	// that exists on the host by the time the container starts is visible
+	// in-container with no further spec change required. Best-effort and
+	// nil-provider-safe (SyncCameraLoopbacks/EnsureCameraNodes swallow their
+	// own errors) — module absence is the production default until Branch F
+	// ships the v4l2loopback kernel module, and a camera-node failure must
+	// never block creation of an otherwise-valid container.
+	if c.cameraLoopbackProvider != nil && shouldEnsureCameraNodes(&entCfg) {
+		if err := c.cameraLoopbackProvider.EnsureCameraNodes(ctx); err != nil {
+			c.logger.Warn("ensuring camera loopback nodes failed", zap.String(logfields.AppID, appID), zap.Error(err))
+		}
+	}
+
 	if err := localoci.ApplyEntitlements(spec, &entCfg, opts); err != nil {
 		return fmt.Errorf("applying entitlements: %w", err)
 	}
@@ -1986,6 +2014,14 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	outputCh := make(chan services.ContainerOutput, 64)
 	go c.streamOutput(taskCtx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
 
+	// Recompute camera-loopback nodes/consumers from truth now that this
+	// container is running: it may have just become an entitled consumer.
+	// context.WithoutCancel because ctx belongs to this RPC and must not be
+	// canceled by the caller returning before the sync goroutine runs; `go`
+	// because a loopback problem must never delay or fail container start
+	// (see SyncCameraLoopbacks).
+	go c.SyncCameraLoopbacks(context.WithoutCancel(ctx))
+
 	return outputCh, nil
 }
 
@@ -2085,6 +2121,10 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 
 	outputCh := make(chan services.ContainerOutput, 64)
 	go c.streamOutput(taskCtx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
+
+	// See StartContainer: recompute camera-loopback state from truth now that
+	// this container is running.
+	go c.SyncCameraLoopbacks(context.WithoutCancel(ctx))
 
 	return outputCh, nil
 }
@@ -3436,6 +3476,13 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	}
 
 	c.logger.Info("Container stopped", zap.String("container_id", containerID))
+
+	// Recompute camera-loopback nodes/consumers from truth now that this
+	// container is no longer running: it may have just dropped out of the
+	// entitled-and-running set (see StartContainer for the WithoutCancel/go
+	// rationale).
+	go c.SyncCameraLoopbacks(context.WithoutCancel(ctx))
+
 	return nil
 }
 
@@ -3766,6 +3813,14 @@ func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage b
 	if len(errs) == 0 && wholeApp && c.dataSocketProvider != nil {
 		c.dataSocketProvider.ReleaseApp(appID)
 	}
+
+	// Recompute camera-loopback nodes/consumers from truth now that some or
+	// all of this app's containers are gone (unconditional: even a partial
+	// delete removed real containers, so the entitled-and-running set may
+	// have changed regardless of errs — see StartContainer for the
+	// WithoutCancel/go rationale).
+	go c.SyncCameraLoopbacks(context.WithoutCancel(ctx))
+
 	return errors.Join(errs...)
 }
 

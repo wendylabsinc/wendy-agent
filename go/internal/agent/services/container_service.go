@@ -20,6 +20,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	_ "google.golang.org/grpc/encoding/gzip" // accept compressed WriteChunks messages
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 

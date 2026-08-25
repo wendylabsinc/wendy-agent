@@ -274,6 +274,114 @@ func TestServiceHookRunner_FiresAfterReadiness(t *testing.T) {
 	}
 }
 
+// TestServiceHookRunner_CloudSwapsHostForReadinessAndHook verifies that a
+// cloud connection (conn.Reconnect != nil) — whose Host is the unresolvable
+// cloud asset name — gets both its readiness probe and its postStart hook
+// pointed at the agent-reported IP instead, mirroring the single-container
+// fix in run.go's resolveHookHost. Before this fix, service_lifecycle.go had
+// no swap at all: runOne dialed r.conn.Host directly for both readiness and
+// the hook, which is fine for LAN but always fails against a cloud asset
+// name.
+func TestServiceHookRunner_CloudSwapsHostForReadinessAndHook(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start listener: %v", err)
+	}
+	defer ln.Close()
+	port := testPort(t, ln)
+
+	calls := swapBrowserOpen(t)
+	containerFake := &lifecycleFakeContainerClient{}
+	conn := &grpcclient.AgentConnection{
+		Host:             "cloud-asset-does-not-resolve.invalid",
+		Reconnect:        neverReconnect,
+		ContainerService: containerFake,
+		AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+			NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"127.0.0.1"}}},
+		}},
+	}
+	r := &serviceHookRunner{conn: conn}
+
+	cfg := &appconfig.AppConfig{
+		AppID:       "app",
+		ServiceName: "worker",
+		Readiness: &appconfig.ReadinessConfig{
+			TCPSocket:      &appconfig.TCPSocketProbe{Port: port},
+			TimeoutSeconds: 5,
+		},
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:9/${WENDY_SERVICE_NAME}"},
+		},
+	}
+
+	start := time.Now()
+	r.runOne(context.Background(), context.Background(), cfg)
+	elapsed := time.Since(start)
+
+	// The real listener answers almost instantly; dialing the unresolvable
+	// asset name would instead burn the full 5s TimeoutSeconds.
+	if elapsed > 2*time.Second {
+		t.Errorf("took %v, expected near-instant readiness against the reported IP (probe likely dialed %q instead)", elapsed, conn.Host)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("browserOpen calls = %v, want exactly 1", *calls)
+	}
+	want := "http://127.0.0.1:9/worker"
+	if (*calls)[0] != want {
+		t.Errorf("openURL = %q, want %q", (*calls)[0], want)
+	}
+	if containerFake.listContainersCalls != 0 {
+		t.Errorf("ListContainers called despite readiness succeeding (unexpected warning path)")
+	}
+}
+
+// TestServiceHookRunner_CloudNoReportedIPSkipsHookAndReadiness verifies that
+// a cloud connection with no reported IP at all skips readiness and the
+// postStart hook entirely — there is no usable host to dial — instead of
+// trying (and failing) against the dead asset name, and prints guidance.
+func TestServiceHookRunner_CloudNoReportedIPSkipsHookAndReadiness(t *testing.T) {
+	calls := swapBrowserOpen(t)
+	containerFake := &lifecycleFakeContainerClient{}
+	conn := &grpcclient.AgentConnection{
+		Host:             "cctv",
+		Reconnect:        neverReconnect,
+		ContainerService: containerFake,
+		AgentService:     &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}},
+	}
+	r := &serviceHookRunner{conn: conn}
+
+	cfg := &appconfig.AppConfig{
+		AppID:       "app",
+		ServiceName: "worker",
+		Readiness: &appconfig.ReadinessConfig{
+			TCPSocket:      &appconfig.TCPSocketProbe{Port: 1}, // must never be dialed
+			TimeoutSeconds: 5,
+		},
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:9999"},
+		},
+	}
+
+	start := time.Now()
+	out := captureStderr(t, func() {
+		r.runOne(context.Background(), context.Background(), cfg)
+	})
+	elapsed := time.Since(start)
+
+	if elapsed > 1*time.Second {
+		t.Errorf("took %v, expected an immediate return (no readiness wait) when no host is reported", elapsed)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("browserOpen called %v despite no routable device address", *calls)
+	}
+	if containerFake.listContainersCalls != 0 {
+		t.Errorf("ListContainers called %d times; readiness must be skipped entirely, not attempted", containerFake.listContainersCalls)
+	}
+	if !strings.Contains(out, "Skipping postStart hook") {
+		t.Errorf("expected guidance notice about the skipped postStart hook; output:\n%s", out)
+	}
+}
+
 // TestServiceHookRunner_ReadinessTimeoutSuppressesAutomaticHTTPSideEffects
 // verifies that a timed-out HTTP readiness gate warns without claiming success
 // or opening a synthesized browser URL, while an explicitly configured hook
@@ -310,7 +418,7 @@ func TestServiceHookRunner_ReadinessTimeoutSuppressesAutomaticHTTPSideEffects(t 
 	}
 
 	start := time.Now()
-	out := captureStdout(t, func() {
+	out := captureStderr(t, func() {
 		r.runOne(context.Background(), context.Background(), cfg)
 	})
 	elapsed := time.Since(start)
@@ -368,7 +476,7 @@ func TestServiceHookRunner_ReadinessWarningIncludesGroupExitDetail(t *testing.T)
 		},
 	}
 
-	out := captureStdout(t, func() {
+	out := captureStderr(t, func() {
 		r.runOne(context.Background(), context.Background(), cfg)
 	})
 
@@ -734,7 +842,7 @@ func runFourServicesOnlyFrontend(t *testing.T, detach bool) {
 		ContainerService: fake,
 	}
 
-	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
+	err = startAndStreamServices(context.Background(), conn, "app", ordered, nil, runOptions{detach: detach},
 		func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 	if err != nil {
 		t.Fatalf("startAndStreamServices(detach=%v): %v", detach, err)
@@ -884,7 +992,7 @@ func TestStartAndStreamServices_Attached_HookDoesNotBlockStartLoop(t *testing.T)
 		ContainerService: fake,
 	}
 
-	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: false},
+	err = startAndStreamServices(context.Background(), conn, "app", ordered, nil, runOptions{detach: false},
 		func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 	if err != nil {
 		t.Fatalf("startAndStreamServices: %v", err)
@@ -996,7 +1104,7 @@ func runAppLevelFallback(t *testing.T, detach bool) {
 		ContainerService: fake,
 	}
 
-	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
+	err = startAndStreamServices(context.Background(), conn, "app", ordered, nil, runOptions{detach: detach},
 		func(string) error { return nil }, svcCfgs, svcLifecycleCfgs, appLevelCfg)
 	if err != nil {
 		t.Fatalf("startAndStreamServices(detach=%v): %v", detach, err)
@@ -1106,7 +1214,7 @@ func TestStartAndStreamServices_ServiceAndAppHTTPBothFire(t *testing.T) {
 		AgentService:     &lifecycleFakeAgentClient{},
 		ContainerService: fake,
 	}
-	if err := startAndStreamServices(context.Background(), conn, appCfg.AppID, ordered, runOptions{detach: false},
+	if err := startAndStreamServices(context.Background(), conn, appCfg.AppID, ordered, nil, runOptions{detach: false},
 		func(string) error { return nil }, svcCfgs, svcLifecycleCfgs, appLevelCfg); err != nil {
 		t.Fatalf("startAndStreamServices: %v", err)
 	}
@@ -1158,7 +1266,7 @@ func TestStartAndStreamServices_Detached_NoHostSideWork(t *testing.T) {
 	conn := &grpcclient.AgentConnection{Host: "127.0.0.1", AgentService: &lifecycleFakeAgentClient{}, ContainerService: fake}
 
 	start := time.Now()
-	err = startAndStreamServices(context.Background(), conn, "app", []string{"solo"}, runOptions{detach: true},
+	err = startAndStreamServices(context.Background(), conn, "app", []string{"solo"}, nil, runOptions{detach: true},
 		func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 	elapsed := time.Since(start)
 	if err != nil {
@@ -1210,7 +1318,7 @@ func TestStartAndStreamServices_Attached_ReadinessTimeoutNonFatal(t *testing.T) 
 	conn := newLifecycleTestConn("127.0.0.1", nil)
 	conn.ContainerService = fake
 
-	if err := startAndStreamServices(context.Background(), conn, "app", []string{"solo"}, runOptions{detach: false},
+	if err := startAndStreamServices(context.Background(), conn, "app", []string{"solo"}, nil, runOptions{detach: false},
 		func(string) error { return nil }, svcCfgs, svcCfgs, nil); err != nil {
 		t.Fatalf("startAndStreamServices returned %v, want nil (readiness timeout must be non-fatal)", err)
 	}
@@ -1234,7 +1342,7 @@ func TestStartAndStreamServices_NilAppLevelCfg(t *testing.T) {
 	for _, detach := range []bool{true, false} {
 		fake := &hookSvcContainerClient{}
 		conn := &grpcclient.AgentConnection{Host: "127.0.0.1", AgentService: &lifecycleFakeAgentClient{}, ContainerService: fake}
-		err := startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
+		err := startAndStreamServices(context.Background(), conn, "app", ordered, nil, runOptions{detach: detach},
 			func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 		if err != nil {
 			t.Fatalf("startAndStreamServices(detach=%v) = %v, want nil", detach, err)

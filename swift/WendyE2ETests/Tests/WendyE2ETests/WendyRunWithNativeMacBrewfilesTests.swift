@@ -25,8 +25,10 @@ struct `'wendy run' with native Mac Brewfiles` {
 
             let result = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(result.status.isSuccess)
-            #expect(result.stdout.contains("Will apply Brewfile on target Mac."))
-            #expect(result.stdout.contains("Brewfile applied."))
+            // Brewfile progress lines print to stderr (WDY-2435); stdout keeps
+            // the app's own output.
+            #expect(result.stderr.contains("Will apply Brewfile on target Mac."))
+            #expect(result.stderr.contains("Brewfile applied."))
             #expect(result.stdout.contains("SWIFTPM_AUTODETECT: Hello, world!"))
         }
     }
@@ -49,8 +51,8 @@ struct `'wendy run' with native Mac Brewfiles` {
 
             let result = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(result.status.isSuccess)
-            #expect(result.stdout.contains("Will apply Brewfile on target Mac."))
-            #expect(result.stdout.contains("Brewfile applied."))
+            #expect(result.stderr.contains("Will apply Brewfile on target Mac."))
+            #expect(result.stderr.contains("Brewfile applied."))
             #expect(result.stdout.contains("XCODE_HELLO: Hello, world!"))
         }
     }
@@ -72,8 +74,8 @@ struct `'wendy run' with native Mac Brewfiles` {
 
             let result = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(result.status.isSuccess)
-            #expect(!result.stdout.contains("Will apply Brewfile"))
-            #expect(!result.stdout.contains("Brewfile applied."))
+            #expect(!result.stderr.contains("Will apply Brewfile"))
+            #expect(!result.stderr.contains("Brewfile applied."))
             #expect(result.stdout.contains("PLAIN_BREWFILE_IGNORED"))
         }
     }
@@ -99,8 +101,8 @@ struct `'wendy run' with native Mac Brewfiles` {
 
             let result = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(result.status.isSuccess)
-            #expect(result.stdout.contains("Will apply Brewfile on target Mac."))
-            #expect(result.stdout.contains("Brewfile applied."))
+            #expect(result.stderr.contains("Will apply Brewfile on target Mac."))
+            #expect(result.stderr.contains("Brewfile applied."))
             #expect(result.stdout.contains("EXPLICIT_BREWFILE: Hello, world!"))
         }
     }
@@ -134,7 +136,7 @@ struct `'wendy run' with native Mac Brewfiles` {
             #expect(result.stderr.contains("exit code"))
             #expect(!result.stderr.contains("wendy-e2e-this-formula-should-not-exist"))
             #expect(!result.stderr.contains("No available formula"))
-            #expect(!result.stdout.contains("Brewfile applied."))
+            #expect(!result.stderr.contains("Brewfile applied."))
             #expect(!result.stdout.contains("SHOULD_NOT_START_AFTER_BREW_FAILURE"))
             #expect(!result.stderr.contains("SHOULD_NOT_START_AFTER_BREW_FAILURE"))
         }
@@ -159,12 +161,12 @@ struct `'wendy run' with native Mac Brewfiles` {
             let first = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(first.status.isSuccess)
             #expect(first.stdout.contains("IDEMPOTENT_BREWFILE: Hello, world!"))
-            #expect(first.stdout.contains("Brewfile applied."))
+            #expect(first.stderr.contains("Brewfile applied."))
 
             let second = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(second.status.isSuccess)
             #expect(second.stdout.contains("IDEMPOTENT_BREWFILE: Hello, world!"))
-            #expect(second.stdout.contains("Brewfile applied."))
+            #expect(second.stderr.contains("Brewfile applied."))
         }
     }
 
@@ -191,8 +193,8 @@ struct `'wendy run' with native Mac Brewfiles` {
             let result = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(result.status.isFailure)
             #expect(result.stderr.contains("conflicts with another synced file"))
-            #expect(!result.stdout.contains("Will apply Brewfile"))
-            #expect(!result.stdout.contains("Brewfile applied."))
+            #expect(!result.stderr.contains("Will apply Brewfile"))
+            #expect(!result.stderr.contains("Brewfile applied."))
             #expect(!result.stdout.contains("SHOULD_NOT_START_AFTER_CONFLICT"))
         }
     }

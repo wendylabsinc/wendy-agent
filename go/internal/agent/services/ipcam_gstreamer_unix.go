@@ -134,21 +134,23 @@ func glibLibraryNames() []string {
 }
 
 // gstreamerPipelineDescription redirects the fdsink from stdout to the private
-// pipe used by the in-process runner. Tokens come from ipcam.PipelineArgs; the
-// credential-bearing URL is already percent-encoded and contains no whitespace.
-func gstreamerPipelineDescription(args []string, fd uintptr) (string, error) {
+// pipe used by the in-process runner, when one is present. Sink-terminated
+// pipelines — Task C3's v4l2loopback pump, for example, where the device node
+// is the sink rather than an fdsink — carry no fd=1 token at all, so hasFD
+// reports whether a rewrite happened instead of treating its absence as an
+// error. Tokens come from ipcam.PipelineArgs / ipcam.LoopbackPipelineArgs; the
+// credential-bearing URL is already percent-encoded and contains no
+// whitespace.
+func gstreamerPipelineDescription(args []string, fd uintptr) (string, bool, error) {
 	parts := append([]string(nil), args...)
-	foundFD := false
+	hasFD := false
 	for i, part := range parts {
 		if part == gstreamerPipelineFDArg {
 			parts[i] = fmt.Sprintf("fd=%d", fd)
-			foundFD = true
+			hasFD = true
 		}
 	}
-	if !foundFD {
-		return "", errors.New("GStreamer pipeline has no output file descriptor")
-	}
-	return strings.Join(parts, " "), nil
+	return strings.Join(parts, " "), hasFD, nil
 }
 
 // RunIPCameraGStreamerHelper reads one JSON-encoded pipeline from in and writes
@@ -181,15 +183,35 @@ func runIPCameraGStreamerPipeline(ctx context.Context, args []string, emit func(
 	if err != nil {
 		return err
 	}
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		return fmt.Errorf("creating capture pipe: %w", err)
+
+	// Only allocate the private capture pipe when the pipeline actually has an
+	// fdsink to redirect. Sink-terminated pipelines — the v4l2loopback pump, for
+	// example — carry no fd=1 token, and a pipe neither of them writes to nor
+	// reads from would just be two file descriptors held open for nothing.
+	var reader, writer *os.File
+	var fd uintptr
+	for _, part := range args {
+		if part == gstreamerPipelineFDArg {
+			reader, writer, err = os.Pipe()
+			if err != nil {
+				return fmt.Errorf("creating capture pipe: %w", err)
+			}
+			fd = writer.Fd()
+			break
+		}
+	}
+	closePipe := func() {
+		if writer != nil {
+			writer.Close() //nolint:errcheck
+		}
+		if reader != nil {
+			reader.Close() //nolint:errcheck
+		}
 	}
 
-	description, err := gstreamerPipelineDescription(args, writer.Fd())
+	description, hasFD, err := gstreamerPipelineDescription(args, fd)
 	if err != nil {
-		reader.Close() //nolint:errcheck
-		writer.Close() //nolint:errcheck
+		closePipe()
 		return err
 	}
 	var parseErr uintptr
@@ -198,24 +220,21 @@ func runIPCameraGStreamerPipeline(ctx context.Context, args []string, emit func(
 		api.errorFree(parseErr)
 	}
 	if pipeline == 0 {
-		reader.Close() //nolint:errcheck
-		writer.Close() //nolint:errcheck
+		closePipe()
 		return errors.New("creating GStreamer capture pipeline failed")
 	}
 	defer api.objectUnref(pipeline)
 
 	bus := api.elementGetBus(pipeline)
 	if bus == 0 {
-		reader.Close() //nolint:errcheck
-		writer.Close() //nolint:errcheck
+		closePipe()
 		return errors.New("creating GStreamer event bus failed")
 	}
 	defer api.objectUnref(bus)
 
 	if api.elementSetState(pipeline, gstStatePlaying) == gstStateChangeFailure {
 		api.elementSetState(pipeline, gstStateNull)
-		reader.Close() //nolint:errcheck
-		writer.Close() //nolint:errcheck
+		closePipe()
 		return errors.New("starting GStreamer capture pipeline failed")
 	}
 
@@ -233,8 +252,7 @@ func runIPCameraGStreamerPipeline(ctx context.Context, args []string, emit func(
 		stopOnce.Do(func() {
 			api.elementSetState(pipeline, gstStateNull)
 			api.busSetFlushing(bus, 1)
-			writer.Close() //nolint:errcheck
-			reader.Close() //nolint:errcheck
+			closePipe()
 		})
 	}
 	stopped := make(chan struct{})
@@ -247,21 +265,29 @@ func runIPCameraGStreamerPipeline(ctx context.Context, args []string, emit func(
 		close(stopped)
 	}()
 
-	buf := make([]byte, 64*1024)
-	for {
-		n, readErr := reader.Read(buf)
-		if n > 0 {
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			if err := emit(chunk); err != nil {
-				stop()
-				<-stopped
-				return errors.New("writing GStreamer output failed")
+	if hasFD {
+		buf := make([]byte, 64*1024)
+		for {
+			n, readErr := reader.Read(buf)
+			if n > 0 {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				if err := emit(chunk); err != nil {
+					stop()
+					<-stopped
+					return errors.New("writing GStreamer output failed")
+				}
+			}
+			if readErr != nil {
+				break
 			}
 		}
-		if readErr != nil {
-			break
-		}
+	} else {
+		// No stdout to pump: the sink is the v4l2loopback node itself, so there is
+		// nothing to read. Just wait for the pipeline to reach a terminal state or
+		// for the context to cancel, exactly as the fd path does once its read
+		// loop ends.
+		<-stopped
 	}
 	stop()
 	<-stopped

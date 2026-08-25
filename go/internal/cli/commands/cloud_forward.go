@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -86,7 +87,7 @@ func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL st
 		return err
 	}
 
-	brokerConn, err := dialCloudBroker(auth, brokerURL)
+	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
 	if err != nil {
 		return err
 	}

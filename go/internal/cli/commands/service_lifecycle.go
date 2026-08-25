@@ -13,11 +13,17 @@ import (
 // fire postStart" sequence for multi-service runs (compose + services map).
 // A readiness failure warns and still fires explicitly configured hooks, but
 // suppresses the success announcement and HTTP-entitlement-synthesized browser
-// open. Only context cancellation suppresses every side effect.
+// open. Context cancellation suppresses every side effect, as does a watch
+// session that has already completed the sequence for this container.
 //
-// Zero-value-ready except conn: construct with &serviceHookRunner{conn: conn}.
+// Zero-value-ready except conn: construct with
+// &serviceHookRunner{conn: conn, opts: opts}.
 type serviceHookRunner struct {
 	conn *grpcclient.AgentConnection
+	// opts carries the watch session state, if any. Under `wendy run --watch`
+	// each service completes this sequence after its first successful readiness
+	// check only.
+	opts runOptions
 	wg   sync.WaitGroup
 	mu   sync.Mutex
 	cmds []*exec.Cmd // cli-hook children to reap in attached mode
@@ -43,6 +49,20 @@ type serviceHookRunner struct {
 // readiness.tcpSocket — must still get an actual readiness wait and an
 // auto-opened browser tab, not just the announceReachableURL text that
 // already (via effectiveReadiness) assumes readiness was probed.
+//
+// The dial target for both readiness and the hook is resolveHookHost's
+// result, not r.conn.Host directly — same reasoning as run.go's
+// single-container path (see resolveHookHost): a cloud connection's Host is
+// the tunnel's unresolvable asset name, and an IPv6-literal Host may be a
+// rotating temporary address, so both prefer the agent-reported IP when one
+// is available. resolveHookHost's announceReachableURL call also replaces
+// the old readiness-gated announce call below — it now runs before the
+// readiness wait (not after a successful one), which mirrors run.go's
+// documented tradeoff: the "App reachable at" line prints regardless of
+// whether this service's probe later fails, in exchange for a probe that can
+// actually reach a cloud device at all. A cfg with no usable host (a cloud
+// conn with no reported IP) skips readiness and the hook entirely instead of
+// dialing a dead asset name.
 func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.AppConfig) {
 	if cfg == nil {
 		return
@@ -52,9 +72,28 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 	if readiness == nil && hooks == nil {
 		return
 	}
+	containerName := cfg.ContainerName()
+	if !r.opts.beginHostLifecycle(containerName) {
+		return
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			r.opts.abandonHostLifecycle(containerName)
+		}
+	}()
+
+	hookHost, hostOK := resolveHookHost(ctx, r.conn, cfg)
+	if !hostOK {
+		// cfg.ServiceName is "" for the app-level fallback config (see
+		// appLevelLifecycleConfig); containerDisplayName falls back to the
+		// bare AppID in that case rather than printing a dangling "for :".
+		cliNotice("Skipping postStart hook for %s: no routable device address reported; open the app manually once the device IP is known.", containerDisplayName(cfg))
+		return
+	}
 
 	readinessSucceeded := true
-	if err := waitForReadiness(ctx, readiness, r.conn.Host); err != nil {
+	if err := waitForReadiness(ctx, readiness, hookHost); err != nil {
 		if ctx.Err() != nil {
 			// Canceled (e.g. Ctrl+C, or the run ending) — stay silent and skip
 			// the hook entirely; this is not a readiness failure to report.
@@ -71,23 +110,32 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 	if ctx.Err() != nil {
 		return
 	}
-
-	if readinessSucceeded {
-		announceReachableURL(ctx, r.conn, cfg)
+	// Watch claims host-side actions only after readiness succeeds. A failed
+	// attempt releases the claim so a later deploy can try again.
+	if r.opts.isWatch() && !readinessSucceeded {
+		return
 	}
 
 	effectiveCfg := cfg
 	// A failed probe must not synthesize an automatic browser open from an HTTP
-	// entitlement. Explicit hooks retain the established multi-service behavior
-	// and still run after a non-cancellation timeout.
+	// entitlement. Explicit hooks still run after a non-cancellation timeout.
 	if readinessSucceeded && hooks != cfg.Hooks {
 		clone := *cfg
 		clone.Hooks = hooks
 		effectiveCfg = &clone
 	}
+	if ctx.Err() != nil {
+		return
+	}
+	r.opts.completeHostLifecycle(containerName)
+	completed = true
 
-	cmd := startPostStartHook(hookCtx, effectiveCfg, r.conn.Host, cfg.ServiceName)
+	cmd := startPostStartHook(hookCtx, effectiveCfg, hookHost, cfg.ServiceName)
 	if cmd != nil {
+		if r.opts.isWatch() {
+			r.opts.watchState.reapCommand(cmd)
+			return
+		}
 		r.mu.Lock()
 		r.cmds = append(r.cmds, cmd)
 		r.mu.Unlock()
@@ -102,10 +150,14 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 // follow up with reap() the same way run.go cancels runCtx before waiting on
 // postStartCmd.
 func (r *serviceHookRunner) startAsync(runCtx context.Context, cfg *appconfig.AppConfig) {
+	hookCtx := runCtx
+	if r.opts.isWatch() {
+		hookCtx = r.opts.watchState.hookContext(runCtx)
+	}
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
-		r.runOne(runCtx, runCtx, cfg)
+		r.runOne(runCtx, hookCtx, cfg)
 	}()
 }
 

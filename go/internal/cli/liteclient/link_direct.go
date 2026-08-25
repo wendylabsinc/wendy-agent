@@ -37,36 +37,70 @@ func (l *directLink) linkHandshake() error {
 	return serialHandshake(l.conn.(serial.Port))
 }
 
-func serialHandshake(port serial.Port) error {
+// serialHandshakePort is the narrow slice of serial.Port used by the console
+// mode handshake. Keeping it narrow makes the boot-log interleaving behavior
+// deterministic to test without a physical serial device.
+type serialHandshakePort interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	SetReadTimeout(time.Duration) error
+}
+
+func serialHandshake(port serialHandshakePort) error {
 	if _, err := port.Write([]byte{escapeChar, escapeChar, escapeChar, escapeChar, 'e'}); err != nil {
 		return fmt.Errorf("serial handshake: send escape: %w", err)
 	}
-
-	var sentinel string
 
 	if err := port.SetReadTimeout(100 * time.Millisecond); err != nil {
 		return fmt.Errorf("serial handshake: set timeout: %w", err)
 	}
 
+	// Send the sentinel immediately. Waiting for a quiet read timeout before
+	// the first send makes reconnecting after a physical reboot fail whenever
+	// boot or auto-started app logs keep the serial stream continuously
+	// readable for the entire 3-second handshake budget.
+	var randBytes [16]byte
+	if _, err := rand.Read(randBytes[:]); err != nil {
+		return fmt.Errorf("serial handshake: generate sentinel: %w", err)
+	}
+	sentinel := hex.EncodeToString(randBytes[:])
+	sendSentinel := func() error {
+		if _, err := port.Write([]byte(strings.Repeat(" ", 16) + sentinel)); err != nil {
+			return fmt.Errorf("serial handshake: send sentinel: %w", err)
+		}
+		return nil
+	}
+	if err := sendSentinel(); err != nil {
+		return err
+	}
+	// The mode switch may be applied asynchronously by the device after the
+	// escape command is consumed. Keep sending while draining output so at
+	// least one sentinel lands after that transition even if Read never times
+	// out because boot logs are continuous.
+	nextSentinel := time.Now().Add(100 * time.Millisecond)
+
 	window := make([]byte, 0, 32)
 	oneByte := make([]byte, 1)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
+		if !time.Now().Before(nextSentinel) {
+			if err := sendSentinel(); err != nil {
+				return err
+			}
+			nextSentinel = time.Now().Add(100 * time.Millisecond)
+		}
 		n, err := port.Read(oneByte)
 		if err != nil {
 			return fmt.Errorf("serial handshake: read: %w", err)
 		}
 		if n == 0 {
-			// rx timeout, so rx buffer empty, so send sentinel
-			var randBytes [16]byte
-			if _, err := rand.Read(randBytes[:]); err != nil {
-				return fmt.Errorf("serial handshake: generate sentinel: %w", err)
-			}
-			sentinel = hex.EncodeToString(randBytes[:])
+			// The echo may have been lost while the device was switching modes;
+			// resend the same sentinel whenever the receive buffer goes quiet.
 			window = window[:0]
-			if _, err := port.Write([]byte(strings.Repeat(" ", 16) + sentinel)); err != nil {
-				return fmt.Errorf("serial handshake: send sentinel: %w", err)
+			if err := sendSentinel(); err != nil {
+				return err
 			}
+			nextSentinel = time.Now().Add(100 * time.Millisecond)
 			continue
 		}
 		if n == 1 {

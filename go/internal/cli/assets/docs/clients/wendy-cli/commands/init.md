@@ -13,6 +13,9 @@ wendy init
 # Create ./my-app and scaffold into it
 wendy init my-app
 
+# Already inside an empty my-app/ — scaffold here instead of nesting ./my-app/my-app
+wendy init --here my-app
+
 # Fully non-interactive
 wendy init \
   --app-id my-app \
@@ -22,7 +25,7 @@ wendy init \
   --assistant skip
 ```
 
-An `[app-id]` argument (or `--app-id`) always creates a new subdirectory of that name. With neither, the wizard offers to scaffold into the current directory instead.
+An `[app-id]` argument (or `--app-id`) always creates a new subdirectory of that name. With neither, the wizard offers to scaffold into the current directory instead. Pass `--here` to scaffold into the current directory directly instead of nesting a subdirectory — with an app ID it still writes that as `wendy.json`'s app ID; without one, it infers the app ID from the current directory's name.
 
 ## What it produces
 
@@ -51,6 +54,7 @@ Templates may offer additional languages (for example `rust`, `node`, or `cpp`) 
 | Flag | Description |
 |---|---|
 | `--app-id <id>` | Application ID written to `wendy.json`. Creates a subdirectory of that name. |
+| `--here` | Scaffold into the current directory instead of creating a subdirectory. With no `[app-id]`/`--app-id`, infers the app ID from the current directory's name. |
 | `--target <name>` | Target platform: `wendyos`, `darwin`, or `wendy-lite`. Required when running non-interactively. |
 | `--language <name>` | Project language. `swift` or `python` for the plain wizard; templates may offer more. |
 | `--git-init <yes\|no>` | Initialize a git repo in the project directory. |

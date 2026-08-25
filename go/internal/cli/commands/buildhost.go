@@ -169,7 +169,11 @@ func checkBuildHostCapabilities(host string, resp *agentpbv2.GetBuildCapabilitie
 		if strings.EqualFold(resp.GetOs(), "darwin") {
 			return fmt.Errorf("%s has no BuildKit daemon: macOS hosts run containers through Apple Container, which has no BuildKit underneath, so a Mac cannot be a build host", host)
 		}
-		return fmt.Errorf("%s has no BuildKit daemon and cannot build", host)
+		// Say what to do, not only what is wrong. The agent's own refusal names
+		// the socket and the daemon -- but this check runs first, before any
+		// context is transferred, so that wording is unreachable in practice and
+		// the developer lands on this line instead.
+		return fmt.Errorf("%s has no BuildKit daemon and cannot build; install buildkitd on it and start it on unix:///run/buildkit/buildkitd.sock, or omit --build-host to build locally", host)
 	}
 	if slices.Contains(resp.GetNativePlatforms(), platform) {
 		return nil

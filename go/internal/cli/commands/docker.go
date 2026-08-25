@@ -1418,7 +1418,7 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 	// plugin load, no buildkit gRPC handshake). On any miss we fall through to the
 	// full robust path below.
 	containerName := "buildx_buildkit_" + builderName + "0"
-	if out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
+	if out, err := imageBuilderCommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
 		return builderName, nil
 	}
 
@@ -1426,10 +1426,10 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 		return "", err
 	}
 
-	exists := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil
+	exists := imageBuilderCommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil
 	if !exists {
 		fmt.Fprintf(w, "[buildx] creating OCI-export builder %q\n", builderName)
-		cmd := exec.CommandContext(ctx, "docker", "buildx", "create",
+		cmd := imageBuilderCommandContext(ctx, "docker", "buildx", "create",
 			"--name", builderName,
 			"--driver", "docker-container",
 			"--driver-opt", "network=host",
@@ -1439,13 +1439,56 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 		}
 	}
 
-	// Ensure the builder is running. This is cheap when it is already up and,
-	// crucially, performs no config injection or container restart.
-	bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
-	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("bootstrapping builder %q: %s: %w", builderName, string(out), err)
+	// Ensure the builder is running and bootstrapped. This is cheap when it is
+	// already up and, crucially, performs no config injection or container
+	// restart; on a cold builder it pulls the BuildKit image inline, which
+	// bootstrapOCIBuilder bounds and streams to w so the wait isn't silent.
+	if err := bootstrapOCIBuilder(ctx, builderName, w); err != nil {
+		return "", err
 	}
 	return builderName, nil
+}
+
+// ociBuilderBootstrapTimeout bounds `docker buildx inspect --bootstrap`: a cold
+// start pulls the BuildKit image (minutes, not seconds), but a wedged daemon
+// must not stall the deploy forever. Package var so tests can shrink it.
+var ociBuilderBootstrapTimeout = 3 * time.Minute
+
+// bootstrapOCIBuilder runs `docker buildx inspect --bootstrap` for builderName,
+// streaming its output to w as it arrives — a cold builder pulls the BuildKit
+// image inline with this call, so without live output the wait looks like a
+// hang — while also buffering it for error context. ociBuilderBootstrapTimeout
+// bounds the wait so a wedged Docker daemon cannot stall the deploy forever.
+func bootstrapOCIBuilder(ctx context.Context, builderName string, w io.Writer) error {
+	fmt.Fprintf(w, "[buildx] bootstrapping builder %q (a cold start pulls the BuildKit image; this can take a few minutes)\n", builderName)
+
+	bootstrapCtx, cancel := context.WithTimeout(ctx, ociBuilderBootstrapTimeout)
+	defer cancel()
+
+	var buf bytes.Buffer
+	// Stdout and Stderr are set to the *same* MultiWriter value (not two
+	// separate io.MultiWriter calls) so os/exec recognizes them as equal and
+	// combines them into a single pipe/copy goroutine — the same trick
+	// CombinedOutput relies on — avoiding concurrent, unsynchronized writes
+	// into buf from interleaved stdout/stderr output.
+	mw := io.MultiWriter(w, &buf)
+	cmd := imageBuilderCommandContext(bootstrapCtx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
+	cmd.Stdout = mw
+	cmd.Stderr = mw
+	if err := cmd.Run(); err != nil {
+		// Only claim *our* bootstrap timeout fired if the parent ctx is still
+		// alive: bootstrapCtx also reports DeadlineExceeded when an ancestor
+		// context's own deadline expires first (ctx.Err() != nil in that case),
+		// and blaming that on the bootstrap would misattribute the failure.
+		// Plain Ctrl+C is unaffected — that propagates context.Canceled, not
+		// DeadlineExceeded. (Same convention as buildprogress.go:135,173.)
+		if errors.Is(bootstrapCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return fmt.Errorf("bootstrapping builder %q timed out after %s (is the Docker daemon healthy?); output so far:\n%s",
+				builderName, ociBuilderBootstrapTimeout, buf.String())
+		}
+		return fmt.Errorf("bootstrapping builder %q: %s: %w", builderName, buf.String(), err)
+	}
+	return nil
 }
 
 // buildkitRegistryConfig generates a buildkitd.toml snippet for the given

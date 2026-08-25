@@ -348,6 +348,20 @@ func main() {
 	// periodically rather than only when a client asks.
 	videoSvc.StartDiscovery()
 
+	// Wire videoSvc as the camera-loopback provider for entitled containers
+	// (Task C6). Built after ctrdClient, so this must be a separate wiring
+	// step rather than an argument at construction. The immediate sync
+	// reconciles camera-loopback state against whatever containers are
+	// already running after an agent restart, mirroring
+	// RestoreAppSystemAPISockets above; the periodic sync then catches any
+	// drift the create/start/stop/delete lifecycle nudges in the containerd
+	// client miss (e.g. a container's task crash-exiting on its own).
+	if ctrdClient != nil {
+		ctrdClient.SetCameraLoopbackProvider(videoSvc)
+		ctrdClient.SyncCameraLoopbacks(ctx)
+		go ctrdClient.RunCameraLoopbackSync(ctx, time.Minute)
+	}
+
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 
 	// Returns nil if the PEM data is invalid, which causes the registry to stay HTTP.

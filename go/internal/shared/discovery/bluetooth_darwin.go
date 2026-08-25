@@ -68,7 +68,16 @@ func discoverBluetooth(ctx context.Context, activeScan bool) ([]models.Bluetooth
 		scanSeconds = 3
 	}
 
-	// Run the CoreBluetooth scan (blocks for scanSeconds).
+	return scanBLEWithContext(ctx, scanSeconds)
+}
+
+// bleScanFn performs the blocking CoreBluetooth scan for scanSeconds and
+// returns the discovered devices, sorted by RSSI descending (strongest
+// signal first). Indirected so scanBLEWithContext's cancellation logic can
+// be unit tested without cgo — cgo cannot be used from _test.go files, so
+// this default implementation has to stay here (see dnssd_darwin.go's
+// dnssdRegister for the same constraint).
+var bleScanFn = func(scanSeconds int) ([]models.BluetoothDevice, error) {
 	result := C.wendy_ble_scan(C.int(scanSeconds))
 	defer C.wendy_ble_free_result(result)
 
@@ -109,4 +118,46 @@ func discoverBluetooth(ctx context.Context, activeScan bool) ([]models.Bluetooth
 	})
 
 	return devices, nil
+}
+
+// bleScanResult carries a bleScanFn outcome across scanBLEWithContext's
+// internal channel.
+type bleScanResult struct {
+	devices []models.BluetoothDevice
+	err     error
+}
+
+// scanBLEWithContext runs bleScanFn(scanSeconds) but does not wait on it past
+// ctx cancellation. bleScanFn wraps wendy_ble_scan, a blocking cgo call with
+// no ctx awareness at all: it always runs for the full scanSeconds via
+// nanosleep and cannot be interrupted mid-flight from Go once started. This
+// bounds the WAIT rather than the call — mirroring SerialDiscovery's
+// probeWithWatchdog/WaitForIdle pattern (serial_discovery.go) — so a caller
+// whose ctx is cancelled (e.g. the picker's Bluetooth polling goroutine when
+// the user quits) is unblocked immediately instead of sitting out the
+// remainder of a 3-5s scan. The scan itself keeps running in the background
+// goroutine until it naturally finishes; its result is simply discarded if
+// nothing is left to receive it.
+func scanBLEWithContext(ctx context.Context, scanSeconds int) ([]models.BluetoothDevice, error) {
+	// Read the indirection var here, on the caller's goroutine, rather than
+	// inside the goroutine below: the `go` statement's happens-before
+	// guarantee then ensures this read is ordered before anything the caller
+	// does after scanBLEWithContext returns (including a test's deferred
+	// restore of bleScanFn) — reading it directly inside the spawned
+	// goroutine has no such ordering against a caller that stops waiting on
+	// it, and races under -race. Mirrors probeWithWatchdog in
+	// serial_discovery.go.
+	scan := bleScanFn
+	ch := make(chan bleScanResult, 1)
+	go func() {
+		devices, err := scan(scanSeconds)
+		ch <- bleScanResult{devices: devices, err: err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.devices, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }

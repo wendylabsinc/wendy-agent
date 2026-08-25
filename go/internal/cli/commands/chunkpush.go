@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -13,7 +14,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	grpcgzip "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/status"
 )
 
@@ -25,6 +28,12 @@ import (
 // already parallelized across cores (chunk.ChunkReaderAt), so this need not
 // equal the core count.
 const maxConcurrentLayerPush = 4
+
+// maxChunksPerWriteStream bounds one client-streaming WriteChunks RPC. Closing
+// each small batch gets an application-level acknowledgement, limits how much
+// progress can be reported before the receiver confirms it, and starts a fresh
+// HTTP/2 stream at negligible overhead (at most 4 MiB per batch).
+const maxChunksPerWriteStream = 64
 
 // chunkTransferProgressWriter is implemented by interactive build output
 // adapters that can display chunk-upload bytes directly. Keeping this as an
@@ -267,7 +276,7 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 // printing over Bubble Tea's frame. A nil output preserves the ordinary CLI
 // behavior for callers without a live renderer.
 func pushLayersByChunksWithPrepareOutput(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer) ([]*agentpb.RunContainerLayerHeader, error) {
-	return pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, output, false)
+	return pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, output, false, nil)
 }
 
 // pushLayersByChunksWithStrictPrepareOutput is for callers, such as Compose,
@@ -275,10 +284,16 @@ func pushLayersByChunksWithPrepareOutput(ctx context.Context, cs agentpb.WendyCo
 // cannot use the single-container path's lenient "finish during RunContainer"
 // behavior: PrepareImage must have registered the named image first.
 func pushLayersByChunksWithStrictPrepareOutput(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer) ([]*agentpb.RunContainerLayerHeader, error) {
-	return pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, output, true)
+	return pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, output, true, nil)
 }
 
-func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer, strictPrepare bool) ([]*agentpb.RunContainerLayerHeader, error) {
+// pushLayersByChunksWithPrepareMode is the full-parameter core. prog, when
+// non-nil, is the single-service live-progress aggregator (WDY-2431/2433):
+// it receives layer counts, per-layer chunk plans, and sent-byte updates so
+// the interactive bar / plain heartbeat can render the push. Compose callers
+// pass nil prog and get their progress through output's optional
+// chunk*ProgressWriter interfaces instead; both sinks are nil-safe.
+func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer, strictPrepare bool, prog *chunkPushProgress) ([]*agentpb.RunContainerLayerHeader, error) {
 	headers := make([]*agentpb.RunContainerLayerHeader, len(layers))
 
 	// Capability probe: a single empty QueryChunks tells us whether the agent
@@ -320,10 +335,21 @@ func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyCont
 		}
 		toPush = append(toPush, i)
 	}
-	if skipped > 0 {
+	// Interactive mode already renders this same reused-layer count live, via
+	// the progress bar's ticker (chunkPushSnapshot.Line(), fed by
+	// SetLayerCounts below) and again in its post-exit Summary() — printing it
+	// here too would race cliLogln's direct write to os.Stderr against the
+	// live Bubble Tea program rendering to that same fd, garbling the bar on
+	// every deploy with layer reuse (WDY-2432/2433 final-review fix wave,
+	// finding 3). Callers with their own output writer (compose's live build
+	// renderer) still get the line, routed through that writer; the plain
+	// non-interactive path keeps it as its only feedback until the
+	// end-of-push Summary() line.
+	if skipped > 0 && (output != nil || !buildProgressInteractive()) {
 		chunkPushLogln(output, "Reusing %s layer(s) already on device; chunking %s.",
 			tui.Value(fmt.Sprintf("%d", skipped)), tui.Value(fmt.Sprintf("%d", len(toPush))))
 	}
+	prog.SetLayerCounts(len(layers), skipped)
 	limit := maxConcurrentLayerPush
 	if n := runtime.GOMAXPROCS(0); n < limit {
 		limit = n
@@ -387,7 +413,7 @@ func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyCont
 	for _, idx := range toPush {
 		r := resolved[idx]
 		uploadGroup.Go(func() error {
-			return r.upload(uploadGroupCtx, cs, indexProgress, transferProgress)
+			return r.upload(uploadGroupCtx, cs, indexProgress, transferProgress, prog)
 		})
 	}
 	uploadErr := uploadGroup.Wait()
@@ -426,8 +452,13 @@ func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyCont
 				// Older agents use the existing RunContainer assembly/unpack path.
 			default:
 				// Preparation is an optimization. RunContainer repeats all work
-				// idempotently and remains the authoritative error path.
-				chunkPushLogln(output, "Image prewarming unavailable (%v); finishing during start.", err)
+				// idempotently and remains the authoritative error path. Skip the
+				// notice when the interactive progress bar owns the terminal and
+				// no output writer is routing around it (same garbling hazard as
+				// the reused-layer line above).
+				if output != nil || !buildProgressInteractive() {
+					chunkPushLogln(output, "Image prewarming unavailable (%v); finishing during start.", err)
+				}
 			}
 		}
 	}
@@ -593,11 +624,11 @@ func resolveChunkLayer(l localLayer, progress *chunkIndexProgress) (*resolvedChu
 	}, nil
 }
 
-func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContainerServiceClient, indexProgress *chunkIndexProgress, transferProgress *chunkTransferProgress) error {
+func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContainerServiceClient, indexProgress *chunkIndexProgress, transferProgress *chunkTransferProgress, prog *chunkPushProgress) error {
 	orderedHashes := r.header.GetChunkHashes()
 	qresp, err := cs.QueryChunks(ctx, &agentpb.QueryChunksRequest{ChunkHashes: orderedHashes})
 	if err != nil {
-		return err
+		return fmt.Errorf("querying missing chunks for layer %s: %w", r.header.GetDiffId(), err)
 	}
 	missing := make(map[[32]byte]bool, len(qresp.GetMissingHashes()))
 	for _, hb := range qresp.GetMissingHashes() {
@@ -622,30 +653,63 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 			}
 		}
 		transferProgress.addTotal(missingBytes)
-		wc, err := cs.WriteChunks(ctx)
-		if err != nil {
-			return err
-		}
-		for _, ref := range r.refs {
+		prog.LayerPlanned(len(orderedHashes), len(missing), missingBytes)
+		var wc grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]
+		chunksInStream := 0
+		for chunkIndex, ref := range r.refs {
 			if !missing[ref.Hash] {
 				continue
 			}
-			buf := make([]byte, ref.Len) // ref.Len <= chunk.MaxSize (256 KiB)
+			if wc == nil {
+				// Hardware reproduction showed that particular raw chunk payloads can
+				// stall a USB-NCM link while the compressed registry path succeeds.
+				// Give the fast path the same property; gRPC decompresses the message
+				// before the agent hashes and stages the original bytes.
+				wc, err = cs.WriteChunks(ctx, grpc.UseCompressor(grpcgzip.Name))
+				if err != nil {
+					return fmt.Errorf("opening chunk upload for layer %s: %w", r.header.GetDiffId(), err)
+				}
+			}
+			buf := make([]byte, ref.Len) // ref.Len <= chunk.MaxSize (64 KiB)
 			if _, err := r.dl.f.ReadAt(buf, int64(ref.Offset)); err != nil {
-				return err
+				return fmt.Errorf("reading chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
 			}
 			hb := ref.Hash // copy
 			if err := wc.Send(&agentpb.WriteChunksRequest{
 				Hash: hb[:],
 				Data: buf,
 			}); err != nil {
-				return err
+				// grpc-go reports io.EOF from Send when the server has already
+				// closed a client-streaming RPC. CloseAndRecv carries the actual
+				// terminal status (for example ResourceExhausted or InvalidArgument);
+				// without this read the CLI hides the actionable agent error behind
+				// a bare EOF and incorrectly treats it as a transport drop.
+				if errors.Is(err, io.EOF) {
+					if _, terminalErr := wc.CloseAndRecv(); terminalErr != nil {
+						err = terminalErr
+					}
+				}
+				return fmt.Errorf("sending chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
 			}
+			prog.ChunkSent(len(buf))
 			transferProgress.addSent(int64(len(buf)))
+			chunksInStream++
+			if chunksInStream == maxChunksPerWriteStream {
+				if _, err := wc.CloseAndRecv(); err != nil {
+					return fmt.Errorf("closing chunk upload batch after chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
+				}
+				wc = nil
+				chunksInStream = 0
+			}
 		}
-		if _, err := wc.CloseAndRecv(); err != nil {
-			return err
+		if wc != nil {
+			_, err = wc.CloseAndRecv()
 		}
+		if err != nil {
+			return fmt.Errorf("closing chunk upload for layer %s: %w", r.header.GetDiffId(), err)
+		}
+	} else {
+		prog.LayerPlanned(len(orderedHashes), 0, 0)
 	}
 	return nil
 }
@@ -656,7 +720,7 @@ func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClie
 		return nil, err
 	}
 	defer r.close()
-	if err := r.upload(ctx, cs, nil, nil); err != nil {
+	if err := r.upload(ctx, cs, nil, nil, nil); err != nil {
 		return nil, err
 	}
 	return r.header, nil
