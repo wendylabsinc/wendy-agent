@@ -3,7 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -34,7 +34,7 @@ func newTestDataSocketManager(t *testing.T) *AppDataSocketManager {
 	t.Cleanup(cancel)
 	m := NewAppDataSocketManager(ctx, nil, capture)
 	m.peerCred = func(net.Conn) (peerCredentials, error) {
-		return peerCredentials{}, errors.New("test: peer credentials unavailable")
+		return peerCredentials{}, fmt.Errorf("%w: test seam", errPeerCredUnavailable)
 	}
 	return m
 }

@@ -294,11 +294,16 @@ func TestConvertRejectsNonEpisodeDirectory(t *testing.T) {
 
 func TestIsBSlice(t *testing.T) {
 	// first_mb_in_slice = 0 ("1"), slice_type = 1 ("010") -> B slice.
-	if !isBSlice([]byte{0x41, 0xA0}) {
-		t.Error("slice_type 1 should be reported as a B slice")
+	if isB, parsed := isBSlice([]byte{0x41, 0xA0}); !isB || !parsed {
+		t.Errorf("slice_type 1 should be a parsed B slice, got isB=%v parsed=%v", isB, parsed)
 	}
 	// first_mb_in_slice = 0 ("1"), slice_type = 0 ("1") -> P slice.
-	if isBSlice([]byte{0x41, 0xC0}) {
-		t.Error("slice_type 0 is a P slice, not a B slice")
+	if isB, parsed := isBSlice([]byte{0x41, 0xC0}); isB || !parsed {
+		t.Errorf("slice_type 0 should be a parsed P slice, got isB=%v parsed=%v", isB, parsed)
+	}
+	// A header too short to carry a slice type is unknown, not B-free: the
+	// caller must be able to tell "no B slices" from "could not tell".
+	if isB, parsed := isBSlice([]byte{0x41}); isB || parsed {
+		t.Errorf("a truncated slice header should report unknown, got isB=%v parsed=%v", isB, parsed)
 	}
 }

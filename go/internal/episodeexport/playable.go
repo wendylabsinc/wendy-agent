@@ -78,6 +78,13 @@ type ClipResult struct {
 	// Skipped counts frames the index named but which could not be muxed
 	// because their bytes were missing, truncated, or held no coded picture.
 	Skipped int
+	// SkippedReason quotes the first failure behind Skipped, so a clip that
+	// lost frames for one systemic reason (a segment file that is not there,
+	// an index whose offsets run past the end of a truncated segment) names
+	// that reason instead of reporting a bare count. Empty when nothing was
+	// skipped, or when the frames skipped carried no coded picture at all and
+	// so produced no read error.
+	SkippedReason string
 	// Unparsed counts index lines that were not valid records, which is the
 	// expected shape of a partial tail left by an interrupted episode.
 	Unparsed int
@@ -89,6 +96,16 @@ type ClipResult struct {
 	// order is not the coded order the index records and the timing written
 	// here cannot be exact. See isBSlice.
 	BFrames bool
+	// UndecodedSliceHeaders counts slice headers whose type could not be read,
+	// which is the honest "unknown" beside BFrames: a header this tool cannot
+	// parse is not evidence that the stream is free of B slices, so a clip with
+	// BFrames false and this non-zero has undetermined timing exactness rather
+	// than proven exactness.
+	UndecodedSliceHeaders int
+	// SyncSamples counts written samples a decoder can start on (coded IDR
+	// pictures). A clip with none is not seekable and most players refuse it,
+	// so it must not be reported as a clean conversion on frame count alone.
+	SyncSamples int
 	// MinInterval, MaxInterval and MeanInterval describe the spread of
 	// inter-frame intervals actually written. They differ from each other
 	// whenever the capture rate varied, which is the point.
@@ -152,7 +169,10 @@ func convertSource(episodeDir, sourceDir, indexPath, out string) (ClipResult, er
 	stats, writeErr := muxAnnexBToMP4(f, episodeDir, frames)
 	closeErr := f.Close()
 	result.Frames, result.Skipped, result.Segments = stats.frames, stats.skipped, stats.segments
+	result.SkippedReason = stats.skipReason
 	result.BFrames = stats.bFrames
+	result.UndecodedSliceHeaders = stats.undecodedSliceHeaders
+	result.SyncSamples = stats.syncSamples
 	result.MinInterval, result.MaxInterval, result.MeanInterval = stats.min, stats.max, stats.mean
 	if err := errors.Join(writeErr, closeErr); err != nil {
 		return result, err
@@ -222,6 +242,16 @@ type muxStats struct {
 	frames, skipped, segments int
 	min, max, mean            time.Duration
 	bFrames                   bool
+	// skipReason is the first error behind skipped, kept so a clip that lost
+	// frames for one systemic reason can name it instead of reporting a count
+	// whose cause was thrown away.
+	skipReason string
+	// undecodedSliceHeaders counts slice headers whose type could not be read.
+	// isBSlice cannot answer for those, and "could not tell" is not "no B
+	// slices", so they are counted rather than folded into bFrames.
+	undecodedSliceHeaders int
+	// syncSamples counts written samples a decoder can start on.
+	syncSamples int
 }
 
 // isBSlice reports whether a VCL NAL unit carries a B slice. It matters
@@ -231,18 +261,33 @@ type muxStats struct {
 // slices has a presentation order that differs from its coded order, and
 // recovering it needs picture order counts the index does not carry. Such a
 // stream is flagged rather than silently mistimed.
-func isBSlice(nal []byte) bool {
+//
+// It returns (isB, parsed); parsed is false when the slice header could not be
+// read, which is an honest "unknown" rather than a "no". Reporting an
+// unparsable header as B-free would let a clip whose timing this tool cannot
+// vouch for be presented as exactly timed.
+func isBSlice(nal []byte) (isB, parsed bool) {
 	if len(nal) < 2 {
-		return false
+		return false, false
 	}
 	r := &bitReader{b: unescapeRBSP(nal)}
 	r.skip(8) // nal_unit_header
 	r.ue()    // first_mb_in_slice
 	sliceType := r.ue()
 	if r.err != nil {
-		return false
+		return false, false
 	}
-	return sliceType == 1 || sliceType == 6
+	return sliceType == 1 || sliceType == 6, true
+}
+
+// noteSliceType folds one slice header's verdict into the stats.
+func (s *muxStats) noteSliceType(nal []byte) {
+	isB, parsed := isBSlice(nal)
+	if !parsed {
+		s.undecodedSliceHeaders++
+		return
+	}
+	s.bFrames = s.bFrames || isB
 }
 
 // muxAnnexBToMP4 writes a complete MP4 to w. Sample payloads are streamed
@@ -282,8 +327,12 @@ func muxAnnexBToMP4(w *os.File, episodeDir string, frames []cameraIndexLine) (mu
 			// A frame the index names but whose bytes are missing or short is
 			// dropped and counted. Writing the bytes that do exist would put a
 			// truncated access unit in the file and make it undecodable from
-			// that point on.
+			// that point on. The first cause is kept: a bare count cannot tell
+			// a missing segment file from an index that outran a truncated one.
 			stats.skipped++
+			if stats.skipReason == "" {
+				stats.skipReason = err.Error()
+			}
 			continue
 		}
 		var (
@@ -309,9 +358,9 @@ func muxAnnexBToMP4(w *os.File, episodeDir string, frames []cameraIndexLine) (mu
 				continue
 			case 5: // coded slice of an IDR picture
 				sync = true
-				stats.bFrames = stats.bFrames || isBSlice(nal)
+				stats.noteSliceType(nal)
 			case 1: // coded slice of a non-IDR picture
-				stats.bFrames = stats.bFrames || isBSlice(nal)
+				stats.noteSliceType(nal)
 			}
 			body = append(body, u32(uint32(len(nal)))...)
 			body = append(body, nal...)
@@ -322,6 +371,9 @@ func muxAnnexBToMP4(w *os.File, episodeDir string, frames []cameraIndexLine) (mu
 		}
 		if _, err := w.Write(body); err != nil {
 			return stats, err
+		}
+		if sync {
+			stats.syncSamples++
 		}
 		samples = append(samples, sample{
 			// Rounded from the recorded nanoseconds. Never derived from a rate.
@@ -334,6 +386,9 @@ func muxAnnexBToMP4(w *os.File, episodeDir string, frames []cameraIndexLine) (mu
 	}
 	stats.frames, stats.segments = len(samples), len(segments.seen)
 	if len(samples) == 0 {
+		if stats.skipReason != "" {
+			return stats, fmt.Errorf("no frame payload could be read (%d unreadable); first cause: %s", stats.skipped, stats.skipReason)
+		}
 		return stats, fmt.Errorf("no frame payload could be read (%d unreadable)", stats.skipped)
 	}
 	if sps == nil || pps == nil {

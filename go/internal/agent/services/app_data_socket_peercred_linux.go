@@ -17,7 +17,7 @@ import (
 func readPeerCredentials(c net.Conn) (peerCredentials, error) {
 	uc, ok := c.(*net.UnixConn)
 	if !ok {
-		return peerCredentials{}, fmt.Errorf("connection is not a unix socket")
+		return peerCredentials{}, fmt.Errorf("%w: connection is not a unix socket", errPeerCredUnavailable)
 	}
 	raw, err := uc.SyscallConn()
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -293,6 +294,14 @@ func main() {
 		return timesync.QueryConsensus(ctx, timesync.Servers)
 	})
 	dataManager.SetWarnLogger(func(msg string) { logger.Warn(msg) })
+	// Episode store bounds. The enforced quota is the smaller of a fifth of the
+	// data filesystem and this cap, and eviction preserves the reserve as free
+	// space. A device whose data partition wants different bounds sets these
+	// rather than being stuck with the built-in numbers.
+	dataManager.SetQuota(
+		envBytes(logger, "WENDY_DATA_MAX_BYTES", agentdata.DefaultMaxQuotaBytes),
+		envBytes(logger, "WENDY_DATA_RESERVE_BYTES", agentdata.DefaultReserveBytes),
+	)
 	dataSvc := services.NewDataService(dataManager)
 	dataSvc.SetAudioService(audioSvc)
 	// ROS 2 inspection requires the containerd-backed sidecar runtime; the
@@ -980,9 +989,13 @@ func main() {
 	}
 
 	// Episode transfer worker: uploads sealed episodes to the cloud ingest
-	// service over the same asset mTLS identity as the telemetry flusher. Gated
-	// on disk persistence (the manifest queue lives on disk) and, inside Run, on
-	// provisioning completion (it needs the cloud identity).
+	// service over the same asset mTLS identity as the telemetry flusher. Its
+	// queue is the episode store the data manager owns, which NewManager above
+	// created (the agent exits when it cannot), so the only start condition is
+	// provisioning completion, which Run waits for itself. It is deliberately
+	// NOT gated on telemetry disk buffering: that reports on a different store,
+	// and gating on it would silently leave every sealed episode unuploaded
+	// until the quota evicted it.
 	dataTransferWorker := services.NewDataTransferWorker(logger, dataManager, provisioningSvc)
 	// WENDY_DATA_INGEST_URL redirects episode uploads to a different
 	// DataIngestService endpoint (for example a dev cloud deployment) without
@@ -993,13 +1006,11 @@ func main() {
 		logger.Info("data transfer worker: ingest endpoint override set",
 			zap.String("url", v))
 	}
-	if telemetryBuf.DiskEnabled() {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			dataTransferWorker.Run(ctx)
-		}()
-	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		dataTransferWorker.Run(ctx)
+	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -1226,4 +1237,22 @@ func handleUtilityCommand(args []string) (bool, int) {
 
 	fmt.Printf("Opening %s in default browser...\n", rawURL)
 	return true, 0
+}
+
+// envBytes reads a byte count from the environment, falling back to fallback
+// when the variable is unset. A value that is present but unusable is reported
+// rather than silently ignored: a device configured with a bad quota should
+// learn that its configuration did not take.
+func envBytes(logger *zap.Logger, name string, fallback int64) int64 {
+	raw, ok := os.LookupEnv(name)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || v < 0 {
+		logger.Warn("ignoring unusable byte count in environment; using the default",
+			zap.String("variable", name), zap.String("value", raw), zap.Int64("default", fallback))
+		return fallback
+	}
+	return v
 }

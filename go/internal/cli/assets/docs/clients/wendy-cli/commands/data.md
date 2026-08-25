@@ -129,9 +129,11 @@ Fields belonging to a different mode than the declared one are rejected.
 | `fragment` | `threshold` | Optional captured duration per threshold crossing. |
 | `max_resolution` | any | Camera sources only: `WxH` cap such as `1280x720`. |
 
-Only `continuous` is implemented by the capture adapters today. Other modes
-validate and deploy, and deployment prints a warning naming each source whose
-requested mode is not implemented yet; those sources record continuously for
+What each adapter honors today: cameras implement `continuous` and `snapshot`,
+audio implements `continuous` and `threshold`, and the ROS 2 and telemetry
+paths implement `continuous` only. Every other combination validates and
+deploys, and deployment prints a warning naming each source whose requested
+mode is not implemented for its kind; those sources record continuously for
 now.
 
 `capture.buffer` must be a Go-style duration from `0s` through `5m`.
@@ -280,11 +282,19 @@ already uploaded or were recorded without an upload policy are evicted first.
 Episodes still awaiting upload are evicted only as a last resort, with a
 warning in the agent log naming the Episode and campaign.
 
+The device-wide quota is the smaller of a fifth of the episode store's
+filesystem and `WENDY_DATA_MAX_BYTES` (default 50 GiB), and eviction preserves
+`WENDY_DATA_RESERVE_BYTES` of free space on it (default 5 GiB). Both are read
+by the agent from its environment file.
+
 ## Current layer boundaries
 
-- Upload policy (`upload.when`, `upload.destination`, `upload.max_rate`) is
-  stored as durable pending state, but this release does not run a cloud
-  transfer worker.
+- Upload policy: `upload.when` and `upload.max_rate` are applied by the agent's
+  episode transfer worker, which uploads sealed episodes to the cloud ingest
+  service. `wifi` is currently treated as `always` because no device
+  network-type signal is plumbed to the worker yet. `upload.destination` is a
+  logical dataset name stored with the plan; the device never receives bucket
+  layouts or credentials.
 - Per-source capture modes other than `continuous` are validated and stored,
   but the adapters record continuously; deployment warns per source.
 - `retention.local_quota` is validated and stored, but eviction currently

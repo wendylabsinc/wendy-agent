@@ -145,6 +145,11 @@ mkdir -p /data/wendy-agent/episodes && systemctl restart wendyos-agent"
 - `WENDY_DATA_DIR` moves the episode store off the root partition (default
   `/var/lib/wendy-agent/data/episodes`) onto the larger data partition. Worth
   doing on any device whose root partition is a few gigabytes.
+- `WENDY_DATA_MAX_BYTES` and `WENDY_DATA_RESERVE_BYTES` bound that store. The
+  enforced quota is the smaller of a fifth of the store's filesystem and
+  `WENDY_DATA_MAX_BYTES` (default 50 GiB), and eviction preserves
+  `WENDY_DATA_RESERVE_BYTES` of free space (default 5 GiB). Both take a plain
+  byte count; a value the agent cannot parse is logged and the default is kept.
 
 Verify the override took: the agent logs
 `data transfer worker: ingest endpoint override set` at startup.
@@ -199,8 +204,10 @@ With nothing in front of the camera the app reports uncertainty 1.0, so the
 `model.uncertainty > 0.65` trigger fires organically; walking into the frame
 fires the edge-triggered `person_detected` trigger instead. Each trigger seals
 one episode (10 seconds of pre-trigger buffer, 20 seconds after) which uploads
-within seconds. An episode of that length carries on the order of a hundred
-prediction records at the CPU path's 5 predictions per second.
+within seconds. The app holds itself to a ceiling of 5 predictions per second, but
+what it achieves is set by inference, not by the ceiling: an episode of that
+length carried on the order of a hundred prediction records, nearer three per
+second. Quote the ceiling as a ceiling.
 
 To pair those outcomes with the frames that produced them:
 
@@ -260,11 +267,33 @@ Enrollment is untouched by the demo, so there is nothing to restore there.
 
 ## Open gaps
 
-- Camera frames inside episodes need a second camera, or an app change to share
-  frames, because the reference app monopolizes the one it opens.
 - Chunk-diff deploys omit entitlement labels (pitfall 4), which is an open bug.
 - Catalog read verification from the CLI needs a user bearer token; today the
   proof is the commit-gated `uploaded` state plus a direct ClickHouse read.
 - The graphics processing unit (GPU) variant of the app, using
-  `onnxruntime-gpu`, has not been exercised; the demo runs the CPU path at
-  5 predictions per second.
+  `onnxruntime-gpu`, has not been exercised; the demo runs the CPU path.
+- The app sensor socket authenticates a caller by the app-private mount, the
+  group-2000 gate and the 0750 directory only. It performs no
+  peer-credential check, so it does not yet have the `SO_PEERCRED` plus cgroup
+  attribution the app data socket gained; a process in group 2000 that can
+  reach another app's sensor socket path would be served, and that app's
+  entitlement allowlist is what would be applied. The fix is the data socket's
+  `verifyPeer` behind an accept-time wrapper on the sensor listener.
+- ROS 2 sources report `healthy: true` unconditionally
+  (`data_ros2_adapter.go`, `ros2DataSource`): nothing probes the Data
+  Distribution Service (DDS) graph, so a dead domain enumerates as healthy.
+  Camera and audio sources derive their health; ROS 2 does not yet.
+- ROS 2 capture treats "rosbag2 has not exited within 750 ms" as "rosbag2 is
+  recording" (`data_ros2_adapter.go`, `startOne`). Nothing confirms the bag
+  directory was created or that a topic was subscribed, so a recorder that
+  fails just after that window reports a successful start and surfaces the
+  failure only at Stop.
+- The audio capture's `canonical_uncertainty_nanos` is the width of the
+  `clock_gettime` bracket taken in `beginSegment`, which runs after a chunk of
+  pulse-code modulation (PCM) data has already been read from the pipe. The
+  published uncertainty therefore describes the read of the clock, not the
+  buffering delay ahead of it, and understates the true error on a segment
+  start.
+- `wendy data download` mutates its own `--output` flag variable when the flag
+  is empty, so re-running the same command object in one process writes to the
+  first episode's directory.

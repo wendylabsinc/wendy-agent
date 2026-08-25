@@ -65,18 +65,24 @@ The episode directory is never modified.
 		}
 		fmt.Printf("  index span       %s\n", r.Span)
 		fmt.Printf("  interval min/mean/max  %s / %s / %s\n", r.MinInterval, r.MeanInterval, r.MaxInterval)
+		if r.SkippedReason != "" {
+			fmt.Fprintf(os.Stderr, "episode-playable: warning: camera %s skipped %d frame(s); first cause: %s\n", r.Source, r.Skipped, r.SkippedReason)
+		}
+		if r.SyncSamples == 0 {
+			fmt.Fprintf(os.Stderr, "episode-playable: warning: camera %s clip carries no random-access frame, so players cannot seek in it and many will not open it at all\n", r.Source)
+		}
 		if r.BFrames {
 			fmt.Fprintf(os.Stderr, "episode-playable: warning: camera %s contains B slices, so its presentation order differs from the coded order index.jsonl records; the timing written for it is approximate\n", r.Source)
+		} else if r.UndecodedSliceHeaders > 0 {
+			fmt.Fprintf(os.Stderr, "episode-playable: warning: camera %s has %d slice header(s) this tool could not parse, so whether the stream carries B slices is unknown and its timing may be approximate\n", r.Source, r.UndecodedSliceHeaders)
 		}
 	}
+	// Convert returns an empty result list only alongside a non-empty error
+	// list, so failing here covers the "nothing was converted" case too.
 	if len(errs) > 0 {
 		for _, err := range errs {
 			fmt.Fprintf(os.Stderr, "episode-playable: %v\n", err)
 		}
-		os.Exit(1)
-	}
-	if len(results) == 0 {
-		fmt.Fprintln(os.Stderr, "episode-playable: nothing to convert")
 		os.Exit(1)
 	}
 }

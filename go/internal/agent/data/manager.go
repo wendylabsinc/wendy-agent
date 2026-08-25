@@ -25,8 +25,13 @@ const DefaultRoot = "/var/lib/wendy-agent/data/episodes"
 const (
 	preRollWindow = 5 * time.Minute
 	preRollLimit  = 50 << 20
-	maxQuotaBytes = int64(50 << 30)
-	reserveBytes  = int64(5 << 30)
+	// DefaultMaxQuotaBytes caps the episode store, and DefaultReserveBytes is
+	// the free space eviction keeps available on the store's filesystem. The
+	// quota itself is a fifth of the filesystem bounded by this cap, so both
+	// are defaults rather than device-specific numbers; SetQuota overrides
+	// them where a device wants a different bound.
+	DefaultMaxQuotaBytes = int64(50 << 30)
+	DefaultReserveBytes  = int64(5 << 30)
 )
 
 var ErrNoActiveEpisode = errors.New("no active episode")
@@ -68,7 +73,28 @@ type Manager struct {
 	sourceProvider func(context.Context) []Source
 	appObserver    func(string, ApplicationRecord)
 	warn           func(string)
-	quotaForTest   int64
+	// maxQuota and reserve bound the episode store. They default to
+	// DefaultMaxQuotaBytes and DefaultReserveBytes and are overridden through
+	// SetQuota, which is how the agent applies its configuration and how the
+	// eviction tests drive a store small enough to evict deterministically.
+	maxQuota int64
+	reserve  int64
+}
+
+// SetQuota overrides the episode store bounds. maxQuota caps the store (the
+// enforced quota is still the smaller of it and a fifth of the filesystem) and
+// reserve is the free space eviction preserves on that filesystem. A
+// non-positive maxQuota keeps the default; reserve is applied as given, so
+// zero really does mean "keep no headroom".
+func (m *Manager) SetQuota(maxQuota, reserve int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if maxQuota > 0 {
+		m.maxQuota = maxQuota
+	}
+	if reserve >= 0 {
+		m.reserve = reserve
+	}
 }
 
 // SetWarnLogger routes operational warnings (for example evicting an episode
@@ -198,7 +224,8 @@ func NewManager(root string) (*Manager, error) {
 			return nil, errors.Join(err, fallbackErr)
 		}
 	}
-	m := &Manager{root: root, downloads: make(map[string]int), active: make(map[string]*activeEpisode)}
+	m := &Manager{root: root, downloads: make(map[string]int), active: make(map[string]*activeEpisode),
+		maxQuota: DefaultMaxQuotaBytes, reserve: DefaultReserveBytes}
 	if err := m.recoverPartials(); err != nil {
 		return nil, err
 	}
@@ -633,13 +660,10 @@ func (m *Manager) enforceQuota() error {
 	total := int64(stat.Blocks) * int64(stat.Bsize)
 	free := int64(stat.Bavail) * int64(stat.Bsize)
 	quota := total / 5
-	if quota > maxQuotaBytes {
-		quota = maxQuotaBytes
+	if quota > m.maxQuota {
+		quota = m.maxQuota
 	}
-	reserve := reserveBytes
-	if m.quotaForTest > 0 {
-		quota, reserve = m.quotaForTest, 0
-	}
+	reserve := m.reserve
 	type candidate struct {
 		path          string
 		started, size int64
@@ -697,7 +721,7 @@ func (m *Manager) enforceQuota() error {
 		free += c.size
 	}
 	if used > quota || free < reserve {
-		return fmt.Errorf("data quota cannot preserve %d GiB free", reserveBytes>>30)
+		return fmt.Errorf("data store holds %d bytes against a %d byte quota and cannot preserve %d bytes free", used, quota, reserve)
 	}
 	return nil
 }

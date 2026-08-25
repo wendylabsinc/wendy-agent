@@ -238,7 +238,7 @@ func TestEnforceQuotaEvictsUploadedBeforePendingUpload(t *testing.T) {
 	// OLDER of the two, so the previous strictly oldest-first order would have
 	// evicted it; upload-state ordering must sacrifice the newer uploaded
 	// episode instead.
-	m.quotaForTest = episodeSize(t, m, pending.ID) + 1
+	m.SetQuota(episodeSize(t, m, pending.ID)+1, 0)
 	final := recordEpisode(t, m, StartOptions{Sources: []string{"applications"}})
 	if _, err = m.episodeDir(uploaded.ID); err == nil {
 		t.Fatal("uploaded episode was not evicted")
@@ -254,7 +254,7 @@ func TestEnforceQuotaEvictsUploadedBeforePendingUpload(t *testing.T) {
 	}
 	// Force the pending episode out as well: the quota can no longer hold it,
 	// and the eviction must warn, naming the episode and campaign.
-	m.quotaForTest = 1
+	m.SetQuota(1, 0)
 	if _, err = m.Start(StartOptions{Sources: []string{"applications"}}); err == nil {
 		if _, stopErr := m.Stop(AdHocEpisodeKey); stopErr != nil {
 			t.Fatal(stopErr)

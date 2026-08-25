@@ -7,9 +7,11 @@ fleet: warehouse-west
 
 sources:
   # Per-source capture policy is optional; without one a source records
-  # continuously. Modes other than continuous are validated and stored, but
-  # the capture adapters do not implement them yet: deployment warns and the
-  # source records continuously for now.
+  # continuously. Which modes an adapter honors depends on the source kind:
+  # cameras do continuous and snapshot, audio does continuous and threshold,
+  # ROS 2 and telemetry do continuous only. A mode an adapter does not
+  # implement for its kind still validates and deploys; deployment warns and
+  # that source records continuously.
   - camera: front
     capture:
       mode: snapshot

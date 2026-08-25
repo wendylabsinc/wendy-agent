@@ -168,7 +168,9 @@ func (s *DataService) startCapture(ctx context.Context, opts data.StartOptions) 
 			r, _ := captures[i].Stop(context.Background())
 			results = append(results, r...)
 		}
-		_ = s.manager.ApplyCaptureResults(key, results)
+		if applyErr := s.manager.ApplyCaptureResults(key, results); applyErr != nil {
+			s.manager.Warnf("recording capture results for episode key %q after a failed adapter start: %v", key, applyErr)
+		}
 		_, _ = s.manager.Interrupt(key, "capture_adapter_start_failed")
 		return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("starting capture adapter: %v", startErr))
 	}
@@ -233,7 +235,12 @@ func (s *DataService) stopCaptureLocked(ctx context.Context, key string) (*agent
 	}
 	delete(s.activeCaptures, key)
 	if len(results) > 0 {
-		_ = s.manager.ApplyCaptureResults(key, results)
+		// A manifest sealed without its per-source capture results reports an
+		// episode as complete while silently omitting what each source
+		// actually produced, so the failure is surfaced rather than dropped.
+		if applyErr := s.manager.ApplyCaptureResults(key, results); applyErr != nil {
+			s.manager.Warnf("recording capture results into episode key %q failed; its manifest will omit per-source capture counters: %v", key, applyErr)
+		}
 	}
 	var m data.Manifest
 	var err error
@@ -380,6 +387,9 @@ func (s *DataService) observeApplicationRecord(_ string, record data.Application
 	}
 	campaigns, err := s.manager.Campaigns()
 	if err != nil {
+		// Without the campaign list no armed trigger can fire, which is
+		// indistinguishable from "no record matched" unless it is said.
+		s.manager.Warnf("reading campaigns to evaluate triggers failed; no campaign can fire until this clears: %v", err)
 		return
 	}
 	for _, campaign := range campaigns {
@@ -391,7 +401,13 @@ func (s *DataService) observeApplicationRecord(_ string, record data.Application
 			continue
 		}
 		campaign := campaign
-		go func() { _, _ = s.triggerCampaign(context.Background(), campaign, reason, expression) }()
+		go func() {
+			if _, triggerErr := s.triggerCampaign(context.Background(), campaign, reason, expression); triggerErr != nil {
+				// An armed campaign that matched but could not start an
+				// episode must not look the same as one that never matched.
+				s.manager.Warnf("campaign %q matched %s but starting its episode failed: %v", campaign.Name, reason, triggerErr)
+			}
+		}()
 	}
 }
 

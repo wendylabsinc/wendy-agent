@@ -336,7 +336,7 @@ func TestQuotaEvictionEdgeCases(t *testing.T) {
 	// Every candidate awaits upload and the quota holds roughly one episode:
 	// eviction must still make room, warn once per sacrificed episode, and
 	// never fail to start the new capture.
-	m.quotaForTest = episodeSize(t, m, third.ID) + 1
+	m.SetQuota(episodeSize(t, m, third.ID)+1, 0)
 	fourth := recordEpisode(t, m, StartOptions{Sources: []string{"applications"}})
 	if _, err := m.episodeDir(fourth.ID); err != nil {
 		t.Fatal(err)
@@ -356,7 +356,7 @@ func TestQuotaEvictionEdgeCases(t *testing.T) {
 	// A quota smaller than any single episode evicts everything sealed and
 	// still admits the new episode rather than deadlocking capture.
 	warnings = warnings[:0]
-	m.quotaForTest = 1
+	m.SetQuota(1, 0)
 	fifth, err := m.Start(StartOptions{Sources: []string{"applications"}})
 	if err != nil {
 		t.Fatalf("start under minimal quota: %v", err)
@@ -473,7 +473,7 @@ func TestRecoverMultiplePartialsAcrossCampaigns(t *testing.T) {
 	// Recovered pending-upload episodes keep their eviction protection.
 	var warnings []string
 	recovered.SetWarnLogger(func(msg string) { warnings = append(warnings, msg) })
-	recovered.quotaForTest = 1
+	recovered.SetQuota(1, 0)
 	if _, err := recovered.Start(StartOptions{Sources: []string{"applications"}}); err != nil {
 		t.Fatal(err)
 	}

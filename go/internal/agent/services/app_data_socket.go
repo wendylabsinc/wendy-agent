@@ -40,6 +40,15 @@ type peerCredentials struct {
 	PID int32
 }
 
+// errPeerCredUnavailable marks the cases where the connection structurally
+// carries no peer identity to read: it is not a unix socket, or the platform
+// has no SO_PEERCRED. Those, and only those, are the fail-open cases in
+// verifyPeer. A lookup that fails for any other reason on a real unix socket
+// (SyscallConn or getsockopt returning an error) is an unexplained failure of
+// the identity check, not an absence of one, and must fail closed like every
+// other unattributable peer.
+var errPeerCredUnavailable = errors.New("peer credentials are unavailable on this connection")
+
 var AppDataSocketRootPath = "/var/lib/wendy/app-data"
 
 type appDataSocket struct {
@@ -199,10 +208,11 @@ func (m *AppDataSocketManager) serve(s *appDataSocket) {
 // to a different app is refused: it cannot write records attributed to an app
 // it is not.
 //
-// Fail-open is confined to the case where SO_PEERCRED itself yields no peer:
-// not a unix socket, an unsupported platform, or the seam being disabled. In
-// those cases the group-2000 gate and the 0750 app-private socket directory
-// remain the baseline.
+// Fail-open is confined to the case where the connection structurally carries
+// no peer to read: not a unix socket, an unsupported platform, or the seam
+// being disabled (see errPeerCredUnavailable). In those cases the group-2000
+// gate and the 0750 app-private socket directory remain the baseline. A
+// SO_PEERCRED lookup that fails for any other reason fails closed.
 //
 // Once a peer pid IS known, verification fails CLOSED: any inability to
 // positively attribute that pid to this app (its /proc cgroup is unreadable,
@@ -230,9 +240,16 @@ func (m *AppDataSocketManager) verifyPeer(appID string, c net.Conn) error {
 	}
 	creds, err := m.peerCred(c)
 	if err != nil {
-		// Peer credentials are unavailable (not a unix socket, or an
-		// unsupported platform). Fall back to the group/directory gate.
-		return nil
+		if errors.Is(err, errPeerCredUnavailable) {
+			// The connection carries no peer identity at all (not a unix
+			// socket, or an unsupported platform). Fall back to the
+			// group/directory gate.
+			return nil
+		}
+		// SO_PEERCRED was available in principle and failed anyway. Refusing
+		// keeps the identity check from being silently skipped by whatever
+		// made it fail.
+		return fmt.Errorf("reading peer credentials failed; cannot attribute the connection to app %q: %w", appID, err)
 	}
 	if m.cgroupOfPID == nil {
 		return nil
