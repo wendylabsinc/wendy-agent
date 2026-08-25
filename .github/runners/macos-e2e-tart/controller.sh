@@ -45,6 +45,7 @@ assert_protected_secret() {
 }
 
 verify_installation() {
+  local installed_tart_version installed_softnet_version installed_softnet_build
   assert_immutable_file "$0"
   assert_immutable_file "$CONFIG_PATH"
   assert_immutable_file "$INSTALL_ROOT/bin/watchdog.sh"
@@ -55,10 +56,15 @@ verify_installation() {
   [[ "$GOLDEN_IMAGE" =~ ^[A-Za-z0-9._:-]+$ ]] || fail "GOLDEN_IMAGE is invalid"
   [[ "$RUNNER_MAX_SECONDS" =~ ^[0-9]+$ ]] || fail "RUNNER_MAX_SECONDS must be numeric"
 
-  [[ "$($TART_BIN --version)" == "Tart $TART_VERSION" ]] \
-    || fail "expected Tart $TART_VERSION"
-  [[ "$($SOFTNET_BIN --version)" == "softnet $SOFTNET_VERSION" ]] \
-    || fail "expected Softnet $SOFTNET_VERSION"
+  installed_tart_version="$($TART_BIN --version)"
+  installed_softnet_version="$($SOFTNET_BIN --version)"
+  installed_softnet_build="${installed_softnet_version#softnet }"
+  [[ "$installed_tart_version" == "$TART_VERSION" ]] \
+    || fail "expected Tart $TART_VERSION, got $installed_tart_version"
+  [[ "$installed_softnet_version" == softnet\ * && \
+     ("$installed_softnet_build" == "$SOFTNET_VERSION" || \
+      "$installed_softnet_build" == "$SOFTNET_VERSION"-*) ]] \
+    || fail "expected Softnet $SOFTNET_VERSION, got $installed_softnet_version"
   "$JQ_BIN" --version >/dev/null
   "$TART_BIN" list --source local --quiet | grep -Fxq "$GOLDEN_IMAGE" \
     || fail "golden image is missing: $GOLDEN_IMAGE"

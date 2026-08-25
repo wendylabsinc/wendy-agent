@@ -97,8 +97,8 @@ As that operator account, install the verified versions:
 ```bash
 brew install openai/tools/tart openai/tools/softnet jq
 
-tart --version       # Tart 2.36.0
-softnet --version     # softnet 0.23.0
+tart --version        # 2.36.0
+softnet --version     # softnet 0.23.0-<build>
 ```
 
 Then run the installer from a trusted, reviewed checkout. Pass the **path** to

@@ -57,10 +57,14 @@ for tool in /opt/homebrew/bin/tart /opt/homebrew/bin/softnet /opt/homebrew/bin/j
     exit 1
   }
 done
-[[ "$(sudo -u "$operator_user" /opt/homebrew/bin/tart --version)" == 'Tart 2.36.0' ]] \
-  || { echo "ERROR: expected Tart 2.36.0" >&2; exit 1; }
-[[ "$(sudo -u "$operator_user" /opt/homebrew/bin/softnet --version)" == 'softnet 0.23.0' ]] \
-  || { echo "ERROR: expected Softnet 0.23.0" >&2; exit 1; }
+installed_tart_version="$(sudo -u "$operator_user" /opt/homebrew/bin/tart --version)"
+installed_softnet_version="$(sudo -u "$operator_user" /opt/homebrew/bin/softnet --version)"
+installed_softnet_build="${installed_softnet_version#softnet }"
+[[ "$installed_tart_version" == '2.36.0' ]] \
+  || { echo "ERROR: expected Tart 2.36.0, got $installed_tart_version" >&2; exit 1; }
+[[ "$installed_softnet_version" == softnet\ * && \
+   ("$installed_softnet_build" == '0.23.0' || "$installed_softnet_build" == 0.23.0-*) ]] \
+  || { echo "ERROR: expected Softnet 0.23.0, got $installed_softnet_version" >&2; exit 1; }
 
 install -o root -g wheel -m 0755 "$script_dir/controller.sh" "$install_root/bin/controller.sh"
 install -o root -g wheel -m 0755 "$script_dir/watchdog.sh" "$install_root/bin/watchdog.sh"
