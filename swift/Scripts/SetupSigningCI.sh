@@ -61,8 +61,6 @@ security set-key-partition-list \
   -s \
   -k "$KEYCHAIN_PASSWORD" \
   "$KEYCHAIN_PATH"
-security list-keychains -d user -s "$KEYCHAIN_PATH"
-
 SIGNING_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk -F '"' '/Developer ID Application/ { print $2; exit }')
 if [ -z "$SIGNING_IDENTITY" ]; then
   echo "::error::Could not find a Developer ID Application identity in the imported certificate"
@@ -72,7 +70,8 @@ fi
 xcrun notarytool store-credentials "$NOTARY_PROFILE" \
   --apple-id "$NOTARY_APPLE_ID" \
   --team-id "$NOTARY_TEAM_ID" \
-  --password "$NOTARY_PASSWORD"
+  --password "$NOTARY_PASSWORD" \
+  --keychain "$KEYCHAIN_PATH"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
