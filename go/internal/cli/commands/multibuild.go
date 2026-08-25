@@ -26,6 +26,10 @@ import (
 
 const maxConcurrentBuilds = 4
 
+// serviceBuildFn builds the image for one service. repo is the lowercased
+// "<appID>-<service>" name that is both the image repo and the cache key.
+type serviceBuildFn func(ctx context.Context, contextDir, repo, dockerfile string, buildOut, logOut io.Writer) error
+
 // multiBuildConcurrency returns the default number of service images to
 // build+push at once for a group of numServices.
 func multiBuildConcurrency(numServices int) int {
@@ -591,11 +595,11 @@ func droppedSummary(dropped map[string]string) string {
 	return fmt.Sprintf(", %d skipped (failed dependency: %s)", len(names), strings.Join(names, ", "))
 }
 
-// buildServicesParallel builds all service images concurrently (up to
-// maxConcurrentBuilds at a time). Services in skip are already on the device with
-// unchanged inputs, so their build+push is skipped (WDY-1692). Progress is shown
-// via a Bubbletea multi-spinner in interactive terminals and via plain log lines
-// otherwise.
+// buildServicesParallelCore builds all service images concurrently (up to
+// maxConcurrentBuilds at a time), invoking build for each one. Services in skip
+// are already on the device with unchanged inputs, so their build+push is
+// skipped (WDY-1692). Progress is shown via a Bubbletea multi-spinner in
+// interactive terminals and via plain log lines otherwise.
 //
 // dockerfiles carries the build file planning already resolved per service, so a
 // Stagefile project is not compiled twice in the same run. It is best-effort:
@@ -603,16 +607,12 @@ func droppedSummary(dropped map[string]string) string {
 // could not plan, so a service missing from the map resolves its own build file
 // here — which is also where that resolution's error belongs, since this is the
 // path that reports per-service failures.
-func buildServicesParallel(
+func buildServicesParallelCore(
 	ctx context.Context,
-	conn *grpcclient.AgentConnection,
-	regPort int,
-	agentOS string,
+	build serviceBuildFn,
 	cwd, appID string,
 	services map[string]*appconfig.ServiceConfig,
-	platform string,
-	buildArgs map[string]string,
-	builder string,
+	gpuArch string,
 	skip map[string]bool,
 	dockerfiles map[string]string,
 	maxConcurrency int,
@@ -627,10 +627,6 @@ func buildServicesParallel(
 		names = append(names, n)
 	}
 	sort.Strings(names)
-
-	// Resolved once for the group: every service deploys to this one device,
-	// so they share its GPU architecture.
-	gpuArch := serviceGPUArch(buildCtx, cwd, services, conn)
 
 	type result struct {
 		name string
@@ -732,7 +728,7 @@ func buildServicesParallel(
 				// Pass the per-service repo as the build's cache key so each concurrent
 				// build gets its own isolated local buildx cache dir (WDY-1689); sharing
 				// one dir corrupts BuildKit's cache-export ingest store under concurrency.
-				err = buildServiceImage(buildCtx, conn, regPort, agentOS, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
+				err = build(buildCtx, contextDir, repo, dockerfile, buildOut, logOutW)
 			}
 			dur := time.Since(start)
 
@@ -804,6 +800,36 @@ func buildServicesParallel(
 		return nil, ctx.Err()
 	}
 	return failed, nil
+}
+
+// buildServicesParallel is the push-destination flavor of
+// buildServicesParallelCore: it builds and pushes each service's image to the
+// device registry, via the buildServiceImage seam.
+func buildServicesParallel(
+	ctx context.Context,
+	conn *grpcclient.AgentConnection,
+	regPort int,
+	agentOS string,
+	cwd, appID string,
+	services map[string]*appconfig.ServiceConfig,
+	platform string,
+	buildArgs map[string]string,
+	builder string,
+	skip map[string]bool,
+	dockerfiles map[string]string,
+	maxConcurrency int,
+	quietBuild bool,
+	sfOpts ...stagefile.Option,
+) (map[string]error, error) {
+	// Resolved once for the group: every service deploys to this one device,
+	// so they share its GPU architecture.
+	gpuArch := serviceGPUArch(ctx, cwd, services, conn)
+
+	build := func(ctx context.Context, contextDir, repo, dockerfile string, buildOut, logOut io.Writer) error {
+		return buildServiceImage(ctx, conn, regPort, agentOS, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOut)
+	}
+
+	return buildServicesParallelCore(ctx, build, cwd, appID, services, gpuArch, skip, dockerfiles, maxConcurrency, quietBuild, sfOpts...)
 }
 
 // sortedServiceErrorKeys returns the service names in failed, sorted, for stable
