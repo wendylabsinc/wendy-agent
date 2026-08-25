@@ -33,6 +33,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
@@ -1764,7 +1765,11 @@ func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvide
 		return nil, err
 	}
 
-	if err := installESP32Firmware(ctx, false, board, device.ConnectionInfo["serialPort"], wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollAuto}); err != nil {
+	serialDevice := discovery.SerialPortInfo{
+		Port:      device.ConnectionInfo["serialPort"],
+		Transport: discovery.SerialTransportNativeUSB,
+	}
+	if err := installESP32Firmware(ctx, false, board, serialDevice, wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollAuto}); err != nil {
 		return nil, fmt.Errorf("reinstalling Wendy Lite: %w", err)
 	}
 

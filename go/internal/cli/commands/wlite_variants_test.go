@@ -84,6 +84,27 @@ func TestWendyLiteFirmwareID(t *testing.T) {
 	}
 }
 
+func TestWendyLiteTargetForBoard(t *testing.T) {
+	tests := map[string]string{
+		"esp32c5_generic":           "esp32c5",
+		"esp32c6_generic":           "esp32c6",
+		"esp32c61_generic_native":   "esp32c61",
+		"esp32p4_waveshare_lcd_4b":  "esp32p4",
+		"esp32s3_seeed_xiao_native": "esp32s3",
+	}
+	for board, want := range tests {
+		t.Run(board, func(t *testing.T) {
+			got, err := WendyLiteTargetForBoard(board)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Fatalf("WendyLiteTargetForBoard(%q) = %q, want %q", board, got, want)
+			}
+		})
+	}
+}
+
 // wendyLiteBoardsWithFirmware drops catalog boards that have no published
 // firmware in the manifest's Firmware map, so pickers never offer a board
 // whose flash attempt would fail right after selection.
