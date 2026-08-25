@@ -10,7 +10,7 @@ Required options:
   --operator-user USER             Logged-in macOS account that will run Tart
   --github-app-id ID               GitHub App ID (not a secret)
   --github-app-installation-id ID  Installation ID for WendyOS (not a secret)
-  --runner-group-id ID             ID of the dedicated runner group
+  --runner-group-id ID             ID of the existing wendy-developer group
   --github-app-key PATH            Existing GitHub App private-key file
 
 The key is copied into the host-owned secret directory. Never paste key content

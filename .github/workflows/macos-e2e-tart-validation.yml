@@ -58,7 +58,7 @@ jobs:
     permissions:
       contents: read
     runs-on:
-      group: wendy-e2e-macos-tart
+      group: wendy-developer
       labels: [self-hosted, wendy-e2e-macos-tart]
     timeout-minutes: 170
     steps:
@@ -158,7 +158,7 @@ jobs:
     permissions:
       contents: read
     runs-on:
-      group: wendy-e2e-macos-tart
+      group: wendy-developer
       labels: [self-hosted, wendy-e2e-macos-tart]
     timeout-minutes: 15
     steps:

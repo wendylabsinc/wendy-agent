@@ -78,7 +78,7 @@ jobs:
     permissions:
       contents: read
     runs-on:
-      group: wendy-e2e-macos-tart
+      group: wendy-developer
       labels: [self-hosted, wendy-e2e-macos-tart]
     concurrency:
       group: device-local-macos-tart

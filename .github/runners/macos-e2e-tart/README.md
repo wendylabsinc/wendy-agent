@@ -22,7 +22,7 @@ checkout or mounts a host directory into a guest.
 | Tart | `2.36.0` |
 | Softnet | `0.23.0` |
 | Guest resources | 8 CPUs, 12 GB RAM, one concurrent guest |
-| Runner group/label | `wendy-e2e-macos-tart` / `wendy-e2e-macos-tart` |
+| Runner group/label | existing `wendy-developer` / unique `wendy-e2e-macos-tart` |
 
 The upstream digest was resolved from the Cirrus Labs Xcode 26.6 release on
 2026-08-25. The runner archive digest is published on the GitHub Actions runner
@@ -38,9 +38,11 @@ The upstream digest was resolved from the Cirrus Labs Xcode 26.6 release on
   installation is restricted to `wendylabsinc/WendyOS`; its private key never
   enters the guest. The one-job JIT configuration crosses Tart's control socket
   on stdin and is not written to host disk or a host process argument.
-- The runner group is restricted to WendyOS and the workflow selects both the
-  unique group and unique label. It does not select `macos-*` or the shared
-  `wendy-developer` pool.
+- The JIT runner joins the existing `wendy-developer` group, but jobs also
+  require the unique `wendy-e2e-macos-tart` label. The persistent Mac has only
+  the shared `macOS`/`ARM64` labels, so it cannot satisfy this route. Repository
+  scope, the unique label, and host-owned lifecycle form the isolation boundary;
+  the shared group is not treated as one.
 - Passwordless sudo exists only for `admin` inside the disposable guest. SSH
   password authentication is disabled. The existing E2E setup may enable sshd
   and create a guest-local loopback key because the harness runs local sessions
@@ -59,23 +61,22 @@ destroy the VM.
 
 ## One-time GitHub setup
 
-Use an organization owner or a role with runner-group administration. Do not
-supply credentials to a workflow or paste them into chat.
+Do not supply credentials to a workflow or paste them into chat.
 
-1. Create an organization runner group named `wendy-e2e-macos-tart`.
-2. Set repository access to **Selected repositories** and select only
-   `wendylabsinc/WendyOS`. Record the numeric group ID from the API/UI URL.
-3. Create or reuse a GitHub App installed only on WendyOS. Give it repository
+1. Record the numeric ID of the existing `wendy-developer` runner group from its
+   GitHub organization settings URL. This is a non-secret value; no new group or
+   group-policy change is required.
+2. Create or reuse a GitHub App installed only on WendyOS. Give it repository
    **Administration: write** (required by the repository JIT-config endpoint)
    and **Metadata: read**. Do not grant contents, secrets, packages, or org-wide
    repository access.
-4. Generate one App private key and transfer the file directly to the target
+3. Generate one App private key and transfer the file directly to the target
    host's protected local filesystem. Do not commit it or put it in shell
    history. Record the App and installation IDs; those IDs are not secrets.
 
-The current interactive `gh` token intentionally cannot administer runners, so
-these steps require the bounded owner action above rather than broadening a
-developer token.
+The current interactive `gh` token intentionally cannot read runner-group IDs,
+so retrieving that non-secret ID remains a bounded owner action rather than a
+reason to broaden a developer token.
 
 ## Install on the M4 Pro host
 
