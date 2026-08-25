@@ -37,7 +37,8 @@ done
 [[ -s "$github_pat_file" ]] || { echo "ERROR: GitHub PAT file is empty" >&2; exit 1; }
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-install_root="/Library/Application Support/Wendy/TartE2E"
+install_parent="/Library/Application Support/Wendy"
+install_root="$install_parent/TartE2E"
 operator_uid="$(id -u "$operator_user")"
 operator_gid="$(id -g "$operator_user")"
 operator_home="$(dscl . -read "/Users/$operator_user" NFSHomeDirectory | awk '{print $2}')"
@@ -46,6 +47,9 @@ tart_home="$operator_home/.tart"
 launch_agent="/Library/LaunchAgents/org.wendy.macos-e2e-tart.plist"
 
 [[ -d "$operator_home" ]] || { echo "ERROR: operator home is missing" >&2; exit 1; }
+# install(1) applies the requested mode only to named destinations. Name the
+# intermediate Wendy directory explicitly so umask 077 cannot make it root-only.
+install -d -o root -g wheel -m 0711 "$install_parent"
 install -d -o root -g wheel -m 0755 "$install_root" "$install_root/bin"
 install -d -o "$operator_user" -g "$operator_gid" -m 0700 \
   "$install_root/secrets" "$state_dir" "$tart_home"
