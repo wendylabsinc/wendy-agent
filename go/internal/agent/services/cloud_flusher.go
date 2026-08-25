@@ -43,6 +43,17 @@ type CloudFlusher struct {
 	logger          *zap.Logger
 	buffer          *TelemetryBuffer
 	provisioningSvc *ProvisioningService // nil in tests
+	// telemetryHostOverride, when non-empty, replaces the provisioning cloud
+	// host as the OTLP export target. Enrollment is still required: the asset
+	// identity and client certificate come from provisioning, only the
+	// destination changes. Set from WENDY_DATA_TELEMETRY_URL in main.
+	//
+	// This exists because the broker's OTLP ingest handler has sinks for Loki,
+	// Prometheus and Tempo but none for the data platform's ClickHouse store,
+	// so telemetry sent there is acknowledged and discarded. Pointing the
+	// flusher at the wendy-data ingest service instead lands the same frames in
+	// telemetry_metrics, telemetry_logs and telemetry_traces.
+	telemetryHostOverride string
 }
 
 // NewCloudFlusher creates a CloudFlusher for tests. The explicit org/asset ID
@@ -76,11 +87,12 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 	}
 
 	var cloudHost string
+	var orgID, assetID int32
 
 	// Poll until provisioned.
 	for {
 		var enrolled bool
-		cloudHost, _, _, enrolled = f.provisioningSvc.ProvisioningInfo()
+		cloudHost, orgID, assetID, enrolled = f.provisioningSvc.ProvisioningInfo()
 		if enrolled {
 			break
 		}
@@ -104,7 +116,11 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 		}
 
 		certPEM, chainPEM, keyData := f.provisioningSvc.ProvisioningCerts()
-		conn, err := f.dial(ctx, cloudHost, certPEM, chainPEM, keyData)
+		// The identity sent, when one is sent at all, is the one the enrolled
+		// asset certificate asserts: it comes from ProvisioningInfo above,
+		// never from the environment or from anything an app can influence.
+		conn, err := f.dial(ctx, f.telemetryDialHost(cloudHost), certPEM, chainPEM, keyData,
+			f.telemetryDialOptions(orgID, assetID)...)
 		if err != nil {
 			f.logger.Warn("cloud flusher: dial failed", zap.Error(err))
 			f.sleep(ctx, attempt)
@@ -150,9 +166,37 @@ func (f *CloudFlusher) sleep(ctx context.Context, attempt int) {
 
 // dial establishes a TLS 1.3 gRPC connection. keyData is zeroed on return as
 // best-effort protection; crypto/tls may retain additional internal copies.
-func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string, keyData []byte) (*grpc.ClientConn, error) {
+func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string, keyData []byte, extraOpts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	defer zeroBytes(keyData)
-	return dialCloudMTLS(host, certPEM, chainPEM, keyData)
+	return dialCloudMTLS(host, certPEM, chainPEM, keyData, extraOpts...)
+}
+
+// SetTelemetryHostOverride points OTLP exports at host instead of the
+// provisioning cloud host. host may be a bare host, host:port, or an
+// http(s):// URL; the scheme and any path are stripped and the default port
+// is applied by the dialer. An empty host clears the override.
+func (f *CloudFlusher) SetTelemetryHostOverride(host string) {
+	f.telemetryHostOverride = normalizeIngestOverride(host)
+}
+
+// telemetryDialHost resolves the host this pass should dial: the override when
+// set, the enrolled cloud host otherwise.
+func (f *CloudFlusher) telemetryDialHost(cloudHost string) string {
+	if f.telemetryHostOverride != "" {
+		return f.telemetryHostOverride
+	}
+	return cloudHost
+}
+
+// telemetryDialOptions returns the extra dial options for this pass: nil on the
+// normal enrolled path, where Envoy terminates mutual Transport Layer Security
+// and injects the identity itself, and the certificate identity header on the
+// override path, which does not go through Envoy at all.
+func (f *CloudFlusher) telemetryDialOptions(orgID, assetID int32) []grpc.DialOption {
+	if f.telemetryHostOverride == "" {
+		return nil
+	}
+	return certIdentityDialOptions(orgID, assetID)
 }
 
 // zeroBytes overwrites b in place as best-effort key-material hygiene.

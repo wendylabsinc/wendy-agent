@@ -980,6 +980,18 @@ func main() {
 	}()
 
 	cloudFlusher := services.NewCloudFlusherWithProvisioning(logger, telemetryBuf, provisioningSvc)
+	// WENDY_DATA_TELEMETRY_URL redirects OpenTelemetry Protocol (OTLP) exports
+	// to a different collector endpoint, the mirror of WENDY_DATA_INGEST_URL
+	// below. The broker's OTLP handler has sinks for Loki, Prometheus and Tempo
+	// but none for the data platform's store, so telemetry sent there is
+	// acknowledged and discarded; pointing the flusher at the wendy-data ingest
+	// service lands the same frames in ClickHouse. Enrollment is untouched:
+	// identity still comes from the enrolled asset certificate.
+	if v := os.Getenv("WENDY_DATA_TELEMETRY_URL"); v != "" {
+		cloudFlusher.SetTelemetryHostOverride(v)
+		logger.Info("cloud flusher: telemetry endpoint override set",
+			zap.String("url", v))
+	}
 	if telemetryBuf.DiskEnabled() {
 		wg.Add(1)
 		go func() {

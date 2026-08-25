@@ -151,6 +151,17 @@ func (w *DataTransferWorker) ingestDialOptions(orgID, assetID int32) []grpc.Dial
 	if w.ingestHostOverride == "" {
 		return nil
 	}
+	return certIdentityDialOptions(orgID, assetID)
+}
+
+// certIdentityDialOptions attaches the asset's certificate identity to every
+// unary call and stream on the connection. Shared by the episode transfer
+// worker and the telemetry flusher, which face the same problem on their
+// override paths: the endpoint has no Envoy ingress in front of it to inject
+// the identity, so the client must assert the one its enrolled certificate
+// already carries. Callers must only use this on an override path, and must
+// take orgID and assetID from ProvisioningInfo.
+func certIdentityDialOptions(orgID, assetID int32) []grpc.DialOption {
 	header := fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", orgID, assetID)
 	withIdentity := func(ctx context.Context) context.Context {
 		return metadata.AppendToOutgoingContext(ctx, ingestCertIdentityHeader, header)
