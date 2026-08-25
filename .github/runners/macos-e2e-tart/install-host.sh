@@ -42,7 +42,8 @@ install_root="$install_parent/TartE2E"
 operator_uid="$(id -u "$operator_user")"
 operator_gid="$(id -g "$operator_user")"
 operator_home="$(dscl . -read "/Users/$operator_user" NFSHomeDirectory | awk '{print $2}')"
-state_dir="$operator_home/Library/Application Support/Wendy/TartE2E"
+state_parent="$operator_home/Library/Application Support/Wendy"
+state_dir="$state_parent/TartE2E"
 tart_home="$operator_home/.tart"
 launch_agent="/Library/LaunchAgents/org.wendy.macos-e2e-tart.plist"
 
@@ -52,7 +53,7 @@ launch_agent="/Library/LaunchAgents/org.wendy.macos-e2e-tart.plist"
 install -d -o root -g wheel -m 0711 "$install_parent"
 install -d -o root -g wheel -m 0755 "$install_root" "$install_root/bin"
 install -d -o "$operator_user" -g "$operator_gid" -m 0700 \
-  "$install_root/secrets" "$state_dir" "$tart_home"
+  "$install_root/secrets" "$state_parent" "$state_dir" "$tart_home"
 
 for tool in /opt/homebrew/bin/tart /opt/homebrew/bin/softnet /opt/homebrew/bin/jq; do
   [[ -x "$tool" ]] || {
