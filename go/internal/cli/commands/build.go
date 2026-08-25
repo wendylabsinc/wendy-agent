@@ -3,10 +3,12 @@ package commands
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -41,6 +43,13 @@ type buildOptions struct {
 	// buildHost names a WendyOS device that builds the image instead of this
 	// machine. Empty means build locally.
 	buildHost string
+	// service selects one service (and its dependencies) to build, for a
+	// multi-service (wendy.json services map) project. Empty builds every
+	// service.
+	service string
+	// maxConcurrency caps how many service images build at once in a
+	// multi-service project (0 = default limit of 4).
+	maxConcurrency int
 }
 
 var appleContainerLocalProviderHintSupported = func() bool {
@@ -60,6 +69,9 @@ func newBuildCmd() *cobra.Command {
 			}
 			if _, err := normalizeImageBuilder(opts.builder); err != nil {
 				return err
+			}
+			if opts.maxConcurrency < 0 {
+				return fmt.Errorf("--max-concurrency must be >= 0 (0 = default limit of 4)")
 			}
 			if err := validateBuildHostFlags(opts.buildHost, opts.builder); err != nil {
 				return err
@@ -189,6 +201,26 @@ func newBuildCmd() *cobra.Command {
 				defer target.Agent.Close()
 			}
 
+			// A validated wendy.json with a non-empty services map routes to the
+			// multi-service build: one LOCAL image per selected service, never
+			// pushing to a registry or touching create/start container RPCs.
+			if cfgErr == nil && len(appCfg.Services) > 0 {
+				// cmd.Flags().Changed, not opts.buildType/opts.dockerfile: the
+				// --dockerfile defaulting above (opts.buildType = "docker") mutates
+				// the struct, not the flag-set state, so Changed still reflects what
+				// the user actually typed.
+				if cmd.Flags().Changed("dockerfile") || cmd.Flags().Changed("build-type") {
+					return fmt.Errorf("--dockerfile and --build-type are not supported for multi-service projects; each service resolves its own build file from its context")
+				}
+				if normalized, _ := normalizeImageBuilder(opts.builder); normalized == imageBuilderBuildkit {
+					return fmt.Errorf("--builder buildkit is not supported for multi-service builds; use docker or apple-container")
+				}
+				return runMultiServiceBuild(cmd.Context(), cwd, appCfg, target, opts)
+			}
+			if opts.service != "" {
+				return fmt.Errorf("--service requires a wendy.json services map")
+			}
+
 			// Detect all build options and filter by target capabilities.
 			options := detectBuildOptions(cwd)
 			if target != nil && target.Provider != nil {
@@ -209,21 +241,7 @@ func newBuildCmd() *cobra.Command {
 			if cfgErr == nil {
 				cfgPlatform = appCfg.Platform
 			}
-			platform := "linux/arm64"
-			if target != nil && target.Agent != nil {
-				versionResp, err := target.Agent.AgentService.GetAgentVersion(cmd.Context(), &agentpb.GetAgentVersionRequest{})
-				if err == nil {
-					agentOS := versionResp.GetOs()
-					if agentOS == "" {
-						agentOS = "linux"
-					}
-					arch := versionResp.GetCpuArchitecture()
-					if arch == "" {
-						arch = "arm64"
-					}
-					platform = resolveAgentPlatform(cfgPlatform, agentOS, arch)
-				}
-			}
+			platform := resolveBuildPlatform(cmd.Context(), target, cfgPlatform)
 
 			appID := filepath.Base(cwd)
 			if cfgErr == nil {
@@ -247,11 +265,86 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); taken from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build compiled languages unoptimized (swift build -c debug, cargo without --release) instead of the release default")
 	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark)")
+	cmd.Flags().StringVar(&opts.service, "service", "", "Build only the named service and its dependencies (multi-service projects)")
+	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build at once (0 = default limit of 4)")
 	if err := cmd.Flags().MarkHidden("build-host"); err != nil {
 		panic(err)
 	}
 
 	return cmd
+}
+
+// resolveBuildPlatform is the target platform for a `wendy build`: the
+// selected device's own OS/arch when an agent is connected (cfgPlatform
+// overrides its GPU-arch guess the same way `wendy run` honors it), or
+// linux/arm64 with no device to ask.
+func resolveBuildPlatform(ctx context.Context, target *SelectedDevice, cfgPlatform string) string {
+	platform := "linux/arm64"
+	if target != nil && target.Agent != nil {
+		versionResp, err := target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+		if err == nil {
+			agentOS := versionResp.GetOs()
+			if agentOS == "" {
+				agentOS = "linux"
+			}
+			arch := versionResp.GetCpuArchitecture()
+			if arch == "" {
+				arch = "arm64"
+			}
+			platform = resolveAgentPlatform(cfgPlatform, agentOS, arch)
+		}
+	}
+	return platform
+}
+
+// runMultiServiceBuild is the `wendy build` flavor of a services-map project:
+// one LOCAL image per selected service, built in parallel. It never pushes to
+// a registry and never calls create/start container RPCs — those belong to
+// `wendy run`'s multi-service path (runMultiServiceWithAgent).
+func runMultiServiceBuild(ctx context.Context, cwd string, appCfg *appconfig.AppConfig, target *SelectedDevice, opts buildOptions) error {
+	services, err := resolveServiceSubset(appCfg.Services, opts.service)
+	if err != nil {
+		return err
+	}
+
+	platform := resolveBuildPlatform(ctx, target, appCfg.Platform)
+
+	// Ensure the Apple Container system is up once, before the parallel
+	// builds, so an explicit --builder apple-container prompts/starts a single
+	// time rather than racing across service goroutines.
+	if err := ensureAppleContainerSystemForBuilder(ctx, opts.builder, false); err != nil {
+		return err
+	}
+
+	dirs := make([]string, 0, len(services))
+	for _, svc := range services {
+		dirs = append(dirs, filepath.Join(cwd, svc.Context))
+	}
+	gpuArch := resolveGPUArchForDirs(ctx, dirs, opts.gpuArch, agentConn(target))
+
+	// Debug only: this deliberately matches `wendy run`'s multi-service path
+	// (no frameworkStagefileOptions) so both commands build identical images.
+	sfOpts := debugStagefileOptions(opts.debug)
+
+	failed, err := buildServicesLocal(ctx, cwd, appCfg.AppID, services, platform, opts.builder, gpuArch, opts.maxConcurrency, false, sfOpts...)
+	if err != nil {
+		return err
+	}
+	if len(failed) > 0 {
+		return joinServiceErrors(failed)
+	}
+
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	tags := make([]string, 0, len(names))
+	for _, name := range names {
+		tags = append(tags, strings.ToLower(appCfg.AppID)+"-"+strings.ToLower(name)+":latest")
+	}
+	cliSuccess("Built %d service image(s): %s", len(tags), strings.Join(tags, ", "))
+	return nil
 }
 
 func resolveDetectedBuildOption(options []BuildOption, requestedType, requestedDockerfile string) (*BuildOption, error) {
@@ -640,6 +733,63 @@ func buildDockerProjectWithBuilder(ctx context.Context, builder, dir, imageName,
 		return err
 	}
 	return runAppleContainerBuildWithProgress(ctx, dir, imageName, platform, dockerfile)
+}
+
+// buildLocalServiceImage is the per-service local build step for multi-service
+// `wendy build`. Package var so tests can substitute a fake builder.
+var buildLocalServiceImage = buildServiceImageLocally
+
+// buildServiceImageLocally builds one service's image into the local image
+// store (docker --load, or the Apple Container CLI's implicit local store) —
+// never a registry. It mirrors buildDockerProjectWithBuilder's builder
+// selection but is writer-driven and context-aware, as buildServicesParallelCore
+// requires: no os.Stdout, no owned spinner, no --builder buildkit (rejected at
+// the command level before this is ever called).
+func buildServiceImageLocally(ctx context.Context, builder, contextDir, imageName, platform, dockerfile string, buildOut, logOut io.Writer) error {
+	if dockerfile == "" {
+		return fmt.Errorf("no container build file found in %s; add a Dockerfile, Containerfile, or Stagefile (e.g. build.stagefile.yaml)", contextDir)
+	}
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+
+	if !imageBuilderWasExplicit(builder) && shouldAutoAttemptAppleContainerBuilder() {
+		// Same auto-attempt semantics as the single-image path: never prompt or
+		// start services as a side effect, just try and fall back to Docker.
+		if err := checkAppleContainerBuilder(ctx); err == nil {
+			if err := buildImageWithAppleContainer(ctx, contextDir, imageName, platform, dockerfile, nil, buildOut, logOut); err == nil {
+				return nil
+			} else {
+				logAppleContainerFallback(logOut, err)
+			}
+		} else {
+			logAppleContainerFallback(logOut, err)
+		}
+	}
+
+	if normalized == imageBuilderAppleContainer {
+		// The Apple Container system itself is ensured once by the caller before
+		// the parallel builds start, not per service.
+		return buildImageWithAppleContainer(ctx, contextDir, imageName, platform, dockerfile, nil, buildOut, logOut)
+	}
+
+	// No OCI-layout export and no per-service cache-dir isolation: a plain
+	// --load build uses the daemon-side BuildKit cache, which is
+	// concurrency-safe on its own.
+	args := []string{"buildx", "build", "--platform", platform, "--progress", "plain", "-f", dockerfile, "-t", imageName, "--load", "."}
+	fmt.Fprintf(logOut, "[buildx] starting build: docker %s\n", strings.Join(args, " "))
+	cmd := imageBuilderCommandContext(ctx, "docker", args...)
+	cmd.Dir = contextDir
+	// --progress plain emits BuildKit's step output on stderr; both streams go
+	// to buildOut so tui.BuildParser (wired in by the core's per-service
+	// writers) sees it.
+	cmd.Stdout = buildOut
+	cmd.Stderr = buildOut
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("building image %s: %w", imageName, err)
+	}
+	return nil
 }
 
 func buildPythonProject(ctx context.Context, builder, dir, imageName, platform string) error {

@@ -832,6 +832,23 @@ func buildServicesParallel(
 	return buildServicesParallelCore(ctx, build, cwd, appID, services, gpuArch, skip, dockerfiles, maxConcurrency, quietBuild, sfOpts...)
 }
 
+// buildServicesLocal builds every service image into the local image store
+// (no device, no registry push) — the `wendy build` flavor over
+// buildServicesParallelCore.
+func buildServicesLocal(ctx context.Context, cwd, appID string, services map[string]*appconfig.ServiceConfig,
+	platform, builder, gpuArch string, maxConcurrency int, quietBuild bool,
+	sfOpts ...stagefile.Option) (map[string]error, error) {
+	build := func(ctx context.Context, contextDir, repo, dockerfile string, buildOut, logOut io.Writer) error {
+		return buildLocalServiceImage(ctx, builder, contextDir, repo+":latest", platform, dockerfile, buildOut, logOut)
+	}
+	// skip=nil: `wendy build` builds every selected service every invocation —
+	// push-skip fingerprinting is a device-deploy optimization and does not
+	// apply here. dockerfiles=nil: the core's per-service planResolveDockerfile
+	// fallback resolves each context, the same non-interactive
+	// Stagefile>Dockerfile rules `wendy run` uses.
+	return buildServicesParallelCore(ctx, build, cwd, appID, services, gpuArch, nil, nil, maxConcurrency, quietBuild, sfOpts...)
+}
+
 // sortedServiceErrorKeys returns the service names in failed, sorted, for stable
 // error/report output.
 func sortedServiceErrorKeys(failed map[string]error) []string {
