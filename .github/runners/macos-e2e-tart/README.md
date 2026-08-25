@@ -15,18 +15,25 @@ checkout or mounts a host directory into a guest.
 
 | Component | Pin |
 | --- | --- |
-| Guest | macOS 26, Xcode 26.6 |
-| Upstream image | `ghcr.io/cirruslabs/macos-tahoe-xcode@sha256:61f6e857a3d65dd2f8daf9c51c7b837fa458bcc9181ae8556e645b534dab6bf6` |
-| Golden image | `wendy-macos-26-xcode-26.6-e2e-v1` |
+| Guest | macOS 26, Xcode 26.5 (the repository's pinned build version) |
+| Upstream image | Cirrus `macos-tahoe-xcode:26.5` content digest `sha256:61f6e857a3d65dd2f8daf9c51c7b837fa458bcc9181ae8556e645b534dab6bf6` |
+| Golden image | `wendy-macos-26-xcode-26.5-e2e-v1` |
 | Actions runner | `2.336.0`, archive SHA-256 `8e8839c49b7060b6b2154f4931f815df330c27f167d53ef2239ee3dfce28b079` |
 | Tart | `2.36.0` |
 | Softnet | `0.23.0` |
 | Guest resources | 8 CPUs, 12 GB RAM, one concurrent guest |
 | Runner group/label | existing `wendy-developer` / unique `wendy-e2e-macos-tart` |
 
-The upstream digest was resolved from the Cirrus Labs Xcode 26.6 release on
-2026-08-25. The runner archive digest is published on the GitHub Actions runner
-`v2.336.0` release. Do not replace either with `latest` in installed config.
+The upstream digest was resolved from Cirrus Labs' versioned `26.5` tag on
+2026-08-25 and corresponds to its [Xcode 26.5 release][cirrus-26.5]. Xcode 26.5
+matches `XCODE_VERSION` in `.github/workflows/build.yml`; the hosted rollback
+may carry a newer patch image. The runner archive digest is published on the
+GitHub Actions runner `v2.336.0` release. Do not replace either with `latest` in
+installed config. Cirrus does not currently publish a signature/attestation for
+this Tart artifact, so promotion verifies the content address and guest contents
+but cannot claim vendor-attested provenance.
+
+[cirrus-26.5]: https://github.com/cirruslabs/macos-image-templates/releases/tag/26.5
 
 ## Security and lifecycle
 

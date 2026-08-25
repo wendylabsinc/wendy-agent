@@ -71,7 +71,7 @@ fi
   sudo -n true
   test ! -e /Users/admin/actions-runner/.runner
   test ! -e /Users/admin/actions-runner/.credentials
-  test "$(xcodebuild -version | awk '\''/^Xcode / { print $2 }'\'')" = 26.6
+  test "$(xcodebuild -version | awk '\''/^Xcode / { print $2 }'\'')" = 26.5
   /Users/admin/actions-runner/bin/Runner.Listener --version
 '
 
@@ -79,8 +79,9 @@ fi
 wait "$run_pid" || true
 run_pid=""
 "$TART_BIN" rename "$candidate" "$GOLDEN_IMAGE"
-# The local golden image is now independent. Remove only its exact OCI cache
-# entry so the 512 GB host retains enough room for guest copy-on-write growth.
+# SECURITY: The exact source digest remains in immutable config and is printed
+# below for audit/re-pull. Its ~69 GB compressed cache is pruned deliberately so
+# the 512 GB host retains enough headroom for hostile guest disk growth.
 "$TART_BIN" delete "$UPSTREAM_IMAGE" >/dev/null 2>&1 || true
 
 echo "Promoted immutable Tart image: $GOLDEN_IMAGE"

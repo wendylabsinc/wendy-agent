@@ -11,8 +11,8 @@ if [[ "$(sw_vers -productVersion)" != 26.* ]]; then
   echo "ERROR: expected macOS 26" >&2
   exit 1
 fi
-if [[ "$(xcodebuild -version | awk '/^Xcode / { print $2 }')" != "26.6" ]]; then
-  echo "ERROR: expected Xcode 26.6" >&2
+if [[ "$(xcodebuild -version | awk '/^Xcode / { print $2 }')" != "26.5" ]]; then
+  echo "ERROR: expected Xcode 26.5" >&2
   exit 1
 fi
 
