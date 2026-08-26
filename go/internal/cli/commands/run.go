@@ -1980,8 +1980,19 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
+	if hashErr == nil {
+		var basesPinned bool
+		basesPinned, hashErr = dockerfileBasesContentPinned(cwd, opts.dockerfile)
+		if hashErr == nil && !basesPinned {
+			hashErr = fmt.Errorf("persistent build skip requires digest-pinned base images")
+		}
+	}
+	desiredHash := ""
+	if hashErr == nil {
+		desiredHash, hashErr = computeDeployDesiredHash(inputHash, appCfg, opts.userArgs, deployEnv, resolveRestartPolicy(opts))
+	}
 	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
-		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
+		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
 			mark("fast-path (skipped build)")
 			return nil
 		}
@@ -2028,7 +2039,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 				// Record the layer diff IDs we deployed so the next run's fast path
 				// can verify the device still holds this content before skipping the
 				// build (WDY-1824).
-				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
+				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: desiredHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
 			}
 			return nil
 		} else if isChunkDeployCancellation(ctx, err) {
