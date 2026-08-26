@@ -1,6 +1,6 @@
 # Multi-Service Apps with `wendy.json`
 
-When your project needs more than one container managed through a `wendy.json` file (rather than a `docker-compose.yml`), declare a `services` map in `wendy.json`. `wendy run` detects the map and automatically orchestrates a parallel multi-service build and deployment.
+When your project needs more than one container managed through a `wendy.json` file (rather than a `docker-compose.yml`), declare a `services` map in `wendy.json`. `wendy run` detects the map and automatically orchestrates a parallel multi-service build and deployment. `wendy build` detects the same map and builds the images locally without deploying — see [Building without deploying](#building-without-deploying).
 
 ## `wendy.json` structure
 
@@ -137,6 +137,17 @@ eliminating any collision risk from the hyphen separator).
 
 > **Note:** Single-container apps (no `serviceName` in the top-level
 > `wendy.json`) are unaffected — their container ID remains the bare `appId`.
+
+## Building without deploying
+
+`wendy build` detects the same `services` map and builds every service (or a `--service` closure) into the local image store, tagged `<appid>-<service>:latest`, without deploying: nothing is pushed to a registry and nothing is created or started on a device. Useful for CI and pre-flight checks — confirm every service builds before running `wendy run`:
+
+```sh
+wendy build
+wendy build --service api
+```
+
+See [`wendy build`](../clients/wendy-cli/commands/build.md#multi-service-manifests) for the full flag reference (`--service`, `--max-concurrency`, `--builder`, `--gpu-arch`, `--debug`).
 
 ## Filtering with `--service`
 
