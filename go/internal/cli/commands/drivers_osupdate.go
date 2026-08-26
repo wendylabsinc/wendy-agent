@@ -10,45 +10,78 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // A driver add-on is built for one exact kernel, so an OS update that bumps it
-// stops the add-on merging — visible only in the device journal. These advisories
-// are informational: any failure prints nothing and never changes the outcome.
+// stops the add-on merging — visible only in the device journal. The pre-flight
+// stages each rebuild ahead of the reboot and reports what it could not stage;
+// the caller decides whether to go ahead. The post-update report is advisory.
 
-// An unresponsive driver service must not hold up the OS update.
+var driverExtensionsForFn = driverExtensionsFor
+
+// driverListTimeout bounds reading the installed set. Short: the answer gates an
+// OS update, so a slow reply has to become a decision rather than a hang.
 const driverListTimeout = 5 * time.Second
 
 // driverStageTimeout bounds one add-on fetch. Generous because the agent
 // downloads the image, but bounded so a stalled registry cannot hold up an OTA.
 const driverStageTimeout = 10 * time.Minute
 
-// installedDriverAddons returns the device's add-ons, or nil when it has none or
-// cannot report them: an older agent answers Unimplemented and an unenrolled
-// (plaintext) connection has no driver service at all.
-func installedDriverAddons(ctx context.Context, conn *grpcclient.AgentConnection) *agentpbv2.ListDriversResponse {
+// driverPreflight is what the pre-update check concluded. Anything recorded here
+// means the device is about to update without a driver it has today.
+type driverPreflight struct {
+	// unreadable is set when the installed set could not be read at all, which is
+	// the worst case: there may be no add-ons, or there may be a critical one.
+	unreadable string
+	unstaged   []unstagedAddon
+}
+
+type unstagedAddon struct{ name, reason string }
+
+func (p driverPreflight) blocking() bool {
+	return p.unreadable != "" || len(p.unstaged) > 0
+}
+
+// installedDriverAddons reads the device's add-ons. A nil response and a nil error
+// mean the device cannot have any — an unenrolled connection exposes no driver
+// service, an older agent answers Unimplemented — and blocking on those would
+// block the update that fixes them. Every other failure is returned: "could not
+// ask" and "has none" must not look alike to the caller.
+func installedDriverAddons(ctx context.Context, conn *grpcclient.AgentConnection) (*agentpbv2.ListDriversResponse, error) {
 	if conn == nil || conn.DriverService == nil {
-		return nil
+		return nil, nil
 	}
 	callCtx, cancel := context.WithTimeout(ctx, driverListTimeout)
 	defer cancel()
 	resp, err := conn.DriverService.ListDrivers(callCtx, &agentpbv2.ListDriversRequest{})
-	if err != nil || len(resp.GetInstalled()) == 0 {
-		return nil
+	if status.Code(err) == codes.Unimplemented {
+		return nil, nil
 	}
-	return resp
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // warnDriverAddonsBeforeUpdate names the installed add-ons and what this update
 // may do to them. An empty targetVersion (a local artifact or --artifact-url
 // resolves no manifest) limits it to the generic warning.
-func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentConnection, deviceType, targetVersion string, pr int, stageDrivers bool) {
-	dl := installedDriverAddons(ctx, conn)
-	if dl == nil {
-		return
+func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentConnection, deviceType, targetVersion string, pr int, stageDrivers bool) driverPreflight {
+	var pf driverPreflight
+	dl, err := installedDriverAddons(ctx, conn)
+	if err != nil {
+		pf.unreadable = err.Error()
+		cliLogln("%s", tui.WarningMessage("Could not read the installed driver add-ons: "+err.Error()))
+		return pf
+	}
+	if dl == nil || len(dl.GetInstalled()) == 0 {
+		return pf
 	}
 	installed := dl.GetInstalled()
 
@@ -67,13 +100,27 @@ func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentCon
 		}
 	}
 
+	// Without a resolved manifest nothing can be staged: a local artifact or
+	// --artifact-url names no version to look add-ons up against.
 	if deviceType == "" || targetVersion == "" {
-		return
+		if stageDrivers {
+			for _, d := range installed {
+				pf.unstaged = append(pf.unstaged, unstagedAddon{d.GetName(),
+					"this update resolves no manifest, so no rebuild can be staged"})
+			}
+		}
+		return pf
 	}
-	exts, err := driverExtensionsFor(deviceType, targetVersion, pr)
+	exts, err := driverExtensionsForFn(deviceType, targetVersion, pr)
 	if err != nil {
-		// The manifest is advisory here; the generic warning above already stands.
-		return
+		cliLogln("  could not read the add-ons published for %s: %v", targetVersion, err)
+		if stageDrivers {
+			for _, d := range installed {
+				pf.unstaged = append(pf.unstaged, unstagedAddon{d.GetName(),
+					fmt.Sprintf("could not read the published add-ons: %v", err)})
+			}
+		}
+		return pf
 	}
 	// The manifest publishes one entry per (name, kernel), so collect every
 	// kernel a name ships for rather than letting the last entry win.
@@ -86,41 +133,53 @@ func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentCon
 		byName[e.Name] = append(byName[e.Name], e)
 	}
 	for _, d := range installed {
-		kernels, ok := published[d.GetName()]
+		name := d.GetName()
+		kernels, ok := published[name]
 		switch {
 		case !ok:
-			cliLogln("  %s: no rebuild published for %s", d.GetName(), targetVersion)
+			cliLogln("  %s: no rebuild published for %s", name, targetVersion)
+			if stageDrivers {
+				pf.unstaged = append(pf.unstaged, unstagedAddon{name, "no rebuild published for " + targetVersion})
+			}
 		case slices.Contains(kernels, dl.GetKernelVersion()):
-			cliLogln("  %s: unaffected — %s publishes it for this kernel", d.GetName(), targetVersion)
+			cliLogln("  %s: unaffected — %s publishes it for this kernel", name, targetVersion)
 		case stageDrivers:
-			stageRebuild(ctx, conn, d.GetName(), byName[d.GetName()])
+			if reason := stageRebuild(ctx, conn, name, byName[name]); reason != "" {
+				pf.unstaged = append(pf.unstaged, unstagedAddon{name, reason})
+			}
 		default:
+			// --no-drivers: the operator has already accepted this, so it is
+			// reported but never blocks.
 			cliLogln("  %s: rebuild published for kernel %s — reinstall after the update",
-				d.GetName(), strings.Join(kernels, ", "))
+				name, strings.Join(kernels, ", "))
 		}
 	}
+	return pf
 }
 
 // stageRebuild puts the published rebuild in place for the kernel the update is
 // about to boot into, so the add-on loads on the first boot of the new slot.
-// Advisory like the rest of this file: a failure prints, it never fails the OTA.
-func stageRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name string, entries []extensionEntry) {
+// Returns "" on success, or why it could not be staged.
+func stageRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name string, entries []extensionEntry) string {
 	// Every entry here targets a kernel other than the running one, so any of them
 	// is a candidate; more than one means the release ships several kernels and
 	// there is no way to tell from here which the update will boot.
 	if len(entries) != 1 {
-		cliLogln("  %s: rebuild published for several kernels — reinstall after the update", name)
-		return
+		reason := "published for several kernels, so the one this update boots is ambiguous"
+		cliLogln("  %s: %s", name, reason)
+		return reason
 	}
 	e := entries[0]
 	if e.Path == "" {
-		cliLogln("  %s: rebuild has no artifact in the manifest — reinstall after the update", name)
-		return
+		reason := "the published rebuild has no artifact in the manifest"
+		cliLogln("  %s: %s", name, reason)
+		return reason
 	}
 	sig, err := base64.StdEncoding.DecodeString(e.Signature)
 	if err != nil {
-		cliLogln("  %s: rebuild has an unreadable signature — reinstall after the update", name)
-		return
+		reason := "the published rebuild has an unreadable signature"
+		cliLogln("  %s: %s", name, reason)
+		return reason
 	}
 	spec := &agentpbv2.DriverSpec{
 		Name:          e.Name,
@@ -133,10 +192,12 @@ func stageRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name st
 		StageOnly:     true,
 	}
 	if err := runDriverStage(ctx, conn, spec); err != nil {
-		cliLogln("  %s: could not stage the rebuild (%v) — reinstall after the update", name, err)
-		return
+		reason := fmt.Sprintf("staging failed: %v", err)
+		cliLogln("  %s: %s", name, reason)
+		return reason
 	}
 	cliLogln("  %s: staged for kernel %s — it will load on the first boot of the new slot", name, e.KernelVersion)
+	return ""
 }
 
 // runDriverStage drives the install stream to completion for a staged add-on.
@@ -185,8 +246,10 @@ func reportDriverAddonsAfterUpdate(ctx context.Context, host string) {
 	}
 	defer conn.Close()
 
-	dl := installedDriverAddons(callCtx, conn)
-	if dl == nil {
+	// Unlike the pre-flight, silence is right here: the update is already applied
+	// and the agent may still be starting after the reboot.
+	dl, err := installedDriverAddons(callCtx, conn)
+	if err != nil || len(dl.GetInstalled()) == 0 {
 		return
 	}
 	var stale []string
@@ -209,4 +272,46 @@ func countAddons(n int) string {
 		return "1 driver add-on"
 	}
 	return fmt.Sprintf("%d driver add-ons", n)
+}
+
+// confirmDriverPreflight turns the pre-flight verdict into a decision. The tool
+// cannot tell a critical NIC driver from a webcam, so it asks rather than guessing.
+func confirmDriverPreflight(pf driverPreflight) error {
+	cliLogln("")
+	if pf.unreadable != "" {
+		cliLogln("%s", tui.WarningMessage("The device's driver add-ons could not be read, so this update may remove one."))
+	} else {
+		cliLogln("%s", tui.WarningMessage(fmt.Sprintf("%s will not be in place after this update:", countAddons(len(pf.unstaged)))))
+		for _, u := range pf.unstaged {
+			cliLogln("    %s — %s", u.name, u.reason)
+		}
+	}
+
+	if !isInteractiveTerminal() {
+		return fmt.Errorf("aborted: the device would update without %s (re-run with --no-drivers to update anyway)",
+			driverPreflightSubject(pf))
+	}
+	confirmed, err := tui.Confirm("Continue with the update anyway?")
+	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return ErrUserCancelled
+		}
+		return err
+	}
+	if !confirmed {
+		cliNotice("Cancelled.")
+		return ErrUserCancelled
+	}
+	return nil
+}
+
+func driverPreflightSubject(pf driverPreflight) string {
+	if pf.unreadable != "" {
+		return "a driver add-on it may have (the installed set could not be read)"
+	}
+	names := make([]string, 0, len(pf.unstaged))
+	for _, u := range pf.unstaged {
+		names = append(names, u.name)
+	}
+	return strings.Join(names, ", ")
 }

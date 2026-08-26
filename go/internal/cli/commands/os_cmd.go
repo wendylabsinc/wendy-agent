@@ -421,8 +421,15 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				return err
 			}
 
-			// Last point before anything transfers, so the operator can still abort.
-			warnDriverAddonsBeforeUpdate(ctx, conn, versionResp.GetDeviceType(), targetVersion, prNumber, !noDrivers)
+			// Last point before anything transfers. Staging a rebuild that fails is
+			// the case where the device loses a driver it has today, so the operator
+			// decides rather than finding out after the reboot.
+			pf := warnDriverAddonsBeforeUpdate(ctx, conn, versionResp.GetDeviceType(), targetVersion, prNumber, !noDrivers)
+			if !noDrivers && pf.blocking() {
+				if err := confirmDriverPreflight(pf); err != nil {
+					return err
+				}
+			}
 
 			if err := streamOSUpdate(ctx, conn, artifactURL, ""); err != nil {
 				return err
@@ -440,7 +447,8 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 
 	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "OS update artifact URL (remote)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both agent and OS")
-	cmd.Flags().BoolVar(&noDrivers, "no-drivers", false, "Do not stage rebuilt driver add-ons for the target kernel before updating")
+	cmd.Flags().BoolVar(&noDrivers, "no-drivers", false,
+		"Update even though driver add-ons will not be staged for the target kernel; skips staging and the confirmation")
 	cmd.Flags().IntVar(&prNumber, "pr", 0, "OTA-update to the image built by wendyos-builder PR #N (debug build; mutually exclusive with a positional artifact path and --artifact-url)")
 
 	return cmd
