@@ -96,6 +96,29 @@ func connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL s
 	return connectCloudAsset(ctx, auth, asset, brokerURL)
 }
 
+// detachedTunnelContext returns the context to open a connection-scoped broker
+// tunnel stream on, given the context that bounds only the dial.
+//
+// A dial context routinely outlives its usefulness the moment the connection is
+// handed to the caller: the reconnect helpers (waitForCloudAgentRestart,
+// waitForUpdatedAgentReady, runAgentConnectionSpinner) each wrap the dial in a
+// timeout they cancel as soon as the connection is returned. A tunnel stream
+// opened directly on the dial context dies with that cancel, so every
+// reconnected cloud connection arrived dead — its liveness probe passed only
+// because it ran before the cancel, and the next RPC failed with
+// "error reading from server: EOF".
+//
+// The returned context therefore does not inherit dialCtx's cancellation (its
+// values are kept). Until handoff is called, cancelling dialCtx still ends it,
+// so an abandoned dial attempt cannot leak a live stream; handoff severs that
+// link at the successful hand-over, after which only cancel — which the caller
+// must wire into the connection's Close path — ends the context.
+func detachedTunnelContext(dialCtx context.Context) (tunnelCtx context.Context, handoff func(), cancel context.CancelFunc) {
+	tunnelCtx, tunnelCancel := context.WithCancel(context.WithoutCancel(dialCtx))
+	stop := context.AfterFunc(dialCtx, tunnelCancel)
+	return tunnelCtx, func() { stop() }, tunnelCancel
+}
+
 func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) (*grpcclient.AgentConnection, error) {
 	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
 	if err != nil {
@@ -109,10 +132,23 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		}
 	}()
 
+	// The tunnel stream lives exactly as long as the context it is opened on,
+	// and ctx here may be a short per-attempt dial timeout the caller cancels
+	// right after we return (see detachedTunnelContext). Open the stream on a
+	// context detached at handoff and ended by Close instead.
+	tunnelCtx, tunnelHandoff, tunnelCancel := detachedTunnelContext(ctx)
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			tunnelHandoff()
+			tunnelCancel()
+		}
+	}()
+
 	// Provisioned agents serve mTLS on agentPort+1 (50052) for remote clients; the
 	// plaintext port (50051) is shut down after provisioning. (On-device containers
 	// with the admin entitlement can reach the agent via the local unix socket.)
-	tunnelConn, err := openBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), defaultAgentPort+1)
+	tunnelConn, err := openBrokerTunnel(tunnelCtx, brokerConn, auth, asset.GetId(), defaultAgentPort+1)
 	if err != nil {
 		return nil, fmt.Errorf("opening cloud tunnel to %s: %w", asset.GetName(), err)
 	}
@@ -178,8 +214,10 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	agentConn.Reconnect = func(rctx context.Context) (*grpcclient.AgentConnection, error) {
 		return waitForCloudAgentRestart(rctx, auth, asset, brokerURL)
 	}
-	agentConn.ExtraClosers = append(agentConn.ExtraClosers, closeFunc(closeTunnel), brokerConn)
+	agentConn.ExtraClosers = append(agentConn.ExtraClosers, closeFunc(closeTunnel), brokerConn, closeFunc(tunnelCancel))
 	cleanupBroker = false
+	tunnelHandoff()
+	handedOff = true
 	return agentConn, nil
 }
 
