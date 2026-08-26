@@ -12,7 +12,7 @@ The `config` partition is outside the update boundary. Files placed there surviv
 
 Because the partition is FAT32, your computer mounts it automatically when you plug in the storage.
 
-- **macOS / Linux:** appears as a volume labelled `config`. On macOS, `wendy install` writes provisioning through this auto-mount directly; older versions remounted the partition via `mount_msdos`, which could fail with `Resource busy`.
+- **macOS / Linux:** appears as a volume labelled `config`. On macOS, `wendy install` writes provisioning through this auto-mount directly.
 - **Windows:** appears as a drive labelled `config`
 
 Write files there, eject, and they are available at `/config` on the device on next boot.

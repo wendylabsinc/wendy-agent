@@ -426,11 +426,7 @@ HID input device access (barcode scanners, keyboards, etc.).
 
 ### `mcp`
 
-Registers the container as a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server. When this entitlement is present the wendy agent:
-
-1. Stores the port in the container's `sh.wendy/mcp.port` label.
-2. Exposes the container's tools through `wendy mcp serve` so that AI assistants (Claude Desktop, etc.) can call them automatically.
-3. Makes the port available via the `StreamMCP` gRPC API for secure proxying.
+Registers the container as a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server. When this entitlement is present, the wendy agent exposes the container's tools through `wendy mcp serve` so that AI assistants (Claude Desktop, etc.) can call them automatically.
 
 ```json
 { "type": "mcp", "port": 3000 }
@@ -510,18 +506,12 @@ changed, or differently cased requests—returns `ALREADY_EXISTS`; it does not
 replay success. A local validation or rate-limit rejection occurs before Cloud
 and leaves that UUID valid for retry. Selector categories have union semantics.
 The agent accepts at most 100 selector entries, then normalizes and deduplicates
-them; Cloud resolves at most 10,000 recipients. The socket handler stamps Cloud
-`app_id` from trusted container metadata. Wendy Cloud stores
-that identity as `created_by_app_id` and derives `created_by_asset_id` and
-organization identity from the provisioned device certificate; none of those
-identities can be supplied by the app.
+them; Cloud resolves at most 10,000 recipients. An app cannot supply its own
+app, device, or organization identity; the agent and Cloud derive those from
+trusted device identity.
 
-Each send has a 15-second Cloud deadline. The per-app host directory lives under
-`/var/lib/wendy/app-system`, so its inode remains stable while the agent/daemon
-restarts and recreates `system.sock` from persisted container labels. Running
-containers reconnect on their next call without a redeploy. Multi-service
-ownership is reference-counted and the directory is removed after the last
-entitled container is deleted.
+The socket is recreated after an agent restart, so running containers reconnect
+on their next call without a redeploy.
 
 > **Security:** `notifications` exposes only entitled app-facing APIs. It does
 > not expose `WENDY_AGENT_SOCKET` or any app/device administration RPC.
