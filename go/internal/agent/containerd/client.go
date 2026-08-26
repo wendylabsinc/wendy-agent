@@ -37,6 +37,7 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/typeurl/v2"
 	digest "github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/identity"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
 
@@ -116,6 +117,13 @@ type Client struct {
 	// serviceIPs maps appID → serviceName → IP for isolated-mode apps.
 	// Updated after each successful CNI ADD. Protected by mu.
 	serviceIPs map[string]map[string]string
+
+	// preparedSnapshots holds a fresh, never-executed writable rootfs prepared
+	// by PrepareImage while chunks are still arriving. CreateContainer consumes
+	// it exactly once. It is guarded separately from mu because image preparation
+	// intentionally overlaps deployment work.
+	preparedSnapshotsMu sync.Mutex
+	preparedSnapshots   map[string]*preparedSnapshot
 
 	// appStopping tracks appIDs that are currently being stopped.
 	// Set before releasing c.mu in StopContainer; cleared in the cleanup phase.
@@ -274,20 +282,21 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 	snapshotter := probeSnapshotter(logger)
 
 	return &Client{
-		client:          c,
-		logger:          logger,
-		namespace:       "default",
-		proxyManager:    proxyMgr,
-		appServices:     make(map[string]map[string]*appconfig.ServiceConfig),
-		primaryPIDs:     make(map[string]uint32),
-		appIsolation:    make(map[string]string),
-		warnedExposures: make(map[string]struct{}),
-		serviceIPs:      make(map[string]map[string]string),
-		appStopping:     make(map[string]bool),
-		ros2ExecRefs:    make(map[string]int),
-		chunkIndex:      idx,
-		staging:         newStaging(defaultChunkStagingDir),
-		snapshotter:     snapshotter,
+		client:            c,
+		logger:            logger,
+		namespace:         "default",
+		proxyManager:      proxyMgr,
+		appServices:       make(map[string]map[string]*appconfig.ServiceConfig),
+		primaryPIDs:       make(map[string]uint32),
+		appIsolation:      make(map[string]string),
+		warnedExposures:   make(map[string]struct{}),
+		serviceIPs:        make(map[string]map[string]string),
+		preparedSnapshots: make(map[string]*preparedSnapshot),
+		appStopping:       make(map[string]bool),
+		ros2ExecRefs:      make(map[string]int),
+		chunkIndex:        idx,
+		staging:           newStaging(defaultChunkStagingDir),
+		snapshotter:       snapshotter,
 	}, nil
 }
 
@@ -298,6 +307,7 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 // Close releases the underlying containerd client connection and stops all
 // D-Bus proxy processes.
 func (c *Client) Close() error {
+	c.discardAllPreparedSnapshots()
 	if c.proxyManager != nil {
 		c.proxyManager.StopAll()
 	}
@@ -1468,17 +1478,46 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		return fmt.Errorf("marshaling OCI spec: %w", err)
 	}
 
-	// Create the container with a new snapshot from the image.
+	// Prefer the fresh writable rootfs PrepareImage created concurrently with
+	// upload. Immutable layer snapshots are reused either way; consuming this
+	// active snapshot moves the final snapshotter Prepare call off the replace
+	// critical path. A prepared snapshot is single-use and has never backed a
+	// task, so runtime filesystem mutations can never leak across deployments.
 	snapshotKey := SnapshotKey(appID, serviceName)
+	snapshotOpt := containerd.WithNewSnapshot(snapshotKey, image)
+	var prepared *preparedSnapshot
+	if diffIDs, rootErr := image.RootFS(ctx); rootErr == nil {
+		prepared = c.takePreparedSnapshot(imageName, identity.ChainID(diffIDs).String())
+		if prepared != nil {
+			// The lease has a bounded expiration so an abandoned preparation
+			// cannot pin storage forever. If GC already collected that snapshot,
+			// discard the stale bookkeeping and retain the normal synchronous
+			// WithNewSnapshot fallback selected above.
+			if _, statErr := c.client.SnapshotService(c.snapshotter).Stat(ctx, prepared.key); statErr != nil {
+				prepared.discard()
+				prepared = nil
+			} else {
+				snapshotKey = prepared.key
+				snapshotOpt = containerd.WithSnapshot(snapshotKey)
+			}
+		}
+	}
 	_, err = c.client.NewContainer(ctx, containerName,
 		containerd.WithImage(image),
 		containerd.WithSnapshotter(c.snapshotter),
-		containerd.WithNewSnapshot(snapshotKey, image),
+		snapshotOpt,
 		containerd.WithContainerLabels(labels),
 		containerd.WithNewSpec(
 			oci.WithSpecFromBytes(specJSON),
 		),
 	)
+	if prepared != nil {
+		if err != nil {
+			prepared.discard()
+		} else {
+			prepared.releaseLease()
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("creating container %q: %w", containerName, err)
 	}
