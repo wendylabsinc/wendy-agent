@@ -676,7 +676,7 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	gstFallbackDirs = nil
 	t.Cleanup(func() { gstFallbackDirs = prev })
 	svc := NewVideoService(context.Background(), zap.NewNop())
-	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "", pipeWireSource{})
+	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "", pipeWireSource{}, noRawSink{})
 	if err == nil {
 		t.Fatal("expected error when gst-launch-1.0 not found")
 	}
@@ -693,7 +693,7 @@ func newTestHub(t *testing.T) (*deviceHub, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &deviceHub{
-		subs:   make(map[int]chan *videoFrame),
+		subs:   make(map[int]*hubSubscriber),
 		ctx:    ctx,
 		cancel: cancel,
 		done:   make(chan struct{}),
@@ -787,7 +787,7 @@ func TestDeviceHub_ProducerErrorPropagated(t *testing.T) {
 	h.mu.Lock()
 	h.err = wantErr
 	for _, c := range h.subs {
-		close(c)
+		close(c.ch)
 	}
 	h.mu.Unlock()
 

@@ -319,7 +319,7 @@ func newCameraWatchCmd() *cobra.Command {
 // hidden alias.
 func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 	var deviceID, width, height, fps uint32
-	var toStdout bool
+	var toStdout, raw bool
 
 	cmd := &cobra.Command{
 		Use:    use,
@@ -327,6 +327,10 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 		Short:  "Stream H.264 video from a device camera",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			if raw && !toStdout {
+				// Raw frames are bytes for a program, not a picture for a window.
+				return fmt.Errorf("--raw writes whole uncompressed frames and needs --stdout")
+			}
 			conn, err := connectToAgent(ctx)
 			if err != nil {
 				return err
@@ -353,6 +357,7 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 				Width:     width,
 				Height:    height,
 				Framerate: fps,
+				Raw:       raw,
 			}
 			startStream := func() (videoStream, error) {
 				return conn.VideoService.StreamVideo(ctx, req)
@@ -393,6 +398,7 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 	cmd.Flags().Uint32Var(&height, "height", 0, "Frame height (0 = device default)")
 	cmd.Flags().Uint32Var(&fps, "fps", 0, "Framerate (0 = device default)")
 	cmd.Flags().BoolVar(&toStdout, "stdout", false, "Pipe encoded video to stdout instead of opening a window (codec: H.264 or VP8/WebM depending on device capabilities)")
+	cmd.Flags().BoolVar(&raw, "raw", false, "With --stdout: write the camera's uncompressed capture frames (one whole frame per message, layout printed to stderr) instead of encoded video. Only cameras captured in a raw pixel format offer this; viewers of the same camera keep receiving H.264.")
 
 	return cmd
 }
@@ -434,6 +440,7 @@ func cameraStreamDiagnostic(err error) error {
 }
 
 func pipeVideoToStdout(stream videoStream, w io.Writer) error {
+	announcedRaw := false
 	for {
 		frame, err := stream.Recv()
 		if err == io.EOF {
@@ -441,6 +448,14 @@ func pipeVideoToStdout(stream videoStream, w io.Writer) error {
 		}
 		if err != nil {
 			return fmt.Errorf("receiving video: %w", err)
+		}
+		if f := frame.GetRawFormat(); f != nil && !announcedRaw {
+			// Once, on stderr: stdout is the frame bytes, and the reader needs
+			// the geometry to slice them.
+			announcedRaw = true
+			cliLogln("raw frames: %dx%d %s, %d bytes per line, %d bytes per frame",
+				f.GetWidth(), f.GetHeight(), f.GetFourcc(), f.GetBytesPerLine(),
+				f.GetBytesPerLine()*f.GetHeight())
 		}
 		if _, err := w.Write(frame.GetData()); err != nil {
 			return fmt.Errorf("writing video data: %w", err)
