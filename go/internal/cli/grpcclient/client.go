@@ -65,6 +65,7 @@ type AgentConnection struct {
 	// pre-built (NewFromConn) connections.
 	Addr           string
 	IsMTLS         bool                    // true when connected via mutual TLS
+	IsSessionProxy bool                    // true when Conn reaches a local session broker retaining the mTLS transport
 	CertInfo       *config.CertificateInfo // cert used to establish mTLS; nil for plaintext
 	RegistryDialer func(context.Context, int) (net.Conn, error)
 	ExtraClosers   []io.Closer

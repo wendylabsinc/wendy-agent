@@ -22,6 +22,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -2893,6 +2894,35 @@ type resolveConfig struct {
 	suppressUpdateCheck      bool
 	nonInteractive           bool
 	device                   string
+	disableSessionBroker     bool
+}
+
+var (
+	connectSessionBrokerFn = sessionbroker.Connect
+	startSessionBrokerFn   = sessionbroker.Start
+)
+
+func connectPinnedSession(ctx context.Context, key, addr string) (*grpcclient.AgentConnection, bool) {
+	pinKey := pinKeyForAddr(key)
+	target := newDialTarget(pinKey, addr)
+	if target.Expected == nil {
+		return nil, false
+	}
+	conn, err := connectSessionBrokerFn(ctx, pinKey, *target.Expected)
+	return conn, err == nil && conn != nil
+}
+
+func startPinnedSession(key string, conn *grpcclient.AgentConnection) {
+	// The current invocation already has a verified connection. Broker startup
+	// is an optimization for the next invocation and must never affect this one.
+	_ = startSessionBrokerFn(pinKeyForAddr(key), conn)
+}
+
+// DisableSessionBroker forces a fresh device transport. Watch already retains
+// one connection for its whole lifetime, so routing it through the short-lived
+// cross-process broker adds a hop without avoiding any setup.
+func DisableSessionBroker() resolveOption {
+	return func(c *resolveConfig) { c.disableSessionBroker = true }
 }
 
 // SelectDevice makes device selection an explicit property of this resolve
@@ -3071,40 +3101,52 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		if _, _, splitErr := net.SplitHostPort(device); splitErr != nil {
 			addr = hostPort(device, defaultAgentPort)
 		}
-		startedAt := time.Now()
-		provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
-		conn, err := connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
-		rt("  ↳ connectResolvedAgent (dial+probe)")
-		if err != nil {
-			if errors.Is(err, ErrUserCancelled) {
-				return nil, err
+		conn, brokerHit := (*grpcclient.AgentConnection)(nil), false
+		if !cfg.disableSessionBroker {
+			conn, brokerHit = connectPinnedSession(ctx, device, addr)
+		}
+		if brokerHit {
+			rt("  ↳ reusable session connection")
+			if isDefault {
+				noteImplicitDevice(device, implicitDefaultDevice)
 			}
-			if syncedConn, ok := autoSyncTimeAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
-				return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
-			}); ok {
-				conn = syncedConn
-			} else if errors.Is(err, errProvisionedAgentUnauthorized) {
-				refreshedConn, ok := offerCertRefreshAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
-					return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
-				})
-				if !ok {
+		} else {
+			startedAt := time.Now()
+			provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
+			var err error
+			conn, err = connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+			rt("  ↳ connectResolvedAgent (dial+probe)")
+			if err != nil {
+				if errors.Is(err, ErrUserCancelled) {
 					return nil, err
 				}
-				conn = refreshedConn
-			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
-				// Default device is unreachable — offer interactive recovery.
-				recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
-				if recErr != nil {
-					return nil, recErr
+				if syncedConn, ok := autoSyncTimeAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
+					return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+				}); ok {
+					conn = syncedConn
+				} else if errors.Is(err, errProvisionedAgentUnauthorized) {
+					refreshedConn, ok := offerCertRefreshAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
+						return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+					})
+					if !ok {
+						return nil, err
+					}
+					conn = refreshedConn
+				} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
+					// Default device is unreachable — offer interactive recovery.
+					recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+					if recErr != nil {
+						return nil, recErr
+					}
+					if pinErr := enforceSelectedDevicePin(recovered); pinErr != nil {
+						return nil, pinErr
+					}
+					return recovered, nil
+				} else if isDefault {
+					return nil, defaultDeviceUnreachableError(device, err)
+				} else {
+					return nil, err
 				}
-				if pinErr := enforceSelectedDevicePin(recovered); pinErr != nil {
-					return nil, pinErr
-				}
-				return recovered, nil
-			} else if isDefault {
-				return nil, defaultDeviceUnreachableError(device, err)
-			} else {
-				return nil, err
 			}
 		}
 		// Same pin key as connectToAgent's: the host of the address dialled, via
@@ -3122,6 +3164,9 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 			}
 		}
 		rt("  ↳ checkAndOfferUpdate")
+		if !brokerHit && !cfg.disableSessionBroker {
+			startPinnedSession(device, conn)
+		}
 		return &SelectedDevice{Agent: conn}, nil
 	}
 

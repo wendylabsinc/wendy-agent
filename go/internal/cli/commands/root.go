@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
+	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
@@ -35,7 +36,7 @@ func NewRootCmd() *cobra.Command {
 			// avoids config/analytics writes (and an update check) as root, and
 			// keeps the first-run banner out of the helper's captured output.
 			switch cmd.Name() {
-			case "__ble-check", "__usb-setup", "__t234-write", "open-browser":
+			case "__ble-check", "__session-broker", "__usb-setup", "__t234-write", "open-browser":
 				return nil
 			}
 
@@ -201,6 +202,18 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
+	var sessionSpec string
+	sessionBrokerCmd := &cobra.Command{
+		Use:    "__session-broker",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return sessionbroker.Run(cmd.Context(), sessionSpec, sessionbroker.DefaultIdleTTL)
+		},
+	}
+	sessionBrokerCmd.Flags().StringVar(&sessionSpec, "spec", "", "Encoded session connection recipe")
+	_ = sessionBrokerCmd.MarkFlagRequired("spec")
+
 	var bmapDevice, bmapFile, bmapSource string
 	var bmapWriters int
 	bmapWriteCmd := &cobra.Command{
@@ -237,6 +250,7 @@ func NewRootCmd() *cobra.Command {
 		cacheCmd,
 		// Hidden
 		bleCheckCmd,
+		sessionBrokerCmd,
 		bmapWriteCmd,
 		newT234WriteCmd(),
 		newUSBSetupHiddenCmd(),
