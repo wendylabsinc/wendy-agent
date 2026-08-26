@@ -3024,6 +3024,16 @@ func verifyAgentAfterUpdate(ctx context.Context, agentService agentpb.WendyAgent
 }
 
 func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentConnection) func(context.Context) (*grpcclient.AgentConnection, error) {
+	// A connection with a pinned Reconnect (cloud tunnel — bound to the exact
+	// asset id) reconnects through it. Re-running discovery instead would
+	// relaunch the interactive device picker in the middle of the restart wait
+	// when the device was picked interactively (cloudDeviceConfig.DeviceName is
+	// only the --device flag), and even a named lookup can misresolve while the
+	// restarting device's heartbeat lapses.
+	if previous != nil && previous.Reconnect != nil {
+		return previous.Reconnect
+	}
+
 	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {
 		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectToCloudAgent(waitCtx, cloudCfg.CloudGRPC, cloudCfg.DeviceName, cloudCfg.BrokerURL)
