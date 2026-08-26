@@ -1177,7 +1177,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		cliLogln("warning: %s", w)
 	}
 
-	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}

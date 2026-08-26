@@ -1029,7 +1029,7 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 		// command UIs don't surface delayed transport errors, and so provisioned
 		// agents that only expose the mTLS port can report an auth error.
 		probeCtx, cancel := context.WithTimeout(ctx, agentPlaintextProbeTimeout)
-		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		cancel()
 		tm("  ↳ plaintext probe (GetAgentVersion)")
 		if probeErr != nil {
@@ -1043,6 +1043,7 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 			}
 			return nil, probeErr
 		}
+		conn.CacheAgentVersion(resp)
 	}
 	// This is the choke point's only real proof-of-life exit: conn.IsMTLS
 	// means dialAgentLadder already verified it with a live probe, and the
@@ -2031,7 +2032,10 @@ func cacheFastPathReachable(ctx context.Context, conn *grpcclient.AgentConnectio
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+	resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+	if probeErr == nil {
+		conn.CacheAgentVersion(resp)
+	}
 	return probeErr == nil
 }
 
@@ -2267,9 +2271,10 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 			// the old 8s budget (which also covered .local mDNS resolution) made
 			// an unreachable mTLS port cost 8s before the plaintext fallback.
 			probeCtx, cancel := context.WithTimeout(ctx, mtlsProbeTimeout)
-			_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+			resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 			cancel()
 			if probeErr == nil {
+				conn.CacheAgentVersion(resp)
 				rememberCertOrg(host, w.allCerts[i].OrganizationID)
 				return conn, nil
 			}
@@ -2631,11 +2636,16 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	if updateCheckRecentlyPassed(conn.Host) {
 		return conn, nil
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	resp, err := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
-	cancel()
-	if err != nil {
-		return conn, nil
+	resp, ok := conn.CachedAgentVersion()
+	if !ok {
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		var err error
+		resp, err = conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		cancel()
+		if err != nil {
+			return conn, nil
+		}
+		conn.CacheAgentVersion(resp)
 	}
 
 	agentVer := resp.GetVersion()
@@ -2740,9 +2750,10 @@ func waitForAgentRestart(ctx context.Context, addr string) (*grpcclient.AgentCon
 			continue
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		cancel()
 		if probeErr == nil {
+			conn.CacheAgentVersion(resp)
 			return conn, nil
 		}
 		conn.Close()
