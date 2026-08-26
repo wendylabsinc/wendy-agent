@@ -9,7 +9,7 @@ CONFIG_PATH="${WENDY_TART_E2E_CONFIG:-/Library/Application Support/Wendy/TartE2E
 # shellcheck disable=SC1090
 source "$CONFIG_PATH"
 export TART_HOME
-runtime_path="$(dirname "$TART_BIN"):$(dirname "$SOFTNET_BIN"):$(dirname "$JQ_BIN"):/usr/bin:/bin:/usr/sbin:/sbin"
+runtime_path="$(dirname "$TART_BIN"):$(dirname "$JQ_BIN"):/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH="$runtime_path"
 
 current_vm=""
@@ -45,7 +45,7 @@ assert_protected_secret() {
 }
 
 verify_installation() {
-  local installed_tart_version installed_softnet_version installed_softnet_build
+  local installed_tart_version
   assert_immutable_file "$0"
   assert_immutable_file "$CONFIG_PATH"
   assert_immutable_file "$INSTALL_ROOT/bin/watchdog.sh"
@@ -57,14 +57,8 @@ verify_installation() {
   [[ "$RUNNER_MAX_SECONDS" =~ ^[0-9]+$ ]] || fail "RUNNER_MAX_SECONDS must be numeric"
 
   installed_tart_version="$($TART_BIN --version)"
-  installed_softnet_version="$($SOFTNET_BIN --version)"
-  installed_softnet_build="${installed_softnet_version#softnet }"
   [[ "$installed_tart_version" == "$TART_VERSION" ]] \
     || fail "expected Tart $TART_VERSION, got $installed_tart_version"
-  [[ "$installed_softnet_version" == softnet\ * && \
-     ("$installed_softnet_build" == "$SOFTNET_VERSION" || \
-      "$installed_softnet_build" == "$SOFTNET_VERSION"-*) ]] \
-    || fail "expected Softnet $SOFTNET_VERSION, got $installed_softnet_version"
   "$JQ_BIN" --version >/dev/null
   "$TART_BIN" list --source local --quiet | grep -Fxq "$GOLDEN_IMAGE" \
     || fail "golden image is missing: $GOLDEN_IMAGE"
@@ -202,7 +196,6 @@ run_one_guest() {
     --no-graphics \
     --no-audio \
     --no-clipboard \
-    --net-softnet \
     "$current_vm" >/dev/null 2>&1 &
   tart_run_pid=$!
 

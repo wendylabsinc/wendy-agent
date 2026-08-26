@@ -55,7 +55,7 @@ install -d -o root -g wheel -m 0755 "$install_root" "$install_root/bin"
 install -d -o "$operator_user" -g "$operator_gid" -m 0700 \
   "$install_root/secrets" "$state_parent" "$state_dir" "$tart_home"
 
-for tool in /opt/homebrew/bin/tart /opt/homebrew/bin/softnet /opt/homebrew/bin/jq; do
+for tool in /opt/homebrew/bin/tart /opt/homebrew/bin/jq; do
   [[ -x "$tool" ]] || {
     echo "ERROR: missing $tool" >&2
     echo "Install the pinned host tools as $operator_user before running this script." >&2
@@ -63,13 +63,8 @@ for tool in /opt/homebrew/bin/tart /opt/homebrew/bin/softnet /opt/homebrew/bin/j
   }
 done
 installed_tart_version="$(sudo -u "$operator_user" /opt/homebrew/bin/tart --version)"
-installed_softnet_version="$(sudo -u "$operator_user" /opt/homebrew/bin/softnet --version)"
-installed_softnet_build="${installed_softnet_version#softnet }"
 [[ "$installed_tart_version" == '2.36.0' ]] \
   || { echo "ERROR: expected Tart 2.36.0, got $installed_tart_version" >&2; exit 1; }
-[[ "$installed_softnet_version" == softnet\ * && \
-   ("$installed_softnet_build" == '0.23.0' || "$installed_softnet_build" == 0.23.0-*) ]] \
-  || { echo "ERROR: expected Softnet 0.23.0, got $installed_softnet_version" >&2; exit 1; }
 
 install -o root -g wheel -m 0755 "$script_dir/controller.sh" "$install_root/bin/controller.sh"
 install -o root -g wheel -m 0755 "$script_dir/watchdog.sh" "$install_root/bin/watchdog.sh"
@@ -93,12 +88,6 @@ awk \
 # protected at 0400 and the root-owned config is not writable.
 install -o root -g wheel -m 0644 "$config_tmp" "$install_root/config.env"
 install -o root -g wheel -m 0644 "$script_dir/org.wendy.macos-e2e-tart.plist" "$launch_agent"
-
-# Softnet needs elevated vmnet initialization, then drops privileges. Configure
-# only the pinned binary selected by Homebrew, not an arbitrary PATH lookup.
-softnet_real="$(/usr/bin/python3 -c 'import os; print(os.path.realpath("/opt/homebrew/bin/softnet"))')"
-chown root:wheel "$softnet_real"
-chmod 4755 "$softnet_real"
 
 chown -R "$operator_user:$operator_gid" "$state_dir" "$tart_home"
 chmod 0700 "$state_dir" "$tart_home"

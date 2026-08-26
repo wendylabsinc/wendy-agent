@@ -20,7 +20,7 @@ checkout or mounts a host directory into a guest.
 | Golden image | `wendy-macos-26-xcode-26.5-e2e-v1` |
 | Actions runner | `2.336.0`, archive SHA-256 `8e8839c49b7060b6b2154f4931f815df330c27f167d53ef2239ee3dfce28b079` |
 | Tart | `2.36.0` |
-| Softnet | `0.23.0` |
+| Guest networking | Tart standard NAT |
 | Guest resources | 8 CPUs, 12 GB RAM, one concurrent guest |
 | Runner group/label | existing `wendy-developer` / unique `wendy-e2e-macos-tart` |
 
@@ -37,10 +37,9 @@ but cannot claim vendor-attested provenance.
 
 ## Security and lifecycle
 
-- The controller creates a local APFS copy-on-write clone, starts it with no
-  directory mounts, no clipboard, no audio, and Softnet's default policy.
-  Softnet permits public IPv4 egress but blocks private IPv4 destinations and
-  guest-initiated host access.
+- The controller creates a local APFS copy-on-write clone and starts it with no
+  directory mounts, clipboard, or audio. This PoC uses Tart's standard NAT
+  networking; it does not claim private-LAN or host-network isolation.
 - A temporary fine-grained PAT creates each repository-level JIT configuration.
   It is restricted to `wendylabsinc/WendyOS` with only Administration write,
   remains on the host, and is revoked after the PoC. The one-job JIT
@@ -95,10 +94,9 @@ headless macOS 15+ requires an available unlocked login keychain.
 As that operator account, install the verified versions:
 
 ```bash
-brew install openai/tools/tart openai/tools/softnet jq
+brew install openai/tools/tart jq
 
 tart --version        # 2.36.0
-softnet --version     # softnet 0.23.0-<build>
 ```
 
 Then run the installer from a trusted, reviewed checkout. Pass the **path** to
@@ -112,11 +110,10 @@ sudo .github/runners/macos-e2e-tart/install-host.sh \
 ```
 
 The installer copies immutable scripts/config, copies the PAT as operator-owned
-mode 0400, configures the pinned Softnet binary's required setuid bit, and prints
-exact image-promotion and LaunchAgent commands. It deliberately does not start
-the service before the image exists.
+mode 0400, and prints exact image-promotion and LaunchAgent commands. It
+deliberately does not start the service before the image exists.
 
-Image preparation clones the pinned OCI digest, boots with Softnet and no
+Image preparation clones the pinned OCI digest, boots with standard NAT and no
 mounts, installs only the Wendy E2E dependencies and exact runner archive,
 checks passwordless guest sudo, removes runner/test residue, stops the VM, and
 renames the candidate to the immutable golden name. Promotion fails closed; a
@@ -162,7 +159,7 @@ cannot publish a release. Before merge, apply one of the same-repository PR labe
 it again. After merge, use the equivalent workflow-dispatch choice.
 
 1. **Normal completion:** run `smoke`; confirm public egress, no VirtioFS host
-   mount, no private-LAN reachability, and successful completion. Then confirm
+   mount, passwordless guest sudo, and successful completion. Then confirm
    that guest name disappears and a different waiting JIT runner appears.
 2. **Cancellation:** run `wait-for-cancellation`, wait until the job starts,
    cancel it, and confirm the clone is destroyed without an in-guest cleanup

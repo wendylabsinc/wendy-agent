@@ -7,7 +7,7 @@ CONFIG_PATH="${WENDY_TART_E2E_CONFIG:-/Library/Application Support/Wendy/TartE2E
 # shellcheck disable=SC1090
 source "$CONFIG_PATH"
 export TART_HOME
-runtime_path="$(dirname "$TART_BIN"):$(dirname "$SOFTNET_BIN"):$(dirname "$JQ_BIN"):/usr/bin:/bin:/usr/sbin:/sbin"
+runtime_path="$(dirname "$TART_BIN"):$(dirname "$JQ_BIN"):/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH="$runtime_path"
 
 candidate="${GOLDEN_IMAGE}.candidate.$(date -u +%Y%m%d%H%M%S)"
@@ -40,7 +40,6 @@ fi
   --no-graphics \
   --no-audio \
   --no-clipboard \
-  --net-softnet \
   "$candidate" >/dev/null 2>&1 &
 run_pid=$!
 
@@ -65,7 +64,7 @@ fi
   "$RUNNER_VERSION" "$RUNNER_ARCHIVE_SHA256" \
   < "$INSTALL_ROOT/bin/image-prepare.sh"
 
-# Verify the promoted image through the same no-mount, Softnet-isolated route.
+# Verify the promoted image through the same no-mount, standard NAT route.
 "$TART_BIN" exec "$candidate" /bin/bash -c '
   set -euo pipefail
   sudo -n true

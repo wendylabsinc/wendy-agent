@@ -70,7 +70,7 @@ jobs:
           sw_vers
           xcodebuild -version
 
-      - name: Verify isolated route
+      - name: Verify PoC route
         if: needs.select-scenario.outputs.scenario == 'smoke'
         shell: bash
         run: |
@@ -80,12 +80,6 @@ jobs:
             exit 1
           fi
           curl --fail --silent --show-error --max-time 15 https://api.github.com/zen >/dev/null
-          for address in 10.255.255.254 172.31.255.254 192.168.255.254; do
-            if nc -G 2 -z "$address" 443 >/dev/null 2>&1; then
-              echo "ERROR: reached private-LAN probe $address" >&2
-              exit 1
-            fi
-          done
           sudo -n true
 
       - name: Wait for operator cancellation
