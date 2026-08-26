@@ -1106,9 +1106,15 @@ func unameRelease() string {
 	return ""
 }
 
+// Reads the field directly rather than calling parseOSRelease: that lives in the
+// linux-only distro file, and this one is built for every platform.
 func osReleaseVersionID() string {
-	_, version, _ := parseOSRelease("/etc/os-release")
-	return version
+	f, err := os.Open("/etc/os-release")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	return parseKeyValues(f)["VERSION_ID"]
 }
 
 func loadedKernelModules() []string {

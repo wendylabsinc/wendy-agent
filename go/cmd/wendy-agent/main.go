@@ -659,7 +659,11 @@ func main() {
 		// registered ONLY here on the mTLS server (authenticated, org-checked),
 		// never via registerAllServices: signature verification guards WHAT runs,
 		// but the transport must still guard WHO may install or remove a driver.
-		agentpbv2.RegisterWendyDriverServiceServer(srv, driverSvc)
+		// Linux only: the store is systemd-sysext and modprobe. Elsewhere the
+		// client sees Unimplemented and treats the device as having no add-ons.
+		if runtime.GOOS == "linux" {
+			agentpbv2.RegisterWendyDriverServiceServer(srv, driverSvc)
+		}
 
 		// Compute mTLS port = agentPort + 1.
 		portNum, err := strconv.Atoi(agentPort)
