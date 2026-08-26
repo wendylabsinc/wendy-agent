@@ -211,9 +211,14 @@ const (
 
 // decideOSUpdate chooses how the OS-update step behaves when a newer OS may be
 // available. It is pure so it can be unit-tested; the caller is responsible for
-// running the interactive prompt when the result is osActionPrompt.
-func decideOSUpdate(currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
-	if osAlreadyCurrent(currentOSVersion, latestVersion, nightly) {
+// running the interactive prompt when the result is osActionPrompt. A --pr
+// request (prNumber > 0) never resolves to osActionAlreadyCurrent: a PR's
+// version tag ("pr-N") is constant across rebuilds, so treating a matching tag
+// as current would silently no-op a re-test after a new push to the same PR
+// (same rationale as osUpdateShouldSkipAlreadyCurrent, which implements the
+// suppression).
+func decideOSUpdate(prNumber int, currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
+	if osUpdateShouldSkipAlreadyCurrent(prNumber, currentOSVersion, latestVersion, nightly) {
 		return osActionAlreadyCurrent
 	}
 	switch {
