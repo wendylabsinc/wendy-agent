@@ -972,6 +972,10 @@ func toCreateContainerProgress(progress UnpackProgress) *agentpb.CreateContainer
 }
 
 func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig, onProgress services.ProgressFunc) error {
+	createStarted := time.Now()
+	var replaceDuration, imageResolveDuration, unpackDuration, specDuration, snapshotDuration time.Duration
+	var replacedExisting bool
+
 	ctx = c.withNamespace(ctx)
 
 	// Derive the app identity. appCfg.AppID is the authoritative source; fall
@@ -1008,7 +1012,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	containerName := ContainerName(appID, serviceName)
 	unlockNetwork := c.lockNetworkOperation(containerName)
 	defer unlockNetwork()
+	lockStarted := time.Now()
 	c.mu.Lock()
+	lockWait := time.Since(lockStarted)
 	defer c.mu.Unlock()
 
 	// Reject creation while a concurrent StopContainer is tearing down this app.
@@ -1061,7 +1067,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Delete any pre-existing container with the same name.
+	phaseStarted := time.Now()
 	if existing, err := c.client.LoadContainer(ctx, containerName); err == nil {
+		replacedExisting = true
 		// Pause the restart monitor for this name for the rest of this
 		// function: without it, a crash-looping app's next tick can call
 		// StartContainer on this same container between our kill and delete
@@ -1144,6 +1152,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		if c.proxyManager != nil {
 			_ = c.proxyManager.Stop(containerName)
 		}
+		replaceDuration = time.Since(phaseStarted)
 	}
 
 	// Try the local image store first. The device-local registry shares
@@ -1153,6 +1162,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// local-registry case.
 	var image containerd.Image
 	var err error
+	phaseStarted = time.Now()
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_UNPACKING})
 	image, err = c.client.GetImage(ctx, imageName)
 	if err != nil {
@@ -1170,6 +1180,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			return fmt.Errorf("getting/pulling image %q: %w", imageName, err)
 		}
 	}
+	imageResolveDuration = time.Since(phaseStarted)
 
 	// Start D-Bus proxy if bluetooth entitlement is present. The returned
 	// socket directory is keyed by containerName (which includes the service
@@ -1200,6 +1211,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Unpack the image into the snapshotter if not already done.
+	phaseStarted = time.Now()
 	unpacked, err := image.IsUnpacked(ctx, c.snapshotter)
 	if err != nil {
 		c.logger.Warn("Failed to check if image is unpacked", zap.Error(err))
@@ -1214,12 +1226,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			return fmt.Errorf("unpacking image %q: %w", imageName, err)
 		}
 	}
+	unpackDuration = time.Since(phaseStarted)
 
 	// Read the image's OCI config (CMD, ENTRYPOINT, ENV, WorkingDir). An image
 	// whose config cannot be read is unusable: falling back to defaults would
 	// discard Cmd/Entrypoint/Env/WorkingDir and silently run /bin/sh in place of
 	// the application, which exits 0 immediately and presents as a crash loop
 	// with no explanation (WDY-2009).
+	phaseStarted = time.Now()
 	imageSpec, err := image.Spec(ctx)
 	if err != nil {
 		return fmt.Errorf("reading image config for %q (image is incomplete or corrupt): %w", imageName, err)
@@ -1540,6 +1554,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if err != nil {
 		return fmt.Errorf("marshaling OCI spec: %w", err)
 	}
+	specDuration = time.Since(phaseStarted)
 
 	// Prefer the fresh writable rootfs PrepareImage created concurrently with
 	// upload. Immutable layer snapshots are reused either way; consuming this
@@ -1547,6 +1562,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// critical path. A prepared snapshot is single-use and has never backed a
 	// task, so runtime filesystem mutations can never leak across deployments.
 	snapshotKey := SnapshotKey(appID, serviceName)
+	phaseStarted = time.Now()
 	snapshotOpt := containerd.WithNewSnapshot(snapshotKey, image)
 	var prepared *preparedSnapshot
 	if diffIDs, rootErr := image.RootFS(ctx); rootErr == nil {
@@ -1585,6 +1601,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		return fmt.Errorf("creating container %q: %w", containerName, err)
 	}
 	reusedNetworkSandboxCommitted = true
+	snapshotDuration = time.Since(phaseStarted)
 
 	// Container created successfully; keep its external socket resources running.
 	dbusProxyStarted = false
@@ -1602,6 +1619,19 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		createdFields = append(createdFields, zap.String("service_name", serviceName))
 	}
 	c.logger.Info("Container created", createdFields...)
+	c.logger.Info("Container create phase timings",
+		zap.String("container_name", containerName),
+		zap.String("snapshotter", c.snapshotter),
+		zap.Bool("replaced_existing", replacedExisting),
+		zap.Bool("image_was_unpacked", unpacked),
+		zap.Duration("lock_wait", lockWait),
+		zap.Duration("replace_existing", replaceDuration),
+		zap.Duration("resolve_image", imageResolveDuration),
+		zap.Duration("unpack_image", unpackDuration),
+		zap.Duration("build_spec", specDuration),
+		zap.Duration("prepare_snapshot_and_create", snapshotDuration),
+		zap.Duration("total", time.Since(createStarted)),
+	)
 
 	// Cache services map for stop-order resolution and isolation mode for
 	// StartContainer PID tracking. c.mu is already held for the full function
@@ -1677,6 +1707,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 // lifecycle serialization here prevents AttachContainer from bypassing CNI
 // CHECK or racing an ordinary start while c.mu is released for external work.
 func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Reader, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
+	startStarted := time.Now()
 	// Accept both "appID" and "appID_serviceName" forms. ParseContainerName
 	// validates both components so a crafted value cannot reach the label filter
 	// in the containersForApp fallback path (SOC2-CC6, ISO27001-A.8).
@@ -1690,7 +1721,11 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	// sandbox health checks and CNI cleanup, then reacquired around NewTask so a
 	// concurrent DeleteContainer cannot remove the container between the final
 	// stop-state check and task creation (TOCTOU, SOC2-CC6).
+	lockStarted := time.Now()
 	c.mu.Lock()
+	lockWait := time.Since(lockStarted)
+	var resolveDuration, staleTaskDuration, newTaskDuration, waitDuration, runtimeStartDuration, netnsAnchorDuration time.Duration
+	var cniDeleteDuration, cniAddDuration, networkFinalizeDuration time.Duration
 	muHeld := true
 	defer func() {
 		if muHeld {
@@ -1704,6 +1739,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 
 	// Start streams one container's output, so a bare appID naming a group is
 	// an error here rather than a fan-out.
+	phaseStarted := time.Now()
 	ctrs, _, _, err := c.resolveTargets(ctx, appName)
 	if err != nil {
 		return nil, fmt.Errorf("loading container %q: %w", appName, err)
@@ -1816,9 +1852,12 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 			return nil, fmt.Errorf("updating restart policy for %q: %w", appName, err)
 		}
 	}
+	resolveDuration = time.Since(phaseStarted)
 
 	// Clean up any stale task from a previous run.
+	phaseStarted = time.Now()
 	c.deleteStaleTask(ctx, container, appName)
+	staleTaskDuration = time.Since(phaseStarted)
 
 	// The task's IO pipeline must live as long as the task, not the RPC that
 	// started it: containerd's fifo package closes the FIFO fds when the
@@ -1833,6 +1872,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	stderrR, stderrW := io.Pipe()
 
 	// Create a new task with pipe-based stdio for programmatic capture.
+	phaseStarted = time.Now()
 	task, err := container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
 	if err != nil {
 		if errdefs.IsAlreadyExists(err) {
@@ -1859,9 +1899,11 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 			return nil, fmt.Errorf("creating task for %q: %w", appName, err)
 		}
 	}
+	newTaskDuration = time.Since(phaseStarted)
 
 	// Set up the wait channel before starting. Uses taskCtx so the exit
 	// monitor — and with it the output pipeline — survives client disconnect.
+	phaseStarted = time.Now()
 	exitStatusCh, err := task.Wait(taskCtx)
 	if err != nil {
 		_, _ = task.Delete(taskCtx)
@@ -1872,8 +1914,10 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("waiting on task for %q: %w", appName, err)
 	}
+	waitDuration = time.Since(phaseStarted)
 
 	// Start the task.
+	phaseStarted = time.Now()
 	if err := task.Start(taskCtx); err != nil {
 		_, _ = task.Delete(taskCtx)
 		stdoutR.Close()
@@ -1883,6 +1927,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("starting task for %q: %w", appName, err)
 	}
+	runtimeStartDuration = time.Since(phaseStarted)
 
 	// From this point through network setup, every failure must kill the task,
 	// close its unconsumed pipes, and record a did-not-start diagnostic. The
@@ -1915,6 +1960,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	// anchor below), because needsCNIBridgeWiring must also recognise a
 	// single-service "bridge"-mode app, which isolation+serviceName alone
 	// cannot detect (unlike a multi-service isolated app service).
+	phaseStarted = time.Now()
 	// Anchor the network namespace with an open fd BEFORE releasing the mutex.
 	// This eliminates the TOCTOU race where a concurrent StopContainer could
 	// recycle the PID between mutex release and CNI ADD, causing the plugin to
@@ -1927,6 +1973,8 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 			return nil, failStartedTask(fmt.Errorf("anchoring network namespace for app %q: %w", appID, err))
 		}
 	}
+	netnsAnchored := netnsRef != nil
+	netnsAnchorDuration = time.Since(phaseStarted)
 
 	// Release the mutex before launching the streaming goroutine, which does
 	// not need it (it only reads from pipes).
@@ -1974,11 +2022,15 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		// (the fresh netns has no eth0 to remove and host-local has no
 		// reservation for this ID) — so a pre-ADD DEL makes ADD collision-proof
 		// no matter how the previous instance was (or wasn't) torn down.
+		phaseStarted = time.Now()
 		if delErr := c.CNIDel(ctx, appID, appName, netnsPath); delErr != nil {
 			c.logger.Warn("CNI DEL before ADD (stale-allocation reclaim) failed (non-fatal)",
 				zap.String(logfields.AppID, appID), zap.Error(delErr))
 		}
+		cniDeleteDuration = time.Since(phaseStarted)
+		phaseStarted = time.Now()
 		ip, cniResult, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
+		cniAddDuration = time.Since(phaseStarted)
 		if cniErr != nil {
 			// Roll back any partial state the failed ADD left behind (e.g. a
 			// host-local IPAM allocation recorded before a later step, such as
@@ -1997,6 +2049,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 			c.logger.Error("CNI ADD failed", zap.String(logfields.AppID, appID), zap.Error(cniErr))
 			return nil, failStartedTask(fmt.Errorf("CNI ADD failed for app %q: %w", appID, cniErr))
 		} else {
+			phaseStarted = time.Now()
 			// netnsPath (the bind-mount) must stay mounted through mesh egress
 			// setup below, which needs a live netns to install the service-CIDR
 			// route via nsenter (SetMeshRoute). Until every subsequent setup step
@@ -2131,11 +2184,29 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 			}
 			networkReady = true
 			c.mu.Unlock()
+			networkFinalizeDuration = time.Since(phaseStarted)
 		}
 	}
 
 	c.logger.Info("Container started", zap.String("app_name", appName))
 	c.startPostStartAgentHook(postStartAgentCommand, appName)
+
+	c.logger.Info("Container start phase timings",
+		zap.String("container_name", appName),
+		zap.Bool("cni_bridge", needsBridge),
+		zap.Bool("netns_anchored", netnsAnchored),
+		zap.Duration("lock_wait", lockWait),
+		zap.Duration("resolve_container", resolveDuration),
+		zap.Duration("delete_stale_task", staleTaskDuration),
+		zap.Duration("new_task", newTaskDuration),
+		zap.Duration("register_wait", waitDuration),
+		zap.Duration("runtime_start", runtimeStartDuration),
+		zap.Duration("anchor_netns", netnsAnchorDuration),
+		zap.Duration("cni_delete", cniDeleteDuration),
+		zap.Duration("cni_add", cniAddDuration),
+		zap.Duration("network_finalize", networkFinalizeDuration),
+		zap.Duration("total", time.Since(startStarted)),
+	)
 
 	// Stream output from the pipes.
 	outputCh := make(chan services.ContainerOutput, 64)
