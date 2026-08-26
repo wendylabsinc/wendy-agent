@@ -89,6 +89,14 @@ awk \
 install -o root -g wheel -m 0644 "$config_tmp" "$install_root/config.env"
 install -o root -g wheel -m 0644 "$script_dir/org.wendy.macos-e2e-tart.plist" "$launch_agent"
 
+# Undo the privileged Softnet binary mode used by the earlier PoC revision.
+# Tart may retain Softnet as a Homebrew dependency, but this route never invokes it.
+if [[ -e /opt/homebrew/bin/softnet ]]; then
+  legacy_softnet_real="$(/usr/bin/python3 -c 'import os; print(os.path.realpath("/opt/homebrew/bin/softnet"))')"
+  chown "$operator_user:$operator_gid" "$legacy_softnet_real"
+  chmod 0755 "$legacy_softnet_real"
+fi
+
 chown -R "$operator_user:$operator_gid" "$state_dir" "$tart_home"
 chmod 0700 "$state_dir" "$tart_home"
 plutil -lint "$launch_agent" >/dev/null
