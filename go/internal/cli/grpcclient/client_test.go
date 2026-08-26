@@ -4,7 +4,34 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+func TestAgentConnectionCachesSuccessfulVersionProbe(t *testing.T) {
+	conn := &AgentConnection{}
+	if _, ok := conn.CachedAgentVersion(); ok {
+		t.Fatal("new connection unexpectedly has a cached version")
+	}
+	want := &agentpb.GetAgentVersionResponse{Version: "test-version", Os: "linux"}
+	conn.CacheAgentVersion(want)
+	got, ok := conn.CachedAgentVersion()
+	if !ok || got != want {
+		t.Fatalf("CachedAgentVersion() = (%p, %v), want (%p, true)", got, ok, want)
+	}
+}
+
+func TestAgentConnectionDoesNotReuseStaleVersionProbe(t *testing.T) {
+	conn := &AgentConnection{}
+	conn.cachedAgentVersion.Store(&agentVersionCacheEntry{
+		response: &agentpb.GetAgentVersionResponse{Version: "stale"},
+		cachedAt: time.Now().Add(-agentVersionCacheTTL - time.Second),
+	})
+	if _, ok := conn.CachedAgentVersion(); ok {
+		t.Fatal("stale probe unexpectedly remained reusable")
+	}
+}
 
 // ── grpcTarget ──────────────────────────────────────────────────────
 
