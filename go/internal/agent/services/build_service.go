@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -136,6 +137,10 @@ type BuildServiceOptions struct {
 	// A function rather than a value so a certificate rotated while the agent
 	// runs is picked up on the next build.
 	PushTLS func(targetAssetID int32) (*tls.Config, error)
+	// TargetAgentPort is the mTLS gRPC port target agents listen on, which is
+	// where a device's chunk store is reached to deliver an image. Zero means
+	// DefaultTargetAgentPort.
+	TargetAgentPort uint16
 }
 
 // BuildService lets a CLI delegate an image build to this device. See the
@@ -150,6 +155,9 @@ type BuildService struct {
 	peers                PeerDialer
 	pushTLS              func(targetAssetID int32) (*tls.Config, error)
 	maxContextBytes      int64
+	// dialTarget opens the gRPC hop to a target device's agent for chunked
+	// delivery. See targetDialer.
+	dialTarget targetDialer
 
 	// contextLocks serialises builds that share a context directory. See
 	// lockContextDir.
@@ -169,6 +177,9 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 	if opts.ContextLocks == nil {
 		opts.ContextLocks = NewBuildContextLockSet()
 	}
+	if opts.TargetAgentPort == 0 {
+		opts.TargetAgentPort = DefaultTargetAgentPort
+	}
 	return &BuildService{
 		logger:               logger,
 		buildHostEnabledPath: filepath.Join(opts.ConfigPath, buildHostEnabledFile),
@@ -178,6 +189,7 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 		peers:                opts.Peers,
 		pushTLS:              opts.PushTLS,
 		maxContextBytes:      opts.MaxContextBytes,
+		dialTarget:           meshTargetDialer(opts.Peers, opts.PushTLS, opts.TargetAgentPort),
 		contextLocks:         opts.ContextLocks,
 	}
 }
@@ -483,51 +495,54 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	}
 
 	if s.pushTLS == nil {
-		return status.Error(codes.FailedPrecondition, "this build host has no client certificate for pushing to a device registry")
+		return status.Error(codes.FailedPrecondition, "this build host has no client certificate for delivering an image to another device")
+	}
+	// Credentials for every device are loaded — and pinned to that device —
+	// before the build, for the reason the targets were validated up front: a
+	// build that cannot be delivered is wasted minutes on a machine other people
+	// share.
+	for _, t := range targets {
+		if _, err := s.pushTLS(t.GetAssetId()); err != nil {
+			return status.Errorf(codes.FailedPrecondition, "loading delivery credentials for device %d: %v", t.GetAssetId(), err)
+		}
 	}
 
-	// One pass per device. The image is built once in any real sense: BuildKit
-	// has solved it after the first pass, so the rest are cache hits that
-	// re-export and push. That leaves only the delivery cost, which is per
-	// device and unavoidable — and layer-diffed, so the second device onwards
-	// usually transfers very little.
-	//
-	// Each pass gets its OWN proxy and its own asset-pinned TLS config. Reusing
-	// one hop for several devices would mean a single pinned identity standing
-	// in for all of them, which is exactly the property the pin exists to deny.
+	// Build ONCE, exporting an OCI layout beside the context directory. Delivery
+	// is then a separate step per device, fed from that export: which layers and
+	// chunks a device lacks is a question about that device, and a rebuild does
+	// not answer it. The registry push this replaces ran one buildctl pass per
+	// device because the push WAS the export; it survives only as the fallback
+	// for an agent too old to receive chunks (see deliver).
+	imageTar := dir + exportedImageSuffix
+	defer os.Remove(imageTar)
+	args, err := buildctlOCIArgs(dir, df.GetDockerfile(), spec.GetPlatform(), df.GetBuildArgs(), imageTar)
+	if err != nil {
+		return err
+	}
+	if err := s.runBuildctl(ctx, stream, args, ""); err != nil {
+		return err
+	}
+	img, err := readExportedImage(imageTar, spec.GetPlatform())
+	if err != nil {
+		return status.Errorf(codes.Internal, "reading the built image: %v", err)
+	}
+
+	prog := &buildProgress{stream: stream}
 	deliveries := make([]*agentpbv2.DeliveryResult, 0, len(targets))
-	multi := len(targets) > 1
 	for i, t := range targets {
-		buildErr, deliveryErr := s.buildAndDeliver(ctx, stream, spec, df, dir, t)
-
-		// A build failure on the FIRST pass is a build failure, full stop: no
-		// device can receive this image and continuing would report N identical
-		// failures for one broken Dockerfile.
-		if buildErr != nil && i == 0 {
-			return buildErr
+		deliveryErr := s.deliver(ctx, prog, stream, spec, df, dir, img, i, t)
+		if len(targets) == 1 && deliveryErr != nil {
+			// Single-target behaviour is unchanged, including the code and the
+			// message prefix a CLI built before fleet delivery already uses to
+			// tell a delivery failure from a build failure.
+			return status.Errorf(codes.Unavailable, "pushing the built image to the target device failed: %v", deliveryErr)
 		}
-		if !multi {
-			// Single-target behaviour is unchanged, including the error codes a
-			// CLI built before fleet delivery already distinguishes.
-			if deliveryErr != nil {
-				return status.Errorf(codes.Unavailable, "pushing the built image to the target device failed: %v", deliveryErr)
-			}
-			if buildErr != nil {
-				return buildErr
-			}
-			deliveries = append(deliveries, &agentpbv2.DeliveryResult{AssetId: t.GetAssetId(), Delivered: true})
-			break
-		}
-
-		// Past the first pass, one device's problem is one device's problem.
+		// With several devices, one device's problem is one device's problem.
 		// Recording it and moving on is the whole point: a fleet deploy must not
 		// be abandoned halfway because the third camera is offline.
-		res := &agentpbv2.DeliveryResult{AssetId: t.GetAssetId(), Delivered: true}
-		switch {
-		case deliveryErr != nil:
-			res.Delivered, res.Error = false, deliveryErr.Error()
-		case buildErr != nil:
-			res.Delivered, res.Error = false, buildErr.Error()
+		res := &agentpbv2.DeliveryResult{AssetId: t.GetAssetId(), Delivered: deliveryErr == nil}
+		if deliveryErr != nil {
+			res.Error = deliveryErr.Error()
 		}
 		deliveries = append(deliveries, res)
 	}
@@ -539,9 +554,44 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	// code is how a device silently misses a change.
 	return stream.Send(&agentpbv2.BuildImageProgress{
 		Event: &agentpbv2.BuildImageProgress_Result{
-			Result: &agentpbv2.BuildImageResult{Deliveries: deliveries},
+			Result: &agentpbv2.BuildImageResult{ImageDigest: img.manifestDigest, Deliveries: deliveries},
 		},
 	})
+}
+
+// deliver gets the built image onto one device: by chunks into its content
+// store, or — for an agent that predates the RPCs that needs — through the
+// registry push the feature shipped with, as a second buildctl pass that
+// BuildKit's cache turns into a re-export.
+//
+// The fallback is taken ONLY on errChunkDeliveryUnsupported. A genuine failure
+// is reported as one: retrying it over the slower path would blame the wrong
+// leg, and on a link that just dropped a whole-image push is the transfer least
+// likely to survive.
+func (s *BuildService) deliver(
+	ctx context.Context,
+	prog *buildProgress,
+	stream agentpbv2.WendyBuildService_BuildImageServer,
+	spec *agentpbv2.BuildSpec,
+	df *agentpbv2.DockerfileBuild,
+	dir string,
+	img *exportedImage,
+	index int,
+	target *agentpbv2.PushTarget,
+) error {
+	err := s.deliverByChunks(ctx, prog, index, img, target)
+	if !errors.Is(err, errChunkDeliveryUnsupported) {
+		return err
+	}
+	prog.logf("#%d 0.000 device %d predates chunked delivery; pushing through its registry instead",
+		deliveryVertexBase+index, target.GetAssetId())
+	buildErr, deliveryErr := s.buildAndDeliver(ctx, stream, spec, df, dir, target)
+	if deliveryErr != nil {
+		return deliveryErr
+	}
+	// The export pass already proved the Dockerfile builds, so a failure here is
+	// this device's pass failing, not the build.
+	return buildErr
 }
 
 // deliveryTargets resolves where this build is delivered, preferring the fleet
@@ -564,7 +614,9 @@ func deliveryTargets(spec *agentpbv2.BuildSpec) ([]*agentpbv2.PushTarget, error)
 }
 
 // buildAndDeliver runs one buildctl pass whose output is pushed to a single
-// device, and separates the two failures that look identical from the outside.
+// device's registry, and separates the two failures that look identical from
+// the outside. It is the delivery path for an agent too old to receive chunks
+// (see deliver); a current agent gets deliverByChunks.
 //
 // A failed outbound push reaches buildctl only as a reset loopback connection,
 // so its error says "exit status 1" and names nothing. When the proxy knows the
@@ -667,14 +719,16 @@ func (s *BuildService) reassembleContext(ctx context.Context, m *agentpbv2.Chunk
 // runBuildctl streams buildctl's plain-mode output back as log lines and
 // finishes with the result event.
 //
-// dockerConfigDir holds the loopback push credential. buildctl reads it into
-// the auth provider it attaches to the build session, which is how buildkitd
-// answers the proxy's 401 challenge.
+// dockerConfigDir, when set, holds the loopback push credential of a registry
+// push. buildctl reads it into the auth provider it attaches to the build
+// session, which is how buildkitd answers the proxy's 401 challenge. An OCI
+// export pushes nowhere and passes "".
 func (s *BuildService) runBuildctl(ctx context.Context, stream agentpbv2.WendyBuildService_BuildImageServer, args []string, dockerConfigDir string) error {
 	cmd := buildctlCommandContext(ctx, "buildctl", args...)
-	cmd.Env = append(os.Environ(),
-		"BUILDKIT_HOST="+s.buildkitAddress,
-		"DOCKER_CONFIG="+dockerConfigDir)
+	cmd.Env = append(os.Environ(), "BUILDKIT_HOST="+s.buildkitAddress)
+	if dockerConfigDir != "" {
+		cmd.Env = append(cmd.Env, "DOCKER_CONFIG="+dockerConfigDir)
+	}
 	if s.logger != nil {
 		// Build-arg VALUES can carry secrets, so the command line is never logged raw.
 		s.logger.Info("remote build starting", zap.Strings("args", redactBuildctlArgs(args)))
@@ -852,10 +906,31 @@ func extractContextTar(r io.Reader, dir string) error {
 	}
 }
 
-// buildctlArgs builds the buildctl invocation. It mirrors the CLI's
-// buildkitOCIArgs, differing only in the output: an image export that pushes,
-// rather than an OCI tar on disk.
+// buildctlArgs builds the buildctl invocation for the registry-push fallback:
+// an image export that pushes to pushRef.
 func buildctlArgs(contextDir, dockerfile, platform, pushRef string, buildArgs map[string]string) ([]string, error) {
+	args, err := buildctlBaseArgs(contextDir, dockerfile, platform, buildArgs)
+	if err != nil {
+		return nil, err
+	}
+	return append(args, "--output", "type=image,name="+pushRef+",push=true"), nil
+}
+
+// buildctlOCIArgs builds the buildctl invocation for chunked delivery: an OCI
+// layout tar written to dest on this host, which delivery reads layers from. It
+// is the export the CLI's own buildkitOCIArgs asks for — the same tar the
+// laptop path chunk-diffs from.
+func buildctlOCIArgs(contextDir, dockerfile, platform string, buildArgs map[string]string, dest string) ([]string, error) {
+	args, err := buildctlBaseArgs(contextDir, dockerfile, platform, buildArgs)
+	if err != nil {
+		return nil, err
+	}
+	return append(args, "--output", "type=oci,dest="+dest), nil
+}
+
+// buildctlBaseArgs is the invocation up to its --output, with every
+// client-supplied field shape-checked.
+func buildctlBaseArgs(contextDir, dockerfile, platform string, buildArgs map[string]string) ([]string, error) {
 	// Shape-checked like everything else the client sends. Injection is not the
 	// hazard — it becomes one argv element and no shell is involved — but an
 	// unconstrained string here would reach the streamed build log, where
@@ -888,5 +963,5 @@ func buildctlArgs(contextDir, dockerfile, platform, pushRef string, buildArgs ma
 	for _, k := range keys {
 		args = append(args, "--opt", "build-arg:"+k+"="+buildArgs[k])
 	}
-	return append(args, "--output", "type=image,name="+pushRef+",push=true"), nil
+	return args, nil
 }

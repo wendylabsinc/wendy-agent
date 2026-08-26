@@ -539,6 +539,9 @@ func main() {
 			Chunks:       buildChunkSource,
 			Peers:        meshDialer,
 			ContextLocks: buildContextLocks,
+			// Where a target's chunk store is reached: its agent's mTLS port,
+			// assumed to match this device's own configuration.
+			TargetAgentPort: uint16(mtlsPortNum),
 			// Read fresh per build rather than captured: a certificate rotated
 			// while the agent runs must be picked up without a restart.
 			//

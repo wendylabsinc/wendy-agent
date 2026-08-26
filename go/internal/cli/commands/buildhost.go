@@ -227,8 +227,10 @@ func classifyRemoteBuildError(host string, err error) error {
 }
 
 // runRemoteBuild builds the image on another WendyOS device, has that device
-// push it straight into the target's registry over the mesh, and then creates
-// the container through the unchanged registry-push deploy path.
+// deliver it to the target over the mesh — by chunks into the target's content
+// store, registered under the same localhost:<port>/<repo> name a registry push
+// would have given it — and then creates the container by that name through
+// the unchanged registry-push deploy path.
 //
 // Nothing here touches a local container builder: no ensureDockerDaemon, no
 // ensureBuildxBuilder, no ensureAppleContainerSystemForBuilder. That is the
