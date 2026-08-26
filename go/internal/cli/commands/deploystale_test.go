@@ -72,7 +72,8 @@ func TestTryDeployFastPath_StaleImageForcesRebuild(t *testing.T) {
 		inputHash = "sha256:deadbeef"
 		layerID   = "sha256:layer0"
 	)
-	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash, LayerDiffIDs: []string{layerID}})
+	identity := unchangedTestIdentity(inputHash)
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash, ContainerIdentityHash: identity.Container, LiveMetadataHash: identity.Metadata, LayerDiffIDs: []string{layerID}})
 
 	appCfg := &appconfig.AppConfig{AppID: appID}
 
@@ -81,7 +82,7 @@ func TestTryDeployFastPath_StaleImageForcesRebuild(t *testing.T) {
 	fake := &fastPathContainerClient{appName: appID, state: agentpb.AppRunningState_RUNNING, presentLayers: map[string]bool{}}
 	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
 
-	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, inputHash, runOptions{detach: true})
+	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, identity, runOptions{detach: true})
 	if err != nil {
 		t.Fatalf("tryDeployFastPath returned error: %v", err)
 	}
@@ -104,17 +105,76 @@ func TestTryDeployFastPath_NoRecordedLayersForcesRebuild(t *testing.T) {
 		deviceKey = "testdevice"
 		inputHash = "sha256:deadbeef"
 	)
-	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash})
+	identity := unchangedTestIdentity(inputHash)
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash, ContainerIdentityHash: identity.Container, LiveMetadataHash: identity.Metadata})
 
 	appCfg := &appconfig.AppConfig{AppID: appID}
 	fake := &fastPathContainerClient{appName: appID, state: agentpb.AppRunningState_RUNNING, presentLayers: map[string]bool{}}
 	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
 
-	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, inputHash, runOptions{detach: true})
+	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, identity, runOptions{detach: true})
 	if err != nil {
 		t.Fatalf("tryDeployFastPath returned error: %v", err)
 	}
 	if done {
 		t.Fatal("fast path skipped on a fingerprint with no recorded layers (cannot verify content)")
+	}
+}
+
+func TestTryDeployFastPath_LegacyFingerprintForcesRebuild(t *testing.T) {
+	isolateFingerprintCache(t)
+
+	const (
+		appID     = "legacy-identity-app"
+		deviceKey = "testdevice"
+		layerID   = "sha256:layer0"
+	)
+	// Fingerprints written before immutable/live identity separation cannot
+	// prove which part of the old combined hash changed, so they fail closed.
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{
+		InputHash:    "sha256:legacy-combined",
+		LayerDiffIDs: []string{layerID},
+	})
+	fake := &fastPathContainerClient{
+		appName: appID, state: agentpb.AppRunningState_RUNNING,
+		presentLayers: map[string]bool{layerID: true},
+	}
+	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
+
+	done, err := tryDeployFastPath(context.Background(), conn, &appconfig.AppConfig{AppID: appID}, deviceKey, unchangedTestIdentity("sha256:container"), runOptions{detach: true})
+	if err != nil {
+		t.Fatalf("tryDeployFastPath returned error: %v", err)
+	}
+	if done || fake.startCalls != 0 || fake.metadataCalls != 0 {
+		t.Fatalf("legacy fingerprint must full deploy: done=%t starts=%d metadata=%d", done, fake.startCalls, fake.metadataCalls)
+	}
+}
+
+func TestTryDeployFastPath_ImmutableMismatchDoesNotReconcileMetadata(t *testing.T) {
+	isolateFingerprintCache(t)
+
+	const (
+		appID     = "immutable-change-app"
+		deviceKey = "testdevice"
+		layerID   = "sha256:layer0"
+	)
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{
+		InputHash:             "sha256:old-container",
+		ContainerIdentityHash: "sha256:old-container",
+		LiveMetadataHash:      "sha256:metadata",
+		LayerDiffIDs:          []string{layerID},
+	})
+	fake := &fastPathContainerClient{
+		appName: appID, state: agentpb.AppRunningState_RUNNING,
+		presentLayers: map[string]bool{layerID: true},
+	}
+	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
+
+	done, err := tryDeployFastPath(context.Background(), conn, &appconfig.AppConfig{AppID: appID}, deviceKey, unchangedTestIdentity("sha256:new-container"), runOptions{detach: true})
+	if err != nil {
+		t.Fatalf("tryDeployFastPath returned error: %v", err)
+	}
+	if done || fake.metadataCalls != 0 || fake.startCalls != 0 {
+		t.Fatalf("immutable mismatch must full deploy: done=%t starts=%d metadata=%d", done, fake.startCalls, fake.metadataCalls)
 	}
 }

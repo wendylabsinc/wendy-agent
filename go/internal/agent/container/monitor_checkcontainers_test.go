@@ -24,6 +24,8 @@ type fakeContainerd struct {
 	mu            sync.Mutex
 	startCalls    []string
 	started       chan string // signalled (buffered) on each StartContainer
+	startEntered  chan string // signalled before an optional deterministic block
+	startRelease  <-chan struct{}
 	stoppedByUser map[string]bool
 	migrateCalls  int
 	rebuildCalls  int
@@ -71,6 +73,16 @@ func (f *fakeContainerd) StartContainer(ctx context.Context, appName, _ string, 
 	f.mu.Lock()
 	f.startCalls = append(f.startCalls, appName)
 	f.mu.Unlock()
+	if f.startEntered != nil {
+		f.startEntered <- appName
+	}
+	if f.startRelease != nil {
+		select {
+		case <-f.startRelease:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if f.started != nil {
 		f.started <- appName
 	}
@@ -440,6 +452,63 @@ func TestRestartSingle_StartsWhenNotBlocked(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected StartContainer(crashloop-app), got none")
+	}
+}
+
+func TestQuiesceMakesPolicyNoLinearizableWithScheduledRestart(t *testing.T) {
+	release := make(chan struct{})
+	fake := &fakeContainerd{
+		startEntered: make(chan string, 1),
+		startRelease: release,
+	}
+	m := newMonitorWithClient(fake)
+	m.Register("policy-app", RestartUnlessStopped, 0)
+
+	restartDone := make(chan struct{})
+	go func() {
+		m.restartSingle(context.Background(), "policy-app")
+		close(restartDone)
+	}()
+	select {
+	case <-fake.startEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scheduled restart did not enter StartContainer")
+	}
+
+	type quiesceResult struct {
+		resume func()
+		err    error
+	}
+	quiesced := make(chan quiesceResult, 1)
+	go func() {
+		resume, err := m.Quiesce(context.Background(), "policy-app")
+		quiesced <- quiesceResult{resume: resume, err: err}
+	}()
+	select {
+	case <-quiesced:
+		t.Fatal("Quiesce returned before the already-scheduled restart finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	var result quiesceResult
+	select {
+	case result = <-quiesced:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Quiesce did not return after the in-flight restart finished")
+	}
+	if result.err != nil {
+		t.Fatalf("Quiesce: %v", result.err)
+	}
+	m.Unregister("policy-app") // the service's policy->NO commit point
+	result.resume()
+	<-restartDone
+
+	// A stale action dispatched before the policy update but executing after
+	// success must observe the missing registration and stay stopped.
+	m.restartSingle(context.Background(), "policy-app")
+	if calls := fake.startCallsSnapshot(); len(calls) != 1 {
+		t.Fatalf("stale restart ran after policy->NO success: calls=%v", calls)
 	}
 }
 

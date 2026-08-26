@@ -282,40 +282,59 @@ func TestBuildInputHashSaltIsV2(t *testing.T) {
 	}
 }
 
-func TestComputeDeployDesiredHash_RuntimeChangesInvalidate(t *testing.T) {
+func TestComputeDeployIdentityHashes_SeparatesContainerAndLiveMetadata(t *testing.T) {
 	baseCfg := &appconfig.AppConfig{AppID: "demo", Version: "1.0.0"}
-	base, err := computeDeployDesiredHash("sha256:image", baseCfg, []string{"serve"}, []string{"LOG_LEVEL=info"}, &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED})
+	base, err := computeDeployIdentityHashes("sha256:image", baseCfg, []string{"serve"}, []string{"LOG_LEVEL=info"}, &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	tests := []struct {
-		name string
-		cfg  *appconfig.AppConfig
-		args []string
-		env  []string
-		mode agentpb.RestartPolicyMode
+		name             string
+		cfg              *appconfig.AppConfig
+		args             []string
+		env              []string
+		mode             agentpb.RestartPolicyMode
+		containerChanged bool
+		metadataChanged  bool
 	}{
-		{name: "version", cfg: &appconfig.AppConfig{AppID: "demo", Version: "2.0.0"}, args: []string{"serve"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
-		{name: "entitlement", cfg: &appconfig.AppConfig{AppID: "demo", Version: "1.0.0", Entitlements: []appconfig.Entitlement{{Type: "network/host"}}}, args: []string{"serve"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
-		{name: "arguments", cfg: baseCfg, args: []string{"worker"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
-		{name: "environment", cfg: baseCfg, args: []string{"serve"}, env: []string{"LOG_LEVEL=debug"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
-		{name: "restart policy", cfg: baseCfg, args: []string{"serve"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_NO},
+		{name: "version", cfg: &appconfig.AppConfig{AppID: "demo", Version: "2.0.0"}, args: []string{"serve"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED, metadataChanged: true},
+		{name: "restart policy", cfg: baseCfg, args: []string{"serve"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_NO, metadataChanged: true},
+		{name: "entitlement", cfg: &appconfig.AppConfig{AppID: "demo", Version: "1.0.0", Entitlements: []appconfig.Entitlement{{Type: "network/host"}}}, args: []string{"serve"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED, containerChanged: true},
+		{name: "arguments", cfg: baseCfg, args: []string{"worker"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED, containerChanged: true},
+		{name: "environment", cfg: baseCfg, args: []string{"serve"}, env: []string{"LOG_LEVEL=debug"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED, containerChanged: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := computeDeployDesiredHash("sha256:image", tt.cfg, tt.args, tt.env, &agentpb.RestartPolicy{Mode: tt.mode})
+			got, err := computeDeployIdentityHashes("sha256:image", tt.cfg, tt.args, tt.env, &agentpb.RestartPolicy{Mode: tt.mode})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got == base {
-				t.Fatalf("runtime change did not invalidate desired-state hash: %s", got)
+			if changed := got.Container != base.Container; changed != tt.containerChanged {
+				t.Errorf("container identity changed = %t, want %t", changed, tt.containerChanged)
+			}
+			if changed := got.Metadata != base.Metadata; changed != tt.metadataChanged {
+				t.Errorf("metadata identity changed = %t, want %t", changed, tt.metadataChanged)
 			}
 		})
 	}
 }
 
-func TestComputeDeployDesiredHash_CLIOnlyChangesDoNotInvalidate(t *testing.T) {
+func TestComputeDeployIdentityHashes_EmptyVersionEqualsLatest(t *testing.T) {
+	empty, err := computeDeployIdentityHashes("sha256:image", &appconfig.AppConfig{AppID: "myapp"}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := computeDeployIdentityHashes("sha256:image", &appconfig.AppConfig{AppID: "myapp", Version: "latest"}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty != latest {
+		t.Fatalf("empty version identity = %#v, explicit latest = %#v", empty, latest)
+	}
+}
+
+func TestComputeDeployIdentityHashes_CLIOnlyChangesDoNotInvalidate(t *testing.T) {
 	baseCfg := &appconfig.AppConfig{AppID: "demo", Version: "1.0.0"}
 	changedCfg := &appconfig.AppConfig{
 		AppID:     "demo",
@@ -324,15 +343,15 @@ func TestComputeDeployDesiredHash_CLIOnlyChangesDoNotInvalidate(t *testing.T) {
 		Hooks:     &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{CLI: "open http://device"}},
 	}
 	policy := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED}
-	base, err := computeDeployDesiredHash("sha256:image", baseCfg, nil, nil, policy)
+	base, err := computeDeployIdentityHashes("sha256:image", baseCfg, nil, nil, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := computeDeployDesiredHash("sha256:image", changedCfg, nil, nil, policy)
+	got, err := computeDeployIdentityHashes("sha256:image", changedCfg, nil, nil, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != base {
-		t.Fatalf("CLI-only readiness/hook change invalidated container identity: %s != %s", got, base)
+		t.Fatalf("CLI-only readiness/hook change invalidated deployment identity: %#v != %#v", got, base)
 	}
 }

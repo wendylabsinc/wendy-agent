@@ -14,7 +14,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // fastPathContainerClient is a minimal WendyContainerServiceClient for driving
@@ -24,10 +25,13 @@ import (
 type fastPathContainerClient struct {
 	agentpb.WendyContainerServiceClient // embedded nil — satisfies interface
 
-	appName    string
-	state      agentpb.AppRunningState
-	startCtx   context.Context
-	startCalls int
+	appName       string
+	state         agentpb.AppRunningState
+	startCtx      context.Context
+	startCalls    int
+	metadataCalls int
+	metadataReq   *agentpb.UpdateRunningContainerMetadataRequest
+	metadataErr   error
 	// presentLayers is the set of diff IDs the device reports holding via
 	// QueryLayers. The fast path only skips when every recorded layer is present
 	// (WDY-1824), so tests that expect a skip must list the fingerprint's layers
@@ -55,6 +59,19 @@ func (f *fastPathContainerClient) StartContainer(ctx context.Context, _ *agentpb
 	f.startCalls++
 	f.startCtx = ctx
 	return &fakeRunContainerStream{}, nil
+}
+
+func (f *fastPathContainerClient) UpdateRunningContainerMetadata(_ context.Context, req *agentpb.UpdateRunningContainerMetadataRequest, _ ...grpc.CallOption) (*agentpb.UpdateRunningContainerMetadataResponse, error) {
+	f.metadataCalls++
+	f.metadataReq = req
+	if f.metadataErr != nil {
+		return nil, f.metadataErr
+	}
+	return &agentpb.UpdateRunningContainerMetadataResponse{}, nil
+}
+
+func unchangedTestIdentity(hash string) deployIdentityHashes {
+	return deployIdentityHashes{Container: hash, Metadata: "sha256:metadata"}
 }
 
 type fakeListContainersStream struct {
@@ -127,12 +144,10 @@ func waitForFile(t *testing.T, path string, timeout time.Duration) {
 	t.Fatalf("host-side postStart hook did not run: %s was never created", path)
 }
 
-// TestTryDeployFastPath_StoppedRunsAgentHookOnly verifies that when the fast
-// path starts a stopped-but-unchanged app, the agent-side (in-container) hook
-// runs via StartContainer metadata and the host-side hook does not. The fast
-// path only ever runs detached, and detached deploys skip the readiness probe
-// the host hook is gated on.
-func TestTryDeployFastPath_StoppedRunsAgentHookOnly(t *testing.T) {
+// A stopped container cannot prove its persisted identity through the
+// running-only metadata CAS. It must be fully deployed instead of started,
+// even when this machine's local fingerprint is unchanged.
+func TestTryDeployFastPath_StoppedFailsClosedWithoutStart(t *testing.T) {
 	isolateFingerprintCache(t)
 
 	const (
@@ -141,49 +156,23 @@ func TestTryDeployFastPath_StoppedRunsAgentHookOnly(t *testing.T) {
 		inputHash = "sha256:deadbeef"
 		layerID   = "sha256:layer0"
 	)
-	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash, LayerDiffIDs: []string{layerID}})
+	identity := unchangedTestIdentity(inputHash)
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash, ContainerIdentityHash: identity.Container, LiveMetadataHash: identity.Metadata, LayerDiffIDs: []string{layerID}})
 
-	hookCommands := swapPostStartExec(t)
-	const agentHook = "wendy-agent utils open-browser http://localhost:3000"
-	appCfg := &appconfig.AppConfig{
-		AppID: appID,
-		Hooks: &appconfig.HooksConfig{
-			PostStart: &appconfig.HookCommand{
-				Agent: agentHook,
-				CLI:   "fastpath-cli-hook",
-			},
-		},
-	}
+	appCfg := &appconfig.AppConfig{AppID: appID}
 
 	fake := &fastPathContainerClient{appName: appID, state: agentpb.AppRunningState_STOPPED, presentLayers: map[string]bool{layerID: true}}
 	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
 
-	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, inputHash, runOptions{detach: true})
+	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, identity, runOptions{detach: true})
 	if err != nil {
 		t.Fatalf("tryDeployFastPath returned error: %v", err)
 	}
-	if !done {
-		t.Fatal("expected fast path to handle the stopped app (done=true)")
+	if done {
+		t.Fatal("stopped container bypassed the full deploy")
 	}
-	if fake.startCalls != 1 {
-		t.Fatalf("StartContainer calls = %d, want 1", fake.startCalls)
-	}
-
-	// Agent-side postStart hook must be attached to the start RPC's context.
-	md, ok := metadata.FromOutgoingContext(fake.startCtx)
-	if !ok {
-		t.Fatal("StartContainer context carried no outgoing metadata (agent postStart hook skipped)")
-	}
-	if got := md.Get(appconfig.PostStartAgentHookMetadataKey); len(got) != 1 || got[0] != agentHook {
-		t.Fatalf("agent postStart hook metadata = %#v, want [%q]", got, agentHook)
-	}
-
-	// Host-side CLI postStart hook must NOT fire: the fast path only runs
-	// detached, and detached deploys do not block on the readiness probe that
-	// gates the host hook (see runPostStartIfReady's doc comment). The
-	// agent-side hook asserted above is what still runs.
-	if len(*hookCommands) != 0 {
-		t.Errorf("postStart cli hook ran %v, want no calls", *hookCommands)
+	if fake.startCalls != 0 || fake.metadataCalls != 0 {
+		t.Fatalf("stopped container used runtime RPCs: starts=%d metadata=%d", fake.startCalls, fake.metadataCalls)
 	}
 }
 
@@ -232,7 +221,8 @@ func TestTryDeployFastPath_RunningSkipsAllPostStartHooks(t *testing.T) {
 		inputHash = "sha256:deadbeef"
 		layerID   = "sha256:layer0"
 	)
-	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash, LayerDiffIDs: []string{layerID}})
+	identity := unchangedTestIdentity(inputHash)
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash, ContainerIdentityHash: identity.Container, LiveMetadataHash: identity.Metadata, LayerDiffIDs: []string{layerID}})
 
 	hookCommands := swapPostStartExec(t)
 	appCfg := &appconfig.AppConfig{
@@ -245,7 +235,7 @@ func TestTryDeployFastPath_RunningSkipsAllPostStartHooks(t *testing.T) {
 	fake := &fastPathContainerClient{appName: appID, state: agentpb.AppRunningState_RUNNING, presentLayers: map[string]bool{layerID: true}}
 	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
 
-	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, inputHash, runOptions{detach: true})
+	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, identity, runOptions{detach: true})
 	if err != nil {
 		t.Fatalf("tryDeployFastPath returned error: %v", err)
 	}
@@ -255,10 +245,166 @@ func TestTryDeployFastPath_RunningSkipsAllPostStartHooks(t *testing.T) {
 	if fake.startCalls != 0 {
 		t.Fatalf("StartContainer should not be called for an already-running app, got %d calls", fake.startCalls)
 	}
+	if fake.metadataCalls != 1 || fake.metadataReq.GetExpectedContainerIdentity() != identity.Container {
+		t.Fatalf("running no-op did not verify agent identity: calls=%d request=%#v", fake.metadataCalls, fake.metadataReq)
+	}
 	// Detached deploys do not run the host-side postStart hook: it is gated on
 	// a readiness probe that costs the app's whole boot time, which --detach
 	// and --watch must not pay (see runPostStartIfReady).
 	if len(*hookCommands) != 0 {
 		t.Errorf("postStart cli hook ran %v, want no calls", *hookCommands)
+	}
+}
+
+func TestTryDeployFastPath_RunningReconcilesLiveMetadataWithoutStart(t *testing.T) {
+	isolateFingerprintCache(t)
+
+	const (
+		appID     = "metadata-app"
+		deviceKey = "testdevice"
+		layerID   = "sha256:layer0"
+	)
+	identity := deployIdentityHashes{Container: "sha256:container", Metadata: "sha256:new-metadata"}
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{
+		InputHash:             identity.Container,
+		ContainerIdentityHash: identity.Container,
+		LiveMetadataHash:      "sha256:old-metadata",
+		AppVersion:            "1.0.0",
+		LayerDiffIDs:          []string{layerID},
+	})
+
+	fake := &fastPathContainerClient{
+		appName: appID, state: agentpb.AppRunningState_RUNNING,
+		presentLayers: map[string]bool{layerID: true},
+	}
+	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
+	appCfg := &appconfig.AppConfig{AppID: appID, Version: "2.0.0"}
+
+	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, identity, runOptions{
+		detach: true, noRestart: true,
+	})
+	if err != nil {
+		t.Fatalf("tryDeployFastPath returned error: %v", err)
+	}
+	if !done {
+		t.Fatal("metadata-only change did not use the running-container fast path")
+	}
+	if fake.metadataCalls != 1 {
+		t.Fatalf("UpdateRunningContainerMetadata calls = %d, want 1", fake.metadataCalls)
+	}
+	if fake.startCalls != 0 {
+		t.Fatalf("StartContainer called for a running task: %d", fake.startCalls)
+	}
+	if got := fake.metadataReq.GetAppVersion(); got != "2.0.0" {
+		t.Errorf("updated app version = %q, want 2.0.0", got)
+	}
+	if got := fake.metadataReq.GetRestartPolicy().GetMode(); got != agentpb.RestartPolicyMode_NO {
+		t.Errorf("updated restart policy = %v, want NO", got)
+	}
+	if fp, ok := loadDeployFingerprint(appID, deviceKey); !ok || fp.LiveMetadataHash != identity.Metadata || fp.AppVersion != "2.0.0" {
+		t.Fatalf("fingerprint was not advanced after reconciliation: %#v, ok=%t", fp, ok)
+	}
+}
+
+func TestTryDeployFastPath_MetadataRPCFailureFallsBackWithoutStart(t *testing.T) {
+	isolateFingerprintCache(t)
+
+	const (
+		appID     = "old-agent-app"
+		deviceKey = "testdevice"
+		layerID   = "sha256:layer0"
+	)
+	identity := deployIdentityHashes{Container: "sha256:container", Metadata: "sha256:new-metadata"}
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{
+		InputHash:             identity.Container,
+		ContainerIdentityHash: identity.Container,
+		LiveMetadataHash:      "sha256:old-metadata",
+		LayerDiffIDs:          []string{layerID},
+	})
+	fake := &fastPathContainerClient{
+		appName: appID, state: agentpb.AppRunningState_RUNNING,
+		presentLayers: map[string]bool{layerID: true},
+		metadataErr:   status.Error(codes.Unimplemented, "old agent"),
+	}
+	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
+
+	done, err := tryDeployFastPath(context.Background(), conn, &appconfig.AppConfig{AppID: appID, Version: "2.0.0"}, deviceKey, identity, runOptions{detach: true})
+	if err != nil {
+		t.Fatalf("tryDeployFastPath returned error: %v", err)
+	}
+	if done {
+		t.Fatal("old agent authorized metadata fast path")
+	}
+	if fake.startCalls != 0 {
+		t.Fatalf("StartContainer called for a running task after metadata RPC failure: %d", fake.startCalls)
+	}
+	if fp, _ := loadDeployFingerprint(appID, deviceKey); fp.LiveMetadataHash != "sha256:old-metadata" {
+		t.Fatalf("fingerprint advanced after failed reconciliation: %#v", fp)
+	}
+}
+
+func TestTryDeployFastPath_CrossDeployerIdentityMismatchFallsBack(t *testing.T) {
+	isolateFingerprintCache(t)
+
+	const (
+		appID     = "foreign-deploy-app"
+		deviceKey = "testdevice"
+		layerID   = "sha256:layer0"
+		identity  = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	)
+	desired := deployIdentityHashes{Container: identity, Metadata: "sha256:metadata"}
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{
+		InputHash:             identity,
+		ContainerIdentityHash: identity,
+		LiveMetadataHash:      desired.Metadata,
+		AppVersion:            "latest",
+		LayerDiffIDs:          []string{layerID},
+	})
+	fake := &fastPathContainerClient{
+		appName: appID, state: agentpb.AppRunningState_RUNNING,
+		presentLayers: map[string]bool{layerID: true},
+		metadataErr:   status.Error(codes.FailedPrecondition, "container identity mismatch"),
+	}
+	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
+
+	done, err := tryDeployFastPath(context.Background(), conn, &appconfig.AppConfig{AppID: appID}, deviceKey, desired, runOptions{detach: true})
+	if err != nil {
+		t.Fatalf("tryDeployFastPath returned error: %v", err)
+	}
+	if done || fake.startCalls != 0 {
+		t.Fatalf("foreign deployment authorized fast path: done=%t starts=%d", done, fake.startCalls)
+	}
+	if fake.metadataCalls != 1 || fake.metadataReq.GetExpectedContainerIdentity() != identity {
+		t.Fatalf("identity CAS request = %#v, calls=%d", fake.metadataReq, fake.metadataCalls)
+	}
+}
+
+func TestTryDeployFastPath_StoppedMetadataMismatchFallsBack(t *testing.T) {
+	isolateFingerprintCache(t)
+
+	const (
+		appID     = "stopped-metadata-app"
+		deviceKey = "testdevice"
+		layerID   = "sha256:layer0"
+	)
+	identity := deployIdentityHashes{Container: "sha256:container", Metadata: "sha256:new-metadata"}
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{
+		InputHash:             identity.Container,
+		ContainerIdentityHash: identity.Container,
+		LiveMetadataHash:      "sha256:old-metadata",
+		LayerDiffIDs:          []string{layerID},
+	})
+	fake := &fastPathContainerClient{
+		appName: appID, state: agentpb.AppRunningState_STOPPED,
+		presentLayers: map[string]bool{layerID: true},
+	}
+	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
+
+	done, err := tryDeployFastPath(context.Background(), conn, &appconfig.AppConfig{AppID: appID}, deviceKey, identity, runOptions{detach: true})
+	if err != nil {
+		t.Fatalf("tryDeployFastPath returned error: %v", err)
+	}
+	if done || fake.startCalls != 0 || fake.metadataCalls != 0 {
+		t.Fatalf("stopped metadata mismatch must full deploy: done=%t starts=%d metadata=%d", done, fake.startCalls, fake.metadataCalls)
 	}
 }

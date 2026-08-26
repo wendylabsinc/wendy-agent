@@ -106,6 +106,17 @@ type ImagePreparer interface {
 	PrepareImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error
 }
 
+// RunningContainerMetadataUpdater is the optional capability used to update
+// metadata that does not affect a running task's OCI spec or root filesystem.
+// Keeping it separate avoids making alternate runtimes and older test doubles
+// claim support for a safety-sensitive optimization.
+type RunningContainerMetadataUpdater interface {
+	// UpdateRunningContainerMetadata updates the app version and restart-policy
+	// labels only when appName identifies one currently-running, non-service
+	// container. It must fail closed for stopped or grouped containers.
+	UpdateRunningContainerMetadata(ctx context.Context, appName, expectedIdentity, appVersion string, restartPolicy *agentpb.RestartPolicy) error
+}
+
 // CachePruneResult describes Wendy-managed container cache pins released by a
 // ContainerdCachePruner. The byte counts are the aggregate sizes of the
 // affected objects, not a promise that all of those bytes are unreachable:
@@ -216,6 +227,11 @@ type ContainerMonitorRegistrar interface {
 	// automatic restarts for appName. Used to undo a pre-emptive mark when the
 	// stop operation itself fails.
 	ClearExplicitStop(appName string)
+	// Quiesce prevents new restarts and waits for any restart which already
+	// passed its execution-time gate to finish. Holding the returned resume
+	// function through a policy update makes policy->NO linearizable with
+	// restart execution.
+	Quiesce(ctx context.Context, appName string) (resume func(), err error)
 }
 
 // RestartStatus is the container monitor's live bookkeeping for one monitored

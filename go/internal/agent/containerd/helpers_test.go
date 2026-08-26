@@ -521,6 +521,76 @@ func TestRestartPolicyToLabel_OnFailureNoRetries(t *testing.T) {
 	}
 }
 
+func TestUpdateRuntimeMetadataLabels_UpdatesOnlyLiveMetadata(t *testing.T) {
+	const identity = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	labels := map[string]string{
+		labelKeyAppVersion:        "1.0.0",
+		labelKeyContainerIdentity: identity,
+		labelKeyRestartPolicy:     "unless-stopped",
+		labelKeyAppID:             "demo",
+		"custom":                  "preserved",
+	}
+	got, err := updateRuntimeMetadataLabels(labels, identity, "2.0.0", &agentpb.RestartPolicy{
+		Mode:                agentpb.RestartPolicyMode_ON_FAILURE,
+		OnFailureMaxRetries: 4,
+	})
+	if err != nil {
+		t.Fatalf("updateRuntimeMetadataLabels: %v", err)
+	}
+	if got[labelKeyAppVersion] != "2.0.0" || got[labelKeyRestartPolicy] != "on-failure:4" {
+		t.Fatalf("live metadata labels = %#v", got)
+	}
+	if got[labelKeyAppID] != "demo" || got["custom"] != "preserved" {
+		t.Fatalf("immutable/unrelated labels changed: %#v", got)
+	}
+}
+
+func TestUpdateRuntimeMetadataLabels_NilPolicyPreservesPolicy(t *testing.T) {
+	const identity = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	got, err := updateRuntimeMetadataLabels(map[string]string{labelKeyContainerIdentity: identity, labelKeyRestartPolicy: "no"}, identity, "2.0.0", nil)
+	if err != nil {
+		t.Fatalf("updateRuntimeMetadataLabels: %v", err)
+	}
+	if got[labelKeyRestartPolicy] != "no" {
+		t.Fatalf("nil policy changed persisted policy: %#v", got)
+	}
+}
+
+func TestUpdateRuntimeMetadataLabels_FailsClosedForForeignOrUnlabeledContainer(t *testing.T) {
+	const (
+		expected = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+		foreign  = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	)
+	for name, labels := range map[string]map[string]string{
+		"unlabeled": {labelKeyAppVersion: "1.0.0"},
+		"foreign":   {labelKeyAppVersion: "1.0.0", labelKeyContainerIdentity: foreign},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := updateRuntimeMetadataLabels(labels, expected, "2.0.0", &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_NO})
+			if err == nil {
+				t.Fatal("identity mismatch authorized metadata update")
+			}
+			if got[labelKeyAppVersion] != "1.0.0" {
+				t.Fatalf("version changed despite failed CAS: %#v", got)
+			}
+			if _, ok := got[labelKeyRestartPolicy]; ok {
+				t.Fatalf("restart policy changed despite failed CAS: %#v", got)
+			}
+		})
+	}
+}
+
+func TestUpdateRuntimeMetadataLabels_EmptyVersionNormalizesToLatest(t *testing.T) {
+	const identity = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	got, err := updateRuntimeMetadataLabels(map[string]string{labelKeyContainerIdentity: identity}, identity, "", nil)
+	if err != nil {
+		t.Fatalf("updateRuntimeMetadataLabels: %v", err)
+	}
+	if got[labelKeyAppVersion] != "latest" {
+		t.Fatalf("empty version persisted as %q, want latest", got[labelKeyAppVersion])
+	}
+}
+
 func TestParseEntitlementsFromAnnotations_Single(t *testing.T) {
 	annotations := map[string]string{
 		"sh.wendy/entitlement.network": "mode=host",

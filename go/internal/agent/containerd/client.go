@@ -952,6 +952,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	defer c.mu.Unlock()
 
 	ctx = c.withNamespace(ctx)
+	if identity := req.GetContainerIdentity(); identity != "" && !validContainerIdentity(identity) {
+		return fmt.Errorf("invalid container identity %q", identity)
+	}
 
 	// Derive the app identity. appCfg.AppID is the authoritative source; fall
 	// back to req.GetAppName() for raw RPC calls that arrive without a parsed
@@ -1017,10 +1020,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	c.logger.Info("Creating container", logFields...)
 
 	// Determine version from the app config or default.
-	version := appCfg.Version
-	if version == "" {
-		version = "latest"
-	}
+	version := normalizeAppVersion(appCfg.Version)
 
 	// Delete any pre-existing container with the same name.
 	if existing, err := c.client.LoadContainer(ctx, containerName); err == nil {
@@ -1336,6 +1336,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements, appCfg.Isolation, dependsOn)
+	if identity := req.GetContainerIdentity(); identity != "" {
+		labels[labelKeyContainerIdentity] = identity
+	}
 
 	// Publish the resolved ROS 2 configuration as a container label so the
 	// agent can discover ROS 2 containers at runtime and configure the CLI
@@ -4125,6 +4128,45 @@ func (c *Client) GetContainerRestartPolicyLabel(ctx context.Context, appName str
 		return "", fmt.Errorf("getting container info for %q: %w", appName, err)
 	}
 	return info.Labels[labelKeyRestartPolicy], nil
+}
+
+// UpdateRunningContainerMetadata applies metadata which is independent of the
+// OCI spec and writable snapshot. The container must remain running throughout
+// the guarded check+update; c.mu serialises this with create/start/stop/delete.
+// Service containers are rejected so the initial CLI optimization cannot
+// accidentally reconcile only one member of a multi-service deployment.
+func (c *Client) UpdateRunningContainerMetadata(ctx context.Context, appName, expectedIdentity, appVersion string, restartPolicy *agentpb.RestartPolicy) error {
+	ctx = c.withNamespace(ctx)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ctrs, _, wholeApp, err := c.resolveTargets(ctx, appName)
+	if err != nil {
+		return err
+	}
+	if len(ctrs) != 1 || !wholeApp {
+		return fmt.Errorf("app %q is not a single-container deployment", appName)
+	}
+	ctr := ctrs[0]
+	info, err := ctr.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("getting container info for %q: %w", appName, err)
+	}
+	if info.Labels[labelKeyServiceName] != "" {
+		return fmt.Errorf("app %q is a service container; metadata reconciliation is unsupported", appName)
+	}
+	if !c.containerIsRunning(ctx, ctr) {
+		return fmt.Errorf("app %q is not running", appName)
+	}
+
+	return ctr.Update(ctx, func(_ context.Context, _ *containerd.Client, record *containers.Container) error {
+		labels, err := updateRuntimeMetadataLabels(record.Labels, expectedIdentity, appVersion, restartPolicy)
+		if err != nil {
+			return err
+		}
+		record.Labels = labels
+		return nil
+	})
 }
 
 // GetContainerStats collects memory and image-size stats for all Wendy-managed containers.

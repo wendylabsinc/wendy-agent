@@ -1980,19 +1980,21 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
+	identity := deployIdentityHashes{}
 	if hashErr == nil {
-		var basesPinned bool
-		basesPinned, hashErr = dockerfileBasesContentPinned(cwd, opts.dockerfile)
-		if hashErr == nil && !basesPinned {
-			hashErr = fmt.Errorf("persistent build skip requires digest-pinned base images")
-		}
+		identity, hashErr = computeDeployIdentityHashes(inputHash, appCfg, opts.userArgs, deployEnv, resolveRestartPolicy(opts))
 	}
-	desiredHash := ""
-	if hashErr == nil {
-		desiredHash, hashErr = computeDeployDesiredHash(inputHash, appCfg, opts.userArgs, deployEnv, resolveRestartPolicy(opts))
+	// Base-image eligibility gates persistent skipping, not identity creation.
+	// Even an ineligible full deployment should persist its immutable runtime
+	// identity so the agent owns authoritative cross-deployer state; it simply
+	// won't write a reusable local fingerprint until every FROM is content-pinned.
+	fastPathEligible := hashErr == nil
+	if fastPathEligible {
+		basesPinned, pinErr := dockerfileBasesContentPinned(cwd, opts.dockerfile)
+		fastPathEligible = pinErr == nil && basesPinned
 	}
-	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
-		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
+	if !isDarwinAgent && opts.detach && !opts.deploy && fastPathEligible {
+		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, identity, opts); done {
 			mark("fast-path (skipped build)")
 			return nil
 		}
@@ -2032,14 +2034,20 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		// image's layers, even on a later failure, so the fallback branch below
 		// can size the registry push it's about to fall back to (WDY-2432).
 		var stats chunkDeployStats
-		diffIDs, hint, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts, &stats)
+		diffIDs, hint, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, identity.Container, opts, &stats)
 		ociHint = hint
 		if err == nil {
-			if hashErr == nil {
+			if fastPathEligible {
 				// Record the layer diff IDs we deployed so the next run's fast path
 				// can verify the device still holds this content before skipping the
 				// build (WDY-1824).
-				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: desiredHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
+				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{
+					InputHash:             identity.Container,
+					ContainerIdentityHash: identity.Container,
+					LiveMetadataHash:      identity.Metadata,
+					AppVersion:            effectiveAppVersion(appCfg.Version),
+					LayerDiffIDs:          diffIDs,
+				})
 			}
 			return nil
 		} else if isChunkDeployCancellation(ctx, err) {
@@ -2140,12 +2148,13 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	restartPolicy := resolveRestartPolicy(opts)
 
 	createReq := &agentpb.CreateContainerRequest{
-		ImageName:     deviceImage,
-		AppName:       appCfg.AppID,
-		AppConfig:     appConfigData,
-		RestartPolicy: restartPolicy,
-		UserArgs:      opts.userArgs,
-		Env:           deployEnv,
+		ImageName:         deviceImage,
+		AppName:           appCfg.AppID,
+		AppConfig:         appConfigData,
+		RestartPolicy:     restartPolicy,
+		UserArgs:          opts.userArgs,
+		Env:               deployEnv,
+		ContainerIdentity: identity.Container,
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -3000,7 +3009,7 @@ type ociReuseHint struct {
 // soon as a layer read succeeds — including on failure paths below that point
 // — so a caller whose overall deploy still fails can decide how to handle a
 // registry-push fallback without re-reading the layers itself.
-func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions, stats *chunkDeployStats) ([]string, *ociReuseHint, error) {
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, containerIdentity string, opts runOptions, stats *chunkDeployStats) ([]string, *ociReuseHint, error) {
 	mark := phaseTimer()
 	var hint *ociReuseHint
 
@@ -3208,15 +3217,16 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		defer logSub.stop()
 	}
 	stream, err := pushConn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
-		ImageName:      imageName,
-		AppName:        appCfg.AppID,
-		Layers:         headers,
-		AppConfig:      appConfigData,
-		ImageConfig:    imageConfig,
-		RestartPolicy:  resolveRestartPolicy(opts),
-		UserArgs:       opts.userArgs,
-		ImageSignature: imageSignature,
-		Env:            deployEnv,
+		ImageName:         imageName,
+		AppName:           appCfg.AppID,
+		Layers:            headers,
+		AppConfig:         appConfigData,
+		ImageConfig:       imageConfig,
+		RestartPolicy:     resolveRestartPolicy(opts),
+		UserArgs:          opts.userArgs,
+		ImageSignature:    imageSignature,
+		Env:               deployEnv,
+		ContainerIdentity: containerIdentity,
 	})
 	if err != nil {
 		return nil, hint, err
