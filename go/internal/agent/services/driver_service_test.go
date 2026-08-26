@@ -1020,15 +1020,6 @@ func TestFinalize_StageOnlyRejectsAKernelMismatch(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "built for kernel") {
 		t.Fatalf("finalize = %v, want a refusal for the kernel mismatch", err)
 	}
-
-	// And it cannot be staged at all without saying which kernel it is for.
-	if _, err := svc.finalize(context.Background(), DriverInstallSpec{
-		Name:      "wendyos-hello",
-		SHA256:    sha256Hex(payload),
-		StageOnly: true,
-	}, staged, digest); err == nil {
-		t.Error("staging without a kernel version was accepted")
-	}
 }
 
 // A rollback returns to the previous kernel, so its bucket must survive a prune.
@@ -1109,5 +1100,58 @@ func TestInstallDriver_StageOnlyOverTheRPC(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Error("the apply script ran; staging must not touch the running system")
+	}
+}
+
+// Offline pre-load: the operator hands over the bytes, so the image names the
+// bucket and no declared kernel is needed.
+func TestFinalize_StageOnlyFromStreamedBytesUsesTheImageKernel(t *testing.T) {
+	payload := driverImage(t, "a") // declares 6.6.0-test
+	svc := newTestDriverService(t, payload)
+	svc.unameR = func() string { return "9.9.9-running" }
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "applied")
+	script := filepath.Join(dir, "apply.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc.applyScript = script
+
+	digest, staged := stageDriverRaw(t, svc, payload)
+	rebootRequired, err := svc.finalize(context.Background(), DriverInstallSpec{
+		Name:      "wendyos-hello",
+		SHA256:    sha256Hex(payload),
+		StageOnly: true, // no KernelVersion, no ArtifactURL: streamed bytes
+	}, staged, digest)
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if rebootRequired {
+		t.Error("rebootRequired = true, want false: staging applies nothing")
+	}
+	if _, err := os.Stat(svc.rawPath(testKernel, "wendyos-hello")); err != nil {
+		t.Errorf("staged image is not in the bucket the image names: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the apply script ran; staging must not touch the running system")
+	}
+}
+
+// A URL fetch still has to declare its kernel: the manifest is the only witness
+// to what was downloaded.
+func TestFinalize_StageOnlyFromURLStillNeedsAKernel(t *testing.T) {
+	payload := driverImage(t, "a")
+	svc := newTestDriverService(t, payload)
+	digest, staged := stageDriverRaw(t, svc, payload)
+
+	_, err := svc.finalize(context.Background(), DriverInstallSpec{
+		Name:        "wendyos-hello",
+		SHA256:      sha256Hex(payload),
+		ArtifactURL: "https://example/x.raw",
+		StageOnly:   true,
+	}, staged, digest)
+	if err == nil || !strings.Contains(err.Error(), "without a kernel version") {
+		t.Fatalf("finalize = %v, want a refusal for the missing kernel", err)
 	}
 }

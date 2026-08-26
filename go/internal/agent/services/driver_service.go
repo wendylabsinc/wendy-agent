@@ -241,9 +241,11 @@ func (s *DriverService) InstallFromURL(ctx context.Context, spec DriverInstallSp
 func (s *DriverService) checkKernel(name, kernelVersion string, remote, stageOnly bool) error {
 	if stageOnly {
 		// Staging targets a kernel this device is not running; finalize checks the
-		// image against the kernel it was published for instead.
-		if kernelVersion == "" {
-			return fmt.Errorf("driver %q cannot be staged without a kernel version", name)
+		// image against the kernel it was published for instead. Only a URL fetch
+		// has to declare one, because only there is the manifest the sole witness
+		// to what the bytes are.
+		if kernelVersion == "" && remote {
+			return fmt.Errorf("driver %q cannot be staged from a URL without a kernel version", name)
 		}
 		return nil
 	}
@@ -298,18 +300,20 @@ func (s *DriverService) finalize(ctx context.Context, spec DriverInstallSpec, tm
 			return false, fmt.Errorf("driver add-on signature verification error: %v", err)
 		}
 	}
-	// The image is the last word on which kernel it targets: a local install
-	// declares nothing, and a manifest can disagree with what it published.
-	// After the signature gate, so a signing key also gates squashfs parsing.
-	//
-	// A staged add-on targets a kernel this device is not running yet, so it is
-	// checked against the kernel it was published for instead of uname.
+	// The image is the last word on which kernel it targets; checked after the
+	// signature gate so a signing key also gates squashfs parsing. Staging aims at
+	// a kernel this device is not running, so it checks against the published one —
+	// or, for streamed bytes that declare none, whatever the image itself names. A
+	// URL fetch must still declare one: there the manifest is the only cross-check.
 	target := s.unameR()
 	if spec.StageOnly {
-		if spec.KernelVersion == "" {
-			return false, fmt.Errorf("driver %q cannot be staged without a kernel version: there is no bucket to put it in", spec.Name)
-		}
 		target = spec.KernelVersion
+		if target == "" {
+			if spec.ArtifactURL != "" {
+				return false, fmt.Errorf("driver %q cannot be staged from a URL without a kernel version", spec.Name)
+			}
+			target, _ = imageKernel(tmpPath, spec.Name)
+		}
 	}
 	if err := verifyImageKernel(tmpPath, spec.Name, spec.KernelVersion, target); err != nil {
 		return false, err

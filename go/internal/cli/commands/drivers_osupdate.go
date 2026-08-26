@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -72,7 +73,7 @@ func installedDriverAddons(ctx context.Context, conn *grpcclient.AgentConnection
 // warnDriverAddonsBeforeUpdate names the installed add-ons and what this update
 // may do to them. An empty targetVersion (a local artifact or --artifact-url
 // resolves no manifest) limits it to the generic warning.
-func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentConnection, deviceType, targetVersion string, pr int, stageDrivers bool) driverPreflight {
+func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentConnection, deviceType, targetVersion, driversDir string, pr int, stageDrivers bool) driverPreflight {
 	var pf driverPreflight
 	dl, err := installedDriverAddons(ctx, conn)
 	if err != nil {
@@ -80,24 +81,34 @@ func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentCon
 		cliLogln("%s", tui.WarningMessage("Could not read the installed driver add-ons: "+err.Error()))
 		return pf
 	}
-	if dl == nil || len(dl.GetInstalled()) == 0 {
-		return pf
-	}
 	installed := dl.GetInstalled()
 
-	names := make([]string, 0, len(installed))
-	for _, d := range installed {
-		names = append(names, d.GetName())
-	}
-	cliLogln("%s", tui.WarningMessage(fmt.Sprintf("%s installed: %s.",
-		countAddons(len(names)), strings.Join(names, ", "))))
-	// Stated as a rule, not as a fact about these add-ons: some may already be
-	// stale, which is precisely the state this warning exists for.
-	cliLogln("An add-on is built for one exact kernel and stops loading if this update changes it.")
-	for _, d := range installed {
-		if driverStale(d, dl.GetKernelVersion()) {
-			cliLogln("  %s: already not usable on kernel %s", d.GetName(), dl.GetKernelVersion())
+	if len(installed) > 0 {
+		names := make([]string, 0, len(installed))
+		for _, d := range installed {
+			names = append(names, d.GetName())
 		}
+		cliLogln("%s", tui.WarningMessage(fmt.Sprintf("%s installed: %s.",
+			countAddons(len(names)), strings.Join(names, ", "))))
+		// Stated as a rule, not as a fact about these add-ons: some may already be
+		// stale, which is precisely the state this warning exists for.
+		cliLogln("An add-on is built for one exact kernel and stops loading if this update changes it.")
+		for _, d := range installed {
+			if driverStale(d, dl.GetKernelVersion()) {
+				cliLogln("  %s: already not usable on kernel %s", d.GetName(), dl.GetKernelVersion())
+			}
+		}
+	}
+
+	// Files the operator supplied win over the registry: they are the answer for a
+	// network with no route to it. Reached even with nothing installed, so a fresh
+	// air-gapped device can be pre-loaded.
+	if driversDir != "" {
+		stageFromDir(ctx, conn, installed, driversDir, &pf)
+		return pf
+	}
+	if len(installed) == 0 {
+		return pf
 	}
 
 	// Without a resolved manifest nothing can be staged: a local artifact or
@@ -217,6 +228,11 @@ func runDriverStage(ctx context.Context, conn *grpcclient.AgentConnection, spec 
 	if err := stream.CloseSend(); err != nil {
 		return err
 	}
+	return awaitDriverApply(stream)
+}
+
+// awaitDriverApply drains an apply stream to its verdict.
+func awaitDriverApply(stream agentpbv2.WendyDriverService_InstallDriverClient) error {
 	for {
 		resp, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -314,4 +330,93 @@ func driverPreflightSubject(pf driverPreflight) string {
 		names = append(names, u.name)
 	}
 	return strings.Join(names, ", ")
+}
+
+// checkDriversDir rejects a --drivers-dir the update cannot honour, before
+// anything transfers. A directory with no images is a wrong path, not a verdict
+// about the device, so it fails outright rather than becoming a prompt.
+func checkDriversDir(conn *grpcclient.AgentConnection, dir string) error {
+	if conn == nil || conn.DriverService == nil {
+		return fmt.Errorf("--drivers-dir needs the device's driver service; enrol the device first")
+	}
+	files, err := driverRawsIn(dir)
+	if err != nil {
+		return fmt.Errorf("--drivers-dir %s: %w", dir, err)
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("--drivers-dir %s contains no .raw driver add-ons", dir)
+	}
+	return nil
+}
+
+func driverRawsIn(dir string) ([]string, error) {
+	return filepath.Glob(filepath.Join(dir, "*.raw"))
+}
+
+// stageFromDir stages every add-on image in dir, so an air-gapped update can put
+// the next kernel's drivers in place. Each image names its own kernel, so the
+// caller does not have to know the target. Staging one the device has not got is
+// how a fresh device is pre-loaded; an installed one with no image here is a
+// driver the device loses on reboot.
+func stageFromDir(ctx context.Context, conn *grpcclient.AgentConnection, installed []*agentpbv2.InstalledDriver, dir string, pf *driverPreflight) {
+	files, err := driverRawsIn(dir)
+	if err != nil {
+		pf.unreadable = err.Error()
+		cliLogln("%s", tui.WarningMessage("Could not read "+dir+": "+err.Error()))
+		return
+	}
+	cliLogln("Staging driver add-ons from %s", tui.Path(dir))
+	present := make(map[string]bool, len(files))
+	for _, path := range files {
+		name := strings.TrimSuffix(filepath.Base(path), ".raw")
+		present[name] = true
+		if err := stageLocalRebuild(ctx, conn, name, path); err != nil {
+			reason := fmt.Sprintf("staging failed: %v", err)
+			cliLogln("  %s: %s", name, reason)
+			pf.unstaged = append(pf.unstaged, unstagedAddon{name, reason})
+			continue
+		}
+		cliLogln("  %s: staged from %s", name, filepath.Base(path))
+	}
+	for _, d := range installed {
+		if name := d.GetName(); !present[name] {
+			reason := fmt.Sprintf("no %s.raw in %s", name, dir)
+			cliLogln("  %s: %s", name, reason)
+			pf.unstaged = append(pf.unstaged, unstagedAddon{name, reason})
+		}
+	}
+}
+
+// stageLocalRebuild streams one local .raw to the agent for staging. The digest
+// is computed here so the agent can verify what it received, exactly as
+// `drivers install --file` does.
+func stageLocalRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name, path string) error {
+	sum, err := sha256File(path)
+	if err != nil {
+		return err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, driverStageTimeout)
+	defer cancel()
+	stream, err := conn.DriverService.InstallDriver(callCtx)
+	if err != nil {
+		return err
+	}
+	// No KernelVersion: the image declares the kernel it was built for, and the
+	// agent files it under that.
+	if err := stream.Send(&agentpbv2.InstallDriverRequest{
+		RequestType: &agentpbv2.InstallDriverRequest_Spec{Spec: &agentpbv2.DriverSpec{
+			Name:      name,
+			Sha256:    sum,
+			StageOnly: true,
+		}},
+	}); err != nil {
+		return err
+	}
+	if err := streamDriverChunks(stream, path); err != nil {
+		return err
+	}
+	if err := stream.CloseSend(); err != nil {
+		return err
+	}
+	return awaitDriverApply(stream)
 }

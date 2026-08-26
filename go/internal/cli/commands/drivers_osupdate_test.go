@@ -3,6 +3,9 @@ package commands
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -63,8 +66,10 @@ func TestDriverPreflightSubject(t *testing.T) {
 // the way a real one does when a device is slow or half-reachable.
 type fakeDriverClient struct {
 	agentpbv2.WendyDriverServiceClient
-	listErr error
-	list    *agentpbv2.ListDriversResponse
+	listErr     error
+	list        *agentpbv2.ListDriversResponse
+	installFail string
+	installs    *[]*fakeInstallStream
 }
 
 func (f fakeDriverClient) ListDrivers(context.Context, *agentpbv2.ListDriversRequest, ...grpc.CallOption) (*agentpbv2.ListDriversResponse, error) {
@@ -78,7 +83,7 @@ func TestWarnDriverAddons_ListDriversFailureBlocks(t *testing.T) {
 	conn := &grpcclient.AgentConnection{
 		DriverService: fakeDriverClient{listErr: status.Error(codes.DeadlineExceeded, "context deadline exceeded")},
 	}
-	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", 0, true)
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", "", 0, true)
 	if !pf.blocking() {
 		t.Fatal("a ListDrivers failure did not block the update")
 	}
@@ -93,7 +98,7 @@ func TestWarnDriverAddons_UnimplementedDoesNotBlock(t *testing.T) {
 	conn := &grpcclient.AgentConnection{
 		DriverService: fakeDriverClient{listErr: status.Error(codes.Unimplemented, "unknown service")},
 	}
-	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", 0, true)
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", "", 0, true)
 	if pf.blocking() {
 		t.Error("an older agent blocked the update")
 	}
@@ -111,12 +116,12 @@ func TestWarnDriverAddons_NoManifestBlocksPerAddon(t *testing.T) {
 			},
 		},
 	}}
-	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "", "", 0, true)
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "", "", "", 0, true)
 	if len(pf.unstaged) != 2 || !pf.blocking() {
 		t.Fatalf("unstaged = %+v, want both add-ons blocking", pf.unstaged)
 	}
 	// --no-drivers is the explicit opt-out and must never block.
-	if pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "", "", 0, false); pf.blocking() {
+	if pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "", "", "", 0, false); pf.blocking() {
 		t.Error("--no-drivers blocked the update")
 	}
 }
@@ -129,13 +134,16 @@ func stubDriverExtensionsFor(t *testing.T, exts []extensionEntry, err error) {
 }
 
 func connWithAddons(names ...string) *grpcclient.AgentConnection {
+	return connWith(fakeDriverClient{}, names...)
+}
+
+func connWith(c fakeDriverClient, names ...string) *grpcclient.AgentConnection {
 	installed := make([]*agentpbv2.InstalledDriver, 0, len(names))
 	for _, n := range names {
 		installed = append(installed, &agentpbv2.InstalledDriver{Name: n, KernelVersion: "6.18.33-v8-16k"})
 	}
-	return &grpcclient.AgentConnection{DriverService: fakeDriverClient{
-		list: &agentpbv2.ListDriversResponse{KernelVersion: "6.18.33-v8-16k", Installed: installed},
-	}}
+	c.list = &agentpbv2.ListDriversResponse{KernelVersion: "6.18.33-v8-16k", Installed: installed}
+	return &grpcclient.AgentConnection{DriverService: c}
 }
 
 // If the published add-ons cannot be read, nothing can be staged — and the device
@@ -143,7 +151,7 @@ func connWithAddons(names ...string) *grpcclient.AgentConnection {
 func TestWarnDriverAddons_ManifestFailureBlocks(t *testing.T) {
 	stubDriverExtensionsFor(t, nil, errors.New("fetching manifest: 503 Service Unavailable"))
 
-	pf := warnDriverAddonsBeforeUpdate(context.Background(), connWithAddons("acme-nic"), "raspberry-pi-5", "0.20.0", 0, true)
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), connWithAddons("acme-nic"), "raspberry-pi-5", "0.20.0", "", 0, true)
 	if !pf.blocking() {
 		t.Fatal("a manifest failure did not block the update")
 	}
@@ -151,7 +159,7 @@ func TestWarnDriverAddons_ManifestFailureBlocks(t *testing.T) {
 		t.Errorf("unstaged = %+v, want the add-on named with the underlying cause", pf.unstaged)
 	}
 	// --no-drivers stays the explicit opt-out.
-	if pf := warnDriverAddonsBeforeUpdate(context.Background(), connWithAddons("acme-nic"), "raspberry-pi-5", "0.20.0", 0, false); pf.blocking() {
+	if pf := warnDriverAddonsBeforeUpdate(context.Background(), connWithAddons("acme-nic"), "raspberry-pi-5", "0.20.0", "", 0, false); pf.blocking() {
 		t.Error("--no-drivers blocked on a manifest failure")
 	}
 }
@@ -163,7 +171,7 @@ func TestWarnDriverAddons_NoRebuildPublishedBlocks(t *testing.T) {
 		{Name: "someone-else", KernelVersion: "6.19.0", Path: "p"},
 	}, nil)
 
-	pf := warnDriverAddonsBeforeUpdate(context.Background(), connWithAddons("acme-nic"), "raspberry-pi-5", "0.20.0", 0, true)
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), connWithAddons("acme-nic"), "raspberry-pi-5", "0.20.0", "", 0, true)
 	if !pf.blocking() || len(pf.unstaged) != 1 {
 		t.Fatalf("unstaged = %+v, want acme-nic blocking", pf.unstaged)
 	}
@@ -179,9 +187,152 @@ func TestWarnDriverAddons_UnaffectedAddonDoesNotBlock(t *testing.T) {
 		{Name: "acme-nic", KernelVersion: "6.18.33-v8-16k", Path: "p"},
 	}, nil)
 
-	pf := warnDriverAddonsBeforeUpdate(context.Background(), connWithAddons("acme-nic"), "raspberry-pi-5", "0.20.0", 0, true)
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), connWithAddons("acme-nic"), "raspberry-pi-5", "0.20.0", "", 0, true)
 	if pf.blocking() {
 		t.Errorf("an unaffected add-on blocked the update: %+v", pf.unstaged)
+	}
+}
+
+// fakeInstallStream is one InstallDriver call: it records the spec the CLI sent
+// and answers with the verdict the test asked for.
+type fakeInstallStream struct {
+	grpc.ClientStream
+	specs []*agentpbv2.DriverSpec
+	fail  string
+	done  bool
+}
+
+func (f *fakeInstallStream) Send(req *agentpbv2.InstallDriverRequest) error {
+	if spec := req.GetSpec(); spec != nil {
+		f.specs = append(f.specs, spec)
+	}
+	return nil
+}
+
+func (f *fakeInstallStream) CloseSend() error { return nil }
+
+func (f *fakeInstallStream) Recv() (*agentpbv2.DriverApplyResponse, error) {
+	if f.done {
+		return nil, io.EOF
+	}
+	f.done = true
+	if f.fail != "" {
+		return &agentpbv2.DriverApplyResponse{ResponseType: &agentpbv2.DriverApplyResponse_Failed_{
+			Failed: &agentpbv2.DriverApplyResponse_Failed{ErrorMessage: f.fail},
+		}}, nil
+	}
+	return &agentpbv2.DriverApplyResponse{ResponseType: &agentpbv2.DriverApplyResponse_Completed_{
+		Completed: &agentpbv2.DriverApplyResponse_Completed{},
+	}}, nil
+}
+
+func (f fakeDriverClient) InstallDriver(context.Context, ...grpc.CallOption) (agentpbv2.WendyDriverService_InstallDriverClient, error) {
+	st := &fakeInstallStream{fail: f.installFail}
+	if f.installs != nil {
+		*f.installs = append(*f.installs, st)
+	}
+	return st, nil
+}
+
+// driversDirWith writes placeholder images: the agent is faked here, so only the
+// filenames matter.
+func driversDirWith(t *testing.T, names ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(dir, n+".raw"), []byte("image-"+n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// --drivers-dir stages the whole directory, including an add-on the device has
+// not got: that is how a fresh air-gapped device is pre-loaded.
+func TestWarnDriverAddons_DriversDirStagesEveryImage(t *testing.T) {
+	var installs []*fakeInstallStream
+	conn := connWith(fakeDriverClient{installs: &installs}, "acme-nic")
+	dir := driversDirWith(t, "acme-nic", "acme-npu")
+
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", dir, 0, true)
+	if pf.blocking() {
+		t.Fatalf("staging every image still blocked: %+v", pf)
+	}
+	if len(installs) != 2 {
+		t.Fatalf("staged %d images, want both", len(installs))
+	}
+	for _, st := range installs {
+		if len(st.specs) != 1 {
+			t.Fatalf("stream sent %d specs, want 1", len(st.specs))
+		}
+		spec := st.specs[0]
+		// The image names its own kernel, so the CLI must not guess one.
+		if !spec.GetStageOnly() || spec.GetKernelVersion() != "" {
+			t.Errorf("spec = %+v, want StageOnly with no kernel version", spec)
+		}
+	}
+}
+
+// A device with nothing installed is the pre-load case: the directory must still
+// be staged rather than the flag silently doing nothing.
+func TestWarnDriverAddons_DriversDirPreloadsAnEmptyDevice(t *testing.T) {
+	var installs []*fakeInstallStream
+	conn := connWith(fakeDriverClient{installs: &installs})
+	dir := driversDirWith(t, "acme-nic")
+
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", dir, 0, true)
+	if pf.blocking() {
+		t.Errorf("pre-loading blocked the update: %+v", pf)
+	}
+	if len(installs) != 1 {
+		t.Fatalf("staged %d images, want 1", len(installs))
+	}
+}
+
+// An installed add-on the directory has no image for is one the device loses on
+// reboot, so it must block and say which.
+func TestWarnDriverAddons_DriversDirMissingAnInstalledAddonBlocks(t *testing.T) {
+	conn := connWith(fakeDriverClient{}, "acme-nic", "acme-npu")
+	dir := driversDirWith(t, "acme-nic")
+
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", dir, 0, true)
+	if !pf.blocking() || len(pf.unstaged) != 1 {
+		t.Fatalf("unstaged = %+v, want only acme-npu blocking", pf.unstaged)
+	}
+	if pf.unstaged[0].name != "acme-npu" || !strings.Contains(pf.unstaged[0].reason, "no acme-npu.raw") {
+		t.Errorf("unstaged = %+v, want acme-npu named as missing", pf.unstaged[0])
+	}
+}
+
+// A staging failure must be reported once, against the add-on whose image was
+// there — never a second time as a missing file.
+func TestWarnDriverAddons_DriversDirStagingFailureBlocksOnce(t *testing.T) {
+	conn := connWith(fakeDriverClient{installFail: "signature verification failed"}, "acme-nic")
+	dir := driversDirWith(t, "acme-nic")
+
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", dir, 0, true)
+	if !pf.blocking() || len(pf.unstaged) != 1 {
+		t.Fatalf("unstaged = %+v, want acme-nic blocking exactly once", pf.unstaged)
+	}
+	if !strings.Contains(pf.unstaged[0].reason, "signature verification failed") {
+		t.Errorf("reason = %q, want the agent's cause", pf.unstaged[0].reason)
+	}
+}
+
+// A --drivers-dir the update cannot honour is an operator error, so it fails
+// outright instead of becoming a prompt about the device.
+func TestCheckDriversDir(t *testing.T) {
+	withImages := driversDirWith(t, "acme-nic")
+	conn := connWithAddons("acme-nic")
+
+	if err := checkDriversDir(conn, withImages); err != nil {
+		t.Errorf("a directory with images was rejected: %v", err)
+	}
+	if err := checkDriversDir(conn, t.TempDir()); err == nil {
+		t.Error("an empty directory was accepted")
+	}
+	if err := checkDriversDir(&grpcclient.AgentConnection{}, withImages); err == nil {
+		t.Error("a connection with no driver service was accepted")
 	}
 }
 
@@ -200,5 +351,20 @@ func TestConfirmDriverPreflight_NonInteractiveAborts(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "acme-nic") || !strings.Contains(err.Error(), "--no-drivers") {
 		t.Errorf("error = %q, want the add-on named and --no-drivers offered", err)
+	}
+}
+
+// --no-drivers says stage nothing and --drivers-dir says stage these; the pair is
+// refused rather than one of them silently winning.
+func TestOSUpdate_NoDriversWithDriversDirIsRejected(t *testing.T) {
+	cmd := newOSUpdateCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--no-drivers", "--drivers-dir", t.TempDir()})
+	// Asserting the message, not just an error: this command fails for plenty of
+	// other reasons off a device, and any of them would pass a bare nil check.
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--no-drivers cannot be combined with --drivers-dir") {
+		t.Fatalf("err = %v, want the flag pair refused", err)
 	}
 }
