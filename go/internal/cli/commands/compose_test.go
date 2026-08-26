@@ -254,6 +254,18 @@ func TestComposeServiceWatchHashTracksCreateRequest(t *testing.T) {
 	}
 }
 
+func TestImageRefContentPinned(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("b", 64)
+	if !imageRefContentPinned("docker.io/library/alpine@" + digest) {
+		t.Fatal("digest-pinned image was not eligible")
+	}
+	for _, ref := range []string{"alpine", "alpine:3.20", "${IMAGE}", ""} {
+		if imageRefContentPinned(ref) {
+			t.Fatalf("mutable or invalid image %q was eligible", ref)
+		}
+	}
+}
+
 func TestPlanComposeBuildSkipsVerifiedUnchangedService(t *testing.T) {
 	isolateFingerprintCache(t)
 	const (

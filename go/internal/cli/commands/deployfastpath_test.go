@@ -66,6 +66,31 @@ func TestComputeBuildInputHash_BuildArgsAndDockerfile(t *testing.T) {
 	}
 }
 
+func TestDockerfileBasesContentPinned(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	for _, tt := range []struct {
+		name, dockerfile string
+		want             bool
+	}{
+		{name: "scratch", dockerfile: "FROM scratch\n", want: true},
+		{name: "pinned multistage", dockerfile: "FROM alpine@" + digest + " AS build\nFROM build\n", want: true},
+		{name: "mutable tag", dockerfile: "FROM alpine:3.20\n"},
+		{name: "arg base", dockerfile: "ARG BASE=alpine@" + digest + "\nFROM ${BASE}\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "Dockerfile", tt.dockerfile)
+			got, err := dockerfileBasesContentPinned(dir, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("dockerfileBasesContentPinned() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestComputeBuildInputHash_HonorsDockerignore(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "Dockerfile", "FROM python:3.11-slim\nCOPY app.py .\n")

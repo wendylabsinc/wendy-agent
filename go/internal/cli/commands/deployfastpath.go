@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -234,6 +235,90 @@ func computeBuildInputHash(cwd, dockerfile, platform string, buildArgs map[strin
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// dockerfileBasesContentPinned is the fail-closed eligibility gate for a
+// persistent no-build skip. Old device content proves what was deployed, but
+// only digest-pinned external bases prove a rebuild would still resolve the
+// same inputs. scratch and references to prior named stages are also stable.
+func dockerfileBasesContentPinned(cwd, dockerfile string) (bool, error) {
+	dfPath := filepath.Join(cwd, "Dockerfile")
+	if dockerfile != "" {
+		resolved, err := confinedDockerfilePath(cwd, dockerfile)
+		if err != nil {
+			return false, err
+		}
+		dfPath = resolved
+	}
+	f, err := os.Open(dfPath)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	var logical strings.Builder
+	stages := make(map[string]struct{})
+	foundFrom := false
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		continued := strings.HasSuffix(line, "\\")
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\\"))
+		if logical.Len() > 0 {
+			logical.WriteByte(' ')
+		}
+		logical.WriteString(line)
+		if continued {
+			continue
+		}
+
+		fields := strings.Fields(logical.String())
+		logical.Reset()
+		if len(fields) == 0 || !strings.EqualFold(fields[0], "FROM") {
+			continue
+		}
+		foundFrom = true
+		i := 1
+		for i < len(fields) && strings.HasPrefix(fields[i], "--") {
+			if !strings.Contains(fields[i], "=") {
+				return false, nil
+			}
+			i++
+		}
+		if i >= len(fields) {
+			return false, nil
+		}
+		base := fields[i]
+		_, priorStage := stages[strings.ToLower(base)]
+		if !strings.EqualFold(base, "scratch") && !priorStage {
+			parsed, parseErr := reference.ParseAnyReference(base)
+			if parseErr != nil {
+				return false, nil
+			}
+			if _, pinned := parsed.(reference.Digested); !pinned {
+				return false, nil
+			}
+		}
+		if i+2 < len(fields) && strings.EqualFold(fields[i+1], "AS") {
+			alias := strings.ToLower(fields[i+2])
+			if alias == "" || strings.HasPrefix(alias, "$") {
+				return false, nil
+			}
+			stages[alias] = struct{}{}
+		} else if i+1 != len(fields) {
+			return false, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	if logical.Len() != 0 {
+		return false, nil
+	}
+	return foundFrom, nil
+}
+
 // dockerIgnore is a conservative .dockerignore matcher. It only excludes a path
 // when a pattern confidently matches; negation (!) and patterns it cannot parse
 // are ignored, which keeps the matcher safe (it can only under-exclude, leading
@@ -449,13 +534,9 @@ func deviceHasAllLayers(ctx context.Context, conn *grpcclient.AgentConnection, d
 	if len(diffIDs) == 0 {
 		return false
 	}
-	resp, err := conn.ContainerService.QueryLayers(ctx, &agentpb.QueryLayersRequest{DiffIds: diffIDs})
-	if err != nil {
+	present, ok := devicePresentLayers(ctx, conn, diffIDs)
+	if !ok {
 		return false
-	}
-	present := make(map[string]bool, len(resp.GetPresent()))
-	for _, p := range resp.GetPresent() {
-		present[p.GetDiffId()] = true
 	}
 	for _, id := range diffIDs {
 		if !present[id] {
@@ -463,6 +544,25 @@ func deviceHasAllLayers(ctx context.Context, conn *grpcclient.AgentConnection, d
 		}
 	}
 	return true
+}
+
+// devicePresentLayers performs one fail-closed layer-presence query and returns
+// the confirmed set. Keeping the raw set available lets multi-service planners
+// batch every candidate service into one RPC instead of paying one round trip
+// per service. The bool is false for old agents and all other RPC failures.
+func devicePresentLayers(ctx context.Context, conn *grpcclient.AgentConnection, diffIDs []string) (map[string]bool, bool) {
+	if len(diffIDs) == 0 {
+		return nil, false
+	}
+	resp, err := conn.ContainerService.QueryLayers(ctx, &agentpb.QueryLayersRequest{DiffIds: diffIDs})
+	if err != nil {
+		return nil, false
+	}
+	present := make(map[string]bool, len(resp.GetPresent()))
+	for _, p := range resp.GetPresent() {
+		present[p.GetDiffId()] = true
+	}
+	return present, true
 }
 
 // lookupAppState queries the device for the running state of a single app.
