@@ -125,6 +125,14 @@ type Client struct {
 	preparedSnapshotsMu sync.Mutex
 	preparedSnapshots   map[string]*preparedSnapshot
 
+	// networkSandboxes owns CNI-configured namespace bind mounts retained
+	// across task restart and compatible container replacement. It has a
+	// separate mutex because CNI work deliberately runs after c.mu is released.
+	networkSandboxesMu sync.Mutex
+	networkSandboxes   map[string]*networkSandbox
+	networkOpsMu       sync.Mutex
+	networkOps         map[string]*networkOperation
+
 	// appStopping tracks appIDs that are currently being stopped.
 	// Set before releasing c.mu in StopContainer; cleared in the cleanup phase.
 	// Checked by CreateContainerWithProgress to reject concurrent create/stop races
@@ -292,6 +300,8 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		warnedExposures:   make(map[string]struct{}),
 		serviceIPs:        make(map[string]map[string]string),
 		preparedSnapshots: make(map[string]*preparedSnapshot),
+		networkSandboxes:  make(map[string]*networkSandbox),
+		networkOps:        make(map[string]*networkOperation),
 		appStopping:       make(map[string]bool),
 		ros2ExecRefs:      make(map[string]int),
 		chunkIndex:        idx,
@@ -308,6 +318,10 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 // D-Bus proxy processes.
 func (c *Client) Close() error {
 	c.discardAllPreparedSnapshots()
+	// Do not tear down retained network sandboxes here. Closing an agent client
+	// does not stop its containerd tasks; their nsfs bind mounts and CNI state
+	// must survive an agent restart so the next client can validate and adopt
+	// them. Explicit stop/delete paths remain the lifecycle boundary.
 	if c.proxyManager != nil {
 		c.proxyManager.StopAll()
 	}
@@ -958,9 +972,6 @@ func toCreateContainerProgress(progress UnpackProgress) *agentpb.CreateContainer
 }
 
 func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig, onProgress services.ProgressFunc) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	ctx = c.withNamespace(ctx)
 
 	// Derive the app identity. appCfg.AppID is the authoritative source; fall
@@ -994,6 +1005,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Both values are now validated; promote to short names for readability.
 	appID, serviceName := rawAppID, rawServiceName
+	containerName := ContainerName(appID, serviceName)
+	unlockNetwork := c.lockNetworkOperation(containerName)
+	defer unlockNetwork()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	// Reject creation while a concurrent StopContainer is tearing down this app.
 	// Without this check a new container could be created after resolveStopOrder
@@ -1003,7 +1019,19 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		return fmt.Errorf("app %q is currently being stopped; retry after stop completes", appID)
 	}
 
-	containerName := ContainerName(appID, serviceName)
+	desiredNetworkIdentity := ""
+	if networkSandboxEligible(serviceName, appCfg.Entitlements) {
+		desiredNetworkIdentity = networkIdentity(appCfg.Isolation, appCfg.Entitlements)
+	}
+	var reusedNetworkSandbox *networkSandbox
+	reusedNetworkSandboxCommitted := false
+	defer func() {
+		// Validation/spec/snapshot/container failures after the old task was
+		// removed must not leave a CNI namespace detached from any container.
+		if reusedNetworkSandbox != nil && !reusedNetworkSandboxCommitted {
+			c.destroyNetworkSandbox(context.WithoutCancel(ctx), containerName)
+		}
+	}()
 
 	// Canonicalise the image reference so older CLIs sending Docker short
 	// names like "python:3.11-slim" still resolve correctly under containerd's
@@ -1045,8 +1073,27 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		defer resumeRestarts()
 
 		oldHadSystemAPI := false
-		if labels, labelErr := existing.Labels(ctx); labelErr == nil {
-			oldHadSystemAPI = entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNotifications)
+		if oldLabels, labelErr := existing.Labels(ctx); labelErr == nil {
+			oldHadSystemAPI = entitlementsContain(parseEntitlementsFromAnnotations(oldLabels), appconfig.EntitlementNotifications)
+			oldSpec, _ := existing.Spec(ctx)
+			if oldLabels[labelKeyNetworkIdentity] == desiredNetworkIdentity {
+				reusedNetworkSandbox, _ = c.reusableNetworkSandbox(ctx, containerName, desiredNetworkIdentity)
+				if reusedNetworkSandbox == nil && oldSpec != nil {
+					reusedNetworkSandbox, _ = c.recoverNetworkSandbox(ctx, existing, desiredNetworkIdentity, oldLabels, oldSpec)
+				}
+			}
+			if reusedNetworkSandbox == nil {
+				c.purgePersistedNetworkSandbox(ctx, existing, oldLabels, oldSpec)
+			}
+		}
+		if reusedNetworkSandbox == nil {
+			// Identity mismatch, unhealthy namespace, legacy container, or a
+			// non-CNI configuration: release every external network side effect
+			// before the old task disappears.
+			c.destroyNetworkSandbox(ctx, containerName)
+		} else {
+			c.logger.Debug("Retaining compatible network sandbox across container replacement",
+				zap.String("container_name", containerName), zap.String("netns", reusedNetworkSandbox.path))
 		}
 		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
 		// Kill the old task's whole process group — not just init — and wait
@@ -1346,6 +1393,12 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements, appCfg.Isolation, dependsOn)
+	if desiredNetworkIdentity != "" {
+		labels[labelKeyNetworkIdentity] = desiredNetworkIdentity
+		if reusedNetworkSandbox != nil {
+			labels[labelKeyNetworkSandboxIP] = reusedNetworkSandbox.ip
+		}
+	}
 
 	// Publish the resolved ROS 2 configuration as a container label so the
 	// agent can discover ROS 2 containers at runtime and configure the CLI
@@ -1464,6 +1517,16 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// container creation with EEXIST.
 	localoci.DedupeDevices(spec)
 
+	// A retained namespace is injected only after the complete new runtime
+	// configuration has been validated and matched against the old network
+	// identity. runc will join this nsfs bind mount instead of creating a fresh
+	// network namespace, so StartContainer can safely skip CNI DEL+ADD.
+	if reusedNetworkSandbox != nil {
+		if err := localoci.JoinNetworkNamespace(spec, reusedNetworkSandbox.path); err != nil {
+			return fmt.Errorf("joining reusable network sandbox: %w", err)
+		}
+	}
+
 	// SECURITY (WDY-1102): backstop against any mount whose source resolves into
 	// containerd's runtime directory (the control socket is a host-escape vector).
 	// Runs on the fully assembled spec — entitlement, shared-SHM, and default
@@ -1521,6 +1584,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if err != nil {
 		return fmt.Errorf("creating container %q: %w", containerName, err)
 	}
+	reusedNetworkSandboxCommitted = true
 
 	// Container created successfully; keep its external socket resources running.
 	dbusProxyStarted = false
@@ -1612,6 +1676,8 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	if err != nil {
 		return nil, fmt.Errorf("StartContainer: invalid app name: %w", err)
 	}
+	unlockNetwork := c.lockNetworkOperation(appName)
+	defer unlockNetwork()
 	// Hold c.mu for container lookup and task creation to prevent a concurrent
 	// DeleteContainer from removing the container between the label-based lookup
 	// and NewTask (TOCTOU, SOC2-CC6). Released before the streaming goroutine
@@ -1645,7 +1711,9 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// namespace joins, CNI per-service records) under the wrong identity.
 	// The labels written at create time are authoritative — prefer them,
 	// re-validating since labels are external state (SOC2-CC6, NIST-SI-10).
+	var containerLabels map[string]string
 	if labels, lerr := container.Labels(ctx); lerr == nil {
+		containerLabels = labels
 		if id := labels[labelKeyAppID]; id != "" && appconfig.ValidateAppID(id) == nil {
 			svc := labels[labelKeyServiceName]
 			if svc == "" || appconfig.ValidateServiceName(svc) == nil {
@@ -1676,11 +1744,48 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// starts again. The gate is the persisted spec's mesh resolv.conf mount
 	// itself (leak-free — see recreateMeshResolvConfForStart), so a Spec load
 	// failure just skips the hook.
-	if spec, serr := container.Spec(ctx); serr == nil {
-		c.recreateMeshResolvConfForStart(spec.Mounts)
+	storedSpec, storedSpecErr := container.Spec(ctx)
+	if storedSpecErr == nil {
+		c.recreateMeshResolvConfForStart(storedSpec.Mounts)
 	} else {
 		c.logger.Warn("mesh: could not load container spec to recreate resolv.conf before start",
-			zap.String("app_name", appName), zap.Error(serr))
+			zap.String("app_name", appName), zap.Error(storedSpecErr))
+	}
+
+	// Resolve network policy before NewTask. A sandbox is reusable only when
+	// both its health/identity checks pass and the stored OCI spec explicitly
+	// joins its bind mount. The second condition prevents skipping CNI for a
+	// legacy/private spec that would start in an unrelated fresh namespace.
+	isolation := c.getIsolation(appID)
+	entitlements := parseEntitlementsFromAnnotations(containerLabels)
+	needsBridge := needsCNIBridgeWiring(isolation, serviceName, entitlements)
+	identity, retainsBridge := networkIdentityFromLabels(containerLabels)
+	var reusedNetworkSandbox *networkSandbox
+	if retainsBridge {
+		if candidate, ok := c.reusableNetworkSandbox(ctx, appName, identity); ok &&
+			runtimeSpecJoinsNetworkSandbox(storedSpec, candidate.path) {
+			reusedNetworkSandbox = candidate
+		} else if candidate, ok := c.recoverNetworkSandbox(ctx, container, identity, containerLabels, storedSpec); ok {
+			reusedNetworkSandbox = candidate
+		} else {
+			c.destroyNetworkSandbox(ctx, appName)
+			c.purgePersistedNetworkSandbox(ctx, container, containerLabels, storedSpec)
+			if containerLabels[labelKeyNetworkSandboxIP] != "" || runtimeSpecHasNetworkNamespacePath(storedSpec) {
+				if err := c.persistNetworkNamespace(ctx, container, "", identity, ""); err != nil {
+					return nil, fmt.Errorf("clearing stale reusable network namespace for %q: %w", appName, err)
+				}
+			}
+		}
+	} else {
+		// Host/shared namespaces are never eligible, even if stale process
+		// memory claims a sandbox exists for this name.
+		c.destroyNetworkSandbox(ctx, appName)
+		c.purgePersistedNetworkSandbox(ctx, container, containerLabels, storedSpec)
+		if containerLabels[labelKeyNetworkSandboxIP] != "" || runtimeSpecHasNetworkNamespacePath(storedSpec) {
+			if err := c.persistNetworkNamespace(ctx, container, "", "", ""); err != nil {
+				return nil, fmt.Errorf("clearing ineligible reusable network namespace for %q: %w", appName, err)
+			}
+		}
 	}
 
 	if restartPolicy != nil {
@@ -1761,7 +1866,6 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 
 	// Track the primary PID for shared-namespace app groups.
 	// getIsolation requires c.mu (held here via muHeld).
-	isolation := c.getIsolation(appID)
 	if appconfig.IsSharedNamespaceIsolation(isolation) {
 		// Presence alone is not enough: a per-service stop leaves the group
 		// entry behind, so a dead PID must be replaced rather than kept.
@@ -1778,18 +1882,12 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// anchor below), because needsCNIBridgeWiring must also recognise a
 	// single-service "bridge"-mode app, which isolation+serviceName alone
 	// cannot detect (unlike a multi-service isolated app service).
-	var entitlements []appconfig.Entitlement
-	if labels, lerr := container.Labels(ctx); lerr == nil {
-		entitlements = parseEntitlementsFromAnnotations(labels)
-	}
-	needsBridge := needsCNIBridgeWiring(isolation, serviceName, entitlements)
-
 	// Anchor the network namespace with an open fd BEFORE releasing the mutex.
 	// This eliminates the TOCTOU race where a concurrent StopContainer could
 	// recycle the PID between mutex release and CNI ADD, causing the plugin to
 	// operate on the wrong process's netns (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
 	var netnsRef *os.File
-	if needsBridge {
+	if needsBridge && reusedNetworkSandbox == nil {
 		nsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
 		var nsErr error
 		netnsRef, nsErr = os.Open(nsPath)
@@ -1815,8 +1913,19 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// /proc/self/fd/<n> reference that third-party CNI plugins may not honour.
 	// It also closes the fd (the bind-mount anchors the namespace independently).
 	// On Linux the bind-mount is used; on other platforms the fd path is the fallback.
-	if needsBridge && netnsRef != nil {
-		netnsPath, cleanupNetns := bindNetnsForCNI(appName, netnsRef)
+	if reusedNetworkSandbox != nil {
+		if !taskUsesNetworkSandbox(reusedNetworkSandbox.path, task.Pid()) {
+			c.destroyNetworkSandbox(ctx, appName)
+			_, _ = task.Delete(ctx, containerd.WithProcessKill)
+			return nil, fmt.Errorf("reusable network sandbox validation failed for app %q after task start", appID)
+		}
+		c.logger.Info("Reused CNI network sandbox",
+			zap.String(logfields.AppID, appID),
+			zap.String("container_id", appName),
+			zap.String("ip", reusedNetworkSandbox.ip))
+	} else if needsBridge && netnsRef != nil {
+		netnsPath, cleanupNetns, persistentNetns := bindNetnsForCNI(appName, netnsRef)
+		bridgeDNSHealthy := !retainsBridge
 		// Release any stale host-local IPAM reservation for this container ID
 		// before ADD (WDY-1834). The CNI allocation is keyed by container ID
 		// (== appName, which is stable across restart/redeploy), and
@@ -1837,7 +1946,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			c.logger.Warn("CNI DEL before ADD (stale-allocation reclaim) failed (non-fatal)",
 				zap.String(logfields.AppID, appID), zap.Error(delErr))
 		}
-		ip, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
+		ip, cniResult, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
 		if cniErr != nil {
 			// Roll back any partial state the failed ADD left behind (e.g. a
 			// host-local IPAM allocation recorded before a later step, such as
@@ -1857,9 +1966,22 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		} else {
 			// netnsPath (the bind-mount) must stay mounted through mesh egress
 			// setup below, which needs a live netns to install the service-CIDR
-			// route via nsenter (SetMeshRoute). It is unmounted at the end of
-			// this branch, after mesh wiring has had a chance to use it.
-			defer cleanupNetns()
+			// route via nsenter (SetMeshRoute). Until every subsequent setup step
+			// succeeds, a deferred rollback releases both IPAM and the bind mount.
+			networkReady := false
+			keepNetns := false
+			defer func() {
+				if !networkReady {
+					_ = c.CNIDel(context.WithoutCancel(ctx), appID, appName, netnsPath)
+					if needsGatewayDNS(isolation, entitlements) {
+						c.releaseMeshDNS(appName, appID)
+					}
+					c.teardownMeshEgress(entitlements, appName, appID, ip)
+					cleanupNetns()
+				} else if !keepNetns {
+					cleanupNetns()
+				}
+			}()
 
 			// /etc/hosts bookkeeping is specific to multi-service isolated app
 			// groups (sibling services resolve each other by name); a
@@ -1934,7 +2056,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			// works), mirroring the rest of this block's error handling.
 			if _, ok := findBridgeEntitlement(entitlements); ok {
 				if gw, gwErr := meshGateway(appID); gwErr == nil {
-					c.ensureMeshDNS(appName, gw)
+					bridgeDNSHealthy = c.ensureMeshDNS(appName, gw)
 				} else {
 					c.logger.Warn("bridge: could not derive gateway for DNS listener",
 						zap.String(logfields.AppID, appID), zap.Error(gwErr))
@@ -1951,6 +2073,35 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 				_, _ = task.Delete(ctx, containerd.WithProcessKill)
 				return nil, fmt.Errorf("mesh egress setup failed for app %q: %w", appID, meshErr)
 			}
+
+			// All network configuration is now complete. Transfer ownership to the
+			// client map and persist the namespace path into container metadata so
+			// future NewTask calls join it without another CNI DEL+ADD cycle.
+			c.mu.Lock()
+			if c.appStopping[appID] {
+				c.mu.Unlock()
+				_, _ = task.Delete(ctx, containerd.WithProcessKill)
+				return nil, fmt.Errorf("app %q stopped during network sandbox setup; container not started", appID)
+			}
+			if retainsBridge && bridgeDNSHealthy && persistentNetns && containerLabels[labelKeyNetworkIdentity] != "" {
+				if err := writeNetworkSandboxResult(appName, cniResult); err == nil {
+					if err := c.persistNetworkNamespace(ctx, container, netnsPath, containerLabels[labelKeyNetworkIdentity], ip); err == nil {
+						c.registerNetworkSandbox(&networkSandbox{
+							appID: appID, serviceName: serviceName, containerID: appName,
+							identity: containerLabels[labelKeyNetworkIdentity], path: netnsPath, ip: ip, result: cniResult,
+							isolation: isolation, entitlements: append([]appconfig.Entitlement(nil), entitlements...), cleanup: cleanupNetns,
+						})
+						keepNetns = true
+					} else {
+						_ = os.Remove(networkSandboxResultPath(appName))
+						c.logger.Warn("Could not persist reusable network namespace", zap.String("container_id", appName), zap.Error(err))
+					}
+				} else {
+					c.logger.Warn("Could not persist reusable CNI result", zap.String("container_id", appName), zap.Error(err))
+				}
+			}
+			networkReady = true
+			c.mu.Unlock()
 		}
 	}
 
@@ -3334,12 +3485,30 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 		return fmt.Errorf("loading container %q: %w", containerID, err)
 	}
 
+	// Explicit stop is a lifecycle boundary: unlike crash-monitor restart or a
+	// compatible redeploy, it must release the retained namespace and all CNI,
+	// DNS, and mesh state even when the task has already exited.
+	labels, _ := container.Labels(ctx)
+	spec, _ := container.Spec(ctx)
+	desiredNetworkIdentity, _ := networkIdentityFromLabels(labels)
+	releasedSandbox := c.destroyNetworkSandbox(ctx, containerID)
+	if !releasedSandbox {
+		releasedSandbox = c.purgePersistedNetworkSandbox(ctx, container, labels, spec)
+	}
+	var clearSandboxErr error
+	if releasedSandbox {
+		if err := c.persistNetworkNamespace(ctx, container, "", desiredNetworkIdentity, ""); err != nil {
+			clearSandboxErr = fmt.Errorf("clearing reusable network namespace for %q: %w", containerID, err)
+			c.logger.Warn("Failed to clear reusable network metadata; continuing task termination", zap.String("container_id", containerID), zap.Error(err))
+		}
+	}
+
 	task, err := container.Task(ctx, nil)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			return nil // No task running.
+			return clearSandboxErr // No task running.
 		}
-		return fmt.Errorf("getting task for %q: %w", containerID, err)
+		return errors.Join(clearSandboxErr, fmt.Errorf("getting task for %q: %w", containerID, err))
 	}
 
 	// For containers with bridge wiring — multi-service isolated app services
@@ -3371,7 +3540,7 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 			}
 		}
 
-		if needsCNIBridgeWiring(isolation, svcName, entitlements) {
+		if needsCNIBridgeWiring(isolation, svcName, entitlements) && !releasedSandbox {
 			netnsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
 			if cniErr := c.CNIDel(ctx, appID, containerID, netnsPath); cniErr != nil {
 				c.logger.Warn("CNI DEL failed during stop (non-fatal)",
@@ -3412,7 +3581,7 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	// SIGKILL after the grace period. Group-wide signalling (not just init)
 	// ensures no descendant survives holding devices/ports (WDY-1818).
 	if err := c.terminateTask(ctx, task, containerID, syscall.SIGTERM, stopGracePeriod, killWaitTimeout); err != nil {
-		return err
+		return errors.Join(clearSandboxErr, err)
 	}
 
 	if c.proxyManager != nil {
@@ -3427,7 +3596,7 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	// rationale).
 	go c.SyncCameraLoopbacks(context.WithoutCancel(ctx))
 
-	return nil
+	return clearSandboxErr
 }
 
 // StopContainer stops the containers addressed by name: a bare appID stops
@@ -3437,6 +3606,8 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 // the list query and the stop loop (TOCTOU, SOC2-CC6, NIST-AC-4).
 func (c *Client) StopContainer(ctx context.Context, name string) error {
 	ctx = c.withNamespace(ctx)
+	unlockNetwork := c.lockNetworkOperation(name)
+	defer unlockNetwork()
 
 	// Hold mutex only long enough to enumerate containers and resolve stop order.
 	// Releasing before stopOne prevents holding c.mu across potentially long
@@ -3632,6 +3803,15 @@ func ensureSharedSHM(appID string) (string, error) {
 // can batch image deletions across services. ctx must have the namespace set
 // and the caller must hold c.mu.
 func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantImg bool) (imgName string, err error) {
+	// Delete may be called without StopContainer first. Release an owned
+	// reusable sandbox even when there is no live task left to provide a procfs
+	// namespace path.
+	persistedLabels, _ := ctr.Labels(ctx)
+	persistedSpec, _ := ctr.Spec(ctx)
+	releasedSandbox := c.destroyNetworkSandbox(ctx, ctr.ID())
+	if !releasedSandbox {
+		releasedSandbox = c.purgePersistedNetworkSandbox(ctx, ctr, persistedLabels, persistedSpec)
+	}
 	// Mesh/bridge teardown for delete-without-stop: `wendy device apps remove`
 	// on a RUNNING meshed or bridge-mode app goes DeleteContainer → deleteOne
 	// without ever passing through stopOne, which would otherwise leak the
@@ -3660,7 +3840,7 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 		}
 		needsBridge = needsCNIBridgeWiring(isolation, svcName, entitlements)
 	}
-	if needsBridge {
+	if needsBridge && !releasedSandbox {
 		if needsGatewayDNS(isolation, entitlements) {
 			c.releaseMeshDNS(ctr.ID(), appID)
 		}
@@ -3677,7 +3857,7 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 		// create for the same appID/serviceName then fails CNI ADD with
 		// "duplicate allocation is not allowed" (WDY mesh: found via repeated
 		// remove+redeploy cycles during RemoteCam demo debugging).
-		if needsBridge {
+		if needsBridge && !releasedSandbox {
 			netnsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
 			if cniErr := c.CNIDel(ctx, appID, ctr.ID(), netnsPath); cniErr != nil {
 				c.logger.Warn("CNI DEL failed during delete (non-fatal)",
@@ -3716,6 +3896,8 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 // apps all service containers are removed. When deleteImage is true, each
 // distinct image is deleted once (services sharing an image are handled safely).
 func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage bool) error {
+	unlockNetwork := c.lockNetworkOperation(name)
+	defer unlockNetwork()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
