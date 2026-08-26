@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"testing"
 
 	"go.uber.org/zap"
@@ -28,6 +29,9 @@ func (noopRegistrar) Register(string, int, int) {}
 func (noopRegistrar) Unregister(string)         {}
 func (noopRegistrar) MarkExplicitStop(string)   {}
 func (noopRegistrar) ClearExplicitStop(string)  {}
+func (noopRegistrar) Quiesce(context.Context, string) (func(), error) {
+	return func() {}, nil
+}
 
 func newRestartStatusService(t *testing.T, statuses map[string]RestartStatus) *ContainerService {
 	t.Helper()

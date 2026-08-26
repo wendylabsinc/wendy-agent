@@ -60,6 +60,11 @@ func normalizeImageName(image string) string {
 // labelKeyAppVersion is the containerd label key that marks Wendy-managed containers.
 const labelKeyAppVersion = "sh.wendy/app.version"
 
+// labelKeyContainerIdentity records the CLI's immutable create-time identity.
+// Live metadata reconciliation requires an exact match and fails closed for
+// legacy or foreign containers without it.
+const labelKeyContainerIdentity = "sh.wendy/container.identity"
+
 // labelKeyRestartPolicy stores the restart policy (e.g. "on-failure:5").
 const labelKeyRestartPolicy = "sh.wendy/restart.policy"
 
@@ -303,7 +308,7 @@ func sanitizeForLog(s string, maxLen int) string {
 // appServices can be rebuilt after a restart (see labelKeyDependsOn).
 func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement, isolation string, dependsOn []string) map[string]string {
 	labels := map[string]string{
-		labelKeyAppVersion: version,
+		labelKeyAppVersion: normalizeAppVersion(version),
 		labelKeyAppID:      appName,
 	}
 
@@ -463,4 +468,45 @@ func restartPolicyToLabel(rp *agentpb.RestartPolicy) string {
 	default:
 		return ""
 	}
+}
+
+// updateRuntimeMetadataLabels mutates only metadata explicitly supported by
+// the running-container reconcile RPC. A nil restart policy means "preserve"
+// so callers can update the version without accidentally disabling monitoring.
+func updateRuntimeMetadataLabels(labels map[string]string, expectedIdentity, appVersion string, restartPolicy *agentpb.RestartPolicy) (map[string]string, error) {
+	if labels == nil || labels[labelKeyContainerIdentity] == "" {
+		return labels, fmt.Errorf("container has no immutable Wendy deployment identity")
+	}
+	if labels[labelKeyContainerIdentity] != expectedIdentity {
+		return labels, fmt.Errorf("container identity mismatch: found %q, expected %q", labels[labelKeyContainerIdentity], expectedIdentity)
+	}
+	labels[labelKeyAppVersion] = normalizeAppVersion(appVersion)
+	if restartPolicy != nil {
+		policy := restartPolicyToLabel(restartPolicy)
+		if policy == "" {
+			delete(labels, labelKeyRestartPolicy)
+		} else {
+			labels[labelKeyRestartPolicy] = policy
+		}
+	}
+	return labels, nil
+}
+
+func normalizeAppVersion(version string) string {
+	if version == "" {
+		return "latest"
+	}
+	return version
+}
+
+func validContainerIdentity(identity string) bool {
+	if len(identity) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(identity, "sha256:") {
+		return false
+	}
+	for _, ch := range identity[len("sha256:"):] {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
 }

@@ -28,18 +28,25 @@ import (
 // single-container detached path also uses it to ensure the existing container
 // is running without recreating it.
 //
-// This is intentionally a local-only, best-effort optimization (WDY fast path):
-// the fingerprint is trusted as-is, and the device is only consulted to confirm
-// the app still exists and learn whether it is running. Any mismatch, missing
-// fingerprint, or RPC hiccup falls back to the normal deploy, so a stale cache
-// can never deploy the wrong code — at worst it triggers an unnecessary build.
+// This is intentionally a local-only, best-effort optimization (WDY fast path).
+// The fingerprint selects a candidate, but the device must verify both its
+// image layers and the container's persisted immutable identity before a skip.
+// Any mismatch, missing state, or RPC hiccup falls back to the normal deploy.
 type deployFingerprint struct {
-	// InputHash is computed by computeBuildInputHash over everything that can
-	// affect a single built image, or by a service desired-state hash that also
-	// includes its create-time configuration.
+	// InputHash is the legacy/shared desired-state slot. Single-container
+	// fingerprints store ContainerIdentityHash here as well for compatibility;
+	// service fingerprints store their service desired-state hash.
 	InputHash string `json:"inputHash"`
-	// AppVersion is the wendy.json version at deploy time, used as a cheap
-	// cross-check against the version the device reports.
+	// ContainerIdentityHash covers image content and every create-time runtime
+	// setting. It excludes only metadata the agent can safely reconcile on a
+	// running task. An empty value denotes a legacy fingerprint and fails closed.
+	ContainerIdentityHash string `json:"containerIdentityHash,omitempty"`
+	// LiveMetadataHash covers the subset that UpdateRunningContainerMetadata can
+	// change without replacing the container: currently version and restart
+	// policy. It is compared only after container identity and content checks.
+	LiveMetadataHash string `json:"liveMetadataHash,omitempty"`
+	// AppVersion mirrors the live-metadata version at deploy time. The fast path
+	// cross-checks it against the version the device reports before a no-op.
 	AppVersion string `json:"appVersion,omitempty"`
 	// LayerDiffIDs are the uncompressed layer diff IDs of the image content that
 	// was actually pushed to this device on the last successful deploy. A skip is
@@ -58,27 +65,34 @@ type deployFingerprint struct {
 // affects the container the agent creates. Build-only and CLI-only settings
 // are deliberately absent: changing a readiness probe or a host-side hook must
 // not invalidate an otherwise reusable container, while changing resources,
-// entitlements, isolation, framework wiring, arguments, environment, or the
-// restart policy must.
+// entitlements, isolation, framework wiring, arguments, or environment must.
+// Restart policy and app version are tracked separately as live metadata.
 //
 // Keep AppConfig as a value so newly-added device runtime fields fail safe: they
 // are included unless runtimeAppConfig explicitly clears them below.
 type deployRuntimeIdentity struct {
-	AppConfig     appconfig.AppConfig    `json:"appConfig"`
-	UserArgs      []string               `json:"userArgs,omitempty"`
-	Env           []string               `json:"env,omitempty"`
+	AppConfig appconfig.AppConfig `json:"appConfig"`
+	UserArgs  []string            `json:"userArgs,omitempty"`
+	Env       []string            `json:"env,omitempty"`
+}
+
+type deployLiveMetadataIdentity struct {
+	AppVersion    string                 `json:"appVersion,omitempty"`
 	RestartPolicy *agentpb.RestartPolicy `json:"restartPolicy,omitempty"`
 }
 
-// computeDeployDesiredHash combines the already-computed build-input hash
-// (Dockerfile/context, target platform, build args, and deploy environment)
-// with the effective create/start configuration. The old fast path used the
-// build hash directly, which meant a resource, entitlement, isolation,
-// user-arg, or restart-policy-only change could incorrectly leave the old
-// container running.
-func computeDeployDesiredHash(buildInputHash string, appCfg *appconfig.AppConfig, userArgs, env []string, restartPolicy *agentpb.RestartPolicy) (string, error) {
-	if buildInputHash == "" || appCfg == nil {
-		return "", fmt.Errorf("build input hash and app config are required")
+type deployIdentityHashes struct {
+	Container string
+	Metadata  string
+}
+
+// computeDeployIdentityHashes separates immutable create-time identity from
+// metadata the agent can reconcile on a running container. New device-runtime
+// fields remain in AppConfig by default and therefore fail safely into a full
+// deploy unless they are deliberately cleared here.
+func computeDeployIdentityHashes(imageInputHash string, appCfg *appconfig.AppConfig, userArgs, env []string, restartPolicy *agentpb.RestartPolicy) (deployIdentityHashes, error) {
+	if imageInputHash == "" || appCfg == nil {
+		return deployIdentityHashes{}, fmt.Errorf("image input hash and app config are required")
 	}
 
 	runtimeCfg := *appCfg
@@ -96,23 +110,45 @@ func computeDeployDesiredHash(buildInputHash string, appCfg *appconfig.AppConfig
 	runtimeCfg.Brewfile = ""
 	runtimeCfg.Env = nil // resolved values are carried separately below
 	runtimeCfg.Services = nil
+	runtimeCfg.Version = "" // live label metadata, carried separately below
 
 	payload, err := json.Marshal(deployRuntimeIdentity{
-		AppConfig:     runtimeCfg,
-		UserArgs:      userArgs,
-		Env:           env,
-		RestartPolicy: restartPolicy,
+		AppConfig: runtimeCfg,
+		UserArgs:  userArgs,
+		Env:       env,
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshaling deploy runtime identity: %w", err)
+		return deployIdentityHashes{}, fmt.Errorf("marshaling deploy runtime identity: %w", err)
 	}
 
 	h := sha256.New()
-	io.WriteString(h, "wendy-deploy-desired-state-v1\n")
-	io.WriteString(h, buildInputHash)
+	io.WriteString(h, "wendy-container-identity-v1\n")
+	io.WriteString(h, imageInputHash)
 	h.Write([]byte{'\n'})
 	h.Write(payload)
-	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+	containerHash := "sha256:" + hex.EncodeToString(h.Sum(nil))
+
+	metadata, err := json.Marshal(deployLiveMetadataIdentity{
+		AppVersion:    effectiveAppVersion(appCfg.Version),
+		RestartPolicy: restartPolicy,
+	})
+	if err != nil {
+		return deployIdentityHashes{}, fmt.Errorf("marshaling deploy live metadata identity: %w", err)
+	}
+	h = sha256.New()
+	io.WriteString(h, "wendy-live-metadata-identity-v1\n")
+	h.Write(metadata)
+	return deployIdentityHashes{
+		Container: containerHash,
+		Metadata:  "sha256:" + hex.EncodeToString(h.Sum(nil)),
+	}, nil
+}
+
+func effectiveAppVersion(version string) string {
+	if version == "" {
+		return "latest"
+	}
+	return version
 }
 
 // deployFingerprintPath returns the on-disk location for an app+device
@@ -173,7 +209,7 @@ func loadDeployFingerprint(appID, deviceKey string) (*deployFingerprint, bool) {
 	if err := json.Unmarshal(data, &fp); err != nil {
 		return nil, false
 	}
-	if fp.InputHash == "" {
+	if fp.InputHash == "" && fp.ContainerIdentityHash == "" {
 		return nil, false
 	}
 	return &fp, true
@@ -494,13 +530,13 @@ func matchIgnorePattern(pat, clean string) bool {
 }
 
 // tryDeployFastPath attempts to satisfy a detached run without building. It
-// returns (true, nil) when the app was confirmed up to date and is now running
-// (either it already was, or we started it). It returns (false, nil) whenever
+// returns (true, nil) when the app was confirmed up to date and still running.
+// It returns (false, nil) whenever
 // the normal build/deploy path should run instead — no fingerprint, a mismatch,
 // the app missing from the device, or any RPC error (all safe fallbacks).
-func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, deviceKey, inputHash string, opts runOptions) (bool, error) {
+func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, deviceKey string, identity deployIdentityHashes, opts runOptions) (bool, error) {
 	fp, ok := loadDeployFingerprint(appCfg.AppID, deviceKey)
-	if !ok || fp.InputHash != inputHash {
+	if !ok || fp.ContainerIdentityHash == "" || fp.ContainerIdentityHash != identity.Container {
 		return false, nil
 	}
 
@@ -513,13 +549,32 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		return false, nil
 	}
 
-	state, found, err := lookupAppState(ctx, conn, appCfg.AppID)
+	state, deviceVersion, found, err := lookupAppState(ctx, conn, appCfg.AppID)
 	if err != nil || !found {
 		// Device unreachable for the query or app no longer present — rebuild.
 		return false, nil
 	}
 
 	if state == agentpb.AppRunningState_RUNNING {
+		// Always perform the agent-side compare-and-swap, even when metadata
+		// appears unchanged locally. Another deployer may have replaced the app
+		// since this machine wrote its fingerprint; the persisted identity is the
+		// only authoritative proof that this is still our exact container.
+		if _, err := conn.ContainerService.UpdateRunningContainerMetadata(ctx, &agentpb.UpdateRunningContainerMetadataRequest{
+			AppName:                   appCfg.AppID,
+			AppVersion:                effectiveAppVersion(appCfg.Version),
+			RestartPolicy:             resolveRestartPolicy(opts),
+			ExpectedContainerIdentity: identity.Container,
+		}); err != nil {
+			return false, nil
+		}
+		if fp.LiveMetadataHash != identity.Metadata || deviceVersion != effectiveAppVersion(appCfg.Version) {
+			fp.LiveMetadataHash = identity.Metadata
+			fp.AppVersion = effectiveAppVersion(appCfg.Version)
+			saveDeployFingerprint(appCfg.AppID, deviceKey, *fp)
+			cliLogln("Updated runtime metadata for running %s without recreating it.", containerDisplayName(appCfg))
+			return true, nil
+		}
 		cliLogln("No changes detected; %s is already up to date and running.", containerDisplayName(appCfg))
 		// No host-side postStart hook: the fast path only ever runs detached
 		// (see the opts.detach gate on tryDeployFastPath's caller), and
@@ -528,20 +583,10 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		// agent-side hook cannot re-run either.
 		return true, nil
 	}
-
-	// Present but stopped — start it without rebuilding. Mirror the normal
-	// detached deploy path so the fast path stays a transparent optimization:
-	// attach the agent-side postStart hook to the start RPC (via context
-	// metadata). Detached deploys do not fire the host-side postStart hook.
-	if _, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
-		AppName:       appCfg.AppID,
-		RestartPolicy: resolveRestartPolicy(opts),
-	}); err != nil {
-		// Could not start the existing container; fall back to a full deploy.
-		return false, nil
-	}
-	cliLogln("No changes detected; started existing %s.", containerDisplayName(appCfg))
-	return true, nil
+	// The metadata RPC intentionally accepts only running tasks. Without an
+	// equivalent identity-bearing CAS for stopped containers, starting one could
+	// resurrect a deployment replaced by another machine. Rebuild fail-closed.
+	return false, nil
 }
 
 // containerExitDetail returns a short human summary of why appID's container
@@ -619,11 +664,12 @@ func deviceHasAllLayers(ctx context.Context, conn *grpcclient.AgentConnection, d
 	return true
 }
 
-// lookupAppState queries the device for the running state of a single app.
-func lookupAppState(ctx context.Context, conn *grpcclient.AgentConnection, appID string) (agentpb.AppRunningState, bool, error) {
+// lookupAppState queries the device for the running state and reported version
+// of a single app.
+func lookupAppState(ctx context.Context, conn *grpcclient.AgentConnection, appID string) (agentpb.AppRunningState, string, bool, error) {
 	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
 	if err != nil {
-		return agentpb.AppRunningState_STOPPED, false, err
+		return agentpb.AppRunningState_STOPPED, "", false, err
 	}
 	for {
 		resp, err := stream.Recv()
@@ -631,15 +677,15 @@ func lookupAppState(ctx context.Context, conn *grpcclient.AgentConnection, appID
 			break
 		}
 		if err != nil {
-			return agentpb.AppRunningState_STOPPED, false, err
+			return agentpb.AppRunningState_STOPPED, "", false, err
 		}
 		c := resp.GetContainer()
 		if c == nil {
 			continue
 		}
 		if strings.EqualFold(c.GetAppName(), appID) {
-			return c.GetRunningState(), true, nil
+			return c.GetRunningState(), c.GetAppVersion(), true, nil
 		}
 	}
-	return agentpb.AppRunningState_STOPPED, false, nil
+	return agentpb.AppRunningState_STOPPED, "", false, nil
 }

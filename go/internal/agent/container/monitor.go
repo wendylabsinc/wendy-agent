@@ -144,8 +144,14 @@ type ContainerMonitor struct {
 	// the same service) don't have the first resume() re-enable restarts while
 	// the second is still tearing the task down. Guarded by mu.
 	suppressed map[string]int
-	mu         sync.Mutex
-	interval   time.Duration
+	// restartInFlight counts restartSingle calls that may already have passed
+	// their execution-time gate. restartIdle is closed when that count reaches
+	// zero so reconciliation can quiesce without holding mu across containerd
+	// (which would invert the existing containerd->monitor lock order).
+	restartInFlight map[string]int
+	restartIdle     map[string]chan struct{}
+	mu              sync.Mutex
+	interval        time.Duration
 	// now is the monitor's clock, defaulting to time.Now. Restart backoff is
 	// measured in minutes, so tests override this to drive the curve
 	// deterministically instead of sleeping.
@@ -163,6 +169,8 @@ func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, l
 		states:          make(map[string]*containerState),
 		groupRestarting: make(map[string]bool),
 		suppressed:      make(map[string]int),
+		restartInFlight: make(map[string]int),
+		restartIdle:     make(map[string]chan struct{}),
 		interval:        interval,
 		now:             time.Now,
 	}
@@ -247,9 +255,53 @@ func (m *ContainerMonitor) Suppress(containerName string) func() {
 	}
 }
 
+// Quiesce suppresses new automatic restarts and waits until any restartSingle
+// already executing for containerName has returned from StartContainer. It is
+// safe to wait here because callers invoke it before entering containerd; the
+// ordinary Suppress method remains non-blocking for lifecycle code that already
+// holds containerd's mutex.
+func (m *ContainerMonitor) Quiesce(ctx context.Context, containerName string) (func(), error) {
+	resume := m.Suppress(containerName)
+	m.mu.Lock()
+	idle := m.restartIdle[containerName]
+	m.mu.Unlock()
+	if idle == nil {
+		return resume, nil
+	}
+	select {
+	case <-idle:
+		return resume, nil
+	case <-ctx.Done():
+		resume()
+		return nil, ctx.Err()
+	}
+}
+
+func (m *ContainerMonitor) beginRestart(containerName string) func() {
+	m.mu.Lock()
+	if m.restartInFlight[containerName] == 0 {
+		m.restartIdle[containerName] = make(chan struct{})
+	}
+	m.restartInFlight[containerName]++
+	m.mu.Unlock()
+
+	return func() {
+		m.mu.Lock()
+		m.restartInFlight[containerName]--
+		if m.restartInFlight[containerName] <= 0 {
+			delete(m.restartInFlight, containerName)
+			if idle := m.restartIdle[containerName]; idle != nil {
+				close(idle)
+				delete(m.restartIdle, containerName)
+			}
+		}
+		m.mu.Unlock()
+	}
+}
+
 // restartBlocked reports whether containerName currently has a Suppress
-// handle held on it, or is marked as explicitly stopped, and so must not be
-// (re)started. Used by restartSingle to
+// handle, was unregistered/policy-disabled since scheduling, or is marked as
+// explicitly stopped, and so must not be (re)started. Used by restartSingle to
 // re-check right before it would call StartContainer — see the comment there
 // for why this differs from the planRestarts-time check.
 //
@@ -264,10 +316,8 @@ func (m *ContainerMonitor) restartBlocked(containerName string) bool {
 	if m.suppressed[containerName] > 0 {
 		return true
 	}
-	if state, ok := m.states[containerName]; ok && state.ExplicitStop {
-		return true
-	}
-	return false
+	state, ok := m.states[containerName]
+	return !ok || !m.shouldRestart(state)
 }
 
 // RestartStatuses returns the monitor's per-container restart bookkeeping,
@@ -458,7 +508,9 @@ func (m *ContainerMonitor) groupHasBlockedMember(ctx context.Context, gr service
 
 // restartSingle restarts one container and drains its output to the log manager.
 func (m *ContainerMonitor) restartSingle(ctx context.Context, name string) {
+	endRestart := m.beginRestart(name)
 	if m.restartBlocked(name) {
+		endRestart()
 		// This goroutine was scheduled by a tick that observed name as down
 		// and eligible, but a Suppress or MarkExplicitStop landed in the gap
 		// between that decision and this goroutine actually running (there is
@@ -467,11 +519,15 @@ func (m *ContainerMonitor) restartSingle(ctx context.Context, name string) {
 		// before the call that would resurrect the container, is what
 		// actually closes it: a replace/stop that starts suppression after
 		// the tick fired but before this line runs still wins.
-		m.logger.Debug("Skipping restart: suppressed or explicitly stopped since being scheduled",
+		m.logger.Debug("Skipping restart: policy disabled, suppressed, or explicitly stopped since being scheduled",
 			zap.String("app_name", name))
 		return
 	}
 	outputCh, err := m.containerd.StartContainer(ctx, name, "", nil)
+	// StartContainer has now linearized against lifecycle operations. Output
+	// draining lasts for the task's entire lifetime and must not keep metadata
+	// reconciliation quiesced until the container exits.
+	endRestart()
 	if err != nil {
 		m.logger.Error("Failed to restart container",
 			zap.String("app_name", name),

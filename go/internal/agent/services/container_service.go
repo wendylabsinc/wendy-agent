@@ -67,6 +67,18 @@ type appMutex struct {
 	m sync.Map // map[string]*sync.Mutex
 }
 
+func validContainerIdentity(identity string) bool {
+	if len(identity) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(identity, "sha256:") {
+		return false
+	}
+	for _, ch := range identity[len("sha256:"):] {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // lockApp acquires the per-app lock for appName and returns an unlock function.
 func (a *appMutex) lockApp(appName string) func() {
 	v, _ := a.m.LoadOrStore(appName, &sync.Mutex{})
@@ -189,6 +201,9 @@ func (r *layerStreamReader) drain() {
 }
 
 func (s *ContainerService) CreateContainer(ctx context.Context, req *agentpb.CreateContainerRequest) (*agentpb.CreateContainerResponse, error) {
+	if identity := req.GetContainerIdentity(); identity != "" && !validContainerIdentity(identity) {
+		return nil, status.Error(codes.InvalidArgument, "container identity must be a canonical sha256 digest")
+	}
 	appCfg, err := parseAppConfig(req.GetAppConfig())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid app config: %v", err)
@@ -206,6 +221,9 @@ func (s *ContainerService) CreateContainer(ctx context.Context, req *agentpb.Cre
 }
 
 func (s *ContainerService) CreateContainerWithProgress(req *agentpb.CreateContainerRequest, stream grpc.ServerStreamingServer[agentpb.CreateContainerProgressResponse]) error {
+	if identity := req.GetContainerIdentity(); identity != "" && !validContainerIdentity(identity) {
+		return status.Error(codes.InvalidArgument, "container identity must be a canonical sha256 digest")
+	}
 	appCfg, err := parseAppConfig(req.GetAppConfig())
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid app config: %v", err)
@@ -373,6 +391,9 @@ func (s *ContainerService) validateSignedLayerBinding(imageConfig []byte, layers
 
 func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]) error {
 	ctx := stream.Context()
+	if identity := req.GetContainerIdentity(); identity != "" && !validContainerIdentity(identity) {
+		return status.Error(codes.InvalidArgument, "container identity must be a canonical sha256 digest")
+	}
 
 	appCfg, err := parseAppConfig(req.GetAppConfig())
 	if err != nil {
@@ -437,14 +458,15 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 	// Same CreateContainer call the registry path makes, so both transports
 	// apply caller env identically and through the same validateUserEnv checks.
 	createReq := &agentpb.CreateContainerRequest{
-		ImageName:     req.GetImageName(),
-		AppName:       req.GetAppName(),
-		Cmd:           req.GetCmd(),
-		AppConfig:     req.GetAppConfig(),
-		WorkingDir:    req.GetWorkingDir(),
-		RestartPolicy: req.GetRestartPolicy(),
-		UserArgs:      req.GetUserArgs(),
-		Env:           req.GetEnv(),
+		ImageName:         req.GetImageName(),
+		AppName:           req.GetAppName(),
+		Cmd:               req.GetCmd(),
+		AppConfig:         req.GetAppConfig(),
+		WorkingDir:        req.GetWorkingDir(),
+		RestartPolicy:     req.GetRestartPolicy(),
+		UserArgs:          req.GetUserArgs(),
+		Env:               req.GetEnv(),
+		ContainerIdentity: req.GetContainerIdentity(),
 	}
 
 	if err := s.containerd.CreateContainer(ctx, createReq, appCfg); err != nil {
@@ -477,6 +499,60 @@ func (s *ContainerService) StartContainer(req *agentpb.StartContainerRequest, st
 	}
 
 	return s.streamContainerOutput(ctx, appName, postStartAgentHookFromContext(ctx), req.GetRestartPolicy(), stream)
+}
+
+// UpdateRunningContainerMetadata reconciles labels and monitor state without
+// recreating or restarting the task. The per-app lock makes this RPC atomic
+// with Wendy lifecycle operations; the containerd updater itself keeps the
+// running-state check and label update atomic with runtime operations.
+func (s *ContainerService) UpdateRunningContainerMetadata(ctx context.Context, req *agentpb.UpdateRunningContainerMetadataRequest) (*agentpb.UpdateRunningContainerMetadataResponse, error) {
+	appName := req.GetAppName()
+	if err := appconfig.ValidateAppID(appName); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid app name: %v", err)
+	}
+	if len(req.GetAppVersion()) > 256 {
+		return nil, status.Error(codes.InvalidArgument, "app version exceeds 256 bytes")
+	}
+	if !validContainerIdentity(req.GetExpectedContainerIdentity()) {
+		return nil, status.Error(codes.InvalidArgument, "expected container identity must be a canonical sha256 digest")
+	}
+	if policy := req.GetRestartPolicy(); policy != nil {
+		switch policy.GetMode() {
+		case agentpb.RestartPolicyMode_DEFAULT,
+			agentpb.RestartPolicyMode_UNLESS_STOPPED,
+			agentpb.RestartPolicyMode_NO,
+			agentpb.RestartPolicyMode_ON_FAILURE:
+		default:
+			return nil, status.Errorf(codes.InvalidArgument, "unknown restart policy mode %d", policy.GetMode())
+		}
+	}
+	updater, ok := s.containerd.(RunningContainerMetadataUpdater)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "running container metadata updates are not supported")
+	}
+
+	unlock := s.appMu.lockApp(appName)
+	defer unlock()
+	resumeRestarts := func() {}
+	if s.monitor != nil {
+		var err error
+		resumeRestarts, err = s.monitor.Quiesce(ctx, appName)
+		if err != nil {
+			return nil, status.Errorf(codes.Aborted, "quiescing container restarts: %v", err)
+		}
+		defer resumeRestarts()
+	}
+	if err := updater.UpdateRunningContainerMetadata(ctx, appName, req.GetExpectedContainerIdentity(), req.GetAppVersion(), req.GetRestartPolicy()); err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "updating container metadata: %v", err)
+		}
+		return nil, status.Errorf(codes.FailedPrecondition, "updating running container metadata: %v", err)
+	}
+
+	// Register/Unregister cannot fail. Performing it while holding appMu means
+	// lifecycle RPCs observe the persisted label and in-memory policy together.
+	s.registerContainerWithMonitor(ctx, appName, req.GetRestartPolicy())
+	return &agentpb.UpdateRunningContainerMetadataResponse{}, nil
 }
 
 // startGroup starts each service container in a multi-service app in detach

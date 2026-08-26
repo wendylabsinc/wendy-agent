@@ -59,11 +59,20 @@ type mockContainerdClient struct {
 	declaredVolumesErr    error
 	assembleImageCalls    int
 	createReqs            []*agentpb.CreateContainerRequest
+	metadataErr           error
+	metadataCalls         []metadataUpdateCall
 }
 
 type stoppedByUserCall struct {
 	containerID string
 	stopped     bool
+}
+
+type metadataUpdateCall struct {
+	appName          string
+	expectedIdentity string
+	appVersion       string
+	restartPolicy    *agentpb.RestartPolicy
 }
 
 func (m *mockContainerdClient) ListBootContainers(_ context.Context) ([]BootContainer, error) {
@@ -154,6 +163,11 @@ func (m *mockContainerdClient) GetContainerMCPPort(_ context.Context, _ string) 
 
 func (m *mockContainerdClient) GetContainerRestartPolicyLabel(_ context.Context, _ string) (string, error) {
 	return m.restartPolicyLabel, m.restartPolicyLabelErr
+}
+
+func (m *mockContainerdClient) UpdateRunningContainerMetadata(_ context.Context, appName, expectedIdentity, appVersion string, restartPolicy *agentpb.RestartPolicy) error {
+	m.metadataCalls = append(m.metadataCalls, metadataUpdateCall{appName: appName, expectedIdentity: expectedIdentity, appVersion: appVersion, restartPolicy: restartPolicy})
+	return m.metadataErr
 }
 
 func (m *mockContainerdClient) ContainerIDsForApp(_ context.Context, appID string) ([]string, error) {
@@ -695,6 +709,10 @@ func (m *mockMonitorRegistrar) ClearExplicitStop(appName string) {
 	m.clearStopCalls = append(m.clearStopCalls, appName)
 }
 
+func (m *mockMonitorRegistrar) Quiesce(context.Context, string) (func(), error) {
+	return func() {}, nil
+}
+
 // startContainerServerWithMonitor starts a gRPC bufconn server for ContainerService
 // configured with the given ContainerdClient and ContainerMonitorRegistrar.
 func startContainerServerWithMonitor(t *testing.T, client ContainerdClient, mon ContainerMonitorRegistrar) (agentpb.WendyContainerServiceClient, func()) {
@@ -768,6 +786,75 @@ func TestStartContainer_RegistersMonitor_UnlessStopped(t *testing.T) {
 	}
 	if got.policy != RestartPolicyUnlessStopped {
 		t.Errorf("Register policy = %d; want %d (UnlessStopped)", got.policy, RestartPolicyUnlessStopped)
+	}
+}
+
+func TestUpdateRunningContainerMetadata_UpdatesLabelsAndMonitor(t *testing.T) {
+	mc := &mockContainerdClient{}
+	mon := &mockMonitorRegistrar{}
+	client, cleanup := startContainerServerWithMonitor(t, mc, mon)
+	defer cleanup()
+
+	_, err := client.UpdateRunningContainerMetadata(context.Background(), &agentpb.UpdateRunningContainerMetadataRequest{
+		AppName:                   "my-app",
+		AppVersion:                "2.0.0",
+		ExpectedContainerIdentity: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		RestartPolicy: &agentpb.RestartPolicy{
+			Mode:                agentpb.RestartPolicyMode_ON_FAILURE,
+			OnFailureMaxRetries: 3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateRunningContainerMetadata: %v", err)
+	}
+	if len(mc.metadataCalls) != 1 {
+		t.Fatalf("metadata update calls = %d, want 1", len(mc.metadataCalls))
+	}
+	got := mc.metadataCalls[0]
+	if got.appName != "my-app" || got.expectedIdentity != "sha256:0000000000000000000000000000000000000000000000000000000000000000" || got.appVersion != "2.0.0" || got.restartPolicy.GetMode() != agentpb.RestartPolicyMode_ON_FAILURE {
+		t.Fatalf("metadata update = %#v, want my-app/2.0.0/on-failure", got)
+	}
+	if len(mon.registerCalls) != 1 {
+		t.Fatalf("monitor register calls = %d, want 1", len(mon.registerCalls))
+	}
+	if got := mon.registerCalls[0]; got.appName != "my-app" || got.policy != RestartPolicyOnFailure || got.maxRetries != 3 {
+		t.Fatalf("monitor registration = %#v", got)
+	}
+}
+
+func TestUpdateRunningContainerMetadata_FailureDoesNotChangeMonitor(t *testing.T) {
+	mc := &mockContainerdClient{metadataErr: errors.New("container stopped")}
+	mon := &mockMonitorRegistrar{}
+	client, cleanup := startContainerServerWithMonitor(t, mc, mon)
+	defer cleanup()
+
+	_, err := client.UpdateRunningContainerMetadata(context.Background(), &agentpb.UpdateRunningContainerMetadataRequest{
+		AppName:                   "my-app",
+		AppVersion:                "2.0.0",
+		RestartPolicy:             &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
+		ExpectedContainerIdentity: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("status = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+	}
+	if len(mon.registerCalls) != 0 || len(mon.unregisterCalls) != 0 {
+		t.Fatalf("monitor changed after metadata update failure: register=%v unregister=%v", mon.registerCalls, mon.unregisterCalls)
+	}
+}
+
+func TestUpdateRunningContainerMetadata_UnsupportedRuntimeIsUnimplemented(t *testing.T) {
+	// Embedding the required interface forwards ordinary methods but does not
+	// implement the optional RunningContainerMetadataUpdater capability.
+	withoutUpdater := struct{ ContainerdClient }{ContainerdClient: &mockContainerdClient{}}
+	client, cleanup := startContainerServerWithMonitor(t, withoutUpdater, &mockMonitorRegistrar{})
+	defer cleanup()
+
+	_, err := client.UpdateRunningContainerMetadata(context.Background(), &agentpb.UpdateRunningContainerMetadataRequest{
+		AppName:                   "my-app",
+		ExpectedContainerIdentity: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+	})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("status = %v, want Unimplemented (err=%v)", status.Code(err), err)
 	}
 }
 
@@ -1722,10 +1809,9 @@ func TestParseAppConfigEmptyDataStillAllowed(t *testing.T) {
 	}
 }
 
-// TestRunContainer_ForwardsEnv covers WDY-2040: the layer/chunk deploy path
-// applies caller env, the same as the registry-push path that reaches
-// CreateContainer directly.
-func TestRunContainer_ForwardsEnv(t *testing.T) {
+// TestRunContainer_ForwardsCreateMetadata covers the values that the layer/chunk
+// path must carry into the same CreateContainer call as the registry path.
+func TestRunContainer_ForwardsCreateMetadata(t *testing.T) {
 	outputCh := make(chan ContainerOutput, 1)
 	outputCh <- ContainerOutput{Done: true}
 	close(outputCh)
@@ -1735,9 +1821,11 @@ func TestRunContainer_ForwardsEnv(t *testing.T) {
 	defer cleanup()
 
 	want := []string{"FOO=bar", "OTEL_LOGS_EXPORTER=console"}
+	const identity = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	stream, err := client.RunContainer(context.Background(), &agentpb.RunContainerLayersRequest{
-		ImageName: "test-image:latest",
-		AppName:   "env-app",
+		ImageName:         "test-image:latest",
+		AppName:           "env-app",
+		ContainerIdentity: identity,
 		Layers: []*agentpb.RunContainerLayerHeader{
 			{Digest: "sha256:layerdigest", Size: 10, DiffId: "sha256:layerdiffid"},
 		},
@@ -1762,5 +1850,8 @@ func TestRunContainer_ForwardsEnv(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("env[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
 		}
+	}
+	if got := mock.createReqs[0].GetContainerIdentity(); got != identity {
+		t.Fatalf("container identity = %q, want %q", got, identity)
 	}
 }

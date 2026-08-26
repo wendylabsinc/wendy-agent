@@ -11,6 +11,10 @@ service WendyContainerService {
     rpc CreateContainerWithProgress(CreateContainerRequest) returns (stream CreateContainerProgressResponse);
     rpc RunContainer(RunContainerLayersRequest) returns (stream RunContainerLayersResponse);
     rpc StartContainer(StartContainerRequest) returns (stream RunContainerLayersResponse);
+    // UpdateRunningContainerMetadata reconciles metadata that does not affect
+    // the OCI spec or writable snapshot. It only succeeds for a running,
+    // single-container app; callers must perform a full deploy otherwise.
+    rpc UpdateRunningContainerMetadata(UpdateRunningContainerMetadataRequest) returns (UpdateRunningContainerMetadataResponse);
     rpc AttachContainer(stream AttachContainerRequest) returns (stream RunContainerLayersResponse);
     // ExecContainer runs a process inside an existing container with an
     // interactive PTY (docker `exec -it` style). The first client message MUST
@@ -137,6 +141,11 @@ message RunContainerLayersRequest {
     // Same semantics as CreateContainerRequest.env, which this path forwards to.
     // Agents predating this field ignore it and start the container without it.
     repeated string env = 11;
+
+    // Immutable create-time identity computed by the CLI. Persisted on the
+    // container so later metadata-only reconciliation can compare-and-swap
+    // against the exact deployment it previously created.
+    string container_identity = 12;
 }
 
 message CreateContainerRequest {
@@ -151,6 +160,10 @@ message CreateContainerRequest {
     // Applied after the image's built-in env and before Wendy system env vars,
     // so Wendy vars always win.
     repeated string env = 8;
+    // See RunContainerLayersRequest.container_identity. Empty is accepted for
+    // backward compatibility, but such a container is ineligible for live
+    // metadata reconciliation.
+    string container_identity = 9;
 }
 
 message CreateContainerResponse {}
@@ -392,3 +405,14 @@ message MCPChunk {
 }
 
 message PrepareImageResponse {}
+
+message UpdateRunningContainerMetadataRequest {
+    string app_name = 1;
+    string app_version = 2;
+    RestartPolicy restart_policy = 3;
+    // Compare-and-swap guard. The agent updates metadata only when this exactly
+    // matches the immutable identity persisted when the container was created.
+    string expected_container_identity = 4;
+}
+
+message UpdateRunningContainerMetadataResponse {}
