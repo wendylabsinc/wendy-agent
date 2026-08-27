@@ -2,7 +2,7 @@ Updates the wendy-agent installation on the remote device, then checks for a new
 
 If the device responds with "an update is already in progress" (a `FailedPrecondition` error), a previous upload likely committed without the agent restarting — a bug fixed in this release. Reboot the device to clear the stale lock, then retry.
 
-On the auto-download path, if the device already runs the resolved release version, the upload and agent restart are skipped and the command reports that it is already up to date. The OS update step below still runs afterward — except in `--json` mode, where the command returns immediately and the OS update step is not run.
+On the auto-download path, if the device already runs the resolved release version, the upload and agent restart are skipped and the command reports that it is already up to date. The OS update step below still runs afterward — except in `--json` mode, where the command returns immediately and the OS update step is not run. Because `--json` skips the OS step, combining it with `--pr` is refused outright rather than silently ignoring the requested PR image.
 
 GitHub release lookups use the `GITHUB_TOKEN` environment variable for authentication when it is present, and fall back to unauthenticated requests otherwise.
 
@@ -55,6 +55,38 @@ After the agent is updated, the command checks for an OS update on WendyOS devic
 If the available artifact uses the wendyos-update stack (`.wendy` format) but the device image predates that stack, the auto-detected OS update is not offered — the command prints an explanation instead of prompting, and the agent-only update still counts as a success. This check runs only when an update is actually available; an already-current device is not warned.
 
 An explicit `--artifact-url` pointing to a `.wendy` artifact on an incompatible device is **not** silently skipped: `device update` exits non-zero with the same reflash explanation.
+
+## Update the OS to a pull-request build
+
+```sh
+wendy device update --pr 123 --yes
+```
+
+`--pr N` makes the OS update step install the WendyOS image built by
+wendyos-builder PR #N instead of the manifest's latest. The agent-binary step is
+unaffected: `--nightly` still selects the agent channel, and `--binary` still
+uploads your build and re-applies it after the OS reboot.
+
+PR images are **debug builds**: SSH is enabled, root login is passwordless, and
+the serial console is active. They are for testing the PR on hardware — **never
+install a PR image on a production device.** Artifacts are deleted when the PR
+is closed.
+
+`--pr` is supported for Linux disk-image devices (Raspberry Pi, Jetson Orin
+Nano, Jetson AGX Orin) with OTA support; it is not supported for Jetson AGX
+Thor or ESP32 targets. It is mutually exclusive with `--artifact-url` and
+`--json`.
+
+A `--pr` run never skips as "already current": a PR's version tag (`pr-N`) is
+constant across rebuilds, so re-running after pushing a new commit to the same
+PR always re-flashes. And unlike the default OS step — which degrades to an
+agent-only success when the OS check fails — a `--pr` run must install that
+PR's build or exit non-zero.
+
+`--pr` works over the cloud tunnel (`wendy cloud device update --pr N`): the
+resolved artifact is a public URL the device downloads directly, with only the
+control stream tunneled. As with any cloud-tunneled OS update, the command does
+not wait for the reboot (see [Post-update outcome](#post-update-outcome)).
 
 ## Pre-0.17.0 devices require a reflash
 
