@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func writeFile(t *testing.T, dir, rel, content string) {
@@ -68,15 +71,21 @@ func TestComputeBuildInputHash_BuildArgsAndDockerfile(t *testing.T) {
 
 func TestDockerfileBasesContentPinned(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
-	for _, tt := range []struct {
-		name, dockerfile string
-		want             bool
+	tests := []struct {
+		name       string
+		dockerfile string
+		want       bool
 	}{
 		{name: "scratch", dockerfile: "FROM scratch\n", want: true},
-		{name: "pinned multistage", dockerfile: "FROM alpine@" + digest + " AS build\nFROM build\n", want: true},
-		{name: "mutable tag", dockerfile: "FROM alpine:3.20\n"},
-		{name: "arg base", dockerfile: "ARG BASE=alpine@" + digest + "\nFROM ${BASE}\n"},
-	} {
+		{name: "digest pinned", dockerfile: "FROM --platform=linux/arm64 python:3.12@" + digest + " AS base\nFROM base AS app\n", want: true},
+		{name: "mutable tag", dockerfile: "FROM python:3.12\n"},
+		{name: "arg expanded", dockerfile: "ARG BASE=python:3.12\nFROM ${BASE}\n"},
+		{name: "mixed multistage", dockerfile: "FROM alpine@" + digest + " AS build\nFROM ubuntu:24.04\n"},
+		{name: "continued pinned", dockerfile: "FROM --platform=linux/arm64 \\\n alpine@" + digest + " AS base\nFROM base\n", want: true},
+		{name: "no from", dockerfile: "RUN true\n"},
+		{name: "split flag rejected", dockerfile: "FROM --platform linux/arm64 alpine@" + digest + "\n"},
+	}
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFile(t, dir, "Dockerfile", tt.dockerfile)
@@ -284,5 +293,60 @@ func TestBuildInputHashSaltIsV2(t *testing.T) {
 	}
 	if strings.Contains(string(data), `"wendy-deploy-fingerprint-v1\n"`) {
 		t.Fatal("v1 salt string still present in deployfastpath.go")
+	}
+}
+
+func TestComputeDeployDesiredHash_RuntimeChangesInvalidate(t *testing.T) {
+	baseCfg := &appconfig.AppConfig{AppID: "demo", Version: "1.0.0"}
+	base, err := computeDeployDesiredHash("sha256:image", baseCfg, []string{"serve"}, []string{"LOG_LEVEL=info"}, &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		cfg  *appconfig.AppConfig
+		args []string
+		env  []string
+		mode agentpb.RestartPolicyMode
+	}{
+		{name: "version", cfg: &appconfig.AppConfig{AppID: "demo", Version: "2.0.0"}, args: []string{"serve"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
+		{name: "entitlement", cfg: &appconfig.AppConfig{AppID: "demo", Version: "1.0.0", Entitlements: []appconfig.Entitlement{{Type: "network/host"}}}, args: []string{"serve"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
+		{name: "arguments", cfg: baseCfg, args: []string{"worker"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
+		{name: "environment", cfg: baseCfg, args: []string{"serve"}, env: []string{"LOG_LEVEL=debug"}, mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
+		{name: "restart policy", cfg: baseCfg, args: []string{"serve"}, env: []string{"LOG_LEVEL=info"}, mode: agentpb.RestartPolicyMode_NO},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := computeDeployDesiredHash("sha256:image", tt.cfg, tt.args, tt.env, &agentpb.RestartPolicy{Mode: tt.mode})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == base {
+				t.Fatalf("runtime change did not invalidate desired-state hash: %s", got)
+			}
+		})
+	}
+}
+
+func TestComputeDeployDesiredHash_CLIOnlyChangesDoNotInvalidate(t *testing.T) {
+	baseCfg := &appconfig.AppConfig{AppID: "demo", Version: "1.0.0"}
+	changedCfg := &appconfig.AppConfig{
+		AppID:     "demo",
+		Version:   "1.0.0",
+		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: 8080}},
+		Hooks:     &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{CLI: "open http://device"}},
+	}
+	policy := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED}
+	base, err := computeDeployDesiredHash("sha256:image", baseCfg, nil, nil, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := computeDeployDesiredHash("sha256:image", changedCfg, nil, nil, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != base {
+		t.Fatalf("CLI-only readiness/hook change invalidated container identity: %s != %s", got, base)
 	}
 }

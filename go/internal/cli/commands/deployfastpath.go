@@ -54,6 +54,74 @@ type deployFingerprint struct {
 	LayerDiffIDs []string `json:"layerDiffIds,omitempty"`
 }
 
+// deployRuntimeIdentity is the subset of a single-container deployment that
+// affects the container the agent creates. Build-only and CLI-only settings
+// are deliberately absent: changing a readiness probe or a host-side hook must
+// not invalidate an otherwise reusable container, while changing resources,
+// entitlements, isolation, framework wiring, arguments, environment, or the
+// restart policy must.
+//
+// Keep AppConfig as a value so newly-added device runtime fields fail safe: they
+// are included unless runtimeAppConfig explicitly clears them below.
+type deployRuntimeIdentity struct {
+	AppConfig     appconfig.AppConfig    `json:"appConfig"`
+	UserArgs      []string               `json:"userArgs,omitempty"`
+	Env           []string               `json:"env,omitempty"`
+	RestartPolicy *agentpb.RestartPolicy `json:"restartPolicy,omitempty"`
+}
+
+// computeDeployDesiredHash combines the already-computed build-input hash
+// (Dockerfile/context, target platform, build args, and deploy environment)
+// with the effective create/start configuration. The old fast path used the
+// build hash directly, which meant a resource, entitlement, isolation,
+// user-arg, or restart-policy-only change could incorrectly leave the old
+// container running.
+func computeDeployDesiredHash(buildInputHash string, appCfg *appconfig.AppConfig, userArgs, env []string, restartPolicy *agentpb.RestartPolicy) (string, error) {
+	if buildInputHash == "" || appCfg == nil {
+		return "", fmt.Errorf("build input hash and app config are required")
+	}
+
+	runtimeCfg := *appCfg
+	// These fields influence local build selection, native file deployment, or
+	// CLI lifecycle behavior, but are not consumed when the Linux container is
+	// created. Excluding them lets readiness/hook-only edits retain the running
+	// container without weakening device-runtime correctness.
+	runtimeCfg.Platform = ""
+	runtimeCfg.Xcode = nil
+	runtimeCfg.Run = nil // effective arguments are carried separately below
+	runtimeCfg.Readiness = nil
+	hook := postStartAgentHook(appCfg)
+	if hook != "" {
+		runtimeCfg.Hooks = &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{Agent: hook},
+		}
+	} else {
+		runtimeCfg.Hooks = nil
+	}
+	runtimeCfg.Python = nil
+	runtimeCfg.Files = nil
+	runtimeCfg.Brewfile = ""
+	runtimeCfg.Env = nil // resolved values are carried separately below
+	runtimeCfg.Services = nil
+
+	payload, err := json.Marshal(deployRuntimeIdentity{
+		AppConfig:     runtimeCfg,
+		UserArgs:      userArgs,
+		Env:           env,
+		RestartPolicy: restartPolicy,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshaling deploy runtime identity: %w", err)
+	}
+
+	h := sha256.New()
+	io.WriteString(h, "wendy-deploy-desired-state-v1\n")
+	io.WriteString(h, buildInputHash)
+	h.Write([]byte{'\n'})
+	h.Write(payload)
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // deployFingerprintPath returns the on-disk location for an app+device
 // fingerprint. deviceKey identifies the target device (see deviceFingerprintKey).
 func deployFingerprintPath(appID, deviceKey string) (string, error) {
@@ -235,10 +303,15 @@ func computeBuildInputHash(cwd, dockerfile, platform string, buildArgs map[strin
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// dockerfileBasesContentPinned is the fail-closed eligibility gate for a
-// persistent no-build skip. Old device content proves what was deployed, but
-// only digest-pinned external bases prove a rebuild would still resolve the
-// same inputs. scratch and references to prior named stages are also stable.
+// dockerfileBasesContentPinned reports whether rebuilding this Dockerfile is
+// independent of mutable registry tags. Persistent no-build skipping is only
+// safe when every external base is scratch or digest-pinned; merely proving
+// that the previously-built layers still exist on the device does not prove a
+// mutable FROM tag still resolves to those layers.
+//
+// This intentionally accepts only a small, unambiguous subset of Dockerfile
+// syntax. ARG-expanded bases and malformed/uncertain instructions fail closed
+// to a normal build. Multi-stage references to an earlier named stage are safe.
 func dockerfileBasesContentPinned(cwd, dockerfile string) (bool, error) {
 	if dockerfile == "" {
 		dockerfile = "Dockerfile"
@@ -249,7 +322,7 @@ func dockerfileBasesContentPinned(cwd, dockerfile string) (bool, error) {
 	}
 	f, err := os.Open(dfPath)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("reading Dockerfile base images: %w", err)
 	}
 	defer f.Close()
 
@@ -280,6 +353,8 @@ func dockerfileBasesContentPinned(cwd, dockerfile string) (bool, error) {
 		foundFrom = true
 		i := 1
 		for i < len(fields) && strings.HasPrefix(fields[i], "--") {
+			// FROM flags use --key=value. Reject split/unknown forms instead of
+			// guessing which following token is the image reference.
 			if !strings.Contains(fields[i], "=") {
 				return false, nil
 			}
@@ -299,6 +374,7 @@ func dockerfileBasesContentPinned(cwd, dockerfile string) (bool, error) {
 				return false, nil
 			}
 		}
+
 		if i+2 < len(fields) && strings.EqualFold(fields[i+1], "AS") {
 			alias := strings.ToLower(fields[i+2])
 			if alias == "" || strings.HasPrefix(alias, "$") {
@@ -310,7 +386,7 @@ func dockerfileBasesContentPinned(cwd, dockerfile string) (bool, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return false, err
+		return false, fmt.Errorf("scanning Dockerfile base images: %w", err)
 	}
 	if logical.Len() != 0 {
 		return false, nil
