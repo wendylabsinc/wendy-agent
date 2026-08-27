@@ -35,6 +35,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/seriallock"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -1722,6 +1723,37 @@ func deviceNeedsInstall(device models.ExternalDevice) bool {
 	return device.ConnectionInfo["needsInstall"] == "true"
 }
 
+var (
+	serialPortFreeBudget = 6 * time.Second // probe worst case: 3s handshake + 3s identity
+	serialPortFreePoll   = 200 * time.Millisecond
+)
+
+// waitForSerialPortFree reports whether port is free of an advisory lock, waiting
+// up to serialPortFreeBudget for a holder to release it. Only ErrLocked is waited
+// on; other Acquire failures aren't contention and the caller's own open reports
+// them better. Always true on Windows, where Acquire is a no-op.
+func waitForSerialPortFree(ctx context.Context, port string) bool {
+	deadline := time.Now().Add(serialPortFreeBudget)
+	for {
+		lock, err := seriallock.Acquire(port)
+		if err == nil {
+			lock.Release()
+			return true
+		}
+		if !errors.Is(err, seriallock.ErrLocked) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-time.After(serialPortFreePoll):
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
 // offerLiteReinstallAndRebuild handles a provider build that failed because
 // the device cannot host the app: either its existing firmware does not
 // support the app's requirements (native or WASM apps), or it has no Wendy
@@ -1763,6 +1795,17 @@ func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvide
 			return nil, wrapped
 		}
 		return nil, err
+	}
+
+	if freshInstall {
+		// Improbable, but the picker's scanner may still be probing this port,
+		// so wait until the port is free. The lock is released immediately:
+		// installESP32Firmware takes its own, and flock is per-descriptor, so
+		// holding ours would block it.
+		port := device.ConnectionInfo["serialPort"]
+		if !waitForSerialPortFree(ctx, port) {
+			cliNotice("Serial port %s is still in use; attempting the install anyway.", port)
+		}
 	}
 
 	serialDevice := discovery.SerialPortInfo{
