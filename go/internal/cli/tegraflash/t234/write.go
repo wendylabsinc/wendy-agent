@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 	"unicode/utf8"
 
 	backendfile "github.com/diskfs/go-diskfs/backend/file"
@@ -233,27 +234,72 @@ func writePlan(opts WriterOptions) error {
 	return nil
 }
 
+// openDevice opens the raw device for a dump read. It is a package var so tests
+// can substitute a device that reports the transient not-ready state.
+var openDevice = os.Open
+
+// dumpDeviceRetries bounds how many times dumpDevice re-opens a device that
+// reports deviceNotReady before giving up. dumpDeviceRetryDelay spaces the
+// attempts; it is a var so tests can drop it to zero.
+const dumpDeviceRetries = 5
+
+var dumpDeviceRetryDelay = 500 * time.Millisecond
+
 // dumpDevice copies the first DumpBytes of the device into DumpTo (used to
 // read the flashpkg filesystem back for the status report). The output file
 // is made world-readable so the unprivileged parent can parse it.
+//
+// The read is retried while the device reports deviceNotReady: on macOS the
+// flashpkg LUN's raw node can briefly return ENXIO ("device not configured")
+// right after the Stage 2 force-unmount, while diskarbitrationd finishes
+// tearing down the volumes it auto-probed. The node reappears within about a
+// second, so re-opening and retrying rides through it instead of aborting the
+// flash (WDY-2621).
 func dumpDevice(opts WriterOptions) error {
 	if opts.DumpBytes <= 0 {
 		return fmt.Errorf("--bytes must be positive with --dump")
 	}
-	dev, err := os.Open(opts.Device)
-	if err != nil {
-		return fmt.Errorf("opening %s (%s): %w", opts.Device, devOpenPrivilege, err)
-	}
-	defer dev.Close()
 	out, err := os.OpenFile(opts.DumpTo, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
+
+	var lastErr error
+	for attempt := 0; attempt < dumpDeviceRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(dumpDeviceRetryDelay)
+			// Rewind the output so a partial read from the previous attempt
+			// is overwritten rather than appended to.
+			if _, err := out.Seek(0, io.SeekStart); err != nil {
+				return err
+			}
+			if err := out.Truncate(0); err != nil {
+				return err
+			}
+		}
+		lastErr = copyDumpOnce(out, opts)
+		if lastErr == nil {
+			return out.Sync()
+		}
+		if !deviceNotReady(lastErr) {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+// copyDumpOnce performs one open+read of the raw device into out.
+func copyDumpOnce(out *os.File, opts WriterOptions) error {
+	dev, err := openDevice(opts.Device)
+	if err != nil {
+		return fmt.Errorf("opening %s (%s): %w", opts.Device, devOpenPrivilege, err)
+	}
+	defer dev.Close()
 	if _, err := io.CopyN(out, dev, opts.DumpBytes); err != nil {
 		return fmt.Errorf("reading %s: %w", opts.Device, err)
 	}
-	return out.Sync()
+	return nil
 }
 
 // copyFileAt writes path's contents to dev starting at offset, in
