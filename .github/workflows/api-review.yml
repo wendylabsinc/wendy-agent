@@ -149,7 +149,7 @@ jobs:
           fi
 
           critical_pattern='(^go/installer/|^go/internal/cli/commands/(apps_install|auth|cloud_run|deploy|device_osupdate|docker|fleet_run|helpers_cloudauth|os_cmd|os_install|os_provision|run|update|watch)[^/]*\.go$|^Proto/.*(auth|deploy|install|provision|update).*\.proto$)'
-          critical_files="$(rg -i "$critical_pattern" "$CHANGED_FILES" | rg -v '_test\.go$' || true)"
+          critical_files="$(grep -Ei "$critical_pattern" "$CHANGED_FILES" | grep -Ev '_test\.go$' || true)"
           if [[ -n "$critical_files" ]]; then
             critical_flow_changed=true
             risk=high
