@@ -16,7 +16,7 @@ jobs:
     runs-on: runs-on,runner=2cpu-linux-x64
     permissions:
       contents: read
-    outputs:
+      pull-requests: read
       api-changed: ${{ steps.detect.outputs.api-changed }}
       risk: ${{ steps.detect.outputs.risk }}
     steps:
