@@ -42,6 +42,11 @@ jobs:
             base/go.sum
             head/go.sum
 
+      # Constructing the Cobra command tree compiles the full CLI, including
+      # its ALSA and libusb cgo dependencies.
+      - name: Install native CLI dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libusb-1.0-0-dev
+
       - name: Get changed files
         env:
           GH_TOKEN: ${{ github.token }}
@@ -74,6 +79,8 @@ jobs:
           if [[ ! -f "$detector_source" ]]; then
             # Bootstrap only: the PR that introduces this workflow cannot load
             # the detector from a base revision that predates it.
+            # SECURITY: This job is restricted above to same-repository PRs,
+            # so only repository writers can exercise this one-time fallback.
             detector_source="$HEAD_DIR/go/cmd/api-surface-snapshot/main.go"
             echo "::notice::Using the head API detector for the bootstrap PR"
           fi
@@ -87,6 +94,10 @@ jobs:
           # After the bootstrap PR, detector_source always comes from the
           # trusted base revision. The PR may change CLI code, but it cannot
           # change what the detector observes.
+          # SECURITY: Evaluating the head's Cobra surface necessarily loads its
+          # command package. The same-repository guard limits this to trusted
+          # writers; checkout credentials are not persisted, and GH_TOKEN is
+          # scoped only to the earlier changed-files step.
           trusted_detector="$(mktemp -d "$HEAD_DIR/go/cmd/api-surface-snapshot-ci.XXXXXX")"
           cp "$detector_source" "$trusted_detector/main.go"
           (
