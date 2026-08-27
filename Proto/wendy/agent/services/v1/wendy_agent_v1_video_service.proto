@@ -9,6 +9,11 @@ service WendyVideoService {
     rpc ForgetCamera(ForgetCameraRequest) returns (ForgetCameraResponse);
     rpc RefreshCameras(RefreshCamerasRequest) returns (RefreshCamerasResponse);
     rpc TestCameraCredentials(TestCameraCredentialsRequest) returns (TestCameraCredentialsResponse);
+    // GetCameraControls reports the tunable V4L2 controls of a local (USB/CSI)
+    // camera with their current value and range. SetCameraControls sets them.
+    // Both reject network cameras: an RTSP camera exposes no V4L2 controls here.
+    rpc GetCameraControls(GetCameraControlsRequest) returns (GetCameraControlsResponse);
+    rpc SetCameraControls(SetCameraControlsRequest) returns (SetCameraControlsResponse);
 }
 
 message VideoDevice {
@@ -98,4 +103,48 @@ message VideoFrame {
     bytes      data         = 1; // chunk of encoded video; concatenate chunks in order; format described by codec
     uint64     timestamp_ns = 2; // wall-clock timestamp in nanoseconds
     VideoCodec codec        = 3; // codec used; default 0 = H264
+}
+
+// A tunable V4L2 control on a local camera -- exposure, gain, white balance and
+// the like. The agent owns the /dev/videoN node (StreamVideo multiplexes it),
+// so it is the only place these can be set to stick: a second process cannot,
+// and a setting made out of band is lost the next time the pipeline reopens the
+// device. The motivating case is a scene the camera's auto-exposure gets wrong
+// -- a flame or lamp that blows out to white -- where forcing manual exposure
+// keeps the highlight from clipping.
+message CameraControl {
+    string name          = 1; // stable slug, e.g. "auto_exposure", "exposure_time_absolute", "brightness", "gain", "backlight_compensation"
+    int32  value         = 2; // current value (Get) or desired value (Set)
+    int32  minimum       = 3; // inclusive; Get only
+    int32  maximum       = 4; // inclusive; Get only
+    int32  step          = 5; // Get only
+    int32  default_value = 6; // Get only
+    bool   settable      = 7; // Get only: false when the driver reports it read-only or disabled right now
+}
+
+message GetCameraControlsRequest {
+    uint32 device_id = 1; // numeric suffix N in /dev/videoN; the reserved network-camera band is rejected
+}
+
+message GetCameraControlsResponse {
+    repeated CameraControl controls = 1;
+}
+
+message SetCameraControlsRequest {
+    uint32 device_id = 1;
+    repeated CameraControl controls = 2; // only name and value are read
+    // Re-apply these whenever the capture pipeline reopens the device, and
+    // across agent restarts, so a stream reconnect or a reboot does not revert
+    // to the firmware default. When false the values are applied once, now.
+    bool persist = 3;
+}
+
+message SetCameraControlsResponse {
+    repeated CameraControlResult results = 1;
+}
+
+message CameraControlResult {
+    string name    = 1;
+    bool   applied = 2;
+    string detail  = 3; // when not applied, why -- e.g. "unknown control" or the errno text
 }
