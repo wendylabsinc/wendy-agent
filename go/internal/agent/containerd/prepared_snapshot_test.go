@@ -5,8 +5,8 @@ import "testing"
 func trackedPrepared(key, parent string, removed, released *int) *preparedSnapshot {
 	return &preparedSnapshot{
 		key: key, parent: parent,
-		remove:  func() { *removed++ },
-		release: func() { *released++ },
+		remove:  func() { (*removed)++ },
+		release: func() { (*released)++ },
 	}
 }
 
