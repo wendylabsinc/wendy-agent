@@ -133,9 +133,9 @@ type Client struct {
 	networkOpsMu       sync.Mutex
 	networkOps         map[string]*networkOperation
 
-	// appStopping tracks appIDs that are currently being stopped.
-	// Set before releasing c.mu in StopContainer; cleared in the cleanup phase.
-	// Checked by CreateContainerWithProgress to reject concurrent create/stop races
+	// appStopping tracks appIDs that are currently being stopped or deleted.
+	// Set before releasing c.mu in StopContainer/DeleteContainer; cleared in the
+	// cleanup phase. Checked by create/start paths to reject concurrent lifecycle races
 	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
 	appStopping map[string]bool
 
@@ -1669,6 +1669,14 @@ func (c *Client) applyNvidiaCDI(spec *localoci.Spec) {
 }
 
 func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
+	return c.startContainer(ctx, appName, nil, postStartAgentCommand, restartPolicy)
+}
+
+// startContainer is the single task-start implementation for both streaming
+// starts and starts with attached stdin. Keeping network sandbox validation and
+// lifecycle serialization here prevents AttachContainer from bypassing CNI
+// CHECK or racing an ordinary start while c.mu is released for external work.
+func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Reader, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
 	// Accept both "appID" and "appID_serviceName" forms. ParseContainerName
 	// validates both components so a crafted value cannot reach the label filter
 	// in the containersForApp fallback path (SOC2-CC6, ISO27001-A.8).
@@ -1825,7 +1833,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	stderrR, stderrW := io.Pipe()
 
 	// Create a new task with pipe-based stdio for programmatic capture.
-	task, err := container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(nil, stdoutW, stderrW)))
+	task, err := container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
 	if err != nil {
 		if errdefs.IsAlreadyExists(err) {
 			// Orphaned task: exists in the containerd runtime but container.Task()
@@ -1838,7 +1846,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			} else {
 				container, err = c.client.LoadContainer(ctx, appName)
 				if err == nil {
-					task, err = container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(nil, stdoutW, stderrW)))
+					task, err = container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
 				}
 			}
 		}
@@ -1914,11 +1922,9 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	var netnsRef *os.File
 	if needsBridge && reusedNetworkSandbox == nil {
 		nsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
-		var nsErr error
-		netnsRef, nsErr = os.Open(nsPath)
-		if nsErr != nil {
-			c.logger.Warn("could not anchor netns fd before mutex release; CNI ADD skipped",
-				zap.String(logfields.AppID, appID), zap.Error(nsErr))
+		netnsRef, err = os.Open(nsPath)
+		if err != nil {
+			return nil, failStartedTask(fmt.Errorf("anchoring network namespace for app %q: %w", appID, err))
 		}
 	}
 
@@ -2146,108 +2152,10 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	return outputCh, nil
 }
 
-// StartContainerWithStdin is like StartContainer but attaches the provided
-// stdin reader to the container's standard input.
+// StartContainerWithStdin uses the same validated task-start lifecycle as
+// StartContainer and only changes the task's stdin stream.
 func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, stdin io.Reader, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
-	if _, _, err := ParseContainerName(appName); err != nil {
-		return nil, fmt.Errorf("StartContainerWithStdin: invalid app name: %w", err)
-	}
-	c.mu.Lock()
-	muHeld := true
-	defer func() {
-		if muHeld {
-			c.mu.Unlock()
-		}
-	}()
-	ctx = c.withNamespace(ctx)
-
-	container, err := c.client.LoadContainer(ctx, appName)
-	if err != nil {
-		ctrs, labelErr := c.containersForApp(ctx, appName)
-		if labelErr != nil || len(ctrs) == 0 {
-			return nil, fmt.Errorf("loading container %q: %w", appName, err)
-		}
-		if len(ctrs) > 1 {
-			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
-		}
-		container = ctrs[0]
-	}
-
-	if restartPolicy != nil {
-		if err := c.applyRestartPolicyLabel(ctx, container, restartPolicy); err != nil {
-			return nil, fmt.Errorf("updating restart policy for %q: %w", appName, err)
-		}
-	}
-
-	c.deleteStaleTask(ctx, container, appName)
-
-	// See StartContainer: the IO pipeline must outlive the RPC, otherwise a
-	// client disconnect closes the FIFO readers and the app later freezes
-	// writing to a full stdout pipe.
-	taskCtx := c.withNamespace(context.Background())
-
-	stdoutR, stdoutW := io.Pipe()
-	stderrR, stderrW := io.Pipe()
-
-	task, err := container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
-	if err != nil {
-		if errdefs.IsAlreadyExists(err) {
-			c.logger.Warn("Orphaned task detected, force-deleting and recreating container", zap.String("app_name", appName))
-			c.forceDeleteTask(ctx, appName)
-			if rerr := c.recreateContainer(ctx, container, appName); rerr != nil {
-				c.logger.Error("Failed to recreate container", zap.Error(rerr))
-			} else {
-				container, err = c.client.LoadContainer(ctx, appName)
-				if err == nil {
-					task, err = container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
-				}
-			}
-		}
-		if err != nil {
-			stdoutR.Close()
-			stdoutW.Close()
-			stderrR.Close()
-			stderrW.Close()
-			c.recordStartFailure(ctx, appName, err)
-			return nil, fmt.Errorf("creating task for %q: %w", appName, err)
-		}
-	}
-
-	exitStatusCh, err := task.Wait(taskCtx)
-	if err != nil {
-		_, _ = task.Delete(taskCtx)
-		stdoutR.Close()
-		stdoutW.Close()
-		stderrR.Close()
-		stderrW.Close()
-		c.recordStartFailure(ctx, appName, err)
-		return nil, fmt.Errorf("waiting on task for %q: %w", appName, err)
-	}
-
-	if err := task.Start(taskCtx); err != nil {
-		_, _ = task.Delete(taskCtx)
-		stdoutR.Close()
-		stdoutW.Close()
-		stderrR.Close()
-		stderrW.Close()
-		c.recordStartFailure(ctx, appName, err)
-		return nil, fmt.Errorf("starting task for %q: %w", appName, err)
-	}
-
-	c.logger.Info("Container started with stdin", zap.String("app_name", appName))
-	c.startPostStartAgentHook(postStartAgentCommand, appName)
-
-	muHeld = false
-	c.mu.Unlock()
-
-	outputCh := make(chan services.ContainerOutput, 64)
-	go c.streamOutput(taskCtx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
-
-	// See StartContainer: recompute camera-loopback state from truth now that
-	// this container is running.
-	go c.SyncCameraLoopbacks(context.WithoutCancel(ctx))
-
-	return outputCh, nil
+	return c.startContainer(ctx, appName, stdin, postStartAgentCommand, restartPolicy)
 }
 
 // execCounter disambiguates concurrent exec IDs within the agent process.
@@ -3627,9 +3535,9 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 
 // StopContainer stops the containers addressed by name: a bare appID stops
 // every service, "{appID}_{serviceName}" stops one. See resolveTargets.
-// c.mu is held for the full duration to prevent a concurrent
-// CreateContainerWithProgress from inserting a new service container between
-// the list query and the stop loop (TOCTOU, SOC2-CC6, NIST-AC-4).
+// appStopping closes the gap between the container-list snapshot and the stop
+// loop; resolved per-container network locks then drain any start already in
+// flight before CNI teardown begins (TOCTOU, SOC2-CC6, NIST-AC-4).
 func (c *Client) StopContainer(ctx context.Context, name string) error {
 	ctx = c.withNamespace(ctx)
 	unlockNetwork := c.lockNetworkOperation(name)
