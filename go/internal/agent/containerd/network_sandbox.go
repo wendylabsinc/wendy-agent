@@ -186,6 +186,12 @@ func (c *Client) reusableNetworkSandbox(ctx context.Context, containerID, identi
 // networkSandboxChecksPassed keeps the independent kernel-health and CNI CHECK
 // gates explicit. In particular, a healthy-looking namespace or persisted
 // prevResult can never compensate for a failed plugin CHECK.
+//
+// SECURITY: the vendored bridge CHECK uses prevResult only as expected state;
+// it reopens both namespaces and queries live bridge/veth, address, and route
+// state, while vendored host-local CHECK reopens its allocation store. These
+// live checks are pinned by SECURITY comments at both CmdCheck implementations
+// and must remain mandatory on vendored-plugin upgrades.
 func networkSandboxChecksPassed(healthOK bool, cniCheckErr error) bool {
 	return healthOK && cniCheckErr == nil
 }
