@@ -994,6 +994,18 @@ func main() {
 	}()
 
 	cloudFlusher := services.NewCloudFlusherWithProvisioning(logger, telemetryBuf, provisioningSvc)
+	// WENDY_DATA_TELEMETRY_URL redirects OpenTelemetry Protocol (OTLP) exports
+	// to a different collector endpoint, the mirror of WENDY_DATA_INGEST_URL
+	// below. The broker's OTLP handler has sinks for Loki, Prometheus and Tempo
+	// but none for the data platform's store, so telemetry sent there is
+	// acknowledged and discarded; pointing the flusher at the wendy-data ingest
+	// service lands the same frames in ClickHouse. Enrollment is untouched:
+	// identity still comes from the enrolled asset certificate.
+	if v := os.Getenv("WENDY_DATA_TELEMETRY_URL"); v != "" {
+		cloudFlusher.SetTelemetryHostOverride(v)
+		logger.Info("cloud flusher: telemetry endpoint override set",
+			zap.String("url", v))
+	}
 	if telemetryBuf.DiskEnabled() {
 		wg.Add(1)
 		go func() {
@@ -1001,6 +1013,30 @@ func main() {
 			cloudFlusher.Run(ctx)
 		}()
 	}
+
+	// Episode transfer worker: uploads sealed episodes to the cloud ingest
+	// service over the same asset mTLS identity as the telemetry flusher. Its
+	// queue is the episode store the data manager owns, which NewManager above
+	// created (the agent exits when it cannot), so the only start condition is
+	// provisioning completion, which Run waits for itself. It is deliberately
+	// NOT gated on telemetry disk buffering: that reports on a different store,
+	// and gating on it would silently leave every sealed episode unuploaded
+	// until the quota evicted it.
+	dataTransferWorker := services.NewDataTransferWorker(logger, dataManager, provisioningSvc)
+	// WENDY_DATA_INGEST_URL redirects episode uploads to a different
+	// DataIngestService endpoint (for example a dev cloud deployment) without
+	// touching the device's enrollment; identity still comes from the enrolled
+	// asset certificate.
+	if v := os.Getenv("WENDY_DATA_INGEST_URL"); v != "" {
+		dataTransferWorker.SetIngestHostOverride(v)
+		logger.Info("data transfer worker: ingest endpoint override set",
+			zap.String("url", v))
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		dataTransferWorker.Run(ctx)
+	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
