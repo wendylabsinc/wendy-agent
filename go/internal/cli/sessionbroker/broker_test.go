@@ -34,7 +34,7 @@ type testContainerServer struct {
 
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/private/tmp", "wsb-")
+	dir, err := os.MkdirTemp("/tmp", "wsb-")
 	if err != nil {
 		t.Fatal(err)
 	}
