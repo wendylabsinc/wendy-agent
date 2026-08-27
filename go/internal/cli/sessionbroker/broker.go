@@ -405,7 +405,7 @@ func (h connectionActivity) HandleConn(_ context.Context, event stats.ConnStats)
 	}
 }
 
-func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn, idleTTL time.Duration) error {
+func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn, idleTTL time.Duration) (err error) {
 	if idleTTL <= 0 {
 		idleTTL = DefaultIdleTTL
 	}
@@ -415,7 +415,11 @@ func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer func() {
+		if cerr := lock.Close(); err == nil && cerr != nil {
+			err = cerr
+		}
+	}()
 	locked, err := acquireLock(lock)
 	if err != nil {
 		return err
