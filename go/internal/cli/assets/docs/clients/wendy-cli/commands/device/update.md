@@ -8,7 +8,7 @@ GitHub release lookups use the `GITHUB_TOKEN` environment variable for authentic
 
 ## Verification
 
-A successful reconnect only proves the device is reachable — a silent no-op, a rollback, or an arch-mismatched binary that never starts would answer just as well. So after **every** agent upload, confirmed or not, `wendy device update` queries the restarted agent with `GetAgentVersion` and checks what the device actually runs before reporting success.
+A successful reconnect only proves the device is reachable — a silent no-op, a rollback, or an arch-mismatched binary that never starts would answer just as well. So after **every** agent upload, confirmed or not, `wendy device update` queries the restarted agent and checks what the device actually runs before reporting success.
 
 If the connection drops while the agent binary is being uploaded (the agent restarts the moment the binary lands, which can close the stream before the confirmation arrives), the command treats the outcome as **unconfirmed** rather than an error: it prints an informational message, reconnects, and lets the check below decide the outcome.
 
@@ -24,8 +24,6 @@ On success the reported version is included in the message:
 ```
 Agent updated successfully (agent reports 2026.07.01-223311).
 ```
-
-> **Protocol note:** `GetAgentVersionResponse.binary_sha256` carries the hex SHA-256 of the executable the agent process was started from, computed once at startup and cached. It is non-empty only on the Linux/WendyOS Go agent; the macOS agent does not implement it yet. Because it is cached at startup, it keeps reporting the *running* binary even after an update has replaced the file on disk — which is exactly what makes it usable as proof that the restart picked up the new binary.
 
 ## JSON output (`--json`)
 
@@ -72,7 +70,7 @@ The agent-binary update (including `--binary`) still runs and lands successfully
 
 ## Post-update outcome
 
-After the device is back online, `wendy device update` queries the post-reboot commit/rollback verdict from the device (the same `GetOSUpdateStatus` record that `wendy os update` and `wendy os update-status` report). If the update was rolled back, the command prints the rollback reason and exits non-zero:
+After the device is back online, `wendy device update` queries the post-reboot commit/rollback verdict from the device (the same status record that `wendy os update` and `wendy os update-status` report). If the update was rolled back, the command prints the rollback reason and exits non-zero:
 
 ```
 Update failed post-reboot healthchecks and was rolled back to WendyOS-0.10.4.
@@ -97,7 +95,7 @@ The re-apply is verified the same way as the initial upload — by hash, which i
 
 ## Artifact signature
 
-`wendy device update` passes a detached **ML-DSA65** signature alongside the binary in the `UpdateAgent` RPC. The agent verifies the signature over the SHA256 digest of the binary before installing it.
+`wendy device update` passes a detached **ML-DSA65** signature alongside the binary. The agent verifies the signature over the SHA256 digest of the binary before installing it.
 
 By default no signature is sent (the verification key is not yet embedded in production builds, so the check is a fail-safe no-op and the install proceeds as before). When a signing pipeline is deployed, set `WENDY_AGENT_SIGNATURE_PATH` to the path of the detached signature file and `wendy device update` will include it automatically.
 

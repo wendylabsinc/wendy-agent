@@ -243,7 +243,7 @@ other people's instructions:
   its peers into building for it. And the unauthenticated port the agent serves
   before provisioning does not accept builds at all.
 - **Build contexts land on its disk.** Sources are reassembled under
-  `/var/lib/wendy/buildctx/<app>` (mode `0700`, root-owned) and are kept between
+  `/var/lib/wendy/buildctx/<app>` and are kept between
   builds so BuildKit's local-source cache stays warm. They are cleared and
   rewritten at the start of each build of that app, but they are not deleted
   afterwards.
@@ -388,7 +388,7 @@ Deploy records written before this version carry no layer IDs, so they cannot be
 - The first deploy after upgrading always does a full build and push.
 - A legacy record (or any record without verifiable layer IDs) is treated as unverifiable rather than skipped, so you see a full rebuild with unchanged inputs instead of a silent skip onto possibly-stale content.
 
-> **Note:** Push-skip is currently inactive for multi-service deployments. Registry-push content cannot be verified via layer diff IDs, so every multi-service run rebuilds and re-pushes each service; a registry-digest pre-check to restore the optimisation is planned. Setting `WENDY_PUSH_SKIP=0` disables the multi-service push-skip planner (it does not affect the single-service fast path above). Because that planner is inactive today, the override has no observable effect and is reserved for when multi-service push-skip returns.
+> **Note:** Push-skip is currently inactive for multi-service deployments. Registry-push content cannot be verified via layer diff IDs, so every multi-service run rebuilds and re-pushes each service; a registry-digest pre-check to restore the optimisation is planned.
 
 ## postStart hooks
 
@@ -435,7 +435,7 @@ If the browser cannot be opened, a warning is printed and `wendy run` continues 
 
 ### Hook process lifetime
 
-On **Windows**, the entire process tree spawned by a `cli` hook — including grandchildren started via `start /B` — is terminated when `wendy run` exits or is interrupted. This is implemented using a Windows Job Object with `KILL_ON_JOB_CLOSE`; closing the job handle causes the kernel to terminate every process assigned to it. If Job Object creation is unavailable, `wendy run` falls back to `taskkill /T /F`, which terminates the direct child and its descendants as long as the parent process is still alive.
+On **Windows**, the entire process tree spawned by a `cli` hook — including grandchildren started via `start /B` — is terminated when `wendy run` exits or is interrupted. If the primary mechanism is unavailable, `wendy run` falls back to `taskkill /T /F`, which terminates the direct child and its descendants as long as the parent process is still alive.
 
 On **Unix**, the default shell process-group cleanup is sufficient; no additional termination logic is applied.
 
@@ -455,5 +455,3 @@ process to reap. Attached watch hooks are owned and reaped by the watch session.
 `wendy run` optionally includes a detached **ML-DSA65** signature with every `RunContainer` call. The agent verifies the signature over the SHA256 digest of the OCI image config before assembling or starting the container.
 
 Set `WENDY_IMAGE_SIGNATURE_PATH` to the path of the detached signature file; when the variable is unset or points to an empty file, no signature is sent. Verification is currently dormant on the agent side (the per-org publisher key is not yet wired in), so omitting the signature does not block container creation today. Once the publisher key is provisioned, sending an unsigned or tampered image causes the agent to refuse the run.
-
-> **Note:** `CreateContainer` and `CreateContainerWithProgress` do not yet pass through the image-signature gate — only the `RunContainer` path (used by `wendy run`) verifies it.

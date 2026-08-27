@@ -9,7 +9,7 @@ wendy device build-host disable --device spark-office
 
 ## The role is off by default
 
-`BuildImage` runs build instructions supplied by whoever calls it — that is the
+A remote build runs build instructions supplied by whoever calls it — that is the
 feature, not a flaw in it. So a device has to **volunteer** for the build-host
 role rather than acquire it by being reachable with an organisation
 certificate. Nothing is enabled by installing the agent, by provisioning, or by
@@ -21,7 +21,7 @@ Enabling takes effect on the next build. There is no agent restart.
 
 `enable` and `disable` require a **user** certificate and refuse a device
 certificate. Without that split the opt-in would be decorative: anything able to
-call `BuildImage` could call `enable` first and let itself in.
+submit a build could call `enable` first and let itself in.
 
 Submitting a build makes the same demand. A device certificate cannot build even
 on a host that has opted in — nothing in the design has one device build for

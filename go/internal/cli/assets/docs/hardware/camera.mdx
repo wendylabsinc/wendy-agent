@@ -87,7 +87,7 @@ wendy device camera test <id>
 
 ### Container Access
 
-Apps with the `camera` entitlement (see [Camera Entitlement](/docs/device/entitlements#camera-entitlement)) see network cameras exactly like local ones: each registered camera is mirrored into a `/dev/video2xx` loopback node numbered to match its own device ID — camera `212` is always `/dev/video212` — and mounted into the container the same way USB and CSI devices are. A node is created before an entitled container starts; which containers currently count as consumers is kept in sync on every container start, stop, and delete, plus a periodic reconciliation roughly once a minute that catches anything those lifecycle hooks miss, such as a container's task crashing on its own.
+Apps with the `camera` entitlement (see [Camera Entitlement](/docs/device/entitlements#camera-entitlement)) see network cameras exactly like local ones: each registered camera is mirrored into a `/dev/video2xx` loopback node numbered to match its own device ID — camera `212` is always `/dev/video212` — and mounted into the container the same way USB and CSI devices are.
 
 <Callout type="info">
   The loopback node always carries the camera's **sub-stream** — the same lower-resolution feed `camera view` chooses automatically for anything ≤1024px wide. There is currently no way for a container to request the camera's main/high-resolution stream instead.
@@ -97,8 +97,6 @@ Apps with the `camera` entitlement (see [Camera Entitlement](/docs/device/entitl
   **Builds without the kernel module**: mirroring a camera into a container needs the `v4l2loopback` kernel module. On a WendyOS build that lacks it (or in local development), the agent logs this once and moves on:
 
   > running WendyOS build lacks the v4l2loopback module; `camera view` still works
-
-  *(that's the underlying sentinel error's own text; the agent's warning log line paraphrases it rather than quoting it verbatim.)*
 
   `wendy device camera view` and `wendy device camera test` are unaffected either way — only the in-container `/dev/video2xx` mirror is unavailable.
 </Callout>

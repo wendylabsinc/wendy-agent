@@ -45,7 +45,7 @@ Press `x` to stop the selected app. For a multi-service app, this stops the whol
 
 | Flag | Default | Description |
 |---|---|---|
-| `--interval` | `2s` | Refresh interval for the live view. Each individual poll gets a deadline of 2× this value (at least 3s, at most 15s), so a device that loses power mid-request cannot freeze the dashboard while the connection waits on gRPC keepalive. |
+| `--interval` | `2s` | Refresh interval for the live view. A device that loses power mid-request cannot freeze the dashboard — a stalled poll times out and raises the offline banner. |
 
 The [global `--json` flag](../../global-flags.md) is also honored — see below.
 
