@@ -91,6 +91,20 @@ func TestDockerfileBasesContentPinned(t *testing.T) {
 	}
 }
 
+func TestDockerfileBasesContentPinned_ConfinesDefaultDockerfile(t *testing.T) {
+	outside := t.TempDir()
+	writeFile(t, outside, "Dockerfile", "FROM scratch\n")
+
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(outside, "Dockerfile"), filepath.Join(dir, "Dockerfile")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := dockerfileBasesContentPinned(dir, ""); err == nil {
+		t.Fatal("expected default Dockerfile symlink outside project to be rejected")
+	}
+}
+
 func TestComputeBuildInputHash_HonorsDockerignore(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "Dockerfile", "FROM python:3.11-slim\nCOPY app.py .\n")

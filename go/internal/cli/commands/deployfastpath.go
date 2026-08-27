@@ -240,13 +240,12 @@ func computeBuildInputHash(cwd, dockerfile, platform string, buildArgs map[strin
 // only digest-pinned external bases prove a rebuild would still resolve the
 // same inputs. scratch and references to prior named stages are also stable.
 func dockerfileBasesContentPinned(cwd, dockerfile string) (bool, error) {
-	dfPath := filepath.Join(cwd, "Dockerfile")
-	if dockerfile != "" {
-		resolved, err := confinedDockerfilePath(cwd, dockerfile)
-		if err != nil {
-			return false, err
-		}
-		dfPath = resolved
+	if dockerfile == "" {
+		dockerfile = "Dockerfile"
+	}
+	dfPath, err := confinedDockerfilePath(cwd, dockerfile)
+	if err != nil {
+		return false, err
 	}
 	f, err := os.Open(dfPath)
 	if err != nil {
