@@ -80,6 +80,7 @@ type AgentConnection struct {
 	FileSyncService     agentpb.WendyFileSyncServiceClient
 	TimeSyncService     agentpbv2.WendyTimeSyncServiceClient
 	BuildService        agentpbv2.WendyBuildServiceClient
+	DataService         agentpbv2.DataServiceClient
 	// observedServerOrg holds the org ID read from the device's server
 	// certificate during the TLS handshake (set by the OnServerIdentity sink
 	// wired in ConnectWithTLSAndPins). Written on the handshake goroutine, read
@@ -515,6 +516,7 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 		FileSyncService:     agentpb.NewWendyFileSyncServiceClient(conn),
 		TimeSyncService:     agentpbv2.NewWendyTimeSyncServiceClient(conn),
 		BuildService:        agentpbv2.NewWendyBuildServiceClient(conn),
+		DataService:         agentpbv2.NewDataServiceClient(conn),
 	}
 }
 
