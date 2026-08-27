@@ -50,6 +50,75 @@ after socket restoration; no redeploy is required. Stopped containers retain
 their mount and can reconnect when started again. The directory remains until
 the last entitled service container is deleted.
 
+## Wendy Data
+
+Use `{ "type": "data" }` when an app needs to submit structured events or
+predictions to Wendy Data. The agent gives each app a private socket and derives
+the trusted app identity from that socket; the administrative agent socket is
+never exposed.
+
+| Boundary | Value |
+|---|---|
+| Read-only mount | `/run/wendy/data` |
+| Injected environment | `WENDY_DATA_SOCKET=/run/wendy/data/data.sock` |
+| Supplementary group | GID `2000` |
+| Maximum record | 64 KiB, versioned length-prefixed JSON |
+| Acknowledgements | `buffered`, `recorded`, or `rejected` |
+| Socket restoration | Recreated from persisted container labels after agent/daemon restart |
+
+When no Episode is active, accepted records enter the bounded application
+pre-roll buffer. They can trigger an armed campaign by event name or model
+uncertainty. Running containers reconnect after socket restoration without a
+redeploy. Apps without `data` receive neither this mount nor the environment
+variable.
+
+A `prediction` record may carry an optional `inputs` list of
+`{source_id, sample_id}` naming the harness samples it was computed from (see
+Wendy Sensors). The agent records the references in the Episode so
+`(input, outcome)` pairs can be reconstructed offline; a record without them is
+still accepted.
+
+## Wendy Sensors
+
+Use `{ "type": "sensors" }` when a model needs sensor data. The harness feeds
+the app rather than the app opening a device, so the app and the Episode capture
+adapter consume the same producer instead of fighting over a single-holder
+device node.
+
+| Boundary | Value |
+|---|---|
+| Read-only mount | `/run/wendy/sensors` |
+| Injected environment | `WENDY_SENSOR_SOCKET=/run/wendy/sensors/sensors.sock` |
+| Supplementary group | GID `2000` |
+| Service exposed | `wendy.agent.services.v2.SensorService` only (`Sources`, `Subscribe`) |
+| Device nodes granted | none |
+| Socket restoration | Recreated from persisted container labels after agent/daemon restart |
+
+Every sample carries its source id, a monotonically increasing per-source
+`sample_id`, the agent's bracketed `CLOCK_BOOTTIME` receipt, the payload, and
+the number of samples the subscriber missed since the previous one. While an
+Episode is recording, each delivered sample is recorded in the Episode's
+`model_inputs.jsonl` under the same `sample_id`, and the capture index carries
+that `sample_id` on the payload bytes the Episode kept — so an Episode can be
+replayed as the inputs the model consumed paired with the outcomes it produced.
+
+An optional `allowlist` of source ids narrows the grant, as it does for the
+`camera` entitlement; sources outside it are neither listed nor subscribable.
+Omit it and the app may subscribe to any sensor source the device offers. All
+services of a multi-service app share one socket, so it permits the union of
+what they declared.
+
+Source ids must be written exactly as `wendy data sources` reports them.
+Near-miss spellings are refused rather than resolved: `ipcamera:0` and
+`v4l2:/dev/video00` do not name `v4l2:/dev/video0`. An allowlist entry must not
+silently grant a different camera than the one it names, and the Episode joins a
+model's inputs to the captured bytes on the source id, so a second spelling for
+one camera would produce ledger entries nothing can resolve.
+
+The entitlement is read-only: it cannot start or stop Episodes, deploy
+campaigns, or download recorded data. Raw device access remains the separate
+`camera` entitlement, which is unchanged; an app may hold both.
+
 ## Network
 
 The network entitlement allows the container to access the device's network. If the device is connected to WiFi, Ethernet or otherwise, the container will have access to make TCP and UDP connections to the internet.
