@@ -64,6 +64,58 @@ func TestResolveForceUpdateOverridesExistingEntry(t *testing.T) {
 	}
 }
 
+func TestResolvePrunesUnusedImagePins(t *testing.T) {
+	existing := &File{Version: 1, Images: map[string]string{
+		"python:old": "sha256:old",
+		"python:new": "sha256:current",
+	}}
+	result, _, err := Resolve(existing, "sha256:src1", []string{"python:new"}, nil, fakeResolver(nil))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(result.Images) != 1 || result.Images["python:new"] != "sha256:current" {
+		t.Fatalf("Images = %+v, want only the current ref", result.Images)
+	}
+}
+
+func TestManagedBaseRevisionRefreshesExistingDigest(t *testing.T) {
+	const ref = "python:3.14-slim-trixie"
+	existing := &File{
+		Images:       map[string]string{ref: "sha256:old"},
+		ManagedBases: map[string]ManagedBase{"python": {Ref: ref, Revision: 1}},
+	}
+	desired := map[string]ManagedBase{"python": {Ref: ref, Revision: 2}}
+	force := ManagedBaseRefreshes(existing, desired)
+	result, resolved, err := Resolve(existing, "sha256:src", []string{ref}, force, fakeResolver(map[string]string{ref: "sha256:new"}))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if result.Images[ref] != "sha256:new" || len(resolved) != 1 {
+		t.Fatalf("Images = %+v, resolved = %+v", result.Images, resolved)
+	}
+}
+
+func TestManagedBaseUnchangedRevisionReusesDigest(t *testing.T) {
+	const ref = "python:3.14-slim-trixie"
+	selected := ManagedBase{Ref: ref, Revision: 2}
+	existing := &File{
+		Images:       map[string]string{ref: "sha256:current"},
+		ManagedBases: map[string]ManagedBase{"python": selected},
+	}
+	if force := ManagedBaseRefreshes(existing, map[string]ManagedBase{"python": selected}); len(force) != 0 {
+		t.Fatalf("force = %+v, want no refresh for an unchanged catalog revision", force)
+	}
+}
+
+func TestAdoptingManagedBaseRefreshesAnExplicitPin(t *testing.T) {
+	const ref = "python:3.14-slim-trixie"
+	existing := &File{Images: map[string]string{ref: "sha256:explicit"}}
+	desired := map[string]ManagedBase{"python": {Ref: ref, Revision: 1}}
+	if force := ManagedBaseRefreshes(existing, desired); !force[ref] {
+		t.Fatalf("force = %+v, want the newly managed ref refreshed", force)
+	}
+}
+
 func TestResolvePropagatesResolverError(t *testing.T) {
 	resolver := fakeResolver(map[string]string{})
 	if _, _, err := Resolve(nil, "sha256:src1", []string{"debian:12"}, nil, resolver); err == nil {

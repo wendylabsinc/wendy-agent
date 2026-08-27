@@ -143,8 +143,9 @@ func WithROS2Runtime(distro, rmw string) Option {
 
 // CompileFile reads a Stagefile from dir — the canonical build.stagefile.yaml
 // unless WithSource names a variant — resolves any missing lockfile image refs
-// against a live registry (existing pins are never touched — only an explicit
-// re-lock changes them), writes/updates that source's lockfile in dir, and
+// against a live registry (existing explicit pins are reused; a managed base is
+// refreshed when Wendy advances its catalog revision), writes/updates that
+// source's lockfile in dir, and
 // returns the compiled Dockerfile text and the derived .dockerignore text.
 //
 // Safe to call concurrently for different directories: the lockfile and both
@@ -392,10 +393,13 @@ func resolveSpec(dir, source, gpuArch, buildProfile, ros2Distro, ros2RMW string,
 	if err != nil {
 		return nil, err
 	}
-	updated, _, err := lock.Resolve(existing, spec.SourceHash(raw), imageRefs(f), nil, resolver)
+	desiredBases := managedBases(f)
+	forceImages := lock.ManagedBaseRefreshes(existing, desiredBases)
+	updated, _, err := lock.Resolve(existing, spec.SourceHash(raw), imageRefs(f), forceImages, resolver)
 	if err != nil {
 		return nil, err
 	}
+	updated.ManagedBases = desiredBases
 	if _, err := updated.ResolveDownloads(downloadURLs(f), nil, hasher); err != nil {
 		return nil, err
 	}
@@ -517,4 +521,19 @@ func imageRefs(f *spec.File) []string {
 		priorStages[s.Name] = true
 	}
 	return refs
+}
+
+// managedBases converts the semantic selections retained by spec validation
+// into their on-disk lock representation. Returning nil when no base: channel
+// is used preserves the shape of existing lockfiles that use only from:.
+func managedBases(f *spec.File) map[string]lock.ManagedBase {
+	selected := f.ManagedBases()
+	if len(selected) == 0 {
+		return nil
+	}
+	result := make(map[string]lock.ManagedBase, len(selected))
+	for _, base := range selected {
+		result[base.Name] = lock.ManagedBase{Ref: base.Ref, Revision: base.Revision}
+	}
+	return result
 }

@@ -6,11 +6,22 @@ type File struct {
 	Stages  []Stage `yaml:"stages"`
 }
 
-// Stage is one named build stage. Every stage has exactly one base image
-// (From) plus whichever optional operations it performs.
+// Stage is one named build stage. Every stage has exactly one base image,
+// selected through Wendy's managed Base catalog or named explicitly with From,
+// plus whichever optional operations it performs.
 type Stage struct {
 	Name string `yaml:"name"`
-	From string `yaml:"from"`
+	// Base selects a Wendy-maintained image channel (for example "python") so
+	// the Stagefile does not own a language or distribution version. Validation
+	// resolves it to From; the lockfile still pins that image to an exact digest.
+	Base string `yaml:"base,omitempty"`
+	// From names an image or an earlier stage directly. It is the escape hatch
+	// for specialized images and is mutually exclusive with Base.
+	From string `yaml:"from,omitempty"`
+	// managedBaseResolved is populated only by validation. It distinguishes
+	// `base: python` from an explicit from: that happens to name the catalog's
+	// current Python image, without allocating per stage.
+	managedBaseResolved bool
 	// Pin defaults to true (digest-pinned via the lockfile). `pin: false`
 	// is a visible deviation for images that exist only in the local
 	// daemon store (docker load'd, never pushed) and therefore have no

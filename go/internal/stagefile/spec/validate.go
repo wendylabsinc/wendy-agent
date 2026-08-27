@@ -17,6 +17,9 @@ func (f *File) Validate() error {
 	if len(f.Stages) == 0 {
 		return fmt.Errorf("stages: must declare at least one stage")
 	}
+	if err := f.resolveManagedBases(); err != nil {
+		return err
+	}
 
 	priorNames := map[string]bool{}
 	lastIdx := len(f.Stages) - 1
@@ -31,7 +34,10 @@ func (f *File) Validate() error {
 			return fmt.Errorf("stages[%d]: duplicate stage name %q", i, s.Name)
 		}
 		if s.From == "" {
-			return fmt.Errorf("stage %q: from is required", s.Name)
+			return fmt.Errorf("stage %q: base or from is required", s.Name)
+		}
+		if s.managedBaseResolved && s.Pin != nil && !*s.Pin {
+			return fmt.Errorf("stage %q: managed base %q cannot set pin: false; use from: for a local-only image", s.Name, s.Base)
 		}
 		if s.Platform != "" && s.Platform != "build" {
 			return fmt.Errorf("stage %q: platform %q is not supported (only \"build\", meaning $BUILDPLATFORM)", s.Name, s.Platform)

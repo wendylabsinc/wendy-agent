@@ -93,6 +93,34 @@ func TestCompileFileReusesExistingLockPin(t *testing.T) {
 	}
 }
 
+func TestCompileFileRecordsManagedBaseSelection(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    base: python\n"
+	if err := os.WriteFile(filepath.Join(dir, SourceName), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var resolvedRef string
+	resolver := func(ref string) (string, error) {
+		resolvedRef = ref
+		return "sha256:managed", nil
+	}
+	dockerfile, _, err := compileFile(dir, SourceName, "linux/arm64", "", "", resolver, refuseHasher(t))
+	if err != nil {
+		t.Fatalf("compileFile: %v", err)
+	}
+	if !strings.Contains(dockerfile, resolvedRef+"@sha256:managed") {
+		t.Fatalf("Dockerfile does not use managed ref %q:\n%s", resolvedRef, dockerfile)
+	}
+	pinned, err := lock.Load(filepath.Join(dir, LockName(SourceName)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, ok := pinned.ManagedBases["python"]
+	if !ok || base.Ref != resolvedRef || base.Revision < 1 {
+		t.Fatalf("managed base lock = %+v", pinned.ManagedBases)
+	}
+}
+
 func TestCompileFileReturnsErrorForInvalidSource(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 2\n"), 0o644); err != nil {

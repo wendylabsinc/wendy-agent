@@ -1,4 +1,8 @@
 version: 1
-sourceHash: sha256:3988b5d50ad08466839c90538a5518ec8e21c0532d1b8d5516a979f8e1c27dff
+sourceHash: sha256:a2af2d1f9444fabdb48a307a6194fa3366cdecd6a54da9cb9b60dd30f625b4cf
 images:
-    python:3.11-slim: sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff
+    python:3.14-slim-trixie: sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4
+managedBases:
+    python:
+        ref: python:3.14-slim-trixie
+        revision: 1

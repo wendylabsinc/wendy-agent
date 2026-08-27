@@ -47,7 +47,7 @@ Wendy then compares the image layers with the device through the default chunk-d
 
 A Stagefile also removes several sources of build drift:
 
-- Base-image tags resolve to immutable digests in a committed lockfile.
+- Common runtimes use Wendy-maintained `base:` channels, and every selected image still resolves to an immutable digest in a committed lockfile.
 - npm, yarn, pnpm, and uv use their frozen-lockfile install modes.
 - apt omits recommended packages by default and removes package indexes from the image layer; apk uses `--no-cache` by default.
 - Multi-stage builds copy only declared runtime artifacts into the final image.
@@ -74,7 +74,7 @@ Add `build.stagefile.yaml` at the project root:
 version: 1
 stages:
   - name: app
-    from: python:3.12-slim
+    base: python
     workdir: /app
     env:
       PYTHONUNBUFFERED: "1"
@@ -123,7 +123,7 @@ The first build writes three files beside the Stagefile:
 
 | File | What to do with it |
 | --- | --- |
-| `build.stagefile.lock.yaml` | Commit it. It records resolved base-image digests, remote-download checksums, and GPU profiles. |
+| `build.stagefile.lock.yaml` | Commit it. It records managed-base revisions, resolved image digests, remote-download checksums, and GPU profiles. |
 | `Dockerfile.generated` | Do not edit or commit it. It is regenerated build output. |
 | `Dockerfile.generated.dockerignore` | Do not edit or commit it. It is the derived build-context allowlist. |
 
@@ -145,7 +145,7 @@ A Stagefile contains a version and an ordered list of stages. Each stage starts 
 
 | Field | Purpose |
 | --- | --- |
-| `name`, `from` | Give the stage a unique name and base image. Base images are pinned by default. |
+| `name`, `base`, `from` | Give the stage a unique name and select either a Wendy-maintained base or an explicit image/earlier stage. Images are pinned by default. |
 | `workdir` | Set the absolute working directory for the stage and, on the final stage, the running container. |
 | `args`, `env` | Declare build arguments and image environment variables. |
 | `install` | Install apt, apk, CMake, pip, npm/yarn/pnpm, or uv dependencies using compiler-selected commands and caches. |
@@ -155,6 +155,24 @@ A Stagefile contains a version and an ordered list of stages. Each stage starts 
 | `cuda` | Resolve the CUDA runtime, Python wheel index, library path, and runtime packages from the target device's GPU architecture. |
 | `healthcheck` | Add an exec-form container health check on the final stage. |
 | `entrypoint`, `cmd`, `user` | Configure final-stage runtime behavior without shell-string command parsing. |
+
+### Select a maintained base
+
+Use `base:` for common language and runtime images. The Stagefile states the capability it needs; Wendy owns the maintained release line, distribution variant, and refresh policy:
+
+| `base` | Intended use |
+| --- | --- |
+| `python` | Slim Python application runtime |
+| `node` | Slim Node.js LTS runtime and package builds |
+| `go` | Go toolchain stage |
+| `rust` | Rust toolchain stage |
+| `swift` | Swift toolchain stage |
+| `swift-runtime` | Slim Swift runtime stage |
+| `debian` | Minimal general-purpose runtime stage |
+
+The generated Dockerfile still names a concrete official image, and the lockfile still pins its exact digest. Each managed channel also has a Wendy catalog revision. When Wendy advances a release line or deliberately picks up a rebuilt tag, the next build refreshes that channel once and writes a visible lockfile diff; subsequent builds reuse the new digest without a registry lookup.
+
+Use `from:` when a stage inherits an earlier named stage or genuinely needs a specialized vendor image. `base:` and `from:` are mutually exclusive, and a managed base cannot set `pin: false`.
 
 ### Install dependencies
 
@@ -180,7 +198,7 @@ stage:
 ```yaml
 stages:
   - name: native
-    from: python:3.11-slim
+    base: python
     install:
       apt:
         packages: [build-essential, cmake, git]
@@ -220,7 +238,7 @@ Compiled apps should keep the toolchain out of the runtime image. This Swift exa
 version: 1
 stages:
   - name: build
-    from: swift:6.3.2-noble
+    base: swift
     workdir: /build
     copy:
       - from: local
@@ -232,7 +250,7 @@ stages:
       product: MyApp
 
   - name: app
-    from: swift:6.3.2-noble-slim
+    base: swift-runtime
     copy:
       - from: build
         paths: [/build/.build/release/MyApp]
