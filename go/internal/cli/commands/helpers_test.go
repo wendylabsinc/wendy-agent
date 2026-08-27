@@ -2194,6 +2194,97 @@ func TestExternalProviderPickerItem(t *testing.T) {
 		if len(entry.mergedDevice.Externals) != 1 || entry.mergedDevice.Externals[0].ID != dev.ID {
 			t.Errorf("mergedDevice.Externals = %#v, want the source device", entry.mergedDevice.Externals)
 		}
+		// A LAN row carries no serial port, so it must not take part in the
+		// unflashed-row supersede at all.
+		if item.DedupKey != dev.DisplayName || item.Supersedes != "" {
+			t.Errorf("DedupKey = %q, Supersedes = %q, want the display name and no supersede",
+				item.DedupKey, item.Supersedes)
+		}
+	})
+
+	// An unflashed board and the same board once it identifies itself must share
+	// one row: the unflashed row is keyed by port so the identified one can
+	// retire it, instead of both display names sitting in the picker at once.
+	t.Run("unflashed USB device is keyed by port", func(t *testing.T) {
+		prov := &fakeProvider{key: "wendy-lite"}
+		dev := models.ExternalDevice{
+			ID:          "wendy-lite:/dev/cu.usbmodem2101",
+			DisplayName: "ESP32 (unflashed) — /dev/cu.usbmodem2101",
+			ProviderKey: "wendy-lite",
+			ConnectionInfo: map[string]string{
+				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "needsInstall": "true",
+			},
+		}
+		item := externalProviderPickerItem(prov, &dev)
+
+		if want := unflashedLiteDedupKey("/dev/cu.usbmodem2101"); item.DedupKey != want {
+			t.Errorf("DedupKey = %q, want %q", item.DedupKey, want)
+		}
+		if item.Supersedes != "" {
+			t.Errorf("Supersedes = %q, want empty on the unflashed row", item.Supersedes)
+		}
+		if want := strings.ToLower(dev.DisplayName); item.SortKey != want {
+			t.Errorf("SortKey = %q, want %q so the row keeps its position", item.SortKey, want)
+		}
+	})
+
+	t.Run("identified USB device supersedes the unflashed row", func(t *testing.T) {
+		prov := &fakeProvider{key: "wendy-lite"}
+		dev := models.ExternalDevice{
+			ID:          "wendy-lite:/dev/cu.usbmodem2101",
+			DisplayName: "Lite Board",
+			ProviderKey: "wendy-lite",
+			ConnectionInfo: map[string]string{
+				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "name": "lite-board",
+			},
+		}
+		item := externalProviderPickerItem(prov, &dev)
+
+		if item.DedupKey != dev.DisplayName {
+			t.Errorf("DedupKey = %q, want the display name so LAN/USB rows still merge", item.DedupKey)
+		}
+		if want := unflashedLiteDedupKey("/dev/cu.usbmodem2101"); item.Supersedes != want {
+			t.Errorf("Supersedes = %q, want %q", item.Supersedes, want)
+		}
+	})
+
+	// End to end over the picker: the reported bug was a board that stayed
+	// listed as unflashed after a later probe identified it.
+	t.Run("identified board replaces its unflashed row in the picker", func(t *testing.T) {
+		prov := &fakeProvider{key: "wendy-lite"}
+		const port = "/dev/cu.usbmodem2101"
+		unflashed := models.ExternalDevice{
+			ID:          "wendy-lite:" + port,
+			DisplayName: "ESP32 (unflashed) — " + port,
+			ProviderKey: "wendy-lite",
+			ConnectionInfo: map[string]string{
+				"type": "USB", "serialPort": port, "needsInstall": "true",
+			},
+		}
+		identified := models.ExternalDevice{
+			ID:          "wendy-lite:" + port,
+			DisplayName: "Lite Board",
+			ProviderKey: "wendy-lite",
+			ConnectionInfo: map[string]string{
+				"type": "USB", "serialPort": port, "name": "lite-board",
+			},
+		}
+
+		picker := tui.NewPicker()
+		updated, _ := picker.Update(tui.PickerAddMsg{
+			Items: []tui.PickerItem{externalProviderPickerItem(prov, &unflashed)},
+		})
+		updated, _ = updated.(tui.PickerModel).Update(tui.PickerAddMsg{
+			Items: []tui.PickerItem{externalProviderPickerItem(prov, &identified)},
+		})
+
+		view := updated.(tui.PickerModel).View()
+		if !strings.Contains(view, identified.DisplayName) {
+			t.Errorf("picker does not list the identified device:\n%s", view)
+		}
+		if strings.Contains(view, "unflashed") {
+			t.Errorf("picker still lists the superseded unflashed row:\n%s", view)
+		}
 	})
 
 	t.Run("other providers keep provider row layout", func(t *testing.T) {
