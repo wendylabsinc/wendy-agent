@@ -1678,10 +1678,10 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	}
 	unlockNetwork := c.lockNetworkOperation(appName)
 	defer unlockNetwork()
-	// Hold c.mu for container lookup and task creation to prevent a concurrent
-	// DeleteContainer from removing the container between the label-based lookup
-	// and NewTask (TOCTOU, SOC2-CC6). Released before the streaming goroutine
-	// launch via the muHeld flag pattern.
+	// Hold c.mu for the initial container/metadata snapshot. It is released for
+	// sandbox health checks and CNI cleanup, then reacquired around NewTask so a
+	// concurrent DeleteContainer cannot remove the container between the final
+	// stop-state check and task creation (TOCTOU, SOC2-CC6).
 	c.mu.Lock()
 	muHeld := true
 	defer func() {
@@ -1732,6 +1732,13 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	if c.appStopping[appID] {
 		return nil, fmt.Errorf("%w: %q", errAppStopping, appID)
 	}
+	isolation := c.getIsolation(appID)
+
+	// Sandbox verification can self-exec CNI CHECK, query netlink, and tear down
+	// mounts/IPAM. None of that may run under the global client mutex; the keyed
+	// network-operation lock above still serializes this container's lifecycle.
+	muHeld = false
+	c.mu.Unlock()
 
 	// Reboot resilience for meshed containers (C-final-review Fix 1): the
 	// container's OCI spec bind-mounts /etc/resolv.conf from a tmpfs path
@@ -1756,7 +1763,6 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// both its health/identity checks pass and the stored OCI spec explicitly
 	// joins its bind mount. The second condition prevents skipping CNI for a
 	// legacy/private spec that would start in an unrelated fresh namespace.
-	isolation := c.getIsolation(appID)
 	entitlements := parseEntitlementsFromAnnotations(containerLabels)
 	needsBridge := needsCNIBridgeWiring(isolation, serviceName, entitlements)
 	identity, retainsBridge := networkIdentityFromLabels(containerLabels)
@@ -1786,6 +1792,15 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 				return nil, fmt.Errorf("clearing ineligible reusable network namespace for %q: %w", appName, err)
 			}
 		}
+	}
+
+	// Re-enter the narrow task-creation critical section after all potentially
+	// slow sandbox validation and cleanup. StopContainer publishes appStopping
+	// under this mutex, so a stop that won the unlocked interval fails closed.
+	c.mu.Lock()
+	muHeld = true
+	if c.appStopping[appID] {
+		return nil, fmt.Errorf("%w: %q", errAppStopping, appID)
 	}
 
 	if restartPolicy != nil {
@@ -1861,8 +1876,18 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		return nil, fmt.Errorf("starting task for %q: %w", appName, err)
 	}
 
-	c.logger.Info("Container started", zap.String("app_name", appName))
-	c.startPostStartAgentHook(postStartAgentCommand, appName)
+	// From this point through network setup, every failure must kill the task,
+	// close its unconsumed pipes, and record a did-not-start diagnostic. The
+	// post-start hook is intentionally delayed until network setup commits.
+	failStartedTask := func(cause error) error {
+		_, _ = task.Delete(taskCtx, containerd.WithProcessKill)
+		stdoutR.Close()
+		stdoutW.Close()
+		stderrR.Close()
+		stderrW.Close()
+		c.recordStartFailure(ctx, appName, cause)
+		return cause
+	}
 
 	// Track the primary PID for shared-namespace app groups.
 	// getIsolation requires c.mu (held here via muHeld).
@@ -1914,10 +1939,11 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// It also closes the fd (the bind-mount anchors the namespace independently).
 	// On Linux the bind-mount is used; on other platforms the fd path is the fallback.
 	if reusedNetworkSandbox != nil {
+		// Mandatory for both in-memory reuse and restart recovery: neither path
+		// may skip this post-start task<->namespace binding check.
 		if !taskUsesNetworkSandbox(reusedNetworkSandbox.path, task.Pid()) {
 			c.destroyNetworkSandbox(ctx, appName)
-			_, _ = task.Delete(ctx, containerd.WithProcessKill)
-			return nil, fmt.Errorf("reusable network sandbox validation failed for app %q after task start", appID)
+			return nil, failStartedTask(fmt.Errorf("reusable network sandbox validation failed for app %q after task start", appID))
 		}
 		c.logger.Info("Reused CNI network sandbox",
 			zap.String(logfields.AppID, appID),
@@ -1963,6 +1989,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			}
 			cleanupNetns()
 			c.logger.Error("CNI ADD failed", zap.String(logfields.AppID, appID), zap.Error(cniErr))
+			return nil, failStartedTask(fmt.Errorf("CNI ADD failed for app %q: %w", appID, cniErr))
 		} else {
 			// netnsPath (the bind-mount) must stay mounted through mesh egress
 			// setup below, which needs a live netns to install the service-CIDR
@@ -2005,8 +2032,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 					c.mu.Unlock()
 					c.logger.Warn("CNI ADD: app already stopped before IP could be recorded, discarding IP",
 						zap.String(logfields.AppID, appID), zap.String("ip", ip))
-					_, _ = task.Delete(ctx, containerd.WithProcessKill)
-					return nil, fmt.Errorf("app %q stopped during CNI ADD; container not started", appID)
+					return nil, failStartedTask(fmt.Errorf("app %q stopped during CNI ADD; container not started", appID))
 				}
 				c.recordServiceIP(appID, serviceName, ip)
 				hostsPath, pathErr := safeJoin("/run/wendy/hosts", appID)
@@ -2020,8 +2046,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 					c.logger.Error("security: appID produces unsafe hosts path",
 						zap.String(logfields.AppID, appID), zap.Error(pathErr))
 					c.mu.Unlock()
-					_, _ = task.Delete(ctx, containerd.WithProcessKill)
-					return nil, fmt.Errorf("security: appID %q produces unsafe hosts path: %w", appID, pathErr)
+					return nil, failStartedTask(fmt.Errorf("security: appID %q produces unsafe hosts path: %w", appID, pathErr))
 				}
 				_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
 				c.mu.Unlock()
@@ -2070,8 +2095,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			if meshErr := c.applyMeshEgress(entitlements, appName, appID, netnsPath, ip); meshErr != nil {
 				c.logger.Error("mesh egress setup failed; failing container start",
 					zap.String("app_id", appID), zap.Error(meshErr))
-				_, _ = task.Delete(ctx, containerd.WithProcessKill)
-				return nil, fmt.Errorf("mesh egress setup failed for app %q: %w", appID, meshErr)
+				return nil, failStartedTask(fmt.Errorf("mesh egress setup failed for app %q: %w", appID, meshErr))
 			}
 
 			// All network configuration is now complete. Transfer ownership to the
@@ -2080,15 +2104,14 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			c.mu.Lock()
 			if c.appStopping[appID] {
 				c.mu.Unlock()
-				_, _ = task.Delete(ctx, containerd.WithProcessKill)
-				return nil, fmt.Errorf("app %q stopped during network sandbox setup; container not started", appID)
+				return nil, failStartedTask(fmt.Errorf("app %q stopped during network sandbox setup; container not started", appID))
 			}
-			if retainsBridge && bridgeDNSHealthy && persistentNetns && containerLabels[labelKeyNetworkIdentity] != "" {
+			if retainsBridge && bridgeDNSHealthy && persistentNetns && identity != "" {
 				if err := writeNetworkSandboxResult(appName, cniResult); err == nil {
-					if err := c.persistNetworkNamespace(ctx, container, netnsPath, containerLabels[labelKeyNetworkIdentity], ip); err == nil {
+					if err := c.persistNetworkNamespace(ctx, container, netnsPath, identity, ip); err == nil {
 						c.registerNetworkSandbox(&networkSandbox{
 							appID: appID, serviceName: serviceName, containerID: appName,
-							identity: containerLabels[labelKeyNetworkIdentity], path: netnsPath, ip: ip, result: cniResult,
+							identity: identity, path: netnsPath, ip: ip, result: cniResult,
 							isolation: isolation, entitlements: append([]appconfig.Entitlement(nil), entitlements...), cleanup: cleanupNetns,
 						})
 						keepNetns = true
@@ -2104,6 +2127,9 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			c.mu.Unlock()
 		}
 	}
+
+	c.logger.Info("Container started", zap.String("app_name", appName))
+	c.startPostStartAgentHook(postStartAgentCommand, appName)
 
 	// Stream output from the pipes.
 	outputCh := make(chan services.ContainerOutput, 64)

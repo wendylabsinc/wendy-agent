@@ -1,6 +1,7 @@
 package containerd
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -62,6 +63,28 @@ func TestNetworkIdentityFromLabelsRecomputesFingerprint(t *testing.T) {
 	labels[labelKeyNetworkIdentity] = networkIdentity("isolated", bridge)
 	if _, ok := networkIdentityFromLabels(labels); ok {
 		t.Fatal("multi-service labels were accepted for sandbox retention")
+	}
+}
+
+func TestDesiredNetworkIdentityIgnoresPersistedFingerprint(t *testing.T) {
+	bridge := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "bridge"}}
+	labels := wendyLabels("com.example.app", "", "1", nil, bridge, "isolated", nil)
+	labels[labelKeyNetworkIdentity] = "attacker-controlled"
+	want := networkIdentity("isolated", bridge)
+	if got, ok := desiredNetworkIdentityFromLabels(labels); !ok || got != want {
+		t.Fatalf("derived identity = %q, %v; want %q, true", got, ok, want)
+	}
+}
+
+func TestNetworkSandboxChecksRequireCNICheck(t *testing.T) {
+	if networkSandboxChecksPassed(true, errors.New("CHECK rejected prevResult")) {
+		t.Fatal("healthy namespace was accepted after CNI CHECK failed")
+	}
+	if networkSandboxChecksPassed(false, nil) {
+		t.Fatal("unhealthy namespace was accepted after CNI CHECK passed")
+	}
+	if !networkSandboxChecksPassed(true, nil) {
+		t.Fatal("healthy namespace with successful CNI CHECK was rejected")
 	}
 }
 

@@ -105,6 +105,15 @@ func networkIdentity(isolation string, entitlements []appconfig.Entitlement) str
 // Container labels are external state, so callers must not trust the stored
 // fingerprint without recomputing it from isolation and entitlements.
 func networkIdentityFromLabels(labels map[string]string) (string, bool) {
+	expected, eligible := desiredNetworkIdentityFromLabels(labels)
+	return expected, eligible && labels[labelKeyNetworkIdentity] == expected
+}
+
+// desiredNetworkIdentityFromLabels derives the fingerprint exclusively from
+// the policy-bearing labels. Unlike networkIdentityFromLabels it deliberately
+// ignores the persisted fingerprint, so write paths can never copy an
+// attacker-influenced identity value back into container metadata.
+func desiredNetworkIdentityFromLabels(labels map[string]string) (string, bool) {
 	appID, serviceName := labels[labelKeyAppID], labels[labelKeyServiceName]
 	if appconfig.ValidateAppID(appID) != nil || (serviceName != "" && appconfig.ValidateServiceName(serviceName) != nil) {
 		return "", false
@@ -114,7 +123,7 @@ func networkIdentityFromLabels(labels map[string]string) (string, bool) {
 		return "", false
 	}
 	expected := networkIdentity(labels[labelKeyIsolation], entitlements)
-	return expected, expected != "" && labels[labelKeyNetworkIdentity] == expected
+	return expected, expected != ""
 }
 
 func (c *Client) registerNetworkSandbox(s *networkSandbox) {
@@ -131,6 +140,10 @@ func (c *Client) registerNetworkSandbox(s *networkSandbox) {
 }
 
 func (c *Client) lockNetworkOperation(containerID string) func() {
+	// Lock ordering invariant: when an operation needs both locks, the keyed
+	// network-operation lock is always acquired before c.mu. Never call this
+	// helper while holding c.mu; reversing that order can deadlock StartContainer's
+	// metadata commit against create/stop/delete.
 	c.networkOpsMu.Lock()
 	if c.networkOps == nil {
 		c.networkOps = make(map[string]*networkOperation)
@@ -161,10 +174,20 @@ func (c *Client) reusableNetworkSandbox(ctx context.Context, containerID, identi
 	c.networkSandboxesMu.Lock()
 	s := c.networkSandboxes[containerID]
 	c.networkSandboxesMu.Unlock()
-	if s == nil || s.identity != identity || !networkSandboxHealthy(s.path, s.ip) || c.CNICheck(ctx, s.appID, s.containerID, s.path, s.result) != nil || !c.refreshBridgeDNS(s.containerID, s.appID) {
+	if s == nil || s.identity != identity || !networkSandboxHealthy(s.path, s.ip) {
+		return nil, false
+	}
+	if !networkSandboxChecksPassed(true, c.CNICheck(ctx, s.appID, s.containerID, s.path, s.result)) || !c.refreshBridgeDNS(s.containerID, s.appID) {
 		return nil, false
 	}
 	return s, true
+}
+
+// networkSandboxChecksPassed keeps the independent kernel-health and CNI CHECK
+// gates explicit. In particular, a healthy-looking namespace or persisted
+// prevResult can never compensate for a failed plugin CHECK.
+func networkSandboxChecksPassed(healthOK bool, cniCheckErr error) bool {
+	return healthOK && cniCheckErr == nil
 }
 
 // refreshBridgeDNS drops and reacquires this single-service bridge's listener.
@@ -271,7 +294,7 @@ func (c *Client) recoverNetworkSandbox(ctx context.Context, ctr containerd.Conta
 		return nil, false
 	}
 	result, err := readNetworkSandboxResult(ctr.ID())
-	if err != nil || c.CNICheck(ctx, appID, ctr.ID(), path, result) != nil {
+	if err != nil || !networkSandboxChecksPassed(true, c.CNICheck(ctx, appID, ctr.ID(), path, result)) {
 		return nil, false
 	}
 	if !c.refreshBridgeDNS(ctr.ID(), appID) {
@@ -346,15 +369,22 @@ func (c *Client) persistNetworkNamespace(ctx context.Context, ctr containerd.Con
 		if record.Labels == nil {
 			record.Labels = make(map[string]string)
 		}
+		// Recompute from the authoritative isolation/entitlement policy at the
+		// write boundary. The identity argument is only an intent/consistency
+		// check; it is never copied into metadata.
+		desiredIdentity, eligible := desiredNetworkIdentityFromLabels(record.Labels)
+		if identity != "" && (!eligible || identity != desiredIdentity) {
+			return fmt.Errorf("network identity changed while persisting reusable namespace")
+		}
 		if path == "" {
 			delete(record.Labels, labelKeyNetworkSandboxIP)
 			if identity == "" {
 				delete(record.Labels, labelKeyNetworkIdentity)
 			} else {
-				record.Labels[labelKeyNetworkIdentity] = identity
+				record.Labels[labelKeyNetworkIdentity] = desiredIdentity
 			}
 		} else {
-			record.Labels[labelKeyNetworkIdentity] = identity
+			record.Labels[labelKeyNetworkIdentity] = desiredIdentity
 			record.Labels[labelKeyNetworkSandboxIP] = ip
 		}
 		return nil
