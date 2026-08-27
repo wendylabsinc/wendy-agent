@@ -369,7 +369,7 @@ func (c *Client) applyMeshEgress(entitlements []appconfig.Entitlement, container
 		return fmt.Errorf("mesh egress: adding REDIRECT rule for app %q: %w", appID, err)
 	}
 
-	// DNS is best-effort: without it, device-N.cloud.wendy.dev hostnames fail
+	// DNS is best-effort: without it, device-N.mesh.wendy.internal hostnames fail
 	// to resolve but VIP literals still work over the REDIRECT/route wired
 	// above, so a DNS listener failure must not fail container start.
 	// ensureMeshDNS is the last fallible step in this function — nothing

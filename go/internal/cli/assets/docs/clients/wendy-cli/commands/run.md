@@ -220,7 +220,7 @@ depends on which network you are on.
 - **The target device must be provisioned**, so the build host can address it by
   asset id. Delivery goes through the mesh dialer — LAN first, cloud broker
   otherwise — and never resolves a hostname, so a build host that cannot resolve
-  `device-<id>.cloud.wendy.dev` still delivers.
+  `device-<id>.mesh.wendy.internal` still delivers.
 
 If any of these does not hold, `wendy run` fails immediately and names the host.
 It never quietly falls back to building locally — a twenty-minute local build
@@ -404,6 +404,14 @@ for multi-service details.
 
 Under attached `--watch` the host-side actions run after the first successful
 readiness check only. `--watch --detach` skips them; see [Watch mode](#watch-mode).
+
+> **Cloud routing:** Host-side readiness and `postStart` actions for a cloud run
+> require Wendy Mesh. When the desktop VPN resolves the device's
+> `device-<id>.mesh.wendy.internal` name into the mesh range, the CLI uses that
+> hostname for both the probe and hook. It does not substitute an
+> agent-reported LAN address, because that private address is generally not
+> reachable from the developer's network; without an active mesh route, the CLI
+> skips these host-side actions and prints guidance.
 
 > **Note:** When the CLI connects to the device at an IPv6 address (for example, one discovered via mDNS), the hook targets the device's best self-reported IP address instead — the same address shown in the `App reachable at` line — for both `openURL` and `cli`. This avoids pointing at a rotating RFC 4941 temporary privacy address that may not be reachable later. If the device cannot be queried, the dialed address is used (and bracketed for URL safety in `openURL`).
 

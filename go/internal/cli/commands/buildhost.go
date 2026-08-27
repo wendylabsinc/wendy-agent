@@ -487,7 +487,7 @@ func connectBuildHost(ctx context.Context, host string) (*grpcclient.AgentConnec
 // targetPushTarget describes where the BUILD HOST should push, as a mesh peer
 // rather than a hostname.
 //
-// The asset id is deliberate: a name like device-<id>.cloud.wendy.dev only
+// The asset id is deliberate: a name like device-<id>.mesh.wendy.internal only
 // resolves where the mesh DNS server runs, which excludes adopted Linux hosts
 // whose resolver already owns 127.0.0.53 — so a reachable peer looked
 // unreachable. The build host's peer dialer needs only the id (WDY-2356).

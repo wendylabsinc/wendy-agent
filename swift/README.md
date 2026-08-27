@@ -7,15 +7,19 @@ Swift sources for the Wendy Agent macOS app and shared agent core.
 This directory contains:
 
 - `WendyAgentCore/` — the shared Swift package that implements the agent runtime, gRPC services, Bonjour advertising, and local OpenTelemetry ingestion.
-- `WendyAgentMac/` — a lightweight macOS menu bar app that launches and manages `WendyAgent`, organized into `Sources/`, `Assets/`, and `Design/`.
+- `WendyAgentMac/` — a lightweight macOS menu bar app that owns Wendy's private Linux build/runtime VM and can launch and manage `WendyAgent`, organized into `Sources/`, `Assets/`, and `Design/`. The VM starts independently at app launch; exposing the physical Mac as a deployment target remains disabled by default and must be enabled from the status menu or with `WENDY_MAC_DEPLOYMENT_TARGET=1`.
 - `WendyE2ETests/` — a Swift package for end-to-end tests of the Wendy CLI and agent.
 - `WendyAgent.xcworkspace/` — the Xcode workspace for working on the app and package together.
 - `Scripts/` — helper scripts, including protobuf generation.
 
-By default, the agent starts:
+When the Mac deployment-target toggle is enabled, the agent starts:
 
 - gRPC on port `50051`
 - local OpenTelemetry ingestion on port `4317`
+
+The private Linux runtime is separate from those listeners. WendyAgentMac starts it even
+when the Mac deployment target is disabled and exposes BuildKit at
+`~/Library/Caches/wendy/runtime/buildkitd.sock`.
 
 ## Requirements
 
@@ -138,12 +142,13 @@ swift/
 └── WendyAgentMac/
     ├── Assets/
     ├── Design/
+    ├── RuntimeGuest/
     ├── Sources/
     └── WendyAgentMac.xcodeproj/
 ```
 
 ## Notes
 
-- The macOS app is implemented as an accessory app with a status menu, with source files under `WendyAgentMac/Sources/` and resources separated into `Assets/` and `Design/`.
+- The macOS app is implemented as an accessory app with a status menu, with source files under `WendyAgentMac/Sources/`, guest sources under `WendyAgentMac/RuntimeGuest/`, and generated VM resources under `WendyAgentMac/Resources/runtime/`.
 - The core package exposes `WendyAgent`, which manages startup, shutdown, service lifecycle, and status observation.
 - `Scripts/GenerateProto.sh` is intended for regenerating protobuf/gRPC sources when the service definitions change.

@@ -10,4 +10,7 @@
    <FileRef
       location = "group:WendyE2ETests">
    </FileRef>
+   <FileRef
+      location = "group:../desktop-native/WendySandbox.xcodeproj">
+   </FileRef>
 </Workspace>
