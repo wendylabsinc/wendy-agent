@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	containerd "github.com/containerd/containerd/v2/client"
@@ -164,6 +165,37 @@ func (c *Client) lockNetworkOperation(containerID string) func() {
 			delete(c.networkOps, containerID)
 		}
 		c.networkOpsMu.Unlock()
+	}
+}
+
+// lockAdditionalNetworkOperations extends an already-held operation lock to a
+// set of concrete container IDs. Group stop/delete calls begin with the bare
+// app-ID lock, while per-service create/start calls use container IDs; holding
+// both key spaces is therefore required to serialize a whole-app lifecycle
+// operation against every member. Caller must hold heldKey's lock and must not
+// hold c.mu. Callers for one group share heldKey; sorting makes their additional
+// per-member acquisition order deterministic.
+func (c *Client) lockAdditionalNetworkOperations(heldKey string, containerIDs []string) func() {
+	unique := make(map[string]struct{}, len(containerIDs))
+	for _, containerID := range containerIDs {
+		if containerID != "" && containerID != heldKey {
+			unique[containerID] = struct{}{}
+		}
+	}
+	keys := make([]string, 0, len(unique))
+	for key := range unique {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	unlocks := make([]func(), 0, len(keys))
+	for _, key := range keys {
+		unlocks = append(unlocks, c.lockNetworkOperation(key))
+	}
+	return func() {
+		for i := len(unlocks) - 1; i >= 0; i-- {
+			unlocks[i]()
+		}
 	}
 }
 

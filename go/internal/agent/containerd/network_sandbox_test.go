@@ -114,6 +114,41 @@ func TestNetworkOperationLockSerializesSameContainer(t *testing.T) {
 	}
 }
 
+func TestAdditionalNetworkOperationLocksSerializeGroupMembers(t *testing.T) {
+	c := &Client{networkOps: make(map[string]*networkOperation)}
+	unlockGroup := c.lockNetworkOperation("myapp")
+	unlockMembers := c.lockAdditionalNetworkOperations("myapp", []string{"myapp_api", "myapp", "myapp_worker", "myapp_api"})
+
+	acquired := make(chan string, 2)
+	for _, containerID := range []string{"myapp_api", "myapp_worker"} {
+		go func() {
+			defer c.lockNetworkOperation(containerID)()
+			acquired <- containerID
+		}()
+	}
+	select {
+	case containerID := <-acquired:
+		t.Fatalf("member operation %q entered during group lock", containerID)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	unlockMembers()
+	for range 2 {
+		select {
+		case <-acquired:
+		case <-time.After(time.Second):
+			t.Fatal("member operation did not proceed after group lock release")
+		}
+	}
+	unlockGroup()
+
+	c.networkOpsMu.Lock()
+	defer c.networkOpsMu.Unlock()
+	if len(c.networkOps) != 0 {
+		t.Fatalf("idle network lock entries leaked: %d", len(c.networkOps))
+	}
+}
+
 func TestSpecJoinsNetworkSandbox(t *testing.T) {
 	spec := &localoci.Spec{Linux: &localoci.Linux{Namespaces: []localoci.LinuxNamespace{
 		{Type: "network", Path: "/run/wendy/netns/myapp"},

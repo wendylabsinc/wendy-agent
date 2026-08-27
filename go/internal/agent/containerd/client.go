@@ -3645,6 +3645,10 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 		c.mu.Unlock()
 		return err
 	}
+	if c.appStopping[appID] {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: %q", errAppStopping, appID)
+	}
 	stopOrder := c.resolveStopOrder(ctx, appID, ctrs)
 	// Mark app as stopping before releasing the mutex so any concurrent
 	// CreateContainerWithProgress call will see it and abort (SOC2-CC6, NIST-AC-3).
@@ -3653,6 +3657,12 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 	}
 	c.appStopping[appID] = true
 	c.mu.Unlock()
+
+	// A whole-app operation is keyed by bare appID, while service starts and
+	// creates are keyed by concrete container ID. Hold every member key for the
+	// remainder of teardown so CNI ADD/CHECK/DEL cannot overlap this group stop.
+	unlockTargets := c.lockAdditionalNetworkOperations(name, stopOrder)
+	defer unlockTargets()
 
 	// Pause the restart monitor for every container about to be stopped, for
 	// the whole rest of this function: without it, a crash-looping member's
@@ -3925,14 +3935,39 @@ func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage b
 	unlockNetwork := c.lockNetworkOperation(name)
 	defer unlockNetwork()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	ctx = c.withNamespace(ctx)
 	// A bare appID deletes every service; "{appID}_{serviceName}" deletes one.
 	ctrs, appID, wholeApp, err := c.resolveTargets(ctx, name)
 	if err != nil {
+		c.mu.Unlock()
 		return err
 	}
+	if c.appStopping[appID] {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: %q", errAppStopping, appID)
+	}
+	if c.appStopping == nil {
+		c.appStopping = make(map[string]bool)
+	}
+	c.appStopping[appID] = true
+	c.mu.Unlock()
+
+	containerIDs := make([]string, 0, len(ctrs))
+	for _, ctr := range ctrs {
+		containerIDs = append(containerIDs, ctr.ID())
+	}
+	// See StopContainer: the bare group key alone does not serialize against
+	// per-service create/start operations. Acquire all concrete member keys
+	// before re-taking c.mu, preserving network-lock -> c.mu ordering.
+	unlockTargets := c.lockAdditionalNetworkOperations(name, containerIDs)
+	defer unlockTargets()
+
+	c.mu.Lock()
+	defer func() {
+		delete(c.appStopping, appID)
+		c.mu.Unlock()
+	}()
 
 	seen := make(map[string]bool)
 	var errs []error
