@@ -1083,13 +1083,13 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 					zap.Uint32("existing_fps", h.framerate))
 				return nil, 0, nil, status.Errorf(codes.InvalidArgument, "device already in use with different stream parameters")
 			}
-			if req.GetRaw() {
+			if req.GetCodec() == agentpb.VideoCodec_VIDEO_CODEC_RAW {
 				if refusal := h.rawRefusal(); refusal != nil {
 					s.mu.Unlock()
 					return nil, 0, nil, refusal
 				}
 			}
-			id, ch, err = h.subscribeKind(req.GetRaw())
+			id, ch, err = h.subscribeKind(req.GetCodec() == agentpb.VideoCodec_VIDEO_CODEC_RAW)
 			s.mu.Unlock()
 			if err != nil {
 				if st, _ := status.FromError(err); st.Code() == codes.Unavailable {
@@ -1155,7 +1155,7 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 		framerate: req.GetFramerate(),
 	}
 	// New hub: the first subscriber is always within the cap.
-	id, ch, _ = h.subscribeKind(req.GetRaw())
+	id, ch, _ = h.subscribeKind(req.GetCodec() == agentpb.VideoCodec_VIDEO_CODEC_RAW)
 	s.hubs[path] = h
 	s.mu.Unlock()
 
@@ -1455,7 +1455,7 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 	}
 
 	if src.kind == sourceIP {
-		if req.GetRaw() {
+		if req.GetCodec() == agentpb.VideoCodec_VIDEO_CODEC_RAW {
 			// Refused before a hub exists: the producer would only say the same
 			// thing after opening an RTSP session for nothing.
 			return errRawUnavailable("network cameras deliver encoded video only")

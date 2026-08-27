@@ -157,7 +157,7 @@ func TestGetOrCreateHub_RawRefusedUpFrontOnceProducerDeclined(t *testing.T) {
 	defer h.unsubscribe(id)
 	h.rawNotOffered("camera is captured as MJPEG at 1280x720; raw frames are not offered")
 
-	_, _, _, err = svc.getOrCreateHub(ctx, "/dev/video0", &agentpb.StreamVideoRequest{Raw: true})
+	_, _, _, err = svc.getOrCreateHub(ctx, "/dev/video0", &agentpb.StreamVideoRequest{Codec: agentpb.VideoCodec_VIDEO_CODEC_RAW})
 	if err == nil {
 		t.Fatal("raw request joined a hub that already declined raw")
 	}
@@ -413,7 +413,7 @@ func TestPlan_NoCropWithoutVideocropElement(t *testing.T) {
 // --- request shape ---
 
 func TestRequestsDeviceDefault(t *testing.T) {
-	if !requestsDeviceDefault(&agentpb.StreamVideoRequest{DeviceId: 4, Raw: true}) {
+	if !requestsDeviceDefault(&agentpb.StreamVideoRequest{DeviceId: 4, Codec: agentpb.VideoCodec_VIDEO_CODEC_RAW}) {
 		t.Error("device id and raw do not make a request explicit about size or rate")
 	}
 	if requestsDeviceDefault(&agentpb.StreamVideoRequest{Framerate: 25}) {

@@ -46,18 +46,22 @@ message StreamVideoRequest {
     uint32 width      = 2; // pixels; 0 = device default
     uint32 height     = 3; // pixels; 0 = device default
     uint32 framerate  = 4; // fps; 0 = device default
-    // Deliver the camera's capture frames uncompressed instead of encoded video.
-    // Every VideoFrame then carries exactly one complete frame with codec
-    // VIDEO_CODEC_RAW and raw_format describing its layout. Other subscribers of
-    // the same camera keep receiving encoded video: raw and encoded consumers
-    // share one capture, so an analytic reader (a thermal module's per-pixel
-    // temperatures, for instance) and a viewer no longer compete for the node.
+    // The requested delivery codec. The default, VIDEO_CODEC_H264 (0), delivers
+    // encoded video exactly as before this field existed. VIDEO_CODEC_RAW instead
+    // delivers the camera's capture frames uncompressed: every VideoFrame then
+    // carries exactly one complete frame with codec VIDEO_CODEC_RAW and raw_format
+    // describing its layout. Other subscribers of the same camera keep receiving
+    // encoded video: raw and encoded consumers share one capture, so an analytic
+    // reader (a thermal module's per-pixel temperatures, for instance) and a
+    // viewer no longer compete for the node.
     //
-    // Offered only for local cameras the agent captures in a raw pixel format;
-    // a camera streaming MJPEG or native H.264, a network camera, or one shared
-    // through PipeWire has no raw frames to give, and the request fails with
-    // FailedPrecondition (reason RAW_UNAVAILABLE) rather than waiting forever.
-    bool raw          = 5;
+    // VIDEO_CODEC_RAW is offered only for local cameras the agent captures in a
+    // raw pixel format; a camera streaming MJPEG or native H.264, a network
+    // camera, or one shared through PipeWire has no raw frames to give, and the
+    // request fails with FailedPrecondition (reason RAW_UNAVAILABLE) rather than
+    // waiting forever. A codec the agent cannot produce for a camera is refused
+    // the same way rather than silently downgraded.
+    VideoCodec codec  = 5;
 }
 
 // Credentials for a network camera. Stored on the device, never returned by any

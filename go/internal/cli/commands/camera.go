@@ -352,12 +352,16 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 				deviceID = chosen
 			}
 
+			codec := agentpb.VideoCodec_VIDEO_CODEC_H264
+			if raw {
+				codec = agentpb.VideoCodec_VIDEO_CODEC_RAW
+			}
 			req := &agentpb.StreamVideoRequest{
 				DeviceId:  deviceID,
 				Width:     width,
 				Height:    height,
 				Framerate: fps,
-				Raw:       raw,
+				Codec:     codec,
 			}
 			startStream := func() (videoStream, error) {
 				return conn.VideoService.StreamVideo(ctx, req)
