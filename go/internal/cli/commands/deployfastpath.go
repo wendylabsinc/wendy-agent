@@ -90,7 +90,14 @@ func computeDeployDesiredHash(buildInputHash string, appCfg *appconfig.AppConfig
 	runtimeCfg.Xcode = nil
 	runtimeCfg.Run = nil // effective arguments are carried separately below
 	runtimeCfg.Readiness = nil
-	runtimeCfg.Hooks = nil
+	hook := postStartAgentHook(appCfg)
+	if hook != "" {
+		runtimeCfg.Hooks = &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{Agent: hook},
+		}
+	} else {
+		runtimeCfg.Hooks = nil
+	}
 	runtimeCfg.Python = nil
 	runtimeCfg.Files = nil
 	runtimeCfg.Brewfile = ""
