@@ -1409,6 +1409,9 @@ func TestConnectAgentAtAddressWithProvisionedHint_SelfHealsExistingDiscoveryEntr
 		t.Fatalf("connectAgentAtAddressWithProvisionedHint: %v", err)
 	}
 	defer conn.Close()
+	if _, ok := conn.CachedAgentVersion(); !ok {
+		t.Fatal("successful plaintext liveness probe was not retained on the connection")
+	}
 
 	reloaded, err := discoverycache.LoadFrom(cachePath)
 	if err != nil {

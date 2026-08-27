@@ -251,10 +251,11 @@ func waitForCloudAgentRestart(ctx context.Context, auth *config.AuthConfig, asse
 			continue
 		}
 		probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
-		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		probeCancel()
 		attemptCancel()
 		if probeErr == nil {
+			conn.CacheAgentVersion(resp)
 			return conn, nil
 		}
 		conn.Close()
