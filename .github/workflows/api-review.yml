@@ -14,11 +14,12 @@ jobs:
     name: Detect API surface changes
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: runs-on,runner=2cpu-linux-x64
+    outputs:
+      api-changed: ${{ steps.detect.outputs.api-changed }}
+      risk: ${{ steps.detect.outputs.risk }}
     permissions:
       contents: read
       pull-requests: read
-      api-changed: ${{ steps.detect.outputs.api-changed }}
-      risk: ${{ steps.detect.outputs.risk }}
     steps:
       - name: Check out base
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
