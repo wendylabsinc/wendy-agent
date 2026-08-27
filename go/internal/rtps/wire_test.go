@@ -24,6 +24,21 @@ func dataSubmessage(readerID, writerID uint32, sn uint64, payload []byte) []byte
 	return append(out, body...)
 }
 
+func dataFragSubmessage(readerID, writerID uint32, sn uint64, start uint32, count, fragmentSize uint16, sampleSize uint32, payload []byte) []byte {
+	body := make([]byte, 32)
+	binary.LittleEndian.PutUint16(body[2:4], 28)
+	binary.BigEndian.PutUint32(body[4:8], readerID)
+	binary.BigEndian.PutUint32(body[8:12], writerID)
+	binary.LittleEndian.PutUint32(body[12:16], uint32(sn>>32))
+	binary.LittleEndian.PutUint32(body[16:20], uint32(sn))
+	binary.LittleEndian.PutUint32(body[20:24], start)
+	binary.LittleEndian.PutUint16(body[24:26], count)
+	binary.LittleEndian.PutUint16(body[26:28], fragmentSize)
+	binary.LittleEndian.PutUint32(body[28:32], sampleSize)
+	body = append(body, payload...)
+	return buildSubmessage(subDATAFRAG, 0, body)
+}
+
 func rtpsDatagram(prefix GUIDPrefix, subs ...[]byte) []byte {
 	out := []byte{'R', 'T', 'P', 'S', 2, 2, 0x01, 0x0f}
 	out = append(out, prefix[:]...)
@@ -115,6 +130,53 @@ func TestParseData_SequenceNumberIsHighLow(t *testing.T) {
 	}
 	if d.WriterSN != SequenceNumber(1<<32|2) {
 		t.Errorf("WriterSN = %d, want %d", d.WriterSN, int64(1<<32|2))
+	}
+}
+
+func TestParseDataFrag(t *testing.T) {
+	sub := dataFragSubmessage(0, 0x00032102, 1<<32|7, 3, 2, 1024, 5000, []byte("fragment bytes"))
+	msg, err := ParseMessage(rtpsDatagram(GUIDPrefix{}, sub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := ParseDataFrag(msg.Submessages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.WriterID != 0x00032102 || f.WriterSN != SequenceNumber(1<<32|7) ||
+		f.FragmentStartingNum != 3 || f.FragmentsInSubmessage != 2 ||
+		f.FragmentSize != 1024 || f.SampleSize != 5000 || string(f.Payload) != "fragment bytes" {
+		t.Fatalf("parsed DATA_FRAG = %+v payload=%q", f, f.Payload)
+	}
+}
+
+func TestParticipant_ReassemblesDataFragOutOfOrder(t *testing.T) {
+	writer := GUID{EntityID: 0x00032102}
+	p := &Participant{
+		subWriters: map[GUID]struct{}{writer: {}},
+		fragments:  map[fragmentKey]*fragmentSet{},
+		samples:    make(chan Sample, 1),
+		unmatched:  map[GUID]int{},
+	}
+	p.handleUserDataFrag(writer.Prefix, &DataFragSubmessage{
+		WriterID: writer.EntityID, WriterSN: 9, FragmentStartingNum: 2,
+		FragmentsInSubmessage: 1, FragmentSize: 4, SampleSize: 10, Payload: []byte("efgh"),
+	})
+	p.handleUserDataFrag(writer.Prefix, &DataFragSubmessage{
+		WriterID: writer.EntityID, WriterSN: 9, FragmentStartingNum: 1,
+		FragmentsInSubmessage: 1, FragmentSize: 4, SampleSize: 10, Payload: []byte("abcd"),
+	})
+	p.handleUserDataFrag(writer.Prefix, &DataFragSubmessage{
+		WriterID: writer.EntityID, WriterSN: 9, FragmentStartingNum: 3,
+		FragmentsInSubmessage: 1, FragmentSize: 4, SampleSize: 10, Payload: []byte("ij"),
+	})
+	select {
+	case sample := <-p.samples:
+		if string(sample.Payload) != "abcdefghij" {
+			t.Fatalf("payload = %q", sample.Payload)
+		}
+	default:
+		t.Fatal("completed fragmented sample was not delivered")
 	}
 }
 

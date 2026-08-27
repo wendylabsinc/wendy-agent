@@ -1,6 +1,6 @@
 ---
 title: Camera Access
-description: Use USB and CSI cameras from WendyOS apps
+description: Use USB, CSI, IP, and ROS 2 cameras from WendyOS apps
 ---
 
 ## Camera Access
@@ -23,7 +23,7 @@ Use the device camera commands to see which cameras WendyOS can see:
 wendy device camera list
 ```
 
-The output includes a device ID, transport type (`usb`, `csi`, or `ip`), name, and — for local cameras — a path such as `/dev/video0`. Network cameras show their address instead of a path; see [IP Cameras](#ip-cameras) below. Use the ID with view commands:
+The output includes a device ID, transport type (`usb`, `csi`, `ip`, or `ros2`), name, and — for local cameras — a path such as `/dev/video0`. Network cameras show their address, while ROS 2 cameras show their topic. Use the ID with view commands:
 
 ```bash
 wendy device camera view --id 0
@@ -46,6 +46,32 @@ For broad hardware inspection, filter the device capability list:
 ```bash
 wendy device hardware list --category camera
 ```
+
+## ROS 2 Camera Topics
+
+The WendyOS agent automatically presents ROS 2 video publishers as ordinary
+cameras. It recognizes `sensor_msgs/msg/Image` and
+`sensor_msgs/msg/CompressedImage`, allocates each topic a stable ID from
+`128`–`199`, and feeds a matching `/dev/video<ID>` v4l2loopback device. The
+topic then works with the same commands as a USB camera:
+
+```bash
+wendy device camera list
+wendy device camera view --id 128
+```
+
+App-local ROS 2 graphs stay app-local. The agent creates its DDS reader inside
+the running app's network namespace instead of changing the app's discovery
+scope. Host/robot feeds on domain 0 are discovered on wired interfaces.
+
+Unitree Go2 robots receive special handling: the native
+`unitree_go/msg/Go2FrontVideoData` publisher on `/frontvideostream` appears as
+**Unitree Go2 front camera**. Wendy uses its 720p JPEG field when available and
+falls back to the lower-resolution fields on firmware that leaves it empty.
+
+ROS 2 camera mirroring requires the WendyOS `v4l2loopback` module. If the
+running image does not include it, the agent logs the missing-module error and
+the ROS 2 feed cannot be opened as a camera.
 
 ## IP Cameras
 
