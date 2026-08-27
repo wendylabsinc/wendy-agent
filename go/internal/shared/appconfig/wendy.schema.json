@@ -348,6 +348,27 @@
         },
         {
           "properties": {
+            "type": { "const": "data" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Submit structured event and prediction records to Wendy Data over the app-private data socket (WENDY_DATA_SOCKET). Never exposes the administrative agent socket."
+        },
+        {
+          "properties": {
+            "type": { "const": "sensors" },
+            "allowlist": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Sensor source ids this app may subscribe to, as reported by `wendy data sources` (for example \"v4l2:/dev/video0\"). Omit to allow every subscribable source."
+            }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Subscribe read-only to agent-hosted sensor streams over the app-private sensor socket (WENDY_SENSOR_SOCKET), receiving identified samples that the active episode records under the same identifiers. Grants no device nodes and never exposes the administrative agent socket."
+        },
+        {
+          "properties": {
             "type": { "const": "admin" }
           },
           "required": ["type"],
