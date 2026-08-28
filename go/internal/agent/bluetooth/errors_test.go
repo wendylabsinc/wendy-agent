@@ -111,6 +111,14 @@ func TestIsTransientBluetoothError(t *testing.T) {
 		{"le busy is transient", "org.bluez.Error.Failed", "le-connection-busy", true},
 		{"adapter InProgress is transient", "org.bluez.Error.InProgress", "", true},
 		{"bus NoReply is transient", "org.freedesktop.DBus.Error.NoReply", "", true},
+		// A canceled attempt is a collision with another connect on the same
+		// device — observed on real hardware with a stale bond, where
+		// bluetoothd's background auto-connect retries the advertising device
+		// every ~2s and the explicit connect loses the race before it can see
+		// the real (stale-bond) error. Retrying lets the explicit attempt run
+		// to completion and surface that error so recovery can engage.
+		{"br canceled is transient", "org.bluez.Error.Failed", "br-connection-canceled", true},
+		{"le abort by local is transient", "org.bluez.Error.Failed", "le-connection-abort-by-local", true},
 
 		// Reasons that indicate a real, non-transient condition must not retry.
 		{"br refused is not transient", "org.bluez.Error.Failed", "br-connection-refused", false},

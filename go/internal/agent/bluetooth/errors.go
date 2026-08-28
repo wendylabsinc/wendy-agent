@@ -60,9 +60,14 @@ func friendlyBluetoothError(name, message string) (text string, notFound, ok boo
 // often fires as a momentary race — e.g. a speaker still tearing down its
 // previous connection — rather than a permanent rejection, so a short retry
 // frequently succeeds. org.bluez.Error.InProgress and a bus-level NoReply are
-// likewise transient by definition. Every other classified reason (refused,
-// timeout, adapter-not-powered, authentication rejected, device not found,
-// ...) reflects a real condition that a bare retry will not fix.
+// likewise transient by definition. A canceled attempt
+// (br-connection-canceled / le-connection-abort-by-local) is a collision with
+// another connect on the same device — in the stale-bond scenario bluetoothd's
+// own background auto-connect races the explicit one every ~2s — and retrying
+// lets the explicit attempt run to completion and observe the real error.
+// Every other classified reason (refused, timeout, adapter-not-powered,
+// authentication rejected, device not found, ...) reflects a real condition
+// that a bare retry will not fix.
 func isTransientBluetoothError(name, message string) bool {
 	switch name {
 	case "org.bluez.Error.InProgress", "org.freedesktop.DBus.Error.NoReply":
@@ -71,7 +76,9 @@ func isTransientBluetoothError(name, message string) bool {
 		return strings.Contains(message, "br-connection-unknown") ||
 			strings.Contains(message, "le-connection-unknown") ||
 			strings.Contains(message, "br-connection-busy") ||
-			strings.Contains(message, "le-connection-busy")
+			strings.Contains(message, "le-connection-busy") ||
+			strings.Contains(message, "br-connection-canceled") ||
+			strings.Contains(message, "le-connection-abort-by-local")
 	}
 	return false
 }

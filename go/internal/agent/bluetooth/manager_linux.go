@@ -808,33 +808,32 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 		if name, message, ok := dbusErrorInfo(connectErr); ok && pairSkipped && isStaleBondBluetoothError(name, message) {
 			m.logger.Warn("Connect failed with a stale-bond error; re-pairing from scratch",
 				zap.String("address", address), zap.Error(connectErr))
-			return m.repairFreshly(ctx, conn, address, trustAfterRepair)
+			return m.repairFreshly(ctx, conn, address, trustAfterRepair, isHIDDevice(props))
 		}
 		return false, m.connectFailureError(address, pairErr, connectErr)
 	}
 
 	// A HID peripheral is only really connected once the kernel has an input
-	// device for it. When the connect leaned on an existing bond, verify that
-	// before reporting success: a peripheral that lost its key accepts the
-	// link and then waits for pairing while encryption silently fails —
-	// Connected=yes, no input device, and the old flow reported success.
-	if pairSkipped && isHIDDevice(props) && !waitForInputDevice(ctx, address, inputArrivalTimeout) {
+	// device for it. Whenever pairing was requested, verify that before
+	// reporting success: over an existing bond, a peripheral that lost its key
+	// accepts the link and then waits for pairing while encryption silently
+	// fails — Connected=yes, no input device, and the old flow reported
+	// success — and even a fresh pair has been observed reporting success a
+	// second before the kernel device appeared. A connect without pairing is
+	// not gated: its recovery would remove a bond the caller never asked to
+	// touch.
+	if pair && isHIDDevice(props) && !waitForInputDevice(ctx, address, inputArrivalTimeout) {
 		m.logger.Warn("HID device connected but produced no input device; re-pairing from scratch",
 			zap.String("address", address))
-		return m.repairFreshly(ctx, conn, address, trustAfterRepair)
+		return m.repairFreshly(ctx, conn, address, trustAfterRepair, true)
 	}
 
 	// The device's live Paired property is the source of truth: pairing may
 	// have completed implicitly during the connect, or been skipped by the
 	// fallback above. Fall back to the computed state if the read fails.
 	paired := boolProp(props, "Paired") || (pair && pairErr == nil)
-	if call := device.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, deviceIface, "Paired"); call.Err == nil {
-		var v dbus.Variant
-		if call.Store(&v) == nil {
-			if b, ok := v.Value().(bool); ok {
-				paired = b
-			}
-		}
+	if live, ok := liveBoolProp(ctx, device, "Paired"); ok {
+		paired = live
 	}
 
 	if pairErr != nil {
@@ -849,7 +848,11 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 // in the stale-bond scenario it is — the peripheral is sitting in pairing
 // mode), then pairs and connects from scratch. For HID peripherals the fresh
 // connect must also produce a kernel input device before success is reported.
-func (m *BlueZManager) repairFreshly(ctx context.Context, conn *dbus.Conn, address string, trust bool) (bool, error) {
+// wasHID carries the caller's HID classification, computed from the cached
+// device whose properties were complete: the re-discovered device may have
+// advertised only a subset of its UUIDs (and Icon is optional), so deciding
+// from the fresh snapshot alone could skip the input-device check.
+func (m *BlueZManager) repairFreshly(ctx context.Context, conn *dbus.Conn, address string, trust, wasHID bool) (bool, error) {
 	devicePath, adapterPath, err := lookupCachedDevice(ctx, conn, address)
 	if err != nil {
 		return false, fmt.Errorf("locating stale pairing for %s: %w", address, err)
@@ -884,7 +887,7 @@ func (m *BlueZManager) repairFreshly(ctx context.Context, conn *dbus.Conn, addre
 	if connectErr := m.connectDevice(ctx, device, address, stringsProp(props, "UUIDs")); connectErr != nil {
 		return false, m.wrapBluetoothError("connecting to", address, connectErr)
 	}
-	if isHIDDevice(props) && !waitForInputDevice(ctx, address, inputArrivalTimeout) {
+	if (wasHID || isHIDDevice(props)) && !waitForInputDevice(ctx, address, inputArrivalTimeout) {
 		return false, fmt.Errorf("paired and connected to %s but no input device appeared — power-cycle the device and retry", address)
 	}
 
