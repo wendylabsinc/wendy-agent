@@ -206,4 +206,13 @@ protoc \
     wendy_com_tunnel_msg.proto \
     wendy_com_tunnel_service.proto
 
+echo "Generating Wendy Lite sensorlink protos..."
+SENSORLINK_PKG="$MODULE/go/proto/gen/sensorlinkpb"
+mkdir -p "$GEN_DIR/sensorlinkpb"
+protoc \
+    --proto_path="$PROTO_DIR" \
+    --go_out="$GEN_DIR/sensorlinkpb" \
+    --go_opt=module="$SENSORLINK_PKG" \
+    "$PROTO_DIR/wendy/lite/sensorlink.proto"
+
 echo "Proto generation complete!"
