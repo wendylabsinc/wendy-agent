@@ -2,9 +2,22 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v7.35.1
-// source: wendy/agent/services/v2/sensor_service.proto
+// source: wendy/agent/apps/v1/sensor_service.proto
 
-package agentpbv2
+// Everything in the wendy.agent.apps package is APP-FACING: it is reachable by
+// an entitled application over a per-app private unix socket that the agent
+// creates for that app alone, and it is the only surface an application can
+// reach. Nothing here is part of the device control plane.
+//
+// The control-plane counterpart is wendy.agent.services.v2, served over device
+// mutual Transport Layer Security alongside provisioning, WiFi, container and
+// update services. Applications cannot reach that package at all. The two live
+// in separate proto packages precisely so the trust boundary is visible in the
+// protocol rather than left to a comment or a runtime policy check: if a
+// definition is in this package it is exposed to apps, and if it is not in this
+// package it is not.
+
+package appspbv1
 
 import (
 	context "context"
@@ -19,8 +32,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SensorService_Sources_FullMethodName   = "/wendy.agent.services.v2.SensorService/Sources"
-	SensorService_Subscribe_FullMethodName = "/wendy.agent.services.v2.SensorService/Subscribe"
+	SensorService_Sources_FullMethodName   = "/wendy.agent.apps.v1.SensorService/Sources"
+	SensorService_Subscribe_FullMethodName = "/wendy.agent.apps.v1.SensorService/Subscribe"
 )
 
 // SensorServiceClient is the client API for SensorService service.
@@ -37,7 +50,8 @@ const (
 // A gRPC server exposes services, not methods, so keeping Subscribe on
 // DataService would put Start, Stop, Download, and CampaignDeploy on the same
 // socket and leave a per-method interceptor allowlist as the only barrier. A
-// separate service makes the boundary structural instead of a policy check.
+// separate service, in a separate package, makes the boundary structural
+// instead of a policy check.
 //
 // Samples are identified by (source_id, sample_id). sample_id is assigned by
 // the producer that feeds every consumer of that source, so the sample a model
@@ -105,7 +119,8 @@ type SensorService_SubscribeClient = grpc.ServerStreamingClient[SensorSample]
 // A gRPC server exposes services, not methods, so keeping Subscribe on
 // DataService would put Start, Stop, Download, and CampaignDeploy on the same
 // socket and leave a per-method interceptor allowlist as the only barrier. A
-// separate service makes the boundary structural instead of a policy check.
+// separate service, in a separate package, makes the boundary structural
+// instead of a policy check.
 //
 // Samples are identified by (source_id, sample_id). sample_id is assigned by
 // the producer that feeds every consumer of that source, so the sample a model
@@ -190,7 +205,7 @@ type SensorService_SubscribeServer = grpc.ServerStreamingServer[SensorSample]
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var SensorService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "wendy.agent.services.v2.SensorService",
+	ServiceName: "wendy.agent.apps.v1.SensorService",
 	HandlerType: (*SensorServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -205,5 +220,5 @@ var SensorService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "wendy/agent/services/v2/sensor_service.proto",
+	Metadata: "wendy/agent/apps/v1/sensor_service.proto",
 }

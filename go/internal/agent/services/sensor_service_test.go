@@ -13,6 +13,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	appspbv1 "github.com/wendylabsinc/wendy/go/proto/gen/appspb/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -89,13 +90,13 @@ func sensorScript(sourceID string, count int) []SensorSample {
 // delivered, cancelling the stream the way a real client disconnecting does. The
 // provider is driven one sample at a time so the assertion is on the contract
 // and not on a race with the fan-in queue.
-func subscribeAll(t *testing.T, service *SensorService, provider *fakeSensorProvider, req *agentpbv2.SensorSubscribeRequest, want int) []*agentpbv2.SensorSample {
+func subscribeAll(t *testing.T, service *SensorService, provider *fakeSensorProvider, req *appspbv1.SensorSubscribeRequest, want int) []*appspbv1.SensorSample {
 	t.Helper()
 	provider.gate = make(chan struct{}, 1)
 	provider.gate <- struct{}{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream := &fakeServerStream[agentpbv2.SensorSample]{ctx: ctx}
+	stream := &fakeServerStream[appspbv1.SensorSample]{ctx: ctx}
 	stream.onSend = func(count int) error {
 		if count >= want {
 			// Cancelled after the send returns, so the sample is already in the
@@ -120,7 +121,7 @@ func TestSubscribeStreamsIdentifiedSamples(t *testing.T) {
 	service := NewSensorService("sh.wendy.test", nil)
 	service.AddProvider(provider)
 
-	sent := subscribeAll(t, service, provider, &agentpbv2.SensorSubscribeRequest{SourceIds: []string{"v4l2:/dev/video0"}}, 3)
+	sent := subscribeAll(t, service, provider, &appspbv1.SensorSubscribeRequest{SourceIds: []string{"v4l2:/dev/video0"}}, 3)
 	if len(sent) != 3 {
 		t.Fatalf("delivered %d samples, want 3", len(sent))
 	}
@@ -149,13 +150,13 @@ func TestSubscribeStreamsIdentifiedSamples(t *testing.T) {
 func TestSubscribeRejectsMalformedRequests(t *testing.T) {
 	service := NewSensorService("sh.wendy.test", nil)
 	service.AddProvider(&fakeSensorProvider{sourceID: "a"})
-	for name, req := range map[string]*agentpbv2.SensorSubscribeRequest{
+	for name, req := range map[string]*appspbv1.SensorSubscribeRequest{
 		"no sources": {},
 		"empty id":   {SourceIds: []string{""}},
 		"unknown id": {SourceIds: []string{"nope"}},
 		"too many":   {SourceIds: []string{"1", "2", "3", "4", "5", "6", "7", "8", "9"}},
 	} {
-		stream := &fakeServerStream[agentpbv2.SensorSample]{ctx: context.Background()}
+		stream := &fakeServerStream[appspbv1.SensorSample]{ctx: context.Background()}
 		err := service.Subscribe(req, stream)
 		if err == nil {
 			t.Errorf("%s: Subscribe accepted the request", name)
@@ -224,7 +225,7 @@ func TestSubscribeTeesDeliveredSamplesIntoActiveEpisode(t *testing.T) {
 	provider := &fakeSensorProvider{sourceID: source.ID, samples: sensorScript(source.ID, 4)}
 	service.AddProvider(provider)
 
-	sent := subscribeAll(t, service, provider, &agentpbv2.SensorSubscribeRequest{SourceIds: []string{source.ID}, Model: "yolov8n"}, 4)
+	sent := subscribeAll(t, service, provider, &appspbv1.SensorSubscribeRequest{SourceIds: []string{source.ID}, Model: "yolov8n"}, 4)
 	if len(sent) != 4 {
 		t.Fatalf("delivered %d samples", len(sent))
 	}
@@ -278,7 +279,7 @@ func TestTeeReportsPolicySubsetHonestly(t *testing.T) {
 	service := NewSensorService("sh.wendy.test", manager)
 	provider := &fakeSensorProvider{sourceID: source.ID, samples: sensorScript(source.ID, 2)}
 	service.AddProvider(provider)
-	subscribeAll(t, service, provider, &agentpbv2.SensorSubscribeRequest{SourceIds: []string{source.ID}}, 2)
+	subscribeAll(t, service, provider, &appspbv1.SensorSubscribeRequest{SourceIds: []string{source.ID}}, 2)
 
 	manifest, err := manager.Stop(data.AdHocEpisodeKey)
 	if err != nil {
@@ -307,7 +308,7 @@ func TestTeeRecordsSourceTheEpisodeDoesNotCapture(t *testing.T) {
 	service := NewSensorService("sh.wendy.test", manager)
 	provider := &fakeSensorProvider{sourceID: source.ID, samples: sensorScript(source.ID, 2)}
 	service.AddProvider(provider)
-	subscribeAll(t, service, provider, &agentpbv2.SensorSubscribeRequest{SourceIds: []string{source.ID}}, 2)
+	subscribeAll(t, service, provider, &appspbv1.SensorSubscribeRequest{SourceIds: []string{source.ID}}, 2)
 
 	if entries := readLedger(t, dir); len(entries) != 2 {
 		t.Fatalf("ledger holds %d entries, want 2", len(entries))
@@ -334,7 +335,7 @@ func TestPredictionInputCorrelationReachesTheManifest(t *testing.T) {
 	service := NewSensorService("sh.wendy.test", manager)
 	provider := &fakeSensorProvider{sourceID: source.ID, samples: sensorScript(source.ID, 3)}
 	service.AddProvider(provider)
-	subscribeAll(t, service, provider, &agentpbv2.SensorSubscribeRequest{SourceIds: []string{source.ID}}, 3)
+	subscribeAll(t, service, provider, &appspbv1.SensorSubscribeRequest{SourceIds: []string{source.ID}}, 3)
 
 	bootID := data.BootID()
 	_, now, _, err := data.CaptureReceipt()
@@ -413,17 +414,17 @@ func TestPredictionInputRefsAreBounded(t *testing.T) {
 // grant: the socket must refuse any method outside SensorService even if
 // something else is ever registered on that server.
 func TestSensorSocketAuthorizesOnlySensorService(t *testing.T) {
-	if err := authorizeSensorMethod(agentpbv2.SensorService_Subscribe_FullMethodName); err != nil {
+	if err := authorizeSensorMethod(appspbv1.SensorService_Subscribe_FullMethodName); err != nil {
 		t.Fatalf("Subscribe refused: %v", err)
 	}
-	if err := authorizeSensorMethod(agentpbv2.SensorService_Sources_FullMethodName); err != nil {
+	if err := authorizeSensorMethod(appspbv1.SensorService_Sources_FullMethodName); err != nil {
 		t.Fatalf("Sources refused: %v", err)
 	}
 	for _, method := range []string{
 		agentpbv2.DataService_Start_FullMethodName,
 		agentpbv2.DataService_CampaignDeploy_FullMethodName,
 		agentpbv2.DataService_Download_FullMethodName,
-		"/wendy.agent.services.v2.SensorServiceEvil/Subscribe",
+		"/wendy.agent.apps.v1.SensorServiceEvil/Subscribe",
 	} {
 		if err := authorizeSensorMethod(method); status.Code(err) != codes.PermissionDenied {
 			t.Errorf("method %s was authorized on the sensor socket (err %v)", method, err)
@@ -443,11 +444,11 @@ func TestSensorSourcesMarksUnsubscribableSources(t *testing.T) {
 	})
 	service := NewSensorService("sh.wendy.test", manager)
 	service.AddProvider(&fakeSensorProvider{sourceID: "v4l2:/dev/video0"})
-	response, err := service.Sources(context.Background(), &agentpbv2.SensorSourcesRequest{})
+	response, err := service.Sources(context.Background(), &appspbv1.SensorSourcesRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := map[string]*agentpbv2.SensorSource{}
+	found := map[string]*appspbv1.SensorSource{}
 	for _, source := range response.GetSources() {
 		found[source.GetId()] = source
 	}
@@ -483,7 +484,7 @@ func TestSensorAllowlistNarrowsTheGrant(t *testing.T) {
 	service.AddProvider(&fakeSensorProvider{sourceID: "v4l2:/dev/video1", samples: sensorScript("v4l2:/dev/video1", 1)})
 	service.SetSourcePermission(func(id string) bool { return id == "v4l2:/dev/video0" })
 
-	response, err := service.Sources(context.Background(), &agentpbv2.SensorSourcesRequest{})
+	response, err := service.Sources(context.Background(), &appspbv1.SensorSourcesRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,8 +494,8 @@ func TestSensorAllowlistNarrowsTheGrant(t *testing.T) {
 		}
 	}
 
-	stream := &fakeServerStream[agentpbv2.SensorSample]{ctx: context.Background()}
-	err = service.Subscribe(&agentpbv2.SensorSubscribeRequest{SourceIds: []string{"v4l2:/dev/video1"}}, stream)
+	stream := &fakeServerStream[appspbv1.SensorSample]{ctx: context.Background()}
+	err = service.Subscribe(&appspbv1.SensorSubscribeRequest{SourceIds: []string{"v4l2:/dev/video1"}}, stream)
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("Subscribe to a source outside the allowlist returned %v, want PermissionDenied", err)
 	}
@@ -502,7 +503,7 @@ func TestSensorAllowlistNarrowsTheGrant(t *testing.T) {
 		t.Fatalf("a refused subscription still delivered %d samples", len(stream.sent))
 	}
 	// The allowed source still works.
-	if got := subscribeAll(t, service, allowed, &agentpbv2.SensorSubscribeRequest{SourceIds: []string{"v4l2:/dev/video0"}}, 1); len(got) != 1 {
+	if got := subscribeAll(t, service, allowed, &appspbv1.SensorSubscribeRequest{SourceIds: []string{"v4l2:/dev/video0"}}, 1); len(got) != 1 {
 		t.Fatalf("allowlisted source delivered %d samples, want 1", len(got))
 	}
 }

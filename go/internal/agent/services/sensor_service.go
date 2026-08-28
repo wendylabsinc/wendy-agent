@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
-	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	appspbv1 "github.com/wendylabsinc/wendy/go/proto/gen/appspb/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -26,7 +26,7 @@ const maxSubscribeSources = 8
 const sensorFanInBuffer = 2
 
 // SensorSample is one sample handed from a producer to a model subscriber. It
-// is the harness-internal form of agentpbv2.SensorSample.
+// is the harness-internal form of appspbv1.SensorSample.
 type SensorSample struct {
 	SourceID string
 	SampleID uint64
@@ -72,7 +72,7 @@ type sensorProvider interface {
 // the request arrived on (the private mount is the credential, exactly as for
 // the System API socket), never from the request body.
 type SensorService struct {
-	agentpbv2.UnimplementedSensorServiceServer
+	appspbv1.UnimplementedSensorServiceServer
 	appID   string
 	manager *data.Manager
 	// permits reports whether this app is allowed to reach a source id. It
@@ -138,11 +138,11 @@ func (s *SensorService) providerFor(sourceID string) sensorProvider {
 	return nil
 }
 
-func (s *SensorService) Sources(ctx context.Context, _ *agentpbv2.SensorSourcesRequest) (*agentpbv2.SensorSourcesResponse, error) {
+func (s *SensorService) Sources(ctx context.Context, _ *appspbv1.SensorSourcesRequest) (*appspbv1.SensorSourcesResponse, error) {
 	if s.manager == nil {
 		return nil, status.Error(codes.Unavailable, "sensor sources are unavailable: no capture manager is configured")
 	}
-	response := &agentpbv2.SensorSourcesResponse{}
+	response := &appspbv1.SensorSourcesResponse{}
 	for _, source := range s.manager.Sources(ctx) {
 		if !s.permitted(source.ID) {
 			// An allowlisted app must not even learn what else the device has.
@@ -155,7 +155,7 @@ func (s *SensorService) Sources(ctx context.Context, _ *agentpbv2.SensorSourcesR
 			// tell "not available to models" from "does not exist".
 			detail = appendDetail(detail, "not subscribable: this source has no producer that can multiplex to a model subscriber yet")
 		}
-		response.Sources = append(response.Sources, &agentpbv2.SensorSource{
+		response.Sources = append(response.Sources, &appspbv1.SensorSource{
 			Id: source.ID, Kind: source.Kind, ClockDomain: source.ClockDomain,
 			Healthy: source.Healthy, Detail: detail, Subscribable: subscribable,
 		})
@@ -179,7 +179,7 @@ func appendDetail(detail, note string) string {
 // losing the record of a delivered sample, but it would let a stream that dies
 // mid-send leave the episode asserting the model saw a frame it never received,
 // and a false record is worse than a missing one.
-func (s *SensorService) Subscribe(req *agentpbv2.SensorSubscribeRequest, stream agentpbv2.SensorService_SubscribeServer) error {
+func (s *SensorService) Subscribe(req *appspbv1.SensorSubscribeRequest, stream appspbv1.SensorService_SubscribeServer) error {
 	sourceIDs, err := normalizeSubscribeSources(req.GetSourceIds())
 	if err != nil {
 		return err
@@ -285,8 +285,8 @@ func (s *SensorService) recordDelivered(model string, sample SensorSample) {
 	}
 }
 
-func sensorSampleMessage(sample SensorSample) *agentpbv2.SensorSample {
-	return &agentpbv2.SensorSample{
+func sensorSampleMessage(sample SensorSample) *appspbv1.SensorSample {
+	return &appspbv1.SensorSample{
 		SourceId: sample.SourceID, SampleId: sample.SampleID,
 		BoottimeNanos: sample.BootNanos, TimestampUncertaintyNanos: sample.UncertaintyNanos,
 		Payload: sample.Payload, Encoding: sample.Encoding,
