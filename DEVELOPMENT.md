@@ -376,9 +376,17 @@ wendy device camera list
 wendy device camera view --id 128
 ```
 
-Raw ROS images are converted to MJPEG; compressed JPEG feeds, including the
-Go2's 720p field, stay compressed on the way into the loopback device. Large
-DDS samples are reassembled from bounded RTPS DATA_FRAG sets in the agent.
+Raw ROS images are converted to MJPEG and compressed JPEG feeds stay
+compressed. Go2 firmware may publish either the SDK-declared JPEG fields or a
+resolution-tagged Annex-B H.264 access unit; both stay encoded on the way into
+the loopback device. Large DDS samples are reassembled from bounded RTPS
+DATA_FRAG sets in the agent.
+
+ROS 2 cameras require v4l2loopback 0.15.x's dynamic control API (the WendyOS
+recipe is pinned to 0.15.4). Ubuntu 22.04's `v4l2loopback-dkms` 0.12.7 package
+does not provide the compatible `/dev/v4l2loopback` interface. A previously
+failed availability check is retried, so loading the compatible module does
+not require restarting `wendy-agent`.
 
 ### Network cameras
 

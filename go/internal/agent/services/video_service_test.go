@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -16,6 +17,16 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestV4L2FormatMatches64BitUAPI(t *testing.T) {
+	var format v4l2Format
+	if got := unsafe.Sizeof(format); got != 208 {
+		t.Fatalf("sizeof(v4l2Format) = %d, want 208", got)
+	}
+	if got := unsafe.Offsetof(format.Width); got != 8 {
+		t.Fatalf("offsetof(v4l2Format.Width) = %d, want 8", got)
+	}
+}
 
 // mustBuildGStreamerArgs calls buildGStreamerArgs for the USB/v4l2src path and
 // fails the test if it returns an error. CSI-specific behaviour is covered by

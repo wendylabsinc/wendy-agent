@@ -14,6 +14,7 @@ import (
 const (
 	v4l2BufTypeVideoOutput = 2
 	v4l2PixFmtMJPEG        = 0x47504a4d // MJPG
+	v4l2PixFmtH264         = 0x34363248 // H264
 	v4l2FieldNone          = 1
 	vidiocSFmt             = 0xc0d05605
 )
@@ -51,13 +52,19 @@ type frameWriter struct {
 	path          string
 	file          *os.File
 	width, height int
+	codec         Codec
 }
 
 func newFrameWriter(path string) cameraWriter { return &frameWriter{path: path} }
 
-func (w *frameWriter) WriteJPEG(frame []byte, width, height int) error {
+func (w *frameWriter) WriteFrame(frame Frame) error {
+	width, height := frame.Width, frame.Height
 	if width <= 0 || height <= 0 || width > 8192 || height > 8192 {
 		return fmt.Errorf("invalid frame dimensions %dx%d", width, height)
+	}
+	pixelFormat, err := v4l2PixelFormat(frame.Codec)
+	if err != nil {
+		return err
 	}
 	if w.file == nil {
 		fd, err := unix.Open(w.path, unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
@@ -66,34 +73,50 @@ func (w *frameWriter) WriteJPEG(frame []byte, width, height int) error {
 		}
 		w.file = os.NewFile(uintptr(fd), w.path)
 	}
-	if w.width != width || w.height != height {
+	if w.width != width || w.height != height || w.codec != frame.Codec {
+		sizeImage := width * height * 3
+		if len(frame.Data) > sizeImage {
+			sizeImage = len(frame.Data)
+		}
 		format := v4l2Format{
 			Type:        v4l2BufTypeVideoOutput,
 			Width:       uint32(width),
 			Height:      uint32(height),
-			PixelFormat: v4l2PixFmtMJPEG,
+			PixelFormat: pixelFormat,
 			Field:       v4l2FieldNone,
 			// Compressed frame sizes vary with scene complexity. Reserve the
 			// uncompressed RGB bound rather than sizing the loopback buffer from
 			// the first (possibly unusually small) JPEG.
-			SizeImage: uint32(width * height * 3),
+			SizeImage: uint32(sizeImage),
 		}
 		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, w.file.Fd(), vidiocSFmt, uintptr(unsafe.Pointer(&format))); errno != 0 {
 			return fmt.Errorf("configuring ROS 2 camera loopback %s: %w", w.path, errno)
 		}
-		w.width, w.height = width, height
+		w.width, w.height, w.codec = width, height, frame.Codec
 	}
-	for len(frame) > 0 {
-		n, err := w.file.Write(frame)
+	data := frame.Data
+	for len(data) > 0 {
+		n, err := w.file.Write(data)
 		if err != nil {
 			return fmt.Errorf("writing ROS 2 camera frame: %w", err)
 		}
 		if n == 0 {
 			return errors.New("writing ROS 2 camera frame made no progress")
 		}
-		frame = frame[n:]
+		data = data[n:]
 	}
 	return nil
+}
+
+func v4l2PixelFormat(codec Codec) (uint32, error) {
+	switch codec {
+	case CodecMJPEG:
+		return v4l2PixFmtMJPEG, nil
+	case CodecH264:
+		return v4l2PixFmtH264, nil
+	default:
+		return 0, fmt.Errorf("unsupported ROS 2 loopback codec %d", codec)
+	}
 }
 
 func (w *frameWriter) Close() error {

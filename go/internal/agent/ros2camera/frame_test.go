@@ -130,6 +130,38 @@ func TestDecodeGo2FrontVideoPrefers720p(t *testing.T) {
 	}
 }
 
+func TestDecodeGo2FrontVideoH264FirmwareLayout(t *testing.T) {
+	// This is the minimal form of the payload observed from a physical Go2:
+	// time_frame, resolution height, one H.264 access unit. The encapsulation
+	// option records the single trailing CDR padding byte.
+	want := []byte{0x00, 0x00, 0x01, 0x41, 0xe0, 0x01, 0x80, 0x03, 0x02, 0x7f, 0xdb}
+	c := newCDRBuilder()
+	c.b[3] = 1
+	c.u64(0x00000003e12398)
+	c.u32(360)
+	c.bytes(want)
+	c.b = append(c.b, 0)
+
+	got, err := DecodeFrame(TypeGo2FrontVideo, c.b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Codec != CodecH264 || got.Width != 640 || got.Height != 360 || !bytes.Equal(got.Data, want) {
+		t.Fatalf("frame = %+v, want 640x360 H.264 with %d bytes", got, len(want))
+	}
+}
+
+func TestDecodeGo2FrontVideoH264LayoutRejectsNonAnnexBPayload(t *testing.T) {
+	c := newCDRBuilder()
+	c.u64(42)
+	c.u32(360)
+	c.bytes([]byte{1, 2, 3, 4})
+
+	if _, err := DecodeFrame(TypeGo2FrontVideo, c.b); !errors.Is(err, ErrUnsupportedEncoding) {
+		t.Fatalf("error = %v; want ErrUnsupportedEncoding", err)
+	}
+}
+
 func TestDecodeRawBGR8(t *testing.T) {
 	c := newCDRBuilder()
 	c.header()

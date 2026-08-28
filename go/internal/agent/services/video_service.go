@@ -87,6 +87,7 @@ const (
 // v4l2Format matches struct v4l2_format (208 bytes) for V4L2_BUF_TYPE_VIDEO_CAPTURE.
 type v4l2Format struct {
 	Type         uint32
+	_            [4]byte // align the v4l2_format union to 8 bytes on 64-bit Linux
 	Width        uint32
 	Height       uint32
 	PixelFormat  uint32
@@ -99,8 +100,18 @@ type v4l2Format struct {
 	Enc          uint32
 	Quantization uint32
 	XferFunc     uint32
-	_            [156]byte
+	_            [152]byte
 }
+
+// VIDIOC_S_FMT encodes a 208-byte argument, and the anonymous format union
+// starts at byte 8 on Linux's 64-bit UAPI. Keep both properties compile-time
+// checked because shifted fields make valid H.264 devices look unsupported.
+var (
+	_ [208 - unsafe.Sizeof(v4l2Format{})]byte
+	_ [unsafe.Sizeof(v4l2Format{}) - 208]byte
+	_ [8 - unsafe.Offsetof(v4l2Format{}.Width)]byte
+	_ [unsafe.Offsetof(v4l2Format{}.Width) - 8]byte
+)
 
 // v4l2FrmSizeEnum matches struct v4l2_frmsizeenum (44 bytes). Only the discrete
 // branch of the union is read; Union covers the larger stepwise variant so the

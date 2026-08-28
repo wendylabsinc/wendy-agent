@@ -10,12 +10,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// ErrLoopbackUnavailable is returned when the running build has no
+// ErrLoopbackUnavailable is returned when the running build has no compatible
 // v4l2loopback module. Its text is user-facing: EnsureNodes swallows it into
 // a one-time log so the rest of the agent degrades gracefully, but anything
 // that surfaces it to a person (a CLI command, a status field) should show
 // this text as-is rather than paraphrasing it.
-var ErrLoopbackUnavailable = errors.New("running WendyOS build lacks the v4l2loopback module; `camera view` still works")
+var ErrLoopbackUnavailable = errors.New("running build lacks compatible v4l2loopback 0.15.x support")
 
 // PumpFunc starts the in-process GStreamer helper that copies an RTSP
 // camera's stream into its v4l2loopback node. Per branch-C-preamble.md, this
@@ -172,8 +172,9 @@ type Loopback struct {
 	deps  loopbackDeps
 	clock clock
 
-	detectOnce sync.Once
-	detectErr  error
+	detectMu sync.Mutex
+	detected bool
+	warnOnce sync.Once
 
 	mu sync.Mutex
 	// containerOwners is the current set of running entitled container names,
@@ -224,22 +225,28 @@ func NewLoopback(ctx context.Context, logger *zap.Logger, reg *Registry, creds *
 }
 
 // Available reports whether the v4l2loopback module is usable, attempting to
-// load it — once, ever, for the life of this Loopback — if it is not already
-// present. A non-nil error always wraps ErrLoopbackUnavailable.
+// load it if it is not already present. Success is cached; failure is not, so
+// installing or loading the module can recover without restarting the agent.
+// A non-nil error always wraps ErrLoopbackUnavailable.
 func (l *Loopback) Available() error {
-	l.detectOnce.Do(func() {
-		l.detectErr = l.detect()
-	})
-	return l.detectErr
+	l.detectMu.Lock()
+	defer l.detectMu.Unlock()
+	if l.detected {
+		return nil
+	}
+	if err := l.detect(); err != nil {
+		return err
+	}
+	l.detected = true
+	return nil
 }
 
-// detect runs the module-detection policy exactly once, guarded by
-// detectOnce: stat the control device; if absent, try to load the module;
-// re-stat; if it is still absent, degrade for good and log that once. See
+// detect runs one module-detection attempt while detectMu is held: stat the
+// control device; if absent, try to load the module; re-stat; if it is still
+// absent, degrade for this attempt and log the condition once. See
 // loopback_linux.go's modprobe implementation for the params-then-plain
-// fallback retry — from here it is a single seam call, so a fake in tests can
-// prove modprobe is attempted at most once regardless of how many times
-// Available is called.
+// fallback retry. From here each detection attempt makes one seam call; a
+// later Available call may retry after the module has been installed.
 func (l *Loopback) detect() error {
 	if err := l.deps.statControl(); err == nil {
 		return nil
@@ -278,12 +285,13 @@ func (l *Loopback) sweepAutoCreatedNodes() {
 	}
 }
 
-// warnUnavailable logs the degradation. It is only ever called from inside
-// detectOnce, so — regardless of how many times Available or EnsureNodes are
-// called afterward — it fires exactly once for the life of this Loopback.
+// warnUnavailable logs the degradation once even though Available permits
+// later detection attempts after an operator installs or loads the module.
 func (l *Loopback) warnUnavailable(cause error) {
-	l.logger.Warn("v4l2loopback module unavailable; camera view still works, but container mirroring is disabled",
-		zap.Error(cause))
+	l.warnOnce.Do(func() {
+		l.logger.Warn("compatible v4l2loopback module unavailable; virtual camera streams are disabled",
+			zap.Error(cause))
+	})
 }
 
 // EnsureNodes creates a v4l2loopback node for every registered camera that

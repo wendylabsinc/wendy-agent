@@ -25,6 +25,23 @@ const (
 
 var ErrUnsupportedEncoding = errors.New("unsupported ROS 2 image encoding")
 
+// Codec is the compressed format written to the V4L2 loopback device.
+type Codec uint8
+
+const (
+	CodecMJPEG Codec = iota + 1
+	CodecH264
+)
+
+// Frame is one encoded camera frame and the format the loopback writer must
+// advertise. Keeping the codec with the bytes avoids transcoding the Go2's
+// native H.264 stream merely to fit the JPEG-oriented ROS message paths.
+type Frame struct {
+	Data          []byte
+	Width, Height int
+	Codec         Codec
+}
+
 // SupportsType reports whether typeName carries a video frame this package can
 // decode. DDS and ros2cli spellings are both accepted.
 func SupportsType(typeName string) bool {
@@ -46,6 +63,20 @@ func TopicName(topic string) string {
 		topic = "/" + topic
 	}
 	return topic
+}
+
+// DecodeFrame extracts one frame from a serialized ROS 2 sample. Standard ROS
+// image messages become MJPEG. Go2 firmware is seen in two wire layouts: the
+// SDK-declared three-JPEG form and a live single-resolution H.264 form.
+func DecodeFrame(typeName string, payload []byte) (Frame, error) {
+	if typeName == TypeGo2FrontVideo || typeName == "unitree_go/msg/Go2FrontVideoData" {
+		return decodeGo2Frame(payload)
+	}
+	data, width, height, err := DecodeJPEG(typeName, payload)
+	if err != nil {
+		return Frame{}, err
+	}
+	return Frame{Data: data, Width: width, Height: height, Codec: CodecMJPEG}, nil
 }
 
 // DecodeJPEG extracts a frame from a serialized ROS 2 sample and returns a
@@ -151,6 +182,67 @@ func decodeGo2FrontVideo(payload []byte) ([]byte, int, int, error) {
 		}
 	}
 	return nil, 0, 0, errors.New("Go2 front-video sample contains no image")
+}
+
+func decodeGo2Frame(payload []byte) (Frame, error) {
+	h264, matchedH264Layout, h264Err := decodeGo2H264Frame(payload)
+	if matchedH264Layout && h264Err == nil {
+		return h264, nil
+	}
+	jpegFrame, width, height, jpegErr := decodeGo2FrontVideo(payload)
+	if jpegErr == nil {
+		return Frame{Data: jpegFrame, Width: width, Height: height, Codec: CodecMJPEG}, nil
+	}
+	if matchedH264Layout {
+		return Frame{}, h264Err
+	}
+	return Frame{}, jpegErr
+}
+
+func decodeGo2H264Frame(payload []byte) (Frame, bool, error) {
+	d, err := cdr.NewDecoder(payload)
+	if err != nil {
+		return Frame{}, false, err
+	}
+	if _, err := d.Uint64(); err != nil {
+		return Frame{}, false, fmt.Errorf("time_frame: %w", err)
+	}
+	resolution, err := d.Uint32()
+	if err != nil {
+		return Frame{}, false, fmt.Errorf("resolution: %w", err)
+	}
+	width, height, ok := go2ResolutionDimensions(resolution)
+	if !ok {
+		return Frame{}, false, nil
+	}
+	data, err := d.Bytes()
+	if err != nil {
+		return Frame{}, true, fmt.Errorf("video: %w", err)
+	}
+	// XCDR may leave at most three bytes of alignment padding at the end of a
+	// top-level sample. Anything larger means this is not the observed layout.
+	if d.Remaining() > 3 {
+		return Frame{}, true, fmt.Errorf("video: %d unexpected trailing bytes", d.Remaining())
+	}
+	if !hasAnnexBStartCode(data) {
+		return Frame{}, true, fmt.Errorf("%w: Go2 frame is not Annex-B H.264", ErrUnsupportedEncoding)
+	}
+	return Frame{Data: data, Width: width, Height: height, Codec: CodecH264}, true, nil
+}
+
+func go2ResolutionDimensions(resolution uint32) (width, height int, ok bool) {
+	switch resolution {
+	case 180, 360, 720:
+		height = int(resolution)
+		return height * 16 / 9, height, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func hasAnnexBStartCode(frame []byte) bool {
+	return len(frame) >= 4 && frame[0] == 0 && frame[1] == 0 &&
+		(frame[2] == 1 || (len(frame) >= 5 && frame[2] == 0 && frame[3] == 1))
 }
 
 func decodeRawImage(payload []byte) ([]byte, int, int, error) {

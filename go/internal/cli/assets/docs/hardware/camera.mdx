@@ -73,12 +73,20 @@ scope. Host/robot feeds on domain 0 are discovered on wired interfaces.
 
 Unitree Go2 robots receive special handling: the native
 `unitree_go/msg/Go2FrontVideoData` publisher on `/frontvideostream` appears as
-**Unitree Go2 front camera**. Wendy uses its 720p JPEG field when available and
-falls back to the lower-resolution fields on firmware that leaves it empty.
+**Unitree Go2 front camera**. Wendy accepts both the SDK-declared JPEG fields
+and the resolution-tagged Annex-B H.264 layout emitted by current Go2 firmware,
+preserving either codec through the loopback rather than transcoding it.
 
-ROS 2 camera mirroring requires the WendyOS `v4l2loopback` module. If the
-running image does not include it, the agent logs the missing-module error and
-the ROS 2 feed cannot be opened as a camera.
+ROS 2 camera mirroring requires v4l2loopback 0.15.x's dynamic control API; the
+WendyOS recipe is pinned to 0.15.4. Ubuntu 22.04's packaged 0.12.7 DKMS module
+is not compatible even if it loads successfully. If a compatible module is
+installed or loaded after an initial failure, retry the camera command; the
+agent rechecks availability without requiring a restart.
+
+The loopback uses exclusive capabilities. A container process that opens its
+device immediately at startup may briefly find it output-only while the first
+ROS 2 frame configures the capture format. Retry the initial format/open step
+for up to the agent's 15-second first-frame window.
 
 ## IP Cameras
 
@@ -127,11 +135,14 @@ Apps with the `camera` entitlement (see [Camera Entitlement](/docs/device/entitl
 </Callout>
 
 <Callout type="warning">
-  **Builds without the kernel module**: mirroring a camera into a container needs the `v4l2loopback` kernel module. On a WendyOS build that lacks it (or in local development), the agent logs this once and moves on:
+  **Builds without the kernel module**: mirroring a camera into a container needs compatible v4l2loopback 0.15.x support. On a WendyOS build that lacks it (or in local development), the agent logs this once and moves on:
 
-  > running WendyOS build lacks the v4l2loopback module; `camera view` still works
+  > running build lacks compatible v4l2loopback 0.15.x support
 
-  `wendy device camera view` and `wendy device camera test` are unaffected either way — only the in-container `/dev/video2xx` mirror is unavailable.
+  Direct IP-camera `wendy device camera view` and `camera test` are unaffected;
+  only the in-container `/dev/video2xx` mirror is unavailable. ROS 2 cameras
+  use a loopback node for both viewing and container access, so neither path is
+  available until the compatible module is present.
 </Callout>
 
 ## App Configuration

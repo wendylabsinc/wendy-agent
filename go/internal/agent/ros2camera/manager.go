@@ -49,7 +49,7 @@ type Graph struct {
 type GraphSource func(context.Context) ([]Graph, error)
 
 type cameraWriter interface {
-	WriteJPEG(frame []byte, width, height int) error
+	WriteFrame(frame Frame) error
 	Close() error
 }
 
@@ -412,7 +412,7 @@ func (m *Manager) handleSample(sample rtps.Sample) {
 	}
 	cam.lastFrame = now
 	m.mu.Unlock()
-	frame, width, height, err := DecodeJPEG(typeName, sample.Payload)
+	frame, err := DecodeFrame(typeName, sample.Payload)
 	if err != nil {
 		m.logCameraErrorOnce(cam, "decoding ROS 2 camera frame failed", err)
 		return
@@ -423,7 +423,7 @@ func (m *Manager) handleSample(sample rtps.Sample) {
 	}
 	w := cam.writer
 	m.mu.Unlock()
-	if err := w.WriteJPEG(frame, width, height); err != nil {
+	if err := w.WriteFrame(frame); err != nil {
 		m.logCameraErrorOnce(cam, "writing ROS 2 camera loopback failed", err)
 		return
 	}

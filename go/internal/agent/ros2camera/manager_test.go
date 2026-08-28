@@ -37,11 +37,12 @@ type fakeWriter struct {
 	frames int
 	width  int
 	height int
+	codec  Codec
 }
 
-func (w *fakeWriter) WriteJPEG(_ []byte, width, height int) error {
+func (w *fakeWriter) WriteFrame(frame Frame) error {
 	w.frames++
-	w.width, w.height = width, height
+	w.width, w.height, w.codec = frame.Width, frame.Height, frame.Codec
 	return nil
 }
 func (*fakeWriter) Close() error { return nil }
@@ -91,7 +92,28 @@ func TestManagerPumpsCompressedImageToLoopback(t *testing.T) {
 	m.handleSample(rtps.Sample{Writer: guid, Payload: c.b})
 	m.handleSample(rtps.Sample{Writer: guid, Payload: c.b})
 
-	if writer.frames != 1 || writer.width != 5 || writer.height != 4 {
+	if writer.frames != 1 || writer.width != 5 || writer.height != 4 || writer.codec != CodecMJPEG {
+		t.Fatalf("writer = %+v", writer)
+	}
+}
+
+func TestManagerPreservesGo2H264ForLoopback(t *testing.T) {
+	loop := &fakeLoopback{}
+	m := NewManager(context.Background(), zap.NewNop(), loop, filepath.Join(t.TempDir(), "registry.json"), nil)
+	t.Cleanup(m.Shutdown)
+	writer := &fakeWriter{}
+	m.newWriter = func(string) cameraWriter { return writer }
+	m.containerUse = true
+	guid := rtps.GUID{EntityID: 8}
+	m.registerEndpoint(&participantState{iface: "eth0", domainID: 0}, rtps.Endpoint{Topic: "rt/frontvideostream", Type: TypeGo2FrontVideo, GUID: guid})
+
+	c := newCDRBuilder()
+	c.u64(42)
+	c.u32(360)
+	c.bytes([]byte{0, 0, 1, 0x41, 1, 2, 3})
+	m.handleSample(rtps.Sample{Writer: guid, Payload: c.b})
+
+	if writer.frames != 1 || writer.width != 640 || writer.height != 360 || writer.codec != CodecH264 {
 		t.Fatalf("writer = %+v", writer)
 	}
 }
