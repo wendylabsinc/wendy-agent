@@ -6,6 +6,7 @@ self-hosted-runner:
     - X64
     - macOS
     - macos-26
+    - wendy-e2e-macos-tart
 
 config-variables: null
 

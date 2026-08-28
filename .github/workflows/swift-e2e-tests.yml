@@ -28,6 +28,14 @@ on:
         description: 'Optional ref to diff against (empty = full review)'
         required: false
         default: ''
+      macos_runner:
+        description: 'macOS execution route'
+        required: false
+        default: tart
+        type: choice
+        options:
+          - tart
+          - github-hosted
   workflow_call:
     inputs:
       tests:
@@ -42,6 +50,10 @@ on:
         type: string
         required: false
         default: ''
+      macos_runner:
+        type: string
+        required: false
+        default: tart
     secrets:
       WENDY_E2E_SLACK_WEBHOOK_URL:
         required: false
@@ -56,14 +68,46 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read
-  issues: write
-  pull-requests: write
 
 jobs:
   swift-e2e-local-macos:
-    name: 'Local: macOS 26'
-    if: ${{ inputs.target_group == '' || inputs.target_group == 'all' || inputs.target_group == 'local' }}
+    name: 'Local: macOS 26 (Tart)'
+    if: >-
+      ${{ (inputs.target_group == '' || inputs.target_group == 'all' || inputs.target_group == 'local') &&
+          (inputs.macos_runner == '' || inputs.macos_runner == 'tart') }}
+    permissions:
+      contents: read
+    runs-on:
+      group: wendy-developer
+      labels: [self-hosted, wendy-e2e-macos-tart]
+    concurrency:
+      group: device-local-macos-tart
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: local-macos
+          runner_id: macos-26
+          cli_os: macOS
+          device_address: 127.0.0.1:50051
+          agent_os: macOS
+          transport: local
+          setup: true
+          managed_agent: true
+
+  swift-e2e-local-macos-hosted-rollback:
+    name: 'Local: macOS 26 (GitHub-hosted rollback)'
+    if: >-
+      ${{ (inputs.target_group == '' || inputs.target_group == 'all' || inputs.target_group == 'local') &&
+          inputs.macos_runner == 'github-hosted' }}
+    permissions:
+      contents: read
     runs-on: macos-26
     concurrency:
       group: device-local-macos-hosted
@@ -71,7 +115,7 @@ jobs:
       queue: max
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/swift-e2e-run
         with:
           tests: ${{ inputs.tests || '' }}
@@ -87,6 +131,8 @@ jobs:
   swift-e2e-local-ubuntu:
     name: 'Local: Ubuntu 24'
     if: ${{ inputs.target_group == '' || inputs.target_group == 'all' || inputs.target_group == 'local' }}
+    permissions:
+      contents: read
     runs-on: ubuntu-24.04
     concurrency:
       group: device-local-ubuntu-hosted
@@ -426,7 +472,13 @@ jobs:
     if: ${{ always() && !cancelled() }}
     needs:
       - swift-e2e-local-macos
+      - swift-e2e-local-macos-hosted-rollback
       - swift-e2e-local-ubuntu
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: write
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:

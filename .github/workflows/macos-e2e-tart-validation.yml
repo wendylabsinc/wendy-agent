@@ -1,0 +1,172 @@
+name: Validate disposable macOS E2E runner
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Disposable-boundary scenario
+        required: true
+        type: choice
+        options:
+          - smoke
+          - wait-for-cancellation
+          - persistence
+          - disk-pressure
+          - watchdog
+
+concurrency:
+  group: macos-e2e-tart-validation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  select-scenario:
+    name: Select trusted validation scenario
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+           startsWith(github.event.label.name, 'macos-e2e-tart:')) }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    outputs:
+      scenario: ${{ steps.scenario.outputs.value }}
+    steps:
+      - name: Validate selection
+        id: scenario
+        shell: bash
+        env:
+          DISPATCH_SCENARIO: ${{ inputs.scenario || '' }}
+          PR_LABEL: ${{ github.event.label.name || '' }}
+        run: |
+          set -euo pipefail
+          scenario="${DISPATCH_SCENARIO:-${PR_LABEL#macos-e2e-tart:}}"
+          case "$scenario" in
+            smoke|wait-for-cancellation|persistence|disk-pressure|watchdog) ;;
+            *) echo "ERROR: invalid validation scenario" >&2; exit 64 ;;
+          esac
+          echo "value=$scenario" >> "$GITHUB_OUTPUT"
+
+  exercise:
+    name: Exercise ${{ needs.select-scenario.outputs.scenario }}
+    needs: select-scenario
+    if: needs.select-scenario.result == 'success'
+    permissions:
+      contents: read
+    runs-on:
+      group: wendy-developer
+      labels: [self-hosted, wendy-e2e-macos-tart]
+    timeout-minutes: 170
+    steps:
+      - name: Record disposable guest identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'host=%s\n' "$(scutil --get ComputerName)"
+          sw_vers
+          xcodebuild -version
+
+      - name: Verify PoC route
+        if: needs.select-scenario.outputs.scenario == 'smoke'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if mount | grep -Fq 'com.apple.virtio-fs'; then
+            echo 'ERROR: a host VirtioFS mount is present' >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 15 https://api.github.com/zen >/dev/null
+          sudo -n true
+
+      - name: Wait for operator cancellation
+        if: needs.select-scenario.outputs.scenario == 'wait-for-cancellation'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'Cancel this workflow now. No in-guest cleanup step will run.'
+          sleep 9600
+
+      - name: Attempt guest persistence
+        if: needs.select-scenario.outputs.scenario == 'persistence'
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker='/Library/Application Support/Wendy/tart-persistence-marker'
+          plist='/Library/LaunchDaemons/org.wendy.tart-persistence-validation.plist'
+          sudo mkdir -p "$(dirname "$marker")"
+          sudo touch "$marker"
+          cat <<'PLIST' | sudo tee "$plist" >/dev/null
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>Label</key><string>org.wendy.tart-persistence-validation</string>
+            <key>ProgramArguments</key><array>
+              <string>/usr/bin/touch</string>
+              <string>/Library/Application Support/Wendy/tart-persistence-launched</string>
+            </array>
+            <key>RunAtLoad</key><true/>
+          </dict></plist>
+          PLIST
+          sudo chown root:wheel "$plist"
+          sudo chmod 0644 "$plist"
+          sudo launchctl bootstrap system "$plist"
+          test -e "$marker"
+          test -e '/Library/Application Support/Wendy/tart-persistence-launched'
+
+      - name: Exhaust disposable guest disk
+        if: needs.select-scenario.outputs.scenario == 'disk-pressure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          free_kb="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 { print $4 }')"
+          reserve_kb=$((2 * 1024 * 1024))
+          if (( free_kb <= reserve_kb )); then
+            echo "ERROR: guest started with only ${free_kb}KB free" >&2
+            exit 1
+          fi
+          allocate_kb=$((free_kb - reserve_kb))
+          echo "Allocating ${allocate_kb}KB inside the disposable guest"
+          mkfile "${allocate_kb}k" "$RUNNER_TEMP/wendy-disk-pressure"
+          sync
+          df -h "$RUNNER_TEMP"
+
+      - name: Outlive host watchdog
+        if: needs.select-scenario.outputs.scenario == 'watchdog'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'The host watchdog should destroy this guest after 9,300 seconds.'
+          sleep 9600
+
+  verify-fresh:
+    name: Verify a fresh guest
+    needs: [select-scenario, exercise]
+    if: >-
+      ${{ always() && needs.exercise.result == 'success' &&
+          (needs.select-scenario.outputs.scenario == 'persistence' ||
+           needs.select-scenario.outputs.scenario == 'disk-pressure') }}
+    permissions:
+      contents: read
+    runs-on:
+      group: wendy-developer
+      labels: [self-hosted, wendy-e2e-macos-tart]
+    timeout-minutes: 15
+    steps:
+      - name: Verify prior guest state is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e '/Library/LaunchDaemons/org.wendy.tart-persistence-validation.plist'
+          test ! -e '/Library/Application Support/Wendy/tart-persistence-marker'
+          test ! -e '/Library/Application Support/Wendy/tart-persistence-launched'
+          free_kb="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 { print $4 }')"
+          minimum_kb=$((10 * 1024 * 1024))
+          if (( free_kb < minimum_kb )); then
+            echo "ERROR: fresh guest has less than 10GB free (${free_kb}KB)" >&2
+            exit 1
+          fi
+          printf 'fresh-host=%s free-kb=%s\n' "$(scutil --get ComputerName)" "$free_kb"
