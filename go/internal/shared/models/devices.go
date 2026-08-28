@@ -184,6 +184,13 @@ type DiscoveredDevice struct {
 	// Sensorlink is copied from LAN.Sensorlink when a LAN sighting is merged
 	// in; false when the device has no LAN sighting.
 	Sensorlink bool
+	// AssetID and OrgID are copied from the LAN sighting's cloud asset/org TXT
+	// records; zero when the device has no LAN sighting or is unprovisioned.
+	AssetID int32
+	OrgID   int32
+	// IPAddress is copied from the LAN sighting; empty when the device has no
+	// LAN sighting.
+	IPAddress string
 
 	LAN       *LANDevice
 	Bluetooth *BluetoothDevice
@@ -298,6 +305,9 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 			OSVersion:       d.OSVersion,
 			CPUArchitecture: d.CPUArchitecture,
 			Sensorlink:      d.Sensorlink,
+			AssetID:         d.AssetID,
+			OrgID:           d.OrgID,
+			IPAddress:       d.IPAddress,
 			LAN:             d,
 		}
 		register(merged, d.HostKey(), strings.ToLower(d.DisplayName))
