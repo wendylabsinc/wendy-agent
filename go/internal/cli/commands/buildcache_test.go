@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -139,6 +140,67 @@ func TestEnforceBuildCacheSizeCap_SkipsKeepAndActive(t *testing.T) {
 	}
 	if _, err := os.Stat(appDir); err != nil {
 		t.Fatalf("active dir should survive: %v", err)
+	}
+}
+
+// A layout dir whose lock another wendy process holds (build → read → push,
+// see lockOCILayoutDir) is in use no matter how old its blobs look — a long
+// chunk push reads blobs without writing any — and must never be evicted.
+func TestEnforceBuildCacheSizeCap_SkipsLockedLayoutDir(t *testing.T) {
+	root := t.TempDir()
+	p := writeCacheBlob(t, root, "busy", digestA, make([]byte, 100))
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(p, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	appDir := filepath.Dir(filepath.Dir(filepath.Dir(p)))
+
+	release, err := lockOCILayoutDir(context.Background(), appDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := enforceBuildCacheSizeCap(10, nil, 10*time.Minute, root); got != 0 {
+		t.Fatalf("locked dir must not be evicted, reclaimed=%d", got)
+	}
+	if _, err := os.Stat(appDir); err != nil {
+		t.Fatalf("locked dir should survive: %v", err)
+	}
+	release()
+
+	// Once the owner lets go, the same stale dir is fair game again.
+	if got := enforceBuildCacheSizeCap(10, nil, 10*time.Minute, root); got != 100 {
+		t.Fatalf("unlocked stale dir should be evicted, reclaimed=%d", got)
+	}
+	if _, err := os.Stat(appDir); !os.IsNotExist(err) {
+		t.Fatal("unlocked stale dir should have been removed")
+	}
+}
+
+// The dedup-aware total behind both the size cap and `wendy cache list` counts
+// a hardlinked blob once, however many app dirs link it, so the number the
+// user sees next to the cap is the number the cap is enforced against.
+func TestScanBuildCache_CountsSharedBlobOnce(t *testing.T) {
+	root := t.TempDir()
+	shared := make([]byte, 200)
+	a1 := writeCacheBlob(t, root, "app1", digestA, shared)
+	a2 := writeCacheBlob(t, root, "app2", digestA, shared)
+	if !relinkBlob(a1, a2) {
+		t.Fatal("setup: relink failed")
+	}
+	writeCacheBlob(t, root, "app2", digestB, make([]byte, 50))
+
+	scan := scanBuildCache(nil, root)
+	if scan.total != 250 {
+		t.Fatalf("total = %d, want 250 (shared blob counted once)", scan.total)
+	}
+	if len(scan.units) != 2 {
+		t.Fatalf("units = %d, want 2", len(scan.units))
+	}
+	// Per-row sizes are per-link by design and so can sum past the real total.
+	s1, _ := dirSizeAndMtime(filepath.Dir(filepath.Dir(filepath.Dir(a1))))
+	s2, _ := dirSizeAndMtime(filepath.Dir(filepath.Dir(filepath.Dir(a2))))
+	if s1+s2 != 450 {
+		t.Fatalf("per-link row sizes = %d, want 450", s1+s2)
 	}
 }
 

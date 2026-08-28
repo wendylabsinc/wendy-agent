@@ -122,7 +122,8 @@ func newCacheListCmd() *cobra.Command {
 			// individually; the build caches also carry a last-built age.
 			now := time.Now()
 			var items []cacheEntry
-			var buildCacheBytes, sharedBytes int64
+			var buildRoots []string
+			var sharedBytes int64
 			for _, entry := range entries {
 				if isCacheDBFile(entry.Name()) {
 					continue
@@ -165,10 +166,13 @@ func newCacheListCmd() *cobra.Command {
 					if err != nil {
 						return fmt.Errorf("reading %s cache directory: %w", entry.Name(), err)
 					}
+					buildRoots = append(buildRoots, path)
 					for _, c := range children {
 						cp := filepath.Join(path, c.Name())
+						// Per-row size is per-link: after dedup a layer shared by N apps
+						// shows in each of their rows, so rows can sum past the real
+						// on-disk total reported in the summary below.
 						sz, mt := dirSizeAndMtime(cp)
-						buildCacheBytes += sz
 						// blobs/, ingest/ and the top-level index files are the shared
 						// store, not a per-app cache: fold them into the summary rather
 						// than list a row that can't be deleted without taking the app
@@ -201,10 +205,13 @@ func newCacheListCmd() *cobra.Command {
 			// Largest first — the whole point of listing is to find what to reclaim.
 			sort.Slice(items, func(i, j int) bool { return items[i].SizeBytes > items[j].SizeBytes })
 
+			// The headline number is the dedup-aware on-disk total — the same
+			// accounting the size cap is enforced against — so "over cap" here
+			// means the next build's maintenance pass will evict something.
 			buildCacheSummary := ""
-			if buildCacheBytes > 0 {
-				buildCacheSummary = fmt.Sprintf("Build cache: %s (%s shared) · cap %s",
-					formatSize(buildCacheBytes), formatSize(sharedBytes), formatSize(buildCacheMaxBytes()))
+			if onDisk := scanBuildCache(nil, buildRoots...).total; onDisk > 0 {
+				buildCacheSummary = fmt.Sprintf("Build cache: %s on disk (%s shared) · cap %s",
+					formatSize(onDisk), formatSize(sharedBytes), formatSize(buildCacheMaxBytes()))
 			}
 
 			if explicitJSON {

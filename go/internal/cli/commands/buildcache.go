@@ -121,29 +121,28 @@ type cacheUnit struct {
 	mtime   time.Time
 }
 
-// enforceBuildCacheSizeCap deletes whole per-app cache subdirs, least-recently
-// modified first, until real on-disk usage is at or under maxBytes. Accounting
-// is dedup-aware: a layer hardlinked into N app dirs counts once, and evicting a
-// dir only reclaims a layer whose LAST reference it held — layers still linked by
-// a surviving dir or by the root-level shared store (blobs/, never evicted) are
-// not counted as freed. keep holds absolute dirs the current build needs; dirs
-// modified within activeWindow are skipped so a concurrent build's cache is never
-// yanked mid-solve. A non-positive maxBytes disables the cap. Best-effort: a
-// failed removal just leaves that dir for the next run. Returns bytes reclaimed.
-func enforceBuildCacheSizeCap(maxBytes int64, keep map[string]bool, activeWindow time.Duration, roots ...string) int64 {
-	if maxBytes <= 0 {
-		return 0
-	}
-	blobSize := map[string]int64{} // digest -> size (once)
-	refCount := map[string]int{}   // digest -> live references (units + shared store)
-	var units []cacheUnit
-	var total int64
-	cutoff := time.Now().Add(-activeWindow)
+// buildCacheScan is the dedup-aware picture of the on-disk build caches. total
+// is real usage — a blob hardlinked into N dirs counts once — and is the single
+// number both the size cap enforces and `wendy cache list` shows beside it, so
+// the two can never disagree. units are the eviction candidates (per-app dirs
+// that are neither the shared store nor kept); blobSize/refCount let eviction
+// tell when a dir held a blob's LAST reference, i.e. when removing it actually
+// frees the inode.
+type buildCacheScan struct {
+	units    []cacheUnit
+	total    int64
+	blobSize map[string]int64 // digest -> size (once)
+	refCount map[string]int   // digest -> live references (units + shared store)
+}
 
+// scanBuildCache walks roots and builds the dedup-aware buildCacheScan. keep
+// holds absolute dirs excluded from the eviction candidates (still counted).
+func scanBuildCache(keep map[string]bool, roots ...string) buildCacheScan {
+	s := buildCacheScan{blobSize: map[string]int64{}, refCount: map[string]int{}}
 	for _, root := range roots {
 		entries, err := os.ReadDir(root)
 		if err != nil {
-			continue // missing root: nothing to prune
+			continue // missing root: nothing there
 		}
 		for _, e := range entries {
 			p := filepath.Join(root, e.Name())
@@ -151,47 +150,103 @@ func enforceBuildCacheSizeCap(maxBytes int64, keep map[string]bool, activeWindow
 			// its blob references must still count so a layer it holds never looks
 			// free when the last app dir referencing it is evicted.
 			shared := !e.IsDir() || e.Name() == "blobs" || e.Name() == "ingest"
-			u := scanCacheUnit(p, blobSize, refCount)
-			total += u.ownSize
+			u := scanCacheUnit(p, s.blobSize, s.refCount)
+			s.total += u.ownSize
 			if shared || keep[p] {
 				continue
 			}
-			units = append(units, u)
+			s.units = append(s.units, u)
 		}
 	}
 	// Each unique digest contributes its size to the real total exactly once.
-	for d, sz := range blobSize {
-		if refCount[d] > 0 {
-			total += sz
+	for d, sz := range s.blobSize {
+		if s.refCount[d] > 0 {
+			s.total += sz
 		}
 	}
+	return s
+}
+
+// enforceBuildCacheSizeCap deletes whole per-app cache subdirs, least-recently
+// modified first, until real on-disk usage is at or under maxBytes. Accounting
+// is dedup-aware (see scanBuildCache): a layer hardlinked into N app dirs counts
+// once, and evicting a dir only reclaims a layer whose LAST reference it held —
+// layers still linked by a surviving dir or by the root-level shared store
+// (blobs/, never evicted) are not counted as freed. keep holds absolute dirs the
+// current build needs. Two guards protect other wendy processes: a dir whose
+// layout lock another process holds (lockOCILayoutDir — held for the whole of
+// build → read → push, including a long chunk push that writes no blobs) is
+// never touched, and dirs modified within activeWindow are skipped as a likely
+// in-progress build. A non-positive maxBytes disables the cap. Best-effort: a
+// failed removal just leaves that dir for the next run. Returns bytes reclaimed.
+func enforceBuildCacheSizeCap(maxBytes int64, keep map[string]bool, activeWindow time.Duration, roots ...string) int64 {
+	if maxBytes <= 0 {
+		return 0
+	}
+	s := scanBuildCache(keep, roots...)
+	total := s.total
 	if total <= maxBytes {
 		return 0
 	}
 
-	sort.Slice(units, func(i, j int) bool { return units[i].mtime.Before(units[j].mtime) })
+	cutoff := time.Now().Add(-activeWindow)
+	sort.Slice(s.units, func(i, j int) bool { return s.units[i].mtime.Before(s.units[j].mtime) })
 	var reclaimed int64
-	for _, u := range units {
+	for _, u := range s.units {
 		if total <= maxBytes {
 			break
 		}
 		if u.mtime.After(cutoff) {
 			continue // likely an in-progress build; leave it
 		}
-		if err := os.RemoveAll(u.path); err != nil {
+		release, ok := tryLockCacheUnit(u.path)
+		if !ok {
+			continue // another wendy process is building into / pushing from it
+		}
+		err := os.RemoveAll(u.path)
+		release()
+		if err != nil {
 			continue
 		}
 		freed := u.ownSize
 		for _, d := range u.blobs {
-			refCount[d]--
-			if refCount[d] == 0 { // last reference gone: the inode is actually freed
-				freed += blobSize[d]
+			s.refCount[d]--
+			if s.refCount[d] == 0 { // last reference gone: the inode is actually freed
+				freed += s.blobSize[d]
 			}
 		}
 		total -= freed
 		reclaimed += freed
 	}
 	return reclaimed
+}
+
+// tryLockCacheUnit takes, without blocking, the per-directory lock a wendy
+// process holds for the whole of build → read → push → GC on a layout dir
+// (lockOCILayoutDir; the lock file sits beside the dir as dir+".lock"). ok is
+// false when another process holds it: that dir is in use, however stale its
+// blobs look, and must not be evicted. A dir with no lock file (buildx/ units
+// are never locked this way) has no owner to consult and is returned as
+// lockable with a no-op release; it stays governed by the activeWindow
+// heuristic alone. Callers hold the lock across the removal so a build that
+// starts meanwhile waits for the dir to be gone instead of racing RemoveAll.
+func tryLockCacheUnit(dir string) (release func(), ok bool) {
+	f, err := os.OpenFile(dir+".lock", os.O_RDWR, 0)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return func() {}, true
+		}
+		return nil, false // unreadable lock: can't tell, leave the dir alone
+	}
+	locked, err := tryLockFile(f)
+	if err != nil || !locked {
+		_ = f.Close()
+		return nil, false
+	}
+	return func() {
+		_ = unlockFile(f)
+		_ = f.Close()
+	}, true
 }
 
 // scanCacheUnit walks one cache dir, recording each blob digest's size and a
@@ -225,8 +280,9 @@ func scanCacheUnit(dir string, blobSize map[string]int64, refCount map[string]in
 }
 
 // dirSizeAndMtime returns a tree's byte size (per-path — hardlinked blobs count
-// once per link) and the newest blob mtime, used by `wendy cache list` to show a
-// per-app cache's size and last-built time.
+// once per link, so rows can sum past the dedup-aware on-disk total from
+// scanBuildCache) and the newest blob mtime, used by `wendy cache list` to show
+// a per-app cache's size and last-built time.
 func dirSizeAndMtime(dir string) (int64, time.Time) {
 	var size int64
 	var newest time.Time
