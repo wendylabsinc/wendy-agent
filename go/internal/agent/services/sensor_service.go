@@ -76,11 +76,11 @@ type SensorService struct {
 	appID   string
 	manager *data.Manager
 	// permits reports whether this app is allowed to reach a source id. It
-	// carries the entitlement's optional allowlist, so an app that declared one
-	// neither sees nor can subscribe to any other sensor on the device. Nil
-	// means unrestricted, which is what an entitlement with no allowlist asks
-	// for. It is consulted live because a multi-service app's owner set changes
-	// while the socket keeps serving.
+	// carries the entitlement's allowlist, which sensor-read requires, so an
+	// app neither sees nor can subscribe to any sensor it did not name. Nil
+	// means unrestricted and is a test-only default: the socket manager always
+	// installs a check. It is consulted live because a multi-service app's
+	// owner set changes while the socket keeps serving.
 	permits func(sourceID string) bool
 
 	mu        sync.RWMutex
@@ -96,8 +96,9 @@ func NewSensorService(appID string, manager *data.Manager) *SensorService {
 }
 
 // SetSourcePermission installs the entitlement's allowlist check. A nil permits
-// function (the default) allows every source, which is what an entitlement
-// without an allowlist grants.
+// function (the default) allows every source; production never leaves it nil,
+// because the sensor-read entitlement requires an allowlist and the socket
+// manager installs the check derived from it.
 func (s *SensorService) SetSourcePermission(permits func(sourceID string) bool) {
 	s.mu.Lock()
 	s.permits = permits
@@ -194,13 +195,13 @@ func (s *SensorService) Subscribe(req *appspbv1.SensorSubscribeRequest, stream a
 		if !s.permitted(sourceID) {
 			cancel()
 			wg.Wait()
-			return status.Errorf(codes.PermissionDenied, "this app's sensors entitlement does not list source %q", sourceID)
+			return status.Errorf(codes.PermissionDenied, "this app's sensor-read entitlement allowlist does not list source %q", sourceID)
 		}
 		provider := s.providerFor(sourceID)
 		if provider == nil {
 			cancel()
 			wg.Wait()
-			return status.Errorf(codes.NotFound, "source %q is not available to model subscribers", sourceID)
+			return s.unsubscribableError(ctx, sourceID)
 		}
 		subscription, err := provider.SubscribeSensor(ctx, sourceID)
 		if err != nil {
@@ -264,6 +265,46 @@ func (s *SensorService) Subscribe(req *appspbv1.SensorSubscribeRequest, stream a
 			s.recordDelivered(req.GetModel(), sample)
 		}
 	}
+}
+
+// unsubscribableError explains why a source has no producer a model can join.
+// "Does not exist on this device" and "exists, but nothing can multiplex a
+// source of that kind to an app yet" are different problems with different
+// fixes, and one shared "not available" message left the app author guessing
+// which one they had hit. Only camera sources have a producer hub today; audio
+// and ROS 2 sources are captured into episodes but cannot be streamed to an
+// app, so an app subscribing to one must be told that in as many words.
+func (s *SensorService) unsubscribableError(ctx context.Context, sourceID string) error {
+	kind, found := s.sourceKind(ctx, sourceID)
+	if !found {
+		return status.Errorf(
+			codes.NotFound,
+			"no sensor source %q exists on this device; run `wendy data sources` to list the source ids it offers",
+			sourceID,
+		)
+	}
+	if kind == "" {
+		kind = "unknown"
+	}
+	return status.Errorf(
+		codes.Unimplemented,
+		"sensor source %q exists but %s sources are not subscribable in this release: no producer can multiplex a %s source to a model subscriber yet, so it can be captured into an episode but not streamed to an app. SensorService.Sources (`wendy data sources`) marks the sources an app may subscribe to with subscribable=true",
+		sourceID, kind, kind,
+	)
+}
+
+// sourceKind looks up the declared kind of a source id, reporting whether the
+// device knows the source at all.
+func (s *SensorService) sourceKind(ctx context.Context, sourceID string) (string, bool) {
+	if s.manager == nil {
+		return "", false
+	}
+	for _, source := range s.manager.Sources(ctx) {
+		if source.ID == sourceID {
+			return source.Kind, true
+		}
+	}
+	return "", false
 }
 
 // recordDelivered tees one delivered sample into every active episode. A

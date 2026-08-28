@@ -54,7 +54,8 @@ type ApplyOptions struct {
 	// SystemAPISocketDir is the app-specific host directory prepared by
 	// AppSystemAPISocketManager. It contains only the narrow System API socket.
 	SystemAPISocketDir string
-	// DataSocketDir is an app-private directory containing only data.sock.
+	// DataSocketDir is an app-private directory containing only data.sock, the
+	// episode-write grant's socket.
 	DataSocketDir string
 	// SensorSocketDir is an app-private directory prepared by
 	// AppSensorSocketManager containing only sensors.sock, which serves the
@@ -120,9 +121,9 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			}
 		case appconfig.EntitlementNotifications:
 			applySystemAPI(spec, opts.SystemAPISocketDir)
-		case appconfig.EntitlementData:
+		case appconfig.EntitlementEpisodeWrite:
 			applyDataSocket(spec, opts.DataSocketDir)
-		case appconfig.EntitlementSensors:
+		case appconfig.EntitlementSensorRead:
 			applySensorSocket(spec, opts.SensorSocketDir)
 		case appconfig.EntitlementAdmin:
 			applyAdmin(spec)
@@ -152,11 +153,13 @@ func applyDataSocket(spec *Spec, hostDirectory string) {
 // API and data sockets, the directory is mounted rather than the socket inode so
 // the agent can recreate the socket under a running container.
 //
-// This is the narrow model-input grant: the mount carries one socket serving
-// only wendy.agent.apps.v1.SensorService, so the app can subscribe to sensor
-// streams and do nothing else. It adds NO device nodes and no device cgroup
-// rules — an app that wants the raw /dev/videoN node still asks for the camera
-// entitlement, and gets the single-holder semantics that come with it.
+// This is the narrow model-input grant behind the sensor-read entitlement: the
+// mount carries one socket serving only wendy.agent.apps.v1.SensorService, so
+// the app can subscribe to sensor streams and do nothing else. It adds NO
+// device nodes and no device cgroup rules — an app that wants the raw
+// /dev/videoN node still asks for the camera entitlement, and gets the
+// single-holder semantics that come with it. Writing into the recorded dataset
+// is the separate episode-write grant and its own socket.
 func applySensorSocket(spec *Spec, hostDirectory string) {
 	if hostDirectory == "" {
 		return

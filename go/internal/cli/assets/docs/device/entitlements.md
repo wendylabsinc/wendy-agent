@@ -50,12 +50,18 @@ after socket restoration; no redeploy is required. Stopped containers retain
 their mount and can reconnect when started again. The directory remains until
 the last entitled service container is deleted.
 
-## Wendy Data
+## Wendy Data (episode-write)
 
-Use `{ "type": "data" }` when an app needs to submit structured events or
-predictions to Wendy Data. The agent gives each app a private socket and derives
-the trusted app identity from that socket; the administrative agent socket is
-never exposed.
+Use `{ "type": "episode-write" }` when an app needs to write into the device's
+recorded dataset: it submits structured events or predictions to the episode
+recorder. The agent gives each app a private socket and derives the trusted app
+identity from that socket; the administrative agent socket is never exposed.
+
+The name says write, because that is what it grants, and the grant is stronger
+than plain logging: campaign triggers match on application event names and
+prediction attributes, so an app holding `episode-write` can start recordings.
+It grants no read access to any sensor; reading is the separate `sensor-read`
+entitlement.
 
 | Boundary | Value |
 |---|---|
@@ -69,7 +75,8 @@ never exposed.
 When no Episode is active, accepted records enter the bounded application
 pre-roll buffer. They can trigger an armed campaign by event name or model
 uncertainty. Running containers reconnect after socket restoration without a
-redeploy. Apps without `data` receive neither this mount nor the environment
+redeploy. Apps without `episode-write` receive neither this mount nor the
+environment
 variable.
 
 A `prediction` record may carry an optional `inputs` list of
@@ -78,12 +85,16 @@ Wendy Sensors). The agent records the references in the Episode so
 `(input, outcome)` pairs can be reconstructed offline; a record without them is
 still accepted.
 
-## Wendy Sensors
+## Wendy Sensors (sensor-read)
 
-Use `{ "type": "sensors" }` when a model needs sensor data. The harness feeds
-the app rather than the app opening a device, so the app and the Episode capture
-adapter consume the same producer instead of fighting over a single-holder
-device node.
+Use `{ "type": "sensor-read", "allowlist": [...] }` when a model needs sensor
+data. The harness feeds the app rather than the app opening a device, so the app
+and the Episode capture adapter consume the same producer instead of fighting
+over a single-holder device node.
+
+The name says read, because that is all it grants. In practice it is permission
+to see the cameras and microphones the allowlist names. It writes nothing into
+the recorded dataset; writing is the separate `episode-write` entitlement.
 
 | Boundary | Value |
 |---|---|
@@ -102,11 +113,21 @@ Episode is recording, each delivered sample is recorded in the Episode's
 that `sample_id` on the payload bytes the Episode kept — so an Episode can be
 replayed as the inputs the model consumed paired with the outcomes it produced.
 
-An optional `allowlist` of source ids narrows the grant, as it does for the
-`camera` entitlement; sources outside it are neither listed nor subscribable.
-Omit it and the app may subscribe to any sensor source the device offers. All
-services of a multi-service app share one socket, so it permits the union of
-what they declared.
+The `allowlist` of source ids is **required and must name at least one source**.
+Sources outside it are neither listed nor subscribable. Unlike the `camera`
+entitlement's optional allowlist, omitting it is rejected rather than treated as
+"everything": a bare grant would cover every source the device can multiplex
+today and every source kind that becomes subscribable in a later release, so an
+app asking only for a camera would silently gain microphones and the ROS 2 graph
+on an agent upgrade. A manifest without one fails validation with a message
+naming the fix. All services of a multi-service app share one socket, so it
+permits the union of what they declared.
+
+Only camera sources have a producer that can multiplex to a model subscriber in
+this release. Audio and ROS 2 sources are captured into Episodes but are not
+subscribable: `wendy data sources` reports them with `subscribable=false`, and
+subscribing to one is refused with an error saying that source kind is not
+subscribable in this release.
 
 Source ids must be written exactly as `wendy data sources` reports them.
 Near-miss spellings are refused rather than resolved: `ipcamera:0` and
@@ -116,8 +137,12 @@ model's inputs to the captured bytes on the source id, so a second spelling for
 one camera would produce ledger entries nothing can resolve.
 
 The entitlement is read-only: it cannot start or stop Episodes, deploy
-campaigns, or download recorded data. Raw device access remains the separate
-`camera` entitlement, which is unchanged; an app may hold both.
+campaigns, download recorded data, or write records into an Episode. Raw device
+access remains the separate `camera` entitlement, which is unchanged; an app may
+hold both. `sensor-read` and `episode-write` are deliberately separate grants
+running in opposite directions, so an app that logs an event does not thereby
+get the camera, and an app that reads a sensor does not thereby get to write the
+training corpus.
 
 ## Network
 
