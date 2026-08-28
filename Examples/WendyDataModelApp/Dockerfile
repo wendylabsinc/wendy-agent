@@ -27,16 +27,16 @@ WORKDIR /export
 RUN yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12
 
 # The sensor client speaks gRPC to the app-private sensor socket, so it needs
-# stubs for wendy.agent.services.v2.SensorService. They are generated here and
+# stubs for wendy.agent.apps.v1.SensorService. They are generated here and
 # copied in, keeping grpcio-tools out of the runtime image. proto/ holds a copy
-# of the canonical Proto/wendy/agent/services/v2/sensor_service.proto; a Go test
+# of the canonical Proto/wendy/agent/apps/v1/sensor_service.proto; a Go test
 # (TestExampleSensorProtoMatchesCanonical) fails if the two ever drift.
 FROM python:3.11-slim-bookworm AS protos
 RUN pip install --no-cache-dir grpcio-tools
 WORKDIR /gen
 COPY proto ./proto
 RUN python3 -m grpc_tools.protoc -Iproto --python_out=. --grpc_python_out=. \
-        proto/wendy/agent/services/v2/sensor_service.proto \
+        proto/wendy/agent/apps/v1/sensor_service.proto \
     && find wendy -type d -exec touch {}/__init__.py \;
 
 FROM python:3.11-slim-bookworm
