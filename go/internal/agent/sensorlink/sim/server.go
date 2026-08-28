@@ -2,7 +2,6 @@ package sim
 
 import (
 	"context"
-	"errors"
 	"net"
 	"time"
 
@@ -19,7 +18,15 @@ type Options struct {
 
 // Serve accepts sensorlink connections until ctx is cancelled or ln closes.
 func Serve(ctx context.Context, ln net.Listener, opts Options) error {
-	go func() { <-ctx.Done(); ln.Close() }()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			ln.Close()
+		case <-done:
+		}
+	}()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -35,6 +42,9 @@ func Serve(ctx context.Context, ln net.Listener, opts Options) error {
 func handleConn(ctx context.Context, conn net.Conn, opts Options) {
 	defer conn.Close()
 	if err := sensorlink.WriteMessage(conn, &sensorlinkpb.Envelope{Msg: &sensorlinkpb.Envelope_Manifest{Manifest: opts.Manifest}}); err != nil {
+		return
+	}
+	if len(opts.Frames) == 0 {
 		return
 	}
 	env, err := sensorlink.ReadMessage(conn)
@@ -61,9 +71,6 @@ func handleConn(ctx context.Context, conn net.Conn, opts Options) {
 			for _, ch := range sub.ChannelId {
 				frame := &sensorlinkpb.SensorFrame{ChannelId: ch, Seq: seq, TsUs: uint64(time.Now().UnixMicro()), Flags: 1, Payload: payload}
 				if err := sensorlink.WriteMessage(conn, &sensorlinkpb.Envelope{Msg: &sensorlinkpb.Envelope_Frame{Frame: frame}}); err != nil {
-					if errors.Is(err, net.ErrClosed) {
-						return
-					}
 					return
 				}
 			}
