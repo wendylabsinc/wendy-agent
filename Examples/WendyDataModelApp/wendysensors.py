@@ -2,7 +2,7 @@
 
 The harness feeds the model instead of the model opening a device. This
 module wraps `wendy.agent.apps.v1.SensorService` on the app-private
-socket the `sensors` entitlement mounts, and turns the identified encoded
+socket the `sensor-read` entitlement mounts, and turns the identified encoded
 samples it streams into decoded frames while keeping track of which
 sample identifiers produced each frame.
 

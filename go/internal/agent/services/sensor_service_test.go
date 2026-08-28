@@ -14,6 +14,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	appspbv1 "github.com/wendylabsinc/wendy/go/proto/gen/appspb/v1"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -510,7 +511,9 @@ func TestSensorAllowlistNarrowsTheGrant(t *testing.T) {
 
 // TestSensorSocketUnionsOwnerAllowlists documents the multi-service semantics:
 // an app's services share one socket, so the socket permits the union of what
-// they declared — and a service that declared no allowlist asks for everything.
+// they declared — and nothing beyond it. An owner with no allowlist is not a
+// blanket grant any more; it cannot be created (Ensure refuses one) and, if one
+// somehow appears, permits fails closed.
 func TestSensorSocketUnionsOwnerAllowlists(t *testing.T) {
 	socket := &appSensorSocket{owners: map[string][]string{"a": {"cam:1"}, "b": {"cam:2"}}}
 	for _, id := range []string{"cam:1", "cam:2"} {
@@ -522,7 +525,61 @@ func TestSensorSocketUnionsOwnerAllowlists(t *testing.T) {
 		t.Error("socket permitted a source no owner declared")
 	}
 	socket.owners["c"] = nil
-	if !socket.permits("cam:3") {
-		t.Error("an owner with no allowlist did not widen the grant to every source")
+	if socket.permits("cam:3") {
+		t.Error("an owner with no allowlist widened the grant to every source")
+	}
+}
+
+// TestEnsureRejectsAnEmptyAllowlist is the agent-side half of the mandatory
+// allowlist. The CLI rejects a manifest without one, but the agent must not
+// depend on that: a request that reached it another way still cannot obtain a
+// grant covering every source the device offers.
+func TestEnsureRejectsAnEmptyAllowlist(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager := NewAppSensorSocketManager(ctx, zap.NewNop(), nil)
+	for name, allowlist := range map[string][]string{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := manager.Ensure("sh.wendy.test", "", allowlist); err == nil {
+				t.Fatal("Ensure accepted a sensor-read owner with no allowlist")
+			} else if !strings.Contains(err.Error(), "allowlist") {
+				t.Fatalf("the refusal does not name the fix: %v", err)
+			}
+		})
+	}
+}
+
+// TestSubscribeNamesAnUnimplementedSourceKind covers the audio and ROS 2 case:
+// those sources exist, are captured into episodes, and have no producer that can
+// multiplex to a model subscriber. An app that subscribes to one must be told
+// that in as many words, rather than getting a message that reads like the
+// source does not exist.
+func TestSubscribeNamesAnUnimplementedSourceKind(t *testing.T) {
+	manager, err := data.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetSourceProvider(func(context.Context) []data.Source {
+		return []data.Source{{ID: "alsa:hw:0,0", Kind: "audio", Healthy: true}}
+	})
+	service := NewSensorService("sh.wendy.test", manager)
+	service.AddProvider(&fakeSensorProvider{sourceID: "v4l2:/dev/video0"})
+
+	stream := &fakeServerStream[appspbv1.SensorSample]{ctx: context.Background()}
+	err = service.Subscribe(&appspbv1.SensorSubscribeRequest{SourceIds: []string{"alsa:hw:0,0"}}, stream)
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("Subscribe to an audio source returned %v, want Unimplemented", err)
+	}
+	for _, want := range []string{"audio", "not subscribable in this release"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+
+	// A source the device does not have at all is a different problem and must
+	// read as one.
+	err = service.Subscribe(&appspbv1.SensorSubscribeRequest{SourceIds: []string{"alsa:hw:9,9"}}, stream)
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("Subscribe to a nonexistent source returned %v, want NotFound", err)
 	}
 }

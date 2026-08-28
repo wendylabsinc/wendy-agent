@@ -6,8 +6,8 @@ running agent. The protocol matches the agent's application-record socket
 (go/internal/agent/services/app_data_socket.go):
 
   - Unix stream socket, path in the WENDY_DATA_SOCKET environment variable
-    (the agent injects /run/wendy/data/data.sock for apps with the "data"
-    entitlement).
+    (the agent injects /run/wendy/data/data.sock for apps with the
+    "episode-write" entitlement).
   - Each record is a 4-byte big-endian length prefix followed by a JSON
     document of at most 64 KiB.
   - Records carry {"version": 1, "type": "event"|"prediction", ...} plus

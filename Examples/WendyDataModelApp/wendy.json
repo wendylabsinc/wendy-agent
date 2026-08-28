@@ -5,10 +5,13 @@
     "language": "python",
     "entitlements": [
         {
-            "type": "sensors"
+            "type": "sensor-read",
+            "allowlist": [
+                "v4l2:/dev/video0"
+            ]
         },
         {
-            "type": "data"
+            "type": "episode-write"
         }
     ]
 }

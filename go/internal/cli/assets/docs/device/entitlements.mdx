@@ -309,16 +309,23 @@ service container is deleted.
   the separate administrative `WENDY_AGENT_SOCKET`.
 </Callout>
 
-### Wendy Data Entitlement
+### Wendy Data Entitlement (`episode-write`)
 
-The data entitlement lets an app submit structured events and predictions to
-Wendy Data without receiving the administrative agent socket.
+The `episode-write` entitlement lets an app write into the device's recorded
+dataset: it submits structured events and predictions to the episode recorder,
+without receiving the administrative agent socket.
 
 ```json
 {
-  "type": "data"
+  "type": "episode-write"
 }
 ```
+
+The name says write, because that is the direction it runs. It is stronger than
+plain logging: campaign triggers match on application event names and prediction
+attributes, so an app holding `episode-write` can start recordings. It grants no
+sensor read access — that is the separate `sensor-read` entitlement, which runs
+the other way.
 
 The agent mounts the app-private socket directory at `/run/wendy/data` and
 injects `WENDY_DATA_SOCKET=/run/wendy/data/data.sock`. Records use a versioned,
@@ -328,22 +335,26 @@ application pre-roll and can fire armed event or model-uncertainty campaigns.
 
 The socket is recreated from persisted container labels after an agent restart.
 Running containers reconnect on their next call without a redeploy. Apps
-without `data` receive no mount, environment variable, or access to another
-app's records.
+without `episode-write` receive no mount, environment variable, or access to
+another app's records.
 
 <Callout type="warning">
-  **Security**: `data` exposes only the private application-record protocol. It
-  never exposes the separate administrative `WENDY_AGENT_SOCKET`.
+  **Security**: `episode-write` exposes only the private application-record
+  protocol. It never exposes the separate administrative `WENDY_AGENT_SOCKET`.
 </Callout>
 
-### Sensors Entitlement
+### Sensors Entitlement (`sensor-read`)
 
-The sensors entitlement is the first-class model-input path: the harness feeds
-the app sensor samples instead of the app opening a device.
+The `sensor-read` entitlement is the first-class model-input path: the harness
+feeds the app sensor samples instead of the app opening a device. The name says
+read, because that is all it grants — in practice, permission to see the cameras
+and microphones its allowlist names. Writing into the recorded dataset is the
+separate `episode-write` entitlement.
 
 ```json
 {
-  "type": "sensors"
+  "type": "sensor-read",
+  "allowlist": ["v4l2:/dev/video0"]
 }
 ```
 
@@ -369,21 +380,24 @@ follow:
   record may name the samples it was computed from, so `(input, outcome)` pairs
   can be reconstructed offline.
 
-An optional allowlist restricts the grant to named source ids, the way the
+The `allowlist` names the source ids the app may subscribe to, the way the
 camera entitlement's allowlist restricts device nodes. Sources outside it are
-neither listed nor subscribable:
+neither listed nor subscribable.
 
-```json
-{
-  "type": "sensors",
-  "allowlist": ["v4l2:/dev/video0"]
-}
-```
+Unlike the camera entitlement's, this allowlist is **required and must name at
+least one source**. Omitting it is rejected rather than read as "everything": a
+bare grant would cover every source the device can multiplex today and every
+source kind that becomes subscribable in a later release, so an app that wanted
+one camera would silently gain microphones and the ROS 2 graph on an agent
+upgrade. A manifest without an allowlist fails validation with a message naming
+the fix. In a multi-service app all services share one socket, so the socket
+permits the union of what they declared.
 
-Omit `allowlist` and the app may subscribe to any sensor source the device
-offers. In a multi-service app all services share one socket, so the socket
-permits the union of what they declared — a service that declares no allowlist
-widens the grant to every source.
+Only camera sources have a producer that can multiplex to a model subscriber in
+this release. Audio and ROS 2 sources are captured into episodes but are not
+subscribable: `Sources` reports them with `subscribable=false`, and `Subscribe`
+refuses them with an error saying that source kind is not subscribable in this
+release.
 
 Source ids must be written exactly as `wendy data sources` reports them.
 Near-miss spellings are refused rather than resolved: `ipcamera:0` and
@@ -398,10 +412,11 @@ This entitlement grants **no device nodes**. An app that wants the raw
 single-holder semantics; the two can be held together.
 
 <Callout type="warning">
-  **Security**: `sensors` is read-only. The socket cannot start or stop
-  episodes, deploy campaigns, or download recorded data — those live on
-  `DataService`, which this socket does not serve — and it never exposes the
-  administrative `WENDY_AGENT_SOCKET`.
+  **Security**: `sensor-read` is read-only. The socket cannot start or stop
+  episodes, deploy campaigns, download recorded data, or write records into an
+  episode — those live on `DataService` and the `episode-write` socket, neither
+  of which this socket serves — and it never exposes the administrative
+  `WENDY_AGENT_SOCKET`.
 </Callout>
 
 ### Admin Entitlement
