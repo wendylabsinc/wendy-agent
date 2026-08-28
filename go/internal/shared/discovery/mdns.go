@@ -83,6 +83,9 @@ func lanDeviceFromService(svc MDNSService) models.LANDevice {
 	if v, ok := svc.TXTRecords["name"]; ok {
 		dev.MeshName = v
 	}
+	if v, ok := svc.TXTRecords["sensorlink"]; ok && v == "true" {
+		dev.Sensorlink = true
+	}
 	return dev
 }
 

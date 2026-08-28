@@ -64,7 +64,10 @@ type LANDevice struct {
 	MeshName string `json:"meshName,omitempty"`
 	// OrgID is the device's cloud organization id from the `orgid` TXT record;
 	// 0 when unprovisioned or pre-mesh.
-	OrgID            int32  `json:"orgId,omitempty"`
+	OrgID int32 `json:"orgId,omitempty"`
+	// Sensorlink is true when the device advertises the `sensorlink=true` TXT
+	// record, meaning it can act as a remote sensor source for pairing.
+	Sensorlink       bool   `json:"sensorlink,omitempty"`
 	InterfaceType    string `json:"interfaceType"`
 	NetworkInterface string `json:"-"`
 	USB              string `json:"usb,omitempty"`
@@ -178,6 +181,9 @@ type DiscoveredDevice struct {
 	OS              string
 	OSVersion       string
 	CPUArchitecture string
+	// Sensorlink is copied from LAN.Sensorlink when a LAN sighting is merged
+	// in; false when the device has no LAN sighting.
+	Sensorlink bool
 
 	LAN       *LANDevice
 	Bluetooth *BluetoothDevice
@@ -291,6 +297,7 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 			OS:              d.OS,
 			OSVersion:       d.OSVersion,
 			CPUArchitecture: d.CPUArchitecture,
+			Sensorlink:      d.Sensorlink,
 			LAN:             d,
 		}
 		register(merged, d.HostKey(), strings.ToLower(d.DisplayName))
