@@ -167,7 +167,8 @@ cd <wendyos-checkout>/Examples/WendyDataModelApp
 
 `campaign.yaml` declares a `camera: front` source and the app consumes the same
 camera, on a single-camera device, at the same time. That works because the app
-does not open the device: it holds the `sensors` entitlement and subscribes to
+does not open the device: it holds the `sensor-read` entitlement, whose
+allowlist names that camera, and subscribes to
 the agent's camera producer, which the campaign's capture adapter subscribes to
 as well. Video4Linux2 admits one holder of a capture device, and the agent is
 it.

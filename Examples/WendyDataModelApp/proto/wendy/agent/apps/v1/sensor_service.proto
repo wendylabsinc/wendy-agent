@@ -17,7 +17,7 @@ package wendy.agent.apps.v1;
 option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/appspb/v1;appspbv1";
 
 // SensorService is the read-only model-input surface of the harness. An app
-// with the "sensors" entitlement receives a private socket serving THIS
+// with the "sensor-read" entitlement receives a private socket serving THIS
 // service and nothing else, so the grant cannot reach episode control,
 // campaign deployment, or downloads.
 //

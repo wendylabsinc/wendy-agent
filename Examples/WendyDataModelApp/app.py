@@ -4,7 +4,7 @@
 Demonstrates the three harness contracts end to end:
 
   1. Sensors in    — camera frames FED BY THE HARNESS over the app-private
-                     sensor socket granted by the sensors entitlement. The
+                     sensor socket granted by the sensor-read entitlement. The
                      app opens no device: it subscribes to the same
                      producer the episode capture adapter consumes, so the
                      two never fight over the camera, and every frame the
@@ -13,7 +13,7 @@ Demonstrates the three harness contracts end to end:
   2. Predictions out — one "prediction" record per processed frame, naming
                      the sample identifiers it was computed from, plus a
                      "person_detected" event, over the app-private data
-                     socket granted by the data entitlement.
+                     socket granted by the episode-write entitlement.
   3. Actuation out — a Robot Operating System 2 (ROS 2) Twist command on
                      /cmd_vel when ROS 2 is available and enabled; the
                      same decision is logged when it is not.
@@ -231,7 +231,7 @@ def resolve_camera_source(client: wendysensors.SensorClient) -> str:
     try:
         sources = client.sources()
     except Exception as exc:  # grpc.RpcError and connection failures alike
-        log.error("cannot reach the sensor socket at %s (%s); is the sensors entitlement granted?", client.target, exc)
+        log.error("cannot reach the sensor socket at %s (%s); is the sensor-read entitlement granted, and does its allowlist name this source?", client.target, exc)
         sys.exit(1)
     cameras = [s for s in sources if s.kind == "camera" and s.subscribable and s.healthy]
     if not cameras:

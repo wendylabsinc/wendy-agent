@@ -6,13 +6,13 @@ WendyOS, so a Wendy Arm demo needs nothing beyond `wendy run` and
 
 | Contract | Mechanism in this app |
 |---|---|
-| Sensors in | Camera frames **fed by the harness** over the app-private sensor socket granted by the `sensors` entitlement (`WENDY_SENSOR_SOCKET`). The app opens no device. |
-| Predictions out | One `prediction` record per scored frame, naming the sample identifiers it was computed from, plus a `person_detected` event, over the app-private data socket granted by the `data` entitlement (`WENDY_DATA_SOCKET`) |
+| Sensors in | Camera frames **fed by the harness** over the app-private sensor socket granted by the `sensor-read` entitlement (`WENDY_SENSOR_SOCKET`). Read-only, and narrowed to the source the manifest names. The app opens no device. |
+| Predictions out | One `prediction` record per scored frame, naming the sample identifiers it was computed from, plus a `person_detected` event, over the app-private data socket granted by the `episode-write` entitlement (`WENDY_DATA_SOCKET`) |
 | Actuation out | A Robot Operating System 2 (ROS 2) `geometry_msgs/Twist` on `/cmd_vel` when ROS 2 is enabled; the identical control decision is logged when it is not |
 
 ```
 WendyDataModelApp/
-├── wendy.json          ← sensors + data entitlements (no camera device access)
+├── wendy.json          ← sensor-read + episode-write entitlements (no camera device access)
 ├── Dockerfile          ← YOLOv8n ONNX export + gRPC stub generation, CPU runtime
 ├── app.py              ← subscribe, detect, record, actuate loop
 ├── wendysensors.py     ← sensor subscribe client (gRPC + PyAV decode)
@@ -67,8 +67,17 @@ below):
 
 Set `WENDY_CAMERA_SOURCE` to pick a source explicitly; by default the app
 takes the first healthy, subscribable camera the harness offers and logs
-which one. A camera the harness lists but cannot stream to models is
-reported with the reason rather than silently skipped.
+which one. Either way the source must appear in the `sensor-read` allowlist
+in `wendy.json`, which ships naming `v4l2:/dev/video0`. On a device whose
+camera has another identifier, edit that allowlist to match what `wendy data
+sources` prints; a source outside it is neither listed nor subscribable, so
+the app will report that it has no camera to score.
+
+A camera the harness lists but cannot stream to models is reported with the
+reason rather than silently skipped. Only camera sources are subscribable in
+this release: audio and ROS 2 sources are captured into episodes, and
+subscribing to one is refused with an error saying that kind is not
+subscribable yet.
 
 ### The uncertainty formula
 
@@ -136,9 +145,9 @@ does the app exit, and it says so rather than stopping quietly with the
 campaign still armed. Set the attempts to 0 to exit on the first end of
 stream instead.
 
-Without a data socket (running outside WendyOS, or without the `data`
-entitlement) it keeps running and logs each dropped record; without ROS 2
-it logs each actuation decision.
+Without a data socket (running outside WendyOS, or without the
+`episode-write` entitlement) it keeps running and logs each dropped record;
+without ROS 2 it logs each actuation decision.
 
 `proto/wendy/agent/apps/v1/sensor_service.proto` is a copy of the
 canonical `Proto/wendy/agent/apps/v1/sensor_service.proto`, because the
