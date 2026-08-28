@@ -120,9 +120,9 @@ func TestAccessorUnknownRefVersion(t *testing.T) {
 }
 
 func TestAccountDerivationDeterministic(t *testing.T) {
-	a1 := keyAccount("grpc.wendy.com:443", 7, "user-1", 0)
-	a2 := keyAccount("grpc.wendy.com:443", 7, "user-1", 0)
-	b := keyAccount("grpc.wendy.com:443", 8, "user-1", 0)
+	a1 := keyAccount("grpc.wendy.com:443", 7, "user-1", 0, "")
+	a2 := keyAccount("grpc.wendy.com:443", 7, "user-1", 0, "")
+	b := keyAccount("grpc.wendy.com:443", 8, "user-1", 0, "")
 	if a1 != a2 {
 		t.Errorf("same inputs → different accounts: %q vs %q", a1, a2)
 	}
@@ -166,10 +166,18 @@ func TestAccountDerivationDashboardVariance(t *testing.T) {
 // UserID, only an AssetID, so two asset certs on the same endpoint+org with
 // different AssetID must not collide on one key account.
 func TestAccountDerivationAssetVariance(t *testing.T) {
-	a := keyAccount("grpc.wendy.com:443", 7, "", 100)
-	b := keyAccount("grpc.wendy.com:443", 7, "", 200)
+	a := keyAccount("grpc.wendy.com:443", 7, "", 100, "")
+	b := keyAccount("grpc.wendy.com:443", 7, "", 200, "")
 	if a == b {
 		t.Error("differing AssetID with empty UserID (same endpoint+org) → same key account")
+	}
+}
+
+func TestAccountDerivationSPIFFEPrincipalVariance(t *testing.T) {
+	a := keyAccount("grpc.wendy.com:443", 0, "", 0, "spiffe://wendy.sh/tenant/a/operator/alice")
+	b := keyAccount("grpc.wendy.com:443", 0, "", 0, "spiffe://wendy.sh/tenant/b/operator/alice")
+	if a == b {
+		t.Error("differing SPIFFE principals → same key account")
 	}
 }
 

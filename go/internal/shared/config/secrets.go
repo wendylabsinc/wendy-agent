@@ -88,12 +88,19 @@ func resolveError(cause error) error {
 
 // keyAccount derives the deterministic Keychain account for a client
 // private key, so re-login for the same identity overwrites one item. It
-// hashes cloudGRPC|orgID|userID|assetID: userID alone is not enough because
-// asset certs (from performLocalLogin) carry no UserID, only an AssetID, so
-// two asset certs on the same endpoint+org with different AssetID must not
-// collide on the same Keychain item.
-func keyAccount(cloudGRPC string, orgID int, userID string, assetID int) string {
-	sum := sha256.Sum256([]byte(cloudGRPC + "|" + strconv.Itoa(orgID) + "|" + userID + "|" + strconv.Itoa(assetID)))
+// hashes cloudGRPC|orgID|userID|assetID|principalURI. userID alone is not
+// enough because asset certs (from performLocalLogin) carry no UserID, only an
+// AssetID, so two asset certs on the same endpoint+org with different AssetID
+// must not collide. principalURI distinguishes newer pki-core SPIFFE
+// identities, which do not carry the legacy numeric org ID.
+func keyAccount(cloudGRPC string, orgID int, userID string, assetID int, principalURI string) string {
+	identity := cloudGRPC + "|" + strconv.Itoa(orgID) + "|" + userID + "|" + strconv.Itoa(assetID)
+	// Preserve the established account derivation for legacy certificates;
+	// append the new identity component only when it exists.
+	if principalURI != "" {
+		identity += "|" + principalURI
+	}
+	sum := sha256.Sum256([]byte(identity))
 	return "key-" + hex.EncodeToString(sum[:8])
 }
 
@@ -227,7 +234,7 @@ func dehydrate(cfg *Config) {
 		for j := range a.Certificates {
 			c := &a.Certificates[j]
 			if c.PemPrivateKey != "" && !isRef(c.PemPrivateKey) {
-				acct := keyAccount(a.CloudGRPC, c.OrganizationID, c.UserID, c.AssetID)
+				acct := keyAccount(a.CloudGRPC, c.OrganizationID, c.UserID, c.AssetID, c.PrincipalURI)
 				if store.Put(acct, []byte(c.PemPrivateKey)) == nil {
 					cacheSecret(refPrefixV1+acct, c.PemPrivateKey)
 					c.PemPrivateKey = refPrefixV1 + acct

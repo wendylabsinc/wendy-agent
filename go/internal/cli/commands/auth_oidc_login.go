@@ -5,18 +5,23 @@ package commands
 // auth_oidc.go.
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/subtle"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -40,13 +45,20 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	if opts.ClientID == "" {
 		return fmt.Errorf("--client-id is required")
 	}
-	if opts.Resource == "" {
+	if opts.CloudResource == "" {
 		return fmt.Errorf("--resource is required for OIDC login")
+	}
+	if opts.IdentityResource == "" {
+		return fmt.Errorf("--pki-resource is required for OIDC login")
+	}
+	if opts.IdentityEndpoint == "" {
+		return fmt.Errorf("--pki-identity-endpoint is required for OIDC login")
 	}
 	if opts.CloudGRPC == "" {
 		return fmt.Errorf("--cloud-grpc is required for OIDC login")
 	}
-	resource := opts.Resource
+	cloudResource := opts.CloudResource
+	identityResource := opts.IdentityResource
 
 	// Step 1: the key, before anything else.
 	privateKeyPEM, err := certs.GenerateKeyPair()
@@ -128,7 +140,7 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	}()
 
 	// Step 4: send the operator to the realm's authorize endpoint.
-	authURL, err := buildAuthorizeURL(meta, opts.ClientID, redirectURI, challenge, state, resource)
+	authURL, err := buildAuthorizeURL(meta, opts.ClientID, redirectURI, challenge, state, identityResource)
 	if err != nil {
 		return err
 	}
@@ -152,7 +164,7 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	}
 
 	// Step 6: exchange the code, DPoP-bound to the key from step 1.
-	token, err := exchangeCodeForToken(ctx, key, meta, opts.ClientID, result.Code, verifier, redirectURI, resource)
+	identityToken, err := exchangeCodeForToken(ctx, key, meta, opts.ClientID, result.Code, verifier, redirectURI, identityResource)
 	if err != nil {
 		return err
 	}
@@ -162,7 +174,7 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	// A token without cnf.jkt, or with someone else's thumbprint, cannot be
 	// refreshed with the local key. Fail now with a useful client-registration
 	// diagnosis instead of saving a broken session.
-	claims, err := decodeJWTClaims(token.AccessToken)
+	claims, err := decodeJWTClaims(identityToken.AccessToken)
 	if err != nil {
 		return fmt.Errorf("inspecting access token: %w", err)
 	}
@@ -175,15 +187,71 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	}
 	fmt.Println(tui.SuccessMessage("Access token is sender-constrained to this key (cnf.jkt matches)."))
 
-	if !audienceContains(claims["aud"], resource) {
-		return fmt.Errorf("access token audience does not include %s", resource)
+	if !audienceContains(claims["aud"], identityResource) {
+		return fmt.Errorf("access token audience does not include pki-core identity resource %s", identityResource)
 	}
 	if issuer, _ := claims["iss"].(string); issuer != strings.TrimSuffix(opts.Issuer, "/") {
 		return fmt.Errorf("access token issuer %q does not match %q", issuer, strings.TrimSuffix(opts.Issuer, "/"))
 	}
 
 	if opts.PrintClaims {
-		printClaims(claims, token)
+		printClaims(claims, identityToken)
+	}
+
+	subject, _ := claims["sub"].(string)
+	if subject == "" {
+		return fmt.Errorf("pki-core identity token carries no sub claim")
+	}
+	tenantUUID, _ := claims["tenant_uuid"].(string)
+	if tenantUUID == "" {
+		return fmt.Errorf("pki-core identity token carries no tenant_uuid: realm %q is not linked to a pki-core tenant", issuerRealm(opts.Issuer))
+	}
+	tenantID, err := uuid.Parse(tenantUUID)
+	if err != nil {
+		return fmt.Errorf("pki-core identity token carries invalid tenant_uuid %q", tenantUUID)
+	}
+	tenantUUID = tenantID.String()
+	if identityToken.RefreshToken == "" {
+		return fmt.Errorf("wendy-auth returned no refresh token; cannot obtain a separate Cloud API token after PKI enrollment")
+	}
+
+	// Step 8: create a PKCS#10 request with the same key used for DPoP and ask
+	// pki-core directly. pki-core enforces the three-way binding between this
+	// key, token cnf.jkt, and the proof's embedded JWK.
+	fmt.Println(tui.InfoMessage("Requesting an operator certificate from pki-core..."))
+	certInfo, err := requestPKIIdentityCertificate(
+		ctx, http.DefaultClient, opts.IdentityEndpoint, privateKeyPEM, key,
+		identityToken.AccessToken, tenantUUID, subject,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Step 9: wendy-auth currently issues one resource audience at a time.
+	// Rotate the same sender-constrained refresh-token family from the PKI
+	// audience to the Cloud API audience, and persist only this API token.
+	cloudToken, err := refreshOIDCToken(
+		ctx, key, meta, opts.ClientID, identityToken.RefreshToken, cloudResource,
+	)
+	if err != nil {
+		return fmt.Errorf("obtaining Cloud API token after certificate enrollment: %w", err)
+	}
+	cloudClaims, err := decodeJWTClaims(cloudToken.AccessToken)
+	if err != nil {
+		return fmt.Errorf("inspecting Cloud API access token: %w", err)
+	}
+	if confirmationThumbprint(cloudClaims) != thumbprint {
+		return fmt.Errorf("Cloud API access token is not bound to the generated operator key")
+	}
+	if !audienceContains(cloudClaims["aud"], cloudResource) {
+		return fmt.Errorf("Cloud API access token audience does not include %s", cloudResource)
+	}
+	if issuer, _ := cloudClaims["iss"].(string); issuer != strings.TrimSuffix(opts.Issuer, "/") {
+		return fmt.Errorf("Cloud API access token issuer %q does not match %q", issuer, strings.TrimSuffix(opts.Issuer, "/"))
+	}
+	refreshToken := cloudToken.RefreshToken
+	if refreshToken == "" {
+		refreshToken = identityToken.RefreshToken
 	}
 
 	cfg, err := config.Load()
@@ -193,22 +261,268 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	authEntry := config.AuthConfig{
 		CloudDashboard: opts.CloudURL,
 		CloudGRPC:      opts.CloudGRPC,
-		APIKey:         token.AccessToken,
+		APIKey:         cloudToken.AccessToken,
 		OAuthIssuer:    strings.TrimSuffix(opts.Issuer, "/"),
 		OAuthClientID:  opts.ClientID,
-		OAuthResource:  resource,
-		OAuthExpiresAt: time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).UTC().Format(time.RFC3339),
-		RefreshToken:   token.RefreshToken,
+		OAuthResource:  cloudResource,
+		PKIResource:    identityResource,
+		PKIEndpoint:    opts.IdentityEndpoint,
+		OAuthExpiresAt: time.Now().Add(time.Duration(cloudToken.ExpiresIn) * time.Second).UTC().Format(time.RFC3339),
+		RefreshToken:   refreshToken,
 		DPoPPrivateKey: privateKeyPEM,
+		Certificates:   []config.CertificateInfo{certInfo},
 	}
 	cfg.AddAuth(authEntry)
 	if cfg.DefaultCloudGRPC == "" {
 		cfg.DefaultCloudGRPC = opts.CloudGRPC
 	}
 	if err := config.Save(cfg); err != nil {
-		return fmt.Errorf("saving OAuth session: %w", err)
+		return fmt.Errorf("saving OAuth session and certificates: %w", err)
 	}
-	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Signed in to %s. API session saved.", issuerRealm(opts.Issuer))))
+	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Signed in to %s. API session and certificates saved.", issuerRealm(opts.Issuer))))
+	clitimesync.CacheProof(ctx)
+	return nil
+}
+
+type oidcHTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+// requestPKIIdentityCertificate implements pki-core's operator identity wire
+// contract: raw PKCS#10 body, DPoP authorization, and a leaf-first PEM chain.
+func requestPKIIdentityCertificate(
+	ctx context.Context,
+	client oidcHTTPDoer,
+	endpoint, privateKeyPEM string,
+	key *ecdsa.PrivateKey,
+	accessToken, tenantUUID, subject string,
+) (config.CertificateInfo, error) {
+	if accessToken == "" {
+		return config.CertificateInfo{}, fmt.Errorf("requesting pki-core identity certificate: access token is empty")
+	}
+	htu, err := canonicalHTU(endpoint)
+	if err != nil {
+		return config.CertificateInfo{}, err
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return config.CertificateInfo{}, fmt.Errorf("invalid pki-core identity endpoint %q", endpoint)
+	}
+	loopback := u.Hostname() == "localhost"
+	if ip := net.ParseIP(u.Hostname()); ip != nil {
+		loopback = ip.IsLoopback()
+	}
+	if (u.Scheme != "https" && !(u.Scheme == "http" && loopback)) ||
+		u.User != nil || u.Fragment != "" || u.Path != "/v1/identity/certificate" {
+		return config.CertificateInfo{}, fmt.Errorf("invalid pki-core identity endpoint %q: want HTTPS (or loopback HTTP) with path /v1/identity/certificate", endpoint)
+	}
+	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), subject, "")
+	if err != nil {
+		return config.CertificateInfo{}, fmt.Errorf("generating operator CSR: %w", err)
+	}
+	proof, err := newDPoPAccessProof(key, http.MethodPost, htu, accessToken)
+	if err != nil {
+		return config.CertificateInfo{}, fmt.Errorf("building pki-core DPoP proof: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(csrPEM))
+	if err != nil {
+		return config.CertificateInfo{}, fmt.Errorf("building pki-core identity request: %w", err)
+	}
+	req.Header.Set("Authorization", "DPoP "+accessToken)
+	req.Header.Set("DPoP", proof)
+	req.Header.Set("Content-Type", "application/pkcs10")
+	req.Header.Set("Accept", "application/pem-certificate-chain")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return config.CertificateInfo{}, fmt.Errorf("calling pki-core identity endpoint %s: %w", endpoint, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if readErr != nil {
+		return config.CertificateInfo{}, fmt.Errorf("reading pki-core identity response: %w", readErr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		detail := strings.TrimSpace(string(body))
+		if resp.StatusCode == http.StatusUnauthorized {
+			detail = "unauthorized (verify the realm-to-tenant mapping and PKI audience)"
+		}
+		return config.CertificateInfo{}, fmt.Errorf("pki-core identity endpoint returned %d: %s", resp.StatusCode, detail)
+	}
+	if len(body) > 1<<20 {
+		return config.CertificateInfo{}, fmt.Errorf("pki-core identity response exceeds 1 MiB")
+	}
+	leafPEM, chainPEM, leaf, err := splitCertificateChainPEM(body)
+	if err != nil {
+		return config.CertificateInfo{}, fmt.Errorf("parsing pki-core certificate chain: %w", err)
+	}
+	wantPublicKey, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		return config.CertificateInfo{}, fmt.Errorf("encoding generated operator public key: %w", err)
+	}
+	gotPublicKey, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
+	if err != nil || !bytes.Equal(gotPublicKey, wantPublicKey) {
+		return config.CertificateInfo{}, fmt.Errorf("pki-core returned a certificate for a different key")
+	}
+	principalURI := fmt.Sprintf("spiffe://wendy.sh/tenant/%s/operator/%s", tenantUUID, subject)
+	principalMatches := 0
+	for _, uri := range leaf.URIs {
+		if uri.String() == principalURI {
+			principalMatches++
+			continue
+		}
+		if uri.Scheme == "spiffe" && uri.Host == "wendy.sh" && strings.HasPrefix(uri.Path, "/tenant/") {
+			return config.CertificateInfo{}, fmt.Errorf("pki-core returned a certificate for a different principal")
+		}
+	}
+	if principalMatches != 1 {
+		return config.CertificateInfo{}, fmt.Errorf("pki-core certificate does not contain the expected operator identity %s", principalURI)
+	}
+	return config.CertificateInfo{
+		PemCertificate:      leafPEM,
+		PemCertificateChain: chainPEM,
+		PemPrivateKey:       privateKeyPEM,
+		PrincipalURI:        principalURI,
+	}, nil
+}
+
+func splitCertificateChainPEM(chain []byte) (string, string, *x509.Certificate, error) {
+	rest := chain
+	var encoded [][]byte
+	var leaf *x509.Certificate
+	for len(bytes.TrimSpace(rest)) > 0 {
+		block, remaining := pem.Decode(rest)
+		if block == nil || block.Type != "CERTIFICATE" {
+			return "", "", nil, fmt.Errorf("response contains non-certificate PEM data")
+		}
+		if leaf == nil {
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return "", "", nil, err
+			}
+			leaf = cert
+		}
+		encoded = append(encoded, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes}))
+		rest = remaining
+	}
+	if leaf == nil {
+		return "", "", nil, fmt.Errorf("response contains no certificate")
+	}
+	return string(encoded[0]), string(bytes.Join(encoded[1:], nil)), leaf, nil
+}
+
+// refreshOIDCCertificate replays the direct pki-core flow for an existing
+// OAuth session. The refresh-token family is first scoped to pki-core and then
+// rotated back to the Cloud API resource. The DPoP key cannot change here:
+// pki-core requires it to remain the CSR key as well.
+func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig) error {
+	refreshToken, err := auth.OAuthRefreshToken()
+	if err != nil {
+		return fmt.Errorf("loading OAuth refresh token: %w", err)
+	}
+	if refreshToken == "" {
+		return fmt.Errorf("OAuth session has no refresh token; sign in again")
+	}
+	privateKeyPEM, err := auth.OAuthDPoPKey()
+	if err != nil {
+		return fmt.Errorf("loading OAuth DPoP key: %w", err)
+	}
+	key, err := parseECPrivateKeyPEM(privateKeyPEM)
+	if err != nil {
+		return fmt.Errorf("parsing OAuth DPoP key: %w", err)
+	}
+	thumbprint, err := jwkThumbprint(&key.PublicKey)
+	if err != nil {
+		return fmt.Errorf("computing OAuth DPoP thumbprint: %w", err)
+	}
+	meta, err := discoverOIDC(ctx, auth.OAuthIssuer)
+	if err != nil {
+		return err
+	}
+	identityResource := auth.PKIResource
+	if identityResource == "" {
+		identityResource = defaultPKIIdentityResource
+	}
+	identityEndpoint := auth.PKIEndpoint
+	if identityEndpoint == "" {
+		identityEndpoint = defaultPKIIdentityEndpoint
+	}
+
+	identityToken, err := refreshOIDCToken(
+		ctx, key, meta, auth.OAuthClientID, refreshToken, identityResource,
+	)
+	if err != nil {
+		return fmt.Errorf("obtaining pki-core identity token: %w", err)
+	}
+	if identityToken.RefreshToken == "" {
+		return fmt.Errorf("wendy-auth did not rotate the refresh token for pki-core enrollment")
+	}
+	// The old handle has already been consumed. Retain the rotated one even if
+	// a later validation or issuance step fails; refreshAllCerts persists this
+	// mutation so the user's login is not stranded.
+	auth.RefreshToken = identityToken.RefreshToken
+	claims, err := decodeJWTClaims(identityToken.AccessToken)
+	if err != nil {
+		return fmt.Errorf("inspecting pki-core identity token: %w", err)
+	}
+	if confirmationThumbprint(claims) != thumbprint {
+		return fmt.Errorf("pki-core identity token is not bound to the stored DPoP key")
+	}
+	if !audienceContains(claims["aud"], identityResource) {
+		return fmt.Errorf("pki-core identity token audience does not include %s", identityResource)
+	}
+	if issuer, _ := claims["iss"].(string); issuer != strings.TrimSuffix(auth.OAuthIssuer, "/") {
+		return fmt.Errorf("pki-core identity token issuer %q does not match %q", issuer, strings.TrimSuffix(auth.OAuthIssuer, "/"))
+	}
+	subject, _ := claims["sub"].(string)
+	if subject == "" {
+		return fmt.Errorf("pki-core identity token carries no sub claim")
+	}
+	tenantUUID, _ := claims["tenant_uuid"].(string)
+	if tenantUUID == "" {
+		return fmt.Errorf("pki-core identity token carries no tenant_uuid: realm %q is not linked to a pki-core tenant", issuerRealm(auth.OAuthIssuer))
+	}
+	tenantID, err := uuid.Parse(tenantUUID)
+	if err != nil {
+		return fmt.Errorf("pki-core identity token carries invalid tenant_uuid %q", tenantUUID)
+	}
+	tenantUUID = tenantID.String()
+
+	certInfo, err := requestPKIIdentityCertificate(
+		ctx, http.DefaultClient, identityEndpoint, privateKeyPEM, key,
+		identityToken.AccessToken, tenantUUID, subject,
+	)
+	if err != nil {
+		return err
+	}
+	cloudToken, err := refreshOIDCToken(
+		ctx, key, meta, auth.OAuthClientID, identityToken.RefreshToken, auth.OAuthResource,
+	)
+	if err != nil {
+		return fmt.Errorf("restoring Cloud API token after certificate refresh: %w", err)
+	}
+	if cloudToken.RefreshToken != "" {
+		auth.RefreshToken = cloudToken.RefreshToken
+	}
+	cloudClaims, err := decodeJWTClaims(cloudToken.AccessToken)
+	if err != nil {
+		return fmt.Errorf("inspecting refreshed Cloud API token: %w", err)
+	}
+	if confirmationThumbprint(cloudClaims) != thumbprint {
+		return fmt.Errorf("refreshed Cloud API token is not bound to the stored DPoP key")
+	}
+	if !audienceContains(cloudClaims["aud"], auth.OAuthResource) {
+		return fmt.Errorf("refreshed Cloud API token audience does not include %s", auth.OAuthResource)
+	}
+	if issuer, _ := cloudClaims["iss"].(string); issuer != strings.TrimSuffix(auth.OAuthIssuer, "/") {
+		return fmt.Errorf("refreshed Cloud API token issuer %q does not match %q", issuer, strings.TrimSuffix(auth.OAuthIssuer, "/"))
+	}
+	auth.APIKey = cloudToken.AccessToken
+	auth.OAuthExpiresAt = time.Now().Add(time.Duration(cloudToken.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+	auth.PKIResource = identityResource
+	auth.PKIEndpoint = identityEndpoint
+	auth.Certificates = []config.CertificateInfo{certInfo}
+	clitimesync.CacheProof(ctx)
 	return nil
 }
 

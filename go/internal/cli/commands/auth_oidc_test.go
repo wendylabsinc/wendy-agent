@@ -154,6 +154,9 @@ func TestNewDPoPProofStructure(t *testing.T) {
 	if _, ok := payload["nonce"]; ok {
 		t.Error("nonce present when none was supplied")
 	}
+	if _, ok := payload["ath"]; ok {
+		t.Error("ath present on a token-endpoint proof")
+	}
 }
 
 func TestNewDPoPProofIncludesNonceWhenGiven(t *testing.T) {

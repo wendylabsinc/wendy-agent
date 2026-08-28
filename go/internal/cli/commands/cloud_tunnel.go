@@ -51,6 +51,9 @@ func (f closeFunc) Close() error {
 }
 
 func certXFCC(cert config.CertificateInfo) string {
+	if cert.PrincipalURI != "" {
+		return "URI=" + cert.PrincipalURI
+	}
 	if cert.UserID != "" {
 		return fmt.Sprintf("URI=urn:wendy:org:%d:user:%s", cert.OrganizationID, cert.UserID)
 	}

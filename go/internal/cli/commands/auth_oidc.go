@@ -1,9 +1,8 @@
 package commands
 
-// OpenID Connect login against wendy-auth for the Wendy Cloud API. The native
-// client uses authorization code + PKCE and binds tokens to a local DPoP key.
-// The existing certificate enrollment flow remains available for device and
-// broker operations that still require mTLS.
+// OpenID Connect login against wendy-auth for the Wendy Cloud API and
+// pki-core. The native client uses authorization code + PKCE and binds both
+// resource tokens and the operator CSR to one local DPoP key.
 
 import (
 	"bytes"
@@ -35,8 +34,14 @@ type oidcLoginOptions struct {
 	// ClientID is the public client registered in that realm. Public + PKCE,
 	// token_endpoint_auth_method=none: a CLI cannot keep a secret.
 	ClientID string
-	// Resource is copied into the access token audience via RFC 8707.
-	Resource string
+	// CloudResource is the audience used for the access token persisted for
+	// ordinary Cloud API calls. IdentityResource is the pki-core audience used
+	// only during certificate bootstrap.
+	CloudResource    string
+	IdentityResource string
+	// IdentityEndpoint is pki-core's operator-identity CSR endpoint. Its exact
+	// canonical URL is bound into the resource-request DPoP proof.
+	IdentityEndpoint string
 	// CloudURL and CloudGRPC identify the API environment this session targets.
 	CloudURL  string
 	CloudGRPC string
@@ -260,6 +265,20 @@ func signES256(key *ecdsa.PrivateKey, signingInput string) (string, error) {
 // htu must be the request URI with query and fragment removed; htm the method.
 // nonce is included only when the server has demanded one (see dpopNonceRetry).
 func newDPoPProof(key *ecdsa.PrivateKey, htm, htu, nonce string) (string, error) {
+	return newDPoPProofWithAccessToken(key, htm, htu, nonce, "")
+}
+
+// newDPoPAccessProof builds the proof used at a protected resource. In
+// addition to the request URI and method it binds the proof to the exact
+// access-token bytes through RFC 9449's ath claim.
+func newDPoPAccessProof(key *ecdsa.PrivateKey, htm, htu, accessToken string) (string, error) {
+	if accessToken == "" {
+		return "", fmt.Errorf("access token is empty")
+	}
+	return newDPoPProofWithAccessToken(key, htm, htu, "", accessToken)
+}
+
+func newDPoPProofWithAccessToken(key *ecdsa.PrivateKey, htm, htu, nonce, accessToken string) (string, error) {
 	jwk, err := ecPublicJWK(&key.PublicKey)
 	if err != nil {
 		return "", err
@@ -281,6 +300,10 @@ func newDPoPProof(key *ecdsa.PrivateKey, htm, htu, nonce string) (string, error)
 	}
 	if nonce != "" {
 		payload["nonce"] = nonce
+	}
+	if accessToken != "" {
+		sum := sha256.Sum256([]byte(accessToken))
+		payload["ath"] = base64URL(sum[:])
 	}
 
 	headerJSON, err := json.Marshal(header)
