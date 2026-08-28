@@ -117,8 +117,8 @@ func schemaEntitlementConsts(t *testing.T) map[string]bool {
 // give the app stubs for a contract the agent no longer serves.
 func TestExampleSensorProtoMatchesCanonical(t *testing.T) {
 	const (
-		canonical = "../../../../Proto/wendy/agent/services/v2/sensor_service.proto"
-		copied    = "../../../../Examples/WendyDataModelApp/proto/wendy/agent/services/v2/sensor_service.proto"
+		canonical = "../../../../Proto/wendy/agent/apps/v1/sensor_service.proto"
+		copied    = "../../../../Examples/WendyDataModelApp/proto/wendy/agent/apps/v1/sensor_service.proto"
 	)
 	want, err := os.ReadFile(canonical)
 	if err != nil {

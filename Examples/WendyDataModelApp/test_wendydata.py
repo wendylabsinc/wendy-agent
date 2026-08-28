@@ -124,14 +124,14 @@ class TestSampleAttribution(unittest.TestCase):
         for name in (
             "wendy",
             "wendy.agent",
-            "wendy.agent.services",
-            "wendy.agent.services.v2",
+            "wendy.agent.apps",
+            "wendy.agent.apps.v1",
         ):
             module = sys.modules.setdefault(name, types.ModuleType(name))
             module.__path__ = []
         for name in (
-            "wendy.agent.services.v2.sensor_service_pb2",
-            "wendy.agent.services.v2.sensor_service_pb2_grpc",
+            "wendy.agent.apps.v1.sensor_service_pb2",
+            "wendy.agent.apps.v1.sensor_service_pb2_grpc",
         ):
             sys.modules.setdefault(name, types.ModuleType(name))
         import wendysensors

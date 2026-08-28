@@ -1,7 +1,7 @@
 """Wendy sensor client: model input through the harness.
 
 The harness feeds the model instead of the model opening a device. This
-module wraps `wendy.agent.services.v2.SensorService` on the app-private
+module wraps `wendy.agent.apps.v1.SensorService` on the app-private
 socket the `sensors` entitlement mounts, and turns the identified encoded
 samples it streams into decoded frames while keeping track of which
 sample identifiers produced each frame.
@@ -49,8 +49,8 @@ from dataclasses import dataclass, field
 
 import grpc
 
-from wendy.agent.services.v2 import sensor_service_pb2 as sensorpb
-from wendy.agent.services.v2 import sensor_service_pb2_grpc as sensorgrpc
+from wendy.agent.apps.v1 import sensor_service_pb2 as sensorpb
+from wendy.agent.apps.v1 import sensor_service_pb2_grpc as sensorgrpc
 
 log = logging.getLogger("wendysensors")
 

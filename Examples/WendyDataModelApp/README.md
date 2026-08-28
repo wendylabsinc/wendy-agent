@@ -140,8 +140,8 @@ Without a data socket (running outside WendyOS, or without the `data`
 entitlement) it keeps running and logs each dropped record; without ROS 2
 it logs each actuation decision.
 
-`proto/wendy/agent/services/v2/sensor_service.proto` is a copy of the
-canonical `Proto/wendy/agent/services/v2/sensor_service.proto`, because the
+`proto/wendy/agent/apps/v1/sensor_service.proto` is a copy of the
+canonical `Proto/wendy/agent/apps/v1/sensor_service.proto`, because the
 image build context is this directory. A Go test
 (`TestExampleSensorProtoMatchesCanonical`) fails if the two drift; when the
 canonical proto changes, copy it over.
