@@ -372,7 +372,11 @@ func main() {
 	}
 	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), mcusource.NewMTLSDialer(logger, mcuIdentity), ros2camera.NewFrameWriter)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
-	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorRunner.Start, sensorRunner.Stop)
+	sensorAgentOrgID := func() int32 {
+		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
+		return orgID
+	}
+	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentOrgID, sensorRunner.Start, sensorRunner.Stop)
 	// Boot-resume: every previously paired source reconnects on its own —
 	// addr == "" tells the runner to resolve the source's current LAN address
 	// by asset id rather than trusting a possibly-stale one from disk.

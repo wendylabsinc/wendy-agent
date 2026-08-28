@@ -16,14 +16,23 @@ type StopPairingFunc func(sourceAssetID int32)
 
 type SensorPairingService struct {
 	agentpbv2.UnimplementedWendySensorPairingServiceServer
-	logger *zap.Logger
-	store  *mcusource.PairingStore
-	start  StartPairingFunc
-	stop   StopPairingFunc
+	logger     *zap.Logger
+	store      *mcusource.PairingStore
+	agentOrgID func() int32
+	start      StartPairingFunc
+	stop       StopPairingFunc
 }
 
-func NewSensorPairingService(logger *zap.Logger, store *mcusource.PairingStore, start StartPairingFunc, stop ...StopPairingFunc) *SensorPairingService {
-	s := &SensorPairingService{logger: logger, store: store, start: start}
+// agentOrgID returns this agent's own current provisioning org id, read
+// fresh on every Add (not captured once at construction) so a device
+// provisioned or re-provisioned while the agent runs gets the right org
+// without a restart. Sensor pairing is same-org by design (no org_id field
+// on the request), so every pairing's SensorPairing.OrgID is set to the
+// agent's own org — that's the identity the per-pairing mTLS dialer pins
+// against on the handshake, so a wrong org here means no real source can
+// ever connect.
+func NewSensorPairingService(logger *zap.Logger, store *mcusource.PairingStore, agentOrgID func() int32, start StartPairingFunc, stop ...StopPairingFunc) *SensorPairingService {
+	s := &SensorPairingService{logger: logger, store: store, agentOrgID: agentOrgID, start: start}
 	if len(stop) > 0 {
 		s.stop = stop[0]
 	}
@@ -33,6 +42,7 @@ func NewSensorPairingService(logger *zap.Logger, store *mcusource.PairingStore, 
 func (s *SensorPairingService) AddSensorPairing(_ context.Context, req *agentpbv2.AddSensorPairingRequest) (*agentpbv2.AddSensorPairingResponse, error) {
 	p := mcusource.SensorPairing{
 		SourceAssetID:   req.SourceAssetId,
+		OrgID:           s.agentOrgID(),
 		Name:            req.Name,
 		SensorAllowlist: req.SensorAllowlist,
 	}
@@ -42,7 +52,9 @@ func (s *SensorPairingService) AddSensorPairing(_ context.Context, req *agentpbv
 	if s.start != nil {
 		s.start(p, req.SourceAddress)
 	}
-	return &agentpbv2.AddSensorPairingResponse{Pairing: toProto(p, true)}, nil
+	// Connected is unknown at Add time (the supervisor hasn't dialed yet);
+	// match ListSensorPairings, which always reports false too.
+	return &agentpbv2.AddSensorPairingResponse{Pairing: toProto(p, false)}, nil
 }
 
 func (s *SensorPairingService) RemoveSensorPairing(_ context.Context, req *agentpbv2.RemoveSensorPairingRequest) (*agentpbv2.RemoveSensorPairingResponse, error) {
