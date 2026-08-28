@@ -3,9 +3,12 @@ package ros2camera
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
+	"strings"
 	"testing"
 )
 
@@ -66,6 +69,34 @@ func TestDecodeCompressedImagePreservesJPEG(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) || width != 3 || height != 2 {
 		t.Fatalf("got %dx%d, %d bytes; want 3x2, %d bytes", width, height, len(got), len(want))
+	}
+}
+
+func TestDecodeCompressedImageRejectsNonJPEG(t *testing.T) {
+	var frame bytes.Buffer
+	if err := png.Encode(&frame, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	c := newCDRBuilder()
+	c.header()
+	c.str("png")
+	c.bytes(frame.Bytes())
+	if _, _, _, err := DecodeJPEG(TypeCompressedImage, c.b); !errors.Is(err, ErrUnsupportedEncoding) {
+		t.Fatalf("error = %v; want ErrUnsupportedEncoding", err)
+	}
+}
+
+func TestDecodeRawImageRejectsOversizedDimensions(t *testing.T) {
+	c := newCDRBuilder()
+	c.header()
+	c.u32(1)
+	c.u32(maxFrameDimension + 1)
+	c.str("mono8")
+	c.u8(0)
+	c.u32(maxFrameDimension + 1)
+	c.bytes(nil)
+	if _, _, _, err := DecodeJPEG(TypeImage, c.b); err == nil || !strings.Contains(err.Error(), "invalid image dimensions") {
+		t.Fatalf("error = %v; want invalid image dimensions", err)
 	}
 }
 

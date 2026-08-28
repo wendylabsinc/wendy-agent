@@ -50,7 +50,7 @@ wendy device hardware list --category camera
 ## ROS 2 Camera Topics
 
 The WendyOS agent automatically presents ROS 2 video publishers as ordinary
-cameras. It recognizes `sensor_msgs/msg/Image` and
+cameras. It recognizes `sensor_msgs/msg/Image` and JPEG-encoded
 `sensor_msgs/msg/CompressedImage`, allocates each topic a stable ID from
 `128`–`199`, and feeds a matching `/dev/video<ID>` v4l2loopback device. The
 topic then works with the same commands as a USB camera:
@@ -63,6 +63,13 @@ wendy device camera view --id 128
 App-local ROS 2 graphs stay app-local. The agent creates its DDS reader inside
 the running app's network namespace instead of changing the app's discovery
 scope. Host/robot feeds on domain 0 are discovered on wired interfaces.
+
+<Callout type="warning">
+  DDS discovery on host-facing wired interfaces is unauthenticated. WendyOS
+  treats peers on those robot networks as trusted: any peer publishing a
+  supported image topic on domain 0 can appear as a camera. Keep untrusted
+  devices on a separate network segment.
+</Callout>
 
 Unitree Go2 robots receive special handling: the native
 `unitree_go/msg/Go2FrontVideoData` publisher on `/frontvideostream` appears as

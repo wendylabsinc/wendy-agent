@@ -9,7 +9,6 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
-	_ "image/png"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/rtps/cdr"
@@ -19,6 +18,8 @@ const (
 	TypeImage           = "sensor_msgs::msg::dds_::Image_"
 	TypeCompressedImage = "sensor_msgs::msg::dds_::CompressedImage_"
 	TypeGo2FrontVideo   = "unitree_go::msg::dds_::Go2FrontVideoData_"
+	maxFrameDimension   = 4096
+	maxFramePixels      = 4096 * 2160
 )
 
 var ErrUnsupportedEncoding = errors.New("unsupported ROS 2 image encoding")
@@ -77,21 +78,30 @@ func skipHeader(d *cdr.Decoder) error {
 }
 
 func jpegDimensions(frame []byte) ([]byte, int, int, error) {
+	// CompressedImage permits other formats, but this bridge promises MJPEG and
+	// should never decompress attacker-controlled PNG or WebP payloads merely to
+	// convert them. JPEG header parsing is bounded and the bytes pass through.
+	if len(frame) < 2 || frame[0] != 0xff || frame[1] != 0xd8 {
+		return nil, 0, 0, fmt.Errorf("%w: compressed frame is not JPEG", ErrUnsupportedEncoding)
+	}
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(frame))
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("decoding compressed image header: %w", err)
 	}
-	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > 8192 || cfg.Height > 8192 {
-		return nil, 0, 0, fmt.Errorf("invalid compressed image dimensions %dx%d", cfg.Width, cfg.Height)
+	if format != "jpeg" {
+		return nil, 0, 0, fmt.Errorf("%w: compressed frame format %s", ErrUnsupportedEncoding, format)
 	}
-	if format == "jpeg" {
-		return frame, cfg.Width, cfg.Height, nil
+	if err := validateDimensions(cfg.Width, cfg.Height); err != nil {
+		return nil, 0, 0, err
 	}
-	img, _, err := image.Decode(bytes.NewReader(frame))
-	if err != nil {
-		return nil, 0, 0, fmt.Errorf("decoding compressed image: %w", err)
+	return frame, cfg.Width, cfg.Height, nil
+}
+
+func validateDimensions(width, height int) error {
+	if width <= 0 || height <= 0 || width > maxFrameDimension || height > maxFrameDimension || uint64(width)*uint64(height) > maxFramePixels {
+		return fmt.Errorf("invalid image dimensions %dx%d", width, height)
 	}
-	return encodeJPEG(img)
+	return nil
 }
 
 func decodeCompressedImage(payload []byte) ([]byte, int, int, error) {
@@ -170,11 +180,14 @@ func decodeRawImage(payload []byte) ([]byte, int, int, error) {
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("step: %w", err)
 	}
+	if err := validateDimensions(int(width), int(height)); err != nil {
+		return nil, 0, 0, err
+	}
 	data, err := d.Bytes()
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("data: %w", err)
 	}
-	if width == 0 || height == 0 || width > 8192 || height > 8192 || uint64(step)*uint64(height) > uint64(len(data)) {
+	if uint64(step)*uint64(height) > uint64(len(data)) {
 		return nil, 0, 0, errors.New("invalid ROS 2 image dimensions")
 	}
 

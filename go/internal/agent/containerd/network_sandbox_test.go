@@ -93,7 +93,8 @@ func TestNetworkOperationLockSerializesSameContainer(t *testing.T) {
 	unlock := c.lockNetworkOperation("myapp")
 	acquired := make(chan struct{})
 	go func() {
-		defer c.lockNetworkOperation("myapp")()
+		unlock := c.lockNetworkOperation("myapp")
+		unlock()
 		close(acquired)
 	}()
 	select {
@@ -122,7 +123,8 @@ func TestAdditionalNetworkOperationLocksSerializeGroupMembers(t *testing.T) {
 	acquired := make(chan string, 2)
 	for _, containerID := range []string{"myapp_api", "myapp_worker"} {
 		go func() {
-			defer c.lockNetworkOperation(containerID)()
+			unlock := c.lockNetworkOperation(containerID)
+			unlock()
 			acquired <- containerID
 		}()
 	}

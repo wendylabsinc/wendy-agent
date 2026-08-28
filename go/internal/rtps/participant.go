@@ -35,6 +35,7 @@ const (
 	maxFragmentSets    = 8
 	maxFragmentBytes   = 64 * 1024 * 1024
 	fragmentSetTTL     = 30 * time.Second
+	fragmentSweep      = fragmentSetTTL / 2
 )
 
 // Endpoint is a remote writer discovered over SEDP.
@@ -79,6 +80,10 @@ type Config struct {
 	// thread returns to the host namespace, allowing the Wendy agent to inspect
 	// app-local ROS 2 graphs without weakening their isolation.
 	NetworkNamespacePID uint32
+	// VerifyNetworkNamespace runs after entering NetworkNamespacePID and before
+	// any socket is opened. It lets callers reject a PID that was recycled after
+	// they enumerated the target process.
+	VerifyNetworkNamespace func() bool
 	// Logf, when set, receives progress lines. Discovery failures are usually
 	// silent by nature, so this is the only way to see what happened.
 	Logf func(format string, args ...any)
@@ -150,6 +155,9 @@ type Participant struct {
 	// never matches and no data ever flows.
 	subAnnounce [][]byte
 
+	// fragmentsMu isolates potentially large fragment copies from participant
+	// bookkeeping such as subscription changes and discovery updates.
+	fragmentsMu sync.Mutex
 	// fragments holds bounded in-flight DATA_FRAG samples. Camera messages are
 	// routinely larger than one UDP datagram; without this reassembly the DDS
 	// reader can discover image topics but can never receive a frame from them.
@@ -239,11 +247,18 @@ func NewParticipant(cfg Config) (*Participant, error) {
 	// The first two octets of a GUID prefix are conventionally the vendor ID.
 	p.prefix[0], p.prefix[1] = 0x01, 0x0f
 
-	if err := withNetworkNamespace(cfg.NetworkNamespacePID, p.openSockets); err != nil {
+	if err := withNetworkNamespace(cfg.NetworkNamespacePID, p.openVerifiedSockets); err != nil {
 		_ = p.Close()
 		return nil, err
 	}
 	return p, nil
+}
+
+func (p *Participant) openVerifiedSockets() error {
+	if p.cfg.NetworkNamespacePID != 0 && p.cfg.VerifyNetworkNamespace != nil && !p.cfg.VerifyNetworkNamespace() {
+		return fmt.Errorf("rtps: network namespace process %d changed", p.cfg.NetworkNamespacePID)
+	}
+	return p.openSockets()
 }
 
 func (p *Participant) openSockets() error {
@@ -352,14 +367,46 @@ func (p *Participant) Samples() <-chan Sample { return p.samples }
 // re-announces on a timer.
 func (p *Participant) Run(ctx context.Context) {
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); p.readLoop(ctx, p.mcast, true) }()
 	go func() { defer wg.Done(); p.readLoop(ctx, p.ucast, false) }()
 	go func() { defer wg.Done(); p.announceLoop(ctx) }()
+	go func() { defer wg.Done(); p.fragmentCleanupLoop(ctx) }()
 
 	<-ctx.Done()
 	p.Close()
 	wg.Wait()
+	p.fragmentsMu.Lock()
+	p.fragments = make(map[fragmentKey]*fragmentSet)
+	p.fragmentBytes = 0
+	p.fragmentsMu.Unlock()
+}
+
+func (p *Participant) fragmentCleanupLoop(ctx context.Context) {
+	t := time.NewTicker(fragmentSweep)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			p.expireFragmentSets(now)
+		}
+	}
+}
+
+func (p *Participant) expireFragmentSets(now time.Time) {
+	p.fragmentsMu.Lock()
+	p.dropExpiredFragmentSetsLocked(now)
+	p.fragmentsMu.Unlock()
+}
+
+func (p *Participant) dropExpiredFragmentSetsLocked(now time.Time) {
+	for key, set := range p.fragments {
+		if now.Sub(set.updated) > fragmentSetTTL {
+			p.dropFragmentSetLocked(key)
+		}
+	}
 }
 
 func (p *Participant) announceLoop(ctx context.Context) {
@@ -451,7 +498,7 @@ func (p *Participant) handle(pkt []byte, src *net.UDPAddr) {
 			// Builtin discovery traffic is small DATA, never DATA_FRAG. Treat a
 			// fragmented builtin writer as malformed instead of feeding it to the
 			// user-data reassembler.
-			if f.WriterID == entitySPDPWriter || f.WriterID == entitySEDPPubWriter {
+			if f.WriterID == entitySPDPWriter || f.WriterID == entitySEDPPubWriter || f.WriterID == entitySEDPSubWriter {
 				p.statDataErr.Add(1)
 				continue
 			}
@@ -656,7 +703,7 @@ func (p *Participant) deliverUserData(writer GUID, sn SequenceNumber, payload []
 // through the same subscription filter as ordinary DATA. Old/incomplete sets
 // are discarded so a publisher disappearing mid-frame cannot retain memory.
 func (p *Participant) handleUserDataFrag(prefix GUIDPrefix, f *DataFragSubmessage) {
-	if f.SampleSize > maxSampleSize {
+	if f.SampleSize == 0 || f.FragmentStartingNum == 0 || f.FragmentSize == 0 || f.FragmentsInSubmessage == 0 || f.SampleSize > maxSampleSize {
 		p.statDataErr.Add(1)
 		return
 	}
@@ -666,20 +713,24 @@ func (p *Participant) handleUserDataFrag(prefix GUIDPrefix, f *DataFragSubmessag
 		p.mu.Unlock()
 		return
 	}
-
-	now := time.Now()
-	for key, set := range p.fragments {
-		if now.Sub(set.updated) > fragmentSetTTL {
-			p.dropFragmentSetLocked(key)
-		}
+	p.mu.Unlock()
+	payload, complete := p.addUserDataFrag(writer, f)
+	if complete {
+		p.deliverUserData(writer, f.WriterSN, payload)
 	}
+}
+
+func (p *Participant) addUserDataFrag(writer GUID, f *DataFragSubmessage) ([]byte, bool) {
+	now := time.Now()
+	p.fragmentsMu.Lock()
+	defer p.fragmentsMu.Unlock()
+	p.dropExpiredFragmentSetsLocked(now)
 	key := fragmentKey{writer: writer, sn: f.WriterSN}
 	set := p.fragments[key]
 	fragmentCount := (int(f.SampleSize) + int(f.FragmentSize) - 1) / int(f.FragmentSize)
 	if fragmentCount > maxSampleFragments {
-		p.mu.Unlock()
 		p.statDataErr.Add(1)
-		return
+		return nil, false
 	}
 	if set == nil {
 		for len(p.fragments) >= maxFragmentSets || p.fragmentBytes+int(f.SampleSize) > maxFragmentBytes {
@@ -702,9 +753,8 @@ func (p *Participant) handleUserDataFrag(prefix GUIDPrefix, f *DataFragSubmessag
 		p.fragmentBytes += len(set.buf)
 	} else if len(set.buf) != int(f.SampleSize) || set.fragmentSize != int(f.FragmentSize) {
 		p.dropFragmentSetLocked(key)
-		p.mu.Unlock()
 		p.statDataErr.Add(1)
-		return
+		return nil, false
 	}
 
 	start := int(f.FragmentStartingNum) - 1
@@ -735,21 +785,18 @@ func (p *Participant) handleUserDataFrag(prefix GUIDPrefix, f *DataFragSubmessag
 	set.updated = now
 	if !valid {
 		p.dropFragmentSetLocked(key)
-		p.mu.Unlock()
 		p.statDataErr.Add(1)
-		return
+		return nil, false
 	}
 	if set.receivedCount != len(set.received) {
-		p.mu.Unlock()
-		return
+		return nil, false
 	}
 	payload := set.buf
 	p.dropFragmentSetLocked(key)
-	p.mu.Unlock()
-
-	p.deliverUserData(writer, f.WriterSN, payload)
+	return payload, true
 }
 
+// dropFragmentSetLocked requires fragmentsMu.
 func (p *Participant) dropFragmentSetLocked(key fragmentKey) {
 	if set := p.fragments[key]; set != nil {
 		p.fragmentBytes -= len(set.buf)

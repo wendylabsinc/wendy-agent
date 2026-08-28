@@ -2,7 +2,9 @@ package rtps
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
+	"time"
 )
 
 // dataSubmessage builds a little-endian DATA submessage carrying payload,
@@ -177,6 +179,49 @@ func TestParticipant_ReassemblesDataFragOutOfOrder(t *testing.T) {
 		}
 	default:
 		t.Fatal("completed fragmented sample was not delivered")
+	}
+}
+
+func TestParticipant_ExpiresIncompleteDataFragWithoutMoreTraffic(t *testing.T) {
+	key := fragmentKey{writer: GUID{EntityID: 0x00032102}, sn: 9}
+	p := &Participant{
+		fragments: map[fragmentKey]*fragmentSet{
+			key: {buf: make([]byte, 32), updated: time.Now().Add(-fragmentSetTTL - time.Second)},
+		},
+		fragmentBytes: 32,
+	}
+	p.expireFragmentSets(time.Now())
+	if len(p.fragments) != 0 || p.fragmentBytes != 0 {
+		t.Fatalf("expired fragments retained: sets=%d bytes=%d", len(p.fragments), p.fragmentBytes)
+	}
+}
+
+func TestParticipant_RejectsFragmentedBuiltinSubscriptionWriter(t *testing.T) {
+	remote := GUIDPrefix{9}
+	p := &Participant{prefix: GUIDPrefix{1}}
+	sub := dataFragSubmessage(0, entitySEDPSubWriter, 1, 1, 1, 4, 4, []byte("data"))
+	p.handle(rtpsDatagram(remote, sub), nil)
+	stats := p.Stats()
+	if stats.DataParseErrors != 1 || stats.UserDataMessages != 0 {
+		t.Fatalf("stats = %+v; want one parse error and no user data", stats)
+	}
+}
+
+func TestParticipant_VerifiesNamespaceBeforeOpeningSockets(t *testing.T) {
+	called := false
+	p := &Participant{cfg: Config{
+		NetworkNamespacePID: 42,
+		VerifyNetworkNamespace: func() bool {
+			called = true
+			return false
+		},
+	}}
+	err := p.openVerifiedSockets()
+	if !called || err == nil || !strings.Contains(err.Error(), "process 42 changed") {
+		t.Fatalf("called=%v error=%v; want verifier rejection before socket setup", called, err)
+	}
+	if p.mcast != nil || p.ucast != nil {
+		t.Fatal("namespace verifier rejection still opened RTPS sockets")
 	}
 }
 

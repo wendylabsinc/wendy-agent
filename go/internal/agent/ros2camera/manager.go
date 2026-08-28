@@ -18,6 +18,8 @@ import (
 const (
 	reconcileInterval = time.Minute
 	firstFrameTimeout = 15 * time.Second
+	minFrameInterval  = 30 * time.Millisecond
+	maxTopicLength    = 255
 )
 
 // Loopback is the shared v4l2loopback control surface owned by ipcam.Loopback.
@@ -34,9 +36,9 @@ type Graph struct {
 	InstanceKey         string
 	DomainID            int
 	NetworkNamespacePID uint32
-	// Verify confirms that InstanceKey still owns NetworkNamespacePID after
-	// the namespace sockets have been opened. This closes the PID-reuse window
-	// without publishing any DDS traffic in an unverified namespace.
+	// Verify confirms that InstanceKey still owns NetworkNamespacePID after the
+	// namespace is entered but before sockets are opened, and once more before
+	// discovery starts.
 	Verify func(context.Context) bool
 }
 
@@ -78,6 +80,7 @@ type cameraState struct {
 	loggedError bool
 	active      bool
 	viewRefs    int
+	lastFrame   time.Time
 }
 
 // Manager owns DDS discovery and the frame pumps feeding ROS 2 loopback nodes.
@@ -147,7 +150,7 @@ func (m *Manager) reconcile(ctx context.Context) {
 	// including the Go2's /frontvideostream publisher.
 	for _, iface := range eligibleInterfaces() {
 		desired[participantKey(iface, 0, 0, "host")] = true
-		m.ensureParticipant(iface, 0, 0, "host", "host", nil)
+		m.ensureParticipant(iface, 0, 0, "host:"+iface, "host", nil)
 	}
 	complete := m.graphs == nil
 	if m.graphs != nil {
@@ -186,7 +189,14 @@ func (m *Manager) ensureParticipant(iface string, domain int, netnsPID uint32, g
 		return
 	}
 	m.mu.Unlock()
-	p, err := rtps.NewParticipant(rtps.Config{DomainID: domain, Interface: iface, NetworkNamespacePID: netnsPID})
+	var verifyNamespace func() bool
+	if verify != nil {
+		verifyNamespace = func() bool { return verify(m.ctx) }
+	}
+	p, err := rtps.NewParticipant(rtps.Config{
+		DomainID: domain, Interface: iface, NetworkNamespacePID: netnsPID,
+		VerifyNetworkNamespace: verifyNamespace,
+	})
 	if err != nil {
 		m.logger.Debug("starting ROS 2 camera discovery failed", zap.String("interface", iface), zap.Int("domain_id", domain), zap.Uint32("network_namespace_pid", netnsPID), zap.Error(err))
 		return
@@ -269,6 +279,10 @@ func (m *Manager) registerEndpoint(p *participantState, endpoint rtps.Endpoint) 
 		return
 	}
 	topic := TopicName(endpoint.Topic)
+	if !validTopicName(topic) {
+		m.logger.Debug("ignoring ROS 2 camera with invalid topic name")
+		return
+	}
 	// Namespace identity prevents two isolated apps that happen to use the same
 	// domain and topic name from collapsing into one camera.
 	key := fmt.Sprintf("graph=%s;domain=%d;topic=%s", p.graphKey, p.domainID, topic)
@@ -323,6 +337,20 @@ func nameForNode(name string, id uint32) string {
 	return label
 }
 
+func validTopicName(topic string) bool {
+	if len(topic) < 2 || len(topic) > maxTopicLength || topic[0] != '/' {
+		return false
+	}
+	for i := 1; i < len(topic); i++ {
+		c := topic[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '/' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func (m *Manager) ensureSubscribed(cam *cameraState) error {
 	m.mu.Lock()
 	if cam.subscribed {
@@ -364,13 +392,21 @@ func (m *Manager) handleSample(sample rtps.Sample) {
 	}
 	cam.pumpMu.Lock()
 	defer cam.pumpMu.Unlock()
+	path, ok := m.loopback.NodePath(cam.ID)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	m.mu.Lock()
+	if !cam.lastFrame.IsZero() && now.Sub(cam.lastFrame) < minFrameInterval {
+		m.mu.Unlock()
+		return
+	}
+	cam.lastFrame = now
+	m.mu.Unlock()
 	frame, width, height, err := DecodeJPEG(typeName, sample.Payload)
 	if err != nil {
 		m.logCameraErrorOnce(cam, "decoding ROS 2 camera frame failed", err)
-		return
-	}
-	path, ok := m.loopback.NodePath(cam.ID)
-	if !ok {
 		return
 	}
 	m.mu.Lock()

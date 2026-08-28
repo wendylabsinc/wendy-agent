@@ -89,9 +89,55 @@ func TestManagerPumpsCompressedImageToLoopback(t *testing.T) {
 	c.str("jpeg")
 	c.bytes(jpegFrame)
 	m.handleSample(rtps.Sample{Writer: guid, Payload: c.b})
+	m.handleSample(rtps.Sample{Writer: guid, Payload: c.b})
 
 	if writer.frames != 1 || writer.width != 5 || writer.height != 4 {
 		t.Fatalf("writer = %+v", writer)
+	}
+}
+
+func TestManagerSkipsDecodeWhenLoopbackNodeIsMissing(t *testing.T) {
+	loop := &fakeLoopback{}
+	m := NewManager(context.Background(), zap.NewNop(), loop, filepath.Join(t.TempDir(), "registry.json"), nil)
+	t.Cleanup(m.Shutdown)
+	m.containerUse = true
+	guid := rtps.GUID{EntityID: 7}
+	m.registerEndpoint(&participantState{iface: "eth0", domainID: 0, graphKey: "host:eth0"}, rtps.Endpoint{
+		Topic: "rt/camera/compressed", Type: TypeCompressedImage, GUID: guid,
+	})
+	loop.mu.Lock()
+	delete(loop.paths, IDBandStart)
+	loop.mu.Unlock()
+
+	m.handleSample(rtps.Sample{Writer: guid, Payload: []byte("not CDR")})
+	if m.cameras[IDBandStart].loggedError {
+		t.Fatal("missing loopback node should skip decoding without logging a decode error")
+	}
+}
+
+func TestManagerKeepsHostInterfacesDistinct(t *testing.T) {
+	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil)
+	t.Cleanup(m.Shutdown)
+	topic := "rt/camera/compressed"
+	m.registerEndpoint(&participantState{iface: "eth0", domainID: 0, graphKey: "host:eth0"}, rtps.Endpoint{
+		Topic: topic, Type: TypeCompressedImage, GUID: rtps.GUID{EntityID: 1},
+	})
+	m.registerEndpoint(&participantState{iface: "eth1", domainID: 0, graphKey: "host:eth1"}, rtps.Endpoint{
+		Topic: topic, Type: TypeCompressedImage, GUID: rtps.GUID{EntityID: 2},
+	})
+	if cameras := m.List(); len(cameras) != 2 || cameras[0].ID == cameras[1].ID {
+		t.Fatalf("cameras = %+v; want distinct cameras for each host interface", cameras)
+	}
+}
+
+func TestManagerRejectsUnsafeTopicNames(t *testing.T) {
+	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil)
+	t.Cleanup(m.Shutdown)
+	m.registerEndpoint(&participantState{iface: "eth0", domainID: 0, graphKey: "host:eth0"}, rtps.Endpoint{
+		Topic: "rt/camera\nforged", Type: TypeCompressedImage, GUID: rtps.GUID{EntityID: 1},
+	})
+	if cameras := m.List(); len(cameras) != 0 {
+		t.Fatalf("unsafe topic was registered: %+v", cameras)
 	}
 }
 
