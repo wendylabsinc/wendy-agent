@@ -38,6 +38,19 @@ const (
 //
 // DataService owns the single device-local episode recorder. Canonical times
 // are signed CLOCK_BOOTTIME nanoseconds relative to the recording request.
+//
+// CONTROL PLANE ONLY. This service is registered on the agent's device mutual
+// Transport Layer Security server, alongside the provisioning, WiFi, container
+// and update services, and is never exposed to applications. An app reaches the
+// agent solely through a per-app private unix socket, which serves the
+// app-facing wendy.agent.apps.v1 package and nothing else; no entitlement makes
+// any method below callable by an application.
+//
+// The four Campaign methods in particular are command-line-facing: they are
+// what `wendy data campaign deploy`, `wendy data campaign list`, `wendy data
+// campaign inspect` and `wendy data campaign trigger` call over that mutually
+// authenticated channel. They are operator commands for managing capture
+// campaigns on a device, not an application programming interface for apps.
 type DataServiceClient interface {
 	Sources(ctx context.Context, in *DataSourcesRequest, opts ...grpc.CallOption) (*DataSourcesResponse, error)
 	Start(ctx context.Context, in *DataStartRequest, opts ...grpc.CallOption) (*DataEpisode, error)
@@ -185,6 +198,19 @@ func (c *dataServiceClient) CampaignTrigger(ctx context.Context, in *DataCampaig
 //
 // DataService owns the single device-local episode recorder. Canonical times
 // are signed CLOCK_BOOTTIME nanoseconds relative to the recording request.
+//
+// CONTROL PLANE ONLY. This service is registered on the agent's device mutual
+// Transport Layer Security server, alongside the provisioning, WiFi, container
+// and update services, and is never exposed to applications. An app reaches the
+// agent solely through a per-app private unix socket, which serves the
+// app-facing wendy.agent.apps.v1 package and nothing else; no entitlement makes
+// any method below callable by an application.
+//
+// The four Campaign methods in particular are command-line-facing: they are
+// what `wendy data campaign deploy`, `wendy data campaign list`, `wendy data
+// campaign inspect` and `wendy data campaign trigger` call over that mutually
+// authenticated channel. They are operator commands for managing capture
+// campaigns on a device, not an application programming interface for apps.
 type DataServiceServer interface {
 	Sources(context.Context, *DataSourcesRequest) (*DataSourcesResponse, error)
 	Start(context.Context, *DataStartRequest) (*DataEpisode, error)

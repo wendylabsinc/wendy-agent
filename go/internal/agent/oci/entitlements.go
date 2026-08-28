@@ -153,7 +153,7 @@ func applyDataSocket(spec *Spec, hostDirectory string) {
 // the agent can recreate the socket under a running container.
 //
 // This is the narrow model-input grant: the mount carries one socket serving
-// only wendy.agent.services.v2.SensorService, so the app can subscribe to sensor
+// only wendy.agent.apps.v1.SensorService, so the app can subscribe to sensor
 // streams and do nothing else. It adds NO device nodes and no device cgroup
 // rules — an app that wants the raw /dev/videoN node still asks for the camera
 // entitlement, and gets the single-holder semantics that come with it.
