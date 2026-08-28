@@ -1,0 +1,28 @@
+syntax = "proto3";
+package wendy.agent.services.v2;
+option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2;agentpbv2";
+
+service WendySensorPairingService {
+  rpc AddSensorPairing(AddSensorPairingRequest) returns (AddSensorPairingResponse);
+  rpc RemoveSensorPairing(RemoveSensorPairingRequest) returns (RemoveSensorPairingResponse);
+  rpc ListSensorPairings(ListSensorPairingsRequest) returns (ListSensorPairingsResponse);
+}
+
+message SensorPairing {
+  int32 source_asset_id = 1;
+  int32 org_id = 2;
+  string name = 3;
+  repeated string sensor_allowlist = 4;
+  bool connected = 5;
+}
+message AddSensorPairingRequest {
+  int32 source_asset_id = 1;
+  string source_address = 2;   // resolved LAN addr host:port
+  string name = 3;
+  repeated string sensor_allowlist = 4;
+}
+message AddSensorPairingResponse { SensorPairing pairing = 1; }
+message RemoveSensorPairingRequest { int32 source_asset_id = 1; }
+message RemoveSensorPairingResponse {}
+message ListSensorPairingsRequest {}
+message ListSensorPairingsResponse { repeated SensorPairing pairings = 1; }

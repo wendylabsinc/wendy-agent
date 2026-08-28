@@ -23,15 +23,19 @@ type Loopback interface {
 type Supervisor struct {
 	logger    *zap.Logger
 	lb        Loopback
-	dialer    Dialer
+	dialerFor func(SensorPairing) (Dialer, error)
 	newWriter func(path string) ros2camera.CameraWriter
 
 	nodeIDsMu sync.Mutex
 	nodeIDs   map[string]uint32 // "sourceAssetID:channelID" -> MCU-band node id
 }
 
-func NewSupervisor(logger *zap.Logger, lb Loopback, dialer Dialer, newWriter func(path string) ros2camera.CameraWriter) *Supervisor {
-	return &Supervisor{logger: logger, lb: lb, dialer: dialer, newWriter: newWriter, nodeIDs: make(map[string]uint32)}
+// dialerFor is called once per streamOnce attempt (not cached) so each
+// pairing's mTLS handshake pins that specific source's asset identity,
+// mirroring mesh_dialer.go's per-target pinning — a single shared Dialer
+// cannot do that across pairings with different SourceAssetID/OrgID.
+func NewSupervisor(logger *zap.Logger, lb Loopback, dialerFor func(SensorPairing) (Dialer, error), newWriter func(path string) ros2camera.CameraWriter) *Supervisor {
+	return &Supervisor{logger: logger, lb: lb, dialerFor: dialerFor, newWriter: newWriter, nodeIDs: make(map[string]uint32)}
 }
 
 // nodeID returns a stable MCU-band node id for (sourceAssetID, channelID),
@@ -98,10 +102,23 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 
 // streamOnce connects, mounts camera channels, and copies frames until error.
 func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr string) error {
+	dialer, err := s.dialerFor(p)
+	if err != nil {
+		return fmt.Errorf("mcusource: resolving dialer for source %d: %w", p.SourceAssetID, err)
+	}
 	// Peek the manifest first (subscribe to nothing) to learn the channels.
-	probe, err := Connect(ctx, s.dialer, addr, nil)
+	probe, err := Connect(ctx, dialer, addr, nil)
 	if err != nil {
 		return err
+	}
+	// Defense-in-depth: the mTLS handshake already pins the source's asset
+	// identity, but a compromised/misconfigured relay could still present a
+	// manifest for a different device than the one we dialed. Refuse rather
+	// than mount a stranger's cameras under this pairing's node ids.
+	if probe.Manifest.GetDeviceAssetId() != p.SourceAssetID {
+		probe.Close()
+		return fmt.Errorf("mcusource: manifest device asset id %d does not match pairing source %d",
+			probe.Manifest.GetDeviceAssetId(), p.SourceAssetID)
 	}
 	cams := cameraChannels(probe.Manifest, p.SensorAllowlist)
 	probe.Close()
@@ -134,7 +151,7 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		return nil
 	}
 
-	stream, err := Connect(ctx, s.dialer, addr, subs)
+	stream, err := Connect(ctx, dialer, addr, subs)
 	if err != nil {
 		return err
 	}

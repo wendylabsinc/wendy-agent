@@ -36,11 +36,13 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
+	"github.com/wendylabsinc/wendy/go/internal/agent/mcusource"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
 	"github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
+	"github.com/wendylabsinc/wendy/go/internal/agent/ros2camera"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/agent/usbgadget"
@@ -343,6 +345,41 @@ func main() {
 		go ctrdClient.RunCameraLoopbackSync(ctx, time.Minute)
 	}
 
+	// Sensor pairing (Task 8): mounts a remote source device's cameras as
+	// local loopback nodes, reusing videoSvc's v4l2loopback manager (MCU band,
+	// ipcam.MCUBandStart..MCUBandEnd) so module detection and node paths have
+	// one owner. Every pairing shares this one Supervisor because its node-id
+	// allocator must be shared across pairings; the dialer is still resolved
+	// per-pairing (mcuIdentity below) so each source's mTLS handshake pins
+	// that specific source's asset identity.
+	//
+	// mcuIdentity is read fresh on every dial (never cached) so a certificate
+	// issued or rotated while the agent runs (BLE first-boot enrollment,
+	// re-provisioning) is picked up without a restart — the same contract as
+	// the PushTLS closure in registerAllServices below.
+	mcuIdentity := func() (certPEM, chainPEM, keyPEM string) {
+		var keyData []byte
+		certPEM, chainPEM, keyData = provisioningSvc.ProvisioningCerts()
+		keyPEM = string(keyData)
+		for i := range keyData {
+			keyData[i] = 0
+		}
+		return certPEM, chainPEM, keyPEM
+	}
+	sensorStore := mcusource.NewPairingStore("/var/lib/wendy/sensor-pairings.json")
+	if err := sensorStore.Load(); err != nil {
+		logger.Warn("loading sensor pairing store failed", zap.Error(err))
+	}
+	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), mcusource.NewMTLSDialer(logger, mcuIdentity), ros2camera.NewFrameWriter)
+	sensorRunner := mcusource.NewRunner(logger, sensorSup)
+	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorRunner.Start, sensorRunner.Stop)
+	// Boot-resume: every previously paired source reconnects on its own —
+	// addr == "" tells the runner to resolve the source's current LAN address
+	// by asset id rather than trusting a possibly-stale one from disk.
+	for _, p := range sensorStore.List() {
+		sensorRunner.Start(p, "")
+	}
+
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 
 	// Returns nil if the PEM data is invalid, which causes the registry to stay HTTP.
@@ -587,6 +624,7 @@ func main() {
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
 		agentpbv2.RegisterWendyMeshServiceServer(srv, meshSvc)
 		agentpbv2.RegisterWendyBuildServiceServer(srv, buildSvc)
+		agentpbv2.RegisterWendySensorPairingServiceServer(srv, sensorSvc)
 		if ros2Svc != nil {
 			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
 		}

@@ -319,7 +319,7 @@ func newAudioListenCmd() *cobra.Command {
 	cmd.Flags().Uint32Var(&sampleRate, "sample-rate", 16000, "Sample rate in Hz")
 	cmd.Flags().Uint32Var(&channels, "channels", 1, "Number of audio channels")
 	cmd.Flags().BoolVar(&stdout, "stdout", false, "Write raw PCM to stdout instead of playing")
-	cmd.Flags().BoolVar(&all, "all", false, "Include virtual/dummy capture devices when selecting a microphone")
+	cmd.Flags().BoolVar(&all, "all", false, "Also offer unusable capture endpoints (HDMI/dummy/routing FIFOs); loopback mics are already auto-selected")
 	cmd.Flags().Uint32Var(&bufferMs, "buffer-ms", 30, "Playback jitter-buffer target in ms; lower = less latency, more prone to dropouts")
 
 	return cmd
