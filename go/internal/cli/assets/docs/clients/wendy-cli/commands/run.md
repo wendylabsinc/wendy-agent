@@ -27,6 +27,18 @@ The printed URL uses a routable IP address reported by the device instead of the
 
 > **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Headless Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
 
+## ESP32 — native ESP-IDF projects
+
+Regular ESP-IDF projects are the recommended app model for ESP32 targets. Wendy recognizes a project by its standard top-level `CMakeLists.txt`/`project.cmake` include or an `sdkconfig` file. Add a `wendy.json` with `"platform": "wendy-lite"`, then run:
+
+```bash
+wendy run --device <name>
+```
+
+The connected device must run a firmware variant with native app support. Wendy reads its chip target, ensures ESP-IDF 5.5.4 is available through `eim`, runs `idf.py set-target` when needed, builds the project, uploads the native application firmware, reboots, reconnects, and streams its console output. ESP-IDF projects are detected automatically; `--build-type` does not need to be set.
+
+See [ESP32 installation](/docs/installation/wendy-lite-esp32) for setup and a minimal project layout.
+
 ## Headless Mac — supported project types
 
 Headless Mac (Darwin targets) currently runs native macOS apps only. When the selected agent reports `os: darwin`, `wendy run` rejects Linux/container deployment paths before any build, registry auth, or registry setup.
