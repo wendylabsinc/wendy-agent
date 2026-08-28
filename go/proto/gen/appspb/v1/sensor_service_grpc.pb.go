@@ -41,7 +41,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // SensorService is the read-only model-input surface of the harness. An app
-// with the "sensors" entitlement receives a private socket serving THIS
+// with the "sensor-read" entitlement receives a private socket serving THIS
 // service and nothing else, so the grant cannot reach episode control,
 // campaign deployment, or downloads.
 //
@@ -110,7 +110,7 @@ type SensorService_SubscribeClient = grpc.ServerStreamingClient[SensorSample]
 // for forward compatibility.
 //
 // SensorService is the read-only model-input surface of the harness. An app
-// with the "sensors" entitlement receives a private socket serving THIS
+// with the "sensor-read" entitlement receives a private socket serving THIS
 // service and nothing else, so the grant cannot reach episode control,
 // campaign deployment, or downloads.
 //

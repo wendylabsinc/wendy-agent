@@ -73,7 +73,7 @@ type AppDataSocketProvider interface {
 }
 
 // AppSensorSocketProvider prepares the app-private sensor socket that serves the
-// read-only SensorService for apps holding the sensors entitlement. It is the
+// read-only SensorService for apps holding the sensor-read entitlement. It is the
 // same shape as the data socket provider; keeping it a separate interface keeps
 // the two grants independently wireable (and independently absent).
 type AppSensorSocketProvider interface {
@@ -285,13 +285,13 @@ func (c *Client) RestoreAppSystemAPISockets(ctx context.Context) {
 	for _, labels := range labelSets {
 		appID, serviceName := labels[labelKeyAppID], labels[labelKeyServiceName]
 		entitlements := parseEntitlementsFromAnnotations(labels)
-		if c.dataSocketProvider != nil && entitlementsContain(entitlements, appconfig.EntitlementData) {
+		if c.dataSocketProvider != nil && entitlementsContain(entitlements, appconfig.EntitlementEpisodeWrite) {
 			if _, err := c.dataSocketProvider.Ensure(appID, serviceName); err != nil {
 				c.logger.Warn("restore app data socket failed", zap.String(logfields.AppID, appID), zap.Error(err))
 			}
 		}
 		if c.sensorSocketProvider != nil {
-			if sensors, ok := entitlementOfType(entitlements, appconfig.EntitlementSensors); ok {
+			if sensors, ok := entitlementOfType(entitlements, appconfig.EntitlementSensorRead); ok {
 				if _, err := c.sensorSocketProvider.Ensure(appID, serviceName, sensors.Allowlist); err != nil {
 					c.logger.Warn("restore app sensor socket failed", zap.String(logfields.AppID, appID), zap.Error(err))
 				}
@@ -1085,8 +1085,8 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		if labels, labelErr := existing.Labels(ctx); labelErr == nil {
 			entitlements := parseEntitlementsFromAnnotations(labels)
 			oldHadSystemAPI = entitlementsContain(entitlements, appconfig.EntitlementNotifications)
-			oldHadData = entitlementsContain(entitlements, appconfig.EntitlementData)
-			oldHadSensors = entitlementsContain(entitlements, appconfig.EntitlementSensors)
+			oldHadData = entitlementsContain(entitlements, appconfig.EntitlementEpisodeWrite)
+			oldHadSensors = entitlementsContain(entitlements, appconfig.EntitlementSensorRead)
 		}
 		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
 		// Kill the old task's whole process group — not just init — and wait
@@ -1308,9 +1308,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			}
 		}()
 	}
-	if appCfg.HasEntitlement(appconfig.EntitlementData) {
+	if appCfg.HasEntitlement(appconfig.EntitlementEpisodeWrite) {
 		if c.dataSocketProvider == nil {
-			return fmt.Errorf("data entitlement unavailable: app data socket manager is not configured")
+			return fmt.Errorf("episode-write entitlement unavailable: app data socket manager is not configured")
 		}
 		dataSocketDir, err = c.dataSocketProvider.Ensure(appID, serviceName)
 		if err != nil {
@@ -1324,9 +1324,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}()
 	}
 
-	if sensors, hasSensors := entitlementOfType(appCfg.Entitlements, appconfig.EntitlementSensors); hasSensors {
+	if sensors, hasSensors := entitlementOfType(appCfg.Entitlements, appconfig.EntitlementSensorRead); hasSensors {
 		if c.sensorSocketProvider == nil {
-			return fmt.Errorf("sensors entitlement unavailable: app sensor socket manager is not configured")
+			return fmt.Errorf("sensor-read entitlement unavailable: app sensor socket manager is not configured")
 		}
 		sensorSocketDir, err = c.sensorSocketProvider.Ensure(appID, serviceName, sensors.Allowlist)
 		if err != nil {

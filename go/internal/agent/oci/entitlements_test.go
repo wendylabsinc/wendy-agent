@@ -2581,7 +2581,7 @@ func TestApplySensors_MountsOnlyPrivateSensorSocket(t *testing.T) {
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
 		AppID:        "test",
-		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementSensors}},
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementSensorRead}},
 	}
 	if err := ApplyEntitlements(spec, cfg, ApplyOptions{SensorSocketDir: dir}); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
@@ -2591,28 +2591,28 @@ func TestApplySensors_MountsOnlyPrivateSensorSocket(t *testing.T) {
 		t.Fatalf("sensor mount = %+v, found=%v", mount, ok)
 	}
 	if !hasEnv(spec, "WENDY_SENSOR_SOCKET=/run/wendy/sensors/sensors.sock") {
-		t.Fatal("sensors entitlement did not inject WENDY_SENSOR_SOCKET")
+		t.Fatal("sensor-read entitlement did not inject WENDY_SENSOR_SOCKET")
 	}
 	if !hasGID(spec, appSystemAPIGroupGID) {
-		t.Fatal("sensors entitlement did not grant the private socket group")
+		t.Fatal("sensor-read entitlement did not grant the private socket group")
 	}
 	// The whole point of the narrow grant: no admin socket, no data socket, and
 	// above all no raw device nodes. An app that reaches sensors through the
 	// harness must not also be handed /dev/videoN.
 	if hasMount(spec, "/run/wendy/agent") || hasEnv(spec, "WENDY_AGENT_SOCKET=") {
-		t.Error("sensors entitlement exposed the admin control socket")
+		t.Error("sensor-read entitlement exposed the admin control socket")
 	}
 	if hasMount(spec, "/run/wendy/data") || hasEnv(spec, "WENDY_DATA_SOCKET=") {
-		t.Error("sensors entitlement exposed the data socket")
+		t.Error("sensor-read entitlement exposed the data socket")
 	}
 	if len(spec.Linux.Devices) != 0 {
-		t.Errorf("sensors entitlement added device nodes: %+v", spec.Linux.Devices)
+		t.Errorf("sensor-read entitlement added device nodes: %+v", spec.Linux.Devices)
 	}
 	// The default spec's deny-all rule is expected; an ALLOW rule is not.
 	if spec.Linux.Resources != nil {
 		for _, rule := range spec.Linux.Resources.Devices {
 			if rule.Allow {
-				t.Errorf("sensors entitlement added an allow device cgroup rule: %+v", rule)
+				t.Errorf("sensor-read entitlement added an allow device cgroup rule: %+v", rule)
 			}
 		}
 	}
@@ -2625,7 +2625,7 @@ func TestApplySensors_AbsentWithoutEntitlement(t *testing.T) {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
 	if hasMount(spec, "/run/wendy/sensors") || hasEnv(spec, "WENDY_SENSOR_SOCKET=") {
-		t.Fatal("app without the sensors entitlement received sensor access")
+		t.Fatal("app without the sensor-read entitlement received sensor access")
 	}
 }
 
@@ -2646,7 +2646,7 @@ func TestApplySensors_DoesNotDisplaceCameraEntitlement(t *testing.T) {
 
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{
-		{Type: appconfig.EntitlementSensors},
+		{Type: appconfig.EntitlementSensorRead},
 		{Type: appconfig.EntitlementCamera},
 	}}
 	if err := ApplyEntitlements(spec, cfg, ApplyOptions{SensorSocketDir: dir}); err != nil {
