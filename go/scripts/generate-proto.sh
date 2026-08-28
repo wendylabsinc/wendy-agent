@@ -54,6 +54,7 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/mesh_service.proto"
     "wendy/agent/services/v2/ros2_service.proto"
     "wendy/agent/services/v2/timesync_service.proto"
+    "wendy/agent/services/v2/build_service.proto"
 )
 
 V2_AGENT_M_OPTS=""
@@ -62,23 +63,36 @@ for p in "${V2_AGENT_PROTOS[@]}"; do
     V2_AGENT_M_OPTS="$V2_AGENT_M_OPTS --go-grpc_opt=M${p}=${V2_AGENT_PKG}"
 done
 
-# OTEL protos
-OTEL_PKG="$MODULE/go/proto/gen/otelpb"
-OTEL_PROTOS=(
-    "opentelemetry/proto/common/v1/common.proto"
-    "opentelemetry/proto/resource/v1/resource.proto"
-    "opentelemetry/proto/logs/v1/logs.proto"
-    "opentelemetry/proto/metrics/v1/metrics.proto"
-    "opentelemetry/proto/trace/v1/trace.proto"
-    "opentelemetry/proto/collector/logs/v1/logs_service.proto"
-    "opentelemetry/proto/collector/metrics/v1/metrics_service.proto"
-    "opentelemetry/proto/collector/trace/v1/trace_service.proto"
+# ---- OpenTelemetry protos ----
+#
+# These are NOT generated here. The canonical OTLP protos are already published
+# as Go packages under go.opentelemetry.io/proto/otlp, and the Go protobuf
+# runtime panics if the same proto file path is registered twice. Generating a
+# second copy into this module made it impossible to link any dependency that
+# pulls in the upstream packages (e.g. moby/buildkit's client).
+#
+# Instead we only map each OTLP proto file to its upstream Go package, so any
+# Wendy proto that embeds an OTLP message imports upstream code. The .proto
+# files under Proto/opentelemetry/ are still needed as protoc inputs (they are
+# imported by the Wendy protos), but no Go code is emitted for them.
+OTEL_PKG_PREFIX="go.opentelemetry.io/proto/otlp"
+
+# proto file path -> upstream Go import path
+declare -a OTEL_PROTO_PKGS=(
+    "opentelemetry/proto/common/v1/common.proto=$OTEL_PKG_PREFIX/common/v1"
+    "opentelemetry/proto/resource/v1/resource.proto=$OTEL_PKG_PREFIX/resource/v1"
+    "opentelemetry/proto/logs/v1/logs.proto=$OTEL_PKG_PREFIX/logs/v1"
+    "opentelemetry/proto/metrics/v1/metrics.proto=$OTEL_PKG_PREFIX/metrics/v1"
+    "opentelemetry/proto/trace/v1/trace.proto=$OTEL_PKG_PREFIX/trace/v1"
+    "opentelemetry/proto/collector/logs/v1/logs_service.proto=$OTEL_PKG_PREFIX/collector/logs/v1"
+    "opentelemetry/proto/collector/metrics/v1/metrics_service.proto=$OTEL_PKG_PREFIX/collector/metrics/v1"
+    "opentelemetry/proto/collector/trace/v1/trace_service.proto=$OTEL_PKG_PREFIX/collector/trace/v1"
 )
 
 OTEL_M_OPTS=""
-for p in "${OTEL_PROTOS[@]}"; do
-    OTEL_M_OPTS="$OTEL_M_OPTS --go_opt=M${p}=${OTEL_PKG}"
-    OTEL_M_OPTS="$OTEL_M_OPTS --go-grpc_opt=M${p}=${OTEL_PKG}"
+for entry in "${OTEL_PROTO_PKGS[@]}"; do
+    OTEL_M_OPTS="$OTEL_M_OPTS --go_opt=M${entry}"
+    OTEL_M_OPTS="$OTEL_M_OPTS --go-grpc_opt=M${entry}"
 done
 
 # ---- Cloud protos ----
@@ -116,17 +130,6 @@ done
 
 # All M opts combined for cross-package imports
 ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $SYSTEM_M_OPTS"
-
-echo "Generating OpenTelemetry protos..."
-mkdir -p "$GEN_DIR/otelpb"
-protoc \
-    --proto_path="$PROTO_DIR" \
-    --go_out="$GEN_DIR/otelpb" \
-    --go_opt=module="$OTEL_PKG" \
-    $ALL_M_OPTS \
-    --go-grpc_out="$GEN_DIR/otelpb" \
-    --go-grpc_opt=module="$OTEL_PKG" \
-    ${OTEL_PROTOS[@]}
 
 echo "Generating Wendy Agent protos..."
 mkdir -p "$GEN_DIR/agentpb"

@@ -27,8 +27,8 @@ func TestROS2SourceAndExec_UsesPOSIXSourceBuiltin(t *testing.T) {
 	if strings.Contains(script, "source ") {
 		t.Errorf("`source` is a bashism; use `.` so the script runs under /bin/sh: %q", script)
 	}
-	if !strings.HasPrefix(script, ". /opt/ros/humble/setup.bash") {
-		t.Errorf("script should dot-source the distro's setup.bash, got %q", script)
+	if !strings.HasPrefix(script, ". /opt/ros/humble/setup.sh") {
+		t.Errorf("script should dot-source the distro's setup.sh, got %q", script)
 	}
 	if !strings.Contains(script, `exec ros2 "$@"`) {
 		t.Errorf(`script must keep caller args out of shell interpretation via "$@", got %q`, script)
@@ -87,9 +87,38 @@ func TestROS2ShellArgs_EmptyExtraStillGetsArgvZero(t *testing.T) {
 func TestROS2SourceAndExecUsesTheGivenDistro(t *testing.T) {
 	for _, distro := range []string{"humble", "jazzy", "iron"} {
 		script := ros2SourceAndExec(distro)
-		if !strings.Contains(script, "/opt/ros/"+distro+"/setup.bash") {
+		if !strings.Contains(script, "/opt/ros/"+distro+"/setup.sh") {
 			t.Errorf("distro %q not reflected in the script: %q", distro, script)
 		}
+	}
+}
+
+// Dot-sourcing setup.bash under /bin/sh is the bug this guards. ament's
+// setup.bash resolves its own path via ${BASH_SOURCE[0]} and sets
+// AMENT_SHELL=bash, so dash aborts on it. Because both call sites silence the
+// sourcing with >/dev/null 2>&1, the failure surfaced only as `command -v ros2`
+// returning non-zero — which the sidecar reported as the app image lacking the
+// ros2 CLI, for images that shipped it. setup.sh is ament's POSIX variant and
+// bakes its prefix in at generation time.
+func TestROS2SetupScript_IsThePOSIXVariantNotBash(t *testing.T) {
+	for _, distro := range []string{"humble", "jazzy", "iron"} {
+		got := ros2SetupScript(distro)
+		if strings.HasSuffix(got, ".bash") {
+			t.Errorf("ros2SetupScript(%q) = %q; setup.bash cannot be sourced by dash", distro, got)
+		}
+		if want := "/opt/ros/" + distro + "/setup.sh"; got != want {
+			t.Errorf("ros2SetupScript(%q) = %q, want %q", distro, got, want)
+		}
+	}
+}
+
+// Both the probe and the exec path must agree on the script, or the probe can
+// pass while real commands fail (or the reverse).
+func TestROS2SetupScript_ProbeAndExecAgree(t *testing.T) {
+	script := ros2SourceAndExec("humble")
+	if !strings.Contains(script, ros2SetupScript("humble")) {
+		t.Errorf("exec path %q does not use ros2SetupScript(%q) = %q",
+			script, "humble", ros2SetupScript("humble"))
 	}
 }
 

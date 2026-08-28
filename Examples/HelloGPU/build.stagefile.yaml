@@ -1,0 +1,11 @@
+version: 1
+stages:
+  - name: app
+    from: dustynv/pytorch:2.7-r36.4.0-cu128-24.04
+    env:
+      PYTHONUNBUFFERED: "1"
+    copy:
+      - from: local
+        paths: [app.py]
+    entrypoint:
+      exec: [python3, app.py]

@@ -9,10 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
-	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -50,22 +49,15 @@ func cameraCredentialsFromConfig(dir string) (user, password string, found bool)
 // It is the agent's machine-readable signal, so a stream that failed for any other
 // reason is left alone.
 func cameraNeedsCredentials(err error) (uint32, bool) {
-	st, ok := status.FromError(err)
-	if !ok {
+	info := streamreason.Info(err)
+	if info == nil || info.GetReason() != streamreason.IPCameraNoCredentials {
 		return 0, false
 	}
-	for _, detail := range st.Details() {
-		info, ok := detail.(*errdetails.ErrorInfo)
-		if !ok || info.GetReason() != "IP_CAMERA_NO_CREDENTIALS" {
-			continue
-		}
-		id, parseErr := parseCameraID(info.GetMetadata()["device_id"])
-		if parseErr != nil {
-			return 0, false
-		}
-		return id, true
+	id, parseErr := parseCameraID(info.GetMetadata()["device_id"])
+	if parseErr != nil {
+		return 0, false
 	}
-	return 0, false
+	return id, true
 }
 
 // streamVideoWithCredentialRetry starts a camera stream and resolves a missing

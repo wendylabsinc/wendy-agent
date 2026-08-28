@@ -159,6 +159,87 @@ func TestContainerMonitor_ShouldRestart_OnFailure(t *testing.T) {
 	}
 }
 
+// TestContainerMonitor_ShouldRestart_Always verifies RestartAlways handles
+// spontaneous exits but still yields to an explicit user stop.
+func TestContainerMonitor_ShouldRestart_Always(t *testing.T) {
+	m := newTestMonitor()
+
+	state := &containerState{RestartPolicy: RestartAlways}
+	if !m.shouldRestart(state) {
+		t.Error("shouldRestart() = false for RestartAlways (not stopped), want true")
+	}
+
+	state.ExplicitStop = true
+	if m.shouldRestart(state) {
+		t.Error("shouldRestart() = true for explicitly-stopped RestartAlways, want false")
+	}
+}
+
+// TestRestartBlocked_AlwaysPolicyHonorsExplicitStop guards the direct-start
+// race between a monitor tick and a user stop.
+func TestRestartBlocked_AlwaysPolicyHonorsExplicitStop(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartAlways, 0)
+	m.MarkExplicitStop("com.example.app")
+
+	if !m.restartBlocked("com.example.app") {
+		t.Error("restartBlocked() = false for RestartAlways + ExplicitStop; want true")
+	}
+}
+
+// TestRestartBlocked_OnFailurePolicyHonorsExplicitStop is the paired case: a
+// policy shouldRestart does honor ExplicitStop for must still be blocked.
+func TestRestartBlocked_OnFailurePolicyHonorsExplicitStop(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartOnFailure, 0)
+	m.MarkExplicitStop("com.example.app")
+
+	if !m.restartBlocked("com.example.app") {
+		t.Error("restartBlocked() = false for RestartOnFailure + ExplicitStop; want true")
+	}
+}
+
+// TestRestartBlocked_SuppressedAlwaysStillBlocked verifies the suppression
+// arm stays unconditional: suppression means a replace/stop operation is
+// actively tearing the task down right now, which blocks every policy
+// including RestartAlways — it is orthogonal to whether the policy honors
+// ExplicitStop.
+func TestRestartBlocked_SuppressedAlwaysStillBlocked(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartAlways, 0)
+	resume := m.Suppress("com.example.app")
+	defer resume()
+
+	if !m.restartBlocked("com.example.app") {
+		t.Error("restartBlocked() = false for suppressed RestartAlways container; want true (suppression is unconditional)")
+	}
+}
+
+// TestPlanRestarts_ExplicitlyStoppedAlwaysPolicyStaysStopped is the group-stop
+// regression: an `always` member must not schedule a group restart after a
+// direct user stop.
+func TestPlanRestarts_ExplicitlyStoppedAlwaysPolicyStaysStopped(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartAlways, 0)
+	m.MarkExplicitStop("com.example.app")
+
+	stopped := []*agentpb.AppContainer{
+		{AppName: "com.example.app", RunningState: agentpb.AppRunningState_STOPPED},
+	}
+
+	got := m.planRestarts(stopped)
+	if len(got) != 0 {
+		t.Errorf("planRestarts = %v; want none for explicitly-stopped RestartAlways", got)
+	}
+
+	m.mu.Lock()
+	fc := m.states["com.example.app"].FailureCount
+	m.mu.Unlock()
+	if fc != 0 {
+		t.Errorf("FailureCount = %d after explicit stop; want 0", fc)
+	}
+}
+
 func TestContainerMonitor_ExplicitStop(t *testing.T) {
 	m := newTestMonitor()
 
@@ -264,6 +345,68 @@ func TestPlanRestartActions_CoalescesGroupMembers(t *testing.T) {
 	}
 	if len(singles) != 0 {
 		t.Errorf("single actions = %v; want none", singles)
+	}
+}
+
+// TestPlanRestartActions_DefersGroupWhenMemberSuppressed is the regression
+// guard for the group-restart-bypasses-suppression gap (F2 round 1 follow-up,
+// finding 1): planRestarts/Suppress only ever gate individual member names,
+// but planRestartActions escalates any one unsuppressed, down member into a
+// whole-group restartGroup(appID) call — whose stopOne/refreshSecondaryNamespaces
+// would stop/recreate every member, including a sibling a replace/stop is
+// currently holding suppressed. A suppressed member must defer the entire
+// group action until it is resumed, even when that member itself isn't in
+// toRestart (e.g. it's still reporting RUNNING because the caller hasn't
+// killed its task yet).
+func TestPlanRestartActions_DefersGroupWhenMemberSuppressed(t *testing.T) {
+	fake := &fakeContainerdClient{groupOf: map[string]string{
+		"app_talker":   "app",
+		"app_listener": "app",
+	}}
+	m := NewContainerMonitor(zap.NewNop(), fake, nil, time.Second)
+
+	resume := m.Suppress("app_talker") // e.g. a replace mid-teardown of talker
+
+	actions := m.planRestartActions(context.Background(), []string{"app_listener"})
+	if len(actions) != 0 {
+		t.Errorf("planRestartActions = %+v while a group member is suppressed; want no action", actions)
+	}
+
+	resume()
+
+	actions = m.planRestartActions(context.Background(), []string{"app_listener"})
+	if len(actions) != 1 || actions[0].groupAppID != "app" {
+		t.Errorf("planRestartActions after resume = %+v; want one group action for app", actions)
+	}
+}
+
+func TestPlanRestartActions_DefersGroupWhenMemberExplicitlyStopped(t *testing.T) {
+	fake := &fakeContainerdClient{groupOf: map[string]string{
+		"app_talker":   "app",
+		"app_listener": "app",
+	}}
+	m := NewContainerMonitor(zap.NewNop(), fake, nil, time.Second)
+	m.Register("app_talker", RestartAlways, 0)
+	m.MarkExplicitStop("app_talker")
+
+	actions := m.planRestartActions(context.Background(), []string{"app_listener"})
+	if len(actions) != 0 {
+		t.Errorf("planRestartActions = %+v with explicitly-stopped sibling; want no action", actions)
+	}
+}
+
+func TestRestartGroup_SkipsWhenMemberStoppedAfterScheduling(t *testing.T) {
+	fake := &fakeContainerdClient{groupOf: map[string]string{
+		"app_talker":   "app",
+		"app_listener": "app",
+	}}
+	m := NewContainerMonitor(zap.NewNop(), fake, nil, time.Second)
+	m.Register("app_talker", RestartAlways, 0)
+	m.MarkExplicitStop("app_talker")
+
+	m.restartGroup(context.Background(), "app")
+	if len(fake.groupRestarts) != 0 {
+		t.Errorf("RestartGroup calls = %v; want none", fake.groupRestarts)
 	}
 }
 
@@ -383,6 +526,82 @@ func TestContainerMonitor_Register_And_Unregister(t *testing.T) {
 		t.Error("app-1 still in states after Unregister")
 	}
 	m.mu.Unlock()
+}
+
+// TestMonitorSuppressSkipsRestart is the regression guard for F2: while a
+// Suppress handle is held for a container name, planRestarts must not
+// schedule a restart for it even though the container is stopped and its
+// policy would otherwise restart it. This is what lets a replace/stop
+// operation kill and delete the task without the monitor's next tick
+// resurrecting it mid-teardown (observed live: "cannot delete running task:
+// failed precondition"). Once the handle is resumed, the same input restarts
+// normally again.
+func TestMonitorSuppressSkipsRestart(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartUnlessStopped, 0)
+
+	stopped := []*agentpb.AppContainer{
+		{AppName: "com.example.app", RunningState: agentpb.AppRunningState_STOPPED},
+	}
+
+	resume := m.Suppress("com.example.app")
+
+	if got := m.planRestarts(stopped); len(got) != 0 {
+		t.Errorf("planRestarts scheduled a restart while suppressed: %v", got)
+	}
+
+	resume()
+
+	got := m.planRestarts(stopped)
+	if len(got) != 1 || got[0] != "com.example.app" {
+		t.Errorf("planRestarts after resume = %v; want [com.example.app]", got)
+	}
+}
+
+// TestMonitorSuppressIsReferenceCounted verifies two independent Suppress
+// handles on the same container name (e.g. a stop racing a replace of the
+// same service) both have to resume before restarts are allowed again —
+// otherwise the first operation to finish would silently re-enable restarts
+// while the second is still mid-teardown.
+func TestMonitorSuppressIsReferenceCounted(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartUnlessStopped, 0)
+
+	stopped := []*agentpb.AppContainer{
+		{AppName: "com.example.app", RunningState: agentpb.AppRunningState_STOPPED},
+	}
+
+	resumeA := m.Suppress("com.example.app")
+	resumeB := m.Suppress("com.example.app")
+
+	resumeA()
+	if got := m.planRestarts(stopped); len(got) != 0 {
+		t.Errorf("planRestarts scheduled a restart with one of two suppressions still held: %v", got)
+	}
+
+	resumeB()
+	if got := m.planRestarts(stopped); len(got) != 1 || got[0] != "com.example.app" {
+		t.Errorf("planRestarts after both resumed = %v; want [com.example.app]", got)
+	}
+}
+
+// TestMonitorSuppressResumeIsIdempotent verifies calling resume more than
+// once does not under-flow the suppression counter, which would otherwise let
+// a spurious extra resume cancel out a still-active, unrelated Suppress call
+// on the same name.
+func TestMonitorSuppressResumeIsIdempotent(t *testing.T) {
+	m := newTestMonitor()
+
+	resume := m.Suppress("com.example.app")
+	resume()
+	resume() // must be a no-op, not decrement past zero
+
+	m.mu.Lock()
+	count := m.suppressed["com.example.app"]
+	m.mu.Unlock()
+	if count != 0 {
+		t.Errorf("suppressed count = %d after idempotent double-resume; want 0", count)
+	}
 }
 
 func TestContainerMonitor_RestartStatuses(t *testing.T) {

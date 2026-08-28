@@ -62,16 +62,71 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 		return nil, err
 	}
 
+	// WaitForIdle, not Devices: StartScan returns immediately and probes in
+	// the background, so reading Devices() right after the mDNS browse above
+	// races that pass's own per-port handshake budget against this unrelated
+	// fixed window — on a cold first-plug-in the probe can still be running
+	// when this reads, silently dropping a genuinely connected, responsive
+	// board (WDY-2319). Bounded independently of ctx so a caller with no
+	// deadline can't block here forever on a wedged serial port.
+	serialCtx, cancel := context.WithTimeout(ctx, serialIdleTimeout)
+	defer cancel()
+
 	var devices []models.ExternalDevice
 	for _, svc := range services {
+		if !connectableLiteMDNSService(svc) {
+			continue
+		}
 		devices = append(devices, p.mdnsExternalDevice(svc))
 	}
-	for _, dev := range sd.Devices() {
+	for _, dev := range sd.WaitForIdle(serialCtx) {
 		devices = append(devices, p.serialExternalDevice(dev))
+	}
+
+	// An empty result here is ambiguous: it's indistinguishable from "nothing
+	// plugged in" even when a board is connected but its port is held open by
+	// something else (see ContendedPorts) — the exact shape of WDY-2319.
+	// Surface that distinctly instead of falling through to the generic "no
+	// Wendy Lite devices found".
+	if len(devices) == 0 {
+		if ports := sd.ContendedPorts(); len(ports) > 0 {
+			return nil, contendedPortsError(ports)
+		}
 	}
 
 	return devices, nil
 }
+
+// contendedPortsError explains that ESP32 serial ports were found but every
+// one of them is currently held open by something else, so no Wendy Lite
+// identity handshake could even be attempted.
+func contendedPortsError(ports []string) error {
+	verb := "it"
+	countPrefix := "an ESP32 serial port"
+	if len(ports) > 1 {
+		verb = "them"
+		countPrefix = fmt.Sprintf("%d ESP32 serial ports", len(ports))
+	}
+	return fmt.Errorf(
+		"found %s but couldn't open %s: %s %s in use by another process (e.g. a running `wendy device camera view` or `wendy run`) — stop it and try again",
+		countPrefix, verb, strings.Join(ports, ", "), pluralIs(len(ports)),
+	)
+}
+
+// pluralIs returns the correct copula for the port count in contendedPortsError.
+func pluralIs(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}
+
+// serialIdleTimeout bounds DiscoverDevices' wait for the serial probe pass it
+// just kicked off. Generous relative to the identity handshake's own 3s
+// per-port budget (see probeIdentityFn) to leave real margin for port
+// enumeration and USB/serial connect overhead — the absence of that margin
+// was the root cause of WDY-2319.
+const serialIdleTimeout = 8 * time.Second
 
 // mdnsExternalDevice maps a resolved _wendy-lite._tcp mDNS service to an
 // ExternalDevice.
@@ -96,8 +151,35 @@ func (p *MicroWendyProvider) mdnsExternalDevice(svc discovery.MDNSService) model
 	}
 }
 
-// serialExternalDevice maps a serial-port Wendy Lite device to an ExternalDevice.
+// connectableLiteMDNSService rejects incomplete/stale DNS-SD records. The
+// Wendy Lite LAN connector requires both an IP and a port; presenting a row
+// without them creates a blank-address "LAN (Lite)" device that can never be
+// selected successfully (commonly an offline device lingering in the macOS
+// mDNSResponder cache).
+func connectableLiteMDNSService(svc discovery.MDNSService) bool {
+	return svc.IPAddress != "" && svc.Port > 0
+}
+
+// serialExternalDevice maps a serial-port ESP32 device to an ExternalDevice.
+// An unresponsive device — one that matched the ESP32 USB VID/PID but never
+// completed the Wendy Lite identity handshake, because no compatible firmware
+// is installed yet — is still surfaced rather than dropped, marked with
+// ConnectionInfo["needsInstall"] so `wendy run` can offer to flash Wendy Lite
+// onto it instead of silently ignoring the board.
 func (p *MicroWendyProvider) serialExternalDevice(dev discovery.SerialDevice) models.ExternalDevice {
+	if !dev.Responsive {
+		return models.ExternalDevice{
+			ID:          fmt.Sprintf("wendy-lite:%s", dev.Port),
+			DisplayName: fmt.Sprintf("ESP32 (unflashed) — %s", dev.Port),
+			ProviderKey: p.Key(),
+			ConnectionInfo: map[string]string{
+				"type":         "USB",
+				"serialPort":   dev.Port,
+				"needsInstall": "true",
+			},
+			IsWendyDevice: true,
+		}
+	}
 	return models.ExternalDevice{
 		ID:          fmt.Sprintf("wendy-lite:%s", dev.Port),
 		DisplayName: dev.DisplayName,
@@ -113,9 +195,11 @@ func (p *MicroWendyProvider) serialExternalDevice(dev discovery.SerialDevice) mo
 
 // DiscoverDevicesContinuous streams wendy-lite devices as they are found:
 // mDNS services via continuous browsing and serial devices via the background
-// serial scanner. Continuous mDNS browsing is only available on macOS; on
-// other platforms this returns an error and callers fall back to polling
-// DiscoverDevices.
+// serial scanner. Continuous mDNS browsing works on every platform — macOS
+// via mDNSResponder, Linux via Avahi over D-Bus (hashicorp/mdns when the
+// daemon is unreachable), Windows via hashicorp/mdns — so the polling
+// fallback in callers is now only reached if the browse itself fails to
+// start.
 func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-chan models.ExternalDevice, error) {
 	svcCh, err := discovery.BrowseMDNSServicesContinuous(ctx, microWendyServiceType)
 	if err != nil {
@@ -172,6 +256,9 @@ func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-c
 					// back to polling.
 					return
 				}
+				if !connectableLiteMDNSService(svc) {
+					continue
+				}
 				if !send(p.mdnsExternalDevice(svc)) {
 					return
 				}
@@ -212,6 +299,17 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 
 // buildSwift compiles a Swift package to WASM for the embedded WASI target.
 func (p *MicroWendyProvider) buildSwift(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+	// get device info
+	di, err := p.GetDeviceInfo(ctx, device)
+	if err != nil {
+		return nil, fmt.Errorf("getting device info: %w", err)
+	}
+
+	// check device capability
+	if !di.WasmAppSupport {
+		return nil, &AppRequirementsUnsupportedError{Device: device, Missing: "WASM apps"}
+	}
+
 	swiftlyTestCmd := exec.CommandContext(ctx, "swiftly", "--version")
 	if swiftlyTestCmd.Run() != nil {
 		return nil, fmt.Errorf("swiftly is not installed or not in PATH")
@@ -303,6 +401,18 @@ func espIdfBinaryPath(projectPath, product string) (string, error) {
 	return binPath, nil
 }
 
+// AppRequirementsUnsupportedError reports that the device firmware does not
+// support what the app being deployed requires. Missing names the unsupported
+// capability (e.g. "native apps", "WASM apps").
+type AppRequirementsUnsupportedError struct {
+	Device  models.ExternalDevice
+	Missing string
+}
+
+func (e *AppRequirementsUnsupportedError) Error() string {
+	return fmt.Sprintf("device %s does not support %s", e.Device.DisplayName, e.Missing)
+}
+
 // buildEspIdf builds an ESP-IDF project with idf.py (via eim) and picks up
 // the firmware binary from the project's build folder. The binary is named
 // after the CMake project() name, which may differ from the app ID.
@@ -315,7 +425,7 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 
 	// check device capability
 	if !di.NativeAppSupport {
-		return nil, fmt.Errorf("device %s does not support native apps", device.DisplayName)
+		return nil, &AppRequirementsUnsupportedError{Device: device, Missing: "native apps"}
 	}
 
 	// ensures the ESP-IDF toolchain is available, install it if not
@@ -522,6 +632,13 @@ func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
 }
 
 func (p *MicroWendyProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	// An unflashed board has nothing listening on the Wendy Lite protocol, so
+	// attempting to connect would only time out. Report the real reason
+	// directly: this surfaces as AppRequirementsUnsupportedError, which the
+	// `wendy run` install-offer flow already knows how to handle.
+	if device.ConnectionInfo["needsInstall"] == "true" {
+		return nil, &AppRequirementsUnsupportedError{Device: device, Missing: "Wendy Lite firmware (none installed)"}
+	}
 	client, err := p.connectClient(device)
 	if err != nil {
 		return nil, err
@@ -588,7 +705,7 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		if serialPort == "" {
 			return nil, fmt.Errorf("wendy-lite provider: missing serial port in connection info")
 		}
-		if err := client.ConnectToSerial(serialPort); err != nil {
+		if err := connectSerialWithRetry(client, serialPort); err != nil {
 			return nil, fmt.Errorf("connect to device via serial: %w", err)
 		}
 	} else if device.ConnectionInfo["type"] == "LAN" {
@@ -606,7 +723,11 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 			var connectErrs []error
 			connected := false
 			for _, certInfo := range certInfos {
-				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+				keyPEM, err := certInfo.PrivateKeyPEM()
+				if err != nil {
+					return nil, fmt.Errorf("wendy-lite provider: loading client key: %w", err)
+				}
+				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(keyPEM))
 				if err != nil {
 					return nil, fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
 				}
@@ -642,6 +763,47 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		return nil, fmt.Errorf("wendy-lite provider: unsupported connection type: %s", device.ConnectionInfo["type"])
 	}
 	return client, nil
+}
+
+// serialConnectMaxAttempts bounds how many times connectSerialWithRetry
+// retries a USB serial handshake before giving up. A discovery pass already
+// confirmed the port completes the Wendy Lite identity handshake, but a
+// single handshake round trip can still drop — the same USB-CDC flakiness
+// documented in serial_discovery.go's probeWatchdog (WDY-2319) — so retrying
+// a few times absorbs that instead of failing the whole build/run outright.
+const serialConnectMaxAttempts = 3
+
+// serialConnectRetryDelay is the base backoff between attempts, scaled
+// linearly by attempt number. A var so tests can shrink it.
+var serialConnectRetryDelay = 400 * time.Millisecond
+
+// connectSerialFn performs a single ConnectToSerial attempt. Indirected so
+// tests can simulate transient and permanent failures without real hardware.
+var connectSerialFn = func(client *liteclient.WendyLiteClient, port string) error {
+	return client.ConnectToSerial(port)
+}
+
+// connectSerialWithRetry opens a Wendy Lite serial connection, retrying on
+// failure up to serialConnectMaxAttempts times. ConnectToSerial already
+// leaves the client in a clean state after a failed attempt (port closed,
+// lock released, link cleared), so it's safe to call again on the same
+// client. Prints a short notice to stderr once a retry is actually needed, so
+// a transient hiccup doesn't read as a silent hang.
+func connectSerialWithRetry(client *liteclient.WendyLiteClient, serialPort string) error {
+	var lastErr error
+	for attempt := 1; attempt <= serialConnectMaxAttempts; attempt++ {
+		if lastErr = connectSerialFn(client, serialPort); lastErr == nil {
+			return nil
+		}
+		if attempt < serialConnectMaxAttempts {
+			fmt.Fprintf(os.Stderr, "connecting to %s failed (%v), retrying (%d/%d)...\n", serialPort, lastErr, attempt+1, serialConnectMaxAttempts)
+			time.Sleep(serialConnectRetryDelay * time.Duration(attempt))
+		}
+	}
+	return fmt.Errorf(
+		"%w after %d attempts — if this keeps happening, make sure no other process (e.g. `idf.py monitor`, `wendy device camera view`) is using %s, or try unplugging and reconnecting the board",
+		lastErr, serialConnectMaxAttempts, serialPort,
+	)
 }
 
 func loadAllCLICerts() ([]config.CertificateInfo, error) {

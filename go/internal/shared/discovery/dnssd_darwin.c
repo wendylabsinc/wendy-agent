@@ -40,9 +40,39 @@ static void resolve_reply(DNSServiceRef ref, DNSServiceFlags flags,
 
 DNSServiceErrorType wendy_dnssd_resolve(DNSServiceRef *ref, const char *name,
                                         const char *regtype, const char *domain,
+                                        uint32_t interface_index,
                                         uintptr_t handle) {
-  // kDNSServiceInterfaceIndexAny matches the previous `dns-sd -L` behaviour,
-  // which did not pin the resolve to the interface the browse replied on.
-  return DNSServiceResolve(ref, 0, kDNSServiceInterfaceIndexAny, name, regtype,
+  return DNSServiceResolve(ref, 0, interface_index, name, regtype,
                            domain, resolve_reply, (void *)handle);
+}
+
+static void addr_reply(DNSServiceRef ref, DNSServiceFlags flags,
+                       uint32_t ifIndex, DNSServiceErrorType err,
+                       const char *hostname, const struct sockaddr *address,
+                       uint32_t ttl, void *ctx) {
+  (void)ref;
+  (void)hostname;
+  (void)ttl;
+  char text[INET6_ADDRSTRLEN] = {0};
+  if (err == kDNSServiceErr_NoError && address != NULL) {
+    if (address->sa_family == AF_INET) {
+      inet_ntop(AF_INET, &((const struct sockaddr_in *)address)->sin_addr,
+                text, sizeof(text));
+    } else if (address->sa_family == AF_INET6) {
+      inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)address)->sin6_addr,
+                text, sizeof(text));
+    }
+  }
+  wendyDNSSDAddrReply((uintptr_t)ctx, (uint32_t)flags, ifIndex, (int32_t)err,
+                      text);
+}
+
+DNSServiceErrorType wendy_dnssd_getaddrinfo(DNSServiceRef *ref,
+                                            const char *hostname,
+                                            uint32_t interface_index,
+                                            uintptr_t handle) {
+  return DNSServiceGetAddrInfo(ref, 0, interface_index,
+                               kDNSServiceProtocol_IPv4 |
+                                   kDNSServiceProtocol_IPv6,
+                               hostname, addr_reply, (void *)handle);
 }

@@ -1,0 +1,34 @@
+version: 1
+# Converted from the intentionally un-optimized Dockerfile this replaced. Most
+# of what that file demonstrated cannot be written here at all — see
+# ./EXPECTED.txt for the line-by-line accounting. What the compiler removes on
+# its own: the unpinned `node:latest` is digest-pinned through
+# build.stagefile.lock.yaml, `apt-get update` and `apt-get install` are emitted
+# as one layer with --no-install-recommends, pip and npm get cache mounts,
+# `npm install` becomes `npm ci`, ADD becomes COPY, and the shell-form CMD
+# becomes an argv list.
+stages:
+  - name: builder
+    from: node:latest
+    install:
+      apt:
+        packages: [python3-pip]
+      pip:
+        - requirements: requirements.txt
+      npm: {}
+    copy:
+      - from: local
+        paths: [app.js]
+        dest: /app/app.js
+  - name: app
+    from: node:latest
+    # The Dockerfile did `COPY --from=builder / /`, which drags the whole
+    # builder stage — root filesystem included — into the final image. That is
+    # not expressible: copying the literal path "/" is refused, so the paths
+    # this stage actually needs are named instead.
+    copy:
+      - from: builder
+        paths: [/app]
+      - from: builder
+        paths: [/node_modules]
+    cmd: [npm, start]

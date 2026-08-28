@@ -93,8 +93,20 @@ func (c *Client) terminateTask(ctx context.Context, task teardownTask, container
 			zap.String("container_id", containerID))
 	}
 
-	if _, err := task.Delete(ctx, containerd.WithProcessKill); err != nil && !errdefs.IsNotFound(err) {
-		return fmt.Errorf("deleting task for %q: %w", containerID, err)
+	_, delErr := task.Delete(ctx, containerd.WithProcessKill)
+	// A half-dead task whose runc state directory has been removed out from
+	// under it (isMissingRuncStateDir) wedges this Delete forever — runc's
+	// own delete path stats the directory before it will proceed, and
+	// nothing else ever recreates it. This is the path that was actually
+	// observed wedged on hardware: stopOne (and therefore StopContainer) call
+	// terminateTask directly and previously had no recovery at all, unlike
+	// the replace path's separate forceDeleteTask fallback.
+	delErr = c.recoverMissingRuncStateDir(containerID, delErr, func() error {
+		_, retryErr := task.Delete(ctx, containerd.WithProcessKill)
+		return retryErr
+	})
+	if delErr != nil && !errdefs.IsNotFound(delErr) {
+		return fmt.Errorf("deleting task for %q: %w", containerID, delErr)
 	}
 	return nil
 }

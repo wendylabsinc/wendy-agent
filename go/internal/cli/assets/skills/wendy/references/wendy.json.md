@@ -92,6 +92,24 @@ When enabled:
 
 **Note**: GPU entitlement behavior is hardware-specific.
 
+### Camera Entitlement
+
+Camera / V4L2 device access.
+
+```json
+{ "type": "camera" }
+{ "type": "camera", "allowlist": ["/dev/video0"] }
+{ "type": "camera", "user": "admin", "password": "secret" }
+```
+
+| Field | Description |
+|-------|-------------|
+| `allowlist` | Restrict access to specific device paths. Omit to allow all cameras. |
+| `user` | Username for a registered IP camera. Ignored for local cameras. |
+| `password` | Password for a registered IP camera. Ignored for local cameras. |
+
+> **Security:** `user`/`password` set here are stored in **plaintext** in `wendy.json` and deployed as-is. Prefer the interactive `wendy device camera login` command, which keeps credentials out of the app config.
+
 ### Display Entitlement
 
 Present to a locally-attached monitor as a Wayland client (GPU-accelerated).

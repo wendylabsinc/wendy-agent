@@ -3,6 +3,12 @@ title: Linux
 description: Install wendy-agent on any Linux machine to turn it into a managed Wendy device
 ---
 
+<img
+  src={`${(process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/$/, '')}/images/boards/ubuntu.png`}
+  alt="Ubuntu desktop"
+  className="not-prose aspect-video w-full bg-fd-muted object-cover object-center"
+/>
+
 ## Overview
 
 Install `wendy-agent` on **any existing Linux installation**, including Ubuntu, Debian, Raspberry Pi OS, DGX Spark, NUCs, cloud VMs, or any other ARM64 or x86-64 (Intel or AMD) machine, to turn it into a managed Wendy device. Ubuntu 22.04 or later is recommended. Wendy Agent is also known to work on Fedora, Arch, and other popular Linux distributions. Once installed, your `wendy` CLI and the device discover each other over the local network.

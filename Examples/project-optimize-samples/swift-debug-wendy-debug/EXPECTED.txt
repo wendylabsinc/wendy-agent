@@ -1,6 +1,23 @@
-Expected findings (wendy project optimize):
-  warning  build-cache     swift build without --mount=type=cache      (Dockerfile:11) [fixable]
-  warning  release-debug   swift build is a debug build                (Dockerfile:11) [fixable]
-  info     release-debug   WENDY_DEBUG declared but never used to toggle the build
-  warning  arch-image      No .dockerignore                            [fixable]
-  info     arch-image      Single-stage build ships its toolchain
+Expected findings (wendy project optimize): NONE.
+
+This sample was converted from a Dockerfile to build.stagefile.yaml, and
+`wendy project optimize` analyses Dockerfiles, Containerfiles and compose
+services — not Stagefiles. Running it here now reports nothing and exits 0.
+
+What the five findings this file used to list became:
+
+  Structurally impossible in a Stagefile:
+    build-cache     swift build without a cache mount -> every build.lang gets one
+    arch-image      No .dockerignore                  -> derived from the copy paths
+
+  Still true of the converted file, just no longer reported by anything:
+    release-debug   swift build is a debug build (`profile: debug` is still
+                    declared — a visible deviation from the release default)
+    release-debug   WENDY_DEBUG declared but never used to toggle the build
+                    (still declared under `args:`, still unused — a Stagefile
+                    has no conditional, so this stays as pointless as it was)
+    arch-image      Single-stage build ships its toolchain
+
+This directory is also still not buildable, exactly as it was not before:
+there is no Package.swift and no Swift source in it, so `swift build` fails.
+This sample has always been read by the analyzer rather than built.

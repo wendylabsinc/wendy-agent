@@ -12,7 +12,11 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 )
 
 func TestOTELHTTPReceiver_HandleLogs(t *testing.T) {
@@ -22,16 +26,16 @@ func TestOTELHTTPReceiver_HandleLogs(t *testing.T) {
 	id, ch := broadcaster.SubscribeLogs()
 	defer broadcaster.UnsubscribeLogs(id)
 
-	req := &otelpb.ExportLogsServiceRequest{
-		ResourceLogs: []*otelpb.ResourceLogs{
+	req := &collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{
 			{
-				ScopeLogs: []*otelpb.ScopeLogs{
+				ScopeLogs: []*logspb.ScopeLogs{
 					{
-						LogRecords: []*otelpb.LogRecord{
+						LogRecords: []*logspb.LogRecord{
 							{
-								SeverityNumber: otelpb.SeverityNumber_SEVERITY_NUMBER_INFO,
-								Body: &otelpb.AnyValue{
-									Value: &otelpb.AnyValue_StringValue{StringValue: "test log"},
+								SeverityNumber: logspb.SeverityNumber_SEVERITY_NUMBER_INFO,
+								Body: &commonpb.AnyValue{
+									Value: &commonpb.AnyValue_StringValue{StringValue: "test log"},
 								},
 							},
 						},
@@ -73,7 +77,7 @@ func TestOTELHTTPReceiver_HandleMetrics(t *testing.T) {
 	id, ch := broadcaster.SubscribeMetrics()
 	defer broadcaster.UnsubscribeMetrics(id)
 
-	req := &otelpb.ExportMetricsServiceRequest{}
+	req := &colmetricspb.ExportMetricsServiceRequest{}
 	body, err := proto.Marshal(req)
 	if err != nil {
 		t.Fatalf("proto.Marshal: %v", err)
@@ -104,7 +108,7 @@ func TestOTELHTTPReceiver_HandleTraces(t *testing.T) {
 	id, ch := broadcaster.SubscribeTraces()
 	defer broadcaster.UnsubscribeTraces(id)
 
-	req := &otelpb.ExportTraceServiceRequest{}
+	req := &coltracepb.ExportTraceServiceRequest{}
 	body, err := proto.Marshal(req)
 	if err != nil {
 		t.Fatalf("proto.Marshal: %v", err)
@@ -135,16 +139,16 @@ func TestOTELHTTPReceiver_HandleLogsGzip(t *testing.T) {
 	id, ch := broadcaster.SubscribeLogs()
 	defer broadcaster.UnsubscribeLogs(id)
 
-	req := &otelpb.ExportLogsServiceRequest{
-		ResourceLogs: []*otelpb.ResourceLogs{
+	req := &collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{
 			{
-				ScopeLogs: []*otelpb.ScopeLogs{
+				ScopeLogs: []*logspb.ScopeLogs{
 					{
-						LogRecords: []*otelpb.LogRecord{
+						LogRecords: []*logspb.LogRecord{
 							{
-								SeverityNumber: otelpb.SeverityNumber_SEVERITY_NUMBER_INFO,
-								Body: &otelpb.AnyValue{
-									Value: &otelpb.AnyValue_StringValue{StringValue: "gzip log"},
+								SeverityNumber: logspb.SeverityNumber_SEVERITY_NUMBER_INFO,
+								Body: &commonpb.AnyValue{
+									Value: &commonpb.AnyValue_StringValue{StringValue: "gzip log"},
 								},
 							},
 						},

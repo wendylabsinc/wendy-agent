@@ -1,0 +1,21 @@
+version: 1
+stages:
+  # See HelloWorld's Stagefile for why this is two stages.
+  - name: build
+    from: swift:6.3.2-noble
+    workdir: /build
+    copy:
+      - from: local
+        paths: [Package.swift]
+      - from: local
+        paths: [Sources]
+    build:
+      lang: swift
+      product: Environment
+  - name: app
+    from: swift:6.3.2-noble-slim
+    copy:
+      - from: build
+        paths: [/build/.build/release/Environment]
+        dest: /Environment
+    cmd: [/Environment]

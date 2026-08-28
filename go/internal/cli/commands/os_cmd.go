@@ -211,9 +211,14 @@ const (
 
 // decideOSUpdate chooses how the OS-update step behaves when a newer OS may be
 // available. It is pure so it can be unit-tested; the caller is responsible for
-// running the interactive prompt when the result is osActionPrompt.
-func decideOSUpdate(currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
-	if osAlreadyCurrent(currentOSVersion, latestVersion, nightly) {
+// running the interactive prompt when the result is osActionPrompt. A --pr
+// request (prNumber > 0) never resolves to osActionAlreadyCurrent: a PR's
+// version tag ("pr-N") is constant across rebuilds, so treating a matching tag
+// as current would silently no-op a re-test after a new push to the same PR
+// (same rationale as osUpdateShouldSkipAlreadyCurrent, which implements the
+// suppression).
+func decideOSUpdate(prNumber int, currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
+	if osUpdateShouldSkipAlreadyCurrent(prNumber, currentOSVersion, latestVersion, nightly) {
 		return osActionAlreadyCurrent
 	}
 	switch {
@@ -760,7 +765,15 @@ func evaluateOSUpdateOutcome(
 		if rolledBackTo == "" {
 			rolledBackTo = postUpdateOSVersion
 		}
-		fmt.Fprintf(&b, "Update failed post-reboot healthchecks and was rolled back to %s.\n", rolledBackTo)
+		reason := classifyOSRollback(resp.GetServices(), resp.GetNote())
+		switch reason {
+		case rollbackReasonNotBooted:
+			fmt.Fprintf(&b, "The new OS did not boot; the device fell back to %s and the update was rolled back.\n", rolledBackTo)
+		case rollbackReasonHealthchecks:
+			fmt.Fprintf(&b, "Update failed post-reboot healthchecks and was rolled back to %s.\n", rolledBackTo)
+		default:
+			fmt.Fprintf(&b, "Update was rolled back to %s.\n", rolledBackTo)
+		}
 		writeFailedServices(&b, resp.GetServices())
 		// When the updater ran its own health gate (wendyos-update health.d),
 		// there are no per-service results — the reason is carried in the note.
@@ -770,13 +783,22 @@ func evaluateOSUpdateOutcome(
 		if re := resp.GetRollbackError(); re != "" {
 			fmt.Fprintf(&b, "Rollback error: %s\n", re)
 		}
-		return strings.TrimRight(b.String(), "\n"),
-			errors.New("OS update rolled back: critical services failed healthchecks")
+		return strings.TrimRight(b.String(), "\n"), rolledBackError(reason)
 
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED:
 		var b strings.Builder
-		b.WriteString("Update failed post-reboot healthchecks, and the automatic rollback could not be performed. " +
-			"The device may be in a degraded state.\n")
+		reason := classifyOSRollback(resp.GetServices(), resp.GetNote())
+		switch reason {
+		case rollbackReasonNotBooted:
+			b.WriteString("The new OS did not boot, and the automatic rollback could not be performed. " +
+				"The device may be in a degraded state.\n")
+		case rollbackReasonHealthchecks:
+			b.WriteString("Update failed post-reboot healthchecks, and the automatic rollback could not be performed. " +
+				"The device may be in a degraded state.\n")
+		default:
+			b.WriteString("The update did not stick, and the automatic rollback could not be performed. " +
+				"The device may be in a degraded state.\n")
+		}
 		writeFailedServices(&b, resp.GetServices())
 		// When the updater ran its own health gate (wendyos-update health.d),
 		// there are no per-service results — the reason is carried in the note.
@@ -786,8 +808,7 @@ func evaluateOSUpdateOutcome(
 		if re := resp.GetRollbackError(); re != "" {
 			fmt.Fprintf(&b, "Rollback error: %s\n", re)
 		}
-		return strings.TrimRight(b.String(), "\n"),
-			errors.New("OS update healthchecks failed and automatic rollback did not run")
+		return strings.TrimRight(b.String(), "\n"), rollbackFailedError(reason)
 
 	default: // OUTCOME_COMMIT_FAILED
 		msg := "The update could not be committed: no health verdict was rendered. " +
@@ -878,9 +899,23 @@ func formatOSUpdateStatus(resp *agentpb.GetOSUpdateStatusResponse) string {
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED:
 		b.WriteString("Last OS update: committed (healthchecks passed).\n")
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK:
-		b.WriteString("Last OS update: rolled back after failed healthchecks.\n")
+		switch classifyOSRollback(resp.GetServices(), resp.GetNote()) {
+		case rollbackReasonNotBooted:
+			b.WriteString("Last OS update: rolled back — the new OS did not boot.\n")
+		case rollbackReasonHealthchecks:
+			b.WriteString("Last OS update: rolled back after failed healthchecks.\n")
+		default:
+			b.WriteString("Last OS update: rolled back.\n")
+		}
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED:
-		b.WriteString("Last OS update: healthchecks failed and the rollback could not be performed.\n")
+		switch classifyOSRollback(resp.GetServices(), resp.GetNote()) {
+		case rollbackReasonNotBooted:
+			b.WriteString("Last OS update: the new OS did not boot and the rollback could not be performed.\n")
+		case rollbackReasonHealthchecks:
+			b.WriteString("Last OS update: healthchecks failed and the rollback could not be performed.\n")
+		default:
+			b.WriteString("Last OS update: the update did not stick and the rollback could not be performed.\n")
+		}
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMIT_FAILED:
 		b.WriteString("Last OS update: the commit did not complete (no health verdict was rendered); it will be retried.\n")
 	default:
@@ -968,6 +1003,102 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// osRollbackReason classifies why an OS update was rolled back. The CLI used to
+// state "critical services failed healthchecks" for every rollback, which is
+// false whenever the update backend runs its own health gate: wendyos-update's
+// boot verifier marks a deployment failed *before* commit when the new slot
+// never booted, so /etc/wendyos-update/health.d never runs at all. Reporting a
+// healthcheck failure then points the reader at the wrong layer entirely
+// (WDY-2200).
+type osRollbackReason int
+
+const (
+	// rollbackReasonUnknown: the record does not say why. The CLI reports the
+	// rollback and the captured reason without naming a cause of its own.
+	rollbackReasonUnknown osRollbackReason = iota
+	// rollbackReasonHealthchecks: a critical service failed, so the agent's own
+	// CheckAll rejected the update. This is a genuine healthcheck failure.
+	rollbackReasonHealthchecks
+	// rollbackReasonNotBooted: the new OS never produced a healthy boot — the
+	// firmware fell back to the old slot, or the deployment was already marked
+	// failed — so no healthcheck was ever reached.
+	rollbackReasonNotBooted
+)
+
+// updaterNeverBootedMarkers are substrings of a wendyos-update commit rejection
+// that mean the new slot never booted. They are matched on the note because the
+// exit code cannot distinguish these cases: the CLI contract's exit 4 covers
+// both platform-verification and health.d failures, while an already-marked-
+// failed deployment exits 1. An unmatched note yields rollbackReasonUnknown,
+// which asserts nothing — the property that matters is that the CLI never claims
+// a healthcheck failure it cannot substantiate.
+//
+// A structured reason field on the agent's status response would remove this
+// matching entirely; until then, matching the note keeps every already-deployed
+// agent honest, because they all report it.
+var updaterNeverBootedMarkers = []string{
+	"is marked failed",  // engine.Commit: pending update <x> is marked failed
+	"firmware fallback", // engine.Commit / VerifyBoot: booted slot != target slot
+	"never swapped",     // engine.Commit: written but never swapped
+}
+
+// updaterHealthcheckMarker matches engine.HookError for the gating health phase,
+// which formats as `health hook "<name>" failed: <err>`. The delegated path
+// reports no per-service results, so without this a genuine
+// /etc/wendyos-update/health.d rejection would fall through to
+// rollbackReasonUnknown and discard the one thing the record does establish.
+const updaterHealthcheckMarker = "health hook"
+
+// classifyOSRollback determines why an update was rolled back. A failed service
+// is decisive: only the agent-run CheckAll path populates service results, and
+// it records only failures it actually observed. The never-booted markers are
+// checked before the health marker because the boot verifier marks a deployment
+// failed before commit ever reaches health.d, so a record carrying both is a
+// never-booted one.
+func classifyOSRollback(services []*agentpb.GetOSUpdateStatusResponse_ServiceResult, note string) osRollbackReason {
+	for _, svc := range services {
+		if svc.GetStatus() == agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED {
+			return rollbackReasonHealthchecks
+		}
+	}
+	lowered := strings.ToLower(note)
+	for _, marker := range updaterNeverBootedMarkers {
+		if strings.Contains(lowered, marker) {
+			return rollbackReasonNotBooted
+		}
+	}
+	if strings.Contains(lowered, updaterHealthcheckMarker) {
+		return rollbackReasonHealthchecks
+	}
+	return rollbackReasonUnknown
+}
+
+// rolledBackError is the exit error for a rolled-back update, worded to match
+// what the record actually supports.
+func rolledBackError(reason osRollbackReason) error {
+	switch reason {
+	case rollbackReasonNotBooted:
+		return errors.New("OS update rolled back: the new OS did not boot")
+	case rollbackReasonHealthchecks:
+		return errors.New("OS update rolled back: critical services failed healthchecks")
+	default:
+		return errors.New("OS update rolled back")
+	}
+}
+
+// rollbackFailedError is the exit error for an update that failed and could not
+// be rolled back.
+func rollbackFailedError(reason osRollbackReason) error {
+	switch reason {
+	case rollbackReasonNotBooted:
+		return errors.New("the new OS did not boot and automatic rollback did not run")
+	case rollbackReasonHealthchecks:
+		return errors.New("OS update healthchecks failed and automatic rollback did not run")
+	default:
+		return errors.New("OS update did not stick and automatic rollback did not run")
+	}
 }
 
 func writeFailedServices(b *strings.Builder, services []*agentpb.GetOSUpdateStatusResponse_ServiceResult) {
@@ -1269,7 +1400,15 @@ func downloadArtifactToTemp(artifactURL string) (string, error) {
 		return "", fmt.Errorf("progress TUI: %w", err)
 	}
 
-	model := finalModel.(tui.ProgressModel)
+	// Comma-ok rather than a bare assertion: a bubbletea program can return a
+	// different final model (e.g. when it is killed), and panicking mid-download
+	// would leave the temp file behind with no diagnosable error.
+	model, ok := finalModel.(tui.ProgressModel)
+	if !ok {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("progress TUI returned an unexpected model %T", finalModel)
+	}
 	if model.Err() != nil {
 		tmpFile.Close()
 		os.Remove(tmpFile.Name())

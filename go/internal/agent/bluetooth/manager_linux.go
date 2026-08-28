@@ -1110,11 +1110,14 @@ var audioSessionTimeout = 4 * time.Minute
 
 // waitForAudioSession blocks until the user session's PipeWire socket appears.
 // It reports false only when ctx is cancelled — a timeout still returns true so
-// the reconnect is attempted rather than silently skipped.
+// the reconnect is attempted rather than silently skipped. The probe goes
+// through audio.Available (not RuntimeDir directly) so tests can stub session
+// presence: RuntimeDir only trusts a socket owned by the wendy user, which no
+// test environment can fabricate.
 func waitForAudioSession(ctx context.Context) bool {
 	deadline := time.Now().Add(audioSessionTimeout)
 	for {
-		if audio.RuntimeDir() != "" {
+		if audio.Available() {
 			return true
 		}
 		if time.Now().After(deadline) {

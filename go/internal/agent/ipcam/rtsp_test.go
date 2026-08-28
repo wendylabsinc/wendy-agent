@@ -2,6 +2,9 @@ package ipcam
 
 import (
 	"errors"
+	"net"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -138,6 +141,44 @@ func TestPipelineArgsDepayloadsWithoutTranscode(t *testing.T) {
 	}
 }
 
+// Unlike PipelineArgs, the loopback pipeline decodes: a v4l2loopback CAPTURE
+// side needs raw frames, since nothing consuming it as a normal camera device
+// can be expected to speak compressed H.264.
+func TestLoopbackPipelineArgsDecodesToDevice(t *testing.T) {
+	args := strings.Join(LoopbackPipelineArgs("rtsp://admin:p@10.98.0.50:554/x", "/dev/video203"), " ")
+	for _, want := range []string{"rtspsrc", "rtph264depay", "h264parse", "config-interval=-1", "avdec_h264", "videoconvert", "v4l2sink", "device=/dev/video203"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("pipeline missing %q: %s", want, args)
+		}
+	}
+	if strings.Contains(args, "fdsink") {
+		t.Fatalf("loopback pipeline has an fd sink; the v4l2loopback node is the sink: %s", args)
+	}
+	if !strings.Contains(args, "protocols=tcp") {
+		t.Fatalf("pipeline does not force TCP: %s", args)
+	}
+}
+
+// The loopback pipeline's location= token must redact exactly like
+// PipelineArgs's does: this is the one place SecretsIn/RedactText have to
+// keep working for Task C3's supervisor to log a pump failure safely.
+func TestLoopbackPipelineArgsRedactsCredentials(t *testing.T) {
+	args := LoopbackPipelineArgs("rtsp://admin:hunter2@10.98.0.50:554/h264Preview_01_sub", "/dev/video203")
+
+	diagnostic := "ERROR from element rtspsrc0: Could not open resource for reading and writing.\n" +
+		"gstrtspsrc.c(9105): gst_rtspsrc_retrieve_sdp (): location=rtsp://admin:hunter2@10.98.0.50:554/h264Preview_01_sub\n" +
+		"Failed to connect. (Timeout while waiting for server response)"
+
+	got := RedactText(diagnostic, SecretsIn(args)...)
+
+	if strings.Contains(got, "hunter2") {
+		t.Fatalf("password survived redaction: %s", got)
+	}
+	if !strings.Contains(got, "Failed to connect") || !strings.Contains(got, "10.98.0.50") {
+		t.Fatalf("redaction destroyed the diagnostic: %s", got)
+	}
+}
+
 func TestChooseStream(t *testing.T) {
 	cases := []struct {
 		width uint32
@@ -165,5 +206,106 @@ func TestFormatUnreachable(t *testing.T) {
 	got := FormatUnreachable(c)
 	if !strings.Contains(got, "10.98.0.50") || !strings.Contains(got, "2026-08-05") {
 		t.Fatalf("message = %q, want the address and when it was last seen", got)
+	}
+}
+
+// A GStreamer diagnostic is worth showing, but it echoes the location property
+// back, and that property carries the camera password.
+func TestRedactTextRemovesCredentialsFromDiagnostics(t *testing.T) {
+	args := PipelineArgs("rtsp://admin:hunter2@10.98.0.50:554/h264Preview_01_sub")
+	diagnostic := "ERROR from element rtspsrc0: Could not open resource for reading and writing.\n" +
+		"gstrtspsrc.c(9105): gst_rtspsrc_retrieve_sdp (): location=rtsp://admin:hunter2@10.98.0.50:554/h264Preview_01_sub\n" +
+		"Failed to connect. (Timeout while waiting for server response)"
+
+	got := RedactText(diagnostic, SecretsIn(args)...)
+
+	if strings.Contains(got, "hunter2") {
+		t.Fatalf("password survived redaction: %s", got)
+	}
+	// The part that makes the diagnostic worth keeping must survive.
+	if !strings.Contains(got, "Failed to connect") || !strings.Contains(got, "10.98.0.50") {
+		t.Fatalf("redaction destroyed the diagnostic: %s", got)
+	}
+}
+
+// A password containing reserved characters appears percent-encoded in the
+// pipeline, so the literal pass alone would miss it and the URL pass alone would
+// miss any copy outside a URL. Both spellings must go.
+func TestRedactTextRemovesEncodedAndBareCredentials(t *testing.T) {
+	secret := "p@ss:word/1"
+	args := PipelineArgs("rtsp://" + url.UserPassword("admin", secret).String() + "@10.98.0.50:554/x")
+	encoded := url.UserPassword("admin", secret).String()
+	diagnostic := "location=rtsp://" + encoded + "@10.98.0.50:554/x and a bare copy " + secret
+
+	got := RedactText(diagnostic, SecretsIn(args)...)
+
+	if strings.Contains(got, secret) || strings.Contains(got, encoded) {
+		t.Fatalf("credential survived redaction: %s", got)
+	}
+}
+
+// Redaction must not depend on this package having built the URL: a library can
+// echo back a form we never produced.
+func TestRedactTextRemovesUnknownURLCredentials(t *testing.T) {
+	got := RedactText("failed on rtsp://someone:secret@10.98.0.50:554/x")
+	if strings.Contains(got, "secret") {
+		t.Fatalf("credential survived redaction: %s", got)
+	}
+	if !strings.Contains(got, "10.98.0.50") {
+		t.Fatalf("host was destroyed: %s", got)
+	}
+}
+
+func TestSecretsInIgnoresPipelineWithoutLocation(t *testing.T) {
+	if got := SecretsIn([]string{"rtspsrc", "protocols=tcp", "!", "fdsink", "fd=1"}); len(got) != 0 {
+		t.Fatalf("SecretsIn = %v, want nothing", got)
+	}
+}
+
+func TestSegmentIndexFor(t *testing.T) {
+	for _, tc := range []struct {
+		address string
+		index   int
+		ok      bool
+	}{
+		{"10.98.0.50", 0, true},
+		{"10.98.3.50", 3, true},
+		{"10.98.255.1", 255, true},
+		{"192.168.2.69", 0, false},
+		{"10.99.0.50", 0, false},
+		{"", 0, false},
+	} {
+		index, ok := SegmentIndexFor(net.ParseIP(tc.address))
+		if ok != tc.ok || index != tc.index {
+			t.Errorf("SegmentIndexFor(%q) = %d, %v; want %d, %v", tc.address, index, ok, tc.index, tc.ok)
+		}
+	}
+}
+
+// The relay must not pace or buffer the stream on its own account. Both of these
+// were costing a frame's worth of delay or more on every frame, on a path whose
+// only job is to move bytes.
+func TestPipelineArgsAddsNoLatencyOfItsOwn(t *testing.T) {
+	args := PipelineArgs("rtsp://admin:p@10.98.0.50:554/x")
+	joined := strings.Join(args, " ")
+
+	// A jitter buffer only earns its delay on a reordering transport, and this
+	// pipeline forces TCP.
+	if !strings.Contains(joined, "latency=0") {
+		t.Errorf("jitter buffer adds delay on an ordered transport: %s", joined)
+	}
+	// fdsink is a GstBaseSink, so without this it holds every buffer until its
+	// presentation time — clock-pacing a relay.
+	fdsinkAt := -1
+	for i, arg := range args {
+		if arg == "fdsink" {
+			fdsinkAt = i
+		}
+	}
+	if fdsinkAt < 0 {
+		t.Fatalf("pipeline has no fdsink: %s", joined)
+	}
+	if !slices.Contains(args[fdsinkAt:], "sync=false") {
+		t.Errorf("fdsink paces output to the clock: %s", joined)
 	}
 }

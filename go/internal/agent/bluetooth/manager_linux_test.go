@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -692,53 +691,41 @@ func TestClaimBootReconnectUnwritable(t *testing.T) {
 }
 
 func TestWaitForAudioSession(t *testing.T) {
-	dir := t.TempDir()
-	origGlob, origTimeout := audio.SocketGlob, audioSessionTimeout
-	t.Cleanup(func() { audio.SocketGlob, audioSessionTimeout = origGlob, origTimeout })
-	audio.SocketGlob = filepath.Join(dir, "user-*", "pipewire-0")
-
-	// A plain file is not a session; only a listening socket is.
-	if err := os.MkdirAll(filepath.Join(dir, "user-1000"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "user-1000", "pipewire-0"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	stale, cancelStale := context.WithCancel(context.Background())
-	cancelStale()
-	if waitForAudioSession(stale) {
-		t.Error("a regular file must not count as a session")
-	}
+	origAvailable, origTimeout := audio.Available, audioSessionTimeout
+	t.Cleanup(func() { audio.Available, audioSessionTimeout = origAvailable, origTimeout })
 
 	// Present already: returns immediately, which is the agent-restart case on
-	// a machine whose audio has been up for weeks.
-	socketDir, err := os.MkdirTemp("/tmp", "pw")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(socketDir) })
-	if err := os.MkdirAll(filepath.Join(socketDir, "user-1000"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	l, err := net.Listen("unix", filepath.Join(socketDir, "user-1000", "pipewire-0"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { l.Close() })
-	audio.SocketGlob = filepath.Join(socketDir, "user-*", "pipewire-0")
+	// a machine whose audio has been up for weeks. (What counts as a session —
+	// a listening socket owned by the wendy user, not a plain file — is the
+	// audio package's contract, covered by its own RuntimeDir tests; here the
+	// seam is stubbed because no test environment can own a socket as wendy.)
+	audio.Available = func() bool { return true }
 	if !waitForAudioSession(context.Background()) {
-		t.Error("should report ready when the socket already exists")
+		t.Error("should report ready when the session is already up")
 	}
 
-	// Cancellation is the only false: a timeout still proceeds, so a board
-	// with no working audio stack still attempts the reconnect.
-	audio.SocketGlob = filepath.Join(dir, "never-*", "pipewire-0")
+	// Appears later: the wait polls until the session comes up.
+	probes := 0
+	audio.Available = func() bool { probes++; return probes >= 2 }
+	audioSessionTimeout = time.Minute
+	if !waitForAudioSession(context.Background()) {
+		t.Error("should become ready once the session appears")
+	}
+	if probes < 2 {
+		t.Errorf("expected repeated probes, got %d", probes)
+	}
+
+	// Cancellation is the only false: the reconnect is skipped only when the
+	// agent is shutting down.
+	audio.Available = func() bool { return false }
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if waitForAudioSession(ctx) {
 		t.Error("cancelled context should report not-ready")
 	}
 
+	// A timeout still proceeds, so a board with no working audio stack still
+	// attempts the reconnect.
 	audioSessionTimeout = 0
 	if !waitForAudioSession(context.Background()) {
 		t.Error("timeout should proceed anyway rather than skip the reconnect")

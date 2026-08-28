@@ -1,0 +1,35 @@
+version: 1
+stages:
+  # camserver is built here rather than by `wendy run`'s Swift buildpack: that
+  # buildpack only auto-detects Package.swift at wendy.json's own directory for
+  # SINGLE-service apps. Multi-service apps — needed here so this service gets
+  # a non-empty serviceName, which mesh egress wiring requires along with
+  # isolation:"isolated" (see go/internal/agent/containerd/client.go) — always
+  # build through a container build file regardless of any --build-type or
+  # language hint.
+  - name: build
+    from: swift:6.1-noble
+    workdir: /build
+    copy:
+      - from: local
+        paths: [Package.swift]
+      - from: local
+        paths: [Sources]
+    build:
+      lang: swift
+      # Without --product, `swift build` compiles every target in the graph,
+      # including swift-container-plugin's own plugin executables, and fails
+      # with "package-name is empty". This was a real, reproducible build
+      # failure that blocked RemoteCam's first conversion attempt.
+      product: camserver
+  - name: app
+    from: swift:6.1-noble-slim
+    workdir: /app
+    copy:
+      - from: build
+        paths: [/build/.build/release/camserver]
+        dest: ./camserver
+    cmd: [./camserver]
+    # CamCapture opens /dev/video0 (root:video 0660); the compiler's non-root
+    # default is in no groups.
+    user: root

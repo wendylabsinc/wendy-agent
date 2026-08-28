@@ -71,6 +71,7 @@ func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, m
 		if err != nil {
 			return err
 		}
+		seedPinsFromAssetsBestEffort(auth, assets)
 		for name, comp := range manifest.Components {
 			targetsByComp[name] = cloudTargetsForTags(auth, assets, comp.Tags, brokerURL)
 			for _, a := range assetsWithAnyTag(assets, comp.Tags) {

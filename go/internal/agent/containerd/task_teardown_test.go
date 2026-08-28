@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,7 +41,13 @@ type fakeTeardownTask struct {
 	exitOnce sync.Once
 
 	deleteErr error
-	deleted   bool
+	// deleteErrs, when non-nil, overrides deleteErr with a per-call sequence
+	// (index 0 = first Delete call, index 1 = second, ...); calls beyond the
+	// slice length return nil. Lets tests model a Delete that fails once and
+	// succeeds on retry, e.g. the missing-runc-state-dir recovery path.
+	deleteErrs  []error
+	deleteCalls int
+	deleted     bool
 }
 
 func newFakeTeardownTask() *fakeTeardownTask {
@@ -83,10 +90,18 @@ func (f *fakeTeardownTask) Delete(ctx context.Context, opts ...containerd.Proces
 	// Do NOT run opts: the production code passes containerd.WithProcessKill,
 	// which would Wait+Kill against this fake and distort the recorded kill
 	// sequence the tests assert on. The fake models a delete that succeeds
-	// (or fails via deleteErr) regardless.
+	// (or fails via deleteErr/deleteErrs) regardless.
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.deleted = true
-	f.mu.Unlock()
+	idx := f.deleteCalls
+	f.deleteCalls++
+	if f.deleteErrs != nil {
+		if idx < len(f.deleteErrs) {
+			return nil, f.deleteErrs[idx]
+		}
+		return nil, nil
+	}
 	return nil, f.deleteErr
 }
 
@@ -242,6 +257,69 @@ func TestTerminateTaskReturnsDeleteError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "deleting task") || !strings.Contains(err.Error(), "shim wedged") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestTerminateTaskRecoversFromMissingRuncStateDir is the stop-path
+// regression guard for finding 3 (F2 round 1 follow-up): the
+// missing-runc-state-dir recovery previously only existed in the replace
+// path's forceDeleteTask, so stopOne -> terminateTask -> task.Delete
+// propagated the runc error with no recovery — the actual wedge observed on
+// hardware, since `wendy device apps stop` goes through this exact call.
+// Uses the literal error string captured live, and swaps runcStateDirMkdirAll
+// (the seam recreateRuncStateDirAndRetry calls through) so the test doesn't
+// need real /run/containerd/runc/ filesystem access to prove the wiring.
+func TestTerminateTaskRecoversFromMissingRuncStateDir(t *testing.T) {
+	orig := runcStateDirMkdirAll
+	var mkdirCalls []string
+	runcStateDirMkdirAll = func(path string, perm os.FileMode) error {
+		mkdirCalls = append(mkdirCalls, path)
+		return nil
+	}
+	t.Cleanup(func() { runcStateDirMkdirAll = orig })
+
+	task := newFakeTeardownTask()
+	task.exitOnSignal = syscall.SIGKILL
+	const dir = "/run/containerd/runc/default/com.wendylabs.examples.mcp-example"
+	task.deleteErrs = []error{
+		errors.New("cannot open directory `" + dir + "`: No such file or directory"),
+		nil, // recovery retry succeeds
+	}
+	c := newTeardownTestClient()
+
+	err := c.terminateTask(context.Background(), task, "com.wendylabs.examples.mcp-example", syscall.SIGKILL, time.Second, time.Second)
+	if err != nil {
+		t.Fatalf("terminateTask returned error: %v", err)
+	}
+	if len(mkdirCalls) != 1 || mkdirCalls[0] != dir {
+		t.Fatalf("mkdir calls = %v, want exactly [%s]", mkdirCalls, dir)
+	}
+	if task.deleteCalls != 2 {
+		t.Fatalf("Delete called %d times, want 2 (initial failure + recovery retry)", task.deleteCalls)
+	}
+}
+
+// TestTerminateTaskMissingRuncStateDirRecoveryFailurePropagates verifies
+// that when the recovery retry ALSO fails, terminateTask still surfaces an
+// error (the recovery is a best-effort extra attempt, not a guarantee).
+func TestTerminateTaskMissingRuncStateDirRecoveryFailurePropagates(t *testing.T) {
+	orig := runcStateDirMkdirAll
+	runcStateDirMkdirAll = func(path string, perm os.FileMode) error { return nil }
+	t.Cleanup(func() { runcStateDirMkdirAll = orig })
+
+	task := newFakeTeardownTask()
+	task.exitOnSignal = syscall.SIGKILL
+	const dir = "/run/containerd/runc/default/com.wendylabs.examples.mcp-example"
+	stillWedged := errors.New("cannot open directory `" + dir + "`: No such file or directory")
+	task.deleteErrs = []error{stillWedged, stillWedged}
+	c := newTeardownTestClient()
+
+	err := c.terminateTask(context.Background(), task, "com.wendylabs.examples.mcp-example", syscall.SIGKILL, time.Second, time.Second)
+	if err == nil {
+		t.Fatal("expected the still-failing retry's error to be surfaced, got nil")
+	}
+	if task.deleteCalls != 2 {
+		t.Fatalf("Delete called %d times, want 2 (initial failure + recovery retry)", task.deleteCalls)
 	}
 }
 

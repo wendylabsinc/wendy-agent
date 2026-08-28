@@ -1,6 +1,6 @@
 # Multi-Service Apps with `wendy.json`
 
-When your project needs more than one container managed through a `wendy.json` file (rather than a `docker-compose.yml`), declare a `services` map in `wendy.json`. `wendy run` detects the map and automatically orchestrates a parallel multi-service build and deployment.
+When your project needs more than one container managed through a `wendy.json` file (rather than a `docker-compose.yml`), declare a `services` map in `wendy.json`. `wendy run` detects the map and automatically orchestrates a parallel multi-service build and deployment. `wendy build` detects the same map and builds the images locally without deploying — see [Building without deploying](#building-without-deploying).
 
 ## `wendy.json` structure
 
@@ -94,45 +94,54 @@ Only a service that declares `readiness`, `hooks`, or a service-level `http` ent
 - `readiness` gates only the declaring service's own `postStart` hook — it never delays other services' startup order (`dependsOn` ordering is a separate mechanism).
 - A service-level `http` entitlement waits, announces, and opens only for that service. A top-level `http` entitlement remains in every container's create configuration but runs as an app-level action once, after every service starts. If both scopes declare HTTP, both actions run at their respective scopes.
 - An explicit `readiness.tcpSocket.port` remains the probe target even when the same scope declares HTTP. The displayed/opened URL prefers an explicit hostname-templated `openURL`, then the HTTP port, then the readiness port; probing `9000` while opening `8080` is supported.
-- `hooks.postStart.agent` (a command run on the device) is delivered only to the declaring service's own container start call; it never runs in any other service's container.
+- `hooks.postStart.agent` runs directly on the device host and is delivered only with the declaring service's own container start call; starting another service does not trigger it.
 - Hook commands may reference `${WENDY_HOSTNAME}` (the device host), `${WENDY_APP_ID}`, and `${WENDY_SERVICE_NAME}` — the declaring service's name, empty for single-container apps and for the app-level fallback below. Windows-style `%VAR%` forms are accepted too.
 
 ### App-level fallback
 
 A top-level `readiness`/`hooks` or `http` entitlement in `wendy.json` acts as an app-level fallback: it fires once after every service has started, rather than gating any single service. Both the fallback and a service's own lifecycle configuration fire if both are declared. Two exceptions:
 
-- A top-level `hooks.postStart.agent` is ignored for multi-service apps — there is no app-level container to run it in. `wendy run` warns about this when it loads `wendy.json`; declare it under `services.<name>.hooks` instead.
+- A top-level `hooks.postStart.agent` is ignored for multi-service apps — there is no single app-level container start to trigger it. `wendy run` warns about this when it loads `wendy.json`; declare it under `services.<name>.hooks` instead.
 - The fallback is skipped when `wendy run --service` selects a subset of services, since "every service has started" can't be guaranteed on a partial run.
 
 ### Attached vs. detached
 
-In attached mode, each service's readiness→postStart sequence fires asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service. Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. If the run ends on its own — every service's log stream closes — while a hook (per-service or the app-level fallback) is still waiting on readiness, that hook is suppressed rather than fired, so `wendy run` never opens a browser onto a stack that has already exited. In detached mode, readiness is waited sequentially in dependency order after every service has started and hooks outlive the CLI once it exits. In either mode, a non-cancellation readiness timeout warns but does not fail the command: explicitly configured multi-service `postStart` hooks still run, while `App reachable` and any HTTP-entitlement-synthesized browser open are suppressed. Cancellation suppresses the warning, announcement, and hook.
+In attached mode, each service's readiness→postStart sequence fires asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service. Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. If the run ends on its own — every service's log stream closes — while a hook (per-service or the app-level fallback) is still waiting on readiness, that hook is suppressed rather than fired, so `wendy run` never opens a browser onto a stack that has already exited. In detached mode none of this runs: no readiness wait, no `App reachable` line, and no host-side `postStart` action. Only the agent-side `postStart.agent` hooks, carried on each start RPC, still run on the device. With `wendy run --watch`, each service's `openURL` and `cli` actions run once per session after its first successful readiness check; later saves do not repeat them, while a failed or canceled check may retry after a later deploy. `--watch --detach` skips these actions. A non-cancellation readiness timeout in attached mode warns but does not fail the command: explicitly configured multi-service `postStart` hooks still run, while `App reachable` and any HTTP-entitlement-synthesized browser open are suppressed. Cancellation suppresses the warning, announcement, and hook.
 
 ## How `wendy run` handles multi-service projects
 
-When `appCfg.Services` is non-empty, `wendy run` routes to the multi-service pipeline:
+When `wendy.json` defines a `services` map, `wendy run` routes to the multi-service pipeline:
 
-1. **Parallel build** — all service images are built and pushed concurrently. By default, up to 4 simultaneous builds run; for large groups (8+ services), builds throttle to 2 concurrent to protect the device registry tunnel. Override with `--max-concurrency`. In interactive terminals a per-service spinner displays each service's status (`waiting` → `building…` → `built (Xs)` / `failed`). In non-interactive terminals plain log lines are printed instead.
+1. **Parallel build** — all service images are built and pushed concurrently, with up to 4 simultaneous builds by default. Override with `--max-concurrency`. In interactive terminals a per-service spinner displays each service's status (`waiting` → `building…` → `built (Xs)` / `failed`). While a service builds, its row names the Dockerfile step currently running and, where that step's output exposes it, appends live progress after a `·` separator:
+
+    ⠹ api         [4/9] RUN pip install -r requirements.txt · 61%  128.0MB/797.3MB  95.2MB/s
+
+In non-interactive terminals plain log lines are printed instead.
 2. **Ordered container creation** — containers are created one at a time in topological dependency order. A service listed in another service's `dependsOn` is created first.
 3. **Start and stream** — all containers are started and their combined stdout/stderr is multiplexed to the terminal. Each line is prefixed with `[serviceName]`.
 
-Press **Ctrl-C** to stop all services. The CLI cancels all streams, issues a `StopContainer` for each service concurrently, and waits up to 30 seconds before exiting.
+Press **Ctrl-C** to stop all services. The CLI cancels all streams and stops each service concurrently before exiting.
 
 ### Container naming
 
 Each service container ID follows the `{appId}_{serviceName}` convention (`_`
 is the separator because `/` is not permitted in containerd container IDs). For
 example, with `appId: "com.example.myapp"` and service `"api"`, the containerd
-container ID is `com.example.myapp_api`. The corresponding snapshot key uses
-`@` as the separator (`wendy-com.example.myapp@api`) to remain unambiguous when
-either component contains a hyphen. The cgroup path component uses `@` as the
-separator: `system.slice:edge-agent:com.example.myapp@api` (the systemd service segment
-reflects the `WENDY_SYSTEMD_SERVICE_NAME` env var, which defaults to `edge-agent`;
-`@` is used because it cannot appear in either a valid appId or serviceName,
-eliminating any collision risk from the hyphen separator).
+container ID is `com.example.myapp_api`.
 
 > **Note:** Single-container apps (no `serviceName` in the top-level
 > `wendy.json`) are unaffected — their container ID remains the bare `appId`.
+
+## Building without deploying
+
+`wendy build` detects the same `services` map and builds every service (or a `--service` closure) into the local image store, tagged `<appid>-<service>:latest`, without deploying: nothing is pushed to a registry and nothing is created or started on a device. Useful for CI and pre-flight checks — confirm every service builds before running `wendy run`:
+
+```sh
+wendy build
+wendy build --service api
+```
+
+See [`wendy build`](../clients/wendy-cli/commands/build.md#multi-service-manifests) for the full flag reference (`--service`, `--max-concurrency`, `--builder`, `--gpu-arch`, `--debug`).
 
 ## Filtering with `--service`
 
@@ -152,9 +161,10 @@ All standard `wendy run` flags apply. The following are particularly relevant fo
 |------|-------------|
 | `--service <name>` | Build and run only the named service and its transitive `dependsOn` dependencies. |
 | `--deploy` | Build and create all containers but do not start them. |
-| `--detach` | Start all containers but do not stream logs. |
+| `--detach` | Start all containers but do not stream logs. See [Attached vs. detached](#attached-vs-detached). |
 | `--keep-going` | Deploy services that build successfully instead of aborting the whole group on the first build/push failure. |
-| `--max-concurrency <n>` | Max service images to build+push at once. 0 = auto-throttle large groups (default). |
+| `--max-concurrency <n>` | Max service images to build+push at once. 0 = default limit of 4. |
+| `--watch` | Redeploy changed services while continuing to show logs from the whole app. Use `--watch --detach` to skip logs and `openURL`/`cli` actions. |
 
 ## Example layout
 
@@ -190,5 +200,5 @@ naming the individual service.
 ## Limitations
 
 - Log output is multiplexed with a `[serviceName]` prefix on each line. Per-service log stream routing is not yet available.
-- Containers are created via individual `CreateContainer` calls in dependency order. A grouped `CreateAppGroup` RPC for atomic creation is planned as a follow-up.
+- Containers are created one at a time in dependency order, not atomically as a group. Grouped atomic creation is planned as a follow-up.
 - Headless Mac is not supported. `wendy run` rejects multi-service `wendy.json` projects when the selected target is Headless Mac, before any build or registry operation. Target a Linux/WendyOS device for multi-service workloads.

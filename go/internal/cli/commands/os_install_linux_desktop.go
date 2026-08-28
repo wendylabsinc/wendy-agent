@@ -184,7 +184,11 @@ func createLinuxDesktopToken(ctx context.Context, auth *config.AuthConfig, devic
 
 	var transportOpt grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
-		tlsCfg, err := certs.LoadTLSConfig(cert.PemCertificate, cert.PemCertificateChain, cert.PemPrivateKey, "")
+		keyPEM, err := cert.PrivateKeyPEM()
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("loading client key: %w", err)
+		}
+		tlsCfg, err := certs.LoadTLSConfig(cert.PemCertificate, cert.PemCertificateChain, keyPEM, "")
 		if err != nil {
 			return "", time.Time{}, fmt.Errorf("loading TLS config: %w", err)
 		}
@@ -202,7 +206,11 @@ func createLinuxDesktopToken(ctx context.Context, auth *config.AuthConfig, devic
 	if orgID == 0 {
 		orgID = int32(cert.OrganizationID)
 	}
-	resp, err := cloudpb.NewCertificateServiceClient(conn).CreateAssetEnrollmentToken(cloudContext(ctx, auth), &cloudpb.CreateAssetEnrollmentTokenRequest{
+	cloudCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	resp, err := cloudpb.NewCertificateServiceClient(conn).CreateAssetEnrollmentToken(cloudCtx, &cloudpb.CreateAssetEnrollmentTokenRequest{
 		OrganizationId: orgID,
 		Name:           deviceName,
 		TtlSeconds:     3600,

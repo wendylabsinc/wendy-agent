@@ -17,7 +17,7 @@ jobs:
     name: Discover devices
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, macOS, ARM64]
+      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
     outputs:
       matrix: ${{ steps.scan.outputs.matrix }}
     steps:
@@ -59,7 +59,7 @@ jobs:
     if: needs.discover.outputs.matrix != '[]'
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, macOS, ARM64]
+      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
     concurrency:
       group: device-${{ matrix.hostname }}
       cancel-in-progress: false

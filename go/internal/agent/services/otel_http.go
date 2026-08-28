@@ -14,7 +14,9 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
 const (
@@ -73,7 +75,7 @@ func (r *OTELHTTPReceiver) handleLogs(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	var logsReq otelpb.ExportLogsServiceRequest
+	var logsReq collogspb.ExportLogsServiceRequest
 	if err := proto.Unmarshal(body, &logsReq); err != nil {
 		r.logger.Warn("Failed to unmarshal OTLP logs request", zap.Error(err))
 		http.Error(w, "failed to unmarshal protobuf", http.StatusBadRequest)
@@ -92,7 +94,7 @@ func (r *OTELHTTPReceiver) handleMetrics(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	var metricsReq otelpb.ExportMetricsServiceRequest
+	var metricsReq colmetricspb.ExportMetricsServiceRequest
 	if err := proto.Unmarshal(body, &metricsReq); err != nil {
 		r.logger.Warn("Failed to unmarshal OTLP metrics request", zap.Error(err))
 		http.Error(w, "failed to unmarshal protobuf", http.StatusBadRequest)
@@ -111,7 +113,7 @@ func (r *OTELHTTPReceiver) handleTraces(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	var traceReq otelpb.ExportTraceServiceRequest
+	var traceReq coltracepb.ExportTraceServiceRequest
 	if err := proto.Unmarshal(body, &traceReq); err != nil {
 		r.logger.Warn("Failed to unmarshal OTLP traces request", zap.Error(err))
 		http.Error(w, "failed to unmarshal protobuf", http.StatusBadRequest)

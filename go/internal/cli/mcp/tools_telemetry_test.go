@@ -8,7 +8,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -83,7 +85,7 @@ func TestTelemetryLogs_NotConnected(t *testing.T) {
 func TestTelemetryLogs_ReturnsJSON(t *testing.T) {
 	fake := &fakeTelemetryServer{
 		logBatches: []*agentpb.StreamLogsResponse{
-			{Logs: &otelpb.ExportLogsServiceRequest{}},
+			{Logs: &collogspb.ExportLogsServiceRequest{}},
 		},
 	}
 	conn := startFakeTelemetryServer(t, fake)
@@ -105,7 +107,7 @@ func TestTelemetryLogs_ReturnsJSON(t *testing.T) {
 func TestTelemetryLogs_HasStructuredContent(t *testing.T) {
 	fake := &fakeTelemetryServer{
 		logBatches: []*agentpb.StreamLogsResponse{
-			{Logs: &otelpb.ExportLogsServiceRequest{}},
+			{Logs: &collogspb.ExportLogsServiceRequest{}},
 		},
 	}
 	conn := startFakeTelemetryServer(t, fake)
@@ -147,7 +149,7 @@ func TestTelemetryLogs_EmptyReturnsEmptyList(t *testing.T) {
 func TestTelemetryMetrics_ReturnsJSON(t *testing.T) {
 	fake := &fakeTelemetryServer{
 		metricBatches: []*agentpb.StreamMetricsResponse{
-			{Metrics: &otelpb.ExportMetricsServiceRequest{}},
+			{Metrics: &colmetricspb.ExportMetricsServiceRequest{}},
 		},
 	}
 	conn := startFakeTelemetryServer(t, fake)
@@ -169,7 +171,7 @@ func TestTelemetryMetrics_ReturnsJSON(t *testing.T) {
 func TestTelemetryTraces_ReturnsJSON(t *testing.T) {
 	fake := &fakeTelemetryServer{
 		traceBatches: []*agentpb.StreamTracesResponse{
-			{Traces: &otelpb.ExportTraceServiceRequest{}},
+			{Traces: &coltracepb.ExportTraceServiceRequest{}},
 		},
 	}
 	conn := startFakeTelemetryServer(t, fake)

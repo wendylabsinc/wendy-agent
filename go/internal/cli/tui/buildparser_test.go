@@ -22,15 +22,20 @@ func TestParserEmitsStepStartAndDoneWithDuration(t *testing.T) {
 		"#9 1.563 Collecting debugpy\n" +
 		"#9 DONE 4.3s\n"
 	got := collect(t, text)
-	if len(got) != 2 {
-		t.Fatalf("want 2 events, got %d: %+v", len(got), got)
+	// start, one progress update from the log line, done.
+	if len(got) != 3 {
+		t.Fatalf("want 3 events, got %d: %+v", len(got), got)
 	}
 	if got[0].Status != BuildStepRunning || got[0].Kind != BuildVertexStep ||
 		got[0].Display != "[4/6] RUN pip install -r requirements.txt" {
 		t.Errorf("start event wrong: %+v", got[0])
 	}
-	if got[1].Status != BuildStepDone || got[1].Dur != 4300*time.Millisecond {
-		t.Errorf("done event wrong: %+v (dur=%v)", got[1], got[1].Dur)
+	if got[1].Status != BuildStepRunning || got[1].Detail != "collecting debugpy" {
+		t.Errorf("progress event wrong: %+v", got[1])
+	}
+	last := got[len(got)-1]
+	if last.Status != BuildStepDone || last.Dur != 4300*time.Millisecond {
+		t.Errorf("done event wrong: %+v (dur=%v)", last, last.Dur)
 	}
 }
 
@@ -43,10 +48,12 @@ func TestParserMarksCachedStep(t *testing.T) {
 }
 
 func TestParserHidesInternalNoise(t *testing.T) {
-	// .dockerignore / build context / cache manifest / resolve are noise.
+	// .dockerignore / cache manifest / resolve are noise. Build context is not
+	// in this list any more: transferring a multi-gigabyte context is one of the
+	// slowest things a build does, so it gets a visible row (see
+	// TestParserShowsBuildContextTransferProgress).
 	text := "#3 [internal] load .dockerignore\n#3 DONE 0.0s\n" +
-		"#4 importing cache manifest from local:123\n#4 DONE 0.0s\n" +
-		"#5 [internal] load build context\n#5 DONE 0.0s\n"
+		"#4 importing cache manifest from local:123\n#4 DONE 0.0s\n"
 	if got := collect(t, text); len(got) != 0 {
 		t.Fatalf("want no events for internal noise, got %+v", got)
 	}
@@ -128,5 +135,45 @@ func TestParserHidesInternalVertexWithFraction(t *testing.T) {
 	text := "#7 [internal 2/3] settle layers\n#7 DONE 0.0s\n"
 	if got := collect(t, text); len(got) != 0 {
 		t.Fatalf("want no events for an [internal] vertex with N/N fraction, got %+v", got)
+	}
+}
+
+// Transferring a large build context is one of the slowest, least explained
+// parts of a build, so it gets a visible row carrying its byte counters.
+func TestParserShowsBuildContextTransferProgress(t *testing.T) {
+	text := "#5 [internal] load build context\n" +
+		"#5 transferring context: 1.20MB / 45.60MB\n" +
+		"#5 DONE 3.0s\n"
+	got := collect(t, text)
+	if len(got) < 2 {
+		t.Fatalf("want build context events, got %+v", got)
+	}
+	if got[0].Kind != BuildVertexSetup || got[0].Display != "load build context" {
+		t.Fatalf("start event wrong: %+v", got[0])
+	}
+	var sawBytes bool
+	for _, e := range got {
+		if e.Bytes.Current == 1_200_000 && e.Bytes.Total == 45_600_000 {
+			sawBytes = true
+		}
+	}
+	if !sawBytes {
+		t.Fatalf("want context transfer byte counters, got %+v", got)
+	}
+}
+
+// A base-image pull is invisible in the old view; it is often the longest phase
+// of a cold build.
+func TestParserSurfacesBaseImagePullWithBytes(t *testing.T) {
+	text := "#5 docker-image://nvcr.io/nvidia/l4t-base:r36.2@sha256:abc\n" +
+		"#5 resolve nvcr.io/nvidia/l4t-base:r36.2 done\n" +
+		"#5 sha256:layer 5.24MB / 27.09MB 1.2s\n"
+	got := collect(t, text)
+	if got[0].Kind != BuildVertexPull || got[0].Display != "pull nvidia/l4t-base:r36.2" {
+		t.Fatalf("pull event wrong: %+v", got[0])
+	}
+	last := got[len(got)-1]
+	if last.Bytes.Current != 5_240_000 || last.Bytes.Total != 27_090_000 {
+		t.Fatalf("want pull byte counters, got %+v", last.Bytes)
 	}
 }

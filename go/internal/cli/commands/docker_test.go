@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -115,6 +116,20 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 }
 
 func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
+	isolateBuildLockDir(t)
+	// Model a Docker deployment in another process holding the shared builder
+	// lock. Apple Container has independent scheduler/cache state and must not
+	// queue behind it.
+	holder := &processBuildLock{}
+	releaseHolder, err := holder.acquire(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseHolder()
+	originalBuildLock := buildLock
+	buildLock = &processBuildLock{}
+	defer func() { buildLock = originalBuildLock }()
+
 	oldCommand := imageBuilderCommandContext
 	t.Cleanup(func() { imageBuilderCommandContext = oldCommand })
 	logFile := filepath.Join(t.TempDir(), "commands.log")
@@ -130,8 +145,13 @@ func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
 	}
 
 	// Route through the apple-container branch of the fast OCI-layout build.
-	err := buildImageToOCILayout(context.Background(), cwd, "Dockerfile", "linux/arm64",
-		map[string]string{"A": "1"}, imageBuilderAppleContainer, dest, io.Discard, io.Discard)
+	// Race instrumentation can make the fake helper subprocess noticeably
+	// slower; the deadline exists to catch an accidental lock wait, not to
+	// benchmark process startup.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err = buildImageToOCILayout(ctx, cwd, "Dockerfile", "linux/arm64",
+		map[string]string{"A": "1"}, imageBuilderAppleContainer, dest, "test-cache", io.Discard, io.Discard)
 	if err != nil {
 		t.Fatalf("buildImageToOCILayout(apple-container): %v", err)
 	}
@@ -448,6 +468,18 @@ func TestImageBuilderHelperProcess(t *testing.T) {
 			_ = f.Close()
 		}
 	}
+	if sleepMS := os.Getenv("IMAGE_BUILDER_HELPER_SLEEP_MS"); sleepMS != "" {
+		// Models a slow subprocess (e.g. buildx pulling the BuildKit image on a
+		// cold builder): write a marker to stdout, so callers can prove output
+		// streamed live, then sleep. If the parent's context has a shorter
+		// deadline than the sleep, exec.CommandContext kills us before we reach
+		// the exit below.
+		if n, err := strconv.Atoi(sleepMS); err == nil && n > 0 {
+			_, _ = os.Stdout.WriteString(imageBuilderHelperMarker)
+			time.Sleep(time.Duration(n) * time.Millisecond)
+			os.Exit(0)
+		}
+	}
 	if len(args) >= 2 && args[0] == "container" && args[1] == "--version" {
 		_, _ = os.Stdout.WriteString("container 1.0.0\n")
 		os.Exit(0)
@@ -501,6 +533,160 @@ func TestImageBuilderHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+// imageBuilderHelperMarker is written to stdout by the fake helper process
+// (see TestImageBuilderHelperProcess) when IMAGE_BUILDER_HELPER_SLEEP_MS is
+// set, before it sleeps. Tests use it to prove output reaches an io.Writer
+// while the subprocess is still running, not just after it exits.
+const imageBuilderHelperMarker = "wendy-bootstrap-marker\n"
+
+// signalingWriter buffers everything written to it and closes seen the first
+// time a chunk containing marker arrives, letting a test observe streamed
+// output as it happens rather than only after the writer's owner returns.
+type signalingWriter struct {
+	marker []byte
+	seen   chan struct{}
+	once   sync.Once
+
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func newSignalingWriter(marker string) *signalingWriter {
+	return &signalingWriter{marker: []byte(marker), seen: make(chan struct{})}
+}
+
+func (s *signalingWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.buf.Write(p)
+	s.mu.Unlock()
+	if bytes.Contains(p, s.marker) {
+		s.once.Do(func() { close(s.seen) })
+	}
+	return len(p), nil
+}
+
+// TestBootstrapOCIBuilderTimesOut proves bootstrapOCIBuilder bounds the
+// `docker buildx inspect --bootstrap` call: a helper process that outlives a
+// deliberately shrunk ociBuilderBootstrapTimeout must be killed, and the
+// returned error must say so, well within the test's own budget.
+func TestBootstrapOCIBuilderTimesOut(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "helper.log")
+	oldExec := imageBuilderCommandContext
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	t.Cleanup(func() { imageBuilderCommandContext = oldExec })
+	t.Setenv("IMAGE_BUILDER_HELPER_SLEEP_MS", "2000")
+
+	oldTimeout := ociBuilderBootstrapTimeout
+	ociBuilderBootstrapTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { ociBuilderBootstrapTimeout = oldTimeout })
+
+	var out bytes.Buffer
+	start := time.Now()
+	err := bootstrapOCIBuilder(context.Background(), "wendy-oci", &out)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("bootstrapOCIBuilder: expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("bootstrapOCIBuilder error = %q, want it to mention timing out", err.Error())
+	}
+	if !strings.Contains(err.Error(), "wendy-oci") {
+		t.Fatalf("bootstrapOCIBuilder error = %q, want it to mention the builder name", err.Error())
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("bootstrapOCIBuilder took %s, want well under the 2s helper sleep (it should have been killed at the 50ms timeout)", elapsed)
+	}
+}
+
+// TestBootstrapOCIBuilderStreamsOutputLive proves bootstrapOCIBuilder's w
+// receives subprocess output live — while the helper process is still
+// running and blocked in its sleep, strictly before bootstrapOCIBuilder (and
+// thus the underlying cmd.Run()) returns — not merely by the time it returns
+// on the success path.
+func TestBootstrapOCIBuilderStreamsOutputLive(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "helper.log")
+	oldExec := imageBuilderCommandContext
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	t.Cleanup(func() { imageBuilderCommandContext = oldExec })
+	// Long enough that, once the marker is observed, the non-blocking check
+	// below is reliably still before completion; short enough to keep the
+	// test fast.
+	t.Setenv("IMAGE_BUILDER_HELPER_SLEEP_MS", "500")
+
+	w := newSignalingWriter(imageBuilderHelperMarker)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- bootstrapOCIBuilder(context.Background(), "wendy-oci", w)
+	}()
+
+	select {
+	case <-w.seen:
+		// The marker reached w — good.
+	case err := <-done:
+		t.Fatalf("bootstrapOCIBuilder returned (err=%v) before the marker ever appeared on w", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the marker to appear on w")
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("bootstrapOCIBuilder already returned (err=%v) by the time the marker was observed on w — not proof it streamed live", err)
+	default:
+		// Still running — the marker really did arrive before Run() returned.
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("bootstrapOCIBuilder: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("bootstrapOCIBuilder did not return after the helper process exited")
+	}
+}
+
+// TestBootstrapOCIBuilderParentDeadlineIsNotMisattributed proves that when an
+// ancestor context's own deadline fires first — not
+// bootstrapOCIBuilder's ociBuilderBootstrapTimeout — the returned error is
+// the plain failure shape, not the "timed out after <ociBuilderBootstrapTimeout>"
+// message. bootstrapCtx (a child of the caller's ctx) also reports
+// DeadlineExceeded in that case, so the check must also confirm the parent
+// ctx itself is not yet done before claiming the bootstrap-specific timeout.
+func TestBootstrapOCIBuilderParentDeadlineIsNotMisattributed(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "helper.log")
+	oldExec := imageBuilderCommandContext
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	t.Cleanup(func() { imageBuilderCommandContext = oldExec })
+	t.Setenv("IMAGE_BUILDER_HELPER_SLEEP_MS", "2000")
+
+	oldTimeout := ociBuilderBootstrapTimeout
+	ociBuilderBootstrapTimeout = 5 * time.Second // longer than the parent deadline below
+	t.Cleanup(func() { ociBuilderBootstrapTimeout = oldTimeout })
+
+	// Parent deadline is shorter than both the shrunk-but-still-long
+	// ociBuilderBootstrapTimeout and the helper's sleep, so the parent fires
+	// first and the child (bootstrapCtx) inherits DeadlineExceeded from it.
+	parentCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	var out bytes.Buffer
+	start := time.Now()
+	err := bootstrapOCIBuilder(parentCtx, "wendy-oci", &out)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("bootstrapOCIBuilder: expected an error, got nil")
+	}
+	if strings.Contains(err.Error(), "timed out after") {
+		t.Fatalf("bootstrapOCIBuilder error = %q, must not claim its own bootstrap timeout when the parent context's deadline fired first", err.Error())
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("bootstrapOCIBuilder took %s, want well under the 2s helper sleep (it should have been killed when the 50ms parent deadline fired)", elapsed)
+	}
 }
 
 // setupAppleContainerEnsureSeams installs the fakes ensureAppleContainerSystem
@@ -1199,7 +1385,7 @@ func TestResolveRunDockerfile_SingleDockerfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -1216,7 +1402,7 @@ func TestResolveRunDockerfile_ExplicitFlag(t *testing.T) {
 		}
 	}
 
-	got, err := resolveDockerfile(dir, "Dockerfile.prod", false)
+	got, err := resolveDockerfile(dir, "Dockerfile.prod", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -1233,7 +1419,7 @@ func TestResolveRunDockerfile_MultipleNonInteractivePrefersBase(t *testing.T) {
 		}
 	}
 
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2367,7 +2553,7 @@ func TestStartMTLSRegistryHTTPProxy_UntrustedClientCert(t *testing.T) {
 
 func TestResolveDockerfile_NoDockerfiles(t *testing.T) {
 	dir := t.TempDir()
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2383,7 +2569,7 @@ func TestResolveDockerfile_RequestedPassthrough(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := resolveDockerfile(dir, "Dockerfile.prod", false)
+	got, err := resolveDockerfile(dir, "Dockerfile.prod", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2397,7 +2583,7 @@ func TestResolveDockerfile_SingleVariant(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.dev"), []byte("FROM scratch"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2411,7 +2597,7 @@ func TestResolveDockerfile_Containerfile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2427,7 +2613,7 @@ func TestResolveDockerfile_MultipleNonInteractivePrefersBase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2443,7 +2629,7 @@ func TestResolveDockerfile_MultipleNonInteractiveVariantOnlyPrefersFirst(t *test
 			t.Fatal(err)
 		}
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2635,7 +2821,7 @@ func TestResolveDockerfile_AutoSelectionRejectsSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skip("symlinks not supported:", err)
 	}
-	if _, err := resolveDockerfile(dir, "", false); err == nil {
+	if _, err := resolveDockerfile(dir, "", false, ""); err == nil {
 		t.Fatal("expected error for auto-selected symlink escape, got nil")
 	}
 }
@@ -2710,5 +2896,377 @@ func TestTLSClientDialer_RejectsWrongCA(t *testing.T) {
 
 	if _, err := dial(context.Background()); err == nil {
 		t.Fatal("expected handshake failure against a server signed by an untrusted CA")
+	}
+}
+
+func TestDetectProjectType_Stagefile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := detectProjectType(dir)
+	if err != nil {
+		t.Fatalf("detectProjectType: %v", err)
+	}
+	if got != "docker" {
+		t.Fatalf("got %q, want %q", got, "docker")
+	}
+}
+
+func TestDetectBuildOptions_Stagefile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options := detectBuildOptions(dir)
+	found := false
+	for _, o := range options {
+		if o.Type == "docker" && o.File == "build.stagefile.yaml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a docker/build.stagefile.yaml option, got %+v", options)
+	}
+}
+
+func TestDetectBuildOptions_IgnoresOwnGeneratedDockerfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.generated"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options := detectBuildOptions(dir)
+	dockerCount := 0
+	for _, o := range options {
+		if o.Type == "docker" {
+			dockerCount++
+		}
+	}
+	if dockerCount != 1 {
+		t.Fatalf("expected exactly 1 docker-type option once Dockerfile.generated exists alongside build.stagefile.yaml, got %d: %+v", dockerCount, options)
+	}
+}
+
+func TestPreferredContainerBuildFileOption_StagefileWinsOverDockerfile(t *testing.T) {
+	options := []BuildOption{
+		{Type: "docker", File: "Dockerfile"},
+		{Type: "docker", File: "build.stagefile.yaml"},
+	}
+	got := preferredContainerBuildFileOption(options)
+	if got == nil || got.File != "build.stagefile.yaml" {
+		t.Fatalf("got %+v, want the build.stagefile.yaml option", got)
+	}
+}
+
+func TestResolveDockerfile_CompilesStagefile(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n"
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seed a lockfile with an already-resolved pin so this test never
+	// touches a real registry (stagefile.CompileFile only calls the live
+	// resolver for refs that are still missing from the lockfile).
+	lockContent := "version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n"
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.lock.yaml"), []byte(lockContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveDockerfile(dir, "", false, "")
+	if err != nil {
+		t.Fatalf("resolveDockerfile: %v", err)
+	}
+	if got != "Dockerfile.generated" {
+		t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("reading generated Dockerfile: %v", err)
+	}
+	if !strings.Contains(string(data), "sha256:fakepindigest") {
+		t.Fatalf("generated Dockerfile missing the pinned digest:\n%s", data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, generatedDockerignoreName)); err != nil {
+		t.Fatalf("expected %s to be written: %v", generatedDockerignoreName, err)
+	}
+	// A user-authored .dockerignore must never be touched — the derived
+	// allowlist rides along via BuildKit's per-Dockerfile precedence.
+	if _, err := os.Stat(filepath.Join(dir, ".dockerignore")); !os.IsNotExist(err) {
+		t.Fatalf("expected no bare .dockerignore to be written, stat err = %v", err)
+	}
+}
+
+func TestResolveRunProjectType_StagefileExplicitDockerOverride(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveRunProjectType(dir, "docker")
+	if err != nil {
+		t.Fatalf("resolveRunProjectType: %v", err)
+	}
+	if got != "docker" {
+		t.Fatalf("got %q, want %q", got, "docker")
+	}
+}
+
+func TestApplySafeOptimizeFixes_AppliesAdditiveFixesInMemory(t *testing.T) {
+	dir := t.TempDir()
+	original := "FROM python:3.11-slim\n" +
+		"RUN apt-get update && apt-get install -y curl\n" +
+		"RUN pip install -r requirements.txt\n" +
+		"CMD [\"python3\", \"app.py\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	if got != "Dockerfile.generated" {
+		t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+	}
+
+	// The real Dockerfile must be byte-for-byte untouched.
+	realData, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(realData) != original {
+		t.Fatalf("original Dockerfile was modified:\n%s", realData)
+	}
+
+	fixedData, err := os.ReadFile(filepath.Join(dir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("reading Dockerfile.generated: %v", err)
+	}
+	fixed := string(fixedData)
+	// apt-install is no longer silently auto-applied: --no-install-recommends
+	// changes which packages land in the image (explicit --fix only).
+	if strings.Contains(fixed, "--no-install-recommends") {
+		t.Fatalf("expected --no-install-recommends NOT to be auto-applied:\n%s", fixed)
+	}
+	if !strings.Contains(fixed, "--mount=type=cache,target=/root/.cache/pip") {
+		t.Fatalf("expected a pip build-cache mount to be auto-applied:\n%s", fixed)
+	}
+	// The cache mount supersedes pip-flags' --no-cache-dir: the flag would
+	// disable exactly the cache the mount persists.
+	if strings.Contains(fixed, "--no-cache-dir") {
+		t.Fatalf("expected --no-cache-dir NOT to be added alongside a pip cache mount:\n%s", fixed)
+	}
+}
+
+func TestApplySafeOptimizeFixes_NeverAutoAppliesNpmCiOrReleaseFlag(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := "FROM node:20\n" +
+		"RUN npm install\n" +
+		"RUN cargo build\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	// build-cache still applies to both RUN lines, so a Dockerfile.generated IS produced —
+	// but npm ci and --release must never appear in it.
+	if got != "Dockerfile.generated" {
+		t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+	}
+	fixedData, err := os.ReadFile(filepath.Join(dir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("reading Dockerfile.generated: %v", err)
+	}
+	fixed := string(fixedData)
+	if strings.Contains(fixed, "npm ci") {
+		t.Fatalf("npm ci must never be auto-applied (can hard-fail on a drifted lockfile):\n%s", fixed)
+	}
+	if !strings.Contains(fixed, "npm install") || !strings.Contains(fixed, "--mount=type=cache,target=/root/.npm") {
+		t.Fatalf("npm install line should keep npm install and gain a cache mount:\n%s", fixed)
+	}
+	if strings.Contains(fixed, "--release") {
+		t.Fatalf("--release must never be auto-applied (changes runtime behavior):\n%s", fixed)
+	}
+}
+
+func TestApplySafeOptimizeFixes_NoOpWhenNothingToFix(t *testing.T) {
+	dir := t.TempDir()
+	original := "FROM scratch\nCMD [\"/bin/true\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	if got != "Dockerfile" {
+		t.Fatalf("got %q, want the original filename unchanged", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Dockerfile.generated")); err == nil {
+		t.Fatalf("Dockerfile.generated should not be created when there's nothing to fix")
+	}
+}
+
+func TestApplySafeOptimizeFixes_IgnoresNamedVariant(t *testing.T) {
+	dir := t.TempDir()
+	original := "FROM python:3.11-slim\nRUN pip install -r requirements.txt\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.prod"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile.prod")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	if got != "Dockerfile.prod" {
+		t.Fatalf("got %q, want the original filename unchanged (optimize doesn't scan named variants today)", got)
+	}
+}
+
+func TestPrepareDockerBuildFile_DispatchesToStagefileOrOptimizeFix(t *testing.T) {
+	t.Run("stagefile", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"),
+			[]byte("version: 1\nstages:\n  - name: app\n    from: debian:12\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		lockContent := "version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n"
+		if err := os.WriteFile(filepath.Join(dir, "build.stagefile.lock.yaml"), []byte(lockContent), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := prepareDockerBuildFile(dir, "build.stagefile.yaml", "")
+		if err != nil {
+			t.Fatalf("prepareDockerBuildFile: %v", err)
+		}
+		if got != "Dockerfile.generated" {
+			t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+		}
+	})
+
+	t.Run("plain dockerfile with a fixable finding", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"),
+			[]byte("FROM python:3.11-slim\nRUN pip install -r requirements.txt\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := prepareDockerBuildFile(dir, "Dockerfile", "")
+		if err != nil {
+			t.Fatalf("prepareDockerBuildFile: %v", err)
+		}
+		if got != "Dockerfile.generated" {
+			t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+		}
+	})
+}
+
+func TestWriteGeneratedFile_SkipsUnchangedWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, generatedDockerfileName)
+	if err := writeGeneratedFile(path, []byte("FROM a\n")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same content: the file must not be rewritten (no mtime churn — a
+	// rewrite would re-trigger `wendy watch` mid-deploy).
+	if err := writeGeneratedFile(path, []byte("FROM a\n")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("unchanged content still rewrote the file")
+	}
+	if err := writeGeneratedFile(path, []byte("FROM b\n")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "FROM b\n" {
+		t.Fatalf("content = %q", data)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temp files left behind: %v", leftovers)
+	}
+}
+
+// A Stagefile that copies the whole context yields no derivable allowlist, and
+// the generated ignore file wins BuildKit's precedence over the project's own
+// .dockerignore. Writing a vacuous one there would therefore disable the
+// project's excludes — shipping, for a Swift project, a multi-gigabyte .build
+// directory into the build context and then into the image.
+func TestCompileStagefile_NoIgnoreFileWhenContextRootIsCopied(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n    workdir: /app\n" +
+		"    copy:\n      - from: local\n        paths: [.]\n        dest: /app/\n"
+	mustWrite(t, filepath.Join(dir, "build.stagefile.yaml"), source)
+	mustWrite(t, filepath.Join(dir, "build.stagefile.lock.yaml"),
+		"version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n")
+	// The project's own excludes, which must remain the ones in effect.
+	mustWrite(t, filepath.Join(dir, ".dockerignore"), ".build/\n")
+
+	// A sidecar left by an earlier build must not survive: absence is what puts
+	// the project's .dockerignore back in charge, so a stale file is as bad as
+	// writing a new one.
+	stale := filepath.Join(dir, generatedDockerignoreName)
+	mustWrite(t, stale, "*\n!.\n!./\n!./**\n")
+
+	if _, err := compileStagefile(dir, stagefileSourceName, ""); err != nil {
+		t.Fatalf("compileStagefile: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		b, _ := os.ReadFile(stale)
+		t.Fatalf("%s should not exist for a whole-context copy; stat err = %v, content:\n%s",
+			generatedDockerignoreName, err, b)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, ".dockerignore")); err != nil || string(b) != ".build/\n" {
+		t.Fatalf("the project .dockerignore must be left alone: %q, err = %v", b, err)
+	}
+}
+
+// The narrow case still gets its allowlist: only a whole-context copy suppresses it.
+func TestCompileStagefile_WritesIgnoreFileForNamedPaths(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n" +
+		"    copy:\n      - from: local\n        paths: [main.py]\n"
+	mustWrite(t, filepath.Join(dir, "build.stagefile.yaml"), source)
+	mustWrite(t, filepath.Join(dir, "build.stagefile.lock.yaml"),
+		"version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n")
+
+	if _, err := compileStagefile(dir, stagefileSourceName, ""); err != nil {
+		t.Fatalf("compileStagefile: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, generatedDockerignoreName))
+	if err != nil {
+		t.Fatalf("expected an allowlist for a named path: %v", err)
+	}
+	if !strings.HasPrefix(string(b), "*\n") || !strings.Contains(string(b), "!main.py") {
+		t.Fatalf("unexpected allowlist:\n%s", b)
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

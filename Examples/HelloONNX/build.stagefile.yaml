@@ -1,0 +1,22 @@
+version: 1
+stages:
+  - name: app
+    from: ubuntu:22.04
+    workdir: /app
+    # See PyTorchGPU for what cuda: resolves. Nothing here names a board.
+    cuda: true
+    env:
+      PYTHONUNBUFFERED: "1"
+    install:
+      apt:
+        packages: [python3-pip, python3-dev, libopenblas-dev, libgomp1]
+      pip:
+        - packages: [onnxruntime-gpu]
+          cuda: true
+        # onnx (model building helpers) and numpy from standard PyPI. NumPy
+        # pinned to 1.x — the GPU wheel is compiled against NumPy 1.x.
+        - packages: [onnx, "numpy==1.26.4"]
+    copy:
+      - from: local
+        paths: [app.py]
+    cmd: [python3, app.py]

@@ -21,11 +21,17 @@ var cacheRules = []cacheRule{
 	{"go build", "/root/.cache/go-build"},
 	{"go mod download", "/root/.cache/go-build"},
 	{"swift build", "/root/.swiftpm"},
+	// yarn 1 and pnpm never read npm's cache dir; mounting /root/.npm for
+	// them is dead weight. These targets mirror the stagefile compiler's
+	// own cache dirs (go/internal/stagefile/codegen). pnpm must precede
+	// npm: "pnpm install" contains "npm install" as a substring and
+	// matchCacheRule returns the first hit.
+	{"pnpm install", "/root/.local/share/pnpm/store"},
+	{"yarn install", "/root/.cache/yarn"},
 	{"npm install", "/root/.npm"},
 	{"npm ci", "/root/.npm"},
-	{"yarn install", "/root/.npm"},
-	{"pnpm install", "/root/.npm"},
 	{"pip install", "/root/.cache/pip"},
+	{"pip3 install", "/root/.cache/pip"},
 }
 
 func (a buildCacheAnalyzer) Analyze(t *Target) []Finding {
@@ -42,6 +48,22 @@ func (a buildCacheAnalyzer) Analyze(t *Target) []Finding {
 		}
 		rule, ok := matchCacheRule(inst.Args)
 		if !ok {
+			continue
+		}
+		// A pip cache mount would be dead weight next to --no-cache-dir:
+		// pip ignores the mounted cache entirely. The useful change —
+		// dropping the flag and adding the mount — removes text the user
+		// wrote, so it's reported without a Fix rather than applied.
+		if rule.target == "/root/.cache/pip" && strings.Contains(inst.Args, "--no-cache-dir") {
+			out = append(out, Finding{
+				Analyzer: a.ID(),
+				Severity: SeverityWarning,
+				Title:    fmt.Sprintf("%q disables the cache a build-cache mount would reuse", rule.match),
+				Detail: "This RUN uses --no-cache-dir, so pip re-downloads every wheel each time the layer rebuilds. " +
+					"Replace --no-cache-dir with `--mount=type=cache,target=/root/.cache/pip` on the RUN to keep the " +
+					"image just as slim while making rebuilds much faster — not auto-fixed, since it removes a flag you wrote.",
+				Location: &Loc{File: t.Dockerfile.Path, Line: inst.Line},
+			})
 			continue
 		}
 		raw := t.Dockerfile.Lines[inst.Line-1]

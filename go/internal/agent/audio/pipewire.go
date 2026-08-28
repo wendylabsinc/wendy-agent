@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,8 +47,9 @@ var expectedUID = func() (uint32, bool) {
 	return uint32(uid), true
 }
 
-// queryTimeout bounds a single pw-dump or wpctl invocation, so a wedged
-// PipeWire cannot hold an RPC open indefinitely.
+// queryTimeout bounds a single audio-query subprocess — pw-dump or wpctl here,
+// aplay/arecord/amixer on the ALSA fallback — so a wedged PipeWire or sound
+// card cannot hold an RPC open indefinitely.
 const queryTimeout = 5 * time.Second
 
 // Node is a PipeWire sink or source.
@@ -79,31 +81,78 @@ func (d Defaults) IsDefault(n Node) bool {
 	return n.Name != "" && n.Name == d.SourceName
 }
 
-// RuntimeDir returns the directory holding the user session's PipeWire socket,
-// or "" when no session is up. Only the socket owned by the "wendy" user is
-// trusted: on a multi-user host, any local UID can create a session under
-// /run/user/<uid>, and root blindly following the first glob match would let
-// that UID influence the agent's audio graph operations.
-func RuntimeDir() string {
+// session locates the user session's PipeWire socket directory. It returns
+// either a directory and an empty reason, or an empty directory and a reason
+// naming the precondition that failed.
+//
+// The reason exists because "no session" is three different situations — no
+// "wendy" account, no socket, or a socket owned by someone else — and a caller
+// that sees only "" reports the same thing for all three. Each is a distinct
+// misconfiguration, and an operator can only act on the one that applies.
+//
+// Only the socket owned by the "wendy" user is trusted: on a multi-user host,
+// any local UID can create a session under /run/user/<uid>, and root blindly
+// following the first glob match would let that UID influence the agent's
+// audio graph operations.
+func session() (dir, reason string) {
 	uid, ok := expectedUID()
 	if !ok {
-		return ""
+		return "", `no local user "wendy" (PipeWire runs in that user's session)`
 	}
 	matches, _ := filepath.Glob(SocketGlob)
+	// Tracked so a candidate that exists but is unusable can be reported for
+	// what it is: a socket owned by the wrong UID is a very different fault
+	// from no socket at all, and conflating them sends an operator looking in
+	// the wrong place.
+	var rejected string
 	for _, m := range matches {
 		// Lstat, not Stat: a symlink swapped in after the glob must not be
 		// followed to a socket outside the expected session.
 		fi, err := os.Lstat(m)
-		if err != nil || fi.Mode()&os.ModeSocket == 0 {
+		if err != nil {
+			if rejected == "" {
+				rejected = fmt.Sprintf("%s could not be read: %v", m, err)
+			}
+			continue
+		}
+		if fi.Mode()&os.ModeSocket == 0 {
+			if rejected == "" {
+				rejected = fmt.Sprintf("%s is not a socket", m)
+			}
 			continue
 		}
 		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || st.Uid != uid {
+		if !ok {
 			continue
 		}
-		return filepath.Dir(m)
+		if st.Uid != uid {
+			if rejected == "" {
+				rejected = fmt.Sprintf("%s is owned by uid %d, expected the \"wendy\" user (uid %d)", m, st.Uid, uid)
+			}
+			continue
+		}
+		return filepath.Dir(m), ""
 	}
-	return ""
+	if rejected != "" {
+		return "", rejected
+	}
+	return "", fmt.Sprintf("no socket matching %s (is pipewire-user-setup.service running?)", SocketGlob)
+}
+
+// RuntimeDir returns the directory holding the user session's PipeWire socket,
+// or "" when no session is up. Use UnavailableReason to find out why.
+func RuntimeDir() string {
+	dir, _ := session()
+	return dir
+}
+
+// UnavailableReason explains why no PipeWire session was usable, or "" when one
+// is. Callers put it in log lines and error messages so a fallback to ALSA
+// states its cause rather than asserting, unprovably, that nothing is running.
+// Behind a var so tests can pair it with a stubbed Available.
+var UnavailableReason = func() string {
+	_, reason := session()
+	return reason
 }
 
 // Available reports whether a PipeWire user session is up. Callers use this
@@ -188,11 +237,33 @@ func propUint(props map[string]json.RawMessage, key string) uint64 {
 	return v
 }
 
-// parseDump extracts audio sinks and sources, and the current defaults.
-func parseDump(data []byte) ([]Node, Defaults, error) {
+// decodeDump unmarshals pw-dump output into the objects both scans below walk.
+func decodeDump(data []byte) ([]pwObject, error) {
 	var objects []pwObject
 	if err := json.Unmarshal(data, &objects); err != nil {
-		return nil, Defaults{}, fmt.Errorf("parsing pw-dump output: %w", err)
+		return nil, fmt.Errorf("parsing pw-dump output: %w", err)
+	}
+	return objects, nil
+}
+
+// nodeProps returns o's properties and media.class if o is a Node of one of classes. Device
+// and Port objects share the id space and carry media.class too, but only a Node is streamable.
+func nodeProps(o pwObject, classes ...string) (map[string]json.RawMessage, string, bool) {
+	if o.Type != "PipeWire:Interface:Node" {
+		return nil, "", false
+	}
+	class := propString(o.Info.Props, "media.class")
+	if !slices.Contains(classes, class) {
+		return nil, "", false
+	}
+	return o.Info.Props, class, true
+}
+
+// parseDump extracts audio sinks and sources, and the current defaults.
+func parseDump(data []byte) ([]Node, Defaults, error) {
+	objects, err := decodeDump(data)
+	if err != nil {
+		return nil, Defaults{}, err
 	}
 
 	var nodes []Node
@@ -217,29 +288,23 @@ func parseDump(data []byte) ([]Node, Defaults, error) {
 			continue
 		}
 
-		// Only Node objects are addressable by wpctl and pw-record; Device and
-		// Port objects share the id space and can carry a media.class.
-		if o.Type != "PipeWire:Interface:Node" {
+		// Exactly "Audio/Sink" or "Audio/Source": monitor and virtual nodes carry a
+		// further suffix and are not devices anyone chose to install.
+		props, class, ok := nodeProps(o, "Audio/Sink", "Audio/Source")
+		if !ok {
 			continue
 		}
-
-		// Exactly "Audio/Sink" or "Audio/Source". Monitor and virtual nodes
-		// carry a further suffix and are not devices anyone chose to install.
-		class := propString(o.Info.Props, "media.class")
-		if class != "Audio/Sink" && class != "Audio/Source" {
-			continue
-		}
-		name := propString(o.Info.Props, "node.name")
+		name := propString(props, "node.name")
 		if name == "" {
 			continue
 		}
-		description := propString(o.Info.Props, "node.description")
+		description := propString(props, "node.description")
 		if description == "" {
 			description = name
 		}
 		nodes = append(nodes, Node{
 			ID:          o.ID,
-			Serial:      propUint(o.Info.Props, "object.serial"),
+			Serial:      propUint(props, "object.serial"),
 			Name:        name,
 			Description: description,
 			IsSink:      class == "Audio/Sink",

@@ -1,12 +1,16 @@
 package containerd
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -593,6 +597,20 @@ func TestInjectOTELEnvSetsServiceNameAndResourceAttrs(t *testing.T) {
 	}
 }
 
+func TestInjectOTELEnvUsesContainerNameForMultiServiceIdentity(t *testing.T) {
+	cfg := hostNetworkCfgWithID("robot")
+	cfg.ServiceName = "listener"
+
+	env := injectOTELEnvIfNeeded(nil, cfg, "robot")
+
+	if !slices.Contains(env, "OTEL_SERVICE_NAME=robot_listener") {
+		t.Errorf("env missing multi-service OTEL_SERVICE_NAME; got %v", env)
+	}
+	if !slices.Contains(env, "OTEL_RESOURCE_ATTRIBUTES=wendy.app.name=robot") {
+		t.Errorf("env missing owning app resource attribute; got %v", env)
+	}
+}
+
 func TestInjectOTELEnvSetsIdentityWhenEndpointPreset(t *testing.T) {
 	// An image that presets only the endpoint should still get identity vars so
 	// its direct OTLP logs remain filterable by `wendy device logs --app <id>`.
@@ -680,6 +698,88 @@ func TestHasHostNetworkEntitlementHostAdmin(t *testing.T) {
 	}
 	if !hasHostNetworkEntitlement(cfg) {
 		t.Error("host-admin mode should imply host networking")
+	}
+}
+
+// stubBoard pins the detected board kind for one test so needsNvidiaCDI never
+// reads the host's real /etc/nv_tegra_release — the assertions below are about
+// the entitlement/board decision, not about what the machine running the suite
+// happens to be.
+func stubBoard(t *testing.T, kind board.Kind) {
+	t.Helper()
+	prev := boardDetect
+	boardDetect = func() board.Info { return board.Info{Kind: kind} }
+	t.Cleanup(func() { boardDetect = prev })
+}
+
+// TestNeedsNvidiaCDIGPUOnly verifies the pre-existing trigger (gpu entitlement
+// alone) still applies CDI, so this change is additive. Board-independent: a
+// gpu entitlement asks for CDI/CSV provisioning on any host, and applyNvidiaCDI's
+// warnings when there is none are the intended outcome.
+func TestNeedsNvidiaCDIGPUOnly(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementGPU},
+		},
+	}
+	for _, kind := range []board.Kind{board.Jetson, board.RaspberryPi, board.Generic} {
+		stubBoard(t, kind)
+		if !needsNvidiaCDI(cfg) {
+			t.Errorf("gpu entitlement should trigger CDI application on board kind %v", kind)
+		}
+	}
+}
+
+// TestNeedsNvidiaCDIDisplayOnlyJetson covers the gap this change closes: a
+// display entitlement with no explicit gpu entitlement must still get the
+// NVIDIA CDI library/device mounts, matching applyDisplay's own doc comment
+// that Jetson injects the EGL/GLES userspace via CDI. Before this fix, a
+// display-only app got /dev/dri and the driver-capability env vars from
+// applyDisplay but none of CDI's actual library mounts.
+func TestNeedsNvidiaCDIDisplayOnlyJetson(t *testing.T) {
+	stubBoard(t, board.Jetson)
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementDisplay},
+		},
+	}
+	if !needsNvidiaCDI(cfg) {
+		t.Error("display entitlement alone should trigger CDI application on a Jetson")
+	}
+}
+
+// TestNeedsNvidiaCDIDisplayOnlyNonJetson pins the other half of the gate: a
+// display app on a board with no NVIDIA userspace must not enter applyNvidiaCDI,
+// which would only log "no NVIDIA CDI spec" warnings at it. This mirrors
+// applyDisplay, which likewise sets the NVIDIA driver-capability env vars only
+// on a Jetson.
+func TestNeedsNvidiaCDIDisplayOnlyNonJetson(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementDisplay},
+		},
+	}
+	for _, kind := range []board.Kind{board.RaspberryPi, board.Generic} {
+		stubBoard(t, kind)
+		if needsNvidiaCDI(cfg) {
+			t.Errorf("display entitlement should not trigger NVIDIA CDI on board kind %v", kind)
+		}
+	}
+}
+
+// TestNeedsNvidiaCDINeitherEntitlement verifies an app with neither
+// entitlement gets no CDI mounts, preserving the default no-GPU sandbox for
+// apps that never opted into GPU or display access — including on a Jetson,
+// where the board check alone must not be enough.
+func TestNeedsNvidiaCDINeitherEntitlement(t *testing.T) {
+	stubBoard(t, board.Jetson)
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementAudio},
+		},
+	}
+	if needsNvidiaCDI(cfg) {
+		t.Error("neither gpu nor display entitlement should trigger CDI application")
 	}
 }
 
@@ -1303,5 +1403,250 @@ func TestCollectExposures(t *testing.T) {
 		if strings.Contains(k, "9000") {
 			t.Errorf("loopback port 9000 must not be an exposure (key %q)", k)
 		}
+	}
+}
+
+// fakeRestartSuppressor is a recording restartSuppressor for the F2
+// replace/stop-suppression tests below: it captures every Suppress call and
+// every subsequent resume so tests can assert both the call and its pairing
+// without depending on the real container.ContainerMonitor.
+type fakeRestartSuppressor struct {
+	suppressed []string
+	resumed    []string
+}
+
+func (f *fakeRestartSuppressor) Suppress(containerName string) func() {
+	f.suppressed = append(f.suppressed, containerName)
+	return func() {
+		f.resumed = append(f.resumed, containerName)
+	}
+}
+
+// TestSuppressRestartsNoopWhenNoMonitor verifies suppressRestarts always
+// returns a callable resume func even when no monitor was wired in (e.g.
+// containerd came up before/without a monitor, or a bare *Client in a unit
+// test) — callers must be able to unconditionally `defer resume()`.
+func TestSuppressRestartsNoopWhenNoMonitor(t *testing.T) {
+	c := &Client{}
+	resume := c.suppressRestarts("com.example.app")
+	if resume == nil {
+		t.Fatal("suppressRestarts returned a nil func with no monitor wired")
+	}
+	resume() // must not panic
+}
+
+func TestStartContainerRejectsStartWhileAppStopping(t *testing.T) {
+	c := &Client{
+		namespace:   "default",
+		appStopping: map[string]bool{"com.example.app": true},
+	}
+	t.Run("without stdin", func(t *testing.T) {
+		_, err := c.StartContainer(context.Background(), "com.example.app", "", nil)
+		if !errors.Is(err, errAppStopping) {
+			t.Fatalf("StartContainer error = %v; want errAppStopping", err)
+		}
+	})
+	t.Run("with stdin", func(t *testing.T) {
+		_, err := c.StartContainerWithStdin(context.Background(), "com.example.app", strings.NewReader("input"), "", nil)
+		if !errors.Is(err, errAppStopping) {
+			t.Fatalf("StartContainerWithStdin error = %v; want errAppStopping", err)
+		}
+	})
+}
+
+// TestSuppressRestartsDelegatesToMonitor verifies suppressRestarts forwards
+// to the wired restartMonitor and returns its resume func unchanged.
+func TestSuppressRestartsDelegatesToMonitor(t *testing.T) {
+	fake := &fakeRestartSuppressor{}
+	c := &Client{restartMonitor: fake}
+
+	resume := c.suppressRestarts("com.example.app")
+	if len(fake.suppressed) != 1 || fake.suppressed[0] != "com.example.app" {
+		t.Fatalf("Suppress calls = %v; want [com.example.app]", fake.suppressed)
+	}
+	if len(fake.resumed) != 0 {
+		t.Fatalf("resume calls before resume() = %v; want none", fake.resumed)
+	}
+
+	resume()
+	if len(fake.resumed) != 1 || fake.resumed[0] != "com.example.app" {
+		t.Fatalf("resume calls = %v; want [com.example.app]", fake.resumed)
+	}
+}
+
+// TestSetRestartSuppressor verifies the setter wires the field suppressRestarts reads.
+func TestSetRestartSuppressor(t *testing.T) {
+	fake := &fakeRestartSuppressor{}
+	c := &Client{}
+	c.SetRestartSuppressor(fake)
+
+	c.suppressRestarts("app")
+	if len(fake.suppressed) != 1 || fake.suppressed[0] != "app" {
+		t.Fatalf("Suppress calls after SetRestartSuppressor = %v; want [app]", fake.suppressed)
+	}
+}
+
+// TestIsMissingRuncStateDir is the regression guard for the missing-runc-
+// state-dir workaround (F2): forceDeleteTask must recognize the exact error
+// runc produces when a task's state directory under
+// /run/containerd/runc/<ns>/<id> is gone, and extract the directory path so
+// the caller can recreate it. The first case uses the literal string observed
+// live on hardware.
+func TestIsMissingRuncStateDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantDir string
+		wantOK  bool
+	}{
+		{
+			name:    "observed live error",
+			err:     errors.New("cannot open directory `/run/containerd/runc/default/com.wendylabs.examples.mcp-example`: No such file or directory"),
+			wantDir: "/run/containerd/runc/default/com.wendylabs.examples.mcp-example",
+			wantOK:  true,
+		},
+		{
+			name: "nil error",
+			err:  nil,
+		},
+		{
+			name: "unrelated error",
+			err:  errors.New("failed precondition"),
+		},
+		{
+			name: "cannot open directory but not a runc state path",
+			err:  errors.New("cannot open directory `/some/other/path`: No such file or directory"),
+		},
+		{
+			name: "cannot open directory with no closing backtick",
+			err:  errors.New("cannot open directory `/run/containerd/runc/default/app: No such file or directory"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, ok := isMissingRuncStateDir(tt.err)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v; want %v", ok, tt.wantOK)
+			}
+			if ok && dir != tt.wantDir {
+				t.Errorf("dir = %q; want %q", dir, tt.wantDir)
+			}
+		})
+	}
+}
+
+// TestRecoverMissingRuncStateDir_PassesThroughUnrelatedErrors verifies
+// recoverMissingRuncStateDir (the F2 round-1-followup finding-3 shared
+// helper, used by both forceDeleteTask and terminateTask's task.Delete step)
+// never invokes retry for an error isMissingRuncStateDir doesn't recognize —
+// including nil, the success case.
+func TestRecoverMissingRuncStateDir_PassesThroughUnrelatedErrors(t *testing.T) {
+	c := &Client{logger: zap.NewNop()}
+
+	t.Run("nil error", func(t *testing.T) {
+		called := false
+		got := c.recoverMissingRuncStateDir("ctr", nil, func() error {
+			called = true
+			return nil
+		})
+		if got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+		if called {
+			t.Error("retry called for nil error")
+		}
+	})
+
+	t.Run("unrelated error", func(t *testing.T) {
+		want := errors.New("boom")
+		called := false
+		got := c.recoverMissingRuncStateDir("ctr", want, func() error {
+			called = true
+			return nil
+		})
+		if got != want {
+			t.Errorf("got %v, want %v", got, want)
+		}
+		if called {
+			t.Error("retry called for an error that isn't the missing-state-dir failure")
+		}
+	})
+}
+
+// TestRecreateRuncStateDirAndRetry_MkdirSucceeds is the decision-flow
+// regression guard for finding 3 (the missing-runc-state-dir recovery was
+// unreachable from the stop path, the actual live-observed wedge): given a
+// directory that doesn't exist yet but whose parent is writable, MkdirAll
+// must succeed, retry must be invoked exactly once, and its result (success
+// or failure) must be returned unchanged. Uses t.TempDir() rather than a real
+// /run/containerd/runc/ path (isMissingRuncStateDir's prefix requirement),
+// since recreateRuncStateDirAndRetry is deliberately split out to be testable
+// against an arbitrary directory without needing root on a real Linux host —
+// see its doc comment.
+func TestRecreateRuncStateDirAndRetry_MkdirSucceeds(t *testing.T) {
+	c := &Client{logger: zap.NewNop()}
+	dir := filepath.Join(t.TempDir(), "default", "com.example.app")
+	origErr := errors.New("cannot open directory `" + dir + "`: No such file or directory")
+	retryErr := errors.New("still failing after retry")
+
+	retryCalls := 0
+	got := c.recreateRuncStateDirAndRetry("ctr", dir, origErr, func() error {
+		retryCalls++
+		return retryErr
+	})
+
+	if retryCalls != 1 {
+		t.Fatalf("retry called %d times, want 1", retryCalls)
+	}
+	if got != retryErr {
+		t.Errorf("got %v, want retry's error %v returned unchanged", got, retryErr)
+	}
+	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		t.Errorf("expected %s to be recreated as a directory (stat err: %v)", dir, statErr)
+	}
+}
+
+// TestRecreateRuncStateDirAndRetry_MkdirSucceeds_RetrySucceeds covers the
+// success path end to end: mkdir succeeds, retry succeeds, the original
+// error is fully swallowed.
+func TestRecreateRuncStateDirAndRetry_MkdirSucceeds_RetrySucceeds(t *testing.T) {
+	c := &Client{logger: zap.NewNop()}
+	dir := filepath.Join(t.TempDir(), "default", "com.example.app")
+	origErr := errors.New("cannot open directory `" + dir + "`: No such file or directory")
+
+	got := c.recreateRuncStateDirAndRetry("ctr", dir, origErr, func() error {
+		return nil
+	})
+
+	if got != nil {
+		t.Errorf("got %v, want nil after a successful retry", got)
+	}
+}
+
+// TestRecreateRuncStateDirAndRetry_MkdirFails verifies that when MkdirAll
+// itself fails, retry is never called and the original error is preserved
+// (not the mkdir error) — a file occupying a path component that MkdirAll
+// needs to descend through makes it fail portably, without needing real
+// /run/containerd/runc permissions.
+func TestRecreateRuncStateDirAndRetry_MkdirFails(t *testing.T) {
+	c := &Client{logger: zap.NewNop()}
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: writing blocker file: %v", err)
+	}
+	dir := filepath.Join(blocker, "default", "com.example.app")
+	origErr := errors.New("cannot open directory `" + dir + "`: No such file or directory")
+
+	retryCalls := 0
+	got := c.recreateRuncStateDirAndRetry("ctr", dir, origErr, func() error {
+		retryCalls++
+		return nil
+	})
+
+	if retryCalls != 0 {
+		t.Errorf("retry called %d times after mkdir failure, want 0", retryCalls)
+	}
+	if got != origErr {
+		t.Errorf("got %v, want original error %v preserved", got, origErr)
 	}
 }

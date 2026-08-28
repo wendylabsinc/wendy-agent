@@ -46,7 +46,7 @@ func newWifiCmd() *cobra.Command {
 
 func runWifiInteractive(cmd *cobra.Command) error {
 	ctx := cmd.Context()
-	target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"))
+	target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"), IncludeBluetooth())
 	if err != nil {
 		return err
 	}
@@ -271,7 +271,7 @@ func newWifiListCmd() *cobra.Command {
 		Short: "List available WiFi networks",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"))
+			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"), IncludeBluetooth())
 			if err != nil {
 				return err
 			}
@@ -370,7 +370,7 @@ func newWifiConnectCmd() *cobra.Command {
 		Short: "Connect to a WiFi network",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"))
+			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"), IncludeBluetooth())
 			if err != nil {
 				return err
 			}
@@ -446,7 +446,7 @@ func newWifiStatusCmd() *cobra.Command {
 		Short: "Get current WiFi connection status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"))
+			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"), IncludeBluetooth())
 			if err != nil {
 				return err
 			}
@@ -498,7 +498,7 @@ func newWifiDisconnectCmd() *cobra.Command {
 		Short: "Disconnect from the current WiFi network",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"))
+			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"), IncludeBluetooth())
 			if err != nil {
 				return err
 			}
@@ -558,7 +558,7 @@ Examples:
 				return errors.New("--priority is required when --ssid is set")
 			}
 
-			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"))
+			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"), IncludeBluetooth())
 			if err != nil {
 				return err
 			}
@@ -612,7 +612,7 @@ func newWifiForgetCmd() *cobra.Command {
 			if ssid == "" {
 				return errors.New("--ssid is required")
 			}
-			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"))
+			target, err := resolveTarget(ctx, ExcludeProviders("local", "docker"), IncludeBluetooth())
 			if err != nil {
 				return err
 			}

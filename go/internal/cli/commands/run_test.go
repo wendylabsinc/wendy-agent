@@ -3,12 +3,34 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
+
+func TestResolveStagefileGPUTargetKeepsWatchTarget(t *testing.T) {
+	dir := t.TempDir()
+	const cudaStagefile = "version: 1\nstages:\n  - name: app\n    from: ubuntu:22.04\n    pin: false\n    cuda: true\n"
+	if err := os.WriteFile(filepath.Join(dir, stagefileSourceName), []byte(cudaStagefile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	watchTarget := &SelectedDevice{}
+
+	got, err := resolveStagefileGPUTarget(context.Background(), dir, watchTarget, runOptions{})
+	if err != nil {
+		t.Fatalf("resolveStagefileGPUTarget: %v", err)
+	}
+	if got != watchTarget {
+		t.Fatal("CUDA Stagefile cycle replaced the watch session's selected target")
+	}
+}
 
 // containerDisplayName must print the real container identity in deploy
 // output: "{appID}_{serviceName}" when the config describes one service of a
@@ -405,5 +427,155 @@ func TestValidateEnvFlag(t *testing.T) {
 		if err := validateEnvFlag([]string{entry}); err == nil {
 			t.Errorf("validateEnvFlag(%q) = nil, want an error", entry)
 		}
+	}
+}
+
+// TestDebugRequiresDebugpy asserts the --debug pre-deploy gate for Stagefile
+// Python projects: the agent always wraps a Python entrypoint in debugpy
+// when debug mode is requested, but nothing injects debugpy into the image
+// (removed by 70493f702, by design), so a Stagefile project must declare
+// debugpy in its pip requirements or the deploy should fail fast with an
+// actionable message instead of crash-looping on device.
+func TestDebugRequiresDebugpy(t *testing.T) {
+	const stagefileYAML = "version: 1\n" +
+		"stages:\n" +
+		"  - name: app\n" +
+		"    from: python:3.11-slim\n" +
+		"    install:\n" +
+		"      pip:\n" +
+		"        requirements: requirements.txt\n" +
+		"    entrypoint:\n" +
+		"      exec: [python, main.py]\n"
+
+	writeFile := func(t *testing.T, dir, name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
+	}
+
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, dir string)
+		appCfg     *appconfig.AppConfig
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name: "stagefile python project without debugpy errors",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, dir, "build.stagefile.yaml", stagefileYAML)
+				writeFile(t, dir, "requirements.txt", "flask==3.0\n")
+			},
+			appCfg:     &appconfig.AppConfig{Language: "python"},
+			wantErr:    true,
+			errContain: "debugpy",
+		},
+		{
+			name: "stagefile python project with debugpy is fine",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, dir, "build.stagefile.yaml", stagefileYAML)
+				writeFile(t, dir, "requirements.txt", "flask==3.0\ndebugpy>=1.8\n")
+			},
+			appCfg: &appconfig.AppConfig{Language: "python"},
+		},
+		{
+			name: "stagefile python project with odd-cased DebugPy is fine",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, dir, "build.stagefile.yaml", stagefileYAML)
+				writeFile(t, dir, "requirements.txt", "flask==3.0\nDebugPy==1.8.0\n")
+			},
+			appCfg: &appconfig.AppConfig{Language: "python"},
+		},
+		{
+			name:   "non-stagefile directory is fine",
+			setup:  func(t *testing.T, dir string) {},
+			appCfg: &appconfig.AppConfig{Language: "python"},
+		},
+		{
+			name: "non-python language is fine",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, dir, "build.stagefile.yaml", stagefileYAML)
+				writeFile(t, dir, "requirements.txt", "flask==3.0\n")
+			},
+			appCfg: &appconfig.AppConfig{Language: "swift"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tt.setup(t, dir)
+			err := debugRequiresDebugpy(dir, tt.appCfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("debugRequiresDebugpy() = nil, want an error")
+				}
+				if !strings.Contains(err.Error(), tt.errContain) {
+					t.Fatalf("debugRequiresDebugpy() error = %q, want it to mention %q", err.Error(), tt.errContain)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("debugRequiresDebugpy() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// shouldOfferLiteReinstall must fire only for the exact situation where a
+// reinstall prompt is safe and actionable: the provider reported the firmware
+// cannot host the app's requirements (with a known chip), the device is
+// reachable over USB, and a human is there to answer (WDY-2319). Everything
+// else keeps the plain build error.
+func TestShouldOfferLiteReinstall(t *testing.T) {
+	usb := models.ExternalDevice{DisplayName: "lite", ConnectionInfo: map[string]string{"type": "USB"}}
+	lan := models.ExternalDevice{DisplayName: "lite", ConnectionInfo: map[string]string{"type": "LAN"}}
+	native := &providers.AppRequirementsUnsupportedError{Device: usb, Missing: "native apps"}
+	wasm := &providers.AppRequirementsUnsupportedError{Device: usb, Missing: "WASM apps"}
+
+	cases := []struct {
+		name        string
+		err         error
+		device      models.ExternalDevice
+		interactive bool
+		want        *providers.AppRequirementsUnsupportedError
+	}{
+		{"USB and interactive offers reinstall", native, usb, true, native},
+		{"WASM apps gate the same way", wasm, usb, true, wasm},
+		{"matches through error wrapping", fmt.Errorf("building: %w", native), usb, true, native},
+		{"other build errors never prompt", errors.New("boom"), usb, true, nil},
+		{"LAN devices cannot be reflashed here", native, lan, true, nil},
+		{"non-interactive keeps the error", native, usb, false, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := shouldOfferLiteReinstall(tc.err, tc.device, tc.interactive)
+			if got != tc.want || ok != (tc.want != nil) {
+				t.Errorf("shouldOfferLiteReinstall() = (%v, %v), want (%v, %v)", got, ok, tc.want, tc.want != nil)
+			}
+		})
+	}
+}
+
+// deviceNeedsInstall distinguishes a genuinely unflashed board (offer wording:
+// "install") from one whose existing firmware just lacks a capability (offer
+// wording: "reinstall") — see offerLiteReinstallAndRebuild.
+func TestDeviceNeedsInstall(t *testing.T) {
+	cases := []struct {
+		name   string
+		device models.ExternalDevice
+		want   bool
+	}{
+		{"marked needsInstall", models.ExternalDevice{ConnectionInfo: map[string]string{"needsInstall": "true", "type": "USB"}}, true},
+		{"capability mismatch has no marker", models.ExternalDevice{ConnectionInfo: map[string]string{"type": "USB"}}, false},
+		{"nil ConnectionInfo", models.ExternalDevice{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deviceNeedsInstall(tc.device); got != tc.want {
+				t.Errorf("deviceNeedsInstall() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

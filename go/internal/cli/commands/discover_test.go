@@ -176,13 +176,13 @@ func TestDiscoverModel_WindowWidthCropsViewLines(t *testing.T) {
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
 	m = updated.(discoverModel)
-	updated, _ = m.Update(lanScanMsg{devices: []models.LANDevice{{
+	updated, _ = m.Update(lanFoundEvent(models.LANDevice{
 		DisplayName:  "Ardent Cashew",
 		Hostname:     "wendyos-ardent-cashew.local",
 		Port:         defaultAgentPort,
 		AgentVersion: "2026.05.30-161141",
 		OSVersion:    "WendyOS-0.13.2",
-	}}})
+	}))
 	m = updated.(discoverModel)
 
 	if !m.canScrollTable() {
@@ -205,22 +205,21 @@ func TestDiscoverModel_LeftRightScrollsWithoutBreakingVerticalNavigation(t *test
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 20})
 	m = updated.(discoverModel)
-	updated, _ = m.Update(lanScanMsg{devices: []models.LANDevice{
-		{
-			DisplayName:  "alpha",
-			Hostname:     "wendyos-alpha.local",
-			Port:         defaultAgentPort,
-			AgentVersion: "2026.05.30-161141",
-			OSVersion:    "WendyOS-0.13.2",
-		},
-		{
-			DisplayName:  "beta",
-			Hostname:     "wendyos-beta.local",
-			Port:         defaultAgentPort,
-			AgentVersion: "2026.05.30-161141",
-			OSVersion:    "WendyOS-0.13.2",
-		},
-	}})
+	updated, _ = m.Update(lanFoundEvent(models.LANDevice{
+		DisplayName:  "alpha",
+		Hostname:     "wendyos-alpha.local",
+		Port:         defaultAgentPort,
+		AgentVersion: "2026.05.30-161141",
+		OSVersion:    "WendyOS-0.13.2",
+	}))
+	m = updated.(discoverModel)
+	updated, _ = m.Update(lanFoundEvent(models.LANDevice{
+		DisplayName:  "beta",
+		Hostname:     "wendyos-beta.local",
+		Port:         defaultAgentPort,
+		AgentVersion: "2026.05.30-161141",
+		OSVersion:    "WendyOS-0.13.2",
+	}))
 	m = updated.(discoverModel)
 
 	before := m.tableView()
@@ -256,11 +255,11 @@ func TestDiscoverModel_DKeySetsDefaultAndMarksSelectedDevice(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 
 	m := newDiscoverModel(context.Background(), defaultOpts(), true)
-	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+	updated, _ := m.Update(lanFoundEvent(models.LANDevice{
 		DisplayName: "ubuntu",
 		Hostname:    "ubuntu.local",
 		Port:        defaultAgentPort,
-	}}})
+	}))
 	m = updated.(discoverModel)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
@@ -309,11 +308,11 @@ func TestDiscoverModel_ViewShowsLegendWithDevices(t *testing.T) {
 		t.Fatalf("expected no legend before any device is found, got %q", m.View())
 	}
 
-	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+	updated, _ := m.Update(lanFoundEvent(models.LANDevice{
 		DisplayName: "ubuntu",
 		Hostname:    "ubuntu.local",
 		Port:        defaultAgentPort,
-	}}})
+	}))
 	m = updated.(discoverModel)
 
 	if !strings.Contains(m.View(), tui.DeviceTableLegendBase) {
@@ -597,11 +596,12 @@ func TestMergePickerItemMergesBLEIntoLANByHostname(t *testing.T) {
 
 func TestDiscoverModelViewShowsNoAccessHintForHighlightedDevice(t *testing.T) {
 	m := newDiscoverModel(context.Background(), discovery.DiscoveryOptions{}, true)
-	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+	dev := models.LANDevice{
 		DisplayName: "wendy-locked",
 		IPAddress:   "192.168.1.30",
 		IsMTLS:      true,
-	}}})
+	}
+	updated, _ := m.Update(lanCachedEvent(dev))
 	dm := updated.(discoverModel)
 
 	// While the probe is still in flight the row is "connecting" (spinner), so
@@ -610,8 +610,10 @@ func TestDiscoverModelViewShowsNoAccessHintForHighlightedDevice(t *testing.T) {
 		t.Fatalf("no-access hint should be suppressed while connecting, got %q", view)
 	}
 
-	// Once the probe fails, the provisioned device shows the no-access hint.
-	updated, _ = dm.Update(lanProbeMsg{name: "wendy-locked", err: context.DeadlineExceeded})
+	// Once the device is confirmed offline without ever resolving a version,
+	// the provisioned device shows the no-access hint — offline is a
+	// concluded probe outcome, not a pending one.
+	updated, _ = dm.Update(lanOfflineEvent(dev))
 	dm = updated.(discoverModel)
 
 	view := ansi.Strip(dm.View())
@@ -625,12 +627,12 @@ func TestDiscoverModelViewShowsNoAccessHintForHighlightedDevice(t *testing.T) {
 
 func TestDiscoverModelViewOmitsHintForAccessibleDevice(t *testing.T) {
 	m := newDiscoverModel(context.Background(), discovery.DiscoveryOptions{}, true)
-	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+	updated, _ := m.Update(lanFoundEvent(models.LANDevice{
 		DisplayName:  "wendy-mine",
 		IPAddress:    "192.168.1.31",
 		IsMTLS:       true,
 		AgentVersion: "1.2.3",
-	}}})
+	}))
 	dm := updated.(discoverModel)
 
 	view := ansi.Strip(dm.View())

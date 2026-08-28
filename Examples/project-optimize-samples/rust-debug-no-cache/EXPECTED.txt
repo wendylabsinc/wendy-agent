@@ -1,6 +1,28 @@
-Expected findings (wendy project optimize):
-  error    arch-image      amd64 base image on arm64 target          (Dockerfile:6)
-  warning  build-cache     cargo build without --mount=type=cache    (Dockerfile:10) [fixable]
-  warning  release-debug   cargo build is a debug build              (Dockerfile:10) [fixable]
-  warning  arch-image      No .dockerignore                          [fixable]
-  info     arch-image      Single-stage build ships its toolchain
+Expected findings (wendy project optimize): NONE.
+
+This sample was converted from a Dockerfile to build.stagefile.yaml, and
+`wendy project optimize` analyses Dockerfiles, Containerfiles and compose
+services — not Stagefiles. Running it here now reports nothing and exits 0.
+
+What the five findings this file used to list became:
+
+  Not writable in a Stagefile at all:
+    arch-image      amd64 base image on arm64 target (this sample's headline
+                    finding, and its only `error`). The Dockerfile pinned
+                    `--platform=linux/amd64`; a Stagefile's `platform:`
+                    accepts only "build" ($BUILDPLATFORM), so a per-stage
+                    architecture pin cannot be expressed and the image builds
+                    for the target architecture.
+
+  Structurally impossible in a Stagefile:
+    build-cache     cargo build without a cache mount -> every build.lang gets one
+    arch-image      No .dockerignore                  -> derived from the copy paths
+
+  Still true of the converted file, just no longer reported by anything:
+    release-debug   cargo build is a debug build (`profile: debug` is still
+                    declared — a visible deviation from the release default)
+    arch-image      Single-stage build ships its toolchain
+
+This directory is also still not buildable, exactly as it was not before:
+there is no Cargo.toml and no Rust source in it, so `cargo build` fails.
+This sample has always been read by the analyzer rather than built.

@@ -191,5 +191,7 @@ editing the image.
 ## Files
 
 - `app.py` - Main application with demo and web server
-- `Dockerfile` - Container definition with Jetson-optimized dependencies
+- `build.stagefile.yaml` - Container definition; `cuda: true` resolves the CUDA
+  version, wheel index and runtime from the device's reported `gpu_arch`
+- `build.stagefile.lock.yaml` - Resolved base-image digest and CUDA profile, committed
 - `wendy.json` - Wendy configuration with GPU and network entitlements

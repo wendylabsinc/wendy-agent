@@ -159,6 +159,30 @@ func TestGetAgentVersion(t *testing.T) {
 	}
 }
 
+func TestGetAgentVersionReportsHostname(t *testing.T) {
+	// Goes through startAgentServer rather than a bare &AgentService{}: the
+	// handler now resolves and hashes its own executable (binarySHA256), which
+	// calls the execPathResolver a zero-value struct leaves nil.
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+	)
+	defer cleanup()
+
+	resp, err := client.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		t.Fatalf("GetAgentVersion: %v", err)
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		t.Skipf("os.Hostname unavailable: %v", err)
+	}
+	if resp.GetHostname() != host {
+		t.Fatalf("Hostname = %q, want %q", resp.GetHostname(), host)
+	}
+}
+
 func TestReadWendyOSVersionFromPrefersCurrentPath(t *testing.T) {
 	dir := t.TempDir()
 	current := filepath.Join(dir, "etc", "wendyos", "version.txt")
@@ -1035,5 +1059,96 @@ func TestDetectCUDAVersion_NothingFound(t *testing.T) {
 
 	if got := detectCUDAVersionIn(usrLocal, noLookPath, noRunCmd); got != "" {
 		t.Errorf("detectCUDAVersionIn = %q, want empty", got)
+	}
+}
+
+func TestGetAgentVersionReportsBinarySHA256(t *testing.T) {
+	binPath := filepath.Join(t.TempDir(), "wendy-agent")
+	content := []byte("fake agent binary contents")
+	if err := os.WriteFile(binPath, content, 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sum := sha256.Sum256(content)
+	want := hex.EncodeToString(sum[:])
+
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) {
+			svc.execPathResolver = func() (string, os.FileMode, error) { return binPath, 0o755, nil }
+		},
+	)
+	defer cleanup()
+
+	resp, err := client.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		t.Fatalf("GetAgentVersion: %v", err)
+	}
+	if resp.GetBinarySha256() != want {
+		t.Errorf("binarySha256 = %q; want %q", resp.GetBinarySha256(), want)
+	}
+
+	// The hash means "the binary this process was started from": once
+	// computed it must not change even if the file at the exec path is
+	// replaced, as happens between a committed update and the restart.
+	if err := os.WriteFile(binPath, []byte("replaced by an update"), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	resp, err = client.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		t.Fatalf("GetAgentVersion after replace: %v", err)
+	}
+	if resp.GetBinarySha256() != want {
+		t.Errorf("binarySha256 changed to %q after exec path was replaced; want cached %q", resp.GetBinarySha256(), want)
+	}
+}
+
+func TestWarmBinaryHashPrimesTheCache(t *testing.T) {
+	binPath := filepath.Join(t.TempDir(), "wendy-agent")
+	content := []byte("the binary this process started from")
+	if err := os.WriteFile(binPath, content, 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sum := sha256.Sum256(content)
+	want := hex.EncodeToString(sum[:])
+
+	svc := NewAgentService(zap.NewNop(), &mockNetworkManager{}, &mockHardwareDiscoverer{}, &mockBluetoothManager{}, &AgentInstaller{})
+	svc.execPathResolver = func() (string, os.FileMode, error) { return binPath, 0o755, nil }
+	svc.WarmBinaryHash()
+
+	// binarySHA256 shares the warm goroutine's sync.Once, so this read
+	// synchronizes with (or performs) the computation.
+	if got := svc.binarySHA256(); got != want {
+		t.Fatalf("binarySHA256() = %q, want %q", got, want)
+	}
+
+	if err := os.WriteFile(binPath, []byte("replaced by an update"), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if got := svc.binarySHA256(); got != want {
+		t.Fatalf("binarySHA256() = %q after exec path replaced, want warmed %q", got, want)
+	}
+}
+
+func TestGetAgentVersionBinarySHA256EmptyWhenUnreadable(t *testing.T) {
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) {
+			svc.execPathResolver = func() (string, os.FileMode, error) {
+				return "", 0, fmt.Errorf("exec path unavailable")
+			}
+		},
+	)
+	defer cleanup()
+
+	resp, err := client.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		t.Fatalf("GetAgentVersion must succeed even when hashing fails: %v", err)
+	}
+	if resp.GetBinarySha256() != "" {
+		t.Errorf("binarySha256 = %q; want empty when the executable cannot be hashed", resp.GetBinarySha256())
 	}
 }

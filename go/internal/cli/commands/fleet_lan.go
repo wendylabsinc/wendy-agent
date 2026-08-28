@@ -107,7 +107,7 @@ func discoverFleetLAN(ctx context.Context, timeout time.Duration) ([]models.LAND
 	if timeout <= 0 {
 		timeout = fleetLANDiscoverTimeout
 	}
-	devices, err := discovery.DiscoverLAN(ctx, timeout)
+	devices, err := discovery.CollectLAN(ctx, cliLANStreamOptions(), timeout)
 	if err != nil {
 		return nil, fmt.Errorf("discovering LAN devices: %w", err)
 	}
@@ -210,6 +210,7 @@ func cloudFleetTargets(ctx context.Context, group, cloudGRPC, brokerURL string) 
 	if err != nil {
 		return nil, err
 	}
+	seedPinsFromAssetsBestEffort(auth, assets)
 	if group != "" {
 		assets = assetsInGroup(assets, group)
 	}

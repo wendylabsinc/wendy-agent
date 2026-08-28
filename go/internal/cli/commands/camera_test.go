@@ -10,10 +10,14 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc"
+
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 )
 
 // Annex-B NAL header bytes (forbidden_zero | nal_ref_idc | nal_unit_type).
@@ -178,7 +182,7 @@ func TestPlayVideoWithGStreamer_RemoteStreamErrorPrecedesMissingGStreamer(t *tes
 func firmwareMismatchError(t *testing.T) error {
 	t.Helper()
 	st := status.New(codes.FailedPrecondition, "firmware mismatch")
-	with, err := st.WithDetails(&errdetails.ErrorInfo{Reason: "TEGRA_FIRMWARE_MISMATCH", Metadata: map[string]string{
+	with, err := st.WithDetails(&errdetails.ErrorInfo{Reason: streamreason.TegraFirmwareMismatch, Metadata: map[string]string{
 		"rootfs_l4t": "R38.2.0", "boot_firmware_l4t": "R36.4.3",
 	}})
 	if err != nil {
@@ -201,6 +205,117 @@ func TestCameraFirmwareDiagnosticOnFirstRecv(t *testing.T) {
 	_, err := stream.Recv()
 	if err == nil || !strings.Contains(err.Error(), "full USB recovery") {
 		t.Fatalf("first Recv diagnostic = %v", err)
+	}
+}
+
+// fakeCameraTester is a stub cameraTester: tests set resp or err directly
+// rather than driving a real gRPC connection.
+type fakeCameraTester struct {
+	resp *agentpb.TestCameraCredentialsResponse
+	err  error
+}
+
+func (f *fakeCameraTester) TestCameraCredentials(context.Context, *agentpb.TestCameraCredentialsRequest, ...grpc.CallOption) (*agentpb.TestCameraCredentialsResponse, error) {
+	return f.resp, f.err
+}
+
+func TestRunCameraTest_OKOutput(t *testing.T) {
+	client := &fakeCameraTester{resp: &agentpb.TestCameraCredentialsResponse{
+		Result:  agentpb.TestCameraCredentialsResponse_RESULT_OK,
+		Address: "10.98.0.50",
+		Detail:  "camera 200 at 10.98.0.50 accepted the credentials",
+	}}
+	var buf bytes.Buffer
+	if err := runCameraTest(context.Background(), client, 200, &buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "credentials accepted") {
+		t.Fatalf("output = %q, want it to report accepted credentials", buf.String())
+	}
+}
+
+func TestRunCameraTest_OKShowsDetail(t *testing.T) {
+	client := &fakeCameraTester{resp: &agentpb.TestCameraCredentialsResponse{
+		Result:  agentpb.TestCameraCredentialsResponse_RESULT_OK,
+		Address: "10.98.0.50",
+		Detail:  "camera 200 at 10.98.0.50 did not request authentication; the stream path returned RTSP 404 and may be wrong",
+	}}
+	var buf bytes.Buffer
+	if err := runCameraTest(context.Background(), client, 200, &buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "did not request authentication") {
+		t.Fatalf("output = %q, want the probe's detail surfaced on success", buf.String())
+	}
+}
+
+func TestRunCameraTest_OKNoDetailOmitsColon(t *testing.T) {
+	client := &fakeCameraTester{resp: &agentpb.TestCameraCredentialsResponse{
+		Result:  agentpb.TestCameraCredentialsResponse_RESULT_OK,
+		Address: "10.98.0.50",
+	}}
+	var buf bytes.Buffer
+	if err := runCameraTest(context.Background(), client, 200, &buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := buf.String(), "Camera 200: credentials accepted (10.98.0.50).\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestRunCameraTest_AuthFailedNamesLoginFix(t *testing.T) {
+	client := &fakeCameraTester{resp: &agentpb.TestCameraCredentialsResponse{
+		Result:  agentpb.TestCameraCredentialsResponse_RESULT_AUTH_FAILED,
+		Address: "10.98.0.50",
+		Detail:  "camera 200 at 10.98.0.50 rejected the credentials (RTSP 401)",
+	}}
+	var buf bytes.Buffer
+	err := runCameraTest(context.Background(), client, 200, &buf)
+	if err == nil {
+		t.Fatal("expected an error for rejected credentials")
+	}
+	if !strings.Contains(err.Error(), "wendy device camera login 200") {
+		t.Fatalf("error = %v, want it to name the login fix", err)
+	}
+}
+
+// The agent returns "no stored credentials" as a gRPC error (FailedPrecondition
+// + ErrorInfo{IP_CAMERA_NO_CREDENTIALS}), the same as StreamVideo. runCameraTest
+// must route it through the existing cameraStreamDiagnostic so it prints the
+// established login hint with zero new mapping.
+func TestRunCameraTest_NoCredentialsGetsLoginHint(t *testing.T) {
+	st := status.New(codes.FailedPrecondition, "camera 200 has no stored credentials")
+	with, err := st.WithDetails(&errdetails.ErrorInfo{
+		Reason:   "IP_CAMERA_NO_CREDENTIALS",
+		Metadata: map[string]string{"device_id": "200"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeCameraTester{err: with.Err()}
+	var buf bytes.Buffer
+	testErr := runCameraTest(context.Background(), client, 200, &buf)
+	if testErr == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(testErr.Error(), "wendy device camera login 200") {
+		t.Fatalf("error = %v, want the established login hint", testErr)
+	}
+}
+
+func TestRunCameraTest_UnreachableShowsDetail(t *testing.T) {
+	client := &fakeCameraTester{resp: &agentpb.TestCameraCredentialsResponse{
+		Result:  agentpb.TestCameraCredentialsResponse_RESULT_UNREACHABLE,
+		Address: "10.98.0.50",
+		Detail:  "camera 200 at 10.98.0.50 is unreachable",
+	}}
+	var buf bytes.Buffer
+	err := runCameraTest(context.Background(), client, 200, &buf)
+	if err == nil {
+		t.Fatal("expected an error for an unreachable camera")
+	}
+	if !strings.Contains(err.Error(), "camera 200 at 10.98.0.50 is unreachable") {
+		t.Fatalf("error = %v, want the probe's detail", err)
 	}
 }
 

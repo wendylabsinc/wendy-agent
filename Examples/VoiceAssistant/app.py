@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Low-latency ALSA bridge for OpenAI's Realtime speech-to-speech API."""
+"""Low-latency audio bridge for OpenAI's Realtime speech-to-speech API.
+
+Audio goes through PipeWire (pw-record/pw-play) whenever the host exposes a
+session socket — the only route that reaches Bluetooth devices — and falls
+back to raw ALSA (arecord/aplay) on hosts that only provide /dev/snd."""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 import urllib.error
 import urllib.request
@@ -211,6 +216,40 @@ def card_from_device(device: str) -> str | None:
     return digits if digits.isdigit() else None
 
 
+def pipewire_socket() -> str | None:
+    """Path of the PipeWire session socket, or None when no session is exposed.
+
+    The wendy-agent audio entitlement mounts the host's user-session socket
+    into the container and sets PIPEWIRE_RUNTIME_DIR; XDG_RUNTIME_DIR covers
+    running uncontainerized on a desktop."""
+    for env in ("PIPEWIRE_RUNTIME_DIR", "XDG_RUNTIME_DIR"):
+        runtime_dir = (os.getenv(env) or "").strip()
+        if not runtime_dir:
+            continue
+        path = os.path.join(runtime_dir, "pipewire-0")
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def select_audio_backend(which: Any = shutil.which) -> str:
+    """Prefer PipeWire whenever the host exposes a session socket: it is the
+    only route to Bluetooth audio, and raw ALSA on such a host would race
+    WirePlumber for the very devices PipeWire has already claimed."""
+    socket_path = pipewire_socket()
+    if socket_path is None:
+        return "alsa"
+    if which("pw-record") is None or which("pw-play") is None:
+        LOG.error(
+            "PipeWire socket %s is mounted but pw-record/pw-play are missing — "
+            "this image was built without pipewire-bin; falling back to raw "
+            "ALSA, which cannot reach Bluetooth audio",
+            socket_path,
+        )
+        return "alsa"
+    return "pipewire"
+
+
 @dataclass(frozen=True)
 class Config:
     api_key: str
@@ -375,57 +414,88 @@ class AlsaMixer:
         return await self.set_volume(current + delta)
 
 
-class AlsaAudio:
-    """Owns one arecord process and one aplay process."""
+class PulseMixer:
+    """Playback volume control for the PipeWire backend, via `pactl` over the
+    PULSE_SERVER socket the audio entitlement provides. Targets the default
+    sink — the node WirePlumber routes playback to, which is the Bluetooth
+    speaker once one is connected and default. Duck-types AlsaMixer."""
 
-    def __init__(self, config: Config, input_device: str, output_device: str) -> None:
+    SINK = "@DEFAULT_SINK@"
+    _PERCENT = re.compile(r"(\d{1,3})%")
+
+    def __init__(self, run: Any = None) -> None:
+        # apply_startup_volume logs .card; the sink alias is the honest name.
+        self.card = self.SINK
+        self._run = run or (lambda *args: _run_command("pactl", *args))
+
+    @classmethod
+    def parse_volume(cls, output: str) -> int | None:
+        for line in output.splitlines():
+            if "Volume:" not in line:
+                continue
+            match = cls._PERCENT.search(line)
+            if match:
+                return min(int(match.group(1)), 100)
+        return None
+
+    async def _pactl(self, *args: str) -> str:
+        returncode, output = await self._run(*args)
+        if returncode != 0:
+            raise RuntimeError(f"pactl {' '.join(args)} failed: {output.strip()}")
+        return output
+
+    async def get_volume(self) -> int:
+        volume = self.parse_volume(await self._pactl("get-sink-volume", self.SINK))
+        if volume is None:
+            raise RuntimeError("pactl reported no volume for the default sink")
+        return volume
+
+    async def set_volume(self, percent: int) -> int:
+        percent = max(0, min(100, percent))
+        await self._pactl("set-sink-volume", self.SINK, f"{percent}%")
+        await self._pactl("set-sink-mute", self.SINK, "0")
+        # Re-read so callers see what the server actually applied.
+        return await self.get_volume()
+
+    async def adjust_volume(self, direction: str, step: int = 10) -> int:
+        current = await self.get_volume()
+        delta = step if direction == "up" else -step
+        return await self.set_volume(current + delta)
+
+
+class PcmBridge:
+    """Owns one capture process and one playback process bridging raw PCM16.
+
+    Subclasses supply the command lines; the lifecycle — startup, barge-in
+    playback restart, teardown, and error surfacing — is shared."""
+
+    def __init__(
+        self, config: Config, input_device: str | None, output_device: str | None
+    ) -> None:
         self.config = config
         self.input_device = input_device
         self.output_device = output_device
         self.capture: asyncio.subprocess.Process | None = None
         self.playback: asyncio.subprocess.Process | None = None
 
-    async def __aenter__(self) -> "AlsaAudio":
-        common = [
-            "-q",
-            "-D",
-            self.input_device,
-            "-t",
-            "raw",
-            "-f",
-            "S16_LE",
-            "-c",
-            "1",
-            "-r",
-            str(self.config.sample_rate),
-        ]
+    def capture_command(self) -> list[str]:
+        raise NotImplementedError
+
+    def playback_command(self) -> list[str]:
+        raise NotImplementedError
+
+    async def __aenter__(self) -> "PcmBridge":
         self.capture = await asyncio.create_subprocess_exec(
-            "arecord",
-            *common,
+            *self.capture_command(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-
         await self._start_playback()
         return self
 
     async def _start_playback(self) -> None:
-        playback_args = [
-            "-q",
-            "-D",
-            self.output_device,
-            "-t",
-            "raw",
-            "-f",
-            "S16_LE",
-            "-c",
-            "1",
-            "-r",
-            str(self.config.sample_rate),
-        ]
         self.playback = await asyncio.create_subprocess_exec(
-            "aplay",
-            *playback_args,
+            *self.playback_command(),
             stdin=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -462,7 +532,9 @@ class AlsaAudio:
             # PCM16 messages must contain complete samples.
             return chunk[: len(chunk) - (len(chunk) % BYTES_PER_SAMPLE)]
         error = await self._stderr(self.capture)
-        raise RuntimeError(f"microphone capture stopped: {error or 'arecord exited'}")
+        raise RuntimeError(
+            f"microphone capture stopped: {error or self.capture_command()[0] + ' exited'}"
+        )
 
     async def write(self, audio: bytes) -> None:
         assert self.playback is not None and self.playback.stdin is not None
@@ -478,6 +550,61 @@ class AlsaAudio:
         if process.stderr is None:
             return ""
         return (await process.stderr.read()).decode(errors="replace").strip()
+
+
+class AlsaAudio(PcmBridge):
+    """arecord/aplay bridge for hosts that expose only /dev/snd."""
+
+    def _common_args(self, device: str | None) -> list[str]:
+        return [
+            "-q",
+            "-D",
+            device or "default",
+            "-t",
+            "raw",
+            "-f",
+            "S16_LE",
+            "-c",
+            "1",
+            "-r",
+            str(self.config.sample_rate),
+        ]
+
+    def capture_command(self) -> list[str]:
+        return ["arecord", *self._common_args(self.input_device)]
+
+    def playback_command(self) -> list[str]:
+        return ["aplay", *self._common_args(self.output_device)]
+
+
+class PipewireAudio(PcmBridge):
+    """pw-record/pw-play bridge over the session socket the audio entitlement
+    mounts. Targets default to WirePlumber's default source/sink — which is
+    how Bluetooth devices are reached; an explicit AUDIO_*_DEVICE names a
+    PipeWire node (object serial or node.name) instead of an ALSA PCM.
+
+    The flag set matches the agent's own capture invocation
+    (audio_service.go startCapture): raw s16 mono on stdio."""
+
+    def _common_args(self, device: str | None) -> list[str]:
+        args = [
+            "--rate",
+            str(self.config.sample_rate),
+            "--channels",
+            "1",
+            "--format",
+            "s16",
+            "--raw",
+        ]
+        if device:
+            args += ["--target", device]
+        return args + ["-"]
+
+    def capture_command(self) -> list[str]:
+        return ["pw-record", *self._common_args(self.input_device)]
+
+    def playback_command(self) -> list[str]:
+        return ["pw-play", *self._common_args(self.output_device)]
 
 
 class VoiceAssistant:
@@ -675,35 +802,51 @@ class VoiceAssistant:
             "OpenAI-Safety-Identifier": "wendy-voice-assistant-demo",
         }
 
-        # Devices can enumerate late or renumber across reconnects, so resolve
-        # them at the start of every session rather than once at startup.
-        input_device = self.config.input_device or await detect_device("arecord")
-        output_device = self.config.output_device or await detect_device("aplay")
-
-        card = card_from_device(output_device)
-        if card is None and self.config.output_device:
-            # An explicit but unparsable device (e.g. "default" via asound.conf):
-            # bind the mixer to whatever playback card auto-detection can name.
-            # Note this card may differ from the one actually playing.
-            card = card_from_device(await detect_device("aplay"))
-        if card is None:
-            self.mixer = None
-            LOG.warning(
-                "No ALSA card resolved from %s; volume control disabled", output_device
-            )
+        backend = select_audio_backend()
+        if backend == "pipewire":
+            # WirePlumber routes the default source/sink, so no card scan:
+            # empty devices mean "default", explicit ones name PipeWire nodes.
+            input_device = self.config.input_device
+            output_device = self.config.output_device
+            if shutil.which("pactl"):
+                self.mixer = PulseMixer()
+                await self.apply_startup_volume(self.mixer)
+            else:
+                self.mixer = None
+                LOG.warning("pactl not found; volume control disabled")
+            bridge: PcmBridge = PipewireAudio(self.config, input_device, output_device)
         else:
-            self.mixer = AlsaMixer(card)
-            await self.apply_startup_volume(self.mixer)
+            # Devices can enumerate late or renumber across reconnects, so resolve
+            # them at the start of every session rather than once at startup.
+            input_device = self.config.input_device or await detect_device("arecord")
+            output_device = self.config.output_device or await detect_device("aplay")
+
+            card = card_from_device(output_device)
+            if card is None and self.config.output_device:
+                # An explicit but unparsable device (e.g. "default" via asound.conf):
+                # bind the mixer to whatever playback card auto-detection can name.
+                # Note this card may differ from the one actually playing.
+                card = card_from_device(await detect_device("aplay"))
+            if card is None:
+                self.mixer = None
+                LOG.warning(
+                    "No ALSA card resolved from %s; volume control disabled", output_device
+                )
+            else:
+                self.mixer = AlsaMixer(card)
+                await self.apply_startup_volume(self.mixer)
+            bridge = AlsaAudio(self.config, input_device, output_device)
 
         LOG.info(
-            "Opening Realtime session (%s); mic=%s%s speaker=%s%s",
+            "Opening Realtime session (%s) via %s; mic=%s%s speaker=%s%s",
             self.config.model,
-            input_device,
+            backend,
+            input_device or "default",
             "" if self.config.input_device else " (auto)",
-            output_device,
+            output_device or "default",
             "" if self.config.output_device else " (auto)",
         )
-        async with AlsaAudio(self.config, input_device, output_device) as audio:
+        async with bridge as audio:
             async with connect(
                 url,
                 additional_headers=headers,
@@ -718,7 +861,7 @@ class VoiceAssistant:
                     self.receive_events(websocket, audio),
                 )
 
-    async def send_microphone(self, websocket: Any, audio: AlsaAudio) -> None:
+    async def send_microphone(self, websocket: Any, audio: PcmBridge) -> None:
         while True:
             chunk = await audio.read()
             if not chunk:
@@ -734,13 +877,13 @@ class VoiceAssistant:
                 )
             )
 
-    async def receive_events(self, websocket: Any, audio: AlsaAudio) -> None:
+    async def receive_events(self, websocket: Any, audio: PcmBridge) -> None:
         async for message in websocket:
             event = json.loads(message)
             await self.handle_event(event, audio, websocket)
 
     async def handle_event(
-        self, event: dict[str, Any], audio: AlsaAudio, websocket: Any | None = None
+        self, event: dict[str, Any], audio: PcmBridge, websocket: Any | None = None
     ) -> None:
         event_type = event.get("type", "")
 
@@ -781,7 +924,8 @@ class VoiceAssistant:
             chunk = base64.b64decode(event["delta"])
             self.assistant_speaking.set()
             # Track when the final queued sample should reach the speaker. This
-            # prevents opening the microphone while ALSA still has buffered audio.
+            # prevents opening the microphone while the audio server still has
+            # buffered audio.
             now = time.monotonic()
             if not self.playback_started_at:
                 self.playback_started_at = now
@@ -983,7 +1127,7 @@ class VoiceAssistant:
             return
         await websocket.send(json.dumps({"type": "response.create"}))
 
-    async def interrupt_response(self, websocket: Any | None, audio: AlsaAudio) -> None:
+    async def interrupt_response(self, websocket: Any | None, audio: PcmBridge) -> None:
         now = time.monotonic()
         played_seconds = min(
             self.playback_audio_seconds,

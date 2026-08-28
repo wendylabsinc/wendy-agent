@@ -30,26 +30,28 @@ type LinkManager struct {
 	serve          func(ctx context.Context, link string, seg CameraSegment, pool *LeasePool, onLease func(net.HardwareAddr, net.IP, string)) error
 	now            func() time.Time
 
-	mu      sync.Mutex
-	claimed map[string]CameraSegment
-	pools   map[string]*LeasePool
-	running map[string]bool
-	stop    map[string]context.CancelFunc // cancels a claimed link's server
-	downFor map[string]int                // consecutive scans with no carrier
+	mu            sync.Mutex
+	claimed       map[string]CameraSegment
+	pools         map[string]*LeasePool
+	running       map[string]bool
+	stop          map[string]context.CancelFunc // cancels a claimed link's server
+	downFor       map[string]int                // consecutive scans with no carrier
+	watchingSince map[string]time.Time          // when this process began watching a link
 }
 
 // NewLinkManager returns a manager writing discovered cameras into reg.
 func NewLinkManager(reg *Registry, logger *zap.Logger) *LinkManager {
 	m := &LinkManager{
-		reg:     reg,
-		guard:   NewLinkGuard(),
-		logger:  logger,
-		now:     time.Now,
-		claimed: make(map[string]CameraSegment),
-		pools:   make(map[string]*LeasePool),
-		running: make(map[string]bool),
-		stop:    make(map[string]context.CancelFunc),
-		downFor: make(map[string]int),
+		reg:           reg,
+		guard:         NewLinkGuard(),
+		logger:        logger,
+		now:           time.Now,
+		claimed:       make(map[string]CameraSegment),
+		pools:         make(map[string]*LeasePool),
+		running:       make(map[string]bool),
+		stop:          make(map[string]context.CancelFunc),
+		downFor:       make(map[string]int),
+		watchingSince: make(map[string]time.Time),
 	}
 	m.carrier = sysfsCarrier
 	m.listInterfaces = func() ([]Interface, error) {
@@ -113,10 +115,17 @@ func (m *LinkManager) scanOnce(ctx context.Context) {
 		// carrier releases it; re-testing eligibility here would release the link
 		// on the very next scan and then re-claim it on the next DISCOVER,
 		// spawning a second server each time round.
-		if m.isClaimed(iface.Name) {
+		if seg, claimed := m.claimedSegment(iface.Name); claimed {
 			if m.carrierLost(iface) {
 				m.release(iface.Name)
+				continue
 			}
+			// Carrier alone is not proof the segment still works. Whatever else
+			// manages this interface can strip the address we added, and nothing
+			// tells us when it does: the DHCP watcher is a packet socket and the
+			// server binds INADDR_ANY, so leases keep flowing on an addressless
+			// link while every route to the camera is gone.
+			m.reassertAddress(iface, seg)
 			continue
 		}
 		if !iface.Eligible() {
@@ -129,10 +138,72 @@ func (m *LinkManager) scanOnce(ctx context.Context) {
 		}
 		m.noteCarrierUp(iface.Name)
 		m.ensureWatching(ctx, iface.Name)
+		if seg, ok := m.restorableSegment(iface.Name); ok {
+			if m.guard.RestoreClaim(iface.Name) {
+				m.logger.Info("restoring camera link claim from a previous run",
+					zap.String("link", iface.Name), zap.String("address", seg.CIDR()))
+				m.claim(ctx, iface.Name, &seg)
+			}
+			continue
+		}
 		if m.guard.ShouldClaim(iface.Name, m.now()) {
-			m.claim(ctx, iface.Name)
+			m.claim(ctx, iface.Name, nil)
 		}
 	}
+}
+
+// reassertAddress puts our segment address back on a claimed link that has lost
+// it. Losing it is silent and permanent otherwise: scanOnce judges a claimed
+// link on carrier only, so nothing would ever notice or retry.
+func (m *LinkManager) reassertAddress(iface Interface, seg CameraSegment) {
+	if iface.HasAddress(seg.ServerIP) {
+		return
+	}
+	// Warn, not Info: the address disappearing under us means something else is
+	// managing this interface, and that is worth seeing in production logs.
+	m.logger.Warn("camera link lost its address, restoring it",
+		zap.String("link", iface.Name), zap.String("cidr", seg.CIDR()))
+	if err := m.addAddress(iface.Name, seg.CIDR()); err != nil {
+		// Deliberately not disqualifying: the cause is usually transient, and
+		// disqualifying would strand the segment until carrier is lost. The next
+		// scan tries again.
+		m.logger.Warn("restoring camera link address failed",
+			zap.String("link", iface.Name), zap.String("cidr", seg.CIDR()), zap.Error(err))
+	}
+}
+
+// restorableSegment returns the segment a link should reclaim after an agent
+// restart, and whether there is one.
+//
+// LinkManager state is in-process, so a restart forgets every claim, while the
+// registry remembers the camera and the address it holds. Without this the link
+// waits for the camera to speak DHCP again, which a camera holding a lease will
+// not do for up to LeaseWindow — twelve hours during which it is unreachable.
+//
+// The competing-server guard is still honoured: the link must have been watched
+// for unansweredWindow first, so a foreign OFFER has had the same chance to
+// disqualify it as it does on a first claim.
+func (m *LinkManager) restorableSegment(link string) (CameraSegment, bool) {
+	if m.reg == nil {
+		return CameraSegment{}, false
+	}
+	m.mu.Lock()
+	since, watching := m.watchingSince[link]
+	m.mu.Unlock()
+	if !watching || m.now().Sub(since) < unansweredWindow {
+		return CameraSegment{}, false
+	}
+	for _, cam := range m.reg.List() {
+		if cam.Link != link || cam.Address == "" {
+			continue
+		}
+		index, ok := SegmentIndexFor(net.ParseIP(cam.Address))
+		if !ok {
+			continue
+		}
+		return SegmentFor(index), true
+	}
+	return CameraSegment{}, false
 }
 
 // ensureWatching starts one passive DHCP watcher per link.
@@ -143,6 +214,9 @@ func (m *LinkManager) ensureWatching(ctx context.Context, link string) {
 		return
 	}
 	m.running[link] = true
+	// The clock a restored claim waits on: it is how long we have been listening
+	// for a competing DHCP server on this link in this process.
+	m.watchingSince[link] = m.now()
 	m.mu.Unlock()
 
 	// Info, not Debug: when a camera does not appear, the first question is
@@ -154,6 +228,7 @@ func (m *LinkManager) ensureWatching(ctx context.Context, link string) {
 		defer func() {
 			m.mu.Lock()
 			delete(m.running, link)
+			delete(m.watchingSince, link)
 			m.mu.Unlock()
 		}()
 		err := m.watch(ctx, link, func(p *Packet) {
@@ -202,14 +277,16 @@ func (m *LinkManager) noteClient(link string, p *Packet) {
 	}
 }
 
-// claim configures the link and starts serving leases on it.
-func (m *LinkManager) claim(ctx context.Context, link string) {
+// claim configures the link and starts serving leases on it. A non-nil preferred
+// segment is used when it is free, which is how a restored claim keeps the
+// subnet the camera already holds a lease on.
+func (m *LinkManager) claim(ctx context.Context, link string, preferred *CameraSegment) {
 	m.mu.Lock()
 	if _, exists := m.claimed[link]; exists {
 		m.mu.Unlock()
 		return
 	}
-	seg, ok := m.nextSegmentLocked()
+	seg, ok := m.chooseSegmentLocked(preferred)
 	if !ok {
 		m.mu.Unlock()
 		m.logger.Warn("no camera link subnet available", zap.String("link", link))
@@ -272,20 +349,32 @@ func (m *LinkManager) claim(ctx context.Context, link string) {
 	}()
 }
 
+// chooseSegmentLocked returns the segment a claim should use: the preferred one
+// when it is free, otherwise the lowest unused. Callers hold m.mu.
+func (m *LinkManager) chooseSegmentLocked(preferred *CameraSegment) (CameraSegment, bool) {
+	if preferred != nil && !m.segmentUsedLocked(*preferred) {
+		return *preferred, true
+	}
+	return m.nextSegmentLocked()
+}
+
+// segmentUsedLocked reports whether a segment is already claimed by some link.
+// Callers hold m.mu.
+func (m *LinkManager) segmentUsedLocked(seg CameraSegment) bool {
+	for _, claimed := range m.claimed {
+		if claimed.ServerIP.Equal(seg.ServerIP) {
+			return true
+		}
+	}
+	return false
+}
+
 // nextSegmentLocked returns the lowest unused camera subnet. Reusing holes is
 // important: len(m.claimed) can name a subnet that is still active after a
 // lower-numbered link has been released. Callers hold m.mu.
 func (m *LinkManager) nextSegmentLocked() (CameraSegment, bool) {
-	for index := 0; index < 256; index++ {
-		candidate := SegmentFor(index)
-		used := false
-		for _, claimed := range m.claimed {
-			if claimed.ServerIP.Equal(candidate.ServerIP) {
-				used = true
-				break
-			}
-		}
-		if !used {
+	for index := range 256 {
+		if candidate := SegmentFor(index); !m.segmentUsedLocked(candidate) {
 			return candidate, true
 		}
 	}
@@ -318,10 +407,16 @@ func (m *LinkManager) recordLease(link string, mac net.HardwareAddr, addr net.IP
 }
 
 func (m *LinkManager) isClaimed(link string) bool {
+	_, ok := m.claimedSegment(link)
+	return ok
+}
+
+// claimedSegment returns the segment a link is claimed with, if it is claimed.
+func (m *LinkManager) claimedSegment(link string) (CameraSegment, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, ok := m.claimed[link]
-	return ok
+	seg, ok := m.claimed[link]
+	return seg, ok
 }
 
 // dropClaim forgets a link's claim bookkeeping and stops its server, leaving the

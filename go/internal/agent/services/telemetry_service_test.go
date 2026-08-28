@@ -16,7 +16,14 @@ import (
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
 func TestBroadcaster_SubscribeUnsubscribe(t *testing.T) {
@@ -47,7 +54,7 @@ func TestBroadcaster_PublishLogs(t *testing.T) {
 	defer b.UnsubscribeLogs(id1)
 	defer b.UnsubscribeLogs(id2)
 
-	req := &otelpb.ExportLogsServiceRequest{}
+	req := &collogspb.ExportLogsServiceRequest{}
 	b.PublishLogs(req)
 
 	select {
@@ -77,10 +84,10 @@ func TestBroadcaster_PublishMetrics(t *testing.T) {
 	defer b.UnsubscribeMetrics(id1)
 	defer b.UnsubscribeMetrics(id2)
 
-	req := &otelpb.ExportMetricsServiceRequest{}
+	req := &colmetricspb.ExportMetricsServiceRequest{}
 	b.PublishMetrics(req)
 
-	for i, ch := range []<-chan *otelpb.ExportMetricsServiceRequest{ch1, ch2} {
+	for i, ch := range []<-chan *colmetricspb.ExportMetricsServiceRequest{ch1, ch2} {
 		select {
 		case got := <-ch:
 			if got != req {
@@ -100,10 +107,10 @@ func TestBroadcaster_PublishTraces(t *testing.T) {
 	defer b.UnsubscribeTraces(id1)
 	defer b.UnsubscribeTraces(id2)
 
-	req := &otelpb.ExportTraceServiceRequest{}
+	req := &coltracepb.ExportTraceServiceRequest{}
 	b.PublishTraces(req)
 
-	for i, ch := range []<-chan *otelpb.ExportTraceServiceRequest{ch1, ch2} {
+	for i, ch := range []<-chan *coltracepb.ExportTraceServiceRequest{ch1, ch2} {
 		select {
 		case got := <-ch:
 			if got != req {
@@ -124,13 +131,13 @@ func TestBroadcaster_SlowSubscriber(t *testing.T) {
 
 	// Fill the channel buffer.
 	for i := 0; i < 64; i++ {
-		b.PublishLogs(&otelpb.ExportLogsServiceRequest{})
+		b.PublishLogs(&collogspb.ExportLogsServiceRequest{})
 	}
 
 	// The 65th publish should be dropped (not block).
 	done := make(chan struct{})
 	go func() {
-		b.PublishLogs(&otelpb.ExportLogsServiceRequest{})
+		b.PublishLogs(&collogspb.ExportLogsServiceRequest{})
 		close(done)
 	}()
 
@@ -196,7 +203,7 @@ func TestStreamLogs_Integration(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Publish a log.
-	broadcaster.PublishLogs(&otelpb.ExportLogsServiceRequest{})
+	broadcaster.PublishLogs(&collogspb.ExportLogsServiceRequest{})
 
 	// Receive on client.
 	resp, err := stream.Recv()
@@ -222,7 +229,7 @@ func TestOTELLogsReceiver(t *testing.T) {
 	id, ch := broadcaster.SubscribeLogs()
 	defer broadcaster.UnsubscribeLogs(id)
 
-	req := &otelpb.ExportLogsServiceRequest{}
+	req := &collogspb.ExportLogsServiceRequest{}
 	resp, err := receiver.Export(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
@@ -248,7 +255,7 @@ func TestOTELMetricsReceiver(t *testing.T) {
 	id, ch := broadcaster.SubscribeMetrics()
 	defer broadcaster.UnsubscribeMetrics(id)
 
-	req := &otelpb.ExportMetricsServiceRequest{}
+	req := &colmetricspb.ExportMetricsServiceRequest{}
 	_, err := receiver.Export(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
@@ -271,7 +278,7 @@ func TestOTELTraceReceiver(t *testing.T) {
 	id, ch := broadcaster.SubscribeTraces()
 	defer broadcaster.UnsubscribeTraces(id)
 
-	req := &otelpb.ExportTraceServiceRequest{}
+	req := &coltracepb.ExportTraceServiceRequest{}
 	_, err := receiver.Export(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
@@ -292,9 +299,9 @@ func TestBroadcaster_RingBufferWrapAround(t *testing.T) {
 
 	// Publish more than defaultMaxCachedLogs entries so the ring buffer wraps.
 	total := defaultMaxCachedLogs + 5 // 25 entries
-	reqs := make([]*otelpb.ExportLogsServiceRequest, total)
+	reqs := make([]*collogspb.ExportLogsServiceRequest, total)
 	for i := 0; i < total; i++ {
-		reqs[i] = &otelpb.ExportLogsServiceRequest{}
+		reqs[i] = &collogspb.ExportLogsServiceRequest{}
 		b.PublishLogs(reqs[i])
 	}
 
@@ -308,7 +315,7 @@ func TestBroadcaster_RingBufferWrapAround(t *testing.T) {
 	_, ch := b.SubscribeLogs()
 
 	// Collect pre-filled entries (allow a brief window for the goroutine).
-	var got []*otelpb.ExportLogsServiceRequest
+	var got []*collogspb.ExportLogsServiceRequest
 	timeout := time.After(time.Second)
 	for len(got) < defaultMaxCachedLogs {
 		select {
@@ -332,15 +339,15 @@ func TestBroadcaster_SubscribeLogs_ChronologicalOrder(t *testing.T) {
 	b := NewTelemetryBroadcaster()
 
 	// Publish exactly defaultMaxCachedLogs entries (no wrap yet).
-	reqs := make([]*otelpb.ExportLogsServiceRequest, defaultMaxCachedLogs)
+	reqs := make([]*collogspb.ExportLogsServiceRequest, defaultMaxCachedLogs)
 	for i := 0; i < defaultMaxCachedLogs; i++ {
-		reqs[i] = &otelpb.ExportLogsServiceRequest{}
+		reqs[i] = &collogspb.ExportLogsServiceRequest{}
 		b.PublishLogs(reqs[i])
 	}
 
 	_, ch := b.SubscribeLogs()
 
-	var got []*otelpb.ExportLogsServiceRequest
+	var got []*collogspb.ExportLogsServiceRequest
 	timeout := time.After(time.Second)
 	for len(got) < defaultMaxCachedLogs {
 		select {
@@ -361,25 +368,25 @@ func TestBroadcaster_SubscribeLogs_ChronologicalOrder(t *testing.T) {
 func TestBroadcaster_PublishMetrics_PerServiceMergeRetainsMetrics(t *testing.T) {
 	b := NewTelemetryBroadcaster()
 
-	makeAttr := func(key, val string) *otelpb.KeyValue {
-		return &otelpb.KeyValue{
+	makeAttr := func(key, val string) *commonpb.KeyValue {
+		return &commonpb.KeyValue{
 			Key:   key,
-			Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: val}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: val}},
 		}
 	}
-	makeResource := func(svc string) *otelpb.Resource {
-		return &otelpb.Resource{Attributes: []*otelpb.KeyValue{makeAttr("service.name", svc)}}
+	makeResource := func(svc string) *resourcepb.Resource {
+		return &resourcepb.Resource{Attributes: []*commonpb.KeyValue{makeAttr("service.name", svc)}}
 	}
-	makeReq := func(svc string, metrics ...string) *otelpb.ExportMetricsServiceRequest {
-		ms := make([]*otelpb.Metric, len(metrics))
+	makeReq := func(svc string, metrics ...string) *colmetricspb.ExportMetricsServiceRequest {
+		ms := make([]*metricspb.Metric, len(metrics))
 		for i, n := range metrics {
-			ms[i] = &otelpb.Metric{Name: n}
+			ms[i] = &metricspb.Metric{Name: n}
 		}
-		return &otelpb.ExportMetricsServiceRequest{
-			ResourceMetrics: []*otelpb.ResourceMetrics{
+		return &colmetricspb.ExportMetricsServiceRequest{
+			ResourceMetrics: []*metricspb.ResourceMetrics{
 				{
 					Resource:     makeResource(svc),
-					ScopeMetrics: []*otelpb.ScopeMetrics{{Metrics: ms}},
+					ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: ms}},
 				},
 			},
 		}
@@ -401,7 +408,7 @@ func TestBroadcaster_PublishMetrics_PerServiceMergeRetainsMetrics(t *testing.T) 
 		t.Errorf("latestMetrics has %d entries; want 2", mapLen)
 	}
 
-	names := func(req *otelpb.ExportMetricsServiceRequest) map[string]bool {
+	names := func(req *colmetricspb.ExportMetricsServiceRequest) map[string]bool {
 		out := map[string]bool{}
 		for _, rm := range req.GetResourceMetrics() {
 			for _, sm := range rm.GetScopeMetrics() {
@@ -426,23 +433,23 @@ func TestBroadcaster_PublishMetrics_PerServiceMergeRetainsMetrics(t *testing.T) 
 func TestBroadcaster_PublishMetrics_ResourceCap(t *testing.T) {
 	b := NewTelemetryBroadcaster()
 
-	makeAttr := func(key, val string) *otelpb.KeyValue {
-		return &otelpb.KeyValue{
+	makeAttr := func(key, val string) *commonpb.KeyValue {
+		return &commonpb.KeyValue{
 			Key:   key,
-			Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: val}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: val}},
 		}
 	}
 
 	// Publish maxCachedResourcesPerService+10 distinct resource instances for the same service.
 	for i := 0; i < maxCachedResourcesPerService+10; i++ {
-		req := &otelpb.ExportMetricsServiceRequest{
-			ResourceMetrics: []*otelpb.ResourceMetrics{
+		req := &colmetricspb.ExportMetricsServiceRequest{
+			ResourceMetrics: []*metricspb.ResourceMetrics{
 				{
-					Resource: &otelpb.Resource{Attributes: []*otelpb.KeyValue{
+					Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
 						makeAttr("service.name", "svc"),
 						makeAttr("instance.id", fmt.Sprintf("pod-%d", i)),
 					}},
-					ScopeMetrics: []*otelpb.ScopeMetrics{{Metrics: []*otelpb.Metric{{Name: "m"}}}},
+					ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{{Name: "m"}}}},
 				},
 			},
 		}
@@ -473,7 +480,7 @@ func TestBroadcaster_ConcurrentPublish(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			b.PublishLogs(&otelpb.ExportLogsServiceRequest{})
+			b.PublishLogs(&collogspb.ExportLogsServiceRequest{})
 		}()
 	}
 
@@ -559,21 +566,21 @@ func TestStreamLogs_LastN(t *testing.T) {
 	}
 }
 
-func makeMetricReq(name string) *otelpb.ExportMetricsServiceRequest {
-	return &otelpb.ExportMetricsServiceRequest{
-		ResourceMetrics: []*otelpb.ResourceMetrics{{
-			ScopeMetrics: []*otelpb.ScopeMetrics{{
-				Metrics: []*otelpb.Metric{{Name: name}},
+func makeMetricReq(name string) *colmetricspb.ExportMetricsServiceRequest {
+	return &colmetricspb.ExportMetricsServiceRequest{
+		ResourceMetrics: []*metricspb.ResourceMetrics{{
+			ScopeMetrics: []*metricspb.ScopeMetrics{{
+				Metrics: []*metricspb.Metric{{Name: name}},
 			}},
 		}},
 	}
 }
 
-func makeTraceReq(name string) *otelpb.ExportTraceServiceRequest {
-	return &otelpb.ExportTraceServiceRequest{
-		ResourceSpans: []*otelpb.ResourceSpans{{
-			ScopeSpans: []*otelpb.ScopeSpans{{
-				Spans: []*otelpb.Span{{Name: name}},
+func makeTraceReq(name string) *coltracepb.ExportTraceServiceRequest {
+	return &coltracepb.ExportTraceServiceRequest{
+		ResourceSpans: []*tracepb.ResourceSpans{{
+			ScopeSpans: []*tracepb.ScopeSpans{{
+				Spans: []*tracepb.Span{{Name: name}},
 			}},
 		}},
 	}
@@ -695,23 +702,23 @@ func TestStreamTraces_LastN(t *testing.T) {
 
 // makeLogReqForService builds a single-record log batch attributed to the
 // given service.name, which is what --app/--service filtering matches on.
-func makeLogReqForService(svc, body string) *otelpb.ExportLogsServiceRequest {
-	return &otelpb.ExportLogsServiceRequest{
-		ResourceLogs: []*otelpb.ResourceLogs{{
-			Resource: &otelpb.Resource{Attributes: []*otelpb.KeyValue{{
+func makeLogReqForService(svc, body string) *collogspb.ExportLogsServiceRequest {
+	return &collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{{
+			Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{{
 				Key:   "service.name",
-				Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: svc}},
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: svc}},
 			}}},
-			ScopeLogs: []*otelpb.ScopeLogs{{
-				LogRecords: []*otelpb.LogRecord{{
-					Body: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: body}},
+			ScopeLogs: []*logspb.ScopeLogs{{
+				LogRecords: []*logspb.LogRecord{{
+					Body: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: body}},
 				}},
 			}},
 		}},
 	}
 }
 
-func firstLogBody(req *otelpb.ExportLogsServiceRequest) string {
+func firstLogBody(req *collogspb.ExportLogsServiceRequest) string {
 	return req.GetResourceLogs()[0].GetScopeLogs()[0].GetLogRecords()[0].GetBody().GetStringValue()
 }
 
@@ -917,5 +924,83 @@ func TestStreamLogsV2_LastN_FilterBeforeWindow(t *testing.T) {
 		if got := firstLogBody(resp.GetLogs()); got != want {
 			t.Errorf("want body %s, got %s", want, got)
 		}
+	}
+}
+
+func TestStreamLogs_RecentPrefillIsMarkedAsHistory(t *testing.T) {
+	broadcaster := NewTelemetryBroadcaster()
+	broadcaster.PublishLogs(makeLogReqForService("watch-app", "stale-before-watch"))
+	svc := NewTelemetryService(zap.NewNop(), broadcaster, nil)
+	conn := newTelemetryTestConn(t, func(srv *grpc.Server) {
+		agentpb.RegisterWendyTelemetryServiceServer(srv, svc)
+	})
+	client := agentpb.NewWendyTelemetryServiceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	appName := "watch-app"
+	stream, err := client.StreamLogs(ctx, &agentpb.StreamLogsRequest{AppName: &appName})
+	if err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if got := firstLogBody(resp.GetLogs()); got != "stale-before-watch" {
+		t.Fatalf("first body = %q, want cached pre-subscription record", got)
+	}
+	if !resp.GetIsHistory() {
+		t.Error("cached pre-subscription record was not marked as history")
+	}
+
+	broadcaster.PublishLogs(makeLogReqForService("watch-app", "live-after-watch"))
+	resp, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv live: %v", err)
+	}
+	if got := firstLogBody(resp.GetLogs()); got != "live-after-watch" || resp.GetIsHistory() {
+		t.Errorf("live response = history:%v body:%q, want history:false body:%q",
+			resp.GetIsHistory(), got, "live-after-watch")
+	}
+}
+
+func TestStreamLogsV2_RecentPrefillIsMarkedAsHistory(t *testing.T) {
+	broadcaster := NewTelemetryBroadcaster()
+	broadcaster.PublishLogs(makeLogReqForService("watch-app", "stale-before-watch"))
+	svc := NewTelemetryServiceV2(zap.NewNop(), broadcaster, nil)
+	conn := newTelemetryTestConn(t, func(srv *grpc.Server) {
+		agentpbv2.RegisterWendyTelemetryServiceServer(srv, svc)
+	})
+	client := agentpbv2.NewWendyTelemetryServiceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	appName := "watch-app"
+	stream, err := client.StreamLogs(ctx, &agentpbv2.StreamLogsRequest{AppName: &appName})
+	if err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if got := firstLogBody(resp.GetLogs()); got != "stale-before-watch" {
+		t.Fatalf("first body = %q, want cached pre-subscription record", got)
+	}
+	if !resp.GetIsHistory() {
+		t.Error("cached pre-subscription record was not marked as history")
+	}
+
+	broadcaster.PublishLogs(makeLogReqForService("watch-app", "live-after-watch"))
+	resp, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv live: %v", err)
+	}
+	if got := firstLogBody(resp.GetLogs()); got != "live-after-watch" || resp.GetIsHistory() {
+		t.Errorf("live response = history:%v body:%q, want history:false body:%q",
+			resp.GetIsHistory(), got, "live-after-watch")
 	}
 }

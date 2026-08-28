@@ -1,0 +1,27 @@
+version: 1
+stages:
+  - name: llm
+    # MLX backend for HelloVLM — drop-in alternative to ../llm (llama.cpp).
+    # Same serviceName ("llm"), so deploying one replaces the other: the app
+    # keeps talking to localhost:11434 either way.
+    #
+    # The base image carries the prebuilt MLX server for NVIDIA arm64 (see
+    # experiments/mlx-jetson-probe/runtime/ for how it is produced — mlx-swift
+    # has no official prebuilt binaries for CUDA/arm64 yet, so we build them).
+    from: mlx-server:0.1
+    # Until that image is published to a registry it exists only in the local
+    # daemon store (`docker load -i mlx-server-0.1.tar`, or `container image
+    # load --input mlx-server-0.1.tar`), so there is no registry digest to pin
+    # it against. pin: false is the visible declaration of that gap — every
+    # other from: in Examples/ is digest-pinned through its lockfile.
+    pin: false
+    env:
+      # The base image's entrypoint downloads this checkpoint on-device into
+      # the persist volume on first start, then serves an OpenAI-compatible
+      # API on :11434.
+      MLX_MODEL: mlx-community/gemma-3-27b-it-qat-4bit
+    # No entrypoint/cmd here: the base image's own are what run. The user is
+    # declared because the compiler's default for a final stage is a non-root
+    # UID, which would change how the base image behaves — it writes the
+    # downloaded checkpoint into the root-owned /models persist volume.
+    user: root

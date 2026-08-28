@@ -1,0 +1,46 @@
+PROBE3-BEGIN
+PROBE3 === battery_alarm FULL payload
+data: '{"alarm_status":0,"timestamp":"1785172863544","cell_voltages":[3617,3624,3621,3622,3621,3624,3624,3618],"description":"Diff:7mV"}'
+---
+PROBE3 === battery_alarm second sample (does it change?)
+data: '{"alarm_status":0,"timestamp":"1785172865543","cell_voltages":[3617,3624,3621,3622,3622,3625,3625,3618],"description":"Diff:8mV"}'
+---
+PROBE3 === battery_alarm publish rate
+average rate: 1.000
+	min: 1.000s max: 1.001s std dev: 0.00050s window: 3
+average rate: 1.000
+	min: 0.999s max: 1.001s std dev: 0.00051s window: 5
+average rate: 1.000
+	min: 0.999s max: 1.001s std dev: 0.00057s window: 7
+average rate: 1.000
+	min: 0.999s max: 1.001s std dev: 0.00054s window: 9
+PROBE3 === battery_alarm QoS
+Type: std_msgs/msg/String
+
+Publisher count: 1
+
+Node name: _CREATED_BY_BARE_DDS_APP_
+Node namespace: _CREATED_BY_BARE_DDS_APP_
+Topic type: std_msgs/msg/String
+Endpoint type: PUBLISHER
+GID: 01.10.86.7d.f7.41.bd.89.57.29.c4.05.00.00.06.03.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): KEEP_LAST (1)
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Subscription count: 2
+
+Node name: _CREATED_BY_BARE_DDS_APP_
+Node namespace: _CREATED_BY_BARE_DDS_APP_
+PROBE3 === lowstate publish rate
+The message type 'unitree_go/msg/LowState' is invalid
+PROBE3 === lf/lowstate publish rate
+The message type 'unitree_go/msg/LowState' is invalid
+PROBE3 === any other topic whose name hints at power
+/lf/battery_alarm
+PROBE3-COMPLETE

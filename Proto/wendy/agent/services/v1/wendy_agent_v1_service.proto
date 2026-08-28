@@ -220,6 +220,30 @@ message GetAgentVersionResponse {
     // Number of online logical CPU cores, from /proc/stat. Zero when the
     // agent cannot read it.
     uint32 cpu_count = 19;
+    // Hex SHA-256 of the executable this agent process was started from.
+    // Lets an updater confirm an uploaded binary is what actually runs,
+    // even when version strings cannot distinguish builds (dev builds).
+    // Empty when the agent cannot hash its own executable.
+    //
+    // Only comparable to the update payload on platforms where that payload
+    // IS the executable (linux). The darwin payload is an app-bundle zip, so
+    // its hash can never match this field — the CLI must skip the comparison
+    // there, and a future darwin implementation should instead persist and
+    // report the hash of the update payload it committed.
+    string binary_sha256 = 20;
+    // Device hostname (gethostname(2)). The CLI uses it to identify a device
+    // reached over the USB well-known link-local address, where no mDNS TXT
+    // records are available. Empty on agents predating this field.
+    //
+    // Numbered 21, not 20: this field was authored on PR #1621 against 20,
+    // which binary_sha256 above had already taken on main. The battery field
+    // below was deliberately started at 22 to leave 21 free for exactly this
+    // renumber, so no wire number is reused across the two merges.
+    string hostname = 21;
+    // Aggregate system-battery state, from /sys/class/power_supply. Absent on
+    // mains-powered devices and on agents predating this field, so `wendy
+    // device info` shows no battery line for either.
+    optional BatteryStats battery = 22;
 }
 
 // A network interface on the device and the IP addresses assigned to it.

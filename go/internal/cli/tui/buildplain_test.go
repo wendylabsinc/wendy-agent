@@ -2,19 +2,22 @@ package tui
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 func TestPlainRendererWritesLinePerCompletedStep(t *testing.T) {
 	var sb strings.Builder
-	emit, tally := NewBuildPlainRenderer(&sb)
-	emit(BuildStepEvent{ID: 1, Kind: BuildVertexSetup, Display: "load metadata", Status: BuildStepRunning})
-	emit(BuildStepEvent{ID: 1, Kind: BuildVertexSetup, Display: "load metadata", Status: BuildStepDone, Dur: 2 * time.Second})
-	emit(BuildStepEvent{ID: 6, Kind: BuildVertexStep, Display: "[1/6] FROM python", Status: BuildStepRunning})
-	emit(BuildStepEvent{ID: 6, Kind: BuildVertexStep, Display: "[1/6] FROM python", Status: BuildStepCached})
-	emit(BuildStepEvent{ID: 9, Kind: BuildVertexStep, Display: "[4/6] RUN pip install", Status: BuildStepRunning})
-	emit(BuildStepEvent{ID: 9, Kind: BuildVertexStep, Display: "[4/6] RUN pip install", Status: BuildStepDone, Dur: 4300 * time.Millisecond})
+	// heartbeat disabled: this test asserts only the per-step lines.
+	emit, tally, stop := newBuildPlainRenderer(&sb, 0)
+	defer stop()
+	emit(BuildStepEvent{ID: "#1", Kind: BuildVertexSetup, Display: "load metadata", Status: BuildStepRunning})
+	emit(BuildStepEvent{ID: "#1", Kind: BuildVertexSetup, Display: "load metadata", Status: BuildStepDone, Dur: 2 * time.Second})
+	emit(BuildStepEvent{ID: "#6", Kind: BuildVertexStep, Display: "[1/6] FROM python", Status: BuildStepRunning})
+	emit(BuildStepEvent{ID: "#6", Kind: BuildVertexStep, Display: "[1/6] FROM python", Status: BuildStepCached})
+	emit(BuildStepEvent{ID: "#9", Kind: BuildVertexStep, Display: "[4/6] RUN pip install", Status: BuildStepRunning})
+	emit(BuildStepEvent{ID: "#9", Kind: BuildVertexStep, Display: "[4/6] RUN pip install", Status: BuildStepDone, Dur: 4300 * time.Millisecond})
 
 	out := sb.String()
 	// Running events produce no line; only terminal states do.
@@ -30,4 +33,65 @@ func TestPlainRendererWritesLinePerCompletedStep(t *testing.T) {
 	if got := tally(); got.Cached != 1 || got.Rebuilt != 1 {
 		t.Errorf("tally = %+v, want {Cached:1 Rebuilt:1}", got)
 	}
+}
+
+// A long-running step must visibly advance in CI logs; otherwise a ten-minute
+// compile is an unexplained silent gap that reads as a hang.
+func TestPlainRendererHeartbeatReportsRunningStepProgress(t *testing.T) {
+	var sb safeBuilder
+	emit, _, stop := newBuildPlainRenderer(&sb, 20*time.Millisecond)
+	defer stop()
+
+	emit(BuildStepEvent{ID: "#9", Kind: BuildVertexStep, Display: "[4/6] RUN swift build", Status: BuildStepRunning})
+	emit(BuildStepEvent{ID: "#9", Kind: BuildVertexStep, Display: "[4/6] RUN swift build",
+		Status: BuildStepRunning, Detail: "[525/1027] 51%  Compiling WendyKit"})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(sb.String(), "[525/1027]") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	out := sb.String()
+	if !strings.Contains(out, "[4/6] RUN swift build") || !strings.Contains(out, "[525/1027] 51%  Compiling WendyKit") {
+		t.Fatalf("heartbeat missing step or detail:\n%s", out)
+	}
+
+	// Once the step finishes the heartbeat stops mentioning it.
+	emit(BuildStepEvent{ID: "#9", Kind: BuildVertexStep, Display: "[4/6] RUN swift build", Status: BuildStepDone, Dur: time.Second})
+	before := strings.Count(sb.String(), "...")
+	time.Sleep(80 * time.Millisecond)
+	if after := strings.Count(sb.String(), "..."); after != before {
+		t.Fatalf("heartbeat kept reporting a finished step (%d -> %d)", before, after)
+	}
+}
+
+func TestPlainRendererNoHeartbeatWhenDisabled(t *testing.T) {
+	var sb safeBuilder
+	emit, _, stop := newBuildPlainRenderer(&sb, 0)
+	defer stop()
+	emit(BuildStepEvent{ID: "#9", Kind: BuildVertexStep, Display: "[4/6] RUN x", Status: BuildStepRunning, Detail: "working"})
+	time.Sleep(30 * time.Millisecond)
+	if out := sb.String(); out != "" {
+		t.Fatalf("want no output with heartbeat disabled, got %q", out)
+	}
+}
+
+// safeBuilder is a strings.Builder guarded for the heartbeat goroutine.
+type safeBuilder struct {
+	mu sync.Mutex
+	sb strings.Builder
+}
+
+func (b *safeBuilder) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.sb.Write(p)
+}
+
+func (b *safeBuilder) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.sb.String()
 }

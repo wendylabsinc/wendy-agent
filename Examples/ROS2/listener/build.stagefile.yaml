@@ -1,0 +1,16 @@
+version: 1
+stages:
+  - name: listener
+    from: ros:humble
+    install:
+      apt:
+        packages: [ros-humble-demo-nodes-cpp, ros-humble-rmw-cyclonedds-cpp]
+    # See FoxgloveBridge's Stagefile for why this is an entrypoint with
+    # source: rather than a cmd:. The Dockerfile this replaced used CMD, so
+    # `docker run <image> <args>` used to replace the whole command; it now
+    # appends to it. Nothing in this example passes run arguments.
+    entrypoint:
+      source: /opt/ros/humble/setup.bash
+      exec: [ros2, run, demo_nodes_cpp, listener]
+    # ros:humble declares no user; ROS 2 needs a writable home for its logs.
+    user: root

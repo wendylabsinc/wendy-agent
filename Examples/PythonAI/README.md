@@ -21,23 +21,22 @@ A Python application that captures audio from a USB microphone and transcribes s
 
 ## Installation
 
-### Option 1: Docker/Containerd (Recommended for Production)
+### Option 1: Wendy (Recommended for Production)
 
-1. **Clone or download this project:**
+The container is described by `build.stagefile.yaml`, not a Dockerfile, so
+`wendy` is what builds it — it compiles the Stagefile to `Dockerfile.generated`
+and builds that. Plain `docker build .` / `docker-compose up --build` will not
+work here, because neither knows how to read a Stagefile.
+
+1. **Deploy to a device:**
    ```bash
-   cd /path/to/your/project
+   cd Examples/PythonAI
+   wendy run --device <device>
    ```
 
-2. **Build and run with Docker Compose:**
+2. **Or build the image locally**, by compiling the Stagefile first:
    ```bash
-   # Build and run the container
-   docker-compose up --build
-   ```
-
-3. **Alternative Docker commands:**
-   ```bash
-   # Build the image
-   docker build -t speech-transcriber .
+   wendy build
 
    # Run with USB audio device access
    docker run --privileged \
@@ -45,6 +44,11 @@ A Python application that captures audio from a USB microphone and transcribes s
      --device=/dev/bus/usb:/dev/bus/usb \
      speech-transcriber
    ```
+
+`docker-compose.yml` is kept as a record of the device access this app needs
+(`privileged`, `/dev/snd`, `/dev/bus/usb`, the ALSA config mounts and the
+`ALSA_*` environment). The `audio` entitlement in `wendy.json` is what grants
+the equivalent on a device.
 
 ### Option 2: Local Python Installation
 

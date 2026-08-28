@@ -27,22 +27,28 @@ type mountEntry struct {
 }
 
 // parseProcMounts parses the contents of /proc/mounts and returns the real,
-// disk-backed filesystems. A filesystem is considered disk-backed when its
-// source is a path under /dev/, which excludes pseudo-filesystems such as
-// tmpfs, proc, sysfs, cgroup and overlay. Entries are deduplicated by backing
-// device (the first mount of a device wins) so a disk that is bind-mounted in
-// several places is only reported once.
+// disk-backed, writable filesystems. A filesystem is considered disk-backed
+// when its source is a path under /dev/, which excludes pseudo-filesystems such
+// as tmpfs, proc, sysfs, cgroup and overlay. Read-only mounts (loopback-mounted
+// snap squashfs images, ISO images, a read-only rootfs) are skipped: they are
+// permanently ~100% full by design and nothing the user can do — including
+// 'wendy device cache prune' — will ever free space on them. Entries are
+// deduplicated by backing device (the first mount of a device wins) so a disk
+// that is bind-mounted in several places is only reported once.
 func parseProcMounts(content string) []mountEntry {
 	var entries []mountEntry
 	seen := make(map[string]struct{})
 
 	for line := range strings.SplitSeq(content, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		if len(fields) < 4 {
 			continue
 		}
 		device := unescapeMountField(fields[0])
 		if !strings.HasPrefix(device, "/dev/") {
+			continue
+		}
+		if mountIsReadOnly(fields[3]) {
 			continue
 		}
 		if _, dup := seen[device]; dup {
@@ -57,6 +63,18 @@ func parseProcMounts(content string) []mountEntry {
 	}
 
 	return entries
+}
+
+// mountIsReadOnly reports whether the comma-separated mount options field from
+// /proc/mounts marks the filesystem read-only ("ro" is always the first option
+// the kernel writes for a read-only mount).
+func mountIsReadOnly(options string) bool {
+	for opt := range strings.SplitSeq(options, ",") {
+		if opt == "ro" {
+			return true
+		}
+	}
+	return false
 }
 
 // unescapeMountField decodes the octal escape sequences (\040 space, \011 tab,

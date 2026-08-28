@@ -2,6 +2,7 @@ import Crypto
 import Darwin
 import Foundation
 import GRPCCore
+import OpenTelemetryGRPC
 import Testing
 import WendyAgentGRPC
 
@@ -9,6 +10,138 @@ import WendyAgentGRPC
 
 @Suite("ContainerService.startContainer")
 struct ContainerServiceTests {
+    @Test("telemetry continues after the start stream disconnects", .timeLimit(.minutes(1)))
+    func telemetryContinuesAfterStartStreamDisconnects() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.DetachedTelemetry"
+        let firstMarker = "triggers-start-stream-disconnect"
+        let marker = "live-after-start-disconnect"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        let releaseLater = appDirectory.appendingPathComponent("release-later.fifo")
+        let holdOpen = appDirectory.appendingPathComponent("hold-open.fifo")
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try makeFIFO(at: releaseLater)
+        try makeFIFO(at: holdOpen)
+        try writeDisconnectOutputScript(
+            to: appDirectory.appendingPathComponent("output.sh"),
+            firstMarker: firstMarker,
+            laterMarker: marker,
+            releaseFIFOName: releaseLater.lastPathComponent,
+            holdFIFOName: holdOpen.lastPathComponent
+        )
+
+        let broadcaster = TelemetryBroadcaster()
+        let service = ContainerService(
+            broadcaster: broadcaster,
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "output.sh")
+
+        var request = Wendy_Agent_Services_V1_StartContainerRequest()
+        request.appName = appID
+        let response = try await service.startContainer(
+            request: ServerRequest(metadata: [:], message: request),
+            context: makeServerContext(method: "StartContainer")
+        )
+        let contents = try response.accepted.get()
+
+        do {
+            _ = try await contents.producer(
+                RPCWriter(
+                    wrapping: DisconnectAfterFirstWriteWriter<
+                        Wendy_Agent_Services_V1_RunContainerLayersResponse
+                    >()
+                )
+            )
+        } catch {
+            // This models watch canceling StartContainer after the Started frame.
+        }
+
+        let (logSubscriptionID, _, liveLogs) = await broadcaster.subscribeLogs()
+        try signalFIFO(at: releaseLater)
+        var logIterator = liveLogs.makeAsyncIterator()
+        var receivedLaterMarker = false
+        while let logs = await logIterator.next() {
+            if logRequest(logs, contains: marker) {
+                receivedLaterMarker = true
+                break
+            }
+        }
+        await broadcaster.unsubscribeLogs(id: logSubscriptionID)
+        #expect(receivedLaterMarker)
+
+        // The gRPC runtime invokes a response producer once. Reinvoking it here
+        // is a white-box probe of the captured AsyncStream: after the first
+        // producer disconnected, it must already be finished rather than hold
+        // the later marker in an unbounded response buffer.
+        var replayError: String?
+        do {
+            _ = try await contents.producer(
+                RPCWriter(
+                    wrapping: DisconnectAfterFirstWriteWriter<
+                        Wendy_Agent_Services_V1_RunContainerLayersResponse
+                    >()
+                )
+            )
+        } catch {
+            replayError = String(describing: error)
+        }
+
+        try await deleteApp(service: service, appID: appID)
+        #expect(replayError == nil)
+    }
+
+    @Test("deleting an app finishes its start log stream", .timeLimit(.minutes(1)))
+    func deletingAppFinishesStartLogStream() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.DeleteClosesLogStream"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        let holdOpen = appDirectory.appendingPathComponent("hold-open.fifo")
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try makeFIFO(at: holdOpen)
+        try writeBlockingScript(
+            to: appDirectory.appendingPathComponent("block.sh"),
+            holdFIFOName: holdOpen.lastPathComponent
+        )
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "block.sh")
+
+        var request = Wendy_Agent_Services_V1_StartContainerRequest()
+        request.appName = appID
+        let response = try await service.startContainer(
+            request: ServerRequest(metadata: [:], message: request),
+            context: makeServerContext(method: "StartContainer")
+        )
+        let contents = try response.accepted.get()
+        let writer = SignalingWriter<Wendy_Agent_Services_V1_RunContainerLayersResponse>()
+        var messages = writer.events.makeAsyncIterator()
+        let producerTask = Task {
+            _ = try await contents.producer(RPCWriter(wrapping: writer))
+        }
+        defer { producerTask.cancel() }
+
+        let started = await messages.next()
+        guard case .started? = started?.responseType else {
+            Issue.record("start stream did not send Started")
+            try? await deleteApp(service: service, appID: appID)
+            producerTask.cancel()
+            return
+        }
+
+        try await deleteApp(service: service, appID: appID)
+        try await producerTask.value
+    }
+
     @Test("app updates are published for create, start, stop, and delete")
     func appUpdatesArePublishedForLifecycleChanges() async throws {
         let appsBase = try makeTempDir()
@@ -741,6 +874,80 @@ struct ContainerServiceTests {
         #expect(environment["LOGNAME"] == "wendy")
     }
 
+    @Test("Native app environment routes OTLP to the agent and stamps app identity")
+    func nativeAppEnvironmentRoutesOTLPToAgent() {
+        let environment = ContainerService.nativeAppEnvironment(
+            appName: "camera",
+            otelPort: 54321,
+            source: [
+                "PATH": "/usr/bin:/bin",
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://inherited.invalid:4317",
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "https://inherited.invalid/v1/logs",
+                "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/protobuf",
+                "OTEL_SERVICE_NAME": "inherited-agent-name",
+                "OTEL_RESOURCE_ATTRIBUTES": "deployment.environment.name=test",
+            ]
+        )
+
+        #expect(environment["PATH"] == "/usr/bin:/bin")
+        #expect(environment["NSUnbufferedIO"] == "YES")
+        #expect(environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:54321")
+        #expect(environment["OTEL_EXPORTER_OTLP_PROTOCOL"] == "grpc")
+        #expect(environment["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] == nil)
+        #expect(environment["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] == nil)
+        #expect(environment["OTEL_SERVICE_NAME"] == "camera")
+        #expect(
+            environment["OTEL_RESOURCE_ATTRIBUTES"]
+                == "deployment.environment.name=test,wendy.app.name=camera"
+        )
+    }
+
+    @Test("Native app environment corrects an inherited Wendy app resource attribute")
+    func nativeAppEnvironmentCorrectsInheritedAppAttribute() {
+        let environment = ContainerService.nativeAppEnvironment(
+            appName: "camera",
+            otelPort: 4317,
+            source: ["OTEL_RESOURCE_ATTRIBUTES": "wendy.app.name=custom,region=au"]
+        )
+
+        #expect(environment["OTEL_RESOURCE_ATTRIBUTES"] == "wendy.app.name=camera,region=au")
+    }
+
+    @Test("Adapted native process output uses the canonical container log scope")
+    func adaptedNativeOutputUsesContainerScope() throws {
+        let request = ContainerService.containerLogRequest(
+            appName: "camera",
+            text: "hello",
+            stream: "stderr",
+            severity: .warn,
+            timestamp: 123
+        )
+        let resourceLogs = try #require(request.resourceLogs.first)
+        let scopeLogs = try #require(resourceLogs.scopeLogs.first)
+        let record = try #require(scopeLogs.logRecords.first)
+
+        #expect(scopeLogs.scope.name == "wendy.container")
+        #expect(record.body.stringValue == "hello")
+        #expect(record.severityNumber == .warn)
+        #expect(record.timeUnixNano == 123)
+        #expect(
+            record.attributes.contains { attribute in
+                attribute.key == "stream" && attribute.value.stringValue == "stderr"
+            }
+        )
+        #expect(
+            resourceLogs.resource.attributes.contains { attribute in
+                attribute.key == "service.name" && attribute.value.stringValue == "camera"
+            }
+        )
+        #expect(
+            resourceLogs.resource.attributes.contains { attribute in
+                attribute.key == "wendy.app.name" && attribute.value.stringValue == "camera"
+            }
+        )
+    }
+
     @Test("Real user name resolves to an existing account")
     func realUserNameResolvesToAnExistingAccount() {
         let name = ContainerService.realUserName()
@@ -1303,6 +1510,51 @@ private final class CollectingWriter<Element: Sendable>: RPCWriterProtocol, @unc
     }
 }
 
+private final class SignalingWriter<Element: Sendable>: RPCWriterProtocol, @unchecked Sendable {
+    let events: AsyncStream<Element>
+    private let continuation: AsyncStream<Element>.Continuation
+
+    init() {
+        (self.events, self.continuation) = AsyncStream.makeStream(
+            of: Element.self,
+            bufferingPolicy: .bufferingNewest(16)
+        )
+    }
+
+    func write(_ element: Element) async throws {
+        self.continuation.yield(element)
+    }
+
+    func write(contentsOf elements: some Sequence<Element>) async throws {
+        for element in elements {
+            self.continuation.yield(element)
+        }
+    }
+}
+
+private final class DisconnectAfterFirstWriteWriter<Element: Sendable>: RPCWriterProtocol,
+    @unchecked Sendable
+{
+    private let queue = DispatchQueue(label: "wendy.tests.disconnecting-writer")
+    private var writes = 0
+
+    func write(_ element: Element) async throws {
+        let shouldDisconnect = queue.sync {
+            writes += 1
+            return writes > 1
+        }
+        if shouldDisconnect {
+            throw TestError(description: "simulated client disconnect after Started")
+        }
+    }
+
+    func write(contentsOf elements: some Sequence<Element>) async throws {
+        for element in elements {
+            try await self.write(element)
+        }
+    }
+}
+
 private struct TestError: Error, CustomStringConvertible {
     let description: String
 }
@@ -1498,6 +1750,55 @@ private func writeExitAfterDelayScript(to url: URL) throws {
 private func writeExitWithCodeScript(to url: URL, code: Int) throws {
     try "#!/bin/sh\nsleep 0.2\nexit \(code)\n".write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+}
+
+private func writeDisconnectOutputScript(
+    to url: URL,
+    firstMarker: String,
+    laterMarker: String,
+    releaseFIFOName: String,
+    holdFIFOName: String
+) throws {
+    try
+        "#!/bin/sh\nprintf '%s\\n' '\(firstMarker)'\nIFS= read -r _ < '\(releaseFIFOName)'\nprintf '%s\\n' '\(laterMarker)'\nIFS= read -r _ < '\(holdFIFOName)'\n"
+        .write(
+            to: url,
+            atomically: true,
+            encoding: .utf8
+        )
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+}
+
+private func writeBlockingScript(to url: URL, holdFIFOName: String) throws {
+    try "#!/bin/sh\nIFS= read -r _ < '\(holdFIFOName)'\n".write(
+        to: url,
+        atomically: true,
+        encoding: .utf8
+    )
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+}
+
+private func makeFIFO(at url: URL) throws {
+    guard Darwin.mkfifo(url.path, S_IRUSR | S_IWUSR) == 0 else {
+        throw TestError(description: "Failed to create FIFO at \(url.path): errno \(errno)")
+    }
+}
+
+private func signalFIFO(at url: URL) throws {
+    let handle = try FileHandle(forWritingTo: url)
+    try handle.write(contentsOf: Data("continue\n".utf8))
+    try handle.close()
+}
+
+private func logRequest(
+    _ request: Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest?,
+    contains marker: String
+) -> Bool {
+    request?.resourceLogs.contains { resourceLogs in
+        resourceLogs.scopeLogs.contains { scopeLogs in
+            scopeLogs.logRecords.contains { $0.body.stringValue.contains(marker) }
+        }
+    } ?? false
 }
 
 private func makeTempDir() throws -> String {

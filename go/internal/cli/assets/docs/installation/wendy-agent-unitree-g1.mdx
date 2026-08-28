@@ -3,6 +3,12 @@ title: Unitree G1
 description: Install wendy-agent on the Unitree G1's onboard computer to deploy and manage apps with Wendy
 ---
 
+<img
+  src={`${(process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/$/, '')}/media/unitree-g1-card.jpg`}
+  alt="Unitree G1 humanoid robot"
+  className="not-prose aspect-video w-full bg-fd-muted object-cover object-center"
+/>
+
 ## Overview
 
 The Unitree G1 EDU includes an NVIDIA Jetson development computer known as PC2.
@@ -177,6 +183,87 @@ enrollment token expires after about an hour.
 
 Run the generated command on PC2. The G1 will then appear in Wendy Cloud when
 it is online.
+
+## Drive the G1 from your browser
+
+The `g1-rc` template gives you a live camera view, a touch joystick, posture
+and arm controls, and a latching software E-stop.
+
+Before you start:
+
+- Put the G1 on its gantry and clear the area around it.
+- Keep the Unitree remote with the operator. The physical E-stop is the primary
+  stop.
+- Make sure no other app is controlling the robot. Check the running apps with:
+
+  ```bash
+  wendy device apps list --device <address-from-wendy-discover>
+  ```
+
+  Stop any other motion app before continuing:
+
+  ```bash
+  wendy device apps stop <app-name> \
+    --device <address-from-wendy-discover>
+  ```
+
+Create and deploy the remote control:
+
+```bash
+wendy init --app-id my-g1-rc --template g1-rc --language python
+cd my-g1-rc
+wendy run --device <address-from-wendy-discover>
+```
+
+The first build takes a few minutes. When it is ready, Wendy opens the remote
+control in your browser. If it does not open, use the G1 hostname or Wi-Fi
+address on port 3500, for example:
+
+```text
+http://unitree-g1-nx.local:3500
+```
+
+Check the four status badges before touching the controls:
+
+- **motion: ok** means the app can reach Unitree's motion service.
+- **cam: live** means the page is receiving the front camera at `/dev/video4`.
+- **battery** shows the percentage reported by the G1 battery controller.
+- **fsm** shows the G1 locomotion state. The page does not send velocity
+  commands until it has a recent `801 (walk-ready)` readback.
+
+Use the FSM badge to choose the next step:
+
+| FSM | Meaning | What to do |
+|---|---|---|
+| `1` | DAMP; joints are compliant | Press **stand**, then wait for FSM `4`. |
+| `4` | LOCK STAND; standing but not walking | Press **ready-to-walk**. |
+| `801` | RUNNING; ready to walk | You can use the joystick or WASD controls. |
+| another value or `—` | Not ready or no fresh readback | Do not drive. Check the motion app and make sure no other app owns motion. |
+
+For the first motion test, set **Speed** to 20% and press forward briefly. Let
+go to stop. Use the red **STOP** button if the robot does not stop as expected,
+and use the Unitree remote's physical E-stop if needed.
+
+<Callout type="warning">
+  **stand** may move the G1 through DAMP before LOCK STAND. From an unexpected
+  FSM, the page asks you to confirm that the robot is supported. Do not confirm
+  unless the G1 is secured on its gantry. **damp** makes the joints compliant
+  and can make an unsupported robot fall.
+</Callout>
+
+If the camera badge stays red, list the G1 camera devices:
+
+```bash
+wendy device camera list --device <address-from-wendy-discover>
+```
+
+The tested G1 uses `/dev/video4` for the 640×480 color stream. If your G1 uses
+a different color node, create the project again with that camera number:
+
+```bash
+wendy init --app-id my-g1-rc --template g1-rc --language python \
+  --var CAMERA_SOURCE=<number>
+```
 
 ## Work with the G1 from an app
 

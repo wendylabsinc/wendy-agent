@@ -47,7 +47,11 @@ func listOrgsFromCloudImpl(ctx context.Context, auth *config.AuthConfig) ([]*clo
 	limit := int32(orgPageSize)
 	for page := 0; page < orgPageCap; page++ {
 		req := &cloudpb.ListOrganizationsRequest{Offset: &offset, Limit: &limit}
-		stream, err := client.ListOrganizations(cloudContext(ctx, auth), req)
+		cloudCtx, err := cloudContext(ctx, auth)
+		if err != nil {
+			return nil, err
+		}
+		stream, err := client.ListOrganizations(cloudCtx, req)
 		if err != nil {
 			return nil, fmt.Errorf("listing organizations: %w", err)
 		}

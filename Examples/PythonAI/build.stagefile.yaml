@@ -1,0 +1,41 @@
+version: 1
+stages:
+  - name: app
+    from: python:3.11-slim
+    workdir: /app
+    env:
+      PYTHONUNBUFFERED: "1"
+      # ALSA device selection, read by the sounddevice/PortAudio stack.
+      ALSA_CARD: "0"
+      ALSA_DEVICE: "0"
+    install:
+      apt:
+        packages:
+          # PortAudio + ALSA: the capture path Whisper reads from.
+          - libportaudio2
+          - libasound2-dev
+          - portaudio19-dev
+          - alsa-utils
+          - alsa-tools
+          # Toolchain for the audio wheels that have no prebuilt arm64 form.
+          - gcc
+          - g++
+          - python3-dev
+          # Whisper shells out to ffmpeg for decoding.
+          - ffmpeg
+      pip:
+        - requirements: requirements.txt
+    copy:
+      - from: local
+        paths: [speech_transcriber.py, test_microphone.py]
+        dest: ./
+    # The Dockerfile this replaced created `appuser` (uid 1000) and added it to
+    # the `audio` group, which is what actually granted access to /dev/snd
+    # (root:audio, mode 0660). Stagefile can name a user but cannot create one
+    # with supplementary groups, and the compiler's non-root default (uid
+    # 65532, in no groups) would lose that access silently — the container
+    # would start and then find no capture device. Root keeps /dev/snd
+    # reachable, and matches what docker-compose.yml already assumes with
+    # `privileged: true`.
+    user: root
+    cmd: [python, speech_transcriber.py]

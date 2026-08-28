@@ -21,8 +21,39 @@ const pinFileName = "known_devices.json"
 type PinnedDevice struct {
 	SPKIFingerprint string `json:"spkiFingerprint"` // "sha256:<hex>"
 	DisplayName     string `json:"displayName"`
-	LastSeen        string `json:"lastSeen"` // RFC3339
+	LastSeen        string `json:"lastSeen"`           // RFC3339
+	NotAfter        string `json:"notAfter,omitempty"` // RFC3339; pinned leaf's expiry
 }
+
+// PinMismatchError reports that a device identity presented a different public
+// key than the one pinned for it, while the pinned certificate was still valid.
+// A rotation that happens after the pinned cert expires is not an error — it is
+// renewal — so this only fires inside the pinned cert's validity window, where
+// a new key is unexplained.
+type PinMismatchError struct {
+	Key         string
+	DisplayName string
+	Want        string
+	Got         string
+}
+
+func (e *PinMismatchError) Error() string {
+	return fmt.Sprintf("device %q (%s) presented a different certificate key than pinned (pinned %s, now %s)",
+		e.DisplayName, e.Key, e.Want, e.Got)
+}
+
+// BlockingPinRejection marks this as the one CheckAndUpdate failure the TLS
+// verifier must drop a connection over: it says the PEER is not the one we
+// pinned. Every other way CheckAndUpdate can fail is a write to local
+// bookkeeping, which cannot make a verified device untrustworthy. See
+// certs.BlockingPinError.
+func (e *PinMismatchError) BlockingPinRejection() {}
+
+// Compile-time proof that the marker above really does satisfy the interface
+// the verifier tests for. Without it, dropping or renaming the method would
+// silently downgrade every key-change rejection to best-effort — the verifier
+// would just stop failing, and nothing in this package would notice.
+var _ certs.BlockingPinError = (*PinMismatchError)(nil)
 
 // Store is a file-backed map from device identity key to PinnedDevice.
 // It is not safe for concurrent use across multiple processes.
@@ -54,9 +85,25 @@ func Open(dir string) (*Store, error) {
 //
 //   - Not an asset cert: skip (user certs and certs with no identity are not pinned)
 //   - Not previously pinned: store pin, return nil
-//   - Pinned, SPKI match: update LastSeen, return nil
-//   - Pinned, SPKI differs: warn to stderr (potential MITM or legitimate rotation),
-//     update pin, return nil
+//   - Pinned, SPKI match: refresh LastSeen in memory, return nil
+//   - Pinned, SPKI differs, pinned cert still valid: hard fail with PinMismatchError
+//   - Pinned, SPKI differs, pinned cert expired (or predates NotAfter tracking):
+//     rotation by definition — update pin, return nil
+//
+// Only the PinMismatchError is a rejection of the device. A returned write
+// failure means the verdict above stands but could not be recorded; it is
+// reported so a caller may log it, and deliberately does NOT implement
+// certs.BlockingPinError, so the TLS verifier lets the connection through. The
+// alternative — every mTLS connection failing because ~/.wendy is read-only —
+// is an outage with no security question behind it.
+//
+// The write is skipped entirely when the entry would come back identical apart
+// from LastSeen, which is the common path: a device whose key and expiry are
+// unchanged is every connection after the first. Nothing reads LastSeen (it is
+// there for a human reading known_devices.json), so it is refreshed in memory
+// and rides along on the next write that has a real reason to happen. NotAfter
+// is a different matter — CheckAndUpdate itself reads it to tell rotation from
+// mismatch — so any change to it still forces the write through.
 func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error {
 	identity, ok, err := certs.IdentityFromCert(leaf)
 	if err != nil || !ok || identity.EntityType != "asset" {
@@ -65,18 +112,53 @@ func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error
 
 	key := identity.IdentityKey()
 	fingerprint := spkiFingerprint(leaf)
+	notAfter := leaf.NotAfter.UTC().Format(time.RFC3339)
 
-	if existing, pinned := s.devices[key]; pinned && existing.SPKIFingerprint != fingerprint {
-		fmt.Fprintf(os.Stderr,
-			"WARNING: Device %q (%s) presented a different certificate than previously seen (was: %s, now: %s); if this is unexpected, a MITM attack may be in progress.\n",
-			displayName, key, existing.SPKIFingerprint, fingerprint)
+	existing, pinned := s.devices[key]
+	if pinned && existing.SPKIFingerprint != fingerprint {
+		// A key change while the pinned cert is still valid is unexplained: a
+		// renewal replaces an expiring cert, it does not race a live one.
+		if existing.NotAfter != "" {
+			if exp, parseErr := time.Parse(time.RFC3339, existing.NotAfter); parseErr == nil && time.Now().Before(exp) {
+				return &PinMismatchError{Key: key, DisplayName: displayName, Want: existing.SPKIFingerprint, Got: fingerprint}
+			}
+		}
 	}
+
+	unchanged := pinned &&
+		existing.SPKIFingerprint == fingerprint &&
+		existing.NotAfter == notAfter &&
+		existing.DisplayName == displayName
 
 	s.devices[key] = PinnedDevice{
 		SPKIFingerprint: fingerprint,
 		DisplayName:     displayName,
 		LastSeen:        time.Now().UTC().Format(time.RFC3339),
+		NotAfter:        notAfter,
 	}
+	if unchanged {
+		return nil
+	}
+	return s.flush()
+}
+
+// Has reports whether a pin is recorded for an identity key. Remove treats an
+// absent key as success, which is right for the caller's contract but leaves it
+// unable to say what it actually removed — and an unpin that reports clearing
+// entries it never held is exactly the kind of vague reporting that let
+// over-broad clearing go unnoticed.
+func (s *Store) Has(key string) bool {
+	_, ok := s.devices[key]
+	return ok
+}
+
+// Remove drops the pin for an identity key, so the next connection is a first
+// use. Removing an absent key is not an error.
+func (s *Store) Remove(key string) error {
+	if _, ok := s.devices[key]; !ok {
+		return nil
+	}
+	delete(s.devices, key)
 	return s.flush()
 }
 

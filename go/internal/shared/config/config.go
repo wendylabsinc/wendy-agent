@@ -13,6 +13,11 @@ type Config struct {
 	Auth          []AuthConfig     `json:"auth,omitempty"`
 	Analytics     *AnalyticsConfig `json:"analytics,omitempty"`
 	DefaultDevice string           `json:"defaultDevice,omitempty"`
+	// DefaultBuildHost is the device `wendy run` delegates the image
+	// build to when --build-host is not passed. Per-developer rather than
+	// per-project: the right build host depends on which network the developer is
+	// sitting on, not on the repository.
+	DefaultBuildHost string `json:"defaultBuildHost,omitempty"`
 	// DefaultCloudGRPC names the auth session (by its gRPC endpoint) used when
 	// several sessions exist and no --cloud-grpc flag is given. Empty means no
 	// default; resolution then falls back to an interactive picker or an error.
@@ -181,14 +186,34 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
-// Save writes the configuration to ~/.wendy/config.json.
+// Save writes the configuration to ~/.wendy/config.json. On platforms with
+// a credential store, inline secrets are moved into it and the file holds
+// only references (see secrets.go); the caller's cfg is never mutated. If
+// cfg cannot be cloned, Save fails rather than falling back to mutating the
+// caller's struct in place.
 func Save(cfg *Config) error {
 	path, err := configPath()
 	if err != nil {
 		return err
 	}
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	out, err := cfg.clone()
+	if err != nil {
+		return fmt.Errorf("cloning config: %w", err)
+	}
+	if dehydrateEnabled() {
+		dehydrate(out)
+	} else {
+		// This branch covers two cases: WENDY_SECRET_STORE=file (explicit
+		// de-migration — resolve any existing refs back inline) and
+		// non-darwin platforms (no store; refs only exist if the config
+		// file was copied over from a Mac, in which case resolution fails
+		// and the ref is left as-is — normal non-darwin configs contain no
+		// refs, so this is a no-op for them).
+		inlineSecrets(out)
+	}
+
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}

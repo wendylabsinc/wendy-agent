@@ -125,7 +125,11 @@ func (s *mcpServer) registerDocResources(srv *server.MCPServer) {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if path.Ext(p) != ".md" {
+		// Both plain-Markdown reference docs (.md) and the embedded MDX guide
+		// content (.mdx, e.g. docs/integrations/ros2.mdx) are exposed here —
+		// an MCP client has no other way to read either.
+		ext := path.Ext(p)
+		if ext != ".md" && ext != ".mdx" {
 			return nil
 		}
 		relPath := strings.TrimPrefix(p, "docs/")
@@ -152,6 +156,7 @@ func (s *mcpServer) registerDocResources(srv *server.MCPServer) {
 // docTitle converts a relative doc path to a human-readable title.
 func docTitle(relPath string) string {
 	base := path.Base(relPath)
+	base = strings.TrimSuffix(base, ".mdx")
 	base = strings.TrimSuffix(base, ".md")
 	base = strings.ReplaceAll(base, "-", " ")
 	base = strings.ReplaceAll(base, "_", " ")

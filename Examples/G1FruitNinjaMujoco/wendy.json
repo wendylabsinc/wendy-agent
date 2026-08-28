@@ -1,0 +1,13 @@
+{
+  "appId": "g1-fruit-ninja-mujoco",
+  "version": "0.1.0",
+  "platform": "linux",
+  "entitlements": [
+    { "type": "gpu" },
+    { "type": "network", "mode": "host" }
+  ],
+  "readiness": {
+    "tcpSocket": { "port": 8878 },
+    "timeoutSeconds": 90
+  }
+}

@@ -1,17 +1,323 @@
 package commands
 
 import (
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+// A Compose build includes its registry upload in the same builder call. This
+// barrier therefore proves both that service image builds overlap and that a
+// later build need not wait for an earlier service to finish uploading.
+func TestBuildComposeServicesParallelOverlapsBuildAndPush(t *testing.T) {
+	origBuild := buildComposeServiceImage
+	origInteractive := isInteractiveTerminalFn
+	t.Cleanup(func() {
+		buildComposeServiceImage = origBuild
+		isInteractiveTerminalFn = origInteractive
+	})
+	isInteractiveTerminalFn = func() bool { return false }
+
+	const count = 4
+	jobs := make(map[string]composeBuildJob, count)
+	for i := range count {
+		name := string(rune('a' + i))
+		jobs[name] = composeBuildJob{contextDir: name, dockerfile: "Dockerfile", repo: "app-" + name}
+	}
+
+	var started sync.WaitGroup
+	started.Add(count)
+	var mu sync.Mutex
+	cacheKeys := map[string]string{}
+	buildComposeServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, repo, _, _ string, _ map[string]string, cacheKey string, _, _ io.Writer) error {
+		mu.Lock()
+		cacheKeys[repo] = cacheKey
+		mu.Unlock()
+		started.Done()
+		started.Wait()
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		failed, _, err := buildComposeServicesParallel(context.Background(), nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, count, false)
+		if err == nil && len(failed) != 0 {
+			err = joinServiceErrors(failed)
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("buildComposeServicesParallel: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Compose services did not enter build-and-push concurrently")
+	}
+
+	for _, job := range jobs {
+		if cacheKeys[job.repo] != job.repo {
+			t.Errorf("repo %q used cache key %q; concurrent exports need per-service isolation", job.repo, cacheKeys[job.repo])
+		}
+	}
+}
+
+func TestBuildComposeServicesParallelCancellationDoesNotStartQueuedBuilds(t *testing.T) {
+	originalBuild := buildComposeServiceImage
+	originalInteractive := isInteractiveTerminalFn
+	t.Cleanup(func() {
+		buildComposeServiceImage = originalBuild
+		isInteractiveTerminalFn = originalInteractive
+	})
+	isInteractiveTerminalFn = func() bool { return false }
+
+	jobs := map[string]composeBuildJob{}
+	for _, name := range []string{"a", "b", "c", "d"} {
+		jobs[name] = composeBuildJob{contextDir: name, dockerfile: "Dockerfile", repo: "app-" + name}
+	}
+
+	started := make(chan struct{}, len(jobs))
+	var mu sync.Mutex
+	startCount := 0
+	buildComposeServiceImage = func(ctx context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, _, _, _ string, _ map[string]string, _ string, _, _ io.Writer) error {
+		mu.Lock()
+		startCount++
+		mu.Unlock()
+		started <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type outcome struct {
+		failed map[string]error
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		failed, _, err := buildComposeServicesParallel(ctx, nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, 1, false)
+		done <- outcome{failed: failed, err: err}
+	}()
+
+	select {
+	case <-started:
+		cancel()
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Compose service build did not start")
+	}
+
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", got.err)
+		}
+		if got.failed != nil {
+			t.Fatalf("failed = %v, want nil for operation cancellation", got.failed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Compose builder did not return after cancellation")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if startCount != 1 {
+		t.Fatalf("started %d Compose builders after cancellation, want exactly the active one", startCount)
+	}
+}
+
+func TestComposePreparationConcurrencyIsBoundedSeparately(t *testing.T) {
+	ctx := withComposePrepareLimiter(context.Background())
+	releases := make([]func(), 0, maxConcurrentComposePrepares)
+	for range maxConcurrentComposePrepares {
+		release, err := acquireComposePrepare(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		releases = append(releases, release)
+	}
+
+	acquired := make(chan func(), 1)
+	go func() {
+		release, err := acquireComposePrepare(ctx)
+		if err == nil {
+			acquired <- release
+		}
+	}()
+	select {
+	case release := <-acquired:
+		release()
+		t.Fatal("device preparation exceeded its independent concurrency bound")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releases[0]()
+	select {
+	case release := <-acquired:
+		release()
+	case <-time.After(time.Second):
+		t.Fatal("queued device preparation did not start after a slot opened")
+	}
+	for _, release := range releases[1:] {
+		release()
+	}
+}
+
+func TestBuildComposeServicesParallelQuietBuildDoesNotOpenTUI(t *testing.T) {
+	originalBuild := buildComposeServiceImage
+	originalInteractive := isInteractiveTerminalFn
+	t.Cleanup(func() {
+		buildComposeServiceImage = originalBuild
+		isInteractiveTerminalFn = originalInteractive
+	})
+	// quietBuild must short-circuit the terminal/TUI branch entirely.
+	isInteractiveTerminalFn = func() bool {
+		t.Fatal("quiet Compose build queried interactive terminal state")
+		return true
+	}
+
+	called := false
+	buildComposeServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, _, _, _ string, _ map[string]string, _ string, stream, logw io.Writer) error {
+		called = true
+		if stream == os.Stdout || stream == os.Stderr || logw == os.Stdout || logw == os.Stderr {
+			t.Fatal("quiet Compose build streamed builder output to the terminal")
+		}
+		_, _ = io.WriteString(stream, "builder progress\n")
+		_, _ = io.WriteString(logw, "builder setup\n")
+		if reporter, ok := stream.(interface{ ReportImageContent([]string) }); ok {
+			reporter.ReportImageContent([]string{"sha256:layer"})
+		}
+		return nil
+	}
+
+	jobs := map[string]composeBuildJob{
+		"api": {contextDir: "api", dockerfile: "Dockerfile", repo: "app-api"},
+	}
+	failed, content, err := buildComposeServicesParallel(context.Background(), nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, 1, true)
+	if err != nil {
+		t.Fatalf("quiet Compose build: %v", err)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("quiet Compose failures = %v", failed)
+	}
+	if !called {
+		t.Fatal("quiet Compose builder was not called")
+	}
+	if got := content["api"]; len(got) != 1 || got[0] != "sha256:layer" {
+		t.Fatalf("prepared content = %v, want reported layer identity", got)
+	}
+}
+
+func TestComposeServiceWatchHashTracksCreateRequest(t *testing.T) {
+	cfg := &appconfig.AppConfig{AppID: "demo", ServiceName: "api"}
+	policy := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED}
+	base, err := composeServiceWatchHash("image-a", cfg, "server", []string{"--port", "80"}, policy, []string{"MODE=prod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		image  string
+		cmd    string
+		args   []string
+		env    []string
+		policy *agentpb.RestartPolicy
+	}{
+		{"image", "image-b", "server", []string{"--port", "80"}, []string{"MODE=prod"}, policy},
+		{"command", "image-a", "worker", []string{"--port", "80"}, []string{"MODE=prod"}, policy},
+		{"args", "image-a", "server", []string{"--port", "81"}, []string{"MODE=prod"}, policy},
+		{"env", "image-a", "server", []string{"--port", "80"}, []string{"MODE=dev"}, policy},
+		{"restart", "image-a", "server", []string{"--port", "80"}, []string{"MODE=prod"}, &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_NO}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := composeServiceWatchHash(tc.image, cfg, tc.cmd, tc.args, tc.policy, tc.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == base {
+				t.Fatalf("%s change did not invalidate watch hash", tc.name)
+			}
+		})
+	}
+}
+
+func TestImageRefContentPinned(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("b", 64)
+	if !imageRefContentPinned("docker.io/library/alpine@" + digest) {
+		t.Fatal("digest-pinned image was not eligible")
+	}
+	for _, ref := range []string{"alpine", "alpine:3.20", "${IMAGE}", ""} {
+		if imageRefContentPinned(ref) {
+			t.Fatalf("mutable or invalid image %q was eligible", ref)
+		}
+	}
+}
+
+func TestPlanComposeBuildSkipsVerifiedUnchangedService(t *testing.T) {
+	isolateFingerprintCache(t)
+	const (
+		name      = "api"
+		deviceKey = "device"
+		desired   = "sha256:desired"
+		layerDiff = "sha256:layer"
+	)
+	cfg := &appconfig.AppConfig{AppID: "demo", ServiceName: name, Version: "1"}
+	states := map[string]agentpb.AppRunningState{
+		strings.ToLower(cfg.ContainerName()): agentpb.AppRunningState_STOPPED,
+	}
+	saveDeployFingerprint(serviceFingerprintKey(cfg.AppID, name), deviceKey, deployFingerprint{
+		InputHash: desired, LayerDiffIDs: []string{layerDiff},
+	})
+	fake := &multiSvcContainerClient{presentLayers: map[string]bool{layerDiff: true}}
+	conn := &grpcclient.AgentConnection{ContainerService: fake}
+
+	skip := planComposeBuildSkips(context.Background(), conn, deviceKey,
+		map[string]string{name: desired}, map[string]*appconfig.AppConfig{name: cfg}, states)
+	if !skip[name] {
+		t.Fatal("verified unchanged Compose service was not skipped")
+	}
+}
+
+func TestPlanComposeBuildSkipsFailsClosed(t *testing.T) {
+	isolateFingerprintCache(t)
+	const name = "api"
+	cfg := &appconfig.AppConfig{AppID: "demo", ServiceName: name}
+	states := map[string]agentpb.AppRunningState{
+		strings.ToLower(cfg.ContainerName()): agentpb.AppRunningState_RUNNING,
+	}
+	saveDeployFingerprint(serviceFingerprintKey(cfg.AppID, name), "device", deployFingerprint{
+		InputHash: "wanted", LayerDiffIDs: []string{"sha256:missing"},
+	})
+	fake := &multiSvcContainerClient{presentLayers: map[string]bool{}}
+	conn := &grpcclient.AgentConnection{ContainerService: fake}
+
+	skip := planComposeBuildSkips(context.Background(), conn, "device",
+		map[string]string{name: "wanted"}, map[string]*appconfig.AppConfig{name: cfg}, states)
+	if skip[name] {
+		t.Fatal("Compose service skipped despite missing device image content")
+	}
+
+	delete(states, strings.ToLower(cfg.ContainerName()))
+	fake.presentLayers["sha256:missing"] = true
+	skip = planComposeBuildSkips(context.Background(), conn, "device",
+		map[string]string{name: "wanted"}, map[string]*appconfig.AppConfig{name: cfg}, states)
+	if skip[name] {
+		t.Fatal("Compose service skipped despite missing device container")
+	}
+}
 
 func writeComposeFile(t *testing.T, dir, name, body string) {
 	t.Helper()
@@ -128,15 +434,16 @@ func TestComposeEnv(t *testing.T) {
 
 	t.Run("mapping with mixed types", func(t *testing.T) {
 		svc := parse(t, "services:\n  svc:\n    environment:\n      STR: hello\n      NUM: 42\n      BOOL: true\n")
-		got := composeEnv(svc)
-		sort.Strings(got)
 		want := []string{"BOOL=true", "NUM=42", "STR=hello"}
-		if len(got) != len(want) {
-			t.Fatalf("got %v want %v", got, want)
-		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Fatalf("got %v want %v", got, want)
+		for i := 0; i < 100; i++ {
+			got := composeEnv(svc)
+			if len(got) != len(want) {
+				t.Fatalf("iteration %d: got %v want %v", i, got, want)
+			}
+			for j := range want {
+				if got[j] != want[j] {
+					t.Fatalf("iteration %d: got %v want stable order %v", i, got, want)
+				}
 			}
 		}
 	})
@@ -154,8 +461,7 @@ func TestComposeEnv(t *testing.T) {
 		t.Setenv("WENDY_TEST_LIST", "from-list")
 		svc := parse(t, "services:\n  svc:\n    environment:\n      - WENDY_TEST_LIST\n      - EXPLICIT=value\n")
 		got := composeEnv(svc)
-		sort.Strings(got)
-		want := []string{"EXPLICIT=value", "WENDY_TEST_LIST=from-list"}
+		want := []string{"WENDY_TEST_LIST=from-list", "EXPLICIT=value"}
 		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 			t.Fatalf("got %v want %v", got, want)
 		}
@@ -321,6 +627,26 @@ func TestComposeAppConfig(t *testing.T) {
 		}
 		if cfg.ServiceName != "" {
 			t.Fatalf("single-service ServiceName: want empty, got %q", cfg.ServiceName)
+		}
+		if got := composeWatchAppID("myapp", nil, map[string]*appconfig.AppConfig{"web": cfg}); got != "myapp-web" {
+			t.Fatalf("single-service watch appID: want %q, got %q", "myapp-web", got)
+		}
+	})
+
+	t.Run("multi-service watch uses grouped project appID", func(t *testing.T) {
+		cfgs := map[string]*appconfig.AppConfig{
+			"api": {AppID: "myapp", ServiceName: "api"},
+			"db":  {AppID: "myapp", ServiceName: "db"},
+		}
+		if got := composeWatchAppID("myapp", nil, cfgs); got != "myapp" {
+			t.Fatalf("multi-service watch appID: want %q, got %q", "myapp", got)
+		}
+	})
+
+	t.Run("companion appID overrides watch identity", func(t *testing.T) {
+		companion := &appconfig.AppConfig{AppID: "sh.wendy.example"}
+		if got := composeWatchAppID("myapp", companion, nil); got != companion.AppID {
+			t.Fatalf("companion watch appID: want %q, got %q", companion.AppID, got)
 		}
 	})
 }
@@ -1062,5 +1388,176 @@ services:
 	warnings := unsupportedComposeWarnings(cfg.Services["api"])
 	if len(warnings) != 0 {
 		t.Errorf("expected no warnings for clean service, got %v", warnings)
+	}
+}
+
+func TestComposeBuildContext_PrefersStagefile(t *testing.T) {
+	parse := func(t *testing.T, body string) composeService {
+		t.Helper()
+		var cfg composeConfig
+		if err := yaml.Unmarshal([]byte(body), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Services["svc"]
+	}
+
+	t.Run("scalar build path with stagefile", func(t *testing.T) {
+		proj := t.TempDir()
+		svcDir := filepath.Join(proj, "api")
+		if err := os.MkdirAll(svcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(svcDir, stagefileSourceName), []byte("version: 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		svc := parse(t, "services:\n  svc:\n    build: ./api\n")
+		_, df, _, err := composeBuildContext(svc, proj)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if df != stagefileSourceName {
+			t.Fatalf("got %q, want %q", df, stagefileSourceName)
+		}
+	})
+
+	t.Run("mapping without dockerfile with stagefile", func(t *testing.T) {
+		proj := t.TempDir()
+		svcDir := filepath.Join(proj, "svc")
+		if err := os.MkdirAll(svcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(svcDir, stagefileSourceName), []byte("version: 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		svc := parse(t, "services:\n  svc:\n    build:\n      context: ./svc\n")
+		_, df, _, err := composeBuildContext(svc, proj)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if df != stagefileSourceName {
+			t.Fatalf("got %q, want %q", df, stagefileSourceName)
+		}
+	})
+
+	t.Run("explicit dockerfile wins over stagefile", func(t *testing.T) {
+		proj := t.TempDir()
+		svcDir := filepath.Join(proj, "svc")
+		if err := os.MkdirAll(svcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range map[string]string{
+			stagefileSourceName: "version: 1\n",
+			"Dockerfile.dev":    "FROM alpine\n",
+		} {
+			if err := os.WriteFile(filepath.Join(svcDir, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		svc := parse(t, "services:\n  svc:\n    build:\n      context: ./svc\n      dockerfile: Dockerfile.dev\n")
+		_, df, _, err := composeBuildContext(svc, proj)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if df != "Dockerfile.dev" {
+			t.Fatalf("got %q, want %q", df, "Dockerfile.dev")
+		}
+	})
+}
+
+func TestComposeStagefileOverride(t *testing.T) {
+	proj := t.TempDir()
+	svcDir := filepath.Join(proj, "server")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n"
+	if err := os.WriteFile(filepath.Join(svcDir, stagefileSourceName), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seeded pin so the compile never touches a live registry.
+	lockContent := "version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n"
+	if err := os.WriteFile(filepath.Join(svcDir, "build.stagefile.lock.yaml"), []byte(lockContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	compose := "services:\n  server:\n    build: ./server\n  cached:\n    image: alpine\n"
+	if err := os.WriteFile(filepath.Join(proj, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	companion := `{
+  "appId": "sh.wendy.compose-test",
+  "services": {
+    "server": {
+      "frameworks": {
+        "ros2": {"distro": "humble", "rmw": "cyclonedds"}
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(filepath.Join(proj, "wendy.json"), []byte(companion), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	path, cleanup, err := composeStagefileOverride(proj, "")
+	if err != nil {
+		t.Fatalf("composeStagefileOverride: %v", err)
+	}
+	if path == "" {
+		t.Fatal("expected an override file, got none")
+	}
+	defer cleanup()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Services map[string]struct {
+			Build struct {
+				Context    string `yaml:"context"`
+				Dockerfile string `yaml:"dockerfile"`
+			} `yaml:"build"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parsing override: %v\n%s", err, data)
+	}
+	ov, ok := doc.Services["server"]
+	if !ok || ov.Build.Context != "server" || ov.Build.Dockerfile != "Dockerfile.generated" {
+		t.Fatalf("override = %+v\n%s", doc, data)
+	}
+	if _, hasCached := doc.Services["cached"]; hasCached {
+		t.Fatalf("image-only service must not be overridden:\n%s", data)
+	}
+	generated, err := os.ReadFile(filepath.Join(svcDir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("expected compiled Dockerfile.generated: %v", err)
+	}
+	if !strings.Contains(string(generated), "sha256:fakepindigest") {
+		t.Fatalf("generated Dockerfile missing pinned digest:\n%s", generated)
+	}
+	if !strings.Contains(string(generated), "'ros-humble-rmw-cyclonedds-cpp'") {
+		t.Fatalf("generated Dockerfile missing service framework middleware:\n%s", generated)
+	}
+}
+
+func TestComposeStagefileOverride_NoStagefiles(t *testing.T) {
+	proj := t.TempDir()
+	svcDir := filepath.Join(proj, "server")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	compose := "services:\n  server:\n    build: ./server\n"
+	if err := os.WriteFile(filepath.Join(proj, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, cleanup, err := composeStagefileOverride(proj, "")
+	if err != nil {
+		t.Fatalf("composeStagefileOverride: %v", err)
+	}
+	if path != "" || cleanup != nil {
+		t.Fatalf("expected no override for a Dockerfile-only project, got %q", path)
 	}
 }

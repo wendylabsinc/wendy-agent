@@ -14,7 +14,7 @@ wendy device enroll [--name <name>] [--cloud-grpc <endpoint>] [flags]
 
 ## Description
 
-`wendy device enroll` creates an enrollment token using your stored auth session, then calls `StartProvisioning` on the connected agent so it fetches its certificate. Run [`wendy cloud login`](../cloud/login.md) first.
+`wendy device enroll` creates an enrollment token using your stored auth session, then has the connected agent fetch its certificate. Run [`wendy cloud login`](../cloud/login.md) first.
 
 › **Certificate identity:** The CSR submitted during provisioning includes the
 › device's authoritative Wendy identity as a URI Subject Alternative Name

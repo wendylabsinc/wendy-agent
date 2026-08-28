@@ -305,6 +305,7 @@ public actor WendyAgent {
             stateDirectory: stateDirectory,
             appsBase: appsBase,
             linuxBackend: linuxBackend,
+            otelPort: self.configuration.otelPort,
             onAppsChanged: { [weak self] apps in
                 await self?.updateApps(apps)
             }

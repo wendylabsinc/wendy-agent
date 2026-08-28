@@ -44,6 +44,25 @@ func TestBuildCNIConfig(t *testing.T) {
 	}
 }
 
+func TestBuildBridgeCNICheckConfigCarriesPreviousResult(t *testing.T) {
+	result := `{"cniVersion":"0.4.0","ips":[{"version":"4","address":"10.1.2.3/28","gateway":"10.1.2.1"}]}`
+	cfgJSON, err := buildBridgeCNICheckConfig("com.example.myapp", "10.1.2.0/28", result)
+	if err != nil {
+		t.Fatalf("build check config: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(cfgJSON), &cfg); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	prev, ok := cfg["prevResult"].(map[string]any)
+	if !ok || prev["cniVersion"] != "0.4.0" {
+		t.Fatalf("prevResult not preserved: %#v", cfg["prevResult"])
+	}
+	if _, err := buildBridgeCNICheckConfig("com.example.myapp", "10.1.2.0/28", `{broken`); err == nil {
+		t.Fatal("malformed previous result was accepted")
+	}
+}
+
 func TestBridgeName(t *testing.T) {
 	// Short appID: direct embedding.
 	if got := bridgeName("myapp"); got != "wendy-br-myapp" {

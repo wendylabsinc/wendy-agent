@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
-	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
@@ -44,9 +43,11 @@ func NewRootCmd() *cobra.Command {
 				jsonOutput = true
 			}
 
+			// Provider availability is probed lazily on first use (see
+			// providers.ensureAvailable) rather than here: the probes shell out
+			// to `docker`/`container` and most commands never consult a
+			// provider at all.
 			premark := phaseTimer()
-			providers.Initialize(cmd.Context())
-			premark("  prerun: providers.Initialize")
 
 			cfg, err := config.Load()
 			if err != nil {
@@ -79,6 +80,13 @@ func NewRootCmd() *cobra.Command {
 			maybeRefreshMCPSetup(cfg)
 			premark("  prerun: maybeRefreshMCPSetup")
 
+			// Reconcile credentials with the configured storage policy. Runs in
+			// the synchronous zone: the update-check goroutine below saves cfg
+			// too, and its Save must observe an already-migrated on-disk state.
+			if config.MigrateSecretsIfNeeded(cfg) {
+				cmd.PrintErrln("Moved wendy credentials into ~/.wendy/config.json.")
+			}
+
 			if dueCLIUpdateCheck(cfg) {
 				scheduleCLIUpdateCheck(cfg)
 			}
@@ -105,7 +113,10 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	root.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
-	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname")
+	// Do not name the hidden --build-host flag here: this description shows in
+	// every command's --help (persistent flag), and the E2E help specs guard
+	// that the unreleased flag never leaks into help output.
+	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname; `wendy run` accepts a comma-separated list to deploy one build to several devices (needs a remote build host and --detach)")
 
 	// Render the top-level command groups in the deliberate order below rather
 	// than alphabetically, so e.g. "project" lists before "device".
@@ -128,6 +139,8 @@ func NewRootCmd() *cobra.Command {
 	// command can only be attached to one parent.
 	installCmd := newOSInstallCmd()
 	installCmd.GroupID = "develop"
+	docsCmd := newDocsCmd()
+	docsCmd.GroupID = "develop"
 
 	// Manage
 	projectCmd := newProjectCmd()
@@ -212,6 +225,7 @@ func NewRootCmd() *cobra.Command {
 		initCmd,
 		runCmd,
 		installCmd,
+		docsCmd,
 		// Manage
 		projectCmd,
 		deviceCmd,
@@ -259,12 +273,14 @@ func NewRootCmd() *cobra.Command {
 // A command is only treated as argument-free when its Use string declares no
 // placeholder. Anything documenting a positional, such as "logs [app]" or
 // "record [topics...]", already states its own contract and is left alone, as is
-// any command that already sets Args.
+// any command that already sets Args. Commands that disable Cobra's flag parser
+// are also left alone: their remaining argv is an application-defined protocol,
+// not a list of positional arguments for Cobra to reject.
 func rejectStrayArguments(cmd *cobra.Command) {
 	for _, child := range cmd.Commands() {
 		rejectStrayArguments(child)
 	}
-	if !cmd.Runnable() || cmd.Args != nil {
+	if !cmd.Runnable() || cmd.Args != nil || cmd.DisableFlagParsing {
 		return
 	}
 	for _, token := range strings.Fields(cmd.Use)[1:] {

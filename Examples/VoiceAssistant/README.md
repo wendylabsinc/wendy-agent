@@ -8,15 +8,22 @@ detection, and 24 kHz mono PCM16 audio in both directions.
 Interruption/barge-in is enabled by default: speak over the assistant and it
 stops immediately, truncating the unheard part of its reply. The assistant can
 also control its own speaker volume — say "set the volume to 30 percent" or
-"turn it up a bit" and it adjusts the ALSA mixer through Realtime function
+"turn it up a bit" and it adjusts the output volume through Realtime function
 tools. It can answer questions that need live data too: weather anywhere via
 the free Open-Meteo API, and anything else current (news, scores, prices)
 via OpenAI web search.
 
+Audio goes through PipeWire whenever the host exposes a session socket (any
+WendyOS build with the PipeWire audio stack). That is what makes Bluetooth
+speakers and microphones reachable — raw ALSA cannot see them. On hosts
+without a PipeWire session the app falls back to the previous
+`arecord`/`aplay` ALSA path automatically.
+
 ## Hardware
 
 - A WendyOS device — Raspberry Pi 3, 4, and 5 are all supported
-- A microphone and speaker visible to ALSA (a USB speakerphone covers both)
+- A microphone and speaker: a USB speakerphone covers both, or a connected
+  Bluetooth speaker/speakerphone on a PipeWire-enabled WendyOS
 - Internet access from the device
 
 Keep the mic away from the speaker for the cleanest turn detection. The mic
@@ -38,11 +45,12 @@ ALSA card *numbers* can change across boots as USB devices enumerate, so
 prefer the stable name form `plughw:CARD=<name>,DEV=<n>` — the app's
 auto-detection (below) does this for you.
 
-## 1. Pick the ALSA devices (optional)
+## 1. Pick the audio devices (optional)
 
-By default the app auto-detects the first USB sound card for both capture and
-playback and falls back to the ALSA `default` device. If that is what you want,
-skip this step.
+By default the app uses the host's default source and sink (PipeWire mode —
+WirePlumber routes these, and a connected Bluetooth speaker set as default
+"just works"), or auto-detects the first USB sound card (ALSA fallback mode).
+If that is what you want, skip this step.
 
 To choose devices yourself, list them:
 
@@ -53,13 +61,18 @@ wendy device audio list --device <hostname>.local
 and export the identifiers before deploying:
 
 ```sh
+# PipeWire mode: a node name (stable) or numeric id from `audio list`
+export AUDIO_INPUT_DEVICE='bluez_input.00_7F_1D_51_A9_6E'
+export AUDIO_OUTPUT_DEVICE='bluez_output.00_7F_1D_51_A9_6E.1'
+
+# ALSA fallback mode: an ALSA PCM name
 export AUDIO_INPUT_DEVICE='plughw:CARD=Device,DEV=0'
 export AUDIO_OUTPUT_DEVICE='plughw:CARD=Device,DEV=0'  # or an HDMI card
 ```
 
-Use `plughw` rather than `hw` so ALSA can convert a device's native sample
-rate to the API's 24 kHz PCM stream when necessary. You can validate the
-microphone before deploying with `wendy device audio monitor`.
+In ALSA mode use `plughw` rather than `hw` so ALSA can convert a device's
+native sample rate to the API's 24 kHz PCM stream when necessary. You can
+validate the microphone before deploying with `wendy device audio monitor`.
 
 ## 2. Supply the API key and deploy
 
@@ -88,7 +101,8 @@ otherwise be silent or very quiet. Set it to `off` to leave the mixer alone.
 
 While the assistant is running, just ask it: "set the volume to 30 percent",
 "turn it up", "how loud are you?". These are Realtime function tools backed by
-`amixer` inside the container.
+`pactl` on the default sink (PipeWire mode) or `amixer` (ALSA fallback) inside
+the container.
 
 You can also drive volume manually with the interactive TUI on the host:
 

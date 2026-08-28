@@ -9,17 +9,21 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 )
 
-// fakeLogsClient implements otelpb.LogsServiceClient.
+// fakeLogsClient implements collogspb.LogsServiceClient.
 type fakeLogsClient struct {
 	mu      sync.Mutex
-	calls   []*otelpb.ExportLogsServiceRequest
+	calls   []*collogspb.ExportLogsServiceRequest
 	errOnce error
 }
 
-func (f *fakeLogsClient) Export(ctx context.Context, in *otelpb.ExportLogsServiceRequest, opts ...grpc.CallOption) (*otelpb.ExportLogsServiceResponse, error) {
+func (f *fakeLogsClient) Export(ctx context.Context, in *collogspb.ExportLogsServiceRequest, opts ...grpc.CallOption) (*collogspb.ExportLogsServiceResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.errOnce != nil {
@@ -28,52 +32,52 @@ func (f *fakeLogsClient) Export(ctx context.Context, in *otelpb.ExportLogsServic
 		return nil, err
 	}
 	f.calls = append(f.calls, in)
-	return &otelpb.ExportLogsServiceResponse{}, nil
+	return &collogspb.ExportLogsServiceResponse{}, nil
 }
 
 func (f *fakeLogsClient) count() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.calls) }
 
-// fakeMetricsClient implements otelpb.MetricsServiceClient.
+// fakeMetricsClient implements colmetricspb.MetricsServiceClient.
 type fakeMetricsClient struct {
 	mu    sync.Mutex
-	calls []*otelpb.ExportMetricsServiceRequest
+	calls []*colmetricspb.ExportMetricsServiceRequest
 }
 
-func (f *fakeMetricsClient) Export(ctx context.Context, in *otelpb.ExportMetricsServiceRequest, opts ...grpc.CallOption) (*otelpb.ExportMetricsServiceResponse, error) {
+func (f *fakeMetricsClient) Export(ctx context.Context, in *colmetricspb.ExportMetricsServiceRequest, opts ...grpc.CallOption) (*colmetricspb.ExportMetricsServiceResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, in)
-	return &otelpb.ExportMetricsServiceResponse{}, nil
+	return &colmetricspb.ExportMetricsServiceResponse{}, nil
 }
 
 func (f *fakeMetricsClient) count() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.calls) }
 
-// fakeTraceClient implements otelpb.TraceServiceClient.
+// fakeTraceClient implements coltracepb.TraceServiceClient.
 type fakeTraceClient struct {
 	mu    sync.Mutex
-	calls []*otelpb.ExportTraceServiceRequest
+	calls []*coltracepb.ExportTraceServiceRequest
 }
 
-func (f *fakeTraceClient) Export(ctx context.Context, in *otelpb.ExportTraceServiceRequest, opts ...grpc.CallOption) (*otelpb.ExportTraceServiceResponse, error) {
+func (f *fakeTraceClient) Export(ctx context.Context, in *coltracepb.ExportTraceServiceRequest, opts ...grpc.CallOption) (*coltracepb.ExportTraceServiceResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, in)
-	return &otelpb.ExportTraceServiceResponse{}, nil
+	return &coltracepb.ExportTraceServiceResponse{}, nil
 }
 
 func (f *fakeTraceClient) count() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.calls) }
 
 // logReqWithSensitive builds a log request whose record carries a deny-listed
 // attribute, used to assert export-time scrubbing.
-func logReqWithSensitive(body string) *otelpb.ExportLogsServiceRequest {
-	return &otelpb.ExportLogsServiceRequest{
-		ResourceLogs: []*otelpb.ResourceLogs{{
-			ScopeLogs: []*otelpb.ScopeLogs{{
-				LogRecords: []*otelpb.LogRecord{{
-					Body: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: body}},
-					Attributes: []*otelpb.KeyValue{
-						{Key: "password", Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: "hunter2"}}},
-						{Key: "ok", Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: "1"}}},
+func logReqWithSensitive(body string) *collogspb.ExportLogsServiceRequest {
+	return &collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{{
+			ScopeLogs: []*logspb.ScopeLogs{{
+				LogRecords: []*logspb.LogRecord{{
+					Body: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: body}},
+					Attributes: []*commonpb.KeyValue{
+						{Key: "password", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "hunter2"}}},
+						{Key: "ok", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "1"}}},
 					},
 				}},
 			}},

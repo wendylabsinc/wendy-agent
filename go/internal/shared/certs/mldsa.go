@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"time"
 
@@ -46,10 +47,54 @@ func (e *OrgMismatchError) Error() string {
 	return fmt.Sprintf("server certificate belongs to org %d, expected org %d", e.Got, e.Want)
 }
 
+// IdentityMismatchError is returned by the VerifyConnection callback when the
+// server certificate does not carry the exact asset identity the caller
+// required via ServerVerifyOpts.ExpectedIdentity. Unlike OrgMismatchError this
+// is never subject to grace mode: a certificate with no Wendy identity is a
+// mismatch, because the caller asked for a specific device and got something
+// that cannot prove it is that device.
+type IdentityMismatchError struct {
+	WantOrg   int32
+	WantAsset string
+	GotOrg    int32  // 0 when the certificate carried no Wendy identity
+	GotAsset  string // "" when the certificate carried no Wendy asset identity
+}
+
+func (e *IdentityMismatchError) Error() string {
+	if e.GotAsset == "" {
+		return fmt.Sprintf("device presented no wendy asset identity, expected asset %s in org %d", e.WantAsset, e.WantOrg)
+	}
+	return fmt.Sprintf("device presented asset %s in org %d, expected asset %s in org %d",
+		e.GotAsset, e.GotOrg, e.WantAsset, e.WantOrg)
+}
+
 // PinChecker is satisfied by *devicepin.Store. Defined here as an interface
 // so shared/certs does not import shared/devicepin (which would be circular).
 type PinChecker interface {
 	CheckAndUpdate(leaf *x509.Certificate, displayName string) error
+}
+
+// BlockingPinError marks the subset of PinChecker errors that must fail the TLS
+// handshake. Only a rejection of the PEER — the pinned key changed while the
+// pinned certificate was still valid — is one; everything else a pin store can
+// fail at is about the store, not the device.
+//
+// The distinction has to be expressed here rather than by type-switching on
+// devicepin's error, because shared/certs cannot import shared/devicepin (that
+// is why PinChecker exists at all). Making it an interface the error opts into
+// keeps the direction of the dependency intact — devicepin already imports
+// certs — and states the rule in the one place that applies it: a PinChecker
+// error aborts a verified connection only if it says it is about the peer.
+//
+// Anything that does NOT implement this is treated as best-effort. A read-only
+// config directory or a full disk is an operational fault in local bookkeeping;
+// failing every mTLS connection over it would take a fleet offline for a reason
+// that has nothing to do with whether the device is who it claims to be.
+type BlockingPinError interface {
+	error
+	// BlockingPinRejection distinguishes this error from a persistence
+	// failure. It is a marker; it does nothing.
+	BlockingPinRejection()
 }
 
 // ServerVerifyOpts configures the server certificate verification callback
@@ -58,13 +103,35 @@ type ServerVerifyOpts struct {
 	ChainPEM      string     // required: PEM-encoded CA chain for ML-DSA-aware chain verification
 	ExpectedOrgID int32      // 0 = accept any org (still extracted for pinning key)
 	PinStore      PinChecker // nil = skip pinning
+	// ExpectedIdentity, when non-nil, requires the server leaf to carry an
+	// "asset" Wendy identity whose org and entity id match it exactly. This is
+	// the CLI-side counterpart of agent/mtls.NewClientTLSConfigExpectingPeer:
+	// chain validity alone only proves the peer holds a cert from a trusted CA,
+	// not that it is the device the caller asked for, so any other same-CA cert
+	// could otherwise answer at an mDNS-advertised address.
+	//
+	// Grace mode does not apply when this is set — a cert with no Wendy
+	// identity is a mismatch, not a legacy device to be tolerated.
+	ExpectedIdentity *WendyIdentity
 	// OnServerIdentity, when non-nil, is called with the server leaf's Wendy
 	// identity BEFORE chain verification and the org-mismatch check — so the
 	// observed org is captured on every outcome (success, chain-verify failure,
 	// org mismatch, and before any client-cert rejection). Best-effort: it is
 	// not called when the cert carries no Wendy identity or identity parsing
 	// fails, and it never affects the verification result.
+	//
+	// Because it fires before verification, what it reports is UNTRUSTED — any
+	// host can assert any identity. It is for diagnostics only; use
+	// OnVerifiedServerIdentity for anything that makes a trust decision.
 	OnServerIdentity func(WendyIdentity)
+	// OnVerifiedServerIdentity, when non-nil, is called with the server leaf's
+	// Wendy identity only AFTER the chain and org checks have both passed —
+	// i.e. only for a certificate this verifier accepted. That is what makes it
+	// safe to pin against (see config.DevicePin): an impostor presenting an
+	// unsigned or cross-org cert never reaches it. Not called when the cert
+	// carries no Wendy identity. Like OnServerIdentity it never affects the
+	// verification result.
+	OnVerifiedServerIdentity func(WendyIdentity)
 }
 
 // ParseCertsFromPEM parses all CERTIFICATE blocks from a PEM bundle, handling
@@ -152,7 +219,8 @@ func verifyMLDSASignature(issuer, cert *x509.Certificate) error {
 //  1. Verifies the server cert chain with ML-DSA fallback (see mldsa.go)
 //  2. Extracts the server's Wendy org identity (IdentityFromCert)
 //  3. Returns OrgMismatchError if opts.ExpectedOrgID != 0 and orgs differ
-//  4. Calls opts.PinStore.CheckAndUpdate if PinStore is non-nil
+//  4. Calls opts.PinStore.CheckAndUpdate if PinStore is non-nil, failing the
+//     handshake only on a BlockingPinError
 //
 // InsecureSkipVerify must be true on the tls.Config — this callback is the
 // actual verification. Go's built-in verifier cannot parse ML-DSA chain certs
@@ -225,17 +293,53 @@ func BuildServerVerifyConnection(opts ServerVerifyOpts) (func(tls.ConnectionStat
 			return &OrgMismatchError{Want: opts.ExpectedOrgID, Got: identity.OrgID}
 		}
 
-		// Step 3: SPKI pin check/update.
+		// Step 2b: exact device identity check. Deliberately after the org check
+		// so a cross-org impostor still reports OrgMismatchError, whose remedy
+		// (fetch that org's cert) differs from this one's (wrong device).
+		if opts.ExpectedIdentity != nil {
+			if !hasIdentity || identity.EntityType != "asset" {
+				return &IdentityMismatchError{
+					WantOrg:   opts.ExpectedIdentity.OrgID,
+					WantAsset: opts.ExpectedIdentity.EntityID,
+					GotOrg:    identity.OrgID,
+				}
+			}
+			if identity.OrgID != opts.ExpectedIdentity.OrgID || identity.EntityID != opts.ExpectedIdentity.EntityID {
+				return &IdentityMismatchError{
+					WantOrg:   opts.ExpectedIdentity.OrgID,
+					WantAsset: opts.ExpectedIdentity.EntityID,
+					GotOrg:    identity.OrgID,
+					GotAsset:  identity.EntityID,
+				}
+			}
+		}
+
+		// Step 3: SPKI pin check/update. Only a rejection of the peer aborts
+		// the handshake — see BlockingPinError. A pin store that cannot record
+		// what it just verified has failed at bookkeeping, and dropping an
+		// otherwise fully verified connection over that would turn a read-only
+		// config directory into a total loss of device access.
 		if opts.PinStore != nil && hasIdentity && identity.EntityType == "asset" {
 			displayName := leaf.Subject.CommonName
 			if displayName == "" {
 				displayName = identity.IdentityKey()
 			}
 			if pinErr := opts.PinStore.CheckAndUpdate(leaf, displayName); pinErr != nil {
-				// Log but don't block — pin I/O failure is not a security failure
-				// when the chain has already been verified above.
-				_ = pinErr // callers that care about pinning use a Store that logs internally
+				var blocking BlockingPinError
+				if errors.As(pinErr, &blocking) {
+					return pinErr
+				}
 			}
+		}
+
+		// Step 4: surface the VERIFIED identity. Everything that could reject
+		// this certificate has already run, so unlike OnServerIdentity above,
+		// callers may base a trust decision on what this reports.
+		if opts.OnVerifiedServerIdentity != nil && hasIdentity {
+			func() {
+				defer func() { _ = recover() }()
+				opts.OnVerifiedServerIdentity(identity)
+			}()
 		}
 
 		return nil

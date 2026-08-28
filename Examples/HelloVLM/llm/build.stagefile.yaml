@@ -1,0 +1,48 @@
+version: 1
+stages:
+  - name: llm
+    # llama.cpp's llama-server, taken from the official Ollama image (which
+    # bundles CUDA 13 builds that support recent Jetson GPUs such as AGX Thor,
+    # sm_110). llama-server is run directly instead of `ollama serve` because
+    # Ollama disables vision-projector GPU offload on integrated GPUs (every
+    # Jetson), making VLM prompt processing ~10x slower.
+    from: docker.io/ollama/ollama:latest
+    # Deliberately NOT `cuda: true`. That op installs CUDA runtime wheels from
+    # pip and puts them first on the loader path; here the CUDA build already
+    # ships inside the base image, and the paths below are the ones Ollama
+    # itself lays down. Declaring cuda: would install a second, conflicting
+    # runtime on top of it.
+    env:
+      LD_LIBRARY_PATH: /usr/lib/ollama:/usr/lib/ollama/cuda_v13:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+      GGML_BACKEND_PATH: /usr/lib/ollama/cuda_v13/libggml-cuda.so
+      # The model weights are downloaded ON THE DEVICE at first start (see
+      # entrypoint.sh) into the `hellovlm-models` persist volume, so they never
+      # transit the developer machine and survive redeploys. Change these to
+      # switch models; tiers mirroring HelloMLX's DownloadVLM.sh:
+      #   fast    ggml-org/gemma-3-4b-it-GGUF   Q4_K_M (~3.3 GB, ~55 tok/s on Thor)
+      #   large   ggml-org/gemma-3-27b-it-GGUF  Q4_K_M (~16.5 GB)
+      #
+      # These are env, not download:, on purpose. A download: entry is fetched
+      # at build time into the image, which would put 16 GB of weights through
+      # the developer's machine and into every redeploy — the exact thing the
+      # on-device fetch exists to avoid.
+      MODEL_URL: https://huggingface.co/ggml-org/gemma-3-27b-it-GGUF/resolve/main/gemma-3-27b-it-Q4_K_M.gguf
+      MMPROJ_URL: https://huggingface.co/ggml-org/gemma-3-27b-it-GGUF/resolve/main/mmproj-model-f16.gguf
+      MODEL_ALIAS: gemma-3-27b-it
+    install:
+      apt:
+        # aria2 fetches the weights with parallel connections (Hugging Face
+        # throttles per connection); ca-certificates for the HTTPS fetch.
+        packages: [aria2, ca-certificates]
+    copy:
+      - from: local
+        paths: [entrypoint.sh]
+        dest: /usr/local/bin/hellovlm-llm-entrypoint
+        # Replaces the Dockerfile's `RUN chmod +x` — and unlike it, does not
+        # depend on the exec bit surviving the local checkout.
+        mode: "0755"
+    entrypoint:
+      exec: [/usr/local/bin/hellovlm-llm-entrypoint]
+    # The base image declares no user, so this ran as root and the entrypoint
+    # created /models that way. The persist volume is mounted root-owned.
+    user: root

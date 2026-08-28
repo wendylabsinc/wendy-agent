@@ -136,6 +136,14 @@ func (m cloudDiscoverModel) scanCmd() tea.Cmd {
 	onlineOnly := !m.all
 	return func() tea.Msg {
 		assets, err := fetchCloudAssetsFiltered(ctx, auth, onlineOnly)
+		if err == nil {
+			// This refreshes every cloudDiscoverRefreshInterval (10s) while the
+			// TUI is open, so this reseeds on every tick — wasteful, but
+			// best-effort and cheap enough (one config read + conditional
+			// write) not to special-case out of the picker's one true asset
+			// roster fetch.
+			seedPinsFromAssetsBestEffort(auth, assets)
+		}
 		return cloudScanMsg{assets: assets, err: err}
 	}
 }
@@ -503,6 +511,7 @@ func cloudDiscoverJSON(ctx context.Context, auth *config.AuthConfig, all bool) e
 	if err != nil {
 		return err
 	}
+	seedPinsFromAssetsBestEffort(auth, assets)
 	infos := make([]discoverDeviceInfo, 0, len(assets))
 	for _, a := range assets {
 		infos = append(infos, cloudDeviceInfoFromAsset(a, nil))
@@ -546,7 +555,11 @@ func fetchCloudAssetsFiltered(ctx context.Context, auth *config.AuthConfig, onli
 			req.OnlineOnly = boolPtr(true)
 		}
 
-		stream, err := assetClient.ListAssets(cloudContext(ctx, auth), req)
+		cloudCtx, err := cloudContext(ctx, auth)
+		if err != nil {
+			return nil, err
+		}
+		stream, err := assetClient.ListAssets(cloudCtx, req)
 		if err != nil {
 			return nil, fmt.Errorf("listing devices: %w", err)
 		}

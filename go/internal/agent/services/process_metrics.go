@@ -5,7 +5,10 @@ import (
 	"time"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
 const metricsCollectionInterval = 15 * time.Second
@@ -20,7 +23,7 @@ func CollectContainerMetrics(
 	logManager *ContainerLogManager,
 ) {
 	// cache per app so we don't rebuild on every tick
-	resources := make(map[string]*otelpb.Resource)
+	resources := make(map[string]*resourcepb.Resource)
 	startTimes := make(map[string]time.Time)
 
 	collect := func(t time.Time) {
@@ -76,8 +79,8 @@ func CollectContainerMetrics(
 }
 
 // containerResource builds the standard OTel resource for a Wendy container app.
-func containerResource(appName, version string) *otelpb.Resource {
-	attrs := []*otelpb.KeyValue{
+func containerResource(appName, version string) *resourcepb.Resource {
+	attrs := []*commonpb.KeyValue{
 		stringKV("service.name", appName),
 		stringKV("service.namespace", "wendy"),
 	}
@@ -87,7 +90,7 @@ func containerResource(appName, version string) *otelpb.Resource {
 	if h := resolveHostname(); h != "" {
 		attrs = append(attrs, stringKV("service.instance.id", h))
 	}
-	return &otelpb.Resource{Attributes: attrs}
+	return &resourcepb.Resource{Attributes: attrs}
 }
 
 // publishProcessMetrics emits one OTel metrics export with cpu.time (user+system)
@@ -96,40 +99,40 @@ func containerResource(appName, version string) *otelpb.Resource {
 // startTime is the start of the cumulative measurement window (required by OTel for Sum metrics).
 func publishProcessMetrics(
 	broadcaster TelemetryPublisher,
-	resource *otelpb.Resource,
+	resource *resourcepb.Resource,
 	scope, cpuMetric, memMetric string,
 	userCPUNanos, sysCPUNanos, memBytes int64,
 	startTime, t time.Time,
 ) {
 	nowNano := uint64(t.UnixNano())
 	startNano := uint64(startTime.UnixNano())
-	broadcaster.PublishMetrics(&otelpb.ExportMetricsServiceRequest{
-		ResourceMetrics: []*otelpb.ResourceMetrics{
+	broadcaster.PublishMetrics(&colmetricspb.ExportMetricsServiceRequest{
+		ResourceMetrics: []*metricspb.ResourceMetrics{
 			{
 				Resource: resource,
-				ScopeMetrics: []*otelpb.ScopeMetrics{
+				ScopeMetrics: []*metricspb.ScopeMetrics{
 					{
-						Scope: &otelpb.InstrumentationScope{Name: scope},
-						Metrics: []*otelpb.Metric{
+						Scope: &commonpb.InstrumentationScope{Name: scope},
+						Metrics: []*metricspb.Metric{
 							{
 								Name: cpuMetric,
 								Unit: "s",
-								Data: &otelpb.Metric_Sum{
-									Sum: &otelpb.Sum{
+								Data: &metricspb.Metric_Sum{
+									Sum: &metricspb.Sum{
 										IsMonotonic:            true,
-										AggregationTemporality: otelpb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
-										DataPoints: []*otelpb.NumberDataPoint{
+										AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
+										DataPoints: []*metricspb.NumberDataPoint{
 											{
-												Attributes:        []*otelpb.KeyValue{stringKV("cpu.mode", "user")},
+												Attributes:        []*commonpb.KeyValue{stringKV("cpu.mode", "user")},
 												StartTimeUnixNano: startNano,
 												TimeUnixNano:      nowNano,
-												Value:             &otelpb.NumberDataPoint_AsDouble{AsDouble: float64(userCPUNanos) / 1e9},
+												Value:             &metricspb.NumberDataPoint_AsDouble{AsDouble: float64(userCPUNanos) / 1e9},
 											},
 											{
-												Attributes:        []*otelpb.KeyValue{stringKV("cpu.mode", "system")},
+												Attributes:        []*commonpb.KeyValue{stringKV("cpu.mode", "system")},
 												StartTimeUnixNano: startNano,
 												TimeUnixNano:      nowNano,
-												Value:             &otelpb.NumberDataPoint_AsDouble{AsDouble: float64(sysCPUNanos) / 1e9},
+												Value:             &metricspb.NumberDataPoint_AsDouble{AsDouble: float64(sysCPUNanos) / 1e9},
 											},
 										},
 									},
@@ -138,12 +141,12 @@ func publishProcessMetrics(
 							{
 								Name: memMetric,
 								Unit: "By",
-								Data: &otelpb.Metric_Gauge{
-									Gauge: &otelpb.Gauge{
-										DataPoints: []*otelpb.NumberDataPoint{
+								Data: &metricspb.Metric_Gauge{
+									Gauge: &metricspb.Gauge{
+										DataPoints: []*metricspb.NumberDataPoint{
 											{
 												TimeUnixNano: nowNano,
-												Value:        &otelpb.NumberDataPoint_AsInt{AsInt: memBytes},
+												Value:        &metricspb.NumberDataPoint_AsInt{AsInt: memBytes},
 											},
 										},
 									},

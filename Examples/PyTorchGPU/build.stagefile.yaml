@@ -1,0 +1,39 @@
+version: 1
+stages:
+  - name: app
+    from: ubuntu:22.04
+    workdir: /app
+    # Runs on the GPU. Everything that implies — which CUDA version this
+    # board needs, which index serves its wheels, the matching CUDA runtime,
+    # keeping that runtime from being shadowed by the one the host injects,
+    # and running as root for /dev/nvmap — is resolved from the device being
+    # deployed to. Nothing here names a board, so this file is as correct on
+    # a Thor as it is on an Orin.
+    cuda: true
+    env:
+      PYTHONUNBUFFERED: "1"
+    install:
+      apt:
+        # libopenblas/libgomp1 back the PyTorch wheel's CPU BLAS and OpenMP.
+        packages:
+          - python3-pip
+          - python3-dev
+          - libopenblas-dev
+          - libblas-dev
+          - liblapack-dev
+          - gfortran
+          - cmake
+          - build-essential
+          - libgomp1
+      pip:
+        # cuda: true resolves these from the GPU wheel index for the target
+        # architecture, rather than PyPI.
+        - packages: ["torch==2.8.0", "torchvision==0.23.0", "torchaudio==2.8.0"]
+          cuda: true
+        # NumPy pinned to 1.x — the GPU PyTorch wheels are compiled against
+        # NumPy 1.x.
+        - packages: ["numpy==1.26.4", scipy, matplotlib]
+    copy:
+      - from: local
+        paths: [gpu-test.py]
+    cmd: [python3, gpu-test.py]

@@ -1,0 +1,21 @@
+version: 1
+# Converted from the intentionally un-optimized Dockerfile this replaced. See
+# ./EXPECTED.txt for what survived the conversion and what did not.
+stages:
+  - name: app
+    from: swift:6.0
+    args:
+      # Still declared and still never used to toggle the build — `profile`
+      # below is a constant, not a function of this arg. A Stagefile has no
+      # conditional, so this stays exactly as pointless as it was.
+      WENDY_DEBUG: "0"
+    workdir: /app
+    copy:
+      - from: local
+        paths: ["."]
+    build:
+      lang: swift
+      # Still a debug build, and still single-stage shipping the toolchain.
+      # The missing cache mount is gone — every build.lang gets one.
+      profile: debug
+    cmd: [/app/.build/debug/app]

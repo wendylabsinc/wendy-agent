@@ -6,7 +6,11 @@ import (
 
 	"go.uber.org/zap"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 )
 
 // fakeTelemetryPublisher captures PublishMetrics/PublishLogs/PublishTraces
@@ -14,24 +18,24 @@ import (
 // (disk I/O, batching, etc). Shared by mesh_metrics_test.go and
 // mesh_dialer_test.go.
 type fakeTelemetryPublisher struct {
-	metricReqs []*otelpb.ExportMetricsServiceRequest
-	logReqs    []*otelpb.ExportLogsServiceRequest
-	traceReqs  []*otelpb.ExportTraceServiceRequest
+	metricReqs []*colmetricspb.ExportMetricsServiceRequest
+	logReqs    []*collogspb.ExportLogsServiceRequest
+	traceReqs  []*coltracepb.ExportTraceServiceRequest
 }
 
-func (f *fakeTelemetryPublisher) PublishLogs(req *otelpb.ExportLogsServiceRequest) {
+func (f *fakeTelemetryPublisher) PublishLogs(req *collogspb.ExportLogsServiceRequest) {
 	f.logReqs = append(f.logReqs, req)
 }
-func (f *fakeTelemetryPublisher) PublishMetrics(req *otelpb.ExportMetricsServiceRequest) {
+func (f *fakeTelemetryPublisher) PublishMetrics(req *colmetricspb.ExportMetricsServiceRequest) {
 	f.metricReqs = append(f.metricReqs, req)
 }
-func (f *fakeTelemetryPublisher) PublishTraces(req *otelpb.ExportTraceServiceRequest) {
+func (f *fakeTelemetryPublisher) PublishTraces(req *coltracepb.ExportTraceServiceRequest) {
 	f.traceReqs = append(f.traceReqs, req)
 }
 
 var _ TelemetryPublisher = (*fakeTelemetryPublisher)(nil)
 
-func findMetric(req *otelpb.ExportMetricsServiceRequest, name string) *otelpb.Metric {
+func findMetric(req *colmetricspb.ExportMetricsServiceRequest, name string) *metricspb.Metric {
 	for _, rm := range req.GetResourceMetrics() {
 		for _, sm := range rm.GetScopeMetrics() {
 			for _, m := range sm.GetMetrics() {
@@ -44,7 +48,7 @@ func findMetric(req *otelpb.ExportMetricsServiceRequest, name string) *otelpb.Me
 	return nil
 }
 
-func scopeName(req *otelpb.ExportMetricsServiceRequest) string {
+func scopeName(req *colmetricspb.ExportMetricsServiceRequest) string {
 	for _, rm := range req.GetResourceMetrics() {
 		for _, sm := range rm.GetScopeMetrics() {
 			return sm.GetScope().GetName()
@@ -53,7 +57,7 @@ func scopeName(req *otelpb.ExportMetricsServiceRequest) string {
 	return ""
 }
 
-func attrString(attrs []*otelpb.KeyValue, key string) (string, bool) {
+func attrString(attrs []*commonpb.KeyValue, key string) (string, bool) {
 	for _, a := range attrs {
 		if a.GetKey() == key {
 			return a.GetValue().GetStringValue(), true
@@ -88,7 +92,7 @@ func TestMeshMetricsPublishesConnectionsBytesAndDialDuration(t *testing.T) {
 		t.Fatal("mesh.connections metric missing")
 	}
 	sum := conns.GetSum()
-	if sum == nil || !sum.GetIsMonotonic() || sum.GetAggregationTemporality() != otelpb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE {
+	if sum == nil || !sum.GetIsMonotonic() || sum.GetAggregationTemporality() != metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE {
 		t.Fatalf("mesh.connections not a monotonic cumulative sum: %+v", sum)
 	}
 	var okCount, errCount int64
@@ -147,10 +151,10 @@ func TestMeshMetricsPublishesConnectionsBytesAndDialDuration(t *testing.T) {
 		t.Fatal("mesh.dial.duration_ms metric missing")
 	}
 	hist := dial.GetHistogram()
-	if hist == nil || hist.GetAggregationTemporality() != otelpb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE {
+	if hist == nil || hist.GetAggregationTemporality() != metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE {
 		t.Fatal("mesh.dial.duration_ms is not a cumulative histogram")
 	}
-	var lanHDP, relayHDP *otelpb.HistogramDataPoint
+	var lanHDP, relayHDP *metricspb.HistogramDataPoint
 	for _, dp := range hist.GetDataPoints() {
 		mode, _ := attrString(dp.GetAttributes(), "mesh.mode")
 		switch mode {
@@ -179,7 +183,7 @@ func TestMeshMetricsPublishSkipsWhenNothingRecorded(t *testing.T) {
 
 // TestMeshMetricsHistogramBucketBoundaries pins down the "<=" inclusive
 // upper-bound semantics for the explicit bucket boundaries (matching the
-// otelpb HistogramDataPoint doc comment) and the overflow bucket for values
+// OTLP HistogramDataPoint doc comment) and the overflow bucket for values
 // past the last bound.
 func TestMeshMetricsHistogramBucketBoundaries(t *testing.T) {
 	pub := &fakeTelemetryPublisher{}

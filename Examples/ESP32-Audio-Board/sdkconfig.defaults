@@ -1,0 +1,36 @@
+# Defaults for the ESP32-S3-AUDIO-Board (ESP32-S3R8: octal 8 MB PSRAM, 16 MB flash).
+# Verified against Waveshare's own demo firmware's sdkconfig for this exact board.
+
+# --- Partition table: custom CSV sized for the 16 MB flash ---
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# --- Flash: 16 MB, 80 MHz (matches the octal PSRAM speed below) ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHFREQ="80m"
+
+# --- Octal PSRAM (S3R8 module) ---
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_CLK_IO=30
+CONFIG_SPIRAM_CS_IO=26
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# --- mbedTLS: dynamic buffers keep the WebSocket/HTTPS TLS sessions off the
+#     static heap so WiFi buffers and audio DMA don't get starved. ---
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+
+# --- Console over UART (on-board USB-UART bridge) ---
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# --- Main task needs headroom for WiFi/TLS/WebSocket setup at boot ---
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

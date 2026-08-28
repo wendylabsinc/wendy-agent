@@ -17,6 +17,7 @@ import (
 	"io"
 	"math/rand"
 	"runtime"
+	"sync"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -24,14 +25,18 @@ import (
 const (
 	MinSize uint64 = 16 << 10
 	AvgSize uint64 = 64 << 10
-	MaxSize uint64 = 256 << 10
+	// Keep each gRPC WriteChunks message at or below 64 KiB. Hardware testing
+	// showed that larger messages fail more readily on some USB-NCM links; the
+	// compressed WriteChunks transport handles content-sensitive stalls, while
+	// this bound limits worst-case per-message flow-control pressure.
+	MaxSize uint64 = 64 << 10
 )
 
 // AlgoVersion identifies the chunking algorithm. Bump it whenever a change here
 // would alter the chunk boundaries or hashes for the same input (gear table,
 // masks, size constants, or region size). Callers that persist chunk manifests
 // use it to reject stale caches produced by an older algorithm.
-const AlgoVersion = 2
+const AlgoVersion = 3
 
 // regionSize is the granularity of parallel chunking. The input is cut into
 // regions of this size and each is chunked independently, so a forced boundary
@@ -39,6 +44,17 @@ const AlgoVersion = 2
 // dedup cost of these forced seams is ~one chunk per region (<0.5%), while still
 // yielding hundreds of regions for a multi-GiB layer — plenty of parallelism.
 const regionSize = 16 << 20 // 16 MiB
+
+// maxConcurrentReaderAtRegions bounds the process-wide transient memory used
+// by ChunkReaderAt. Parallel deploys multiply at several levels (Compose
+// services × image layers × regions); allowing every call to independently use
+// GOMAXPROCS workers retained nearly 800 MiB of 16 MiB buffers in practice.
+// Four slots keep the hot working set at 64 MiB while still overlapping disk
+// reads and hashing across independent layers and services. This changes only
+// scheduling, never region seams, chunk boundaries, or hashes.
+const maxConcurrentReaderAtRegions = 4
+
+var readerAtRegionSlots = make(chan struct{}, maxConcurrentReaderAtRegions)
 
 // FastCDC normalized-chunking masks. AvgSize is 2^16, so the target is 16 hash
 // bits; normalization makes cuts harder than target before AvgSize (maskS, 18
@@ -80,6 +96,70 @@ func Chunk(r io.Reader) ([]Ref, error) {
 	return ChunkBytes(data)
 }
 
+// ChunkStream content-chunks a sequential stream without first materializing
+// it or rereading it. It preserves ChunkReaderAt's fixed region seams and
+// therefore produces identical refs for the same bytes. Region processing is
+// overlapped with reading the following region and shares the process-wide
+// memory slots used by ChunkReaderAt.
+func ChunkStream(r io.Reader, progress func(completed int64)) ([]Ref, int64, error) {
+	type regionResult struct{ refs []Ref }
+	var (
+		g          errgroup.Group
+		parts      []*regionResult
+		total      int64
+		progressMu sync.Mutex
+		completed  int64
+	)
+
+	for {
+		readerAtRegionSlots <- struct{}{}
+		buf := make([]byte, regionSize)
+		n, err := io.ReadFull(r, buf)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			<-readerAtRegionSlots
+			_ = g.Wait()
+			return nil, total, err
+		}
+		if n == 0 {
+			<-readerAtRegionSlots
+			break
+		}
+
+		region := buf[:n]
+		base := total
+		total += int64(n)
+		part := &regionResult{}
+		parts = append(parts, part)
+		g.Go(func() error {
+			defer func() { <-readerAtRegionSlots }()
+			part.refs = fastCDCRegion(region, uint64(base))
+			if progress != nil {
+				progressMu.Lock()
+				completed += int64(len(region))
+				progress(completed)
+				progressMu.Unlock()
+			}
+			return nil
+		})
+		if err == io.ErrUnexpectedEOF {
+			break
+		}
+	}
+	if err := g.Wait(); err != nil {
+		return nil, total, err
+	}
+
+	count := 0
+	for _, part := range parts {
+		count += len(part.refs)
+	}
+	refs := make([]Ref, 0, count)
+	for _, part := range parts {
+		refs = append(refs, part.refs...)
+	}
+	return refs, total, nil
+}
+
 // ChunkBytes returns the content-defined chunks of an in-memory buffer. Regions
 // are chunked concurrently and reference data directly (no copy).
 func ChunkBytes(data []byte) ([]Ref, error) {
@@ -101,6 +181,14 @@ func ChunkBytes(data []byte) ([]Ref, error) {
 // the worker count rather than the whole input — important on the agent, which
 // re-chunks multi-GiB layers without holding them in RAM.
 func ChunkReaderAt(ra io.ReaderAt, size int64) ([]Ref, error) {
+	return ChunkReaderAtWithProgress(ra, size, nil)
+}
+
+// ChunkReaderAtWithProgress is ChunkReaderAt with an optional concurrency-safe
+// progress callback. completed advances once a region has been fully read,
+// boundary-scanned, and hashed; total is always size. Callbacks are serialized
+// in increasing completed-byte order and must return promptly.
+func ChunkReaderAtWithProgress(ra io.ReaderAt, size int64, progress func(completed, total int64)) ([]Ref, error) {
 	if size < 0 {
 		return nil, fmt.Errorf("chunk: negative size %d", size)
 	}
@@ -111,14 +199,25 @@ func ChunkReaderAt(ra io.ReaderAt, size int64) ([]Ref, error) {
 	if n == 0 {
 		return nil, nil
 	}
+	var progressMu sync.Mutex
+	var completed int64
 	return chunkRegions(n, func(start, end int) ([]Ref, error) {
+		readerAtRegionSlots <- struct{}{}
+		defer func() { <-readerAtRegionSlots }()
 		buf := make([]byte, end-start)
 		// io.ReaderAt fills buf fully unless it returns an error; a full read may
 		// still report io.EOF, so trust the byte count rather than the error.
 		if got, err := ra.ReadAt(buf, int64(start)); got != len(buf) {
 			return nil, fmt.Errorf("chunk: short read at %d: %d/%d bytes: %w", start, got, len(buf), err)
 		}
-		return fastCDCRegion(buf, uint64(start)), nil
+		refs := fastCDCRegion(buf, uint64(start))
+		if progress != nil {
+			progressMu.Lock()
+			completed += int64(end - start)
+			progress(completed, size)
+			progressMu.Unlock()
+		}
+		return refs, nil
 	})
 }
 

@@ -1,0 +1,4 @@
+version: 1
+sourceHash: sha256:2cde9d71306a67cc5f65b73293d893019587e4e05a4c07759b3219c007a356e6
+images:
+    node:latest: sha256:bde0dae02f2b12d2bce5ee72b2432f0e511767b7b2dc4dd3b064df11ae422fee

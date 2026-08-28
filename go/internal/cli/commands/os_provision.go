@@ -57,7 +57,11 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 
 	var transportOpt grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
-		tlsCfg, err := certs.LoadTLSConfig(cert.PemCertificate, cert.PemCertificateChain, cert.PemPrivateKey, "")
+		keyPEM, err := cert.PrivateKeyPEM()
+		if err != nil {
+			return nil, fmt.Errorf("loading client key: %w", err)
+		}
+		tlsCfg, err := certs.LoadTLSConfig(cert.PemCertificate, cert.PemCertificateChain, keyPEM, "")
 		if err != nil {
 			return nil, fmt.Errorf("loading TLS config: %w", err)
 		}
@@ -74,7 +78,10 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 
 	certClient := cloudpb.NewCertificateServiceClient(cloudConn)
 
-	tokenCtx := cloudContext(ctx, auth)
+	tokenCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
 
 	if orgID == 0 {
 		orgID = int32(cert.OrganizationID)

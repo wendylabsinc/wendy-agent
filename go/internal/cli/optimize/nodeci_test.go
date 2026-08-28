@@ -26,8 +26,8 @@ func TestNodeCIFlagsNpmInstallWithLockfile(t *testing.T) {
 	if f.Analyzer != "node-ci" || f.Severity != SeverityWarning {
 		t.Fatalf("finding = %+v", f)
 	}
-	if f.Fix == nil || f.Fix.New != "RUN npm ci" {
-		t.Fatalf("fix = %+v", f.Fix)
+	if f.Fix != nil {
+		t.Fatalf("expected no auto-fix (npm ci can hard-fail on a drifted lockfile — report-only), got %+v", f.Fix)
 	}
 }
 
@@ -88,15 +88,18 @@ func TestNodeCISilentOnIndividualDependencyInstall(t *testing.T) {
 	}
 }
 
-func TestNodeCIFixesProjectInstallWithFlag(t *testing.T) {
+func TestNodeCIReportsProjectInstallWithFlag(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	tg := dockerfileTargetInDir(t, dir, "FROM node:20\nRUN npm install --legacy-peer-deps\n")
 	got := nodeCIAnalyzer{}.Analyze(tg)
-	if len(got) != 1 || got[0].Fix == nil || got[0].Fix.New != "RUN npm ci --legacy-peer-deps" {
-		t.Fatalf("got %+v, want one safe npm ci fix", got)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
+	}
+	if got[0].Fix != nil {
+		t.Fatalf("expected no auto-fix (npm ci can hard-fail on a drifted lockfile — report-only), got %+v", got[0].Fix)
 	}
 }
 

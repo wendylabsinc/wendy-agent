@@ -1,24 +1,29 @@
-# FastAPI Example (Auto-Generated Dockerfile)
+# FastAPI Example
 
-This example demonstrates wendy's automatic Dockerfile generation feature for Python projects.
+A small FastAPI service with CRUD endpoints, built from a Stagefile
+(`build.stagefile.yaml`).
 
-## What's Special About This Example?
-
-Unlike other Python examples, this project **does not include a Dockerfile**. When you run `wendy run`, wendy will:
-
-1. Detect the `requirements.txt` file
-2. Read the Python version from `.python-version` (3.12)
-3. Detect FastAPI framework from requirements
-4. Automatically generate an appropriate Dockerfile
-5. Build and run the container
+> **This example used to demonstrate something else.** It shipped without any
+> build file so that `wendy run` would detect `requirements.txt`, read
+> `.python-version`, recognise FastAPI, and offer to generate a Dockerfile for
+> you. That auto-generation path still exists in the CLI — it is what any
+> Python project with no build file gets — but this example no longer
+> exercises it, because a Stagefile takes precedence over both a Dockerfile
+> and language detection. If you want to see the generated-Dockerfile flow,
+> delete `build.stagefile.yaml` and `build.stagefile.lock.yaml` from a copy of
+> this directory and run `wendy run` there.
 
 ## Files
 
-- `main.py` - FastAPI application with CRUD endpoints
-- `requirements.txt` - Python dependencies (FastAPI, uvicorn, pydantic)
-- `.python-version` - Specifies Python 3.12
-- `wendy.json` - Wendy project configuration
-- `.gitignore` - Ignores the generated Dockerfile
+- `main.py` — FastAPI application with CRUD endpoints
+- `requirements.txt` — Python dependencies (FastAPI, uvicorn, pydantic)
+- `build.stagefile.yaml` — the build descriptor
+- `build.stagefile.lock.yaml` — the resolved base-image digest, committed
+- `.python-version` — 3.12, for local tooling. Note the Stagefile pins
+  `python:3.11-slim`, matching the Dockerfile that preceded it; the
+  auto-generation path is what read `.python-version`.
+- `wendy.json` — Wendy project configuration
+- `.gitignore` — ignores the compiled `Dockerfile`/`Dockerfile.generated`
 
 ## Running
 
@@ -27,34 +32,28 @@ cd Examples/FastAPIExample
 wendy run
 ```
 
-You'll see output like:
+`wendy run` compiles `build.stagefile.yaml` into `Dockerfile.generated` (plus
+a derived `Dockerfile.generated.dockerignore`) and builds that. Both are build
+output — regenerated on every build, and safe to delete.
 
+## The build
+
+```yaml
+version: 1
+stages:
+  - name: app
+    from: python:3.11-slim
+    workdir: /app
+    install:
+      pip:
+        - requirements: requirements.txt
+    copy:
+      - from: local
+        paths: [main.py]
+    cmd: [python, main.py]
 ```
-Detected Python project (requirements.txt found)
-Detected entry point: main.py
-Python version: 3.12
-Detected framework: FastAPI
-Generate Dockerfile and continue? [y/n]
-```
 
-## Generated Dockerfile
-
-Wendy will generate a Dockerfile similar to:
-
-```dockerfile
-FROM python:3.12
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-EXPOSE 8000
-
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
+`main.py`'s `__main__` block starts uvicorn on `$PORT` (default 8000).
 
 ## API Endpoints
 

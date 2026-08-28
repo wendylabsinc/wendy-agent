@@ -179,6 +179,7 @@ func runFleetGroupLs(ctx context.Context, cloudGRPC string) error {
 	if err != nil {
 		return err
 	}
+	seedPinsFromAssetsBestEffort(auth, assets)
 
 	counts := groupCounts(assets)
 	names := make([]string, 0, len(counts))
@@ -219,6 +220,7 @@ func runFleetGroupShow(ctx context.Context, cloudGRPC, group string) error {
 	if err != nil {
 		return err
 	}
+	seedPinsFromAssetsBestEffort(auth, assets)
 	members := assetsInGroup(assets, group)
 
 	if jsonOutput || !isInteractiveTerminal() {
@@ -262,6 +264,7 @@ func runFleetGroupMembership(ctx context.Context, cloudGRPC, group string, devic
 	if err != nil {
 		return err
 	}
+	seedPinsFromAssetsBestEffort(auth, assets)
 
 	conn, err := dialCloudGRPC(auth)
 	if err != nil {
@@ -269,6 +272,11 @@ func runFleetGroupMembership(ctx context.Context, cloudGRPC, group string, devic
 	}
 	defer conn.Close()
 	client := cloudpb.NewAssetServiceClient(conn)
+
+	cloudCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return err
+	}
 
 	results := make([]fleetMembershipResult, 0, len(devices))
 	failures := 0
@@ -299,7 +307,7 @@ func runFleetGroupMembership(ctx context.Context, cloudGRPC, group string, devic
 
 		// UpdateAsset replaces the tags list with the value sent; other (optional)
 		// fields left unset are not modified.
-		if _, uErr := client.UpdateAsset(cloudContext(ctx, auth), &cloudpb.UpdateAssetRequest{
+		if _, uErr := client.UpdateAsset(cloudCtx, &cloudpb.UpdateAssetRequest{
 			Id:   asset.GetId(),
 			Tags: newTags,
 		}); uErr != nil {

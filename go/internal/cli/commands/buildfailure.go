@@ -1,0 +1,217 @@
+package commands
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"regexp"
+	"strings"
+)
+
+const maxBuildFailureCauseLen = 220
+
+var (
+	buildFailureANSIRe   = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	buildFailurePrefixRe = regexp.MustCompile(`^#\d+(?:\s+\d+(?:\.\d+)?)?\s+`)
+	buildElapsedPrefixRe = regexp.MustCompile(`^\d+(?:\.\d+)?\s+`)
+	buildSourceRe        = regexp.MustCompile(`^([^\s:]*Dockerfile[^:]*):(\d+)$`)
+	buildStepRe          = regexp.MustCompile(`^>?\s*\[([^\]]+)]\s+(.+?)(?::)?$`)
+	githubPackageRe      = regexp.MustCompile(`github\.com/([^/\s]+)/([^/@\s]+?)(?:\.git)?@`)
+
+	persistBuildFailureLog = writeBuildFailureLog
+)
+
+type buildFailureSummary struct {
+	step       string
+	cause      string
+	source     string
+	detailsURL string
+	fallback   string
+}
+
+// summarizeBuildFailure extracts the useful part of a BuildKit failure. The
+// raw stream repeats the failed command and dependency diagnostics several
+// times; presenting those repetitions makes the actual cause hard to find.
+func summarizeBuildFailure(raw string, buildErr error) buildFailureSummary {
+	clean := buildFailureANSIRe.ReplaceAllString(raw, "")
+	lines := strings.Split(clean, "\n")
+	var summary buildFailureSummary
+	var errorsSeen []string
+
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+
+		if m := buildSourceRe.FindStringSubmatch(line); m != nil {
+			summary.source = m[1] + ":" + m[2]
+		}
+		if value, ok := strings.CutPrefix(line, "View build details:"); ok {
+			summary.detailsURL = strings.TrimSpace(value)
+		}
+
+		withoutVertex := buildFailurePrefixRe.ReplaceAllString(line, "")
+		withoutTime := buildElapsedPrefixRe.ReplaceAllString(withoutVertex, "")
+		if m := buildStepRe.FindStringSubmatch(withoutVertex); m != nil && isBuildCommand(m[2]) {
+			summary.step = m[1] + " — " + compactBuildCommand(strings.TrimSuffix(m[2], ":"))
+		}
+
+		if strings.HasPrefix(withoutTime, "ERROR:") {
+			message := strings.TrimSpace(strings.TrimPrefix(withoutTime, "ERROR:"))
+			if !isBuildkitWrapperError(message) {
+				errorsSeen = appendUnique(errorsSeen, compactBuildFailureText(message))
+			}
+		}
+	}
+
+	if strings.Contains(clean, "conflicting dependencies") && strings.Contains(clean, "ResolutionImpossible") {
+		packages := githubPackages(clean)
+		if len(packages) >= 2 {
+			summary.cause = "pip dependency conflict: " + strings.Join(packages, " and ")
+			if strings.Contains(clean, "unknown 0.0.0") {
+				summary.cause += " both report package metadata as unknown 0.0.0"
+			}
+		} else {
+			summary.cause = "pip could not resolve the requested package dependencies"
+		}
+	} else if len(errorsSeen) > 0 {
+		summary.cause = errorsSeen[0]
+	}
+
+	if buildErr != nil {
+		summary.fallback = compactBuildFailureText(buildErr.Error())
+	}
+	return summary
+}
+
+func renderBuildFailure(w io.Writer, label, raw string, buildErr error) {
+	summary := summarizeBuildFailure(raw, buildErr)
+	heading := "Build failure details"
+	if label != "" {
+		heading += ": " + label
+	}
+	fmt.Fprintf(w, "\n%s\n", heading)
+	if summary.step != "" {
+		fmt.Fprintf(w, "  Step: %s\n", summary.step)
+	}
+	if summary.cause != "" {
+		fmt.Fprintf(w, "  Cause: %s\n", summary.cause)
+	} else if summary.fallback != "" {
+		fmt.Fprintf(w, "  Cause: %s\n", summary.fallback)
+	}
+	if summary.source != "" {
+		fmt.Fprintf(w, "  At: %s\n", summary.source)
+	}
+	if summary.detailsURL != "" {
+		fmt.Fprintf(w, "  Details: %s\n", summary.detailsURL)
+	}
+
+	if path, err := persistBuildFailureLog(label, raw); err == nil {
+		fmt.Fprintf(w, "  Build log: %s\n", path)
+	} else {
+		// Never discard the only diagnostic when the temporary directory is
+		// unavailable. This is rare, and the verbose fallback is preferable to
+		// a tidy but unactionable error.
+		fmt.Fprintf(w, "\n%s", raw)
+		if raw != "" && !strings.HasSuffix(raw, "\n") {
+			fmt.Fprintln(w)
+		}
+	}
+}
+
+func writeBuildFailureLog(label, raw string) (string, error) {
+	name := sanitizeBuildLogLabel(label)
+	f, err := os.CreateTemp("", "wendy-build-"+name+"-*.log")
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	if _, err := io.WriteString(f, raw); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+func sanitizeBuildLogLabel(label string) string {
+	if label == "" {
+		return "image"
+	}
+	var b strings.Builder
+	for _, r := range strings.ToLower(label) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "image"
+	}
+	return b.String()
+}
+
+func githubPackages(text string) []string {
+	var out []string
+	for _, match := range githubPackageRe.FindAllStringSubmatch(text, -1) {
+		repo := strings.TrimSuffix(match[2], ".git")
+		out = appendUnique(out, match[1]+"/"+repo)
+	}
+	return out
+}
+
+func isBuildCommand(text string) bool {
+	for _, prefix := range []string{"RUN ", "COPY ", "ADD ", "FROM ", "WORKDIR ", "ENV ", "ARG "} {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func compactBuildCommand(command string) string {
+	if strings.HasPrefix(command, "RUN ") {
+		for _, tool := range []string{"pip install", "apt-get", "npm ", "yarn ", "swift build", "go build", "cargo build"} {
+			if strings.Contains(command, tool) && len(command) > 120 {
+				return "RUN " + strings.TrimSpace(tool) + " …"
+			}
+		}
+	}
+	return truncateBuildFailureText(command, 140)
+}
+
+func compactBuildFailureText(text string) string {
+	return truncateBuildFailureText(strings.Join(strings.Fields(text), " "), maxBuildFailureCauseLen)
+}
+
+func truncateBuildFailureText(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	return strings.TrimSpace(text[:max-1]) + "…"
+}
+
+func isBuildkitWrapperError(message string) bool {
+	return strings.HasPrefix(message, "failed to build:") ||
+		strings.HasPrefix(message, "failed to solve:") ||
+		strings.HasPrefix(message, "process \"") ||
+		strings.HasPrefix(message, "ResolutionImpossible:")
+}
+
+func appendUnique(values []string, value string) []string {
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}

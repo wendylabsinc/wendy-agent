@@ -8,7 +8,12 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
 // TelemetryServiceV2 implements agentpbv2.WendyTelemetryServiceServer by
@@ -30,11 +35,12 @@ func (s *TelemetryServiceV2) StreamLogs(req *agentpbv2.StreamLogsRequest, stream
 	// telemetry is buffered during replay and not lost, and to avoid duplicate
 	// deliveries from both the disk history and the in-memory ring buffer.
 	var subID string
-	var ch <-chan *otelpb.ExportLogsServiceRequest
+	var recent []*collogspb.ExportLogsServiceRequest
+	var ch <-chan *collogspb.ExportLogsServiceRequest
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		subID, ch = s.broadcaster.SubscribeLogsNoPrefill()
 	} else {
-		subID, ch = s.broadcaster.SubscribeLogs()
+		subID, recent, ch = s.broadcaster.SubscribeLogsWithHistory()
 	}
 	defer s.broadcaster.UnsubscribeLogs(subID)
 
@@ -43,7 +49,7 @@ func (s *TelemetryServiceV2) StreamLogs(req *agentpbv2.StreamLogsRequest, stream
 	// to a chatty co-tenant, which would replay nothing for the requested app.
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		entries := s.buffer.ReadLastNMatching(SignalLogs, int(*req.LastN), func(m proto.Message) proto.Message {
-			logs, ok := m.(*otelpb.ExportLogsServiceRequest)
+			logs, ok := m.(*collogspb.ExportLogsServiceRequest)
 			if !ok {
 				return nil
 			}
@@ -55,13 +61,25 @@ func (s *TelemetryServiceV2) StreamLogs(req *agentpbv2.StreamLogsRequest, stream
 			return logs
 		})
 		for _, e := range entries {
-			logs, ok := e.(*otelpb.ExportLogsServiceRequest)
+			logs, ok := e.(*collogspb.ExportLogsServiceRequest)
 			if !ok {
 				continue
 			}
 			if err := stream.Send(&agentpbv2.StreamLogsResponse{Logs: logs, IsHistory: true}); err != nil {
 				return err
 			}
+		}
+	}
+
+	for _, logs := range recent {
+		if req.ServiceName != nil || req.MinSeverity != nil || req.AppName != nil {
+			logs = filterLogsV2(logs, req)
+			if logs == nil {
+				continue
+			}
+		}
+		if err := stream.Send(&agentpbv2.StreamLogsResponse{Logs: logs, IsHistory: true}); err != nil {
+			return err
 		}
 	}
 
@@ -91,7 +109,7 @@ func (s *TelemetryServiceV2) StreamMetrics(req *agentpbv2.StreamMetricsRequest, 
 	// Subscribe first to buffer live items during replay; skip cache prefill
 	// when replaying history to avoid duplicate metric deliveries.
 	var subID string
-	var ch <-chan *otelpb.ExportMetricsServiceRequest
+	var ch <-chan *colmetricspb.ExportMetricsServiceRequest
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		subID, ch = s.broadcaster.SubscribeMetricsNoPrefill()
 	} else {
@@ -103,7 +121,7 @@ func (s *TelemetryServiceV2) StreamMetrics(req *agentpbv2.StreamMetricsRequest, 
 	// batches that survive the filter, not the last N device-wide.
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		entries := s.buffer.ReadLastNMatching(SignalMetrics, int(*req.LastN), func(m proto.Message) proto.Message {
-			metrics, ok := m.(*otelpb.ExportMetricsServiceRequest)
+			metrics, ok := m.(*colmetricspb.ExportMetricsServiceRequest)
 			if !ok {
 				return nil
 			}
@@ -115,7 +133,7 @@ func (s *TelemetryServiceV2) StreamMetrics(req *agentpbv2.StreamMetricsRequest, 
 			return metrics
 		})
 		for _, e := range entries {
-			metrics, ok := e.(*otelpb.ExportMetricsServiceRequest)
+			metrics, ok := e.(*colmetricspb.ExportMetricsServiceRequest)
 			if !ok {
 				continue
 			}
@@ -156,7 +174,7 @@ func (s *TelemetryServiceV2) StreamTraces(req *agentpbv2.StreamTracesRequest, st
 	// batches that survive the filter, not the last N device-wide.
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		entries := s.buffer.ReadLastNMatching(SignalTraces, int(*req.LastN), func(m proto.Message) proto.Message {
-			traces, ok := m.(*otelpb.ExportTraceServiceRequest)
+			traces, ok := m.(*coltracepb.ExportTraceServiceRequest)
 			if !ok {
 				return nil
 			}
@@ -168,7 +186,7 @@ func (s *TelemetryServiceV2) StreamTraces(req *agentpbv2.StreamTracesRequest, st
 			return traces
 		})
 		for _, e := range entries {
-			traces, ok := e.(*otelpb.ExportTraceServiceRequest)
+			traces, ok := e.(*coltracepb.ExportTraceServiceRequest)
 			if !ok {
 				continue
 			}
@@ -201,7 +219,7 @@ func (s *TelemetryServiceV2) StreamTraces(req *agentpbv2.StreamTracesRequest, st
 
 // filterLogsV2 filters log records based on the v2 stream request filters.
 // Returns nil if all records are filtered out.
-func filterLogsV2(req *otelpb.ExportLogsServiceRequest, filter *agentpbv2.StreamLogsRequest) *otelpb.ExportLogsServiceRequest {
+func filterLogsV2(req *collogspb.ExportLogsServiceRequest, filter *agentpbv2.StreamLogsRequest) *collogspb.ExportLogsServiceRequest {
 	if filter == nil {
 		return req
 	}
@@ -217,23 +235,23 @@ func filterLogsV2(req *otelpb.ExportLogsServiceRequest, filter *agentpbv2.Stream
 		return req
 	}
 
-	var filteredResourceLogs []*otelpb.ResourceLogs
+	var filteredResourceLogs []*logspb.ResourceLogs
 	for _, rl := range req.GetResourceLogs() {
 		if !matchResourceAttributes(rl.GetResource(), serviceName, appName) {
 			continue
 		}
 
 		if minSeverity > 0 {
-			var filteredScopeLogs []*otelpb.ScopeLogs
+			var filteredScopeLogs []*logspb.ScopeLogs
 			for _, sl := range rl.GetScopeLogs() {
-				var filteredRecords []*otelpb.LogRecord
+				var filteredRecords []*logspb.LogRecord
 				for _, lr := range sl.GetLogRecords() {
 					if int32(lr.GetSeverityNumber()) >= minSeverity {
 						filteredRecords = append(filteredRecords, lr)
 					}
 				}
 				if len(filteredRecords) > 0 {
-					filteredScopeLogs = append(filteredScopeLogs, &otelpb.ScopeLogs{
+					filteredScopeLogs = append(filteredScopeLogs, &logspb.ScopeLogs{
 						Scope:      sl.GetScope(),
 						LogRecords: filteredRecords,
 						SchemaUrl:  sl.GetSchemaUrl(),
@@ -241,7 +259,7 @@ func filterLogsV2(req *otelpb.ExportLogsServiceRequest, filter *agentpbv2.Stream
 				}
 			}
 			if len(filteredScopeLogs) > 0 {
-				filteredResourceLogs = append(filteredResourceLogs, &otelpb.ResourceLogs{
+				filteredResourceLogs = append(filteredResourceLogs, &logspb.ResourceLogs{
 					Resource:  rl.GetResource(),
 					ScopeLogs: filteredScopeLogs,
 					SchemaUrl: rl.GetSchemaUrl(),
@@ -255,12 +273,12 @@ func filterLogsV2(req *otelpb.ExportLogsServiceRequest, filter *agentpbv2.Stream
 	if len(filteredResourceLogs) == 0 {
 		return nil
 	}
-	return &otelpb.ExportLogsServiceRequest{ResourceLogs: filteredResourceLogs}
+	return &collogspb.ExportLogsServiceRequest{ResourceLogs: filteredResourceLogs}
 }
 
 // filterMetricsV2 filters metrics based on the v2 stream request filters.
 // Returns nil if all metrics are filtered out.
-func filterMetricsV2(req *otelpb.ExportMetricsServiceRequest, filter *agentpbv2.StreamMetricsRequest) *otelpb.ExportMetricsServiceRequest {
+func filterMetricsV2(req *colmetricspb.ExportMetricsServiceRequest, filter *agentpbv2.StreamMetricsRequest) *colmetricspb.ExportMetricsServiceRequest {
 	if filter == nil {
 		return req
 	}
@@ -273,7 +291,7 @@ func filterMetricsV2(req *otelpb.ExportMetricsServiceRequest, filter *agentpbv2.
 		return req
 	}
 
-	var filteredResourceMetrics []*otelpb.ResourceMetrics
+	var filteredResourceMetrics []*metricspb.ResourceMetrics
 	for _, rm := range req.GetResourceMetrics() {
 		if !matchResourceAttributes(rm.GetResource(), serviceName, appName) {
 			continue
@@ -281,16 +299,16 @@ func filterMetricsV2(req *otelpb.ExportMetricsServiceRequest, filter *agentpbv2.
 
 		if metricNamePrefix != nil {
 			prefix := *metricNamePrefix
-			var filteredScopeMetrics []*otelpb.ScopeMetrics
+			var filteredScopeMetrics []*metricspb.ScopeMetrics
 			for _, sm := range rm.GetScopeMetrics() {
-				var filteredMetrics []*otelpb.Metric
+				var filteredMetrics []*metricspb.Metric
 				for _, m := range sm.GetMetrics() {
 					if strings.HasPrefix(m.GetName(), prefix) {
 						filteredMetrics = append(filteredMetrics, m)
 					}
 				}
 				if len(filteredMetrics) > 0 {
-					filteredScopeMetrics = append(filteredScopeMetrics, &otelpb.ScopeMetrics{
+					filteredScopeMetrics = append(filteredScopeMetrics, &metricspb.ScopeMetrics{
 						Scope:     sm.GetScope(),
 						Metrics:   filteredMetrics,
 						SchemaUrl: sm.GetSchemaUrl(),
@@ -298,7 +316,7 @@ func filterMetricsV2(req *otelpb.ExportMetricsServiceRequest, filter *agentpbv2.
 				}
 			}
 			if len(filteredScopeMetrics) > 0 {
-				filteredResourceMetrics = append(filteredResourceMetrics, &otelpb.ResourceMetrics{
+				filteredResourceMetrics = append(filteredResourceMetrics, &metricspb.ResourceMetrics{
 					Resource:     rm.GetResource(),
 					ScopeMetrics: filteredScopeMetrics,
 					SchemaUrl:    rm.GetSchemaUrl(),
@@ -312,12 +330,12 @@ func filterMetricsV2(req *otelpb.ExportMetricsServiceRequest, filter *agentpbv2.
 	if len(filteredResourceMetrics) == 0 {
 		return nil
 	}
-	return &otelpb.ExportMetricsServiceRequest{ResourceMetrics: filteredResourceMetrics}
+	return &colmetricspb.ExportMetricsServiceRequest{ResourceMetrics: filteredResourceMetrics}
 }
 
 // filterTracesV2 filters traces based on the v2 stream request filters.
 // Returns nil if all spans are filtered out.
-func filterTracesV2(req *otelpb.ExportTraceServiceRequest, filter *agentpbv2.StreamTracesRequest) *otelpb.ExportTraceServiceRequest {
+func filterTracesV2(req *coltracepb.ExportTraceServiceRequest, filter *agentpbv2.StreamTracesRequest) *coltracepb.ExportTraceServiceRequest {
 	if filter == nil {
 		return req
 	}
@@ -330,7 +348,7 @@ func filterTracesV2(req *otelpb.ExportTraceServiceRequest, filter *agentpbv2.Str
 		return req
 	}
 
-	var filteredResourceSpans []*otelpb.ResourceSpans
+	var filteredResourceSpans []*tracepb.ResourceSpans
 	for _, rs := range req.GetResourceSpans() {
 		if !matchResourceAttributes(rs.GetResource(), serviceName, appName) {
 			continue
@@ -338,16 +356,16 @@ func filterTracesV2(req *otelpb.ExportTraceServiceRequest, filter *agentpbv2.Str
 
 		if spanNamePrefix != nil {
 			prefix := *spanNamePrefix
-			var filteredScopeSpans []*otelpb.ScopeSpans
+			var filteredScopeSpans []*tracepb.ScopeSpans
 			for _, ss := range rs.GetScopeSpans() {
-				var filteredSpans []*otelpb.Span
+				var filteredSpans []*tracepb.Span
 				for _, s := range ss.GetSpans() {
 					if strings.HasPrefix(s.GetName(), prefix) {
 						filteredSpans = append(filteredSpans, s)
 					}
 				}
 				if len(filteredSpans) > 0 {
-					filteredScopeSpans = append(filteredScopeSpans, &otelpb.ScopeSpans{
+					filteredScopeSpans = append(filteredScopeSpans, &tracepb.ScopeSpans{
 						Scope:     ss.GetScope(),
 						Spans:     filteredSpans,
 						SchemaUrl: ss.GetSchemaUrl(),
@@ -355,7 +373,7 @@ func filterTracesV2(req *otelpb.ExportTraceServiceRequest, filter *agentpbv2.Str
 				}
 			}
 			if len(filteredScopeSpans) > 0 {
-				filteredResourceSpans = append(filteredResourceSpans, &otelpb.ResourceSpans{
+				filteredResourceSpans = append(filteredResourceSpans, &tracepb.ResourceSpans{
 					Resource:   rs.GetResource(),
 					ScopeSpans: filteredScopeSpans,
 					SchemaUrl:  rs.GetSchemaUrl(),
@@ -369,5 +387,5 @@ func filterTracesV2(req *otelpb.ExportTraceServiceRequest, filter *agentpbv2.Str
 	if len(filteredResourceSpans) == 0 {
 		return nil
 	}
-	return &otelpb.ExportTraceServiceRequest{ResourceSpans: filteredResourceSpans}
+	return &coltracepb.ExportTraceServiceRequest{ResourceSpans: filteredResourceSpans}
 }

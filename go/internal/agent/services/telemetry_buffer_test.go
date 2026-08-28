@@ -12,7 +12,9 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 )
 
 // writeFrameTo is a test helper that writes a single length-prefixed frame.
@@ -71,11 +73,11 @@ func TestReadFramesFrom_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "logs-000001.bin")
 
-	entry := &otelpb.ExportLogsServiceRequest{
-		ResourceLogs: []*otelpb.ResourceLogs{
-			{ScopeLogs: []*otelpb.ScopeLogs{{
-				LogRecords: []*otelpb.LogRecord{{
-					Body: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: "hello"}},
+	entry := &collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{
+			{ScopeLogs: []*logspb.ScopeLogs{{
+				LogRecords: []*logspb.LogRecord{{
+					Body: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "hello"}},
 				}},
 			}}},
 		},
@@ -99,7 +101,7 @@ func TestReadFramesFrom_PartialFrame(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "logs-000001.bin")
 
-	entry := &otelpb.ExportLogsServiceRequest{}
+	entry := &collogspb.ExportLogsServiceRequest{}
 	writeFrameTo(t, path, entry)
 
 	// Append a partial header (only 2 bytes — incomplete frame).
@@ -120,7 +122,7 @@ func TestReadFramesFrom_PartialFrame(t *testing.T) {
 func TestReadFramesFrom_MaxN(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "logs-000001.bin")
-	entry := &otelpb.ExportLogsServiceRequest{}
+	entry := &collogspb.ExportLogsServiceRequest{}
 	for i := 0; i < 5; i++ {
 		writeFrameTo(t, path, entry)
 	}
@@ -148,12 +150,12 @@ func makeTestBuffer(t *testing.T, maxTotal, segmentSize int64) (*TelemetryBuffer
 
 func nopLogger() *zap.Logger { return zap.NewNop() }
 
-func makeLogReq(body string) *otelpb.ExportLogsServiceRequest {
-	return &otelpb.ExportLogsServiceRequest{
-		ResourceLogs: []*otelpb.ResourceLogs{{
-			ScopeLogs: []*otelpb.ScopeLogs{{
-				LogRecords: []*otelpb.LogRecord{{
-					Body: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: body}},
+func makeLogReq(body string) *collogspb.ExportLogsServiceRequest {
+	return &collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{{
+			ScopeLogs: []*logspb.ScopeLogs{{
+				LogRecords: []*logspb.LogRecord{{
+					Body: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: body}},
 				}},
 			}},
 		}},
@@ -244,7 +246,7 @@ func TestTelemetryBuffer_ReadLastN(t *testing.T) {
 	}
 	// Should be c, d, e in order.
 	for i, want := range []string{"c", "d", "e"} {
-		req := msgs[i].(*otelpb.ExportLogsServiceRequest)
+		req := msgs[i].(*collogspb.ExportLogsServiceRequest)
 		got := req.GetResourceLogs()[0].GetScopeLogs()[0].GetLogRecords()[0].GetBody().GetStringValue()
 		if got != want {
 			t.Errorf("msg[%d]: want %q, got %q", i, want, got)
@@ -306,7 +308,7 @@ func TestTelemetryBuffer_ReadLastNMatching(t *testing.T) {
 	buf, _ := makeTestBuffer(t, 10*1024*1024, 100)
 
 	logBody := func(m proto.Message) string {
-		logs, ok := m.(*otelpb.ExportLogsServiceRequest)
+		logs, ok := m.(*collogspb.ExportLogsServiceRequest)
 		if !ok {
 			return ""
 		}

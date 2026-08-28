@@ -93,7 +93,7 @@ Attached `wendy run` starts the container and streams output. Ctrl+C stops the c
 
 `--deploy` creates the container but does not start it. To start that existing app later, use `wendy device apps start <app-id>`, knowing that the current agent-backed start path attaches to the app stream. There is no `wendy device apps start --detach` flag.
 
-`--user-args` is repeatable and also accepts comma-separated values. Prefer repeated flags when values could contain commas.
+`--user-args` is repeatable and also accepts comma-separated values. Prefer repeated flags when values could contain commas. The values are appended to the image's own entrypoint/`CMD`, not substituted for it, so `--user-args --port,8080` runs `<image entrypoint> --port 8080`.
 
 ## Stream logs
 

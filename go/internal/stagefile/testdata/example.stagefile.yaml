@@ -1,0 +1,20 @@
+version: 1
+stages:
+  - name: deps
+    from: python:3.12-slim
+    install:
+      apt:
+        packages: [libgomp1]
+      pip:
+        - requirements: requirements.txt
+          buildPackages: [build-essential]
+
+  - name: app
+    from: python:3.12-slim
+    copy:
+      - from: deps
+        paths: ["/usr/local/lib/python3.12/site-packages"]
+      - from: local
+        paths: ["app.py"]
+    entrypoint:
+      exec: [python3, app.py]

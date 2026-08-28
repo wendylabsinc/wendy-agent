@@ -18,7 +18,10 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
 const (
@@ -444,21 +447,21 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		if atomic.LoadInt32(&redactAtomic) == 0 {
 			resource = redactOffResource
 		}
-		broadcaster.PublishLogs(&otelpb.ExportLogsServiceRequest{
-			ResourceLogs: []*otelpb.ResourceLogs{
+		broadcaster.PublishLogs(&collogspb.ExportLogsServiceRequest{
+			ResourceLogs: []*logspb.ResourceLogs{
 				{
 					Resource: resource,
-					ScopeLogs: []*otelpb.ScopeLogs{
+					ScopeLogs: []*logspb.ScopeLogs{
 						{
-							Scope: &otelpb.InstrumentationScope{Name: "wendy.dmesg"},
-							LogRecords: []*otelpb.LogRecord{
+							Scope: &commonpb.InstrumentationScope{Name: "wendy.dmesg"},
+							LogRecords: []*logspb.LogRecord{
 								{
 									TimeUnixNano:         timeNano,
 									ObservedTimeUnixNano: uint64(time.Now().UnixNano()),
 									SeverityNumber:       severity,
 									SeverityText:         severityText,
-									Body: &otelpb.AnyValue{
-										Value: &otelpb.AnyValue_StringValue{StringValue: message},
+									Body: &commonpb.AnyValue{
+										Value: &commonpb.AnyValue_StringValue{StringValue: message},
 									},
 								},
 							},
@@ -485,12 +488,12 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 // attribute records the effective redaction state for downstream monitoring.
 // "partial" indicates redaction is active but has documented gaps (see startup log);
 // "false" means no redaction at all (requires dual-domain consent).
-func dmesgResource(redact bool, hostname string) *otelpb.Resource {
+func dmesgResource(redact bool, hostname string) *resourcepb.Resource {
 	redactStr := "partial"
 	if !redact {
 		redactStr = "false"
 	}
-	attrs := []*otelpb.KeyValue{
+	attrs := []*commonpb.KeyValue{
 		stringKV("service.name", "kernel"),
 		stringKV("service.namespace", "wendy"),
 		stringKV("wendy.dmesg.redact", redactStr),
@@ -498,7 +501,7 @@ func dmesgResource(redact bool, hostname string) *otelpb.Resource {
 	if !redact && hostname != "" {
 		attrs = append(attrs, stringKV("service.instance.id", hostname))
 	}
-	return &otelpb.Resource{Attributes: attrs}
+	return &resourcepb.Resource{Attributes: attrs}
 }
 
 // kmsgBootEpochNanoseconds returns the wall-clock Unix nanosecond timestamp
@@ -537,23 +540,23 @@ func kmsgTimestampToWall(tsUS int64, bootEpoch int64) uint64 {
 // pollute default INFO+ views. Critical levels (KERN_CRIT and above) are
 // mapped to their natural OTel equivalents so they remain visible in SIEM
 // alerting pipelines (SOC2-CC7, ISO27001-A.12, NIST-AU-2).
-func kernelLevelToOTEL(level int) (otelpb.SeverityNumber, string) {
+func kernelLevelToOTEL(level int) (logspb.SeverityNumber, string) {
 	switch level {
 	case 7: // KERN_DEBUG
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE, "TRACE"
+		return logspb.SeverityNumber_SEVERITY_NUMBER_TRACE, "TRACE"
 	case 6: // KERN_INFO
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE4, "TRACE4"
+		return logspb.SeverityNumber_SEVERITY_NUMBER_TRACE4, "TRACE4"
 	case 5: // KERN_NOTICE
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG, "DEBUG"
+		return logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG, "DEBUG"
 	case 4: // KERN_WARNING
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG2, "DEBUG2"
+		return logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG2, "DEBUG2"
 	case 3: // KERN_ERR
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG3, "DEBUG3"
+		return logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG3, "DEBUG3"
 	case 2: // KERN_CRIT
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN"
+		return logspb.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN"
 	case 1: // KERN_ALERT
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR"
+		return logspb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR"
 	default: // KERN_EMERG (0)
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL, "FATAL"
+		return logspb.SeverityNumber_SEVERITY_NUMBER_FATAL, "FATAL"
 	}
 }

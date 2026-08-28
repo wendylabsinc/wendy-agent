@@ -22,7 +22,12 @@ func NewManager(logger *zap.Logger, configPath string) *Manager {
 // ApplyFloor reads the config-partition floor and advances the clock if it
 // is ahead of the current time. Called once at agent startup.
 func (m *Manager) ApplyFloor() {
-	floor := readFloor(m.configPath)
+	floor, refused := readFloor(m.configPath)
+	if !refused.IsZero() && m.logger != nil {
+		m.logger.Warn("timesync: ignoring implausible clock floor",
+			zap.Time("floor", refused),
+			zap.Time("min", floorMin), zap.Time("max", floorMax))
+	}
 	if floor.IsZero() {
 		return
 	}

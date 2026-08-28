@@ -14,7 +14,9 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/protobuf/proto"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
 // normalizeCloudHost ensures host has a port component, defaulting to :443.
@@ -111,9 +113,9 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 		}
 
 		err = f.runOnce(ctx,
-			otelpb.NewLogsServiceClient(conn),
-			otelpb.NewMetricsServiceClient(conn),
-			otelpb.NewTraceServiceClient(conn),
+			collogspb.NewLogsServiceClient(conn),
+			colmetricspb.NewMetricsServiceClient(conn),
+			coltracepb.NewTraceServiceClient(conn),
 		)
 		conn.Close()
 
@@ -194,12 +196,12 @@ func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string,
 // every frame in its batch is exported successfully (at-least-once delivery;
 // the cloud tolerates duplicates). Org/asset identity is derived server-side
 // from the mTLS client certificate, so no identifiers are sent in the request.
-func (f *CloudFlusher) runOnce(ctx context.Context, logs otelpb.LogsServiceClient, metrics otelpb.MetricsServiceClient, traces otelpb.TraceServiceClient) error {
+func (f *CloudFlusher) runOnce(ctx context.Context, logs collogspb.LogsServiceClient, metrics colmetricspb.MetricsServiceClient, traces coltracepb.TraceServiceClient) error {
 	if f.buffer == nil {
 		return nil
 	}
 	if err := f.flushSignal(SignalLogs, func(msg proto.Message) error {
-		req := msg.(*otelpb.ExportLogsServiceRequest)
+		req := msg.(*collogspb.ExportLogsServiceRequest)
 		sanitizeLogs(req)
 		_, err := logs.Export(ctx, req)
 		return err
@@ -207,7 +209,7 @@ func (f *CloudFlusher) runOnce(ctx context.Context, logs otelpb.LogsServiceClien
 		return err
 	}
 	if err := f.flushSignal(SignalMetrics, func(msg proto.Message) error {
-		req := msg.(*otelpb.ExportMetricsServiceRequest)
+		req := msg.(*colmetricspb.ExportMetricsServiceRequest)
 		sanitizeMetrics(req)
 		_, err := metrics.Export(ctx, req)
 		return err
@@ -215,7 +217,7 @@ func (f *CloudFlusher) runOnce(ctx context.Context, logs otelpb.LogsServiceClien
 		return err
 	}
 	return f.flushSignal(SignalTraces, func(msg proto.Message) error {
-		req := msg.(*otelpb.ExportTraceServiceRequest)
+		req := msg.(*coltracepb.ExportTraceServiceRequest)
 		sanitizeTraces(req)
 		_, err := traces.Export(ctx, req)
 		return err

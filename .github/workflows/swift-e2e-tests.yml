@@ -125,7 +125,7 @@ jobs:
   #   name: macOS 26 → Ubuntu 24
   #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
-  #   runs-on: [self-hosted, macos-26]
+  #   runs-on: [self-hosted, macOS, ARM64, wendy-macos-26]
   #   concurrency:
   #     group: device-ubuntu-24
   #     cancel-in-progress: false
@@ -137,7 +137,7 @@ jobs:
   #       with:
   #         tests: ${{ inputs.tests || '' }}
   #         target_id: macos-ubuntu-24
-  #         runner_id: macos-26
+  #         runner_id: wendy-macos-26
   #         cli_os: macOS
   #         device_address: ${{ vars.SWIFT_E2E_UBUNTU_24_DEVICE_ADDRESS }}
   #         agent_os: linux
@@ -151,7 +151,7 @@ jobs:
   #   name: macOS 26 → Jetson Orin Nano
   #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
-  #   runs-on: [self-hosted, macos-26]
+  #   runs-on: [self-hosted, macOS, ARM64, wendy-macos-26]
   #   concurrency:
   #     group: device-jetson-orin-nano
   #     cancel-in-progress: false
@@ -163,7 +163,7 @@ jobs:
   #       with:
   #         tests: ${{ inputs.tests || '' }}
   #         target_id: macos-jetson-orin-nano
-  #         runner_id: macos-26
+  #         runner_id: wendy-macos-26
   #         cli_os: macOS
   #         device_address: ${{ vars.SWIFT_E2E_JETSON_ORIN_NANO_DEVICE_ADDRESS }}
   #         agent_os: wendyOS
@@ -326,7 +326,7 @@ jobs:
   #   name: macOS 26 → Mac mini
   #   needs: swift-e2e-local-macos
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
-  #   runs-on: [self-hosted, macos-26]
+  #   runs-on: [self-hosted, macOS, ARM64, wendy-macos-26]
   #   concurrency:
   #     group: device-mac-mini
   #     cancel-in-progress: false
@@ -338,7 +338,7 @@ jobs:
   #       with:
   #         tests: ${{ inputs.tests || '' }}
   #         target_id: macos-mac-mini
-  #         runner_id: macos-26
+  #         runner_id: wendy-macos-26
   #         cli_os: macOS
   #         device_address: mac-mini.local
   #         agent_os: macOS
@@ -376,7 +376,7 @@ jobs:
   #   name: macOS 26 → Raspberry Pi 5
   #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
-  #   runs-on: [self-hosted, macos-26]
+  #   runs-on: [self-hosted, macOS, ARM64, wendy-macos-26]
   #   concurrency:
   #     group: device-raspberry-pi-5
   #     cancel-in-progress: false
@@ -388,7 +388,7 @@ jobs:
   #       with:
   #         tests: ${{ inputs.tests || '' }}
   #         target_id: macos-raspberry-pi-5
-  #         runner_id: macos-26
+  #         runner_id: wendy-macos-26
   #         cli_os: macOS
   #         device_address: wendyos-raspberry-pi-5.local
   #         agent_os: wendyOS

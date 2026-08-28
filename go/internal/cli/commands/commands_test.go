@@ -92,16 +92,25 @@ func TestNewRunCmd(t *testing.T) {
 	}
 }
 
-// TestWithWatchInvariants verifies the watch loop's required invariants are
-// applied: it must run detached and never prompt, so a rapid series of saves
-// can't block on log streaming or an interactive confirmation.
+// TestWithWatchInvariants verifies that watch runs attached and non-interactive,
+// creates session state, and preserves an explicit --detach request.
 func TestWithWatchInvariants(t *testing.T) {
 	got := withWatchInvariants(runOptions{})
-	if !got.detach {
-		t.Error("detach should be forced true in watch mode")
+	if got.detach {
+		t.Error("watch runs attached: it streams the app's logs between redeploys")
 	}
 	if !got.yes {
 		t.Error("yes should be forced true in watch mode")
+	}
+	if got.watchState == nil {
+		t.Error("watch mode should initialize per-session deploy state")
+	}
+	if !got.isWatch() {
+		t.Error("session state should mark the run as part of a watch session")
+	}
+
+	if detached := withWatchInvariants(runOptions{detach: true}); !detached.detach {
+		t.Error("withWatchInvariants cleared an explicit --detach")
 	}
 
 	// Other options must be preserved.
@@ -109,6 +118,9 @@ func TestWithWatchInvariants(t *testing.T) {
 	out := withWatchInvariants(in)
 	if out.product != "demo" || out.prefix != "apps/demo" || out.chunking != chunkingForce {
 		t.Errorf("watch invariants clobbered unrelated options: %+v", out)
+	}
+	if again := withWatchInvariants(out); again.watchState != out.watchState {
+		t.Error("watch invariants replaced existing session state")
 	}
 }
 
@@ -148,6 +160,32 @@ func TestRunResolveOptions_YesIsNonInteractive(t *testing.T) {
 	}
 	if !cfg.nonInteractive {
 		t.Error("--yes should set non-interactive resolve")
+	}
+}
+
+// TestRunResolveOptions_NoBluetooth verifies `wendy run` never opts into BLE
+// discovery: it cannot deploy over BLE, so the picker must not scan for or list
+// BLE devices the user would only be told are unusable.
+func TestRunResolveOptions_NoBluetooth(t *testing.T) {
+	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
+	for _, o := range runResolveOptions(runOptions{}) {
+		o(&cfg)
+	}
+	if cfg.includeBluetooth {
+		t.Error("wendy run must not include Bluetooth devices in device resolution")
+	}
+}
+
+// TestIncludeBluetooth verifies BLE discovery is off unless a command opts in,
+// so a new command that has no BLE code path gets the safe default.
+func TestIncludeBluetooth(t *testing.T) {
+	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
+	if cfg.includeBluetooth {
+		t.Error("resolveConfig zero value should exclude Bluetooth")
+	}
+	IncludeBluetooth()(&cfg)
+	if !cfg.includeBluetooth {
+		t.Error("IncludeBluetooth() should enable Bluetooth discovery")
 	}
 }
 
@@ -249,6 +287,12 @@ func TestNewBuildCmd(t *testing.T) {
 	}
 	if cmd.Flags().Lookup("builder") == nil {
 		t.Error("missing flag \"builder\"")
+	}
+	if cmd.Flags().Lookup("service") == nil {
+		t.Error("missing flag \"service\"")
+	}
+	if cmd.Flags().Lookup("max-concurrency") == nil {
+		t.Error("missing flag \"max-concurrency\"")
 	}
 }
 

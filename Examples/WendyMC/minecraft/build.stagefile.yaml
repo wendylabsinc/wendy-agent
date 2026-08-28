@@ -1,0 +1,48 @@
+version: 1
+stages:
+  - name: minecraft
+    from: itzg/minecraft-server:latest
+    # This service is nothing but configuration: itzg/minecraft-server reads
+    # every one of these from the environment, and docker-compose.yml supplies
+    # them as build args. Declaring them as args with defaults and then
+    # exporting them as env is the whole file — there is no source to copy and
+    # no command to run.
+    #
+    # RCON_PASSWORD is a demo default, not a secret. It is baked into the image
+    # as an ENV, so it is readable by anyone who can run `docker history` or
+    # unpack a layer, and RCON grants full remote server console. That is
+    # tolerable only because this example binds RCON to 127.0.0.1 on a host
+    # network. CHANGE IT — via `--build-arg RCON_PASSWORD=...`, and in
+    # ../webui, which must match — before exposing this server to anything.
+    # Baking it in at build time is inherited from the Dockerfile this
+    # replaced; a runtime secret is the real fix and is not something the
+    # build file can provide.
+    args:
+      EULA: "TRUE"
+      TYPE: PAPER
+      VERSION: LATEST
+      MEMORY: 4G
+      MAX_PLAYERS: "10"
+      MOTD: WendyMC — hosted by Wendy
+      ONLINE_MODE: "TRUE"
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: wendymc-local
+      RCON_PORT: "25575"
+      SERVER_PORT: "25565"
+    env:
+      EULA: ${EULA}
+      TYPE: ${TYPE}
+      VERSION: ${VERSION}
+      MEMORY: ${MEMORY}
+      MAX_PLAYERS: ${MAX_PLAYERS}
+      MOTD: ${MOTD}
+      ONLINE_MODE: ${ONLINE_MODE}
+      ENABLE_RCON: ${ENABLE_RCON}
+      RCON_PASSWORD: ${RCON_PASSWORD}
+      RCON_PORT: ${RCON_PORT}
+      SERVER_PORT: ${SERVER_PORT}
+    # The base image's own entrypoint (/image/scripts/start) and workdir
+    # (/data) are what run; nothing here replaces them. The user is declared
+    # only because the compiler's default for a final stage is a non-root UID,
+    # and that start script owns /data as root.
+    user: root

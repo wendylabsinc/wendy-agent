@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
 // fieldToKeyValue is exercised via a real zap.Field so we cover how zap encodes
@@ -16,7 +16,7 @@ import (
 //
 // Named fieldKV (not kv) to avoid colliding with the kv(key, val string)
 // fixture helper already declared in cloud_telemetry_sanitize_test.go.
-func fieldKV(t *testing.T, f zap.Field) *otelpb.KeyValue {
+func fieldKV(t *testing.T, f zap.Field) *commonpb.KeyValue {
 	t.Helper()
 	return fieldToKeyValue(zapcore.Field(f))
 }
@@ -27,7 +27,7 @@ func TestFieldToKeyValue_TimeExportsTimestampNotLocation(t *testing.T) {
 	if got == nil {
 		t.Fatal("zap.Time produced a nil attribute")
 	}
-	sv, ok := got.Value.Value.(*otelpb.AnyValue_StringValue)
+	sv, ok := got.Value.Value.(*commonpb.AnyValue_StringValue)
 	if !ok {
 		t.Fatalf("zap.Time value type = %T, want string", got.Value.Value)
 	}
@@ -83,7 +83,7 @@ func TestFieldToKeyValue_TimeFullType(t *testing.T) {
 	if got == nil {
 		t.Fatal("zap.Time (far future) produced a nil attribute")
 	}
-	sv, ok := got.Value.Value.(*otelpb.AnyValue_StringValue)
+	sv, ok := got.Value.Value.(*commonpb.AnyValue_StringValue)
 	if !ok {
 		t.Fatalf("zap.Time (far future) value type = %T, want string", got.Value.Value)
 	}
@@ -116,7 +116,7 @@ func TestFieldToKeyValue_TimeTypeNonUTC(t *testing.T) {
 	if got == nil {
 		t.Fatal("zap.Time (non-UTC) produced a nil attribute")
 	}
-	sv, ok := got.Value.Value.(*otelpb.AnyValue_StringValue)
+	sv, ok := got.Value.Value.(*commonpb.AnyValue_StringValue)
 	if !ok {
 		t.Fatalf("zap.Time (non-UTC) value type = %T, want string", got.Value.Value)
 	}
@@ -164,7 +164,7 @@ func TestFieldToKeyValue_ReflectTypeMarshalErrorFallsBackToSprint(t *testing.T) 
 	if got == nil {
 		t.Fatal("zap.Any(chan) produced a nil attribute, want fmt.Sprint fallback")
 	}
-	sv, ok := got.Value.Value.(*otelpb.AnyValue_StringValue)
+	sv, ok := got.Value.Value.(*commonpb.AnyValue_StringValue)
 	if !ok {
 		t.Fatalf("zap.Any(chan) value type = %T, want string", got.Value.Value)
 	}

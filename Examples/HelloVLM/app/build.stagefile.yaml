@@ -1,0 +1,49 @@
+version: 1
+# KNOWN BROKEN — the one Stagefile in Examples/ that does not build, and the
+# cause is upstream rather than here. Building in a container builds the
+# swift-json-schema build-tool plugin for Linux, and its JSONSchemaGenerator
+# does not compile there:
+#
+#   Sources/JSONSchemaGenerator/main.swift:9:93: error: reference to var
+#   'stderr' is not concurrency-safe because it involves shared mutable state
+#
+# Reproduced on both swift:6.1-noble and swift:6.3.2-noble. It does not show up
+# on the host cross-compile path this replaced, because there the plugin is
+# built for macOS, where `stderr` is a different declaration. Fixing it means a
+# change in wendylabsinc/swift-json-schema; until then, deleting this file and
+# its lockfile puts the example back on Package.swift detection, which works.
+stages:
+  # See ../../HelloWorld/build.stagefile.yaml for why this is two stages.
+  - name: build
+    from: swift:6.3.2-noble
+    workdir: /build
+    copy:
+      - from: local
+        paths: [Package.swift]
+      - from: local
+        paths: [Sources]
+    build:
+      lang: swift
+      product: HelloVLM
+  - name: app
+    from: swift:6.3.2-noble-slim
+    # No workdir on purpose. AppDirectories.makeDataDirectory() creates "Runs"
+    # relative to the working directory, and wendy.json mounts the
+    # `hellovlm-runs` persist volume at the absolute path /Runs — the two only
+    # coincide when the working directory is /. A WORKDIR /app here would send
+    # every archived run into the container's ephemeral layer instead.
+    copy:
+      - from: build
+        paths: [/build/.build/release/HelloVLM]
+        dest: /HelloVLM
+      # The SwiftPM resource bundle carrying Resources/index.html. It has to
+      # sit next to the executable: on Linux Bundle.module traps with
+      # "unable to find bundle named HelloVLM_HelloVLM" when the directory is
+      # missing, so leaving it out is a startup crash, not a fallback.
+      - from: build
+        paths: [/build/.build/release/HelloVLM_HelloVLM.bundle]
+        dest: /HelloVLM_HelloVLM.bundle
+    cmd: [/HelloVLM]
+    # Opens /dev/video0 (root:video 0660) and writes archived runs into the
+    # root-owned /Runs volume.
+    user: root

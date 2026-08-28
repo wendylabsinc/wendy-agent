@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -278,6 +279,60 @@ func TestRuntimeDir(t *testing.T) {
 	expectedUID = func() (uint32, bool) { return 0, false }
 	if got := RuntimeDir(); got != "" {
 		t.Errorf("unresolvable expected UID should yield \"\", got %q", got)
+	}
+}
+
+// RuntimeDir can fail for three unrelated reasons, and collapsing them into a
+// bare "" leaves both the operator and the agent's own logs with no way to tell
+// a missing "wendy" account from a session that simply is not up. Each reason
+// must name the specific precondition that failed.
+func TestUnavailableReason(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	origGlob, origUID := SocketGlob, expectedUID
+	t.Cleanup(func() { SocketGlob, expectedUID = origGlob, origUID })
+
+	ownUID := uint32(os.Getuid())
+	SocketGlob = filepath.Join(dir, "user-*", "pipewire-0")
+
+	// No "wendy" account: the reason must say so, not blame a missing socket.
+	expectedUID = func() (uint32, bool) { return 0, false }
+	reason := UnavailableReason()
+	if !strings.Contains(reason, "wendy") {
+		t.Errorf("unresolvable user reason = %q, want it to name the \"wendy\" user", reason)
+	}
+
+	// No socket: the reason must name where the agent looked, so an operator
+	// can check that exact path.
+	expectedUID = func() (uint32, bool) { return ownUID, true }
+	reason = UnavailableReason()
+	if !strings.Contains(reason, SocketGlob) {
+		t.Errorf("missing socket reason = %q, want it to name the glob %q", reason, SocketGlob)
+	}
+
+	// Socket present but owned by someone else: the reason must say that,
+	// rather than claiming no session is running when one plainly is.
+	sessionDir := filepath.Join(dir, "user-1000")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	listenUnix(t, filepath.Join(sessionDir, "pipewire-0"))
+	expectedUID = func() (uint32, bool) { return ownUID + 1, true }
+	reason = UnavailableReason()
+	if !strings.Contains(reason, "owned by") {
+		t.Errorf("owner-mismatch reason = %q, want it to report the owning uid", reason)
+	}
+	if strings.Contains(reason, "no PipeWire session") {
+		t.Errorf("owner-mismatch reason = %q, must not claim no session is running", reason)
+	}
+
+	// A usable session has no reason to report.
+	expectedUID = func() (uint32, bool) { return ownUID, true }
+	if reason = UnavailableReason(); reason != "" {
+		t.Errorf("UnavailableReason() = %q with a valid session, want \"\"", reason)
 	}
 }
 

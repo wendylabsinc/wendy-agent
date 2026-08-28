@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -30,12 +31,18 @@ func TestPlanServicePushSkipsDisabled(t *testing.T) {
 		"a": {Context: "./a"},
 		"b": {Context: "./b"},
 	}
-	skip, hashes := planServicePushSkips(context.Background(), nil, t.TempDir(), "app", "devkey", "linux/arm64", nil, services, nil)
+	skip, hashes, dockerfiles := planServicePushSkips(context.Background(), nil, t.TempDir(), "app", "devkey", "linux/arm64", nil, services, nil)
 	if len(skip) != 0 {
 		t.Fatalf("expected no skips when disabled, got %v", skip)
 	}
 	if len(hashes) != 0 {
 		t.Fatalf("expected no hashes computed when disabled, got %v", hashes)
+	}
+	// The short-circuit also means no build file was resolved, so the build path
+	// must fall back to resolving each service itself rather than building with
+	// an empty dockerfile.
+	if len(dockerfiles) != 0 {
+		t.Fatalf("expected no build files resolved when disabled, got %v", dockerfiles)
 	}
 }
 
@@ -48,6 +55,7 @@ type multiSvcContainerClient struct {
 	appName       string
 	services      []string
 	presentLayers map[string]bool
+	queryCalls    [][]string
 }
 
 func (f *multiSvcContainerClient) ListContainers(_ context.Context, _ *agentpb.ListContainersRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[agentpb.ListContainersResponse], error) {
@@ -61,6 +69,7 @@ func (f *multiSvcContainerClient) ListContainers(_ context.Context, _ *agentpb.L
 }
 
 func (f *multiSvcContainerClient) QueryLayers(_ context.Context, in *agentpb.QueryLayersRequest, _ ...grpc.CallOption) (*agentpb.QueryLayersResponse, error) {
+	f.queryCalls = append(f.queryCalls, append([]string(nil), in.GetDiffIds()...))
 	resp := &agentpb.QueryLayersResponse{}
 	for _, id := range in.GetDiffIds() {
 		if f.presentLayers[id] {
@@ -86,9 +95,8 @@ func writeServiceContext(t *testing.T, cwd, rel, platform string) string {
 // TestPlanServicePushSkips_MissingLayersForcesRebuild is the multi-service side
 // of WDY-1824: a service whose inputs are unchanged AND whose container is
 // present must still NOT be skipped when its recorded image content is not
-// confirmed on the device. Here the fingerprint carries diff IDs (the state a
-// future content-verifiable multi-service push would produce) but the device no
-// longer holds them.
+// confirmed on the device. Here the fingerprint carries the diff IDs recorded
+// by the chunk-preparation path, but the device no longer holds them.
 func TestPlanServicePushSkips_MissingLayersForcesRebuild(t *testing.T) {
 	isolateFingerprintCache(t)
 
@@ -109,7 +117,7 @@ func TestPlanServicePushSkips_MissingLayersForcesRebuild(t *testing.T) {
 	fake := &multiSvcContainerClient{appName: appID, services: []string{"llm"}, presentLayers: map[string]bool{}}
 	conn := &grpcclient.AgentConnection{ContainerService: fake}
 
-	skip, hashes := planServicePushSkips(context.Background(), conn, cwd, appID, deviceKey, platform, nil, services, nil)
+	skip, hashes, _ := planServicePushSkips(context.Background(), conn, cwd, appID, deviceKey, platform, nil, services, nil)
 	if skip["llm"] {
 		t.Fatal("service skipped despite the device missing its image layers (WDY-1824)")
 	}
@@ -118,17 +126,14 @@ func TestPlanServicePushSkips_MissingLayersForcesRebuild(t *testing.T) {
 	}
 }
 
-// TestPlanServicePushSkips_RegistryPushNeverSkips pins the current, deliberate
-// behavior of the multi-service (registry-push) path: even when inputs are
+// TestPlanServicePushSkips_RegistryPushNeverSkips pins the deliberate behavior
+// of --chunking=off's registry-push path: even when inputs are
 // unchanged and the container is present, the planner declines the skip because
 // it cannot confirm the device still holds the pushed content (WDY-1824).
 //
-// This is the reachable production state: runMultiServiceWithAgent saves
-// fingerprints via saveDeployFingerprint(...deployFingerprint{InputHash, AppVersion})
-// with NO layer diff IDs (the registry-push builder never surfaces device-verifiable
-// content identity), so contentPresentForService fails closed. Restoring the
-// WDY-1692 skip here needs the deferred registry-digest pre-check; when that
-// lands this test should flip to assert a skip.
+// The registry-push builder does not surface a device-verifiable content
+// identity, so contentPresentForService fails closed. Default chunk preparation
+// records layer diff IDs and can skip through the test below.
 func TestPlanServicePushSkips_RegistryPushNeverSkips(t *testing.T) {
 	isolateFingerprintCache(t)
 
@@ -149,7 +154,7 @@ func TestPlanServicePushSkips_RegistryPushNeverSkips(t *testing.T) {
 	fake := &multiSvcContainerClient{appName: appID, services: []string{"llm"}, presentLayers: map[string]bool{"sha256:layer0": true}}
 	conn := &grpcclient.AgentConnection{ContainerService: fake}
 
-	skip, hashes := planServicePushSkips(context.Background(), conn, cwd, appID, deviceKey, platform, nil, services, nil)
+	skip, hashes, _ := planServicePushSkips(context.Background(), conn, cwd, appID, deviceKey, platform, nil, services, nil)
 	if skip["llm"] {
 		t.Fatal("registry-push service was skipped despite no verifiable recorded content (WDY-1824)")
 	}
@@ -158,11 +163,90 @@ func TestPlanServicePushSkips_RegistryPushNeverSkips(t *testing.T) {
 	}
 }
 
+func TestPlanServicePushSkipsBatchesLayerChecksAcrossServices(t *testing.T) {
+	isolateFingerprintCache(t)
+
+	const (
+		appID     = "grp"
+		deviceKey = "devkey"
+		platform  = "linux/arm64"
+		shared    = "sha256:shared"
+		apiLayer  = "sha256:api"
+		jobLayer  = "sha256:job"
+	)
+	cwd := t.TempDir()
+	apiHash := writeServiceContext(t, cwd, "api", platform)
+	jobHash := writeServiceContext(t, cwd, "job", platform)
+	saveDeployFingerprint(serviceFingerprintKey(appID, "api"), deviceKey, deployFingerprint{InputHash: apiHash, LayerDiffIDs: []string{shared, apiLayer}})
+	saveDeployFingerprint(serviceFingerprintKey(appID, "job"), deviceKey, deployFingerprint{InputHash: jobHash, LayerDiffIDs: []string{shared, jobLayer}})
+
+	services := map[string]*appconfig.ServiceConfig{
+		"api": {Context: "./api"},
+		"job": {Context: "./job"},
+	}
+	fake := &multiSvcContainerClient{
+		appName:       appID,
+		services:      []string{"api", "job"},
+		presentLayers: map[string]bool{shared: true, apiLayer: true, jobLayer: true},
+	}
+	conn := &grpcclient.AgentConnection{ContainerService: fake}
+
+	skip, _, _ := planServicePushSkips(context.Background(), conn, cwd, appID, deviceKey, platform, nil, services, nil)
+	if !skip["api"] || !skip["job"] {
+		t.Fatalf("skip = %v, want both services content-verified", skip)
+	}
+	if len(fake.queryCalls) != 1 {
+		t.Fatalf("QueryLayers called %d times, want one batched call", len(fake.queryCalls))
+	}
+	want := []string{apiLayer, jobLayer, shared}
+	slices.Sort(want)
+	if !slices.Equal(fake.queryCalls[0], want) {
+		t.Fatalf("QueryLayers diff IDs = %v, want de-duplicated %v", fake.queryCalls[0], want)
+	}
+}
+
+func TestRecordServiceDeployFingerprintsPersistsPreparedContentOnlyOnSuccess(t *testing.T) {
+	isolateFingerprintCache(t)
+
+	services := map[string]*appconfig.ServiceConfig{
+		"api":      {},
+		"failed":   {},
+		"registry": {},
+		"skipped":  {},
+	}
+	saveDeployFingerprint(serviceFingerprintKey("grp", "registry"), "device", deployFingerprint{
+		InputHash: "old-verifiable", LayerDiffIDs: []string{"sha256:old"},
+	})
+	recordServiceDeployFingerprints(
+		"grp", "1.2.3", "device", services,
+		map[string]bool{"skipped": true},
+		map[string]error{"failed": context.Canceled},
+		map[string]string{"api": "api-hash", "failed": "failed-hash", "registry": "registry-hash", "skipped": "skipped-hash"},
+		map[string][]string{"api": {"sha256:base", "sha256:api"}, "failed": {"sha256:partial"}},
+	)
+
+	fp, ok := loadDeployFingerprint(serviceFingerprintKey("grp", "api"), "device")
+	if !ok {
+		t.Fatal("successful service fingerprint was not persisted")
+	}
+	if fp.InputHash != "api-hash" || fp.AppVersion != "1.2.3" || !slices.Equal(fp.LayerDiffIDs, []string{"sha256:base", "sha256:api"}) {
+		t.Fatalf("successful fingerprint = %+v, want input/version/prepared diff IDs", fp)
+	}
+	for _, name := range []string{"failed", "skipped"} {
+		if _, ok := loadDeployFingerprint(serviceFingerprintKey("grp", name), "device"); ok {
+			t.Fatalf("%s service unexpectedly persisted a fingerprint", name)
+		}
+	}
+	registry, ok := loadDeployFingerprint(serviceFingerprintKey("grp", "registry"), "device")
+	if !ok || registry.InputHash != "old-verifiable" || !slices.Equal(registry.LayerDiffIDs, []string{"sha256:old"}) {
+		t.Fatalf("registry fallback overwrote verifiable fingerprint: %+v", registry)
+	}
+}
+
 // TestContentPresentForService_VerifiesRecordedLayers documents the content-
-// verification primitive itself: should a multi-service push ever record
-// device-verifiable layer diff IDs (e.g. a future chunk-diff-based push), a skip
-// is authorized only when the device confirms every one of them, and declined
-// when any is missing.
+// verification primitive itself: when chunk preparation records device-
+// verifiable layer diff IDs, a skip is authorized only when the device confirms
+// every one of them, and declined when any is missing.
 func TestContentPresentForService_VerifiesRecordedLayers(t *testing.T) {
 	const (
 		a = "sha256:aaaa"

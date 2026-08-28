@@ -94,3 +94,17 @@ func TestProgressModelUserCancelledIgnoresWrappedContextCanceled(t *testing.T) {
 		t.Fatal("expected wrapped context cancellation to not be treated as direct user cancellation")
 	}
 }
+
+func TestWatchUsesPlainCreateProgressWhileStreamingLogs(t *testing.T) {
+	original := isInteractiveTerminalFn
+	t.Cleanup(func() { isInteractiveTerminalFn = original })
+	isInteractiveTerminalFn = func() bool { return true }
+
+	if !useInteractiveCreateProgress(context.Background()) {
+		t.Fatal("ordinary interactive run should use the progress TUI")
+	}
+	watchCtx := context.WithValue(context.Background(), watchSessionContextKey{}, struct{}{})
+	if useInteractiveCreateProgress(watchCtx) {
+		t.Fatal("watch run must not let progress TUI compete with streamed logs")
+	}
+}
