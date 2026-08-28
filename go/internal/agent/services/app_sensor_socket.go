@@ -49,10 +49,11 @@ type appSensorIdentity struct {
 type appSensorSocket struct {
 	appID  string
 	server *grpc.Server
-	// owners maps an entitled service to the source allowlist it declared. A
-	// nil slice means that service declared no allowlist and therefore asked
-	// for every source; the union across owners is what the socket permits,
-	// matching how the System API socket unions capabilities.
+	// owners maps an entitled service to the source allowlist it declared. The
+	// union across owners is what the socket permits, matching how the System
+	// API socket unions capabilities. Every allowlist is non-empty: the
+	// sensor-read entitlement requires one, and Ensure refuses an owner without
+	// one, so there is no "asked for everything" state to fall back to.
 	owners map[string][]string
 }
 
@@ -60,9 +61,6 @@ type appSensorSocket struct {
 // Callers must hold at least a read lock on the manager.
 func (s *appSensorSocket) permits(sourceID string) bool {
 	for _, allowlist := range s.owners {
-		if allowlist == nil {
-			return true
-		}
 		for _, allowed := range allowlist {
 			if allowed == sourceID {
 				return true
@@ -73,7 +71,7 @@ func (s *appSensorSocket) permits(sourceID string) bool {
 }
 
 // AppSensorSocketManager owns one private sensor gRPC server per app. It is the
-// enforcement point of the "sensors" entitlement: the socket serves
+// enforcement point of the "sensor-read" entitlement: the socket serves
 // SensorService and nothing else, so an app that reads sensors cannot also
 // start episodes, deploy campaigns, or download data.
 //
@@ -114,14 +112,18 @@ func (m *AppSensorSocketManager) AddProvider(provider sensorProvider) {
 }
 
 // Ensure creates (or reuses) the app's sensor socket and records the entitled
-// service as an owner together with the source allowlist it declared. A nil or
-// empty allowlist means the service asked for every source, which is what a
-// bare `{"type": "sensors"}` entitlement grants. The caller must pass only
-// allowlists derived from the trusted parsed app configuration or persisted
-// container labels.
+// service as an owner together with the source allowlist it declared. The
+// allowlist must be non-empty: the sensor-read entitlement requires one, and
+// this is the agent-side half of that rule, so a manifest that reached the
+// agent without passing CLI validation still cannot obtain a blanket grant.
+// The caller must pass only allowlists derived from the trusted parsed app
+// configuration or persisted container labels.
 func (m *AppSensorSocketManager) Ensure(appID, serviceName string, allowlist []string) (string, error) {
 	if err := appconfig.ValidateAppID(appID); err != nil {
 		return "", fmt.Errorf("invalid app ID: %w", err)
+	}
+	if len(allowlist) == 0 {
+		return "", fmt.Errorf("the sensor-read entitlement requires a non-empty allowlist of sensor source ids; declare the sources this app subscribes to in wendy.json")
 	}
 	if serviceName != "" {
 		if err := appconfig.ValidateServiceName(serviceName); err != nil {
@@ -132,13 +134,9 @@ func (m *AppSensorSocketManager) Ensure(appID, serviceName string, allowlist []s
 	directory := filepath.Join(AppSensorSocketRootPath, key)
 	owner := systemAPIOwner(serviceName)
 
-	// A declared-but-empty allowlist is indistinguishable from none in JSON, so
-	// both mean unrestricted; normalizing here keeps the union in permits simple.
-	if len(allowlist) == 0 {
-		allowlist = nil
-	} else {
-		allowlist = append([]string(nil), allowlist...)
-	}
+	// Copy so a later mutation of the caller's slice cannot widen the grant of
+	// a socket that is already serving.
+	allowlist = append([]string(nil), allowlist...)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -282,14 +280,14 @@ func appSensorKey(appID string) string {
 // sensorMethodPrefix is the only gRPC service this socket serves. The server
 // has just one service registered, so this check is defence in depth: it keeps
 // a future registration on this server from silently becoming reachable by
-// every app holding the sensors entitlement.
+// every app holding the sensor-read entitlement.
 const sensorMethodPrefix = "/wendy.agent.apps.v1.SensorService/"
 
 func authorizeSensorMethod(method string) error {
 	if strings.HasPrefix(method, sensorMethodPrefix) {
 		return nil
 	}
-	return status.Error(codes.PermissionDenied, "the sensors entitlement authorizes only wendy.agent.apps.v1.SensorService")
+	return status.Error(codes.PermissionDenied, "the sensor-read entitlement authorizes only wendy.agent.apps.v1.SensorService")
 }
 
 func authorizeSensorUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
