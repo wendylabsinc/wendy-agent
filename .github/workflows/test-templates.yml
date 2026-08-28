@@ -115,7 +115,7 @@ jobs:
     if: inputs.deploy == true
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, macOS, ARM64]
+      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.explicit.outputs.matrix || steps.scan.outputs.matrix || '[]' }}
@@ -233,8 +233,8 @@ jobs:
       fail-fast: false
       matrix:
         runner:
-          - { name: macOS, labels: [self-hosted, macOS, ARM64] }
-          - { name: Linux, labels: [self-hosted, Linux, X64] }
+          - { name: macOS, labels: [self-hosted, macOS, ARM64, wendy-macos-26] }
+          - { name: Linux, labels: [self-hosted, Linux, X64, wendy-linux] }
         hostname: ${{ fromJson(needs.resolve-deploy-devices.outputs.matrix) }}
     env:
       INPUT_HOSTNAME: ${{ matrix.hostname }}

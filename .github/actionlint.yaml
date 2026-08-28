@@ -5,7 +5,8 @@ self-hosted-runner:
     - Linux
     - X64
     - macOS
-    - macos-26
+    - wendy-linux
+    - wendy-macos-26
 
 config-variables: null
 
