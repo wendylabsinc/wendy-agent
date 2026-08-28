@@ -40,7 +40,7 @@ Target platform. One of:
 |-------|-------------|
 | `linux` | Linux edge device; the device architecture is inferred |
 | `wendyos` | Compatibility alias for `linux`; passed to container builders as `linux` |
-| `wendy-lite` | ESP32 WASM target |
+| `wendy-lite` | ESP32 target for native ESP-IDF or WASM apps |
 | `darwin` | Native macOS app running through Headless Mac |
 | `linux/arm64`, `linux/amd64`, etc. | Explicit Linux architecture target |
 
