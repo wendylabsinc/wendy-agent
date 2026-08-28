@@ -107,7 +107,7 @@ func cleanRPCError(err error) error {
 	case codes.PermissionDenied:
 		return fmt.Errorf("not authorized to pair with this device")
 	default:
-		return fmt.Errorf("sensor pairing request failed: %v", status.Convert(err).Message())
+		return fmt.Errorf("sensor pairing request failed: %s", userFacingGRPCError(err))
 	}
 }
 
@@ -144,11 +144,11 @@ func newDevicePairCmd() *cobra.Command {
 					return cleanRPCError(err) // maps codes to human text, never raw "rpc error: code ="
 				}
 				for _, p := range resp.Pairings {
-					status := "disconnected"
+					state := "disconnected"
 					if p.Connected {
-						status = "connected"
+						state = "connected"
 					}
-					cliLogln("%-20s asset %d  %s", p.Name, p.SourceAssetId, status)
+					cliLogln("%-20s asset %d  %s", p.Name, p.SourceAssetId, state)
 				}
 				return nil
 			}
