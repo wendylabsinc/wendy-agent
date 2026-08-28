@@ -349,7 +349,7 @@ the app sensor samples instead of the app opening a device.
 
 The agent mounts the app-private socket directory at `/run/wendy/sensors` and
 injects `WENDY_SENSOR_SOCKET=/run/wendy/sensors/sensors.sock`. That socket
-serves exactly one gRPC service, `wendy.agent.services.v2.SensorService`, with
+serves exactly one gRPC service, `wendy.agent.apps.v1.SensorService`, with
 two methods: `Sources` lists the sensor sources the app may subscribe to (the
 same identifiers `wendy data sources` reports), and `Subscribe` streams their
 samples.

@@ -19,7 +19,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
-	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	appspbv1 "github.com/wendylabsinc/wendy/go/proto/gen/appspb/v1"
 )
 
 const (
@@ -201,7 +201,7 @@ func (m *AppSensorSocketManager) Ensure(appID, serviceName string, allowlist []s
 		// sensor legitimately sits idle between samples, and tearing it down
 		// would be indistinguishable from a producer failure to the app.
 	)
-	agentpbv2.RegisterSensorServiceServer(server, sensors)
+	appspbv1.RegisterSensorServiceServer(server, sensors)
 	socket.server = server
 	m.sockets[key] = socket
 	go func() {
@@ -283,13 +283,13 @@ func appSensorKey(appID string) string {
 // has just one service registered, so this check is defence in depth: it keeps
 // a future registration on this server from silently becoming reachable by
 // every app holding the sensors entitlement.
-const sensorMethodPrefix = "/wendy.agent.services.v2.SensorService/"
+const sensorMethodPrefix = "/wendy.agent.apps.v1.SensorService/"
 
 func authorizeSensorMethod(method string) error {
 	if strings.HasPrefix(method, sensorMethodPrefix) {
 		return nil
 	}
-	return status.Error(codes.PermissionDenied, "the sensors entitlement authorizes only wendy.agent.services.v2.SensorService")
+	return status.Error(codes.PermissionDenied, "the sensors entitlement authorizes only wendy.agent.apps.v1.SensorService")
 }
 
 func authorizeSensorUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
