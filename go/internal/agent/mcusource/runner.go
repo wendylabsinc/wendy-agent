@@ -7,12 +7,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/sensorlink"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"go.uber.org/zap"
 )
 
 // resolveLANAddr is a seam over discovery.Discover so tests can stub LAN
 // resolution without a real mDNS browse.
+//
+// The discovered d.Port is the mDNS-advertised agent gRPC port (~50051), not
+// the sensorlink port the source's SensorPairing service actually listens
+// on. Dial the well-known sensorlink.Port instead so boot-resume agrees with
+// the address the CLI builds on `device pair`.
 var resolveLANAddr = func(ctx context.Context, sourceAssetID int32) (string, bool) {
 	devices, err := discovery.Discover(ctx, discovery.DiscoveryOptions{})
 	if err != nil {
@@ -20,7 +26,7 @@ var resolveLANAddr = func(ctx context.Context, sourceAssetID int32) (string, boo
 	}
 	for _, d := range devices.LANDevices {
 		if d.AssetID == sourceAssetID && d.IsMTLS && d.IPAddress != "" {
-			return net.JoinHostPort(d.IPAddress, strconv.Itoa(d.Port)), true
+			return net.JoinHostPort(d.IPAddress, strconv.Itoa(sensorlink.Port)), true
 		}
 	}
 	return "", false
@@ -91,6 +97,15 @@ func (r *Runner) resolveAddr(ctx context.Context, p SensorPairing, addr string) 
 			level++
 		}
 	}
+}
+
+// IsRunning reports whether a supervisor goroutine is currently active for
+// sourceAssetID.
+func (r *Runner) IsRunning(sourceAssetID int32) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.cancels[sourceAssetID]
+	return ok
 }
 
 // Stop cancels the running supervisor goroutine for sourceAssetID, if any.

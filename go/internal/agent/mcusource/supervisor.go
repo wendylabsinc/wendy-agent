@@ -82,12 +82,18 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		err := s.streamOnce(ctx, p, addr)
+		delivered, err := s.streamOnce(ctx, p, addr)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if err != nil {
 			s.logger.Warn("sensor source stream ended", zap.Int32("source", p.SourceAssetID), zap.Error(err))
+		}
+		if delivered {
+			// A healthy stream delivered at least one frame before ending;
+			// don't let a brief drop after hours of good streaming pay the
+			// full climbed-up backoff (up to backoffCap) to reconnect.
+			level = 0
 		}
 		select {
 		case <-ctx.Done():
@@ -101,15 +107,17 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 }
 
 // streamOnce connects, mounts camera channels, and copies frames until error.
-func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr string) error {
+// delivered reports whether at least one frame was written, so the caller
+// can reset its reconnect backoff after a stream that was actually healthy.
+func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr string) (delivered bool, err error) {
 	dialer, err := s.dialerFor(p)
 	if err != nil {
-		return fmt.Errorf("mcusource: resolving dialer for source %d: %w", p.SourceAssetID, err)
+		return false, fmt.Errorf("mcusource: resolving dialer for source %d: %w", p.SourceAssetID, err)
 	}
 	// Peek the manifest first (subscribe to nothing) to learn the channels.
 	probe, err := Connect(ctx, dialer, addr, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	// Defense-in-depth: the mTLS handshake already pins the source's asset
 	// identity, but a compromised/misconfigured relay could still present a
@@ -117,13 +125,13 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 	// than mount a stranger's cameras under this pairing's node ids.
 	if probe.Manifest.GetDeviceAssetId() != p.SourceAssetID {
 		probe.Close()
-		return fmt.Errorf("mcusource: manifest device asset id %d does not match pairing source %d",
+		return false, fmt.Errorf("mcusource: manifest device asset id %d does not match pairing source %d",
 			probe.Manifest.GetDeviceAssetId(), p.SourceAssetID)
 	}
 	cams := cameraChannels(probe.Manifest, p.SensorAllowlist)
 	probe.Close()
 	if len(cams) == 0 {
-		return nil // nothing to mount; caller backs off and retries
+		return false, nil // nothing to mount; caller backs off and retries
 	}
 
 	// Assign a stable per-(source,channel) MCU-band node id to each channel.
@@ -141,19 +149,19 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 			continue
 		}
 		if err := s.lb.EnsureNode(ctx, id, nodeLabel(p, ch)); err != nil {
-			return err
+			return false, err
 		}
 		path, _ := s.lb.NodePath(id)
 		writers[ch.ChannelId] = s.newWriter(path)
 		subs = append(subs, ch.ChannelId)
 	}
 	if len(subs) == 0 {
-		return nil
+		return false, nil
 	}
 
 	stream, err := Connect(ctx, dialer, addr, subs)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer stream.Close()
 	// The reader goroutine inside Connect only unblocks when the conn is
@@ -175,10 +183,11 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 			continue
 		}
 		if err := w.WriteFrame(frameToCamera(f, cams)); err != nil {
-			return err
+			return delivered, err
 		}
+		delivered = true
 	}
-	return nil
+	return delivered, nil
 }
 
 func cameraChannels(m *sensorlinkpb.SensorManifest, allow []string) []*sensorlinkpb.SensorDescriptor {

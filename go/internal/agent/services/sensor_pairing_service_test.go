@@ -15,8 +15,12 @@ func TestAddAndListSensorPairing(t *testing.T) {
 	store := mcusource.NewPairingStore(filepath.Join(t.TempDir(), "p.json"))
 	_ = store.Load()
 	started := map[int32]string{}
+	running := map[int32]bool{}
 	const agentOrgID = int32(42)
-	svc := services.NewSensorPairingService(zap.NewNop(), store, func() int32 { return agentOrgID }, func(p mcusource.SensorPairing, addr string) { started[p.SourceAssetID] = addr })
+	svc := services.NewSensorPairingService(zap.NewNop(), store, func() int32 { return agentOrgID },
+		func(p mcusource.SensorPairing, addr string) { started[p.SourceAssetID] = addr },
+		nil,
+		func(sourceAssetID int32) bool { return running[sourceAssetID] })
 
 	addResp, err := svc.AddSensorPairing(context.Background(), &agentpbv2.AddSensorPairingRequest{SourceAssetId: 7, SourceAddress: "1.2.3.4:7000", Name: "hub"})
 	if err != nil {
@@ -37,5 +41,29 @@ func TestAddAndListSensorPairing(t *testing.T) {
 	}
 	if resp.Pairings[0].OrgId != agentOrgID {
 		t.Fatalf("expected stored pairing to carry the agent's org id %d, got %d", agentOrgID, resp.Pairings[0].OrgId)
+	}
+	if resp.Pairings[0].Connected {
+		t.Fatalf("expected asset 7 to list as not connected before its supervisor is marked running")
+	}
+
+	// Mark asset 7's supervisor as live and add a second, never-started pairing.
+	running[7] = true
+	if _, err := svc.AddSensorPairing(context.Background(), &agentpbv2.AddSensorPairingRequest{SourceAssetId: 8, SourceAddress: "5.6.7.8:7000", Name: "other"}); err != nil {
+		t.Fatalf("add second: %v", err)
+	}
+
+	resp, err = svc.ListSensorPairings(context.Background(), &agentpbv2.ListSensorPairingsRequest{})
+	if err != nil {
+		t.Fatalf("list after running: %v", err)
+	}
+	connected := map[int32]bool{}
+	for _, p := range resp.Pairings {
+		connected[p.SourceAssetId] = p.Connected
+	}
+	if !connected[7] {
+		t.Fatalf("expected asset 7 (running) to list as connected: %+v", resp.Pairings)
+	}
+	if connected[8] {
+		t.Fatalf("expected asset 8 (not started) to list as not connected: %+v", resp.Pairings)
 	}
 }

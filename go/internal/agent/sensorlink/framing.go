@@ -12,6 +12,12 @@ import (
 // MaxFrameBytes caps a single length-prefixed message (a camera keyframe fits).
 const MaxFrameBytes = 8 << 20
 
+// Port is the fixed TCP port a sensorlink-capable device's SensorPairing
+// agent listens on. Both the CLI (building the initial SourceAddress on
+// `device pair`) and the agent (redialing on boot-resume, where only the
+// mDNS-advertised agent port is known) must agree on this value.
+const Port = 50060
+
 // WriteMessage writes a 4-byte big-endian length prefix followed by the
 // marshaled Envelope.
 func WriteMessage(w io.Writer, env *sensorlinkpb.Envelope) error {

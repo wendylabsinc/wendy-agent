@@ -49,9 +49,10 @@ func (d mtlsDialer) Dial(ctx context.Context, addr string) (net.Conn, error) {
 
 // NewMTLSDialer returns a per-pairing Dialer factory: identity supplies this
 // agent's own credentials (read fresh per call), while the expected peer
-// identity (org + asset id) comes from the pairing itself — a source can be
-// in a different org than the agent's own, and SensorPairing.OrgID is the
-// asset identity a pairing was created against.
+// identity (org + asset id) comes from the pairing itself. Sensor pairing is
+// same-org by design — SensorPairing.OrgID is always set to the agent's own
+// org (see sensor_pairing_service.go) — so this pins the handshake to the
+// source's asset id within that same org, never a different one.
 func NewMTLSDialer(logger *zap.Logger, identity Identity) func(SensorPairing) (Dialer, error) {
 	return func(p SensorPairing) (Dialer, error) {
 		certPEM, chainPEM, keyPEM := identity()

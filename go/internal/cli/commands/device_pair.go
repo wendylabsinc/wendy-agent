@@ -9,15 +9,12 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/sensorlink"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
-
-// sensorlinkPort is the fixed port a sensorlink-capable device's SensorPairing
-// agent listens on.
-const sensorlinkPort = 50060
 
 // sensorSourceItems filters discovered devices to sensor-source-capable ones
 // (advertising sensorlink=true) and builds picker rows for them.
@@ -176,7 +173,7 @@ func newDevicePairCmd() *cobra.Command {
 				return err
 			}
 
-			addr := fmt.Sprintf("%s:%d", source.IPAddress, sensorlinkPort)
+			addr := fmt.Sprintf("%s:%d", source.IPAddress, sensorlink.Port)
 			_, err = conn.SensorPairingService.AddSensorPairing(ctx, &agentpbv2.AddSensorPairingRequest{
 				SourceAssetId:   source.AssetID,
 				SourceAddress:   addr,

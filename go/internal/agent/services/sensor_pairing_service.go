@@ -14,6 +14,10 @@ type StartPairingFunc func(p mcusource.SensorPairing, addr string)
 // StopPairingFunc cancels a running supervisor.
 type StopPairingFunc func(sourceAssetID int32)
 
+// IsRunningFunc reports whether a supervisor goroutine is currently active
+// for sourceAssetID.
+type IsRunningFunc func(sourceAssetID int32) bool
+
 type SensorPairingService struct {
 	agentpbv2.UnimplementedWendySensorPairingServiceServer
 	logger     *zap.Logger
@@ -21,6 +25,7 @@ type SensorPairingService struct {
 	agentOrgID func() int32
 	start      StartPairingFunc
 	stop       StopPairingFunc
+	isRunning  IsRunningFunc
 }
 
 // agentOrgID returns this agent's own current provisioning org id, read
@@ -31,12 +36,8 @@ type SensorPairingService struct {
 // agent's own org — that's the identity the per-pairing mTLS dialer pins
 // against on the handshake, so a wrong org here means no real source can
 // ever connect.
-func NewSensorPairingService(logger *zap.Logger, store *mcusource.PairingStore, agentOrgID func() int32, start StartPairingFunc, stop ...StopPairingFunc) *SensorPairingService {
-	s := &SensorPairingService{logger: logger, store: store, agentOrgID: agentOrgID, start: start}
-	if len(stop) > 0 {
-		s.stop = stop[0]
-	}
-	return s
+func NewSensorPairingService(logger *zap.Logger, store *mcusource.PairingStore, agentOrgID func() int32, start StartPairingFunc, stop StopPairingFunc, isRunning IsRunningFunc) *SensorPairingService {
+	return &SensorPairingService{logger: logger, store: store, agentOrgID: agentOrgID, start: start, stop: stop, isRunning: isRunning}
 }
 
 func (s *SensorPairingService) AddSensorPairing(_ context.Context, req *agentpbv2.AddSensorPairingRequest) (*agentpbv2.AddSensorPairingResponse, error) {
@@ -71,7 +72,8 @@ func (s *SensorPairingService) ListSensorPairings(_ context.Context, _ *agentpbv
 	list := s.store.List()
 	out := make([]*agentpbv2.SensorPairing, 0, len(list))
 	for _, p := range list {
-		out = append(out, toProto(p, false))
+		connected := s.isRunning != nil && s.isRunning(p.SourceAssetID)
+		out = append(out, toProto(p, connected))
 	}
 	return &agentpbv2.ListSensorPairingsResponse{Pairings: out}, nil
 }
