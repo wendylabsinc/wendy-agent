@@ -90,7 +90,7 @@ device node.
 | Read-only mount | `/run/wendy/sensors` |
 | Injected environment | `WENDY_SENSOR_SOCKET=/run/wendy/sensors/sensors.sock` |
 | Supplementary group | GID `2000` |
-| Service exposed | `wendy.agent.services.v2.SensorService` only (`Sources`, `Subscribe`) |
+| Service exposed | `wendy.agent.apps.v1.SensorService` only (`Sources`, `Subscribe`) |
 | Device nodes granted | none |
 | Socket restoration | Recreated from persisted container labels after agent/daemon restart |
 
