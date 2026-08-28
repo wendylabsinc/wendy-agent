@@ -3184,17 +3184,20 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		// record it so a chunk-diff failure below can fall back to reusing it
 		// (see ociReuseHint) instead of a redundant second buildx build.
 		hint = &ociReuseHint{layoutDir: layoutDir, platform: platform}
-		// Prune blobs superseded by this build once the deploy is done with them.
-		// Best-effort: reachable blobs are never touched, so a failed GC only
-		// leaves garbage for the next run to collect.
-		defer func() { _ = gcOCILayoutDir(layoutDir) }()
-		// Then dedup identical blobs across app layout dirs, evict least-recently-
-		// used caches over the size cap, and bound the daemon store. Best-effort;
-		// this build's own layout is protected so maintenance never yanks it.
+		// Once the deploy is done with the layout: GC blobs superseded by this
+		// build, THEN dedup identical blobs across app layout dirs, evict
+		// least-recently-used caches over the size cap, and bound the daemon
+		// store. Defers run LIFO, so maintenance is registered first and GC
+		// last — otherwise the size cap would measure this build's soon-to-be-
+		// pruned orphans as live usage and evict other apps for nothing. Both
+		// are best-effort; this build's own layout is protected (keep) so
+		// maintenance never yanks it, and a failed GC only leaves garbage for
+		// the next run to collect.
 		if userCache, cacheErr := os.UserCacheDir(); cacheErr == nil {
 			keep := map[string]bool{layoutDir: true}
 			defer func() { _, _ = maintainBuildCaches(ctx, userCache, buildCacheMaxBytes(), keep) }()
 		}
+		defer func() { _ = gcOCILayoutDir(layoutDir) }()
 	} else {
 		tmp, err := os.MkdirTemp("", "wendy-oci-*")
 		if err != nil {
