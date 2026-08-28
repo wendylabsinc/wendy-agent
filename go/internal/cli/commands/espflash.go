@@ -4,10 +4,12 @@ package commands
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -26,6 +28,7 @@ const (
 	espCmdSPISetParams    = 0x0B
 	espCmdSPIAttach       = 0x0D
 	espCmdChangeBaud      = 0x0F
+	espCmdFlashMD5        = 0x13
 	espCmdGetSecurityInfo = 0x14
 )
 
@@ -483,9 +486,36 @@ func buildCommand(opcode byte, data []byte, checksum byte) []byte {
 	return pkt
 }
 
-// sendCommand sends a command and reads the matching response,
-// skipping any stale frames that don't match the expected opcode.
+// sendCommand sends a command whose whole response payload is the status, and
+// returns the raw frame from the value field onwards (value(4) + payload).
 func (f *espFlasher) sendCommand(opcode byte, data []byte, checksum byte) ([]byte, error) {
+	resp, err := f.sendCommandFrame(opcode, data, checksum, 0)
+	if err != nil {
+		return nil, err
+	}
+	return resp[4:], nil
+}
+
+// sendCommandForData sends a command whose response carries respDataLen bytes of
+// response data ahead of the status bytes, and returns just that data.
+func (f *espFlasher) sendCommandForData(opcode byte, data []byte, checksum byte, respDataLen int) ([]byte, error) {
+	resp, err := f.sendCommandFrame(opcode, data, checksum, respDataLen)
+	if err != nil {
+		return nil, err
+	}
+	return resp[8 : 8+respDataLen], nil
+}
+
+// sendCommandFrame sends a command and reads the matching response frame,
+// skipping any stale frames that don't match the expected opcode.
+//
+// respDataLen is how many bytes of response data precede the status bytes in
+// the payload, mirroring esptool's check_command(resp_data_len=...): the ROM
+// bootloader puts the status *after* the data, not at the front, so it is 0
+// only for the commands whose entire payload is the status. Chips other than
+// the ESP8266 append two further reserved bytes, which are ignored here (as in
+// esptool).
+func (f *espFlasher) sendCommandFrame(opcode byte, data []byte, checksum byte, respDataLen int) ([]byte, error) {
 	pkt := buildCommand(opcode, data, checksum)
 	encoded := slipEncode(pkt)
 
@@ -518,16 +548,17 @@ func (f *espFlasher) sendCommand(opcode byte, data []byte, checksum byte) ([]byt
 
 		// Check payload
 		payload := resp[8:]
-		if len(payload) < 2 {
-			return nil, fmt.Errorf("bad protocol: response for 0x%02x too short (%d bytes)", opcode, len(payload))
+		if len(payload) < respDataLen+2 {
+			return nil, fmt.Errorf("bad protocol: response for 0x%02x too short (%d bytes, want at least %d)", opcode, len(payload), respDataLen+2)
 		}
-		if payload[0] != 0 || payload[1] != 0 {
-			if payload[0] != 1 {
-				return nil, fmt.Errorf("bad protocol: unexpected status 0x%02x for command 0x%02x", payload[0], opcode)
+		status := payload[respDataLen:]
+		if status[0] != 0 || status[1] != 0 {
+			if status[0] != 1 {
+				return nil, fmt.Errorf("bad protocol: unexpected status 0x%02x for command 0x%02x", status[0], opcode)
 			}
-			return nil, fmt.Errorf("command 0x%02x rejected: %s", opcode, espLoaderErrorMessage(payload[1]))
+			return nil, fmt.Errorf("command 0x%02x rejected: %s", opcode, espLoaderErrorMessage(status[1]))
 		}
-		return resp[4:], nil
+		return resp, nil
 	}
 
 	return nil, fmt.Errorf("no valid response for 0x%02x after 10 frames", opcode)
@@ -1006,6 +1037,59 @@ func (f *espFlasher) flashEnd(reboot bool) error {
 	f.setReadTimeout(espCmdTimeout)
 	_, err := f.sendCommand(espCmdFlashEnd, data, 0)
 	return err
+}
+
+// espFlashMD5HexLen is the length of the ROM bootloader's SPI_FLASH_MD5
+// response data: the ROM sends the digest as ASCII hex, already formatted. (The
+// flasher stub answers with 16 raw bytes instead, but Wendy only ever talks to
+// the ROM.)
+const espFlashMD5HexLen = 32
+
+// md5Timeout scales with the region size: the ROM reads and hashes the whole
+// range before it answers. Mirrors esptool's
+// timeout_per_mb(MD5_TIMEOUT_PER_MB=8, size).
+func md5Timeout(size uint32) time.Duration {
+	const secondsPerMB = 8
+	const floor = 3 * time.Second
+	t := time.Duration(secondsPerMB * float64(size) / 1e6 * float64(time.Second))
+	if t < floor {
+		return floor
+	}
+	return t
+}
+
+// retrieveFlashMD5 asks the ROM bootloader for the MD5 of size bytes of flash
+// starting at addr, as a lowercase hex string — directly comparable to
+// hex.EncodeToString of an md5.Sum over the bytes that were meant to land in
+// that same range.
+//
+// The range has to match what the caller hashes locally. flashFirmwareBytes
+// pads its final block up to espFlashBlockSize, so hashing the firmware
+// unpadded means asking for len(firmware) here, not blockCount*blockSize;
+// hashing the padded buffer means asking for the latter. Mixing the two
+// reports a mismatch on a perfectly good flash.
+//
+// Only valid while the download-mode session is alive: the final resetESP32
+// ends it, so this has to run before that.
+func (f *espFlasher) retrieveFlashMD5(addr, size uint32) (string, error) {
+	data := make([]byte, 16)
+	binary.LittleEndian.PutUint32(data[0:4], addr)
+	binary.LittleEndian.PutUint32(data[4:8], size)
+	// data[8:16] stays zero: two reserved words esptool also sends as zero.
+
+	f.setReadTimeout(md5Timeout(size))
+	resp, err := f.sendCommandForData(espCmdFlashMD5, data, 0, espFlashMD5HexLen)
+	if err != nil {
+		return "", fmt.Errorf("flash MD5 of %d bytes at 0x%08x: %w", size, addr, err)
+	}
+	digest := strings.ToLower(string(resp))
+	// A misaligned or stale frame would otherwise be returned as a plausible
+	// digest that simply never matches, hiding a framing bug behind a
+	// verification failure.
+	if _, err := hex.DecodeString(digest); err != nil {
+		return "", fmt.Errorf("flash MD5 of %d bytes at 0x%08x: response is not hex: %q", size, addr, digest)
+	}
+	return digest, nil
 }
 
 // espResetViaUSBJTAG matches esptool's USBJTAGSerialReset strategy for the
