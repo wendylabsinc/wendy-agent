@@ -2,9 +2,22 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.35.1
-// source: wendy/agent/services/v2/sensor_service.proto
+// source: wendy/agent/apps/v1/sensor_service.proto
 
-package agentpbv2
+// Everything in the wendy.agent.apps package is APP-FACING: it is reachable by
+// an entitled application over a per-app private unix socket that the agent
+// creates for that app alone, and it is the only surface an application can
+// reach. Nothing here is part of the device control plane.
+//
+// The control-plane counterpart is wendy.agent.services.v2, served over device
+// mutual Transport Layer Security alongside provisioning, WiFi, container and
+// update services. Applications cannot reach that package at all. The two live
+// in separate proto packages precisely so the trust boundary is visible in the
+// protocol rather than left to a comment or a runtime policy check: if a
+// definition is in this package it is exposed to apps, and if it is not in this
+// package it is not.
+
+package appspbv1
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -40,7 +53,7 @@ type SensorSource struct {
 
 func (x *SensorSource) Reset() {
 	*x = SensorSource{}
-	mi := &file_wendy_agent_services_v2_sensor_service_proto_msgTypes[0]
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -52,7 +65,7 @@ func (x *SensorSource) String() string {
 func (*SensorSource) ProtoMessage() {}
 
 func (x *SensorSource) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_sensor_service_proto_msgTypes[0]
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -65,7 +78,7 @@ func (x *SensorSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SensorSource.ProtoReflect.Descriptor instead.
 func (*SensorSource) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_sensor_service_proto_rawDescGZIP(), []int{0}
+	return file_wendy_agent_apps_v1_sensor_service_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *SensorSource) GetId() string {
@@ -118,7 +131,7 @@ type SensorSourcesRequest struct {
 
 func (x *SensorSourcesRequest) Reset() {
 	*x = SensorSourcesRequest{}
-	mi := &file_wendy_agent_services_v2_sensor_service_proto_msgTypes[1]
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -130,7 +143,7 @@ func (x *SensorSourcesRequest) String() string {
 func (*SensorSourcesRequest) ProtoMessage() {}
 
 func (x *SensorSourcesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_sensor_service_proto_msgTypes[1]
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -143,7 +156,7 @@ func (x *SensorSourcesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SensorSourcesRequest.ProtoReflect.Descriptor instead.
 func (*SensorSourcesRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_sensor_service_proto_rawDescGZIP(), []int{1}
+	return file_wendy_agent_apps_v1_sensor_service_proto_rawDescGZIP(), []int{1}
 }
 
 type SensorSourcesResponse struct {
@@ -155,7 +168,7 @@ type SensorSourcesResponse struct {
 
 func (x *SensorSourcesResponse) Reset() {
 	*x = SensorSourcesResponse{}
-	mi := &file_wendy_agent_services_v2_sensor_service_proto_msgTypes[2]
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -167,7 +180,7 @@ func (x *SensorSourcesResponse) String() string {
 func (*SensorSourcesResponse) ProtoMessage() {}
 
 func (x *SensorSourcesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_sensor_service_proto_msgTypes[2]
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -180,7 +193,7 @@ func (x *SensorSourcesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SensorSourcesResponse.ProtoReflect.Descriptor instead.
 func (*SensorSourcesResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_sensor_service_proto_rawDescGZIP(), []int{2}
+	return file_wendy_agent_apps_v1_sensor_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SensorSourcesResponse) GetSources() []*SensorSource {
@@ -205,7 +218,7 @@ type SensorSubscribeRequest struct {
 
 func (x *SensorSubscribeRequest) Reset() {
 	*x = SensorSubscribeRequest{}
-	mi := &file_wendy_agent_services_v2_sensor_service_proto_msgTypes[3]
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -217,7 +230,7 @@ func (x *SensorSubscribeRequest) String() string {
 func (*SensorSubscribeRequest) ProtoMessage() {}
 
 func (x *SensorSubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_sensor_service_proto_msgTypes[3]
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -230,7 +243,7 @@ func (x *SensorSubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SensorSubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SensorSubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_sensor_service_proto_rawDescGZIP(), []int{3}
+	return file_wendy_agent_apps_v1_sensor_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SensorSubscribeRequest) GetSourceIds() []string {
@@ -280,7 +293,7 @@ type SensorSample struct {
 
 func (x *SensorSample) Reset() {
 	*x = SensorSample{}
-	mi := &file_wendy_agent_services_v2_sensor_service_proto_msgTypes[4]
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -292,7 +305,7 @@ func (x *SensorSample) String() string {
 func (*SensorSample) ProtoMessage() {}
 
 func (x *SensorSample) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_sensor_service_proto_msgTypes[4]
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -305,7 +318,7 @@ func (x *SensorSample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SensorSample.ProtoReflect.Descriptor instead.
 func (*SensorSample) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_sensor_service_proto_rawDescGZIP(), []int{4}
+	return file_wendy_agent_apps_v1_sensor_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SensorSample) GetSourceId() string {
@@ -371,11 +384,11 @@ func (x *SensorSample) GetBootId() string {
 	return ""
 }
 
-var File_wendy_agent_services_v2_sensor_service_proto protoreflect.FileDescriptor
+var File_wendy_agent_apps_v1_sensor_service_proto protoreflect.FileDescriptor
 
-const file_wendy_agent_services_v2_sensor_service_proto_rawDesc = "" +
+const file_wendy_agent_apps_v1_sensor_service_proto_rawDesc = "" +
 	"\n" +
-	",wendy/agent/services/v2/sensor_service.proto\x12\x17wendy.agent.services.v2\"\xab\x01\n" +
+	"(wendy/agent/apps/v1/sensor_service.proto\x12\x13wendy.agent.apps.v1\"\xab\x01\n" +
 	"\fSensorSource\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12!\n" +
@@ -383,9 +396,9 @@ const file_wendy_agent_services_v2_sensor_service_proto_rawDesc = "" +
 	"\ahealthy\x18\x04 \x01(\bR\ahealthy\x12\x16\n" +
 	"\x06detail\x18\x05 \x01(\tR\x06detail\x12\"\n" +
 	"\fsubscribable\x18\x06 \x01(\bR\fsubscribable\"\x16\n" +
-	"\x14SensorSourcesRequest\"X\n" +
-	"\x15SensorSourcesResponse\x12?\n" +
-	"\asources\x18\x01 \x03(\v2%.wendy.agent.services.v2.SensorSourceR\asources\"M\n" +
+	"\x14SensorSourcesRequest\"T\n" +
+	"\x15SensorSourcesResponse\x12;\n" +
+	"\asources\x18\x01 \x03(\v2!.wendy.agent.apps.v1.SensorSourceR\asources\"M\n" +
 	"\x16SensorSubscribeRequest\x12\x1d\n" +
 	"\n" +
 	"source_ids\x18\x01 \x03(\tR\tsourceIds\x12\x14\n" +
@@ -399,37 +412,37 @@ const file_wendy_agent_services_v2_sensor_service_proto_rawDesc = "" +
 	"\bencoding\x18\x06 \x01(\tR\bencoding\x124\n" +
 	"\x16payload_self_contained\x18\a \x01(\bR\x14payloadSelfContained\x12%\n" +
 	"\x0edropped_before\x18\b \x01(\x04R\rdroppedBefore\x12\x17\n" +
-	"\aboot_id\x18\t \x01(\tR\x06bootId2\xe0\x01\n" +
-	"\rSensorService\x12h\n" +
-	"\aSources\x12-.wendy.agent.services.v2.SensorSourcesRequest\x1a..wendy.agent.services.v2.SensorSourcesResponse\x12e\n" +
-	"\tSubscribe\x12/.wendy.agent.services.v2.SensorSubscribeRequest\x1a%.wendy.agent.services.v2.SensorSample0\x01BAZ?github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2;agentpbv2b\x06proto3"
+	"\aboot_id\x18\t \x01(\tR\x06bootId2\xd0\x01\n" +
+	"\rSensorService\x12`\n" +
+	"\aSources\x12).wendy.agent.apps.v1.SensorSourcesRequest\x1a*.wendy.agent.apps.v1.SensorSourcesResponse\x12]\n" +
+	"\tSubscribe\x12+.wendy.agent.apps.v1.SensorSubscribeRequest\x1a!.wendy.agent.apps.v1.SensorSample0\x01B?Z=github.com/wendylabsinc/wendy/go/proto/gen/appspb/v1;appspbv1b\x06proto3"
 
 var (
-	file_wendy_agent_services_v2_sensor_service_proto_rawDescOnce sync.Once
-	file_wendy_agent_services_v2_sensor_service_proto_rawDescData []byte
+	file_wendy_agent_apps_v1_sensor_service_proto_rawDescOnce sync.Once
+	file_wendy_agent_apps_v1_sensor_service_proto_rawDescData []byte
 )
 
-func file_wendy_agent_services_v2_sensor_service_proto_rawDescGZIP() []byte {
-	file_wendy_agent_services_v2_sensor_service_proto_rawDescOnce.Do(func() {
-		file_wendy_agent_services_v2_sensor_service_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v2_sensor_service_proto_rawDesc), len(file_wendy_agent_services_v2_sensor_service_proto_rawDesc)))
+func file_wendy_agent_apps_v1_sensor_service_proto_rawDescGZIP() []byte {
+	file_wendy_agent_apps_v1_sensor_service_proto_rawDescOnce.Do(func() {
+		file_wendy_agent_apps_v1_sensor_service_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_wendy_agent_apps_v1_sensor_service_proto_rawDesc), len(file_wendy_agent_apps_v1_sensor_service_proto_rawDesc)))
 	})
-	return file_wendy_agent_services_v2_sensor_service_proto_rawDescData
+	return file_wendy_agent_apps_v1_sensor_service_proto_rawDescData
 }
 
-var file_wendy_agent_services_v2_sensor_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
-var file_wendy_agent_services_v2_sensor_service_proto_goTypes = []any{
-	(*SensorSource)(nil),           // 0: wendy.agent.services.v2.SensorSource
-	(*SensorSourcesRequest)(nil),   // 1: wendy.agent.services.v2.SensorSourcesRequest
-	(*SensorSourcesResponse)(nil),  // 2: wendy.agent.services.v2.SensorSourcesResponse
-	(*SensorSubscribeRequest)(nil), // 3: wendy.agent.services.v2.SensorSubscribeRequest
-	(*SensorSample)(nil),           // 4: wendy.agent.services.v2.SensorSample
+var file_wendy_agent_apps_v1_sensor_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_wendy_agent_apps_v1_sensor_service_proto_goTypes = []any{
+	(*SensorSource)(nil),           // 0: wendy.agent.apps.v1.SensorSource
+	(*SensorSourcesRequest)(nil),   // 1: wendy.agent.apps.v1.SensorSourcesRequest
+	(*SensorSourcesResponse)(nil),  // 2: wendy.agent.apps.v1.SensorSourcesResponse
+	(*SensorSubscribeRequest)(nil), // 3: wendy.agent.apps.v1.SensorSubscribeRequest
+	(*SensorSample)(nil),           // 4: wendy.agent.apps.v1.SensorSample
 }
-var file_wendy_agent_services_v2_sensor_service_proto_depIdxs = []int32{
-	0, // 0: wendy.agent.services.v2.SensorSourcesResponse.sources:type_name -> wendy.agent.services.v2.SensorSource
-	1, // 1: wendy.agent.services.v2.SensorService.Sources:input_type -> wendy.agent.services.v2.SensorSourcesRequest
-	3, // 2: wendy.agent.services.v2.SensorService.Subscribe:input_type -> wendy.agent.services.v2.SensorSubscribeRequest
-	2, // 3: wendy.agent.services.v2.SensorService.Sources:output_type -> wendy.agent.services.v2.SensorSourcesResponse
-	4, // 4: wendy.agent.services.v2.SensorService.Subscribe:output_type -> wendy.agent.services.v2.SensorSample
+var file_wendy_agent_apps_v1_sensor_service_proto_depIdxs = []int32{
+	0, // 0: wendy.agent.apps.v1.SensorSourcesResponse.sources:type_name -> wendy.agent.apps.v1.SensorSource
+	1, // 1: wendy.agent.apps.v1.SensorService.Sources:input_type -> wendy.agent.apps.v1.SensorSourcesRequest
+	3, // 2: wendy.agent.apps.v1.SensorService.Subscribe:input_type -> wendy.agent.apps.v1.SensorSubscribeRequest
+	2, // 3: wendy.agent.apps.v1.SensorService.Sources:output_type -> wendy.agent.apps.v1.SensorSourcesResponse
+	4, // 4: wendy.agent.apps.v1.SensorService.Subscribe:output_type -> wendy.agent.apps.v1.SensorSample
 	3, // [3:5] is the sub-list for method output_type
 	1, // [1:3] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
@@ -437,26 +450,26 @@ var file_wendy_agent_services_v2_sensor_service_proto_depIdxs = []int32{
 	0, // [0:1] is the sub-list for field type_name
 }
 
-func init() { file_wendy_agent_services_v2_sensor_service_proto_init() }
-func file_wendy_agent_services_v2_sensor_service_proto_init() {
-	if File_wendy_agent_services_v2_sensor_service_proto != nil {
+func init() { file_wendy_agent_apps_v1_sensor_service_proto_init() }
+func file_wendy_agent_apps_v1_sensor_service_proto_init() {
+	if File_wendy_agent_apps_v1_sensor_service_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v2_sensor_service_proto_rawDesc), len(file_wendy_agent_services_v2_sensor_service_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_apps_v1_sensor_service_proto_rawDesc), len(file_wendy_agent_apps_v1_sensor_service_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_wendy_agent_services_v2_sensor_service_proto_goTypes,
-		DependencyIndexes: file_wendy_agent_services_v2_sensor_service_proto_depIdxs,
-		MessageInfos:      file_wendy_agent_services_v2_sensor_service_proto_msgTypes,
+		GoTypes:           file_wendy_agent_apps_v1_sensor_service_proto_goTypes,
+		DependencyIndexes: file_wendy_agent_apps_v1_sensor_service_proto_depIdxs,
+		MessageInfos:      file_wendy_agent_apps_v1_sensor_service_proto_msgTypes,
 	}.Build()
-	File_wendy_agent_services_v2_sensor_service_proto = out.File
-	file_wendy_agent_services_v2_sensor_service_proto_goTypes = nil
-	file_wendy_agent_services_v2_sensor_service_proto_depIdxs = nil
+	File_wendy_agent_apps_v1_sensor_service_proto = out.File
+	file_wendy_agent_apps_v1_sensor_service_proto_goTypes = nil
+	file_wendy_agent_apps_v1_sensor_service_proto_depIdxs = nil
 }
