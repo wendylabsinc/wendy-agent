@@ -404,7 +404,7 @@ jobs:
       (inputs.platform == 'all' || inputs.platform == 'linux')
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, Linux, wendy-linux]
+      labels: [self-hosted, Linux]
     concurrency:
       group: device-${{ matrix.hostname }}
       cancel-in-progress: false

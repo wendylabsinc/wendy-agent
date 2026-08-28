@@ -234,7 +234,7 @@ jobs:
       matrix:
         runner:
           - { name: macOS, labels: [self-hosted, macOS, ARM64, wendy-macos-26] }
-          - { name: Linux, labels: [self-hosted, Linux, X64, wendy-linux] }
+          - { name: Linux, labels: [self-hosted, Linux, X64] }
         hostname: ${{ fromJson(needs.resolve-deploy-devices.outputs.matrix) }}
     env:
       INPUT_HOSTNAME: ${{ matrix.hostname }}
