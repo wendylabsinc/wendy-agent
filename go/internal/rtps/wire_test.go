@@ -2,6 +2,7 @@ package rtps
 
 import (
 	"encoding/binary"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -215,6 +216,15 @@ func TestParticipant_VerifiesNamespaceTargetBeforeEntry(t *testing.T) {
 	})
 	if !called || err == nil || !strings.Contains(err.Error(), "process 42 changed") {
 		t.Fatalf("called=%v error=%v; want verifier rejection before namespace entry", called, err)
+	}
+}
+
+func TestParticipant_PreservesOperationAndNamespaceRestoreErrors(t *testing.T) {
+	operationErr := errors.New("opening sockets")
+	restoreErr := errors.New("setns host")
+	err := combineNamespaceRestoreError(operationErr, restoreErr)
+	if !errors.Is(err, operationErr) || !errors.Is(err, restoreErr) {
+		t.Fatalf("combined error = %v; want both operation and restore errors", err)
 	}
 }
 

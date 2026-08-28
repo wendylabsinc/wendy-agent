@@ -3,6 +3,7 @@ package rtps
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -259,6 +260,13 @@ func verifyNamespaceTarget(pid uint32, verify func() bool) error {
 		return fmt.Errorf("rtps: network namespace process %d changed", pid)
 	}
 	return nil
+}
+
+func combineNamespaceRestoreError(operationErr, restoreErr error) error {
+	if restoreErr == nil {
+		return operationErr
+	}
+	return errors.Join(operationErr, fmt.Errorf("rtps: restoring host network namespace: %w", restoreErr))
 }
 
 func (p *Participant) openSockets() error {

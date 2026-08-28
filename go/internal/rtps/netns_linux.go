@@ -48,9 +48,7 @@ func withNetworkNamespace(pid uint32, verify func() bool, fn func() error) (err 
 	restored = false
 	defer func() {
 		if restoreErr := unix.Setns(int(host.Fd()), unix.CLONE_NEWNET); restoreErr != nil {
-			if err == nil {
-				err = fmt.Errorf("rtps: restoring host network namespace: %w", restoreErr)
-			}
+			err = combineNamespaceRestoreError(err, restoreErr)
 			return
 		}
 		restored = true
