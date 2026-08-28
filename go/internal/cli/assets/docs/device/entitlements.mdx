@@ -143,9 +143,9 @@ A `camera` entitlement can also carry `user`/`password` fields, but they are not
 </Callout>
 
 <Callout type="warning">
-  **Builds without the module**: container access to a network camera needs `v4l2loopback`. Without it, the agent logs this once and continues — direct `wendy device camera view` on the host is unaffected, only the in-container `/dev/video2xx` mirror is unavailable:
+  **Builds without the module**: container access to a network camera needs compatible v4l2loopback 0.15.x support. Without it, the agent logs this once and continues — direct IP-camera `wendy device camera view` on the host is unaffected, only the in-container `/dev/video2xx` mirror is unavailable:
 
-  > running WendyOS build lacks the v4l2loopback module; `camera view` still works
+  > running build lacks compatible v4l2loopback 0.15.x support
 </Callout>
 
 ### Audio Entitlement

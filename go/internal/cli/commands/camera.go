@@ -126,6 +126,8 @@ func transportLabel(t agentpb.VideoTransport) string {
 		return "csi"
 	case agentpb.VideoTransport_VIDEO_TRANSPORT_IP:
 		return "ip"
+	case agentpb.VideoTransport_VIDEO_TRANSPORT_ROS2:
+		return "ros2"
 	default:
 		return "-"
 	}

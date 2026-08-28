@@ -310,7 +310,11 @@ func main() {
 
 	startROS2BatteryMonitor(ctx, logger, configPath)
 
-	videoSvc := services.NewVideoService(ctx, logger)
+	var videoROSRuntime []services.ROS2Runtime
+	if ctrdClient != nil {
+		videoROSRuntime = append(videoROSRuntime, ctrdClient)
+	}
+	videoSvc := services.NewVideoService(ctx, logger, videoROSRuntime...)
 	defer videoSvc.Shutdown()
 	// Network cameras have to be found before they can be listed, so probe
 	// periodically rather than only when a client asks.
