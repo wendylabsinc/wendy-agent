@@ -85,6 +85,7 @@ type AgentConnection struct {
 	FileSyncService     agentpb.WendyFileSyncServiceClient
 	TimeSyncService     agentpbv2.WendyTimeSyncServiceClient
 	BuildService        agentpbv2.WendyBuildServiceClient
+	DriverService       agentpbv2.WendyDriverServiceClient
 	// cachedAgentVersion retains a successful liveness probe performed while
 	// establishing this connection. Direct-agent connects already call
 	// GetAgentVersion to force gRPC's lazy dial and authenticate the peer; run
@@ -555,6 +556,7 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 		FileSyncService:     agentpb.NewWendyFileSyncServiceClient(conn),
 		TimeSyncService:     agentpbv2.NewWendyTimeSyncServiceClient(conn),
 		BuildService:        agentpbv2.NewWendyBuildServiceClient(conn),
+		DriverService:       agentpbv2.NewWendyDriverServiceClient(conn),
 	}
 }
 
