@@ -91,7 +91,7 @@ LAN discovery uses mDNS (also known as Bonjour on macOS or Avahi on Linux) to fi
 
 ## Device address selection
 
-When mDNS returns both IPv4 and IPv6 addresses for the same device — which happens because Avahi emits one resolve record per protocol, and macOS dns-sd lookups can list IPv6 first — the CLI prefers the IPv4 address. IPv6 address sets typically lead with an RFC 4941 temporary (privacy) address that rotates away, making a stored IPv6 address go stale before the next deploy or readiness probe. IPv6 is used only as a fallback when no IPv4 address is available.
+When mDNS returns both IPv4 and IPv6 addresses for the same device, the CLI prefers the IPv4 address, because a device's IPv6 address often rotates and goes stale between deploys. IPv6 is used only as a fallback when no IPv4 address is available.
 
 ## Troubleshooting LAN Discovery
 

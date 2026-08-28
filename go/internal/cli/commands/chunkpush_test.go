@@ -28,6 +28,18 @@ type imagePreparationRecorder struct {
 	called chan struct{}
 }
 
+func variedChunkTestData(n int) []byte {
+	data := make([]byte, n)
+	state := uint32(0x6d2b79f5)
+	for i := range data {
+		state ^= state << 13
+		state ^= state >> 17
+		state ^= state << 5
+		data[i] = byte(state)
+	}
+	return data
+}
+
 func (r *imagePreparationRecorder) ReportImagePreparation() {
 	r.once.Do(func() { close(r.called) })
 }
@@ -67,7 +79,7 @@ func TestChunkIndexProgressDoesNotReportPartialTotal(t *testing.T) {
 
 func TestComposeChunkProgressKeepsUploadVisible(t *testing.T) {
 	var events []tui.BuildStepEvent
-	w := &composeBuildProgressWriter{
+	w := &imageBuildProgressWriter{
 		Writer: io.Discard,
 		emit:   func(e tui.BuildStepEvent) { events = append(events, e) },
 	}
@@ -124,7 +136,9 @@ type fakeContainerClient struct {
 	queryFn                             func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse
 	queryLayersFn                       func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse
 	writeFn                             func(*agentpb.WriteChunksRequest) error
+	closeErr                            error
 	chunksWritten                       int
+	writeStreams                        int
 	writeStarted                        chan struct{}
 	blockWrites                         bool
 	writeOnce                           sync.Once
@@ -313,6 +327,7 @@ func (f *fakeContainerClient) QueryLayers(_ context.Context, in *agentpb.QueryLa
 }
 
 func (f *fakeContainerClient) WriteChunks(ctx context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse], error) {
+	f.writeStreams++
 	return &fakeWriteChunksStream{parent: f, ctx: ctx}, nil
 }
 
@@ -339,7 +354,60 @@ func (s *fakeWriteChunksStream) Send(req *agentpb.WriteChunksRequest) error {
 }
 
 func (s *fakeWriteChunksStream) CloseAndRecv() (*agentpb.WriteChunksResponse, error) {
-	return &agentpb.WriteChunksResponse{}, nil
+	return &agentpb.WriteChunksResponse{}, s.parent.closeErr
+}
+
+func TestPushLayerByChunksSurfacesTerminalWriteStatusAfterSendEOF(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := []byte("one missing chunk")
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{MissingHashes: req.GetChunkHashes()}
+		},
+		writeFn: func(*agentpb.WriteChunksRequest) error { return io.EOF },
+		closeErr: status.Error(codes.ResourceExhausted,
+			"chunk staging exceeds the device limit"),
+	}
+
+	_, err := pushLayerByChunks(context.Background(), fake, localLayer{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("error = %v, want ResourceExhausted terminal status", err)
+	}
+	if !strings.Contains(err.Error(), "chunk staging exceeds the device limit") {
+		t.Fatalf("error = %q, want terminal server detail", err)
+	}
+}
+
+func TestPushLayerByChunksBatchesLongUploads(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := variedChunkTestData((maxChunksPerWriteStream + 8) * int(chunk.MaxSize))
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{MissingHashes: req.GetChunkHashes()}
+		},
+	}
+	if _, err := pushLayerByChunks(context.Background(), fake, localLayer{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.chunksWritten <= maxChunksPerWriteStream {
+		t.Fatalf("fixture wrote %d chunks, want more than one %d-chunk batch", fake.chunksWritten, maxChunksPerWriteStream)
+	}
+	wantStreams := (fake.chunksWritten + maxChunksPerWriteStream - 1) / maxChunksPerWriteStream
+	if fake.writeStreams != wantStreams {
+		t.Fatalf("WriteChunks streams = %d, want %d for %d chunks", fake.writeStreams, wantStreams, fake.chunksWritten)
+	}
 }
 
 func TestPushLayersByChunksWritesOnlyMissing(t *testing.T) {
@@ -348,7 +416,7 @@ func TestPushLayersByChunksWritesOnlyMissing(t *testing.T) {
 	manifestCacheTestDir = t.TempDir()
 	t.Cleanup(func() { manifestCacheTestDir = "" })
 
-	layerTar := bytes.Repeat([]byte("abc"), 300_000) // multi-chunk
+	layerTar := variedChunkTestData(900_000) // multi-chunk with distinct hashes
 	refs, err := chunk.Chunk(bytes.NewReader(layerTar))
 	if err != nil {
 		t.Fatalf("chunk.Chunk: %v", err)
@@ -459,9 +527,78 @@ func TestPushLayersByChunksSkipsPresentLayer(t *testing.T) {
 	}
 }
 
+func TestPushLayersByChunksOverlapsRemotePreflightAndLocalCacheReads(t *testing.T) {
+	diffID := "sha256:" + strings.Repeat("ef", 32)
+	capabilityStarted := make(chan struct{})
+	layersStarted := make(chan struct{})
+	cacheStarted := make(chan struct{})
+	capabilityRelease := make(chan struct{})
+	layersRelease := make(chan struct{})
+	cacheRelease := make(chan struct{})
+	var capabilityOnce, layersOnce, cacheOnce sync.Once
+	releaseCapability := func() { capabilityOnce.Do(func() { close(capabilityRelease) }) }
+	releaseLayers := func() { layersOnce.Do(func() { close(layersRelease) }) }
+	releaseCache := func() { cacheOnce.Do(func() { close(cacheRelease) }) }
+	defer releaseCapability()
+	defer releaseLayers()
+	defer releaseCache()
+
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			if len(req.GetChunkHashes()) != 0 {
+				t.Fatalf("unexpected non-capability QueryChunks call")
+			}
+			close(capabilityStarted)
+			<-capabilityRelease
+			return &agentpb.QueryChunksResponse{}
+		},
+		queryLayersFn: func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+			close(layersStarted)
+			<-layersRelease
+			return &agentpb.QueryLayersResponse{Present: []*agentpb.PresentLayer{{DiffId: diffID, Size: 123}}}
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := pushLayersByChunksWithPrepareModeAndCache(
+			context.Background(), fake, []localLayer{{Digest: "sha256:cached", DiffID: diffID}},
+			nil, nil, false, nil,
+			func(string) (*cachedManifest, bool) {
+				close(cacheStarted)
+				<-cacheRelease
+				return nil, false
+			},
+		)
+		done <- err
+	}()
+
+	for name, started := range map[string]<-chan struct{}{
+		"capability probe": capabilityStarted,
+		"layer query":      layersStarted,
+		"manifest cache":   cacheStarted,
+	} {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			releaseCapability()
+			releaseLayers()
+			releaseCache()
+			t.Fatalf("%s did not start while the other preflight operations were blocked", name)
+		}
+	}
+	releaseCapability()
+	releaseLayers()
+	releaseCache()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestPushLayersByChunksProbeUnimplemented verifies that an agent which does not
 // support chunk-diff at all (QueryChunks returns Unimplemented) surfaces the
-// error before any layer work, so the caller can fall back to a registry push.
+// error before any layer materialization, so the caller can fall back to a
+// registry push. The optional QueryLayers request may run concurrently.
 func TestPushLayersByChunksProbeUnimplemented(t *testing.T) {
 	manifestCacheTestDir = t.TempDir()
 	t.Cleanup(func() { manifestCacheTestDir = "" })
@@ -485,4 +622,160 @@ type probeUnsupportedClient struct {
 
 func (probeUnsupportedClient) QueryChunks(_ context.Context, _ *agentpb.QueryChunksRequest, _ ...grpc.CallOption) (*agentpb.QueryChunksResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "QueryChunks not implemented")
+}
+
+func (probeUnsupportedClient) QueryLayers(_ context.Context, _ *agentpb.QueryLayersRequest, _ ...grpc.CallOption) (*agentpb.QueryLayersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "QueryLayers not implemented")
+}
+
+// TestPushLayersByChunksReportsProgress verifies that pushLayersByChunks wires
+// a non-nil *chunkPushProgress into the transfer loop: one layer is reused
+// whole (skipped by the QueryLayers pre-check) and one layer needs chunking
+// with exactly one missing chunk, so the resulting snapshot should show the
+// reused layer plus the chunked layer's full manifest size, missing count,
+// and the sent chunk's exact byte length.
+func TestPushLayersByChunksReportsProgress(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := variedChunkTestData(900_000) // multi-chunk with distinct hashes
+	refs, err := chunk.Chunk(bytes.NewReader(layerTar))
+	if err != nil {
+		t.Fatalf("chunk.Chunk: %v", err)
+	}
+	if len(refs) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(refs))
+	}
+
+	// Fake device already has every chunk except the first.
+	have := map[[32]byte]bool{}
+	for _, r := range refs[1:] {
+		have[r.Hash] = true
+	}
+
+	reusedDiffID := "sha256:" + strings.Repeat("cd", 32)
+	const reusedSize int64 = 2048
+
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			var missing [][]byte
+			for _, hb := range req.GetChunkHashes() {
+				var h [32]byte
+				copy(h[:], hb)
+				if !have[h] {
+					missing = append(missing, hb)
+				}
+			}
+			return &agentpb.QueryChunksResponse{MissingHashes: missing}
+		},
+		queryLayersFn: func(req *agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+			return &agentpb.QueryLayersResponse{
+				Present: []*agentpb.PresentLayer{{DiffId: reusedDiffID, Size: reusedSize}},
+			}
+		},
+	}
+
+	prog := newChunkPushProgress()
+	_, err = pushLayersByChunksWithPrepareMode(context.Background(), fake, []localLayer{
+		{
+			// Present layer: skipped whole by the pre-check. Blob is
+			// intentionally not valid gzip so a decompress attempt would fail.
+			Digest:    "sha256:" + sha256Hex([]byte("reused-blob")),
+			DiffID:    reusedDiffID,
+			MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+			Blob:      []byte("this is not gzip"),
+		},
+		{
+			Digest:    "sha256:" + sha256Hex(layerTar),
+			MediaType: "application/vnd.oci.image.layer.v1.tar",
+			Blob:      layerTar,
+		},
+	}, nil, nil, false, prog)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snap := prog.Snapshot()
+	if snap.LayersTotal != 2 {
+		t.Fatalf("LayersTotal = %d, want 2", snap.LayersTotal)
+	}
+	if snap.LayersReused != 1 {
+		t.Fatalf("LayersReused = %d, want 1", snap.LayersReused)
+	}
+	if snap.TotalChunks != len(refs) {
+		t.Fatalf("TotalChunks = %d, want %d", snap.TotalChunks, len(refs))
+	}
+	if snap.MissingChunks != 1 {
+		t.Fatalf("MissingChunks = %d, want 1", snap.MissingChunks)
+	}
+	if snap.SentChunks != 1 {
+		t.Fatalf("SentChunks = %d, want 1", snap.SentChunks)
+	}
+	if snap.SentBytes != int64(refs[0].Len) {
+		t.Fatalf("SentBytes = %d, want %d", snap.SentBytes, refs[0].Len)
+	}
+}
+
+// TestPushLayersByChunksReuseLineSkipsInteractive verifies the mid-push
+// "Reusing N layer(s)..." status line is suppressed while the interactive
+// chunk-push progress bar is live: cliLogln writes straight to os.Stderr, and
+// so does the live Bubble Tea program in pushLayersWithProgress, so printing
+// it there garbles the bar on every deploy with layer reuse (finding 3,
+// WDY-2432/2433 final-review fix wave). The aggregator's Snapshot().Line()
+// (ticker) and Summary() (printed once the TUI exits) already carry the same
+// reused-layer count, so nothing is lost. The non-interactive/plain path is
+// unaffected — nothing else renders to stderr there — so it keeps the line.
+func TestPushLayersByChunksReuseLineSkipsInteractive(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	diffID := "sha256:" + strings.Repeat("ab", 32)
+	const presentSize int64 = 4096
+
+	newFake := func() *fakeContainerClient {
+		return &fakeContainerClient{
+			queryFn: func(_ *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+				return &agentpb.QueryChunksResponse{}
+			},
+			queryLayersFn: func(_ *agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+				return &agentpb.QueryLayersResponse{
+					Present: []*agentpb.PresentLayer{{DiffId: diffID, Size: presentSize}},
+				}
+			},
+		}
+	}
+	// A single present layer: the whole push resolves via the layer pre-check
+	// (skipped > 0), which is exactly the case that fires the "Reusing" line.
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex([]byte("compressed-bytes")),
+		DiffID:    diffID,
+		MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+		Blob:      []byte("this is not gzip"),
+	}}
+
+	t.Run("interactive: suppressed", func(t *testing.T) {
+		restore := forceBuildProgressInteractive(true)
+		defer restore()
+		out := captureStderr(t, func() {
+			if _, err := pushLayersByChunksWithPrepareMode(context.Background(), newFake(), layers, nil, nil, false, newChunkPushProgress()); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if strings.Contains(out, "Reusing") {
+			t.Fatalf("interactive mode must not print the mid-push reuse line (races the live progress bar), got %q", out)
+		}
+	})
+
+	t.Run("non-interactive/plain: unchanged", func(t *testing.T) {
+		restore := forceBuildProgressInteractive(false)
+		defer restore()
+		out := captureStderr(t, func() {
+			if _, err := pushLayersByChunksWithPrepareMode(context.Background(), newFake(), layers, nil, nil, false, newChunkPushProgress()); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if !strings.Contains(out, "Reusing") {
+			t.Fatalf("non-interactive/plain mode should keep the reuse line (nothing else renders to stderr there), got %q", out)
+		}
+	})
 }

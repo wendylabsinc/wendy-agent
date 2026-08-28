@@ -22,7 +22,7 @@ import (
 )
 
 // maxStagedChunkBytes bounds a single staged chunk. The CDC chunker emits
-// chunks of at most chunk.MaxSize (256 KiB); this 4 MiB ceiling leaves ample
+// chunks of at most chunk.MaxSize (64 KiB); this 4 MiB ceiling leaves ample
 // headroom for legitimate clients while rejecting absurdly large payloads.
 const maxStagedChunkBytes = 4 << 20
 
@@ -328,6 +328,40 @@ func (c *Client) chunkLen(h [32]byte) (int64, bool) {
 		return int64(loc.Len), true
 	}
 	return 0, false
+}
+
+// OpenChunkStream returns a reader over the chunks named by hashes, in order,
+// verifying each chunk's SHA-256 as it is served and holding at most one chunk
+// in memory.
+//
+// AssembleLayerFromChunks is the wrong tool for a caller that wants the bytes
+// themselves: it writes a layer blob into the content store, which is right for
+// an image layer and wrong for anything else — a remote build context, say.
+// This exposes the same chunk resolution without that side effect.
+//
+// The stream fails closed: a chunk that is in neither the staging area nor the
+// index ends the read with an error rather than contributing zero bytes, and a
+// chunk whose contents do not hash to the name it was asked for is rejected. A
+// caller reassembling something it will then execute — a build context — gets
+// either every requested byte or an error, never a silently short prefix.
+func (c *Client) OpenChunkStream(ctx context.Context, hashes [][32]byte) io.Reader {
+	nsCtx := c.withNamespace(ctx)
+	src := func(h [32]byte) ([]byte, error) {
+		if b, err := c.staging.read(h); err == nil {
+			return b, nil
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+		if loc, ok := c.chunkIndex.Has(h); ok {
+			return c.readIndexedChunk(nsCtx, loc)
+		}
+		// SECURITY: a nil chunk is the "not held here" sentinel, not an empty
+		// one — chunkStream.Read turns it into "chunk N (%x) unavailable" rather
+		// than splicing zero bytes into the stream. Returning an empty []byte
+		// here instead would be the silent-truncation bug.
+		return nil, nil
+	}
+	return &chunkStream{order: hashes, src: src}
 }
 
 func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, hashes [][32]byte) error {

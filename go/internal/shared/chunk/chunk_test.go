@@ -6,6 +6,13 @@ import (
 	"testing"
 )
 
+func TestMaxSizeBoundsUSBTransportMessages(t *testing.T) {
+	const usbTransportCeiling = 64 << 10
+	if MaxSize > usbTransportCeiling {
+		t.Fatalf("MaxSize = %d, exceeds validated USB transport ceiling %d", MaxSize, usbTransportCeiling)
+	}
+}
+
 func TestChunkIsDeterministic(t *testing.T) {
 	data := make([]byte, 2<<20)
 	if _, err := rand.Read(data); err != nil {

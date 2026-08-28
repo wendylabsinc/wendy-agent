@@ -133,8 +133,8 @@ type templateVariable struct {
 // If ctx is cancelled, the in-flight request is aborted.
 func fetchRepoMeta(ctx context.Context, branch string) (*repoMeta, error) {
 	branch = resolveTemplateBranch(branch)
-	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/meta.json",
-		templateRepoOwner, templateRepoName, branch)
+	url := fmt.Sprintf("%s/%s/%s/%s/meta.json",
+		strings.TrimRight(templateRawBaseURL, "/"), templateRepoOwner, templateRepoName, branch)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -759,7 +759,7 @@ func isTextFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".json", ".toml", ".yaml", ".yml", ".md", ".txt", ".html", ".css",
-		".js", ".ts", ".py", ".rs", ".swift", ".go",
+		".js", ".ts", ".py", ".rs", ".swift", ".go", ".mojo",
 		".cpp", ".c", ".h", ".hpp", ".cmake", ".sh", ".bash", ".zsh",
 		".dockerfile", ".gitignore", ".env", ".cfg", ".ini", ".xml",
 		".svg", ".lock":

@@ -32,6 +32,11 @@ const (
 	assistantClaude = "claude"
 	assistantCodex  = "codex"
 	assistantSkip   = "skip"
+
+	// bareTemplatePickSentinel is the value rewriteBareTemplateFlag injects for
+	// a bare --template so cobra can parse it; the wizard treats it as "show
+	// the template picker".
+	bareTemplatePickSentinel = "_pick"
 )
 
 // Languages available per target platform.
@@ -70,6 +75,7 @@ type entitlementQuestion struct {
 
 type initOptions struct {
 	appID               string
+	here                bool
 	target              string
 	language            string
 	template            string
@@ -130,6 +136,9 @@ func newInitCmd() *cobra.Command {
 		Use:   "init [app-id]",
 		Short: "Initialize a new Wendy project",
 		Long: "Interactively create a new Wendy project with scaffolding, entitlements, and optional AI assistant setup.\n\n" +
+			"An [app-id] argument (or --app-id) creates a new subdirectory of that name by default; pass --here to " +
+			"scaffold into the current directory instead (with no app ID, --here infers one from the current " +
+			"directory's name).\n\n" +
 			"wendy.json also supports a separate, top-level \"frameworks\" key for framework-level config " +
 			"(currently ROS 2: domain ID, RMW middleware, discovery scope). Enable it with --framework " +
 			"(see the ROS 2 example below), through the interactive prompt on a WendyOS target, or by hand-editing " +
@@ -140,11 +149,18 @@ func newInitCmd() *cobra.Command {
   # Scaffold from a template (interactive language picker)
   wendy init --template simple-api
 
+  # Create a project from a template; target and language are inferred
+  # from the template's metadata when it supports exactly one of each
+  wendy init go2-app --template go2-rc
+
   # Non-interactive template scaffold with variable overrides
   wendy init --app-id my-api --template simple-api --language rust --var PORT=8080
 
   # Use a template from a specific branch of the templates repo
   wendy init --template simple-api --branch feature/new-template
+
+  # Scaffold into the current (already-existing, empty) directory
+  wendy init --here my-api --template simple-api
 
   # Fully non-interactive WendyOS Python app with persist storage
   wendy init \
@@ -239,6 +255,7 @@ func newInitCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.appID, "app-id", "", "Application ID to write into wendy.json")
+	cmd.Flags().BoolVar(&opts.here, "here", false, "Scaffold into the current directory instead of creating a subdirectory")
 	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos (writes \"linux\" to wendy.json), wendy-lite, or darwin")
 	cmd.Flags().StringVar(&opts.language, "language", "", "Project language: python, swift, rust, node, or cpp")
 	cmd.Flags().StringVar(&opts.template, "template", "", "Project template (e.g. simple-api, fullstack)")
@@ -281,7 +298,7 @@ func rewriteBareTemplateFlag() {
 			}
 			// If --template is last arg or next arg is another flag, inject sentinel.
 			if next == "" || strings.HasPrefix(next, "-") {
-				os.Args[i] = "--template=_pick"
+				os.Args[i] = "--template=" + bareTemplatePickSentinel
 			}
 		}
 	}
@@ -297,14 +314,9 @@ func runInitWizard(args []string, opts initOptions) error {
 		return err
 	}
 
-	// Step 1: Pick target device first so template filtering works.
-	target, err := resolveInitTarget(opts)
-	if err != nil {
-		return err
-	}
-
-	// Template flow: offer templates filtered by target, or use --template flag.
-	tmpl, meta, err := resolveInitTemplateForTarget(target, opts)
+	// Steps 1-2: target and template resolve together — a concrete --template
+	// can pin or narrow the target from registry metadata.
+	target, tmpl, meta, err := resolveInitTargetAndTemplate(opts)
 	if err != nil {
 		return err
 	}
@@ -401,6 +413,37 @@ func runInitWizard(args []string, opts initOptions) error {
 	return nil
 }
 
+// resolveInitTargetAndTemplate resolves steps 1 and 2 of the wizard together:
+// a concrete --template can pin or narrow the target from registry metadata,
+// so the target question is asked only when the answer is genuinely open.
+// Meta is fetched at most once on either path.
+func resolveInitTargetAndTemplate(opts initOptions) (string, string, *repoMeta, error) {
+	if opts.templateSet && !opts.targetSet {
+		if name := normalizeInitChoice(opts.template); name != bareTemplatePickSentinel {
+			meta, err := fetchRepoMetaWithUI(opts.branch)
+			if err != nil {
+				return "", "", nil, err
+			}
+			t, ok := templateByName(meta, name)
+			if !ok {
+				return "", "", nil, fmt.Errorf("unknown template %q (available: %s)", opts.template, metaTemplateNames(meta))
+			}
+			target, err := resolveInitTargetForTemplate(*t)
+			if err != nil {
+				return "", "", nil, err
+			}
+			return target, name, meta, nil
+		}
+	}
+
+	target, err := resolveInitTarget(opts)
+	if err != nil {
+		return "", "", nil, err
+	}
+	tmpl, meta, err := resolveInitTemplateForTarget(target, opts)
+	return target, tmpl, meta, err
+}
+
 // resolveInitTemplateForTarget determines which template to use, filtering by target.
 // Returns (template name, meta, error). Empty template name means skip templates.
 // Fetches meta.json from the templates repo when needed.
@@ -414,7 +457,7 @@ func resolveInitTemplateForTarget(target string, opts initOptions) (string, *rep
 			return "", nil, err
 		}
 
-		if tmpl == "_pick" {
+		if tmpl == bareTemplatePickSentinel {
 			// Bare --template (no value): show interactive picker filtered by target.
 			name, err := resolveBareTemplatePick(target, meta)
 			return name, meta, err
@@ -469,6 +512,22 @@ func templateTargetMatch(t repoMetaTemplate, target string) bool {
 	return false
 }
 
+// templateTargets returns the targets a template supports, restricted to the
+// targets `wendy init` knows about. Mirrors templateTargetMatch: an empty
+// Targets list means WendyOS only.
+func templateTargets(t repoMetaTemplate) []string {
+	if len(t.Targets) == 0 {
+		return []string{targetWendyOS}
+	}
+	var targets []string
+	for _, tgt := range t.Targets {
+		if isValidInitTarget(tgt) {
+			targets = append(targets, tgt)
+		}
+	}
+	return targets
+}
+
 // templateItemsForTarget builds the picker items for the templates available
 // for target, shared by the interactive picker and its non-interactive
 // plain-text fallback.
@@ -502,15 +561,19 @@ func pickTemplateNameForTarget(target string, meta *repoMeta) (string, error) {
 // list as plain text instead of failing on the picker's TTY open. Without
 // this, a headless caller (script, CI, or an AI agent) hit
 // "picker: could not open a new TTY" with no way to discover what templates
-// exist at all.
+// exist at all. When exactly one template exists for the target it is
+// auto-selected with a notice, TTY or not.
 func resolveBareTemplatePick(target string, meta *repoMeta) (string, error) {
+	items := templateItemsForTarget(target, meta)
+	if len(items) == 0 {
+		return "", fmt.Errorf("no templates available for %s", target)
+	}
+	if len(items) == 1 {
+		name := items[0].Value.(string)
+		cliNotice("Template %q is the only template for %s.", name, initTargetDisplayName(target))
+		return name, nil
+	}
 	if !isInteractiveTerminal() {
-		// Report "no templates" the same way the picker path does rather than
-		// printing an empty list and then blaming the missing --template value.
-		items := templateItemsForTarget(target, meta)
-		if len(items) == 0 {
-			return "", fmt.Errorf("no templates available for %s", target)
-		}
 		printPickerItemsPlainText("Available templates for "+target, items)
 		return "", fmt.Errorf("--template requires a value when running non-interactively; pass --template=<name> using one of the templates listed above")
 	}
@@ -580,15 +643,28 @@ func resolveTemplateLanguage(target, tmpl string, meta *repoMeta, opts initOptio
 		return lang, nil
 	}
 
+	if len(languages) == 1 {
+		cliNotice("Template %q uses %s.", tmpl, languages[0].Name)
+		return languages[0].Key, nil
+	}
+
+	items := templateLanguageItems(languages)
+	if !isInteractiveTerminal() {
+		printPickerItemsPlainText("Available languages for template "+tmpl, items)
+		return "", fmt.Errorf("--language is required when running non-interactively (valid for template %q: %s)",
+			tmpl, repoMetaLanguageKeys(languages))
+	}
+
 	fmt.Println()
+	return pickFromItems("What language will you use?", items)
+}
+
+func templateLanguageItems(languages []repoMetaLanguage) []tui.PickerItem {
 	var items []tui.PickerItem
 	for _, l := range languages {
-		items = append(items, tui.PickerItem{
-			Name:  l.Name,
-			Value: l.Key,
-		})
+		items = append(items, tui.PickerItem{Name: l.Name, Value: l.Key})
 	}
-	return pickFromItems("What language will you use?", items)
+	return items
 }
 
 func templateLanguageAvailable(language string, languages []repoMetaLanguage) bool {
@@ -616,7 +692,9 @@ func metaTemplateNames(meta *repoMeta) string {
 	return strings.Join(names, ", ")
 }
 
-func fetchRepoMetaWithUI(branch string) (*repoMeta, error) {
+// fetchRepoMetaWithUI is a variable so tests can substitute a canned registry
+// (the real fetch hits the network).
+var fetchRepoMetaWithUI = func(branch string) (*repoMeta, error) {
 	if !isInteractiveTerminal() {
 		cliLogln("Fetching template registry...")
 		return fetchRepoMeta(context.Background(), branch)
@@ -715,6 +793,16 @@ func downloadTemplateArchiveWithUI(language, tmpl, branch string) (map[string][]
 // runTemplateFlow handles init when a template is selected.
 // destDir is the resolved project directory (either cwd or a new subdir).
 func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, opts initOptions) error {
+	// Scaffolding into cwd (most commonly via --here, WDY-2439) must not
+	// silently clobber an existing project. Checked first, before any
+	// network calls or filesystem mutation, mirroring the non-template
+	// wizard's own wendy.json-exists guard.
+	if filepath.Clean(destDir) == filepath.Clean(cwd) {
+		if _, err := os.Stat(filepath.Join(destDir, "wendy.json")); err == nil {
+			return fmt.Errorf("wendy.json already exists here; run from an empty directory or remove it first")
+		}
+	}
+
 	language, err := resolveTemplateLanguage(target, tmpl, meta, opts)
 	if err != nil {
 		return err
@@ -874,7 +962,31 @@ var promptInitProjectName = func() (string, error) {
 // both; otherwise the user is asked on an interactive terminal. Flags that
 // answer other questions (--target, entitlement flags, ...) never suppress
 // these prompts (WDY-1805).
+//
+// --here scaffolds into cwd instead of creating a subdirectory (WDY-2439):
+// this is what fixes `wendy init cctv-demo` run inside an already-existing,
+// empty `cctv-demo/` from nesting a redundant `cctv-demo/cctv-demo/`. With an
+// explicit app ID it behaves exactly like the case without --here except the
+// destination is cwd rather than a new subdirectory; with no app ID it
+// infers one from cwd's basename the same way the interactive "use current
+// directory?" prompt does, but without needing a TTY.
 func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, string, error) {
+	if opts.here {
+		if len(args) > 0 || opts.appIDSet {
+			appID, err := resolveInitAppID(cwd, args, opts)
+			if err != nil {
+				return "", "", err
+			}
+			return cwd, appID, nil
+		}
+
+		appID := strings.TrimSpace(filepath.Base(cwd))
+		if err := validateNewProjectName(appID); err != nil {
+			return "", "", fmt.Errorf("current directory name %q is not a valid app id: %w; pass one explicitly: wendy init --here <name>", appID, err)
+		}
+		return cwd, appID, nil
+	}
+
 	// Explicit app ID provided: always create a new subdirectory.
 	if len(args) > 0 || opts.appIDSet {
 		appID, err := resolveInitAppID(cwd, args, opts)
@@ -1008,6 +1120,32 @@ var initTargetItems = []tui.PickerItem{
 	{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite, SortKey: "2"},
 }
 
+// initTargetItemsFor filters the shared initTargetItems so a narrowed target
+// picker keeps the canonical names, descriptions, and sort order.
+func initTargetItemsFor(targets []string) []tui.PickerItem {
+	var items []tui.PickerItem
+	for _, item := range initTargetItems {
+		for _, target := range targets {
+			if item.Value.(string) == target {
+				items = append(items, item)
+				break
+			}
+		}
+	}
+	return items
+}
+
+// initTargetDisplayName maps a target value ("wendyos") to its picker display
+// name ("WendyOS"); unknown values pass through unchanged.
+func initTargetDisplayName(target string) string {
+	for _, item := range initTargetItems {
+		if item.Value.(string) == target {
+			return item.Name
+		}
+	}
+	return target
+}
+
 func resolveInitTarget(opts initOptions) (string, error) {
 	if opts.targetSet {
 		target := normalizeInitTarget(opts.target)
@@ -1024,6 +1162,31 @@ func resolveInitTarget(opts initOptions) (string, error) {
 
 	fmt.Println()
 	return pickFromItems("What is your target device?", initTargetItems)
+}
+
+// resolveInitTargetForTemplate resolves the target when a concrete --template
+// was given without --target: a single-target template pins the answer, a
+// multi-target template narrows the picker to its targets.
+func resolveInitTargetForTemplate(t repoMetaTemplate) (string, error) {
+	targets := templateTargets(t)
+	switch len(targets) {
+	case 0:
+		return "", fmt.Errorf("template %q is not available for any supported target (valid: %s, %s, %s)",
+			t.Name, targetWendyOS, targetWendyLite, targetDarwin)
+	case 1:
+		cliNotice("Template %q targets %s.", t.Name, initTargetDisplayName(targets[0]))
+		return targets[0], nil
+	}
+
+	items := initTargetItemsFor(targets)
+	if !isInteractiveTerminal() {
+		printPickerItemsPlainText("Available targets for template "+t.Name, items)
+		return "", fmt.Errorf("--target is required when running non-interactively (valid for template %q: %s)",
+			t.Name, strings.Join(targets, ", "))
+	}
+
+	fmt.Println()
+	return pickFromItems("What is your target device?", items)
 }
 
 // printPickerItemsPlainText renders picker items as a plain-text list. Used

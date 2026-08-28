@@ -8,6 +8,7 @@ service WendyVideoService {
     rpc SetCameraCredentials(SetCameraCredentialsRequest) returns (SetCameraCredentialsResponse);
     rpc ForgetCamera(ForgetCameraRequest) returns (ForgetCameraResponse);
     rpc RefreshCameras(RefreshCamerasRequest) returns (RefreshCamerasResponse);
+    rpc TestCameraCredentials(TestCameraCredentialsRequest) returns (TestCameraCredentialsResponse);
 }
 
 message VideoDevice {
@@ -22,6 +23,7 @@ message VideoDevice {
     string mac              = 9; // stable identity for network cameras; empty for local cameras
     bool has_credentials    = 10; // the agent holds a login for this camera
     bool online             = 11; // the most recent probe reached this camera
+    string topic            = 12; // ROS 2 image topic, e.g. "/camera/image_raw"; empty for other transports
 }
 
 enum VideoTransport {
@@ -29,6 +31,7 @@ enum VideoTransport {
     VIDEO_TRANSPORT_USB     = 1;
     VIDEO_TRANSPORT_CSI     = 2;
     VIDEO_TRANSPORT_IP      = 3;
+    VIDEO_TRANSPORT_ROS2    = 4;
 }
 
 message ListVideoDevicesRequest {}
@@ -67,6 +70,25 @@ message RefreshCamerasRequest {}
 
 message RefreshCamerasResponse {
     repeated VideoDevice devices = 1;
+}
+
+// TestCameraCredentials validates a network camera's stored login by probing
+// its RTSP port directly, without starting a capture pipeline. Local (V4L2)
+// device IDs are rejected: there is nothing to validate for them.
+message TestCameraCredentialsRequest {
+    uint32 device_id = 1;
+}
+
+message TestCameraCredentialsResponse {
+    enum Result {
+        RESULT_UNSPECIFIED = 0;
+        RESULT_OK           = 1; // the camera accepted the stored credentials
+        RESULT_AUTH_FAILED  = 2; // the camera rejected the stored credentials
+        RESULT_UNREACHABLE  = 3; // the camera's RTSP port could not be reached
+    }
+    Result result   = 1;
+    string address  = 2; // the address probed, e.g. "10.98.0.50"
+    string detail   = 3; // human-readable outcome; camera credentials are redacted
 }
 
 enum VideoCodec {

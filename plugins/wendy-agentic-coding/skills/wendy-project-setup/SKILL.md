@@ -58,6 +58,7 @@ wendy init \
 Useful `wendy init` flags:
 
 - `--app-id`: application ID written to `wendy.json`.
+- `--here`: scaffold into the current directory instead of creating a subdirectory — use when you've already created/entered the project directory.
 - `--target`: `wendyos` (writes `"platform": "linux"` to wendy.json), `wendy-lite`, or `darwin` (native macOS for Wendy Agent for Mac). Omit for default `wendyos` behavior.
 - `--language`: `python`, `swift`, `rust`, `node`, or `cpp`.
 - `--template`: template name; a bare `--template` opens a picker, so avoid bare usage in agent workflows.

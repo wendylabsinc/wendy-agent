@@ -561,8 +561,8 @@ func getThorFlashpackInfo(version string, nightly bool, pr int) (*thorFlashpackI
 
 // firmwareManifest contains version info for a specific chip.
 type firmwareManifest struct {
-	ChipID   string                         `json:"chip_id"`
-	Versions map[string]firmwareVersionInfo `json:"versions"`
+	FirmwareID string                         `json:"firmware_id"`
+	Versions   map[string]firmwareVersionInfo `json:"versions"`
 }
 
 // firmwareVersionInfo describes one firmware version.

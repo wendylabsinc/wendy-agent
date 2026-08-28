@@ -12,6 +12,7 @@
     "volumes",
     "wifi",
     "bluetooth",
+    "build-host",
     "---Reference---",
     "enroll",
     "rename",

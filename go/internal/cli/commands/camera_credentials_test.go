@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -76,7 +77,7 @@ func credentialsNeededError(t *testing.T, deviceID string) error {
 	t.Helper()
 	st := status.New(codes.FailedPrecondition, "camera has no stored credentials")
 	detailed, err := st.WithDetails(&errdetails.ErrorInfo{
-		Reason:   "IP_CAMERA_NO_CREDENTIALS",
+		Reason:   streamreason.IPCameraNoCredentials,
 		Metadata: map[string]string{"device_id": deviceID},
 	})
 	if err != nil {
@@ -187,7 +188,7 @@ func TestResolveCameraCredentialsPrefersConfig(t *testing.T) {
 		"entitlements": [{ "type": "camera", "user": "operator", "password": "fromconfig" }]
 	}`)
 	var got *agentpb.SetCameraCredentialsRequest
-	err := resolveCameraCredentials(context.Background(), newCameraTestCmd(),
+	err := resolveCameraCredentials(context.Background(), newDiscardOutputCmd(),
 		func(_ context.Context, r *agentpb.SetCameraCredentialsRequest) error {
 			got = r
 			return nil
@@ -211,7 +212,7 @@ func TestResolveCameraCredentialsPrefersConfig(t *testing.T) {
 func TestResolveCameraCredentialsFromEnvironment(t *testing.T) {
 	t.Setenv("WENDY_CAMERA_PASSWORD", "fromenv")
 	var got *agentpb.SetCameraCredentialsRequest
-	err := resolveCameraCredentials(context.Background(), newCameraTestCmd(),
+	err := resolveCameraCredentials(context.Background(), newDiscardOutputCmd(),
 		func(_ context.Context, r *agentpb.SetCameraCredentialsRequest) error {
 			got = r
 			return nil
@@ -230,7 +231,7 @@ func TestResolveCameraCredentialsFromEnvironment(t *testing.T) {
 // Nothing to read and nowhere to prompt must produce an actionable error rather
 // than hang waiting on a terminal that is not there.
 func TestResolveCameraCredentialsNonInteractive(t *testing.T) {
-	err := resolveCameraCredentials(context.Background(), newCameraTestCmd(),
+	err := resolveCameraCredentials(context.Background(), newDiscardOutputCmd(),
 		func(_ context.Context, _ *agentpb.SetCameraCredentialsRequest) error {
 			t.Fatal("credentials were stored despite having none")
 			return nil
@@ -253,7 +254,7 @@ func TestResolveCameraCredentialsStoreFailure(t *testing.T) {
 		"entitlements": [{ "type": "camera", "user": "admin", "password": "x" }]
 	}`)
 	sentinel := errors.New("device unreachable")
-	err := resolveCameraCredentials(context.Background(), newCameraTestCmd(),
+	err := resolveCameraCredentials(context.Background(), newDiscardOutputCmd(),
 		func(_ context.Context, _ *agentpb.SetCameraCredentialsRequest) error { return sentinel },
 		200, dir, true)
 	if !errors.Is(err, sentinel) {
@@ -269,9 +270,9 @@ func TestCameraPromptAllowedWithEnvironment(t *testing.T) {
 	}
 }
 
-// newCameraTestCmd returns a command whose output goes nowhere, so prompts in
+// newDiscardOutputCmd returns a command whose output goes nowhere, so prompts in
 // tests do not write to the test log.
-func newCameraTestCmd() *cobra.Command {
+func newDiscardOutputCmd() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)

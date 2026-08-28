@@ -26,8 +26,12 @@ import (
 // The allocated number is also the v4l2loopback node number a camera will get
 // when container parity lands, so the ID a user learns now does not change.
 const (
-	IDBandStart = 200
-	IDBandEnd   = 255
+	// LoopbackBandStart is the first device number reserved for Wendy-managed
+	// virtual cameras. ROS 2 cameras use 128-199; network cameras retain the
+	// original 200-255 stable-ID band.
+	LoopbackBandStart = 128
+	IDBandStart       = 200
+	IDBandEnd         = 255
 )
 
 // ErrBandExhausted is returned when every ID in the reserved band is taken.

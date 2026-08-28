@@ -46,6 +46,11 @@ const (
 	// we see availability regressions.
 	grpcKeepaliveTime    = 15 * time.Minute
 	grpcKeepaliveTimeout = 10 * time.Second
+
+	// A connection probe and the command phase that consumes its metadata are
+	// normally adjacent. Bound reuse so long-running watch/build sessions still
+	// refresh mutable fields such as interfaces and disk usage.
+	agentVersionCacheTTL = 10 * time.Second
 )
 
 // tlsDebugWriter is where WENDY_TLS_DEBUG resumption logging is written.
@@ -79,6 +84,14 @@ type AgentConnection struct {
 	TelemetryService    agentpb.WendyTelemetryServiceClient
 	FileSyncService     agentpb.WendyFileSyncServiceClient
 	TimeSyncService     agentpbv2.WendyTimeSyncServiceClient
+	BuildService        agentpbv2.WendyBuildServiceClient
+	// cachedAgentVersion retains a successful liveness probe performed while
+	// establishing this connection. Direct-agent connects already call
+	// GetAgentVersion to force gRPC's lazy dial and authenticate the peer; run
+	// commands can reuse that exact response instead of immediately issuing the
+	// same RPC again. The cache is deliberately connection-local: it is never
+	// persisted across processes or carried across reconnects.
+	cachedAgentVersion atomic.Pointer[agentVersionCacheEntry]
 	// observedServerOrg holds the org ID read from the device's server
 	// certificate during the TLS handshake (set by the OnServerIdentity sink
 	// wired in ConnectWithTLSAndPins). Written on the handshake goroutine, read
@@ -104,6 +117,34 @@ type AgentConnection struct {
 	// out of gRPC's handshake-failure string. nil for connections that never
 	// install the sink.
 	pinMismatch *atomic.Pointer[devicepin.PinMismatchError]
+}
+
+type agentVersionCacheEntry struct {
+	response *agentpb.GetAgentVersionResponse
+	cachedAt time.Time
+}
+
+// CacheAgentVersion records a successful GetAgentVersion response for reuse by
+// a later caller on this same live connection. Responses returned by grpc-go
+// are immutable in Wendy's callers after receipt, so retaining the pointer is
+// safe; atomic storage also covers probes completed on gRPC/spinner goroutines.
+func (c *AgentConnection) CacheAgentVersion(resp *agentpb.GetAgentVersionResponse) {
+	if c != nil && resp != nil {
+		c.cachedAgentVersion.Store(&agentVersionCacheEntry{response: resp, cachedAt: time.Now()})
+	}
+}
+
+// CachedAgentVersion returns the version response already obtained while
+// proving this connection live, when one is available.
+func (c *AgentConnection) CachedAgentVersion() (*agentpb.GetAgentVersionResponse, bool) {
+	if c == nil {
+		return nil, false
+	}
+	entry := c.cachedAgentVersion.Load()
+	if entry == nil || time.Since(entry.cachedAt) > agentVersionCacheTTL {
+		return nil, false
+	}
+	return entry.response, true
 }
 
 // verifiedIdentitySink returns the OnVerifiedServerIdentity callback that
@@ -513,6 +554,7 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 		TelemetryService:    agentpb.NewWendyTelemetryServiceClient(conn),
 		FileSyncService:     agentpb.NewWendyFileSyncServiceClient(conn),
 		TimeSyncService:     agentpbv2.NewWendyTimeSyncServiceClient(conn),
+		BuildService:        agentpbv2.NewWendyBuildServiceClient(conn),
 	}
 }
 

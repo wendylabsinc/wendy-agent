@@ -44,6 +44,15 @@ func normalizeImageRef(ref string) string {
 	return reference.TagNameOnly(named).String()
 }
 
+func imageRefContentPinned(ref string) bool {
+	parsed, err := reference.ParseAnyReference(strings.TrimSpace(ref))
+	if err != nil {
+		return false
+	}
+	_, ok := parsed.(reference.Digested)
+	return ok
+}
+
 func composeServiceWatchHash(imageIdentity string, cfg *appconfig.AppConfig, cmd string, userArgs []string, restartPolicy *agentpb.RestartPolicy, env []string) (string, error) {
 	return watchDesiredHash(struct {
 		ImageIdentity string
@@ -126,7 +135,10 @@ type composeBuildJob struct {
 	buildArgs  map[string]string
 }
 
-type composeBuildProgressWriter struct {
+// imageBuildProgressWriter adapts the common chunk/preparation progress
+// callbacks and captures the prepared image identity for both Compose and
+// wendy.json multi-service schedulers.
+type imageBuildProgressWriter struct {
 	io.Writer
 	emit          func(tui.BuildStepEvent)
 	reportContent func([]string)
@@ -134,7 +146,7 @@ type composeBuildProgressWriter struct {
 	uploadStarted bool
 }
 
-func (w *composeBuildProgressWriter) emitEvent(e tui.BuildStepEvent) {
+func (w *imageBuildProgressWriter) emitEvent(e tui.BuildStepEvent) {
 	if w.emit != nil {
 		w.emit(e)
 	}
@@ -142,15 +154,15 @@ func (w *composeBuildProgressWriter) emitEvent(e tui.BuildStepEvent) {
 
 // ReportImageContent records the uncompressed identities of the image that was
 // prepared on the device. Keeping this on the same writer used for chunk
-// progress lets the Compose scheduler persist a fail-closed deploy fingerprint
-// without coupling its generic build function signature to OCI internals.
-func (w *composeBuildProgressWriter) ReportImageContent(diffIDs []string) {
+// progress lets both service schedulers persist a fail-closed deploy fingerprint
+// without coupling their generic build function signatures to OCI internals.
+func (w *imageBuildProgressWriter) ReportImageContent(diffIDs []string) {
 	if w.reportContent != nil {
 		w.reportContent(append([]string(nil), diffIDs...))
 	}
 }
 
-func (w *composeBuildProgressWriter) ReportChunkTransfer(current, total int64, rate float64) {
+func (w *imageBuildProgressWriter) ReportChunkTransfer(current, total int64, rate float64) {
 	w.progressMu.Lock()
 	defer w.progressMu.Unlock()
 	w.uploadStarted = true
@@ -163,7 +175,7 @@ func (w *composeBuildProgressWriter) ReportChunkTransfer(current, total int64, r
 	})
 }
 
-func (w *composeBuildProgressWriter) ReportChunkIndex(current, total int64, rate float64, done bool) {
+func (w *imageBuildProgressWriter) ReportChunkIndex(current, total int64, rate float64, done bool) {
 	status := tui.BuildStepRunning
 	if done {
 		status = tui.BuildStepDone
@@ -186,7 +198,7 @@ func (w *composeBuildProgressWriter) ReportChunkIndex(current, total int64, rate
 	})
 }
 
-func (w *composeBuildProgressWriter) ReportRegistryFallback(reason error) {
+func (w *imageBuildProgressWriter) ReportRegistryFallback(reason error) {
 	detail := "chunk preparation unavailable"
 	if reason != nil {
 		detail = fmt.Sprintf("chunk preparation unavailable: %v", reason)
@@ -200,7 +212,7 @@ func (w *composeBuildProgressWriter) ReportRegistryFallback(reason error) {
 	})
 }
 
-func (w *composeBuildProgressWriter) ReportImagePreparation() {
+func (w *imageBuildProgressWriter) ReportImagePreparation() {
 	w.emitEvent(tui.BuildStepEvent{
 		ID:      "image-prepare",
 		Kind:    tui.BuildVertexExport,
@@ -209,7 +221,7 @@ func (w *composeBuildProgressWriter) ReportImagePreparation() {
 	})
 }
 
-func (w *composeBuildProgressWriter) ReportImagePreparationQueued() {
+func (w *imageBuildProgressWriter) ReportImagePreparationQueued() {
 	w.emitEvent(tui.BuildStepEvent{
 		ID:      "image-prepare-queue",
 		Kind:    tui.BuildVertexExport,
@@ -321,7 +333,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 				buildOut = &logBuf
 				logOut = &logBuf
 			}
-			buildOut = &composeBuildProgressWriter{
+			buildOut = &imageBuildProgressWriter{
 				Writer: buildOut,
 				emit:   emit,
 				reportContent: func(ids []string) {
@@ -829,6 +841,21 @@ func composeAppConfig(projectName, serviceName string, svc composeService, numSe
 	}
 }
 
+// composeWatchAppID returns the app identity used to filter session logs.
+// Companion configs supply that identity directly; otherwise a single service
+// uses its generated app ID and a service group uses the project name.
+func composeWatchAppID(projectName string, companion *appconfig.AppConfig, svcCfgs map[string]*appconfig.AppConfig) string {
+	if companion != nil {
+		return companion.AppID
+	}
+	if len(svcCfgs) == 1 {
+		for _, cfg := range svcCfgs {
+			return cfg.AppID
+		}
+	}
+	return projectName
+}
+
 // parseXWendy decodes a compose service's x-wendy extension into appconfig
 // types via a YAML→map→JSON roundtrip, so wendy.json's exact camelCase keys
 // (readiness.tcpSocket.port, timeoutSeconds, hooks.postStart.openURL/cli/agent)
@@ -1162,7 +1189,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		cliLogln("warning: %s", w)
 	}
 
-	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
@@ -1190,7 +1217,6 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 	// Use the project directory name as the project name.
 	projectName := strings.ToLower(filepath.Base(projectDir))
-
 	// Synthesize every service's full create config (compose fields + x-wendy
 	// lifecycle config + companion overrides), then derive separate CLI-private
 	// lifecycle views below. Done BEFORE the image builds so an invalid x-wendy
@@ -1201,6 +1227,11 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 	for _, w := range xWendyWarnings {
 		cliLogln("warning: %s", w)
+	}
+	if opts.isWatch() && !opts.detach {
+		if err := opts.watchState.ensureLogStream(conn, composeWatchAppID(projectName, companion, svcCfgs)); err != nil {
+			return err
+		}
 	}
 	svcLifecycleCfgs := composeServiceLifecycleConfigs(svcCfgs, companion)
 
@@ -1256,6 +1287,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 		appCfg := svcCfgs[name]
 		imageIdentity := normalizeImageRef(svc.Image)
+		contentPinned := imageRefContentPinned(svc.Image)
 		if ctxDir != "" {
 			// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
 			// same way the single-service path does — docker build itself knows
@@ -1272,6 +1304,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			// directory rename changes the Compose repository even when its source
 			// bytes do not, so reusing the old preparation would be unsafe.
 			imageIdentity = fmt.Sprintf("localhost:%d/%s-%s:latest@%s", regPort, projectName, name, imageIdentity)
+			contentPinned, err = dockerfileBasesContentPinned(ctxDir, dockerfile)
+			if err != nil {
+				return fmt.Errorf("checking service %s base images: %w", name, err)
+			}
 		}
 
 		restartPolicy := resolveRestartPolicy(opts)
@@ -1280,7 +1316,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 		cmd, extraArgs := composeArgv(svc)
 		desiredHash, hashErr := composeServiceWatchHash(imageIdentity, appCfg, cmd, extraArgs, restartPolicy, composeEnv(svc))
-		if hashErr == nil {
+		if hashErr == nil && contentPinned {
 			desiredHashes[name] = desiredHash
 			candidates[name] = watchServiceCandidate{appID: appCfg.AppID, containerName: appCfg.ContainerName(), desiredHash: desiredHash}
 		}
@@ -1348,15 +1384,15 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 		preserve = adjustedPreserve
 	}
+	preservedLifecycle := preservedServicesInOrder(ordered, preserve)
 	if len(preserve) > 0 {
 		ordered = filterPreservedServices(ordered, preserve)
 		if len(ordered) == 0 {
 			cliLogln("All Compose services are unchanged and running; nothing to redeploy.")
-			return nil
+			if opts.detach || opts.deploy {
+				return nil
+			}
 		}
-		// A partial watch cycle does not own the preserved services, so it must
-		// not re-run the app-level lifecycle fallback for the whole group.
-		appLevelCfg = nil
 	}
 
 	for _, name := range ordered {
@@ -1426,9 +1462,13 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
+	// The watch loop owns Ctrl-C for the whole session and leaves the project
+	// running when it stops, so a watch cycle must not install its own handler.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-	defer signal.Stop(sigCh)
+	if !opts.isWatch() {
+		signal.Notify(sigCh, os.Interrupt)
+		defer signal.Stop(sigCh)
+	}
 	go func() {
 		select {
 		case <-sigCh:
@@ -1454,35 +1494,40 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		runCancel()
 	}()
 
+	var runErr error
 	if opts.detach {
-		if err := composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, projectName); err != nil {
-			return err
-		}
-		if ctx.Err() == nil {
-			for _, name := range ordered {
-				if h := desiredHashes[name]; h != "" {
-					appCfg := svcCfgs[name]
-					opts.watchState.record(watchServiceKey(deviceKey, appCfg.AppID, name), h)
-				}
+		runErr = composeStartDetached(ctx, conn, ordered, svcCfgs, projectName)
+	} else if opts.isWatch() {
+		runErr = composeStartWatch(runCtx, conn, ordered, preservedLifecycle, svcCfgs, svcLifecycleCfgs, appLevelCfg, opts)
+	} else {
+		// Attached mode: stream output from all containers concurrently with
+		// color-coded, column-aligned service name prefixes.
+		stdoutWriters, stderrWriters := newServiceLogWriters(ordered)
+		runErr = composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, stdoutWriters, stderrWriters, opts)
+	}
+	if runErr != nil {
+		return runErr
+	}
+	if ctx.Err() == nil {
+		for _, name := range ordered {
+			if h := desiredHashes[name]; h != "" {
+				appCfg := svcCfgs[name]
+				opts.watchState.record(watchServiceKey(deviceKey, appCfg.AppID, name), h)
 			}
 		}
-		return nil
 	}
-
-	// Attached mode: stream output from all containers concurrently with
-	// color-coded, column-aligned service name prefixes.
-	stdoutWriters, stderrWriters := newServiceLogWriters(ordered)
-	return composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, stdoutWriters, stderrWriters)
+	return nil
 }
 
 // composeStartDetached starts every compose service in dependency order,
 // waiting for each Started ack, and returns with the containers left running.
-// ctx gates the StartContainer RPCs (the command's outer context); runCtx
-// gates the lifecycle readiness waits. Each start carries the service's
-// agent-side postStart hook as gRPC metadata, and once every container is up
-// the per-service readiness→announce→postStart sequences run sequentially in
-// dependency order, then the app-level fallback (WDY-1271).
-func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, projectName string) error {
+// Each start carries the service's agent-side postStart hook as gRPC metadata,
+// so in-container hooks still run on the device.
+//
+// No host-side lifecycle work: detached runs do not wait for readiness,
+// announce the app URL, or fire host postStart hooks — see
+// runPostStartIfReady's doc comment (WDY-2041).
+func composeStartDetached(ctx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, projectName string) error {
 	for _, name := range ordered {
 		appCfg := svcCfgs[name]
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
@@ -1498,28 +1543,82 @@ func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentCon
 	}
 	cliLogln("All services running in detached mode.")
 	cliLogln("Run 'wendy device logs' to stream logs (filter a service with --app %s-<service>).", projectName)
-
-	// Every container is up: fire each declaring service's readiness→announce→
-	// postStart sequence, then the app-level fallback. hookCtx is
-	// context.Background() so cli hooks outlive the detaching CLI; readiness
-	// failures only warn (non-fatal), so we still return nil. No reap: there is
-	// nothing left to wait on once we detach.
-	runner := &serviceHookRunner{conn: conn}
-	for _, name := range ordered {
-		runner.runOne(runCtx, context.Background(), svcLifecycleCfgs[name])
-	}
-	runner.runOne(runCtx, context.Background(), appLevelCfg)
 	return nil
 }
 
-// composeStartAndStream is the attached-mode tail of a compose run: it starts
-// all services concurrently (bidi AttachContainer preferred, StartContainer
-// fallback for agents that return Unimplemented) and multiplexes their output
-// until every stream ends. Extracted from runComposeWithAgent so tests can
-// drive it with fake clients; the Ctrl+C handler (stop in reverse order, then
-// runCancel) stays with the caller and its ordering is unchanged.
-func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter) error {
-	runner := &serviceHookRunner{conn: conn}
+// composeStartWatch starts the changed service set and returns after every
+// service has confirmed Started and first-successful-deploy lifecycle work has
+// settled. Preserved services are not restarted, but any host lifecycle work
+// left pending by an earlier canceled or failed attempt is retried. The session
+// log stream independently includes services omitted from the start set.
+func composeStartWatch(ctx context.Context, conn *grpcclient.AgentConnection, ordered, preservedLifecycle []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, opts runOptions) error {
+	runner := &serviceHookRunner{conn: conn, opts: opts}
+	cycleCtx, cycleCancel := context.WithCancel(ctx)
+	defer cycleCancel()
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(ordered))
+
+	for _, name := range ordered {
+		appCfg := svcCfgs[name]
+		wg.Add(1)
+		go func(serviceName string, cfg, lifecycleCfg *appconfig.AppConfig) {
+			defer wg.Done()
+			startCtx, cancel := context.WithCancel(cycleCtx)
+			defer cancel()
+			stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(startCtx, cfg), &agentpb.StartContainerRequest{
+				AppName: cfg.ContainerName(),
+			})
+			if err != nil {
+				errCh <- fmt.Errorf("starting service %s: %w", serviceName, err)
+				return
+			}
+			if err := awaitStarted(stream); err != nil {
+				errCh <- fmt.Errorf("waiting for service %s start: %w", serviceName, err)
+				return
+			}
+			cancel()
+			runner.startAsync(cycleCtx, lifecycleCfg)
+		}(name, appCfg, svcLifecycleCfgs[name])
+	}
+	wg.Wait()
+	close(errCh)
+	var startErrs []error
+	for err := range errCh {
+		startErrs = append(startErrs, err)
+	}
+	if err := errors.Join(startErrs...); err != nil {
+		cycleCancel()
+		runner.reap()
+		return err
+	}
+	if cycleCtx.Err() != nil {
+		cycleCancel()
+		runner.reap()
+		return cycleCtx.Err()
+	}
+	for _, name := range preservedLifecycle {
+		runner.startAsync(cycleCtx, svcLifecycleCfgs[name])
+	}
+	runner.startAsync(cycleCtx, appLevelCfg)
+	if len(ordered) > 0 {
+		cliLogln("All services started.")
+	}
+	runner.reap()
+	return cycleCtx.Err()
+}
+
+// composeStartAndStream starts all Compose services concurrently and multiplexes
+// their output until every stream ends. It prefers AttachContainer and falls
+// back to StartContainer when the agent does not support attachment. The caller
+// owns Ctrl+C handling and cancels runCtx after stopping the services.
+func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter, opts runOptions) error {
+	runner := &serviceHookRunner{conn: conn, opts: opts}
+	var appName string
+	if len(ordered) > 0 && svcCfgs[ordered[0]] != nil {
+		appName = svcCfgs[ordered[0]].AppID
+	}
+	logSub := startRunLogSubscription(runCtx, conn, appName, os.Stdout, runLogStreamWarning)
+	defer logSub.stop()
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(ordered))

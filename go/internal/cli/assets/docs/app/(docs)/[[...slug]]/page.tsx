@@ -14,6 +14,13 @@ type PageProps = {
   params: Promise<PageParams>;
 };
 
+// Pages with a bespoke OpenGraph card, keyed by page slug. Anything not listed
+// here falls back to the shared `ogImage`.
+const pageOgImages: Record<string, string> = {
+  'installation/wendyos-nvidia-jetson-agx-thor': '/images/opengraph-thor.png',
+  'integrations/ros2': '/images/opengraph-ros2.png',
+};
+
 function getLegacyRedirect(slug?: string[]) {
   const redirects: Record<string, string> = {
     'installation/wendyos-nvidia-jetson': '/installation/wendyos-nvidia-jetson-orin-nano/',
@@ -72,10 +79,7 @@ export async function generateMetadata(props: PageProps): Promise<Metadata> {
   const page = source.getPage(params.slug);
   if (!page) notFound();
 
-  const pageOgImage =
-    slug === 'installation/wendyos-nvidia-jetson-agx-thor'
-      ? withBasePath('/images/opengraph-thor.png')
-      : ogImage;
+  const pageOgImage = slug && slug in pageOgImages ? withBasePath(pageOgImages[slug]) : ogImage;
 
   return {
     title: page.data.title,

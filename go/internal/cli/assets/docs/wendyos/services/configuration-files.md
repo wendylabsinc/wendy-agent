@@ -17,7 +17,7 @@ All files under `/etc/wendyos/` are bind-mounted from `/data/etc/wendyos/` by `w
 
 | Path | Description |
 |------|-------------|
-| `/etc/wendy-agent/hostname` | Literal hostname set by `wendy device rename`. Takes precedence over `/etc/wendyos/device-name` in hostname generation. |
+| `/etc/wendy-agent/hostname` | Literal hostname set by `wendy device rename`. Backed by `/data`, it survives reboots and OTA updates and takes precedence over `/etc/wendyos/device-name` in hostname generation. At agent startup, `ReassertHostnameAdvertisement` also uses it to restore hostname-derived Avahi TXT records that were replaced during boot or by a fresh OTA slot. |
 | `/etc/default/wendy-agent` | Shell-format environment file sourced by both `wendyos-agent.service` and `wendyos-agent-updater.sh`. Supports `WENDYOS_AGENT_GITHUB_REPO`, `WENDYOS_AGENT_VERSION`. Not created by default; create it to override release channel. |
 | `/var/lib/wendy-agent/` | Runtime state directory for the agent (current-version file, working data). |
 | `/usr/local/bin/wendy-agent` | Agent binary. Installed at build time; overwritten in-place by `wendyos-agent-updater.service`. |

@@ -22,19 +22,18 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
-	"unicode"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/optimize"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/buildargs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -360,7 +359,6 @@ func detectProjectType(dir string) (string, error) {
 // "Containerfile", or either base name followed by a dot or hyphen and one or
 // more safe characters.
 var validDockerfileNameRe = regexp.MustCompile(`^(Dockerfile|Containerfile)([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
-var validBuildArgNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Device-reported build-arg hints (see applyDeviceBuildArgHints) are meant to be
 // clean identifier/version tokens, never free text, so they keep a narrow
@@ -419,29 +417,11 @@ func validateDockerfileName(name string) error {
 }
 
 // validateBuildArgPair gates a KEY=VALUE build arg headed for a builder CLI.
-// Values are user-authored (docker-compose args, wendy.json) and legitimately
-// hold spaces, slashes, and other punctuation — a Minecraft MOTD or a log path,
-// say. Their content is not dangerous: each pair is handed to exec.Command as a
-// single "KEY=VALUE" argv element (no shell is involved), and because KEY is
-// validated to [A-Za-z_][A-Za-z0-9_]* the token always starts with a letter, so
-// a builder CLI can never mistake the value for a flag. So the rejections are
-// only:
-//   - a leading '-', kept as defense-in-depth so a value can never look like a
-//     flag even if a future call site passed it as a standalone argv token; and
-//   - control characters, which are genuinely unsafe regardless: NUL truncates
-//     C strings (Go's exec rejects it outright) and CR/LF/escape sequences can
-//     inject lines or terminal escapes into the streamed build log.
+// The rules live in shared/buildargs because the agent's remote build service
+// must apply the same ones to what a client sends — see that package for why
+// each rejection exists.
 func validateBuildArgPair(key, value string) error {
-	if !validBuildArgNameRe.MatchString(key) {
-		return fmt.Errorf("invalid build arg name %q: must match [A-Za-z_][A-Za-z0-9_]*", key)
-	}
-	if strings.HasPrefix(value, "-") {
-		return fmt.Errorf("invalid build arg %q: value must not start with '-'", key)
-	}
-	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
-		return fmt.Errorf("invalid build arg %q: value must not contain control characters", key)
-	}
-	return nil
+	return buildargs.ValidatePair(key, value)
 }
 
 // applyDeviceBuildArgHints injects the optional device/GPU build-arg hints the
@@ -495,15 +475,7 @@ func jetpackMajor(version string) string {
 }
 
 func sortedValidatedBuildArgKeys(buildArgs map[string]string) ([]string, error) {
-	keys := make([]string, 0, len(buildArgs))
-	for k, v := range buildArgs {
-		if err := validateBuildArgPair(k, v); err != nil {
-			return nil, err
-		}
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys, nil
+	return buildargs.SortedValidatedKeys(buildArgs)
 }
 
 // validComposeDockerfileNameRe matches the broader naming convention allowed by
@@ -699,7 +671,7 @@ func resolveGPUArchForDirs(ctx context.Context, dirs []string, flagArch string, 
 	if !needed {
 		return ""
 	}
-	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	resp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		// Deliberately not fatal. The compiler is where "a GPU stage needs a
 		// target" is enforced, and its error names the fix; failing here would
@@ -1451,7 +1423,7 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 	// plugin load, no buildkit gRPC handshake). On any miss we fall through to the
 	// full robust path below.
 	containerName := "buildx_buildkit_" + builderName + "0"
-	if out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
+	if out, err := imageBuilderCommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
 		return builderName, nil
 	}
 
@@ -1459,10 +1431,10 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 		return "", err
 	}
 
-	exists := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil
+	exists := imageBuilderCommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil
 	if !exists {
 		fmt.Fprintf(w, "[buildx] creating OCI-export builder %q\n", builderName)
-		cmd := exec.CommandContext(ctx, "docker", "buildx", "create",
+		cmd := imageBuilderCommandContext(ctx, "docker", "buildx", "create",
 			"--name", builderName,
 			"--driver", "docker-container",
 			"--driver-opt", "network=host",
@@ -1472,13 +1444,56 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 		}
 	}
 
-	// Ensure the builder is running. This is cheap when it is already up and,
-	// crucially, performs no config injection or container restart.
-	bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
-	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("bootstrapping builder %q: %s: %w", builderName, string(out), err)
+	// Ensure the builder is running and bootstrapped. This is cheap when it is
+	// already up and, crucially, performs no config injection or container
+	// restart; on a cold builder it pulls the BuildKit image inline, which
+	// bootstrapOCIBuilder bounds and streams to w so the wait isn't silent.
+	if err := bootstrapOCIBuilder(ctx, builderName, w); err != nil {
+		return "", err
 	}
 	return builderName, nil
+}
+
+// ociBuilderBootstrapTimeout bounds `docker buildx inspect --bootstrap`: a cold
+// start pulls the BuildKit image (minutes, not seconds), but a wedged daemon
+// must not stall the deploy forever. Package var so tests can shrink it.
+var ociBuilderBootstrapTimeout = 3 * time.Minute
+
+// bootstrapOCIBuilder runs `docker buildx inspect --bootstrap` for builderName,
+// streaming its output to w as it arrives — a cold builder pulls the BuildKit
+// image inline with this call, so without live output the wait looks like a
+// hang — while also buffering it for error context. ociBuilderBootstrapTimeout
+// bounds the wait so a wedged Docker daemon cannot stall the deploy forever.
+func bootstrapOCIBuilder(ctx context.Context, builderName string, w io.Writer) error {
+	fmt.Fprintf(w, "[buildx] bootstrapping builder %q (a cold start pulls the BuildKit image; this can take a few minutes)\n", builderName)
+
+	bootstrapCtx, cancel := context.WithTimeout(ctx, ociBuilderBootstrapTimeout)
+	defer cancel()
+
+	var buf bytes.Buffer
+	// Stdout and Stderr are set to the *same* MultiWriter value (not two
+	// separate io.MultiWriter calls) so os/exec recognizes them as equal and
+	// combines them into a single pipe/copy goroutine — the same trick
+	// CombinedOutput relies on — avoiding concurrent, unsynchronized writes
+	// into buf from interleaved stdout/stderr output.
+	mw := io.MultiWriter(w, &buf)
+	cmd := imageBuilderCommandContext(bootstrapCtx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
+	cmd.Stdout = mw
+	cmd.Stderr = mw
+	if err := cmd.Run(); err != nil {
+		// Only claim *our* bootstrap timeout fired if the parent ctx is still
+		// alive: bootstrapCtx also reports DeadlineExceeded when an ancestor
+		// context's own deadline expires first (ctx.Err() != nil in that case),
+		// and blaming that on the bootstrap would misattribute the failure.
+		// Plain Ctrl+C is unaffected — that propagates context.Canceled, not
+		// DeadlineExceeded. (Same convention as buildprogress.go:135,173.)
+		if errors.Is(bootstrapCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return fmt.Errorf("bootstrapping builder %q timed out after %s (is the Docker daemon healthy?); output so far:\n%s",
+				builderName, ociBuilderBootstrapTimeout, buf.String())
+		}
+		return fmt.Errorf("bootstrapping builder %q: %s: %w", builderName, buf.String(), err)
+	}
+	return nil
 }
 
 // buildkitRegistryConfig generates a buildkitd.toml snippet for the given

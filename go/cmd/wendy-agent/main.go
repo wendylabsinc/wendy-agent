@@ -140,6 +140,16 @@ func main() {
 
 	configpartition.Apply(logger, configPath)
 
+	// Restore the mDNS advertisement for a device renamed via
+	// 'wendy device rename'. The boot-time identity units — and
+	// configpartition.Apply just above, when the config partition carries a
+	// device name — re-derive the name/displayname TXT records from
+	// /etc/wendyos/device-name, reverting the rename. Ordered last so the
+	// operator's explicit choice wins, matching generate-hostname.sh's
+	// precedence for the hostname itself. A no-op on a device that was never
+	// renamed.
+	services.ReassertHostnameAdvertisement(logger)
+
 	// Time sync: apply config-partition floor immediately, then start
 	// background Roughtime + multicast sync.
 	timesyncMgr := timesync.NewManager(logger, configPath)
@@ -182,7 +192,15 @@ func main() {
 	ctrdClient, ctrdErr := agentcontainerd.NewClient(logger, containerdAddr, proxyMgr)
 	if ctrdErr != nil {
 		logger.Warn("Failed to connect to containerd (container features will be unavailable)", zap.Error(ctrdErr))
-	} else {
+	}
+	// Typed separately from containerdClient: assigning a nil *containerd.Client
+	// into an interface yields a non-nil interface holding a nil pointer, which
+	// panics on first use rather than failing the service's nil check.
+	var buildChunkSource services.ChunkSource
+	if ctrdErr == nil {
+		buildChunkSource = ctrdClient
+	}
+	if ctrdErr == nil {
 		containerdClient = ctrdClient
 		defer ctrdClient.Close()
 
@@ -292,11 +310,29 @@ func main() {
 
 	startROS2BatteryMonitor(ctx, logger, configPath)
 
-	videoSvc := services.NewVideoService(ctx, logger)
+	var videoROSRuntime []services.ROS2Runtime
+	if ctrdClient != nil {
+		videoROSRuntime = append(videoROSRuntime, ctrdClient)
+	}
+	videoSvc := services.NewVideoService(ctx, logger, videoROSRuntime...)
 	defer videoSvc.Shutdown()
 	// Network cameras have to be found before they can be listed, so probe
 	// periodically rather than only when a client asks.
 	videoSvc.StartDiscovery()
+
+	// Wire videoSvc as the camera-loopback provider for entitled containers
+	// (Task C6). Built after ctrdClient, so this must be a separate wiring
+	// step rather than an argument at construction. The immediate sync
+	// reconciles camera-loopback state against whatever containers are
+	// already running after an agent restart, mirroring
+	// RestoreAppSystemAPISockets above; the periodic sync then catches any
+	// drift the create/start/stop/delete lifecycle nudges in the containerd
+	// client miss (e.g. a container's task crash-exiting on its own).
+	if ctrdClient != nil {
+		ctrdClient.SetCameraLoopbackProvider(videoSvc)
+		ctrdClient.SyncCameraLoopbacks(ctx)
+		go ctrdClient.RunCameraLoopbackSync(ctx, time.Minute)
+	}
 
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 
@@ -475,6 +511,17 @@ func main() {
 	var mtlsServer *grpc.Server
 	var mtlsMu sync.Mutex
 
+	// Declared here, assigned further down once the provisioning identity is
+	// available, because registerAllServices closes over it: the build service
+	// dials peers through it to deliver a finished image. Every call site of
+	// registerAllServices runs after the assignment; if that ever stops being
+	// true, BuildImage reports "no mesh dialer" rather than panicking.
+	var meshDialer *services.MeshDialer
+	// All listeners extract into the same per-app context directories. Share
+	// their locks so a local-socket build cannot race an mTLS build for the same
+	// app and replace its source tree while buildctl is reading it.
+	buildContextLocks := services.NewBuildContextLockSet()
+
 	registerAllServices := func(srv *grpc.Server) {
 		// MeshService's own-org check (assetIdentityFromContext / MeshDial)
 		// must reflect this device's *current* org, not a value captured once
@@ -491,6 +538,27 @@ func main() {
 		// check rather than reject every caller.
 		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
 		meshSvc := services.NewMeshService(logger, configPath, orgID)
+		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{
+			ConfigPath:   configPath,
+			Chunks:       buildChunkSource,
+			Peers:        meshDialer,
+			ContextLocks: buildContextLocks,
+			// Read fresh per build rather than captured: a certificate rotated
+			// while the agent runs must be picked up without a restart.
+			//
+			// ExpectingPeer, not the plain client config: the plain one validates
+			// the chain but skips hostname verification (device certs carry wendy
+			// URN SANs, not DNS names), so any org-issued certificate could
+			// terminate the registry hop and receive the image. The mesh LAN path
+			// picks its peer from an unauthenticated mDNS TXT record, which is the
+			// spoofing gap this helper was written for.
+			PushTLS: func(targetAssetID int32) (*tls.Config, error) {
+				certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
+				_, pushOrgID, _, _ := provisioningSvc.ProvisioningInfo()
+				return mtls.NewClientTLSConfigExpectingPeer(certPEM, chainPEM, string(keyData), logger,
+					pushOrgID, strconv.FormatInt(int64(targetAssetID), 10))
+			},
+		})
 
 		agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 		agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
@@ -509,6 +577,7 @@ func main() {
 		agentpbv2.RegisterWendyAudioServiceServer(srv, audioSvcV2)
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
 		agentpbv2.RegisterWendyMeshServiceServer(srv, meshSvc)
+		agentpbv2.RegisterWendyBuildServiceServer(srv, buildSvc)
 		if ros2Svc != nil {
 			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
 		}
@@ -642,7 +711,7 @@ func main() {
 		defer wg.Done()
 		meshMetrics.Collect(ctx)
 	}()
-	meshDialer := services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, meshMetrics)
+	meshDialer = services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, meshMetrics)
 	meshProxy := mesh.NewProxy(logger, meshDialer, meshMetrics)
 	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
 		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))

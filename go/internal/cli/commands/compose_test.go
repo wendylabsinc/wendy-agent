@@ -254,6 +254,18 @@ func TestComposeServiceWatchHashTracksCreateRequest(t *testing.T) {
 	}
 }
 
+func TestImageRefContentPinned(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("b", 64)
+	if !imageRefContentPinned("docker.io/library/alpine@" + digest) {
+		t.Fatal("digest-pinned image was not eligible")
+	}
+	for _, ref := range []string{"alpine", "alpine:3.20", "${IMAGE}", ""} {
+		if imageRefContentPinned(ref) {
+			t.Fatalf("mutable or invalid image %q was eligible", ref)
+		}
+	}
+}
+
 func TestPlanComposeBuildSkipsVerifiedUnchangedService(t *testing.T) {
 	isolateFingerprintCache(t)
 	const (
@@ -615,6 +627,26 @@ func TestComposeAppConfig(t *testing.T) {
 		}
 		if cfg.ServiceName != "" {
 			t.Fatalf("single-service ServiceName: want empty, got %q", cfg.ServiceName)
+		}
+		if got := composeWatchAppID("myapp", nil, map[string]*appconfig.AppConfig{"web": cfg}); got != "myapp-web" {
+			t.Fatalf("single-service watch appID: want %q, got %q", "myapp-web", got)
+		}
+	})
+
+	t.Run("multi-service watch uses grouped project appID", func(t *testing.T) {
+		cfgs := map[string]*appconfig.AppConfig{
+			"api": {AppID: "myapp", ServiceName: "api"},
+			"db":  {AppID: "myapp", ServiceName: "db"},
+		}
+		if got := composeWatchAppID("myapp", nil, cfgs); got != "myapp" {
+			t.Fatalf("multi-service watch appID: want %q, got %q", "myapp", got)
+		}
+	})
+
+	t.Run("companion appID overrides watch identity", func(t *testing.T) {
+		companion := &appconfig.AppConfig{AppID: "sh.wendy.example"}
+		if got := composeWatchAppID("myapp", companion, nil); got != companion.AppID {
+			t.Fatalf("companion watch appID: want %q, got %q", companion.AppID, got)
 		}
 	})
 }

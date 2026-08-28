@@ -2,7 +2,10 @@ package rtps
 
 import (
 	"encoding/binary"
+	"errors"
+	"strings"
 	"testing"
+	"time"
 )
 
 // dataSubmessage builds a little-endian DATA submessage carrying payload,
@@ -22,6 +25,21 @@ func dataSubmessage(readerID, writerID uint32, sn uint64, payload []byte) []byte
 	out[1] = 0x01 | 0x04 // little-endian, data present
 	binary.LittleEndian.PutUint16(out[2:4], uint16(len(body)))
 	return append(out, body...)
+}
+
+func dataFragSubmessage(readerID, writerID uint32, sn uint64, start uint32, count, fragmentSize uint16, sampleSize uint32, payload []byte) []byte {
+	body := make([]byte, 32)
+	binary.LittleEndian.PutUint16(body[2:4], 28)
+	binary.BigEndian.PutUint32(body[4:8], readerID)
+	binary.BigEndian.PutUint32(body[8:12], writerID)
+	binary.LittleEndian.PutUint32(body[12:16], uint32(sn>>32))
+	binary.LittleEndian.PutUint32(body[16:20], uint32(sn))
+	binary.LittleEndian.PutUint32(body[20:24], start)
+	binary.LittleEndian.PutUint16(body[24:26], count)
+	binary.LittleEndian.PutUint16(body[26:28], fragmentSize)
+	binary.LittleEndian.PutUint32(body[28:32], sampleSize)
+	body = append(body, payload...)
+	return buildSubmessage(subDATAFRAG, 0, body)
 }
 
 func rtpsDatagram(prefix GUIDPrefix, subs ...[]byte) []byte {
@@ -115,6 +133,98 @@ func TestParseData_SequenceNumberIsHighLow(t *testing.T) {
 	}
 	if d.WriterSN != SequenceNumber(1<<32|2) {
 		t.Errorf("WriterSN = %d, want %d", d.WriterSN, int64(1<<32|2))
+	}
+}
+
+func TestParseDataFrag(t *testing.T) {
+	sub := dataFragSubmessage(0, 0x00032102, 1<<32|7, 3, 2, 1024, 5000, []byte("fragment bytes"))
+	msg, err := ParseMessage(rtpsDatagram(GUIDPrefix{}, sub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := ParseDataFrag(msg.Submessages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.WriterID != 0x00032102 || f.WriterSN != SequenceNumber(1<<32|7) ||
+		f.FragmentStartingNum != 3 || f.FragmentsInSubmessage != 2 ||
+		f.FragmentSize != 1024 || f.SampleSize != 5000 || string(f.Payload) != "fragment bytes" {
+		t.Fatalf("parsed DATA_FRAG = %+v payload=%q", f, f.Payload)
+	}
+}
+
+func TestParticipant_ReassemblesDataFragOutOfOrder(t *testing.T) {
+	writer := GUID{EntityID: 0x00032102}
+	p := &Participant{
+		subWriters: map[GUID]struct{}{writer: {}},
+		fragments:  map[fragmentKey]*fragmentSet{},
+		samples:    make(chan Sample, 1),
+		unmatched:  map[GUID]int{},
+	}
+	p.handleUserDataFrag(writer.Prefix, &DataFragSubmessage{
+		WriterID: writer.EntityID, WriterSN: 9, FragmentStartingNum: 2,
+		FragmentsInSubmessage: 1, FragmentSize: 4, SampleSize: 10, Payload: []byte("efgh"),
+	})
+	p.handleUserDataFrag(writer.Prefix, &DataFragSubmessage{
+		WriterID: writer.EntityID, WriterSN: 9, FragmentStartingNum: 1,
+		FragmentsInSubmessage: 1, FragmentSize: 4, SampleSize: 10, Payload: []byte("abcd"),
+	})
+	p.handleUserDataFrag(writer.Prefix, &DataFragSubmessage{
+		WriterID: writer.EntityID, WriterSN: 9, FragmentStartingNum: 3,
+		FragmentsInSubmessage: 1, FragmentSize: 4, SampleSize: 10, Payload: []byte("ij"),
+	})
+	select {
+	case sample := <-p.samples:
+		if string(sample.Payload) != "abcdefghij" {
+			t.Fatalf("payload = %q", sample.Payload)
+		}
+	default:
+		t.Fatal("completed fragmented sample was not delivered")
+	}
+}
+
+func TestParticipant_ExpiresIncompleteDataFragWithoutMoreTraffic(t *testing.T) {
+	key := fragmentKey{writer: GUID{EntityID: 0x00032102}, sn: 9}
+	p := &Participant{
+		fragments: map[fragmentKey]*fragmentSet{
+			key: {buf: make([]byte, 32), updated: time.Now().Add(-fragmentSetTTL - time.Second)},
+		},
+		fragmentBytes: 32,
+	}
+	p.expireFragmentSets(time.Now())
+	if len(p.fragments) != 0 || p.fragmentBytes != 0 {
+		t.Fatalf("expired fragments retained: sets=%d bytes=%d", len(p.fragments), p.fragmentBytes)
+	}
+}
+
+func TestParticipant_RejectsFragmentedBuiltinSubscriptionWriter(t *testing.T) {
+	remote := GUIDPrefix{9}
+	p := &Participant{prefix: GUIDPrefix{1}}
+	sub := dataFragSubmessage(0, entitySEDPSubWriter, 1, 1, 1, 4, 4, []byte("data"))
+	p.handle(rtpsDatagram(remote, sub), nil)
+	stats := p.Stats()
+	if stats.DataParseErrors != 1 || stats.UserDataMessages != 0 {
+		t.Fatalf("stats = %+v; want one parse error and no user data", stats)
+	}
+}
+
+func TestParticipant_VerifiesNamespaceTargetBeforeEntry(t *testing.T) {
+	called := false
+	err := verifyNamespaceTarget(42, func() bool {
+		called = true
+		return false
+	})
+	if !called || err == nil || !strings.Contains(err.Error(), "process 42 changed") {
+		t.Fatalf("called=%v error=%v; want verifier rejection before namespace entry", called, err)
+	}
+}
+
+func TestParticipant_PreservesOperationAndNamespaceRestoreErrors(t *testing.T) {
+	operationErr := errors.New("opening sockets")
+	restoreErr := errors.New("setns host")
+	err := combineNamespaceRestoreError(operationErr, restoreErr)
+	if !errors.Is(err, operationErr) || !errors.Is(err, restoreErr) {
+		t.Fatalf("combined error = %v; want both operation and restore errors", err)
 	}
 }
 

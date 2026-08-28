@@ -1,12 +1,17 @@
 package analytics
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 func clearCIEnv(t *testing.T) {
@@ -14,6 +19,25 @@ func clearCIEnv(t *testing.T) {
 	for _, key := range env.CIEnvVars {
 		t.Setenv(key, "")
 	}
+}
+
+func enableTestDelivery(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	Close()
+	server := httptest.NewServer(handler)
+	previousEndpoint := telemetryEndpoint
+	telemetryEndpoint = server.URL
+	enabled = true
+	distinctID = "analytics-test-id"
+	client = server.Client()
+	t.Cleanup(func() {
+		Close()
+		enabled = false
+		distinctID = ""
+		telemetryEndpoint = previousEndpoint
+		server.Close()
+	})
+	return server
 }
 
 func TestDisabledViaEnvVar(t *testing.T) {
@@ -150,21 +174,25 @@ func TestTrackHookFiresEvenWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestTrackMilestoneOnceInDir_EmitsOnce(t *testing.T) {
+func TestTrackMilestoneOnceInDir_RecordsAfter2xx(t *testing.T) {
 	dir := t.TempDir()
-	var count int
-	SetTrackHookForTesting(func(event string, _ map[string]string) {
-		if event == "first_deploy_success" {
-			count++
-		}
+	requests := 0
+	server := enableTestDelivery(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusNoContent)
 	})
-	t.Cleanup(func() { SetTrackHookForTesting(nil) })
 
 	TrackMilestoneOnceInDir(dir, "first_deploy_success")
-	TrackMilestoneOnceInDir(dir, "first_deploy_success")
+	Close()
 
-	if count != 1 {
-		t.Fatalf("expected milestone to emit exactly once, got %d", count)
+	// Re-enable the test client after Close. The second call should return from
+	// the persisted milestone check without issuing another request.
+	client = server.Client()
+	TrackMilestoneOnceInDir(dir, "first_deploy_success")
+	Close()
+
+	if requests != 1 {
+		t.Fatalf("expected milestone to be delivered exactly once, got %d requests", requests)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "milestones"))
 	if err != nil {
@@ -172,5 +200,96 @@ func TestTrackMilestoneOnceInDir_EmitsOnce(t *testing.T) {
 	}
 	if string(data) != "first_deploy_success\n" {
 		t.Fatalf("unexpected milestones file contents: %q", string(data))
+	}
+}
+
+func TestTrackMilestoneOnceInDir_RetriesAfterNon2xx(t *testing.T) {
+	dir := t.TempDir()
+	statusCode := http.StatusInternalServerError
+	requests := 0
+	server := enableTestDelivery(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(statusCode)
+	})
+
+	TrackMilestoneOnceInDir(dir, "first_deploy_success")
+	Close()
+
+	if milestoneSent(dir, "first_deploy_success") {
+		t.Fatal("milestone must remain pending after a non-2xx response")
+	}
+	if _, err := os.Stat(filepath.Join(dir, milestonesFileName)); !os.IsNotExist(err) {
+		t.Fatalf("milestone file should not be created after failed delivery; err=%v", err)
+	}
+
+	statusCode = http.StatusNoContent
+	client = server.Client()
+	TrackMilestoneOnceInDir(dir, "first_deploy_success")
+	Close()
+
+	if !milestoneSent(dir, "first_deploy_success") {
+		t.Fatal("milestone should be recorded after a later successful delivery")
+	}
+	if requests != 2 {
+		t.Fatalf("expected one failed attempt and one retry, got %d requests", requests)
+	}
+}
+
+func TestTrackClassifiesSuffixedDevBuild(t *testing.T) {
+	var got eventPayload
+	enableTestDelivery(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode event payload: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	previousVersion := version.Version
+	version.Version = "2026.08.24-171500-dev"
+	t.Cleanup(func() { version.Version = previousVersion })
+
+	Track("command_executed", map[string]string{
+		"command_name": "wendy version",
+		"success":      "true",
+	})
+	Close()
+
+	if !got.IsDevBuild {
+		t.Fatalf("is_dev_build = false for suffixed dev version %q", version.Version)
+	}
+}
+
+func TestCloseWaitsForInFlightDelivery(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	enableTestDelivery(t, func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-releaseResponse
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	Track("command_executed", map[string]string{
+		"command_name": "wendy version",
+		"success":      "true",
+	})
+	<-requestStarted
+
+	closed := make(chan struct{})
+	go func() {
+		Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+		t.Fatal("Close returned before the telemetry request completed")
+	default:
+	}
+
+	close(releaseResponse)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after the telemetry request completed")
 	}
 }

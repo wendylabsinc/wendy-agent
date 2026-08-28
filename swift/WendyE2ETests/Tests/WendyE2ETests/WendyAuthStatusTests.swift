@@ -28,12 +28,19 @@ struct `'wendy auth status'` {
     /**
      With no stored credentials, reports that the user is not logged in,
      exits successfully, emits no stderr, and does not create config
-     files.
+     files. A scripted (non-interactive) invocation auto-enables --json and
+     receives the JSON rendering; `--json=false` keeps the human rendering
+     with the login hint.
      */
     @Test
     func `prints logged-out status without contacting the cloud`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
             try await cli.sh("wendy auth status") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout.contains("\"loggedIn\": false"))
+                #expect(result.stderr == "")
+            }
+            try await cli.sh("wendy auth status --json=false") { result in
                 #expect(result.status.isSuccess)
                 #expect(result.stdout.contains("Not logged in"))
                 #expect(result.stdout.contains("wendy auth login"))
@@ -49,8 +56,9 @@ struct `'wendy auth status'` {
 
     /**
      With a stored session, reports the cloud identity and account or
-     organization summary available locally. Secrets and private key
-     material are never printed.
+     organization summary available locally — as JSON for scripted
+     (non-interactive) invocations, as labeled lines with `--json=false`.
+     Secrets and private key material are never printed.
      */
     @Test
     func `prints logged-in status from stored credentials`() async throws {
@@ -66,6 +74,16 @@ struct `'wendy auth status'` {
                     """
             )
             try await cli.sh("wendy auth status") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout.contains("\"loggedIn\": true"))
+                #expect(result.stdout.contains("\"cloud\": \"https://fixture.invalid\""))
+                #expect(result.stdout.contains("\"cloudGrpc\": \"fixture.invalid:443\""))
+                #expect(result.stdout.contains("\"userId\": \"fixture-user\""))
+                #expect(result.stdout.contains("\"organizationId\": 42"))
+                #expect(!result.stdout.lowercased().contains("private key"))
+                #expect(result.stderr == "")
+            }
+            try await cli.sh("wendy auth status --json=false") { result in
                 #expect(result.status.isSuccess)
                 #expect(result.stdout.contains("Cloud:  https://fixture.invalid"))
                 #expect(result.stdout.contains("gRPC: fixture.invalid:443"))

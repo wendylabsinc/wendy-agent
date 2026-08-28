@@ -447,13 +447,17 @@ func newTopCmd() *cobra.Command {
 }
 
 type topStatsMsg struct {
-	resp *agentpb.GetResourceStatsResponse
-	err  error
+	resp       *agentpb.GetResourceStatsResponse
+	err        error
+	startedAt  time.Time
+	finishedAt time.Time
 }
 
 type topContainersMsg struct {
 	containers []*agentpb.AppContainer
 	err        error
+	startedAt  time.Time
+	finishedAt time.Time
 }
 
 type topModel struct {
@@ -478,6 +482,13 @@ type topModel struct {
 	width     int
 	height    int
 	flash     string
+
+	// Liveness. The stats and container polls run independently, so their
+	// results can reach Update out of order. Keep the latest proof on each side
+	// so a slow failure cannot overwrite a newer successful reply.
+	lastReplyAt       time.Time
+	lastUnreachableAt time.Time
+	offlineSince      time.Time
 
 	// Lifecycle action state is separate from poll errors so a successful poll
 	// cannot erase stop progress or its result.
@@ -616,9 +627,16 @@ func (m topModel) runStatsPoll() {
 	// tick); it only stops when the agent does not implement the RPC at all,
 	// since that will never succeed.
 	fetch := func() bool {
-		resp, err := sampleResourceStats(m.ctx, m.conn)
+		// Deadline per poll: a device that lost power leaves the socket
+		// black-holed, and an undeadlined call would block here — stalling the
+		// ticker too — until gRPC keepalive gives up 15 minutes later.
+		startedAt := time.Now()
+		ctx, cancel := context.WithTimeout(m.ctx, topPollTimeout(m.interval))
+		resp, err := sampleResourceStats(ctx, m.conn)
+		cancel()
+		finishedAt := time.Now()
 		select {
-		case m.statsCh <- topStatsMsg{resp: resp, err: err}:
+		case m.statsCh <- topStatsMsg{resp: resp, err: err, startedAt: startedAt, finishedAt: finishedAt}:
 		case <-m.ctx.Done():
 			return false
 		}
@@ -643,9 +661,13 @@ func (m topModel) runContainersPoll() {
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
 	fetch := func() {
-		containers, err := listAppContainers(m.ctx, m.conn)
+		startedAt := time.Now()
+		ctx, cancel := context.WithTimeout(m.ctx, topPollTimeout(m.interval))
+		containers, err := listAppContainers(ctx, m.conn)
+		cancel()
+		finishedAt := time.Now()
 		select {
-		case m.containersCh <- topContainersMsg{containers: containers, err: err}:
+		case m.containersCh <- topContainersMsg{containers: containers, err: err, startedAt: startedAt, finishedAt: finishedAt}:
 		case <-m.ctx.Done():
 		}
 	}
@@ -699,16 +721,18 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case topStatsMsg:
+		startedAt, finishedAt := topPollTimes(msg.startedAt, msg.finishedAt)
 		if msg.err != nil {
-			m.flash = userFacingGRPCError(msg.err)
+			m.noteOfflineErr(msg.err, startedAt, finishedAt)
 			return m, waitForTopStats(m.statsCh)
 		}
 		m.flash = ""
+		m.noteOnline(finishedAt)
 		if m.cur.host != nil || len(m.cur.containers) > 0 {
 			m.prev = m.cur
 			m.havePrev = true
 		}
-		m.cur = newTopSample(msg.resp, time.Now().UnixNano())
+		m.cur = newTopSample(msg.resp, finishedAt.UnixNano())
 		if m.cur.host != nil {
 			m.displayThermalZones = stabilizeThermalZoneOrder(m.displayThermalZones, m.cur.host.GetThermalZones())
 		} else {
@@ -721,10 +745,16 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(waitForTopStats(m.statsCh), m.fetchPortsCmd(sel))
 
 	case topContainersMsg:
+		startedAt, finishedAt := topPollTimes(msg.startedAt, msg.finishedAt)
 		if msg.err != nil {
-			m.flash = userFacingGRPCError(msg.err)
+			// Both polls ride the same connection, so this normally fails
+			// alongside the stats poll.
+			m.noteOfflineErr(msg.err, startedAt, finishedAt)
 			return m, waitForTopContainers(m.containersCh)
 		}
+		// A container list is a reply, so it ends an outage — but it is not a
+		// sample, so it does not refresh the age of the meters above it.
+		m.noteReachable(finishedAt)
 		m.cachedContainers = msg.containers
 		m.rebuildRows()
 		return m, tea.Batch(waitForTopContainers(m.containersCh), m.maybeFetchPorts())
@@ -811,8 +841,11 @@ var (
 	topCrashRow    = lipgloss.NewStyle().Foreground(tui.Red500)
 	topThermalNear = lipgloss.NewStyle().Bold(true).Foreground(tui.Amber500)
 	topThermalHot  = lipgloss.NewStyle().Bold(true).Foreground(tui.Red500)
-	topKeyCap      = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(lipgloss.Color("#d0d0d0"))
-	topKeyLabel    = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(tui.Emerald500)
+	// Reversed rather than merely red: an offline device is the one condition
+	// that must not blend into the meter stack above the app table.
+	topOfflineBar = lipgloss.NewStyle().Bold(true).Background(tui.Red500).Foreground(lipgloss.Color("#ffffff"))
+	topKeyCap     = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(lipgloss.Color("#d0d0d0"))
+	topKeyLabel   = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(tui.Emerald500)
 )
 
 // topMeter renders an htop-style bracketed meter: LABEL[|||||      value].
@@ -918,6 +951,21 @@ func (m topModel) View() string {
 
 	var top []string // full-width meters + summary
 
+	// An unreachable device keeps its last sample on screen — there is nothing
+	// newer to draw — so the banner is what stops those frozen meters from
+	// reading as live telemetry.
+	if m.isOffline() {
+		var lastBattery *agentpb.BatteryStats
+		if m.cur.host != nil {
+			lastBattery = m.cur.host.GetBattery()
+		}
+		headline := topOfflineHeadline(m.silentFor(time.Now()), lastBattery)
+		top = append(top, topOfflineBar.Render(padOrCrop(" "+headline, width)))
+		if m.cur.host != nil {
+			top = append(top, topValDim.Render(" Readings below are the last values received, not live."))
+		}
+	}
+
 	if m.cur.host != nil {
 		h := m.cur.host
 		meterW := width - 2
@@ -974,7 +1022,7 @@ func (m topModel) View() string {
 		if len(zones) > 0 {
 			top = append(top, topValDim.Render(" Temp: "+formatThermalZones(zones)))
 		}
-	} else {
+	} else if !m.isOffline() {
 		top = append(top, topValDim.Render(" Connecting…"))
 	}
 
