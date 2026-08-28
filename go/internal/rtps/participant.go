@@ -247,18 +247,18 @@ func NewParticipant(cfg Config) (*Participant, error) {
 	// The first two octets of a GUID prefix are conventionally the vendor ID.
 	p.prefix[0], p.prefix[1] = 0x01, 0x0f
 
-	if err := withNetworkNamespace(cfg.NetworkNamespacePID, p.openVerifiedSockets); err != nil {
+	if err := withNetworkNamespace(cfg.NetworkNamespacePID, cfg.VerifyNetworkNamespace, p.openSockets); err != nil {
 		_ = p.Close()
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *Participant) openVerifiedSockets() error {
-	if p.cfg.NetworkNamespacePID != 0 && p.cfg.VerifyNetworkNamespace != nil && !p.cfg.VerifyNetworkNamespace() {
-		return fmt.Errorf("rtps: network namespace process %d changed", p.cfg.NetworkNamespacePID)
+func verifyNamespaceTarget(pid uint32, verify func() bool) error {
+	if verify != nil && !verify() {
+		return fmt.Errorf("rtps: network namespace process %d changed", pid)
 	}
-	return p.openSockets()
+	return nil
 }
 
 func (p *Participant) openSockets() error {

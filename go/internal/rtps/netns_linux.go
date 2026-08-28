@@ -10,7 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func withNetworkNamespace(pid uint32, fn func() error) (err error) {
+func withNetworkNamespace(pid uint32, verify func() bool, fn func() error) (err error) {
 	if pid == 0 {
 		return fn()
 	}
@@ -35,6 +35,13 @@ func withNetworkNamespace(pid uint32, fn func() error) (err error) {
 		return fmt.Errorf("rtps: opening network namespace for pid %d: %w", pid, err)
 	}
 	defer target.Close() //nolint:errcheck
+	// The namespace fd is a stable reference even if the process exits. Verify
+	// container ownership after capturing it but before setns: a recycled PID is
+	// rejected without entering its namespace, while an exit after this check
+	// cannot redirect us to a different namespace.
+	if err := verifyNamespaceTarget(pid, verify); err != nil {
+		return err
+	}
 	if err := unix.Setns(int(target.Fd()), unix.CLONE_NEWNET); err != nil {
 		return fmt.Errorf("rtps: entering network namespace for pid %d: %w", pid, err)
 	}

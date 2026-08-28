@@ -207,21 +207,14 @@ func TestParticipant_RejectsFragmentedBuiltinSubscriptionWriter(t *testing.T) {
 	}
 }
 
-func TestParticipant_VerifiesNamespaceBeforeOpeningSockets(t *testing.T) {
+func TestParticipant_VerifiesNamespaceTargetBeforeEntry(t *testing.T) {
 	called := false
-	p := &Participant{cfg: Config{
-		NetworkNamespacePID: 42,
-		VerifyNetworkNamespace: func() bool {
-			called = true
-			return false
-		},
-	}}
-	err := p.openVerifiedSockets()
+	err := verifyNamespaceTarget(42, func() bool {
+		called = true
+		return false
+	})
 	if !called || err == nil || !strings.Contains(err.Error(), "process 42 changed") {
-		t.Fatalf("called=%v error=%v; want verifier rejection before socket setup", called, err)
-	}
-	if p.mcast != nil || p.ucast != nil {
-		t.Fatal("namespace verifier rejection still opened RTPS sockets")
+		t.Fatalf("called=%v error=%v; want verifier rejection before namespace entry", called, err)
 	}
 }
 

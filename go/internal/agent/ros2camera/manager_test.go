@@ -115,6 +115,18 @@ func TestManagerSkipsDecodeWhenLoopbackNodeIsMissing(t *testing.T) {
 	}
 }
 
+func TestFrameIntervalBudgetsLargeRawFrames(t *testing.T) {
+	if got := frameInterval(TypeCompressedImage, largeRawBytes+1); got != minFrameInterval {
+		t.Fatalf("compressed interval = %s; want %s", got, minFrameInterval)
+	}
+	if got := frameInterval(TypeImage, mediumRawBytes+1); got != mediumRawInterval {
+		t.Fatalf("medium raw interval = %s; want %s", got, mediumRawInterval)
+	}
+	if got := frameInterval(TypeImage, largeRawBytes+1); got != largeRawInterval {
+		t.Fatalf("large raw interval = %s; want %s", got, largeRawInterval)
+	}
+}
+
 func TestManagerKeepsHostInterfacesDistinct(t *testing.T) {
 	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil)
 	t.Cleanup(m.Shutdown)

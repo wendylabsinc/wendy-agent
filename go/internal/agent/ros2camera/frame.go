@@ -20,6 +20,7 @@ const (
 	TypeGo2FrontVideo   = "unitree_go::msg::dds_::Go2FrontVideoData_"
 	maxFrameDimension   = 4096
 	maxFramePixels      = 4096 * 2160
+	maxRawFramePixels   = 1920 * 1080
 )
 
 var ErrUnsupportedEncoding = errors.New("unsupported ROS 2 image encoding")
@@ -182,6 +183,11 @@ func decodeRawImage(payload []byte) ([]byte, int, int, error) {
 	}
 	if err := validateDimensions(int(width), int(height)); err != nil {
 		return nil, 0, 0, err
+	}
+	// SECURITY: Raw frames require a full colorspace conversion and JPEG encode,
+	// unlike compressed frames. Bound that CPU and allocation path to 1080p.
+	if uint64(width)*uint64(height) > maxRawFramePixels {
+		return nil, 0, 0, fmt.Errorf("raw image dimensions %dx%d exceed the 1080p pixel budget", width, height)
 	}
 	data, err := d.Bytes()
 	if err != nil {

@@ -19,7 +19,11 @@ const (
 	reconcileInterval = time.Minute
 	firstFrameTimeout = 15 * time.Second
 	minFrameInterval  = 30 * time.Millisecond
+	mediumRawInterval = 60 * time.Millisecond
+	largeRawInterval  = 100 * time.Millisecond
 	maxTopicLength    = 255
+	mediumRawBytes    = 2 * 1024 * 1024
+	largeRawBytes     = 4 * 1024 * 1024
 )
 
 // Loopback is the shared v4l2loopback control surface owned by ipcam.Loopback.
@@ -36,9 +40,9 @@ type Graph struct {
 	InstanceKey         string
 	DomainID            int
 	NetworkNamespacePID uint32
-	// Verify confirms that InstanceKey still owns NetworkNamespacePID after the
-	// namespace is entered but before sockets are opened, and once more before
-	// discovery starts.
+	// Verify confirms that InstanceKey still owns NetworkNamespacePID after a
+	// stable namespace handle is captured but before it is entered, and once
+	// more before discovery starts.
 	Verify func(context.Context) bool
 }
 
@@ -148,6 +152,9 @@ func (m *Manager) reconcile(ctx context.Context) {
 	desired := map[string]bool{}
 	// Domain zero on physical wired interfaces covers robot-native graphs,
 	// including the Go2's /frontvideostream publisher.
+	// SECURITY: Domain 0 on these interfaces is intentionally a trusted robot-LAN
+	// boundary because standard ROS 2 discovery has no source authentication.
+	// The operator-facing docs require untrusted peers to be segmented away.
 	for _, iface := range eligibleInterfaces() {
 		desired[participantKey(iface, 0, 0, "host")] = true
 		m.ensureParticipant(iface, 0, 0, "host:"+iface, "host", nil)
@@ -398,7 +405,8 @@ func (m *Manager) handleSample(sample rtps.Sample) {
 	}
 	now := time.Now()
 	m.mu.Lock()
-	if !cam.lastFrame.IsZero() && now.Sub(cam.lastFrame) < minFrameInterval {
+	interval := frameInterval(typeName, len(sample.Payload))
+	if !cam.lastFrame.IsZero() && now.Sub(cam.lastFrame) < interval {
 		m.mu.Unlock()
 		return
 	}
@@ -425,6 +433,22 @@ func (m *Manager) handleSample(sample rtps.Sample) {
 		cam.readyClosed = true
 	}
 	m.mu.Unlock()
+}
+
+func frameInterval(typeName string, payloadBytes int) time.Duration {
+	if typeName != TypeImage && typeName != "sensor_msgs/msg/Image" {
+		return minFrameInterval
+	}
+	// SECURITY: Large raw samples are expensive to convert and encode. Apply a
+	// per-writer byte-size budget while leaving compressed JPEG passthrough at
+	// normal camera frame rates.
+	if payloadBytes > largeRawBytes {
+		return largeRawInterval
+	}
+	if payloadBytes > mediumRawBytes {
+		return mediumRawInterval
+	}
+	return minFrameInterval
 }
 
 func (m *Manager) logCameraErrorOnce(cam *cameraState, message string, err error) {

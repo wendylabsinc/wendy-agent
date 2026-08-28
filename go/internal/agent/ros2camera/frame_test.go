@@ -100,6 +100,20 @@ func TestDecodeRawImageRejectsOversizedDimensions(t *testing.T) {
 	}
 }
 
+func TestDecodeRawImageRejectsMoreThan1080p(t *testing.T) {
+	c := newCDRBuilder()
+	c.header()
+	c.u32(1081)
+	c.u32(1920)
+	c.str("mono8")
+	c.u8(0)
+	c.u32(1920)
+	c.bytes(nil)
+	if _, _, _, err := DecodeJPEG(TypeImage, c.b); err == nil || !strings.Contains(err.Error(), "1080p pixel budget") {
+		t.Fatalf("error = %v; want raw-frame pixel budget rejection", err)
+	}
+}
+
 func TestDecodeGo2FrontVideoPrefers720p(t *testing.T) {
 	want := testJPEG(t, 4, 3)
 	c := newCDRBuilder()
