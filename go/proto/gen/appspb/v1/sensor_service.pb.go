@@ -46,9 +46,19 @@ type SensorSource struct {
 	// listed with subscribable=false and a detail saying why, rather than
 	// omitted: a caller must be able to tell "not available to models" from
 	// "does not exist".
-	Subscribable  bool `protobuf:"varint,6,opt,name=subscribable,proto3" json:"subscribable,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Subscribable bool `protobuf:"varint,6,opt,name=subscribable,proto3" json:"subscribable,omitempty"`
+	// loopback_node_path is the v4l2loopback device node carrying this source's
+	// frames on the two-plane data path, for example "/dev/video200". Empty when
+	// the source has no such node, which is the normal case: a node exists only
+	// for a source whose frames can be identified frame-for-frame, and only while
+	// an app entitled to BOTH sensors and camera is running.
+	//
+	// An empty value is not an error and an app must handle it: it means the
+	// two-plane path is unavailable for this source and the app should fall back
+	// to Subscribe, which always works.
+	LoopbackNodePath string `protobuf:"bytes,7,opt,name=loopback_node_path,json=loopbackNodePath,proto3" json:"loopback_node_path,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SensorSource) Reset() {
@@ -121,6 +131,13 @@ func (x *SensorSource) GetSubscribable() bool {
 		return x.Subscribable
 	}
 	return false
+}
+
+func (x *SensorSource) GetLoopbackNodePath() string {
+	if x != nil {
+		return x.LoopbackNodePath
+	}
+	return ""
 }
 
 type SensorSourcesRequest struct {
@@ -384,18 +401,232 @@ func (x *SensorSample) GetBootId() string {
 	return ""
 }
 
+type FrameIdentitySubscribeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// source_ids are the sources whose frame identities to stream, as reported by
+	// Sources. At least one is required.
+	SourceIds []string `protobuf:"bytes,1,rep,name=source_ids,json=sourceIds,proto3" json:"source_ids,omitempty"`
+	// model optionally names the model consuming the frames, recorded in the
+	// episode's model-input ledger exactly as SensorSubscribeRequest.model is.
+	Model         string `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FrameIdentitySubscribeRequest) Reset() {
+	*x = FrameIdentitySubscribeRequest{}
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FrameIdentitySubscribeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FrameIdentitySubscribeRequest) ProtoMessage() {}
+
+func (x *FrameIdentitySubscribeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FrameIdentitySubscribeRequest.ProtoReflect.Descriptor instead.
+func (*FrameIdentitySubscribeRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_apps_v1_sensor_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *FrameIdentitySubscribeRequest) GetSourceIds() []string {
+	if x != nil {
+		return x.SourceIds
+	}
+	return nil
+}
+
+func (x *FrameIdentitySubscribeRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+// FrameIdentity names one frame the agent wrote to a source's v4l2loopback node.
+// It carries no pixels: the pixels are on the node.
+//
+// # Why loopback_sequence is the kernel's number and not ours
+//
+// The natural design would be for the agent to stamp sample_id directly into
+// v4l2_buffer.sequence, so a consumer reads the harness identifier straight off
+// the buffer. The v4l2loopback module makes that impossible: its QBUF handler
+// overwrites the sequence of any queued output buffer with its own internal
+// write counter, discarding whatever the writer supplied. There is no option or
+// flag that disables it.
+//
+// So the agent does the opposite. It reads back the sequence the kernel assigned
+// (QBUF returns it), and publishes the resulting mapping on this stream. A
+// consumer takes v4l2_buffer.sequence off the frame it dequeued and finds the
+// FrameIdentity carrying the same value. The number is therefore authoritative
+// and requires no assumption that frames arrive in a particular order, which is
+// what makes the join trustworthy.
+//
+// # Dropped frames: two different losses, two different signals
+//
+// A consumer that watches only one of these will believe frames were delivered
+// that were not. Both must be checked.
+//
+//  1. The agent could not keep up feeding the node. Those samples never reached
+//     the node at all, so loopback_sequence stays DENSE across the loss and
+//     shows no gap. The loss appears only here, as a jump in sample_id, and is
+//     counted exactly by dropped_before.
+//
+//  2. The application could not keep up reading the node. v4l2loopback
+//     fast-forwards an overrun reader rather than blocking it, so the
+//     application's next dequeued buffer has a sequence that JUMPED. This loss
+//     is invisible on this stream, because the agent did write those frames. The
+//     application detects it by comparing the sequence of consecutive dequeued
+//     buffers: the difference minus one is the number it missed.
+//
+// In short: a sample_id jump means the agent fell behind, a sequence jump means
+// the reader fell behind, and both can happen at once.
+//
+// A frame the agent failed to write appears in neither: it consumes no sequence
+// and produces no FrameIdentity, so it is absent rather than reported as lost.
+type FrameIdentity struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	SourceId string                 `protobuf:"bytes,1,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
+	// sample_id is the same identifier SensorSample.sample_id carries and the same
+	// one the episode capture index and the model-input ledger record, so a frame
+	// scored off the loopback node can be joined to what the episode kept.
+	SampleId uint64 `protobuf:"varint,2,opt,name=sample_id,json=sampleId,proto3" json:"sample_id,omitempty"`
+	// boottime_nanos and timestamp_uncertainty_nanos are the agent's bracketed
+	// CLOCK_BOOTTIME receipt of this sample and the bracket half-width, identical
+	// to the values SensorSample reports for the same sample.
+	BoottimeNanos             int64 `protobuf:"varint,3,opt,name=boottime_nanos,json=boottimeNanos,proto3" json:"boottime_nanos,omitempty"`
+	TimestampUncertaintyNanos int64 `protobuf:"varint,4,opt,name=timestamp_uncertainty_nanos,json=timestampUncertaintyNanos,proto3" json:"timestamp_uncertainty_nanos,omitempty"`
+	// loopback_sequence is the v4l2_buffer.sequence the KERNEL assigned to this
+	// frame on the node. It is the join key: match it against the sequence of the
+	// buffer dequeued from the node. See the message comment for why the agent
+	// cannot choose this value.
+	LoopbackSequence uint32 `protobuf:"varint,5,opt,name=loopback_sequence,json=loopbackSequence,proto3" json:"loopback_sequence,omitempty"`
+	// dropped_before counts samples lost between the producer and the node since
+	// the previous frame written. It is the ONLY report of loss case 1 above,
+	// because that loss leaves no gap in loopback_sequence.
+	DroppedBefore uint64 `protobuf:"varint,6,opt,name=dropped_before,json=droppedBefore,proto3" json:"dropped_before,omitempty"`
+	// boot_id is the kernel boot the timestamps belong to.
+	BootId string `protobuf:"bytes,7,opt,name=boot_id,json=bootId,proto3" json:"boot_id,omitempty"`
+	// node_path is the v4l2loopback node this frame was written to, so an app
+	// subscribing to several sources knows which node each identity belongs to.
+	NodePath      string `protobuf:"bytes,8,opt,name=node_path,json=nodePath,proto3" json:"node_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FrameIdentity) Reset() {
+	*x = FrameIdentity{}
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FrameIdentity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FrameIdentity) ProtoMessage() {}
+
+func (x *FrameIdentity) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_apps_v1_sensor_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FrameIdentity.ProtoReflect.Descriptor instead.
+func (*FrameIdentity) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_apps_v1_sensor_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *FrameIdentity) GetSourceId() string {
+	if x != nil {
+		return x.SourceId
+	}
+	return ""
+}
+
+func (x *FrameIdentity) GetSampleId() uint64 {
+	if x != nil {
+		return x.SampleId
+	}
+	return 0
+}
+
+func (x *FrameIdentity) GetBoottimeNanos() int64 {
+	if x != nil {
+		return x.BoottimeNanos
+	}
+	return 0
+}
+
+func (x *FrameIdentity) GetTimestampUncertaintyNanos() int64 {
+	if x != nil {
+		return x.TimestampUncertaintyNanos
+	}
+	return 0
+}
+
+func (x *FrameIdentity) GetLoopbackSequence() uint32 {
+	if x != nil {
+		return x.LoopbackSequence
+	}
+	return 0
+}
+
+func (x *FrameIdentity) GetDroppedBefore() uint64 {
+	if x != nil {
+		return x.DroppedBefore
+	}
+	return 0
+}
+
+func (x *FrameIdentity) GetBootId() string {
+	if x != nil {
+		return x.BootId
+	}
+	return ""
+}
+
+func (x *FrameIdentity) GetNodePath() string {
+	if x != nil {
+		return x.NodePath
+	}
+	return ""
+}
+
 var File_wendy_agent_apps_v1_sensor_service_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_apps_v1_sensor_service_proto_rawDesc = "" +
 	"\n" +
-	"(wendy/agent/apps/v1/sensor_service.proto\x12\x13wendy.agent.apps.v1\"\xab\x01\n" +
+	"(wendy/agent/apps/v1/sensor_service.proto\x12\x13wendy.agent.apps.v1\"\xd9\x01\n" +
 	"\fSensorSource\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12!\n" +
 	"\fclock_domain\x18\x03 \x01(\tR\vclockDomain\x12\x18\n" +
 	"\ahealthy\x18\x04 \x01(\bR\ahealthy\x12\x16\n" +
 	"\x06detail\x18\x05 \x01(\tR\x06detail\x12\"\n" +
-	"\fsubscribable\x18\x06 \x01(\bR\fsubscribable\"\x16\n" +
+	"\fsubscribable\x18\x06 \x01(\bR\fsubscribable\x12,\n" +
+	"\x12loopback_node_path\x18\a \x01(\tR\x10loopbackNodePath\"\x16\n" +
 	"\x14SensorSourcesRequest\"T\n" +
 	"\x15SensorSourcesResponse\x12;\n" +
 	"\asources\x18\x01 \x03(\v2!.wendy.agent.apps.v1.SensorSourceR\asources\"M\n" +
@@ -412,10 +643,24 @@ const file_wendy_agent_apps_v1_sensor_service_proto_rawDesc = "" +
 	"\bencoding\x18\x06 \x01(\tR\bencoding\x124\n" +
 	"\x16payload_self_contained\x18\a \x01(\bR\x14payloadSelfContained\x12%\n" +
 	"\x0edropped_before\x18\b \x01(\x04R\rdroppedBefore\x12\x17\n" +
-	"\aboot_id\x18\t \x01(\tR\x06bootId2\xd0\x01\n" +
+	"\aboot_id\x18\t \x01(\tR\x06bootId\"T\n" +
+	"\x1dFrameIdentitySubscribeRequest\x12\x1d\n" +
+	"\n" +
+	"source_ids\x18\x01 \x03(\tR\tsourceIds\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\"\xba\x02\n" +
+	"\rFrameIdentity\x12\x1b\n" +
+	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x1b\n" +
+	"\tsample_id\x18\x02 \x01(\x04R\bsampleId\x12%\n" +
+	"\x0eboottime_nanos\x18\x03 \x01(\x03R\rboottimeNanos\x12>\n" +
+	"\x1btimestamp_uncertainty_nanos\x18\x04 \x01(\x03R\x19timestampUncertaintyNanos\x12+\n" +
+	"\x11loopback_sequence\x18\x05 \x01(\rR\x10loopbackSequence\x12%\n" +
+	"\x0edropped_before\x18\x06 \x01(\x04R\rdroppedBefore\x12\x17\n" +
+	"\aboot_id\x18\a \x01(\tR\x06bootId\x12\x1b\n" +
+	"\tnode_path\x18\b \x01(\tR\bnodePath2\xc4\x02\n" +
 	"\rSensorService\x12`\n" +
 	"\aSources\x12).wendy.agent.apps.v1.SensorSourcesRequest\x1a*.wendy.agent.apps.v1.SensorSourcesResponse\x12]\n" +
-	"\tSubscribe\x12+.wendy.agent.apps.v1.SensorSubscribeRequest\x1a!.wendy.agent.apps.v1.SensorSample0\x01B?Z=github.com/wendylabsinc/wendy/go/proto/gen/appspb/v1;appspbv1b\x06proto3"
+	"\tSubscribe\x12+.wendy.agent.apps.v1.SensorSubscribeRequest\x1a!.wendy.agent.apps.v1.SensorSample0\x01\x12r\n" +
+	"\x16SubscribeFrameIdentity\x122.wendy.agent.apps.v1.FrameIdentitySubscribeRequest\x1a\".wendy.agent.apps.v1.FrameIdentity0\x01B?Z=github.com/wendylabsinc/wendy/go/proto/gen/appspb/v1;appspbv1b\x06proto3"
 
 var (
 	file_wendy_agent_apps_v1_sensor_service_proto_rawDescOnce sync.Once
@@ -429,22 +674,26 @@ func file_wendy_agent_apps_v1_sensor_service_proto_rawDescGZIP() []byte {
 	return file_wendy_agent_apps_v1_sensor_service_proto_rawDescData
 }
 
-var file_wendy_agent_apps_v1_sensor_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_wendy_agent_apps_v1_sensor_service_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_wendy_agent_apps_v1_sensor_service_proto_goTypes = []any{
-	(*SensorSource)(nil),           // 0: wendy.agent.apps.v1.SensorSource
-	(*SensorSourcesRequest)(nil),   // 1: wendy.agent.apps.v1.SensorSourcesRequest
-	(*SensorSourcesResponse)(nil),  // 2: wendy.agent.apps.v1.SensorSourcesResponse
-	(*SensorSubscribeRequest)(nil), // 3: wendy.agent.apps.v1.SensorSubscribeRequest
-	(*SensorSample)(nil),           // 4: wendy.agent.apps.v1.SensorSample
+	(*SensorSource)(nil),                  // 0: wendy.agent.apps.v1.SensorSource
+	(*SensorSourcesRequest)(nil),          // 1: wendy.agent.apps.v1.SensorSourcesRequest
+	(*SensorSourcesResponse)(nil),         // 2: wendy.agent.apps.v1.SensorSourcesResponse
+	(*SensorSubscribeRequest)(nil),        // 3: wendy.agent.apps.v1.SensorSubscribeRequest
+	(*SensorSample)(nil),                  // 4: wendy.agent.apps.v1.SensorSample
+	(*FrameIdentitySubscribeRequest)(nil), // 5: wendy.agent.apps.v1.FrameIdentitySubscribeRequest
+	(*FrameIdentity)(nil),                 // 6: wendy.agent.apps.v1.FrameIdentity
 }
 var file_wendy_agent_apps_v1_sensor_service_proto_depIdxs = []int32{
 	0, // 0: wendy.agent.apps.v1.SensorSourcesResponse.sources:type_name -> wendy.agent.apps.v1.SensorSource
 	1, // 1: wendy.agent.apps.v1.SensorService.Sources:input_type -> wendy.agent.apps.v1.SensorSourcesRequest
 	3, // 2: wendy.agent.apps.v1.SensorService.Subscribe:input_type -> wendy.agent.apps.v1.SensorSubscribeRequest
-	2, // 3: wendy.agent.apps.v1.SensorService.Sources:output_type -> wendy.agent.apps.v1.SensorSourcesResponse
-	4, // 4: wendy.agent.apps.v1.SensorService.Subscribe:output_type -> wendy.agent.apps.v1.SensorSample
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
+	5, // 3: wendy.agent.apps.v1.SensorService.SubscribeFrameIdentity:input_type -> wendy.agent.apps.v1.FrameIdentitySubscribeRequest
+	2, // 4: wendy.agent.apps.v1.SensorService.Sources:output_type -> wendy.agent.apps.v1.SensorSourcesResponse
+	4, // 5: wendy.agent.apps.v1.SensorService.Subscribe:output_type -> wendy.agent.apps.v1.SensorSample
+	6, // 6: wendy.agent.apps.v1.SensorService.SubscribeFrameIdentity:output_type -> wendy.agent.apps.v1.FrameIdentity
+	4, // [4:7] is the sub-list for method output_type
+	1, // [1:4] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
 	1, // [1:1] is the sub-list for extension extendee
 	0, // [0:1] is the sub-list for field type_name
@@ -461,7 +710,7 @@ func file_wendy_agent_apps_v1_sensor_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_apps_v1_sensor_service_proto_rawDesc), len(file_wendy_agent_apps_v1_sensor_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

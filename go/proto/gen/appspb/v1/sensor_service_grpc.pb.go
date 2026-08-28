@@ -32,8 +32,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SensorService_Sources_FullMethodName   = "/wendy.agent.apps.v1.SensorService/Sources"
-	SensorService_Subscribe_FullMethodName = "/wendy.agent.apps.v1.SensorService/Subscribe"
+	SensorService_Sources_FullMethodName                = "/wendy.agent.apps.v1.SensorService/Sources"
+	SensorService_Subscribe_FullMethodName              = "/wendy.agent.apps.v1.SensorService/Subscribe"
+	SensorService_SubscribeFrameIdentity_FullMethodName = "/wendy.agent.apps.v1.SensorService/SubscribeFrameIdentity"
 )
 
 // SensorServiceClient is the client API for SensorService service.
@@ -66,6 +67,27 @@ type SensorServiceClient interface {
 	// episode capture adapter uses, so subscribing never takes a device away from
 	// capture (or from another app).
 	Subscribe(ctx context.Context, in *SensorSubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SensorSample], error)
+	// SubscribeFrameIdentity streams the identity of each frame the agent wrote to
+	// a source's v4l2loopback node, carrying NO pixels.
+	//
+	// This is the control plane of the two-plane camera path. An app that wants to
+	// use ordinary tooling reads the pixels from the loopback node with ffmpeg or
+	// GStreamer (the data plane) and joins them to harness identity through this
+	// stream, instead of receiving frames over gRPC. Because the node is fed from
+	// the same producer hub that episode capture consumes, the frame the app
+	// scores is provably the frame the episode recorded, which is not true of an
+	// app that opens the camera device itself.
+	//
+	// The join key is loopback_sequence, which an app reads from the
+	// v4l2_buffer.sequence of the buffer it dequeued. See FrameIdentity for why
+	// that number is assigned by the kernel rather than chosen by the agent, and
+	// for what a consumer must do about dropped frames.
+	//
+	// This grants strictly less than Subscribe, which already carries every
+	// identity field below alongside the payload. It does NOT grant the loopback
+	// node itself: reading the node is a device-node grant and remains the
+	// separate camera entitlement. An app needs both to use the two-plane path.
+	SubscribeFrameIdentity(ctx context.Context, in *FrameIdentitySubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FrameIdentity], error)
 }
 
 type sensorServiceClient struct {
@@ -105,6 +127,25 @@ func (c *sensorServiceClient) Subscribe(ctx context.Context, in *SensorSubscribe
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type SensorService_SubscribeClient = grpc.ServerStreamingClient[SensorSample]
 
+func (c *sensorServiceClient) SubscribeFrameIdentity(ctx context.Context, in *FrameIdentitySubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FrameIdentity], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &SensorService_ServiceDesc.Streams[1], SensorService_SubscribeFrameIdentity_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[FrameIdentitySubscribeRequest, FrameIdentity]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SensorService_SubscribeFrameIdentityClient = grpc.ServerStreamingClient[FrameIdentity]
+
 // SensorServiceServer is the server API for SensorService service.
 // All implementations must embed UnimplementedSensorServiceServer
 // for forward compatibility.
@@ -135,6 +176,27 @@ type SensorServiceServer interface {
 	// episode capture adapter uses, so subscribing never takes a device away from
 	// capture (or from another app).
 	Subscribe(*SensorSubscribeRequest, grpc.ServerStreamingServer[SensorSample]) error
+	// SubscribeFrameIdentity streams the identity of each frame the agent wrote to
+	// a source's v4l2loopback node, carrying NO pixels.
+	//
+	// This is the control plane of the two-plane camera path. An app that wants to
+	// use ordinary tooling reads the pixels from the loopback node with ffmpeg or
+	// GStreamer (the data plane) and joins them to harness identity through this
+	// stream, instead of receiving frames over gRPC. Because the node is fed from
+	// the same producer hub that episode capture consumes, the frame the app
+	// scores is provably the frame the episode recorded, which is not true of an
+	// app that opens the camera device itself.
+	//
+	// The join key is loopback_sequence, which an app reads from the
+	// v4l2_buffer.sequence of the buffer it dequeued. See FrameIdentity for why
+	// that number is assigned by the kernel rather than chosen by the agent, and
+	// for what a consumer must do about dropped frames.
+	//
+	// This grants strictly less than Subscribe, which already carries every
+	// identity field below alongside the payload. It does NOT grant the loopback
+	// node itself: reading the node is a device-node grant and remains the
+	// separate camera entitlement. An app needs both to use the two-plane path.
+	SubscribeFrameIdentity(*FrameIdentitySubscribeRequest, grpc.ServerStreamingServer[FrameIdentity]) error
 	mustEmbedUnimplementedSensorServiceServer()
 }
 
@@ -150,6 +212,9 @@ func (UnimplementedSensorServiceServer) Sources(context.Context, *SensorSourcesR
 }
 func (UnimplementedSensorServiceServer) Subscribe(*SensorSubscribeRequest, grpc.ServerStreamingServer[SensorSample]) error {
 	return status.Error(codes.Unimplemented, "method Subscribe not implemented")
+}
+func (UnimplementedSensorServiceServer) SubscribeFrameIdentity(*FrameIdentitySubscribeRequest, grpc.ServerStreamingServer[FrameIdentity]) error {
+	return status.Error(codes.Unimplemented, "method SubscribeFrameIdentity not implemented")
 }
 func (UnimplementedSensorServiceServer) mustEmbedUnimplementedSensorServiceServer() {}
 func (UnimplementedSensorServiceServer) testEmbeddedByValue()                       {}
@@ -201,6 +266,17 @@ func _SensorService_Subscribe_Handler(srv interface{}, stream grpc.ServerStream)
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type SensorService_SubscribeServer = grpc.ServerStreamingServer[SensorSample]
 
+func _SensorService_SubscribeFrameIdentity_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(FrameIdentitySubscribeRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SensorServiceServer).SubscribeFrameIdentity(m, &grpc.GenericServerStream[FrameIdentitySubscribeRequest, FrameIdentity]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SensorService_SubscribeFrameIdentityServer = grpc.ServerStreamingServer[FrameIdentity]
+
 // SensorService_ServiceDesc is the grpc.ServiceDesc for SensorService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -217,6 +293,11 @@ var SensorService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Subscribe",
 			Handler:       _SensorService_Subscribe_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "SubscribeFrameIdentity",
+			Handler:       _SensorService_SubscribeFrameIdentity_Handler,
 			ServerStreams: true,
 		},
 	},

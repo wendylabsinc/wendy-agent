@@ -551,6 +551,12 @@ type cameraLoopback interface {
 	CredentialsChanged(camID uint32)
 	RemoveCamera(camID uint32)
 	Shutdown()
+	// Auxiliary nodes back the two-plane camera data path: v4l2loopback nodes
+	// fed from the producer hub rather than from a registered network camera.
+	// See video_service_two_plane.go.
+	AllocateAuxNodeNumber() (int, error)
+	EnsureAuxNode(ctx context.Context, nr int, label string) error
+	RemoveAuxNode(nr int)
 }
 
 // VideoService implements agentpb.WendyVideoServiceServer.
@@ -568,6 +574,9 @@ type VideoService struct {
 	discoverer  *ipcam.Discoverer
 	links       *ipcam.LinkManager
 	loopback    cameraLoopback
+
+	// twoPlaneState holds the two-plane camera data path's nodes and pumps.
+	twoPlaneState
 
 	// runGStreamer is the injection seam for the network capture subprocess.
 	runGStreamer func(ctx context.Context, args []string, onFrame func([]byte)) error
@@ -724,6 +733,11 @@ func (s *VideoService) StartDiscovery() {
 // shuttingDown check could still start a new supervisor moments after ctx
 // cancellation fires but before Loopback.Shutdown gets a chance to run.
 func (s *VideoService) Shutdown() {
+	// Two-plane pumps go first, and are waited for, because each one holds a hub
+	// subscription and an open v4l2loopback node. Cancelling s.ctx alone would
+	// stop them eventually but would not wait, so a pump could still be
+	// releasing its node after Shutdown returned.
+	s.stopAllTwoPlane()
 	if s.loopback != nil {
 		s.loopback.Shutdown()
 	}

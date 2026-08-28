@@ -42,6 +42,27 @@ service SensorService {
   // episode capture adapter uses, so subscribing never takes a device away from
   // capture (or from another app).
   rpc Subscribe(SensorSubscribeRequest) returns (stream SensorSample);
+  // SubscribeFrameIdentity streams the identity of each frame the agent wrote to
+  // a source's v4l2loopback node, carrying NO pixels.
+  //
+  // This is the control plane of the two-plane camera path. An app that wants to
+  // use ordinary tooling reads the pixels from the loopback node with ffmpeg or
+  // GStreamer (the data plane) and joins them to harness identity through this
+  // stream, instead of receiving frames over gRPC. Because the node is fed from
+  // the same producer hub that episode capture consumes, the frame the app
+  // scores is provably the frame the episode recorded, which is not true of an
+  // app that opens the camera device itself.
+  //
+  // The join key is loopback_sequence, which an app reads from the
+  // v4l2_buffer.sequence of the buffer it dequeued. See FrameIdentity for why
+  // that number is assigned by the kernel rather than chosen by the agent, and
+  // for what a consumer must do about dropped frames.
+  //
+  // This grants strictly less than Subscribe, which already carries every
+  // identity field below alongside the payload. It does NOT grant the loopback
+  // node itself: reading the node is a device-node grant and remains the
+  // separate camera entitlement. An app needs both to use the two-plane path.
+  rpc SubscribeFrameIdentity(FrameIdentitySubscribeRequest) returns (stream FrameIdentity);
 }
 
 message SensorSource {
@@ -56,6 +77,16 @@ message SensorSource {
   // omitted: a caller must be able to tell "not available to models" from
   // "does not exist".
   bool subscribable = 6;
+  // loopback_node_path is the v4l2loopback device node carrying this source's
+  // frames on the two-plane data path, for example "/dev/video200". Empty when
+  // the source has no such node, which is the normal case: a node exists only
+  // for a source whose frames can be identified frame-for-frame, and only while
+  // an app entitled to BOTH sensor-read and camera is running.
+  //
+  // An empty value is not an error and an app must handle it: it means the
+  // two-plane path is unavailable for this source and the app should fall back
+  // to Subscribe, which always works.
+  string loopback_node_path = 7;
 }
 message SensorSourcesRequest {}
 message SensorSourcesResponse { repeated SensorSource sources = 1; }
@@ -96,4 +127,81 @@ message SensorSample {
   uint64 dropped_before = 8;
   // boot_id is the kernel boot the timestamps belong to.
   string boot_id = 9;
+}
+
+message FrameIdentitySubscribeRequest {
+  // source_ids are the sources whose frame identities to stream, as reported by
+  // Sources. At least one is required.
+  repeated string source_ids = 1;
+  // model optionally names the model consuming the frames, recorded in the
+  // episode's model-input ledger exactly as SensorSubscribeRequest.model is.
+  string model = 2;
+}
+
+// FrameIdentity names one frame the agent wrote to a source's v4l2loopback node.
+// It carries no pixels: the pixels are on the node.
+//
+// # Why loopback_sequence is the kernel's number and not ours
+//
+// The natural design would be for the agent to stamp sample_id directly into
+// v4l2_buffer.sequence, so a consumer reads the harness identifier straight off
+// the buffer. The v4l2loopback module makes that impossible: its QBUF handler
+// overwrites the sequence of any queued output buffer with its own internal
+// write counter, discarding whatever the writer supplied. There is no option or
+// flag that disables it.
+//
+// So the agent does the opposite. It reads back the sequence the kernel assigned
+// (QBUF returns it), and publishes the resulting mapping on this stream. A
+// consumer takes v4l2_buffer.sequence off the frame it dequeued and finds the
+// FrameIdentity carrying the same value. The number is therefore authoritative
+// and requires no assumption that frames arrive in a particular order, which is
+// what makes the join trustworthy.
+//
+// # Dropped frames: two different losses, two different signals
+//
+// A consumer that watches only one of these will believe frames were delivered
+// that were not. Both must be checked.
+//
+//  1. The agent could not keep up feeding the node. Those samples never reached
+//     the node at all, so loopback_sequence stays DENSE across the loss and
+//     shows no gap. The loss appears only here, as a jump in sample_id, and is
+//     counted exactly by dropped_before.
+//
+//  2. The application could not keep up reading the node. v4l2loopback
+//     fast-forwards an overrun reader rather than blocking it, so the
+//     application's next dequeued buffer has a sequence that JUMPED. This loss
+//     is invisible on this stream, because the agent did write those frames. The
+//     application detects it by comparing the sequence of consecutive dequeued
+//     buffers: the difference minus one is the number it missed.
+//
+// In short: a sample_id jump means the agent fell behind, a sequence jump means
+// the reader fell behind, and both can happen at once.
+//
+// A frame the agent failed to write appears in neither: it consumes no sequence
+// and produces no FrameIdentity, so it is absent rather than reported as lost.
+message FrameIdentity {
+  string source_id = 1;
+  // sample_id is the same identifier SensorSample.sample_id carries and the same
+  // one the episode capture index and the model-input ledger record, so a frame
+  // scored off the loopback node can be joined to what the episode kept.
+  uint64 sample_id = 2;
+  // boottime_nanos and timestamp_uncertainty_nanos are the agent's bracketed
+  // CLOCK_BOOTTIME receipt of this sample and the bracket half-width, identical
+  // to the values SensorSample reports for the same sample.
+  int64 boottime_nanos = 3;
+  int64 timestamp_uncertainty_nanos = 4;
+  // loopback_sequence is the v4l2_buffer.sequence the KERNEL assigned to this
+  // frame on the node. It is the join key: match it against the sequence of the
+  // buffer dequeued from the node. See the message comment for why the agent
+  // cannot choose this value.
+  uint32 loopback_sequence = 5;
+  // dropped_before counts samples lost between the producer and the node since
+  // the previous frame written. It is the ONLY report of loss case 1 above,
+  // because that loss leaves no gap in loopback_sequence.
+  uint64 dropped_before = 6;
+  // boot_id is the kernel boot the timestamps belong to.
+  string boot_id = 7;
+  // node_path is the v4l2loopback node this frame was written to, so an app
+  // subscribing to several sources knows which node each identity belongs to.
+  string node_path = 8;
 }
