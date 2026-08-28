@@ -2,6 +2,8 @@ package mcusource
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
@@ -23,10 +25,37 @@ type Supervisor struct {
 	lb        Loopback
 	dialer    Dialer
 	newWriter func(path string) ros2camera.CameraWriter
+
+	nodeIDsMu sync.Mutex
+	nodeIDs   map[string]uint32 // "sourceAssetID:channelID" -> MCU-band node id
 }
 
 func NewSupervisor(logger *zap.Logger, lb Loopback, dialer Dialer, newWriter func(path string) ros2camera.CameraWriter) *Supervisor {
-	return &Supervisor{logger: logger, lb: lb, dialer: dialer, newWriter: newWriter}
+	return &Supervisor{logger: logger, lb: lb, dialer: dialer, newWriter: newWriter, nodeIDs: make(map[string]uint32)}
+}
+
+// nodeID returns a stable MCU-band node id for (sourceAssetID, channelID),
+// allocating the lowest free id in the band on first use. Reusing the same
+// key across reconnects (even after the source reorders its manifest) always
+// returns the same id, and different sources never collide on one id.
+func (s *Supervisor) nodeID(sourceAssetID int32, channelID uint32) (uint32, error) {
+	key := fmt.Sprintf("%d:%d", sourceAssetID, channelID)
+	s.nodeIDsMu.Lock()
+	defer s.nodeIDsMu.Unlock()
+	if id, ok := s.nodeIDs[key]; ok {
+		return id, nil
+	}
+	used := make(map[uint32]bool, len(s.nodeIDs))
+	for _, id := range s.nodeIDs {
+		used[id] = true
+	}
+	for id := uint32(ipcam.MCUBandStart); id <= ipcam.MCUBandEnd; id++ {
+		if !used[id] {
+			s.nodeIDs[key] = id
+			return id, nil
+		}
+	}
+	return 0, fmt.Errorf("mcusource: MCU node band [%d,%d] exhausted", ipcam.MCUBandStart, ipcam.MCUBandEnd)
 }
 
 const (
@@ -80,11 +109,20 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		return nil // nothing to mount; caller backs off and retries
 	}
 
-	// Assign MCU-band node ids deterministically per channel.
+	// Assign a stable per-(source,channel) MCU-band node id to each channel.
 	writers := make(map[uint32]ros2camera.CameraWriter, len(cams))
+	defer func() {
+		for _, w := range writers {
+			w.Close()
+		}
+	}()
 	subs := make([]uint32, 0, len(cams))
-	for i, ch := range cams {
-		id := uint32(ipcam.MCUBandStart + i)
+	for _, ch := range cams {
+		id, err := s.nodeID(p.SourceAssetID, ch.ChannelId)
+		if err != nil {
+			s.logger.Warn("skipping sensor channel", zap.Int32("source", p.SourceAssetID), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
+			continue
+		}
 		if err := s.lb.EnsureNode(ctx, id, nodeLabel(p, ch)); err != nil {
 			return err
 		}
@@ -92,17 +130,28 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		writers[ch.ChannelId] = s.newWriter(path)
 		subs = append(subs, ch.ChannelId)
 	}
-	defer func() {
-		for _, w := range writers {
-			w.Close()
-		}
-	}()
+	if len(subs) == 0 {
+		return nil
+	}
 
 	stream, err := Connect(ctx, s.dialer, addr, subs)
 	if err != nil {
 		return err
 	}
 	defer stream.Close()
+	// The reader goroutine inside Connect only unblocks when the conn is
+	// closed or a read fails; without this, an idle source (no frames, no
+	// error) leaves `range stream.Frames` blocked forever even after ctx is
+	// cancelled. Closing the stream on cancellation forces the read to fail.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			stream.Close()
+		case <-stop:
+		}
+	}()
 	for f := range stream.Frames {
 		w := writers[f.ChannelId]
 		if w == nil {
