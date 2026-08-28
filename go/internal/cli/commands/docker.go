@@ -1391,14 +1391,6 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool,
 	return builderName, effectiveAddr, nil
 }
 
-// ensureOCIExportBuilder ensures a dedicated buildx builder for OCI-layout
-// export exists and is running, returning its name. Unlike the registry
-// builders it needs NO registry config — OCI export never pushes to a registry
-// and pulls base images over the public network — so once created it is reused
-// across runs with only a lightweight bootstrap check. This avoids the per-run
-// config-inject/restart cycle the registry builder pays because its buildkitd
-// config embeds the per-run dynamic registry-proxy port (which changes every
-// invocation, forcing a reconfigure each time).
 // ociBuilderName is the buildx builder used for OCI-layout export builds.
 func ociBuilderName() string {
 	base := os.Getenv("WENDY_BUILDX_BUILDER")
@@ -1408,6 +1400,14 @@ func ociBuilderName() string {
 	return base + "-oci"
 }
 
+// ensureOCIExportBuilder ensures a dedicated buildx builder for OCI-layout
+// export exists and is running, returning its name. Unlike the registry
+// builders it needs NO registry config — OCI export never pushes to a registry
+// and pulls base images over the public network — so once created it is reused
+// across runs with only a lightweight bootstrap check. This avoids the per-run
+// config-inject/restart cycle the registry builder pays because its buildkitd
+// config embeds the per-run dynamic registry-proxy port (which changes every
+// invocation, forcing a reconfigure each time).
 func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 	ensureBuildxBuilderMu.Lock()
 	defer ensureBuildxBuilderMu.Unlock()
