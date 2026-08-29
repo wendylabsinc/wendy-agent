@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/containerd/errdefs"
 	digest "github.com/opencontainers/go-digest"
@@ -21,7 +22,7 @@ import (
 )
 
 // maxStagedChunkBytes bounds a single staged chunk. The CDC chunker emits
-// chunks of at most chunk.MaxSize (256 KiB); this 4 MiB ceiling leaves ample
+// chunks of at most chunk.MaxSize (64 KiB); this 4 MiB ceiling leaves ample
 // headroom for legitimate clients while rejecting absurdly large payloads.
 const maxStagedChunkBytes = 4 << 20
 
@@ -39,9 +40,32 @@ const defaultChunkStagingDir = "/var/lib/wendy/chunk-staging"
 // deploys staging different content do not collide.
 type staging struct {
 	dir string
+	mu  sync.Mutex
+	// changed is closed and replaced whenever a new chunk becomes visible.
+	// Closing broadcasts to every concurrent image preparation waiter, unlike
+	// sending on a shared channel (which would wake only one waiter).
+	changed chan struct{}
 }
 
-func newStaging(dir string) *staging { return &staging{dir: dir} }
+func newStaging(dir string) *staging {
+	return &staging{dir: dir, changed: make(chan struct{})}
+}
+
+// changes returns the current broadcast generation. Callers subscribe before
+// checking availability so a write racing the check either becomes visible to
+// that check or closes the returned channel; no wakeup can be lost.
+func (s *staging) changes() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changed
+}
+
+func (s *staging) notifyChanged() {
+	s.mu.Lock()
+	close(s.changed)
+	s.changed = make(chan struct{})
+	s.mu.Unlock()
+}
 
 // path returns the on-disk location for a chunk hash.
 func (s *staging) path(h [32]byte) string {
@@ -96,6 +120,7 @@ func (s *staging) write(h [32]byte, data []byte) error {
 		os.Remove(tmpName)
 		return err
 	}
+	s.notifyChanged()
 	return nil
 }
 
@@ -149,16 +174,84 @@ func (s *chunkStream) Read(p []byte) (int, error) {
 	}
 }
 
-func (c *Client) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
-	missing := c.chunkIndex.Missing(hashes)
-	// Exclude any already staged on disk (possibly from an earlier session).
-	var out [][32]byte
-	for _, h := range missing {
-		if !c.staging.has(h) {
-			out = append(out, h)
+func (c *Client) MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]byte, error) {
+	// The chunk index outlives containerd's content GC. Validate each backing
+	// blob once before reporting its chunks as present; otherwise a stale index
+	// entry makes the CLI skip the upload and assembly fails much later when it
+	// tries to read the missing blob. This is especially painful for multi-GB
+	// layers because nearly the entire layer may be streamed before the stale
+	// chunk is encountered.
+	nsCtx := c.withNamespace(ctx)
+	indexed := make([]chunkLoc, 0, len(hashes))
+	for _, h := range hashes {
+		if c.staging.has(h) {
+			continue
+		}
+		if loc, ok := c.chunkIndex.Has(h); ok {
+			indexed = append(indexed, loc)
 		}
 	}
-	return out, nil
+
+	blobSizes := make(map[string]uint64)
+	invalidBlobs := make(map[string]struct{})
+	if len(indexed) > 0 {
+		cs := c.client.ContentStore()
+		for _, loc := range indexed {
+			if _, checked := blobSizes[loc.Blob]; checked {
+				continue
+			}
+			if _, invalid := invalidBlobs[loc.Blob]; invalid {
+				continue
+			}
+
+			dgst, err := digest.Parse(loc.Blob)
+			if err != nil {
+				invalidBlobs[loc.Blob] = struct{}{}
+				continue
+			}
+			info, err := cs.Info(nsCtx, dgst)
+			if err != nil {
+				if errdefs.IsNotFound(err) {
+					invalidBlobs[loc.Blob] = struct{}{}
+					continue
+				}
+				return nil, fmt.Errorf("checking indexed chunk blob %s: %w", loc.Blob, err)
+			}
+			if info.Size < 0 {
+				invalidBlobs[loc.Blob] = struct{}{}
+				continue
+			}
+			blobSizes[loc.Blob] = uint64(info.Size)
+		}
+	}
+
+	// A malformed range means the persisted index cannot safely describe that
+	// blob. Drop all of its entries so every affected chunk is requested again.
+	for _, loc := range indexed {
+		size, valid := blobSizes[loc.Blob]
+		if !valid || loc.Offset > size || loc.Len > size-loc.Offset {
+			invalidBlobs[loc.Blob] = struct{}{}
+		}
+	}
+	if len(invalidBlobs) > 0 {
+		for blob := range invalidBlobs {
+			c.chunkIndex.Drop(blob)
+		}
+		if err := c.chunkIndex.Save(); err != nil {
+			return nil, fmt.Errorf("saving pruned chunk index: %w", err)
+		}
+	}
+
+	var missing [][32]byte
+	for _, h := range hashes {
+		if c.staging.has(h) {
+			continue
+		}
+		if _, ok := c.chunkIndex.Has(h); !ok {
+			missing = append(missing, h)
+		}
+	}
+	return missing, nil
 }
 
 // PresentLayers reports which of the given uncompressed layer digests (diff IDs)
@@ -235,6 +328,40 @@ func (c *Client) chunkLen(h [32]byte) (int64, bool) {
 		return int64(loc.Len), true
 	}
 	return 0, false
+}
+
+// OpenChunkStream returns a reader over the chunks named by hashes, in order,
+// verifying each chunk's SHA-256 as it is served and holding at most one chunk
+// in memory.
+//
+// AssembleLayerFromChunks is the wrong tool for a caller that wants the bytes
+// themselves: it writes a layer blob into the content store, which is right for
+// an image layer and wrong for anything else — a remote build context, say.
+// This exposes the same chunk resolution without that side effect.
+//
+// The stream fails closed: a chunk that is in neither the staging area nor the
+// index ends the read with an error rather than contributing zero bytes, and a
+// chunk whose contents do not hash to the name it was asked for is rejected. A
+// caller reassembling something it will then execute — a build context — gets
+// either every requested byte or an error, never a silently short prefix.
+func (c *Client) OpenChunkStream(ctx context.Context, hashes [][32]byte) io.Reader {
+	nsCtx := c.withNamespace(ctx)
+	src := func(h [32]byte) ([]byte, error) {
+		if b, err := c.staging.read(h); err == nil {
+			return b, nil
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+		if loc, ok := c.chunkIndex.Has(h); ok {
+			return c.readIndexedChunk(nsCtx, loc)
+		}
+		// SECURITY: a nil chunk is the "not held here" sentinel, not an empty
+		// one — chunkStream.Read turns it into "chunk N (%x) unavailable" rather
+		// than splicing zero bytes into the stream. Returning an empty []byte
+		// here instead would be the silent-truncation bug.
+		return nil, nil
+	}
+	return &chunkStream{order: hashes, src: src}
 }
 
 func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, hashes [][32]byte) error {

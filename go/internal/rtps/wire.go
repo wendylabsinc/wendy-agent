@@ -3,8 +3,8 @@
 //
 // It is not a DDS implementation. There is no reliable-reader state machine
 // (a BEST_EFFORT reader matches a RELIABLE writer under the RxO rule, which is
-// what ROS 2's default QoS offers), no DATA_FRAG reassembly, no security, no
-// content filtering, and no instance/dispose handling.
+// what ROS 2's default QoS offers), bounded DATA_FRAG reassembly, no security,
+// no content filtering, and no instance/dispose handling.
 package rtps
 
 import (
@@ -29,6 +29,7 @@ const (
 	subINFO_SRC  = 0x0c
 	subINFO_DST  = 0x0e
 	subDATA      = 0x15
+	subDATAFRAG  = 0x16
 )
 
 // Builtin entity IDs. The suffix encodes the entity kind, so these constants
@@ -203,6 +204,21 @@ type DataSubmessage struct {
 	Payload   []byte // serialized payload, including its encapsulation header
 }
 
+// DataFragSubmessage is a parsed DATA_FRAG submessage. Fragment numbers are
+// one-based, as they are on the RTPS wire. Payload contains the serialized
+// bytes carried by the consecutive fragments in this submessage.
+type DataFragSubmessage struct {
+	ReaderID              uint32
+	WriterID              uint32
+	WriterSN              SequenceNumber
+	FragmentStartingNum   uint32
+	FragmentsInSubmessage uint16
+	FragmentSize          uint16
+	SampleSize            uint32
+	InlineQoS             []byte
+	Payload               []byte
+}
+
 // ParseData decodes a DATA submessage body.
 //
 // Layout: extraFlags(2) octetsToInlineQos(2) readerId(4) writerId(4)
@@ -253,6 +269,46 @@ func ParseData(s Submessage) (*DataSubmessage, error) {
 		d.Payload = b[pos:]
 	}
 	return d, nil
+}
+
+// ParseDataFrag decodes a DATA_FRAG submessage body (RTPS 2.3, 8.3.7.3.4).
+// octetsToInlineQos has the same origin as DATA: immediately after the field
+// itself, so a stock header's value 28 lands at byte offset 32.
+func ParseDataFrag(s Submessage) (*DataFragSubmessage, error) {
+	b, order := s.Body, s.Endian
+	if len(b) < 32 {
+		return nil, ErrShort
+	}
+	octetsToInlineQos := int(order.Uint16(b[2:4]))
+	f := &DataFragSubmessage{
+		ReaderID:              binary.BigEndian.Uint32(b[4:8]),
+		WriterID:              binary.BigEndian.Uint32(b[8:12]),
+		FragmentStartingNum:   order.Uint32(b[20:24]),
+		FragmentsInSubmessage: order.Uint16(b[24:26]),
+		FragmentSize:          order.Uint16(b[26:28]),
+		SampleSize:            order.Uint32(b[28:32]),
+	}
+	hi := int64(int32(order.Uint32(b[12:16])))
+	lo := int64(order.Uint32(b[16:20]))
+	f.WriterSN = SequenceNumber(hi<<32 | lo)
+
+	if f.FragmentStartingNum == 0 || f.FragmentsInSubmessage == 0 || f.FragmentSize == 0 || f.SampleSize == 0 {
+		return nil, errors.New("rtps: invalid DATA_FRAG dimensions")
+	}
+	pos := 4 + octetsToInlineQos
+	if pos < 32 || pos > len(b) {
+		return nil, fmt.Errorf("rtps: DATA_FRAG octetsToInlineQos %d out of range", octetsToInlineQos)
+	}
+	if s.Flags&0x02 != 0 {
+		n, err := parameterListLength(b[pos:], order)
+		if err != nil {
+			return nil, fmt.Errorf("rtps: DATA_FRAG inline QoS: %w", err)
+		}
+		f.InlineQoS = b[pos : pos+n]
+		pos += n
+	}
+	f.Payload = b[pos:]
+	return f, nil
 }
 
 // buildMessage assembles a datagram: the RTPS header followed by submessages.

@@ -27,6 +27,7 @@ const (
 	WendyContainerService_ListVolumes_FullMethodName        = "/wendy.agent.services.v2.WendyContainerService/ListVolumes"
 	WendyContainerService_RemoveVolume_FullMethodName       = "/wendy.agent.services.v2.WendyContainerService/RemoveVolume"
 	WendyContainerService_ListContainerStats_FullMethodName = "/wendy.agent.services.v2.WendyContainerService/ListContainerStats"
+	WendyContainerService_PruneCache_FullMethodName         = "/wendy.agent.services.v2.WendyContainerService/PruneCache"
 )
 
 // WendyContainerServiceClient is the client API for WendyContainerService service.
@@ -41,6 +42,10 @@ type WendyContainerServiceClient interface {
 	ListVolumes(ctx context.Context, in *ListVolumesRequest, opts ...grpc.CallOption) (*ListVolumesResponse, error)
 	RemoveVolume(ctx context.Context, in *RemoveVolumeRequest, opts ...grpc.CallOption) (*RemoveVolumeResponse, error)
 	ListContainerStats(ctx context.Context, in *ListContainerStatsRequest, opts ...grpc.CallOption) (*ListContainerStatsResponse, error)
+	// Releases Wendy's explicit GC pins from pushed layer blobs and unpacked
+	// snapshots. Containerd's reference graph continues to preserve current
+	// images and active containers; only cache data becomes collectible.
+	PruneCache(ctx context.Context, in *PruneCacheRequest, opts ...grpc.CallOption) (*PruneCacheResponse, error)
 }
 
 type wendyContainerServiceClient struct {
@@ -152,6 +157,16 @@ func (c *wendyContainerServiceClient) ListContainerStats(ctx context.Context, in
 	return out, nil
 }
 
+func (c *wendyContainerServiceClient) PruneCache(ctx context.Context, in *PruneCacheRequest, opts ...grpc.CallOption) (*PruneCacheResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PruneCacheResponse)
+	err := c.cc.Invoke(ctx, WendyContainerService_PruneCache_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WendyContainerServiceServer is the server API for WendyContainerService service.
 // All implementations must embed UnimplementedWendyContainerServiceServer
 // for forward compatibility.
@@ -164,6 +179,10 @@ type WendyContainerServiceServer interface {
 	ListVolumes(context.Context, *ListVolumesRequest) (*ListVolumesResponse, error)
 	RemoveVolume(context.Context, *RemoveVolumeRequest) (*RemoveVolumeResponse, error)
 	ListContainerStats(context.Context, *ListContainerStatsRequest) (*ListContainerStatsResponse, error)
+	// Releases Wendy's explicit GC pins from pushed layer blobs and unpacked
+	// snapshots. Containerd's reference graph continues to preserve current
+	// images and active containers; only cache data becomes collectible.
+	PruneCache(context.Context, *PruneCacheRequest) (*PruneCacheResponse, error)
 	mustEmbedUnimplementedWendyContainerServiceServer()
 }
 
@@ -197,6 +216,9 @@ func (UnimplementedWendyContainerServiceServer) RemoveVolume(context.Context, *R
 }
 func (UnimplementedWendyContainerServiceServer) ListContainerStats(context.Context, *ListContainerStatsRequest) (*ListContainerStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListContainerStats not implemented")
+}
+func (UnimplementedWendyContainerServiceServer) PruneCache(context.Context, *PruneCacheRequest) (*PruneCacheResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PruneCache not implemented")
 }
 func (UnimplementedWendyContainerServiceServer) mustEmbedUnimplementedWendyContainerServiceServer() {}
 func (UnimplementedWendyContainerServiceServer) testEmbeddedByValue()                               {}
@@ -338,6 +360,24 @@ func _WendyContainerService_ListContainerStats_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WendyContainerService_PruneCache_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PruneCacheRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyContainerServiceServer).PruneCache(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyContainerService_PruneCache_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyContainerServiceServer).PruneCache(ctx, req.(*PruneCacheRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WendyContainerService_ServiceDesc is the grpc.ServiceDesc for WendyContainerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -364,6 +404,10 @@ var WendyContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListContainerStats",
 			Handler:    _WendyContainerService_ListContainerStats_Handler,
+		},
+		{
+			MethodName: "PruneCache",
+			Handler:    _WendyContainerService_PruneCache_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

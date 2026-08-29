@@ -16,13 +16,15 @@ import (
 const StaleAfter = 15 * time.Second
 
 // Cache holds the newest decoded sample and expires it. Safe for concurrent
-// use: the monitor goroutine calls Put while gRPC handlers call Battery.
+// use: the monitor goroutine writes while gRPC handlers read battery and
+// temperature data.
 type Cache struct {
 	now func() time.Time
 
-	mu   sync.RWMutex
-	b    *hoststats.Battery
-	seen time.Time
+	mu    sync.RWMutex
+	b     *hoststats.Battery
+	zones []hoststats.ThermalZone
+	seen  time.Time
 }
 
 // NewCache returns an empty cache reading time from now.
@@ -34,14 +36,30 @@ func NewCache(now func() time.Time) *Cache {
 // the cache, which is how the monitor reports that its writer went away. The
 // sample is copied, so the caller may reuse its buffer.
 func (c *Cache) Put(b *hoststats.Battery) {
+	c.putTelemetry(b, nil)
+}
+
+func (c *Cache) putTelemetry(b *hoststats.Battery, zones []hoststats.ThermalZone) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if b == nil {
-		c.b, c.seen = nil, time.Time{}
+		c.b, c.zones, c.seen = nil, nil, time.Time{}
 		return
 	}
 	cp := *b
-	c.b, c.seen = &cp, c.now()
+	c.b, c.zones, c.seen = &cp, append([]hoststats.ThermalZone(nil), zones...), c.now()
+}
+
+// ThermalZones returns copies of the newest device-specific temperatures, or
+// nil when the cache is empty or stale. They share the battery sample's
+// staleness window because both values come from the same LowState message.
+func (c *Cache) ThermalZones() []hoststats.ThermalZone {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.b == nil || c.now().Sub(c.seen) > StaleAfter {
+		return nil
+	}
+	return append([]hoststats.ThermalZone(nil), c.zones...)
 }
 
 // Battery returns a copy of the newest sample, or nil when the cache is empty

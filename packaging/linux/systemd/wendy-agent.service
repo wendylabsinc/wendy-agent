@@ -1,6 +1,12 @@
 [Unit]
 Description=Wendy Agent
 After=network-online.target dbus.service containerd.service time-sync.target
+# wendyos-identity.service rewrites the mDNS name/displayname TXT records from
+# the generated device-name on every boot. The agent re-asserts an explicit
+# 'wendy device rename' hostname over that (ReassertHostnameAdvertisement), so
+# it must run after it rather than race it. Ordering-only: both units are absent
+# on a non-WendyOS host, where systemd simply ignores the line.
+After=wendyos-identity.service avahi-daemon.service
 Wants=network-online.target time-sync.target
 Requires=containerd.service
 

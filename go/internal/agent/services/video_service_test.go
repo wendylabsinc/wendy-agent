@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -17,13 +18,23 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func TestV4L2FormatMatches64BitUAPI(t *testing.T) {
+	var format v4l2Format
+	if got := unsafe.Sizeof(format); got != 208 {
+		t.Fatalf("sizeof(v4l2Format) = %d, want 208", got)
+	}
+	if got := unsafe.Offsetof(format.Width); got != 8 {
+		t.Fatalf("offsetof(v4l2Format.Width) = %d, want 8", got)
+	}
+}
+
 // mustBuildGStreamerArgs calls buildGStreamerArgs for the USB/v4l2src path and
 // fails the test if it returns an error. CSI-specific behaviour is covered by
 // the dedicated TestBuildGStreamerArgs_CSI_* tests, which call buildGStreamerArgs
 // directly with a CSI transport.
 func mustBuildGStreamerArgs(t *testing.T, gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) []string {
 	t.Helper()
-	args, err := buildGStreamerArgs(gstPath, devicePath, req, encoder, hasH264Parse, camera.TransportUSB, "", nil)
+	args, err := buildGStreamerArgs(gstPath, devicePath, req, encoder, hasH264Parse, camera.TransportUSB, "", pipeWireSource{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error from buildGStreamerArgs: %v", err)
 	}
@@ -46,6 +57,7 @@ func newTestVideoService(glob func() ([]string, error), readName func(string) (s
 	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportUnknown, "" }
 	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, nil }
 	svc.isJetson = func() bool { return false }
+	svc.findCameraSource = func(context.Context, string) (uint64, bool) { return 0, false }
 	return svc
 }
 
@@ -675,7 +687,7 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	gstFallbackDirs = nil
 	t.Cleanup(func() { gstFallbackDirs = prev })
 	svc := NewVideoService(context.Background(), zap.NewNop())
-	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "")
+	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "", pipeWireSource{})
 	if err == nil {
 		t.Fatal("expected error when gst-launch-1.0 not found")
 	}
@@ -844,7 +856,7 @@ func defaultElements() map[string]bool {
 // for injection-token / invalid-parameter inputs).
 func mustCSIArgs(t *testing.T, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool, transport camera.Transport, libcameraID string, available map[string]bool) []string {
 	t.Helper()
-	args, err := buildGStreamerArgs("gst", devicePath, req, encoder, hasH264Parse, transport, libcameraID, available)
+	args, err := buildGStreamerArgs("gst", devicePath, req, encoder, hasH264Parse, transport, libcameraID, pipeWireSource{}, available)
 	if err != nil {
 		t.Fatalf("unexpected error from buildGStreamerArgs: %v", err)
 	}
@@ -1030,7 +1042,7 @@ func TestBuildGStreamerArgs_USB_DoesNotForceNV12SourceFormat(t *testing.T) {
 }
 
 func TestBuildSourceElement_NilAvailableMapTreatedAsLibcamerasrcAbsent(t *testing.T) {
-	src := buildSourceElement("/dev/video0", camera.TransportCSI, "/cam", nil)
+	src := buildSourceElement("/dev/video0", camera.TransportCSI, "/cam", pipeWireSource{}, nil)
 	if src != "v4l2src device=/dev/video0" {
 		t.Errorf("nil availability must degrade CSI to v4l2src, got %q", src)
 	}
@@ -1041,7 +1053,7 @@ func TestBuildSourceElement_NilAvailableMapTreatedAsLibcamerasrcAbsent(t *testin
 // libcamerasrc auto-select instead of interpolating camera-name=<hostile>.
 func TestBuildSourceElement_RejectsInjectableLibcameraID(t *testing.T) {
 	hostile := "/cam ! filesink location=/etc/passwd"
-	src := buildSourceElement("/dev/video0", camera.TransportCSI, hostile, defaultElements())
+	src := buildSourceElement("/dev/video0", camera.TransportCSI, hostile, pipeWireSource{}, defaultElements())
 	if src != "libcamerasrc" {
 		t.Errorf("hostile libcamera id must degrade to plain libcamerasrc, got %q", src)
 	}

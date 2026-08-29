@@ -123,6 +123,27 @@ func (s *ContainerServiceV2) ListContainerStats(ctx context.Context, _ *agentpbv
 	return &agentpbv2.ListContainerStatsResponse{Stats: v2stats}, nil
 }
 
+func (s *ContainerServiceV2) PruneCache(ctx context.Context, req *agentpbv2.PruneCacheRequest) (*agentpbv2.PruneCacheResponse, error) {
+	if s.v1.containerd == nil {
+		return nil, status.Error(codes.FailedPrecondition, "containerd is not available")
+	}
+	pruner, ok := s.v1.containerd.(ContainerdCachePruner)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "container cache pruning is not supported")
+	}
+	result, err := pruner.PruneCache(ctx, req.GetDryRun())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to prune container cache: %v", err)
+	}
+	return &agentpbv2.PruneCacheResponse{
+		ContentBlobs:      result.ContentBlobs,
+		ContentBytes:      result.ContentBytes,
+		Snapshots:         result.Snapshots,
+		SnapshotBytes:     result.SnapshotBytes,
+		MinimumAgeSeconds: result.MinimumAgeSeconds,
+	}, nil
+}
+
 // mapAppContainerToV2 converts a v1 AppContainer to its v2 equivalent,
 // mapping the running state enum explicitly (v1 STOPPED=0/RUNNING=1 vs v2 STOPPED=1/RUNNING=2).
 func mapAppContainerToV2(c *agentpb.AppContainer) *agentpbv2.AppContainer {

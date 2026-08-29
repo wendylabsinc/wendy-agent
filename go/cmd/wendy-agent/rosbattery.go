@@ -43,5 +43,6 @@ func startROS2BatteryMonitor(ctx context.Context, logger *zap.Logger, configPath
 	})
 
 	hoststats.SetFallbackBatterySource(monitor.Battery)
+	hoststats.SetSupplementalThermalSource(monitor.ThermalZones)
 	go monitor.Run(ctx)
 }

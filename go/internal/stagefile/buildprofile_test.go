@@ -34,14 +34,16 @@ stages:
       lang: rust
       profile: release
 `)
-	dockerfile, _, err := compileFile(dir, "", "", BuildProfileDebug, anyDigestResolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", BuildProfileDebug, anyDigestResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
-	if !strings.Contains(dockerfile, "swift build -c debug") {
+	// Matched on the profile flag alone: a Swift build carries --scratch-path
+	// and --cache-path between the command and its configuration.
+	if !strings.Contains(dockerfile, "-c debug") {
 		t.Errorf("swift stage not switched to debug:\n%s", dockerfile)
 	}
-	if strings.Contains(dockerfile, "swift build -c release") {
+	if strings.Contains(dockerfile, "-c release") {
 		t.Errorf("swift stage still builds release:\n%s", dockerfile)
 	}
 	if strings.Contains(dockerfile, "cargo build --release") {
@@ -59,11 +61,11 @@ stages:
     build:
       lang: swift
 `)
-	dockerfile, _, err := compileFile(dir, "", "", "", anyDigestResolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", "", anyDigestResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
-	if !strings.Contains(dockerfile, "swift build -c release") {
+	if !strings.Contains(dockerfile, "-c release") {
 		t.Fatalf("want a release build by default:\n%s", dockerfile)
 	}
 }
@@ -82,7 +84,7 @@ stages:
     build:
       lang: go
 `)
-	dockerfile, _, err := compileFile(dir, "", "", BuildProfileDebug, anyDigestResolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", BuildProfileDebug, anyDigestResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}

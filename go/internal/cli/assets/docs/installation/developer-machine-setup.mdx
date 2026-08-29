@@ -3,6 +3,8 @@ title: Developer Machine Setup
 description: Set up your development machine with the Wendy CLI
 ---
 
+import { Apple, CircuitBoard, Cpu, Gauge, Microchip, Server } from 'lucide-react';
+
 ## CLI Installation
 
 Install the Wendy CLI for your development machine.
@@ -89,10 +91,50 @@ See the [VSCode Extension guide](/docs/remote-debugging/vscode-extension) for se
 
 ## Next Steps
 
-Once your developer machine is ready, choose the branch that matches where you want to deploy first:
+Choose your first deployment target. Dedicated edge hardware runs WendyOS; existing Linux and Apple Silicon machines run Wendy Agent.
 
-- **[Set up your NVIDIA Jetson Orin Nano with WendyOS](/docs/installation/wendyos-nvidia-jetson-orin-nano)** if you are building for GPU-accelerated edge AI on a Jetson Orin Nano or AGX Orin.
-- **[Set up your NVIDIA Jetson AGX Thor with WendyOS](/docs/installation/wendyos-nvidia-jetson-agx-thor)** if you are building for GPU-accelerated edge AI on a Jetson AGX Thor.
-- **[Setup your Raspberry Pi with WendyOS](/docs/installation/wendyos-raspberry-pi-5)** (Pi 3, 4, or 5) if you want a compact ARM64 development or robotics target.
-- **[Install Wendy Agent on Linux](/docs/installation/linux)** if you want to run `wendy-agent` on an existing Linux box, VM, or remote machine.
-- **[Headless Mac](/docs/installation/wendy-agent-macos)** if you want to deploy, manage, and debug Apple Silicon Mac targets; headless Mac systems are a good fit.
+### Install WendyOS on edge hardware
+
+<Cards>
+  <Card
+    href="/docs/installation/wendyos-nvidia-jetson-orin-nano"
+    icon={<Cpu />}
+    title="Jetson Orin Nano or AGX Orin"
+    description="Build GPU-accelerated edge AI applications with NVIDIA CUDA support."
+  />
+  <Card
+    href="/docs/installation/wendyos-nvidia-jetson-agx-thor"
+    icon={<Gauge />}
+    title="Jetson AGX Thor"
+    description="Target NVIDIA's highest-performance platform for physical AI workloads."
+  />
+  <Card
+    href="/docs/installation/wendyos-raspberry-pi-5"
+    icon={<CircuitBoard />}
+    title="Raspberry Pi 3, 4, or 5"
+    description="Use a compact ARM64 target for development, automation, or robotics."
+  />
+  <Card
+    href="/docs/installation/wendy-lite-esp32"
+    icon={<Microchip />}
+    title="ESP32"
+    description="Build and deploy regular native ESP-IDF projects to supported microcontrollers."
+  />
+</Cards>
+
+### Install Wendy Agent on an existing computer
+
+<Cards>
+  <Card
+    href="/docs/installation/linux"
+    icon={<Server />}
+    title="Linux"
+    description="Turn an existing Linux box, VM, or remote machine into a Wendy target."
+  />
+  <Card
+    href="/docs/installation/wendy-agent-macos"
+    icon={<Apple />}
+    title="Headless Mac"
+    description="Deploy, manage, and debug native apps on an Apple Silicon Mac."
+  />
+</Cards>

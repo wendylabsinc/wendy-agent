@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
@@ -483,6 +484,75 @@ func TestAdoptAndSpliceNativeLayers(t *testing.T) {
 	st2, _ := loadNativeState(dir)
 	if st2 == nil || st2.AppLayerDigests[0] != layers2[1].Digest {
 		t.Fatal("state must track the rebuilt layer")
+	}
+
+	// A second pass with byte-identical app inputs must be a true no-op. In
+	// particular, do not rewrite index/state merely because the native fast path
+	// was entered; those writes made zero-change Compose runs look dirty.
+	indexPath := filepath.Join(dir, "index.json")
+	statePath := filepath.Join(dir, nativeStateName)
+	indexBefore, err := os.Stat(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateBefore, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	unchanged, err := tryNativeRebuild(dir, "linux/arm64", proj, sf, st2)
+	if err != nil || !unchanged {
+		t.Fatalf("unchanged native rebuild = %v, %v", unchanged, err)
+	}
+	indexAfter, _ := os.Stat(indexPath)
+	stateAfter, _ := os.Stat(statePath)
+	if !indexAfter.ModTime().Equal(indexBefore.ModTime()) || !stateAfter.ModTime().Equal(stateBefore.ModTime()) {
+		t.Fatal("unchanged native rebuild rewrote index.json or state.json")
+	}
+}
+
+func TestBuildOrUpdateOCILayoutSkipsBuildxAfterAdoption(t *testing.T) {
+	proj := t.TempDir()
+	writeFile(t, proj, "build.stagefile.yaml", `version: 1
+stages:
+  - name: app
+    from: python:3.11-slim
+    copy:
+      - from: local
+        paths: [main.py]
+        dest: app/
+`)
+	writeFile(t, proj, "Dockerfile.generated", "FROM python:3.11-slim AS app\nCOPY main.py app/\n")
+	writeFile(t, proj, "main.py", "print('v1')\n")
+
+	layout := t.TempDir()
+	buildxCalls := 0
+	buildx := func() error {
+		buildxCalls++
+		depsTar := tarBytes(t, map[string]string{"usr/lib/python/dep.py": "dep"})
+		appTar := tarBytes(t, map[string]string{"app/": "", "app/main.py": "print('v1')\n"})
+		writeTwoLayerLayoutDir(t, layout, depsTar, appTar, "")
+		return nil
+	}
+
+	native, err := buildOrUpdateOCILayout(proj, "Dockerfile.generated", "linux/arm64", nil, layout, buildx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if native || buildxCalls != 1 {
+		t.Fatalf("first build: native=%v buildxCalls=%d, want false/1", native, buildxCalls)
+	}
+	if _, ok := loadNativeState(layout); !ok {
+		t.Fatal("first build should adopt native app layers")
+	}
+
+	writeFile(t, proj, "main.py", "print('v2')\n")
+	native, err = buildOrUpdateOCILayout(proj, "Dockerfile.generated", "linux/arm64", nil, layout, buildx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !native || buildxCalls != 1 {
+		t.Fatalf("warm app edit: native=%v buildxCalls=%d, want true/1", native, buildxCalls)
 	}
 }
 

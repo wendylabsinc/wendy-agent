@@ -5,8 +5,12 @@ package discovery
 import (
 	"context"
 	"net"
+	"net/netip"
+	"strings"
 	"sync"
 )
+
+var routeInterfaceForMDNSAddressFn = routeInterfaceForMDNSAddress
 
 // resolveMDNSService resolves a browse result into an MDNSService. Its only
 // caller, mdnsStreamResolveAndEmit, invokes it (via the resolveServiceFn
@@ -19,11 +23,9 @@ func resolveMDNSService(ctx context.Context, inst browseResult, serviceType stri
 		return MDNSService{}, err
 	}
 
-	// Through the resolver rather than net.LookupHost, which ignores ctx —
-	// DefaultResolver keeps the system resolver, which .local names need.
 	ipAddr := ""
-	if addrs, lookupErr := net.DefaultResolver.LookupHost(ctx, hostname); lookupErr == nil {
-		ipAddr = preferIPv4Addr(addrs)
+	if addrs, lookupErr := dnssdResolveAddresses(ctx, hostname, inst); lookupErr == nil {
+		ipAddr = preferInterfaceRoutedAddr(addrs, inst.interfaceName)
 	}
 
 	return MDNSService{
@@ -33,6 +35,67 @@ func resolveMDNSService(ctx context.Context, inst browseResult, serviceType stri
 		Port:         port,
 		TXTRecords:   txtRecords,
 	}, nil
+}
+
+// preferInterfaceRoutedAddr chooses an address whose kernel route still uses
+// the interface that produced the DNS-SD answer. This matters for direct links
+// whose device-side IPv4 subnet overlaps a broader default route: mDNSResponder
+// can correctly return 192.168.123.x on Ethernet while an ordinary dial to it
+// would still leave through Wi-Fi. If no route maps exactly (a physical member
+// may be represented by its bridge), prefer non-link-local IPv6; its advertised
+// on-link prefix retains the interface scope and avoids the overlapping IPv4
+// route.
+func preferInterfaceRoutedAddr(addrs []string, interfaceName string) string {
+	var exact []string
+	for _, addr := range addrs {
+		if routeInterfaceForMDNSAddressFn(addr) == interfaceName {
+			exact = append(exact, addr)
+		}
+	}
+	if len(exact) > 0 {
+		return preferIPv4Addr(exact)
+	}
+	for _, addr := range addrs {
+		ip := net.ParseIP(strings.SplitN(addr, "%", 2)[0])
+		if ip != nil && ip.To4() == nil && !ip.IsLinkLocalUnicast() {
+			return addr
+		}
+	}
+	return preferIPv4Addr(addrs)
+}
+
+func routeInterfaceForMDNSAddress(raw string) string {
+	addr, err := netip.ParseAddr(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	if addr.Zone() != "" {
+		return addr.Zone()
+	}
+	remote := &net.UDPAddr{IP: net.ParseIP(addr.String()), Port: 9}
+	conn, err := net.DialUDP("udp", nil, remote)
+	if err != nil {
+		return ""
+	}
+	localIP := conn.LocalAddr().(*net.UDPAddr).IP
+	_ = conn.Close()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		ifaceAddrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, candidate := range ifaceAddrs {
+			ip, _, err := net.ParseCIDR(candidate.String())
+			if err == nil && ip.Equal(localIP) {
+				return iface.Name
+			}
+		}
+	}
+	return ""
 }
 
 // resolveWorkers bounds how many browse results mdnsStreamBackend resolves
@@ -71,8 +134,16 @@ func mdnsStreamBackend(ctx context.Context, serviceType string, emit func(MDNSSe
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for inst := range jobs {
-				mdnsStreamResolveAndEmit(ctx, inst, serviceType, emit)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case inst, ok := <-jobs:
+					if !ok {
+						return
+					}
+					mdnsStreamResolveAndEmit(ctx, inst, serviceType, emit)
+				}
 			}
 		}()
 	}
@@ -84,10 +155,9 @@ func mdnsStreamBackend(ctx context.Context, serviceType string, emit func(MDNSSe
 		}
 	})
 
-	// Closing jobs (rather than relying solely on ctx) lets any resolver still
-	// draining a backlog finish it instead of abandoning already-queued work;
-	// each resolve is itself ctx-bounded, so this cannot outlive ctx by more
-	// than one dnssdResolveTimeout.
+	// Closing jobs lets workers finish a naturally-ended browse. On cancellation
+	// their ctx arm wins and intentionally abandons queued refreshes; draining a
+	// full queue could otherwise multiply shutdown latency by resolve timeout.
 	close(jobs)
 	wg.Wait()
 	return err
@@ -114,7 +184,11 @@ func mdnsStreamResolveAndEmit(ctx context.Context, inst browseResult, serviceTyp
 
 	svc, err := resolveServiceFn(resolveCtx, inst, serviceType)
 	if err != nil {
-		if isValidHostnameLabel(inst.instanceName) {
+		// The synthesized .local:50051 identity is specific to the WendyOS
+		// agent service. Applying it to generic services such as
+		// _wendy-lite._tcp fabricates selectable rows for stale mDNS browse
+		// records even though their service cannot be resolved anymore.
+		if serviceType == wendyServiceType && isValidHostnameLabel(inst.instanceName) {
 			emit(MDNSService{
 				InstanceName:  inst.instanceName,
 				Hostname:      inst.instanceName + ".local",

@@ -10,9 +10,8 @@ import (
 
 func newDeviceSyncTimeCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:    "sync-time",
-		Hidden: true,
-		Short:  "Sync the clock on nearby WendyOS devices via Roughtime multicast",
+		Use:   "sync-time",
+		Short: "Sync the clock on nearby WendyOS devices via Roughtime multicast",
 		Long: `Queries a Roughtime server for a cryptographically signed timestamp,
 then multicasts the signed proof to all WendyOS devices on the local network.
 Devices verify the Roughtime signature themselves — the Mac is an untrusted relay.`,
@@ -21,10 +20,15 @@ Devices verify the Roughtime signature themselves — the Mac is an untrusted re
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Synced: %s ± %s  (via %s)\n",
+			source := "live query"
+			if cached, age := clitimesync.ProofFromCache(); cached {
+				source = fmt.Sprintf("proof cached %s ago — no route to a Roughtime server",
+					age.Round(time.Minute))
+			}
+			fmt.Printf("Broadcast: %s ± %s  (via %s, %s)\n",
 				result.Midpoint.UTC().Format("2006-01-02T15:04:05Z"),
 				result.Radius.Round(time.Millisecond),
-				result.Server)
+				result.Server, source)
 			return nil
 		},
 	}

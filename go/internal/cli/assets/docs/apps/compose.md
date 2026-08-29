@@ -45,13 +45,21 @@ services:
 wendy run
 ```
 
-Wendy selects a device, builds each service image, pushes them to the device, and starts them concurrently with interleaved log output. Each service's lines are prefixed with a color-coded, column-aligned service name. Colors rotate through cyan, yellow, green, magenta, blue, and red. Log lines are never interleaved mid-line; each line is written atomically:
+Wendy selects a device, builds each service image, pushes them to the device, and starts them concurrently with interleaved log output. Each service's lines are prefixed with a color-coded, column-aligned service name. Log lines are never interleaved mid-line; each line is written atomically:
 
 ```
 [api]     Listening on :8080
 [worker]  Connected to api
 [worker]  Processing item 1
 ```
+
+Service builds run in parallel, while the device-intensive image preparation
+phase is limited to two services at a time so a high `--max-concurrency` value
+does not overload device storage. A later run with unchanged source and runtime
+configuration skips image building, transfer, and preparation when the service's
+container and its content are still present on the device; missing or
+unverifiable content fails closed and performs a normal preparation. Set
+`WENDY_PUSH_SKIP=0` to disable this optimization while diagnosing builds.
 
 Press **Ctrl-C** to stop all services. Services are stopped in reverse dependency order; the CLI prints `Stopping <name>...` for each service and then a final `Stopped N service(s).` summary.
 
@@ -69,7 +77,7 @@ Wendy honours the following compose fields. Fields not listed here are ignored.
 
 | Field | Description |
 |-------|-------------|
-| `build` | Build context: a path string or a `{ context, dockerfile, args }` mapping. Custom Dockerfile paths must resolve inside the build context. Services without `build` use a pre-built image via `image`. |
+| `build` | Build context: a path string or a `{ context, dockerfile, args }` mapping. `dockerfile` may name a `Dockerfile`, `Containerfile`, a dot/hyphen variant of either, or a Stagefile (`prod.stagefile.yaml`), and must resolve inside the build context. See [Build files](#build-files) for how the default is chosen when `dockerfile` is omitted. Services without `build` use a pre-built image via `image`. |
 | `image` | Pre-built image to pull and run on the device (e.g. `redis:7-alpine`). Public image names are normalised to their fully-qualified form automatically. |
 | `command` | Override the container's default command. Accepts a string (shell-split) or a YAML sequence. |
 | `environment` | Environment variables to inject. Parsed from key-value maps or `KEY=VALUE` lists. Applied in order: image env → compose env → Wendy system vars → framework vars (e.g., ROS2) → OTEL vars. OCI last-wins semantics apply. |
@@ -81,6 +89,28 @@ Wendy honours the following compose fields. Fields not listed here are ignored.
 | `x-wendy` | Wendy-specific per-service extensions: `readiness` (a readiness probe) and `hooks` (postStart hooks). Same camelCase schema as `wendy.json`'s top-level `readiness`/`hooks` fields. See [Readiness probes and postStart hooks](#readiness-probes-and-poststart-hooks) below. |
 
 The following fields are recognized but intentionally ignored, each with a warning at deploy time: `devices`, `privileged`, `cap_add`, `security_opt`, `ipc`, `pid`, `shm_size`, `healthcheck`, `profiles`, `secrets`, and `extra_hosts`. Hardware access goes through Wendy entitlements in a companion `wendy.json` instead. Anything else (such as `networks`, `deploy`, `entrypoint`, `env_file`, or long-form volume syntax) is ignored silently.
+
+## Build files
+
+A service's `dockerfile` may name a Stagefile as well as a Dockerfile. Stagefiles are compiled to a Dockerfile before the image build, so nothing else about the service changes:
+
+```yaml
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: prod.stagefile.yaml
+```
+
+When `dockerfile` is omitted, Wendy resolves the default from the build context, in order:
+
+1. `build.stagefile.yaml` — the canonical Stagefile.
+2. Otherwise the first `<name>.stagefile.yaml` in the context, alphabetically. A context that holds only variants has no conventional default, and falling through to `Dockerfile` would silently ignore the Stagefiles plainly sitting there. Name one explicitly with `dockerfile:` to pick a different variant.
+3. Otherwise `Dockerfile`.
+
+Two services may share one build context and point at different build files. Each Stagefile compiles to its own artifact (`Dockerfile.generated` for the canonical one, `Dockerfile.generated.<variant>` otherwise), so concurrent service builds in a shared context never overwrite each other's compiled Dockerfile. See [Stagefile naming](../clients/wendy-cli/commands/build.md#stagefile-naming) for the filename rules.
+
+`docker compose build` itself knows nothing about Stagefiles, so `wendy build` compiles them first and passes a generated override file pointing the affected services at their compiled Dockerfile. Running plain `docker compose build` on the same project — without Wendy — will fail on a `dockerfile:` that names a Stagefile.
 
 ## Networking
 
@@ -133,17 +163,17 @@ services:
           openURL: "http://${WENDY_HOSTNAME}:3000"
 ```
 
-`readiness` here gates only `frontend`'s own `postStart` hook; it never delays any other service's startup (`depends_on` ordering is unaffected). `hooks.postStart.agent` (a command run on the device) is attached only to the declaring service's own container.
+`readiness` here gates only `frontend`'s own `postStart` hook; it never delays any other service's startup (`depends_on` ordering is unaffected). `hooks.postStart.agent` runs directly on the device host and is triggered only by the declaring service's own container start.
 
 A companion `wendy.json` in the same directory can also declare `services.<name>.readiness` / `services.<name>.hooks` for a service. When both are present, the companion wins wholesale per field: its `readiness` and `hooks` each replace the `x-wendy` value entirely rather than merging with it.
 
-A companion `wendy.json`'s *top-level* `readiness`/`hooks` or `http` entitlement act instead as an app-level fallback: they fire once after every service in the project has started, rather than gating any single service. Inherited top-level HTTP remains in every service's container create configuration, but it is not executed once per service. A companion `services.<name>.entitlements` HTTP declaration is service-scoped; if both scopes declare HTTP, both actions run at their respective scopes. [Examples/WendyMC](../../Examples/WendyMC) uses a top-level `{ "type": "http", "port": 8080 }` entitlement with `readiness.timeoutSeconds: 180`, so the CLI preserves that timeout and opens the UI once after both services start. A top-level `hooks.postStart.agent` is the one exception: a compose app has no app-level container to run an agent-side hook in, so it is ignored (with a warning); declare an agent-side hook under a service's `x-wendy.hooks` or the companion's `services.<name>.hooks` instead.
+A companion `wendy.json`'s *top-level* `readiness`/`hooks` or `http` entitlement act instead as an app-level fallback: they fire once after every service in the project has started, rather than gating any single service. Inherited top-level HTTP remains in every service's container create configuration, but it is not executed once per service. A companion `services.<name>.entitlements` HTTP declaration is service-scoped; if both scopes declare HTTP, both actions run at their respective scopes. [Examples/WendyMC](../../Examples/WendyMC) uses a top-level `{ "type": "http", "port": 8080 }` entitlement with `readiness.timeoutSeconds: 180`, so the CLI preserves that timeout and opens the UI once after both services start. A top-level `hooks.postStart.agent` is the one exception: a compose app has no single app-level container start to trigger it, so it is ignored (with a warning); declare an agent-side hook under a service's `x-wendy.hooks` or the companion's `services.<name>.hooks` instead.
 
-In attached mode, each service's readiness→postStart sequence runs asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service; Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. In detached mode, readiness is waited sequentially in dependency order after every service has started and hooks outlive the CLI once it exits. A non-cancellation timeout warns without failing the command: explicitly configured multi-service hooks still run, while `App reachable` and any synthesized HTTP browser open are suppressed. Cancellation suppresses all three. An explicit readiness TCP port remains the probe target; presentation prefers a hostname-templated `openURL`, then the HTTP entitlement port, then the readiness port.
+In attached mode, each service's readiness→postStart sequence runs asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service; Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. In detached mode none of this runs: no readiness wait, no `App reachable` line, and no host-side `postStart` action — only the agent-side `postStart.agent` hooks run, on the device. With `wendy run --watch`, each container's `openURL` and `cli` actions run once per session after its first successful readiness check; later saves do not repeat them, while a failed or canceled attempt may retry after a later deploy. `--watch --detach` skips these actions. A non-cancellation timeout in attached mode warns without failing the command: explicitly configured multi-service hooks still run, while `App reachable` and any synthesized HTTP browser open are suppressed. Cancellation suppresses all three. An explicit readiness TCP port remains the probe target; presentation prefers a hostname-templated `openURL`, then the HTTP entitlement port, then the readiness port. See [Watch mode](../clients/wendy-cli/commands/run.md#watch-mode) for details.
 
 Hook commands may reference `${WENDY_HOSTNAME}` (the device host), `${WENDY_APP_ID}`, and `${WENDY_SERVICE_NAME}` (the declaring service's name; empty for the app-level fallback). Windows-style `%VAR%` forms are accepted too.
 
-A note on naming for single-service projects: a compose file with more than one service groups its containers under the project name (`WENDY_APP_ID` = the project directory name, `WENDY_SERVICE_NAME` = the service name). A **single-service** compose project *without a companion `wendy.json`* instead keeps the legacy `<project>-<service>` app ID for backward compatibility, so `WENDY_SERVICE_NAME` expands to the empty string and `WENDY_APP_ID` is e.g. `myproj-web` (not `myproj`). A companion's `appId` and grouped naming always take over, even for a single service. Write hook commands accordingly if your project has only one service and no companion.
+For a compose file with more than one service, `WENDY_APP_ID` is the project directory name and `WENDY_SERVICE_NAME` is the service name. A **single-service** compose project without a companion `wendy.json` uses `<project>-<service>` as `WENDY_APP_ID` (for example, `myproj-web`) and leaves `WENDY_SERVICE_NAME` empty. When a companion file is present, its `appId` is used and grouped naming applies even when there is only one service.
 
 > Readiness probes and browser URLs dial the device host, not the container directly, so browser-reachable HTTP currently requires `network_mode: host`. Bridge mode provides outbound NAT only, and mesh port mappings serve mesh peers rather than the developer's browser.
 
@@ -154,12 +184,13 @@ All `wendy run` flags work with compose projects:
 | Flag | Description |
 |------|-------------|
 | `--deploy` | Build and create all containers but do not start them. |
-| `--detach` | Start all containers but do not stream logs. |
+| `--detach` | Start all containers but do not stream logs. See [Readiness probes and postStart hooks](#readiness-probes-and-poststart-hooks). |
 | `--restart-unless-stopped` | Set restart policy to `unless-stopped` for all services (overrides per-service setting). |
 | `--restart-on-failure` | Set restart policy to `on-failure` for all services. |
 | `--no-restart` | Disable restart for all services. |
 | `--debug` | Enable debug logging during build and run. |
 | `--yes` / `-y` | Accept all device-selection prompts automatically. |
+| `--watch` | Redeploy on changes and stream app logs between deploys. Requires a Wendy agent target when attached; use `--watch --detach` for provider targets. |
 
 ## Limitations
 

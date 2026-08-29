@@ -3,6 +3,7 @@ package audio
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -140,11 +141,58 @@ func TestAlsaIDDistinguishesDirection(t *testing.T) {
 	}
 }
 
-func TestParseSimpleMixerControls(t *testing.T) {
-	input := "Simple mixer control 'PCM',0\nSimple mixer control 'Mic',0\nignored line"
-	want := []string{"PCM", "Mic"}
-	if got := parseSimpleMixerControls(input); !reflect.DeepEqual(got, want) {
-		t.Fatalf("parseSimpleMixerControls() = %v, want %v", got, want)
+func TestParseMixerContents(t *testing.T) {
+	input := "Simple mixer control 'PCM',0\n" +
+		"  Capabilities: pvolume\n" +
+		"  Mono: Playback 51 [22%] [on]\n" +
+		"Simple mixer control 'Mic',0\n" +
+		"  Capabilities: cvolume\n"
+	got := parseMixerContents(input)
+	want := []mixerContents{
+		{name: "PCM", body: "  Capabilities: pvolume\n  Mono: Playback 51 [22%] [on]\n"},
+		{name: "Mic", body: "  Capabilities: cvolume\n"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseMixerContents() = %#v, want %#v", got, want)
+	}
+}
+
+// A Tegra APE card lists ~2200 simple mixer controls and does not reveal a
+// playback volume until roughly control 1900. Resolving that with one `amixer
+// sget` process per control took ~150s on a Jetson Thor — long enough that
+// `wendy device audio` looked hung — so the whole mixer must come back in a
+// single call regardless of how deep the first playback control sits.
+func TestMixerControlReadsWholeMixerInOneCall(t *testing.T) {
+	orig := AmixerRun
+	t.Cleanup(func() { AmixerRun = orig })
+
+	var mixer strings.Builder
+	for i := 1; i <= 2000; i++ {
+		fmt.Fprintf(&mixer, "Simple mixer control 'ADMAIF%d Mux',0\n", i)
+		mixer.WriteString("  Capabilities: enum\n  Items: 'None' 'ADMAIF1' 'I2S1'\n  Item0: 'None'\n")
+	}
+	mixer.WriteString("Simple mixer control 'CVB-RT DAC1',0\n")
+	mixer.WriteString("  Capabilities: pvolume pswitch\n")
+	mixer.WriteString("  Front Left: Playback 51 [22%] [-20.04dB] [on]\n")
+
+	var calls [][]string
+	AmixerRun = func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if strings.Join(args, " ") != "-c 2 scontents" {
+			return nil, errors.New("unexpected amixer call: " + strings.Join(args, " "))
+		}
+		return []byte(mixer.String()), nil
+	}
+
+	control, volume, err := mixerControl(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if control != "CVB-RT DAC1" || volume != 22 {
+		t.Fatalf("mixerControl() = %q, %d; want CVB-RT DAC1, 22", control, volume)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("amixer ran %d times, want exactly 1 (the scontents dump); calls = %v", len(calls), calls)
 	}
 }
 
@@ -179,10 +227,11 @@ func TestMixerControlPrefersPCMAndSkipsCaptureOnly(t *testing.T) {
 	AmixerRun = func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, append([]string(nil), args...))
 		switch strings.Join(args, " ") {
-		case "-c 2 scontrols":
-			return []byte("Simple mixer control 'Mic',0\nSimple mixer control 'PCM',0\n"), nil
-		case "-c 2 sget PCM":
-			return []byte("Mono: Playback 51 [22%] [-20.04dB] [on]\n"), nil
+		case "-c 2 scontents":
+			return []byte("Simple mixer control 'Mic',0\n" +
+				"  Mono: Capture 12 [22%]\n" +
+				"Simple mixer control 'PCM',0\n" +
+				"  Mono: Playback 51 [22%] [-20.04dB] [on]\n"), nil
 		default:
 			return nil, errors.New("unexpected amixer call")
 		}
@@ -195,7 +244,7 @@ func TestMixerControlPrefersPCMAndSkipsCaptureOnly(t *testing.T) {
 	if control != "PCM" || volume != 22 {
 		t.Fatalf("mixerControl() = %q, %d; want PCM, 22", control, volume)
 	}
-	wantCalls := [][]string{{"-c", "2", "scontrols"}, {"-c", "2", "sget", "PCM"}}
+	wantCalls := [][]string{{"-c", "2", "scontents"}}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %v, want %v", calls, wantCalls)
 	}
@@ -209,10 +258,8 @@ func TestSetAlsaVolume(t *testing.T) {
 	AmixerRun = func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, append([]string(nil), args...))
 		switch strings.Join(args, " ") {
-		case "-c 2 scontrols":
-			return []byte("Simple mixer control 'PCM',0\n"), nil
-		case "-c 2 sget PCM":
-			return []byte("Mono: Playback 51 [22%] [on]\n"), nil
+		case "-c 2 scontents":
+			return []byte("Simple mixer control 'PCM',0\n  Mono: Playback 51 [22%] [on]\n"), nil
 		case "-c 2 sset PCM 100% unmute":
 			return []byte("Mono: Playback 231 [100%] [on]\n"), nil
 		default:

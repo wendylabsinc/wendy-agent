@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -115,6 +116,20 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 }
 
 func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
+	isolateBuildLockDir(t)
+	// Model a Docker deployment in another process holding the shared builder
+	// lock. Apple Container has independent scheduler/cache state and must not
+	// queue behind it.
+	holder := &processBuildLock{}
+	releaseHolder, err := holder.acquire(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseHolder()
+	originalBuildLock := buildLock
+	buildLock = &processBuildLock{}
+	defer func() { buildLock = originalBuildLock }()
+
 	oldCommand := imageBuilderCommandContext
 	t.Cleanup(func() { imageBuilderCommandContext = oldCommand })
 	logFile := filepath.Join(t.TempDir(), "commands.log")
@@ -130,8 +145,13 @@ func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
 	}
 
 	// Route through the apple-container branch of the fast OCI-layout build.
-	err := buildImageToOCILayout(context.Background(), cwd, "Dockerfile", "linux/arm64",
-		map[string]string{"A": "1"}, imageBuilderAppleContainer, dest, io.Discard, io.Discard)
+	// Race instrumentation can make the fake helper subprocess noticeably
+	// slower; the deadline exists to catch an accidental lock wait, not to
+	// benchmark process startup.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err = buildImageToOCILayout(ctx, cwd, "Dockerfile", "linux/arm64",
+		map[string]string{"A": "1"}, imageBuilderAppleContainer, dest, "test-cache", io.Discard, io.Discard)
 	if err != nil {
 		t.Fatalf("buildImageToOCILayout(apple-container): %v", err)
 	}
@@ -448,6 +468,18 @@ func TestImageBuilderHelperProcess(t *testing.T) {
 			_ = f.Close()
 		}
 	}
+	if sleepMS := os.Getenv("IMAGE_BUILDER_HELPER_SLEEP_MS"); sleepMS != "" {
+		// Models a slow subprocess (e.g. buildx pulling the BuildKit image on a
+		// cold builder): write a marker to stdout, so callers can prove output
+		// streamed live, then sleep. If the parent's context has a shorter
+		// deadline than the sleep, exec.CommandContext kills us before we reach
+		// the exit below.
+		if n, err := strconv.Atoi(sleepMS); err == nil && n > 0 {
+			_, _ = os.Stdout.WriteString(imageBuilderHelperMarker)
+			time.Sleep(time.Duration(n) * time.Millisecond)
+			os.Exit(0)
+		}
+	}
 	if len(args) >= 2 && args[0] == "container" && args[1] == "--version" {
 		_, _ = os.Stdout.WriteString("container 1.0.0\n")
 		os.Exit(0)
@@ -501,6 +533,160 @@ func TestImageBuilderHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+// imageBuilderHelperMarker is written to stdout by the fake helper process
+// (see TestImageBuilderHelperProcess) when IMAGE_BUILDER_HELPER_SLEEP_MS is
+// set, before it sleeps. Tests use it to prove output reaches an io.Writer
+// while the subprocess is still running, not just after it exits.
+const imageBuilderHelperMarker = "wendy-bootstrap-marker\n"
+
+// signalingWriter buffers everything written to it and closes seen the first
+// time a chunk containing marker arrives, letting a test observe streamed
+// output as it happens rather than only after the writer's owner returns.
+type signalingWriter struct {
+	marker []byte
+	seen   chan struct{}
+	once   sync.Once
+
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func newSignalingWriter(marker string) *signalingWriter {
+	return &signalingWriter{marker: []byte(marker), seen: make(chan struct{})}
+}
+
+func (s *signalingWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.buf.Write(p)
+	s.mu.Unlock()
+	if bytes.Contains(p, s.marker) {
+		s.once.Do(func() { close(s.seen) })
+	}
+	return len(p), nil
+}
+
+// TestBootstrapOCIBuilderTimesOut proves bootstrapOCIBuilder bounds the
+// `docker buildx inspect --bootstrap` call: a helper process that outlives a
+// deliberately shrunk ociBuilderBootstrapTimeout must be killed, and the
+// returned error must say so, well within the test's own budget.
+func TestBootstrapOCIBuilderTimesOut(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "helper.log")
+	oldExec := imageBuilderCommandContext
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	t.Cleanup(func() { imageBuilderCommandContext = oldExec })
+	t.Setenv("IMAGE_BUILDER_HELPER_SLEEP_MS", "2000")
+
+	oldTimeout := ociBuilderBootstrapTimeout
+	ociBuilderBootstrapTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { ociBuilderBootstrapTimeout = oldTimeout })
+
+	var out bytes.Buffer
+	start := time.Now()
+	err := bootstrapOCIBuilder(context.Background(), "wendy-oci", &out)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("bootstrapOCIBuilder: expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("bootstrapOCIBuilder error = %q, want it to mention timing out", err.Error())
+	}
+	if !strings.Contains(err.Error(), "wendy-oci") {
+		t.Fatalf("bootstrapOCIBuilder error = %q, want it to mention the builder name", err.Error())
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("bootstrapOCIBuilder took %s, want well under the 2s helper sleep (it should have been killed at the 50ms timeout)", elapsed)
+	}
+}
+
+// TestBootstrapOCIBuilderStreamsOutputLive proves bootstrapOCIBuilder's w
+// receives subprocess output live — while the helper process is still
+// running and blocked in its sleep, strictly before bootstrapOCIBuilder (and
+// thus the underlying cmd.Run()) returns — not merely by the time it returns
+// on the success path.
+func TestBootstrapOCIBuilderStreamsOutputLive(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "helper.log")
+	oldExec := imageBuilderCommandContext
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	t.Cleanup(func() { imageBuilderCommandContext = oldExec })
+	// Long enough that, once the marker is observed, the non-blocking check
+	// below is reliably still before completion; short enough to keep the
+	// test fast.
+	t.Setenv("IMAGE_BUILDER_HELPER_SLEEP_MS", "500")
+
+	w := newSignalingWriter(imageBuilderHelperMarker)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- bootstrapOCIBuilder(context.Background(), "wendy-oci", w)
+	}()
+
+	select {
+	case <-w.seen:
+		// The marker reached w — good.
+	case err := <-done:
+		t.Fatalf("bootstrapOCIBuilder returned (err=%v) before the marker ever appeared on w", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the marker to appear on w")
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("bootstrapOCIBuilder already returned (err=%v) by the time the marker was observed on w — not proof it streamed live", err)
+	default:
+		// Still running — the marker really did arrive before Run() returned.
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("bootstrapOCIBuilder: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("bootstrapOCIBuilder did not return after the helper process exited")
+	}
+}
+
+// TestBootstrapOCIBuilderParentDeadlineIsNotMisattributed proves that when an
+// ancestor context's own deadline fires first — not
+// bootstrapOCIBuilder's ociBuilderBootstrapTimeout — the returned error is
+// the plain failure shape, not the "timed out after <ociBuilderBootstrapTimeout>"
+// message. bootstrapCtx (a child of the caller's ctx) also reports
+// DeadlineExceeded in that case, so the check must also confirm the parent
+// ctx itself is not yet done before claiming the bootstrap-specific timeout.
+func TestBootstrapOCIBuilderParentDeadlineIsNotMisattributed(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "helper.log")
+	oldExec := imageBuilderCommandContext
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	t.Cleanup(func() { imageBuilderCommandContext = oldExec })
+	t.Setenv("IMAGE_BUILDER_HELPER_SLEEP_MS", "2000")
+
+	oldTimeout := ociBuilderBootstrapTimeout
+	ociBuilderBootstrapTimeout = 5 * time.Second // longer than the parent deadline below
+	t.Cleanup(func() { ociBuilderBootstrapTimeout = oldTimeout })
+
+	// Parent deadline is shorter than both the shrunk-but-still-long
+	// ociBuilderBootstrapTimeout and the helper's sleep, so the parent fires
+	// first and the child (bootstrapCtx) inherits DeadlineExceeded from it.
+	parentCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	var out bytes.Buffer
+	start := time.Now()
+	err := bootstrapOCIBuilder(parentCtx, "wendy-oci", &out)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("bootstrapOCIBuilder: expected an error, got nil")
+	}
+	if strings.Contains(err.Error(), "timed out after") {
+		t.Fatalf("bootstrapOCIBuilder error = %q, must not claim its own bootstrap timeout when the parent context's deadline fired first", err.Error())
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("bootstrapOCIBuilder took %s, want well under the 2s helper sleep (it should have been killed when the 50ms parent deadline fired)", elapsed)
+	}
 }
 
 // setupAppleContainerEnsureSeams installs the fakes ensureAppleContainerSystem
@@ -3020,5 +3206,67 @@ func TestWriteGeneratedFile_SkipsUnchangedWrites(t *testing.T) {
 	}
 	if len(leftovers) != 0 {
 		t.Fatalf("temp files left behind: %v", leftovers)
+	}
+}
+
+// A Stagefile that copies the whole context yields no derivable allowlist, and
+// the generated ignore file wins BuildKit's precedence over the project's own
+// .dockerignore. Writing a vacuous one there would therefore disable the
+// project's excludes — shipping, for a Swift project, a multi-gigabyte .build
+// directory into the build context and then into the image.
+func TestCompileStagefile_NoIgnoreFileWhenContextRootIsCopied(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n    workdir: /app\n" +
+		"    copy:\n      - from: local\n        paths: [.]\n        dest: /app/\n"
+	mustWrite(t, filepath.Join(dir, "build.stagefile.yaml"), source)
+	mustWrite(t, filepath.Join(dir, "build.stagefile.lock.yaml"),
+		"version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n")
+	// The project's own excludes, which must remain the ones in effect.
+	mustWrite(t, filepath.Join(dir, ".dockerignore"), ".build/\n")
+
+	// A sidecar left by an earlier build must not survive: absence is what puts
+	// the project's .dockerignore back in charge, so a stale file is as bad as
+	// writing a new one.
+	stale := filepath.Join(dir, generatedDockerignoreName)
+	mustWrite(t, stale, "*\n!.\n!./\n!./**\n")
+
+	if _, err := compileStagefile(dir, stagefileSourceName, ""); err != nil {
+		t.Fatalf("compileStagefile: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		b, _ := os.ReadFile(stale)
+		t.Fatalf("%s should not exist for a whole-context copy; stat err = %v, content:\n%s",
+			generatedDockerignoreName, err, b)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, ".dockerignore")); err != nil || string(b) != ".build/\n" {
+		t.Fatalf("the project .dockerignore must be left alone: %q, err = %v", b, err)
+	}
+}
+
+// The narrow case still gets its allowlist: only a whole-context copy suppresses it.
+func TestCompileStagefile_WritesIgnoreFileForNamedPaths(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n" +
+		"    copy:\n      - from: local\n        paths: [main.py]\n"
+	mustWrite(t, filepath.Join(dir, "build.stagefile.yaml"), source)
+	mustWrite(t, filepath.Join(dir, "build.stagefile.lock.yaml"),
+		"version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n")
+
+	if _, err := compileStagefile(dir, stagefileSourceName, ""); err != nil {
+		t.Fatalf("compileStagefile: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, generatedDockerignoreName))
+	if err != nil {
+		t.Fatalf("expected an allowlist for a named path: %v", err)
+	}
+	if !strings.HasPrefix(string(b), "*\n") || !strings.Contains(string(b), "!main.py") {
+		t.Fatalf("unexpected allowlist:\n%s", b)
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

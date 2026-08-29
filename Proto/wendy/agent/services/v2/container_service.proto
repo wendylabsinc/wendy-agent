@@ -13,6 +13,10 @@ service WendyContainerService {
     rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
     rpc RemoveVolume(RemoveVolumeRequest) returns (RemoveVolumeResponse);
     rpc ListContainerStats(ListContainerStatsRequest) returns (ListContainerStatsResponse);
+    // Releases Wendy's explicit GC pins from pushed layer blobs and unpacked
+    // snapshots. Containerd's reference graph continues to preserve current
+    // images and active containers; only cache data becomes collectible.
+    rpc PruneCache(PruneCacheRequest) returns (PruneCacheResponse);
 }
 
 message StartContainerRequest {
@@ -90,4 +94,23 @@ message ListContainerStatsRequest {}
 
 message ListContainerStatsResponse {
     repeated ContainerStats stats = 1;
+}
+
+message PruneCacheRequest {
+    // Reports what would be released without changing containerd metadata.
+    bool dry_run = 1;
+}
+
+message PruneCacheResponse {
+    // Number and aggregate compressed size of pushed layer blobs whose Wendy
+    // GC-root pin was (or would be, for dry_run) released.
+    uint64 content_blobs = 1;
+    uint64 content_bytes = 2;
+    // Number and aggregate filesystem usage of unpacked snapshots whose Wendy
+    // GC-root pin was (or would be, for dry_run) released.
+    uint64 snapshots = 3;
+    uint64 snapshot_bytes = 4;
+    // Newly written cache entries are retained for this many seconds to avoid
+    // disrupting an in-flight deployment between layer RPCs.
+    uint64 minimum_age_seconds = 5;
 }

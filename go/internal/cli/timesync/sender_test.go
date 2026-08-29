@@ -12,7 +12,7 @@ func TestFetchProofPacketMemoizes(t *testing.T) {
 	orig := roughtimeQueryFn
 	roughtimeQueryFn = func(_ context.Context, _ []roughtime.Server) (roughtime.Result, error) {
 		calls++
-		return roughtime.Result{Server: "test", Nonce: []byte("nonce"), RawResponse: []byte("resp")}, nil
+		return roughtime.Result{Server: "cloudflare", Nonce: []byte("nonce"), RawResponse: []byte("resp")}, nil
 	}
 	t.Cleanup(func() { roughtimeQueryFn = orig; resetProofCache() })
 	resetProofCache()

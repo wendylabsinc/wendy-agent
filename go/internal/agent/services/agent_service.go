@@ -44,11 +44,7 @@ type AgentService struct {
 	// AgentUpdateService (the v2 sibling handler) for the same pattern.
 	verifier *sigverify.Verifier
 
-	// execPathResolver resolves the agent's own executable path and mode.
-	// Defaults to resolveExecPath (which resolves os.Executable()); settable
-	// within-package so tests can redirect commitBinaryUpdate's rename target
-	// away from the running test binary.
-	execPathResolver func() (string, os.FileMode, error)
+	execPathCache
 
 	// restartFn is invoked once the binary is committed to schedule the
 	// process exit that lets systemd restart into the new binary. Defaults
@@ -79,7 +75,6 @@ func NewAgentService(
 		isWendyOSHost:      defaultIsWendyOSHost,
 		osUpdateStateDir:   oshealth.DefaultStateDir,
 		verifier:           sigverify.DefaultVerifier,
-		execPathResolver:   resolveExecPath,
 		restartFn:          scheduleAgentRestartExit,
 	}
 }
@@ -173,7 +168,7 @@ func (s *AgentService) WarmBinaryHash() {
 // Empty when the executable cannot be resolved or read.
 func (s *AgentService) binarySHA256() string {
 	s.binaryHashOnce.Do(func() {
-		path, _, err := s.execPathResolver()
+		path, _, err := s.resolvedExecPath()
 		if err != nil {
 			s.logger.Warn("could not resolve own executable for hashing", zap.Error(err))
 			return
@@ -237,6 +232,12 @@ func detectGPUInfo() gpuInfo {
 		// Discrete NVIDIA GPU (no Tegra release file).
 		info.hasGPU = true
 		info.vendor = "nvidia"
+	} else if _, err := os.Stat("/dev/kfd"); err == nil {
+		// AMD ROCm: /dev/kfd (the compute device) is the definitive signal, and
+		// unlike a bare /dev/dri it names the vendor. Checked before the generic
+		// DRM branch so an AMD box reports "amd" rather than an unknown vendor.
+		info.hasGPU = true
+		info.vendor = "amd"
 	} else if entries, _ := os.ReadDir("/dev/dri"); len(entries) > 0 {
 		// Generic GPU via DRM — vendor unknown.
 		info.hasGPU = true
@@ -521,7 +522,7 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 
 	s.logger.Info("UpdateAgent stream started")
 
-	execPath, originalPerm, err := s.execPathResolver()
+	execPath, originalPerm, err := s.resolvedExecPath()
 	if err != nil {
 		return err
 	}

@@ -21,16 +21,27 @@ The Avahi service definition is installed at `/etc/avahi/services/wendyos-mdns.s
 </service-group>
 ```
 
-The placeholder tokens (`WENDY_DEVICE_ID` etc.) are replaced at boot by `update-mdns-uuid.sh` (see below).
+The placeholder tokens (`WENDY_DEVICE_ID` etc.) are replaced during boot. On
+later boots, the same updater replaces the current TXT record values again; it
+is not limited to the original placeholders (see below).
 
 - **Service type**: `_wendyos._udp`
 - **Port**: `50051` pre-provisioning; updated to `50052` (mTLS) automatically once the device enrolls
 - **Instance name**: The device hostname (`%h` expands to the current hostname as set by Avahi)
-- **TXT records**: `id`, `name`, `displayname` (placeholder tokens replaced at boot by `update-mdns-uuid.sh`)
+- **TXT records**: `id`, `name`, `displayname`, plus provisioning records such as `tls`, `assetid`, and `orgid` when applicable
 
-## Dynamic UUID Injection
+Provisioning updates the port and may add `tls`, `assetid`, and `orgid`. Some
+service templates also contain an optional `fqdn` record. The agent preserves
+these records when it updates the hostname-derived TXT values.
 
-At boot, `update-mdns-uuid.sh` (from `recipes-core/wendyos-identity/`):
+## Boot-time mDNS Identity Update
+
+On every boot, `wendyos-identity.service` runs `update-mdns-uuid.sh` from
+`recipes-core/wendyos-identity/`. The script reads
+`/etc/wendyos/device-uuid` and `/etc/wendyos/device-name`, derives the title-case
+display name, and replaces the current `id`, `name`, and `displayname` values in
+the Avahi service file. Matching records by key makes this update idempotent; it
+is not a one-time placeholder replacement. The equivalent data flow is:
 
 ```bash
 UUID=$(cat /etc/wendyos/device-uuid)
@@ -38,14 +49,27 @@ DEVICE_NAME=$(cat /etc/wendyos/device-name 2>/dev/null || echo "unknown-device")
 DISPLAY_NAME=$(echo "$DEVICE_NAME" | sed 's/-/ /g' | \
     awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2));}1')
 
-sed -i "s|WENDY_DEVICE_ID|$UUID|g"           "$SERVICE_FILE"
-sed -i "s|WENDY_DEVICE_NAME|$DEVICE_NAME|g"  "$SERVICE_FILE"
-sed -i "s|WENDY_DISPLAY_NAME|$DISPLAY_NAME|g" "$SERVICE_FILE"
+# Replace the value of each matching <txt-record>key=...</txt-record> entry.
+set_txt id "$UUID"
+set_txt name "$DEVICE_NAME"
+set_txt displayname "$DISPLAY_NAME"
 ```
 
 The `displayname` field converts the hyphen-separated device name to Title Case (e.g. `my-device` becomes `My Device`).
 
-If UUID or device-name files are not yet present, the script retries for up to 10 seconds to handle ordering races. After patching the file it calls `avahi-daemon --reload` if the daemon is already running.
+If UUID or device-name files are not yet present, the script retries for up to
+10 seconds to handle ordering races. After updating the file it calls
+`avahi-daemon --reload` if the daemon is already running.
+
+`wendy device rename` persists the operator-selected hostname in
+`/etc/wendy-agent/hostname` and updates the Avahi records at rename time; it
+does not overwrite the generated `/etc/wendyos/device-name`. Consequently, the
+boot-time identity update above can replace `name` and `displayname` with the
+generated device name. At agent startup, after `wendyos-identity.service` and
+`avahi-daemon.service`, `ReassertHostnameAdvertisement` compares the service
+file with the persisted explicit hostname and restores the hostname-derived TXT
+records when needed. It restarts Avahi only when it changes the service file.
+The same re-assertion repairs a fresh service file after an A/B OTA slot switch.
 
 ## Hostname Generation
 
@@ -60,6 +84,14 @@ Avahi broadcasts the device hostname as `<hostname>.local`. The hostname is set 
 4. Legacy fallbacks: RPi serial from `/proc/cpuinfo`, first 16 chars of `/etc/machine-id`, first MAC address, random hex
 
 The hostname is written to `/etc/hostname` using a direct write (not `hostnamectl`, to avoid EBUSY issues with bind mounts) and also added to `/etc/hosts` as `127.0.1.1 <hostname> <hostname>.local`.
+
+> **Rename persistence:** The hostname itself remains stable across reboots and
+> OTA updates because `/etc/wendy-agent/hostname` is backed by `/data` and has
+> highest precedence above. The Avahi `name` and `displayname` TXT records are
+> separate rootfs state and can be re-derived from `/etc/wendyos/device-name`
+> during boot. The agent re-asserts those records from the persistent explicit
+> hostname at startup and does nothing on devices that have never been renamed
+> or whose records are already current.
 
 A hostname override can be applied by creating `/etc/wendyos-hostname-override`.
 
@@ -129,7 +161,7 @@ type MDNSService struct {
     Hostname     string
     IPAddress    string        // link-local IPv6 includes %zone suffix
     Port         int
-    TXTRecords   map[string]string   // "id", "name", "displayname"
+    TXTRecords   map[string]string   // all advertised TXT records
 }
 ```
 
@@ -140,5 +172,6 @@ type MDNSService struct {
 | `id` | Device UUID (from `/etc/wendyos/device-uuid`) | `550e8400-e29b-41d4-a716-446655440000` |
 | `name` | Slug device name (from `/etc/wendyos/device-name`) | `my-device` |
 | `displayname` | Title-cased device name | `My Device` |
+| `fqdn` | Optional reverse-DNS name derived from the hostname when present in the service template | `sh.wendy.my-device` |
 | `wendyosdevice` | Device UUID (preferred over `id` when present) | `769dc651-4eb2-49f3-b9f6-3e473f15694a` |
 | `tls` | `"true"` when the device is provisioned and requires mTLS (port 50052) | `true` |

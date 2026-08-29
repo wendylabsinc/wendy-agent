@@ -80,7 +80,7 @@ func TestGeneratePipIndexFlags(t *testing.T) {
 			},
 		}}},
 	}, nil)
-	want := "RUN --mount=type=cache,sharing=locked,id=stagefile-pip-8982dbbb6e87f5f3,target=/root/.cache/pip pip install --index-url 'https://pypi.jetson-ai-lab.io/jp6/cu126' --extra-index-url 'https://pypi.org/simple' 'torch'"
+	want := "pip install --root '/opt/stagefile/pip/root' --index-url 'https://pypi.jetson-ai-lab.io/jp6/cu126' --extra-index-url 'https://pypi.org/simple' 'torch'"
 	if !strings.Contains(out, want) {
 		t.Fatalf("missing %q in:\n%s", want, out)
 	}
@@ -180,7 +180,7 @@ func TestGenerateBuildProducts(t *testing.T) {
 		build *spec.Build
 		want  string
 	}{
-		{&spec.Build{Lang: "swift", Product: "camserver"}, "swift build -c release --product 'camserver'"},
+		{&spec.Build{Lang: "swift", Product: "camserver"}, "-c release --product 'camserver'"},
 		{&spec.Build{Lang: "rust", Product: "serve"}, "cargo build --release --bin 'serve'"},
 		{&spec.Build{Lang: "go", Product: "./cmd/serve"}, "go build -o /usr/local/bin/ './cmd/serve'"},
 		{&spec.Build{Lang: "npm"}, "RUN --mount=type=cache,sharing=locked,target=/root/.npm npm run 'build'"},

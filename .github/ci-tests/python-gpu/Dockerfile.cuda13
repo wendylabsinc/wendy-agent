@@ -1,0 +1,23 @@
+FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv libgomp1 libnuma1 \
+    libnvpl-blas0 libnvpl-lapack0 cuda-cupti-13-0 libcudss0-cuda-13 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Jetson AI Lab's CUDA-13 SBSA wheel contains kernels for Thor (sm_110) and
+# Spark (sm_121).
+# Use the immutable, hashed wheel URL so pip cannot select the CPU-only
+# aarch64 package from PyPI. Its ordinary Python dependencies still resolve
+# from PyPI.
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir \
+       'https://pypi.jetson-ai-lab.io/sbsa/cu130/+f/e65/21b6628938478/torch-2.9.1-cp312-cp312-linux_aarch64.whl#sha256=e6521b662893847896ece6740a6f3bd996c8a067d7b3334aadd6e3dcef47fd64' \
+       numpy
+
+ENV PATH="/opt/venv/bin:${PATH}" \
+    LD_LIBRARY_PATH="/usr/lib/aarch64-linux-gnu/libcudss/13:${LD_LIBRARY_PATH}" \
+    PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY main.py .
+CMD ["python3", "main.py"]

@@ -23,17 +23,27 @@ import (
 
 // AplayListRun and ArecordListRun enumerate ALSA cards. Behind vars so tests
 // can supply a fixture instead of running the real tools.
+// Each of these is bounded by queryTimeout for the same reason the PipeWire
+// queries are: the RPC context they inherit carries no deadline of its own, so
+// without one here a wedged card holds the call open for as long as the caller
+// is willing to wait — which, for the CLI, is forever.
 var (
 	AplayListRun = func(ctx context.Context) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+		defer cancel()
 		return exec.CommandContext(ctx, "aplay", "-l").Output()
 	}
 	ArecordListRun = func(ctx context.Context) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+		defer cancel()
 		return exec.CommandContext(ctx, "arecord", "-l").Output()
 	}
 )
 
 // AmixerRun runs amixer for ALSA volume control. Behind a var for tests.
 var AmixerRun = func(ctx context.Context, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
 	return exec.CommandContext(ctx, "amixer", args...).CombinedOutput()
 }
 
@@ -162,14 +172,45 @@ var (
 	preferredPlaybackControls = []string{"Master", "PCM", "Speaker", "Headphone"}
 )
 
-func parseSimpleMixerControls(output string) []string {
-	var controls []string
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		if match := simpleMixerControlPattern.FindStringSubmatch(strings.TrimSpace(scanner.Text())); len(match) == 2 {
-			controls = append(controls, match[1])
+// mixerContents is one simple mixer control as `amixer scontents` reports it:
+// the name from its header line, and the indented body lines that follow
+// carrying its capabilities and current values.
+type mixerContents struct {
+	name string
+	body string
+}
+
+// maxMixerLine bounds a single scontents line. A routing mux on a Tegra APE
+// card enumerates every selectable source on one "Items:" line, so the default
+// 64 KiB scanner limit is nearer than it looks — and overrunning it would
+// silently truncate the mixer rather than report anything.
+const maxMixerLine = 1 << 20
+
+// parseMixerContents splits `amixer scontents` output into per-control blocks,
+// preserving the order amixer listed them in.
+func parseMixerContents(output string) []mixerContents {
+	var controls []mixerContents
+	var body strings.Builder
+	flush := func() {
+		if len(controls) > 0 {
+			controls[len(controls)-1].body = body.String()
 		}
+		body.Reset()
 	}
+
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), maxMixerLine)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if match := simpleMixerControlPattern.FindStringSubmatch(strings.TrimSpace(line)); len(match) == 2 {
+			flush()
+			controls = append(controls, mixerContents{name: match[1]})
+			continue
+		}
+		body.WriteString(line)
+		body.WriteString("\n")
+	}
+	flush()
 	return controls
 }
 
@@ -213,20 +254,37 @@ func parsePlaybackVolume(output string) (uint32, bool) {
 
 // mixerControl resolves the ALSA simple mixer control that owns playback
 // volume for a card and returns its current percentage.
+//
+// This reads the whole mixer with one `scontents` dump rather than listing the
+// controls and running `sget` per control. The per-control scan is quadratic in
+// the wrong thing: a Tegra APE card lists 2179 simple controls, nearly all of
+// them routing muxes, and the first one exposing a playback volume sits at
+// index 1872 — 1872 amixer processes, ~150s on a Jetson Thor, during which
+// `wendy device audio` shows nothing at all. scontents answers the same
+// question in a single process (~0.1s on the same card) because the values are
+// already in the listing.
 func mixerControl(ctx context.Context, card uint64) (string, uint32, error) {
 	cardArg := strconv.FormatUint(card, 10)
-	listOutput, err := AmixerRun(ctx, "-c", cardArg, "scontrols")
+	output, err := AmixerRun(ctx, "-c", cardArg, "scontents")
 	if err != nil {
-		return "", 0, fmt.Errorf("listing mixer controls: %w: %s", err, strings.TrimSpace(string(listOutput)))
+		return "", 0, fmt.Errorf("reading mixer controls: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 
-	for _, control := range orderPlaybackControls(parseSimpleMixerControls(string(listOutput))) {
-		output, getErr := AmixerRun(ctx, "-c", cardArg, "sget", control)
-		if getErr != nil {
+	// Keep the first block of any repeated name: `sget <name>` used to resolve
+	// to index 0, and amixer lists the indices in order.
+	bodies := make(map[string]string)
+	names := make([]string, 0)
+	for _, control := range parseMixerContents(string(output)) {
+		if _, seen := bodies[control.name]; seen {
 			continue
 		}
-		if volume, ok := parsePlaybackVolume(string(output)); ok {
-			return control, volume, nil
+		bodies[control.name] = control.body
+		names = append(names, control.name)
+	}
+
+	for _, name := range orderPlaybackControls(names) {
+		if volume, ok := parsePlaybackVolume(bodies[name]); ok {
+			return name, volume, nil
 		}
 	}
 	return "", 0, fmt.Errorf("no playback volume control found on ALSA card %d", card)

@@ -85,6 +85,31 @@ func TestCache_PutNilClears(t *testing.T) {
 	if b := c.Battery(); b != nil {
 		t.Errorf("expected nil after Put(nil), got %+v", b)
 	}
+	if zones := c.ThermalZones(); zones != nil {
+		t.Errorf("expected temperatures to clear with the LowState sample, got %+v", zones)
+	}
+}
+
+func TestCache_ThermalZonesAreFreshAndCopied(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	c := NewCache(clk.now)
+	zones := []hoststats.ThermalZone{{Name: "go2/imu", TempC: 79}}
+	c.putTelemetry(&hoststats.Battery{Percent: 78}, zones)
+
+	zones[0].TempC = 1
+	first := c.ThermalZones()
+	if len(first) != 1 || first[0].TempC != 79 {
+		t.Fatalf("ThermalZones() = %+v, want copied 79C reading", first)
+	}
+	first[0].TempC = 2
+	if second := c.ThermalZones(); second[0].TempC != 79 {
+		t.Fatalf("ThermalZones() returned shared storage: %+v", second)
+	}
+
+	clk.advance(StaleAfter + time.Second)
+	if stale := c.ThermalZones(); stale != nil {
+		t.Fatalf("stale temperatures must disappear, got %+v", stale)
+	}
 }
 
 // Battery must hand back a copy: a caller mutating the result must not corrupt

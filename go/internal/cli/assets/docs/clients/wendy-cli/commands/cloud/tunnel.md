@@ -10,9 +10,7 @@ wendy cloud tunnel [flags]
 
 ## Description
 
-`wendy cloud tunnel` fetches the list of **online** compute devices from Wendy Cloud (using `OnlineOnly = true`) and either connects directly when only one device is available, selects the device named or identified by `--device`, or prompts you to choose one interactively.
-
-The device list is retrieved via a server-streaming `AssetService.ListAssets` gRPC call so the CLI receives assets incrementally without a separate pagination loop.
+`wendy cloud tunnel` fetches the list of **online** compute devices from Wendy Cloud and either connects directly when only one device is available, selects the device named or identified by `--device`, or prompts you to choose one interactively.
 
 ### Selecting a device
 

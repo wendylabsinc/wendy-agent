@@ -12,23 +12,16 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
-	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // ResolveESP32SerialPorts returns all connected serial ports whose USB VID/PID
-// match the ESP32 constants. ConnectionTime is not available on Windows and is
-// left as the zero value.
-func ResolveESP32SerialPorts() ([]SerialPortInfo, error) {
+// match a supported native or USB-to-UART interface. ConnectionTime is not
+// available on Windows and is left as the zero value.
+func resolveESP32SerialPorts() ([]SerialPortInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	vid := strings.ToUpper(strings.TrimPrefix(models.ESP32VendorID, "0x"))
-	pid := strings.ToUpper(strings.TrimPrefix(models.ESP32ProductID, "0x"))
-
-	script := fmt.Sprintf(
-		`Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPClass -eq 'Ports' -and $_.PNPDeviceID -like 'USB\VID_%s&PID_%s*' } | Select-Object Name, PNPDeviceID, Caption | ConvertTo-Json -Compress`,
-		vid, pid,
-	)
+	script := `Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPClass -eq 'Ports' -and $_.PNPDeviceID -like 'USB\VID_*' } | Select-Object Name, PNPDeviceID, Caption | ConvertTo-Json -Compress`
 
 	cmd := exec.CommandContext(ctx, env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script)
 	out, err := cmd.Output()
@@ -67,9 +60,22 @@ func parseESP32SerialPortsJSON(jsonOut string) ([]SerialPortInfo, error) {
 
 	var result []SerialPortInfo
 	for _, entry := range entries {
+		vendorIDText, productIDText := parseVIDPID(entry.PNPDeviceID)
+		vendorID, vidErr := parseUSBID(vendorIDText)
+		productID, pidErr := parseUSBID(productIDText)
+		if vidErr != nil || pidErr != nil {
+			continue
+		}
+		usbID, ok := supportedESP32SerialUSBID(vendorID, productID)
+		if !ok {
+			continue
+		}
 		for _, field := range []string{entry.Name, entry.Caption} {
 			if match := serialPortRegex.FindString(field); match != "" {
-				result = append(result, SerialPortInfo{Port: strings.Trim(match, "()")})
+				result = append(result, SerialPortInfo{
+					Port:      strings.Trim(match, "()"),
+					Transport: usbID.transport,
+				})
 				break
 			}
 		}
@@ -93,5 +99,5 @@ func parseESP32SerialPortJSON(jsonOut string) (string, error) {
 }
 
 func noESP32SerialPortErr() error {
-	return fmt.Errorf("no ESP32 serial port found (expected COM port with VID %s)", models.ESP32VendorID)
+	return fmt.Errorf("no ESP32 serial port found (expected a supported native USB or CP210x COM port)")
 }

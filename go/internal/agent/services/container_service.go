@@ -20,6 +20,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	_ "google.golang.org/grpc/encoding/gzip" // accept compressed WriteChunks messages
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -300,6 +301,76 @@ func (s *ContainerService) WriteChunks(stream grpc.ClientStreamingServer[agentpb
 	}
 }
 
+// PrepareImage starts the device-side half of a chunk-diff deploy before all
+// missing chunks have arrived. The containerd implementation waits for each
+// layer's chunks, then assembles and unpacks layers from base to top while the
+// CLI continues uploading later layers. RunContainer repeats the work through
+// idempotent fast paths, so a lost response cannot leave deploy state ambiguous.
+func (s *ContainerService) PrepareImage(ctx context.Context, req *agentpb.RunContainerLayersRequest) (*agentpb.PrepareImageResponse, error) {
+	if err := s.verifyImageSignature(req.GetImageConfig(), req.GetImageSignature()); err != nil {
+		return nil, err
+	}
+	if err := s.validateSignedLayerBinding(req.GetImageConfig(), req.GetLayers()); err != nil {
+		return nil, err
+	}
+
+	preparer, ok := s.containerd.(ImagePreparer)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "image preparation is not supported by this runtime")
+	}
+	if err := preparer.PrepareImage(ctx, req.GetImageName(), req.GetLayers(), req.GetImageConfig()); err != nil {
+		return nil, status.Errorf(codes.Internal, "preparing image: %v", err)
+	}
+	return &agentpb.PrepareImageResponse{}, nil
+}
+
+func (s *ContainerService) verifyImageSignature(imageConfig, signature []byte) error {
+	imageDigest := sha256.Sum256(imageConfig)
+	if err := s.imageVerifier.Verify(imageDigest[:], signature); err != nil {
+		switch {
+		case errors.Is(err, sigverify.ErrUnsigned):
+			return status.Error(codes.FailedPrecondition, "container image is unsigned; refusing to run")
+		case errors.Is(err, sigverify.ErrBadSignature):
+			return status.Error(codes.DataLoss, "container image signature verification failed; refusing to run")
+		default:
+			return status.Errorf(codes.Internal, "container image signature verification error: %v", err)
+		}
+	}
+	return nil
+}
+
+// validateSignedLayerBinding ensures an enabled image signature authenticates
+// the exact ordered diff IDs that preparation will persist. AssembleImage
+// intentionally re-derives RootFS from the wire headers, so checking only the
+// config signature without this comparison would let an authenticated config
+// be paired with attacker-chosen layer content.
+func (s *ContainerService) validateSignedLayerBinding(imageConfig []byte, layers []*agentpb.RunContainerLayerHeader) error {
+	if !s.imageVerifier.Enabled() {
+		return nil
+	}
+	var cfg struct {
+		RootFS struct {
+			DiffIDs []string `json:"diff_ids"`
+		} `json:"rootfs"`
+	}
+	if err := json.Unmarshal(imageConfig, &cfg); err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid signed image config: %v", err)
+	}
+	if len(cfg.RootFS.DiffIDs) != len(layers) {
+		return status.Errorf(codes.InvalidArgument, "signed image config has %d diff IDs but request has %d layers", len(cfg.RootFS.DiffIDs), len(layers))
+	}
+	for i, layer := range layers {
+		wireDiffID := layer.GetDiffId()
+		if wireDiffID == "" {
+			wireDiffID = layer.GetDigest()
+		}
+		if cfg.RootFS.DiffIDs[i] != wireDiffID {
+			return status.Errorf(codes.InvalidArgument, "signed image config diff ID %d does not match requested layer", i)
+		}
+	}
+	return nil
+}
+
 func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]) error {
 	ctx := stream.Context()
 
@@ -324,16 +395,11 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 	phaseStart := runStartedAt
 	var verifyDur, layerAssembleDur, imageAssembleDur, createDur time.Duration
 
-	imageDigest := sha256.Sum256(req.GetImageConfig())
-	if err := s.imageVerifier.Verify(imageDigest[:], req.GetImageSignature()); err != nil {
-		switch {
-		case errors.Is(err, sigverify.ErrUnsigned):
-			return status.Error(codes.FailedPrecondition, "container image is unsigned; refusing to run")
-		case errors.Is(err, sigverify.ErrBadSignature):
-			return status.Error(codes.DataLoss, "container image signature verification failed; refusing to run")
-		default:
-			return status.Errorf(codes.Internal, "container image signature verification error: %v", err)
-		}
+	if err := s.verifyImageSignature(req.GetImageConfig(), req.GetImageSignature()); err != nil {
+		return err
+	}
+	if err := s.validateSignedLayerBinding(req.GetImageConfig(), req.GetLayers()); err != nil {
+		return err
 	}
 
 	verifyDur = time.Since(phaseStart)
@@ -952,22 +1018,33 @@ func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopC
 			s.monitor.MarkExplicitStop(id)
 		}
 	}
+	// Persist intent before beginning teardown. Besides surviving reboot, this
+	// lets a group restart that was queued just before MarkExplicitStop observe
+	// the stop even if its goroutine does not run until after the monitor's
+	// in-memory suppression handles have been released.
+	var persisted []string
+	for _, id := range ids {
+		if err := s.containerd.SetStoppedByUser(ctx, id, true); err != nil {
+			s.logger.Warn("failed to persist stopped-by-user mark",
+				zap.String("container_id", id), zap.Error(err))
+			continue
+		}
+		persisted = append(persisted, id)
+	}
 	if err := s.containerd.StopContainer(ctx, appName); err != nil {
 		if s.monitor != nil {
 			for _, id := range ids {
 				s.monitor.ClearExplicitStop(id)
 			}
 		}
-		return nil, status.Errorf(codes.Internal, "failed to stop container: %v", err)
-	}
-	// Persist the stop so it survives a reboot: the boot reconcile skips
-	// containers carrying this mark, so a deliberate stop is not undone by the
-	// restart policy. Best-effort — a label failure must not fail the stop.
-	for _, id := range ids {
-		if err := s.containerd.SetStoppedByUser(ctx, id, true); err != nil {
-			s.logger.Warn("failed to persist stopped-by-user mark",
-				zap.String("container_id", id), zap.Error(err))
+		cleanupCtx := context.WithoutCancel(ctx)
+		for _, id := range persisted {
+			if clearErr := s.containerd.SetStoppedByUser(cleanupCtx, id, false); clearErr != nil {
+				s.logger.Warn("failed to roll back stopped-by-user mark",
+					zap.String("container_id", id), zap.Error(clearErr))
+			}
 		}
+		return nil, status.Errorf(codes.Internal, "failed to stop container: %v", err)
 	}
 	s.logger.Info("App stopped", zap.String("app_name", appName), zap.Int("service_count", len(ids)))
 	return &agentpb.StopContainerResponse{}, nil
@@ -1229,7 +1306,7 @@ func (s *ContainerService) GetResourceStats(ctx context.Context, _ *agentpb.GetR
 		host.MemAvailableBytes = mem.AvailableBytes
 	}
 	host.Gpus = gpuStatsToProto(hoststats.SampleGPU(ctx))
-	host.ThermalZones = thermalZonesToProto(hoststats.SampleThermal())
+	host.ThermalZones = thermalZonesToProto(hoststats.ResolveThermal())
 	host.Battery = batteryToProto(hoststats.ResolveBattery())
 
 	return &agentpb.GetResourceStatsResponse{

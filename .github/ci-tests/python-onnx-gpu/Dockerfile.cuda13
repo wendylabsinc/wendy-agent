@@ -1,0 +1,20 @@
+FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Jetson AI Lab's CUDA-13 SBSA wheel targets CUDA-13 devices including Thor
+# (sm_110) and Spark (sm_121).
+# Pin its immutable, hashed URL while allowing the wheel's ordinary Python
+# dependencies to resolve from PyPI.
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir \
+       'https://pypi.jetson-ai-lab.io/sbsa/cu130/+f/012/c10bef23a39f0/onnxruntime_gpu-1.24.0-cp312-cp312-linux_aarch64.whl#sha256=012c10bef23a39f074730d158b72f797a7314f2695c65835a0669b57282422f6' \
+       onnx numpy
+
+ENV PATH="/opt/venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY main.py .
+CMD ["python3", "main.py"]

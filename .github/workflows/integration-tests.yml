@@ -56,7 +56,7 @@ jobs:
     if: inputs.jobs == 'all' || inputs.jobs == 'discover' || inputs.jobs == 'integration'
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, '${{ matrix.runner.os }}', '${{ matrix.runner.arch }}']
+      labels: [self-hosted, '${{ matrix.runner.os }}', '${{ matrix.runner.arch }}', '${{ matrix.runner.wendy_label }}']
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.explicit.outputs.matrix || steps.scan.outputs.matrix || '[]' }}
@@ -64,7 +64,7 @@ jobs:
       fail-fast: false
       matrix:
         runner:
-          - { name: macOS, os: macOS, arch: ARM64 }
+          - { name: macOS, os: macOS, arch: ARM64, wendy_label: wendy-macos-26 }
     steps:
       - name: Resolve explicit device
         id: explicit
@@ -152,6 +152,7 @@ jobs:
           EXPECTED=(
             "wendy-SER9.local"
             "wendyos-jetson-thor-ci.local"
+            "wendyos-thor.local"
             "wendyos-dynamic-channel.local"
           )
 
@@ -244,7 +245,7 @@ jobs:
       (inputs.platform == 'all' || inputs.platform == 'macos')
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, macOS, ARM64]
+      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
     concurrency:
       group: device-${{ matrix.hostname }}
       cancel-in-progress: false
@@ -354,8 +355,16 @@ jobs:
           builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
           BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
           BUILDER="${BUILDER:0:128}"
-          docker buildx rm "$BUILDER" --force 2>/dev/null || true
-          trap 'docker buildx rm "$BUILDER" --force 2>/dev/null || true' EXIT
+          # Wendy appends -oci to WENDY_BUILDX_BUILDER for chunk-diff exports.
+          # Remove that actual builder too; cleaning only the unsuffixed name
+          # leaked one buildkitd container per integration run until the runner
+          # exhausted memory.
+          cleanup_builders() {
+            docker buildx rm "${BUILDER}-oci" --force 2>/dev/null || true
+            docker buildx rm "$BUILDER" --force 2>/dev/null || true
+          }
+          cleanup_builders
+          trap cleanup_builders EXIT
 
           echo "==> Starting tests on $INPUT_HOSTNAME (builder: $BUILDER)"
           # DOCKER_HOST is often unset here. ssh re-joins its arguments into one
@@ -482,8 +491,14 @@ jobs:
           builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
           BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
           BUILDER="${BUILDER:0:128}"
-          docker buildx rm "$BUILDER" --force 2>/dev/null || true
-          trap 'docker buildx rm "$BUILDER" --force 2>/dev/null || true' EXIT
+          # The CLI creates ${BUILDER}-oci for chunk-diff exports; clean both
+          # names so a buildkitd container is not leaked after every CI run.
+          cleanup_builders() {
+            docker buildx rm "${BUILDER}-oci" --force 2>/dev/null || true
+            docker buildx rm "$BUILDER" --force 2>/dev/null || true
+          }
+          cleanup_builders
+          trap cleanup_builders EXIT
 
           echo "==> Starting tests on $INPUT_HOSTNAME (builder: $BUILDER)"
           WENDY_BUILDX_BUILDER="$BUILDER" go/scripts/test-ci.sh "${TEST_ARGS[@]}" -h "$INPUT_HOSTNAME"

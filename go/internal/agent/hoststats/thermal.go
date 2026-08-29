@@ -6,11 +6,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // thermalRoot is the sysfs directory enumerating thermal zones. A package var so
 // tests can point it at a fixture tree.
 var thermalRoot = "/sys/class/thermal"
+
+var (
+	supplementalThermalMu     sync.RWMutex
+	supplementalThermalSource func() []ThermalZone
+)
 
 // ThermalZone is one temperature sensor reading from /sys/class/thermal.
 type ThermalZone struct {
@@ -44,13 +50,44 @@ func SampleThermal() []ThermalZone {
 		}
 		zones = append(zones, ThermalZone{Name: readZoneType(zoneDir, dirName), TempC: tempC})
 	}
+	sortThermalZones(zones)
+	return zones
+}
+
+// SetSupplementalThermalSource registers temperatures that are not exposed by
+// Linux thermal sysfs. A Unitree robot's IMU and motor temperatures, received
+// over DDS, are the motivating case. Pass nil to clear the source.
+//
+// The supplemental source is additive: portable sysfs readings remain present
+// on every host, and a missing or stale device-specific source simply adds
+// nothing.
+func SetSupplementalThermalSource(f func() []ThermalZone) {
+	supplementalThermalMu.Lock()
+	defer supplementalThermalMu.Unlock()
+	supplementalThermalSource = f
+}
+
+// ResolveThermal combines portable Linux thermal zones with any current
+// device-specific readings and sorts the result hottest-first.
+func ResolveThermal() []ThermalZone {
+	zones := SampleThermal()
+	supplementalThermalMu.RLock()
+	source := supplementalThermalSource
+	supplementalThermalMu.RUnlock()
+	if source != nil {
+		zones = append(zones, source()...)
+	}
+	sortThermalZones(zones)
+	return zones
+}
+
+func sortThermalZones(zones []ThermalZone) {
 	sort.SliceStable(zones, func(i, j int) bool {
 		if zones[i].TempC != zones[j].TempC {
 			return zones[i].TempC > zones[j].TempC
 		}
 		return zones[i].Name < zones[j].Name
 	})
-	return zones
 }
 
 // readZoneTemp reads a thermal zone "temp" file (millidegrees Celsius) and

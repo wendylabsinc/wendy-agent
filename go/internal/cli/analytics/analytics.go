@@ -21,7 +21,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
-const telemetryEndpoint = "https://wendy-cloud-services-nkohwk7hda-uc.a.run.app/v1/telemetry/events"
+const defaultTelemetryEndpoint = "https://wendy-cli-telemetry-114319063177.us-central1.run.app/v1/telemetry/events"
 
 type eventPayload struct {
 	AnonymousID string `json:"anonymous_id"`
@@ -42,6 +42,9 @@ var (
 	wg         sync.WaitGroup
 	enabled    bool
 	distinctID string
+	// telemetryEndpoint is a variable so delivery behavior can be exercised
+	// against an httptest server without sending test events to production.
+	telemetryEndpoint = defaultTelemetryEndpoint
 
 	// trackHook is set by tests to intercept events before they would be
 	// sent to the telemetry endpoint. It is never set in production code.
@@ -96,6 +99,14 @@ func Init(cfg *config.Config) (firstRun bool) {
 // disabled or uninitialized; the test hook (if any) always fires so test
 // assertions can observe the intended payload regardless of initialization state.
 func Track(event string, properties map[string]string) {
+	track(event, properties, nil)
+}
+
+// track sends an event and calls onDelivered only after the receiver returns a
+// 2xx response. Delivery remains best-effort: failures never affect the command
+// result, but callers such as one-time milestones can defer local acknowledgement
+// until the receiver has persisted the event.
+func track(event string, properties map[string]string, onDelivered func()) {
 	if trackHook != nil {
 		trackHook(event, properties)
 	}
@@ -114,7 +125,7 @@ func Track(event string, properties map[string]string) {
 		CLIVersion:  version.Version,
 		OS:          runtime.GOOS,
 		Arch:        runtime.GOARCH,
-		IsDevBuild:  version.Version == "dev",
+		IsDevBuild:  version.IsDev(version.Version),
 	}
 
 	body, err := json.Marshal(payload)
@@ -131,7 +142,13 @@ func Track(event string, properties map[string]string) {
 			return
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return
+		}
+		if onDelivered != nil {
+			onDelivered()
+		}
 	}()
 }
 
@@ -169,8 +186,9 @@ func TrackMilestoneOnceInDir(dir, name string) {
 	if milestoneSent(dir, name) {
 		return
 	}
-	Track(name, map[string]string{"command_name": name})
-	_ = recordMilestone(dir, name)
+	track(name, map[string]string{"command_name": name}, func() {
+		_ = recordMilestone(dir, name)
+	})
 }
 
 // TrackMilestoneOnce emits the named milestone event exactly once per

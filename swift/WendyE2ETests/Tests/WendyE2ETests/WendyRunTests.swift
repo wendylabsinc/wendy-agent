@@ -24,6 +24,7 @@ struct `'wendy run'` {
                 #expect(stdout.contains("--user-args"))
                 #expect(stdout.contains("--prefix"))
                 #expect(stdout.contains("--device"))
+                #expect(stdout.contains("--build-host"))
                 #expect(stdout.contains("--json"))
                 #expect(result.stderr == "")
             }
@@ -147,6 +148,13 @@ struct `'wendy run'` {
                 #expect(result.stdout == "")
                 #expect(result.stderr.contains("invalid --chunking value"))
                 #expect(result.stderr.contains("auto, force, or off"))
+            }
+            try await cli.sh("wendy run --build-host spark-office --builder buildkit") {
+                result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("--builder selects a local image builder"))
+                #expect(result.stderr.contains("cannot be combined with --build-host"))
             }
         }
     }

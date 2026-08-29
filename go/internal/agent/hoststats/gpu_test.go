@@ -1,6 +1,11 @@
 package hoststats
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +61,48 @@ func TestParseTegrastats(t *testing.T) {
 	}
 }
 
+func TestParseTegrastatsWindowAveragesBurstyUtilization(t *testing.T) {
+	output := strings.Join([]string{
+		"RAM 1/2MB GR3D_FREQ 0% GPU@48C VDD_GPU_SOC 1000mW/1000mW",
+		"RAM 1/2MB GR3D_FREQ 80% GPU@49C VDD_GPU_SOC 2000mW/2000mW",
+		"RAM 1/2MB GR3D_FREQ 0% GPU@50C VDD_GPU_SOC 3000mW/3000mW",
+		"RAM 1/2MB GR3D_FREQ 100% GPU@51C VDD_GPU_SOC 4000mW/4000mW",
+		"RAM 1/2MB GR3D_FREQ 0% GPU@52C VDD_GPU_SOC 5000mW/5000mW",
+	}, "\n")
+
+	got := ParseTegrastatsWindow(output)
+	if len(got) != 1 {
+		t.Fatalf("got %d gpus, want 1", len(got))
+	}
+	g := got[0]
+	if g.UtilPercent != 36 {
+		t.Errorf("util = %v, want 36", g.UtilPercent)
+	}
+	if g.TempC == nil || *g.TempC != 52 {
+		t.Errorf("tempC = %v, want latest reading 52", g.TempC)
+	}
+	if g.PowerW == nil || *g.PowerW != 5 {
+		t.Errorf("powerW = %v, want latest reading 5", g.PowerW)
+	}
+}
+
+func TestParseTegrastatsWindowIgnoresLinesWithoutGPUData(t *testing.T) {
+	output := "startup noise\nRAM 1/2MB GR3D_FREQ 40% GPU@48C\n"
+	got := ParseTegrastatsWindow(output)
+	if len(got) != 1 {
+		t.Fatalf("got %d gpus, want 1", len(got))
+	}
+	if got[0].UtilPercent != 40 {
+		t.Errorf("util = %v, want 40", got[0].UtilPercent)
+	}
+}
+
+func TestParseTegrastatsWindowNoGPUFields(t *testing.T) {
+	if got := ParseTegrastatsWindow("RAM 1/2MB CPU [1%@100]\n"); len(got) != 0 {
+		t.Errorf("got %+v, want no gpus", got)
+	}
+}
+
 func TestParseTegrastatsNoGPUFields(t *testing.T) {
 	// A line with no GR3D_FREQ should yield no GPU entries rather than a bogus 0%.
 	got := ParseTegrastats("RAM 100/200MB CPU [1%@100]")
@@ -88,6 +135,62 @@ func TestParseNvidiaSMIUnifiedMemoryNA(t *testing.T) {
 	}
 	if g.PowerW == nil || *g.PowerW != 37.53 {
 		t.Errorf("powerW = %v, want 37.53", g.PowerW)
+	}
+}
+
+func TestParseNvidiaSMIOrinMarksUtilizationUnavailable(t *testing.T) {
+	// Verbatim JetPack 6.2.1 output from an Orin while tegrastats reported an
+	// active GPU. Treating [N/A] as the float zero caused device top to lie.
+	csv := "0, Orin (nvgpu), [N/A], [N/A], [N/A], [N/A], [N/A]\n"
+	got, utilizationAvailable := parseNvidiaSMI(csv)
+	if len(got) != 1 {
+		t.Fatalf("got %d gpus, want 1", len(got))
+	}
+	if utilizationAvailable {
+		t.Fatal("utilizationAvailable = true, want false for [N/A]")
+	}
+	if got[0].Name != "Orin (nvgpu)" {
+		t.Errorf("name = %q, want Orin (nvgpu)", got[0].Name)
+	}
+}
+
+func TestParseNvidiaSMIThorMarksUtilizationAvailable(t *testing.T) {
+	csv := "0, NVIDIA Thor, 85, [N/A], [N/A], 62, 37.53\n"
+	_, utilizationAvailable := parseNvidiaSMI(csv)
+	if !utilizationAvailable {
+		t.Fatal("utilizationAvailable = false, want true for numeric utilization")
+	}
+}
+
+func TestSampleGPUFallsBackToTegrastatsForOrin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses executable shell fixtures")
+	}
+
+	binDir := t.TempDir()
+	writeExecutable := func(name, body string) {
+		t.Helper()
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	writeExecutable("nvidia-smi", "printf '%s\\n' '0, Orin (nvgpu), [N/A], [N/A], [N/A], [N/A], [N/A]'\n")
+	writeExecutable("tegrastats", "printf '%s\\n' 'RAM 1/2MB GR3D_FREQ 20% GPU@48C' 'RAM 1/2MB GR3D_FREQ 80% GPU@50C'\n")
+	t.Setenv("PATH", binDir)
+
+	got := SampleGPU(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("got %d gpus, want 1", len(got))
+	}
+	if got[0].Name != "Orin (nvgpu)" {
+		t.Errorf("name = %q, want nvidia-smi identity", got[0].Name)
+	}
+	if got[0].UtilPercent != 50 {
+		t.Errorf("util = %v, want tegrastats window mean 50", got[0].UtilPercent)
+	}
+	if got[0].TempC == nil || *got[0].TempC != 50 {
+		t.Errorf("tempC = %v, want latest tegrastats reading 50", got[0].TempC)
 	}
 }
 

@@ -443,9 +443,21 @@ func TestPinnedHostSkipsPlaintextRung(t *testing.T) {
 	if err == nil {
 		t.Fatal("ladder returned no error for a pinned host whose mTLS rungs all failed")
 	}
-	if !strings.Contains(err.Error(), "refusing to fall back to an unauthenticated connection") ||
-		!strings.Contains(err.Error(), "wendy device unpin orin.local") {
-		t.Fatalf("err = %v, want the pinned-host refusal naming the unpin escape hatch", err)
+	// The refusal is the unreachable one, not an identity one: nothing answered,
+	// so no certificate arrived and nothing was compared against the pin. It
+	// must still block the unauthenticated fallback (that is what this test is
+	// about) while telling the user the truth about why.
+	if !errors.Is(err, errNoAuthenticatedEndpoint) {
+		t.Fatalf("err = %v, want errNoAuthenticatedEndpoint", err)
+	}
+	if !blocksUnauthenticatedFallback(err) {
+		t.Fatalf("err = %v must still forbid reaching this pinned device unauthenticated", err)
+	}
+	if !strings.Contains(err.Error(), "orin.local") {
+		t.Fatalf("err = %v, want it to name the host the user dialled", err)
+	}
+	if strings.Contains(err.Error(), "device unpin") {
+		t.Fatalf("err = %v recommends unpinning for a device that never answered", err)
 	}
 	// The mTLS diagnostic must survive the refusal — it is the only clue to why
 	// no authenticated endpoint answered.
@@ -509,12 +521,12 @@ func TestPlaintextGuardUsesTheTargetsResolvedPin(t *testing.T) {
 	if plaintextCalls != 0 {
 		t.Fatalf("plaintext rung attempted %d times for a target that was pinned when the connect started; the guard re-read pin state instead of using the dial's own resolution", plaintextCalls)
 	}
-	if err == nil || !strings.Contains(err.Error(), "refusing to fall back to an unauthenticated connection") {
+	if err == nil || !errors.Is(err, errNoAuthenticatedEndpoint) {
 		t.Fatalf("err = %v, want the pinned-host refusal", err)
 	}
 	// The refusal still names the key the governing pin was filed under, from
 	// the same resolution — not a key looked up again against the new state.
-	if !strings.Contains(err.Error(), "wendy device unpin orin.local") {
+	if !strings.Contains(err.Error(), "orin.local") {
 		t.Fatalf("err = %v, want the refusal to name the resolved pin key", err)
 	}
 }
@@ -671,8 +683,17 @@ func TestRefusalNamesTheKeyTheGoverningPinIsFiledUnder(t *testing.T) {
 		if err == nil {
 			t.Fatal("no error for a pinned host whose mTLS rungs all failed")
 		}
-		if !strings.Contains(err.Error(), "wendy device unpin calm-zinnia") {
-			t.Fatalf("err = %v, want it to name 'wendy device unpin calm-zinnia'", err)
+		// This refusal offers no unpin command — nothing answered, so nothing
+		// about the identity is in question. It must still name the alias the
+		// pin is filed under rather than the dialled name, because that key is
+		// what any follow-up (including an eventual deliberate unpin) has to
+		// act on, and naming the dialled name sends the user to a command that
+		// clears nothing.
+		if !strings.Contains(err.Error(), "calm-zinnia") {
+			t.Fatalf("err = %v, want it to name 'calm-zinnia' — the key that actually holds the pin", err)
+		}
+		if strings.Contains(err.Error(), "device unpin") {
+			t.Fatalf("err = %v recommends unpinning for a device that never answered", err)
 		}
 	})
 }

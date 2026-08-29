@@ -11,6 +11,7 @@ import (
 	circlSign "github.com/cloudflare/circl/sign"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
+	"github.com/wendylabsinc/wendy/go/internal/shared/timefmt"
 	"go.uber.org/zap"
 )
 
@@ -208,7 +209,7 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 			// The floor is irrelevant once the cert is expired against the real
 			// clock: pass realNow so the rejection log reflects the actual clock
 			// and never mistakes an expired cert for a clock-skew case.
-			logCertRejection(logger, leaf, expiredErr, realNow)
+			logCertRejection(logger, leaf, expiredErr, realNow, realNow)
 			return expiredErr
 		}
 
@@ -236,16 +237,16 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 			// signature algorithm; for all other failures return the standard error.
 			sigOID, oidErr := certSigAlgOID(leaf)
 			if oidErr != nil {
-				logCertRejection(logger, leaf, stdErr, effectiveNow)
+				logCertRejection(logger, leaf, stdErr, realNow, effectiveNow)
 				return stdErr
 			}
 			if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
-				logCertRejection(logger, leaf, stdErr, effectiveNow)
+				logCertRejection(logger, leaf, stdErr, realNow, effectiveNow)
 				return stdErr
 			}
 			mldsaErr := verifyMLDSAClientCert(leaf, caCerts, realNow, effectiveNow)
 			if mldsaErr != nil {
-				logCertRejection(logger, leaf, mldsaErr, effectiveNow)
+				logCertRejection(logger, leaf, mldsaErr, realNow, effectiveNow)
 				return mldsaErr
 			}
 		}
@@ -254,7 +255,7 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		// checkRevocation only inspects the leaf's validity window, so it needs no
 		// CA list and cannot be bypassed by either the standard or ML-DSA branch.
 		if revErr := checkRevocation(leaf); revErr != nil {
-			logCertRejection(logger, leaf, revErr, effectiveNow)
+			logCertRejection(logger, leaf, revErr, realNow, effectiveNow)
 			return revErr
 		}
 		return nil
@@ -262,8 +263,10 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 }
 
 // logCertRejection logs a WARN when a client cert is rejected, with a clock
-// skew hint when the error indicates the cert is not yet valid.
-func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error, effectiveNow time.Time) {
+// skew hint when the error indicates the cert is not yet valid. realNow is the
+// device clock; effectiveNow is the floored clock verification actually used, and
+// the two differ by however far the floor carried the device.
+func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error, realNow, effectiveNow time.Time) {
 	if logger == nil {
 		return
 	}
@@ -271,14 +274,26 @@ func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error, eff
 		zap.String("subject", leaf.Subject.CommonName),
 		zap.Time("notBefore", leaf.NotBefore),
 		zap.Time("notAfter", leaf.NotAfter),
+		zap.Time("clock", realNow),
 		zap.Error(err),
 	}
 	msg := "mTLS client certificate rejected"
-	// Only hint at clock skew when the device clock is behind the cert's NotBefore.
-	// String-matching on the error text would also fire for expired certs, pointing
-	// operators at the wrong remediation (NTP sync won't help an expired cert).
+	// Only hint at clock skew when the verification clock is behind the cert's
+	// NotBefore. String-matching on the error text would also fire for expired
+	// certs, pointing operators at the wrong remediation (NTP sync won't help an
+	// expired cert).
 	if effectiveNow.Before(leaf.NotBefore) {
-		msg += ": certificate not yet valid — device clock may be skewed; check NTP sync with: timedatectl status"
+		// Report the device clock's own lag, which is what the operator has to fix.
+		// effectiveNow may already have been carried forward by the floor, so the
+		// gap verification failed on understates how far back the clock is.
+		clockLag := leaf.NotBefore.Sub(realNow)
+		msg += ": certificate not yet valid — this device's clock is " +
+			timefmt.Skew(clockLag) +
+			" behind the time the certificate was issued. Check the clock (timedatectl status);" +
+			" push a verified time from a host on this network with: wendy device sync-time"
+		fields = append(fields,
+			zap.Duration("clockLag", clockLag),
+			zap.Duration("verifyLag", leaf.NotBefore.Sub(effectiveNow)))
 	}
 	logger.Warn(msg, fields...)
 }

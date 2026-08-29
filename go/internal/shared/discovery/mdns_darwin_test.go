@@ -229,4 +229,36 @@ func TestMDNSStreamResolveAndEmitFallback(t *testing.T) {
 			t.Errorf("got %d emissions, want 0 (invalid label must not emit): %+v", len(got), got)
 		}
 	})
+
+	t.Run("failed Wendy Lite resolve does not synthesize a ghost agent row", func(t *testing.T) {
+		var got []MDNSService
+		mdnsStreamResolveAndEmit(context.Background(), browseResult{
+			instanceName:  "offline-esp32",
+			interfaceName: "en0",
+		}, "_wendy-lite._tcp", func(svc MDNSService) { got = append(got, svc) })
+
+		if len(got) != 0 {
+			t.Errorf("got %d emissions, want 0 for an unresolved non-WendyOS service: %+v", len(got), got)
+		}
+	})
+}
+
+func TestPreferInterfaceRoutedAddrAvoidsIPv4OnWrongInterface(t *testing.T) {
+	original := routeInterfaceForMDNSAddressFn
+	t.Cleanup(func() { routeInterfaceForMDNSAddressFn = original })
+	routeInterfaceForMDNSAddressFn = func(addr string) string {
+		switch addr {
+		case "192.168.123.18":
+			return "en0"
+		case "fdde:2b9::18":
+			return "bridge104"
+		default:
+			return ""
+		}
+	}
+
+	got := preferInterfaceRoutedAddr([]string{"192.168.123.18", "fdde:2b9::18"}, "en7")
+	if got != "fdde:2b9::18" {
+		t.Fatalf("preferInterfaceRoutedAddr = %q, want Ethernet ULA instead of wrong-interface IPv4", got)
+	}
 }

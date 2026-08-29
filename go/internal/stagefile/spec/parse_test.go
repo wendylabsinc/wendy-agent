@@ -44,6 +44,26 @@ func TestParseRejectsEmptyStages(t *testing.T) {
 	}
 }
 
+func TestParsePipBuildPackages(t *testing.T) {
+	f, err := Parse([]byte(`
+version: 1
+stages:
+  - name: app
+    from: python:3.12
+    install:
+      pip:
+        - packages: [native]
+          buildPackages: [gcc, python3-dev]
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := f.Stages[0].Install.Pip[0].BuildPackages
+	if len(got) != 2 || got[0] != "gcc" || got[1] != "python3-dev" {
+		t.Fatalf("buildPackages = %v", got)
+	}
+}
+
 func TestSourceHashIsStableAndPrefixed(t *testing.T) {
 	h1 := SourceHash([]byte("hello"))
 	h2 := SourceHash([]byte("hello"))

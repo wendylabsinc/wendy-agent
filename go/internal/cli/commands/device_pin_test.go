@@ -600,7 +600,9 @@ func TestPickerLadderRefusalDoesNotFallBackToBluetooth(t *testing.T) {
 		"wrong device answered": identityRefusal("wendyos-agx-orin.local", &certs.IdentityMismatchError{
 			WantOrg: 7, WantAsset: "42", GotOrg: 7, GotAsset: "43",
 		}),
-		"pinned host offered no authenticated endpoint": pinnedHostWentUnauthenticatedError("wendyos-agx-orin.local"),
+		"pinned host offered no authenticated endpoint": pinnedHostNoAuthenticatedEndpointError(
+			"wendyos-agx-orin.local", []string{"10.0.0.9:50051"},
+			[]mtlsAttemptError{{addr: "10.0.0.9:50051", err: errors.New("connection refused")}}, false),
 	}
 
 	for name, refusal := range refusals {
@@ -631,8 +633,13 @@ func TestPickerLadderRefusalDoesNotFallBackToBluetooth(t *testing.T) {
 			if sel != nil {
 				t.Errorf("refused selection = %+v, want nil", sel)
 			}
-			if !errors.Is(err, errDeviceIdentityRefused) {
-				t.Errorf("err = %v does not read as an identity refusal; the fallback is decided on the error's type, not its wording", err)
+			// Typed, not text-matched. The two refusals are deliberately
+			// DIFFERENT sentinels — an unreachable device must not be told its
+			// identity is suspect — so the gate is the predicate that spans
+			// them, not either sentinel alone. Asserting one sentinel here is
+			// what would let the split silently reopen the fallback.
+			if !blocksUnauthenticatedFallback(err) {
+				t.Errorf("err = %v does not block the unauthenticated fallback; the fallback is decided on the error's type, not its wording", err)
 			}
 		})
 	}

@@ -1,0 +1,338 @@
+package services
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+)
+
+// stubPeerDialer stands in for MeshDialer so the proxy can be tested without a
+// broker or a real peer.
+type stubPeerDialer struct {
+	addr string // when set, dial this instead of a mesh peer
+	err  error
+}
+
+func (d stubPeerDialer) DialDevice(_ context.Context, _ int32, _ uint16) (net.Conn, string, error) {
+	if d.err != nil {
+		return nil, "", d.err
+	}
+	c, err := net.Dial("tcp", d.addr)
+	if err != nil {
+		return nil, "", err
+	}
+	return c, "lan-direct", nil
+}
+
+func testTarget() *agentpbv2.PushTarget {
+	return &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"}
+}
+
+// A push that cannot reach the target must surface WHY. Without this the
+// failure reaches buildkit as a bare "connection reset by peer" on loopback,
+// which says nothing about whether the mesh is unreachable or the registry
+// rejected our certificate — the two causes with completely different fixes.
+func TestPushProxy_SurfacesDialFailure(t *testing.T) {
+	dialer := stubPeerDialer{err: errors.New("no route to peer")}
+
+	proxy, err := startPushProxy(context.Background(), dialer, testTarget(), &tls.Config{MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatalf("startPushProxy: %v", err)
+	}
+	defer proxy.stop()
+
+	req, _ := http.NewRequest(http.MethodHead, "http://"+proxy.addr+"/v2/", nil)
+	req.SetBasicAuth(pushProxyUser, proxy.credential)
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+
+	if got := proxy.firstError(); got == nil {
+		t.Fatal("the proxy must record why the outbound dial failed, not discard it")
+	}
+}
+
+// proxyToBackend wires a proxy whose outbound hop is a plain-TCP test backend.
+// The mesh dial and TLS wrapping are orthogonal to what these tests check.
+func proxyToBackend(t *testing.T, handler http.Handler) *pushProxy {
+	t.Helper()
+	backend := httptest.NewServer(handler)
+	t.Cleanup(backend.Close)
+
+	proxy, err := newPushProxy(stubPeerDialer{addr: backend.Listener.Addr().String()}, testTarget(), nil)
+	if err != nil {
+		t.Fatalf("newPushProxy: %v", err)
+	}
+	// Wrapped rather than passed directly: serve replaces stop, and t.Cleanup
+	// would otherwise capture the pre-serve value.
+	t.Cleanup(func() { proxy.stop() })
+	// Set before serve, so no goroutine can be reading dial yet.
+	proxy.dial = func(ctx context.Context) (net.Conn, error) {
+		return net.Dial("tcp", backend.Listener.Addr().String())
+	}
+	proxy.serve(context.Background())
+	return proxy
+}
+
+// The whole point of WDY-2371: loopback is not a boundary on a shared build
+// host, so an unauthenticated local process must not be able to push through
+// this proxy using the agent's mesh identity and certificate.
+func TestPushProxy_RefusesUnauthenticatedLocalCaller(t *testing.T) {
+	var reached bool
+	proxy := proxyToBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	resp, err := http.Get("http://" + proxy.addr + "/v2/evil/blobs/uploads/")
+	if err != nil {
+		t.Fatalf("requesting through the proxy: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for a caller with no credential", resp.StatusCode)
+	}
+	if reached {
+		t.Fatal("an unauthenticated request reached the target device's registry")
+	}
+	// containerd's authorizer only retries with credentials once it sees a
+	// challenge, so without this header a legitimate push never authenticates.
+	if got := resp.Header.Get("WWW-Authenticate"); !strings.HasPrefix(got, "Basic ") {
+		t.Fatalf("WWW-Authenticate = %q, want a Basic challenge", got)
+	}
+}
+
+func TestPushProxy_RefusesWrongCredential(t *testing.T) {
+	proxy := proxyToBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("a request with the wrong credential reached the registry")
+	}))
+
+	req, _ := http.NewRequest(http.MethodGet, "http://"+proxy.addr+"/v2/", nil)
+	req.SetBasicAuth(pushProxyUser, "not-the-credential")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("requesting through the proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for a wrong credential", resp.StatusCode)
+	}
+}
+
+// Each build mints its own credential, so one leaked from a previous build is
+// not a standing key to the next one.
+func TestPushProxy_CredentialIsPerBuild(t *testing.T) {
+	first, err := newPushProxy(stubPeerDialer{}, testTarget(), nil)
+	if err != nil {
+		t.Fatalf("newPushProxy: %v", err)
+	}
+	defer first.ln.Close()
+	second, err := newPushProxy(stubPeerDialer{}, testTarget(), nil)
+	if err != nil {
+		t.Fatalf("newPushProxy: %v", err)
+	}
+	defer second.ln.Close()
+
+	if first.credential == "" {
+		t.Fatal("a proxy must mint a credential")
+	}
+	if first.credential == second.credential {
+		t.Fatal("two builds must not share a push credential")
+	}
+}
+
+// The authenticated path must reach the registry with the body and method
+// intact — and without the loopback credential, which is ours and means nothing
+// to the target (it authenticates us by client certificate).
+func TestPushProxy_ForwardsAuthenticatedRequestWithoutTheCredential(t *testing.T) {
+	var (
+		gotAuth   string
+		gotMethod string
+		gotPath   string
+		gotBody   string
+	)
+	proxy := proxyToBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("done"))
+	}))
+
+	req, _ := http.NewRequest(http.MethodPut,
+		"http://"+proxy.addr+"/v2/myapp/blobs/uploads/abc", strings.NewReader("layer-bytes"))
+	req.SetBasicAuth(pushProxyUser, proxy.credential)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("requesting through the proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 forwarded from the registry", resp.StatusCode)
+	}
+	if string(body) != "done" {
+		t.Fatalf("response body = %q, want the registry's %q", body, "done")
+	}
+	if gotAuth != "" {
+		t.Fatalf("the loopback credential was forwarded to the registry: %q", gotAuth)
+	}
+	if gotMethod != http.MethodPut || gotPath != "/v2/myapp/blobs/uploads/abc" {
+		t.Fatalf("request reached the registry as %s %s, want PUT /v2/myapp/blobs/uploads/abc", gotMethod, gotPath)
+	}
+	if gotBody != "layer-bytes" {
+		t.Fatalf("body reached the registry as %q, want %q", gotBody, "layer-bytes")
+	}
+}
+
+// buildctl must be able to find the credential, and must find it in a file
+// rather than anywhere argv-visible.
+func TestDockerConfigWithPushAuth_WritesUsableCredential(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "auth")
+	if err := dockerConfigWithPushAuth(dir, "127.0.0.1:41000", "s3cret"); err != nil {
+		t.Fatalf("dockerConfigWithPushAuth: %v", err)
+	}
+
+	path := filepath.Join(dir, "config.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config.json: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("config.json mode = %o, want 0600 — it holds a credential", perm)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading config.json: %v", err)
+	}
+	var parsed struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("config.json is not valid docker config: %v", err)
+	}
+	entry, ok := parsed.Auths["127.0.0.1:41000"]
+	if !ok {
+		t.Fatalf("no auth entry for the proxy address, got %v", parsed.Auths)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
+	if err != nil {
+		t.Fatalf("auth entry is not base64: %v", err)
+	}
+	if string(decoded) != pushProxyUser+":s3cret" {
+		t.Fatalf("auth entry decodes to %q, want %q", decoded, pushProxyUser+":s3cret")
+	}
+}
+
+func TestPushProxy_NoErrorWhenNothingConnects(t *testing.T) {
+	proxy, err := startPushProxy(context.Background(),
+		stubPeerDialer{addr: "127.0.0.1:1"}, testTarget(), &tls.Config{MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatalf("startPushProxy: %v", err)
+	}
+	defer proxy.stop()
+
+	if got := proxy.firstError(); got != nil {
+		t.Fatalf("a proxy nothing dialed must report no error, got: %v", got)
+	}
+}
+
+func TestValidatePushTarget_AcceptsMeshPeer(t *testing.T) {
+	if err := validatePushTarget(&agentpbv2.PushTarget{
+		AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest",
+	}); err != nil {
+		t.Fatalf("validatePushTarget: %v", err)
+	}
+}
+
+func TestValidatePushTarget_RejectsMissingTarget(t *testing.T) {
+	if err := validatePushTarget(nil); err == nil {
+		t.Fatal("a spec with no push target must be rejected")
+	}
+}
+
+func TestValidatePushTarget_RejectsBadAssetID(t *testing.T) {
+	if err := validatePushTarget(&agentpbv2.PushTarget{
+		AssetId: 0, RegistryPort: 5000, Repository: "a:latest",
+	}); err == nil {
+		t.Fatal("a non-positive asset id must be rejected")
+	}
+}
+
+func TestValidatePushTarget_RejectsBadPort(t *testing.T) {
+	if err := validatePushTarget(&agentpbv2.PushTarget{
+		AssetId: 214, RegistryPort: 0, Repository: "a:latest",
+	}); err == nil {
+		t.Fatal("a zero registry port must be rejected")
+	}
+}
+
+// A slash would make the first element a registry host once joined to the proxy
+// address, quietly redirecting the push somewhere else.
+func TestValidatePushTarget_RejectsHostInRepository(t *testing.T) {
+	if err := validatePushTarget(&agentpbv2.PushTarget{
+		AssetId: 214, RegistryPort: 5000, Repository: "evil.example.com/a:latest",
+	}); err == nil {
+		t.Fatal("a repository containing a host component must be rejected")
+	}
+}
+
+// The repository is concatenated into `--output type=image,name=<ref>,push=true`,
+// where a comma opens a new key and an '=' opens a new value. Rejecting only '/'
+// and space leaves the rest of that grammar reachable by the client.
+func TestValidatePushTarget_RejectsBuildctlOutputOptionInjection(t *testing.T) {
+	for _, repo := range []string{
+		"a:latest,push=false",                 // drop the push, leaving a silent no-op
+		"a:latest,type=local,dest=/etc",       // swap the exporter for a filesystem write
+		"a=b:latest",                          // end the name, start another value
+		"a:latest\toci-mediatypes=true",       // tab is whitespace but not a space
+		"a:latest\npush=false",                // newline likewise, and forges a log line
+		"a:latest,registry.insecure=true",     // relax the transport for the hop
+		"",                                    // no repository at all
+		":latest",                             // empty name with a tag
+		"a:latest,name=other.example.com/x:1", // rename the push destination outright
+	} {
+		if err := validatePushTarget(&agentpbv2.PushTarget{
+			AssetId: 214, RegistryPort: 5000, Repository: repo,
+		}); err == nil {
+			t.Fatalf("repository %q was accepted; it can rewrite the buildctl output spec", repo)
+		}
+	}
+}
+
+// The shapes the CLI actually sends — lowercased app ids, which carry dots,
+// hyphens and underscores — must keep working.
+func TestValidatePushTarget_AcceptsRealAppRepositories(t *testing.T) {
+	for _, repo := range []string{
+		"sh.wendy.examples.hellopython:latest",
+		"my-app:latest",
+		"my_app2:1.0.0-rc1",
+		"app",
+	} {
+		if err := validatePushTarget(&agentpbv2.PushTarget{
+			AssetId: 214, RegistryPort: 5000, Repository: repo,
+		}); err != nil {
+			t.Fatalf("repository %q was rejected: %v", repo, err)
+		}
+	}
+}

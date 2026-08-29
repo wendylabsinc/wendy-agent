@@ -27,6 +27,10 @@ func (w *lowStateBuilder) arr(align, n int) { w.align(align); w.pad(n) }
 // lowStatePayload builds a complete, correctly-sized LowState whose bms_state
 // carries soc and current, with every other field zeroed.
 func lowStatePayload(soc uint8, current int32) []byte {
+	return lowStatePayloadWithTemperatures(soc, current, 0, nil)
+}
+
+func lowStatePayloadWithTemperatures(soc uint8, current int32, imuTemp int8, motorTemps map[int]int8) []byte {
 	w := &lowStateBuilder{}
 	w.u8(0)
 	w.u8(0)     // head[2]
@@ -39,19 +43,19 @@ func lowStatePayload(soc uint8, current int32) []byte {
 	// IMUState: quaternion[4] + gyroscope[3] + accelerometer[3] + rpy[3]
 	// float32s, then int8 temperature.
 	w.arr(4, 13*4)
-	w.u8(0)
+	w.u8(uint8(imuTemp))
 
 	// MotorState[20]. Note the struct is NOT 4-aligned at its start: its first
 	// member is uint8 mode, so it begins wherever IMUState left off (offset 77,
 	// an odd address). motor_state[0] is therefore 47 bytes and the rest 48.
-	for range 20 {
-		w.u8(0)      // mode
-		w.align(4)   //
-		w.pad(7 * 4) // q..ddq_raw
-		w.u8(0)      // temperature
-		w.align(4)   //
-		w.u32(0)     // lost
-		w.arr(4, 8)  // reserve[2]
+	for i := range 20 {
+		w.u8(0)                    // mode
+		w.align(4)                 //
+		w.pad(7 * 4)               // q..ddq_raw
+		w.u8(uint8(motorTemps[i])) // temperature
+		w.align(4)                 //
+		w.u32(0)                   // lost
+		w.arr(4, 8)                // reserve[2]
 	}
 
 	// BmsState: version_high, version_low, status, soc, current, cycle,
@@ -84,6 +88,62 @@ func lowStatePayload(soc uint8, current int32) []byte {
 	w.u32(0) // crc
 
 	return append([]byte{0x00, 0x01, 0x00, 0x00}, w.b...)
+}
+
+func TestDecodeLowStateTelemetry_Temperatures(t *testing.T) {
+	reading, err := DecodeLowStateTelemetry(lowStatePayloadWithTemperatures(84, -3200, 79, map[int]int8{
+		0:  52,
+		1:  68,
+		9:  61,
+		12: 99, // reserved LowState slot, not a physical Go2 joint
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reading.Battery.Percent != 84 {
+		t.Fatalf("battery percent = %v, want 84", reading.Battery.Percent)
+	}
+	want := map[string]float64{
+		"go2/imu":            79,
+		"go2/motor/fr-hip":   52,
+		"go2/motor/fr-thigh": 68,
+		"go2/motor/rl-hip":   61,
+	}
+	if len(reading.ThermalZones) != len(want) {
+		t.Fatalf("thermal zones = %+v, want %d populated readings", reading.ThermalZones, len(want))
+	}
+	for _, zone := range reading.ThermalZones {
+		if temp, ok := want[zone.Name]; !ok || zone.TempC != temp {
+			t.Errorf("unexpected thermal zone %+v; want %v", zone, want)
+		}
+	}
+}
+
+func TestDecodeLowStateTelemetry_DoesNotExposeReservedMotorSlots(t *testing.T) {
+	reading, err := DecodeLowStateTelemetry(lowStatePayloadWithTemperatures(50, 0, 0, map[int]int8{
+		11: 65,
+		12: 99,
+		19: 98,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reading.ThermalZones) != 1 {
+		t.Fatalf("thermal zones = %+v; reserved motor slots must not be exposed", reading.ThermalZones)
+	}
+	if got := reading.ThermalZones[0]; got.Name != "go2/motor/rl-calf" || got.TempC != 65 {
+		t.Fatalf("physical motor reading = %+v, want rl-calf at 65C", got)
+	}
+}
+
+func TestDecodeLowStateTelemetry_OmitsInvalidZeroTemperatures(t *testing.T) {
+	reading, err := DecodeLowStateTelemetry(lowStatePayload(50, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reading.ThermalZones) != 0 {
+		t.Fatalf("zero temperatures must be omitted, got %+v", reading.ThermalZones)
+	}
 }
 
 func TestDecodeLowState_Discharging(t *testing.T) {

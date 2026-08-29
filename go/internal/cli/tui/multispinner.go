@@ -58,22 +58,31 @@ type multiSpinnerRow struct {
 //	  ⠋ api        building...
 //	  ⠋ frontend   building...
 type MultiSpinnerModel struct {
-	title   string
-	rows    []multiSpinnerRow
-	byName  map[string]int
-	spinner spinner.Model
-	hints   hintRotator
-	width   int
-	done    bool
-	err     error
+	title  string
+	rows   []multiSpinnerRow
+	byName map[string]int
+	// nameWidth is wide enough for the longest service name plus a separator.
+	// Keeping it on the model avoids lipgloss wrapping names longer than the
+	// old fixed 12-cell column into extra physical lines, which confuses the
+	// Bubble Tea renderer's line accounting.
+	nameWidth int
+	spinner   spinner.Model
+	hints     hintRotator
+	width     int
+	done      bool
+	err       error
 }
 
 func NewMultiSpinner(title string, names []string) MultiSpinnerModel {
 	rows := make([]multiSpinnerRow, len(names))
 	byName := make(map[string]int, len(names))
+	nameWidth := 12
 	for i, n := range names {
 		rows[i] = multiSpinnerRow{name: n, status: MultiSpinnerPending}
 		byName[n] = i
+		if w := lipgloss.Width(n) + 1; w > nameWidth {
+			nameWidth = w
+		}
 	}
 
 	s := spinner.New()
@@ -81,11 +90,12 @@ func NewMultiSpinner(title string, names []string) MultiSpinnerModel {
 	s.Style = lipgloss.NewStyle().Foreground(ColorPrimary)
 
 	return MultiSpinnerModel{
-		title:   title,
-		rows:    rows,
-		byName:  byName,
-		spinner: s,
-		hints:   newHintRotator(),
+		title:     title,
+		rows:      rows,
+		byName:    byName,
+		nameWidth: nameWidth,
+		spinner:   s,
+		hints:     newHintRotator(),
 	}
 }
 
@@ -152,7 +162,6 @@ func (m MultiSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 var (
 	msCheckStyle = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 	msCrossStyle = lipgloss.NewStyle().Foreground(ColorError).Bold(true)
-	msNameStyle  = lipgloss.NewStyle().Width(12)
 	msDimStyle   = lipgloss.NewStyle().Foreground(ColorDim)
 	msErrorStyle = lipgloss.NewStyle().Foreground(ColorError)
 	msTitleStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
@@ -172,6 +181,7 @@ func (m MultiSpinnerModel) View() string {
 	}
 
 	var sb strings.Builder
+	nameStyle := lipgloss.NewStyle().Width(m.nameWidth)
 	sb.WriteString(fmt.Sprintf("%s %s\n", m.spinner.View(), msTitleStyle.Render(m.title)))
 
 	for _, r := range m.rows {
@@ -179,7 +189,7 @@ func (m MultiSpinnerModel) View() string {
 		case MultiSpinnerPending:
 			sb.WriteString(fmt.Sprintf("  %s %s%s\n",
 				msDimStyle.Render("·"),
-				msDimStyle.Render(msNameStyle.Render(r.name)),
+				msDimStyle.Render(nameStyle.Render(r.name)),
 				msDimStyle.Render("waiting"),
 			))
 
@@ -190,7 +200,7 @@ func (m MultiSpinnerModel) View() string {
 			}
 			sb.WriteString(fmt.Sprintf("  %s %s%s\n",
 				m.spinner.View(),
-				msNameStyle.Render(r.name),
+				nameStyle.Render(r.name),
 				msDimStyle.Render(detail),
 			))
 
@@ -199,14 +209,14 @@ func (m MultiSpinnerModel) View() string {
 				r.cached, r.rebuilt, r.dur.Round(time.Millisecond))
 			sb.WriteString(fmt.Sprintf("  %s %s%s\n",
 				msCheckStyle.Render("✓"),
-				msNameStyle.Render(r.name),
+				nameStyle.Render(r.name),
 				msDimStyle.Render(note),
 			))
 
 		case MultiSpinnerFailed:
 			sb.WriteString(fmt.Sprintf("  %s %s%s\n",
 				msCrossStyle.Render("✗"),
-				msNameStyle.Render(r.name),
+				nameStyle.Render(r.name),
 				msErrorStyle.Render("failed"),
 			))
 		}
