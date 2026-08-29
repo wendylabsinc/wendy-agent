@@ -905,7 +905,11 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 		return err
 	}
 
-	if err := rebootSystem(); err != nil {
+	// The running OS decides how to reboot: an image whose wendyos-update leaves
+	// the staged capsule non-durable needs the flush-and-unmount path, or the
+	// update just installed is lost on restart (WDY-2200).
+	osVersion, _ := wendyOSVersion()
+	if err := rebootAfterOSUpdate(newRebooter(s.logger), osVersion); err != nil {
 		s.logger.Error("Failed to reboot after OS update", zap.Error(err))
 	}
 

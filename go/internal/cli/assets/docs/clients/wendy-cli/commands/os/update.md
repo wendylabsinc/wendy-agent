@@ -58,6 +58,27 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 
 ---
 
+## How the agent reboots
+
+The agent always flushes filesystems before restarting. Without that, an
+immediate kernel restart can discard recently written data — and on Jetson the
+data at risk is the UEFI capsule that `wendyos-update` staged onto the ESP.
+
+On WendyOS images older than **0.18.1** the agent additionally hands the reboot
+to systemd (`systemctl --no-block reboot`) so filesystems are unmounted, not just
+flushed. Those images ship a `wendyos-update` that fsyncs only the capsule file
+and not the ESP, and because the capsule path deliberately leaves the rootfs slot
+switch to the firmware, a lost capsule means the update silently reboots back into
+the old OS and rolls back (WDY-2200). The orderly shutdown is the combination
+validated on hardware for those releases.
+
+An orderly shutdown can hang, so it is bounded: if the device is still running a
+minute after the request, the agent forces an immediate restart. Expect an update
+on a pre-0.18.1 image to take slightly longer to go down than on a current one.
+
+Devices on 0.18.1 or newer, dev builds, and images whose version cannot be parsed
+all take the plain flush-and-restart path.
+
 ## Post-update commit and automatic rollback
 
 wendyos-update uses A/B rootfs slots, so an update boots into the new slot while keeping the previous OS intact. On the first boot after an update, the agent's gate runs `wendyos-update commit`. The health verdict is entirely delegated to that command: `commit` runs its own health checks internally (`/etc/wendyos-update/health.d`) before deciding whether the update is accepted, and the agent's gate just acts on the result — it does not run any healthchecks of its own.
