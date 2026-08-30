@@ -9,27 +9,130 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"golang.org/x/sys/unix"
 )
 
-type ros2DataAdapter struct{ service *ROS2Service }
+// ROS 2 source identifiers are defined by data.ParseROS2SourceID and its
+// siblings: "ros2:<rmw>:domain-<n>" for a whole DDS domain and
+// "ros2:<rmw>:domain-<n>:<topic>" for one topic on it. The grammar and the
+// reasoning behind it live in the data package because the campaign resolver
+// matches against the same identifiers.
 
-func newROS2DataAdapter(service *ROS2Service) dataCaptureAdapter {
-	return &ros2DataAdapter{service: service}
+// ros2ClockDomain is unchanged from what the domain-level source has always
+// reported: a per-topic source is a narrower selection of the same rosbag2
+// recording, not a different clock.
+const ros2ClockDomain = "ROSBAG2_STORAGE/ROS_MESSAGE_HEADER/SIM_TIME"
+
+// ros2DiscoveryTTL bounds how long one `ros2 topic list -t` result is reused.
+//
+// Measured against a live graph on hardware, that enumeration costs about 0.6
+// seconds beyond the bare `ros2` command-line baseline, and the cost does not
+// grow with the number of topics. Discover is not called once per user action:
+// rendering `wendy data sources` calls it, and a single campaign trigger calls
+// it twice more, once through ResolveCampaignSources and again through
+// Manager.Start. Uncached, that puts roughly 1.8 seconds of DDS discovery
+// between a trigger firing and the recorder starting, and the episode does not
+// capture what happened during it.
+//
+// Five seconds collapses each of those bursts into one enumeration while
+// keeping the listing fresh enough that a node started by hand appears in the
+// next `wendy data sources` a person types. The time to live is a bound on
+// staleness, not a substitute for correctness: the cache is keyed by sidecar
+// identity, so a sidecar restart, an RMW change or a domain override misses
+// immediately, and invalidateDiscovery drops every entry outright when the
+// adapter learns the graph moved under it.
+const ros2DiscoveryTTL = 5 * time.Second
+
+// ros2DiscoveryDetailLimit truncates an enumeration failure before it is put in
+// a source Detail, which the CLI renders in a table column.
+const ros2DiscoveryDetailLimit = 200
+
+type ros2DataAdapter struct {
+	service *ROS2Service
+	// now is time.Now, replaced by tests that need to step over the cache TTL
+	// without sleeping.
+	now func() time.Time
+
+	mu    sync.Mutex
+	cache map[string]ros2DiscoveryEntry
 }
 
-func ros2DataSource(sc ros2SC) data.Source {
-	rmw := sc.rmw
-	if rmw == "" {
-		rmw = "default"
+// ros2DiscoveryEntry is one sidecar's enumerated sources and their expiry.
+// Failures are cached too: a domain whose topic listing is failing tends to
+// keep failing, and re-running a slow failing exec on every Discover is how a
+// dead DDS domain turns `wendy data sources` into a hang.
+type ros2DiscoveryEntry struct {
+	sources []data.Source
+	expires time.Time
+}
+
+func newROS2DataAdapter(service *ROS2Service) dataCaptureAdapter {
+	return newROS2Adapter(service)
+}
+
+// newROS2Adapter returns the concrete adapter. Tests use it to step the clock
+// over the discovery TTL and to reach invalidateDiscovery.
+func newROS2Adapter(service *ROS2Service) *ros2DataAdapter {
+	return &ros2DataAdapter{service: service, now: time.Now, cache: map[string]ros2DiscoveryEntry{}}
+}
+
+// ros2SidecarKey identifies the graph an enumeration result belongs to. The
+// domain is part of the key because resolveSidecars applies a --domain
+// override to the same sidecar.
+func ros2SidecarKey(sc ros2SC) string {
+	return sc.name + "\x00" + sc.rmw + "\x00" + strconv.Itoa(sc.domainID)
+}
+
+// ros2DomainSourceID is the identifier for the whole DDS domain behind sc.
+func ros2DomainSourceID(sc ros2SC) string {
+	return data.ROS2DomainSourceID(sc.rmw, sc.domainID)
+}
+
+// ros2DomainSource describes the whole domain. Healthy is derived, never
+// asserted: see enumerate.
+func ros2DomainSource(sc ros2SC, healthy bool, detail string) data.Source {
+	return data.Source{
+		ID:          ros2DomainSourceID(sc),
+		Kind:        "ros2",
+		ClockDomain: ros2ClockDomain,
+		Healthy:     healthy,
+		Detail:      detail,
 	}
-	return data.Source{ID: fmt.Sprintf("ros2:%s:domain-%d", safeCaptureName(rmw), sc.domainID), Kind: "ros2", ClockDomain: "ROSBAG2_STORAGE/ROS_MESSAGE_HEADER/SIM_TIME", Healthy: true, Detail: fmt.Sprintf("%s DDS domain %d", rmw, sc.domainID)}
+}
+
+// ros2TopicSource describes one topic. Detail is the message type because that
+// is what `wendy data sources` prints in its DETAIL column, and the type is
+// the one fact that tells a person whether this is the topic they meant.
+//
+// Subscribable is not set here and must stay false: SensorService derives it
+// from whether a provider can multiplex the source to a model subscriber, and
+// ROS 2 has no producer hub, so a topic can be captured into an episode but
+// not streamed to an app. Making it true would advertise a stream that
+// Subscribe would then refuse.
+func ros2TopicSource(sc ros2SC, topic *agentpbv2.ROS2Topic) data.Source {
+	detail := strings.Join(topic.GetTypes(), ", ")
+	if detail == "" {
+		// `ros2 topic list -t` prints the type for every topic it lists, so an
+		// empty one means the line did not parse. Say so rather than printing
+		// an empty column that reads like "no type".
+		detail = "message type unreported by ros2 topic list"
+	}
+	return data.Source{
+		ID:          data.ROS2TopicSourceID(sc.rmw, sc.domainID, topic.GetName()),
+		Kind:        "ros2",
+		ClockDomain: ros2ClockDomain,
+		Healthy:     true,
+		Detail:      detail,
+	}
 }
 
 func (a *ros2DataAdapter) Discover(ctx context.Context) []data.Source {
@@ -37,18 +140,164 @@ func (a *ros2DataAdapter) Discover(ctx context.Context) []data.Source {
 	if err != nil {
 		return nil
 	}
-	out := make([]data.Source, 0, len(scs))
+	out := make([]data.Source, 0, len(scs)*8)
+	live := make(map[string]bool, len(scs))
 	for _, sc := range scs {
-		out = append(out, ros2DataSource(sc))
+		live[ros2SidecarKey(sc)] = true
+		out = append(out, a.discoverSidecar(ctx, sc)...)
 	}
+	a.evictAllBut(live)
 	return out
 }
 
+// discoverSidecar enumerates one graph, through the cache.
+func (a *ros2DataAdapter) discoverSidecar(ctx context.Context, sc ros2SC) []data.Source {
+	key := ros2SidecarKey(sc)
+	if cached, ok := a.cached(key); ok {
+		return cached
+	}
+	sources := a.enumerate(ctx, sc)
+	a.store(key, sources)
+	return sources
+}
+
+// enumerate runs the one command that answers the whole question. `ros2 topic
+// list -t` returns every topic name with its message type in a single exec, so
+// there is no second enumerator here.
+//
+// Publisher and subscriber counts are deliberately not fetched. That path runs
+// `ros2 topic info` once per topic, bounded at ros2TopicInfoConcurrency, and
+// measures at roughly 0.8 seconds per round, so it costs ten seconds or more
+// on a robot with a hundred topics and tells a person nothing they need in
+// order to choose what to record.
+func (a *ros2DataAdapter) enumerate(ctx context.Context, sc ros2SC) []data.Source {
+	out, err := a.service.runIn(ctx, sc, "topic", "list", "-t")
+	if err != nil {
+		// Healthy used to be hardcoded true, so a DDS domain that answered
+		// nothing still enumerated as healthy and a campaign naming it started
+		// a recorder that captured nothing. Enumeration is the signal: a graph
+		// that cannot list its own topics cannot be recorded from either, and
+		// the reason belongs in the Detail rather than in a log nobody reads.
+		return []data.Source{ros2DomainSource(sc, false, fmt.Sprintf(
+			"%s DDS domain %d: listing topics failed: %s",
+			a.rmwLabel(sc), sc.domainID, truncateROS2Detail(err.Error()),
+		))}
+	}
+	topics := parseROS2TopicList(out)
+	sources := make([]data.Source, 0, len(topics)+1)
+	// The domain-level source stays listed. It is the handle for "record
+	// everything on this graph", it is what a campaign written before per-topic
+	// sources existed names, and without it the default episode (no explicit
+	// source list) would start one rosbag2 process per topic instead of one.
+	sources = append(sources, ros2DomainSource(sc, true, fmt.Sprintf(
+		"%s DDS domain %d, %d topics", a.rmwLabel(sc), sc.domainID, len(topics),
+	)))
+	// `ros2 topic list -t` should not repeat a name, but a duplicate would mint
+	// two sources with the same id, and selectSources would then match one
+	// campaign entry against both.
+	seen := make(map[string]bool, len(topics))
+	for _, topic := range topics {
+		name := topic.GetName()
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		sources = append(sources, ros2TopicSource(sc, topic))
+	}
+	return sources
+}
+
+func (a *ros2DataAdapter) rmwLabel(sc ros2SC) string {
+	if sc.rmw == "" {
+		return "default"
+	}
+	return sc.rmw
+}
+
+func truncateROS2Detail(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= ros2DiscoveryDetailLimit {
+		return s
+	}
+	// Cut on a rune boundary: the Detail is serialized as JSON and a half
+	// rune would make the whole response invalid UTF-8.
+	cut := ros2DiscoveryDetailLimit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
+}
+
+func (a *ros2DataAdapter) cached(key string) ([]data.Source, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	entry, ok := a.cache[key]
+	if !ok || !a.now().Before(entry.expires) {
+		return nil, false
+	}
+	return append([]data.Source(nil), entry.sources...), true
+}
+
+func (a *ros2DataAdapter) store(key string, sources []data.Source) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cache[key] = ros2DiscoveryEntry{sources: append([]data.Source(nil), sources...), expires: a.now().Add(ros2DiscoveryTTL)}
+}
+
+// evictAllBut drops entries for sidecars that are no longer live so a device
+// that cycles through RMWs or domains does not grow the map forever.
+func (a *ros2DataAdapter) evictAllBut(live map[string]bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for key := range a.cache {
+		if !live[key] {
+			delete(a.cache, key)
+		}
+	}
+}
+
+// invalidateDiscovery is the explicit invalidation path for the TTL cache. It
+// is called when the adapter learns the graph is not what it enumerated, so
+// the next Discover re-runs `ros2 topic list -t` instead of serving a listing
+// that has already been shown to be wrong.
+func (a *ros2DataAdapter) invalidateDiscovery() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	clear(a.cache)
+}
+
+// ros2DomainSelection is the set of sources one episode selected on a single
+// DDS domain, reduced to one recorder invocation.
+type ros2DomainSelection struct {
+	// wholeDomain is set when the domain-level identifier was selected. It
+	// wins over any per-topic identifier on the same domain: `-a` already
+	// records those topics, and the alternative is two rosbag2 processes
+	// writing the same messages into two bags in one episode.
+	wholeDomain bool
+	sources     []data.Source
+	topics      []string
+}
+
 func (a *ros2DataAdapter) Start(ctx context.Context, session data.CaptureSession, selected []data.Source) (runningDataCapture, error) {
-	wanted := make(map[string]data.Source)
+	wanted := map[string]*ros2DomainSelection{}
 	for _, source := range selected {
-		if strings.HasPrefix(source.ID, "ros2:") {
-			wanted[source.ID] = source
+		if !strings.HasPrefix(source.ID, data.ROS2SourcePrefix) {
+			continue
+		}
+		domainID, topic, ok := data.ParseROS2SourceID(source.ID)
+		if !ok {
+			return nil, fmt.Errorf("unrecognized ROS 2 source id %q", source.ID)
+		}
+		selection := wanted[domainID]
+		if selection == nil {
+			selection = &ros2DomainSelection{}
+			wanted[domainID] = selection
+		}
+		selection.sources = append(selection.sources, source)
+		if topic == "" {
+			selection.wholeDomain = true
+		} else {
+			selection.topics = append(selection.topics, topic)
 		}
 	}
 	if len(wanted) == 0 {
@@ -60,29 +309,60 @@ func (a *ros2DataAdapter) Start(ctx context.Context, session data.CaptureSession
 	}
 	group := &ros2CaptureGroup{}
 	for _, sc := range scs {
-		source := ros2DataSource(sc)
-		if _, ok := wanted[source.ID]; !ok {
+		domainID := ros2DomainSourceID(sc)
+		selection, ok := wanted[domainID]
+		if !ok {
 			continue
 		}
-		capture, err := a.startOne(ctx, session, source, sc)
+		capture, err := a.startOne(ctx, session, sc, selection)
 		if err != nil {
 			_, _ = group.Stop(context.Background())
-			return nil, fmt.Errorf("%s: %w", source.ID, err)
+			return nil, fmt.Errorf("%s: %w", domainID, err)
 		}
 		group.captures = append(group.captures, capture)
-		delete(wanted, source.ID)
+		delete(wanted, domainID)
 	}
 	if len(wanted) != 0 {
 		_, _ = group.Stop(context.Background())
+		// The cached listing described a graph that is no longer there, so it
+		// must not be served to the next caller.
+		a.invalidateDiscovery()
 		return nil, errors.New("ROS 2 graph changed during recorder startup")
 	}
 	return group, nil
 }
 
-func (a *ros2DataAdapter) startOne(ctx context.Context, session data.CaptureSession, source data.Source, sc ros2SC) (*ros2Capture, error) {
-	name := safeCaptureName("wendy-" + session.ID + "-" + source.ID)
+// ros2RecordArgs builds the rosbag2 command line for one domain.
+//
+// One invocation records every selected topic on the domain rather than one
+// invocation per topic. Each rosbag2 process pays its own DDS discovery, opens
+// its own storage writer and produces its own bag directory, and this adapter
+// pairs each recorder with a clock sampler and one ClockMapping. Splitting a
+// domain across N recorders would therefore produce N bags and N independent
+// clock mappings for messages that share a single timeline, which is exactly
+// the alignment the episode exists to preserve.
+func ros2RecordArgs(staging string, selection *ros2DomainSelection) []string {
+	args := []string{"bag", "record", "-o", staging}
+	if selection.wholeDomain {
+		return append(args, "-a")
+	}
+	return append(args, sortedUniqueStrings(selection.topics)...)
+}
+
+func sortedUniqueStrings(in []string) []string {
+	out := append([]string(nil), in...)
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+func (a *ros2DataAdapter) startOne(ctx context.Context, session data.CaptureSession, sc ros2SC, selection *ros2DomainSelection) (*ros2Capture, error) {
+	// Paths are keyed by the domain, not by any one selected source: a domain
+	// yields exactly one bag per episode, whether it was selected whole or by
+	// a list of topics, and a topic name is not a safe path component.
+	key := ros2DomainSourceID(sc)
+	name := safeCaptureName("wendy-" + session.ID + "-" + key)
 	staging := filepath.Join(a.service.bagDir, name)
-	destination := filepath.Join(session.Directory, "ros2", safeCaptureName(source.ID))
+	destination := filepath.Join(session.Directory, "ros2", safeCaptureName(key))
 	if _, err := os.Stat(staging); err == nil {
 		return nil, fmt.Errorf("staging bag %s already exists", name)
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -91,15 +371,16 @@ func (a *ros2DataAdapter) startOne(ctx context.Context, session data.CaptureSess
 	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
 		return nil, err
 	}
-	clockFile, err := os.OpenFile(filepath.Join(session.Directory, "ros2", safeCaptureName(source.ID)+"-clock_samples.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	clockFile, err := os.OpenFile(filepath.Join(session.Directory, "ros2", safeCaptureName(key)+"-clock_samples.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, err
 	}
 	recordCtx, cancel := context.WithCancel(context.Background())
-	c := &ros2Capture{service: a.service, session: session, source: source, sc: sc, staging: staging, destination: destination, clockFile: clockFile, ctx: recordCtx, cancel: cancel, recordDone: make(chan ros2ExecResult, 1), samplerDone: make(chan struct{})}
+	c := &ros2Capture{service: a.service, session: session, sources: append([]data.Source(nil), selection.sources...), sc: sc, staging: staging, destination: destination, clockFile: clockFile, ctx: recordCtx, cancel: cancel, recordDone: make(chan ros2ExecResult, 1), samplerDone: make(chan struct{})}
+	args := ros2RecordArgs(staging, selection)
 	go func() {
 		var output bytes.Buffer
-		code, execErr := a.service.runtime.ExecROS2(recordCtx, ROS2ExecOptions{DomainID: sc.domainID, SidecarName: sc.name, Args: []string{"bag", "record", "-o", staging, "-a"}}, &output, &output)
+		code, execErr := a.service.runtime.ExecROS2(recordCtx, ROS2ExecOptions{DomainID: sc.domainID, SidecarName: sc.name, Args: args}, &output, &output)
 		c.recordDone <- ros2ExecResult{code: code, err: execErr, output: output.String()}
 	}()
 	go c.sampleClocks()
@@ -143,9 +424,12 @@ func (g *ros2CaptureGroup) Stop(ctx context.Context) ([]data.CaptureResult, erro
 }
 
 type ros2Capture struct {
-	service              *ROS2Service
-	session              data.CaptureSession
-	source               data.Source
+	service *ROS2Service
+	session data.CaptureSession
+	// sources are every episode source this one recorder covers: the
+	// domain-level source, one or more topic sources, or both. Each gets its
+	// own CaptureResult so the manifest accounts for what the campaign named.
+	sources              []data.Source
 	sc                   ros2SC
 	staging, destination string
 	clockFile            *os.File
@@ -286,7 +570,15 @@ func (c *ros2Capture) Stop(context.Context) ([]data.CaptureResult, error) {
 		if c.simClock {
 			mapping.Discontinuity = "ROS /clock retained as an independent, potentially resetting domain"
 		}
-		c.stopResult = []data.CaptureResult{{SourceID: c.source.ID, DropAccounting: "unavailable", Discontinuities: c.discontinuities, Mappings: []data.ClockMapping{mapping}}}
+		// One result per selected source, sharing this recorder's clock
+		// mapping. SourceDetail is left empty on purpose: it would overwrite
+		// the discovered Detail in the manifest, and for a topic source that
+		// Detail is the message type, which is worth more there than a note
+		// about which bag holds it.
+		c.stopResult = make([]data.CaptureResult, 0, len(c.sources))
+		for _, source := range c.sources {
+			c.stopResult = append(c.stopResult, data.CaptureResult{SourceID: source.ID, DropAccounting: "unavailable", Discontinuities: c.discontinuities, Mappings: []data.ClockMapping{mapping}})
+		}
 	})
 	return c.stopResult, c.stopErr
 }
