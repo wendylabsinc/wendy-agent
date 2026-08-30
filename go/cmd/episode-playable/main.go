@@ -48,6 +48,20 @@ The episode directory is never modified.
 		dest = episode + "-playable"
 	}
 
+	// Episodes sealed since the agent learned to remux at seal time already
+	// carry cameras/<source>/playable.mp4, listed in their manifest. When
+	// every camera source has one there is nothing to convert; reconverting
+	// would only duplicate bytes the manifest already vouches for.
+	existing, _ := filepath.Glob(filepath.Join(episode, "cameras", "*", episodeexport.PlayableFileName))
+	indexes, _ := filepath.Glob(filepath.Join(episode, "cameras", "*", "index.jsonl"))
+	if len(existing) > 0 && len(existing) >= len(indexes) {
+		fmt.Println("episode already carries playable files written at seal time; nothing to convert:")
+		for _, p := range existing {
+			fmt.Printf("  %s\n", p)
+		}
+		return
+	}
+
 	results, errs := episodeexport.Convert(episode, dest)
 	for _, r := range results {
 		if r.Output == "" {

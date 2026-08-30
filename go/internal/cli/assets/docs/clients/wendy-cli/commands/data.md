@@ -204,10 +204,37 @@ including the measured average, describes more than a fraction of the clip.
 The timing is already recorded. `cameras/<source>/index.jsonl` carries one line
 per kept frame with `canonical_episode_nanos`, the frame's position on the
 Episode's canonical `CLOCK_BOOTTIME` timeline, alongside the segment file, byte
-offset and `byte_size` of its payload. The `episode-playable` command remuxes
-those payload bytes into an MP4 that gives every frame the presentation time
-the index recorded for it, so the variable frame rate is represented honestly
-rather than averaged away:
+offset and `byte_size` of its payload. Remuxing those payload bytes into an MP4
+gives every frame the presentation time the index recorded for it, so the
+variable frame rate is represented honestly rather than averaged away.
+
+### Sealed Episodes already carry the MP4
+
+The agent runs that remux itself while sealing an Episode: each camera source
+gains a `cameras/<source>/playable.mp4` beside its raw capture, listed in the
+manifest with a size and SHA-256 like every other file and marked with
+`"role": "derived"`. Because it is listed, the transfer worker uploads it and
+commit-time verification covers it, so the bucket object plays directly in a
+browser (or after a plain download) with no conversion step. The derived file
+is never capture payload: model-input and payload-retention accounting
+resolve payloads through `index.jsonl` into the raw segments, and the raw
+files are kept byte-for-byte as before. The remux is a copy, not a transcode,
+so expect the clip to add roughly the size of the raw stream to the Episode;
+that overhead counts against the Episode's size for the local quota.
+
+Sealing never fails or waits on the remux. A source whose stream cannot become
+an honestly timed, seekable clip (B slices, slice headers the muxer cannot
+parse, no random-access frame) seals without its `playable.mp4`, and the
+manifest's `playable_notes` names the reason; a clip that had to omit frames
+whose bytes were missing gets a note too.
+
+### Converting older Episodes by hand
+
+The `episode-playable` command performs the same remux laptop-side, for
+Episodes sealed before the agent did it (or for a source whose seal-time mux
+was refused, where it will report the same warnings). When every camera source
+already carries a seal-time `playable.mp4` the command says so and converts
+nothing:
 
 ```sh
 # From the repository root.
