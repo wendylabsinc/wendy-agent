@@ -122,7 +122,7 @@ wifi.scan-rand-mac-address=no
 ```
 
 Key decisions:
-- By default, DNS is managed by NM writing `/etc/resolv.conf` directly (`rc-manager=file`). Optionally, `systemd-resolved` can be enabled instead by adding `resolved` to `DISTRO_FEATURES` at build time. When its `127.0.0.53:53` stub is active, newly deployed host-network containers use it so DNS changes propagate without a container restart; otherwise the agent retains a snapshot-style host-file fallback for compatibility.
+- By default, DNS is managed by NM writing `/etc/resolv.conf` directly (`rc-manager=file`). Optionally, `systemd-resolved` can be enabled instead by adding `resolved` to `DISTRO_FEATURES` at build time. When its `127.0.0.53:53` stub is active, newly deployed host-network containers use it so upstream DNS changes propagate without a container restart; their managed resolver file also copies the currently known search domains. Otherwise, the agent retains an inode-pinning host-file fallback for compatibility.
 - Random MAC address scanning is disabled so device identity remains stable during scans.
 - `connectivity.enabled=false` saves bandwidth by not sending periodic HTTP connectivity probes.
 

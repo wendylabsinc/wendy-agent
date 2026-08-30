@@ -271,8 +271,12 @@ the container temporarily fixes it.
 Host-network containers created while the systemd-resolved stub is available
 use a Wendy-managed `/etc/resolv.conf` that points to `127.0.0.53`. Because the
 container shares the host network namespace, its queries reach the live host
-resolver and automatically follow later DHCP, VPN, WiFi, and upstream-DNS
-changes.
+resolver and automatically follow later upstream-DNS server changes from DHCP,
+VPN, or WiFi reconfiguration. Search domains known to systemd-resolved are
+copied into the managed file when the container is deployed and whenever it
+starts after a reboot. Restart the app to pick up a search-domain change made
+while it is already running; fully qualified names continue to follow upstream
+changes without a restart.
 
 Check the host and container:
 

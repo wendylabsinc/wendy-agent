@@ -1321,7 +1321,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	var hostResolvConfPath string
-	if hasHostNetworkMode(appCfg.Entitlements) {
+	if entitlementsUseHostNetwork(appCfg.Entitlements) {
 		if systemdResolvedStubAvailable() {
 			path, writeErr := writeHostResolvConf()
 			if writeErr != nil {
