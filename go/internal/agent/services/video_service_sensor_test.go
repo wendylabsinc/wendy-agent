@@ -427,3 +427,43 @@ func TestSensorSubscriptionReattachesAfterCaptureTakeover(t *testing.T) {
 		t.Fatal("subscription did not reattach to the replacement hub")
 	}
 }
+
+// TestSensorReattachCarriesTailDrops: drops the old subscription accrued after
+// the last delivered sample can no longer ride on a sample of their own once
+// the producer is taken over, so reattach must carry them into the first
+// sample the new subscription delivers.
+func TestSensorReattachCarriesTailDrops(t *testing.T) {
+	svc := newTestVideoService(nil, nil)
+	_ = installFakeProducers(svc)
+	ctx := context.Background()
+
+	hub, subID, frames, err := svc.joinHub(ctx, "/dev/video0", &agentpb.StreamVideoRequest{DeviceId: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := &cameraSensorSubscription{video: svc, key: "/dev/video0", hub: hub, subID: subID, frames: frames, lastDrops: 1}
+	hub.mu.Lock()
+	hub.subDrops[subID] = 4
+	hub.mu.Unlock()
+
+	req := &agentpb.StreamVideoRequest{DeviceId: 0, Width: 640, Height: 480, Framerate: 15}
+	newHub, captureID, _, _, _, _, restarted, err := svc.joinHubForCapture(ctx, "/dev/video0", req)
+	if err != nil || !restarted {
+		t.Fatalf("takeover failed: restarted=%v err=%v", restarted, err)
+	}
+	defer newHub.unsubscribe(captureID)
+
+	if err := subscription.reattach(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	if subscription.hub != newHub {
+		t.Fatal("reattach did not land on the replacement hub")
+	}
+	if subscription.gatedSkips != 3 {
+		t.Fatalf("gatedSkips = %d, want 3 (4 total drops minus 1 already reported)", subscription.gatedSkips)
+	}
+	if subscription.lastDrops != 0 || !subscription.awaitRandomAccess {
+		t.Fatalf("reattach state: lastDrops=%d awaitRandomAccess=%v, want 0/true", subscription.lastDrops, subscription.awaitRandomAccess)
+	}
+}

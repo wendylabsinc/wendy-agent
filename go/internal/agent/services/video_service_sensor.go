@@ -167,9 +167,12 @@ func (c *cameraSensorSubscription) Next(ctx context.Context) (SensorSample, erro
 // reattach joins the replacement hub after a capture takeover, again asserting
 // no parameters. The hub-side drop counter starts at zero on the new
 // subscription, and delivery is gated to a random-access unit so the app's new
-// stream starts decodable.
+// stream starts decodable. Drops the old subscription accrued after the last
+// delivered sample can no longer ride on a sample of their own, so they are
+// carried into gatedSkips and reported on the first sample the new
+// subscription delivers; the restart leaves no loss unreported.
 func (c *cameraSensorSubscription) reattach(ctx context.Context) error {
-	c.hub.unsubscribe(c.subID)
+	c.gatedSkips += c.hub.unsubscribe(c.subID) - c.lastDrops
 	hub, subID, frames, err := c.video.joinHub(ctx, c.key, &agentpb.StreamVideoRequest{DeviceId: c.devID})
 	if err != nil {
 		return err

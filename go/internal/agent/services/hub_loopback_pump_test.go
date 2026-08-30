@@ -373,7 +373,7 @@ func TestPumpGatesRejoinedStreamToRandomAccess(t *testing.T) {
 	frames <- rau
 	close(frames)
 
-	if err := pump.pumpFrom(context.Background(), hub, subID, frames, writer, true); err != nil {
+	if _, err := pump.pumpFrom(context.Background(), hub, subID, frames, writer, true, 0); err != nil {
 		t.Fatalf("pumpFrom: %v", err)
 	}
 	if len(writer.writes) != 1 {
@@ -457,5 +457,52 @@ func mustRAUVideoFrame(_ uint64) *videoFrame {
 		data:      append([]byte(nil), testRAUFrame...),
 		codec:     agentpb.VideoCodec_VIDEO_CODEC_H264,
 		auAligned: true,
+	}
+}
+
+// TestPumpReturnsUnreportedLossesOnRestart: when the hub is torn down by a
+// capture takeover, this subscription will never write another binding, so
+// everything still unreported (the carried count plus hub drops since the last
+// written frame) must be handed back for the replacement subscription's first
+// binding.
+func TestPumpReturnsUnreportedLossesOnRestart(t *testing.T) {
+	hub, subID, frames := newPumpTestHub(t)
+	writer := newFakeLoopbackWriter(0)
+	pump := newHubLoopbackPump(zap.NewNop(), "v4l2:/dev/video0", "/dev/video200")
+
+	hub.mu.Lock()
+	hub.subDrops[subID] = 3
+	hub.restarted = true
+	hub.mu.Unlock()
+	close(frames)
+
+	carried, err := pump.pumpFrom(context.Background(), hub, subID, frames, writer, false, 2)
+	if !errors.Is(err, errLoopbackHubRestarted) {
+		t.Fatalf("pumpFrom returned %v, want errLoopbackHubRestarted", err)
+	}
+	if carried != 5 {
+		t.Fatalf("carried = %d, want 5 (2 carried in + 3 hub drops never reported)", carried)
+	}
+}
+
+// TestPumpReportsCarriedLossesOnFirstBinding: losses inherited from a previous
+// subscription ride on the first binding the new subscription writes.
+func TestPumpReportsCarriedLossesOnFirstBinding(t *testing.T) {
+	hub, subID, frames := newPumpTestHub(t)
+	writer := newFakeLoopbackWriter(50)
+	pump := newHubLoopbackPump(zap.NewNop(), "v4l2:/dev/video0", "/dev/video200")
+
+	frames <- bindableFrame(9, 900, 5)
+	close(frames)
+
+	if _, err := pump.pumpFrom(context.Background(), hub, subID, frames, writer, false, 4); err != nil {
+		t.Fatalf("pumpFrom: %v", err)
+	}
+	binding, ok := pump.Bindings().Lookup(50)
+	if !ok {
+		t.Fatal("no binding recorded")
+	}
+	if binding.HubDropsBefore != 4 {
+		t.Fatalf("HubDropsBefore = %d, want the 4 carried losses", binding.HubDropsBefore)
 	}
 }
