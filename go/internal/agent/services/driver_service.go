@@ -559,7 +559,11 @@ func (s *DriverService) snapshotDriver(kernel, name string) (*driverSnapshot, er
 // leaving a staged rebuild behind would resurrect the add-on at the next OTA.
 func (s *DriverService) snapshotDriverAllKernels(name string) (*driverSnapshot, error) {
 	var paths []string
-	for _, kernel := range s.storedKernels() {
+	kernels, err := s.storedKernels()
+	if err != nil {
+		return nil, err
+	}
+	for _, kernel := range kernels {
 		paths = append(paths, s.rawPath(kernel, name), s.confPath(kernel, name))
 	}
 	return s.snapshotPaths(paths...)
@@ -654,7 +658,11 @@ func (s *DriverService) RemoveDriver(req *agentpbv2.RemoveDriverRequest, stream 
 	if err := validateDriverName(name); err != nil {
 		return sendDriverFailure(stream, err.Error())
 	}
-	if !s.anyCopyInstalled(name) {
+	installed, err := s.anyCopyInstalled(name)
+	if err != nil {
+		return sendDriverFailure(stream, err.Error())
+	}
+	if !installed {
 		return sendDriverFailure(stream, fmt.Sprintf("driver %q is not installed", name))
 	}
 
@@ -696,6 +704,9 @@ func (s *DriverService) RemoveDriver(req *agentpbv2.RemoveDriverRequest, stream 
 
 // ListDrivers reports the installed (declared) drivers plus realized state.
 func (s *DriverService) ListDrivers(ctx context.Context, _ *agentpbv2.ListDriversRequest) (*agentpbv2.ListDriversResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	resp := &agentpbv2.ListDriversResponse{
 		BaseVersion:      osReleaseVersionID(),
 		KernelVersion:    s.unameR(),
@@ -710,7 +721,11 @@ func (s *DriverService) ListDrivers(ctx context.Context, _ *agentpbv2.ListDriver
 
 	// Every bucket, not just the running kernel's: an add-on left behind by an
 	// OTA must still be listed and flagged, rather than silently disappearing.
-	for _, c := range s.installedCopies() {
+	copies, err := s.installedCopies()
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range copies {
 		// Self-describing add-on: the module list is baked into the .raw and
 		// surfaces at the merged path once systemd-sysext merges it. declaredModules
 		// mirrors wendyos-sysext-apply's precedence (/data override, then baked-in).
@@ -864,15 +879,22 @@ type installedCopy struct {
 // installedCopies returns every add-on in the store, deduped by name with the
 // running kernel's copy preferred so a staged name resolves to the one that can
 // load. Top-level entries are the flat layout, read until migration moves them.
-func (s *DriverService) installedCopies() []installedCopy {
+func (s *DriverService) installedCopies() ([]installedCopy, error) {
 	dirs := []string{filepath.Join(s.enabledDir, s.unameR()), filepath.Join(s.enabledDir, unpinnedKernelDir), s.enabledDir}
-	for _, kernel := range s.storedKernels() {
+	kernels, err := s.storedKernels()
+	if err != nil {
+		return nil, err
+	}
+	for _, kernel := range kernels {
 		dirs = append(dirs, filepath.Join(s.enabledDir, kernel))
 	}
 	seen := map[string]bool{}
 	var out []installedCopy
 	for _, dir := range dirs {
-		entries, _ := os.ReadDir(dir) //nolint:errcheck // absent bucket => nothing here
+		entries, err := readDriverDir(dir)
+		if err != nil {
+			return nil, err
+		}
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".raw") {
 				continue
@@ -885,29 +907,36 @@ func (s *DriverService) installedCopies() []installedCopy {
 			out = append(out, installedCopy{name: name, rawPath: filepath.Join(dir, e.Name())})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // anyCopyInstalled reports whether the add-on exists under any kernel.
-func (s *DriverService) anyCopyInstalled(name string) bool {
-	for _, c := range s.installedCopies() {
+func (s *DriverService) anyCopyInstalled(name string) (bool, error) {
+	copies, err := s.installedCopies()
+	if err != nil {
+		return false, err
+	}
+	for _, c := range copies {
 		if c.name == name {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // storedKernels lists the buckets present in the store, running kernel first so
 // callers that dedupe by name prefer the copy that can actually load. The
 // unpinned bucket is always considered, even before it exists.
-func (s *DriverService) storedKernels() []string {
+func (s *DriverService) storedKernels() ([]string, error) {
 	seen := map[string]bool{}
 	out := []string{s.unameR(), unpinnedKernelDir}
 	for _, k := range out {
 		seen[k] = true
 	}
-	entries, _ := os.ReadDir(s.enabledDir) //nolint:errcheck // absent dir => no drivers
+	entries, err := readDriverDir(s.enabledDir)
+	if err != nil {
+		return nil, err
+	}
 	for _, e := range entries {
 		if !e.IsDir() || seen[e.Name()] || validateKernelDir(e.Name()) != nil {
 			continue
@@ -915,7 +944,21 @@ func (s *DriverService) storedKernels() []string {
 		seen[e.Name()] = true
 		out = append(out, e.Name())
 	}
-	return out
+	return out, nil
+}
+
+// readDriverDir distinguishes an absent store or bucket from one that exists but
+// cannot be inspected. The former means no drivers; the latter must fail closed
+// so an OTA cannot mistake an I/O, mount, or permission failure for an empty set.
+func readDriverDir(dir string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if err == nil {
+		return entries, nil
+	}
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("reading driver store %s: %w", dir, err)
 }
 
 // validateKernelDir guards the one kernel string that is not ours: migration
