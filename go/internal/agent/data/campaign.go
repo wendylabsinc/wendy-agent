@@ -170,6 +170,54 @@ type CampaignPrivacy struct {
 	Revision string `json:"revision,omitempty" yaml:"revision,omitempty"`
 }
 
+// NotifyOnEpisodeCommitted is the only notification event campaign version 1
+// supports: fire when an episode this campaign captured is committed.
+const NotifyOnEpisodeCommitted = "episode_committed"
+
+// ErrUnsupportedNotifyOn marks a notify.on value this schema version does not
+// support, so callers can identify the rejection with errors.Is.
+var ErrUnsupportedNotifyOn = errors.New("notify.on must be " + NotifyOnEpisodeCommitted)
+
+// CampaignNotify is an optional, device-inert notification policy. The device
+// attaches no behavior to it: the block rides verbatim in the committed
+// episode manifest (and therefore in the manifest JSON the cloud ingest
+// service receives), and the cloud decides whether and whom to notify. No
+// device-side network activity ever results from this block.
+type CampaignNotify struct {
+	// On names the event to notify on. NotifyOnEpisodeCommitted is the only
+	// supported value.
+	On string `json:"on" yaml:"on"`
+	// UnknownKeys lists keys inside the notify block this schema version does
+	// not know. Unlike the rest of the campaign document, which rejects
+	// unknown fields, the notify block is read by the cloud rather than the
+	// device, so a newer cloud-side key must not brick deployment to an older
+	// device; DeployCampaign warns instead. The list is deploy-time state, not
+	// plan content: it is excluded from the stored plan and the revision hash.
+	UnknownKeys []string `json:"-" yaml:"-"`
+}
+
+// UnmarshalYAML decodes the notify block by hand so unknown keys inside it are
+// collected for a deploy-time warning instead of tripping the document-wide
+// KnownFields rejection. Comparing the raw key scalar also sidesteps YAML 1.1
+// resolving an unquoted "on" key as a boolean.
+func (n *CampaignNotify) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return errors.New("notify must be a mapping such as {on: " + NotifyOnEpisodeCommitted + "}")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		switch key {
+		case "on":
+			if err := node.Content[i+1].Decode(&n.On); err != nil {
+				return fmt.Errorf("notify.on: %w", err)
+			}
+		default:
+			n.UnknownKeys = append(n.UnknownKeys, key)
+		}
+	}
+	return nil
+}
+
 // Campaign is the durable, device-local collection plan. Deployment arms its
 // triggers; it does not require the configured sensors or network destination
 // to be online at deployment time.
@@ -184,6 +232,7 @@ type Campaign struct {
 	Export            CampaignExport    `json:"export" yaml:"export"`
 	Models            map[string]string `json:"models" yaml:"models,omitempty"`
 	Privacy           []CampaignPrivacy `json:"privacy" yaml:"privacy,omitempty"`
+	Notify            *CampaignNotify   `json:"notify,omitempty" yaml:"notify,omitempty"`
 	State             string            `json:"state" yaml:"-"`
 	Revision          string            `json:"revision" yaml:"-"`
 	DeployedUnixNanos int64             `json:"deployed_unix_nanos" yaml:"-"`
@@ -306,6 +355,9 @@ func (c Campaign) validate() error {
 			return fmt.Errorf("privacy[%d].name is required", i)
 		}
 	}
+	if c.Notify != nil && c.Notify.On != NotifyOnEpisodeCommitted {
+		return fmt.Errorf("notify.on %q is not supported: %w", c.Notify.On, ErrUnsupportedNotifyOn)
+	}
 	return nil
 }
 
@@ -349,6 +401,9 @@ func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
 	}
 	if campaign.Retention.LocalQuota != "" {
 		campaign.Warnings = append(campaign.Warnings, "retention.local_quota is recorded with the plan, but this release enforces only the device-wide storage quota")
+	}
+	if campaign.Notify != nil && len(campaign.Notify.UnknownKeys) > 0 {
+		campaign.Warnings = append(campaign.Warnings, "notify has unknown keys this agent ignores: "+strings.Join(campaign.Notify.UnknownKeys, ", "))
 	}
 	dir := m.campaignDir()
 	if err := os.MkdirAll(dir, 0o750); err != nil {

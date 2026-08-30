@@ -234,6 +234,11 @@ type EpisodeTrigger struct {
 	CampaignName     string `json:"campaign_name,omitempty"`
 	CampaignRevision string `json:"campaign_revision,omitempty"`
 	Expression       string `json:"expression,omitempty"`
+	// Notify carries the triggering campaign's notify block verbatim into the
+	// committed manifest, and from there into the manifest JSON the cloud
+	// ingest service receives. The device attaches no behavior to it; the
+	// cloud reads it to decide whether to notify.
+	Notify *CampaignNotify `json:"notify,omitempty"`
 }
 
 type PrivacyTransformation struct {
