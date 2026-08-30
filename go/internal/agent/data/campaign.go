@@ -407,11 +407,12 @@ func (m *Manager) Campaigns() ([]Campaign, error) {
 }
 
 // ResolveCampaignSources maps semantic campaign selectors onto the current
-// device source inventory. ROS topic selectors intentionally select the local
-// ROS graph recorder, which preserves the requested topics in the manifest.
-// Camera capture policies are returned keyed by resolved source ID so the
-// capture adapter can honor them; ROS 2 and telemetry policies are not plumbed
-// because those adapters implement only continuous capture (deployment warns).
+// device source inventory. A ROS 2 topic selector resolves to that topic's own
+// source, so the episode records that topic and nothing else; the requested
+// topics are still preserved in the manifest. Camera capture policies are
+// returned keyed by resolved source ID so the capture adapter can honor them;
+// ROS 2 and telemetry policies are not plumbed because those adapters
+// implement only continuous capture (deployment warns).
 func (m *Manager) ResolveCampaignSources(campaign Campaign) ([]string, []string, map[string]*SourceCapture, error) {
 	all := m.Sources(context.Background())
 	selected := map[string]bool{"applications": true}
@@ -423,14 +424,12 @@ func (m *Manager) ResolveCampaignSources(campaign Campaign) ([]string, []string,
 			selected["telemetry"] = true
 		case requested.ROS2 != "":
 			topics = append(topics, requested.ROS2)
-			found := false
-			for _, source := range all {
-				if source.Kind == "ros2" && source.Healthy {
-					selected[source.ID], found = true, true
-				}
+			ids, err := resolveROS2Selector(all, requested.ROS2)
+			if err != nil {
+				return nil, nil, nil, err
 			}
-			if !found {
-				return nil, nil, nil, fmt.Errorf("no healthy ROS 2 graph is available for topic %s", requested.ROS2)
+			for _, id := range ids {
+				selected[id] = true
 			}
 		case requested.Camera != "":
 			id, err := resolveCameraSelector(all, requested.Camera)
@@ -459,6 +458,89 @@ func (m *Manager) ResolveCampaignSources(campaign Campaign) ([]string, []string,
 	sort.Strings(ids)
 	sort.Strings(topics)
 	return ids, topics, captures, nil
+}
+
+// resolveROS2Selector maps a campaign `ros2:` selector onto discovered source
+// identifiers. Three spellings resolve, and every one of them has to keep
+// working because campaign YAML is deployed to devices in the field.
+//
+//   - A topic name, "/lidar/points": the topic's own source on every healthy
+//     graph that publishes it. This is the spelling the documentation has
+//     always shown, and it is the one that used to silently select the whole
+//     DDS domain, so a plan asking for the lidar recorded every camera and
+//     every inertial measurement unit topic on the robot as well.
+//   - A full per-topic identifier, "ros2:rmw_cyclonedds_cpp:domain-42:/scan":
+//     that exact source, no graph search.
+//   - Anything else, which includes the domain-level identifier a plan written
+//     before per-topic sources existed names ("ros2:rmw_cyclonedds_cpp:domain-42",
+//     with or without the "ros2:" prefix): the whole domain, still recorded
+//     with `ros2 bag record -a`. An unrecognized selector selects every healthy
+//     domain, which is exactly what this function did for every selector before
+//     per-topic sources existed, so no deployed plan changes meaning except the
+//     topic selectors, which now mean what they say.
+//
+// A topic selector that names a topic no healthy graph publishes is an error
+// rather than a fallback to the whole domain. Falling back would resurrect the
+// bug this addresses, and the alternative failure, a sealed and uploaded
+// episode holding none of the data the plan asked for, is the one this package
+// already refuses for audio sources.
+func resolveROS2Selector(all []Source, selector string) ([]string, error) {
+	healthyROS2 := func(source Source) bool { return source.Kind == "ros2" && source.Healthy }
+
+	// A selector that parses as a source identifier names exactly one thing.
+	// Accept it with or without the "ros2:" prefix, because a person copying a
+	// domain out of `wendy data sources` may keep or drop it.
+	candidates := []string{selector, ROS2SourcePrefix + selector}
+	for _, candidate := range candidates {
+		wantDomain, wantTopic, ok := ParseROS2SourceID(candidate)
+		if !ok {
+			continue
+		}
+		var ids []string
+		for _, source := range all {
+			if !healthyROS2(source) {
+				continue
+			}
+			domainID, topic, parsed := ParseROS2SourceID(source.ID)
+			if parsed && domainID == wantDomain && topic == wantTopic {
+				ids = append(ids, source.ID)
+			}
+		}
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("no healthy ROS 2 source %s is available", candidate)
+		}
+		return ids, nil
+	}
+
+	if strings.HasPrefix(selector, "/") {
+		var ids []string
+		for _, source := range all {
+			if !healthyROS2(source) {
+				continue
+			}
+			if _, topic, ok := ParseROS2SourceID(source.ID); ok && topic == selector {
+				ids = append(ids, source.ID)
+			}
+		}
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("no healthy ROS 2 graph publishes topic %s", selector)
+		}
+		return ids, nil
+	}
+
+	var ids []string
+	for _, source := range all {
+		if !healthyROS2(source) {
+			continue
+		}
+		if _, topic, ok := ParseROS2SourceID(source.ID); ok && topic == "" {
+			ids = append(ids, source.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("no healthy ROS 2 graph is available for %s", selector)
+	}
+	return ids, nil
 }
 
 // checkDeployableAudioSources refuses a campaign whose audio selector does not

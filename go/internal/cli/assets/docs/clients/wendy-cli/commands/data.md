@@ -107,7 +107,7 @@ Each `sources` item selects exactly one source:
 | Source | Description |
 |---|---|
 | `camera: <selector>` | A stable source ID, `/dev/videoN` path, or unambiguous name fragment. `front` and `default` select the only healthy camera when exactly one exists. |
-| `ros2: <topic>` | Selects healthy local ROS graph recorders and retains the requested topic separately in the manifest. |
+| `ros2: <topic>` | A ROS 2 topic name such as `/lidar/points`. Selects that topic on every healthy ROS 2 graph publishing it, and the episode records that topic and nothing else. A topic no healthy graph publishes is an error. A full per-topic source ID such as `ros2:rmw_cyclonedds_cpp:domain-42:/lidar/points` selects that one source. A domain-level source ID such as `ros2:rmw_cyclonedds_cpp:domain-42`, or any other value, selects the whole DDS domain and records all of it. Requested topics are retained separately in the manifest either way. |
 | `telemetry: true` | Includes device telemetry. |
 
 An optional `calibration_revision` can accompany a source. Application records
