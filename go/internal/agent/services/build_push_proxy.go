@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -36,13 +37,14 @@ type PeerDialer interface {
 // mTLS, so buildkitd can push plaintext to localhost and needs no per-registry
 // client certificates of its own.
 //
-// It records the most recent outbound failure. Without that, a proxy that cannot
+// It records the most recent actionable outbound failure. Without that, a proxy that cannot
 // reach its target still accepts the local connection and then closes it, so
 // the pusher sees only "connection reset by peer" on 127.0.0.1 — a message that
 // cannot distinguish an unreachable peer from a rejected certificate, which are
 // the two causes with entirely different fixes. The most recent failure is the
 // useful one because BuildKit may retry an earlier 502 and reach a different
-// terminal outcome.
+// terminal outcome. Cleanup cancellation is retained only when no actionable
+// failure preceded it, so teardown cannot erase the cause a user can fix.
 type pushProxy struct {
 	addr string
 	ln   net.Listener
@@ -72,9 +74,23 @@ func (p *pushProxy) latestError() error {
 }
 
 func (p *pushProxy) recordError(err error) {
+	if err == nil {
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.err != nil && pushProxyCleanupError(err) && !pushProxyCleanupError(p.err) {
+		return
+	}
 	p.err = err
+}
+
+// pushProxyCleanupError identifies errors commonly produced while a failed
+// request or the proxy itself is being torn down. They are useful when they are
+// the only cause available, but must not replace an earlier registry, mesh, or
+// TLS failure with the much less actionable "context canceled"/"closed".
+func pushProxyCleanupError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed)
 }
 
 // validRepositoryRe matches a bare OCI "repository:tag" with no registry host

@@ -73,6 +73,46 @@ func TestPushProxy_SurfacesDialFailure(t *testing.T) {
 	}
 }
 
+func TestPushProxy_CleanupFailureDoesNotReplaceActionableCause(t *testing.T) {
+	actionableCause := errors.New("registry connection reset")
+	actionable := annotateDeliveryFailure(actionableCause, 8<<20, 96<<20)
+
+	for _, cleanup := range []error{context.Canceled, net.ErrClosed} {
+		proxy := &pushProxy{}
+		proxy.recordError(actionable)
+		proxy.recordError(annotateDeliveryFailure(cleanup, 0, 0))
+
+		got := proxy.latestError()
+		if !errors.Is(got, actionableCause) {
+			t.Fatalf("cleanup error %v replaced actionable cause: %v", cleanup, got)
+		}
+		if errors.Is(got, cleanup) {
+			t.Fatalf("latest error = %v, want the prior actionable cause", got)
+		}
+	}
+}
+
+func TestPushProxy_ActionableFailureReplacesEarlierCleanup(t *testing.T) {
+	proxy := &pushProxy{}
+	proxy.recordError(context.Canceled)
+
+	actionableCause := errors.New("registry refused connection")
+	proxy.recordError(annotateDeliveryFailure(actionableCause, 0, 0))
+
+	got := proxy.latestError()
+	if !errors.Is(got, actionableCause) {
+		t.Fatalf("latest error = %v, want later actionable cause", got)
+	}
+}
+
+func TestPushProxy_RecordsCleanupWhenItIsTheOnlyCause(t *testing.T) {
+	proxy := &pushProxy{}
+	proxy.recordError(context.Canceled)
+	if got := proxy.latestError(); !errors.Is(got, context.Canceled) {
+		t.Fatalf("latest error = %v, want the only available cancellation cause", got)
+	}
+}
+
 // proxyToBackend wires a proxy whose outbound hop is a plain-TCP test backend.
 // The mesh dial and TLS wrapping are orthogonal to what these tests check.
 func proxyToBackend(t *testing.T, handler http.Handler) *pushProxy {
