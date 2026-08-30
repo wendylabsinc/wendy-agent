@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -40,6 +42,16 @@ const (
 	// controls. This is what v4l2-ctl uses.
 	v4l2CtrlWhichCurVal = 0x0
 
+	// V4L2_CTRL_FLAG_NEXT_CTRL: OR this into the id and QUERYCTRL returns the
+	// next control the DRIVER has, rather than the one asked for. Walking from
+	// 0 therefore enumerates a camera's whole control set without any list
+	// being written down here -- which is the point: a hardcoded table only
+	// ever covers the cameras somebody owned when they wrote it, and silently
+	// omits the rest (zoom, pan, tilt and focus were all missing that way).
+	v4l2CtrlFlagNextCtrl = 0x80000000
+	// V4L2_CTRL_TYPE_CTRL_CLASS: a heading in the enumeration, not a control.
+	v4l2CtrlTypeCtrlClass = 6
+
 	// v4l2_queryctrl flags we act on.
 	v4l2CtrlFlagDisabled = 0x0001
 	v4l2CtrlFlagReadOnly = 0x0004
@@ -53,6 +65,10 @@ const (
 // between the CLI and this API without a translation table. CIDs are the
 // standard V4L2_CID_* values from linux/videodev2.h: the USER class base is
 // 0x00980900, the CAMERA class base 0x009a0900.
+// tunableControls is no longer what this service supports --
+// enumerateV4L2Controls asks the camera. It survives only as the fallback probe
+// list for a driver that does not implement NEXT_CTRL, where the set has to be
+// guessed at.
 var tunableControls = []struct {
 	name string
 	cid  uint32
@@ -71,15 +87,6 @@ var tunableControls = []struct {
 	{"auto_exposure", 0x009a0901},          // V4L2_CID_EXPOSURE_AUTO
 	{"exposure_time_absolute", 0x009a0902}, // V4L2_CID_EXPOSURE_ABSOLUTE
 	{"exposure_dynamic_framerate", 0x009a0903},
-}
-
-func controlCID(name string) (uint32, bool) {
-	for _, c := range tunableControls {
-		if c.name == name {
-			return c.cid, true
-		}
-	}
-	return 0, false
 }
 
 // controlValue is a resolved control ready to write.
@@ -133,7 +140,33 @@ func getV4L2ExtControl(fd int, controlID uint32) (int32, unix.Errno) {
 // name[32]@8, minimum@40, maximum@44, step@48, default@52, flags@56, reserved@60.
 type v4l2QueryCtrl [68]byte
 
-func (q *v4l2QueryCtrl) setID(id uint32)   { *(*uint32)(unsafe.Pointer(&q[0])) = id }
+func (q *v4l2QueryCtrl) setID(id uint32)  { *(*uint32)(unsafe.Pointer(&q[0])) = id }
+func (q *v4l2QueryCtrl) id() uint32       { return *(*uint32)(unsafe.Pointer(&q[0])) }
+func (q *v4l2QueryCtrl) ctrlType() uint32 { return *(*uint32)(unsafe.Pointer(&q[4])) }
+
+// name is the driver's label, normalised to the spelling v4l2-ctl prints and
+// this API accepts: lower case, each run of non-alphanumerics becoming one
+// underscore. "White Balance, Automatic" -> "white_balance_automatic".
+func (q *v4l2QueryCtrl) name() string {
+	raw := q[8:40]
+	if i := bytes.IndexByte(raw, 0); i >= 0 {
+		raw = raw[:i]
+	}
+	var b strings.Builder
+	lastUnderscore := true // leading separators are dropped
+	for _, r := range strings.ToLower(string(raw)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	return strings.TrimSuffix(b.String(), "_")
+}
 func (q *v4l2QueryCtrl) minimum() int32    { return *(*int32)(unsafe.Pointer(&q[40])) }
 func (q *v4l2QueryCtrl) maximum() int32    { return *(*int32)(unsafe.Pointer(&q[44])) }
 func (q *v4l2QueryCtrl) step() int32       { return *(*int32)(unsafe.Pointer(&q[48])) }
@@ -147,6 +180,61 @@ func queryV4L2Control(fd int, controlID uint32) (q v4l2QueryCtrl, ok bool) {
 	q.setID(controlID)
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQueryCtrl, uintptr(unsafe.Pointer(&q)))
 	return q, errno == 0
+}
+
+// enumerateV4L2Controls walks every control the driver exposes, in driver
+// order, skipping class headings and controls the driver reports as disabled.
+//
+// Falls back to the static tunableControls table when the driver does not
+// support NEXT_CTRL (pre-2.6.18 semantics, and a few odd drivers): the first
+// probe returning nothing is indistinguishable from "no controls", so a camera
+// that really has some would otherwise look empty.
+func enumerateV4L2Controls(fd int) []v4l2QueryCtrl {
+	var out []v4l2QueryCtrl
+	id := uint32(0)
+	for len(out) < 256 { // a driver looping would otherwise hang the agent
+		q, ok := queryV4L2Control(fd, id|v4l2CtrlFlagNextCtrl)
+		if !ok {
+			break
+		}
+		next := q.id()
+		if next == id { // driver ignored NEXT_CTRL; stop rather than spin
+			break
+		}
+		id = next
+		if q.ctrlType() == v4l2CtrlTypeCtrlClass || q.flags()&v4l2CtrlFlagDisabled != 0 {
+			continue
+		}
+		if q.name() == "" {
+			continue
+		}
+		out = append(out, q)
+	}
+	if len(out) == 0 {
+		for _, tc := range tunableControls {
+			if q, ok := queryV4L2Control(fd, tc.cid); ok {
+				out = append(out, q)
+			}
+		}
+	}
+	return out
+}
+
+// cameraControlIndex maps a camera's control names to their CIDs by asking the
+// camera, so a name is resolved against the device it is destined for rather
+// than against a table. Read-only open, same EBUSY reasoning as elsewhere.
+func cameraControlIndex(path string) (map[string]uint32, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(fd) //nolint:errcheck
+
+	index := map[string]uint32{}
+	for _, q := range enumerateV4L2Controls(fd) {
+		index[q.name()] = q.id()
+	}
+	return index, nil
 }
 
 // applyCameraControlsV4L2 opens the node read-write and sets each control,
@@ -184,19 +272,16 @@ func queryCameraControlsV4L2(path string) ([]*agentpb.CameraControl, error) {
 	}
 	defer unix.Close(fd) //nolint:errcheck
 
-	out := make([]*agentpb.CameraControl, 0, len(tunableControls))
-	for _, tc := range tunableControls {
-		q, ok := queryV4L2Control(fd, tc.cid)
-		if !ok {
-			continue // this camera does not have it
-		}
-		val, errno := getV4L2ExtControl(fd, tc.cid)
+	discovered := enumerateV4L2Controls(fd)
+	out := make([]*agentpb.CameraControl, 0, len(discovered))
+	for _, q := range discovered {
+		val, errno := getV4L2ExtControl(fd, q.id())
 		if errno != 0 {
 			val = q.defaultVal() // report something rather than dropping the row
 		}
 		flags := q.flags()
 		out = append(out, &agentpb.CameraControl{
-			Name:         tc.name,
+			Name:         q.name(),
 			Value:        val,
 			Minimum:      q.minimum(),
 			Maximum:      q.maximum(),
@@ -330,15 +415,24 @@ func (s *VideoService) SetCameraControls(_ context.Context, req *agentpb.SetCame
 		return nil, status.Error(codes.InvalidArgument, "no controls given")
 	}
 
+	// Resolve names against THIS camera rather than a table, so any control the
+	// camera exposes is settable without a code change -- zoom, pan, tilt and
+	// focus were all unreachable while the table was the source of truth.
+	index, err := s.controlIndexFor(path)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "reading controls from %s: %v", path, err)
+	}
+
 	var resolved []controlValue
 	results := make([]*agentpb.CameraControlResult, 0, len(req.GetControls()))
 	unknown := map[string]bool{}
 	for _, c := range req.GetControls() {
-		cid, ok := controlCID(c.GetName())
+		cid, ok := index[c.GetName()]
 		if !ok {
 			unknown[c.GetName()] = true
 			results = append(results, &agentpb.CameraControlResult{
-				Name: c.GetName(), Applied: false, Detail: "unknown control",
+				Name: c.GetName(), Applied: false,
+				Detail: "this camera has no control by that name",
 			})
 			continue
 		}
@@ -387,9 +481,15 @@ func (s *VideoService) applyStoredCameraControls(path string) {
 	if len(stored) == 0 {
 		return
 	}
+	index, err := s.controlIndexFor(path)
+	if err != nil {
+		s.logger.Debug("re-applying stored camera controls: cannot read control list",
+			zap.String("device", path), zap.Error(err))
+		return
+	}
 	resolved := make([]controlValue, 0, len(stored))
 	for _, sc := range stored {
-		if cid, ok := controlCID(sc.Name); ok {
+		if cid, ok := index[sc.Name]; ok {
 			resolved = append(resolved, controlValue{name: sc.Name, cid: cid, value: sc.Value})
 		}
 	}
