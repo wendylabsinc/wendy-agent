@@ -224,7 +224,8 @@ that overhead counts against the Episode's size for the local quota.
 
 Sealing never fails or waits on the remux. A source whose stream cannot become
 an honestly timed, seekable clip (B slices, slice headers the muxer cannot
-parse, no random-access frame) seals without its `playable.mp4`, and the
+parse, parameter sets that change mid-stream after a producer restart, no
+random-access frame) seals without its `playable.mp4`, and the
 manifest's `playable_notes` names the reason; a clip that had to omit frames
 whose bytes were missing gets a note too.
 

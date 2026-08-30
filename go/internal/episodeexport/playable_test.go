@@ -184,6 +184,11 @@ func TestConvertRealShapes(t *testing.T) {
 	if a.MinInterval == a.MaxInterval {
 		t.Error("cam-a interval spread was flattened to a constant rate")
 	}
+	// Segment 2 re-inlines the same SPS/PPS before its keyframe, which is the
+	// normal encoder habit; identical repeats are not a parameter set change.
+	if a.ParameterSetChanges != 0 {
+		t.Errorf("cam-a reports %d parameter set changes for identical repeated SPS/PPS, want 0", a.ParameterSetChanges)
+	}
 
 	// A frame whose bytes are missing is reported and skipped, and a partial
 	// trailing line is counted as unusable, but the clip is still written.
@@ -315,6 +320,79 @@ func TestConvertSourceInPlaceWritesBesideRawCapture(t *testing.T) {
 	}
 	if after := snapshot(t, dir); after != before {
 		t.Errorf("raw capture was modified:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// restartSPS and restartPPS are a second camera's parameter sets at 640x480,
+// the shape a producer restart splices into a running episode when it comes
+// back at a different resolution.
+const (
+	restartSPS = "6742c01e8c8d40501e900f08846a"
+	restartPPS = "68ce3c80"
+)
+
+// A producer restart mid-episode splices new parameter sets into the stream.
+// The MP4 written here carries exactly one decoder configuration (the first
+// SPS/PPS), so every frame after the change would decode against the wrong
+// parameters; the result must say so, because nothing else about the mux
+// fails: the frames all copy cleanly, slice headers parse, and sync samples
+// exist.
+func TestConvertSourceInPlaceFlagsParameterSetChange(t *testing.T) {
+	dir := t.TempDir()
+	sps1, pps1 := mustHex(t, realSPS), mustHex(t, realPPS)
+	sps2, pps2 := mustHex(t, restartSPS), mustHex(t, restartPPS)
+	if w, h, err := spsDimensions(sps2); err != nil || (w == 1280 && h == 720) {
+		t.Fatalf("restart SPS fixture must parse to a different resolution, got %dx%d err=%v", w, h, err)
+	}
+	idr := append([]byte{0x65, 0x88}, make([]byte, 40)...)
+	p := append([]byte{0x41, 0xC0}, make([]byte, 30)...)
+
+	cam := filepath.Join(dir, "cameras", "cam-a")
+	if err := os.MkdirAll(cam, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	type entry struct {
+		CanonicalEpisodeNanos int64  `json:"canonical_episode_nanos"`
+		Segment               string `json:"segment"`
+		ByteOffset            int64  `json:"byte_offset"`
+		ByteSize              int    `json:"byte_size"`
+		Codec                 string `json:"codec"`
+	}
+	units := [][]byte{
+		annexB(sps1, pps1, idr), annexB(p),
+		annexB(sps2, pps2, idr), annexB(p), // the producer came back at 640x480
+	}
+	var seg, index []byte
+	now := int64(1_000_000_000)
+	for _, u := range units {
+		line, err := json.Marshal(entry{now, "cameras/cam-a/segment-000001.h264", int64(len(seg)), len(u), "h264"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		index = append(index, line...)
+		index = append(index, '\n')
+		seg = append(seg, u...)
+		now += 33_000_000
+	}
+	if err := os.WriteFile(filepath.Join(cam, "segment-000001.h264"), seg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cam, "index.jsonl"), index, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := ConvertSourceInPlace(dir, cam)
+	if err != nil {
+		t.Fatalf("ConvertSourceInPlace: %v", err)
+	}
+	if r.ParameterSetChanges != 2 {
+		t.Errorf("ParameterSetChanges = %d, want 2 (one changed SPS, one changed PPS)", r.ParameterSetChanges)
+	}
+	// The other gates must stay quiet: this failure mode is invisible to them,
+	// which is exactly why it needs its own counter.
+	if r.Frames != 4 || r.Skipped != 0 || r.BFrames || r.UndecodedSliceHeaders != 0 || r.SyncSamples == 0 {
+		t.Errorf("unexpected companion signals: frames %d skipped %d bframes %v undecoded %d sync %d",
+			r.Frames, r.Skipped, r.BFrames, r.UndecodedSliceHeaders, r.SyncSamples)
 	}
 }
 

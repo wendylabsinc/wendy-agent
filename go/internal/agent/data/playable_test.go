@@ -252,6 +252,109 @@ func TestSealRefusesClipItCannotVouchFor(t *testing.T) {
 	}
 }
 
+// A producer restart mid-episode splices new SPS/PPS into the raw stream. The
+// derived clip carries exactly one decoder configuration, so such a stream
+// must seal without its playable.mp4 and say why; no other gate notices,
+// because every frame still copies cleanly.
+func TestSealRefusesClipAfterParameterSetChange(t *testing.T) {
+	// A second camera's parameter sets at 640x480, byte-different from the
+	// 1280x720 pair writeCameraSource lays down at the head of the stream.
+	sps2, err := hex.DecodeString("6742c01e8c8d40501e900f08846a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pps2, err := hex.DecodeString("68ce3c80")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.Start(StartOptions{Sources: []string{"applications"}}); err != nil {
+		t.Fatal(err)
+	}
+	session, ok := m.ActiveSession(AdHocEpisodeKey)
+	if !ok {
+		t.Fatal("no active session")
+	}
+	writeCameraSource(t, session.Directory, "cam-front", [][]byte{
+		annexB(parsedIDR), annexB(parsedPSlice),
+		annexB(sps2, pps2, parsedIDR), annexB(parsedPSlice),
+	})
+	stopped, err := m.Stop(AdHocEpisodeKey)
+	if err != nil {
+		t.Fatalf("a refused mux must never fail the seal: %v", err)
+	}
+	rel := "cameras/cam-front/" + episodeexport.PlayableFileName
+	if _, ok := fileByPath(stopped.Files, rel); ok {
+		t.Errorf("manifest lists %s despite the mid-episode parameter set change", rel)
+	}
+	if _, err := os.Stat(filepath.Join(m.root, stopped.ID, rel)); !os.IsNotExist(err) {
+		t.Errorf("refused clip left on disk (stat err %v)", err)
+	}
+	if len(stopped.PlayableNotes) != 1 || !strings.Contains(stopped.PlayableNotes[0], "parameter sets change") {
+		t.Errorf("notes %v do not name the parameter set change", stopped.PlayableNotes)
+	}
+}
+
+// The mux can fail on plain I/O (a full disk mid-write follows the same error
+// path: the write error surfaces, the .tmp is removed, and the seal goes on).
+// Provoke an open failure with an unwritable source directory and hold the
+// seal to its contract: the episode completes, the note says why, and nothing
+// half-written is listed or left behind.
+func TestSealSurvivesMuxWriteFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, directory permissions do not deny writes")
+	}
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.Start(StartOptions{Sources: []string{"applications"}}); err != nil {
+		t.Fatal(err)
+	}
+	session, ok := m.ActiveSession(AdHocEpisodeKey)
+	if !ok {
+		t.Fatal("no active session")
+	}
+	writeCameraSource(t, session.Directory, "cam-front", [][]byte{
+		annexB(parsedIDR), annexB(parsedPSlice),
+	})
+	sourceDir := filepath.Join(session.Directory, "cameras", "cam-front")
+	if err := os.Chmod(sourceDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sourceDir, 0o755) })
+
+	stopped, err := m.Stop(AdHocEpisodeKey)
+	if err != nil {
+		t.Fatalf("a failed mux must never fail the seal: %v", err)
+	}
+	// The seal renamed the episode directory; restore write permission at its
+	// final location so the test's temporary tree can be removed.
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(m.root, stopped.ID, "cameras", "cam-front"), 0o755) })
+	if stopped.State != "complete" {
+		t.Fatalf("state %q, want complete", stopped.State)
+	}
+	rel := "cameras/cam-front/" + episodeexport.PlayableFileName
+	if _, ok := fileByPath(stopped.Files, rel); ok {
+		t.Errorf("manifest lists %s despite the mux failure", rel)
+	}
+	if len(stopped.PlayableNotes) != 1 || !strings.Contains(stopped.PlayableNotes[0], rel+" not written") {
+		t.Errorf("notes %v do not name the unwritten clip", stopped.PlayableNotes)
+	}
+	for _, f := range stopped.Files {
+		if strings.HasSuffix(f.Path, ".tmp") {
+			t.Errorf("manifest lists temporary file %s", f.Path)
+		}
+	}
+	// The raw capture sealed untouched and verifiable.
+	if _, failures, err := m.Inspect(stopped.ID, true); err != nil || len(failures) != 0 {
+		t.Fatalf("verification: err=%v failures=%v", err, failures)
+	}
+}
+
 func TestSealRefusesClipWithoutRandomAccessFrame(t *testing.T) {
 	m, err := NewManager(t.TempDir())
 	if err != nil {
@@ -319,6 +422,84 @@ func TestRecoverySealsPlayableClipToo(t *testing.T) {
 	}
 	if len(mf.PlayableNotes) != 0 {
 		t.Errorf("clean recovery mux left notes: %v", mf.PlayableNotes)
+	}
+}
+
+// A crash after the mux but before the manifest is written leaves a
+// playable.mp4 (and possibly its .tmp) in the partial directory whose frames
+// may postdate the index tail recovery truncates. Recovery must remux from
+// the truncated index, never reuse the stale clip, and clean up the .tmp.
+func TestRecoveryReplacesStaleClipAndTemporary(t *testing.T) {
+	root := t.TempDir()
+	m, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := m.Start(StartOptions{Sources: []string{"applications"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial := filepath.Join(root, started.ID+".partial")
+	writeCameraSource(t, partial, "cam-front", [][]byte{
+		annexB(parsedIDR), annexB(parsedPSlice),
+	})
+	sourceDir := filepath.Join(partial, "cameras", "cam-front")
+	// The crash left a clip muxed from a longer index than the one recovery
+	// will keep, plus the temporary file of a mux cut off mid-write. Neither
+	// may survive as-is: the clip must be rebuilt from the truncated index,
+	// the temporary removed and never listed.
+	stale := []byte("stale clip muxed before the crash truncated the index")
+	if err := os.WriteFile(filepath.Join(sourceDir, episodeexport.PlayableFileName), stale, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, episodeexport.PlayableFileName+".tmp"), []byte("half a mux"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A partial trailing index line, the shape a crash leaves.
+	idx, err := os.OpenFile(filepath.Join(sourceDir, "index.jsonl"), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.WriteString(`{"canonical_episode_na`); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	m2, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mf, failures, err := m2.Inspect(started.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("verification failures: %v", failures)
+	}
+	rel := "cameras/cam-front/" + episodeexport.PlayableFileName
+	entry, ok := fileByPath(mf.Files, rel)
+	if !ok {
+		t.Fatalf("recovered manifest does not list %s", rel)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(root, started.ID, rel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) == string(stale) {
+		t.Error("recovery reused the stale pre-crash clip instead of remuxing")
+	}
+	if entry.Size == int64(len(stale)) {
+		t.Errorf("listed clip size %d matches the stale clip", entry.Size)
+	}
+	if _, err := os.Stat(filepath.Join(root, started.ID, rel+".tmp")); !os.IsNotExist(err) {
+		t.Errorf("stray mux temporary survived recovery (stat err %v)", err)
+	}
+	for _, f := range mf.Files {
+		if strings.HasSuffix(f.Path, ".tmp") {
+			t.Errorf("recovered manifest lists temporary file %s", f.Path)
+		}
 	}
 }
 

@@ -85,6 +85,9 @@ The episode directory is never modified.
 		if r.SyncSamples == 0 {
 			fmt.Fprintf(os.Stderr, "episode-playable: warning: camera %s clip carries no random-access frame, so players cannot seek in it and many will not open it at all\n", r.Source)
 		}
+		if r.ParameterSetChanges > 0 {
+			fmt.Fprintf(os.Stderr, "episode-playable: warning: camera %s changes its SPS/PPS mid-stream (%d changed unit(s), a producer restart); the clip carries only the first decoder configuration, so frames after the change will misdecode\n", r.Source, r.ParameterSetChanges)
+		}
 		if r.BFrames {
 			fmt.Fprintf(os.Stderr, "episode-playable: warning: camera %s contains B slices, so its presentation order differs from the coded order index.jsonl records; the timing written for it is approximate\n", r.Source)
 		} else if r.UndecodedSliceHeaders > 0 {

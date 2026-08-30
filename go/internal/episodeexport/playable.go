@@ -51,6 +51,7 @@
 package episodeexport
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -118,6 +119,16 @@ type ClipResult struct {
 	// pictures). A clip with none is not seekable and most players refuse it,
 	// so it must not be reported as a clean conversion on frame count alone.
 	SyncSamples int
+	// ParameterSetChanges counts in-band SPS or PPS units whose bytes differ
+	// from the first ones seen. Encoders repeat identical parameter sets
+	// before every IDR and those repeats are not counted; a change means the
+	// producer restarted mid-episode with new parameters (a different
+	// resolution, most likely). The MP4 written here carries exactly one
+	// decoder configuration, built from the first SPS/PPS, so every frame
+	// after a change would be decoded against the wrong parameters. A clip
+	// with this non-zero must not be presented as a faithful rendering of the
+	// capture.
+	ParameterSetChanges int
 	// MinInterval, MaxInterval and MeanInterval describe the spread of
 	// inter-frame intervals actually written. They differ from each other
 	// whenever the capture rate varied, which is the point.
@@ -204,6 +215,7 @@ func convertSource(episodeDir, sourceDir, indexPath, out string) (ClipResult, er
 	result.BFrames = stats.bFrames
 	result.UndecodedSliceHeaders = stats.undecodedSliceHeaders
 	result.SyncSamples = stats.syncSamples
+	result.ParameterSetChanges = stats.parameterSetChanges
 	result.MinInterval, result.MaxInterval, result.MeanInterval = stats.min, stats.max, stats.mean
 	if err := errors.Join(writeErr, closeErr); err != nil {
 		return result, err
@@ -283,6 +295,9 @@ type muxStats struct {
 	undecodedSliceHeaders int
 	// syncSamples counts written samples a decoder can start on.
 	syncSamples int
+	// parameterSetChanges counts SPS/PPS units that differ byte-wise from the
+	// first ones seen; identical repeats before each IDR are not counted.
+	parameterSetChanges int
 }
 
 // isBSlice reports whether a VCL NAL unit carries a B slice. It matters
@@ -378,11 +393,20 @@ func muxAnnexBToMP4(w *os.File, episodeDir string, frames []cameraIndexLine) (mu
 			case 7: // sequence parameter set, carried in avcC instead
 				if sps == nil {
 					sps = append([]byte(nil), nal...)
+				} else if !bytes.Equal(sps, nal) {
+					// The producer restarted with new parameters. avcC holds
+					// only the first SPS, so frames after this point would be
+					// decoded against the wrong configuration; count it so
+					// callers can refuse the clip instead of shipping one that
+					// silently misdecodes its tail.
+					stats.parameterSetChanges++
 				}
 				continue
 			case 8: // picture parameter set, carried in avcC instead
 				if pps == nil {
 					pps = append([]byte(nil), nal...)
+				} else if !bytes.Equal(pps, nal) {
+					stats.parameterSetChanges++
 				}
 				continue
 			case 9, 12: // access unit delimiter, filler

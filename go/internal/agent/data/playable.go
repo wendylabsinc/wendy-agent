@@ -81,6 +81,8 @@ func playableSkipReason(r episodeexport.ClipResult, err error) string {
 		return "stream carries B slices, so its presentation order differs from the coded order index.jsonl records and the clip's timing would be wrong"
 	case r.UndecodedSliceHeaders > 0:
 		return fmt.Sprintf("%d slice header(s) could not be parsed, so whether the stream carries B slices is unknown and the clip's timing cannot be vouched for", r.UndecodedSliceHeaders)
+	case r.ParameterSetChanges > 0:
+		return fmt.Sprintf("the stream's parameter sets change mid-episode (%d changed SPS/PPS unit(s), a producer restart), and the clip's single decoder configuration would misdecode every frame after the change", r.ParameterSetChanges)
 	case r.SyncSamples == 0:
 		return "clip would carry no random-access frame, so players cannot seek in it and many will not open it"
 	}
