@@ -130,6 +130,11 @@ func (p *hubLoopbackPump) publishIdentity(b loopbackBinding) {
 // sequence, and so tests can assert what was recorded.
 func (p *hubLoopbackPump) Bindings() *loopbackBindingTable { return p.bindings }
 
+// errLoopbackHubRestarted is pump's internal signal that the hub it was
+// consuming was torn down by an episode-capture takeover, so Run should rejoin
+// the replacement hub rather than stop the data plane.
+var errLoopbackHubRestarted = errors.New("producer hub restarted by episode capture")
+
 // Run joins the hub for src and pumps frames to the node until ctx is done or
 // the producer stops.
 //
@@ -138,6 +143,15 @@ func (p *hubLoopbackPump) Bindings() *loopbackBindingTable { return p.bindings }
 // running stream away from a viewer or from episode capture. An empty request
 // also matches the parameters episode capture uses by default, so the common
 // case joins the one existing hub rather than forcing a second producer.
+//
+// The reverse direction is allowed: episode capture with explicit campaign
+// parameters may restart a producer this pump joined at defaults. The pump is
+// a parameter-less subscriber like any other, so it survives the restart by
+// rejoining the replacement hub: the stream it was writing to the node ends
+// and a new one begins on a random-access unit, never a mid-stream splice of
+// different sequence parameter sets into one timeline. The node itself carries
+// its picture size in the bitstream's own parameter sets (see
+// hub_loopback_writer.go), so the writer stays open across the restart.
 func (p *hubLoopbackPump) Run(ctx context.Context, svc *VideoService, src videoSource, devID uint32) error {
 	writer, err := openLoopbackFrameWriter(p.nodePath)
 	if err != nil {
@@ -150,18 +164,36 @@ func (p *hubLoopbackPump) Run(ctx context.Context, svc *VideoService, src videoS
 		}
 	}()
 
-	hub, subID, frames, err := svc.joinHub(ctx, src.key, &agentpb.StreamVideoRequest{DeviceId: devID})
-	if err != nil {
-		return fmt.Errorf("joining producer hub for %s: %w", p.sourceID, err)
+	awaitRandomAccess := false
+	for {
+		hub, subID, frames, err := svc.joinHub(ctx, src.key, &agentpb.StreamVideoRequest{DeviceId: devID})
+		if err != nil {
+			return fmt.Errorf("joining producer hub for %s: %w", p.sourceID, err)
+		}
+		err = p.pumpFrom(ctx, hub, subID, frames, writer, awaitRandomAccess)
+		hub.unsubscribe(subID)
+		if errors.Is(err, errLoopbackHubRestarted) {
+			p.logger.Info("two-plane: producer restarted by episode capture; rejoining the replacement hub",
+				zap.String("source", p.sourceID), zap.String("node", p.nodePath))
+			awaitRandomAccess = true
+			continue
+		}
+		return err
 	}
-	defer hub.unsubscribe(subID)
-
-	return p.pump(ctx, hub, subID, frames, writer)
 }
 
 // pump is the frame loop, split out from Run so tests can drive it with a fake
 // hub subscription and a fake writer without any device or kernel module.
 func (p *hubLoopbackPump) pump(ctx context.Context, hub *deviceHub, subID int, frames <-chan *videoFrame, writer loopbackFrameWriter) error {
+	return p.pumpFrom(ctx, hub, subID, frames, writer, false)
+}
+
+// pumpFrom is pump with an explicit starting gate: after a capture takeover
+// the rejoined stream must begin on a random-access unit, so the node's new
+// stream starts decodable. Frames skipped by the gate never reach the node and
+// record no binding; the next written frame's HubDropsBefore carries them, the
+// same way it carries hub-side drops, so no loss goes unreported.
+func (p *hubLoopbackPump) pumpFrom(ctx context.Context, hub *deviceHub, subID int, frames <-chan *videoFrame, writer loopbackFrameWriter, awaitRandomAccess bool) error {
 	// lastDrops is the hub's running drop total for this subscriber as of the
 	// previously WRITTEN frame, so each binding reports the drops since it. This
 	// is drop case 1 from hub_loopback_binding.go: those samples never reach the
@@ -182,6 +214,10 @@ func (p *hubLoopbackPump) pump(ctx context.Context, hub *deviceHub, subID int, f
 	// the frame at broadcast, which is a change to shared hub behaviour that the
 	// gRPC sensor path and episode capture would also have to absorb.
 	var lastDrops uint64
+	// gatedSkips counts frames the starting gate skipped after a rejoin. They
+	// never reached the node, so like hub-side drops they are reported on the
+	// next frame that did.
+	var gatedSkips uint64
 	for {
 		select {
 		case <-ctx.Done():
@@ -190,6 +226,9 @@ func (p *hubLoopbackPump) pump(ctx context.Context, hub *deviceHub, subID int, f
 			if !ok {
 				if err := hub.terminalErr(); err != nil {
 					return err
+				}
+				if hub.wasRestarted() {
+					return errLoopbackHubRestarted
 				}
 				return nil
 			}
@@ -205,8 +244,19 @@ func (p *hubLoopbackPump) pump(ctx context.Context, hub *deviceHub, subID int, f
 				return fmt.Errorf("source %s: %s", p.sourceID, reason)
 			}
 
+			if awaitRandomAccess {
+				// The rejoined stream must begin decodable. frameBindableToLoopback
+				// already guaranteed a whole H.264 access unit, so this only asks
+				// whether it is a random-access one.
+				if _, randomAccess := frameRandomAccess(frame); !randomAccess {
+					gatedSkips++
+					continue
+				}
+				awaitRandomAccess = false
+			}
+
 			drops := hub.drops(subID)
-			delta := drops - lastDrops
+			delta := drops - lastDrops + gatedSkips
 
 			seq, err := writer.WriteFrame(frame.data)
 			if err != nil {
@@ -222,6 +272,7 @@ func (p *hubLoopbackPump) pump(ctx context.Context, hub *deviceHub, subID int, f
 				continue
 			}
 			lastDrops = drops
+			gatedSkips = 0
 
 			binding := loopbackBinding{
 				LoopbackSequence: seq,
