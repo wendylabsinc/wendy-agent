@@ -20,8 +20,21 @@ func newCameraControlsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "controls <id>",
 		Short: "Show a local camera's tunable controls (exposure, gain, white balance, ...)",
-		Args:  cobra.ExactArgs(1),
+		Long: `Show the tunable V4L2 controls a local (USB/CSI) camera exposes, with the
+current value and the range each accepts.
+
+The list comes from the camera itself, so it is whatever that hardware supports
+rather than a fixed set -- a webcam with zoom or focus shows those too.
+
+Run without an id to see which cameras this device has.`,
+		// Not ExactArgs(1): running this bare is how someone finds out what it
+		// wants, and "accepts 1 arg(s), received 0" does not tell them. With no
+		// id we list the cameras, which IS the missing argument.
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return listCamerasForChoice(cmd, "controls")
+			}
 			id, err := parseCameraID(args[0])
 			if err != nil {
 				return err
@@ -97,11 +110,21 @@ manual exposure:
 
 Run "wendy device camera controls <id>" first to see the available controls and
 their ranges.`,
-		Args: cobra.MinimumNArgs(2),
+		// Not MinimumNArgs(2): the two things a caller has to know are which
+		// camera and which control names, and an arity error tells them
+		// neither. Bare, we list the cameras; with an id and no pairs, we list
+		// that camera's settable controls and their ranges.
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return listCamerasForChoice(cmd, "set-control")
+			}
 			id, err := parseCameraID(args[0])
 			if err != nil {
 				return err
+			}
+			if len(args) == 1 {
+				return listControlsForChoice(cmd, id)
 			}
 			controls, err := parseControlAssignments(args[1:])
 			if err != nil {
@@ -170,5 +193,89 @@ func reportControlResults(out io.Writer, id uint32, results []*agentpb.CameraCon
 	if len(failed) > 0 {
 		return fmt.Errorf("camera %d: %d control(s) not applied: %s", id, len(failed), strings.Join(failed, ", "))
 	}
+	return nil
+}
+
+// listCamerasForChoice answers "which camera?" by showing the ones this device
+// has. It is what both commands do when run without an id: the answer to a
+// missing argument is the set of values it could take, not a count of how many
+// were expected.
+func listCamerasForChoice(cmd *cobra.Command, sub string) error {
+	ctx := cmd.Context()
+	conn, err := connectToAgent(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	resp, err := conn.VideoService.ListVideoDevices(ctx, &agentpb.ListVideoDevicesRequest{})
+	if err != nil {
+		return fmt.Errorf("listing cameras: %w", err)
+	}
+	devices := resp.GetDevices()
+	if len(devices) == 0 {
+		return fmt.Errorf("no cameras found on this device")
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Which camera? This device has:\n\n")
+	headers := []string{"ID", "Name", "Path"}
+	var rows [][]string
+	for _, d := range devices {
+		rows = append(rows, []string{strconv.FormatUint(uint64(d.GetId()), 10), d.GetName(), d.GetPath()})
+	}
+	fmt.Fprint(out, tui.RenderTable(headers, rows))
+	if sub == "set-control" {
+		fmt.Fprintf(out, "\nThen: wendy device camera set-control <id> name=value [name=value ...]\n")
+		fmt.Fprintf(out, "Run   wendy device camera set-control <id>   to see that camera's controls.\n")
+	} else {
+		fmt.Fprintf(out, "\nThen: wendy device camera controls <id>\n")
+	}
+	return nil
+}
+
+// listControlsForChoice answers "which control?" for a camera whose id is
+// already known -- the second thing set-control needs and the second thing an
+// arity error will not say.
+func listControlsForChoice(cmd *cobra.Command, id uint32) error {
+	ctx := cmd.Context()
+	conn, err := connectToAgent(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	resp, err := conn.VideoService.GetCameraControls(ctx, &agentpb.GetCameraControlsRequest{DeviceId: id})
+	if err != nil {
+		return fmt.Errorf("getting camera controls: %w", err)
+	}
+	controls := resp.GetControls()
+
+	var settable []*agentpb.CameraControl
+	for _, c := range controls {
+		if c.GetSettable() {
+			settable = append(settable, c)
+		}
+	}
+	if len(settable) == 0 {
+		return fmt.Errorf("camera %d exposes no settable controls (is it a local USB/CSI camera?)", id)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Which control? Camera %d accepts:\n\n", id)
+	headers := []string{"Control", "Now", "Min", "Max"}
+	var rows [][]string
+	for _, c := range settable {
+		rows = append(rows, []string{
+			c.GetName(),
+			strconv.FormatInt(int64(c.GetValue()), 10),
+			strconv.FormatInt(int64(c.GetMinimum()), 10),
+			strconv.FormatInt(int64(c.GetMaximum()), 10),
+		})
+	}
+	fmt.Fprint(out, tui.RenderTable(headers, rows))
+	fmt.Fprintf(out, "\nThen: wendy device camera set-control %d name=value [name=value ...]\n", id)
+	fmt.Fprintf(out, "e.g.  wendy device camera set-control %d %s=%d\n",
+		id, settable[0].GetName(), settable[0].GetValue())
 	return nil
 }
