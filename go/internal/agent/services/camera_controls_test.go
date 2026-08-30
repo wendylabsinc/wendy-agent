@@ -12,12 +12,40 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestControlCID(t *testing.T) {
-	if cid, ok := controlCID("exposure_time_absolute"); !ok || cid != 0x009a0902 {
-		t.Fatalf("exposure_time_absolute: got (%#x, %v), want (0x009a0902, true)", cid, ok)
+// Control names now come from the driver, so the spelling this API accepts is
+// produced by normalising the driver's label. It must match what v4l2-ctl
+// prints, because that is what anyone reading a camera's docs will type.
+func TestQueryCtrlName_MatchesV4L2CtlSpelling(t *testing.T) {
+	cases := []struct{ raw, want string }{
+		{"Exposure Time, Absolute", "exposure_time_absolute"},
+		{"White Balance, Automatic", "white_balance_automatic"},
+		{"Zoom, Absolute", "zoom_absolute"},
+		{"Focus, Automatic Continuous", "focus_automatic_continuous"},
+		{"Backlight Compensation", "backlight_compensation"},
+		{"Gain", "gain"},
+		// trailing NUL padding, leading/trailing separators, and runs of
+		// punctuation must all collapse rather than leak into the name
+		{"Brightness   ", "brightness"},
+		{",,Hue,,", "hue"},
 	}
-	if _, ok := controlCID("not_a_control"); ok {
-		t.Fatalf("unknown control resolved to a CID")
+	for _, tc := range cases {
+		var q v4l2QueryCtrl
+		copy(q[8:40], tc.raw)
+		if got := q.name(); got != tc.want {
+			t.Errorf("name(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+// A name longer than the 32-byte field, or one with no terminator, must not
+// read past the struct.
+func TestQueryCtrlName_UnterminatedFieldStaysInBounds(t *testing.T) {
+	var q v4l2QueryCtrl
+	for i := 8; i < 40; i++ {
+		q[i] = 'a'
+	}
+	if got := q.name(); len(got) != 32 {
+		t.Fatalf("want the full 32 bytes, got %d (%q)", len(got), got)
 	}
 }
 
@@ -90,6 +118,17 @@ func newControlsTestService(t *testing.T) (*VideoService, *[]controlValue) {
 	svc := NewVideoService(context.Background(), zap.NewNop())
 	svc.controls = newCameraControlStore(filepath.Join(t.TempDir(), "cc.json"))
 	captured := &[]controlValue{}
+	svc.controlIndexFor = func(string) (map[string]uint32, error) {
+		// stands in for asking the camera; the CIDs only need to be distinct
+		return map[string]uint32{
+			"auto_exposure":          0x009a0901,
+			"exposure_time_absolute": 0x009a0902,
+			"backlight_compensation": 0x0098091c,
+			"brightness":             0x00980900,
+			"gain":                   0x00980913,
+			"zoom_absolute":          0x009a090d,
+		}, nil
+	}
 	svc.applyLocalControls = func(_ string, ctrls []controlValue) ([]*agentpb.CameraControlResult, error) {
 		*captured = ctrls
 		res := make([]*agentpb.CameraControlResult, len(ctrls))
@@ -132,7 +171,11 @@ func TestSetCameraControls_UnknownControlReportedAndKnownApplied(t *testing.T) {
 	for _, r := range resp.GetResults() {
 		got[r.GetName()] = r
 	}
-	if r := got["totally_bogus"]; r == nil || r.GetApplied() || r.GetDetail() != "unknown control" {
+	// Names are resolved against the camera now, so the reason is not "nobody
+	// has heard of this control" but "this camera does not have it" -- the same
+	// answer a real camera gives for a control it lacks.
+	if r := got["totally_bogus"]; r == nil || r.GetApplied() ||
+		r.GetDetail() != "this camera has no control by that name" {
 		t.Fatalf("unknown control not reported correctly: %+v", got["totally_bogus"])
 	}
 	if r := got["auto_exposure"]; r == nil || !r.GetApplied() {
@@ -201,10 +244,16 @@ func TestApplyStoredCameraControls_ReAppliesResolved(t *testing.T) {
 	if len(*captured) != 2 {
 		t.Fatalf("want 2 controls re-applied, got %v", *captured)
 	}
-	// resolved with real CIDs
+	// Resolved against the camera, not a table: every control carries a CID the
+	// enumeration supplied, and two different names never share one.
+	seen := map[uint32]string{}
 	for _, c := range *captured {
-		if cid, ok := controlCID(c.name); !ok || cid != c.cid {
-			t.Fatalf("control %q resolved to wrong cid %#x", c.name, c.cid)
+		if c.cid == 0 {
+			t.Fatalf("control %q re-applied with no cid", c.name)
 		}
+		if prev, dup := seen[c.cid]; dup {
+			t.Fatalf("controls %q and %q share cid %#x", prev, c.name, c.cid)
+		}
+		seen[c.cid] = c.name
 	}
 }

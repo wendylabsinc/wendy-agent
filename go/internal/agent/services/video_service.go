@@ -520,6 +520,10 @@ type VideoService struct {
 	controls           *cameraControlStore
 	applyLocalControls func(path string, ctrls []controlValue) ([]*agentpb.CameraControlResult, error)
 	queryLocalControls func(path string) ([]*agentpb.CameraControl, error)
+	// controlIndexFor resolves a control name to its CID by asking the camera.
+	// A seam for the same reason as the two above: the tests must not need a
+	// real /dev/videoN to exercise name resolution.
+	controlIndexFor func(path string) (map[string]uint32, error)
 
 	ctx    context.Context    // cancelled on Shutdown; hub contexts are derived from this
 	cancel context.CancelFunc // cancels ctx
@@ -581,6 +585,7 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 	svc.controls = newCameraControlStore(cameraControlsPath)
 	svc.applyLocalControls = applyCameraControlsV4L2
 	svc.queryLocalControls = queryCameraControlsV4L2
+	svc.controlIndexFor = cameraControlIndex
 	if err := svc.controls.Load(); err != nil {
 		logger.Warn("loading camera controls failed", zap.Error(err))
 	}
