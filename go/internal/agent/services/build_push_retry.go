@@ -1,84 +1,10 @@
 package services
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"net"
 	"sync/atomic"
-	"time"
 )
-
-// Delivery over the mesh is the leg that fails on a long-haul link. Measured on
-// a US build host pushing to Jetsons in Canada: EOF partway through "exporting +
-// pushing layers", once at 190s and once at 311s, on a multi-gigabyte image.
-//
-// What can and cannot be retried here is worth stating plainly, because the
-// obvious reading is wrong. A blob upload is one HTTP request with a
-// gigabyte-sized body streamed from buildkit. Once bytes have been forwarded,
-// this proxy cannot replay them -- the body is not seekable and buffering it
-// would mean holding the image in memory. Resuming a partial blob is the
-// pusher's job (the registry protocol has ranged PATCH for exactly this); it is
-// not something a byte-forwarding proxy can retrofit.
-//
-// What IS safe to retry is establishing the hop: a dial has no side effects, so
-// a mesh connection that fails to come up, or a pooled connection found dead
-// after an idle period, can simply be dialled again. On a link that drops
-// briefly and often, that covers a real share of the failures for a few lines.
-const (
-	// pushDialAttempts includes the first try. Small on purpose: a genuinely
-	// unreachable peer should fail in seconds, not after a long ladder that
-	// looks like a hang.
-	pushDialAttempts = 4
-	// pushDialBackoff is the wait after the first failure, doubled each time
-	// (200ms, 400ms, 800ms). Long enough to outlast a brief drop, short enough
-	// that a dead peer is still reported promptly.
-	pushDialBackoff = 200 * time.Millisecond
-	// pushIdleConnTimeout retires pooled connections quickly. A tunnel that
-	// drops leaves idle connections that look usable and fail on first write;
-	// re-dialling costs one round trip, and being handed a dead connection
-	// costs the build.
-	pushIdleConnTimeout = 20 * time.Second
-)
-
-// retryingDial wraps a dial function so transient failures to establish the hop
-// are retried, and reports how many attempts a success took.
-//
-// ctx cancellation is honoured immediately and never retried: a cancelled build
-// must not sit through a backoff ladder.
-func retryingDial(
-	dial func(context.Context) (net.Conn, error),
-	onRetry func(attempt int, err error),
-) func(context.Context) (net.Conn, error) {
-	return func(ctx context.Context) (net.Conn, error) {
-		var lastErr error
-		backoff := pushDialBackoff
-		for attempt := 1; attempt <= pushDialAttempts; attempt++ {
-			conn, err := dial(ctx)
-			if err == nil {
-				return conn, nil
-			}
-			lastErr = err
-			// A cancelled or expired context is a decision, not a blip.
-			if ctx.Err() != nil {
-				return nil, err
-			}
-			if attempt == pushDialAttempts {
-				break
-			}
-			if onRetry != nil {
-				onRetry(attempt, err)
-			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-			}
-			backoff *= 2
-		}
-		return nil, fmt.Errorf("after %d attempts: %w", pushDialAttempts, lastErr)
-	}
-}
 
 // deliveryAttempt holds request-local accounting. BuildKit pushes several
 // layers concurrently and retries 5xx responses, so combining their bodies

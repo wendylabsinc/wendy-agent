@@ -138,6 +138,11 @@ func startPushProxy(ctx context.Context, dialer PeerDialer, target *agentpbv2.Pu
 // format has a slot for one.
 const pushProxyUser = "wendy-build"
 
+// pushIdleConnTimeout bounds how long an unused mesh tunnel stays in the HTTP
+// pool. It reduces stale reuse; it is not a liveness probe and does not replace
+// BuildKit's descriptor-level retry after a failed request.
+const pushIdleConnTimeout = 20 * time.Second
+
 // newPushProxy binds the loopback listener and mints this build's credential,
 // but serves nothing yet.
 //
@@ -229,20 +234,20 @@ func (p *pushProxy) serve(ctx context.Context) {
 			}
 		},
 		Transport: &http.Transport{
-			// Establishing the hop is retried; forwarding bytes is not. A dial
-			// has no side effects, so a mesh connection that fails to come up
-			// can simply be dialled again -- see build_push_retry.go for why a
-			// partially-sent blob cannot be replayed here.
+			// BuildKit retries registry 5xx responses at the descriptor layer,
+			// where it still has the source content needed to replay a request.
+			// The proxy must not stack another retry ladder underneath it: that
+			// multiplies attempts and still cannot resume a partially sent body.
 			DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return retryingDial(p.dial, nil)(ctx)
+				return p.dial(ctx)
 			},
 			// Registry pushes are HTTP/1.1 with sized bodies; the byte relay this
 			// replaces never negotiated h2, so do not start now.
 			ForceAttemptHTTP2:   false,
 			MaxIdleConnsPerHost: 8,
-			// A tunnel that drops leaves pooled connections that look usable and
-			// fail on first write. Retiring them quickly costs one round trip;
-			// being handed a dead one costs the build.
+			// Bound the age of an idle pooled tunnel to reduce stale reuse. This
+			// cannot detect a dead tunnel immediately or prevent the first failed
+			// write; BuildKit handles the resulting 502 at the request layer.
 			IdleConnTimeout:       pushIdleConnTimeout,
 			ResponseHeaderTimeout: 0,
 		},

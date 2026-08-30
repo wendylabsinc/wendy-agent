@@ -1,96 +1,14 @@
 package services
 
 import (
-	"context"
 	"errors"
-	"net"
 	"strings"
 	"testing"
-	"time"
 )
 
-type fakeConn struct{ net.Conn }
-
-// TestRetryingDial_RecoversFromATransientFailure is the case this exists for: a
-// long-haul mesh link that drops briefly. A dial has no side effects, so trying
-// again is safe -- unlike the byte forwarding, which cannot be replayed.
-func TestRetryingDial_RecoversFromATransientFailure(t *testing.T) {
-	var calls int
-	var retries []int
-	dial := retryingDial(func(context.Context) (net.Conn, error) {
-		calls++
-		if calls < 3 {
-			return nil, errors.New("connection reset by peer")
-		}
-		return &fakeConn{}, nil
-	}, func(attempt int, _ error) { retries = append(retries, attempt) })
-
-	conn, err := dial(context.Background())
-	if err != nil {
-		t.Fatalf("want success on the third attempt, got %v", err)
-	}
-	if conn == nil {
-		t.Fatal("want a connection")
-	}
-	if calls != 3 {
-		t.Errorf("dialled %d times, want 3", calls)
-	}
-	if len(retries) != 2 {
-		t.Errorf("reported %v retries, want 2", retries)
-	}
-}
-
-// A genuinely unreachable peer must fail, and say how hard it tried, rather than
-// looking like a hang.
-func TestRetryingDial_GivesUpAndSaysHowManyAttempts(t *testing.T) {
-	var calls int
-	dial := retryingDial(func(context.Context) (net.Conn, error) {
-		calls++
-		return nil, errors.New("no route to host")
-	}, nil)
-
-	_, err := dial(context.Background())
-	if err == nil {
-		t.Fatal("want failure when every attempt fails")
-	}
-	if calls != pushDialAttempts {
-		t.Errorf("dialled %d times, want %d", calls, pushDialAttempts)
-	}
-	if !strings.Contains(err.Error(), "no route to host") {
-		t.Errorf("the underlying cause must survive; got %q", err)
-	}
-	if !strings.Contains(err.Error(), "attempts") {
-		t.Errorf("the message should say it retried; got %q", err)
-	}
-}
-
-// TestRetryingDial_DoesNotRetryACancelledBuild: a cancelled build must not sit
-// through a backoff ladder. Cancellation is a decision, not a blip.
-func TestRetryingDial_DoesNotRetryACancelledBuild(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	var calls int
-	start := time.Now()
-	_, err := retryingDial(func(context.Context) (net.Conn, error) {
-		calls++
-		return nil, errors.New("dial failed")
-	}, nil)(ctx)
-
-	if err == nil {
-		t.Fatal("want failure")
-	}
-	if calls != 1 {
-		t.Errorf("dialled %d times, want exactly 1 on a cancelled context", calls)
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("took %v; a cancelled build must not wait through backoff", elapsed)
-	}
-}
-
-// TestAnnotateDeliveryFailure_SaysHowFarItGot is the whole point of the byte
-// counting: "EOF at 190s" gives a developer nothing to act on, and cannot
-// distinguish a cold build cache (whole image on the wire) from a warm one.
+// A bare EOF says nothing about the failed HTTP request. The diagnostic should
+// report that attempt's body consumption and its declared size without calling
+// either number whole-image progress.
 func TestAnnotateDeliveryFailure_SaysHowFarItGot(t *testing.T) {
 	err := annotateDeliveryFailure(errors.New("unexpected EOF"), 1932735283, 2<<30)
 	if !strings.Contains(err.Error(), "unexpected EOF") {

@@ -21,11 +21,15 @@ import (
 // stubPeerDialer stands in for MeshDialer so the proxy can be tested without a
 // broker or a real peer.
 type stubPeerDialer struct {
-	addr string // when set, dial this instead of a mesh peer
-	err  error
+	addr  string // when set, dial this instead of a mesh peer
+	err   error
+	calls *int
 }
 
 func (d stubPeerDialer) DialDevice(_ context.Context, _ int32, _ uint16) (net.Conn, string, error) {
+	if d.calls != nil {
+		(*d.calls)++
+	}
 	if d.err != nil {
 		return nil, "", d.err
 	}
@@ -45,7 +49,8 @@ func testTarget() *agentpbv2.PushTarget {
 // which says nothing about whether the mesh is unreachable or the registry
 // rejected our certificate — the two causes with completely different fixes.
 func TestPushProxy_SurfacesDialFailure(t *testing.T) {
-	dialer := stubPeerDialer{err: errors.New("no route to peer")}
+	var calls int
+	dialer := stubPeerDialer{err: errors.New("no route to peer"), calls: &calls}
 
 	proxy, err := startPushProxy(context.Background(), dialer, testTarget(), &tls.Config{MinVersion: tls.VersionTLS12})
 	if err != nil {
@@ -62,6 +67,9 @@ func TestPushProxy_SurfacesDialFailure(t *testing.T) {
 
 	if got := proxy.latestError(); got == nil {
 		t.Fatal("the proxy must record why the outbound dial failed, not discard it")
+	}
+	if calls != 1 {
+		t.Fatalf("proxy dialled %d times, want one attempt; BuildKit owns request retries", calls)
 	}
 }
 
