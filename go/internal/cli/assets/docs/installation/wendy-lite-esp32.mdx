@@ -1,143 +1,139 @@
 ---
 title: ESP32 (beta)
-description: Install Wendy Lite on ESP32 RISC-V microcontrollers
+description: Develop and deploy native ESP-IDF apps to supported ESP32 devices with Wendy
 ---
 
-## Wendy Lite — ESP32
+<img
+  src={`${(process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/$/, '')}/images/boards/esp32.jpeg`}
+  alt="ESP32 development boards"
+  className="not-prose aspect-video w-full bg-fd-muted object-cover object-center"
+/>
 
-Wendy Lite is a WebAssembly runtime for ESP32 RISC-V microcontrollers. It lets you write firmware in Swift and deploy it as a `.wasm` binary to ESP32-C6 and ESP32-C5 devices.
+## ESP32 with Wendy
 
-<Callout type="warn">
-  **Supported chips**: Wendy Lite targets ESP32-C6 and ESP32-C5 (RISC-V). Classic ESP32 (Xtensa) is not supported.
+Wendy supports regular, native [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/) projects on ESP32. This is the recommended way to build ESP32 apps: keep the standard ESP-IDF project layout and APIs, then use `wendy run` to select the correct chip target, build, deploy, reboot, and stream logs.
+
+Swift and other WebAssembly apps remain available through the optional Wendy Lite WASM runtime, but new projects should start with native ESP-IDF unless they specifically need WASM portability.
+
+<Callout type="info">
+  **Supported targets:** ESP32-C5, ESP32-C6, ESP32-C61, ESP32-P4, and ESP32-S3. When the installer offers multiple firmware variants, choose one labeled **native app support**. ESP32-P4 support is available for the boards listed by the installer.
 </Callout>
 
-### What You'll Need
+## What You'll Need
 
-- An ESP32-C6 or ESP32-C5 development board
-- USB cable for connecting the board to your computer
-- Wendy CLI installed on your development machine ([Developer Machine Setup](/docs/installation/developer-machine-setup))
-- Swift 6.0+ with Embedded Swift WASM support ([Developer Machine Setup](/docs/installation/developer-machine-setup#install-swift))
+- A supported ESP32 development board
+- A USB data cable
+- The Wendy CLI ([Developer Machine Setup](/docs/installation/developer-machine-setup))
+- The [ESP-IDF Installation Manager (`eim`)](https://dl.espressif.com/dl/eim/). On macOS, install it with `brew install espressif/eim/eim`
+- An existing ESP-IDF project, or a new project created with the standard ESP-IDF tooling
 
-### Installing Wendy Lite Firmware
+Wendy uses `eim` to run ESP-IDF 5.5.4. If that version is not installed, the first `wendy run` installs it for you.
+
+## Install the Wendy Firmware
 
 <Steps>
   <Step>
     ### Connect Your Board
 
-    Plug your ESP32-C6 or ESP32-C5 board into your computer via USB.
+    Plug the ESP32 into your development machine over USB. If the board has separate UART and native USB ports, prefer native USB.
   </Step>
 
   <Step>
     ### Install the Firmware
 
-    Use the `wendy` CLI to flash the Wendy Lite firmware to your board:
+    Run:
 
     ```bash
     wendy install
     ```
 
-    <CliShot flow="os-install" step="select-device-type" alt="The Wendy CLI prompting you to choose a device type, including ESP32 boards, before flashing" />
+    <CliShot flow="os-install" step="select-device-type" alt="The Wendy CLI prompting you to choose an ESP32 target and board" />
 
-    Select **ESP32-C6** (or **ESP32-C5**) when prompted, then select the USB serial port for your board. The CLI will download and flash the Wendy Lite firmware automatically.
+    Select the target that matches your chip, then choose your board. For generic ESP32-C5, ESP32-C6, and ESP32-S3 boards, select the variant labeled **native app support**.
+
+    The CLI detects the USB serial port, verifies the chip model, downloads the correct Wendy firmware, and flashes it directly. No separate `esptool` installation is required.
   </Step>
 
   <Step>
     ### Discover Your Device
 
-    Once the firmware is flashed, the board will restart and advertise itself over BLE. Run:
+    After the board reboots, run:
 
     ```bash
     wendy discover
     ```
 
-    <CliShot flow="discover" step="devices" alt="The Wendy CLI listing discovered Wendy devices, including the ESP32 board over BLE" />
+    <CliShot flow="discover" step="devices" alt="The Wendy CLI listing a discovered ESP32 board" />
 
-    You should see your ESP32 device appear in the list of discovered devices.
+    The ESP32 can be discovered over its native USB connection or over the network after Wi-Fi provisioning.
   </Step>
 </Steps>
 
-### Writing Your First App
+## Use a Regular ESP-IDF Project
 
-<Steps>
-  <Step>
-    ### Create a New Project
+Wendy recognizes the standard ESP-IDF project markers: a top-level `CMakeLists.txt` that includes `project.cmake`, or an `sdkconfig`/`sdkconfig.defaults` file. Keep the normal ESP-IDF layout and add a small `wendy.json` manifest:
 
-    Use the Wendy CLI to scaffold a new Wendy Lite project:
+```text
+hello-esp32/
+├── CMakeLists.txt
+├── sdkconfig.defaults
+├── wendy.json
+└── main/
+    ├── CMakeLists.txt
+    └── main.c
+```
 
-    ```bash
-    mkdir blink && cd blink
-    wendy init
-    ```
+The top-level `CMakeLists.txt` remains standard ESP-IDF:
 
-    <CliShot flow="init" step="wizard" alt="The wendy init project wizard prompting for project details and target platform" />
+```cmake
+cmake_minimum_required(VERSION 3.16)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(hello_esp32)
+```
 
-    Select **ESP32** as the target platform when prompted. This creates a Swift project preconfigured with the WendyLite SDK and the correct build settings for WebAssembly.
-  </Step>
+Add a Wendy manifest using the `wendy-lite` device platform:
 
-  <Step>
-    ### Explore the Project Structure
+```json
+{
+  "$schema": "https://wendy.dev/schemas/wendy.json",
+  "appId": "com.example.hello-esp32",
+  "version": "0.1.0",
+  "platform": "wendy-lite",
+  "entitlements": []
+}
+```
 
-    After initialization, you'll have the following structure:
+Your app code uses normal ESP-IDF components and APIs. Wendy does not require a custom application SDK or wrapper.
 
-    ```
-    blink/
-    ├── Package.swift
-    ├── wendy.json
-    └── Sources/
-        └── blink/
-            └── main.swift
-    ```
-  </Step>
+## Deploy
 
-  <Step>
-    ### Edit Your App
-
-    Open `Sources/blink/main.swift` and replace the contents with a simple blink example:
-
-    ```swift
-    import WendyLite
-
-    let led = GPIO(pin: 8, mode: .output)
-
-    while true {
-        led.high()
-        Timer.delay(milliseconds: 500)
-        led.low()
-        Timer.delay(milliseconds: 500)
-    }
-    ```
-  </Step>
-</Steps>
-
-### Deploying to the Device
-
-Once your project is set up, deploy it to your ESP32 with a single command:
+From the ESP-IDF project directory, run:
 
 ```bash
-wendy run
+wendy run --device <name>
 ```
 
-<CliShot flow="run" step="deploy" alt="The wendy run command building the app and deploying it to the device" />
+Wendy:
 
-The Wendy CLI compiles your Swift code to WebAssembly and uploads the `.wasm` binary to the device. You should see the onboard LED start blinking.
+1. Detects the project as ESP-IDF.
+2. Reads the target from the connected device.
+3. Runs `idf.py set-target` when the project is configured for a different chip.
+4. Builds the project with ESP-IDF 5.5.4.
+5. Uploads the native application firmware, reboots the ESP32, and reconnects.
+6. Streams the ESP-IDF console output back to your terminal.
 
-### BLE Provisioning
+Use the usual ESP-IDF tools such as `idf.py menuconfig` and component manifests as normal. You can also build or flash with `idf.py` directly whenever you want the conventional ESP-IDF workflow.
 
-Wendy Lite devices advertise themselves as `Wendy-XXXX` over BLE for WiFi provisioning. You can send WiFi credentials and cloud certificates via the BLE GATT interface, enabling headless setup of devices in the field.
+## Wi-Fi Provisioning
 
-### Observability
+Wendy devices advertise over BLE for headless Wi-Fi provisioning. Run `wendy device setup` to send Wi-Fi credentials and, when applicable, cloud enrollment information. Once connected, the board is discoverable over mDNS and can receive deployments over the network.
 
-Wendy Lite supports OpenTelemetry natively. Your application can emit structured logs, metrics, and traces that integrate with the Wendy dashboard alongside your Jetson and Raspberry Pi devices.
+## Optional WASM Apps
 
-```swift
-import WendyLite
+Wendy Lite can also run Swift and other WebAssembly guests on firmware variants with WASM support. This path is useful when application portability is more important than direct access to the complete ESP-IDF API. See the [Wendy Lite reference](/docs/advanced/wendy-lite) for the WASM SDK, host API, and deployment details.
 
-Log.info("Sensor reading", attributes: ["temperature": 23.5, "humidity": 61.2])
-Metrics.gauge("temperature", value: 23.5)
-```
+## Next Steps
 
-### Next Steps
-
-- Explore the [Wendy Lite examples](https://github.com/wendylabsinc/wendy-lite/tree/main/wasm_apps) for GPIO, I2C, SPI, BLE, and WiFi demos
-- Check the [Developer Machine Setup](/docs/installation/developer-machine-setup) for CLI installation
-- Read the [Raspberry Pi Installation](/docs/installation/wendyos-raspberry-pi-5), [NVIDIA Jetson Orin Nano Installation](/docs/installation/wendyos-nvidia-jetson-orin-nano), or [NVIDIA Jetson AGX Thor Installation](/docs/installation/wendyos-nvidia-jetson-agx-thor) guides if you also work with larger devices
+- Start from the native [ESP32-C6 NeoPixel example](https://github.com/wendylabsinc/WendyOS/tree/main/Examples/ESP32c6-NeoPixel)
+- Read the [`wendy run` reference](/docs/advanced/clients/wendy-cli/commands/run)
+- Read the [`wendy install` ESP32 reference](/docs/advanced/clients/wendy-cli/commands/os/install#esp32-wendy-lite-path)

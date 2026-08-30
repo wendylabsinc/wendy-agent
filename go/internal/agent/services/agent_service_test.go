@@ -160,9 +160,6 @@ func TestGetAgentVersion(t *testing.T) {
 }
 
 func TestGetAgentVersionReportsHostname(t *testing.T) {
-	// Goes through startAgentServer rather than a bare &AgentService{}: the
-	// handler now resolves and hashes its own executable (binarySHA256), which
-	// calls the execPathResolver a zero-value struct leaves nil.
 	client, cleanup := startAgentServer(t,
 		&mockNetworkManager{},
 		&mockHardwareDiscoverer{},

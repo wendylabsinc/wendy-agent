@@ -1,0 +1,140 @@
+---
+title: Managing Drivers
+description: Install, update, and pre-load kernel driver add-ons on a WendyOS device
+---
+
+## Driver add-ons
+
+Some hardware needs a kernel module WendyOS does not ship — a niche network card, a
+CAN controller, a camera bridge. A **driver add-on** delivers one as a
+systemd-sysext `.raw` image that is merged onto the read-only `/usr` at runtime. The
+rootfs is never modified and the device never compiles anything: add-ons are built in
+CI against a pinned kernel.
+
+```sh
+wendy device drivers list                      # what this device has
+wendy device drivers list --available          # what the registry publishes for it
+wendy device drivers install wendyos-hello     # from the registry
+wendy device drivers install wendyos-hello --file ./wendyos-hello.raw
+wendy device drivers remove wendyos-hello --force
+```
+
+The examples use `wendyos-hello`, a self-test add-on published with every build, so
+they run as written on any device whose OS version is in the registry.
+
+`list` reports what is installed, whether each module is actually loaded, and whether
+an add-on is `stale` — built for a kernel this device no longer runs, or an image that
+cannot be read at all. Either way it is on disk and will not load.
+
+## An add-on is pinned to one exact kernel
+
+This is the fact everything else follows from. A module built for `6.18.33-v8-16k`
+will not load on any other kernel, and `uname -r` encodes the page-size variant too, so
+a 4 KB-page build is ABI-incompatible with a 16 KB-page kernel and is rejected.
+
+The store is therefore keyed by kernel:
+
+```
+/data/extensions/enabled/
+├── 6.18.33-v8-16k/wendyos-hello.raw ← merged when running this kernel
+├── 6.19.2-v8-16k/wendyos-hello.raw  ← staged for a kernel not booted yet
+└── any/                             ← add-ons declaring no kernel; merged always
+```
+
+On boot, `/usr/sbin/wendyos-sysext-apply.sh` merges only the running kernel's bucket
+plus `any/`, then runs `depmod` and `modprobe`. Copies for other kernels sit inert.
+`/data` is shared across A/B slots, so a staged add-on survives an OS update, and a
+rollback still finds the build made for the slot it returns to.
+
+Before anything is placed on `/data`, the agent verifies in order:
+
+1. SHA-256 of the received bytes against the declared digest.
+2. The detached signature over that digest (see [Signing](#signing)).
+3. The kernel the image itself declares, read out of its embedded
+   `extension-release`. The image is the authority — a manifest that disagrees loses.
+
+A rejected install cannot disturb a working add-on: the existing copy is snapshotted
+and restored on any failure.
+
+### Removal may need a reboot
+
+Modules are never force-unloaded. If the module is in use, `remove` unmerges the
+extension but the old code keeps running until a reboot, and the command says so.
+Installing a replacement in that state reports the same thing — the new `.raw` is in
+place, but the kernel runs the old module until you reboot.
+
+## Updating across an OS update
+
+An OS update that changes the kernel would leave every add-on unable to load. So
+`wendy os update` runs a pre-flight: for each installed add-on it looks up the rebuild
+published for the target version and **stages** it — stored in the new kernel's bucket,
+not applied — so the add-on merges on the first boot of the new slot.
+
+If an add-on cannot be staged, the update stops rather than quietly proceeding:
+
+```
+⚠ 1 driver add-on will not be in place after this update:
+    wendyos-hello — no rebuild published for 0.20.0
+✗ aborted: the device would update without wendyos-hello (re-run with --no-drivers to update anyway)
+```
+
+Interactively this is a prompt; non-interactively it exits non-zero, so it cannot be
+missed in a script. It blocks on every way of failing — no rebuild published, the
+manifest unreachable, the download or signature check failing, or the installed set
+being unreadable. `--no-drivers` is the documented way to say you accept the risk.
+
+An add-on the target publishes for the kernel you are already running is reported as
+`unaffected` and never blocks.
+
+## Updating without internet
+
+On a network with no route to the registry, put the rebuilt images in a directory and
+point the update at it:
+
+```sh
+wendy os update --drivers-dir ./drivers/
+```
+
+Every `.raw` in the directory is staged. Each image declares the kernel it was built
+for, so you do not name a version and nothing is looked up — which also means an image
+for a kernel the device is not running is accepted, filed in that kernel's bucket, and
+left unapplied until that kernel boots. Add-ons the device does not have yet are staged
+too, so a fresh device can be pre-loaded.
+
+The same policy applies: an installed add-on with no matching `.raw` in the directory,
+or one that fails to stage, blocks the update. `--drivers-dir` cannot be combined with
+`--no-drivers`.
+
+## Seeding at first boot
+
+A device that needs a driver to reach the network at all cannot fetch one. For that
+case an `extensions.json` on the config partition installs add-ons on first boot — see
+[Config Partition](/docs/wendyos/config-partition).
+
+## Signing
+
+Add-ons are signed with ML-DSA65 detached signatures over the image's SHA-256 digest.
+`wendyos-sign` is the private-key side, run by CI:
+
+```sh
+wendyos-sign keygen -pub pinned_signing_key.pem -priv signing-key.pem
+wendyos-sign sign -key signing-key.pem -file wendyos-hello.raw   # base64 signature
+```
+
+The public half is embedded in the agent at build time. **It is currently an empty
+placeholder**, so verification is dormant and installs proceed unverified — with a
+warning in the agent log, and with the kernel tainted as out-of-tree and unsigned. The
+exception is config-partition seeding, which refuses rather than installing unverified,
+because it runs at boot with nobody present to accept the risk.
+
+Once a real key ships, unsigned add-ons and bad signatures are refused everywhere, and
+`--signature` becomes required for `--file` installs. See
+[Security](/docs/security#artifact-signature-verification).
+
+## Availability
+
+The driver service is Linux-only and is registered on the mTLS port alone — loading a
+kernel module is ring-0 code execution, so the transport must establish *who* is asking
+before signature verification decides *what* runs. Against an agent that does not serve
+it (a non-Linux host, or one predating driver support) the CLI treats the device as
+having no add-ons rather than failing.

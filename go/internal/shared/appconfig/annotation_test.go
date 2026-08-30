@@ -198,6 +198,21 @@ func TestBuildEntitlementAnnotationsIndexesDistinctSerialDevices(t *testing.T) {
 	}
 }
 
+func TestBuildEntitlementAnnotationsKeepsParameterlessEntitlement(t *testing.T) {
+	key := EntitlementAnnotationKeyPrefix + EntitlementCamera
+	annotations := BuildEntitlementAnnotations([]Entitlement{{Type: EntitlementCamera}})
+	value, ok := annotations[key]
+	if !ok {
+		t.Fatalf("missing parameterless entitlement annotation %q", key)
+	}
+	if value == "" {
+		t.Fatal("parameterless entitlement annotation has an empty value, which containerd drops")
+	}
+	if got := ParseEntitlementAnnotation(EntitlementCamera, value); !reflect.DeepEqual(got, Entitlement{Type: EntitlementCamera}) {
+		t.Fatalf("round-trip = %+v, want camera entitlement", got)
+	}
+}
+
 func TestSplitAnnotationParams(t *testing.T) {
 	tests := []struct {
 		input string

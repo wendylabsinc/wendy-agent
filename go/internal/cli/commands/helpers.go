@@ -1029,7 +1029,7 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 		// command UIs don't surface delayed transport errors, and so provisioned
 		// agents that only expose the mTLS port can report an auth error.
 		probeCtx, cancel := context.WithTimeout(ctx, agentPlaintextProbeTimeout)
-		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		cancel()
 		tm("  ↳ plaintext probe (GetAgentVersion)")
 		if probeErr != nil {
@@ -1043,6 +1043,7 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 			}
 			return nil, probeErr
 		}
+		conn.CacheAgentVersion(resp)
 	}
 	// This is the choke point's only real proof-of-life exit: conn.IsMTLS
 	// means dialAgentLadder already verified it with a live probe, and the
@@ -2031,7 +2032,10 @@ func cacheFastPathReachable(ctx context.Context, conn *grpcclient.AgentConnectio
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+	resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+	if probeErr == nil {
+		conn.CacheAgentVersion(resp)
+	}
 	return probeErr == nil
 }
 
@@ -2267,9 +2271,10 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 			// the old 8s budget (which also covered .local mDNS resolution) made
 			// an unreachable mTLS port cost 8s before the plaintext fallback.
 			probeCtx, cancel := context.WithTimeout(ctx, mtlsProbeTimeout)
-			_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+			resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 			cancel()
 			if probeErr == nil {
+				conn.CacheAgentVersion(resp)
 				rememberCertOrg(host, w.allCerts[i].OrganizationID)
 				return conn, nil
 			}
@@ -2631,11 +2636,16 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	if updateCheckRecentlyPassed(conn.Host) {
 		return conn, nil
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	resp, err := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
-	cancel()
-	if err != nil {
-		return conn, nil
+	resp, ok := conn.CachedAgentVersion()
+	if !ok {
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		var err error
+		resp, err = conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		cancel()
+		if err != nil {
+			return conn, nil
+		}
+		conn.CacheAgentVersion(resp)
 	}
 
 	agentVer := resp.GetVersion()
@@ -2740,9 +2750,10 @@ func waitForAgentRestart(ctx context.Context, addr string) (*grpcclient.AgentCon
 			continue
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		cancel()
 		if probeErr == nil {
+			conn.CacheAgentVersion(resp)
 			return conn, nil
 		}
 		conn.Close()
@@ -3414,12 +3425,19 @@ func hideLocalProviders(excludes map[string]bool) map[string]bool {
 	return merged
 }
 
+// unflashedLiteDedupKey keys a board with no Wendy Lite firmware by its port
+// rather than its synthetic display name, so the row it gets once it identifies
+// itself can supersede it.
+func unflashedLiteDedupKey(serialPort string) string {
+	return "wendy-lite-unflashed:" + serialPort
+}
+
 // externalProviderPickerItem builds the picker row for a device discovered
 // through an external provider. wendy-lite devices are presented as merged
 // devices (like LAN discoveries) so they share the LAN row layout.
 func externalProviderPickerItem(prov providers.DeviceProvider, dev *models.ExternalDevice) tui.PickerItem {
 	if prov.Key() == "wendy-lite" {
-		return tui.PickerItem{
+		item := tui.PickerItem{
 			Name:         dev.DisplayName,
 			DedupKey:     dev.DisplayName,
 			Type:         dev.ConnectionType() + " (Lite)",
@@ -3435,6 +3453,17 @@ func externalProviderPickerItem(prov providers.DeviceProvider, dev *models.Exter
 				Externals:       []*models.ExternalDevice{dev},
 			}},
 		}
+		if port := dev.ConnectionInfo["serialPort"]; port != "" {
+			if dev.ConnectionInfo["needsInstall"] == "true" {
+				item.DedupKey = unflashedLiteDedupKey(port)
+				// The branch sets no SortKey, so ordering falls back to the
+				// dedup key; pin it to the name to keep the row's position.
+				item.SortKey = strings.ToLower(dev.DisplayName)
+			} else {
+				item.Supersedes = unflashedLiteDedupKey(port)
+			}
+		}
+		return item
 	}
 	return tui.PickerItem{
 		Name:         dev.DisplayName,

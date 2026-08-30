@@ -79,7 +79,7 @@ func TestChunkIndexProgressDoesNotReportPartialTotal(t *testing.T) {
 
 func TestComposeChunkProgressKeepsUploadVisible(t *testing.T) {
 	var events []tui.BuildStepEvent
-	w := &composeBuildProgressWriter{
+	w := &imageBuildProgressWriter{
 		Writer: io.Discard,
 		emit:   func(e tui.BuildStepEvent) { events = append(events, e) },
 	}
@@ -527,9 +527,78 @@ func TestPushLayersByChunksSkipsPresentLayer(t *testing.T) {
 	}
 }
 
+func TestPushLayersByChunksOverlapsRemotePreflightAndLocalCacheReads(t *testing.T) {
+	diffID := "sha256:" + strings.Repeat("ef", 32)
+	capabilityStarted := make(chan struct{})
+	layersStarted := make(chan struct{})
+	cacheStarted := make(chan struct{})
+	capabilityRelease := make(chan struct{})
+	layersRelease := make(chan struct{})
+	cacheRelease := make(chan struct{})
+	var capabilityOnce, layersOnce, cacheOnce sync.Once
+	releaseCapability := func() { capabilityOnce.Do(func() { close(capabilityRelease) }) }
+	releaseLayers := func() { layersOnce.Do(func() { close(layersRelease) }) }
+	releaseCache := func() { cacheOnce.Do(func() { close(cacheRelease) }) }
+	defer releaseCapability()
+	defer releaseLayers()
+	defer releaseCache()
+
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			if len(req.GetChunkHashes()) != 0 {
+				t.Fatalf("unexpected non-capability QueryChunks call")
+			}
+			close(capabilityStarted)
+			<-capabilityRelease
+			return &agentpb.QueryChunksResponse{}
+		},
+		queryLayersFn: func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+			close(layersStarted)
+			<-layersRelease
+			return &agentpb.QueryLayersResponse{Present: []*agentpb.PresentLayer{{DiffId: diffID, Size: 123}}}
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := pushLayersByChunksWithPrepareModeAndCache(
+			context.Background(), fake, []localLayer{{Digest: "sha256:cached", DiffID: diffID}},
+			nil, nil, false, nil,
+			func(string) (*cachedManifest, bool) {
+				close(cacheStarted)
+				<-cacheRelease
+				return nil, false
+			},
+		)
+		done <- err
+	}()
+
+	for name, started := range map[string]<-chan struct{}{
+		"capability probe": capabilityStarted,
+		"layer query":      layersStarted,
+		"manifest cache":   cacheStarted,
+	} {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			releaseCapability()
+			releaseLayers()
+			releaseCache()
+			t.Fatalf("%s did not start while the other preflight operations were blocked", name)
+		}
+	}
+	releaseCapability()
+	releaseLayers()
+	releaseCache()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestPushLayersByChunksProbeUnimplemented verifies that an agent which does not
 // support chunk-diff at all (QueryChunks returns Unimplemented) surfaces the
-// error before any layer work, so the caller can fall back to a registry push.
+// error before any layer materialization, so the caller can fall back to a
+// registry push. The optional QueryLayers request may run concurrently.
 func TestPushLayersByChunksProbeUnimplemented(t *testing.T) {
 	manifestCacheTestDir = t.TempDir()
 	t.Cleanup(func() { manifestCacheTestDir = "" })
@@ -553,6 +622,10 @@ type probeUnsupportedClient struct {
 
 func (probeUnsupportedClient) QueryChunks(_ context.Context, _ *agentpb.QueryChunksRequest, _ ...grpc.CallOption) (*agentpb.QueryChunksResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "QueryChunks not implemented")
+}
+
+func (probeUnsupportedClient) QueryLayers(_ context.Context, _ *agentpb.QueryLayersRequest, _ ...grpc.CallOption) (*agentpb.QueryLayersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "QueryLayers not implemented")
 }
 
 // TestPushLayersByChunksReportsProgress verifies that pushLayersByChunks wires

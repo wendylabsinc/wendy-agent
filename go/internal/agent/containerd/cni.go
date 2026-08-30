@@ -272,6 +272,20 @@ func buildBridgeCNIConfig(appID, subnet string) string {
 	return string(b)
 }
 
+func buildBridgeCNICheckConfig(appID, subnet, result string) (string, error) {
+	var prevResult any
+	if len(result) == 0 || len(result) > cniStdoutLimit || json.Unmarshal([]byte(result), &prevResult) != nil {
+		return "", fmt.Errorf("invalid CNI previous result")
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(buildBridgeCNIConfig(appID, subnet)), &cfg); err != nil {
+		return "", err
+	}
+	cfg["prevResult"] = prevResult
+	b, err := json.Marshal(cfg)
+	return string(b), err
+}
+
 // cniStdoutLimit is the maximum bytes read from the CNI plugin's stdout.
 // A valid CNI ADD response is well under 1 KB; this cap prevents memory
 // exhaustion if the vendored plugin logic ever emits unexpectedly large
@@ -332,14 +346,14 @@ func warnSubnetCollision(logger *zap.Logger, appID, subnet string) {
 // ensureCNIBinDir in cmd/wendy-agent), so the vendored bridge plugin's IPAM
 // delegation (it execs "host-local" via CNI_PATH) also resolves back into
 // this same binary instead of a third-party binary.
-func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath string) (string, error) {
+func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath string) (string, string, error) {
 	if err := validateCNIInputs(appID, containerID, netnsPath); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	subnet, err := allocateSubnet(appID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	warnSubnetCollision(c.logger, appID, subnet)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
@@ -349,7 +363,7 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	// prevents a kernel-level env truncation if a NUL ever reaches here via a
 	// future bypass (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
 	if strings.ContainsRune(containerID, '\x00') || strings.ContainsRune(netnsPath, '\x00') {
-		return "", fmt.Errorf("CNI ADD: NUL byte in containerID or netnsPath rejected")
+		return "", "", fmt.Errorf("CNI ADD: NUL byte in containerID or netnsPath rejected")
 	}
 
 	// runAddOnce execs the vendored bridge plugin (via self-exec) for one ADD
@@ -413,15 +427,15 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 			zap.String("stdout", sanitizeForLog(stdoutStr, 1024)),
 			zap.String("stderr", sanitizeForLog(stderrStr, 512)),
 			zap.Error(runErr))
-		return "", fmt.Errorf("CNI ADD failed for %s/%s; see agent logs for details", appID, containerID)
+		return "", "", fmt.Errorf("CNI ADD failed for %s/%s; see agent logs for details", appID, containerID)
 	}
 
 	var result cniResult
 	if err := json.Unmarshal([]byte(stdoutStr), &result); err != nil {
-		return "", fmt.Errorf("parsing CNI ADD result for %s/%s: %w", appID, containerID, err)
+		return "", "", fmt.Errorf("parsing CNI ADD result for %s/%s: %w", appID, containerID, err)
 	}
 	if len(result.IPs) == 0 {
-		return "", fmt.Errorf("CNI ADD returned no IPs for %s/%s", appID, containerID)
+		return "", "", fmt.Errorf("CNI ADD returned no IPs for %s/%s", appID, containerID)
 	}
 	rawIP, _, _ := strings.Cut(result.IPs[0].Address, "/")
 	// Validate and normalise the IP before using it in /etc/hosts bind-mounts.
@@ -429,14 +443,49 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	// poison the hosts file injected into sibling containers (SOC2-CC6, NIST-SC-7).
 	parsed := net.ParseIP(rawIP)
 	if parsed == nil {
-		return "", fmt.Errorf("CNI ADD returned invalid IP %q for %s/%s", rawIP, appID, containerID)
+		return "", "", fmt.Errorf("CNI ADD returned invalid IP %q for %s/%s", rawIP, appID, containerID)
 	}
 	ip := parsed.String()
 	c.logger.Info("CNI ADD: assigned IP",
 		zap.String("app_id", appID),
 		zap.String("container_id", containerID),
 		zap.String("ip", ip))
-	return ip, nil
+	return ip, stdoutStr, nil
+}
+
+// CNICheck asks the same vendored bridge and host-local plugins used for ADD
+// to verify the complete persisted setup before it is reused.
+func (c *Client) CNICheck(ctx context.Context, appID, containerID, netnsPath, result string) error {
+	if err := validateCNIInputs(appID, containerID, netnsPath); err != nil {
+		return err
+	}
+	subnet, err := allocateSubnet(appID)
+	if err != nil {
+		return err
+	}
+	cfgJSON, err := buildBridgeCNICheckConfig(appID, subnet, result)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, selfExePath)
+	cmd.Args = []string{"bridge"}
+	cmd.Dir = "/"
+	cmd.Stdin = strings.NewReader(cfgJSON)
+	cmd.Env = []string{
+		"PATH=" + CNIBinDir + cniSystemPathDirs,
+		"CNI_COMMAND=CHECK",
+		"CNI_CONTAINERID=" + containerID,
+		"CNI_NETNS=" + netnsPath,
+		"CNI_IFNAME=eth0",
+		"CNI_PATH=" + CNIBinDir,
+	}
+	var output bytes.Buffer
+	cmd.Stdout = &limitedWriter{w: &output, remaining: cniStdoutLimit, cap: cniStdoutLimit}
+	cmd.Stderr = &limitedWriter{w: &output, remaining: cniStdoutLimit, cap: cniStdoutLimit}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("CNI CHECK failed for %s/%s: %w (%s)", appID, containerID, err, sanitizeForLog(output.String(), 512))
+	}
+	return nil
 }
 
 // limitedWriter is an io.Writer that returns an error if more than `cap`

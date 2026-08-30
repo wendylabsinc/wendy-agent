@@ -28,6 +28,7 @@ message VideoDevice {
     string mac              = 9; // stable identity for network cameras; empty for local cameras
     bool has_credentials    = 10; // the agent holds a login for this camera
     bool online             = 11; // the most recent probe reached this camera
+    string topic            = 12; // ROS 2 image topic, e.g. "/camera/image_raw"; empty for other transports
 }
 
 enum VideoTransport {
@@ -35,6 +36,7 @@ enum VideoTransport {
     VIDEO_TRANSPORT_USB     = 1;
     VIDEO_TRANSPORT_CSI     = 2;
     VIDEO_TRANSPORT_IP      = 3;
+    VIDEO_TRANSPORT_ROS2    = 4;
 }
 
 message ListVideoDevicesRequest {}

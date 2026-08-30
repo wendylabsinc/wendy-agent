@@ -111,6 +111,14 @@ func TestIsTransientBluetoothError(t *testing.T) {
 		{"le busy is transient", "org.bluez.Error.Failed", "le-connection-busy", true},
 		{"adapter InProgress is transient", "org.bluez.Error.InProgress", "", true},
 		{"bus NoReply is transient", "org.freedesktop.DBus.Error.NoReply", "", true},
+		// A canceled attempt is a collision with another connect on the same
+		// device — observed on real hardware with a stale bond, where
+		// bluetoothd's background auto-connect retries the advertising device
+		// every ~2s and the explicit connect loses the race before it can see
+		// the real (stale-bond) error. Retrying lets the explicit attempt run
+		// to completion and surface that error so recovery can engage.
+		{"br canceled is transient", "org.bluez.Error.Failed", "br-connection-canceled", true},
+		{"le abort by local is transient", "org.bluez.Error.Failed", "le-connection-abort-by-local", true},
 
 		// Reasons that indicate a real, non-transient condition must not retry.
 		{"br refused is not transient", "org.bluez.Error.Failed", "br-connection-refused", false},
@@ -124,6 +132,35 @@ func TestIsTransientBluetoothError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isTransientBluetoothError(tt.errName, tt.errMessage); got != tt.want {
 				t.Errorf("isTransientBluetoothError(%q, %q) = %v, want %v", tt.errName, tt.errMessage, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsStaleBondBluetoothError(t *testing.T) {
+	tests := []struct {
+		name       string
+		errName    string
+		errMessage string
+		want       bool
+	}{
+		// The kernel's missing-key disconnect, either bearer.
+		{"br key missing", "org.bluez.Error.Failed", "br-connection-key-missing", true},
+		{"le key missing", "org.bluez.Error.Failed", "le-connection-key-missing", true},
+		// A peripheral actively rejecting the old bond.
+		{"auth failed", "org.bluez.Error.AuthenticationFailed", "", true},
+		{"auth rejected", "org.bluez.Error.AuthenticationRejected", "", true},
+		// Failures a fresh pair would not fix must not nuke a working bond.
+		{"timeout", "org.bluez.Error.Failed", "le-connection-timeout", false},
+		{"refused", "org.bluez.Error.Failed", "br-connection-refused", false},
+		{"unknown reason", "org.bluez.Error.Failed", "br-connection-unknown", false},
+		{"in progress", "org.bluez.Error.InProgress", "", false},
+		{"unclassified", "org.example.Error", "br-connection-key-missing", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isStaleBondBluetoothError(tt.errName, tt.errMessage); got != tt.want {
+				t.Fatalf("isStaleBondBluetoothError(%q, %q) = %v, want %v", tt.errName, tt.errMessage, got, tt.want)
 			}
 		})
 	}
