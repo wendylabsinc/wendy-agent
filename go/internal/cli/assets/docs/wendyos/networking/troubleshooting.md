@@ -262,6 +262,43 @@ ls /sys/class/usb_role/
 
 ---
 
+## Scenario 7 — host-network container cannot resolve names after a network change
+
+**Symptom:** A container using network mode `host` can reach IP addresses but
+cannot resolve hostnames, even though the host can. Restarting or redeploying
+the container temporarily fixes it.
+
+Host-network containers created while the systemd-resolved stub is available
+use a Wendy-managed `/etc/resolv.conf` that points to `127.0.0.53`. Because the
+container shares the host network namespace, its queries reach the live host
+resolver and automatically follow later DHCP, VPN, WiFi, and upstream-DNS
+changes.
+
+Check the host and container:
+
+```bash
+# On the device
+systemctl is-active systemd-resolved
+ss -lnt 'sport = :53'
+
+# Inside the host-network container
+cat /etc/resolv.conf
+# Expected primary path: nameserver 127.0.0.53
+```
+
+When systemd-resolved is absent or its stub listener is disabled, wendy-agent
+keeps compatibility with other Linux hosts by bind-mounting the host resolver
+file. The agent logs `systemd-resolved stub is unavailable` when it takes this
+fallback. A running fallback container cannot observe an atomic replacement of
+that file; restart the app after the host resolver changes, or enable
+systemd-resolved for live updates.
+
+Containers created by an older agent retain their existing OCI mount. Redeploy
+them once after upgrading the agent so they receive the managed stub
+configuration.
+
+---
+
 ## Reference — All Diagnostic Commands
 
 ### On the device

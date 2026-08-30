@@ -221,6 +221,38 @@ func TestNeedsGatewayDNS(t *testing.T) {
 	}
 }
 
+func TestHasHostNetworkMode(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{name: "implicit host", mode: "", want: true},
+		{name: "explicit host", mode: "host", want: true},
+		{name: "host admin", mode: "host-admin", want: true},
+		{name: "bridge", mode: "bridge", want: false},
+		{name: "mesh", mode: "mesh", want: false},
+		{name: "none", mode: "none", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entitlements := []appconfig.Entitlement{{
+				Type: appconfig.EntitlementNetwork,
+				Mode: tt.mode,
+			}}
+			if got := hasHostNetworkMode(entitlements); got != tt.want {
+				t.Fatalf("hasHostNetworkMode(mode %q) = %v, want %v", tt.mode, got, tt.want)
+			}
+		})
+	}
+	if hasHostNetworkMode(nil) {
+		t.Fatal("no network entitlement must not count as host networking")
+	}
+	if hasHostNetworkMode([]appconfig.Entitlement{{Type: appconfig.EntitlementGPU}}) {
+		t.Fatal("unrelated entitlement must not count as host networking")
+	}
+}
+
 // TestHasImplicitHostNetworkMode covers the deprecation-warning predicate:
 // it fires only for a network entitlement with an omitted/empty mode, not for
 // any explicit mode, and not for apps without a network entitlement at all.

@@ -67,6 +67,21 @@ func needsGatewayDNS(isolation string, entitlements []appconfig.Entitlement) boo
 	return ok
 }
 
+// hasHostNetworkMode reports whether the app shares the host network namespace
+// and can therefore reach a resolver on the host loopback interface. Empty
+// mode remains the deprecated implicit-host default handled by applyNetwork.
+func hasHostNetworkMode(entitlements []appconfig.Entitlement) bool {
+	for _, ent := range entitlements {
+		if ent.Type != appconfig.EntitlementNetwork {
+			continue
+		}
+		if ent.Mode == "" || ent.Mode == "host" || ent.Mode == "host-admin" {
+			return true
+		}
+	}
+	return false
+}
+
 // hasImplicitHostNetworkMode reports whether entitlements contains a network
 // entitlement with an omitted/empty mode — the implicit-host default flagged
 // for deprecation by specs/2026-07-05-network-bridge-default-design.md.
