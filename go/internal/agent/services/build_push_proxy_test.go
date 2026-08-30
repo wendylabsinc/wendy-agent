@@ -210,6 +210,97 @@ func TestPushProxy_ForwardsAuthenticatedRequestWithoutTheCredential(t *testing.T
 	}
 }
 
+// BuildKit retries a 502 by opening a new request from the descriptor content it
+// still owns. An outbound failure from the first request must remain diagnostic
+// history, not turn the successful final result into a delivery failure.
+func TestPushProxy_RecoveredRequestRetryDoesNotBecomeFailure(t *testing.T) {
+	var attempts int
+	proxy := proxyToBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		_, _ = io.Copy(io.Discard, r.Body)
+		if attempts == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijacking failed backend connection: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	request := func(body string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut,
+			"http://"+proxy.addr+"/v2/myapp/blobs/uploads/retry", strings.NewReader(body))
+		req.SetBasicAuth(pushProxyUser, proxy.credential)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("requesting through proxy: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if status := request("first-attempt-body"); status != http.StatusBadGateway {
+		t.Fatalf("first status = %d, want 502 to trigger BuildKit retry", status)
+	}
+	if status := request("first-attempt-body"); status != http.StatusCreated {
+		t.Fatalf("retried status = %d, want 201", status)
+	}
+	if attempts != 2 {
+		t.Fatalf("backend saw %d attempts, want 2", attempts)
+	}
+	if proxy.latestError() == nil {
+		t.Fatal("test setup did not retain the first attempt's diagnostic")
+	}
+	buildErr, deliveryErr := classifyBuildAndDeliveryResult(nil, proxy.latestError())
+	if buildErr != nil || deliveryErr != nil {
+		t.Fatalf("recovered request classified as build=%v delivery=%v, want success", buildErr, deliveryErr)
+	}
+}
+
+// When every request fails, the diagnostic must describe the last request only.
+// Adding attempts together can exceed the layer size and is not progress.
+func TestPushProxy_FailedRetriesReportLastRequestOnly(t *testing.T) {
+	proxy := proxyToBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijacking failed backend connection: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+
+	request := func(body string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut,
+			"http://"+proxy.addr+"/v2/myapp/blobs/uploads/retry", strings.NewReader(body))
+		req.SetBasicAuth(pushProxyUser, proxy.credential)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("requesting through proxy: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502", resp.StatusCode)
+		}
+	}
+
+	request(strings.Repeat("x", 64))
+	request("last")
+
+	got := proxy.latestError()
+	if got == nil {
+		t.Fatal("proxy did not retain the terminal request failure")
+	}
+	if strings.Contains(got.Error(), "64 B") || !strings.Contains(got.Error(), "4 B of a 4 B") {
+		t.Fatalf("terminal diagnostic is not request-local: %v", got)
+	}
+}
+
 // buildctl must be able to find the credential, and must find it in a file
 // rather than anywhere argv-visible.
 func TestDockerConfigWithPushAuth_WritesUsableCredential(t *testing.T) {
