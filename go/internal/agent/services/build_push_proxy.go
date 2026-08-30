@@ -36,11 +36,13 @@ type PeerDialer interface {
 // mTLS, so buildkitd can push plaintext to localhost and needs no per-registry
 // client certificates of its own.
 //
-// It records the FIRST outbound failure. Without that, a proxy that cannot
+// It records the most recent outbound failure. Without that, a proxy that cannot
 // reach its target still accepts the local connection and then closes it, so
 // the pusher sees only "connection reset by peer" on 127.0.0.1 — a message that
 // cannot distinguish an unreachable peer from a rejected certificate, which are
-// the two causes with entirely different fixes.
+// the two causes with entirely different fixes. The most recent failure is the
+// useful one because BuildKit may retry an earlier 502 and reach a different
+// terminal outcome.
 type pushProxy struct {
 	addr string
 	ln   net.Listener
@@ -57,17 +59,13 @@ type pushProxy struct {
 	// before serve, which is when the first reader of it can exist.
 	dial func(ctx context.Context) (net.Conn, error)
 
-	// delivered counts bytes forwarded towards the device, so a failure can say
-	// how far it got instead of only that it failed.
-	delivered deliveryCounter
-
 	mu  sync.Mutex
 	err error
 }
 
-// firstError returns the first outbound failure seen, or nil if the proxy never
-// failed (including the case where nothing ever connected to it).
-func (p *pushProxy) firstError() error {
+// latestError returns the most recent outbound failure seen, or nil if the
+// proxy never failed (including the case where nothing ever connected to it).
+func (p *pushProxy) latestError() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.err
@@ -76,9 +74,7 @@ func (p *pushProxy) firstError() error {
 func (p *pushProxy) recordError(err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.err == nil {
-		p.err = err
-	}
+	p.err = err
 }
 
 // validRepositoryRe matches a bare OCI "repository:tag" with no registry host
@@ -219,13 +215,15 @@ func (p *pushProxy) serve(ctx context.Context) {
 			// The loopback credential is ours, not the registry's. The registry
 			// authenticates us by client certificate.
 			pr.Out.Header.Del("Authorization")
-			// Count the body on its way out. Layers the device already has are
-			// never sent, so this is the figure that explains the elapsed time
-			// -- and it is what tells a cold build cache (every layer new, whole
-			// image on the wire) apart from a warm one.
+			// Count only this request body's reads. BuildKit can retry a failed
+			// upload and pushes several layers concurrently, so a proxy-wide total
+			// would be traffic volume rather than a meaningful completion point.
+			attempt := &deliveryAttempt{total: pr.Out.ContentLength}
+			pr.Out = pr.Out.WithContext(context.WithValue(
+				pr.Out.Context(), deliveryAttemptContextKey{}, attempt))
 			if pr.Out.Body != nil {
 				pr.Out.Body = &deliveryBodyCounter{
-					deliveryReader: &deliveryReader{inner: pr.Out.Body, c: &p.delivered},
+					deliveryReader: &deliveryReader{inner: pr.Out.Body, c: &attempt.consumed},
 					closer:         pr.Out.Body,
 				}
 			}
@@ -248,13 +246,18 @@ func (p *pushProxy) serve(ctx context.Context) {
 			IdleConnTimeout:       pushIdleConnTimeout,
 			ResponseHeaderTimeout: 0,
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			// Same reason the byte relay recorded its dial failure: buildkit
 			// would otherwise see only a broken loopback connection, which
 			// cannot distinguish an unreachable peer from a rejected certificate.
+			attempt, _ := r.Context().Value(deliveryAttemptContextKey{}).(*deliveryAttempt)
+			var consumed, total int64
+			if attempt != nil {
+				consumed, total = attempt.consumed.bytes(), attempt.total
+			}
 			p.recordError(annotateDeliveryFailure(
 				fmt.Errorf("reaching device %d's registry over the mesh: %w", p.assetID, err),
-				p.delivered.bytes()))
+				consumed, total))
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}

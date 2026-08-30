@@ -60,7 +60,7 @@ func TestPushProxy_SurfacesDialFailure(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	if got := proxy.firstError(); got == nil {
+	if got := proxy.latestError(); got == nil {
 		t.Fatal("the proxy must record why the outbound dial failed, not discard it")
 	}
 }
@@ -252,7 +252,7 @@ func TestPushProxy_NoErrorWhenNothingConnects(t *testing.T) {
 	}
 	defer proxy.stop()
 
-	if got := proxy.firstError(); got != nil {
+	if got := proxy.latestError(); got != nil {
 		t.Fatalf("a proxy nothing dialed must report no error, got: %v", got)
 	}
 }

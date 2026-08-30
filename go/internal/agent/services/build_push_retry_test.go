@@ -92,32 +92,57 @@ func TestRetryingDial_DoesNotRetryACancelledBuild(t *testing.T) {
 // counting: "EOF at 190s" gives a developer nothing to act on, and cannot
 // distinguish a cold build cache (whole image on the wire) from a warm one.
 func TestAnnotateDeliveryFailure_SaysHowFarItGot(t *testing.T) {
-	err := annotateDeliveryFailure(errors.New("unexpected EOF"), 1932735283)
+	err := annotateDeliveryFailure(errors.New("unexpected EOF"), 1932735283, 2<<30)
 	if !strings.Contains(err.Error(), "unexpected EOF") {
 		t.Errorf("the cause must survive; got %q", err)
 	}
 	if !strings.Contains(err.Error(), "1.80 GiB") {
-		t.Errorf("want the amount sent; got %q", err)
+		t.Errorf("want the amount consumed from this attempt; got %q", err)
+	}
+	if !strings.Contains(err.Error(), "2.00 GiB") || !strings.Contains(err.Error(), "attempt-local") {
+		t.Errorf("want the request size and honest scope; got %q", err)
 	}
 }
 
 // Failing before any bytes moved is a different diagnosis -- unreachable peer or
 // refused certificate, not a link that died mid-transfer.
 func TestAnnotateDeliveryFailure_DistinguishesNothingSent(t *testing.T) {
-	err := annotateDeliveryFailure(errors.New("no route to host"), 0)
-	if !strings.Contains(err.Error(), "no image data had been sent") {
+	err := annotateDeliveryFailure(errors.New("no route to host"), 0, 0)
+	if !strings.Contains(err.Error(), "no request-body bytes had been consumed") {
 		t.Errorf("want the zero-progress wording; got %q", err)
 	}
 }
 
 func TestAnnotateDeliveryFailure_NilStaysNil(t *testing.T) {
-	if annotateDeliveryFailure(nil, 123) != nil {
+	if annotateDeliveryFailure(nil, 123, 456) != nil {
 		t.Error("a nil error must stay nil")
 	}
 }
 
-// The counter must survive concurrent forwarding: a push runs many blob uploads
-// at once, and an undercount would understate progress in the error message.
+func TestAnnotateDeliveryFailure_DoesNotAccumulateRetries(t *testing.T) {
+	first := annotateDeliveryFailure(errors.New("first EOF"), 500<<20, 700<<20)
+	second := annotateDeliveryFailure(errors.New("second EOF"), 200<<20, 700<<20)
+	if strings.Contains(second.Error(), "500 MiB") {
+		t.Fatalf("second attempt retained the first attempt's bytes: %v", second)
+	}
+	if !strings.Contains(first.Error(), "500 MiB") ||
+		!strings.Contains(second.Error(), "200 MiB") ||
+		!strings.Contains(second.Error(), "700 MiB") {
+		t.Fatalf("attempt-local amounts missing: first=%v second=%v", first, second)
+	}
+}
+
+func TestDeliveryFailureStarted(t *testing.T) {
+	if deliveryFailureStarted(annotateDeliveryFailure(errors.New("dial"), 0, 100)) {
+		t.Fatal("zero consumed bytes must not claim a body transfer started")
+	}
+	if !deliveryFailureStarted(annotateDeliveryFailure(errors.New("EOF"), 1, 100)) {
+		t.Fatal("a consumed request-body byte must mark the transfer as started")
+	}
+}
+
+// The counter may be read by the proxy error handler while the transport is
+// finishing a request-body read, so its accounting must be race-free.
 func TestDeliveryCounter_IsSafeUnderConcurrency(t *testing.T) {
 	var c deliveryCounter
 	done := make(chan struct{})
@@ -137,8 +162,7 @@ func TestDeliveryCounter_IsSafeUnderConcurrency(t *testing.T) {
 	}
 }
 
-// Negative reads must not decrement: io.Reader may return -1 with an error on
-// some implementations, and that must not make progress go backwards.
+// Invalid negative additions must not make progress go backwards.
 func TestDeliveryCounter_IgnoresNegative(t *testing.T) {
 	var c deliveryCounter
 	c.add(100)

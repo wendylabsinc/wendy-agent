@@ -80,12 +80,17 @@ func retryingDial(
 	}
 }
 
-// deliveryCounter tracks how many bytes have been forwarded towards the device.
-//
-// It exists so a failure can say how far it got. "EOF at 190s" gives a developer
-// nothing to decide with; "failed after 1.8 GiB" tells them whether to retry the
-// same way or change approach, and immediately distinguishes a cold build cache
-// (every layer new, full image on the wire) from a warm one.
+// deliveryAttempt holds request-local accounting. BuildKit pushes several
+// layers concurrently and retries 5xx responses, so combining their bodies
+// would produce traffic volume rather than image progress.
+type deliveryAttempt struct {
+	consumed deliveryCounter
+	total    int64
+}
+
+type deliveryAttemptContextKey struct{}
+
+// deliveryCounter tracks how many request-body bytes the transport consumed.
 type deliveryCounter struct {
 	sent atomic.Int64
 }
@@ -98,10 +103,9 @@ func (d *deliveryCounter) add(n int64) {
 
 func (d *deliveryCounter) bytes() int64 { return d.sent.Load() }
 
-// deliveryReader adds every byte read to the counter. Wrapping the request body
-// counts what is on its way to the device, rather than what buildkit produced:
-// layers the device already has are never sent, so this is the number that
-// explains the wall-clock time.
+// deliveryReader adds every byte read to the request-local counter. A read says
+// the proxy consumed the bytes for forwarding; it does not prove the peer
+// received them, because a socket write can fail after the transport read ahead.
 type deliveryReader struct {
 	inner interface{ Read([]byte) (int, error) }
 	c     *deliveryCounter
@@ -127,25 +131,49 @@ func describeBytes(n int64) string {
 	}
 }
 
-// annotateDeliveryFailure adds how far the transfer got to an outbound error.
+// annotateDeliveryFailure adds request-local context to an outbound error.
 //
-// Without it every large-image failure reads identically, whether it died on the
-// first byte or the last. errors.Join is not used: this has to survive being
-// rendered into a gRPC status message, where only the text arrives.
-func annotateDeliveryFailure(err error, sent int64) error {
+// Without it every large-request failure reads identically. The counter is
+// deliberately described as bytes consumed for forwarding, not bytes delivered
+// or whole-image progress; the HTTP transport can read ahead, BuildKit can
+// retry, and other layer uploads can be in flight concurrently.
+func annotateDeliveryFailure(err error, consumed, total int64) error {
 	if err == nil {
 		return nil
 	}
-	if sent <= 0 {
-		return fmt.Errorf("%w (no image data had been sent yet)", err)
+	return &deliveryFailure{cause: err, consumed: consumed, total: total}
+}
+
+type deliveryFailure struct {
+	cause    error
+	consumed int64
+	total    int64
+}
+
+func (e *deliveryFailure) Error() string {
+	if e.consumed <= 0 {
+		return fmt.Sprintf("%v (no request-body bytes had been consumed for forwarding)", e.cause)
 	}
-	return fmt.Errorf("%w (after sending %s to the device)", err, describeBytes(sent))
+	if e.total > 0 {
+		return fmt.Sprintf("%v (after consuming %s of a %s request body for forwarding; attempt-local, not whole-image progress)",
+			e.cause, describeBytes(e.consumed), describeBytes(e.total))
+	}
+	return fmt.Sprintf("%v (after consuming %s of this request body for forwarding; attempt-local, not whole-image progress)",
+		e.cause, describeBytes(e.consumed))
+}
+
+func (e *deliveryFailure) Unwrap() error { return e.cause }
+
+func deliveryFailureStarted(err error) bool {
+	var failure *deliveryFailure
+	return errors.As(err, &failure) && failure.consumed > 0
 }
 
 // errDeliveryIncomplete marks a push that started and did not finish, which is
 // the case a retry of the whole command is most likely to fix cheaply: the build
-// cache is warm, so the layers already delivered are skipped on the next run.
-var errDeliveryIncomplete = errors.New("image delivery was interrupted; re-running the build will resume from the layers the device already has")
+// cache is warm and fully committed layers are skipped. Containerd does not
+// resume an incomplete monolithic upload, so that layer starts again.
+var errDeliveryIncomplete = errors.New("image delivery was interrupted; re-running reuses the build cache and skips fully committed layers, but a partially uploaded layer starts again")
 
 // deliveryBodyCounter lets a counted body still be closed by the transport.
 type deliveryBodyCounter struct {

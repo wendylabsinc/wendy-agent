@@ -612,18 +612,16 @@ func (s *BuildService) buildAndDeliver(
 	// BuildKit retries registry 5xx responses itself. The proxy may therefore
 	// have observed an outbound failure even though a later attempt completed
 	// and buildctl exited successfully. In that case the successful solve is
-	// authoritative; retaining the proxy's first error would turn recovery into
+	// authoritative; retaining the proxy's earlier error would turn recovery into
 	// a false delivery failure.
 	if buildErr == nil {
-		return classifyBuildAndDeliveryResult(buildErr, proxy.firstError())
+		return classifyBuildAndDeliveryResult(buildErr, proxy.latestError())
 	}
-	if proxyErr := proxy.firstError(); proxyErr != nil {
-		// Say that re-running is cheap when the transfer had started. The build
-		// cache is warm and the device keeps the layers it already received, so
-		// a second run resumes rather than repeating -- which is not obvious
-		// from a bare transport error, and is the difference between retrying
-		// and going to look for another build host.
-		if proxy.delivered.bytes() > 0 {
+	if proxyErr := proxy.latestError(); proxyErr != nil {
+		// Say what a new run can reuse without implying that containerd resumes
+		// the failed request: the build cache and fully committed layers survive,
+		// but a partial monolithic layer upload starts again.
+		if deliveryFailureStarted(proxyErr) {
 			proxyErr = fmt.Errorf("%w: %w", errDeliveryIncomplete, proxyErr)
 		}
 		return classifyBuildAndDeliveryResult(buildErr, proxyErr)
