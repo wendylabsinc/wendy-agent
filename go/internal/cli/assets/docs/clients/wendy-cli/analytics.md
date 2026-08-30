@@ -1,25 +1,15 @@
-We track analytics for our CLI's usage through a self-hosted telemetry service at `https://cloud.wendy.dev/v1/telemetry/events`. This is [opt-out](./commands/analytics/disable.md), or through `WENDY_ANALYTICS=false` in your environment.
+We track analytics for our CLI's usage through a dedicated self-hosted telemetry service. This is [opt-out](./commands/analytics/disable.md), or through `WENDY_ANALYTICS=false` in your environment.
 
 ## How it works
 
-When analytics are enabled, each tracked event is serialised to JSON and sent via an HTTP POST request in a background goroutine. The CLI waits for any in-flight request to complete before exiting so no events are silently dropped.
+When analytics are enabled, each tracked event is serialised to JSON and sent via an HTTP POST request. Delivery is best-effort: a network failure, timeout, or non-2xx response never changes the command's result.
 
 ## Endpoint
 
 Events are posted to:
 
 ```
-https://cloud.wendy.dev/v1/telemetry/events
-```
-
-Each request has a 5-second timeout. Network errors are silently discarded — telemetry is strictly best-effort and never blocks normal CLI operation.
-
-## Overriding the endpoint
-
-For development and testing the telemetry host can be overridden with an environment variable:
-
-```sh
-WENDY_TELEMETRY_HOST=http://localhost:8082 wendy <command>
+https://wendy-cli-telemetry-114319063177.us-central1.run.app/v1/telemetry/events
 ```
 
 ## Event payload
@@ -38,7 +28,7 @@ Every event is an anonymous JSON object. The fields sent are:
 | `cli_version` | string | CLI version string |
 | `os` | string | Operating system (`GOOS`) |
 | `arch` | string | CPU architecture (`GOARCH`) |
-| `is_dev_build` | boolean | `true` when `cli_version == "dev"` |
+| `is_dev_build` | boolean | `true` when `cli_version` is `"dev"` or has a `-dev` suffix |
 
 > **Privacy note:** Flag values, positional arguments, file paths, hostnames, and error message text are never included in telemetry payloads. Only the fields listed above are sent.
 

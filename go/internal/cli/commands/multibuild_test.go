@@ -187,6 +187,62 @@ func TestBuildServicesParallelReusesPlannedDockerfile(t *testing.T) {
 	}
 }
 
+func TestBuildServicesParallelWithContentReportsPreparedLayers(t *testing.T) {
+	root, services := newServiceTree(t, 2)
+	planned := map[string]string{"svc00": "Dockerfile", "svc01": "Dockerfile"}
+
+	originalBuild := buildServiceImage
+	t.Cleanup(func() { buildServiceImage = originalBuild })
+	buildServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, repo, _, _ string, _ map[string]string, _ string, stream, _ io.Writer) error {
+		reporter, ok := stream.(interface{ ReportImageContent([]string) })
+		if !ok {
+			return fmt.Errorf("build output for %s cannot report image content", repo)
+		}
+		reporter.ReportImageContent([]string{"sha256:" + repo})
+		return nil
+	}
+
+	failed, content, err := buildServicesParallelWithContent(
+		context.Background(), nil, 5000, "linux", root, "app", services,
+		"linux/arm64", nil, "docker", chunkingAuto, nil, planned, 2, true)
+	if err != nil {
+		t.Fatalf("buildServicesParallelWithContent: %v", err)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("failed = %v, want none", failed)
+	}
+	for name := range services {
+		want := "sha256:app-" + name
+		if got := content[name]; len(got) != 1 || got[0] != want {
+			t.Errorf("content[%s] = %v, want [%s]", name, got, want)
+		}
+	}
+}
+
+func TestBuildServicesParallelWithContentDropsFailedBuildIdentity(t *testing.T) {
+	root, services := newServiceTree(t, 1)
+	originalBuild := buildServiceImage
+	t.Cleanup(func() { buildServiceImage = originalBuild })
+	buildServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, _ string, _ string, _ string, _ map[string]string, _ string, stream, _ io.Writer) error {
+		stream.(interface{ ReportImageContent([]string) }).ReportImageContent([]string{"sha256:partial"})
+		return errors.New("prepare failed")
+	}
+
+	failed, content, err := buildServicesParallelWithContent(
+		context.Background(), nil, 5000, "linux", root, "app", services,
+		"linux/arm64", nil, "docker", chunkingAuto, nil,
+		map[string]string{"svc00": "Dockerfile"}, 1, true)
+	if err != nil {
+		t.Fatalf("buildServicesParallelWithContent infrastructure error: %v", err)
+	}
+	if failed["svc00"] == nil {
+		t.Fatal("failed build missing from failure map")
+	}
+	if len(content) != 0 {
+		t.Fatalf("content = %v, want none for failed build", content)
+	}
+}
+
 func TestBuildServicesParallelCancellationStopsActiveAndQueuedBuilds(t *testing.T) {
 	root, services := newServiceTree(t, 4)
 	planned := make(map[string]string, len(services))

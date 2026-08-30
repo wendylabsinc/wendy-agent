@@ -33,7 +33,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/seriallock"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -1050,11 +1052,30 @@ func appConfigFileMissing(cfgPath string) (bool, error) {
 	return false, nil
 }
 
+// agentVersionForRun reuses the liveness/version probe already performed while
+// establishing a direct-agent connection. Cloud and test connections that do
+// not probe during dial still perform the RPC here, then make the result
+// available to later run phases on this connection.
+func agentVersionForRun(ctx context.Context, conn *grpcclient.AgentConnection) (*agentpb.GetAgentVersionResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if resp, ok := conn.CachedAgentVersion(); ok {
+		return resp, nil
+	}
+	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return nil, err
+	}
+	conn.CacheAgentVersion(resp)
+	return resp, nil
+}
+
 func preflightMissingAppConfigForMacTarget(ctx context.Context, target *SelectedDevice, projectType string) error {
 	if target == nil || target.Agent == nil {
 		return nil
 	}
-	versionResp, err := target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, target.Agent)
 	if err != nil {
 		return fmt.Errorf("querying device version for Mac target preflight: %w", err)
 	}
@@ -1266,7 +1287,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 
 	// Query the device OS and architecture.
-	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
@@ -1364,7 +1385,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 // via SyncFiles gRPC, and creates/starts the container.
 func runMacOSSwiftPMWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	// Verify CPU architecture matches.
-	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
@@ -1613,16 +1634,12 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	if app == nil {
 		cliLogln("Building with %s provider...", p.DisplayName())
 		var err error
-		// Pass the resolved project type and Dockerfile to providers that support it.
-		if db, ok := p.(providers.DockerfileBuilder); ok && opts.dockerfile != "" {
-			app, err = db.BuildWithDockerfile(ctx, device, projectPath, product, projectType, opts.dockerfile, opts.debug)
-		} else if tb, ok := p.(providers.TypedBuilder); ok {
-			app, err = tb.BuildWithType(ctx, device, projectPath, product, projectType, opts.debug)
-		} else {
-			app, err = p.Build(ctx, device, projectPath, projectType, product, opts.debug)
-		}
+		app, err = providerBuild(ctx, p, device, projectPath, projectType, product, opts)
 		if err != nil {
-			return fmt.Errorf("provider build: %w", err)
+			app, err = offerLiteReinstallAndRebuild(ctx, p, device, projectPath, projectType, product, opts, err)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1687,6 +1704,188 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	return runErr
 }
 
+// providerBuild dispatches a build to the most specific builder interface the
+// provider implements.
+func providerBuild(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, projectType, product string, opts runOptions) (*providers.BuiltApp, error) {
+	if db, ok := p.(providers.DockerfileBuilder); ok && opts.dockerfile != "" {
+		return db.BuildWithDockerfile(ctx, device, projectPath, product, projectType, opts.dockerfile, opts.debug)
+	}
+	if tb, ok := p.(providers.TypedBuilder); ok {
+		return tb.BuildWithType(ctx, device, projectPath, product, projectType, opts.debug)
+	}
+	return p.Build(ctx, device, projectPath, projectType, product, opts.debug)
+}
+
+// shouldOfferLiteReinstall reports whether a failed provider build should turn
+// into an interactive offer to install (or reinstall) Wendy Lite, and returns
+// the unsupported-requirements error when it should. This fires both when
+// existing firmware rejected the app's requirements and when the device has
+// no Wendy Lite firmware at all yet (see MicroWendyProvider.GetDeviceInfo's
+// needsInstall short-circuit) — either way GetDeviceInfo returns the same
+// error type. The offer only makes sense when reflashing can happen over the
+// same USB cable, and only in a session where a human can answer.
+func shouldOfferLiteReinstall(buildErr error, device models.ExternalDevice, interactive bool) (*providers.AppRequirementsUnsupportedError, bool) {
+	var unsupported *providers.AppRequirementsUnsupportedError
+	if !errors.As(buildErr, &unsupported) {
+		return nil, false
+	}
+	if device.ConnectionType() != "USB" || !interactive {
+		return nil, false
+	}
+	return unsupported, true
+}
+
+// deviceNeedsInstall reports whether device is a serial ESP32 board with no
+// Wendy Lite firmware installed yet, as opposed to one whose existing
+// firmware simply doesn't support what the app requires.
+func deviceNeedsInstall(device models.ExternalDevice) bool {
+	return device.ConnectionInfo["needsInstall"] == "true"
+}
+
+var (
+	serialPortFreeBudget = 6 * time.Second // probe worst case: 3s handshake + 3s identity
+	serialPortFreePoll   = 200 * time.Millisecond
+)
+
+// waitForSerialPortFree reports whether port is free of an advisory lock, waiting
+// up to serialPortFreeBudget for a holder to release it. Only ErrLocked is waited
+// on; other Acquire failures aren't contention and the caller's own open reports
+// them better. Always true on Windows, where Acquire is a no-op.
+func waitForSerialPortFree(ctx context.Context, port string) bool {
+	deadline := time.Now().Add(serialPortFreeBudget)
+	for {
+		lock, err := seriallock.Acquire(port)
+		if err == nil {
+			lock.Release()
+			return true
+		}
+		if !errors.Is(err, seriallock.ErrLocked) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-time.After(serialPortFreePoll):
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+// offerLiteReinstallAndRebuild handles a provider build that failed because
+// the device cannot host the app: either its existing firmware does not
+// support the app's requirements (native or WASM apps), or it has no Wendy
+// Lite firmware installed at all. Either way, it offers to (re)install Wendy
+// Lite (the classic `wendy os install` flow) and, once the device is back,
+// builds again. In every other case — including --yes, which must not
+// silently accept a destructive reinstall — it returns the build error
+// unchanged.
+func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, projectType, product string, opts runOptions, buildErr error) (*providers.BuiltApp, error) {
+	wrapped := fmt.Errorf("provider build: %w", buildErr)
+	unsupported, ok := shouldOfferLiteReinstall(buildErr, device, !opts.yes && isInteractiveTerminal())
+	if !ok {
+		return nil, wrapped
+	}
+
+	freshInstall := deviceNeedsInstall(device)
+	var confirmPrompt string
+	if freshInstall {
+		cliLogln("Device %s has no Wendy Lite firmware installed.", tui.Value(device.DisplayName))
+		confirmPrompt = "Would you like to install Wendy Lite on it now?"
+	} else {
+		cliLogln("Device %s does not support %s.", tui.Value(device.DisplayName), unsupported.Missing)
+		confirmPrompt = "Would you like to reinstall it with a different version of Wendy Lite? This will erase all data on the device."
+	}
+	confirmed, err := tui.Confirm(confirmPrompt)
+	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return nil, ErrUserCancelled
+		}
+		return nil, err
+	}
+	if !confirmed {
+		return nil, wrapped
+	}
+
+	board, err := pickWendyLiteBoard("", false)
+	if err != nil {
+		if errors.Is(err, ErrUserCancelled) {
+			return nil, wrapped
+		}
+		return nil, err
+	}
+
+	if freshInstall {
+		// Improbable, but the picker's scanner may still be probing this port,
+		// so wait until the port is free. The lock is released immediately:
+		// installESP32Firmware takes its own, and flock is per-descriptor, so
+		// holding ours would block it.
+		port := device.ConnectionInfo["serialPort"]
+		if !waitForSerialPortFree(ctx, port) {
+			cliNotice("Serial port %s is still in use; attempting the install anyway.", port)
+		}
+	}
+
+	serialDevice := discovery.SerialPortInfo{
+		Port:      device.ConnectionInfo["serialPort"],
+		Transport: discovery.SerialTransportNativeUSB,
+	}
+	if err := installESP32Firmware(ctx, false, board, serialDevice, wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollAuto}); err != nil {
+		return nil, fmt.Errorf("reinstalling Wendy Lite: %w", err)
+	}
+
+	// The device now has firmware where it had none (or different firmware),
+	// so the needsInstall short-circuit in GetDeviceInfo must not fire again —
+	// clear it before probing/building against the freshly flashed board.
+	if freshInstall {
+		delete(device.ConnectionInfo, "needsInstall")
+	}
+
+	cliLogln("Waiting for the device to restart...")
+
+	// Give the device time to start booting and be discovered by the OS before
+	// probing it.
+	select {
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	if err := waitForDeviceReady(ctx, p, device, 30*time.Second); err != nil {
+		return nil, fmt.Errorf("device did not come back after reinstall: %w", err)
+	}
+
+	cliLogln("Building with %s provider...", p.DisplayName())
+	app, err := providerBuild(ctx, p, device, projectPath, projectType, product, opts)
+	if err != nil {
+		return nil, fmt.Errorf("provider build: %w", err)
+	}
+	return app, nil
+}
+
+// waitForDeviceReady polls the provider until the device answers again after
+// a reboot, or the timeout elapses.
+func waitForDeviceReady(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if _, err := p.GetDeviceInfo(ctx, device); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 // runWithAgent is the existing gRPC agent pipeline.
 func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	mark := phaseTimer()
@@ -1712,12 +1911,12 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 
 	// Resolve the target platform. Query the agent for its OS and architecture,
 	// then determine the effective platform from wendy.json or defaults.
-	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
 	printRunDiskUsageWarning(versionResp)
-	mark("agent GetAgentVersion (in runWithAgent)")
+	mark("agent version metadata (in runWithAgent)")
 	agentOS := versionResp.GetOs()
 	architecture := versionResp.GetCpuArchitecture()
 	if architecture == "" {
@@ -1843,8 +2042,19 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
+	if hashErr == nil {
+		var basesPinned bool
+		basesPinned, hashErr = dockerfileBasesContentPinned(cwd, opts.dockerfile)
+		if hashErr == nil && !basesPinned {
+			hashErr = fmt.Errorf("persistent build skip requires digest-pinned base images")
+		}
+	}
+	desiredHash := ""
+	if hashErr == nil {
+		desiredHash, hashErr = computeDeployDesiredHash(inputHash, appCfg, opts.userArgs, deployEnv, resolveRestartPolicy(opts))
+	}
 	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
-		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
+		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
 			mark("fast-path (skipped build)")
 			return nil
 		}
@@ -1891,7 +2101,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 				// Record the layer diff IDs we deployed so the next run's fast path
 				// can verify the device still holds this content before skipping the
 				// build (WDY-1824).
-				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
+				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: desiredHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
 			}
 			return nil
 		} else if isChunkDeployCancellation(ctx, err) {
@@ -2392,7 +2602,7 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 		return ""
 	}
 
-	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	resp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return ""
 	}

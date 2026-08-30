@@ -3,8 +3,9 @@ import { basePath, withBasePath } from '@/lib/shared';
 type Board = {
   name: string;
   tagline: string;
-  logo: string;
+  logo?: string;
   animation: string;
+  imageAlt: string;
   href: string;
   features: string[];
 };
@@ -15,6 +16,7 @@ const boards: Board[] = [
     tagline: 'Orin Nano, AGX Orin, AGX Thor',
     logo: '/icons/icons8-nvidia.svg',
     animation: '/images/boards/jetson-orin.webp',
+    imageAlt: 'NVIDIA Jetson Orin developer kit',
     href: '/installation/wendyos-nvidia-jetson-orin-nano/',
     features: [
       'Up to 2000 TOPS AI performance',
@@ -28,6 +30,7 @@ const boards: Board[] = [
     tagline: 'Pi 3, 4 & 5 (8GB Pi 5 recommended)',
     logo: '/icons/icons8-raspberry-pi.svg',
     animation: '/images/boards/raspberry-pi-5.webp',
+    imageAlt: 'Raspberry Pi 5 board',
     href: '/installation/wendyos-raspberry-pi-5/',
     features: [
       'Low power consumption',
@@ -41,6 +44,7 @@ const boards: Board[] = [
     tagline: 'High-performance physical AI at the edge',
     logo: '/icons/icons8-nvidia.svg',
     animation: '/images/boards/jetson-thor.gif',
+    imageAlt: 'NVIDIA Jetson AGX Thor developer kit',
     href: '/installation/wendyos-nvidia-jetson-agx-thor/',
     features: [
       'Up to 2000 TOPS AI performance',
@@ -54,12 +58,39 @@ const boards: Board[] = [
     tagline: 'Run Wendy on your Linux development machine',
     logo: '/icons/simple-icons-linux.svg',
     animation: '/images/boards/ubuntu.png',
+    imageAlt: 'Ubuntu desktop',
     href: '/installation/linux/',
     features: [
       'Develop and deploy from your Linux machine',
       'Works with USB-C and LAN devices',
       'Full Wendy CLI support',
       'Ideal for robotics and edge AI workflows',
+    ],
+  },
+  {
+    name: 'Robotics',
+    tagline: 'Deploy apps to the Unitree G1',
+    animation: '/media/unitree-g1-card.jpg',
+    imageAlt: 'Unitree G1 humanoid robot',
+    href: '/installation/wendy-agent-unitree-g1/',
+    features: [
+      'Deploy directly to the onboard Jetson',
+      'Connect to Unitree DDS and unitree_sdk2',
+      'Stream logs and inspect hardware remotely',
+      'Use cameras and GPU acceleration',
+    ],
+  },
+  {
+    name: 'ESP32',
+    tagline: 'C5, C6, C61, P4 & S3 boards',
+    animation: '/images/boards/esp32.jpeg',
+    imageAlt: 'ESP32 development boards',
+    href: '/installation/wendy-lite-esp32/',
+    features: [
+      'Use regular native ESP-IDF projects',
+      'Build and deploy with wendy run',
+      'Provision Wi-Fi over Bluetooth Low Energy',
+      'Optional Swift and WASM app support',
     ],
   },
 ];
@@ -75,13 +106,15 @@ export function HardwareShowcase() {
         >
           <img
             src={`${basePath}${board.animation}`}
-            alt={`${board.name} board animation`}
+            alt={board.imageAlt}
             className="aspect-video w-full bg-fd-muted object-cover object-center"
             loading="lazy"
           />
           <div className="flex flex-1 flex-col gap-4 p-5">
             <div className="flex items-center gap-3">
-              <img src={`${basePath}${board.logo}`} alt={board.name} className="h-9 w-9 object-contain" />
+              {board.logo ? (
+                <img src={`${basePath}${board.logo}`} alt="" className="h-9 w-9 object-contain" />
+              ) : null}
               <div>
                 <h3 className="font-semibold text-fd-card-foreground">{board.name}</h3>
                 <p className="text-sm text-fd-muted-foreground">{board.tagline}</p>

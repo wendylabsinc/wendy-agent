@@ -16,10 +16,4 @@ wendy tour
 
 At the Wi-Fi configuration step, `wendy tour` attempts to detect the host machine's current Wi-Fi network and prefill the SSID field automatically.
 
-| Platform | Implementation |
-|----------|---------------|
-| macOS | Reads the current SSID via the CoreWLAN framework |
-| Linux | Reads the current SSID via `nmcli` or `iwgetid` |
-| Windows | Shells out to `netsh wlan show interfaces` and parses the `SSID` field |
-
 If the SSID cannot be detected (e.g., the host is not connected to Wi-Fi, or the command fails), the field is left blank for manual entry.

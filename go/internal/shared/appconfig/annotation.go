@@ -174,7 +174,10 @@ func isAnnotationKey(s string) bool {
 // sh.wendy/entitlement.* keys to their encoded values, suitable for use as OCI
 // manifest annotations or containerd container labels. When multiple entitlements
 // share the same type a numeric suffix (.0, .1, …) is appended to disambiguate.
-// Entitlements with an empty type are skipped.
+// Entitlements with an empty type are skipped. Parameterless entitlements use
+// enabled=true instead of an empty value because containerd omits empty-valued
+// labels when it persists container metadata; the parser deliberately ignores
+// this sentinel and reconstructs the entitlement from the key.
 func BuildEntitlementAnnotations(entitlements []Entitlement) map[string]string {
 	typeCounts := make(map[string]int)
 	for _, e := range entitlements {
@@ -195,7 +198,11 @@ func BuildEntitlementAnnotations(entitlements []Entitlement) map[string]string {
 			key = EntitlementAnnotationKeyPrefix + e.Type + "." + strconv.Itoa(typeIndex[e.Type])
 			typeIndex[e.Type]++
 		}
-		out[key] = EntitlementAnnotationValue(e)
+		value := EntitlementAnnotationValue(e)
+		if value == "" {
+			value = "enabled=true"
+		}
+		out[key] = value
 	}
 	return out
 }

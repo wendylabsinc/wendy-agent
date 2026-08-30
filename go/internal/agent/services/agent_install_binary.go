@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/sysextfs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -24,14 +26,57 @@ var ErrDirFsync = errors.New("dir fsync after rename failed")
 // far smaller than this; the cap only needs headroom for legitimate growth.
 const maxAgentBinarySize = 256 * 1024 * 1024 // 256 MiB
 
+// execPathCache resolves the agent's own executable path once and holds the
+// answer. /proc/self/exe renders relative to the mount its dentry lives on, so
+// once a sysext overlay over /usr is torn down the kernel reports a truncated
+// path that no longer stats. Resolving early pins the answer while the original
+// mount topology holds.
+//
+// Embedded by every service that rewrites the running binary, so they share one
+// explanation rather than one copy each.
+type execPathCache struct {
+	// execPathResolver overrides how the path is resolved. Left nil in
+	// production; set within-package so tests can redirect commitBinaryUpdate's
+	// rename target away from the running test binary.
+	execPathResolver func() (string, os.FileMode, error)
+
+	execPathOnce sync.Once
+	execPathVal  string
+	execPathMode os.FileMode
+	execPathErr  error
+}
+
+// resolvedExecPath returns the cached executable path, resolving it on first
+// use. The resolver defaults here rather than in a constructor so a zero-value
+// service resolves for real instead of panicking on a nil field.
+func (c *execPathCache) resolvedExecPath() (string, os.FileMode, error) {
+	c.execPathOnce.Do(func() {
+		resolve := c.execPathResolver
+		if resolve == nil {
+			resolve = resolveExecPath
+		}
+		c.execPathVal, c.execPathMode, c.execPathErr = resolve()
+	})
+	return c.execPathVal, c.execPathMode, c.execPathErr
+}
+
+// PrimeExecPath resolves and caches the executable path now. Called at startup,
+// before any driver add-on can be merged or removed underneath the process.
+func (c *execPathCache) PrimeExecPath() {
+	_, _, _ = c.resolvedExecPath()
+}
+
 func resolveExecPath() (string, os.FileMode, error) {
 	execPath, err := os.Executable()
 	if err != nil {
 		return "", 0, status.Errorf(codes.Internal, "failed to get executable path: %v", err)
 	}
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		return "", 0, status.Errorf(codes.Internal, "failed to resolve executable symlinks: %v", err)
+	// Best effort: EvalSymlinks walks every component, which fails outright when
+	// the process's own view of a parent directory has been torn down (a sysext
+	// unmerge under a running agent). The unresolved path still names the binary,
+	// and the Stat below is what actually proves it is usable.
+	if resolved, symErr := filepath.EvalSymlinks(execPath); symErr == nil {
+		execPath = resolved
 	}
 	info, err := os.Stat(execPath)
 	if err != nil {
@@ -64,6 +109,10 @@ func createUpdateTempFile(execPath string) (*os.File, string, func(), error) {
 		return nil, "", nil, status.Errorf(codes.Internal, "failed to stat binary directory: %v", err)
 	} else if info.Mode()&0o022 != 0 {
 		return nil, "", nil, status.Error(codes.FailedPrecondition, "agent binary directory is world- or group-writable; refusing update")
+	}
+
+	if err := sysextfs.CheckDurable(dir); err != nil {
+		return nil, "", nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 
 	// os.CreateTemp creates with mode 0600 — not executable until commitBinaryUpdate.

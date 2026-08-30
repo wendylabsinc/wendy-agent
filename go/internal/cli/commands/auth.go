@@ -30,7 +30,7 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-const defaultCloudDashboard = "https://cloud.wendy.dev"
+const defaultCloudDashboard = "https://cloud.wendy.sh"
 const defaultCloudGRPC = "wendy-cloud-services-114319063177.us-central1.run.app:443"
 
 func newAuthCmd() *cobra.Command {

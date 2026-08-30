@@ -671,7 +671,7 @@ func resolveGPUArchForDirs(ctx context.Context, dirs []string, flagArch string, 
 	if !needed {
 		return ""
 	}
-	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	resp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		// Deliberately not fatal. The compiler is where "a GPU stage needs a
 		// target" is enforced, and its error names the fix; failing here would

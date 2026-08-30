@@ -1,6 +1,6 @@
 # `wendy discover`
 
-Scans for Wendy devices on the local network and connected via USB Ethernet.
+Discovers local and Wendy Cloud devices in a tabbed terminal interface.
 
 ## Usage
 
@@ -10,7 +10,18 @@ wendy discover [flags]
 
 ## Description
 
-`wendy discover` combines two discovery mechanisms and merges the results:
+Without output or timeout flags, `wendy discover` opens a live TUI with two
+tabs:
+
+- **Local** discovers devices over LAN, USB, Bluetooth, and external providers.
+- **Cloud** lists online devices enrolled in the active Wendy Cloud
+  organization.
+
+Use `tab` or `shift+tab` to switch tabs. Cloud discovery starts lazily on the
+first visit to the Cloud tab, so the command makes no cloud connection if you
+only use Local discovery.
+
+Local discovery combines these mechanisms and merges their results:
 
 - **Ethernet (USB NCM) discovery** — enumerates host network adapters and
   returns those whose name or interface description contains "wendy"
@@ -18,14 +29,6 @@ wendy discover [flags]
 - **LAN discovery** — uses mDNS/Bonjour to find WendyOS devices and Headless Mac targets advertising themselves on the local network.
 
 ## Platform support
-
-### Ethernet discovery
-
-| Platform | Implementation |
-|----------|---------------|
-| Linux | Reads `/sys/class/net` and checks adapter names/descriptions |
-| macOS | Uses `SCNetworkConfiguration` to enumerate interfaces |
-| Windows | Shells out to PowerShell (`Get-NetAdapter` joined with `Get-NetIPAddress`) and filters adapters whose `Name` or `InterfaceDescription` contains "wendy" (case-insensitive) |
 
 ### LAN (mDNS) discovery
 
@@ -59,7 +62,8 @@ WENDY_SHOW_LOCAL_DEVICES=1 wendy discover
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--timeout` | `5s` | How long to wait for mDNS responses |
+| `--type` | `all` | Local discovery type: `usb`, `lan`, `bluetooth`, `external`, or `all`. Does not affect the Cloud tab. |
+| `--timeout` | `5s` | Scan local devices once for this duration, print the results, and exit. When omitted, the live tabbed TUI runs until quit. |
 | `--json` | `false` | Output results as a JSON array instead of a table |
 
 ## Environment variables
@@ -68,12 +72,54 @@ WENDY_SHOW_LOCAL_DEVICES=1 wendy discover
 |----------|-------------|
 | `WENDY_SHOW_LOCAL_DEVICES` | When truthy (`1`/`true`/`yes`/`on`), include local run targets (this machine, Docker/OrbStack, Apple Container) in the table. JSON output always includes them regardless. |
 
-## Interactive table
+## Interactive TUI
 
-Without `--json`, discover renders a live table that refreshes as devices come
-and go (`↑`/`↓` navigate, `enter` copy, `a` copy all, `u` update agent, `d` set
-default, `x` unset default, `q` quit). A leading `✦` marks the current default
-device.
+Without `--json` or an explicitly set `--timeout`, discover renders Local and
+Cloud tables that refresh as devices come and go. A leading `✦` marks the
+current default device or organization.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| `tab` / `shift+tab` | Switch between Local and Cloud tabs |
+| `↑` / `↓` | Navigate the active device list |
+| `enter` | Copy the selected device as JSON; when logged out in Cloud, start login |
+| `a` | Copy all devices in the active tab as JSON |
+| `u` | Update the selected device's agent |
+| `d` / `x` | Set or clear the default device in Local |
+| `o` | Switch the active organization in Cloud |
+| `q` / `Ctrl+C` | Quit |
+
+### Local tab
+
+The Local tab shows devices found through the enabled local discovery
+transports. The `--type` flag filters this tab only.
+
+### Cloud tab
+
+The Cloud tab shows online, cloud-enrolled devices for the active organization.
+Its header includes the organization name and ID and marks the persisted
+default organization with `✦ default`.
+
+If no cloud credentials are stored, the Cloud tab displays `Wendy Cloud login —
+Not logged in`. Press `enter` to start browser-based login; after login succeeds,
+discovery restarts with the Cloud tab available. Press `tab` to return to Local
+or `q` to quit without logging in.
+
+### Switching organizations (`o`)
+
+Press `o` in the Cloud tab to choose from all organizations available through
+the stored sessions, including organizations for which this machine does not
+yet have credentials.
+
+- An organization with stored credentials becomes active immediately.
+- An organization without local credentials starts browser-based login against
+  its cloud environment. After login, the CLI verifies that credentials for the
+  selected organization were stored; if not, it reports an error and you can
+  repeat the flow.
+
+### Local table columns
 
 | Column | Description |
 |--------|-------------|

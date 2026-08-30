@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -13,7 +14,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	grpcgzip "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/status"
 )
 
@@ -25,6 +28,12 @@ import (
 // already parallelized across cores (chunk.ChunkReaderAt), so this need not
 // equal the core count.
 const maxConcurrentLayerPush = 4
+
+// maxChunksPerWriteStream bounds one client-streaming WriteChunks RPC. Closing
+// each small batch gets an application-level acknowledgement, limits how much
+// progress can be reported before the receiver confirms it, and starts a fresh
+// HTTP/2 stream at negligible overhead (at most 4 MiB per batch).
+const maxChunksPerWriteStream = 64
 
 // chunkTransferProgressWriter is implemented by interactive build output
 // adapters that can display chunk-upload bytes directly. Keeping this as an
@@ -285,21 +294,66 @@ func pushLayersByChunksWithStrictPrepareOutput(ctx context.Context, cs agentpb.W
 // pass nil prog and get their progress through output's optional
 // chunk*ProgressWriter interfaces instead; both sinks are nil-safe.
 func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer, strictPrepare bool, prog *chunkPushProgress) ([]*agentpb.RunContainerLayerHeader, error) {
+	return pushLayersByChunksWithPrepareModeAndCache(ctx, cs, layers, prepare, output, strictPrepare, prog, loadManifestCache)
+}
+
+type cachedManifestResult struct {
+	manifest *cachedManifest
+	found    bool
+}
+
+// pushLayersByChunksWithPrepareModeAndCache is split from the public call path
+// so tests can control cache-read timing without touching the process-global
+// cache directory. Cache reads are metadata-only: a miss never decompresses or
+// chunks a layer until QueryLayers has confirmed that the full layer is absent.
+func pushLayersByChunksWithPrepareModeAndCache(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer, strictPrepare bool, prog *chunkPushProgress, loadCache func(string) (*cachedManifest, bool)) ([]*agentpb.RunContainerLayerHeader, error) {
 	headers := make([]*agentpb.RunContainerLayerHeader, len(layers))
 
-	// Capability probe: a single empty QueryChunks tells us whether the agent
-	// supports chunk-diff at all BEFORE we decompress and chunk the first layer.
-	// An old agent returns Unimplemented, which bubbles up so deployByChunkDiff
-	// falls back to a registry push instead of wasting a layer's worth of work.
-	if _, err := cs.QueryChunks(ctx, &agentpb.QueryChunksRequest{}); err != nil {
+	// Start both remote preflight queries and local manifest-cache reads together.
+	// QueryChunks is the authoritative capability check: an old agent's
+	// Unimplemented error still bubbles up and triggers the registry fallback.
+	// QueryLayers remains optional and fails closed to chunking every layer.
+	// Only cache metadata is touched here; expensive decompression stays behind
+	// the layer-presence result below.
+	var (
+		present   map[string]int64
+		preloaded = make([]cachedManifestResult, len(layers))
+	)
+	preflightCtx, cancelPreflight := context.WithCancel(ctx)
+	defer cancelPreflight()
+	capabilityDone := make(chan error, 1)
+	go func() {
+		_, err := cs.QueryChunks(preflightCtx, &agentpb.QueryChunksRequest{})
+		capabilityDone <- err
+	}()
+	layersDone := make(chan map[string]int64, 1)
+	go func() {
+		layersDone <- queryPresentLayers(preflightCtx, cs, layers, output)
+	}()
+	cacheDone := make(chan struct{})
+	go func() {
+		defer close(cacheDone)
+		var cacheGroup errgroup.Group
+		cacheGroup.SetLimit(maxConcurrentLayerPush)
+		for i, l := range layers {
+			i, digest := i, l.Digest
+			cacheGroup.Go(func() error {
+				if preflightCtx.Err() != nil {
+					return nil
+				}
+				preloaded[i].manifest, preloaded[i].found = loadCache(digest)
+				return nil
+			})
+		}
+		_ = cacheGroup.Wait()
+	}()
+	if err := <-capabilityDone; err != nil {
+		cancelPreflight()
+		<-cacheDone
 		return nil, err
 	}
-
-	// Layer pre-check: ask which layers the device already has by diff ID so we
-	// can skip them entirely. A layer the device already holds yields no dedup, so
-	// decompressing and content-chunking it would be pure waste. Degrades to
-	// chunking every layer when the agent is too old or the query fails.
-	present := queryPresentLayers(ctx, cs, layers, output)
+	<-cacheDone
+	present = <-layersDone
 
 	// Build the present-layer headers up front and collect the indices that still
 	// need a chunk-diff push. A present-layer header carries no chunk hashes, so
@@ -367,7 +421,7 @@ func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyCont
 	for _, idx := range toPush {
 		idx, l := idx, layers[idx]
 		resolveGroup.Go(func() error {
-			r, err := resolveChunkLayer(l, indexProgress)
+			r, err := resolveChunkLayerWithCache(l, indexProgress, preloaded[idx])
 			if err != nil {
 				return err
 			}
@@ -473,7 +527,7 @@ func queryPresentLayers(ctx context.Context, cs agentpb.WendyContainerServiceCli
 	}
 	resp, err := cs.QueryLayers(ctx, &agentpb.QueryLayersRequest{DiffIds: diffIDs})
 	if err != nil {
-		if !isUnimplementedRPCError(err) {
+		if ctx.Err() == nil && !isUnimplementedRPCError(err) {
 			// The agent supports chunk-diff (the probe succeeded) but the layer
 			// pre-check failed for another reason; chunk everything rather than
 			// abort the deploy over a missed optimization.
@@ -553,6 +607,11 @@ func (r *resolvedChunkLayer) ensureDecompressed(progress *chunkIndexProgress) er
 }
 
 func resolveChunkLayer(l localLayer, progress *chunkIndexProgress) (*resolvedChunkLayer, error) {
+	m, ok := loadManifestCache(l.Digest)
+	return resolveChunkLayerWithCache(l, progress, cachedManifestResult{manifest: m, found: ok})
+}
+
+func resolveChunkLayerWithCache(l localLayer, progress *chunkIndexProgress, cached cachedManifestResult) (*resolvedChunkLayer, error) {
 	var (
 		diffID        string
 		size          int64
@@ -587,8 +646,8 @@ func resolveChunkLayer(l localLayer, progress *chunkIndexProgress) (*resolvedChu
 		return nil
 	}
 
-	if cm, ok := loadManifestCache(l.Digest); ok {
-		diffID, size, orderedHashes = cm.DiffID, cm.Size, cm.Hashes
+	if cached.found {
+		diffID, size, orderedHashes = cached.manifest.DiffID, cached.manifest.Size, cached.manifest.Hashes
 	} else {
 		if err := decompressAndChunk(); err != nil {
 			return nil, err
@@ -619,7 +678,7 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 	orderedHashes := r.header.GetChunkHashes()
 	qresp, err := cs.QueryChunks(ctx, &agentpb.QueryChunksRequest{ChunkHashes: orderedHashes})
 	if err != nil {
-		return err
+		return fmt.Errorf("querying missing chunks for layer %s: %w", r.header.GetDiffId(), err)
 	}
 	missing := make(map[[32]byte]bool, len(qresp.GetMissingHashes()))
 	for _, hb := range qresp.GetMissingHashes() {
@@ -645,30 +704,59 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 		}
 		transferProgress.addTotal(missingBytes)
 		prog.LayerPlanned(len(orderedHashes), len(missing), missingBytes)
-		wc, err := cs.WriteChunks(ctx)
-		if err != nil {
-			return err
-		}
-		for _, ref := range r.refs {
+		var wc grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]
+		chunksInStream := 0
+		for chunkIndex, ref := range r.refs {
 			if !missing[ref.Hash] {
 				continue
 			}
-			buf := make([]byte, ref.Len) // ref.Len <= chunk.MaxSize (256 KiB)
+			if wc == nil {
+				// Hardware reproduction showed that particular raw chunk payloads can
+				// stall a USB-NCM link while the compressed registry path succeeds.
+				// Give the fast path the same property; gRPC decompresses the message
+				// before the agent hashes and stages the original bytes.
+				wc, err = cs.WriteChunks(ctx, grpc.UseCompressor(grpcgzip.Name))
+				if err != nil {
+					return fmt.Errorf("opening chunk upload for layer %s: %w", r.header.GetDiffId(), err)
+				}
+			}
+			buf := make([]byte, ref.Len) // ref.Len <= chunk.MaxSize (64 KiB)
 			if _, err := r.dl.f.ReadAt(buf, int64(ref.Offset)); err != nil {
-				return err
+				return fmt.Errorf("reading chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
 			}
 			hb := ref.Hash // copy
 			if err := wc.Send(&agentpb.WriteChunksRequest{
 				Hash: hb[:],
 				Data: buf,
 			}); err != nil {
-				return err
+				// grpc-go reports io.EOF from Send when the server has already
+				// closed a client-streaming RPC. CloseAndRecv carries the actual
+				// terminal status (for example ResourceExhausted or InvalidArgument);
+				// without this read the CLI hides the actionable agent error behind
+				// a bare EOF and incorrectly treats it as a transport drop.
+				if errors.Is(err, io.EOF) {
+					if _, terminalErr := wc.CloseAndRecv(); terminalErr != nil {
+						err = terminalErr
+					}
+				}
+				return fmt.Errorf("sending chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
 			}
 			prog.ChunkSent(len(buf))
 			transferProgress.addSent(int64(len(buf)))
+			chunksInStream++
+			if chunksInStream == maxChunksPerWriteStream {
+				if _, err := wc.CloseAndRecv(); err != nil {
+					return fmt.Errorf("closing chunk upload batch after chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
+				}
+				wc = nil
+				chunksInStream = 0
+			}
 		}
-		if _, err := wc.CloseAndRecv(); err != nil {
-			return err
+		if wc != nil {
+			_, err = wc.CloseAndRecv()
+		}
+		if err != nil {
+			return fmt.Errorf("closing chunk upload for layer %s: %w", r.header.GetDiffId(), err)
 		}
 	} else {
 		prog.LayerPlanned(len(orderedHashes), 0, 0)

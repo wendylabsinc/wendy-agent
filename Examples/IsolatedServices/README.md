@@ -73,6 +73,16 @@ Expected output:
 [worker] ✓ service name resolution via /etc/hosts works
 ```
 
+## Build only
+
+```sh
+wendy build
+```
+
+Builds the two local images `sh.wendy.examples.isolatedservices-api:latest` and
+`sh.wendy.examples.isolatedservices-worker:latest` without needing a connected
+device.
+
 ## Dependency ordering (WDY-879)
 
 `dependsOn: ["api"]` tells Wendy to start `api` before `worker`.  On stop,

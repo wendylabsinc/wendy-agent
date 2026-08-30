@@ -16,7 +16,7 @@ struct `'wendy discover'` {
             try await cli.sh("wendy discover --help") { result in
                 let stdout = result.stdout
                 #expect(result.status.isSuccess)
-                #expect(stdout.contains("Continuously scan for WendyOS devices"))
+                #expect(stdout.contains("Continuously discover WendyOS devices"))
                 #expect(stdout.contains("Usage:"))
                 #expect(stdout.contains("wendy discover [flags]"))
                 #expect(stdout.contains("--timeout"))

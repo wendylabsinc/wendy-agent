@@ -288,6 +288,12 @@ func TestNewBuildCmd(t *testing.T) {
 	if cmd.Flags().Lookup("builder") == nil {
 		t.Error("missing flag \"builder\"")
 	}
+	if cmd.Flags().Lookup("service") == nil {
+		t.Error("missing flag \"service\"")
+	}
+	if cmd.Flags().Lookup("max-concurrency") == nil {
+		t.Error("missing flag \"max-concurrency\"")
+	}
 }
 
 func TestNewDeviceCmd(t *testing.T) {

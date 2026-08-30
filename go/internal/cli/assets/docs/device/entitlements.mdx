@@ -143,11 +143,9 @@ A `camera` entitlement can also carry `user`/`password` fields, but they are not
 </Callout>
 
 <Callout type="warning">
-  **Builds without the module**: container access to a network camera needs `v4l2loopback`. Without it, the agent logs this once and continues — direct `wendy device camera view` on the host is unaffected, only the in-container `/dev/video2xx` mirror is unavailable:
+  **Builds without the module**: container access to a network camera needs compatible v4l2loopback 0.15.x support. Without it, the agent logs this once and continues — direct IP-camera `wendy device camera view` on the host is unaffected, only the in-container `/dev/video2xx` mirror is unavailable:
 
-  > running WendyOS build lacks the v4l2loopback module; `camera view` still works
-
-  *(that's the underlying sentinel error's own text; the agent's warning log line paraphrases it rather than quoting it verbatim.)*
+  > running build lacks compatible v4l2loopback 0.15.x support
 </Callout>
 
 ### Audio Entitlement
@@ -242,31 +240,6 @@ When enabled, this entitlement:
   **Data Location**: Persistent data is stored at `/var/lib/wendy-agent/storage/{name}` on the host device. Reflashing WendyOS will remove this data unless backed up.
 </Callout>
 
-### Display Entitlement
-
-The display entitlement grants an app the ability to present to a locally-attached monitor as a Wayland client (GPU-accelerated). The app draws directly to the screen without a web browser.
-
-```json
-{
-  "type": "display"
-}
-```
-
-When enabled, this entitlement:
-- Grants `/dev/dri` (GPU render nodes) with cgroup access `rw` (no `mknod`)
-- Adds membership in the `video` and `render` groups
-- Exposes the WendyOS compositor's Wayland socket via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`
-
-On NVIDIA Jetson, GL/EGL userspace is injected from the host through the same CDI path as `gpu`; on Raspberry Pi, the app's own mesa works against the vc4 kernel driver.
-
-<Callout type="info">
-  **Display-enabled image**: The Wayland socket is present only on display-enabled WendyOS images. On a headless image, the entitlement is accepted but nothing renders.
-</Callout>
-
-<Callout type="warning">
-  **Security**: Apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
-</Callout>
-
 ### Notifications Entitlement
 
 The notifications entitlement lets an app send operator-facing Wendy
@@ -278,30 +251,17 @@ Notifications through its private app connection.
 }
 ```
 
-The agent/daemon mounts `/run/wendy/system` read-only and injects
+The agent mounts `/run/wendy/system` read-only and injects
 `WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. There is one socket per
-app, shared by the app's entitled service containers and future app-facing
-API capabilities. WendyKit exposes the typed operation as
-`WendyNotification.send(_:)`.
+app, shared by all of the app's entitled service containers. WendyKit exposes
+the typed operation as `WendyNotification.send(_:)`.
 
-The app supplies one or more user, organization team, or role selectors plus
-content, severity, deep link, a caller-chosen Notification UUID v4 resource
-identity, and optional metadata. After successful creation, any canonical UUID
-reuse returns `ALREADY_EXISTS` rather than replaying success. A local validation
-or rate-limit rejection does not claim the UUID, so that UUID remains valid for
-retry. All selector categories are unioned, normalized, and deduplicated. The
-app-facing API accepts at most 100 selector entries before deduplication; Cloud
-resolves at most 10,000 recipients. Trusted container state supplies Cloud
-`app_id`, stored as `created_by_app_id`; provisioned device mTLS supplies device
-and organization identity. Each send has a 15-second Cloud
-deadline.
-
-All entitled services in a multi-service app share the app's stable directory
-under `/var/lib/wendy/app-system`. After an agent/daemon restart, the socket is
-recreated from persisted container labels and running containers reconnect on
-their next call without a redeploy. Stopped containers retain their mount and
-can reconnect when started again. The directory remains until the last entitled
-service container is deleted.
+An app sends to one or more user, organization team, or role selectors, with
+content, severity, an optional deep link, and a caller-chosen notification UUID.
+A single send accepts at most 100 selector entries, and Cloud resolves at most
+10,000 recipients. All of an app's entitled services share one connection, and
+the socket is recreated after an agent restart, so containers reconnect on their
+next call without a redeploy.
 
 <Callout type="warning">
   **Security**: Apps without `notifications` receive no private app connection
@@ -621,7 +581,7 @@ The TCP socket probe checks whether your application is accepting connections on
 | `tcpSocket.port` | The TCP port to probe. Must match the port your application listens on. |
 | `timeoutSeconds` | Maximum time (in seconds) to wait for the port to become available. Defaults to `30`. |
 
-The probe polls every 500ms with a 2-second dial timeout per attempt. If the port is not reachable within `timeoutSeconds`, the CLI prints a warning rather than failing the deployment. It suppresses the reachable-app announcement and readiness-gated host-side actions.
+If the port is not reachable within `timeoutSeconds`, the CLI prints a warning rather than failing the deployment. It suppresses the reachable-app announcement and readiness-gated host-side actions.
 
 ## Lifecycle Hooks
 
@@ -685,6 +645,6 @@ Here's a complete `wendy.json` with entitlements, readiness, and a postStart hoo
 
 When you run `wendy run`:
 1. The container is built and started on the device
-2. The CLI polls port `3002` on the device every 500ms
+2. The CLI polls port `3002` on the device
 3. Once the port is reachable, the `postStart` hook fires
 4. Your browser opens to the application automatically

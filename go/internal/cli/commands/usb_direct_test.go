@@ -301,6 +301,9 @@ func TestUSBDirectFallbackMatchesHostname(t *testing.T) {
 	if rec.closed {
 		t.Fatal("a matched connection must be returned live, not closed")
 	}
+	if cached, ok := conn.CachedAgentVersion(); !ok || cached.GetHostname() != "wendy-orin" {
+		t.Fatalf("matched connection did not retain its successful version probe: (%v, %v)", cached, ok)
+	}
 }
 
 func TestUSBDirectFallbackRejectsWrongOrUnknownHostname(t *testing.T) {

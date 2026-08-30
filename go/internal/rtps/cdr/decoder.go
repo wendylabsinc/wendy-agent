@@ -1,6 +1,6 @@
 // Package cdr decodes classic CDR (XCDR1) payloads, the wire format ROS 2
-// uses for user data on DDS. It is decode-only and covers exactly the subset
-// the battery messages need.
+// uses for user data on DDS. It is decode-only and covers the subset used by
+// Wendy's ROS 2 telemetry and camera messages.
 package cdr
 
 import (
@@ -113,6 +113,15 @@ func (d *Decoder) Int32() (int32, error) {
 	return int32(v), err
 }
 
+// Uint64 reads an 8-byte unsigned integer, aligned to 8.
+func (d *Decoder) Uint64() (uint64, error) {
+	b, err := d.take(8)
+	if err != nil {
+		return 0, err
+	}
+	return d.order.Uint64(b), nil
+}
+
 // Float32 reads an IEEE-754 single, aligned to 4.
 func (d *Decoder) Float32() (float32, error) {
 	v, err := d.Uint32()
@@ -147,6 +156,22 @@ func (d *Decoder) String() (string, error) {
 func (d *Decoder) SkipString() error {
 	_, err := d.String()
 	return err
+}
+
+// Bytes reads a sequence<uint8>: a uint32 element count followed by the bytes.
+// The returned slice aliases the serialized payload and is valid for as long as
+// the Decoder's input remains live.
+func (d *Decoder) Bytes() ([]byte, error) {
+	n, err := d.Uint32()
+	if err != nil {
+		return nil, err
+	}
+	if uint64(n) > uint64(len(d.buf)-d.pos) {
+		return nil, ErrShort
+	}
+	b := d.buf[d.pos : d.pos+int(n)]
+	d.pos += int(n)
+	return b, nil
 }
 
 // SkipBytes aligns to align, then steps over n bytes. Use it for fixed-size

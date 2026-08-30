@@ -174,6 +174,40 @@ func TestJoinGroupNamespaces_StaleProcess(t *testing.T) {
 	}
 }
 
+func TestJoinNetworkNamespace(t *testing.T) {
+	t.Run("updates existing entry", func(t *testing.T) {
+		spec := &Spec{Linux: &Linux{Namespaces: []LinuxNamespace{
+			{Type: "pid"},
+			{Type: "network"},
+		}}}
+		if err := JoinNetworkNamespace(spec, "/run/wendy/netns/myapp"); err != nil {
+			t.Fatal(err)
+		}
+		if got := spec.Linux.Namespaces[1].Path; got != "/run/wendy/netns/myapp" {
+			t.Fatalf("network path = %q", got)
+		}
+	})
+
+	t.Run("adds missing entry", func(t *testing.T) {
+		spec := &Spec{Linux: &Linux{}}
+		if err := JoinNetworkNamespace(spec, "/run/wendy/netns/myapp"); err != nil {
+			t.Fatal(err)
+		}
+		if len(spec.Linux.Namespaces) != 1 || spec.Linux.Namespaces[0].Type != "network" {
+			t.Fatalf("namespaces = %#v", spec.Linux.Namespaces)
+		}
+	})
+
+	t.Run("rejects invalid spec", func(t *testing.T) {
+		if err := JoinNetworkNamespace(&Spec{}, "/run/wendy/netns/myapp"); err == nil {
+			t.Fatal("expected nil Linux error")
+		}
+		if err := JoinNetworkNamespace(&Spec{Linux: &Linux{}}, ""); err == nil {
+			t.Fatal("expected empty path error")
+		}
+	})
+}
+
 func TestSharedSHMMount(t *testing.T) {
 	m := SharedSHMMount("/run/wendy/shm/com.example.app")
 	if m.Destination != "/dev/shm" {

@@ -43,9 +43,11 @@ An `[app-id]` argument (or `--app-id`) always creates a new subdirectory of that
 |---|---|---|
 | `wendyos` | `linux` | `swift`, `python` |
 | `darwin` (aliases: `mac`, `macos`) | `darwin` | `swift` only |
-| `wendy-lite` | `wendy-lite` | `swift` only |
+| `wendy-lite` | `wendy-lite` | `swift` only (optional WASM scaffold) |
 
 Templates may offer additional languages (for example `rust`, `node`, or `cpp`) on a `wendyos` target; the plain wizard writes `swift` or `python`.
+
+For ESP32, regular native ESP-IDF projects are recommended. Create them with the standard ESP-IDF tooling and add a `wendy.json` whose platform is `wendy-lite`; you do not need `wendy init`. The `wendy-lite` wizard target remains available for scaffolding an optional Swift/WASM guest.
 
 ## Flags
 
@@ -222,7 +224,7 @@ wendy init \
   --i2c-device /dev/i2c-1 \
   --assistant skip
 
-# Wendy Lite always uses Swift
+# Optional Wendy Lite Swift/WASM scaffold
 wendy init \
   --app-id lite-app \
   --target wendy-lite \
