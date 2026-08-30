@@ -332,8 +332,8 @@ func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
 	campaign.DeployedUnixNanos = time.Now().UnixNano()
 	if campaign.BufferDuration() > 0 {
 		for _, source := range campaign.Sources {
-			if source.Camera != "" || source.Audio != "" || source.ROS2 != "" {
-				campaign.Warnings = append(campaign.Warnings, "pre-trigger buffering is currently exact for application records; sensor streams start at the trigger and report their achieved offset")
+			if source.Audio != "" || source.ROS2 != "" {
+				campaign.Warnings = append(campaign.Warnings, "pre-trigger buffering is exact for application records and camera streams; audio and ROS 2 streams start at the trigger and report their achieved offset")
 				break
 			}
 		}

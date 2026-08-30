@@ -181,6 +181,12 @@ type CaptureSession struct {
 	Directory        string
 	RequestBootNanos int64
 	BootID           string
+	// CampaignKey is the concurrency key of the episode's campaign
+	// (AdHocEpisodeKey for campaign-less episodes). Capture adapters use it to
+	// find the standby pre-roll ring a campaign armed for its camera sources, so
+	// the trigger flushes that ring into the opening frames on the same
+	// subscription that then continues live (see the camera adapter's Arm).
+	CampaignKey string
 }
 
 // CaptureResult is reported by an adapter before the episode is sealed.

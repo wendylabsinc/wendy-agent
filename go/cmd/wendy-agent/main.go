@@ -325,6 +325,10 @@ func main() {
 	// per-app sensor socket must be built with that provider already registered.
 	videoSvc := services.NewVideoService(ctx, logger)
 	dataSvc.SetVideoService(videoSvc)
+	// Arm pre-roll for campaigns deployed in a previous agent lifetime so their
+	// next trigger opens BEFORE the trigger instant, not only campaigns deployed
+	// during this run.
+	dataSvc.ReconcileArming(ctx)
 	defer videoSvc.Shutdown()
 
 	notificationSender := services.NewCloudNotificationSender(logger, provisioningSvc)

@@ -506,7 +506,7 @@ func (m *Manager) ActiveSession(key string) (CaptureSession, bool) {
 	if a == nil {
 		return CaptureSession{}, false
 	}
-	return CaptureSession{ID: a.manifest.ID, Directory: a.dir, RequestBootNanos: a.manifest.RequestBootNanos, BootID: a.manifest.BootID}, true
+	return CaptureSession{ID: a.manifest.ID, Directory: a.dir, RequestBootNanos: a.manifest.RequestBootNanos, BootID: a.manifest.BootID, CampaignKey: a.key}, true
 }
 
 // ActiveEpisodeKeys returns the sorted concurrency keys of active episodes.

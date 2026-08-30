@@ -25,7 +25,14 @@ const captureModeSnapshot = "snapshot"
 
 var errAwaitCameraRandomAccess = errors.New("waiting for a decodable random-access unit")
 
-type cameraDataAdapter struct{ video *VideoService }
+type cameraDataAdapter struct {
+	video *VideoService
+	// armed holds the standby pre-roll rings a campaign armed for its camera
+	// sources, keyed by campaign concurrency key then by source ID. It is
+	// populated by Arm and consumed by Start when the campaign triggers.
+	armedMu sync.Mutex
+	armed   map[string]map[string]*armedCameraSource
+}
 
 func newCameraDataAdapter(video *VideoService) dataCaptureAdapter {
 	if video == nil {
@@ -76,9 +83,36 @@ func cameraDeviceID(sourceID string) (uint32, bool) {
 
 func (a *cameraDataAdapter) Start(ctx context.Context, session data.CaptureSession, selected []data.Source) (runningDataCapture, error) {
 	group := &cameraCaptureGroup{}
+	armed := a.takeArmed(session.CampaignKey)
 	for _, source := range selected {
 		devID, ok := cameraDeviceID(source.ID)
 		if !ok {
+			continue
+		}
+		// A campaign that armed this camera for pre-roll flushes its standby ring
+		// into the opening frames and continues live on the same subscription.
+		if pre := armed[source.ID]; pre != nil {
+			delete(armed, source.ID)
+			capture, _, err := pre.activate(session)
+			if err != nil {
+				// Pre-roll activation failed (for example the camera faulted mid
+				// arm). Fall back to a fresh live capture so the episode still
+				// records this camera from the trigger rather than losing it.
+				capture, err = a.startOne(ctx, session, source, devID)
+			}
+			if errors.Is(err, errCameraHeldExplicitly) {
+				group.refused = append(group.refused, data.CaptureResult{
+					SourceID:     source.ID,
+					SourceDetail: strings.TrimSpace(source.Detail + " (not captured: " + err.Error() + ")"),
+				})
+				continue
+			}
+			if err != nil {
+				_, _ = group.Stop(context.Background())
+				a.disarmAll(armed)
+				return nil, fmt.Errorf("%s: %w", source.ID, err)
+			}
+			group.captures = append(group.captures, capture)
 			continue
 		}
 		capture, err := a.startOne(ctx, session, source, devID)
@@ -102,10 +136,102 @@ func (a *cameraDataAdapter) Start(ctx context.Context, session data.CaptureSessi
 		}
 		group.captures = append(group.captures, capture)
 	}
+	// Any armed ring for this campaign whose source was not among the episode's
+	// selected sources is released rather than left subscribed.
+	a.disarmAll(armed)
 	if len(group.captures) == 0 && len(group.refused) == 0 {
 		return nil, nil
 	}
 	return group, nil
+}
+
+// Arm puts each continuous-mode camera source into standby for a campaign that
+// requested a buffer: it subscribes to the source's hub as a non-owning
+// consumer and keeps a keyframe-aligned ring of `buffer` seconds of encoded
+// frames without writing an episode. Snapshot-mode sources are not armed:
+// snapshot capture writes sparse independent stills, not a continuous ring.
+// Arm is idempotent per campaign key when paired with Disarm; a source that
+// cannot be resolved or subscribed is skipped so the campaign still arms its
+// other cameras.
+func (a *cameraDataAdapter) Arm(campaignKey string, buffer time.Duration, selected []data.Source) {
+	if a.video == nil || buffer <= 0 {
+		return
+	}
+	for _, source := range selected {
+		devID, ok := cameraDeviceID(source.ID)
+		if !ok {
+			continue
+		}
+		if source.Capture != nil && source.Capture.EffectiveMode() == captureModeSnapshot {
+			continue
+		}
+		src, err := a.video.resolveSource(devID)
+		if err != nil {
+			continue
+		}
+		if src.kind == sourceIP {
+			if err := a.video.preflightIPCamera(src.camera); err != nil {
+				continue
+			}
+		}
+		// A parameter-less request: arming must never take a running stream from
+		// a viewer, and must never register an explicit holder that would let it
+		// force the parameter-precedence takeover.
+		hub, subID, frames, err := a.video.joinHub(context.Background(), src.key, &agentpb.StreamVideoRequest{DeviceId: devID})
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		as := &armedCameraSource{
+			video: a.video, source: source, key: src.key, devID: devID, buffer: buffer,
+			hub: hub, subID: subID, frames: frames, alive: true,
+			ring:   &cameraPreRollRing{buffer: buffer, limitBytes: preRollCameraLimitBytes},
+			cancel: cancel, done: make(chan struct{}),
+		}
+		go as.fill(ctx)
+		a.store(campaignKey, source.ID, as)
+	}
+}
+
+// Disarm stops and releases every armed source for a campaign key.
+func (a *cameraDataAdapter) Disarm(campaignKey string) {
+	a.disarmAll(a.takeArmed(campaignKey))
+}
+
+func (a *cameraDataAdapter) store(campaignKey, sourceID string, as *armedCameraSource) {
+	a.armedMu.Lock()
+	if a.armed == nil {
+		a.armed = make(map[string]map[string]*armedCameraSource)
+	}
+	byKey := a.armed[campaignKey]
+	if byKey == nil {
+		byKey = make(map[string]*armedCameraSource)
+		a.armed[campaignKey] = byKey
+	}
+	old := byKey[sourceID]
+	byKey[sourceID] = as
+	a.armedMu.Unlock()
+	// Replace any stale armed source for the same key+source (re-arm), disarming
+	// the old one so its subscription is not leaked. Done outside the lock: disarm
+	// waits for the old fill goroutine to stop.
+	if old != nil {
+		old.disarm()
+	}
+}
+
+// takeArmed removes and returns the armed sources for a campaign key.
+func (a *cameraDataAdapter) takeArmed(campaignKey string) map[string]*armedCameraSource {
+	a.armedMu.Lock()
+	defer a.armedMu.Unlock()
+	byKey := a.armed[campaignKey]
+	delete(a.armed, campaignKey)
+	return byKey
+}
+
+func (a *cameraDataAdapter) disarmAll(sources map[string]*armedCameraSource) {
+	for _, as := range sources {
+		as.disarm()
+	}
 }
 
 func (a *cameraDataAdapter) startOne(ctx context.Context, session data.CaptureSession, source data.Source, devID uint32) (*cameraCapture, error) {
@@ -341,10 +467,24 @@ type cameraCapture struct {
 	snapshotNumber  int
 	missedIntervals uint64
 	// Rate-cap state: receipts of the first and last written frames, and
-	// whether the current group of pictures is being skipped.
-	rateStart int64
-	rateLast  int64
-	skipGOP   bool
+	// whether the current group of pictures is being skipped. rateWritten counts
+	// only frames the live loop wrote (not flushed pre-roll), so a campaign that
+	// both pre-rolls and rate-caps enforces the cap over the live capture rather
+	// than being thrown off by the pre-roll frames already on disk.
+	rateStart     int64
+	rateLast      int64
+	rateWritten   uint64
+	haveRateStart bool
+	skipGOP       bool
+	// preRoll holds the standby ring an armed campaign accumulated before the
+	// trigger. run() replays it first, writing each buffered frame at its real
+	// (negative-offset) capture time, before the live loop continues on the same
+	// hub subscription. Empty for captures that were not armed.
+	preRoll []bufferedCameraFrame
+	// armed marks a capture activated from a standby ring: it is already
+	// subscribed and producing, so run() reports ready once its pre-roll is
+	// flushed rather than waiting for a first live frame.
+	armed bool
 }
 
 func (c *cameraCapture) receiptNow() (int64, int64, int64, error) {
@@ -429,6 +569,29 @@ func (c *cameraCapture) run() {
 		_ = c.index.Close()
 		_ = c.mappingFile.Close()
 	}()
+
+	// Flush the armed pre-roll ring first: these frames were captured BEFORE the
+	// trigger, so they open the episode with real negative-offset canonical
+	// times before the live loop takes over on the same subscription. An
+	// undecodable leading frame (should not happen: the ring only retains from a
+	// keyframe) is skipped rather than failing the episode.
+	for i := range c.preRoll {
+		if err := c.writeBufferedFrame(c.preRoll[i]); errors.Is(err, errAwaitCameraRandomAccess) {
+			continue
+		} else if err != nil {
+			c.runErr = err
+			c.signalReady(err)
+			return
+		}
+	}
+	c.preRoll = nil
+	// The armed subscription was already producing while the ring filled, so the
+	// capture is ready as soon as its pre-roll is on disk; the live loop then
+	// continues. A never-armed capture leaves preRoll empty and signals ready on
+	// its first live frame below, exactly as before.
+	if c.armed {
+		c.signalReady(nil)
+	}
 
 	for {
 		select {
@@ -596,12 +759,14 @@ func frameRandomAccess(frame *videoFrame) (int, bool) {
 // its parsed prefix does not prove a GOP boundary.
 func (c *cameraCapture) gateGOP(frame *videoFrame, receipt int64) (skip bool) {
 	if _, randomAccess := frameRandomAccess(frame); randomAccess && frame.auAligned {
-		if c.result.Count == 0 {
-			// Always admit the first GOP so the capture starts promptly.
+		if c.rateWritten == 0 {
+			// Always admit the first live GOP so the capture starts promptly.
+			// Pre-roll frames already on disk are counted separately and never
+			// gate the live cap.
 			c.skipGOP = false
 		} else {
 			elapsed := float64(receipt-c.rateStart) / float64(time.Second)
-			c.skipGOP = elapsed <= 0 || float64(c.result.Count) > c.rateCap*elapsed
+			c.skipGOP = elapsed <= 0 || float64(c.rateWritten) > c.rateCap*elapsed
 		}
 	}
 	return c.skipGOP
@@ -614,6 +779,57 @@ func (c *cameraCapture) writeFrame(frame *videoFrame) error {
 	}
 	if c.rateCap > 0 && c.gateGOP(frame, receipt) {
 		return nil
+	}
+	if err := c.writeEncodedFrame(frame, canonical, uncertainty, mappingID, receipt, false); err != nil {
+		return err
+	}
+	if !c.haveRateStart {
+		c.rateStart, c.haveRateStart = receipt, true
+	}
+	c.rateWritten++
+	c.rateLast = receipt
+	return nil
+}
+
+// writeBufferedFrame replays one frame from an armed campaign's standby ring.
+// Unlike a live frame it is stamped with the bracketed CLOCK_BOOTTIME receipt
+// the hub took when it broadcast the frame (frame.receiptBootNanos), not a
+// fresh receipt: the frame was captured seconds before this replay, so its real
+// capture time is the only honest canonical time, and it lands at a negative
+// episode offset. The native-monotonic refinement live capture applies is not
+// available retroactively, so the receipt bracket is the canonical mapping,
+// exactly as the sensor path reports the same frames to a model. The rate cap
+// never applies to pre-roll: the ring's byte and window bounds already bound it.
+func (c *cameraCapture) writeBufferedFrame(bf bufferedCameraFrame) error {
+	frame := bf.frame
+	if c.observedDomains == nil {
+		c.observedDomains = make(map[string]bool)
+	}
+	c.observedDomains[frame.nativeClock] = true
+	uncertainty := frame.receiptUncertaintyNanos
+	if uncertainty > c.maxCanonicalError {
+		c.maxCanonicalError = uncertainty
+	}
+	return c.writeEncodedFrame(frame, frame.receiptBootNanos, uncertainty, "receipt-bracket-v1", frame.receiptBootNanos, bf.resetSegment)
+}
+
+// writeEncodedFrame is the shared write core for both live capture and pre-roll
+// replay: it rotates the segment on random-access boundaries, appends the
+// payload, records the auditable index entry that ties the harness sample_id to
+// its byte range, and accounts the frame as captured. canonical is the frame's
+// CLOCK_BOOTTIME episode time (negative for pre-roll); newStream forces a fresh
+// segment before the write so a producer restart never splices two sequence
+// parameter sets into one file.
+func (c *cameraCapture) writeEncodedFrame(frame *videoFrame, canonical, uncertainty int64, mappingID string, receipt int64, newStream bool) error {
+	if newStream && c.segment != nil {
+		if err := c.segment.Sync(); err != nil {
+			return err
+		}
+		if err := c.segment.Close(); err != nil {
+			return err
+		}
+		c.segment = nil
+		c.haveSequence = false
 	}
 	trim, err := c.ensureSegment(frame.codec, canonical, frame.data)
 	if err != nil {
@@ -648,10 +864,6 @@ func (c *cameraCapture) writeFrame(frame *videoFrame) error {
 		return err
 	}
 	c.result.Count++
-	if c.result.Count == 1 {
-		c.rateStart = receipt
-	}
-	c.rateLast = receipt
 	if c.result.ActualOffset == nil {
 		actual := canonical - c.session.RequestBootNanos
 		c.result.ActualOffset = &actual
@@ -779,8 +991,8 @@ func (c *cameraCapture) finishResultDetail(end int64) {
 			// No end receipt: fall back to the written-frame span.
 			span = c.rateLast - c.rateStart
 		}
-		if c.result.Count > 0 && span > 0 {
-			note += fmt.Sprintf("; achieved %.3g Hz", float64(c.result.Count)/(float64(span)/float64(time.Second)))
+		if c.rateWritten > 0 && span > 0 {
+			note += fmt.Sprintf("; achieved %.3g Hz", float64(c.rateWritten)/(float64(span)/float64(time.Second)))
 		}
 		c.notes = append(c.notes, note)
 	}

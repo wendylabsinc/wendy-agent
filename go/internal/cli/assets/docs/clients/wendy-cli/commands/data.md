@@ -263,11 +263,16 @@ command becomes a verb on the CLI rather than a separate binary.
 ## Pre-trigger behavior
 
 Application pre-roll is exact, device-wide, and bounded by the campaign buffer
-(with a five-minute/50 MiB global ceiling). Camera and ROS 2 adapters currently
-start at the trigger. Their manifest entries preserve both the requested offset
-and the achieved offset; campaign deployment prints a warning when sensor
-pre-roll was requested. Unknown drop counts are displayed as unknown, never as
-zero.
+(with a five-minute/50 MiB global ceiling). Camera pre-roll is also honored: a
+campaign that requests a buffer arms its camera sources into a standby ring of
+keyframe-aligned encoded frames, so the episode opens BEFORE the trigger. The
+camera source's manifest entry reports the achieved offset, which is at least
+the requested buffer at steady state but may be shorter when the campaign was
+armed less than a buffer before the trigger fired. Audio and ROS 2 adapters
+still start at the trigger. Every source's manifest entry preserves both the
+requested offset and the achieved offset; campaign deployment prints a warning
+when audio or ROS 2 pre-roll was requested. Unknown drop counts are displayed
+as unknown, never as zero.
 
 ## Concurrency and retention
 
