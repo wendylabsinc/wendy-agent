@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -199,6 +200,9 @@ func TestCampaignPersistsAndResolvesSemanticSources(t *testing.T) {
 		return []Source{
 			{ID: "v4l2:/dev/video2", Kind: "camera", ClockDomain: "V4L2", Healthy: true, Detail: "Logitech Brio"},
 			{ID: "ros2:cyclone:domain-0", Kind: "ros2", ClockDomain: "ROS", Healthy: true},
+			{ID: "ros2:cyclone:domain-0:/lidar/points", Kind: "ros2", ClockDomain: "ROS", Healthy: true, Detail: "sensor_msgs/msg/PointCloud2"},
+			{ID: "ros2:cyclone:domain-0:/vehicle/odometry", Kind: "ros2", ClockDomain: "ROS", Healthy: true, Detail: "nav_msgs/msg/Odometry"},
+			{ID: "ros2:cyclone:domain-0:/camera/front/image_raw", Kind: "ros2", ClockDomain: "ROS", Healthy: true, Detail: "sensor_msgs/msg/Image"},
 		}
 	})
 	campaign, err := manager.DeployCampaign([]byte(exampleCampaignYAML))
@@ -221,8 +225,19 @@ func TestCampaignPersistsAndResolvesSemanticSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantSources := map[string]bool{"applications": true, "ros2:cyclone:domain-0": true, "v4l2:/dev/video2": true}
+	// The two ROS 2 topic selectors resolve to their own sources, not to the
+	// whole DDS domain: a plan asking for the lidar and the odometry must not
+	// drag /camera/front/image_raw into the episode with them.
+	wantSources := map[string]bool{
+		"applications":                            true,
+		"ros2:cyclone:domain-0:/lidar/points":     true,
+		"ros2:cyclone:domain-0:/vehicle/odometry": true,
+		"v4l2:/dev/video2":                        true,
+	}
 	for _, source := range sources {
+		if !wantSources[source] {
+			t.Errorf("campaign selected unrequested source %s", source)
+		}
 		delete(wantSources, source)
 	}
 	if len(wantSources) != 0 || len(topics) != 2 {
@@ -263,5 +278,97 @@ func TestDeployWarnsUnimplementedModesPerSourceKind(t *testing.T) {
 	}
 	if warnings := warned("camera: front\n    capture: {mode: threshold, trigger: \"model.uncertainty > 0.9\"}"); len(warnings) != 1 {
 		t.Fatalf("camera threshold mode must still deploy-warn: %v", warnings)
+	}
+}
+
+// TestResolveROS2SelectorSpellings covers every campaign spelling that has to
+// keep working, including the domain-level identifier deployed plans name.
+func TestResolveROS2SelectorSpellings(t *testing.T) {
+	all := []Source{
+		{ID: "applications", Kind: "application", Healthy: true},
+		{ID: "ros2:rmw_cyclonedds_cpp:domain-42", Kind: "ros2", Healthy: true},
+		{ID: "ros2:rmw_cyclonedds_cpp:domain-42:/chatter", Kind: "ros2", Healthy: true},
+		{ID: "ros2:rmw_cyclonedds_cpp:domain-42:/camera/left/image_raw", Kind: "ros2", Healthy: true},
+		{ID: "ros2:rmw_fastrtps_cpp:domain-42", Kind: "ros2", Healthy: true},
+		{ID: "ros2:rmw_fastrtps_cpp:domain-42:/chatter", Kind: "ros2", Healthy: true},
+	}
+	for _, tc := range []struct {
+		name     string
+		selector string
+		want     []string
+	}{
+		{
+			name:     "topic name selects that topic on every graph publishing it",
+			selector: "/chatter",
+			want:     []string{"ros2:rmw_cyclonedds_cpp:domain-42:/chatter", "ros2:rmw_fastrtps_cpp:domain-42:/chatter"},
+		},
+		{
+			name:     "nested topic name",
+			selector: "/camera/left/image_raw",
+			want:     []string{"ros2:rmw_cyclonedds_cpp:domain-42:/camera/left/image_raw"},
+		},
+		{
+			name:     "full per-topic identifier selects exactly one source",
+			selector: "ros2:rmw_cyclonedds_cpp:domain-42:/chatter",
+			want:     []string{"ros2:rmw_cyclonedds_cpp:domain-42:/chatter"},
+		},
+		{
+			name:     "domain-level identifier still selects the whole domain",
+			selector: "ros2:rmw_cyclonedds_cpp:domain-42",
+			want:     []string{"ros2:rmw_cyclonedds_cpp:domain-42"},
+		},
+		{
+			name:     "domain-level identifier without the ros2 prefix",
+			selector: "rmw_cyclonedds_cpp:domain-42",
+			want:     []string{"ros2:rmw_cyclonedds_cpp:domain-42"},
+		},
+		{
+			name:     "unrecognized selector keeps the pre-per-topic behavior",
+			selector: "everything",
+			want:     []string{"ros2:rmw_cyclonedds_cpp:domain-42", "ros2:rmw_fastrtps_cpp:domain-42"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ids, err := resolveROS2Selector(all, tc.selector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sort.Strings(ids)
+			want := append([]string(nil), tc.want...)
+			sort.Strings(want)
+			if strings.Join(ids, ",") != strings.Join(want, ",") {
+				t.Fatalf("resolveROS2Selector(%q) = %v, want %v", tc.selector, ids, want)
+			}
+		})
+	}
+}
+
+// TestResolveROS2SelectorRejectsAbsentTopic keeps a plan from sealing and
+// uploading an episode that holds none of the data it asked for. Falling back
+// to the whole domain would resurrect the bug per-topic sources exist to fix.
+func TestResolveROS2SelectorRejectsAbsentTopic(t *testing.T) {
+	all := []Source{
+		{ID: "ros2:rmw_cyclonedds_cpp:domain-42", Kind: "ros2", Healthy: true},
+		{ID: "ros2:rmw_cyclonedds_cpp:domain-42:/chatter", Kind: "ros2", Healthy: true},
+	}
+	if ids, err := resolveROS2Selector(all, "/lidar/points"); err == nil {
+		t.Fatalf("resolveROS2Selector returned %v for a topic no graph publishes", ids)
+	} else if !strings.Contains(err.Error(), "/lidar/points") {
+		t.Errorf("err = %v, want it to name the missing topic", err)
+	}
+}
+
+// TestResolveROS2SelectorSkipsUnhealthyGraphs keeps an unhealthy domain, which
+// is now derived from whether its topics could be enumerated at all, out of
+// every selection.
+func TestResolveROS2SelectorSkipsUnhealthyGraphs(t *testing.T) {
+	all := []Source{
+		{ID: "ros2:rmw_cyclonedds_cpp:domain-42", Kind: "ros2", Healthy: false, Detail: "listing topics failed"},
+	}
+	if _, err := resolveROS2Selector(all, "ros2:rmw_cyclonedds_cpp:domain-42"); err == nil {
+		t.Fatal("an unhealthy graph resolved")
+	}
+	if _, err := resolveROS2Selector(all, "everything"); err == nil {
+		t.Fatal("an unhealthy graph resolved through the fallback path")
 	}
 }
