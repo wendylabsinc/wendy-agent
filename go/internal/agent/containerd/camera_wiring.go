@@ -26,6 +26,11 @@ type CameraLoopbackProvider interface {
 	// containers entitled to camera access, so the loopback manager can
 	// start or stop its pumps to match.
 	SetCameraContainerConsumers(ctx context.Context, containerIDs []string)
+	// SetTwoPlaneContainerConsumers replaces, wholesale, the set of running
+	// containers entitled to the TWO-PLANE camera path, which is a strictly
+	// narrower set: it requires both sensor-read and camera. See
+	// twoPlaneConsumerNames for why both.
+	SetTwoPlaneContainerConsumers(ctx context.Context, containerIDs []string)
 }
 
 // Compile-time check that *services.VideoService satisfies CameraLoopbackProvider
@@ -73,6 +78,64 @@ func cameraConsumerNames(infos []containerCameraInfo) []string {
 		}
 		entitlements := parseEntitlementsFromAnnotations(info.labels)
 		if entitlementsContain(entitlements, appconfig.EntitlementCamera) || entitlementsContain(entitlements, appconfig.EntitlementVideo) {
+			names = append(names, info.name)
+		}
+	}
+	return names
+}
+
+// twoPlaneConsumerNames returns the names of containers entitled to the
+// two-plane camera path: a Running task holding BOTH the sensor-read entitlement
+// and the camera entitlement (or its deprecated alias, video).
+//
+// # Why both, and why neither alone is enough
+//
+// The two-plane path has two halves, and they are grants of different kinds.
+//
+// The data plane is a v4l2loopback device node the app opens and reads. That is
+// a device-node grant, and device-node grants are what the camera entitlement
+// is. The sensor-read entitlement documents itself as granting "no device nodes;
+// raw device access remains the separate camera entitlement", and honouring
+// that sentence is the point: if holding sensors alone caused a readable
+// /dev/video* to appear in the container, sensors would have silently become a
+// device-access entitlement. So sensors alone must not create a node, and does
+// not here.
+//
+// The control plane is the frame identity stream, which carries source id,
+// sample id, canonical time, uncertainty and a sequence number. That is strictly
+// LESS than SensorService.Subscribe already gives an app holding sensors, which
+// carries every one of those fields plus the pixels. It widens nothing, so it
+// belongs to sensors and needs no new grant.
+//
+// Camera alone is not enough either, and this is the more interesting half. An
+// app holding only camera can already open the physical device today. What it
+// cannot do is prove which frame it saw: it is an independent second reader, so
+// the frame it scored is not provably the frame the episode recorded. Handing
+// such an app a hub-fed node without the identity stream would give it
+// better-looking pixels with the same unprovable join, which is the very defect
+// the harness exists to remove. The identity stream is what makes the node worth
+// having, and that stream is a sensors grant.
+//
+// Requiring both is therefore not belt-and-braces caution: each entitlement
+// covers exactly one plane, and one plane on its own does not deliver the
+// property. An app holding one of the two keeps precisely the behaviour it has
+// today, and nothing it already had is taken away.
+func twoPlaneConsumerNames(infos []containerCameraInfo) []string {
+	var names []string
+	for _, info := range infos {
+		if !info.running {
+			continue
+		}
+		appID := info.labels[labelKeyAppID]
+		serviceName := info.labels[labelKeyServiceName]
+		if appconfig.ValidateAppID(appID) != nil || (serviceName != "" && appconfig.ValidateServiceName(serviceName) != nil) {
+			continue
+		}
+		entitlements := parseEntitlementsFromAnnotations(info.labels)
+		hasCamera := entitlementsContain(entitlements, appconfig.EntitlementCamera) ||
+			entitlementsContain(entitlements, appconfig.EntitlementVideo)
+		hasSensorRead := entitlementsContain(entitlements, appconfig.EntitlementSensorRead)
+		if hasCamera && hasSensorRead {
 			names = append(names, info.name)
 		}
 	}
@@ -142,6 +205,7 @@ func (c *Client) SyncCameraLoopbacks(ctx context.Context) {
 		c.logger.Warn("camera loopback sync: ensuring camera nodes failed", zap.Error(err))
 	}
 	c.cameraLoopbackProvider.SetCameraContainerConsumers(ctx, names)
+	c.cameraLoopbackProvider.SetTwoPlaneContainerConsumers(ctx, twoPlaneConsumerNames(infos))
 }
 
 // RunCameraLoopbackSync runs SyncCameraLoopbacks on a fixed interval until ctx

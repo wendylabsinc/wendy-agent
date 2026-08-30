@@ -159,6 +159,9 @@ func (s *SensorService) Sources(ctx context.Context, _ *appspbv1.SensorSourcesRe
 		response.Sources = append(response.Sources, &appspbv1.SensorSource{
 			Id: source.ID, Kind: source.Kind, ClockDomain: source.ClockDomain,
 			Healthy: source.Healthy, Detail: detail, Subscribable: subscribable,
+			// Empty unless a two-plane data path is running for this source; an
+			// app must treat that as "use Subscribe instead", not as an error.
+			LoopbackNodePath: s.loopbackNodePathFor(source.ID),
 		})
 	}
 	return response, nil
