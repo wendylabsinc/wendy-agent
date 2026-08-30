@@ -928,6 +928,17 @@ func (m *Manager) finalizeLocked(a *activeEpisode, state, reason string) (Manife
 			return Manifest{}, err
 		}
 	}
+	// The playable remux runs before sealFiles so each derived
+	// cameras/<source>/playable.mp4 is checksummed, listed, uploaded and
+	// verified exactly like the capture it derives from. Sealing was already
+	// a synchronous pass over every episode byte (the checksums below), and
+	// the remux is a copy, not a transcode, so this keeps the seal's shape:
+	// one more read of the camera bytes, never a failure. A source that
+	// cannot be muxed honestly seals without its clip and the notes say why.
+	a.manifest.PlayableNotes = muxPlayableClips(a.dir)
+	for _, note := range a.manifest.PlayableNotes {
+		m.warnf("episode %s: %s", a.manifest.ID, note)
+	}
 	files, err := sealFiles(a.dir)
 	if err != nil {
 		return Manifest{}, err
@@ -1177,6 +1188,11 @@ func (m *Manager) recoverPartials() error {
 		if reconciled {
 			mf.RecoveryActions = append(mf.RecoveryActions, "recomputed model input/outcome counters from "+ModelInputLedgerFile+" and "+mf.ModelIO.OutcomeLog)
 		}
+		// Recovery is the other path that seals an episode, so it derives the
+		// same playable clips; the truncated index tails above were already
+		// cut, and the muxer counts a partial trailing line as unusable
+		// rather than guessing at it.
+		mf.PlayableNotes = muxPlayableClips(dir)
 		mf.Files, err = sealFiles(dir)
 		if err != nil {
 			return fmt.Errorf("recovering episode %s: %w", mf.ID, err)
@@ -1297,7 +1313,11 @@ func sealFiles(dir string) ([]File, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		format, mediaType := payloadFormat(rel)
-		out = append(out, File{Path: rel, Size: n, SHA256: h, SourceID: sourceForPath(rel), Format: format, MediaType: mediaType})
+		entry := File{Path: rel, Size: n, SHA256: h, SourceID: sourceForPath(rel), Format: format, MediaType: mediaType}
+		if isDerivedPlayable(rel) {
+			entry.Role = FileRoleDerived
+		}
+		out = append(out, entry)
 		return nil
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
