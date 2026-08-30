@@ -285,6 +285,39 @@ func sum(b []byte) uint64 {
 	return h
 }
 
+func TestConvertSourceInPlaceWritesBesideRawCapture(t *testing.T) {
+	dir, _ := buildEpisode(t)
+	before := snapshot(t, dir)
+
+	result, err := ConvertSourceInPlace(dir, filepath.Join(dir, "cameras", "cam-a"))
+	if err != nil {
+		t.Fatalf("ConvertSourceInPlace: %v", err)
+	}
+	if result.Source != "cam-a" || result.Frames != 5 {
+		t.Errorf("got source %q with %d frames, want cam-a with 5", result.Source, result.Frames)
+	}
+	out := filepath.Join(dir, "cameras", "cam-a", PlayableFileName)
+	if result.Output != out {
+		t.Errorf("output %q, want %q", result.Output, out)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("no playable file in place: %v", err)
+	}
+	if _, err := os.Stat(out + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("temporary mux file left behind")
+	}
+
+	// Everything that existed before must be byte-identical: the raw stream
+	// and index are checksummed archival truth, and index.jsonl addresses
+	// frames by byte offset into the raw segments.
+	if err := os.Remove(out); err != nil {
+		t.Fatal(err)
+	}
+	if after := snapshot(t, dir); after != before {
+		t.Errorf("raw capture was modified:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
 func TestConvertRejectsNonEpisodeDirectory(t *testing.T) {
 	_, errs := Convert(t.TempDir(), filepath.Join(t.TempDir(), "out"))
 	if len(errs) == 0 {

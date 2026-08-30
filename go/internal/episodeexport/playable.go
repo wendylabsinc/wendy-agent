@@ -36,11 +36,18 @@
 // external dependency to be missing: there is no ffmpeg, mkvmerge or PyAV in
 // the path from an episode to a playable file.
 //
-// The episode is read-only here. Output is written to a separate destination
+// The episode is read-only here. Convert writes into a separate destination
 // directory. The elementary stream and index are the checksummed archival
 // truth, and index.jsonl addresses frames by byte offset within the stream, so
 // rewriting it in place would break the join between a frame and the model
 // input recorded against it.
+//
+// ConvertSourceInPlace is the one sanctioned exception to that separation: the
+// agent calls it while sealing an episode, before the manifest's file list is
+// finalized, to add cameras/<source>/playable.mp4 beside the raw capture. The
+// raw segments and index are still only read; the derived clip is a new file
+// that the seal then checksums, lists and uploads like everything else, so a
+// browser can play the episode straight from the bucket.
 package episodeexport
 
 import (
@@ -62,6 +69,11 @@ import (
 // per-sample duration stays inside the 32-bit stts field for any gap short of
 // 71 minutes.
 const playableTimescale = 1_000_000
+
+// PlayableFileName is the derived MP4 written into a camera source directory
+// at seal time by ConvertSourceInPlace. The agent's manifest code and the
+// episode-playable command both key on this name.
+const PlayableFileName = "playable.mp4"
 
 // ClipResult reports what one camera source produced, in the numbers needed to
 // check the conversion without watching it.
@@ -148,6 +160,25 @@ func Convert(episodeDir, outDir string) ([]ClipResult, []error) {
 		results = append(results, result)
 	}
 	return results, errs
+}
+
+// ConvertSourceInPlace remuxes one camera source into
+// <sourceDir>/playable.mp4, reading timing from <sourceDir>/index.jsonl. It is
+// the seal-time variant of Convert: the caller is the agent finalizing an
+// episode, and the output lands inside the episode so the manifest can list
+// it. The raw segment files and the index are only ever read. The output is
+// written through a temporary file and renamed, so a crash mid-mux leaves no
+// half-written playable.mp4 behind (sealing ignores *.tmp files).
+//
+// A non-nil error means no playable.mp4 was left in place. A nil error means
+// the file exists, but the caller must still judge the ClipResult before
+// trusting it: BFrames, UndecodedSliceHeaders and SyncSamples report
+// conditions under which the clip's timing or seekability cannot be vouched
+// for, and Convert deliberately does not decide policy for its callers.
+func ConvertSourceInPlace(episodeDir, sourceDir string) (ClipResult, error) {
+	result, err := convertSource(episodeDir, sourceDir, filepath.Join(sourceDir, "index.jsonl"), filepath.Join(sourceDir, PlayableFileName))
+	result.Source = filepath.Base(sourceDir)
+	return result, err
 }
 
 func convertSource(episodeDir, sourceDir, indexPath, out string) (ClipResult, error) {
