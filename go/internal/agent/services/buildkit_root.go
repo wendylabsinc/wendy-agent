@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,135 +10,236 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// defaultBuildkitRoot is buildkitd's own default for --root.
-//
-// On a general-purpose Linux box this is unremarkable. On an image-based OS it
-// is the A/B root filesystem: measured on a Jetson AGX Thor running WendyOS,
-// 12 GB with 4.6 GB free, beside a /data partition with 862 GB. A TensorRT build
-// cache fills the partition the OS boots from, so getting this wrong damages a
-// device rather than failing a build.
+// defaultBuildkitRoot is buildkitd's own rootful default for --root.
 const defaultBuildkitRoot = "/var/lib/buildkit"
 
-// buildkitConfigPath is where buildkitd looks for its config unless told
-// otherwise, per `buildkitd --help`.
-const buildkitConfigPath = "/etc/buildkit/buildkitd.toml"
+// defaultBuildkitConfigPath is where a rootful buildkitd looks for its config
+// unless --config selects another file.
+const defaultBuildkitConfigPath = "/etc/buildkit/buildkitd.toml"
 
-// buildkitRoot reports where the RUNNING buildkitd keeps its state, preferring
-// evidence over assumption:
-//
-//  1. the daemon's own command line — authoritative, because a flag beats any
-//     file it might also have read;
-//  2. the config file selected by the daemon's `--config`, or buildkitd's
-//     default config path — what a daemon started without --root uses;
-//  3. buildkitd's documented default.
-//
-// The order matters. Reading only the config would report a path the daemon is
-// not using the moment someone passes --root, which is exactly what a WendyOS
-// install has to do — and a wrong path here produces a confident, wrong
-// free-space number, which is worse than no number at all.
-//
-// An empty return means "could not determine", and callers must not read that
-// as safe.
-func buildkitRoot(procDir string) string {
-	root, configPath := pathsFromRunningDaemon(procDir)
-	if root != "" {
-		return root
-	}
-	if configPath != "" {
-		root, err := rootFromConfig(configPath)
-		if err != nil {
-			// The running daemon may have loaded a config that has since been
-			// changed or removed. Its effective root can no longer be inferred.
-			return ""
-		}
-		if root != "" {
-			return root
-		}
-		return defaultBuildkitRoot
-	}
-
-	root, err := rootFromConfig(buildkitConfigPath)
-	if err == nil {
-		if root != "" {
-			return root
-		}
-		return defaultBuildkitRoot
-	}
-	if os.IsNotExist(err) {
-		// No default config is a normal buildkitd installation: the daemon
-		// uses its documented root in that case.
-		return defaultBuildkitRoot
-	}
-	return ""
+type buildkitConfig struct {
+	Root string `toml:"root"`
+	GRPC struct {
+		Address []string `toml:"address"`
+	} `toml:"grpc"`
 }
 
-// pathsFromRunningDaemon scans /proc for a buildkitd process and returns the
-// --root and --config paths it was started with, if any. A daemon running
-// without --root returns an empty root so the caller can read the selected
-// config file. Both flags accept their space-separated and equals forms.
+// buildkitRootLocation contains both the path an operator recognises and the
+// path the agent must stat. The latter enters the selected daemon's mount
+// namespace through /proc: /data inside a container is not necessarily /data
+// in the agent's namespace.
+type buildkitRootLocation struct {
+	displayPath  string
+	statPath     string
+	statBoundary string
+}
+
+// buildkitRoot identifies the one running buildkitd whose effective address
+// matches buildkitAddress and returns its effective state directory.
 //
-// Known limit: with more than one buildkitd running, this reports the first one
-// /proc yields, which is not necessarily the one holding the socket the agent
-// builds through. Observed while testing, by starting a second daemon by hand.
-// Not worth resolving by parsing --addr and matching the socket: two daemons on
-// one host is a broken state either way, and a wrong-but-plausible root here is
-// still better than the alternative of reporting nothing.
-func pathsFromRunningDaemon(procDir string) (root, configPath string) {
+// Address matching matters because Docker/buildx and an administrator can run
+// additional buildkitd processes on the same host. Selecting the first process
+// from /proc can measure an unrelated cache and incorrectly allow the daemon
+// the agent actually builds through to fill the root filesystem. More than one
+// match, or any daemon whose address cannot be determined, is treated as
+// ambiguous rather than guessed.
+func buildkitRoot(procDir, buildkitAddress, configPath string) (buildkitRootLocation, bool) {
 	entries, err := os.ReadDir(procDir)
 	if err != nil {
-		return "", ""
+		return buildkitRootLocation{}, false
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
+
+	var matches []buildkitRootLocation
+	addressUnknown := false
+	for _, entry := range entries {
+		if !entry.IsDir() {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(procDir, e.Name(), "cmdline"))
-		if err != nil || len(raw) == 0 {
+		pidDir := filepath.Join(procDir, entry.Name())
+		raw, err := os.ReadFile(filepath.Join(pidDir, "cmdline"))
+		if err != nil || !isBuildkitDaemon(raw) {
 			continue
 		}
-		// argv[0] only: matching anywhere would also hit the `buildctl` client
-		// and any shell that merely mentions buildkitd.
-		argv0 := string(raw)
-		if i := strings.IndexByte(argv0, 0); i >= 0 {
-			argv0 = argv0[:i]
-		}
-		if filepath.Base(argv0) != "buildkitd" {
+
+		addresses, location, addressKnown, rootKnown := inspectBuildkitDaemon(pidDir, raw, configPath)
+		if !addressKnown {
+			// This process may be the daemon behind the requested socket. Do not
+			// let a different, inspectable process turn that uncertainty into a
+			// confident answer.
+			addressUnknown = true
 			continue
 		}
-		root = procFlagValue(raw, "--root")
-		configPath = procFlagValue(raw, "--config")
-		return root, configPath
+		if !containsBuildkitAddress(addresses, buildkitAddress) {
+			continue
+		}
+		if !rootKnown {
+			return buildkitRootLocation{}, false
+		}
+		matches = append(matches, location)
 	}
-	return "", ""
+
+	if addressUnknown || len(matches) != 1 {
+		return buildkitRootLocation{}, false
+	}
+	return matches[0], true
 }
 
-// procFlagValue reads an exact argv entry from a NUL-separated /proc cmdline.
-// It accepts both forms supported by buildkitd while avoiding substring matches
-// inside unrelated arguments.
-func procFlagValue(raw []byte, name string) string {
+// inspectBuildkitDaemon reconstructs the effective address and root using the
+// same precedence as buildkitd: explicit flags, selected TOML, then defaults.
+// Address and root knowledge are separate so an unrelated daemon with an
+// explicit address can be ignored even if its config has disappeared.
+func inspectBuildkitDaemon(pidDir string, raw []byte, defaultConfigPath string) (
+	addresses []string,
+	location buildkitRootLocation,
+	addressKnown bool,
+	rootKnown bool,
+) {
+	rootFlag, rootSet := procFlagValue(raw, "--root")
+	addressFlags := procFlagValues(raw, "--addr")
+	configFlag, configSet := procFlagValue(raw, "--config")
+
+	var cfg buildkitConfig
+	if !rootSet || len(addressFlags) == 0 {
+		selectedConfig := defaultConfigPath
+		if configSet {
+			selectedConfig = configFlag
+		}
+		err := decodeBuildkitConfig(pathInProcess(pidDir, selectedConfig), &cfg)
+		if err != nil {
+			// An absent default config is normal. A selected custom config, or a
+			// malformed/unreadable default, means values not overridden by flags
+			// can no longer be inferred from the running process.
+			if configSet || !errors.Is(err, os.ErrNotExist) {
+				if len(addressFlags) > 0 {
+					addresses, addressKnown = addressFlags, true
+				}
+				if rootSet {
+					location, rootKnown = daemonRootLocation(pidDir, rootFlag)
+				}
+				return addresses, location, addressKnown, rootKnown
+			}
+		}
+	}
+
+	if len(addressFlags) > 0 {
+		addresses = addressFlags
+	} else if len(cfg.GRPC.Address) > 0 {
+		addresses = cfg.GRPC.Address
+	} else {
+		addresses = []string{DefaultBuildkitAddress}
+	}
+	addressKnown = true
+
+	root := rootFlag
+	if !rootSet {
+		root = cfg.Root
+		if root == "" {
+			root = defaultBuildkitRoot
+		}
+	}
+	location, rootKnown = daemonRootLocation(pidDir, root)
+	return addresses, location, addressKnown, rootKnown
+}
+
+func isBuildkitDaemon(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	argv0 := string(raw)
+	if i := strings.IndexByte(argv0, 0); i >= 0 {
+		argv0 = argv0[:i]
+	}
+	return filepath.Base(argv0) == "buildkitd"
+}
+
+// daemonRootLocation resolves relative roots exactly where buildkitd does:
+// against that process's working directory. statPath deliberately traverses
+// /proc/<pid>/root or /proc/<pid>/cwd so Statfs sees the daemon's mount
+// namespace, not merely a same-named path in the agent's namespace.
+func daemonRootLocation(pidDir, root string) (buildkitRootLocation, bool) {
+	if root == "" {
+		return buildkitRootLocation{}, false
+	}
+	if filepath.IsAbs(root) {
+		return buildkitRootLocation{
+			displayPath:  filepath.Clean(root),
+			statPath:     pathInProcess(pidDir, root),
+			statBoundary: filepath.Join(pidDir, "root"),
+		}, true
+	}
+
+	cwd, err := os.Readlink(filepath.Join(pidDir, "cwd"))
+	if err != nil || !filepath.IsAbs(cwd) {
+		return buildkitRootLocation{}, false
+	}
+	return buildkitRootLocation{
+		displayPath:  filepath.Clean(filepath.Join(cwd, root)),
+		statPath:     filepath.Join(pidDir, "cwd", root),
+		statBoundary: filepath.Join(pidDir, "cwd"),
+	}, true
+}
+
+// pathInProcess maps a buildkitd path into that process's filesystem view.
+func pathInProcess(pidDir, path string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Join(pidDir, "root", strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)))
+	}
+	return filepath.Join(pidDir, "cwd", path)
+}
+
+func containsBuildkitAddress(addresses []string, want string) bool {
+	for _, address := range addresses {
+		if sameBuildkitAddress(address, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameBuildkitAddress(a, b string) bool {
+	aPath, aUnix := strings.CutPrefix(strings.TrimSpace(a), "unix://")
+	bPath, bUnix := strings.CutPrefix(strings.TrimSpace(b), "unix://")
+	if aUnix || bUnix {
+		return aUnix && bUnix && filepath.Clean(aPath) == filepath.Clean(bPath)
+	}
+	return strings.TrimSpace(a) == strings.TrimSpace(b)
+}
+
+// procFlagValue returns the last occurrence, matching CLI flag semantics when
+// a scalar flag is repeated. Both --name value and --name=value are accepted.
+func procFlagValue(raw []byte, name string) (string, bool) {
+	values := procFlagValues(raw, name)
+	if len(values) == 0 {
+		return "", false
+	}
+	return values[len(values)-1], true
+}
+
+func procFlagValues(raw []byte, name string) []string {
 	argv := strings.Split(string(raw), "\x00")
+	var values []string
 	for i := 1; i < len(argv); i++ {
 		if argv[i] == name && i+1 < len(argv) {
-			return strings.TrimSpace(argv[i+1])
+			values = append(values, strings.TrimSpace(argv[i+1]))
+			i++
+			continue
 		}
 		if value, ok := strings.CutPrefix(argv[i], name+"="); ok {
-			return strings.TrimSpace(value)
+			values = append(values, strings.TrimSpace(value))
 		}
 	}
-	return ""
+	return values
 }
 
-// rootFromConfig reads `root = "..."` out of buildkitd.toml.
-//
-// Decode only the top-level field so worker tables with their own `root` keys
-// cannot be mistaken for the daemon's state directory. Errors are returned so
-// the caller can distinguish an absent default config (which means buildkitd's
-// default root) from a selected config whose effective root is now unknown.
+func decodeBuildkitConfig(path string, cfg *buildkitConfig) error {
+	_, err := toml.DecodeFile(path, cfg)
+	return err
+}
+
+// rootFromConfig is the small parser seam used by focused TOML tests.
 func rootFromConfig(path string) (string, error) {
-	var cfg struct {
-		Root string `toml:"root"`
-	}
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+	var cfg buildkitConfig
+	if err := decodeBuildkitConfig(path, &cfg); err != nil {
 		return "", err
 	}
 	return cfg.Root, nil
@@ -145,30 +247,28 @@ func rootFromConfig(path string) (string, error) {
 
 // buildkitRootSpace reports total and available bytes for the filesystem
 // holding path, walking up to the nearest existing ancestor.
-//
-// The walk matters: the state directory does not exist until the daemon's first
-// build, and reporting zero for a path that is merely absent would look
-// identical to a full disk.
-//
-// Named for its caller rather than "diskUsage", which is already a struct in
-// this package describing used/total for the device-info path.
 func buildkitRootSpace(path string) (total, free uint64) {
+	return buildkitRootSpaceWithin(path, "")
+}
+
+// buildkitRootSpaceWithin is buildkitRootSpace with a floor. The floor keeps a
+// vanished process from making a failed /proc/<pid>/root lookup walk upward and
+// accidentally report the proc filesystem as BuildKit's cache filesystem.
+func buildkitRootSpaceWithin(path, boundary string) (total, free uint64) {
 	if path == "" {
 		return 0, 0
 	}
+	boundary = filepath.Clean(boundary)
 	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
 		var st syscall.Statfs_t
 		if err := syscall.Statfs(p, &st); err == nil {
 			bs := uint64(st.Bsize)
-			// Available-to-unprivileged, not free: buildkitd runs as root here,
-			// but reporting the larger number would overstate headroom on any
-			// filesystem with reserved blocks.
 			if bs == 0 {
 				return 0, 0
 			}
 			return st.Blocks * bs, st.Bavail * bs
 		}
-		if p == "/" || p == "." {
+		if (boundary != "." && p == boundary) || p == "/" || p == "." {
 			return 0, 0
 		}
 	}

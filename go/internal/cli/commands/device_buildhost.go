@@ -156,6 +156,8 @@ func newDeviceBuildHostStatusCmd() *cobra.Command {
 			if root := caps.GetBuildkitRoot(); root != "" && caps.GetBuildkitRootTotalBytes() > 0 {
 				cliLogln("Cache:        %s (%s free of %s)", tui.Value(root),
 					humanBytes(caps.GetBuildkitRootFreeBytes()), humanBytes(caps.GetBuildkitRootTotalBytes()))
+			} else if caps.GetBuildkitAvailable() && caps.GetBuildkitRootInspectionSupported() {
+				cliLogln("Cache:        %s", tui.Value("inspection failed"))
 			}
 			cliLogln("Platform:     %s/%s", caps.GetOs(), caps.GetCpuArchitecture())
 			if len(caps.GetNativePlatforms()) > 0 {

@@ -558,75 +558,97 @@ func TestCheckBuildHostCapabilities_NamesTheRemedy(t *testing.T) {
 // there fills the partition the OS boots from.
 func TestCheckBuildkitRootSpace_RefusesADangerouslyFullFilesystem(t *testing.T) {
 	err := checkBuildkitRootSpace("joannis-agx-thor", &agentpbv2.GetBuildCapabilitiesResponse{
-		BuildkitRoot:           "/var/lib/buildkit",
-		BuildkitRootFreeBytes:  4600 * 1000 * 1000,
-		BuildkitRootTotalBytes: 12 * 1000 * 1000 * 1000,
+		BuildkitRoot:                    "/var/lib/buildkit",
+		BuildkitRootFreeBytes:           4600 * 1000 * 1000,
+		BuildkitRootTotalBytes:          12 * 1000 * 1000 * 1000,
+		BuildkitRootInspectionSupported: true,
 	})
 	if err == nil {
 		t.Fatal("want a refusal when the cache filesystem is nearly full")
 	}
-	for _, want := range []string{"/var/lib/buildkit", "--root", "joannis-agx-thor"} {
+	for _, want := range []string{"/var/lib/buildkit", "--root", `root = "/data/buildkit/root"`, "joannis-agx-thor"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error must name %q so it is actionable; got %q", want, err)
 		}
+	}
+	if strings.Contains(err.Error(), "/etc/buildkit/buildkitd.toml") {
+		t.Fatalf("the remediation must not assume the daemon used the default config: %v", err)
 	}
 }
 
 // A roomy filesystem must pass silently.
 func TestCheckBuildkitRootSpace_AllowsARoomyFilesystem(t *testing.T) {
 	if err := checkBuildkitRootSpace("spark3", &agentpbv2.GetBuildCapabilitiesResponse{
-		BuildkitRoot:           "/data/buildkit/root",
-		BuildkitRootFreeBytes:  800 << 30,
-		BuildkitRootTotalBytes: 900 << 30,
+		BuildkitRoot:                    "/data/buildkit/root",
+		BuildkitRootFreeBytes:           800 << 30,
+		BuildkitRootTotalBytes:          900 << 30,
+		BuildkitRootInspectionSupported: true,
 	}); err != nil {
 		t.Fatalf("a large partition must be accepted: %v", err)
 	}
 }
 
-// TestCheckBuildkitRootSpace_SilentWhenTheAgentCannotAnswer: an agent predating
-// these fields reports nothing. Treating unknown as empty would refuse every
-// existing build host — turning a safety check into an outage.
-func TestCheckBuildkitRootSpace_SilentWhenTheAgentCannotAnswer(t *testing.T) {
+// An agent predating these fields reports no support bit. Preserve its prior
+// behavior without conflating it with a failed inspection from a newer agent.
+func TestCheckBuildkitRootSpace_PreservesOlderAgentCompatibility(t *testing.T) {
 	if err := checkBuildkitRootSpace("older-agent", &agentpbv2.GetBuildCapabilitiesResponse{}); err != nil {
 		t.Fatalf("an agent that cannot report must not be refused: %v", err)
 	}
-	// Root known but the filesystem unreadable: still not evidence of a problem.
-	if err := checkBuildkitRootSpace("older-agent", &agentpbv2.GetBuildCapabilitiesResponse{
-		BuildkitRoot: "/var/lib/buildkit",
-	}); err != nil {
-		t.Fatalf("an unreadable filesystem must not be refused: %v", err)
+	// Even partially populated unknown fields from an older schema do not turn
+	// into a refusal without the explicit support bit.
+	if err := checkBuildkitRootSpace("older-agent", &agentpbv2.GetBuildCapabilitiesResponse{BuildkitRoot: "/var/lib/buildkit"}); err != nil {
+		t.Fatalf("an older agent must preserve compatibility: %v", err)
 	}
 }
 
-// TestCheckBuildHostCapabilities_ExplainsAVanishedDaemon: on an image-based OS
-// the opt-in marker lives on the data partition and survives an OS update, while
-// a buildkitd installed on the A/B rootfs does not — so "enabled but no
-// BuildKit" is a specific, diagnosable state rather than a generic absence.
-func TestCheckBuildHostCapabilities_ExplainsAVanishedDaemon(t *testing.T) {
-	err := checkBuildHostCapabilities("joannis-agx-thor", &agentpbv2.GetBuildCapabilitiesResponse{
-		BuilderEnabled:    true,
-		BuildkitAvailable: false,
-		Os:                "wendyos",
-	}, "linux/arm64")
-	if err == nil {
-		t.Fatal("want a refusal when the daemon is gone")
-	}
-	if !strings.Contains(err.Error(), "OS update") {
-		t.Errorf("the error should name the likely cause; got %q", err)
-	}
-}
-
-func TestHumanBytes(t *testing.T) {
-	for _, tc := range []struct {
-		in   uint64
-		want string
-	}{
-		{4600 * 1000 * 1000, "4.3 GiB"},
-		{800 << 20, "800 MiB"},
-		{512, "512 B"},
+func TestAssessBuildkitRootSpace_RefusesFailedInspectionByCapableAgent(t *testing.T) {
+	for _, resp := range []*agentpbv2.GetBuildCapabilitiesResponse{
+		{BuildkitRootInspectionSupported: true},
+		{BuildkitRootInspectionSupported: true, BuildkitRoot: "/data/buildkit"},
 	} {
-		if got := humanBytes(tc.in); got != tc.want {
-			t.Errorf("humanBytes(%d) = %q, want %q", tc.in, got, tc.want)
+		if _, err := assessBuildkitRootSpace("thor", resp); err == nil {
+			t.Fatal("a capable agent's failed inspection must not be treated as safe")
 		}
+	}
+}
+
+func TestCheckBuildHostCapabilities_RefusesFailedRootInspectionBeforePlatformCheck(t *testing.T) {
+	err := checkBuildHostCapabilities("thor", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuilderEnabled:                  true,
+		BuildkitAvailable:               true,
+		BuildkitRootInspectionSupported: true,
+		NativePlatforms:                 []string{"linux/arm64"},
+	}, "linux/arm64")
+	if err == nil || !strings.Contains(err.Error(), "could not verify") {
+		t.Fatalf("got %v, want root inspection refusal even for a natively supported platform", err)
+	}
+}
+
+func TestAssessBuildkitRootSpace_ExactPolicyBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		free        uint64
+		wantError   bool
+		wantWarning bool
+	}{
+		{"one byte below minimum", buildkitRootMinFreeBytes - 1, true, false},
+		{"minimum warns but allows", buildkitRootMinFreeBytes, false, true},
+		{"one byte below warning cutoff", buildkitRootWarnFreeBytes - 1, false, true},
+		{"warning cutoff is silent", buildkitRootWarnFreeBytes, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			warning, err := assessBuildkitRootSpace("thor", &agentpbv2.GetBuildCapabilitiesResponse{
+				BuildkitRoot:                    "/data/buildkit",
+				BuildkitRootFreeBytes:           tc.free,
+				BuildkitRootTotalBytes:          100 << 30,
+				BuildkitRootInspectionSupported: true,
+			})
+			if (err != nil) != tc.wantError {
+				t.Fatalf("error = %v, wantError %v", err, tc.wantError)
+			}
+			if (warning != "") != tc.wantWarning {
+				t.Fatalf("warning = %q, wantWarning %v", warning, tc.wantWarning)
+			}
+		})
 	}
 }

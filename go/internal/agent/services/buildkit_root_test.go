@@ -3,228 +3,296 @@ package services
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// writeProc fakes a /proc tree with one process whose cmdline is the given
-// NUL-separated argv.
-func writeProc(t *testing.T, pid string, argv ...string) string {
+type fakeProc struct {
+	dir               string
+	defaultConfigPath string
+}
+
+func newFakeProc(t *testing.T) *fakeProc {
 	t.Helper()
-	dir := t.TempDir()
-	pdir := filepath.Join(dir, pid)
-	if err := os.MkdirAll(pdir, 0o755); err != nil {
+	return &fakeProc{
+		dir:               t.TempDir(),
+		defaultConfigPath: filepath.Join(t.TempDir(), "absent-buildkitd.toml"),
+	}
+}
+
+func (p *fakeProc) add(t *testing.T, pid, cwd string, argv ...string) {
+	t.Helper()
+	pidDir := filepath.Join(p.dir, pid)
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	var buf []byte
-	for _, a := range argv {
-		buf = append(buf, []byte(a)...)
-		buf = append(buf, 0)
+	var cmdline []byte
+	for _, arg := range argv {
+		cmdline = append(cmdline, arg...)
+		cmdline = append(cmdline, 0)
 	}
-	if err := os.WriteFile(filepath.Join(pdir, "cmdline"), buf, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(pidDir, "cmdline"), cmdline, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return dir
-}
-
-// TestRootFromRunningDaemon_ReadsTheFlag: the running daemon's own argv is the
-// only authoritative answer. A --root passed on the command line beats anything
-// a config file says, and reporting the config's path instead would produce a
-// confident, wrong free-space number.
-func TestRootFromRunningDaemon_ReadsTheFlag(t *testing.T) {
-	proc := writeProc(t, "42", "/data/buildkit/bin/buildkitd", "--addr", "unix:///run/buildkit/buildkitd.sock", "--root", "/data/buildkit/root")
-	if got, _ := pathsFromRunningDaemon(proc); got != "/data/buildkit/root" {
-		t.Fatalf("got %q, want the --root value", got)
-	}
-}
-
-func TestRootFromRunningDaemon_ReadsEqualsForm(t *testing.T) {
-	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--root=/mnt/big/bk")
-	if got, _ := pathsFromRunningDaemon(proc); got != "/mnt/big/bk" {
-		t.Fatalf("got %q, want the --root= value", got)
-	}
-}
-
-func TestPathsFromRunningDaemon_ReadsConfigFlag(t *testing.T) {
-	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config", "/data/etc/buildkit/custom.toml")
-	root, configPath := pathsFromRunningDaemon(proc)
-	if root != "" {
-		t.Fatalf("got root %q, want empty when --root is absent", root)
-	}
-	if configPath != "/data/etc/buildkit/custom.toml" {
-		t.Fatalf("got config %q, want the --config value", configPath)
-	}
-}
-
-func TestPathsFromRunningDaemon_ReadsConfigEqualsForm(t *testing.T) {
-	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config=/data/etc/buildkit/custom.toml")
-	_, configPath := pathsFromRunningDaemon(proc)
-	if configPath != "/data/etc/buildkit/custom.toml" {
-		t.Fatalf("got config %q, want the --config= value", configPath)
-	}
-}
-
-func TestPathsFromRunningDaemon_IgnoresFlagSubstring(t *testing.T) {
-	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--label", "note=--config=/wrong")
-	_, configPath := pathsFromRunningDaemon(proc)
-	if configPath != "" {
-		t.Fatalf("got config %q from an unrelated argument", configPath)
-	}
-}
-
-func TestBuildkitRoot_UsesRunningDaemonsConfig(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "custom.toml")
-	if err := os.WriteFile(configPath, []byte("root = \"/data/buildkit/custom-root\"\n"), 0o644); err != nil {
+	// A root symlink makes absolute paths resolve as they do through real
+	// /proc/<pid>/root, while still allowing tests to use ordinary temp files.
+	if err := os.Symlink("/", filepath.Join(pidDir, "root")); err != nil {
 		t.Fatal(err)
 	}
-	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config", configPath)
-	if got := buildkitRoot(proc); got != "/data/buildkit/custom-root" {
-		t.Fatalf("got %q, want root from the running daemon's custom config", got)
+	if err := os.Symlink(cwd, filepath.Join(pidDir, "cwd")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustBuildkitRoot(t *testing.T, proc *fakeProc, address string) buildkitRootLocation {
+	t.Helper()
+	location, ok := buildkitRoot(proc.dir, address, proc.defaultConfigPath)
+	if !ok {
+		t.Fatal("BuildKit root inspection unexpectedly failed")
+	}
+	return location
+}
+
+func writeBuildkitConfig(t *testing.T, contents string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "buildkitd.toml")
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestBuildkitRoot_SelectsDaemonForRequestedAddress(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.add(t, "10", "/", "buildkitd", "--addr", "unix:///run/other.sock", "--root", "/wrong")
+	proc.add(t, "20", "/", "buildkitd", "--addr", DefaultBuildkitAddress, "--root", "/data/buildkit/right")
+
+	if got := mustBuildkitRoot(t, proc, DefaultBuildkitAddress).displayPath; got != "/data/buildkit/right" {
+		t.Fatalf("got %q, want the root belonging to the requested address", got)
+	}
+}
+
+func TestBuildkitRoot_RefusesAmbiguousMatchingDaemons(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.add(t, "10", "/", "buildkitd", "--addr", DefaultBuildkitAddress, "--root", "/first")
+	proc.add(t, "20", "/", "buildkitd", "--addr", DefaultBuildkitAddress, "--root", "/second")
+
+	if _, ok := buildkitRoot(proc.dir, DefaultBuildkitAddress, proc.defaultConfigPath); ok {
+		t.Fatal("two daemons claiming the requested address must be ambiguous")
+	}
+}
+
+func TestBuildkitRoot_RefusesUnknownDaemonAddress(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.add(t, "10", "/", "buildkitd", "--config", "/removed.toml")
+	proc.add(t, "20", "/", "buildkitd", "--addr", DefaultBuildkitAddress, "--root", "/data/buildkit")
+
+	if _, ok := buildkitRoot(proc.dir, DefaultBuildkitAddress, proc.defaultConfigPath); ok {
+		t.Fatal("an uninspectable daemon may own the requested address, so the result must be unknown")
+	}
+}
+
+func TestBuildkitRoot_UsesAddressAndRootFromCustomConfig(t *testing.T) {
+	config := writeBuildkitConfig(t, `
+root = '/data/buildkit/from-config'
+[grpc]
+  address = ['unix:///run/buildkit/custom.sock']
+`)
+	proc := newFakeProc(t)
+	proc.add(t, "42", "/", "/usr/local/bin/buildkitd", "--config", config)
+
+	if got := mustBuildkitRoot(t, proc, "unix:///run/buildkit/custom.sock").displayPath; got != "/data/buildkit/from-config" {
+		t.Fatalf("got %q, want root from the selected config", got)
+	}
+}
+
+func TestBuildkitRoot_ReadsConfigEqualsForm(t *testing.T) {
+	config := writeBuildkitConfig(t, `
+root = "/data/buildkit/equals-config"
+[grpc]
+  address = ["unix:///run/buildkit/equals.sock"]
+`)
+	proc := newFakeProc(t)
+	proc.add(t, "42", "/", "buildkitd", "--config="+config)
+
+	if got := mustBuildkitRoot(t, proc, "unix:///run/buildkit/equals.sock").displayPath; got != "/data/buildkit/equals-config" {
+		t.Fatalf("got %q, want --config= file root", got)
 	}
 }
 
 func TestBuildkitRoot_RootFlagBeatsCustomConfig(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "custom.toml")
-	if err := os.WriteFile(configPath, []byte("root = \"/wrong\"\n"), 0o644); err != nil {
+	config := writeBuildkitConfig(t, `root = "/wrong"`)
+	proc := newFakeProc(t)
+	proc.add(t, "42", "/", "buildkitd", "--config", config, "--root", "/data/buildkit/flag-root")
+
+	if got := mustBuildkitRoot(t, proc, DefaultBuildkitAddress).displayPath; got != "/data/buildkit/flag-root" {
+		t.Fatalf("got %q, want --root to override config", got)
+	}
+}
+
+func TestBuildkitRoot_ResolvesRelativeRootAgainstDaemonCWD(t *testing.T) {
+	cwd := t.TempDir()
+	proc := newFakeProc(t)
+	proc.add(t, "42", cwd, "buildkitd", "--addr", DefaultBuildkitAddress, "--root", "cache/buildkit")
+
+	location := mustBuildkitRoot(t, proc, DefaultBuildkitAddress)
+	if want := filepath.Join(cwd, "cache/buildkit"); location.displayPath != want {
+		t.Fatalf("got %q, want %q", location.displayPath, want)
+	}
+	if !strings.Contains(location.statPath, filepath.Join("42", "cwd", "cache", "buildkit")) {
+		t.Fatalf("stat path %q does not traverse the daemon cwd", location.statPath)
+	}
+}
+
+func TestBuildkitRoot_ResolvesRelativeConfigAgainstDaemonCWD(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "custom.toml"), []byte(`
+root = "state"
+[grpc]
+  address = ["unix:///run/buildkit/relative.sock"]
+`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config", configPath, "--root", "/data/buildkit/flag-root")
-	if got := buildkitRoot(proc); got != "/data/buildkit/flag-root" {
-		t.Fatalf("got %q, want --root to override the custom config", got)
+	proc := newFakeProc(t)
+	proc.add(t, "42", cwd, "buildkitd", "--config", "custom.toml")
+
+	if got := mustBuildkitRoot(t, proc, "unix:///run/buildkit/relative.sock").displayPath; got != filepath.Join(cwd, "state") {
+		t.Fatalf("got %q, want root relative to daemon cwd", got)
 	}
 }
 
-// A daemon started without --root must return empty, NOT the default, so the
-// caller can still consult the config file.
-func TestRootFromRunningDaemon_NoFlagFallsThrough(t *testing.T) {
-	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--addr", "unix:///run/buildkit/buildkitd.sock")
-	if got, _ := pathsFromRunningDaemon(proc); got != "" {
-		t.Fatalf("got %q, want empty so the config is consulted", got)
+func TestBuildkitRoot_LastScalarFlagWins(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.add(t, "42", "/", "buildkitd",
+		"--addr", "unix:///run/first.sock", "--addr=unix:///run/second.sock",
+		"--root", "/first", "--root=/second")
+
+	if got := mustBuildkitRoot(t, proc, "unix:///run/second.sock").displayPath; got != "/second" {
+		t.Fatalf("got %q, want the last --root value", got)
 	}
 }
 
-// Only argv[0] counts. A buildctl client, or a shell that merely mentions
-// buildkitd, is not the daemon and must not be mistaken for it.
-func TestRootFromRunningDaemon_IgnoresNonDaemons(t *testing.T) {
-	proc := writeProc(t, "42", "/usr/local/bin/buildctl", "--root", "/wrong")
-	if got, _ := pathsFromRunningDaemon(proc); got != "" {
-		t.Fatalf("got %q, want empty for a non-daemon process", got)
-	}
-	proc = writeProc(t, "43", "/bin/sh", "-c", "buildkitd --root /also-wrong")
-	if got, _ := pathsFromRunningDaemon(proc); got != "" {
-		t.Fatalf("got %q, want empty for a shell mentioning buildkitd", got)
+func TestBuildkitRoot_IgnoresNonDaemons(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.add(t, "10", "/", "buildctl", "--addr", DefaultBuildkitAddress, "--root", "/wrong")
+	proc.add(t, "20", "/", "/bin/sh", "-c", "buildkitd --root /also-wrong")
+	proc.add(t, "30", "/", "buildkitd", "--addr", DefaultBuildkitAddress, "--root", "/right")
+
+	if got := mustBuildkitRoot(t, proc, DefaultBuildkitAddress).displayPath; got != "/right" {
+		t.Fatalf("got %q, want the actual daemon", got)
 	}
 }
 
-func TestRootFromConfig(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "buildkitd.toml")
-	if err := os.WriteFile(path, []byte("# comment\nroot = \"/data/buildkit/root\"\n\n[worker.oci]\n  gc = true\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := rootFromConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "/data/buildkit/root" {
-		t.Fatalf("got %q, want the top-level root", got)
+func TestBuildkitRoot_IgnoresUninspectableRootForOtherExplicitAddress(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.add(t, "10", "/", "buildkitd", "--addr", "unix:///run/other.sock", "--config", "/removed.toml")
+	proc.add(t, "20", "/", "buildkitd", "--addr", DefaultBuildkitAddress, "--root", "/right")
+
+	if got := mustBuildkitRoot(t, proc, DefaultBuildkitAddress).displayPath; got != "/right" {
+		t.Fatalf("got %q, want matching daemon despite unrelated daemon's missing root", got)
 	}
 }
 
-func TestRootFromConfig_AllowsInlineComment(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "buildkitd.toml")
-	if err := os.WriteFile(path, []byte("root = \"/data/buildkit/root\" # persistent cache\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := rootFromConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "/data/buildkit/root" {
-		t.Fatalf("got %q, want a valid TOML value before the inline comment", got)
+func TestBuildkitRoot_NoDaemonIsUnknown(t *testing.T) {
+	proc := newFakeProc(t)
+	if _, ok := buildkitRoot(proc.dir, DefaultBuildkitAddress, proc.defaultConfigPath); ok {
+		t.Fatal("a socket with no identifiable daemon must not imply the default root")
 	}
 }
 
-// A `root` inside a table is a different key. Decoding only the top-level field
-// keeps a worker's setting from being reported as the daemon's state directory.
-func TestRootFromConfig_IgnoresKeysInsideTables(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "buildkitd.toml")
-	if err := os.WriteFile(path, []byte("[worker.oci]\n  root = \"/not-the-daemon-root\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := rootFromConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "" {
-		t.Fatalf("got %q, want empty when root only appears inside a table", got)
-	}
-}
+func TestBuildkitRoot_FallsBackToDocumentedDefaultsHermetically(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.add(t, "42", "/", "buildkitd")
 
-func TestRootFromConfig_MissingFileReturnsError(t *testing.T) {
-	if _, err := rootFromConfig(filepath.Join(t.TempDir(), "absent.toml")); !os.IsNotExist(err) {
-		t.Fatalf("got error %v, want a missing-file error", err)
-	}
-}
-
-func TestRootFromConfig_MalformedFileReturnsError(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "buildkitd.toml")
-	if err := os.WriteFile(path, []byte("root = \"unterminated\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rootFromConfig(path); err == nil {
-		t.Fatal("want malformed TOML to return an error")
-	}
-}
-
-func TestBuildkitRoot_BrokenCustomConfigIsUnknown(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "custom.toml")
-	if err := os.WriteFile(configPath, []byte("root = \"unterminated\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config", configPath)
-	if got := buildkitRoot(proc); got != "" {
-		t.Fatalf("got %q, want unknown when the running daemon's custom config cannot be decoded", got)
-	}
-}
-
-func TestBuildkitRoot_MissingCustomConfigIsUnknown(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "removed.toml")
-	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config", configPath)
-	if got := buildkitRoot(proc); got != "" {
-		t.Fatalf("got %q, want unknown when the running daemon's custom config has disappeared", got)
-	}
-}
-
-// TestBuildkitRoot_FallsBackToTheDocumentedDefault: with no daemon and no
-// config, report what buildkitd itself would use.
-func TestBuildkitRoot_FallsBackToTheDocumentedDefault(t *testing.T) {
-	if got := buildkitRoot(t.TempDir()); got != defaultBuildkitRoot {
+	if got := mustBuildkitRoot(t, proc, DefaultBuildkitAddress).displayPath; got != defaultBuildkitRoot {
 		t.Fatalf("got %q, want %q", got, defaultBuildkitRoot)
 	}
 }
 
-// TestBuildkitRootSpace_WalksToAnExistingAncestor: the state directory does not
-// exist until the first build, and reporting zero for a merely-absent path
-// would be indistinguishable from a full disk.
-func TestBuildkitRootSpace_WalksToAnExistingAncestor(t *testing.T) {
+func TestBuildkitRoot_UsesInjectedDefaultConfigHermetically(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.defaultConfigPath = writeBuildkitConfig(t, `root = "/data/buildkit/default-config"`)
+	proc.add(t, "42", "/", "buildkitd")
+
+	if got := mustBuildkitRoot(t, proc, DefaultBuildkitAddress).displayPath; got != "/data/buildkit/default-config" {
+		t.Fatalf("got %q, want root from injected default config", got)
+	}
+}
+
+func TestBuildkitRoot_MissingOrBrokenCustomConfigIsUnknown(t *testing.T) {
+	for _, config := range []string{
+		filepath.Join(t.TempDir(), "removed.toml"),
+		writeBuildkitConfig(t, `root = "unterminated`),
+	} {
+		proc := newFakeProc(t)
+		proc.add(t, "42", "/", "buildkitd", "--config", config)
+		if _, ok := buildkitRoot(proc.dir, DefaultBuildkitAddress, proc.defaultConfigPath); ok {
+			t.Fatalf("config %q should make inspection unknown", config)
+		}
+	}
+}
+
+func TestBuildkitRoot_BrokenDefaultConfigIsUnknown(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.defaultConfigPath = writeBuildkitConfig(t, `root = "unterminated`)
+	proc.add(t, "42", "/", "buildkitd")
+
+	if _, ok := buildkitRoot(proc.dir, DefaultBuildkitAddress, proc.defaultConfigPath); ok {
+		t.Fatal("a malformed default config must not fall through to rootful defaults")
+	}
+}
+
+func TestRootFromConfig_ParsesRealTOMLAndOnlyTopLevelRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		contents string
+		want     string
+	}{
+		{"double quoted", `root = "/data/double" # comment`, "/data/double"},
+		{"single quoted", `root = '/data/single'`, "/data/single"},
+		{"nested ignored", "[worker.oci]\nroot = \"/not-daemon-root\"\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := rootFromConfig(writeBuildkitConfig(t, tc.contents))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRootFromConfig_ReportsMissingAndMalformedFiles(t *testing.T) {
+	if _, err := rootFromConfig(filepath.Join(t.TempDir(), "absent.toml")); !os.IsNotExist(err) {
+		t.Fatalf("got %v, want missing-file error", err)
+	}
+	if _, err := rootFromConfig(writeBuildkitConfig(t, `root = "unterminated`)); err == nil {
+		t.Fatal("malformed TOML must return an error")
+	}
+}
+
+func TestBuildkitRootSpace_WalksToExistingAncestor(t *testing.T) {
 	deep := filepath.Join(t.TempDir(), "does", "not", "exist", "yet")
 	total, free := buildkitRootSpace(deep)
 	if total == 0 {
-		t.Fatal("want the ancestor filesystem's size, not zero")
+		t.Fatal("want the ancestor filesystem size")
 	}
 	if free > total {
 		t.Fatalf("free %d exceeds total %d", free, total)
 	}
 }
 
+func TestBuildkitRootSpace_DoesNotWalkPastProcessBoundary(t *testing.T) {
+	boundary := filepath.Join(t.TempDir(), "vanished-proc-root")
+	if total, free := buildkitRootSpaceWithin(filepath.Join(boundary, "data", "buildkit"), boundary); total != 0 || free != 0 {
+		t.Fatalf("got (%d, %d), want unknown after the process namespace vanished", total, free)
+	}
+}
+
 func TestBuildkitRootSpace_EmptyPathIsUnknown(t *testing.T) {
 	if total, free := buildkitRootSpace(""); total != 0 || free != 0 {
-		t.Fatalf("got (%d, %d), want zeroes for an unknown path", total, free)
+		t.Fatalf("got (%d, %d), want zeroes", total, free)
 	}
 }

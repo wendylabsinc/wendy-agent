@@ -150,6 +150,8 @@ type BuildService struct {
 	peers                PeerDialer
 	pushTLS              func(targetAssetID int32) (*tls.Config, error)
 	maxContextBytes      int64
+	buildkitProcDir      string
+	buildkitConfigPath   string
 
 	// contextLocks serialises builds that share a context directory. See
 	// lockContextDir.
@@ -179,6 +181,8 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 		pushTLS:              opts.PushTLS,
 		maxContextBytes:      opts.MaxContextBytes,
 		contextLocks:         opts.ContextLocks,
+		buildkitProcDir:      "/proc",
+		buildkitConfigPath:   defaultBuildkitConfigPath,
 	}
 }
 
@@ -312,6 +316,9 @@ func (s *BuildService) GetBuildCapabilities(_ context.Context, _ *agentpbv2.GetB
 		// fleet of targets was discarded — and would report a deploy that went
 		// nowhere.
 		MultiTargetDelivery: true,
+		// Lets a newer client distinguish an older agent, which has no root
+		// fields, from this agent failing to inspect a daemon it expected to find.
+		BuildkitRootInspectionSupported: true,
 	}
 	if available {
 		// Only the host's own platform is claimed native. Emulated platforms stay
@@ -323,9 +330,11 @@ func (s *BuildService) GetBuildCapabilities(_ context.Context, _ *agentpbv2.GetB
 		// Where the cache lands, and how much room is there. Reported even when
 		// it looks fine, so a client can decide rather than guess -- see
 		// buildkitRoot for why the default is dangerous on an image-based OS.
-		root := buildkitRoot("/proc")
-		resp.BuildkitRoot = root
-		resp.BuildkitRootTotalBytes, resp.BuildkitRootFreeBytes = buildkitRootSpace(root)
+		if location, ok := buildkitRoot(s.buildkitProcDir, s.buildkitAddress, s.buildkitConfigPath); ok {
+			resp.BuildkitRoot = location.displayPath
+			resp.BuildkitRootTotalBytes, resp.BuildkitRootFreeBytes = buildkitRootSpaceWithin(
+				location.statPath, location.statBoundary)
+		}
 	}
 	return resp, nil
 }

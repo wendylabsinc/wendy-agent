@@ -86,11 +86,16 @@ message GetBuildCapabilitiesResponse {
   // partition with 862 GB. A single TensorRT build cache fills the partition the
   // OS boots from, so the failure is a damaged device rather than a failed build.
   //
-  // Empty root means the agent could not determine it; zero bytes mean it could
-  // not stat the filesystem. Neither is treated as "fine" by a caller.
+  // An agent that implements this inspection sets
+  // buildkit_root_inspection_supported. For such an agent, an empty root or
+  // zero total means inspection failed and a client must not start a build.
+  // An older agent leaves the support flag false, allowing a newer CLI to keep
+  // the pre-existing compatibility behavior without mistaking a failed
+  // inspection by a newer agent for success.
   string buildkit_root = 9;
   uint64 buildkit_root_free_bytes = 10;
   uint64 buildkit_root_total_bytes = 11;
+  bool buildkit_root_inspection_supported = 12;
 }
 
 // ChunkManifest reconstructs a byte stream from chunks already written through

@@ -169,19 +169,7 @@ func checkBuildHostCapabilities(host string, resp *agentpbv2.GetBuildCapabilitie
 		if strings.EqualFold(resp.GetOs(), "darwin") {
 			return fmt.Errorf("%s has no BuildKit daemon: macOS hosts run containers through Apple Container, which has no BuildKit underneath, so a Mac cannot be a build host", host)
 		}
-		// The role is on and the daemon is gone. On an image-based OS that is the
-		// signature of an OS update: the opt-in marker lives on the data
-		// partition and survives, while a buildkitd installed onto the A/B root
-		// filesystem does not. Naming it turns "this worked yesterday" into a
-		// one-line diagnosis.
-		if resp.GetBuilderEnabled() {
-			return fmt.Errorf("%s is enabled as a build host but has no BuildKit daemon; if it built before, an OS update most likely replaced the root filesystem buildkitd was installed on -- reinstall it and start it on unix:///run/buildkit/buildkitd.sock", host)
-		}
-		// Say what to do, not only what is wrong. The agent's own refusal names
-		// the socket and the daemon -- but this check runs first, before any
-		// context is transferred, so that wording is unreachable in practice and
-		// the developer lands on this line instead.
-		return fmt.Errorf("%s has no BuildKit daemon and cannot build; install buildkitd on it and start it on unix:///run/buildkit/buildkitd.sock, or omit --build-host to build locally", host)
+		return fmt.Errorf("%s is enabled as a build host but has no BuildKit daemon; install buildkitd there and start it on unix:///run/buildkit/buildkitd.sock, or omit --build-host to build locally", host)
 	}
 	if err := checkBuildkitRootSpace(host, resp); err != nil {
 		return err
@@ -659,24 +647,42 @@ const (
 // checkBuildkitRootSpace refuses, or warns about, a build host whose BuildKit
 // cache is on a filesystem too small to hold one.
 //
-// Silence when the agent could not answer. An older agent reports nothing here,
-// and treating "unknown" as "empty" would refuse every build host that predates
-// this field -- turning a safety check into an outage.
+// An older agent reports no support bit and preserves the pre-existing behavior.
+// Once an agent advertises support, however, missing data is an inspection
+// failure and cannot be treated as evidence that the cache filesystem is safe.
 func checkBuildkitRootSpace(host string, resp *agentpbv2.GetBuildCapabilitiesResponse) error {
+	warning, err := assessBuildkitRootSpace(host, resp)
+	if err != nil {
+		return err
+	}
+	if warning != "" {
+		cliNotice("%s", warning)
+	}
+	return nil
+}
+
+// assessBuildkitRootSpace contains the policy separately from terminal output,
+// making the refusal and warning boundaries directly testable.
+func assessBuildkitRootSpace(host string, resp *agentpbv2.GetBuildCapabilitiesResponse) (string, error) {
+	if !resp.GetBuildkitRootInspectionSupported() {
+		// An older agent predates these fields. Preserve the behavior that worked
+		// before this safety check rather than turning a CLI update into an outage.
+		return "", nil
+	}
 	root, free := resp.GetBuildkitRoot(), resp.GetBuildkitRootFreeBytes()
 	if root == "" || resp.GetBuildkitRootTotalBytes() == 0 {
-		return nil
+		return "", fmt.Errorf("%s could not verify where its BuildKit cache is stored or how much space it has; inspect the running buildkitd configuration, restart it, and retry, or build elsewhere", host)
 	}
 	if free < buildkitRootMinFreeBytes {
-		return fmt.Errorf(
-			"%s keeps its BuildKit cache in %s, which has only %s free; a build cache there would fill that filesystem. Point buildkitd at a larger partition with --root (or `root = ` in /etc/buildkit/buildkitd.toml) and restart it, or build elsewhere",
+		return "", fmt.Errorf(
+			"%s keeps its BuildKit cache in %s, which has only %s free; a build cache there would fill that filesystem. Point buildkitd at a larger partition with --root (or add `root = \"/data/buildkit/root\"` to its active TOML configuration) and restart it, or build elsewhere",
 			host, root, humanBytes(free))
 	}
 	if free < buildkitRootWarnFreeBytes {
-		cliNotice("%s keeps its BuildKit cache in %s, with %s free; a large image build may exhaust it",
-			host, root, humanBytes(free))
+		return fmt.Sprintf("%s keeps its BuildKit cache in %s, with %s free; a large image build may exhaust it",
+			host, root, humanBytes(free)), nil
 	}
-	return nil
+	return "", nil
 }
 
 // humanBytes renders a byte count at GiB/MiB granularity, which is the scale

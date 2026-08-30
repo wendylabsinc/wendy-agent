@@ -182,13 +182,18 @@ type GetBuildCapabilitiesResponse struct {
 	// partition with 862 GB. A single TensorRT build cache fills the partition the
 	// OS boots from, so the failure is a damaged device rather than a failed build.
 	//
-	// Empty root means the agent could not determine it; zero bytes mean it could
-	// not stat the filesystem. Neither is treated as "fine" by a caller.
-	BuildkitRoot           string `protobuf:"bytes,9,opt,name=buildkit_root,json=buildkitRoot,proto3" json:"buildkit_root,omitempty"`
-	BuildkitRootFreeBytes  uint64 `protobuf:"varint,10,opt,name=buildkit_root_free_bytes,json=buildkitRootFreeBytes,proto3" json:"buildkit_root_free_bytes,omitempty"`
-	BuildkitRootTotalBytes uint64 `protobuf:"varint,11,opt,name=buildkit_root_total_bytes,json=buildkitRootTotalBytes,proto3" json:"buildkit_root_total_bytes,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// An agent that implements this inspection sets
+	// buildkit_root_inspection_supported. For such an agent, an empty root or
+	// zero total means inspection failed and a client must not start a build.
+	// An older agent leaves the support flag false, allowing a newer CLI to keep
+	// the pre-existing compatibility behavior without mistaking a failed
+	// inspection by a newer agent for success.
+	BuildkitRoot                    string `protobuf:"bytes,9,opt,name=buildkit_root,json=buildkitRoot,proto3" json:"buildkit_root,omitempty"`
+	BuildkitRootFreeBytes           uint64 `protobuf:"varint,10,opt,name=buildkit_root_free_bytes,json=buildkitRootFreeBytes,proto3" json:"buildkit_root_free_bytes,omitempty"`
+	BuildkitRootTotalBytes          uint64 `protobuf:"varint,11,opt,name=buildkit_root_total_bytes,json=buildkitRootTotalBytes,proto3" json:"buildkit_root_total_bytes,omitempty"`
+	BuildkitRootInspectionSupported bool   `protobuf:"varint,12,opt,name=buildkit_root_inspection_supported,json=buildkitRootInspectionSupported,proto3" json:"buildkit_root_inspection_supported,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
 }
 
 func (x *GetBuildCapabilitiesResponse) Reset() {
@@ -296,6 +301,13 @@ func (x *GetBuildCapabilitiesResponse) GetBuildkitRootTotalBytes() uint64 {
 		return x.BuildkitRootTotalBytes
 	}
 	return 0
+}
+
+func (x *GetBuildCapabilitiesResponse) GetBuildkitRootInspectionSupported() bool {
+	if x != nil {
+		return x.BuildkitRootInspectionSupported
+	}
+	return false
 }
 
 // ChunkManifest reconstructs a byte stream from chunks already written through
@@ -872,7 +884,7 @@ const file_wendy_agent_services_v2_build_service_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\"7\n" +
 	"\x1bSetBuildHostEnabledResponse\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\"\x1d\n" +
-	"\x1bGetBuildCapabilitiesRequest\"\x83\x04\n" +
+	"\x1bGetBuildCapabilitiesRequest\"\xd0\x04\n" +
 	"\x1cGetBuildCapabilitiesResponse\x12-\n" +
 	"\x12buildkit_available\x18\x01 \x01(\bR\x11buildkitAvailable\x12)\n" +
 	"\x10buildkit_version\x18\x02 \x01(\tR\x0fbuildkitVersion\x12\x0e\n" +
@@ -885,7 +897,8 @@ const file_wendy_agent_services_v2_build_service_proto_rawDesc = "" +
 	"\rbuildkit_root\x18\t \x01(\tR\fbuildkitRoot\x127\n" +
 	"\x18buildkit_root_free_bytes\x18\n" +
 	" \x01(\x04R\x15buildkitRootFreeBytes\x129\n" +
-	"\x19buildkit_root_total_bytes\x18\v \x01(\x04R\x16buildkitRootTotalBytes\"Q\n" +
+	"\x19buildkit_root_total_bytes\x18\v \x01(\x04R\x16buildkitRootTotalBytes\x12K\n" +
+	"\"buildkit_root_inspection_supported\x18\f \x01(\bR\x1fbuildkitRootInspectionSupported\"Q\n" +
 	"\rChunkManifest\x12!\n" +
 	"\fchunk_hashes\x18\x01 \x03(\fR\vchunkHashes\x12\x1d\n" +
 	"\n" +
