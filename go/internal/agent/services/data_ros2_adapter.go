@@ -341,6 +341,13 @@ func (a *ros2DataAdapter) Start(ctx context.Context, session data.CaptureSession
 // domain across N recorders would therefore produce N bags and N independent
 // clock mappings for messages that share a single timeline, which is exactly
 // the alignment the episode exists to preserve.
+//
+// The topic names become argv elements of the rosbag2 exec, so they are an
+// argument-injection surface. They cannot be read as flags: every one of them
+// arrives through parseROS2TopicList, which keeps only lines beginning with
+// "/", and again through data.ParseROS2SourceID, which rejects an identifier
+// whose topic is not absolute (SOC2-CC6, ISO27001-A.8, NIST-SI-10). There is
+// no shell in the path either; ExecROS2 passes argv straight through.
 func ros2RecordArgs(staging string, selection *ros2DomainSelection) []string {
 	args := []string{"bag", "record", "-o", staging}
 	if selection.wholeDomain {
