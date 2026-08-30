@@ -44,6 +44,24 @@ func (p *fakeProc) add(t *testing.T, pid, cwd string, argv ...string) {
 	}
 }
 
+func (p *fakeProc) activateUnixSocket(t *testing.T, pid, socketPath, inode string) {
+	t.Helper()
+	pidDir := filepath.Join(p.dir, pid)
+	if err := os.MkdirAll(filepath.Join(pidDir, "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := "0000000000000000: 00000002 00000000 00010000 0001 01 " + inode + " " + socketPath + "\n"
+	if err := os.WriteFile(filepath.Join(pidDir, "net", "unix"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(pidDir, "fd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("socket:["+inode+"]", filepath.Join(pidDir, "fd", "3")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func mustBuildkitRoot(t *testing.T, proc *fakeProc, address string) buildkitRootLocation {
 	t.Helper()
 	location, ok := buildkitRoot(proc.dir, address, proc.defaultConfigPath)
@@ -69,6 +87,36 @@ func TestBuildkitRoot_SelectsDaemonForRequestedAddress(t *testing.T) {
 
 	if got := mustBuildkitRoot(t, proc, DefaultBuildkitAddress).displayPath; got != "/data/buildkit/right" {
 		t.Fatalf("got %q, want the root belonging to the requested address", got)
+	}
+}
+
+func TestBuildkitRoot_MatchesSystemdActivatedDaemonBySocketOwnership(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.add(t, "42", "/", "buildkitd", "--addr", "fd://", "--root", "/data/buildkit/systemd")
+	proc.activateUnixSocket(t, "42", "/run/buildkit/buildkitd.sock", "43355")
+
+	if got := mustBuildkitRoot(t, proc, DefaultBuildkitAddress).displayPath; got != "/data/buildkit/systemd" {
+		t.Fatalf("got %q, want root from daemon holding the inherited socket", got)
+	}
+}
+
+func TestBuildkitRoot_IgnoresFDActivatedDaemonForAnotherSocket(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.add(t, "10", "/", "buildkitd", "--addr", "fd://", "--root", "/wrong")
+	proc.activateUnixSocket(t, "10", "/run/buildkit/other.sock", "11111")
+	proc.add(t, "20", "/", "buildkitd", "--addr", DefaultBuildkitAddress, "--root", "/right")
+
+	if got := mustBuildkitRoot(t, proc, DefaultBuildkitAddress).displayPath; got != "/right" {
+		t.Fatalf("got %q, want daemon for the requested socket", got)
+	}
+}
+
+func TestBuildkitRoot_FDAddressWithoutSocketEvidenceIsUnknown(t *testing.T) {
+	proc := newFakeProc(t)
+	proc.add(t, "42", "/", "buildkitd", "--addr", "fd://", "--root", "/data/buildkit")
+
+	if _, ok := buildkitRoot(proc.dir, DefaultBuildkitAddress, proc.defaultConfigPath); ok {
+		t.Fatal("fd:// without readable socket ownership must be unknown")
 	}
 }
 

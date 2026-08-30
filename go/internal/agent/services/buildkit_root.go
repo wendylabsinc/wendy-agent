@@ -69,7 +69,12 @@ func buildkitRoot(procDir, buildkitAddress, configPath string) (buildkitRootLoca
 			addressUnknown = true
 			continue
 		}
-		if !containsBuildkitAddress(addresses, buildkitAddress) {
+		matchesAddress, addressMatchKnown := daemonMatchesBuildkitAddress(pidDir, addresses, buildkitAddress)
+		if !addressMatchKnown {
+			addressUnknown = true
+			continue
+		}
+		if !matchesAddress {
 			continue
 		}
 		if !rootKnown {
@@ -187,13 +192,72 @@ func pathInProcess(pidDir, path string) string {
 	return filepath.Join(pidDir, "cwd", path)
 }
 
-func containsBuildkitAddress(addresses []string, want string) bool {
+func daemonMatchesBuildkitAddress(pidDir string, addresses []string, want string) (matches, known bool) {
+	hasInheritedFD := false
 	for _, address := range addresses {
 		if sameBuildkitAddress(address, want) {
-			return true
+			return true, true
+		}
+		if strings.TrimSpace(address) == "fd://" {
+			hasInheritedFD = true
 		}
 	}
-	return false
+	if !hasInheritedFD {
+		return false, true
+	}
+
+	socketPath, unixAddress := strings.CutPrefix(strings.TrimSpace(want), "unix://")
+	if !unixAddress {
+		// An inherited descriptor may be a TCP listener, but /proc/net/unix
+		// cannot prove or disprove that association.
+		return false, false
+	}
+	matches, err := daemonOwnsUnixSocket(pidDir, socketPath)
+	if err != nil {
+		return false, false
+	}
+	return matches, true
+}
+
+// daemonOwnsUnixSocket maps a filesystem Unix socket through /proc/net/unix to
+// its kernel socket inode, then confirms that the daemon holds that inode. This
+// is how a systemd-activated buildkitd using --addr fd:// is associated with the
+// unix:/// address the Wendy agent uses.
+func daemonOwnsUnixSocket(pidDir, socketPath string) (bool, error) {
+	raw, err := os.ReadFile(filepath.Join(pidDir, "net", "unix"))
+	if err != nil {
+		return false, err
+	}
+	wantedInodes := make(map[string]struct{})
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 8 || filepath.Clean(fields[7]) != filepath.Clean(socketPath) {
+			continue
+		}
+		wantedInodes[fields[6]] = struct{}{}
+	}
+	if len(wantedInodes) == 0 {
+		return false, nil
+	}
+
+	fds, err := os.ReadDir(filepath.Join(pidDir, "fd"))
+	if err != nil {
+		return false, err
+	}
+	for _, fd := range fds {
+		target, err := os.Readlink(filepath.Join(pidDir, "fd", fd.Name()))
+		if err != nil {
+			continue
+		}
+		inode, ok := strings.CutSuffix(strings.TrimPrefix(target, "socket:["), "]")
+		if !ok {
+			continue
+		}
+		if _, ok := wantedInodes[inode]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func sameBuildkitAddress(a, b string) bool {
