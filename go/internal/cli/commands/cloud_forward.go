@@ -22,16 +22,18 @@ func newCloudTunnelCmd() *cobra.Command {
 	var brokerURL string
 
 	cmd := &cobra.Command{
-		Use:   "tunnel <local-port>:<remote-port>[/udp]",
+		Use:   "tunnel <port-forward>",
 		Short: "Forward a local TCP or UDP port to a port on a cloud-enrolled device",
-		Long:  "Listens on <local-port> and forwards each connection through the Wendy Cloud tunnel broker to <remote-port> on the target device.",
-		Args:  cobra.ExactArgs(1),
+		Long: "Listens on a local port and forwards each connection through the Wendy Cloud tunnel broker. " +
+			"Use <port>, <local-port>:<remote-port>, or <local-port>:<remote-host>:<remote-port>. " +
+			"Remote hosts are resolved and reached by the target device. Append /udp (or /tcp) to select the protocol; remote-host forwarding is TCP-only.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			localPort, remotePort, udp, err := parseTunnelArg(args[0])
+			localPort, remoteHost, remotePort, udp, err := parseTunnelArg(args[0])
 			if err != nil {
 				return err
 			}
-			return cloudTunnelCommand(cmd.Context(), cloudGRPC, effectiveDeviceName(deviceName), brokerURL, localPort, remotePort, udp)
+			return cloudTunnelCommand(cmd.Context(), cloudGRPC, effectiveDeviceName(deviceName), brokerURL, localPort, remoteHost, remotePort, udp)
 		},
 	}
 
@@ -42,20 +44,20 @@ func newCloudTunnelCmd() *cobra.Command {
 	return cmd
 }
 
-// parseTunnelArg parses "localPort:remotePort" or "port", with an optional
-// docker-style "/udp" (or explicit "/tcp") protocol suffix.
-func parseTunnelArg(arg string) (localPort, remotePort uint32, udp bool, err error) {
+// parseTunnelArg parses "port", "localPort:remotePort", or
+// "localPort:remoteHost:remotePort", with an optional docker-style "/udp"
+// (or explicit "/tcp") protocol suffix. IPv6 remote hosts must be bracketed.
+func parseTunnelArg(arg string) (localPort uint32, remoteHost string, remotePort uint32, udp bool, err error) {
 	if i := strings.LastIndex(arg, "/"); i >= 0 {
 		switch strings.ToLower(arg[i+1:]) {
 		case "udp":
 			udp = true
 		case "tcp":
 		default:
-			return 0, 0, false, fmt.Errorf("unknown protocol %q (use tcp or udp)", arg[i+1:])
+			return 0, "", 0, false, fmt.Errorf("unknown protocol %q (use tcp or udp)", arg[i+1:])
 		}
 		arg = arg[:i]
 	}
-	parts := strings.SplitN(arg, ":", 2)
 	parse := func(s string) (uint32, error) {
 		n, e := strconv.ParseUint(s, 10, 32)
 		if e != nil || n == 0 || n > 65535 {
@@ -63,19 +65,41 @@ func parseTunnelArg(arg string) (localPort, remotePort uint32, udp bool, err err
 		}
 		return uint32(n), nil
 	}
-	if len(parts) == 1 {
-		p, e := parse(parts[0])
-		return p, p, udp, e
+
+	separator := strings.IndexByte(arg, ':')
+	if separator < 0 {
+		p, e := parse(arg)
+		return p, "localhost", p, udp, e
 	}
-	lp, e := parse(parts[0])
+
+	lp, e := parse(arg[:separator])
 	if e != nil {
-		return 0, 0, false, e
+		return 0, "", 0, false, e
 	}
-	rp, e := parse(parts[1])
-	return lp, rp, udp, e
+	remote := arg[separator+1:]
+	if !strings.Contains(remote, ":") {
+		rp, parseErr := parse(remote)
+		return lp, "localhost", rp, udp, parseErr
+	}
+
+	host, portString, splitErr := net.SplitHostPort(remote)
+	if splitErr != nil {
+		return 0, "", 0, false, fmt.Errorf("invalid remote target %q: %w", remote, splitErr)
+	}
+	if host == "" {
+		return 0, "", 0, false, fmt.Errorf("invalid remote host %q", host)
+	}
+	rp, e := parse(portString)
+	if e != nil {
+		return 0, "", 0, false, e
+	}
+	if udp && host != "localhost" {
+		return 0, "", 0, false, fmt.Errorf("remote host forwarding is only supported for TCP tunnels")
+	}
+	return lp, host, rp, udp, nil
 }
 
-func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL string, localPort, remotePort uint32, udp bool) error {
+func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL string, localPort uint32, remoteHost string, remotePort uint32, udp bool) error {
 	auth, err := pickAuthEntry(cloudGRPC)
 	if err != nil {
 		return err
@@ -121,7 +145,11 @@ func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL st
 	}
 	defer ln.Close()
 
-	cliSuccess("Forwarding %s → %s:%d (via cloud)", listenAddr, asset.GetName(), remotePort)
+	if remoteHost == "localhost" {
+		cliSuccess("Forwarding %s → %s:%d (via cloud)", listenAddr, asset.GetName(), remotePort)
+	} else {
+		cliSuccess("Forwarding %s → %s through %s (via cloud)", listenAddr, net.JoinHostPort(remoteHost, strconv.Itoa(int(remotePort))), asset.GetName())
+	}
 	cliLogln("Press Ctrl+C to stop.")
 
 	go func() {
@@ -137,14 +165,14 @@ func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL st
 			}
 			return fmt.Errorf("accepting connection: %w", err)
 		}
-		go serveTunnelConn(ctx, tcpConn, brokerConn, auth, asset.GetId(), remotePort)
+		go serveTunnelConn(ctx, tcpConn, brokerConn, auth, asset.GetId(), remoteHost, remotePort)
 	}
 }
 
-func serveTunnelConn(ctx context.Context, tcpConn net.Conn, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) {
+func serveTunnelConn(ctx context.Context, tcpConn net.Conn, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remoteHost string, remotePort uint32) {
 	defer tcpConn.Close()
 
-	tunnelConn, err := openBrokerTunnel(ctx, brokerConn, auth, assetID, remotePort)
+	tunnelConn, err := openBrokerTunnelToHost(ctx, brokerConn, auth, assetID, remoteHost, remotePort)
 	if err != nil {
 		return
 	}

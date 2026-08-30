@@ -1,16 +1,24 @@
 # `wendy cloud tunnel`
 
-Opens a secure tunnel to a cloud-enrolled compute device.
+Opens a secure port-forwarding tunnel through a cloud-enrolled compute device.
 
 ## Usage
 
 ```sh
-wendy cloud tunnel [flags]
+wendy cloud tunnel <port-forward> [flags]
 ```
 
 ## Description
 
 `wendy cloud tunnel` fetches the list of **online** compute devices from Wendy Cloud and either connects directly when only one device is available, selects the device named or identified by `--device`, or prompts you to choose one interactively.
+
+The port-forward argument accepts these forms:
+
+- `<port>` forwards the same local and remote port on the device.
+- `<local-port>:<remote-port>` forwards to the device's loopback interface.
+- `<local-port>:<remote-host>:<remote-port>` forwards through the device to another TCP host reachable from it. Hostnames are resolved by the device; bracket IPv6 hosts, for example `8080:[fd00::20]:80`.
+
+Append `/udp` or `/tcp` to select the protocol. Remote-host forwarding is currently TCP-only.
 
 ### Selecting a device
 
@@ -42,19 +50,25 @@ When `--device` is omitted and multiple devices are online:
 Connect, choosing interactively when more than one device is online:
 
 ```sh
-wendy cloud tunnel
+wendy cloud tunnel 8080:80
 ```
 
 Target a device by name:
 
 ```sh
-wendy cloud tunnel --device playful-reed
+wendy cloud tunnel 8080:80 --device playful-reed
 ```
 
 Target an unnamed device by its numeric asset ID (from `wendy cloud discover --json`):
 
 ```sh
-wendy cloud tunnel --device 43
+wendy cloud tunnel 8080:80 --device 43
+```
+
+Forward through a device to a PostgreSQL server on its LAN:
+
+```sh
+wendy cloud tunnel 15432:db.internal:5432 --device playful-reed
 ```
 
 ## See also

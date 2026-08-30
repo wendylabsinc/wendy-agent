@@ -26,7 +26,7 @@ func TestParseTunnelArgUDPSuffix(t *testing.T) {
 		{"0:80/udp", 0, 0, false, true},
 	}
 	for _, c := range cases {
-		l, r, udp, err := parseTunnelArg(c.arg)
+		l, _, r, udp, err := parseTunnelArg(c.arg)
 		if c.wantErr {
 			if err == nil {
 				t.Errorf("%q: expected error", c.arg)

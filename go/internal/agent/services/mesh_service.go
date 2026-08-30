@@ -75,8 +75,7 @@ func (s *MeshService) MeshDial(stream agentpbv2.WendyMeshService_MeshDialServer)
 	if open.Port == 0 || open.Port > 65535 {
 		return status.Errorf(codes.InvalidArgument, "invalid port %d", open.Port)
 	}
-	// Same SSRF stance as the broker path (tunnel_broker_client.go:207-213):
-	// only local services are reachable.
+	// Mesh peers intentionally reach only services local to this device.
 	conn, err := s.dialLocal(net.JoinHostPort("127.0.0.1", strconv.Itoa(int(open.Port))), 10*time.Second)
 	if err != nil {
 		return status.Errorf(codes.Unavailable, "dialing local port %d: %v", open.Port, err)

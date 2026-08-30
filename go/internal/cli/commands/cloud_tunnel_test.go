@@ -19,22 +19,30 @@ func TestParseTunnelArg(t *testing.T) {
 	tests := []struct {
 		arg        string
 		wantLocal  uint32
+		wantHost   string
 		wantRemote uint32
+		wantUDP    bool
 		wantErr    bool
 	}{
-		{"8080", 8080, 8080, false},
-		{"3000:8080", 3000, 8080, false},
-		{"0", 0, 0, true},
-		{"99999", 0, 0, true},
-		{"abc", 0, 0, true},
-		{"8080:abc", 0, 0, true},
-		{"65535", 65535, 65535, false},
-		{"1:65535", 1, 65535, false},
+		{"8080", 8080, "localhost", 8080, false, false},
+		{"3000:8080", 3000, "localhost", 8080, false, false},
+		{"3000:db.internal:5432", 3000, "db.internal", 5432, false, false},
+		{"8443:192.168.1.20:443/tcp", 8443, "192.168.1.20", 443, false, false},
+		{"8080:[2001:db8::20]:80", 8080, "2001:db8::20", 80, false, false},
+		{"0", 0, "", 0, false, true},
+		{"99999", 0, "", 0, false, true},
+		{"abc", 0, "", 0, false, true},
+		{"8080:abc", 0, "", 0, false, true},
+		{"8080::80", 0, "", 0, false, true},
+		{"8080:db.internal:abc", 0, "", 0, false, true},
+		{"8080:db.internal:53/udp", 0, "", 0, false, true},
+		{"65535", 65535, "localhost", 65535, false, false},
+		{"1:65535/udp", 1, "localhost", 65535, true, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.arg, func(t *testing.T) {
-			local, remote, _, err := parseTunnelArg(tt.arg)
+			local, host, remote, udp, err := parseTunnelArg(tt.arg)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("parseTunnelArg(%q) expected error, got none", tt.arg)
@@ -44,10 +52,21 @@ func TestParseTunnelArg(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseTunnelArg(%q) unexpected error: %v", tt.arg, err)
 			}
-			if local != tt.wantLocal || remote != tt.wantRemote {
-				t.Errorf("parseTunnelArg(%q) = (%d, %d), want (%d, %d)", tt.arg, local, remote, tt.wantLocal, tt.wantRemote)
+			if local != tt.wantLocal || host != tt.wantHost || remote != tt.wantRemote || udp != tt.wantUDP {
+				t.Errorf("parseTunnelArg(%q) = (%d, %q, %d, %v), want (%d, %q, %d, %v)", tt.arg, local, host, remote, udp, tt.wantLocal, tt.wantHost, tt.wantRemote, tt.wantUDP)
 			}
 		})
+	}
+}
+
+func TestClientTunnelOpenMessageIncludesRemoteHost(t *testing.T) {
+	message := clientTunnelOpenMessage(42, "db.internal", 5432)
+	open := message.GetOpen()
+	if open == nil {
+		t.Fatal("clientTunnelOpenMessage did not create an open message")
+	}
+	if open.GetAssetId() != 42 || open.GetHost() != "db.internal" || open.GetPort() != 5432 {
+		t.Fatalf("open = {asset: %d, host: %q, port: %d}, want {asset: 42, host: %q, port: 5432}", open.GetAssetId(), open.GetHost(), open.GetPort(), "db.internal")
 	}
 }
 

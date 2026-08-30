@@ -268,6 +268,10 @@ func waitForCloudAgentRestart(ctx context.Context, auth *config.AuthConfig, asse
 }
 
 func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) (net.Conn, error) {
+	return openBrokerTunnelToHost(ctx, brokerConn, auth, assetID, "localhost", remotePort)
+}
+
+func openBrokerTunnelToHost(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remoteHost string, remotePort uint32) (net.Conn, error) {
 	client := cloudpb.NewTunnelBrokerServiceClient(brokerConn)
 
 	cloudCtx, err := cloudContext(ctx, auth)
@@ -279,15 +283,7 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 		return nil, fmt.Errorf("opening tunnel stream: %w", err)
 	}
 
-	if err := stream.Send(&cloudpb.ClientTunnelMessage{
-		Content: &cloudpb.ClientTunnelMessage_Open{
-			Open: &cloudpb.ClientTunnelOpen{
-				AssetId: assetID,
-				Host:    "localhost",
-				Port:    remotePort,
-			},
-		},
-	}); err != nil {
+	if err := stream.Send(clientTunnelOpenMessage(assetID, remoteHost, remotePort)); err != nil {
 		return nil, fmt.Errorf("sending tunnel open: %w", err)
 	}
 
@@ -323,6 +319,18 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 	}, stream.CloseSend)
 
 	return local, nil
+}
+
+func clientTunnelOpenMessage(assetID int32, remoteHost string, remotePort uint32) *cloudpb.ClientTunnelMessage {
+	return &cloudpb.ClientTunnelMessage{
+		Content: &cloudpb.ClientTunnelMessage_Open{
+			Open: &cloudpb.ClientTunnelOpen{
+				AssetId: assetID,
+				Host:    remoteHost,
+				Port:    remotePort,
+			},
+		},
+	}
 }
 
 // tunnelUplinkQueueSlots bounds the uplink queue: reads are ≤256KiB, so 128

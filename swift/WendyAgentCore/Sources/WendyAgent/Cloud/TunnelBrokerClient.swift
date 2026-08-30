@@ -134,7 +134,8 @@ struct TunnelBrokerClient: Sendable {
         "URI=urn:wendy:org:\(orgID):asset:\(assetID)"
     }
 
-    /// SSRF guard: a `DialRequest` is served only for a loopback target.
+    /// Whether a tunnel target refers to this device. Used only when remapping
+    /// the well-known agent mTLS port to the process's actual listen port.
     static func isLoopback(_ host: String) -> Bool {
         if host == "localhost" || host == "::1" { return true }
         let parts = host.split(separator: ".", omittingEmptySubsequences: false)
@@ -148,6 +149,11 @@ struct TunnelBrokerClient: Sendable {
             return mtlsPort
         }
         return requested
+    }
+
+    static func tunnelDialPort(host: String, requested: Int, mtlsPort: Int) -> Int {
+        guard Self.isLoopback(host) else { return requested }
+        return Self.remapPort(requested: requested, mtlsPort: mtlsPort)
     }
 
     /// Exponential backoff: `min(1s * 2^attempt, 90s)`.
@@ -321,9 +327,9 @@ struct TunnelBrokerClient: Sendable {
         }
     }
 
-    /// Serves one broker `DialRequest`: SSRF-guards the target, opens a plain TCP
-    /// connection to the local mTLS port, opens an `AgentTunnel` stream, and runs
-    /// the two relay pumps until the session ends.
+    /// Serves one broker `DialRequest`: opens a plain TCP connection to the
+    /// requested host and port, opens an `AgentTunnel` stream, and runs the two
+    /// relay pumps until the session ends.
     private static func handleDial<Transport: ClientTransport>(
         _ dial: Wendycloud_V1_DialRequest,
         client: Wendycloud_V1_TunnelBrokerService.Client<Transport>,
@@ -331,14 +337,11 @@ struct TunnelBrokerClient: Sendable {
         metadata: Metadata,
         logger: Logger
     ) async {
-        guard Self.isLoopback(dial.host) else {
-            logger.error(
-                "broker dial request rejected: only loopback targets allowed",
-                metadata: ["host": "\(dial.host)"]
-            )
-            return
-        }
-        let port = Self.remapPort(requested: Int(dial.port), mtlsPort: config.mtlsPort)
+        let port = Self.tunnelDialPort(
+            host: dial.host,
+            requested: Int(dial.port),
+            mtlsPort: config.mtlsPort
+        )
         let sessionID = dial.sessionID
 
         do {
