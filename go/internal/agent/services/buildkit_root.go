@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/BurntSushi/toml"
 )
 
 // defaultBuildkitRoot is buildkitd's own default for --root.
@@ -41,13 +43,32 @@ func buildkitRoot(procDir string) string {
 	if root != "" {
 		return root
 	}
-	if configPath == "" {
-		configPath = buildkitConfigPath
+	if configPath != "" {
+		root, err := rootFromConfig(configPath)
+		if err != nil {
+			// The running daemon may have loaded a config that has since been
+			// changed or removed. Its effective root can no longer be inferred.
+			return ""
+		}
+		if root != "" {
+			return root
+		}
+		return defaultBuildkitRoot
 	}
-	if p := rootFromConfig(configPath); p != "" {
-		return p
+
+	root, err := rootFromConfig(buildkitConfigPath)
+	if err == nil {
+		if root != "" {
+			return root
+		}
+		return defaultBuildkitRoot
 	}
-	return defaultBuildkitRoot
+	if os.IsNotExist(err) {
+		// No default config is a normal buildkitd installation: the daemon
+		// uses its documented root in that case.
+		return defaultBuildkitRoot
+	}
+	return ""
 }
 
 // pathsFromRunningDaemon scans /proc for a buildkitd process and returns the
@@ -108,32 +129,18 @@ func procFlagValue(raw []byte, name string) string {
 
 // rootFromConfig reads `root = "..."` out of buildkitd.toml.
 //
-// Deliberately a line scan rather than a TOML parser: this is one top-level
-// key, the agent has no TOML dependency, and a malformed file must degrade to
-// "unknown" instead of failing the capabilities RPC that a developer is using
-// to find out what is wrong.
-func rootFromConfig(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
+// Decode only the top-level field so worker tables with their own `root` keys
+// cannot be mistaken for the daemon's state directory. Errors are returned so
+// the caller can distinguish an absent default config (which means buildkitd's
+// default root) from a selected config whose effective root is now unknown.
+func rootFromConfig(path string) (string, error) {
+	var cfg struct {
+		Root string `toml:"root"`
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Only the top-level key. A `root` inside a [worker.*] table means
-		// something else, and tables always come after it.
-		if strings.HasPrefix(line, "[") {
-			break
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok || strings.TrimSpace(k) != "root" {
-			continue
-		}
-		return strings.Trim(strings.TrimSpace(v), `"'`)
+	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return "", err
 	}
-	return ""
+	return cfg.Root, nil
 }
 
 // buildkitRootSpace reports total and available bytes for the filesystem

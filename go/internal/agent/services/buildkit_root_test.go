@@ -123,29 +123,81 @@ func TestRootFromConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# comment\nroot = \"/data/buildkit/root\"\n\n[worker.oci]\n  gc = true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := rootFromConfig(path); got != "/data/buildkit/root" {
+	got, err := rootFromConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/data/buildkit/root" {
 		t.Fatalf("got %q, want the top-level root", got)
 	}
 }
 
-// A `root` inside a table is a different key. Stopping at the first table keeps
-// this from reporting a worker's setting as the daemon's state directory.
+func TestRootFromConfig_AllowsInlineComment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "buildkitd.toml")
+	if err := os.WriteFile(path, []byte("root = \"/data/buildkit/root\" # persistent cache\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := rootFromConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/data/buildkit/root" {
+		t.Fatalf("got %q, want a valid TOML value before the inline comment", got)
+	}
+}
+
+// A `root` inside a table is a different key. Decoding only the top-level field
+// keeps a worker's setting from being reported as the daemon's state directory.
 func TestRootFromConfig_IgnoresKeysInsideTables(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "buildkitd.toml")
 	if err := os.WriteFile(path, []byte("[worker.oci]\n  root = \"/not-the-daemon-root\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := rootFromConfig(path); got != "" {
+	got, err := rootFromConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
 		t.Fatalf("got %q, want empty when root only appears inside a table", got)
 	}
 }
 
-// A missing or unreadable config must degrade to "unknown", never fail: this
-// runs inside the RPC a developer is using to find out what is wrong.
-func TestRootFromConfig_MissingFileIsUnknown(t *testing.T) {
-	if got := rootFromConfig(filepath.Join(t.TempDir(), "absent.toml")); got != "" {
-		t.Fatalf("got %q, want empty for a missing config", got)
+func TestRootFromConfig_MissingFileReturnsError(t *testing.T) {
+	if _, err := rootFromConfig(filepath.Join(t.TempDir(), "absent.toml")); !os.IsNotExist(err) {
+		t.Fatalf("got error %v, want a missing-file error", err)
+	}
+}
+
+func TestRootFromConfig_MalformedFileReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "buildkitd.toml")
+	if err := os.WriteFile(path, []byte("root = \"unterminated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rootFromConfig(path); err == nil {
+		t.Fatal("want malformed TOML to return an error")
+	}
+}
+
+func TestBuildkitRoot_BrokenCustomConfigIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "custom.toml")
+	if err := os.WriteFile(configPath, []byte("root = \"unterminated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config", configPath)
+	if got := buildkitRoot(proc); got != "" {
+		t.Fatalf("got %q, want unknown when the running daemon's custom config cannot be decoded", got)
+	}
+}
+
+func TestBuildkitRoot_MissingCustomConfigIsUnknown(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "removed.toml")
+	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config", configPath)
+	if got := buildkitRoot(proc); got != "" {
+		t.Fatalf("got %q, want unknown when the running daemon's custom config has disappeared", got)
 	}
 }
 
