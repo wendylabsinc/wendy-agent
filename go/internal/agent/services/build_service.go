@@ -609,6 +609,14 @@ func (s *BuildService) buildAndDeliver(
 	}
 
 	buildErr = s.runBuildctl(ctx, stream, args, authDir)
+	// BuildKit retries registry 5xx responses itself. The proxy may therefore
+	// have observed an outbound failure even though a later attempt completed
+	// and buildctl exited successfully. In that case the successful solve is
+	// authoritative; retaining the proxy's first error would turn recovery into
+	// a false delivery failure.
+	if buildErr == nil {
+		return classifyBuildAndDeliveryResult(buildErr, proxy.firstError())
+	}
 	if proxyErr := proxy.firstError(); proxyErr != nil {
 		// Say that re-running is cheap when the transfer had started. The build
 		// cache is warm and the device keeps the layers it already received, so
@@ -616,8 +624,22 @@ func (s *BuildService) buildAndDeliver(
 		// from a bare transport error, and is the difference between retrying
 		// and going to look for another build host.
 		if proxy.delivered.bytes() > 0 {
-			return nil, fmt.Errorf("%w: %w", errDeliveryIncomplete, proxyErr)
+			proxyErr = fmt.Errorf("%w: %w", errDeliveryIncomplete, proxyErr)
 		}
+		return classifyBuildAndDeliveryResult(buildErr, proxyErr)
+	}
+	return classifyBuildAndDeliveryResult(buildErr, nil)
+}
+
+// classifyBuildAndDeliveryResult keeps a recovered proxy attempt from
+// outweighing buildctl's final result. BuildKit owns registry-request retries,
+// so only a failed buildctl invocation can promote the proxy's diagnostic to a
+// terminal delivery error.
+func classifyBuildAndDeliveryResult(buildErr, proxyErr error) (error, error) {
+	if buildErr == nil {
+		return nil, nil
+	}
+	if proxyErr != nil {
 		return nil, proxyErr
 	}
 	return buildErr, nil

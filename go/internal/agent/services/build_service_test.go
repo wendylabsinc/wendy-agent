@@ -889,6 +889,31 @@ func TestRunBuildctl_FailsAndReapsOnOversizedLogLine(t *testing.T) {
 	}
 }
 
+// BuildKit retries registry 5xx responses. A proxy failure from an earlier
+// attempt must not override buildctl's eventual successful exit.
+func TestBuildAndDeliver_RecoveryCannotBecomeAFalseFailure(t *testing.T) {
+	buildErr, deliveryErr := classifyBuildAndDeliveryResult(nil,
+		errors.New("first push attempt lost its mesh connection"))
+	if buildErr != nil || deliveryErr != nil {
+		t.Fatalf("recovered push classified as build=%v delivery=%v, want success", buildErr, deliveryErr)
+	}
+}
+
+func TestClassifyBuildAndDeliveryResult(t *testing.T) {
+	buildFailure := errors.New("Dockerfile failed")
+	proxyFailure := errors.New("mesh connection failed")
+
+	buildErr, deliveryErr := classifyBuildAndDeliveryResult(buildFailure, nil)
+	if !errors.Is(buildErr, buildFailure) || deliveryErr != nil {
+		t.Fatalf("build failure classified as build=%v delivery=%v", buildErr, deliveryErr)
+	}
+
+	buildErr, deliveryErr = classifyBuildAndDeliveryResult(buildFailure, proxyFailure)
+	if buildErr != nil || !errors.Is(deliveryErr, proxyFailure) {
+		t.Fatalf("proxy failure classified as build=%v delivery=%v", buildErr, deliveryErr)
+	}
+}
+
 func TestBuildctlHelperProcess(t *testing.T) {
 	if os.Getenv("WENDY_BUILDCTL_TEST_HELPER") != "oversized-line" {
 		return
