@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -49,20 +49,19 @@ func (p driverPreflight) blocking() bool {
 	return p.unreadable != "" || len(p.unstaged) > 0
 }
 
-// installedDriverAddons reads the device's add-ons. A nil response and a nil error
-// mean the device cannot have any — an unenrolled connection exposes no driver
-// service, an older agent answers Unimplemented — and blocking on those would
-// block the update that fixes them. Every other failure is returned: "could not
-// ask" and "has none" must not look alike to the caller.
+// installedDriverAddons reads the device's add-ons. Every inability to inspect
+// the store is an error: an unenrolled connection exposes no driver service, but
+// an unenrolled device may still retain add-ons installed before it was reset.
+// "Could not ask" and "has none" must never look alike to an OTA pre-flight.
 func installedDriverAddons(ctx context.Context, conn *grpcclient.AgentConnection) (*agentpbv2.ListDriversResponse, error) {
 	if conn == nil || conn.DriverService == nil {
-		return nil, nil
+		return nil, fmt.Errorf("the device's driver service is unavailable on this connection")
 	}
 	callCtx, cancel := context.WithTimeout(ctx, driverListTimeout)
 	defer cancel()
 	resp, err := conn.DriverService.ListDrivers(callCtx, &agentpbv2.ListDriversRequest{})
 	if status.Code(err) == codes.Unimplemented {
-		return nil, nil
+		return nil, fmt.Errorf("the device's driver service is unavailable; enrol the device or update its agent")
 	}
 	if err != nil {
 		return nil, err
@@ -100,87 +99,135 @@ func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentCon
 		}
 	}
 
-	// Files the operator supplied win over the registry: they are the answer for a
-	// network with no route to it. Reached even with nothing installed, so a fresh
-	// air-gapped device can be pre-loaded.
-	if driversDir != "" {
-		stageFromDir(ctx, conn, installed, driversDir, &pf)
-		return pf
-	}
-	if len(installed) == 0 {
+	atRisk := driversNeedingKernelCoverage(installed)
+	if len(atRisk) == 0 {
+		// Files the operator supplied are also how a fresh air-gapped device is
+		// pre-loaded, so stage them even though there is nothing installed to lose.
+		if driversDir != "" {
+			stageFromDir(ctx, conn, installed, driversDir, "", "", &pf)
+		}
 		return pf
 	}
 
-	// Without a resolved manifest nothing can be staged: a local artifact or
-	// --artifact-url names no version to look add-ons up against.
-	if deviceType == "" || targetVersion == "" {
+	// The release's add-on metadata is also the only pre-install statement of
+	// which kernel the OTA boots. A single pinned kernel is proof; no metadata or
+	// several kernels is ambiguous and must not be reported as safe.
+	targetKernel, exts, targetErr := releaseTargetKernel(deviceType, targetVersion, pr)
+
+	// Files the operator supplied win over registry downloads. When the release
+	// kernel is known, pass it to the agent so the image is checked against the OTA
+	// target rather than merely filed under whatever kernel it declares. When it
+	// is unknown, staging still helps an offline operator, but the verdict remains
+	// blocking until they explicitly accept that it could not be verified.
+	if driversDir != "" {
+		stageFromDir(ctx, conn, installed, driversDir, targetKernel, targetErr, &pf)
+		return pf
+	}
+
+	if targetErr != "" {
+		cliLogln("  target kernel could not be determined: %s", targetErr)
 		if stageDrivers {
-			for _, d := range installed {
-				pf.unstaged = append(pf.unstaged, unstagedAddon{d.GetName(),
-					"this update resolves no manifest, so no rebuild can be staged"})
+			for _, d := range atRisk {
+				pf.unstaged = append(pf.unstaged, unstagedAddon{d.GetName(), targetErr})
 			}
 		}
 		return pf
 	}
-	exts, err := driverExtensionsForFn(deviceType, targetVersion, pr)
-	if err != nil {
-		cliLogln("  could not read the add-ons published for %s: %v", targetVersion, err)
-		if stageDrivers {
-			for _, d := range installed {
-				pf.unstaged = append(pf.unstaged, unstagedAddon{d.GetName(),
-					fmt.Sprintf("could not read the published add-ons: %v", err)})
-			}
-		}
-		return pf
-	}
-	// The manifest publishes one entry per (name, kernel), so collect every
-	// kernel a name ships for rather than letting the last entry win.
-	published := map[string][]string{}
-	for _, e := range exts {
-		published[e.Name] = append(published[e.Name], e.KernelVersion)
-	}
+
 	byName := map[string][]extensionEntry{}
 	for _, e := range exts {
 		byName[e.Name] = append(byName[e.Name], e)
 	}
-	for _, d := range installed {
+	for _, d := range atRisk {
 		name := d.GetName()
-		kernels, ok := published[name]
 		switch {
-		case !ok:
+		case targetKernel == dl.GetKernelVersion():
+			cliLogln("  %s: unaffected — %s keeps kernel %s", name, targetVersion, targetKernel)
+		case !hasDriverForKernel(byName[name], targetKernel):
 			cliLogln("  %s: no rebuild published for %s", name, targetVersion)
 			if stageDrivers {
 				pf.unstaged = append(pf.unstaged, unstagedAddon{name, "no rebuild published for " + targetVersion})
 			}
-		case slices.Contains(kernels, dl.GetKernelVersion()):
-			cliLogln("  %s: unaffected — %s publishes it for this kernel", name, targetVersion)
 		case stageDrivers:
-			if reason := stageRebuild(ctx, conn, name, byName[name]); reason != "" {
+			if reason := stageRebuild(ctx, conn, name, targetKernel, byName[name]); reason != "" {
 				pf.unstaged = append(pf.unstaged, unstagedAddon{name, reason})
 			}
 		default:
 			// --no-drivers: the operator has already accepted this, so it is
 			// reported but never blocks.
-			cliLogln("  %s: rebuild published for kernel %s — reinstall after the update",
-				name, strings.Join(kernels, ", "))
+			cliLogln("  %s: rebuild published for kernel %s — reinstall after the update", name, targetKernel)
 		}
 	}
 	return pf
 }
 
+func driversNeedingKernelCoverage(installed []*agentpbv2.InstalledDriver) []*agentpbv2.InstalledDriver {
+	atRisk := make([]*agentpbv2.InstalledDriver, 0, len(installed))
+	for _, d := range installed {
+		if d.GetKernelVersion() != "" || d.GetUnreadable() {
+			atRisk = append(atRisk, d)
+		}
+	}
+	return atRisk
+}
+
+// releaseTargetKernel resolves the one kernel represented by a release's driver
+// metadata. The OS manifest does not yet carry a separate kernel field, so more
+// than one pinned kernel is not enough evidence to declare an OTA safe.
+func releaseTargetKernel(deviceType, targetVersion string, pr int) (string, []extensionEntry, string) {
+	if deviceType == "" || targetVersion == "" {
+		return "", nil, "this update resolves no manifest, so its target kernel cannot be verified"
+	}
+	exts, err := driverExtensionsForFn(deviceType, targetVersion, pr)
+	if err != nil {
+		return "", nil, fmt.Sprintf("could not read the published add-ons: %v", err)
+	}
+	set := map[string]bool{}
+	for _, e := range exts {
+		if e.KernelVersion != "" {
+			set[e.KernelVersion] = true
+		}
+	}
+	kernels := make([]string, 0, len(set))
+	for kernel := range set {
+		kernels = append(kernels, kernel)
+	}
+	sort.Strings(kernels)
+	switch len(kernels) {
+	case 0:
+		return "", exts, "the target release publishes no kernel metadata"
+	case 1:
+		return kernels[0], exts, ""
+	default:
+		return "", exts, fmt.Sprintf("the target release publishes several kernels (%s), so the one this update boots is ambiguous", strings.Join(kernels, ", "))
+	}
+}
+
+func hasDriverForKernel(entries []extensionEntry, kernel string) bool {
+	for _, e := range entries {
+		if e.KernelVersion == kernel {
+			return true
+		}
+	}
+	return false
+}
+
 // stageRebuild puts the published rebuild in place for the kernel the update is
 // about to boot into, so the add-on loads on the first boot of the new slot.
 // Returns "" on success, or why it could not be staged.
-func stageRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name string, entries []extensionEntry) string {
-	// Every entry here targets a kernel other than the running one, so any of them
-	// is a candidate; more than one means the release ships several kernels and
-	// there is no way to tell from here which the update will boot.
-	if len(entries) != 1 {
-		reason := "published for several kernels, so the one this update boots is ambiguous"
+func stageRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name, targetKernel string, entries []extensionEntry) string {
+	var matches []extensionEntry
+	for _, e := range entries {
+		if e.KernelVersion == targetKernel {
+			matches = append(matches, e)
+		}
+	}
+	if len(matches) != 1 {
+		reason := fmt.Sprintf("the manifest has %d rebuilds for target kernel %s", len(matches), targetKernel)
 		cliLogln("  %s: %s", name, reason)
 		return reason
 	}
-	e := entries[0]
+	e := matches[0]
 	if e.Path == "" {
 		reason := "the published rebuild has no artifact in the manifest"
 		cliLogln("  %s: %s", name, reason)
@@ -354,11 +401,11 @@ func driverRawsIn(dir string) ([]string, error) {
 }
 
 // stageFromDir stages every add-on image in dir, so an air-gapped update can put
-// the next kernel's drivers in place. Each image names its own kernel, so the
-// caller does not have to know the target. Staging one the device has not got is
-// how a fresh device is pre-loaded; an installed one with no image here is a
-// driver the device loses on reboot.
-func stageFromDir(ctx context.Context, conn *grpcclient.AgentConnection, installed []*agentpbv2.InstalledDriver, dir string, pf *driverPreflight) {
+// the next kernel's drivers in place. When targetKernel is known the agent checks
+// every pinned image against it. Otherwise images can still be pre-loaded into
+// their self-declared buckets, but an installed driver remains unverified and
+// blocks the OTA until the operator explicitly accepts the risk.
+func stageFromDir(ctx context.Context, conn *grpcclient.AgentConnection, installed []*agentpbv2.InstalledDriver, dir, targetKernel, targetErr string, pf *driverPreflight) {
 	files, err := driverRawsIn(dir)
 	if err != nil {
 		pf.unreadable = err.Error()
@@ -367,21 +414,40 @@ func stageFromDir(ctx context.Context, conn *grpcclient.AgentConnection, install
 	}
 	cliLogln("Staging driver add-ons from %s", tui.Path(dir))
 	present := make(map[string]bool, len(files))
+	staged := make(map[string]bool, len(files))
 	for _, path := range files {
 		name := strings.TrimSuffix(filepath.Base(path), ".raw")
 		present[name] = true
-		if err := stageLocalRebuild(ctx, conn, name, path); err != nil {
+		if err := stageLocalRebuild(ctx, conn, name, path, targetKernel); err != nil {
 			reason := fmt.Sprintf("staging failed: %v", err)
 			cliLogln("  %s: %s", name, reason)
 			pf.unstaged = append(pf.unstaged, unstagedAddon{name, reason})
 			continue
 		}
-		cliLogln("  %s: staged from %s", name, filepath.Base(path))
+		staged[name] = true
+		if targetKernel == "" {
+			cliLogln("  %s: staged from %s (OTA target kernel not verified)", name, filepath.Base(path))
+		} else {
+			cliLogln("  %s: staged from %s for target kernel %s", name, filepath.Base(path), targetKernel)
+		}
 	}
 	for _, d := range installed {
-		if name := d.GetName(); !present[name] {
+		name := d.GetName()
+		if !present[name] {
 			reason := fmt.Sprintf("no %s.raw in %s", name, dir)
 			cliLogln("  %s: %s", name, reason)
+			pf.unstaged = append(pf.unstaged, unstagedAddon{name, reason})
+			continue
+		}
+		if !staged[name] || (d.GetKernelVersion() == "" && !d.GetUnreadable()) {
+			continue // already failed above, or an unpinned add-on needs no kernel proof
+		}
+		if targetKernel == "" {
+			reason := targetErr
+			if reason == "" {
+				reason = "the OTA target kernel cannot be verified"
+			}
+			cliLogln("  %s: staged, but %s", name, reason)
 			pf.unstaged = append(pf.unstaged, unstagedAddon{name, reason})
 		}
 	}
@@ -390,7 +456,7 @@ func stageFromDir(ctx context.Context, conn *grpcclient.AgentConnection, install
 // stageLocalRebuild streams one local .raw to the agent for staging. The digest
 // is computed here so the agent can verify what it received, exactly as
 // `drivers install --file` does.
-func stageLocalRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name, path string) error {
+func stageLocalRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name, path, targetKernel string) error {
 	sum, err := sha256File(path)
 	if err != nil {
 		return err
@@ -401,13 +467,15 @@ func stageLocalRebuild(ctx context.Context, conn *grpcclient.AgentConnection, na
 	if err != nil {
 		return err
 	}
-	// No KernelVersion: the image declares the kernel it was built for, and the
-	// agent files it under that.
+	// KernelVersion binds the local image to the OTA target when release metadata
+	// made that target knowable. If it is empty the agent still files the image by
+	// its self-declared kernel, but the caller keeps the pre-flight blocking.
 	if err := stream.Send(&agentpbv2.InstallDriverRequest{
 		RequestType: &agentpbv2.InstallDriverRequest_Spec{Spec: &agentpbv2.DriverSpec{
-			Name:      name,
-			Sha256:    sum,
-			StageOnly: true,
+			Name:          name,
+			KernelVersion: targetKernel,
+			Sha256:        sum,
+			StageOnly:     true,
 		}},
 	}); err != nil {
 		return err

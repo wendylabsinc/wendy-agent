@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,7 +22,7 @@ import (
 )
 
 // newTestDriverService wires a DriverService against a temp /data store, a fixed
-// kernel, an in-memory artifact fetcher, and /bin/true as the apply script so the
+// kernel, an in-memory artifact fetcher, and true as the apply script so the
 // verify/place/apply path runs without a device.
 // testKernel is what newTestDriverService reports from uname and what the
 // install-a/install-b fixtures declare, so an install lands in its bucket.
@@ -36,7 +37,7 @@ func newTestDriverService(t *testing.T, payload []byte) *DriverService {
 		enabledDir:      filepath.Join(tmp, "enabled"),
 		modulesDir:      filepath.Join(tmp, "modules-load.d"),
 		bakedModulesDir: filepath.Join(tmp, "baked-modules-load.d"),
-		applyScript:     "/bin/true",
+		applyScript:     testExecutable(t, "true"),
 		unameR:          func() string { return "6.6.0-test" },
 		// Nothing resident by default, so a test never inherits the host's modules.
 		loadedModules: func() []string { return nil },
@@ -44,6 +45,15 @@ func newTestDriverService(t *testing.T, payload []byte) *DriverService {
 			return io.NopCloser(bytes.NewReader(payload)), nil
 		},
 	}
+}
+
+func testExecutable(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatalf("finding %s executable: %v", name, err)
+	}
+	return path
 }
 
 // driverImage returns a real add-on image. finalize reads the extension-release
@@ -342,7 +352,7 @@ func TestAllModulesLoaded(t *testing.T) {
 func TestInstallFromURL_ApplyFailureRollsBack(t *testing.T) {
 	payload := driverImage(t, "a")
 	svc := newTestDriverService(t, payload)
-	svc.applyScript = "/bin/false" // apply exits non-zero
+	svc.applyScript = testExecutable(t, "false") // apply exits non-zero
 
 	err := svc.InstallFromURL(context.Background(), DriverInstallSpec{
 		Name:          "wendyos-hello",
@@ -386,7 +396,7 @@ func TestInstallFromURL_ApplyFailureRestoresPreviousInstall(t *testing.T) {
 	svc.httpGet = func(_ context.Context, _ string) (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(newPayload)), nil
 	}
-	svc.applyScript = "/bin/false"
+	svc.applyScript = testExecutable(t, "false")
 	if err := svc.InstallFromURL(context.Background(), DriverInstallSpec{
 		Name:          "wendyos-hello",
 		KernelVersion: "6.6.0-test",
@@ -429,7 +439,7 @@ func TestRemoveDriver_ApplyFailureRestoresInstall(t *testing.T) {
 		t.Fatalf("seeding the install: %v", err)
 	}
 
-	svc.applyScript = "/bin/false"
+	svc.applyScript = testExecutable(t, "false")
 	stream := &fakeRemoveStream{}
 	if err := svc.RemoveDriver(&agentpbv2.RemoveDriverRequest{Name: "wendyos-hello"}, stream); err != nil {
 		t.Fatalf("RemoveDriver returned a transport error: %v", err)
@@ -843,6 +853,24 @@ func TestSnapshotDriver_UnreadableStoreIsNotMistakenForEmpty(t *testing.T) {
 
 	if _, err := svc.snapshotDriver(testKernel, "acme"); err == nil {
 		t.Error("snapshotDriver = nil, want an error rather than an empty snapshot")
+	}
+}
+
+// ListDrivers gates an OTA, so an unreadable store must be an RPC failure rather
+// than a successful empty inventory. A regular file is a portable way to make
+// ReadDir fail on both Linux and macOS without relying on permission semantics.
+func TestListDrivers_UnreadableStoreIsNotMistakenForEmpty(t *testing.T) {
+	svc := newTestDriverService(t, nil)
+	if err := os.WriteFile(svc.enabledDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := svc.ListDrivers(context.Background(), &agentpbv2.ListDriversRequest{})
+	if err == nil {
+		t.Fatalf("ListDrivers = %+v, nil; want a store read error", resp)
+	}
+	if !strings.Contains(err.Error(), "reading driver store") {
+		t.Errorf("ListDrivers error = %v, want driver-store context", err)
 	}
 }
 

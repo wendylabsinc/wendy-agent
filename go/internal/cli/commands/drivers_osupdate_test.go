@@ -92,15 +92,23 @@ func TestWarnDriverAddons_ListDriversFailureBlocks(t *testing.T) {
 	}
 }
 
-// An agent predating driver support answers Unimplemented. It has no add-ons to
-// lose, and blocking would block the very update that adds support.
-func TestWarnDriverAddons_UnimplementedDoesNotBlock(t *testing.T) {
+// Unimplemented does not prove the store is empty: the service is deliberately
+// absent on an unenrolled connection, while unprovisioning leaves /data add-ons
+// in place. An OTA must therefore require an explicit override.
+func TestWarnDriverAddons_UnimplementedBlocks(t *testing.T) {
 	conn := &grpcclient.AgentConnection{
 		DriverService: fakeDriverClient{listErr: status.Error(codes.Unimplemented, "unknown service")},
 	}
 	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", "", 0, true)
-	if pf.blocking() {
-		t.Error("an older agent blocked the update")
+	if !pf.blocking() || pf.unreadable == "" {
+		t.Error("an unavailable driver service did not block the update")
+	}
+}
+
+func TestWarnDriverAddons_MissingClientBlocks(t *testing.T) {
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), &grpcclient.AgentConnection{}, "raspberry-pi-5", "0.20.0", "", 0, true)
+	if !pf.blocking() || pf.unreadable == "" {
+		t.Error("a connection with no driver client did not block the update")
 	}
 }
 
@@ -193,6 +201,50 @@ func TestWarnDriverAddons_UnaffectedAddonDoesNotBlock(t *testing.T) {
 	}
 }
 
+// A release that moves kernels must stage the exact matching rebuild and carry
+// that kernel through to the agent, where the image itself is cross-checked.
+func TestWarnDriverAddons_StagesRebuildForReleaseKernel(t *testing.T) {
+	stubDriverExtensionsFor(t, []extensionEntry{
+		{Name: "acme-nic", KernelVersion: "6.19.0", Path: "acme-nic.raw"},
+	}, nil)
+	var installs []*fakeInstallStream
+	conn := connWith(fakeDriverClient{installs: &installs}, "acme-nic")
+
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", "", 0, true)
+	if pf.blocking() {
+		t.Fatalf("verified rebuild blocked: %+v", pf.unstaged)
+	}
+	if len(installs) != 1 || len(installs[0].specs) != 1 {
+		t.Fatalf("installs = %+v, want one rebuild", installs)
+	}
+	if got := installs[0].specs[0].GetKernelVersion(); got != "6.19.0" {
+		t.Errorf("staged kernel = %q, want OTA target 6.19.0", got)
+	}
+}
+
+func TestWarnDriverAddons_AmbiguousReleaseKernelBlocks(t *testing.T) {
+	stubDriverExtensionsFor(t, []extensionEntry{
+		{Name: "acme-nic", KernelVersion: "6.19.0", Path: "a.raw"},
+		{Name: "acme-nic", KernelVersion: "6.20.0", Path: "b.raw"},
+	}, nil)
+
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), connWithAddons("acme-nic"), "raspberry-pi-5", "0.20.0", "", 0, true)
+	if !pf.blocking() || len(pf.unstaged) != 1 || !strings.Contains(pf.unstaged[0].reason, "several kernels") {
+		t.Fatalf("unstaged = %+v, want ambiguous release to block", pf.unstaged)
+	}
+}
+
+func TestWarnDriverAddons_UnpinnedDriverNeedsNoKernelProof(t *testing.T) {
+	conn := &grpcclient.AgentConnection{DriverService: fakeDriverClient{list: &agentpbv2.ListDriversResponse{
+		KernelVersion: "6.18.33-v8-16k",
+		Installed:     []*agentpbv2.InstalledDriver{{Name: "acme-firmware", KernelVersion: ""}},
+	}}}
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "", "", "", 0, true)
+	if pf.blocking() {
+		t.Fatalf("unpinned add-on blocked a kernel update: %+v", pf.unstaged)
+	}
+}
+
 // fakeInstallStream is one InstallDriver call: it records the spec the CLI sent
 // and answers with the verdict the test asked for.
 type fakeInstallStream struct {
@@ -250,6 +302,10 @@ func driversDirWith(t *testing.T, names ...string) string {
 // --drivers-dir stages the whole directory, including an add-on the device has
 // not got: that is how a fresh air-gapped device is pre-loaded.
 func TestWarnDriverAddons_DriversDirStagesEveryImage(t *testing.T) {
+	stubDriverExtensionsFor(t, []extensionEntry{
+		{Name: "acme-nic", KernelVersion: "6.19.0", Path: "nic.raw"},
+		{Name: "acme-npu", KernelVersion: "6.19.0", Path: "npu.raw"},
+	}, nil)
 	var installs []*fakeInstallStream
 	conn := connWith(fakeDriverClient{installs: &installs}, "acme-nic")
 	dir := driversDirWith(t, "acme-nic", "acme-npu")
@@ -266,9 +322,10 @@ func TestWarnDriverAddons_DriversDirStagesEveryImage(t *testing.T) {
 			t.Fatalf("stream sent %d specs, want 1", len(st.specs))
 		}
 		spec := st.specs[0]
-		// The image names its own kernel, so the CLI must not guess one.
-		if !spec.GetStageOnly() || spec.GetKernelVersion() != "" {
-			t.Errorf("spec = %+v, want StageOnly with no kernel version", spec)
+		// Binding the declared version makes the agent reject an image for any
+		// kernel other than the one represented by the OTA release.
+		if !spec.GetStageOnly() || spec.GetKernelVersion() != "6.19.0" {
+			t.Errorf("spec = %+v, want StageOnly for target kernel 6.19.0", spec)
 		}
 	}
 }
@@ -292,6 +349,9 @@ func TestWarnDriverAddons_DriversDirPreloadsAnEmptyDevice(t *testing.T) {
 // An installed add-on the directory has no image for is one the device loses on
 // reboot, so it must block and say which.
 func TestWarnDriverAddons_DriversDirMissingAnInstalledAddonBlocks(t *testing.T) {
+	stubDriverExtensionsFor(t, []extensionEntry{
+		{Name: "acme-nic", KernelVersion: "6.19.0", Path: "nic.raw"},
+	}, nil)
 	conn := connWith(fakeDriverClient{}, "acme-nic", "acme-npu")
 	dir := driversDirWith(t, "acme-nic")
 
@@ -307,6 +367,9 @@ func TestWarnDriverAddons_DriversDirMissingAnInstalledAddonBlocks(t *testing.T) 
 // A staging failure must be reported once, against the add-on whose image was
 // there — never a second time as a missing file.
 func TestWarnDriverAddons_DriversDirStagingFailureBlocksOnce(t *testing.T) {
+	stubDriverExtensionsFor(t, []extensionEntry{
+		{Name: "acme-nic", KernelVersion: "6.19.0", Path: "nic.raw"},
+	}, nil)
 	conn := connWith(fakeDriverClient{installFail: "signature verification failed"}, "acme-nic")
 	dir := driversDirWith(t, "acme-nic")
 
@@ -316,6 +379,42 @@ func TestWarnDriverAddons_DriversDirStagingFailureBlocksOnce(t *testing.T) {
 	}
 	if !strings.Contains(pf.unstaged[0].reason, "signature verification failed") {
 		t.Errorf("reason = %q, want the agent's cause", pf.unstaged[0].reason)
+	}
+}
+
+// A local or opaque artifact exposes no trustworthy target kernel. The images
+// are still staged for an offline workflow, but filename coverage alone must not
+// waive the OTA guard: the user has to explicitly accept the unverified match.
+func TestWarnDriverAddons_DriversDirUnknownTargetStillBlocks(t *testing.T) {
+	var installs []*fakeInstallStream
+	conn := connWith(fakeDriverClient{installs: &installs}, "acme-nic")
+	dir := driversDirWith(t, "acme-nic")
+
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "", dir, 0, true)
+	if !pf.blocking() || len(pf.unstaged) != 1 {
+		t.Fatalf("unstaged = %+v, want the unverified acme-nic to block", pf.unstaged)
+	}
+	if !strings.Contains(pf.unstaged[0].reason, "target kernel") {
+		t.Errorf("reason = %q, want the unknown target kernel named", pf.unstaged[0].reason)
+	}
+	if len(installs) != 1 || len(installs[0].specs) != 1 || installs[0].specs[0].GetKernelVersion() != "" {
+		t.Fatalf("offline staging specs = %+v, want one self-declared-kernel install", installs)
+	}
+}
+
+// Several kernels in the release metadata cannot identify which one this
+// device's OTA artifact boots. Staging remains possible, but it is not proof.
+func TestWarnDriverAddons_DriversDirAmbiguousTargetStillBlocks(t *testing.T) {
+	stubDriverExtensionsFor(t, []extensionEntry{
+		{Name: "acme-nic", KernelVersion: "6.19.0", Path: "a.raw"},
+		{Name: "acme-nic", KernelVersion: "6.20.0", Path: "b.raw"},
+	}, nil)
+	conn := connWith(fakeDriverClient{}, "acme-nic")
+	dir := driversDirWith(t, "acme-nic")
+
+	pf := warnDriverAddonsBeforeUpdate(context.Background(), conn, "raspberry-pi-5", "0.20.0", dir, 0, true)
+	if !pf.blocking() || len(pf.unstaged) != 1 || !strings.Contains(pf.unstaged[0].reason, "several kernels") {
+		t.Fatalf("unstaged = %+v, want an ambiguous-target blocker", pf.unstaged)
 	}
 }
 
