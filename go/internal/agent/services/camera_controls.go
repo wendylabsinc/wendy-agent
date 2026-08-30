@@ -220,6 +220,29 @@ func enumerateV4L2Controls(fd int) []v4l2QueryCtrl {
 	return out
 }
 
+// cameraControlDefaults reads the driver's own default for each named control.
+// The default is the camera's answer, not something a caller has to know, which
+// is what makes "reset" meaningful for a control nobody documented.
+func cameraControlDefaults(path string, names []string) (map[string]int32, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(fd) //nolint:errcheck
+
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	out := map[string]int32{}
+	for _, q := range enumerateV4L2Controls(fd) {
+		if want[q.name()] {
+			out[q.name()] = q.defaultVal()
+		}
+	}
+	return out, nil
+}
+
 // cameraControlIndex maps a camera's control names to their CIDs by asking the
 // camera, so a name is resolved against the device it is destined for rather
 // than against a table. Read-only open, same EBUSY reasoning as elsewhere.
@@ -373,6 +396,30 @@ func (c *cameraControlStore) save() error {
 	return os.Rename(tmp, c.path)
 }
 
+// remove drops controls from a camera's stored set, so a reset is not
+// re-applied on the next reopen. Without this the store only ever grows and a
+// persisted value cannot be taken back.
+func (c *cameraControlStore) remove(path string, names []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	drop := make(map[string]bool, len(names))
+	for _, n := range names {
+		drop[n] = true
+	}
+	kept := c.byPath[path][:0:0]
+	for _, sc := range c.byPath[path] {
+		if !drop[sc.Name] {
+			kept = append(kept, sc)
+		}
+	}
+	if len(kept) == 0 {
+		delete(c.byPath, path)
+	} else {
+		c.byPath[path] = kept
+	}
+	return c.save()
+}
+
 func (c *cameraControlStore) get(path string) []storedControl {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -423,6 +470,23 @@ func (s *VideoService) SetCameraControls(_ context.Context, req *agentpb.SetCame
 		return nil, status.Errorf(codes.Internal, "reading controls from %s: %v", path, err)
 	}
 
+	// A control asked to reset takes the driver's default instead of the value
+	// in the request, and is dropped from the store afterwards so the reopen
+	// hook stops re-asserting it.
+	var resetNames []string
+	for _, c := range req.GetControls() {
+		if c.GetReset_() {
+			resetNames = append(resetNames, c.GetName())
+		}
+	}
+	defaults := map[string]int32{}
+	if len(resetNames) > 0 {
+		defaults, err = cameraControlDefaults(path, resetNames)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "reading defaults from %s: %v", path, err)
+		}
+	}
+
 	var resolved []controlValue
 	results := make([]*agentpb.CameraControlResult, 0, len(req.GetControls()))
 	unknown := map[string]bool{}
@@ -436,7 +500,19 @@ func (s *VideoService) SetCameraControls(_ context.Context, req *agentpb.SetCame
 			})
 			continue
 		}
-		resolved = append(resolved, controlValue{name: c.GetName(), cid: cid, value: c.GetValue()})
+		value := c.GetValue()
+		if c.GetReset_() {
+			def, known := defaults[c.GetName()]
+			if !known {
+				results = append(results, &agentpb.CameraControlResult{
+					Name: c.GetName(), Applied: false,
+					Detail: "this camera reports no default for that control",
+				})
+				continue
+			}
+			value = def
+		}
+		resolved = append(resolved, controlValue{name: c.GetName(), cid: cid, value: value})
 	}
 
 	if len(resolved) > 0 {
@@ -446,10 +522,35 @@ func (s *VideoService) SetCameraControls(_ context.Context, req *agentpb.SetCame
 		}
 		results = append(results, applied...)
 
+		// Forget what was reset before persisting the rest: a control that was
+		// both stored and reset must not survive in the store, or the next
+		// reopen puts the old value straight back.
+		if len(resetNames) > 0 && s.controls != nil {
+			// Forget UNCONDITIONALLY -- not only where the write succeeded.
+			// A control the driver reports inactive right now (exposure_time_
+			// absolute while auto_exposure is on) cannot be written, and if
+			// that also blocked forgetting it, the stored value would be
+			// re-asserted on every reopen with no way to clear it. Reset is
+			// two promises: stop persisting this, and put it back. The first
+			// must hold even when the second cannot.
+			if err := s.controls.remove(path, resetNames); err != nil {
+				s.logger.Warn("forgetting reset camera controls failed",
+					zap.String("device", path), zap.Error(err))
+			}
+		}
+
 		if req.GetPersist() && s.controls != nil {
+			// A reset must not be re-stored here: it was just removed above,
+			// and persisting the default would leave the control pinned to a
+			// value the driver would have chosen anyway -- and pinned is
+			// exactly what reset undoes.
+			isReset := make(map[string]bool, len(resetNames))
+			for _, n := range resetNames {
+				isReset[n] = true
+			}
 			var toStore []storedControl
 			for _, r := range applied {
-				if r.GetApplied() {
+				if r.GetApplied() && !isReset[r.GetName()] {
 					for _, rv := range resolved {
 						if rv.name == r.GetName() {
 							toStore = append(toStore, storedControl{Name: rv.name, Value: rv.value})

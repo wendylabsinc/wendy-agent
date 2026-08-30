@@ -120,6 +120,14 @@ message CameraControl {
     int32  step          = 5; // Get only
     int32  default_value = 6; // Get only
     bool   settable      = 7; // Get only: false when the driver reports it read-only or disabled right now
+    // Set only: put this control back to the driver's own default and stop
+    // persisting it, ignoring `value`. Without this a persisted control cannot
+    // be taken back -- the store only ever grows, and a setting that degrades a
+    // scene (a wrong exposure quietly costs a vision model its detections) is
+    // re-applied on every reopen with no way to undo it short of editing the
+    // store by hand. The default comes from the driver (QUERYCTRL), so it is
+    // the camera's answer rather than a value the caller has to know.
+    bool   reset         = 8;
 }
 
 message GetCameraControlsRequest {

@@ -94,6 +94,8 @@ func renderCameraControls(controls []*agentpb.CameraControl) error {
 // holds; --no-persist makes it a one-shot.
 func newCameraSetControlCmd() *cobra.Command {
 	var noPersist bool
+	var reset []string
+	var resetAll bool
 	cmd := &cobra.Command{
 		Use:   "set-control <id> name=value [name=value ...]",
 		Short: "Set tunable controls on a local camera",
@@ -109,7 +111,13 @@ manual exposure:
   wendy device camera set-control 0 auto_exposure=1 exposure_time_absolute=20 backlight_compensation=0
 
 Run "wendy device camera controls <id>" first to see the available controls and
-their ranges.`,
+their ranges.
+
+To undo: --reset puts named controls back to the driver's default and stops
+persisting them, and --reset-all does that for every settable control:
+
+  wendy device camera set-control 0 --reset auto_exposure,exposure_time_absolute
+  wendy device camera set-control 0 --reset-all`,
 		// Not MinimumNArgs(2): the two things a caller has to know are which
 		// camera and which control names, and an arity error tells them
 		// neither. Bare, we list the cameras; with an id and no pairs, we list
@@ -123,12 +131,16 @@ their ranges.`,
 			if err != nil {
 				return err
 			}
-			if len(args) == 1 {
+			if len(args) == 1 && len(reset) == 0 && !resetAll {
 				return listControlsForChoice(cmd, id)
 			}
-			controls, err := parseControlAssignments(args[1:])
-			if err != nil {
-				return err
+
+			var controls []*agentpb.CameraControl
+			if len(args) > 1 {
+				controls, err = parseControlAssignments(args[1:])
+				if err != nil {
+					return err
+				}
 			}
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx)
@@ -136,6 +148,31 @@ their ranges.`,
 				return err
 			}
 			defer conn.Close()
+
+			// --reset-all asks the camera which controls it has rather than
+			// keeping a list here, so it covers whatever that hardware exposes.
+			if resetAll {
+				got, err := conn.VideoService.GetCameraControls(ctx,
+					&agentpb.GetCameraControlsRequest{DeviceId: id})
+				if err != nil {
+					return fmt.Errorf("getting camera controls: %w", err)
+				}
+				// Every control, not just the currently settable ones: a
+				// control gated inactive by a mode (exposure_time_absolute
+				// while auto_exposure is on) is exactly the one that would
+				// otherwise stay pinned in the store with no way to clear it.
+				for _, c := range got.GetControls() {
+					reset = append(reset, c.GetName())
+				}
+			}
+			for _, name := range reset {
+				controls = append(controls, &agentpb.CameraControl{
+					Name: strings.TrimSpace(name), Reset_: true,
+				})
+			}
+			if len(controls) == 0 {
+				return fmt.Errorf("nothing to do: give name=value pairs, --reset <name>, or --reset-all")
+			}
 
 			resp, err := conn.VideoService.SetCameraControls(ctx, &agentpb.SetCameraControlsRequest{
 				DeviceId: id,
@@ -150,6 +187,10 @@ their ranges.`,
 	}
 	cmd.Flags().BoolVar(&noPersist, "no-persist", false,
 		"Apply once now; do not re-apply on stream reconnect or reboot")
+	cmd.Flags().StringSliceVar(&reset, "reset", nil,
+		"Put these controls back to the driver's default and stop persisting them")
+	cmd.Flags().BoolVar(&resetAll, "reset-all", false,
+		"Put every settable control back to the driver's default and forget them all")
 	return cmd
 }
 

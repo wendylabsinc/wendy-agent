@@ -879,14 +879,22 @@ func (x *VideoFrame) GetCodec() VideoCodec {
 // -- a flame or lamp that blows out to white -- where forcing manual exposure
 // keeps the highlight from clipping.
 type CameraControl struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                                      // stable slug, e.g. "auto_exposure", "exposure_time_absolute", "brightness", "gain", "backlight_compensation"
-	Value         int32                  `protobuf:"varint,2,opt,name=value,proto3" json:"value,omitempty"`                                   // current value (Get) or desired value (Set)
-	Minimum       int32                  `protobuf:"varint,3,opt,name=minimum,proto3" json:"minimum,omitempty"`                               // inclusive; Get only
-	Maximum       int32                  `protobuf:"varint,4,opt,name=maximum,proto3" json:"maximum,omitempty"`                               // inclusive; Get only
-	Step          int32                  `protobuf:"varint,5,opt,name=step,proto3" json:"step,omitempty"`                                     // Get only
-	DefaultValue  int32                  `protobuf:"varint,6,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"` // Get only
-	Settable      bool                   `protobuf:"varint,7,opt,name=settable,proto3" json:"settable,omitempty"`                             // Get only: false when the driver reports it read-only or disabled right now
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Name         string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                                      // stable slug, e.g. "auto_exposure", "exposure_time_absolute", "brightness", "gain", "backlight_compensation"
+	Value        int32                  `protobuf:"varint,2,opt,name=value,proto3" json:"value,omitempty"`                                   // current value (Get) or desired value (Set)
+	Minimum      int32                  `protobuf:"varint,3,opt,name=minimum,proto3" json:"minimum,omitempty"`                               // inclusive; Get only
+	Maximum      int32                  `protobuf:"varint,4,opt,name=maximum,proto3" json:"maximum,omitempty"`                               // inclusive; Get only
+	Step         int32                  `protobuf:"varint,5,opt,name=step,proto3" json:"step,omitempty"`                                     // Get only
+	DefaultValue int32                  `protobuf:"varint,6,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"` // Get only
+	Settable     bool                   `protobuf:"varint,7,opt,name=settable,proto3" json:"settable,omitempty"`                             // Get only: false when the driver reports it read-only or disabled right now
+	// Set only: put this control back to the driver's own default and stop
+	// persisting it, ignoring `value`. Without this a persisted control cannot
+	// be taken back -- the store only ever grows, and a setting that degrades a
+	// scene (a wrong exposure quietly costs a vision model its detections) is
+	// re-applied on every reopen with no way to undo it short of editing the
+	// store by hand. The default comes from the driver (QUERYCTRL), so it is
+	// the camera's answer rather than a value the caller has to know.
+	Reset_        bool `protobuf:"varint,8,opt,name=reset,proto3" json:"reset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -966,6 +974,13 @@ func (x *CameraControl) GetDefaultValue() int32 {
 func (x *CameraControl) GetSettable() bool {
 	if x != nil {
 		return x.Settable
+	}
+	return false
+}
+
+func (x *CameraControl) GetReset_() bool {
+	if x != nil {
+		return x.Reset_
 	}
 	return false
 }
@@ -1277,7 +1292,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = 
 	"VideoFrame\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12!\n" +
 	"\ftimestamp_ns\x18\x02 \x01(\x04R\vtimestampNs\x129\n" +
-	"\x05codec\x18\x03 \x01(\x0e2#.wendy.agent.services.v1.VideoCodecR\x05codec\"\xc2\x01\n" +
+	"\x05codec\x18\x03 \x01(\x0e2#.wendy.agent.services.v1.VideoCodecR\x05codec\"\xd8\x01\n" +
 	"\rCameraControl\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x05R\x05value\x12\x18\n" +
@@ -1285,7 +1300,8 @@ const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = 
 	"\amaximum\x18\x04 \x01(\x05R\amaximum\x12\x12\n" +
 	"\x04step\x18\x05 \x01(\x05R\x04step\x12#\n" +
 	"\rdefault_value\x18\x06 \x01(\x05R\fdefaultValue\x12\x1a\n" +
-	"\bsettable\x18\a \x01(\bR\bsettable\"7\n" +
+	"\bsettable\x18\a \x01(\bR\bsettable\x12\x14\n" +
+	"\x05reset\x18\b \x01(\bR\x05reset\"7\n" +
 	"\x18GetCameraControlsRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\"_\n" +
 	"\x19GetCameraControlsResponse\x12B\n" +
