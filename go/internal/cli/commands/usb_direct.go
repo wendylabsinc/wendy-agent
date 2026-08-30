@@ -276,6 +276,7 @@ func usbDirectFallback(ctx context.Context, wantHost string) (*grpcclient.AgentC
 			conn.Close()
 			continue
 		}
+		conn.CacheAgentVersion(resp)
 		return conn, true
 	}
 	return nil, false

@@ -8,7 +8,7 @@ references:
 # WendyOS
 
 WendyOS is an Embedded Linux operating system for edge computing. It supports:
-- NVIDIA Jetson devices (production with OTA updates)
+- NVIDIA Jetson devices (production with OTA updates); target JetPack 7.2 or later
 - Raspberry Pi 4/5 (edge devices)
 - ARM64/AMD64 VMs (development)
 

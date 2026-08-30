@@ -3,13 +3,16 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 func TestResolveStagefileGPUTargetKeepsWatchTarget(t *testing.T) {
@@ -515,6 +518,63 @@ func TestDebugRequiresDebugpy(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("debugRequiresDebugpy() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// shouldOfferLiteReinstall must fire only for the exact situation where a
+// reinstall prompt is safe and actionable: the provider reported the firmware
+// cannot host the app's requirements (with a known chip), the device is
+// reachable over USB, and a human is there to answer (WDY-2319). Everything
+// else keeps the plain build error.
+func TestShouldOfferLiteReinstall(t *testing.T) {
+	usb := models.ExternalDevice{DisplayName: "lite", ConnectionInfo: map[string]string{"type": "USB"}}
+	lan := models.ExternalDevice{DisplayName: "lite", ConnectionInfo: map[string]string{"type": "LAN"}}
+	native := &providers.AppRequirementsUnsupportedError{Device: usb, Missing: "native apps"}
+	wasm := &providers.AppRequirementsUnsupportedError{Device: usb, Missing: "WASM apps"}
+
+	cases := []struct {
+		name        string
+		err         error
+		device      models.ExternalDevice
+		interactive bool
+		want        *providers.AppRequirementsUnsupportedError
+	}{
+		{"USB and interactive offers reinstall", native, usb, true, native},
+		{"WASM apps gate the same way", wasm, usb, true, wasm},
+		{"matches through error wrapping", fmt.Errorf("building: %w", native), usb, true, native},
+		{"other build errors never prompt", errors.New("boom"), usb, true, nil},
+		{"LAN devices cannot be reflashed here", native, lan, true, nil},
+		{"non-interactive keeps the error", native, usb, false, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := shouldOfferLiteReinstall(tc.err, tc.device, tc.interactive)
+			if got != tc.want || ok != (tc.want != nil) {
+				t.Errorf("shouldOfferLiteReinstall() = (%v, %v), want (%v, %v)", got, ok, tc.want, tc.want != nil)
+			}
+		})
+	}
+}
+
+// deviceNeedsInstall distinguishes a genuinely unflashed board (offer wording:
+// "install") from one whose existing firmware just lacks a capability (offer
+// wording: "reinstall") — see offerLiteReinstallAndRebuild.
+func TestDeviceNeedsInstall(t *testing.T) {
+	cases := []struct {
+		name   string
+		device models.ExternalDevice
+		want   bool
+	}{
+		{"marked needsInstall", models.ExternalDevice{ConnectionInfo: map[string]string{"needsInstall": "true", "type": "USB"}}, true},
+		{"capability mismatch has no marker", models.ExternalDevice{ConnectionInfo: map[string]string{"type": "USB"}}, false},
+		{"nil ConnectionInfo", models.ExternalDevice{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deviceNeedsInstall(tc.device); got != tc.want {
+				t.Errorf("deviceNeedsInstall() = %v, want %v", got, tc.want)
 			}
 		})
 	}

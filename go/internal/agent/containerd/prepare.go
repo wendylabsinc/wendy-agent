@@ -6,6 +6,7 @@ import (
 
 	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/errdefs"
+	"github.com/google/uuid"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
@@ -26,12 +27,15 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 	if err != nil {
 		return fmt.Errorf("creating image preparation lease: %w", err)
 	}
+	releaseLease := true
 	defer func() {
-		if err := doneLease(cleanupCtx); err != nil {
-			c.logger.Warn("Failed to release image preparation lease; relying on expiration backstop",
-				zap.Duration("expiration", unpackLeaseExpiration),
-				zap.Error(err),
-			)
+		if releaseLease {
+			if err := doneLease(cleanupCtx); err != nil {
+				c.logger.Warn("Failed to release image preparation lease; relying on expiration backstop",
+					zap.Duration("expiration", unpackLeaseExpiration),
+					zap.Error(err),
+				)
+			}
 		}
 	}()
 
@@ -90,6 +94,29 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 	if err := c.AssembleImage(ctx, imageName, layers, imageConfig); err != nil {
 		return fmt.Errorf("assembling prepared image: %w", err)
 	}
+
+	// Prepare a pristine writable rootfs while the caller is still outside the
+	// container replacement window. Failure is deliberately best-effort: all
+	// immutable layers and the image record are already prepared, so create can
+	// safely fall back to containerd.WithNewSnapshot.
+	preparedKey := "wendy-prepared-" + uuid.NewString()
+	if _, err := sn.Prepare(ctx, preparedKey, parentChainID); err != nil {
+		c.logger.Debug("Could not stage writable rootfs; create will prepare it synchronously",
+			zap.String("image", normalizeImageName(imageName)),
+			zap.Error(err),
+		)
+	} else {
+		c.storePreparedSnapshot(normalizeImageName(imageName), &preparedSnapshot{
+			key:     preparedKey,
+			parent:  parentChainID,
+			release: func() { _ = doneLease(cleanupCtx) },
+			remove:  func() { _ = sn.Remove(cleanupCtx, preparedKey) },
+		})
+		// The stored snapshot owns this lease until CreateContainer consumes or
+		// replaces it. The 30-minute expiration remains a crash/disconnect
+		// backstop.
+		releaseLease = false
+	}
 	c.logger.Info("Prepared image before container start",
 		zap.String("image", normalizeImageName(imageName)),
 		zap.Int("layers", len(layers)),
@@ -111,15 +138,36 @@ func prepareChunkHashes(raw [][]byte) ([][32]byte, error) {
 }
 
 func (c *Client) waitForChunks(ctx context.Context, hashes [][32]byte) error {
+	return waitForChunksWith(ctx, hashes, c.staging.changes, c.MissingChunks)
+}
+
+func waitForChunksWith(ctx context.Context, hashes [][32]byte, changes func() <-chan struct{}, missingChunks func(context.Context, [][32]byte) ([][32]byte, error)) error {
+	pending := hashes
+	validatingAll := true
 	for {
-		changed := c.staging.changes()
-		missing, err := c.MissingChunks(ctx, hashes)
+		changed := changes()
+		missing, err := missingChunks(ctx, pending)
 		if err != nil {
 			return err
 		}
 		if len(missing) == 0 {
-			return nil
+			if validatingAll {
+				return nil
+			}
+			// A different layer preparation can consume a shared staged chunk
+			// after an earlier check. Revalidate the full layer once at the end
+			// so narrowing the hot-path checks never weakens correctness.
+			pending = hashes
+			validatingAll = true
+			continue
 		}
+		// Only recheck hashes that were still absent. The old loop rescanned
+		// every hash after every staged chunk, making a layer with N hashes and
+		// M misses perform O(N*M) filesystem/index checks while WriteChunks was
+		// trying to feed it. Keeping the shrinking missing set makes progress
+		// proportional to the actual delta instead.
+		pending = missing
+		validatingAll = false
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

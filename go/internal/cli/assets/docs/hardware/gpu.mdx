@@ -9,6 +9,8 @@ The `gpu` entitlement exposes the host GPU to your app for CUDA, ML inference, i
 
 Today this covers **NVIDIA GPUs (CUDA)** — both NVIDIA Jetson devices and x86 Intel/AMD machines with an NVIDIA card. **AMD GPU acceleration via ROCm is in progress.**
 
+On NVIDIA Jetson, the latest WendyOS is built on **JetPack 7.2** (L4T R39.2.0, CUDA 13). Target JetPack 7.2 or later when selecting CUDA wheels or base images for your app.
+
 Add the entitlement from your project directory:
 
 ```bash

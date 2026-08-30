@@ -98,6 +98,58 @@ type deviceVersion struct {
 	EMMCFlashpackPath      string `json:"emmc_flashpack_path"`
 	EMMCFlashpackChecksum  string `json:"emmc_flashpack_checksum"`
 	EMMCFlashpackSizeBytes int64  `json:"emmc_flashpack_size_bytes"`
+
+	// Driver add-ons (systemd-sysext .raw) published for this OS version, one per
+	// (name, kernel). Written by the publisher's --extension-file; the CLI resolves
+	// install-by-name against these. Mirrors the publisher's ExtensionMetadata.
+	Extensions []extensionEntry `json:"extensions,omitempty"`
+}
+
+// extensionEntry is one driver add-on in a version's extensions[]. The fields
+// mirror the publisher's ExtensionMetadata and map onto the agent's DriverSpec.
+type extensionEntry struct {
+	Name          string   `json:"name"`
+	Version       string   `json:"version,omitempty"`
+	KernelVersion string   `json:"kernel_version"`
+	Path          string   `json:"path"`
+	SHA256        string   `json:"sha256"`
+	SizeBytes     int64    `json:"size_bytes"`
+	Signature     string   `json:"signature,omitempty"`
+	ModulesLoad   []string `json:"modules_load,omitempty"`
+}
+
+// driverExtensionsFor returns the add-ons the manifest publishes for a device.
+// pr>0 resolves a per-PR manifest keyed by the PR's own version ("pr-<N>"), not a
+// device VERSION_ID; the on-device extension-release check still rejects an add-on
+// built for a different OS version.
+func driverExtensionsFor(deviceType, osVersion string, pr int) ([]extensionEntry, error) {
+	var main *mainManifest
+	var err error
+	if pr > 0 {
+		main, err = fetchPRMainManifest(pr)
+	} else {
+		main, err = fetchMainManifest()
+	}
+	if err != nil {
+		return nil, err
+	}
+	dev, ok := main.Devices[deviceType]
+	if !ok || dev.ManifestPath == "" {
+		return nil, fmt.Errorf("device type %q not found in the manifest", deviceType)
+	}
+	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	if err != nil {
+		return nil, err
+	}
+	version := osVersion
+	if pr > 0 {
+		version = prDeviceVersion(dev)
+	}
+	v, ok := dm.Versions[version]
+	if !ok {
+		return nil, fmt.Errorf("no manifest entry for version %s on %s", version, deviceType)
+	}
+	return v.Extensions, nil
 }
 
 // deviceInfo is the aggregated info shown in the picker for one device.
@@ -561,8 +613,8 @@ func getThorFlashpackInfo(version string, nightly bool, pr int) (*thorFlashpackI
 
 // firmwareManifest contains version info for a specific chip.
 type firmwareManifest struct {
-	ChipID   string                         `json:"chip_id"`
-	Versions map[string]firmwareVersionInfo `json:"versions"`
+	FirmwareID string                         `json:"firmware_id"`
+	Versions   map[string]firmwareVersionInfo `json:"versions"`
 }
 
 // firmwareVersionInfo describes one firmware version.

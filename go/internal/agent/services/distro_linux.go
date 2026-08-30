@@ -3,7 +3,6 @@
 package services
 
 import (
-	"bufio"
 	"os"
 	"regexp"
 	"runtime"
@@ -43,15 +42,7 @@ func parseOSRelease(path string) (id, version string, ok bool) {
 	}
 	defer f.Close()
 
-	vals := make(map[string]string)
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		k, v, found := strings.Cut(scanner.Text(), "=")
-		if !found {
-			continue
-		}
-		vals[k] = strings.Trim(v, `"`)
-	}
+	vals := parseKeyValues(f)
 	id = vals["ID"]
 	if id == "" {
 		return "", "", false

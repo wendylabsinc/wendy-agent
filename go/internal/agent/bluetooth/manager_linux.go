@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -55,7 +56,29 @@ const (
 	maxConnectAttempts = 3
 	// connectRetryDelay is the wait between retry attempts.
 	connectRetryDelay = 750 * time.Millisecond
+	// HID service UUIDs for the two Bluetooth transports: 0x1812 is HID over
+	// GATT (LE), while 0x1124 is the Classic Bluetooth HID service class. A
+	// device advertising either UUID (or an input-* icon) is expected to
+	// produce a Linux input device once its connection is actually usable,
+	// which is what makes hollow connects detectable for this class.
+	hidServiceUUID        = "00001812-0000-1000-8000-00805f9b34fb"
+	classicHIDServiceUUID = "00001124-0000-1000-8000-00805f9b34fb"
+	// inputArrivalTimeout bounds how long Connect waits for the kernel input
+	// device of a just-connected HID peripheral. On a healthy encrypted link
+	// bluetoothd attaches HID/HOG and uhid registers within a second or two;
+	// well past that with no input device, the link is connected but unusable
+	// (typically a stale bond: the peripheral lost its key and is waiting to
+	// re-pair while encryption silently fails).
+	inputArrivalTimeout = 8 * time.Second
+	// inputArrivalPollInterval is how often the sysfs input registry is
+	// re-read while waiting for the HID input device to appear.
+	inputArrivalPollInterval = 250 * time.Millisecond
 )
+
+// inputDeviceUniqGlob locates the `uniq` attribute of every registered input
+// device; for Bluetooth HID devices the kernel stores the peripheral's
+// address there. A var so tests can point it at a fake sysfs tree.
+var inputDeviceUniqGlob = "/sys/class/input/input*/uniq"
 
 // managedObjects is the result shape of org.freedesktop.DBus.ObjectManager's
 // GetManagedObjects: object path → interface name → property name → value.
@@ -500,6 +523,79 @@ func audioProfileUUID(uuids []string) string {
 // isAlreadyExists reports whether a BlueZ D-Bus error indicates the operation
 // was a no-op because the resource already exists (e.g. pairing a device that
 // is already paired). Such errors are safe to treat as success.
+// liveBoolProp reads a device property over the bus right now, as opposed to
+// the possibly minutes-old snapshot resolveDevice returned. ok=false means
+// the read failed and the caller should fall back to the snapshot.
+func liveBoolProp(ctx context.Context, device dbus.BusObject, prop string) (value, ok bool) {
+	call := device.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, deviceIface, prop)
+	if call.Err != nil {
+		return false, false
+	}
+	var v dbus.Variant
+	if call.Store(&v) != nil {
+		return false, false
+	}
+	b, isBool := v.Value().(bool)
+	return b, isBool
+}
+
+// isHIDDevice reports whether the device presents as a HID peripheral —
+// the class whose connect is only real once a kernel input device exists.
+func isHIDDevice(props map[string]dbus.Variant) bool {
+	if icon, ok := stringProp(props, "Icon"); ok && strings.HasPrefix(icon, "input-") {
+		return true
+	}
+	if uuids, ok := props["UUIDs"].Value().([]string); ok {
+		for _, uuid := range uuids {
+			if strings.EqualFold(uuid, hidServiceUUID) || strings.EqualFold(uuid, classicHIDServiceUUID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// waitForInputDevice polls the kernel input registry until a device whose
+// uniq attribute equals the peripheral's address appears, or the timeout
+// elapses. This is the ground truth for a usable HID connection: BlueZ can
+// report Connected=yes on a link whose encryption silently failed (stale
+// bond), and in that state no input device is ever created.
+func waitForInputDevice(ctx context.Context, address string, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(inputArrivalPollInterval)
+	defer tick.Stop()
+	for {
+		if inputDevicePresent(address) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-tick.C:
+		}
+	}
+}
+
+func inputDevicePresent(address string) bool {
+	paths, err := filepath.Glob(inputDeviceUniqGlob)
+	if err != nil {
+		return false
+	}
+	for _, path := range paths {
+		uniq, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(string(uniq)), address) {
+			return true
+		}
+	}
+	return false
+}
+
 func isAlreadyExists(err error) bool {
 	name, _, ok := dbusErrorInfo(err)
 	return ok && name == "org.bluez.Error.AlreadyExists"
@@ -613,13 +709,37 @@ func (m *BlueZManager) retryConnect(ctx context.Context, delay time.Duration, at
 	return err
 }
 
+// connectDevice connects the advertised audio profile by name so a peripheral
+// cannot choose the wrong A2DP direction. Non-audio devices, and audio devices
+// whose advertised profile cannot be connected directly, fall back to the
+// whole-device operation. UUIDs are read live because pairing can populate
+// them after the original device snapshot was taken.
+func (m *BlueZManager) connectDevice(ctx context.Context, device dbus.BusObject, address string, cachedUUIDs []string) error {
+	profile := audioProfileUUID(deviceUUIDs(ctx, device, cachedUUIDs))
+	return m.retryConnect(ctx, connectRetryDelay, func() error {
+		if profile != "" {
+			err := device.CallWithContext(ctx, deviceIface+".ConnectProfile", 0, profile).Err
+			if err == nil {
+				return nil
+			}
+			m.logger.Warn("Connecting audio profile failed; falling back to whole-device connect",
+				zap.String("address", address), zap.String("profile", profile), zap.Error(err))
+		}
+		return device.CallWithContext(ctx, deviceIface+".Connect", 0).Err
+	})
+}
+
 // Connect connects to a Bluetooth peripheral by address via BlueZ over D-Bus,
 // discovering the device first if BlueZ no longer has it cached. When pair is
 // set it registers a headless pairing agent and pairs first (skipped if the
-// device is already paired); when trust is set it marks the device trusted so
-// BlueZ reconnects it automatically. The returned bool reports whether the
-// device is paired after the connect — success does not imply pairing because
-// pairing failures fall back to a direct connect.
+// device is already paired, per a live property read); when trust is set it
+// marks the device trusted so BlueZ reconnects it automatically. A connect
+// that leaned on an existing bond and then fails a key-class error — or, for
+// HID peripherals, never produces a kernel input device — is treated as a
+// stale bond: the bond is dropped and the device is re-paired from scratch
+// (repairFreshly). The returned bool reports whether the device is paired
+// after the connect — success does not imply pairing because pairing
+// failures fall back to a direct connect.
 func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust bool) (bool, error) {
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
@@ -632,6 +752,10 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 		return false, err
 	}
 	device := conn.Object(bluezService, devicePath)
+	trustAfterRepair := trust || boolProp(props, "Trusted")
+	if live, ok := liveBoolProp(ctx, device, "Trusted"); ok {
+		trustAfterRepair = trust || live
+	}
 
 	if trust {
 		if call := device.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Set", 0,
@@ -646,53 +770,70 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 	// devices reject SMP pairing yet accept connections, and only the connect
 	// result tells the two cases apart. If the connect also fails, the pairing
 	// error is the root cause and is the one reported.
+	//
+	// The skip decision reads Paired live: the resolveDevice snapshot can be
+	// minutes old, and skipping Pair on a stale "yes" is what strands a
+	// peripheral that lost its key (it sits in pairing mode while the host
+	// tries to encrypt with a bond the peripheral no longer has).
 	var pairErr error
-	if pair && !boolProp(props, "Paired") {
+	pairSkipped := false
+	if pair {
 		// BlueZ rejects authenticated pairing unless an agent is registered.
-		// Register a headless "just works" agent on this connection; it is
-		// unregistered automatically when the connection closes. Best-effort:
-		// devices needing no authentication pair without an agent.
+		// Register a headless "just works" agent on this connection even when
+		// Pair is skipped: a peripheral may initiate SMP itself during the
+		// connect, and that request needs an answer too. It is unregistered
+		// automatically when the connection closes. Best-effort: devices
+		// needing no authentication pair without an agent.
 		if err := registerPairingAgent(conn, m.logger, devicePath); err != nil {
 			m.logger.Warn("Failed to register pairing agent; pairing may fail", zap.Error(err))
 		}
-		if call := device.CallWithContext(ctx, deviceIface+".Pair", 0); call.Err != nil && !isAlreadyExists(call.Err) {
+		alreadyPaired := boolProp(props, "Paired")
+		if live, ok := liveBoolProp(ctx, device, "Paired"); ok {
+			alreadyPaired = live
+		}
+		if alreadyPaired {
+			pairSkipped = true
+		} else if call := device.CallWithContext(ctx, deviceIface+".Pair", 0); call.Err != nil && !isAlreadyExists(call.Err) {
 			pairErr = call.Err
 			m.logger.Warn("Pairing failed; attempting direct connect",
 				zap.String("address", address), zap.Error(call.Err))
 		}
 	}
 
-	// Connect the audio profile by name so the peripheral cannot pick the
-	// direction, falling back to a whole-device Connect for non-audio
-	// peripherals and for one that cannot service the profile it advertises.
-	// UUIDs are re-read because BlueZ populates them from SDP during pairing.
-	profile := audioProfileUUID(deviceUUIDs(ctx, device, stringsProp(props, "UUIDs")))
-	connectErr := m.retryConnect(ctx, connectRetryDelay, func() error {
-		if profile != "" {
-			err := device.CallWithContext(ctx, deviceIface+".ConnectProfile", 0, profile).Err
-			if err == nil {
-				return nil
-			}
-			m.logger.Warn("Connecting audio profile failed; falling back to whole-device connect",
-				zap.String("address", address), zap.String("profile", profile), zap.Error(err))
-		}
-		return device.CallWithContext(ctx, deviceIface+".Connect", 0).Err
-	})
+	connectErr := m.connectDevice(ctx, device, address, stringsProp(props, "UUIDs"))
 	if connectErr != nil {
+		// A key-class failure against a bond only this side still holds is
+		// unrecoverable by retrying; dropping the stale bond and pairing
+		// fresh is the only way forward.
+		if name, message, ok := dbusErrorInfo(connectErr); ok && pairSkipped && isStaleBondBluetoothError(name, message) {
+			m.logger.Warn("Connect failed with a stale-bond error; re-pairing from scratch",
+				zap.String("address", address), zap.Error(connectErr))
+			return m.repairFreshly(ctx, conn, address, trustAfterRepair, isHIDDevice(props))
+		}
 		return false, m.connectFailureError(address, pairErr, connectErr)
+	}
+
+	// A HID peripheral is only really connected once the kernel has an input
+	// device for it. Whenever pairing was requested, verify that before
+	// reporting success: over an existing bond, a peripheral that lost its key
+	// accepts the link and then waits for pairing while encryption silently
+	// fails — Connected=yes, no input device, and the old flow reported
+	// success — and even a fresh pair has been observed reporting success a
+	// second before the kernel device appeared. A connect without pairing is
+	// not gated: its recovery would remove a bond the caller never asked to
+	// touch.
+	if pair && isHIDDevice(props) && !waitForInputDevice(ctx, address, inputArrivalTimeout) {
+		m.logger.Warn("HID device connected but produced no input device; re-pairing from scratch",
+			zap.String("address", address))
+		return m.repairFreshly(ctx, conn, address, trustAfterRepair, true)
 	}
 
 	// The device's live Paired property is the source of truth: pairing may
 	// have completed implicitly during the connect, or been skipped by the
 	// fallback above. Fall back to the computed state if the read fails.
 	paired := boolProp(props, "Paired") || (pair && pairErr == nil)
-	if call := device.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, deviceIface, "Paired"); call.Err == nil {
-		var v dbus.Variant
-		if call.Store(&v) == nil {
-			if b, ok := v.Value().(bool); ok {
-				paired = b
-			}
-		}
+	if live, ok := liveBoolProp(ctx, device, "Paired"); ok {
+		paired = live
 	}
 
 	if pairErr != nil {
@@ -700,6 +841,58 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 	}
 	m.logger.Info("Connected to Bluetooth device", zap.String("address", address), zap.Bool("paired", paired))
 	return paired, nil
+}
+
+// repairFreshly recovers from a stale bond: it removes the device from BlueZ
+// (dropping the stored keys), re-discovers it (it must be advertising, which
+// in the stale-bond scenario it is — the peripheral is sitting in pairing
+// mode), then pairs and connects from scratch. For HID peripherals the fresh
+// connect must also produce a kernel input device before success is reported.
+// wasHID carries the caller's HID classification, computed from the cached
+// device whose properties were complete: the re-discovered device may have
+// advertised only a subset of its UUIDs (and Icon is optional), so deciding
+// from the fresh snapshot alone could skip the input-device check.
+func (m *BlueZManager) repairFreshly(ctx context.Context, conn *dbus.Conn, address string, trust, wasHID bool) (bool, error) {
+	devicePath, adapterPath, err := lookupCachedDevice(ctx, conn, address)
+	if err != nil {
+		return false, fmt.Errorf("locating stale pairing for %s: %w", address, err)
+	}
+	adapter := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
+	if call := adapter.CallWithContext(ctx, adapterIface+".RemoveDevice", 0, devicePath); call.Err != nil {
+		return false, m.wrapBluetoothError("removing stale pairing for", address, call.Err)
+	}
+
+	devicePath, props, err := m.resolveDevice(ctx, conn, address)
+	if err != nil {
+		return false, fmt.Errorf("dropped the stale pairing for %s but the device was not seen advertising — put it in pairing mode and retry: %w", address, err)
+	}
+	device := conn.Object(bluezService, devicePath)
+
+	// The agent object is re-exported at the same path with the new device
+	// path as its scope; RegisterAgent then fails with AlreadyExists on this
+	// connection, which is fine — the export swap is what mattered.
+	if err := registerPairingAgent(conn, m.logger, devicePath); err != nil {
+		m.logger.Debug("Pairing agent re-registration", zap.Error(err))
+	}
+	if call := device.CallWithContext(ctx, deviceIface+".Pair", 0); call.Err != nil && !isAlreadyExists(call.Err) {
+		return false, m.wrapBluetoothError("pairing with", address, call.Err)
+	}
+	if trust {
+		// RemoveDevice dropped the Trusted flag along with the keys.
+		if call := device.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Set", 0,
+			deviceIface, "Trusted", dbus.MakeVariant(true)); call.Err != nil {
+			m.logger.Warn("Failed to trust device", zap.String("address", address), zap.Error(call.Err))
+		}
+	}
+	if connectErr := m.connectDevice(ctx, device, address, stringsProp(props, "UUIDs")); connectErr != nil {
+		return false, m.wrapBluetoothError("connecting to", address, connectErr)
+	}
+	if (wasHID || isHIDDevice(props)) && !waitForInputDevice(ctx, address, inputArrivalTimeout) {
+		return false, fmt.Errorf("paired and connected to %s but no input device appeared — power-cycle the device and retry", address)
+	}
+
+	m.logger.Info("Re-paired Bluetooth device after dropping stale bond", zap.String("address", address))
+	return true, nil
 }
 
 // Disconnect disconnects from a Bluetooth peripheral via BlueZ over D-Bus.

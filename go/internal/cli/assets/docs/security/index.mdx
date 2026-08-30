@@ -65,12 +65,13 @@ See [Verifying release artifacts](/docs/security/verification) for verification 
 
 ## Artifact signature verification
 
-The agent enforces **ML-DSA65 detached-signature verification** on two artifact classes:
+The agent enforces **ML-DSA65 detached-signature verification** on three artifact classes:
 
 | Artifact | Signed over | Verified against |
 |---|---|---|
 | Agent update binary | SHA256 digest of the binary | Wendy build-embedded public key (`DefaultVerifier`) |
 | Container image | SHA256 digest of the OCI image config | Per-org publisher key from provisioning/PKI |
+| Driver add-on | SHA256 digest of the `.raw` image | Wendy build-embedded public key (`DefaultVerifier`) |
 
 Verification behaviour:
 - **Disabled** (no key embedded): verification is a fail-safe no-op; the install or run proceeds as if the check does not exist.
@@ -78,6 +79,14 @@ Verification behaviour:
 - **Corrupt key at init**: the agent panics at startup — it never silently degrades to an accept-all state.
 
 As of this release the embedded keys are placeholder stubs (verification is dormant). The checks become active automatically once the cross-repo signing pipeline and pinned keys are deployed.
+
+Driver add-ons are the one place where "dormant" is not the same as "no consequence": a
+driver add-on is kernel code, so while the key is a stub, installing one loads an
+unsigned out-of-tree module and **taints the running kernel** (flags `4096` + `8192` =
+`12288`). The agent logs a warning naming the add-on each time. One case does not
+degrade: add-ons seeded from the config partition are refused outright rather than
+installed unverified, because that path runs at boot with no operator present to accept
+the risk. See [Managing drivers](/docs/device/managing-drivers).
 
 › **Note:** `CreateContainer` and `CreateContainerWithProgress` do not yet pass through the image-signature gate. `wendy run` carries the image signature via the `WENDY_IMAGE_SIGNATURE_PATH` environment variable.
 

@@ -29,6 +29,19 @@ const (
 	disappearWait   = 45 * time.Second
 )
 
+// identityReattachWait bounds how long the identity read waits for a detached
+// flashpkg LUN to re-attach before giving up. A DiskArbitration eject (macOS's
+// "disk not readable" dialog defaults to Eject) tears the LUN down mid-read;
+// when the gadget re-attaches at all it does so within a few seconds.
+var identityReattachWait = 20 * time.Second
+
+// identityRetryDelay spaces the identity-read retries. A same-node transient
+// (the raw provider momentarily unavailable while the LUN stays listed) clears
+// within about a second — back-to-back retries would exhaust every attempt
+// inside the blip — and a real detach needs a moment to register with the OS
+// before the re-scan can see the LUN's true state.
+var identityRetryDelay = 500 * time.Millisecond
+
 // ErrDeviceSideFailed reports that the device exported its status package
 // early, i.e. its side of the flash aborted before the rootfs write.
 var ErrDeviceSideFailed = errors.New("device-side flash failed early")
@@ -103,11 +116,15 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 		return fmt.Errorf("flashpkg disk %s is smaller (%d bytes) than the flash package (%d bytes)", disk.DevPath, disk.SizeBytes, flashpkgSize)
 	}
 
-	s.unmount(ctx, disk)
-	if err := s.verifyDeviceIdentity(ctx, disk); err != nil {
+	// Identity first, on the untouched LUN: it is the last non-destructive step,
+	// needs no unmount (a raw read is safe under any auto-mounted volume), and
+	// may re-resolve the disk if the LUN detached and re-attached (WDY-2621).
+	disk, err = s.verifyDeviceIdentity(ctx, disk)
+	if err != nil {
 		return err
 	}
 	s.adoptGadget(disk)
+	s.unmount(ctx, disk)
 	s.detail("sending flash commands + bootloader")
 	s.HandoffStarted = true
 	if err := s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, Blob: s.FlashPackagePath}}, nil); err != nil {
@@ -133,36 +150,77 @@ func (s *Stage2) adoptGadget(disk UMSDisk) {
 // verifyDeviceIdentity reads the initrd-created device.json before replacing
 // the first flashpkg LUN. RCM boot is non-persistent; this is the last check
 // before the flash-package handoff starts QSPI/rootfs destruction.
-func (s *Stage2) verifyDeviceIdentity(ctx context.Context, disk UMSDisk) error {
+//
+// The LUN can detach between enumeration and the read — a DiskArbitration
+// eject tears down the raw node under the helper, which surfaces as ENXIO
+// ("device not configured", seen live on an Orin Nano on macOS, WDY-2621) —
+// so a failed read re-resolves the LUN by port/session and retries. The
+// returned disk is the one actually read (its device node may have changed),
+// and every later step must use it.
+func (s *Stage2) verifyDeviceIdentity(ctx context.Context, disk UMSDisk) (UMSDisk, error) {
 	tmp, err := os.CreateTemp(s.TempDir, "t234-identity-*.ext4")
 	if err != nil {
-		return err
+		return UMSDisk{}, err
 	}
 	path := tmp.Name()
 	tmp.Close()
 	defer os.Remove(path)
 	s.detail("verifying module and carrier identity")
-	if err := s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, DumpTo: path, DumpBytes: flashpkgSize}}, nil); err != nil {
-		return fmt.Errorf("reading device identity: %w", err)
+	const identityReadAttempts = 3
+	for attempt := 1; ; attempt++ {
+		readErr := s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, DumpTo: path, DumpBytes: flashpkgSize}}, nil)
+		if readErr == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return UMSDisk{}, ctx.Err()
+		}
+		if attempt == identityReadAttempts {
+			return UMSDisk{}, fmt.Errorf("reading device identity: %w", readErr)
+		}
+		fmt.Fprintf(s.Out, "  warning: identity read failed (%v); re-scanning for the %s disk\n", readErr, disk.Vendor)
+		select {
+		case <-ctx.Done():
+			return UMSDisk{}, ctx.Err()
+		case <-time.After(identityRetryDelay):
+		}
+		re, waitErr := WaitForUMSDiskAt(ctx, LUNSelector{Vendor: disk.Vendor, PortPath: disk.PortPath, PortHint: true, Session: disk.Serial}, identityReattachWait)
+		if waitErr != nil {
+			if ctx.Err() != nil {
+				return UMSDisk{}, ctx.Err()
+			}
+			// The re-scan can also refuse fail-closed (ambiguous/uncorrelated
+			// LUN), not just time out — its verdict must reach the user.
+			return UMSDisk{}, fmt.Errorf("reading device identity: %w; the %s disk detached during the read (on macOS, the \"disk not readable\" dialog's Eject button detaches it — choose Ignore) and re-scanning for it failed: %v",
+				readErr, disk.Vendor, waitErr)
+		}
+		// Same size gate SendFlashPackage applied to the LUN it enumerated.
+		if re.SizeBytes > 0 && re.SizeBytes < flashpkgSize {
+			return UMSDisk{}, fmt.Errorf("re-attached %s disk %s is smaller (%d bytes) than the flash package (%d bytes)", re.Vendor, re.DevPath, re.SizeBytes, flashpkgSize)
+		}
+		if re.DevPath != disk.DevPath {
+			fmt.Fprintf(s.Out, "  %s disk re-attached as %s (was %s)\n", disk.Vendor, re.DevPath, disk.DevPath)
+		}
+		disk = re
 	}
 	img, err := os.Open(path)
 	if err != nil {
-		return err
+		return UMSDisk{}, err
 	}
 	defer img.Close()
 	data, err := Ext4ReadFile(img, "flashpkg/device.json")
 	if err != nil {
-		return fmt.Errorf("recovery initrd did not provide device.json; refusing to flash without hardware identity: %w", err)
+		return UMSDisk{}, fmt.Errorf("recovery initrd did not provide device.json; refusing to flash without hardware identity: %w", err)
 	}
 	var got DeviceIdentity
 	if err := json.Unmarshal(data, &got); err != nil {
-		return fmt.Errorf("parsing recovery device.json: %w", err)
+		return UMSDisk{}, fmt.Errorf("parsing recovery device.json: %w", err)
 	}
 	if err := validateDeviceIdentity(got, disk.Serial, s.ExpectedIdentity); err != nil {
-		return err
+		return UMSDisk{}, err
 	}
 	fmt.Fprintf(s.Out, "  identity verified: module P%s-%s, carrier P%s-%s, session %s\n", got.ModuleID, got.ModuleSKU, got.CarrierID, got.CarrierSKU, got.SessionID)
-	return nil
+	return disk, nil
 }
 
 func validateDeviceIdentity(got DeviceIdentity, session string, want IdentityExpectation) error {

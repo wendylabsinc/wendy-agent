@@ -59,5 +59,8 @@ wendy auth use
 
 ## See also
 
+- In the Cloud tab of `wendy discover` or an interactive device picker, press
+  `o` to switch organizations, including organizations without local
+  credentials.
 - [`wendy auth default`](./default.md) — show or clear the persisted default
 - [`wendy auth login`](./login.md)
