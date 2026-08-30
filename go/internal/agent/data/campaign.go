@@ -319,6 +319,48 @@ func (c Campaign) AfterTriggerDuration() time.Duration {
 	return d
 }
 
+// preRollParameterConflicts names the camera sources whose explicit stream
+// parameters this campaign's pre-roll will not honor, so deployment can warn
+// while the operator can still change the plan.
+//
+// A camera source that is armed for pre-roll subscribes to the producer WITHOUT
+// asserting stream parameters, because arming must never take a running camera
+// away from a viewer, and because asserting them at the trigger would change the
+// sequence parameter set mid-clip, which costs the episode its browser-playable
+// rendering. The consequence is that an armed source records at whatever the
+// producer is already running, so an explicit max_resolution or rate on that
+// same source is requested but not achieved.
+//
+// Only sources that are actually armed conflict. Snapshot-mode camera sources
+// are never armed (snapshot capture writes sparse independent stills, not a
+// continuous ring), so their explicit parameters are still honored through the
+// normal capture join and they are deliberately not named here.
+func preRollParameterConflicts(c Campaign) []string {
+	if c.BufferDuration() <= 0 {
+		return nil
+	}
+	var conflicts []string
+	for i, source := range c.Sources {
+		if source.Camera == "" || source.Capture == nil {
+			continue
+		}
+		if source.Capture.EffectiveMode() != "continuous" {
+			continue
+		}
+		var explicit []string
+		if source.Capture.MaxResolution != "" {
+			explicit = append(explicit, "max_resolution "+source.Capture.MaxResolution)
+		}
+		if source.Capture.Rate > 0 {
+			explicit = append(explicit, fmt.Sprintf("rate %g", source.Capture.Rate))
+		}
+		if len(explicit) > 0 {
+			conflicts = append(conflicts, fmt.Sprintf("sources[%d] (%s, %s)", i, source.describe(), strings.Join(explicit, " and ")))
+		}
+	}
+	return conflicts
+}
+
 func (m *Manager) campaignDir() string { return filepath.Join(filepath.Dir(m.root), "campaigns") }
 
 func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
@@ -346,6 +388,9 @@ func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
 	}
 	if len(pendingModes) > 0 {
 		campaign.Warnings = append(campaign.Warnings, "these capture modes are not implemented yet for their source kind; the sources record continuously for now: "+strings.Join(pendingModes, ", "))
+	}
+	if conflicts := preRollParameterConflicts(campaign); len(conflicts) > 0 {
+		campaign.Warnings = append(campaign.Warnings, "pre-roll and explicit camera stream parameters are mutually exclusive in this release; a buffered camera arms a standby subscription that asserts no stream parameters, so both the pre-roll and the live tail record at the producer's running parameters and the explicit max_resolution or rate is reported as requested but not achieved in the episode manifest: "+strings.Join(conflicts, ", "))
 	}
 	if campaign.Retention.LocalQuota != "" {
 		campaign.Warnings = append(campaign.Warnings, "retention.local_quota is recorded with the plan, but this release enforces only the device-wide storage quota")

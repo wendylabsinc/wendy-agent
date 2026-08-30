@@ -136,7 +136,17 @@ deploys, and deployment prints a warning naming each source whose requested
 mode is not implemented for its kind; those sources record continuously for
 now.
 
-`capture.buffer` must be a Go-style duration from `0s` through `5m`.
+`capture.buffer` must be a Go-style duration from `0s` through `5m`. On a camera
+source, a buffer and explicit stream parameters are mutually exclusive in this
+release: a buffered camera is armed into a standby subscription that asserts no
+stream parameters, so it never takes a running camera away from a viewer and
+never changes the stream parameters part way through a clip. A source that sets
+both a buffer and an explicit `max_resolution` or `rate` therefore records both
+its pre-roll and its live tail at whatever parameters the producer is already
+running, and the explicit values are reported as requested but not achieved in
+the episode manifest. Deployment prints a warning naming each source in that
+position. Set one or the other: a buffer for pre-roll, or explicit parameters
+for a clip that must be captured at a specific resolution or rate.
 `capture.after_trigger` must be greater than `0s` and no more than `24h`. At
 least one trigger is required, and each trigger selects exactly one condition:
 
