@@ -445,7 +445,7 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig) error 
 	}
 	identityEndpoint := auth.PKIEndpoint
 	if identityEndpoint == "" {
-		identityEndpoint = defaultPKIIdentityEndpoint
+		identityEndpoint = defaultDevPKIIdentityEndpoint
 	}
 
 	identityToken, err := refreshOIDCToken(

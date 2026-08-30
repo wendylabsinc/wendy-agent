@@ -900,7 +900,11 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 	} else {
 		cloudTransport = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
-	cloudConn, err := grpc.NewClient(auth.CloudGRPC, cloudTransport)
+	dialOptions, err := withCloudRequestSigning(auth, cloudTransport)
+	if err != nil {
+		return err
+	}
+	cloudConn, err := grpc.NewClient(auth.CloudGRPC, dialOptions...)
 	if err != nil {
 		return fmt.Errorf("connecting to cloud: %w", err)
 	}
@@ -1104,7 +1108,11 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
 
-	cloudConn, dialErr := grpc.NewClient(auth.CloudGRPC, transport)
+	dialOptions, dialErr := withCloudRequestSigning(auth, transport)
+	if dialErr != nil {
+		return nil, nil, dialErr
+	}
+	cloudConn, dialErr := grpc.NewClient(auth.CloudGRPC, dialOptions...)
 	if dialErr != nil {
 		return nil, nil, fmt.Errorf("connecting to cloud: %w", dialErr)
 	}

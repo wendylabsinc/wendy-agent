@@ -26,6 +26,17 @@ import (
 const testOperatorTenant = "2558fd76-afc7-466e-9613-6b715296a526"
 const testOperatorSubject = "operator-subject"
 
+func TestOIDCLoginUsesDevPKIIdentityEndpointByDefault(t *testing.T) {
+	cmd := newAuthLoginCmd()
+	flag := cmd.Flags().Lookup("pki-identity-endpoint")
+	if flag == nil {
+		t.Fatal("pki-identity-endpoint flag is missing")
+	}
+	if got, want := flag.DefValue, "https://identity.dev.pki.wendy.sh/v1/identity/certificate"; got != want {
+		t.Fatalf("pki-identity-endpoint default = %q, want %q", got, want)
+	}
+}
+
 func testLeafPEM(t *testing.T, key *ecdsa.PrivateKey) string {
 	t.Helper()
 	now := time.Now()

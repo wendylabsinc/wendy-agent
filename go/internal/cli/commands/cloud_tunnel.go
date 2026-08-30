@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -601,7 +602,7 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	} else {
 		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
-	conn, err := grpc.NewClient(auth.CloudGRPC,
+	dialOptions, err := withCloudRequestSigning(auth,
 		transport,
 		grpc.WithInitialWindowSize(8*1024*1024),
 		grpc.WithInitialConnWindowSize(16*1024*1024),
@@ -614,9 +615,27 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		}),
 	)
 	if err != nil {
+		return nil, err
+	}
+	conn, err := grpc.NewClient(auth.CloudGRPC, dialOptions...)
+	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
 	}
 	return conn, nil
+}
+
+// withCloudRequestSigning installs the pki-core operator-certificate signer
+// for OIDC sessions. The bootstrap paths that construct their own connection
+// use this helper too, so all Cloud mutations share one wire contract.
+func withCloudRequestSigning(auth *config.AuthConfig, options ...grpc.DialOption) ([]grpc.DialOption, error) {
+	signingOption, err := cloudrequest.DialOption(auth)
+	if err != nil {
+		return nil, fmt.Errorf("configuring Cloud request signing: %w", err)
+	}
+	if signingOption != nil {
+		options = append(options, signingOption)
+	}
+	return options, nil
 }
 
 func tunnelDialer(tunnelConn net.Conn) (grpc.DialOption, func()) {

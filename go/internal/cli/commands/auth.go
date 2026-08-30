@@ -30,14 +30,14 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-const defaultCloudDashboard = "https://cloud.wendy.dev"
+const defaultCloudDashboard = "https://cloud.wendy.sh"
 const defaultCloudGRPC = "wendy-cloud-services-114319063177.us-central1.run.app:443"
 const defaultDevAuthBase = "https://auth.dev.wendy.sh"
 const defaultDevCloudDashboard = "https://cloud.dev.wendy.sh"
 const defaultDevCloudGRPC = "api.dev.wendy.sh:443"
 const defaultDevCloudResource = "https://cloud.dev.wendy.sh/api"
 const defaultPKIIdentityResource = "https://pki.wendy.sh/identity"
-const defaultPKIIdentityEndpoint = "https://pki.wendy.sh/v1/identity/certificate"
+const defaultDevPKIIdentityEndpoint = "https://identity.dev.pki.wendy.sh/v1/identity/certificate"
 
 func newAuthCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -106,7 +106,7 @@ func newAuthLoginCmd() *cobra.Command {
 					identityResource = defaultPKIIdentityResource
 				}
 				if identityEndpoint == "" {
-					identityEndpoint = defaultPKIIdentityEndpoint
+					identityEndpoint = defaultDevPKIIdentityEndpoint
 				}
 				return performOIDCLogin(cmd.Context(), oidcLoginOptions{
 					Issuer:           issuer,
@@ -149,7 +149,7 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&clientID, "client-id", "wendy-cli", "public DPoP OAuth client ID registered in wendy-auth")
 	cmd.Flags().StringVar(&resource, "resource", "", "RFC 8707 API resource indicator (used with OIDC login)")
 	cmd.Flags().StringVar(&identityResource, "pki-resource", defaultPKIIdentityResource, "RFC 8707 pki-core identity resource (used with OIDC login)")
-	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", "", "pki-core operator identity CSR endpoint (used with OIDC login)")
+	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", defaultDevPKIIdentityEndpoint, "pki-core operator identity CSR endpoint (used with OIDC login)")
 	cmd.Flags().BoolVar(&printClaims, "print-claims", false, "Print the decoded access-token claims after login (used with --issuer)")
 	return cmd
 }
