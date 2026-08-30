@@ -32,15 +32,66 @@ func writeProc(t *testing.T, pid string, argv ...string) string {
 // confident, wrong free-space number.
 func TestRootFromRunningDaemon_ReadsTheFlag(t *testing.T) {
 	proc := writeProc(t, "42", "/data/buildkit/bin/buildkitd", "--addr", "unix:///run/buildkit/buildkitd.sock", "--root", "/data/buildkit/root")
-	if got := rootFromRunningDaemon(proc); got != "/data/buildkit/root" {
+	if got, _ := pathsFromRunningDaemon(proc); got != "/data/buildkit/root" {
 		t.Fatalf("got %q, want the --root value", got)
 	}
 }
 
 func TestRootFromRunningDaemon_ReadsEqualsForm(t *testing.T) {
 	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--root=/mnt/big/bk")
-	if got := rootFromRunningDaemon(proc); got != "/mnt/big/bk" {
+	if got, _ := pathsFromRunningDaemon(proc); got != "/mnt/big/bk" {
 		t.Fatalf("got %q, want the --root= value", got)
+	}
+}
+
+func TestPathsFromRunningDaemon_ReadsConfigFlag(t *testing.T) {
+	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config", "/data/etc/buildkit/custom.toml")
+	root, configPath := pathsFromRunningDaemon(proc)
+	if root != "" {
+		t.Fatalf("got root %q, want empty when --root is absent", root)
+	}
+	if configPath != "/data/etc/buildkit/custom.toml" {
+		t.Fatalf("got config %q, want the --config value", configPath)
+	}
+}
+
+func TestPathsFromRunningDaemon_ReadsConfigEqualsForm(t *testing.T) {
+	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config=/data/etc/buildkit/custom.toml")
+	_, configPath := pathsFromRunningDaemon(proc)
+	if configPath != "/data/etc/buildkit/custom.toml" {
+		t.Fatalf("got config %q, want the --config= value", configPath)
+	}
+}
+
+func TestPathsFromRunningDaemon_IgnoresFlagSubstring(t *testing.T) {
+	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--label", "note=--config=/wrong")
+	_, configPath := pathsFromRunningDaemon(proc)
+	if configPath != "" {
+		t.Fatalf("got config %q from an unrelated argument", configPath)
+	}
+}
+
+func TestBuildkitRoot_UsesRunningDaemonsConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "custom.toml")
+	if err := os.WriteFile(configPath, []byte("root = \"/data/buildkit/custom-root\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config", configPath)
+	if got := buildkitRoot(proc); got != "/data/buildkit/custom-root" {
+		t.Fatalf("got %q, want root from the running daemon's custom config", got)
+	}
+}
+
+func TestBuildkitRoot_RootFlagBeatsCustomConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "custom.toml")
+	if err := os.WriteFile(configPath, []byte("root = \"/wrong\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--config", configPath, "--root", "/data/buildkit/flag-root")
+	if got := buildkitRoot(proc); got != "/data/buildkit/flag-root" {
+		t.Fatalf("got %q, want --root to override the custom config", got)
 	}
 }
 
@@ -48,7 +99,7 @@ func TestRootFromRunningDaemon_ReadsEqualsForm(t *testing.T) {
 // caller can still consult the config file.
 func TestRootFromRunningDaemon_NoFlagFallsThrough(t *testing.T) {
 	proc := writeProc(t, "42", "/usr/local/bin/buildkitd", "--addr", "unix:///run/buildkit/buildkitd.sock")
-	if got := rootFromRunningDaemon(proc); got != "" {
+	if got, _ := pathsFromRunningDaemon(proc); got != "" {
 		t.Fatalf("got %q, want empty so the config is consulted", got)
 	}
 }
@@ -57,11 +108,11 @@ func TestRootFromRunningDaemon_NoFlagFallsThrough(t *testing.T) {
 // buildkitd, is not the daemon and must not be mistaken for it.
 func TestRootFromRunningDaemon_IgnoresNonDaemons(t *testing.T) {
 	proc := writeProc(t, "42", "/usr/local/bin/buildctl", "--root", "/wrong")
-	if got := rootFromRunningDaemon(proc); got != "" {
+	if got, _ := pathsFromRunningDaemon(proc); got != "" {
 		t.Fatalf("got %q, want empty for a non-daemon process", got)
 	}
 	proc = writeProc(t, "43", "/bin/sh", "-c", "buildkitd --root /also-wrong")
-	if got := rootFromRunningDaemon(proc); got != "" {
+	if got, _ := pathsFromRunningDaemon(proc); got != "" {
 		t.Fatalf("got %q, want empty for a shell mentioning buildkitd", got)
 	}
 }

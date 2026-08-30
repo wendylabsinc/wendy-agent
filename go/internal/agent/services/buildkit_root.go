@@ -3,7 +3,6 @@ package services
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 )
@@ -21,16 +20,13 @@ const defaultBuildkitRoot = "/var/lib/buildkit"
 // otherwise, per `buildkitd --help`.
 const buildkitConfigPath = "/etc/buildkit/buildkitd.toml"
 
-// procRootFlag matches `--root <path>` or `--root=<path>` in a NUL-separated
-// /proc cmdline.
-var procRootFlag = regexp.MustCompile(`--root[=\x00]([^\x00]+)`)
-
 // buildkitRoot reports where the RUNNING buildkitd keeps its state, preferring
 // evidence over assumption:
 //
 //  1. the daemon's own command line — authoritative, because a flag beats any
 //     file it might also have read;
-//  2. the config file's `root =` — what a daemon started without the flag uses;
+//  2. the config file selected by the daemon's `--config`, or buildkitd's
+//     default config path — what a daemon started without --root uses;
 //  3. buildkitd's documented default.
 //
 // The order matters. Reading only the config would report a path the daemon is
@@ -41,18 +37,23 @@ var procRootFlag = regexp.MustCompile(`--root[=\x00]([^\x00]+)`)
 // An empty return means "could not determine", and callers must not read that
 // as safe.
 func buildkitRoot(procDir string) string {
-	if p := rootFromRunningDaemon(procDir); p != "" {
-		return p
+	root, configPath := pathsFromRunningDaemon(procDir)
+	if root != "" {
+		return root
 	}
-	if p := rootFromConfig(buildkitConfigPath); p != "" {
+	if configPath == "" {
+		configPath = buildkitConfigPath
+	}
+	if p := rootFromConfig(configPath); p != "" {
 		return p
 	}
 	return defaultBuildkitRoot
 }
 
-// rootFromRunningDaemon scans /proc for a buildkitd process and returns the
-// --root it was started with, if any. A daemon running without the flag returns
-// empty rather than the default, so the caller can fall through to the config.
+// pathsFromRunningDaemon scans /proc for a buildkitd process and returns the
+// --root and --config paths it was started with, if any. A daemon running
+// without --root returns an empty root so the caller can read the selected
+// config file. Both flags accept their space-separated and equals forms.
 //
 // Known limit: with more than one buildkitd running, this reports the first one
 // /proc yields, which is not necessarily the one holding the socket the agent
@@ -60,10 +61,10 @@ func buildkitRoot(procDir string) string {
 // Not worth resolving by parsing --addr and matching the socket: two daemons on
 // one host is a broken state either way, and a wrong-but-plausible root here is
 // still better than the alternative of reporting nothing.
-func rootFromRunningDaemon(procDir string) string {
+func pathsFromRunningDaemon(procDir string) (root, configPath string) {
 	entries, err := os.ReadDir(procDir)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -82,11 +83,25 @@ func rootFromRunningDaemon(procDir string) string {
 		if filepath.Base(argv0) != "buildkitd" {
 			continue
 		}
-		if m := procRootFlag.FindSubmatch(raw); m != nil {
-			return strings.TrimSpace(string(m[1]))
+		root = procFlagValue(raw, "--root")
+		configPath = procFlagValue(raw, "--config")
+		return root, configPath
+	}
+	return "", ""
+}
+
+// procFlagValue reads an exact argv entry from a NUL-separated /proc cmdline.
+// It accepts both forms supported by buildkitd while avoiding substring matches
+// inside unrelated arguments.
+func procFlagValue(raw []byte, name string) string {
+	argv := strings.Split(string(raw), "\x00")
+	for i := 1; i < len(argv); i++ {
+		if argv[i] == name && i+1 < len(argv) {
+			return strings.TrimSpace(argv[i+1])
 		}
-		// Found the daemon, started without --root. Let the config decide.
-		return ""
+		if value, ok := strings.CutPrefix(argv[i], name+"="); ok {
+			return strings.TrimSpace(value)
+		}
 	}
 	return ""
 }
