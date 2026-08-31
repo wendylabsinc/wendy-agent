@@ -24,7 +24,8 @@ struct BonjourAdvertiserTests {
             displayName: "mac",
             deviceID: "mac",
             tls: false,
-            assetID: nil
+            assetID: nil,
+            caps: []
         )
         let f = fields(data)
         #expect(f.contains("displayname=mac"))
@@ -39,10 +40,37 @@ struct BonjourAdvertiserTests {
             displayName: "mac",
             deviceID: "mac",
             tls: true,
-            assetID: 42
+            assetID: 42,
+            caps: []
         )
         let f = fields(data)
         #expect(f.contains("tls=true"))
         #expect(f.contains("assetid=42"))
+    }
+
+    @Test("TXT includes caps when non-empty")
+    func encodeTXTIncludesCaps() {
+        let data = BonjourAdvertiser.encodeTXT(
+            displayName: "d",
+            deviceID: "id",
+            tls: true,
+            assetID: 5,
+            caps: ["sensors"]
+        )
+        let s = String(decoding: data, as: UTF8.self)
+        #expect(s.contains("caps=sensors"))
+    }
+
+    @Test("TXT omits caps record when empty")
+    func encodeTXTOmitsCapsWhenEmpty() {
+        let data = BonjourAdvertiser.encodeTXT(
+            displayName: "d",
+            deviceID: "id",
+            tls: true,
+            assetID: 5,
+            caps: []
+        )
+        let f = fields(data)
+        #expect(!f.contains(where: { $0.hasPrefix("caps=") }))
     }
 }

@@ -609,7 +609,8 @@ public actor WendyAgent {
             displayName: ProcessInfo.processInfo.hostName,
             deviceID: ProcessInfo.processInfo.hostName,
             tls: enrolled,
-            assetID: enrolled ? info?.assetID : nil
+            assetID: enrolled ? info?.assetID : nil,
+            caps: enrolled ? ["sensors"] : []
         )
 
         let runtime = try await advertiser.start()
