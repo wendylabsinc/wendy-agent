@@ -79,7 +79,7 @@ func TestChunkIndexProgressDoesNotReportPartialTotal(t *testing.T) {
 
 func TestComposeChunkProgressKeepsUploadVisible(t *testing.T) {
 	var events []tui.BuildStepEvent
-	w := &composeBuildProgressWriter{
+	w := &imageBuildProgressWriter{
 		Writer: io.Discard,
 		emit:   func(e tui.BuildStepEvent) { events = append(events, e) },
 	}

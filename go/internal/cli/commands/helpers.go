@@ -3470,12 +3470,19 @@ func hideLocalProviders(excludes map[string]bool) map[string]bool {
 	return merged
 }
 
+// unflashedLiteDedupKey keys a board with no Wendy Lite firmware by its port
+// rather than its synthetic display name, so the row it gets once it identifies
+// itself can supersede it.
+func unflashedLiteDedupKey(serialPort string) string {
+	return "wendy-lite-unflashed:" + serialPort
+}
+
 // externalProviderPickerItem builds the picker row for a device discovered
 // through an external provider. wendy-lite devices are presented as merged
 // devices (like LAN discoveries) so they share the LAN row layout.
 func externalProviderPickerItem(prov providers.DeviceProvider, dev *models.ExternalDevice) tui.PickerItem {
 	if prov.Key() == "wendy-lite" {
-		return tui.PickerItem{
+		item := tui.PickerItem{
 			Name:         dev.DisplayName,
 			DedupKey:     dev.DisplayName,
 			Type:         dev.ConnectionType() + " (Lite)",
@@ -3491,6 +3498,17 @@ func externalProviderPickerItem(prov providers.DeviceProvider, dev *models.Exter
 				Externals:       []*models.ExternalDevice{dev},
 			}},
 		}
+		if port := dev.ConnectionInfo["serialPort"]; port != "" {
+			if dev.ConnectionInfo["needsInstall"] == "true" {
+				item.DedupKey = unflashedLiteDedupKey(port)
+				// The branch sets no SortKey, so ordering falls back to the
+				// dedup key; pin it to the name to keep the row's position.
+				item.SortKey = strings.ToLower(dev.DisplayName)
+			} else {
+				item.Supersedes = unflashedLiteDedupKey(port)
+			}
+		}
+		return item
 	}
 	return tui.PickerItem{
 		Name:         dev.DisplayName,

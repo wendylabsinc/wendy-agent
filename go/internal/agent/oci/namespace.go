@@ -124,6 +124,28 @@ func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) ([]*os
 	return anchors, nil
 }
 
+// JoinNetworkNamespace makes the container join an externally anchored network
+// namespace. The path must be a host path consumable by runc (for example a
+// bind mount under /run/wendy/netns), not an agent-local /proc/self/fd path.
+// Existing network namespace entries are updated in place so the resulting
+// spec remains deterministic.
+func JoinNetworkNamespace(spec *Spec, path string) error {
+	if spec.Linux == nil {
+		return fmt.Errorf("JoinNetworkNamespace: spec.Linux is nil")
+	}
+	if path == "" {
+		return fmt.Errorf("JoinNetworkNamespace: path must not be empty")
+	}
+	for i := range spec.Linux.Namespaces {
+		if spec.Linux.Namespaces[i].Type == "network" {
+			spec.Linux.Namespaces[i].Path = path
+			return nil
+		}
+	}
+	spec.Linux.Namespaces = append(spec.Linux.Namespaces, LinuxNamespace{Type: "network", Path: path})
+	return nil
+}
+
 // SharedSHMMount returns a bind-mount that maps hostSHMPath into /dev/shm.
 // Use this for shared-ipc isolation where all services share one shm segment.
 // hostSHMPath should be /run/wendy/shm/{appID}.

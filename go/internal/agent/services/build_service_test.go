@@ -889,6 +889,31 @@ func TestRunBuildctl_FailsAndReapsOnOversizedLogLine(t *testing.T) {
 	}
 }
 
+// BuildKit retries registry 5xx responses. A proxy failure from an earlier
+// attempt must not override buildctl's eventual successful exit.
+func TestBuildAndDeliver_RecoveryCannotBecomeAFalseFailure(t *testing.T) {
+	buildErr, deliveryErr := classifyBuildAndDeliveryResult(nil,
+		errors.New("first push attempt lost its mesh connection"))
+	if buildErr != nil || deliveryErr != nil {
+		t.Fatalf("recovered push classified as build=%v delivery=%v, want success", buildErr, deliveryErr)
+	}
+}
+
+func TestClassifyBuildAndDeliveryResult(t *testing.T) {
+	buildFailure := errors.New("Dockerfile failed")
+	proxyFailure := errors.New("mesh connection failed")
+
+	buildErr, deliveryErr := classifyBuildAndDeliveryResult(buildFailure, nil)
+	if !errors.Is(buildErr, buildFailure) || deliveryErr != nil {
+		t.Fatalf("build failure classified as build=%v delivery=%v", buildErr, deliveryErr)
+	}
+
+	buildErr, deliveryErr = classifyBuildAndDeliveryResult(buildFailure, proxyFailure)
+	if buildErr != nil || !errors.Is(deliveryErr, proxyFailure) {
+		t.Fatalf("proxy failure classified as build=%v delivery=%v", buildErr, deliveryErr)
+	}
+}
+
 func TestBuildctlHelperProcess(t *testing.T) {
 	if os.Getenv("WENDY_BUILDCTL_TEST_HELPER") != "oversized-line" {
 		return
@@ -952,6 +977,9 @@ func TestGetBuildCapabilities_ReportsNoBuildkitWhenSocketAbsent(t *testing.T) {
 	if len(resp.GetNativePlatforms()) != 0 {
 		t.Fatal("a host with no buildkit must advertise no buildable platforms")
 	}
+	if !resp.GetBuildkitRootInspectionSupported() {
+		t.Fatal("a new agent must advertise root inspection support independently of daemon availability")
+	}
 }
 
 func TestGetBuildCapabilities_ReportsPlatformsWhenBuildkitPresent(t *testing.T) {
@@ -976,6 +1004,39 @@ func TestGetBuildCapabilities_ReportsPlatformsWhenBuildkitPresent(t *testing.T) 
 	}
 	if resp.GetOs() == "" || resp.GetCpuArchitecture() == "" {
 		t.Fatal("os and architecture must be reported so the CLI can check the target platform")
+	}
+}
+
+func TestGetBuildCapabilities_ReportsSelectedDaemonRootAndFilesystem(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "buildkitd.sock")
+	if err := os.WriteFile(socketPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	address := "unix://" + socketPath
+	root := filepath.Join(t.TempDir(), "buildkit-state")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	proc := newFakeProc(t)
+	proc.add(t, "42", "/", "buildkitd", "--addr", address, "--root", root)
+
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath:      enabledConfigDir(t),
+		BuildkitAddress: address,
+	})
+	svc.buildkitProcDir = proc.dir
+	svc.buildkitConfigPath = proc.defaultConfigPath
+
+	resp, err := svc.GetBuildCapabilities(context.Background(), &agentpbv2.GetBuildCapabilitiesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.GetBuildkitRoot(); got != root {
+		t.Fatalf("root = %q, want %q", got, root)
+	}
+	if resp.GetBuildkitRootTotalBytes() == 0 || resp.GetBuildkitRootFreeBytes() == 0 {
+		t.Fatalf("filesystem capacity was not populated: total=%d free=%d",
+			resp.GetBuildkitRootTotalBytes(), resp.GetBuildkitRootFreeBytes())
 	}
 }
 

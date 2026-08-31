@@ -44,6 +44,15 @@ func normalizeImageRef(ref string) string {
 	return reference.TagNameOnly(named).String()
 }
 
+func imageRefContentPinned(ref string) bool {
+	parsed, err := reference.ParseAnyReference(strings.TrimSpace(ref))
+	if err != nil {
+		return false
+	}
+	_, ok := parsed.(reference.Digested)
+	return ok
+}
+
 func composeServiceWatchHash(imageIdentity string, cfg *appconfig.AppConfig, cmd string, userArgs []string, restartPolicy *agentpb.RestartPolicy, env []string) (string, error) {
 	return watchDesiredHash(struct {
 		ImageIdentity string
@@ -126,7 +135,10 @@ type composeBuildJob struct {
 	buildArgs  map[string]string
 }
 
-type composeBuildProgressWriter struct {
+// imageBuildProgressWriter adapts the common chunk/preparation progress
+// callbacks and captures the prepared image identity for both Compose and
+// wendy.json multi-service schedulers.
+type imageBuildProgressWriter struct {
 	io.Writer
 	emit          func(tui.BuildStepEvent)
 	reportContent func([]string)
@@ -134,7 +146,7 @@ type composeBuildProgressWriter struct {
 	uploadStarted bool
 }
 
-func (w *composeBuildProgressWriter) emitEvent(e tui.BuildStepEvent) {
+func (w *imageBuildProgressWriter) emitEvent(e tui.BuildStepEvent) {
 	if w.emit != nil {
 		w.emit(e)
 	}
@@ -142,15 +154,15 @@ func (w *composeBuildProgressWriter) emitEvent(e tui.BuildStepEvent) {
 
 // ReportImageContent records the uncompressed identities of the image that was
 // prepared on the device. Keeping this on the same writer used for chunk
-// progress lets the Compose scheduler persist a fail-closed deploy fingerprint
-// without coupling its generic build function signature to OCI internals.
-func (w *composeBuildProgressWriter) ReportImageContent(diffIDs []string) {
+// progress lets both service schedulers persist a fail-closed deploy fingerprint
+// without coupling their generic build function signatures to OCI internals.
+func (w *imageBuildProgressWriter) ReportImageContent(diffIDs []string) {
 	if w.reportContent != nil {
 		w.reportContent(append([]string(nil), diffIDs...))
 	}
 }
 
-func (w *composeBuildProgressWriter) ReportChunkTransfer(current, total int64, rate float64) {
+func (w *imageBuildProgressWriter) ReportChunkTransfer(current, total int64, rate float64) {
 	w.progressMu.Lock()
 	defer w.progressMu.Unlock()
 	w.uploadStarted = true
@@ -163,7 +175,7 @@ func (w *composeBuildProgressWriter) ReportChunkTransfer(current, total int64, r
 	})
 }
 
-func (w *composeBuildProgressWriter) ReportChunkIndex(current, total int64, rate float64, done bool) {
+func (w *imageBuildProgressWriter) ReportChunkIndex(current, total int64, rate float64, done bool) {
 	status := tui.BuildStepRunning
 	if done {
 		status = tui.BuildStepDone
@@ -186,7 +198,7 @@ func (w *composeBuildProgressWriter) ReportChunkIndex(current, total int64, rate
 	})
 }
 
-func (w *composeBuildProgressWriter) ReportRegistryFallback(reason error) {
+func (w *imageBuildProgressWriter) ReportRegistryFallback(reason error) {
 	detail := "chunk preparation unavailable"
 	if reason != nil {
 		detail = fmt.Sprintf("chunk preparation unavailable: %v", reason)
@@ -200,7 +212,7 @@ func (w *composeBuildProgressWriter) ReportRegistryFallback(reason error) {
 	})
 }
 
-func (w *composeBuildProgressWriter) ReportImagePreparation() {
+func (w *imageBuildProgressWriter) ReportImagePreparation() {
 	w.emitEvent(tui.BuildStepEvent{
 		ID:      "image-prepare",
 		Kind:    tui.BuildVertexExport,
@@ -209,7 +221,7 @@ func (w *composeBuildProgressWriter) ReportImagePreparation() {
 	})
 }
 
-func (w *composeBuildProgressWriter) ReportImagePreparationQueued() {
+func (w *imageBuildProgressWriter) ReportImagePreparationQueued() {
 	w.emitEvent(tui.BuildStepEvent{
 		ID:      "image-prepare-queue",
 		Kind:    tui.BuildVertexExport,
@@ -321,7 +333,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 				buildOut = &logBuf
 				logOut = &logBuf
 			}
-			buildOut = &composeBuildProgressWriter{
+			buildOut = &imageBuildProgressWriter{
 				Writer: buildOut,
 				emit:   emit,
 				reportContent: func(ids []string) {
@@ -1275,6 +1287,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 		appCfg := svcCfgs[name]
 		imageIdentity := normalizeImageRef(svc.Image)
+		contentPinned := imageRefContentPinned(svc.Image)
 		if ctxDir != "" {
 			// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
 			// same way the single-service path does — docker build itself knows
@@ -1291,6 +1304,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			// directory rename changes the Compose repository even when its source
 			// bytes do not, so reusing the old preparation would be unsafe.
 			imageIdentity = fmt.Sprintf("localhost:%d/%s-%s:latest@%s", regPort, projectName, name, imageIdentity)
+			contentPinned, err = dockerfileBasesContentPinned(ctxDir, dockerfile)
+			if err != nil {
+				return fmt.Errorf("checking service %s base images: %w", name, err)
+			}
 		}
 
 		restartPolicy := resolveRestartPolicy(opts)
@@ -1299,7 +1316,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 		cmd, extraArgs := composeArgv(svc)
 		desiredHash, hashErr := composeServiceWatchHash(imageIdentity, appCfg, cmd, extraArgs, restartPolicy, composeEnv(svc))
-		if hashErr == nil {
+		if hashErr == nil && contentPinned {
 			desiredHashes[name] = desiredHash
 			candidates[name] = watchServiceCandidate{appID: appCfg.AppID, containerName: appCfg.ContainerName(), desiredHash: desiredHash}
 		}

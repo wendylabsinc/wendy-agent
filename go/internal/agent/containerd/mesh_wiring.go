@@ -41,9 +41,9 @@ var _ meshDNSService = (*mesh.DNSServer)(nil)
 //
 // Best-effort: a failure only logs a warning (device-N hostnames won't
 // resolve; VIP literals still work) and takes no refcount.
-func (c *Client) ensureMeshDNS(containerName, gateway string) {
+func (c *Client) ensureMeshDNS(containerName, gateway string) bool {
 	if c.meshDNS == nil {
-		return
+		return false
 	}
 	// Idempotent per container: the monitor's restartSingle calls
 	// StartContainer directly with no intervening stopOne/teardownMeshEgress,
@@ -58,12 +58,12 @@ func (c *Client) ensureMeshDNS(containerName, gateway string) {
 	alreadyHeld := c.meshDNSHeld[containerName]
 	c.meshMu.Unlock()
 	if alreadyHeld {
-		return
+		return true
 	}
 	if err := c.meshDNS.EnsureListener(gateway); err != nil {
 		c.logger.Warn("mesh: DNS listener unavailable; device-N hostnames will not resolve",
 			zap.String("container", containerName), zap.String("gateway", gateway), zap.Error(err))
-		return
+		return false
 	}
 	c.meshMu.Lock()
 	if c.meshDNSHeld == nil {
@@ -71,6 +71,7 @@ func (c *Client) ensureMeshDNS(containerName, gateway string) {
 	}
 	c.meshDNSHeld[containerName] = true
 	c.meshMu.Unlock()
+	return true
 }
 
 // releaseMeshDNS drops the DNS-listener reference containerName holds, if

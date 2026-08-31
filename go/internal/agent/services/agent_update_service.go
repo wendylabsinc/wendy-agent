@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"os"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -27,11 +26,7 @@ type AgentUpdateService struct {
 	// verifier without changing the exported constructor signature.
 	verifier *sigverify.Verifier
 
-	// execPathResolver resolves the agent's own executable path and mode.
-	// Defaults to resolveExecPath (which resolves os.Executable()); settable
-	// within-package so tests can redirect commitBinaryUpdate's rename target
-	// away from the running test binary.
-	execPathResolver func() (string, os.FileMode, error)
+	execPathCache
 
 	// restartFn is invoked once the binary is committed to schedule the
 	// process exit that lets systemd restart into the new binary. Defaults
@@ -43,11 +38,10 @@ type AgentUpdateService struct {
 
 func NewAgentUpdateService(logger *zap.Logger, installer *AgentInstaller) *AgentUpdateService {
 	return &AgentUpdateService{
-		logger:           logger,
-		installer:        installer,
-		verifier:         sigverify.DefaultVerifier,
-		execPathResolver: resolveExecPath,
-		restartFn:        scheduleAgentRestartExit,
+		logger:    logger,
+		installer: installer,
+		verifier:  sigverify.DefaultVerifier,
+		restartFn: scheduleAgentRestartExit,
 	}
 }
 
@@ -66,7 +60,7 @@ func (s *AgentUpdateService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb
 
 	s.logger.Info("UpdateAgent stream started")
 
-	execPath, originalPerm, err := s.execPathResolver()
+	execPath, originalPerm, err := s.resolvedExecPath()
 	if err != nil {
 		return err
 	}
