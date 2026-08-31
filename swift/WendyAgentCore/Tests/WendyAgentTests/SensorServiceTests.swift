@@ -161,3 +161,38 @@ private func makeServerContext(method: String) -> ServerContext {
     #expect(frames.last?.flags == 0)
     #expect(frames.map(\.seq) == [0, 1])
 }
+
+@Test func manifestCarriesAssetIDAndBothChannelsFanInThroughOneWriter() async throws {
+    let keyframe = CameraFrame(annexB: Data([0, 0, 0, 1, 0x67]), isKeyframe: true)
+    let camera = FakeCamera(descriptorValue: cameraDescriptor(), frameList: [keyframe])
+    let svc = SensorService(audio: FakeAudio(), camera: camera, assetID: 42)
+
+    let manifestResponse = try await svc.getSensorManifest(
+        request: ServerRequest(
+            metadata: [:],
+            message: Wendy_Agent_Services_V2_GetSensorManifestRequest()
+        ),
+        context: makeServerContext(method: "GetSensorManifest")
+    )
+    let manifest = try manifestResponse.message
+    #expect(manifest.deviceAssetID == 42)
+    #expect(manifest.sensors.contains { $0.kind == .microphone })
+    #expect(manifest.sensors.contains { $0.kind == .camera })
+
+    var request = Wendy_Agent_Services_V2_StreamSensorsRequest()
+    request.channelID = [SensorService.micChannel, CameraCapture.channel]
+    let streamResponse = try await svc.streamSensors(
+        request: ServerRequest(metadata: [:], message: request),
+        context: makeServerContext(method: "StreamSensors")
+    )
+    let contents = try streamResponse.accepted.get()
+    let writer = CollectingWriter<Wendy_Lite_Sensorlink_SensorFrame>()
+    _ = try await contents.producer(RPCWriter(wrapping: writer))
+
+    // Both producers funnel through the one SerializedFrameWriter actor: assert
+    // frames from both channels actually landed in its output.
+    let frames = writer.snapshot()
+    #expect(frames.contains { $0.channelID == SensorService.micChannel })
+    #expect(frames.contains { $0.channelID == CameraCapture.channel })
+    #expect(frames.count == 3)
+}

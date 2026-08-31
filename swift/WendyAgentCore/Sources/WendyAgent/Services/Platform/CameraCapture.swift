@@ -117,10 +117,13 @@ struct CameraCapture: CameraCapturing {
 
 /// Owns the live capture + encode pipeline for one `frames()` stream.
 ///
-/// `@unchecked Sendable` invariant: `continuation` is assigned once in `start`
-/// before capture begins and read only from the capture/encode callbacks;
-/// `forceNextKeyframe` / `isFirstFrame` are guarded by `lock`. `start` and `stop`
-/// are each called once from the owning `AsyncThrowingStream` closures.
+/// `@unchecked Sendable` invariant: `continuation` and `compressionSession` are
+/// assigned once in `start` before capture begins; every later read or clear of
+/// either (in `stop`, `captureOutput`, and `handleEncoded`) is guarded by `lock`,
+/// as are `forceNextKeyframe` / `isFirstFrame`. `stop` clears both under the lock
+/// before invalidating the VT session, so a concurrent snapshot never observes
+/// a session that's mid-invalidation. `start` and `stop` are each called once
+/// from the owning `AsyncThrowingStream` closures.
 final class CameraCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     @unchecked Sendable
 {
@@ -165,13 +168,21 @@ final class CameraCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     func stop() {
         captureSession.stopRunning()
-        if let compressionSession {
-            VTCompressionSessionCompleteFrames(
-                compressionSession, untilPresentationTimeStamp: .invalid)
-            VTCompressionSessionInvalidate(compressionSession)
-            self.compressionSession = nil
-        }
+
+        // Nil the continuation and snapshot+clear the session under the lock
+        // BEFORE invalidating, so a concurrent captureOutput/handleEncoded
+        // snapshot (also taken under lock) either sees a still-valid session or
+        // a nil continuation/session — never a session mid-invalidation.
+        lock.lock()
+        let session = compressionSession
+        compressionSession = nil
         continuation = nil
+        lock.unlock()
+
+        if let session {
+            VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
+            VTCompressionSessionInvalidate(session)
+        }
     }
 
     private func makeCompressionSession(width: Int32, height: Int32) throws {
@@ -214,11 +225,16 @@ final class CameraCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBuffer
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        guard let compressionSession,
-            let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
-        else { return }
+        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
+        // Snapshot the session and the force-keyframe state under one lock hold
+        // so a concurrent stop() can't invalidate the session between reading it
+        // and using it below.
         lock.lock()
+        guard let compressionSession else {
+            lock.unlock()
+            return
+        }
         let force = forceNextKeyframe || isFirstFrame
         forceNextKeyframe = false
         isFirstFrame = false
@@ -243,6 +259,9 @@ final class CameraCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBuffer
     // MARK: - Encode callback (VideoToolbox thread)
 
     fileprivate func handleEncoded(_ sampleBuffer: CMSampleBuffer) {
+        lock.lock()
+        let continuation = self.continuation
+        lock.unlock()
         guard let continuation, CMSampleBufferDataIsReady(sampleBuffer),
             let format = CMSampleBufferGetFormatDescription(sampleBuffer),
             let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer)

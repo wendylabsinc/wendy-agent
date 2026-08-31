@@ -349,7 +349,7 @@ public actor WendyAgent {
             ),
             containerService,
             AudioService(),
-            SensorService(),
+            SensorService(assetID: info.assetID),
             provisioningService,
             TelemetryService(broadcaster: broadcaster),
             FileSyncService(appsBase: appsBase),
