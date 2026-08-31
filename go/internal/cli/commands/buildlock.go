@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 )
 
 // buildLock protects shared buildx builder setup across separate CLI processes.
@@ -70,7 +72,7 @@ func (l *processBuildLock) acquire(ctx context.Context, w io.Writer) (func(), er
 
 	// Try once without blocking so we can tell the user we're waiting before we
 	// stall on another process's build.
-	locked, err := tryLockFile(f)
+	locked, err := flock.TryLock(f)
 	if err != nil {
 		f.Close()
 		l.mu.Unlock()
@@ -104,7 +106,7 @@ func (l *processBuildLock) release() {
 		return
 	}
 	if l.f != nil {
-		_ = unlockFile(l.f)
+		_ = flock.Unlock(l.f)
 		_ = l.f.Close()
 		l.f = nil
 	}
@@ -116,7 +118,7 @@ func (l *processBuildLock) release() {
 func blockLockFile(ctx context.Context, f *os.File) error {
 	const pollInterval = 200 * time.Millisecond
 	for {
-		locked, err := tryLockFile(f)
+		locked, err := flock.TryLock(f)
 		if err != nil {
 			return err
 		}

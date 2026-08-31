@@ -7,7 +7,7 @@ import (
 	"os"
 	"syscall"
 
-	"golang.org/x/sys/unix"
+	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 )
 
 func detachedProcessAttributes() *syscall.SysProcAttr {
@@ -33,15 +33,11 @@ func pathOwnedByCurrentUser(path string) bool {
 }
 
 func acquireLock(file *os.File) (bool, error) {
-	err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-	if err == unix.EWOULDBLOCK {
-		return false, nil
-	}
-	return err == nil, err
+	return flock.TryLock(file)
 }
 
 func releaseLock(file *os.File) {
-	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	_ = flock.Unlock(file)
 }
 
 func processAlive(pid int) bool {
