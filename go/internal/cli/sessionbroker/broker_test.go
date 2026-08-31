@@ -5,12 +5,14 @@ package sessionbroker
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -660,6 +662,70 @@ func TestIdleExitDrainsStragglerConnections(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("idle exit did not stop after the straggler released its channel")
+	}
+}
+
+func TestRunDoesNotTouchDeviceOrConfigWhenLockIsHeld(t *testing.T) {
+	root := shortTempDir(t)
+	dir := filepath.Join(root, "sessions")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, oldLoad := configDir, loadConfig
+	configDir = func() (string, error) { return root, nil }
+	loadConfig = func() (*config.Config, error) {
+		t.Error("a helper that lost the identity lock must not load config")
+		return &config.Config{}, nil
+	}
+	t.Cleanup(func() { configDir, loadConfig = oldDir, oldLoad })
+
+	// The device: every accepted connection is a full post-quantum handshake's
+	// worth of work on real hardware, and a helper that cannot win the local
+	// lock must never impose one.
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lis.Close()
+	var accepts atomic.Int32
+	go func() {
+		for {
+			c, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			c.Close()
+		}
+	}()
+
+	spec := Spec{
+		Key:             "locked.local",
+		Host:            "locked.local",
+		Addr:            lis.Addr().String(),
+		CertFingerprint: "public-cert-hash",
+		Expected:        certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "49"},
+	}
+	socketPath, _ := paths(dir, spec.Key, spec.Expected)
+	lock, err := os.OpenFile(socketPath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if locked, err := acquireLock(lock); err != nil || !locked {
+		t.Fatalf("test could not take the identity lock: (%v, %v)", locked, err)
+	}
+	defer releaseLock(lock)
+
+	b, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(context.Background(), base64.RawURLEncoding.EncodeToString(b), 50*time.Millisecond); err != nil {
+		t.Fatalf("losing the lock is the expected quiet outcome, got error: %v", err)
+	}
+	if n := accepts.Load(); n != 0 {
+		t.Fatalf("helper dialed the device %d time(s) before losing the lock", n)
 	}
 }
 

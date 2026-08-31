@@ -191,15 +191,32 @@ func Run(ctx context.Context, encoded string, idleTTL time.Duration) error {
 	if err := spec.validate(); err != nil {
 		return err
 	}
-	certInfo, err := findCertificate(spec.CertFingerprint, spec.Expected.OrgID)
-	if err != nil {
-		return err
-	}
 	dir, err := brokerDir()
 	if err != nil {
 		return err
 	}
 	if err := ensurePrivateDir(dir); err != nil {
+		return err
+	}
+	// The identity lock comes before ANY device or config work. Every losing
+	// helper used to complete the full post-quantum handshake — multi-second
+	// work on constrained boards, imposed at exactly the moment the device is
+	// already busy — only to exit at the flock. The lock is local and
+	// microsecond-cheap; take it first so a doomed helper costs nothing.
+	socketPath, _ := paths(dir, spec.Key, spec.Expected)
+	lock, locked, err := acquireIdentityLock(socketPath)
+	if err != nil {
+		return err
+	}
+	if !locked {
+		return nil // another healthy or starting broker owns this identity
+	}
+	defer func() {
+		releaseLock(lock)
+		_ = lock.Close()
+	}()
+	certInfo, err := findCertificate(spec.CertFingerprint, spec.Expected.OrgID)
+	if err != nil {
 		return err
 	}
 	pins, err := devicepin.Open(filepath.Dir(dir))
@@ -218,6 +235,26 @@ func Run(ctx context.Context, encoded string, idleTTL time.Duration) error {
 		return err
 	}
 	return serve(ctx, dir, spec, upstream.Conn, idleTTL)
+}
+
+// acquireIdentityLock takes the non-blocking flock that makes one broker per
+// device identity. It returns (nil, false, nil) when another process holds it.
+// The lock file itself is deliberately never removed: unlinking a file whose
+// inode another process may have just opened and flocked lets two brokers each
+// hold "the" lock (one on the orphaned inode, one on its replacement), which
+// is the split-brain the lock exists to prevent. An empty .lock per identity
+// is the cheap price of that guarantee.
+func acquireIdentityLock(socketPath string) (*os.File, bool, error) {
+	lock, err := os.OpenFile(socketPath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, false, err
+	}
+	locked, err := acquireLock(lock)
+	if err != nil || !locked {
+		_ = lock.Close()
+		return nil, false, err
+	}
+	return lock, true, nil
 }
 
 func (s Spec) validate() error {
@@ -536,29 +573,15 @@ func (h connectionActivity) HandleConn(_ context.Context, event stats.ConnStats)
 	}
 }
 
+// serve publishes the retained transport on the identity's Unix socket. The
+// caller must hold the identity flock (see acquireIdentityLock in Run) for the
+// whole call: holding it is what entitles serve to clobber and later remove
+// the socket and state files.
 func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn, idleTTL time.Duration) (err error) {
 	if idleTTL <= 0 {
 		idleTTL = DefaultIdleTTL
 	}
 	socketPath, statePath := paths(dir, spec.Key, spec.Expected)
-	lockPath := socketPath + ".lock"
-	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if cerr := lock.Close(); err == nil && cerr != nil {
-			err = cerr
-		}
-	}()
-	locked, err := acquireLock(lock)
-	if err != nil {
-		return err
-	}
-	if !locked {
-		return nil // another healthy or starting broker owns this identity
-	}
-	defer releaseLock(lock)
 
 	_ = os.Remove(socketPath)
 	_ = os.Remove(statePath)
