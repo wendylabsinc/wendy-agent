@@ -27,6 +27,35 @@ private struct FakeAudio: AudioManaging {
     }
 }
 
+private struct FakeCamera: CameraCapturing {
+    var descriptorValue: Wendy_Lite_Sensorlink_SensorDescriptor?
+    var frameList: [CameraFrame] = []
+
+    func descriptor() -> Wendy_Lite_Sensorlink_SensorDescriptor? { descriptorValue }
+
+    func frames() -> AsyncThrowingStream<CameraFrame, any Error> {
+        let frames = frameList
+        return AsyncThrowingStream { continuation in
+            for frame in frames { continuation.yield(frame) }
+            continuation.finish()
+        }
+    }
+}
+
+private func cameraDescriptor() -> Wendy_Lite_Sensorlink_SensorDescriptor {
+    var descriptor = Wendy_Lite_Sensorlink_SensorDescriptor()
+    descriptor.channelID = CameraCapture.channel
+    descriptor.kind = .camera
+    descriptor.name = "cam0"
+    var video = Wendy_Lite_Sensorlink_VideoFormat()
+    video.codec = .h264
+    video.width = 1920
+    video.height = 1080
+    video.fps = 30
+    descriptor.video = video
+    return descriptor
+}
+
 private final class CollectingWriter<Element: Sendable>: RPCWriterProtocol, @unchecked Sendable {
     private let queue = DispatchQueue(label: "wendy.tests.sensor-collecting-writer")
     private var elements: [Element] = []
@@ -57,7 +86,8 @@ private func makeServerContext(method: String) -> ServerContext {
 }
 
 @Test func manifestReportsMicAndStreamYieldsPCMFrames() async throws {
-    let svc = SensorService(audio: FakeAudio())
+    // Inject a no-op camera so this test never touches real capture hardware.
+    let svc = SensorService(audio: FakeAudio(), camera: FakeCamera())
 
     let manifestResponse = try await svc.getSensorManifest(
         request: ServerRequest(
@@ -89,5 +119,45 @@ private func makeServerContext(method: String) -> ServerContext {
     #expect(frames.allSatisfy { $0.channelID == SensorService.micChannel })
     #expect(frames.first?.payload == Data([1, 2, 3, 4]))
     #expect(frames.last?.payload == Data([5, 6, 7, 8]))
+    #expect(frames.map(\.seq) == [0, 1])
+}
+
+@Test func manifestReportsCameraAndStreamYieldsAnnexBFrames() async throws {
+    let keyframe = CameraFrame(annexB: Data([0, 0, 0, 1, 0x67]), isKeyframe: true)
+    let delta = CameraFrame(annexB: Data([0, 0, 0, 1, 0x41]), isKeyframe: false)
+    let camera = FakeCamera(descriptorValue: cameraDescriptor(), frameList: [keyframe, delta])
+    let svc = SensorService(audio: FakeAudio(), camera: camera)
+
+    let manifestResponse = try await svc.getSensorManifest(
+        request: ServerRequest(
+            metadata: [:],
+            message: Wendy_Agent_Services_V2_GetSensorManifestRequest()
+        ),
+        context: makeServerContext(method: "GetSensorManifest")
+    )
+    let manifest = try manifestResponse.message
+    let cam = try #require(manifest.sensors.first { $0.kind == .camera })
+    #expect(cam.channelID == CameraCapture.channel)
+    #expect(cam.video.codec == .h264)
+    #expect(cam.video.width == 1920)
+    #expect(cam.video.height == 1080)
+
+    var request = Wendy_Agent_Services_V2_StreamSensorsRequest()
+    request.channelID = [CameraCapture.channel]
+    let streamResponse = try await svc.streamSensors(
+        request: ServerRequest(metadata: [:], message: request),
+        context: makeServerContext(method: "StreamSensors")
+    )
+    let contents = try streamResponse.accepted.get()
+    let writer = CollectingWriter<Wendy_Lite_Sensorlink_SensorFrame>()
+    _ = try await contents.producer(RPCWriter(wrapping: writer))
+
+    let frames = writer.snapshot()
+    #expect(frames.count == 2)
+    #expect(frames.allSatisfy { $0.channelID == CameraCapture.channel })
+    #expect(frames.first?.payload == Data([0, 0, 0, 1, 0x67]))
+    #expect(frames.first?.flags == SensorService.keyframeFlag)
+    #expect(frames.last?.payload == Data([0, 0, 0, 1, 0x41]))
+    #expect(frames.last?.flags == 0)
     #expect(frames.map(\.seq) == [0, 1])
 }
