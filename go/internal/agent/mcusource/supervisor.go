@@ -164,7 +164,11 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 			continue
 		}
 		if err := s.lb.EnsureNode(ctx, id, nodeLabel(p, ch)); err != nil {
-			return false, err
+			// Per-channel isolation: a camera that can't be mounted (e.g. the
+			// consumer kernel lacks v4l2loopback) must not tear down the whole
+			// pairing — skip it so other sensors (mic) still mount.
+			s.logger.Warn("skipping camera channel (loopback node unavailable)", zap.Int32("source", p.SourceAssetID), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
+			continue
 		}
 		path, _ := s.lb.NodePath(id)
 		writers[ch.ChannelId] = s.newWriter(path)
@@ -178,7 +182,10 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		}
 		aw, err := s.audioLoop.OpenWriter(ctx, sub, audioloop.PCMFormat{SampleRate: ch.GetAudio().GetSampleRate(), Channels: ch.GetAudio().GetChannels()})
 		if err != nil {
-			return false, err
+			// Per-channel isolation: a mic that can't be mounted (e.g. no
+			// snd-aloop) must not tear down the pairing — skip it.
+			s.logger.Warn("skipping microphone channel (audio loopback unavailable)", zap.Int32("source", p.SourceAssetID), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
+			continue
 		}
 		audioWriters[ch.ChannelId] = aw
 		subs = append(subs, ch.ChannelId)
