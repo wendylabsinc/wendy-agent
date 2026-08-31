@@ -1,0 +1,17 @@
+{
+    "appId": "sh.wendy.examples.wendydatamodelapp",
+    "platform": "linux",
+    "version": "1.0.0",
+    "language": "python",
+    "entitlements": [
+        {
+            "type": "sensor-read",
+            "allowlist": [
+                "v4l2:/dev/video0"
+            ]
+        },
+        {
+            "type": "episode-write"
+        }
+    ]
+}
