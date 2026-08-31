@@ -87,7 +87,8 @@ A complete plan is in `Examples/WendyDataCampaign` in the WendyOS repository.
 ## Campaign YAML reference
 
 A campaign file contains exactly one YAML document. Unknown fields are
-rejected.
+rejected, with one exception: unknown keys inside the `notify` block warn at
+deployment instead (see the `notify` section below).
 
 | Top-level field | Required | Description |
 |---|---|---|
@@ -101,6 +102,7 @@ rejected.
 | `export` | yes | Annotation integration lifecycle intent. |
 | `models` | no | Map of model name to deployed version, copied into Episodes. |
 | `privacy` | no | List of declared transforms with optional revisions. |
+| `notify` | no | Optional cloud-side notification intent; see below. |
 
 Each `sources` item selects exactly one source:
 
@@ -157,6 +159,20 @@ The `upload` and `retention` blocks:
 | `upload.max_rate` | no | Upload bandwidth cap in bytes per second; plain integers and rates such as `5MB/s` are accepted. |
 | `retention.local_quota` | no | Declared on-device episode storage bound in bytes; plain integers and sizes such as `10GiB` are accepted. Stored with the plan; this release enforces only the device-wide quota and deployment prints a warning. |
 
+The optional `notify` block:
+
+| Field | Required | Description |
+|---|---|---|
+| `notify.on` | yes | The event to notify on. `episode_committed` is the only supported value; anything else is a deploy-time error. |
+
+The `notify` block is inert on the device. It rides verbatim in each committed
+episode manifest (under `trigger.notify`), and the cloud ingest service reads
+it there to decide whether to send a notification; devices never open a
+network connection because of it. Unlike the rest of the document, unknown
+keys inside `notify` do not fail deployment: the cloud side may understand
+keys an older agent does not, so deployment prints a warning naming each
+unrecognized key and ignores it.
+
 ```yaml
 version: 1
 name: forklift-failures
@@ -188,6 +204,9 @@ retention:
 
 export:
   annotation: cvat
+
+notify:
+  on: episode_committed
 ```
 
 ## Playing back camera capture

@@ -346,7 +346,7 @@ func (s *DataService) triggerCampaign(ctx context.Context, campaign data.Campaig
 		Sources:              sources,
 		SourceCaptures:       captures,
 		PreRollDuration:      campaign.BufferDuration(),
-		Trigger:              data.EpisodeTrigger{Reason: reason, CampaignName: campaign.Name, CampaignRevision: campaign.Revision, Expression: expression},
+		Trigger:              data.EpisodeTrigger{Reason: reason, CampaignName: campaign.Name, CampaignRevision: campaign.Revision, Expression: expression, Notify: campaign.Notify},
 		CollectorVersion:     version.Version,
 		ModelVersions:        campaign.Models,
 		RequestedTopics:      topics,
