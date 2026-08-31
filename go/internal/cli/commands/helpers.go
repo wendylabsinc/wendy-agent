@@ -2902,20 +2902,29 @@ var (
 	startSessionBrokerFn   = sessionbroker.Start
 )
 
-func connectPinnedSession(ctx context.Context, key, addr string) (*grpcclient.AgentConnection, bool) {
-	pinKey := pinKeyForAddr(key)
-	target := newDialTarget(pinKey, addr)
-	if target.Expected == nil {
+// connectPinnedSession consults the session broker for addr — the normalized
+// host:port the caller is about to dial. The broker key is that full endpoint,
+// never just the host: two agents can share a hostname on different ports (a
+// dev agent pushed beside the production one), present the SAME asset
+// certificate, and still be different endpoints — so the identity check alone
+// cannot tell them apart, and a host-keyed broker would route an explicit
+// :51000 request to whichever agent a previous default-port command brokered.
+// The pin lookup, by contrast, is host-keyed on purpose: identity is a
+// property of the device, not of the port it answers on.
+func connectPinnedSession(ctx context.Context, addr string) (*grpcclient.AgentConnection, bool) {
+	expected := expectedIdentityFor(pinKeyForAddr(addr))
+	if expected == nil {
 		return nil, false
 	}
-	conn, err := connectSessionBrokerFn(ctx, pinKey, *target.Expected)
+	conn, err := connectSessionBrokerFn(ctx, addr, *expected)
 	return conn, err == nil && conn != nil
 }
 
-func startPinnedSession(key string, conn *grpcclient.AgentConnection) {
+func startPinnedSession(addr string, conn *grpcclient.AgentConnection) {
 	// The current invocation already has a verified connection. Broker startup
 	// is an optimization for the next invocation and must never affect this one.
-	_ = startSessionBrokerFn(pinKeyForAddr(key), conn)
+	// Same endpoint key as connectPinnedSession, or the next consult misses.
+	_ = startSessionBrokerFn(addr, conn)
 }
 
 // DisableSessionBroker forces a fresh device transport. Watch already retains
@@ -3103,7 +3112,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		}
 		conn, brokerHit := (*grpcclient.AgentConnection)(nil), false
 		if !cfg.disableSessionBroker {
-			conn, brokerHit = connectPinnedSession(ctx, device, addr)
+			conn, brokerHit = connectPinnedSession(ctx, addr)
 		}
 		if brokerHit {
 			rt("  ↳ reusable session connection")
@@ -3165,7 +3174,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		}
 		rt("  ↳ checkAndOfferUpdate")
 		if !brokerHit && !cfg.disableSessionBroker {
-			startPinnedSession(device, conn)
+			startPinnedSession(addr, conn)
 		}
 		return &SelectedDevice{Agent: conn}, nil
 	}
