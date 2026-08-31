@@ -36,8 +36,8 @@ import (
 	// The proxy decompresses inbound messages and re-compresses them on the
 	// upstream call (see rpcCompression); both directions need the gzip codec
 	// registered in this process.
-	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/codes"
+	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"

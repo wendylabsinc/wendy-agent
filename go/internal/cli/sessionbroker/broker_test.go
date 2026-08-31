@@ -763,7 +763,9 @@ func TestParentLeaseFollowsPipeExactly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, dir, spec, upstream, 30*time.Millisecond, parentLeaseSignal(r, spec.ParentPID)) }()
+	go func() {
+		done <- serve(ctx, dir, spec, upstream, 30*time.Millisecond, parentLeaseSignal(r, spec.ParentPID))
+	}()
 
 	_, statePath := paths(dir, spec.Key, spec.Expected)
 	deadline := time.Now().Add(time.Second)

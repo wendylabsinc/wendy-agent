@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 )
 
 func TestConnectPinnedSessionKeysBrokerByRequestedEndpoint(t *testing.T) {
