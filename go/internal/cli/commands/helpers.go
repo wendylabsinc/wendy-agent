@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -2953,6 +2954,12 @@ var (
 // The pin lookup, by contrast, is host-keyed on purpose: identity is a
 // property of the device, not of the port it answers on.
 func connectPinnedSession(ctx context.Context, addr string) (*grpcclient.AgentConnection, bool) {
+	// The GOOS check lives here as well as in sessionbroker.Connect: bailing
+	// only inside Connect would still charge Windows the expectedIdentityFor
+	// config read on every invocation, for a feature it never uses.
+	if runtime.GOOS == "windows" {
+		return nil, false
+	}
 	expected := expectedIdentityFor(pinKeyForAddr(addr))
 	if expected == nil {
 		return nil, false

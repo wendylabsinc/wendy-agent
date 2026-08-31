@@ -221,6 +221,19 @@ func Connect(ctx context.Context, key string, expected certs.WendyIdentity) (*gr
 	if err := json.Unmarshal(b, &state); err != nil || state.Spec.Key != key || state.Spec.Expected != expected {
 		return nil, ErrUnavailable
 	}
+	// A dead socket is the common miss shape (a SIGKILLed helper leaves its
+	// inode and state behind): a raw dial discovers it in microseconds, so it
+	// comes before findCertificate's config read and per-certificate PEM
+	// hashing. On refusal the miss is also entitled to sweep the leftovers —
+	// under the identity lock, so a starting or serving broker's freshly bound
+	// socket is never the thing swept — sparing every later invocation this
+	// walk until a new broker publishes.
+	probe, dialErr := net.DialTimeout("unix", socketPath, healthTimeout)
+	if dialErr != nil {
+		sweepStaleSession(socketPath, statePath)
+		return nil, errors.Join(ErrUnavailable, dialErr)
+	}
+	_ = probe.Close()
 	certInfo, err := findCertificate(state.Spec.CertFingerprint, state.Spec.Expected.OrgID)
 	if err != nil {
 		return nil, errors.Join(ErrUnavailable, err)
@@ -330,6 +343,23 @@ func parentLeaseSignal(lease *os.File, pid int) func() bool {
 		}
 	}()
 	return func() bool { return !gone.Load() }
+}
+
+// sweepStaleSession removes a dead broker's leftover socket and state, but
+// only while holding the identity flock: winning it proves no broker owns this
+// identity, so whatever files exist are a crashed helper's remains. Losing it
+// means a broker is starting or serving — its files are live, leave them.
+func sweepStaleSession(socketPath, statePath string) {
+	lock, locked, err := acquireIdentityLock(socketPath)
+	if err != nil || !locked {
+		return
+	}
+	defer func() {
+		releaseLock(lock)
+		_ = lock.Close()
+	}()
+	_ = os.Remove(socketPath)
+	_ = os.Remove(statePath)
 }
 
 // acquireIdentityLock takes the non-blocking flock that makes one broker per

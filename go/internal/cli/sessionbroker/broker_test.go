@@ -322,7 +322,10 @@ func TestConnectFallsBackForDeadBroker(t *testing.T) {
 	if err := os.Chmod(socketPath, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	lis.Close() // leave a correctly-owned but dead socket inode behind
+	// Leave a correctly-owned but dead socket inode behind, the way a
+	// SIGKILLed helper does (a clean Close would unlink it).
+	lis.(*net.UnixListener).SetUnlinkOnClose(false)
+	lis.Close()
 	state, _ := json.Marshal(stateFile{Spec: spec})
 	if err := os.WriteFile(statePath, state, 0o600); err != nil {
 		t.Fatal(err)
@@ -330,6 +333,7 @@ func TestConnectFallsBackForDeadBroker(t *testing.T) {
 	oldDir, oldLoad := configDir, loadConfig
 	configDir = func() (string, error) { return root, nil }
 	loadConfig = func() (*config.Config, error) {
+		t.Error("a dead socket must be discovered before paying the config read")
 		return &config.Config{Auth: []config.AuthConfig{{Certificates: []config.CertificateInfo{cert}}}}, nil
 	}
 	t.Cleanup(func() { configDir, loadConfig = oldDir, oldLoad })
@@ -343,6 +347,14 @@ func TestConnectFallsBackForDeadBroker(t *testing.T) {
 	}
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("error = %v, want ErrUnavailable", err)
+	}
+	// A SIGKILLed helper's leftovers would otherwise make every future
+	// invocation repeat this whole walk; with the identity lock free, the miss
+	// is entitled to sweep them.
+	for _, p := range []string{socketPath, statePath} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("stale %s not cleaned up after a dead-broker miss: %v", p, err)
+		}
 	}
 }
 
