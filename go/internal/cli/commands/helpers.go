@@ -2060,8 +2060,9 @@ var cacheFastPathReachableFn = cacheFastPathReachable
 //     resolution gap issue #1155 exists to work around.
 //
 // Callers must only invoke this once liveness is actually confirmed (a real
-// probe, not a lazy plaintext "connect") — see
-// connectAgentAtAddressWithProvisionedHint, the sole caller.
+// probe, not a lazy plaintext "connect"): connectAgentAtAddressWithProvisionedHint
+// after its dial-ladder or plaintext probe, and resolveTargetInner's broker-hit
+// branch after the broker's health probe.
 //
 // When an existing entry (any age) already matches this hostname (by
 // normalizeMDNSHost equality — e.g. a discovery scan's TXT-id-keyed row),
@@ -3116,6 +3117,12 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		}
 		if brokerHit {
 			rt("  ↳ reusable session connection")
+			// A broker hit passed a live health probe: it is a proof-of-life
+			// exit like connectAgentAtAddressWithProvisionedHint's, and must
+			// refresh the discovery/LKG entry the same way — otherwise a
+			// device reached exclusively through its broker ages out of the
+			// cache while being connected to continuously.
+			cacheConnectSuccess(addr, conn)
 			if isDefault {
 				noteImplicitDevice(device, implicitDefaultDevice)
 			}

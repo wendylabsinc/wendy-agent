@@ -49,6 +49,12 @@ func ConnectSessionProxy(ctx context.Context, socketPath, host, addr string, cer
 	ac.IsSessionProxy = true
 	ac.CertInfo = certInfo
 	ac.observedServerIdentity = newAtomicIdentity(identity)
+	// The org was proven by the broker's original TLS verification, exactly
+	// like the OnServerIdentity sink proves it on a direct connect; carrying
+	// it here keeps org-consuming paths (e.g. the device-cache write-back)
+	// behaving identically on broker hits.
+	ac.observedServerOrg = new(atomic.Int32)
+	ac.observedServerOrg.Store(identity.OrgID)
 	return ac, nil
 }
 
