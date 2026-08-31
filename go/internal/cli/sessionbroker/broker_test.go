@@ -497,6 +497,127 @@ func TestServeKeepsPreparedBrokerWhileParentInvocationLives(t *testing.T) {
 	}
 }
 
+// blockingAgentServer simulates a black-holed device link at the RPC level:
+// the transport stays connected (and Ready from the broker's point of view)
+// while GetAgentVersion never answers within any client's budget.
+type blockingAgentServer struct {
+	agentpb.UnimplementedWendyAgentServiceServer
+}
+
+func (blockingAgentServer) GetAgentVersion(ctx context.Context, _ *agentpb.GetAgentVersionRequest) (*agentpb.GetAgentVersionResponse, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestServeEvictsBrokerThatStopsAnswering(t *testing.T) {
+	dir := shortTempDir(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	agentpb.RegisterWendyAgentServiceServer(server, blockingAgentServer{})
+	go server.Serve(lis) //nolint:errcheck
+	t.Cleanup(func() { server.Stop(); lis.Close() })
+	upstream, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { upstream.Close() })
+
+	spec := Spec{
+		Key:             "blackhole.local",
+		Host:            "blackhole.local",
+		Addr:            "127.0.0.1:50052",
+		CertFingerprint: "public-cert-hash",
+		Expected:        certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "47"},
+		ParentPID:       os.Getpid(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// A live parent plus stats-event touches used to renew the zombie's TTL off
+	// its own failed probes indefinitely; the hour-long TTL proves the exit
+	// below comes from failure eviction, not idleness.
+	socketPath, _, done := startServing(t, ctx, dir, spec, upstream, time.Hour)
+
+	proxy, err := grpcclient.ConnectSessionProxy(context.Background(), socketPath, spec.Host, spec.Addr, &config.CertificateInfo{OrganizationID: 7}, spec.Expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+	for i := 0; i < 3; i++ {
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		_, err := proxy.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		probeCancel()
+		if err == nil {
+			t.Fatal("probe against a black-holed upstream unexpectedly succeeded")
+		}
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("broker kept serving (and holding its identity lock) after repeatedly failing to answer")
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("socket remains after eviction: %v", err)
+	}
+}
+
+func TestServeExitsWhenRetainedTransportLeavesReadyWithoutTraffic(t *testing.T) {
+	dir := shortTempDir(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	agentpb.RegisterWendyAgentServiceServer(server, testAgentServer{})
+	go server.Serve(lis) //nolint:errcheck
+	upstream, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		server.Stop()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { upstream.Close() })
+	// Establish the transport so the broker starts with a Ready upstream, the
+	// state Run() hands serve() after its verification probe.
+	if _, err := agentpb.NewWendyAgentServiceClient(upstream).GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{}); err != nil {
+		server.Stop()
+		t.Fatal(err)
+	}
+
+	spec := Spec{
+		Key:             "stateloss.local",
+		Host:            "stateloss.local",
+		Addr:            "127.0.0.1:50052",
+		CertFingerprint: "public-cert-hash",
+		Expected:        certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "48"},
+		ParentPID:       os.Getpid(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, _, done := startServing(t, ctx, dir, spec, upstream, time.Hour)
+
+	// Kill only the server: the client conn object stays open but its transport
+	// drops, so any later hit would trigger a re-dial verified against this
+	// process's startup pin snapshot — the stale-trust window the broker must
+	// never serve. No RPC is made: the broker has to notice on its own.
+	server.Stop()
+	lis.Close()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("broker kept its identity lock after the retained transport left Ready")
+	}
+}
+
 func TestConnectRejectsNonPrivateSessionDirectory(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sessions")

@@ -37,8 +37,10 @@ import (
 	// upstream call (see rpcCompression); both directions need the gzip codec
 	// registered in this process.
 	_ "google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/stats"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -283,10 +285,21 @@ func (rawCodec) Unmarshal(data []byte, v any) error {
 	return nil
 }
 
+// maxUnansweredRPCs is how many consecutive proxied RPCs may end without the
+// upstream ever answering before the broker concludes it is useless and exits.
+// A broker that cannot answer within the budgets its clients use — a
+// black-holed transport that still reports Ready, or a device answering
+// slower than Connect's healthTimeout — makes every invocation pay a probe
+// timeout on top of the direct dial it falls back to; exiting instead lets
+// that direct dial prepare a healthy replacement. Three strikes rather than
+// one so a single canceled stream cannot evict a working broker.
+const maxUnansweredRPCs = 3
+
 type activity struct {
 	activeRPCs  atomic.Int64
 	connections atomic.Int64
 	last        atomic.Int64
+	failStreak  atomic.Int64
 	upstreamBad chan struct{}
 	badOnce     sync.Once
 }
@@ -298,11 +311,27 @@ func newActivity() *activity {
 }
 func (a *activity) touch() { a.last.Store(time.Now().UnixNano()) }
 
+func (a *activity) markBad() { a.badOnce.Do(func() { close(a.upstreamBad) }) }
+
+// rpcAnswered / rpcUnanswered feed the eviction streak: an RPC counts as
+// answered when anything at all came back from the upstream — a message, a
+// clean end-of-stream, or an application-level error status — because any of
+// those proves the retained transport still reaches the device. Cancellations
+// and deadline expiries prove nothing (they are generated client-side) and a
+// run of them is exactly how a black-holed transport looks.
+func (a *activity) rpcAnswered() { a.failStreak.Store(0) }
+
+func (a *activity) rpcUnanswered() {
+	if a.failStreak.Add(1) >= maxUnansweredRPCs {
+		a.markBad()
+	}
+}
+
 func (a *activity) noteUpstreamError(upstream *grpc.ClientConn, err error) {
 	if err == nil || upstream.GetState() == connectivity.Ready {
 		return
 	}
-	a.badOnce.Do(func() { close(a.upstreamBad) })
+	a.markBad()
 }
 
 // rpcCompression carries the grpc-encoding an inbound RPC arrived with from
@@ -334,7 +363,13 @@ func proxyHandler(upstream *grpc.ClientConn, activity *activity) grpc.StreamHand
 		}
 		activity.activeRPCs.Add(1)
 		activity.touch()
+		answered := false
 		defer func() {
+			if answered {
+				activity.rpcAnswered()
+			} else {
+				activity.rpcUnanswered()
+			}
 			activity.activeRPCs.Add(-1)
 			activity.touch()
 		}()
@@ -398,14 +433,25 @@ func proxyHandler(upstream *grpc.ClientConn, activity *activity) grpc.StreamHand
 				headersSent = true
 			}
 			if errors.Is(err, io.EOF) {
+				answered = true
 				downstream.SetTrailer(upstreamStream.Trailer())
 				return nil
 			}
 			if err != nil {
+				// An application-level status is still an answer — it proves
+				// the retained transport reaches the device. Only the errors a
+				// dead link produces (client-side cancellation or deadline,
+				// transport unavailability) leave the RPC unanswered.
+				switch status.Code(err) {
+				case codes.Canceled, codes.DeadlineExceeded, codes.Unavailable:
+				default:
+					answered = true
+				}
 				downstream.SetTrailer(upstreamStream.Trailer())
 				activity.noteUpstreamError(upstream, err)
 				return err
 			}
+			answered = true
 			if err := downstream.SendMsg(&msg); err != nil {
 				return err
 			}
@@ -417,6 +463,44 @@ func proxyHandler(upstream *grpc.ClientConn, activity *activity) grpc.StreamHand
 				}
 			default:
 			}
+		}
+	}
+}
+
+// watchUpstreamState ends the broker the moment the retained transport leaves
+// Ready — a drop to TransientFailure, or grpc-go's 30-minute client idle
+// teardown. The broker's whole value is the ALREADY-VERIFIED transport it
+// retains; anything that replaces it would be re-dialed and re-verified
+// against the pin snapshot this process loaded at startup, and
+// devicepin.Store is not multi-process safe: another invocation may have
+// re-pinned the device since (a legitimate re-enrollment), and a redial
+// completed here would both trust the stale key and clobber the newer pin
+// file from the stale in-memory map on its next flush. Exiting instead means
+// a re-dial simply never happens under this broker's identity lock: the next
+// invocation direct-dials with fresh pin state and prepares a fresh broker.
+//
+// The transport may legitimately still be establishing when serve() starts
+// (tests hand serve() an un-dialed conn; Run() hands it a probed, Ready one),
+// so departure only counts after Ready has been observed once.
+func watchUpstreamState(ctx context.Context, upstream *grpc.ClientConn, activity *activity) {
+	state := upstream.GetState()
+	for state != connectivity.Ready {
+		if state == connectivity.Shutdown {
+			activity.markBad()
+			return
+		}
+		if !upstream.WaitForStateChange(ctx, state) {
+			return
+		}
+		state = upstream.GetState()
+	}
+	for {
+		if !upstream.WaitForStateChange(ctx, connectivity.Ready) {
+			return
+		}
+		if upstream.GetState() != connectivity.Ready {
+			activity.markBad()
+			return
 		}
 	}
 }
@@ -505,6 +589,7 @@ func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn
 	)
 	serveCtx, cancelServe := context.WithCancel(ctx)
 	defer cancelServe()
+	go watchUpstreamState(serveCtx, upstream, activity)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -520,12 +605,15 @@ func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn
 				server.Stop()
 				return
 			case <-activity.upstreamBad:
-				// A broker whose retained transport has failed must release its
-				// identity lock promptly so the invocation's ordinary direct-dial
-				// fallback can prepare a healthy replacement. Stop rather than
-				// waiting gracefully: a broken bidirectional stream can otherwise
-				// keep its handler blocked while GracefulStop waits for that same
-				// handler, stranding the lock we are trying to release.
+				// A broker whose retained transport has failed — an RPC-observed
+				// drop, a departure from Ready seen by watchUpstreamState, or a
+				// streak of unanswered RPCs over a transport that still claims
+				// Ready — must release its identity lock promptly so the
+				// invocation's ordinary direct-dial fallback can prepare a healthy
+				// replacement. Stop rather than waiting gracefully: a broken
+				// bidirectional stream can otherwise keep its handler blocked
+				// while GracefulStop waits for that same handler, stranding the
+				// lock we are trying to release.
 				server.Stop()
 				return
 			case <-ticker.C:
