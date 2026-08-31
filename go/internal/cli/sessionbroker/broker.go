@@ -50,10 +50,11 @@ const (
 	// handshake, which can take a few seconds on constrained boards. Broker-hit
 	// health probes are local and use the much smaller bound above.
 	upstreamProbeTimeout = 7 * time.Second
-	// Parent PID liveness keeps a newly prepared broker available while the
-	// preparing invocation is still doing local build work. Cap that lease so
-	// PID reuse or a stuck parent cannot leave an otherwise idle helper around
-	// indefinitely.
+	// Parent liveness keeps a newly prepared broker available while the
+	// preparing invocation is still doing local build work. The primary signal
+	// is an inherited pipe whose EOF marks the parent's exit exactly; this cap
+	// applies only to the PID fallback (helpers started without a pipe), where
+	// PID reuse could otherwise keep an idle helper around indefinitely.
 	maxParentLease = 30 * time.Minute
 )
 
@@ -77,6 +78,16 @@ var (
 	loadConfig = config.Load
 )
 
+// parentLeases retains the write ends of every helper's lease pipe for the
+// life of this process. The open descriptor IS the lease — its EOF tells the
+// helper the parent exited — and letting the *os.File become garbage would
+// have the runtime's finalizer close it, ending the lease while the parent
+// still runs.
+var (
+	parentLeasesMu sync.Mutex
+	parentLeases   []*os.File
+)
+
 // Start launches a detached helper for a verified direct mTLS connection. It
 // is best-effort by contract: the caller already has a working direct
 // connection, and session reuse must never make that invocation fail.
@@ -96,15 +107,33 @@ func Start(key string, conn *grpcclient.AgentConnection) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "__session-broker", "--spec", base64.RawURLEncoding.EncodeToString(b))
+	// The helper inherits the pipe's read end as fd 3 and treats its EOF as
+	// "the parent invocation exited" — exact where PID polling is a heuristic
+	// (PID reuse fakes liveness; a hard cap breaks builds longer than it).
+	leaseR, leaseW, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "__session-broker", "--spec", base64.RawURLEncoding.EncodeToString(b), "--parent-lease")
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	cmd.ExtraFiles = []*os.File{leaseR}
 	cmd.SysProcAttr = detachedProcessAttributes()
 	if err := cmd.Start(); err != nil {
+		_ = leaseR.Close()
+		_ = leaseW.Close()
 		return err
 	}
-	return cmd.Process.Release()
+	_ = leaseR.Close()
+	parentLeasesMu.Lock()
+	parentLeases = append(parentLeases, leaseW)
+	parentLeasesMu.Unlock()
+	// Reap instead of Release: a helper that exits while this process still
+	// runs (it lost the flock seconds from now, or expired first) would
+	// otherwise sit as a zombie in the process table until this process exits.
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 func specForConnection(key string, conn *grpcclient.AgentConnection) (Spec, bool) {
@@ -178,8 +207,10 @@ func Connect(ctx context.Context, key string, expected certs.WendyIdentity) (*gr
 }
 
 // Run decodes the hidden helper's non-secret connection recipe and serves it
-// until it has had no active RPCs for idleTTL.
-func Run(ctx context.Context, encoded string, idleTTL time.Duration) error {
+// until it has had no active RPCs for idleTTL. parentLease is the inherited
+// read end of the launching invocation's lease pipe (nil when launched
+// without one); its EOF is the exact "parent exited" signal.
+func Run(ctx context.Context, encoded string, idleTTL time.Duration, parentLease *os.File) error {
 	b, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		return fmt.Errorf("decoding session broker spec: %w", err)
@@ -234,7 +265,34 @@ func Run(ctx context.Context, encoded string, idleTTL time.Duration) error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, dir, spec, upstream.Conn, idleTTL)
+	return serve(ctx, dir, spec, upstream.Conn, idleTTL, parentLeaseSignal(parentLease, spec.ParentPID))
+}
+
+// parentLeaseSignal reports whether the invocation that prepared this broker
+// is still running. With a lease pipe the answer is exact and uncapped: the
+// read end EOFs when the parent exits, no sooner (PID reuse cannot fake it)
+// and no later (a 35-minute first build keeps its lease). Without one it
+// falls back to PID polling under maxParentLease, since a recycled PID could
+// otherwise renew an abandoned broker forever.
+func parentLeaseSignal(lease *os.File, pid int) func() bool {
+	if lease == nil {
+		deadline := time.Now().Add(maxParentLease)
+		return func() bool { return time.Now().Before(deadline) && processAlive(pid) }
+	}
+	var gone atomic.Bool
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			// The parent never writes; reads only ever return EOF (parent
+			// exited) or an error on a broken descriptor — either way the
+			// lease is over.
+			if _, err := lease.Read(buf); err != nil {
+				gone.Store(true)
+				return
+			}
+		}
+	}()
+	return func() bool { return !gone.Load() }
 }
 
 // acquireIdentityLock takes the non-blocking flock that makes one broker per
@@ -577,9 +635,12 @@ func (h connectionActivity) HandleConn(_ context.Context, event stats.ConnStats)
 // caller must hold the identity flock (see acquireIdentityLock in Run) for the
 // whole call: holding it is what entitles serve to clobber and later remove
 // the socket and state files.
-func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn, idleTTL time.Duration) (err error) {
+func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn, idleTTL time.Duration, parentAlive func() bool) (err error) {
 	if idleTTL <= 0 {
 		idleTTL = DefaultIdleTTL
+	}
+	if parentAlive == nil {
+		parentAlive = parentLeaseSignal(nil, spec.ParentPID)
 	}
 	socketPath, statePath := paths(dir, spec.Key, spec.Expected)
 
@@ -604,7 +665,6 @@ func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn
 	}
 
 	activity := newActivity()
-	parentLeaseDeadline := time.Now().Add(maxParentLease)
 	server := grpc.NewServer(
 		grpc.ForceServerCodec(rawCodec{}),
 		grpc.UnknownServiceHandler(proxyHandler(upstream, activity)),
@@ -644,7 +704,7 @@ func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn
 				// already-open direct connection back through us. Treat that
 				// process as a lease so a long first build cannot consume the
 				// entire idle TTL before there is a second invocation to reuse it.
-				if time.Now().Before(parentLeaseDeadline) && processAlive(spec.ParentPID) {
+				if parentAlive() {
 					activity.touch()
 					continue
 				}

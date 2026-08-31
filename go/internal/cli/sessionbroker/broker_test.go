@@ -125,7 +125,7 @@ func startUpstream(t *testing.T, opts ...grpc.ServerOption) (*grpc.ClientConn, f
 func startServing(t *testing.T, ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn, idleTTL time.Duration) (socketPath, statePath string, done chan error) {
 	t.Helper()
 	done = make(chan error, 1)
-	go func() { done <- serve(ctx, dir, spec, upstream, idleTTL) }()
+	go func() { done <- serve(ctx, dir, spec, upstream, idleTTL, nil) }()
 	socketPath, statePath = paths(dir, spec.Key, spec.Expected)
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -233,7 +233,7 @@ func TestServeProxiesUnaryAndStreamingRPCsAndExpires(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, dir, spec, upstream, 80*time.Millisecond) }()
+	go func() { done <- serve(ctx, dir, spec, upstream, 80*time.Millisecond, nil) }()
 
 	socketPath, statePath := paths(dir, spec.Key, spec.Expected)
 	deadline := time.Now().Add(time.Second)
@@ -421,7 +421,7 @@ func TestServeExitsPromptlyWhenRetainedTransportDies(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, dir, spec, upstream, time.Hour) }()
+	go func() { done <- serve(ctx, dir, spec, upstream, time.Hour, nil) }()
 
 	socketPath, statePath := paths(dir, spec.Key, spec.Expected)
 	deadline := time.Now().Add(time.Second)
@@ -471,7 +471,7 @@ func TestServeKeepsPreparedBrokerWhileParentInvocationLives(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, dir, spec, upstream, 30*time.Millisecond) }()
+	go func() { done <- serve(ctx, dir, spec, upstream, 30*time.Millisecond, nil) }()
 
 	_, statePath := paths(dir, spec.Key, spec.Expected)
 	deadline := time.Now().Add(time.Second)
@@ -721,11 +721,65 @@ func TestRunDoesNotTouchDeviceOrConfigWhenLockIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Run(context.Background(), base64.RawURLEncoding.EncodeToString(b), 50*time.Millisecond); err != nil {
+	if err := Run(context.Background(), base64.RawURLEncoding.EncodeToString(b), 50*time.Millisecond, nil); err != nil {
 		t.Fatalf("losing the lock is the expected quiet outcome, got error: %v", err)
 	}
 	if n := accepts.Load(); n != 0 {
 		t.Fatalf("helper dialed the device %d time(s) before losing the lock", n)
+	}
+}
+
+func TestParentLeaseFollowsPipeExactly(t *testing.T) {
+	dir := shortTempDir(t)
+	upstream, cleanup := startUpstream(t)
+	defer cleanup()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	spec := Spec{
+		Key:             "pipelease.local",
+		Host:            "pipelease.local",
+		Addr:            "127.0.0.1:50052",
+		CertFingerprint: "public-cert-hash",
+		Expected:        certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "50"},
+		// A recycled or unrelated PID must not matter once a pipe carries the
+		// exact signal; -1 would fail the legacy processAlive fallback.
+		ParentPID: -1,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- serve(ctx, dir, spec, upstream, 30*time.Millisecond, parentLeaseSignal(r, spec.ParentPID)) }()
+
+	_, statePath := paths(dir, spec.Key, spec.Expected)
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(statePath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("broker state did not appear")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// The pipe's write end is open: the parent invocation still exists, so the
+	// broker must outlive its idle TTL however long the local build takes —
+	// there is deliberately no 30-minute cap on an exact liveness signal.
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("broker expired while the parent's lease pipe was open: %v", err)
+	}
+
+	w.Close() // the parent invocation exits
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("broker did not expire after the parent's lease pipe closed")
 	}
 }
 
