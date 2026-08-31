@@ -21,21 +21,21 @@ type Loopback interface {
 // Supervisor runs one reconcile goroutine per pairing: dial the source, mount
 // its camera channels as loopback nodes, and pump frames with backoff.
 type Supervisor struct {
-	logger    *zap.Logger
-	lb        Loopback
-	dialerFor func(SensorPairing) (Dialer, error)
-	newWriter func(path string) ros2camera.CameraWriter
+	logger       *zap.Logger
+	lb           Loopback
+	transportFor TransportFactory
+	newWriter    func(path string) ros2camera.CameraWriter
 
 	nodeIDsMu sync.Mutex
 	nodeIDs   map[string]uint32 // "sourceAssetID:channelID" -> MCU-band node id
 }
 
-// dialerFor is called once per streamOnce attempt (not cached) so each
+// transportFor is called once per streamOnce attempt (not cached) so each
 // pairing's mTLS handshake pins that specific source's asset identity,
-// mirroring mesh_dialer.go's per-target pinning — a single shared Dialer
+// mirroring mesh_dialer.go's per-target pinning — a single shared transport
 // cannot do that across pairings with different SourceAssetID/OrgID.
-func NewSupervisor(logger *zap.Logger, lb Loopback, dialerFor func(SensorPairing) (Dialer, error), newWriter func(path string) ros2camera.CameraWriter) *Supervisor {
-	return &Supervisor{logger: logger, lb: lb, dialerFor: dialerFor, newWriter: newWriter, nodeIDs: make(map[string]uint32)}
+func NewSupervisor(logger *zap.Logger, lb Loopback, transportFor TransportFactory, newWriter func(path string) ros2camera.CameraWriter) *Supervisor {
+	return &Supervisor{logger: logger, lb: lb, transportFor: transportFor, newWriter: newWriter, nodeIDs: make(map[string]uint32)}
 }
 
 // nodeID returns a stable MCU-band node id for (sourceAssetID, channelID),
@@ -110,12 +110,12 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 // delivered reports whether at least one frame was written, so the caller
 // can reset its reconnect backoff after a stream that was actually healthy.
 func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr string) (delivered bool, err error) {
-	dialer, err := s.dialerFor(p)
+	tr, err := s.transportFor(p, addr)
 	if err != nil {
-		return false, fmt.Errorf("mcusource: resolving dialer for source %d: %w", p.SourceAssetID, err)
+		return false, fmt.Errorf("mcusource: resolving transport for source %d: %w", p.SourceAssetID, err)
 	}
 	// Peek the manifest first (subscribe to nothing) to learn the channels.
-	probe, err := Connect(ctx, dialer, addr, nil)
+	manifest, err := tr.FetchManifest(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -123,13 +123,11 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 	// identity, but a compromised/misconfigured relay could still present a
 	// manifest for a different device than the one we dialed. Refuse rather
 	// than mount a stranger's cameras under this pairing's node ids.
-	if probe.Manifest.GetDeviceAssetId() != p.SourceAssetID {
-		probe.Close()
+	if manifest.GetDeviceAssetId() != p.SourceAssetID {
 		return false, fmt.Errorf("mcusource: manifest device asset id %d does not match pairing source %d",
-			probe.Manifest.GetDeviceAssetId(), p.SourceAssetID)
+			manifest.GetDeviceAssetId(), p.SourceAssetID)
 	}
-	cams := cameraChannels(probe.Manifest, p.SensorAllowlist)
-	probe.Close()
+	cams := cameraChannels(manifest, p.SensorAllowlist)
 	if len(cams) == 0 {
 		return false, nil // nothing to mount; caller backs off and retries
 	}
@@ -159,25 +157,25 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		return false, nil
 	}
 
-	stream, err := Connect(ctx, dialer, addr, subs)
+	frames, closeStream, err := tr.Stream(ctx, subs)
 	if err != nil {
 		return false, err
 	}
-	defer stream.Close()
+	defer closeStream()
 	// The reader goroutine inside Connect only unblocks when the conn is
 	// closed or a read fails; without this, an idle source (no frames, no
-	// error) leaves `range stream.Frames` blocked forever even after ctx is
+	// error) leaves `range frames` blocked forever even after ctx is
 	// cancelled. Closing the stream on cancellation forces the read to fail.
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
 		select {
 		case <-ctx.Done():
-			stream.Close()
+			closeStream()
 		case <-stop:
 		}
 	}()
-	for f := range stream.Frames {
+	for f := range frames {
 		w := writers[f.ChannelId]
 		if w == nil {
 			continue

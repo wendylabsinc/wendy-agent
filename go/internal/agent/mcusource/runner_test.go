@@ -33,7 +33,7 @@ func TestRunnerStartStreamsThenStopCancels(t *testing.T) {
 	lb := &fakeLoopback{}
 	var frames atomic.Int32
 	sup := mcusource.NewSupervisor(zap.NewNop(), lb,
-		func(mcusource.SensorPairing) (mcusource.Dialer, error) { return tcpDialer{}, nil },
+		func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil },
 		func(string) ros2camera.CameraWriter { return &countingWriter{n: &frames} })
 
 	r := mcusource.NewRunner(zap.NewNop(), sup)
@@ -67,7 +67,7 @@ func (w *countingWriter) Close() error                      { return nil }
 // that a final Stop cleanly unblocks everything (no panic, no leak).
 func TestRunnerRestartCancelsPriorGoroutine(t *testing.T) {
 	sup := mcusource.NewSupervisor(zap.NewNop(), &fakeLoopback{},
-		func(mcusource.SensorPairing) (mcusource.Dialer, error) { return tcpDialer{}, nil },
+		func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil },
 		func(string) ros2camera.CameraWriter { return &countingWriter{n: &atomic.Int32{}} })
 
 	// A listener that never accepts: RunPairing blocks in its dial/backoff

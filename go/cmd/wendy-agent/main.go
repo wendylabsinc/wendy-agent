@@ -370,7 +370,14 @@ func main() {
 	if err := sensorStore.Load(); err != nil {
 		logger.Warn("loading sensor pairing store failed", zap.Error(err))
 	}
-	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), mcusource.NewMTLSDialer(logger, mcuIdentity), ros2camera.NewFrameWriter)
+	sensorTransportFor := func(p mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) {
+		d, err := mcusource.NewMTLSDialer(logger, mcuIdentity)(p)
+		if err != nil {
+			return nil, err
+		}
+		return mcusource.NewTCPTransport(d, addr), nil
+	}
+	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, ros2camera.NewFrameWriter)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
 	sensorAgentOrgID := func() int32 {
 		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()

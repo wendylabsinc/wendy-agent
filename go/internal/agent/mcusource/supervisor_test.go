@@ -64,7 +64,7 @@ func TestSupervisorMountsCameraAndWritesFrames(t *testing.T) {
 
 	lb := &fakeLoopback{}
 	w := &fakeWriter{}
-	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(mcusource.SensorPairing) (mcusource.Dialer, error) { return tcpDialer{}, nil }, func(string) ros2camera.CameraWriter { return w })
+	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil }, func(string) ros2camera.CameraWriter { return w })
 
 	rctx, rcancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer rcancel()
@@ -106,7 +106,7 @@ func TestSupervisorRunPairingReturnsPromptlyOnIdleStream(t *testing.T) {
 	})
 
 	lb := &fakeLoopback{}
-	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(mcusource.SensorPairing) (mcusource.Dialer, error) { return tcpDialer{}, nil }, func(string) ros2camera.CameraWriter { return &fakeWriter{} })
+	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil }, func(string) ros2camera.CameraWriter { return &fakeWriter{} })
 
 	rctx, rcancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -135,7 +135,7 @@ func TestSupervisorNodeIDsUniqueAcrossSources(t *testing.T) {
 	go sim.Serve(ctx, ln2, sim.Options{Manifest: camManifest(22, 1, "cam0"), Frames: [][]byte{[]byte("jpg")}, FrameInterval: time.Millisecond})
 
 	lb := &fakeLoopback{}
-	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(mcusource.SensorPairing) (mcusource.Dialer, error) { return tcpDialer{}, nil }, func(string) ros2camera.CameraWriter { return &fakeWriter{} })
+	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil }, func(string) ros2camera.CameraWriter { return &fakeWriter{} })
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -171,7 +171,7 @@ func TestSupervisorNodeIDStableAcrossReconnect(t *testing.T) {
 	defer cancel()
 
 	lb := &fakeLoopback{}
-	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(mcusource.SensorPairing) (mcusource.Dialer, error) { return tcpDialer{}, nil }, func(string) ros2camera.CameraWriter { return &fakeWriter{} })
+	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil }, func(string) ros2camera.CameraWriter { return &fakeWriter{} })
 	pairing := mcusource.SensorPairing{SourceAssetID: 31, OrgID: 1, Name: "src31"}
 
 	connectOnce := func() {
