@@ -92,7 +92,7 @@ var (
 // is best-effort by contract: the caller already has a working direct
 // connection, and session reuse must never make that invocation fail.
 func Start(key string, conn *grpcclient.AgentConnection) error {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || !configDirOwnershipSafe() {
 		return nil
 	}
 	spec, ok := specForConnection(key, conn)
@@ -158,6 +158,40 @@ func specForConnection(key string, conn *grpcclient.AgentConnection) (Spec, bool
 	return spec, true
 }
 
+// InvalidateAll unpublishes every prepared session broker by removing their
+// sockets and state files. Auth logout and device unpin call it: both are the
+// user severing trust, and a broker retaining an authenticated device session
+// for up to its lease+TTL after "trust removed" would quietly outlive that
+// decision. A running broker notices its missing state file on its next tick
+// and exits promptly (see serve), releasing the retained mTLS session. Lock
+// files are deliberately left in place — see acquireIdentityLock.
+func InvalidateAll() error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := brokerDir()
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasSuffix(name, ".sock") || strings.HasSuffix(name, ".json") {
+			if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // Connect returns a healthy local proxy connection only when the broker is
 // bound to the same pinned identity the caller currently expects. Every error
 // is intended to fall through to the ordinary direct dial ladder.
@@ -221,6 +255,9 @@ func Run(ctx context.Context, encoded string, idleTTL time.Duration, parentLease
 	}
 	if err := spec.validate(); err != nil {
 		return err
+	}
+	if !configDirOwnershipSafe() {
+		return fmt.Errorf("session broker: config directory is not owned by the current user")
 	}
 	dir, err := brokerDir()
 	if err != nil {
@@ -331,6 +368,25 @@ func brokerDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "sessions"), nil
+}
+
+// configDirOwnershipSafe reports whether the config directory (and thus the
+// session dir under it) belongs to this process's user. A root re-exec over a
+// preserved user HOME — sudo invocations like the Thor flash elevation — must
+// not plant root-owned files there: one root-run helper used to create a
+// root-owned sessions dir that silently disabled the feature for the user
+// forever after (every later helper died at ensurePrivateDir's Chmod with
+// stderr wired to /dev/null, and the dir could not even be deleted without
+// sudo). A missing directory is safe: whoever creates it owns it.
+//
+// The unsafe branch is deliberately untested: exercising it needs a file
+// owned by another uid, which an unprivileged test cannot create.
+func configDirOwnershipSafe() bool {
+	dir, err := configDir()
+	if err != nil {
+		return false
+	}
+	return pathOwnedByCurrentUser(dir)
 }
 
 func paths(dir, key string, expected certs.WendyIdentity) (string, string) {
@@ -700,6 +756,15 @@ func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn
 				server.Stop()
 				return
 			case <-ticker.C:
+				// A missing state file means this broker was unpublished from
+				// outside — auth logout or device unpin severing trust — and the
+				// retained authenticated session must end NOW, before any lease
+				// or idle grace. Stop, not GracefulStop: an open channel would
+				// otherwise keep the session alive past the user's decision.
+				if _, statErr := os.Lstat(statePath); statErr != nil {
+					server.Stop()
+					return
+				}
 				// The invocation that prepared this broker does not route its
 				// already-open direct connection back through us. Treat that
 				// process as a lease so a long first build cannot consume the

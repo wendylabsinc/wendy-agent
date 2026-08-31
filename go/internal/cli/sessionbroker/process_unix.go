@@ -22,6 +22,16 @@ func validateOwner(info os.FileInfo) error {
 	return nil
 }
 
+// pathOwnedByCurrentUser reports whether path belongs to this process's user.
+// A missing path is fine — whoever creates it will own it.
+func pathOwnedByCurrentUser(path string) bool {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return true
+	}
+	return err == nil && validateOwner(info) == nil
+}
+
 func acquireLock(file *os.File) (bool, error) {
 	err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 	if err == unix.EWOULDBLOCK {

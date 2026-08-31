@@ -783,6 +783,74 @@ func TestParentLeaseFollowsPipeExactly(t *testing.T) {
 	}
 }
 
+func TestInvalidateAllRemovesPublishedSessions(t *testing.T) {
+	root := shortTempDir(t)
+	dir := filepath.Join(root, "sessions")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := configDir
+	configDir = func() (string, error) { return root, nil }
+	t.Cleanup(func() { configDir = oldDir })
+	for _, name := range []string{"aa.sock", "aa.json", "aa.sock.lock", "bb.sock", "bb.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := InvalidateAll(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"aa.sock", "aa.json", "bb.sock", "bb.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s still published after InvalidateAll: %v", name, err)
+		}
+	}
+	// Lock files stay: removing one whose inode another process just flocked
+	// would allow two live brokers for one identity.
+	if _, err := os.Stat(filepath.Join(dir, "aa.sock.lock")); err != nil {
+		t.Fatalf("lock file must survive InvalidateAll: %v", err)
+	}
+	// A missing directory is a clean no-op, not an error.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := InvalidateAll(); err != nil {
+		t.Fatalf("InvalidateAll with no session dir: %v", err)
+	}
+}
+
+func TestServeExitsWhenUnpublishedExternally(t *testing.T) {
+	dir := shortTempDir(t)
+	upstream, cleanup := startUpstream(t)
+	defer cleanup()
+	spec := Spec{
+		Key:             "invalidate.local",
+		Host:            "invalidate.local",
+		Addr:            "127.0.0.1:50052",
+		CertFingerprint: "public-cert-hash",
+		Expected:        certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "51"},
+		// A live parent lease must not outrank invalidation: logout and unpin
+		// sever trust NOW, not when the preparing invocation finishes.
+		ParentPID: os.Getpid(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, statePath, done := startServing(t, ctx, dir, spec, upstream, 200*time.Millisecond)
+
+	if err := os.Remove(statePath); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("broker kept serving after its publication was removed")
+	}
+}
+
 func TestConnectRejectsNonPrivateSessionDirectory(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sessions")
