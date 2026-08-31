@@ -151,6 +151,14 @@ func newDeviceBuildHostStatusCmd() *cobra.Command {
 					cliLogln("BuildKit:     %s", tui.Value("unavailable"))
 				}
 			}
+			// Where the cache lands is worth seeing before a build, not after
+			// the disk fills. Silent on an older agent, which reports nothing.
+			if root := caps.GetBuildkitRoot(); root != "" && caps.GetBuildkitRootTotalBytes() > 0 {
+				cliLogln("Cache:        %s (%s free of %s)", tui.Value(root),
+					humanBytes(caps.GetBuildkitRootFreeBytes()), humanBytes(caps.GetBuildkitRootTotalBytes()))
+			} else if caps.GetBuildkitAvailable() && caps.GetBuildkitRootInspectionSupported() {
+				cliLogln("Cache:        %s", tui.Value("inspection failed"))
+			}
 			cliLogln("Platform:     %s/%s", caps.GetOs(), caps.GetCpuArchitecture())
 			if len(caps.GetNativePlatforms()) > 0 {
 				cliLogln("Builds:       %s natively", formatPlatformList(caps.GetNativePlatforms()))
