@@ -142,10 +142,21 @@ func (EpisodeFileRole) EnumDescriptor() ([]byte, []int) {
 type EpisodeManifest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	EpisodeId string                 `protobuf:"bytes,1,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
-	// Must match the certificate identity of the uploading device.
-	OrgId            uint64 `protobuf:"varint,2,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
-	AssetId          uint64 `protobuf:"varint,3,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
-	Campaign         string `protobuf:"bytes,4,opt,name=campaign,proto3" json:"campaign,omitempty"`
+	// Campaign name: the `name:` field of the campaign file that armed this
+	// capture, a human-authored slug such as "forklift-failures". It is not an
+	// identifier minted by the cloud, and it is not unique over time; the
+	// (campaign, campaign_revision) pair is what identifies an exact plan.
+	Campaign string `protobuf:"bytes,4,opt,name=campaign,proto3" json:"campaign,omitempty"`
+	// Lowercase hex SHA-256 of the canonical campaign plan, so always exactly
+	// 64 characters. The device computes it in WendyOS at
+	// go/internal/agent/data/campaign.go:219, as
+	// hex(sha256(json(campaign.planOnly()))), where planOnly() strips deployment
+	// state so only author-declared plan fields feed the digest.
+	//
+	// String, not an integer: 256 bits of digest do not fit in a uint64, and no
+	// truncation of a hash preserves it as an identifier. It is a content
+	// digest rather than a sequence number, so it identifies the exact plan
+	// that produced this episode but does not order two revisions.
 	CampaignRevision string `protobuf:"bytes,5,opt,name=campaign_revision,json=campaignRevision,proto3" json:"campaign_revision,omitempty"`
 	// Trigger reason (e.g. "manual", "campaign-trigger", or the fired
 	// expression such as "model.uncertainty > 0.65").
@@ -157,16 +168,26 @@ type EpisodeManifest struct {
 	// from the device's clock-sandwich observations. system_clock_status is
 	// the device's own verdict ("ok", "conflict", ...); a "conflict" episode
 	// is flagged in the catalog, never silently resolved.
-	StartedUnixNanos    int64                  `protobuf:"varint,9,opt,name=started_unix_nanos,json=startedUnixNanos,proto3" json:"started_unix_nanos,omitempty"`
-	UtcOffsetLowerNanos int64                  `protobuf:"varint,10,opt,name=utc_offset_lower_nanos,json=utcOffsetLowerNanos,proto3" json:"utc_offset_lower_nanos,omitempty"`
-	UtcOffsetUpperNanos int64                  `protobuf:"varint,11,opt,name=utc_offset_upper_nanos,json=utcOffsetUpperNanos,proto3" json:"utc_offset_upper_nanos,omitempty"`
-	SystemClockStatus   string                 `protobuf:"bytes,12,opt,name=system_clock_status,json=systemClockStatus,proto3" json:"system_clock_status,omitempty"`
-	Files               []*EpisodeFileManifest `protobuf:"bytes,13,rep,name=files,proto3" json:"files,omitempty"`
+	StartedUnixNanos    int64  `protobuf:"varint,9,opt,name=started_unix_nanos,json=startedUnixNanos,proto3" json:"started_unix_nanos,omitempty"`
+	UtcOffsetLowerNanos int64  `protobuf:"varint,10,opt,name=utc_offset_lower_nanos,json=utcOffsetLowerNanos,proto3" json:"utc_offset_lower_nanos,omitempty"`
+	UtcOffsetUpperNanos int64  `protobuf:"varint,11,opt,name=utc_offset_upper_nanos,json=utcOffsetUpperNanos,proto3" json:"utc_offset_upper_nanos,omitempty"`
+	SystemClockStatus   string `protobuf:"bytes,12,opt,name=system_clock_status,json=systemClockStatus,proto3" json:"system_clock_status,omitempty"`
 	// The complete device manifest JSON (manifest v2), stored verbatim in the
 	// catalog attributes column.
+	//
+	// Deliberately bytes rather than map<string, string> or google.protobuf.
+	// Struct. This is not a flat key-value bag: it is a nested document (a
+	// files array, a per-file clock-mapping object, a trigger object, a device
+	// identity object), which a string map cannot hold at all. Struct could
+	// hold the shape but not the bytes, and byte fidelity is the point of the
+	// field: it is the artifact the device sealed, kept as sent so the catalog
+	// can be audited against the device rather than against our re-encoding of
+	// it. The typed fields above are what the catalog indexes on.
 	AttributesJson []byte `protobuf:"bytes,14,opt,name=attributes_json,json=attributesJson,proto3" json:"attributes_json,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Declared last by convention; field number 13 is unchanged.
+	Files         []*EpisodeFileManifest `protobuf:"bytes,13,rep,name=files,proto3" json:"files,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EpisodeManifest) Reset() {
@@ -204,20 +225,6 @@ func (x *EpisodeManifest) GetEpisodeId() string {
 		return x.EpisodeId
 	}
 	return ""
-}
-
-func (x *EpisodeManifest) GetOrgId() uint64 {
-	if x != nil {
-		return x.OrgId
-	}
-	return 0
-}
-
-func (x *EpisodeManifest) GetAssetId() uint64 {
-	if x != nil {
-		return x.AssetId
-	}
-	return 0
 }
 
 func (x *EpisodeManifest) GetCampaign() string {
@@ -283,16 +290,16 @@ func (x *EpisodeManifest) GetSystemClockStatus() string {
 	return ""
 }
 
-func (x *EpisodeManifest) GetFiles() []*EpisodeFileManifest {
+func (x *EpisodeManifest) GetAttributesJson() []byte {
 	if x != nil {
-		return x.Files
+		return x.AttributesJson
 	}
 	return nil
 }
 
-func (x *EpisodeManifest) GetAttributesJson() []byte {
+func (x *EpisodeManifest) GetFiles() []*EpisodeFileManifest {
 	if x != nil {
-		return x.AttributesJson
+		return x.Files
 	}
 	return nil
 }
@@ -471,7 +478,7 @@ type FileUploadState struct {
 	Path  string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	// Bytes durably stored in object storage for this file: 0 (not stored or
 	// partially stored; restart from 0) or the full file size (stored; skip).
-	CommittedOffset int64 `protobuf:"varint,2,opt,name=committed_offset,json=committedOffset,proto3" json:"committed_offset,omitempty"`
+	CommittedOffset uint64 `protobuf:"varint,2,opt,name=committed_offset,json=committedOffset,proto3" json:"committed_offset,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -513,7 +520,7 @@ func (x *FileUploadState) GetPath() string {
 	return ""
 }
 
-func (x *FileUploadState) GetCommittedOffset() int64 {
+func (x *FileUploadState) GetCommittedOffset() uint64 {
 	if x != nil {
 		return x.CommittedOffset
 	}
@@ -578,8 +585,20 @@ type EpisodeChunk struct {
 	Path      string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
 	// Byte offset of this chunk within the file; must equal the number of
 	// bytes already sent for the file (sequential, no gaps).
-	Offset int64 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
-	// At most 1 MiB per chunk.
+	Offset uint64 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	// At most 1 MiB of payload per chunk.
+	//
+	// Why 1 MiB: gRPC's default maximum received message size is 4 MiB, and
+	// that budget covers the whole encoded EpisodeChunk, not just this field.
+	// 1 MiB leaves room for path, offset and framing while staying well inside
+	// the default on every runtime, so neither end has to raise its limit to
+	// speak this protocol. It also bounds what one failed chunk costs to send
+	// again, which is what makes a retry cheap on a slow uplink. It is the
+	// device transfer worker's buffer size too, so cap and sender agree by
+	// construction rather than by luck.
+	//
+	// The cloud enforces this: an oversized chunk is INVALID_ARGUMENT naming
+	// the limit and the size received. The cap is a rule, not a request.
 	Data []byte `protobuf:"bytes,4,opt,name=data,proto3" json:"data,omitempty"`
 	// True on the last chunk of the file; the server then persists the file
 	// to object storage.
@@ -632,7 +651,7 @@ func (x *EpisodeChunk) GetPath() string {
 	return ""
 }
 
-func (x *EpisodeChunk) GetOffset() int64 {
+func (x *EpisodeChunk) GetOffset() uint64 {
 	if x != nil {
 		return x.Offset
 	}
@@ -657,11 +676,11 @@ type EpisodeChunkAck struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Path  string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	// Contiguous bytes received (spooled server-side, not yet durable).
-	ReceivedOffset int64 `protobuf:"varint,2,opt,name=received_offset,json=receivedOffset,proto3" json:"received_offset,omitempty"`
+	ReceivedOffset uint64 `protobuf:"varint,2,opt,name=received_offset,json=receivedOffset,proto3" json:"received_offset,omitempty"`
 	// Bytes durably stored in object storage. Stays 0 until the eof chunk is
 	// persisted, then equals the file size. Never claims durability that
 	// does not exist.
-	CommittedOffset int64 `protobuf:"varint,3,opt,name=committed_offset,json=committedOffset,proto3" json:"committed_offset,omitempty"`
+	CommittedOffset uint64 `protobuf:"varint,3,opt,name=committed_offset,json=committedOffset,proto3" json:"committed_offset,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -703,14 +722,14 @@ func (x *EpisodeChunkAck) GetPath() string {
 	return ""
 }
 
-func (x *EpisodeChunkAck) GetReceivedOffset() int64 {
+func (x *EpisodeChunkAck) GetReceivedOffset() uint64 {
 	if x != nil {
 		return x.ReceivedOffset
 	}
 	return 0
 }
 
-func (x *EpisodeChunkAck) GetCommittedOffset() int64 {
+func (x *EpisodeChunkAck) GetCommittedOffset() uint64 {
 	if x != nil {
 		return x.CommittedOffset
 	}
@@ -769,6 +788,10 @@ type FileVerification struct {
 	ExpectedSha256 string                 `protobuf:"bytes,3,opt,name=expected_sha256,json=expectedSha256,proto3" json:"expected_sha256,omitempty"`
 	ActualSha256   string                 `protobuf:"bytes,4,opt,name=actual_sha256,json=actualSha256,proto3" json:"actual_sha256,omitempty"`
 	// Human-readable detail on failure (missing object, size mismatch, ...).
+	// Plain string rather than optional: `ok` is the discriminator, and the
+	// server sets detail on every failure and never on success, so empty and
+	// absent would mean the same thing. Presence here would add a has-check to
+	// every consumer without letting any of them decide anything new.
 	Detail        string `protobuf:"bytes,5,opt,name=detail,proto3" json:"detail,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1087,16 +1110,30 @@ func (x *GetEpisodeRequest) GetEpisodeId() string {
 
 // A catalog row plus its files.
 type Episode struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	EpisodeId        string                 `protobuf:"bytes,1,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
-	OrgId            uint64                 `protobuf:"varint,2,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
-	AssetId          uint64                 `protobuf:"varint,3,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
-	Campaign         string                 `protobuf:"bytes,4,opt,name=campaign,proto3" json:"campaign,omitempty"`
-	Trigger          string                 `protobuf:"bytes,5,opt,name=trigger,proto3" json:"trigger,omitempty"`
-	StartedUnixNanos int64                  `protobuf:"varint,6,opt,name=started_unix_nanos,json=startedUnixNanos,proto3" json:"started_unix_nanos,omitempty"`
-	EndedUnixNanos   int64                  `protobuf:"varint,7,opt,name=ended_unix_nanos,json=endedUnixNanos,proto3" json:"ended_unix_nanos,omitempty"`
-	State            EpisodeState           `protobuf:"varint,8,opt,name=state,proto3,enum=wendycloud.data.v1.EpisodeState" json:"state,omitempty"`
-	SizeBytes        uint64                 `protobuf:"varint,9,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	EpisodeId string                 `protobuf:"bytes,1,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
+	// Owning tenant, as attested by the cloud. Unlike the upload manifest, this
+	// is server output, not a client claim: it reports the identity the episode
+	// was actually stored under. It stays on the response because a query with
+	// no asset filter spans assets, and a reader that cannot tell the rows
+	// apart would have to reach into attributes_json to do it.
+	OrgId   uint64 `protobuf:"varint,2,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
+	AssetId uint64 `protobuf:"varint,3,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
+	// Campaign name and its trigger, as recorded at capture time.
+	Campaign         string       `protobuf:"bytes,4,opt,name=campaign,proto3" json:"campaign,omitempty"`
+	Trigger          string       `protobuf:"bytes,5,opt,name=trigger,proto3" json:"trigger,omitempty"`
+	StartedUnixNanos int64        `protobuf:"varint,6,opt,name=started_unix_nanos,json=startedUnixNanos,proto3" json:"started_unix_nanos,omitempty"`
+	EndedUnixNanos   int64        `protobuf:"varint,7,opt,name=ended_unix_nanos,json=endedUnixNanos,proto3" json:"ended_unix_nanos,omitempty"`
+	State            EpisodeState `protobuf:"varint,8,opt,name=state,proto3,enum=wendycloud.data.v1.EpisodeState" json:"state,omitempty"`
+	// Total bytes the episode occupies in object storage: the sum of every
+	// file's size, derived files included. It is deliberately NOT capture-only.
+	// This number answers "what does this episode cost to store", which is what
+	// retention and quota act on, and it stays equal to the sum of the file
+	// sizes so the two can be checked against each other. A total that silently
+	// omitted some of its own parts would match neither storage nor the file
+	// list. Capture-only bytes are a filter over the per-file roles, e.g.
+	// summing size_bytes where role is CAPTURED or UNSPECIFIED.
+	SizeBytes uint64 `protobuf:"varint,9,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
 	// Clock correlation summary JSON (UTC offset bounds, clock status).
 	ClockCorrelationJson []byte `protobuf:"bytes,10,opt,name=clock_correlation_json,json=clockCorrelationJson,proto3" json:"clock_correlation_json,omitempty"`
 	// Full device manifest JSON as uploaded.
@@ -1328,12 +1365,10 @@ var File_cloud_data_ingest_proto protoreflect.FileDescriptor
 
 const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\n" +
-	"\x17cloud/data_ingest.proto\x12\x12wendycloud.data.v1\"\xe1\x04\n" +
+	"\x17cloud/data_ingest.proto\x12\x12wendycloud.data.v1\"\xcd\x04\n" +
 	"\x0fEpisodeManifest\x12\x1d\n" +
 	"\n" +
-	"episode_id\x18\x01 \x01(\tR\tepisodeId\x12\x15\n" +
-	"\x06org_id\x18\x02 \x01(\x04R\x05orgId\x12\x19\n" +
-	"\basset_id\x18\x03 \x01(\x04R\aassetId\x12\x1a\n" +
+	"episode_id\x18\x01 \x01(\tR\tepisodeId\x12\x1a\n" +
 	"\bcampaign\x18\x04 \x01(\tR\bcampaign\x12+\n" +
 	"\x11campaign_revision\x18\x05 \x01(\tR\x10campaignRevision\x12\x18\n" +
 	"\atrigger\x18\x06 \x01(\tR\atrigger\x124\n" +
@@ -1343,9 +1378,9 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\x16utc_offset_lower_nanos\x18\n" +
 	" \x01(\x03R\x13utcOffsetLowerNanos\x123\n" +
 	"\x16utc_offset_upper_nanos\x18\v \x01(\x03R\x13utcOffsetUpperNanos\x12.\n" +
-	"\x13system_clock_status\x18\f \x01(\tR\x11systemClockStatus\x12=\n" +
-	"\x05files\x18\r \x03(\v2'.wendycloud.data.v1.EpisodeFileManifestR\x05files\x12'\n" +
-	"\x0fattributes_json\x18\x0e \x01(\fR\x0eattributesJson\"\x81\x03\n" +
+	"\x13system_clock_status\x18\f \x01(\tR\x11systemClockStatus\x12'\n" +
+	"\x0fattributes_json\x18\x0e \x01(\fR\x0eattributesJson\x12=\n" +
+	"\x05files\x18\r \x03(\v2'.wendycloud.data.v1.EpisodeFileManifestR\x05filesJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x06org_idR\basset_id\"\x81\x03\n" +
 	"\x13EpisodeFileManifest\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1d\n" +
 	"\n" +
@@ -1364,7 +1399,7 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\bmanifest\x18\x01 \x01(\v2#.wendycloud.data.v1.EpisodeManifestR\bmanifest\"P\n" +
 	"\x0fFileUploadState\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12)\n" +
-	"\x10committed_offset\x18\x02 \x01(\x03R\x0fcommittedOffset\"\x8f\x01\n" +
+	"\x10committed_offset\x18\x02 \x01(\x04R\x0fcommittedOffset\"\x8f\x01\n" +
 	"\x1aBeginEpisodeUploadResponse\x126\n" +
 	"\x05state\x18\x01 \x01(\x0e2 .wendycloud.data.v1.EpisodeStateR\x05state\x129\n" +
 	"\x05files\x18\x02 \x03(\v2#.wendycloud.data.v1.FileUploadStateR\x05files\"\x7f\n" +
@@ -1372,13 +1407,13 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\n" +
 	"episode_id\x18\x01 \x01(\tR\tepisodeId\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x16\n" +
-	"\x06offset\x18\x03 \x01(\x03R\x06offset\x12\x12\n" +
+	"\x06offset\x18\x03 \x01(\x04R\x06offset\x12\x12\n" +
 	"\x04data\x18\x04 \x01(\fR\x04data\x12\x10\n" +
 	"\x03eof\x18\x05 \x01(\bR\x03eof\"y\n" +
 	"\x0fEpisodeChunkAck\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12'\n" +
-	"\x0freceived_offset\x18\x02 \x01(\x03R\x0ereceivedOffset\x12)\n" +
-	"\x10committed_offset\x18\x03 \x01(\x03R\x0fcommittedOffset\"5\n" +
+	"\x0freceived_offset\x18\x02 \x01(\x04R\x0ereceivedOffset\x12)\n" +
+	"\x10committed_offset\x18\x03 \x01(\x04R\x0fcommittedOffset\"5\n" +
 	"\x14CommitEpisodeRequest\x12\x1d\n" +
 	"\n" +
 	"episode_id\x18\x01 \x01(\tR\tepisodeId\"\x9c\x01\n" +

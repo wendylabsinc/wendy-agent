@@ -92,7 +92,7 @@ func (s *fakeIngestServer) BeginEpisodeUpload(_ context.Context, req *cloudpb.Be
 		if off > 0 {
 			s.committed[f.GetPath()] = off
 		}
-		files = append(files, &cloudpb.FileUploadState{Path: f.GetPath(), CommittedOffset: off})
+		files = append(files, &cloudpb.FileUploadState{Path: f.GetPath(), CommittedOffset: uint64(off)})
 	}
 	return &cloudpb.BeginEpisodeUploadResponse{State: s.beginState, Files: files}, nil
 }
@@ -115,7 +115,7 @@ func (s *fakeIngestServer) UploadEpisodeChunk(stream grpc.BidiStreamingServer[cl
 			committed = recv
 		}
 		s.mu.Unlock()
-		if err := stream.Send(&cloudpb.EpisodeChunkAck{Path: chunk.GetPath(), ReceivedOffset: recv, CommittedOffset: committed}); err != nil {
+		if err := stream.Send(&cloudpb.EpisodeChunkAck{Path: chunk.GetPath(), ReceivedOffset: uint64(recv), CommittedOffset: uint64(committed)}); err != nil {
 			return err
 		}
 	}
@@ -205,8 +205,8 @@ func newTestWorker(mgr *data.Manager, client cloudpb.DataIngestServiceClient) *D
 		now:         time.Now,
 		newSleeper:  contextSleeper,
 	}
-	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, uint64, uint64, func(), error) {
-		return client, 7, 42, func() {}, nil
+	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, func(), error) {
+		return client, func() {}, nil
 	}
 	return w
 }
@@ -536,8 +536,8 @@ func runIdentityHeaderPass(t *testing.T, override string, orgID, assetID int32) 
 	// The client is dialed with exactly the options dialFactory would pass, so
 	// the production interceptors (when there are any) run for real.
 	client := startFakeIngest(t, srv, w.ingestDialOptions(orgID, assetID)...)
-	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, uint64, uint64, func(), error) {
-		return client, uint64(orgID), uint64(assetID), func() {}, nil
+	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, func(), error) {
+		return client, func() {}, nil
 	}
 
 	if err := w.runPass(context.Background()); err != nil {
@@ -602,7 +602,7 @@ func TestBuildEpisodeManifestCarriesFileRole(t *testing.T) {
 			{Path: "cameras/front/playable.mp4", SourceID: "front", MediaType: "video/mp4", Role: data.FileRoleDerived},
 		},
 	}
-	got, err := buildEpisodeManifest(mf, 7, 9)
+	got, err := buildEpisodeManifest(mf)
 	if err != nil {
 		t.Fatalf("buildEpisodeManifest: %v", err)
 	}

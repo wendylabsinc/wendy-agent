@@ -50,9 +50,11 @@ const (
 //
 // Authentication:
 //   - Begin/Upload/Commit require a device asset identity (mTLS client
-//     certificate SAN). Uploads are scoped to the asserted org and asset; a
-//     manifest whose org_id or asset_id differs from the certificate
-//     identity is rejected with PERMISSION_DENIED.
+//     certificate SAN). The owning organization and asset are read from that
+//     certificate and attested by the cloud; they are not carried on the
+//     request. Every catalog row and every storage object name is written
+//     from the certificate identity, so an upload cannot name a tenant it
+//     does not hold a certificate for.
 //   - QueryEpisodes/GetEpisode are read RPCs for users and services; the
 //     serving implementation defines the accepted credential.
 type DataIngestServiceClient interface {
@@ -156,9 +158,11 @@ func (c *dataIngestServiceClient) GetEpisode(ctx context.Context, in *GetEpisode
 //
 // Authentication:
 //   - Begin/Upload/Commit require a device asset identity (mTLS client
-//     certificate SAN). Uploads are scoped to the asserted org and asset; a
-//     manifest whose org_id or asset_id differs from the certificate
-//     identity is rejected with PERMISSION_DENIED.
+//     certificate SAN). The owning organization and asset are read from that
+//     certificate and attested by the cloud; they are not carried on the
+//     request. Every catalog row and every storage object name is written
+//     from the certificate identity, so an upload cannot name a tenant it
+//     does not hold a certificate for.
 //   - QueryEpisodes/GetEpisode are read RPCs for users and services; the
 //     serving implementation defines the accepted credential.
 type DataIngestServiceServer interface {
