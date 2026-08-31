@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/audioloop"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ros2camera"
 	sensorlinkpb "github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb"
@@ -18,13 +19,21 @@ type Loopback interface {
 	NodePath(id uint32) (string, bool)
 }
 
+// AudioLoop is the subset of audioloop.Manager the supervisor needs to fan
+// microphone channels out to snd-aloop PCM sinks.
+type AudioLoop interface {
+	Allocate(sourceAssetID int32, channelID uint32) (int, error)
+	OpenWriter(ctx context.Context, sub int, f audioloop.PCMFormat) (audioloop.AudioWriter, error)
+}
+
 // Supervisor runs one reconcile goroutine per pairing: dial the source, mount
-// its camera channels as loopback nodes, and pump frames with backoff.
+// its camera and microphone channels, and pump frames with backoff.
 type Supervisor struct {
 	logger       *zap.Logger
 	lb           Loopback
 	transportFor TransportFactory
 	newWriter    func(path string) ros2camera.CameraWriter
+	audioLoop    AudioLoop
 
 	nodeIDsMu sync.Mutex
 	nodeIDs   map[string]uint32 // "sourceAssetID:channelID" -> MCU-band node id
@@ -34,8 +43,8 @@ type Supervisor struct {
 // pairing's mTLS handshake pins that specific source's asset identity,
 // mirroring mesh_dialer.go's per-target pinning — a single shared transport
 // cannot do that across pairings with different SourceAssetID/OrgID.
-func NewSupervisor(logger *zap.Logger, lb Loopback, transportFor TransportFactory, newWriter func(path string) ros2camera.CameraWriter) *Supervisor {
-	return &Supervisor{logger: logger, lb: lb, transportFor: transportFor, newWriter: newWriter, nodeIDs: make(map[string]uint32)}
+func NewSupervisor(logger *zap.Logger, lb Loopback, transportFor TransportFactory, newWriter func(path string) ros2camera.CameraWriter, audioLoop AudioLoop) *Supervisor {
+	return &Supervisor{logger: logger, lb: lb, transportFor: transportFor, newWriter: newWriter, audioLoop: audioLoop, nodeIDs: make(map[string]uint32)}
 }
 
 // nodeID returns a stable MCU-band node id for (sourceAssetID, channelID),
@@ -128,18 +137,26 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 			manifest.GetDeviceAssetId(), p.SourceAssetID)
 	}
 	cams := cameraChannels(manifest, p.SensorAllowlist)
-	if len(cams) == 0 {
+	mics := microphoneChannels(manifest, p.SensorAllowlist)
+	if len(cams) == 0 && len(mics) == 0 {
 		return false, nil // nothing to mount; caller backs off and retries
 	}
 
-	// Assign a stable per-(source,channel) MCU-band node id to each channel.
+	// Assign a stable per-(source,channel) MCU-band node id to each camera
+	// channel, and a snd-aloop subdevice to each microphone channel.
 	writers := make(map[uint32]ros2camera.CameraWriter, len(cams))
 	defer func() {
 		for _, w := range writers {
 			w.Close()
 		}
 	}()
-	subs := make([]uint32, 0, len(cams))
+	audioWriters := make(map[uint32]audioloop.AudioWriter, len(mics))
+	defer func() {
+		for _, aw := range audioWriters {
+			aw.Close()
+		}
+	}()
+	subs := make([]uint32, 0, len(cams)+len(mics))
 	for _, ch := range cams {
 		id, err := s.nodeID(p.SourceAssetID, ch.ChannelId)
 		if err != nil {
@@ -151,6 +168,19 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		}
 		path, _ := s.lb.NodePath(id)
 		writers[ch.ChannelId] = s.newWriter(path)
+		subs = append(subs, ch.ChannelId)
+	}
+	for _, ch := range mics {
+		sub, err := s.audioLoop.Allocate(p.SourceAssetID, ch.ChannelId)
+		if err != nil {
+			s.logger.Warn("skipping sensor channel", zap.Int32("source", p.SourceAssetID), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
+			continue
+		}
+		aw, err := s.audioLoop.OpenWriter(ctx, sub, audioloop.PCMFormat{SampleRate: ch.GetAudio().GetSampleRate(), Channels: ch.GetAudio().GetChannels()})
+		if err != nil {
+			return false, err
+		}
+		audioWriters[ch.ChannelId] = aw
 		subs = append(subs, ch.ChannelId)
 	}
 	if len(subs) == 0 {
@@ -176,14 +206,17 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		}
 	}()
 	for f := range frames {
-		w := writers[f.ChannelId]
-		if w == nil {
-			continue
+		if w := writers[f.ChannelId]; w != nil {
+			if err := w.WriteFrame(frameToCamera(f, cams)); err != nil {
+				return delivered, err
+			}
+			delivered = true
+		} else if aw := audioWriters[f.ChannelId]; aw != nil {
+			if err := aw.WritePCM(f.Payload); err != nil {
+				return delivered, err
+			}
+			delivered = true
 		}
-		if err := w.WriteFrame(frameToCamera(f, cams)); err != nil {
-			return delivered, err
-		}
-		delivered = true
 	}
 	return delivered, nil
 }
@@ -192,6 +225,20 @@ func cameraChannels(m *sensorlinkpb.SensorManifest, allow []string) []*sensorlin
 	var out []*sensorlinkpb.SensorDescriptor
 	for _, d := range m.GetSensors() {
 		if d.Kind != sensorlinkpb.SensorDescriptor_CAMERA {
+			continue
+		}
+		if len(allow) > 0 && !contains(allow, d.Name) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+func microphoneChannels(m *sensorlinkpb.SensorManifest, allow []string) []*sensorlinkpb.SensorDescriptor {
+	var out []*sensorlinkpb.SensorDescriptor
+	for _, d := range m.GetSensors() {
+		if d.Kind != sensorlinkpb.SensorDescriptor_MICROPHONE {
 			continue
 		}
 		if len(allow) > 0 && !contains(allow, d.Name) {

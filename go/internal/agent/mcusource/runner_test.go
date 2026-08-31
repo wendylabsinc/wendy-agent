@@ -34,7 +34,7 @@ func TestRunnerStartStreamsThenStopCancels(t *testing.T) {
 	var frames atomic.Int32
 	sup := mcusource.NewSupervisor(zap.NewNop(), lb,
 		func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil },
-		func(string) ros2camera.CameraWriter { return &countingWriter{n: &frames} })
+		func(string) ros2camera.CameraWriter { return &countingWriter{n: &frames} }, noAudioLoop{})
 
 	r := mcusource.NewRunner(zap.NewNop(), sup)
 	r.Start(mcusource.SensorPairing{SourceAssetID: 5, OrgID: 1}, ln.Addr().String())
@@ -68,7 +68,7 @@ func (w *countingWriter) Close() error                      { return nil }
 func TestRunnerRestartCancelsPriorGoroutine(t *testing.T) {
 	sup := mcusource.NewSupervisor(zap.NewNop(), &fakeLoopback{},
 		func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil },
-		func(string) ros2camera.CameraWriter { return &countingWriter{n: &atomic.Int32{}} })
+		func(string) ros2camera.CameraWriter { return &countingWriter{n: &atomic.Int32{}} }, noAudioLoop{})
 
 	// A listener that never accepts: RunPairing blocks in its dial/backoff
 	// loop, so Stop's ctx cancellation is what has to unblock each goroutine.

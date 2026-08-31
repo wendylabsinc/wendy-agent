@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/audioloop"
 	"github.com/wendylabsinc/wendy/go/internal/agent/bluetooth"
 	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
 	"github.com/wendylabsinc/wendy/go/internal/agent/configpartition"
@@ -381,7 +382,8 @@ func main() {
 		}
 		return mcusource.NewTCPTransport(d, addr), nil
 	}
-	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, ros2camera.NewFrameWriter)
+	audioLoop := audioloop.NewManager(logger)
+	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, ros2camera.NewFrameWriter, audioLoop)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
 	sensorAgentOrgID := func() int32 {
 		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
