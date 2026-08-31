@@ -64,6 +64,14 @@ const (
 	// declares the app's primary HTTP port so clients (wendy run, remote
 	// management apps) can discover and open it. See entitlements.md.
 	EntitlementHTTP = "http"
+	// EntitlementProfiling grants the capabilities GPU profilers (NVIDIA CUPTI,
+	// nsys) need to read hardware performance counters inside the container
+	// (CAP_SYS_ADMIN, CAP_SYS_PTRACE). It is privileged-equivalent, so the caps
+	// are honored ONLY under `wendy run --profile` (or `--debug`, which also
+	// enables them); either flag injects them, so apps do not need to declare
+	// it, and outside those flags it is a no-op. See entitlements.md for the
+	// blast radius.
+	EntitlementProfiling = "profiling"
 )
 
 // ValidEntitlementTypes is the set of all recognized entitlement type strings.
@@ -87,6 +95,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementAdmin,
 	EntitlementBuild,
 	EntitlementHTTP,
+	EntitlementProfiling,
 }
 
 // FrameworkROS2 is the "ros2" key under wendy.json's "frameworks" object.
@@ -123,6 +132,7 @@ var allowedKeys = map[string][]string{
 	EntitlementAdmin:         {"type"},
 	EntitlementBuild:         {"type"},
 	EntitlementHTTP:          {"type", "port"},
+	EntitlementProfiling:     {"type"},
 }
 
 // Platform constants identify the target hardware family.
@@ -257,7 +267,11 @@ type AppConfig struct {
 	Hooks        *HooksConfig     `json:"hooks,omitempty"`
 	Python       *PythonConfig    `json:"python,omitempty"`
 	Debug        bool             `json:"debug,omitempty"`
-	Files        []FileSyncEntry  `json:"files,omitempty"`
+	// Profiling enables the GPU-profiling entitlement's capabilities
+	// (CAP_SYS_ADMIN/SYS_PTRACE for CUPTI/nsys) WITHOUT the debug build /
+	// network-host side effects of Debug. Set by `wendy run --profile`.
+	Profiling bool            `json:"profiling,omitempty"`
+	Files     []FileSyncEntry `json:"files,omitempty"`
 	// Brewfile is an optional Homebrew Bundle manifest path for native Darwin
 	// deployments. It is relative to wendy.json and synced to the target Mac
 	// before the agent runs `brew bundle --file`.

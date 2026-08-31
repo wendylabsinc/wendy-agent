@@ -504,6 +504,7 @@ type runOptions struct {
 	// Empty for every ordinary run.
 	fleetDevices         []string
 	debug                bool
+	profile              bool
 	deploy               bool
 	detach               bool
 	yes                  bool
@@ -611,6 +612,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark); the built image is pushed straight to the target device")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
+	cmd.Flags().BoolVar(&opts.profile, "profile", false, "Enable GPU profiling capabilities (CUPTI/nsys) in the container, without forcing a debug build")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Automatically accept all interactive prompts")
@@ -955,6 +957,11 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	if err := warnAppConfigFile(cfgPath); err != nil {
 		return fmt.Errorf("reading wendy.json warnings: %w", err)
 	}
+
+	// --profile grants GPU profiling caps (CUPTI/nsys) via appCfg.Profiling,
+	// independent of --debug: no host-networking, no debugpy, and (crucially) no
+	// debug build — the profile runs against the optimized release binary.
+	appCfg.Profiling = opts.profile
 
 	// Debug mode requires host networking for remote debugger access.
 	if opts.debug {

@@ -54,6 +54,15 @@ type ApplyOptions struct {
 	// SystemAPISocketDir is the app-specific host directory prepared by
 	// AppSystemAPISocketManager. It contains only the narrow System API socket.
 	SystemAPISocketDir string
+	// Debug is set when the container is launched via `wendy run --debug`. It
+	// auto-enables the profiling capabilities (GPU perf-counter capabilities for
+	// CUPTI/nsys) even when the app did not declare it in wendy.json. Outside
+	// --debug/--profile, profiling is never granted.
+	Debug bool
+	// Profiling is set by `wendy run --profile`. Like Debug it enables the GPU
+	// profiling capabilities, but WITHOUT forcing a debug build — so profiles
+	// run against an optimized binary. Never granted outside --debug/--profile.
+	Profiling bool
 }
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
@@ -120,7 +129,33 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			applyBuild(spec)
 		}
 	}
+
+	// `wendy run --profile` (or --debug) auto-enables GPU profiling (CUPTI/nsys
+	// perf counters) regardless of whether the app declared the profiling
+	// entitlement in wendy.json. Outside those flags the caps are never granted,
+	// so a declared profiling entitlement is a no-op in normal runs. --profile is
+	// the preferred trigger: it grants the caps without forcing a debug build.
+	if opts.Debug || opts.Profiling {
+		applyProfiling(spec)
+	}
 	return nil
+}
+
+// applyProfiling grants the capabilities NVIDIA CUPTI / Nsight Systems need to
+// read GPU hardware performance counters from inside the container. It is
+// privileged-equivalent (CAP_SYS_ADMIN), so callers gate it on --debug. The
+// host driver must also permit non-admin profiling
+// (NVreg_RestrictProfilingToAdminUsers=0) for counters to be readable.
+func applyProfiling(spec *Spec) {
+	if spec.Process.Capabilities == nil {
+		spec.Process.Capabilities = &LinuxCapabilities{}
+	}
+	for _, cap := range []string{"CAP_SYS_ADMIN", "CAP_SYS_PTRACE"} {
+		spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, cap)
+		spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, cap)
+		spec.Process.Capabilities.Inheritable = appendUnique(spec.Process.Capabilities.Inheritable, cap)
+		spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, cap)
+	}
 }
 
 // SetDeviceCapabilities adds standard device capabilities plus the cgroup

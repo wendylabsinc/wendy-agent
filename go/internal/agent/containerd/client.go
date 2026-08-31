@@ -1323,6 +1323,12 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	opts := localoci.ApplyOptions{
 		DBusProxySocketDir: dbusProxySocketDir,
 		SystemAPISocketDir: systemAPISocketDir,
+		// `wendy run --debug` sets appCfg.Debug; propagate it so the profiling
+		// entitlement (GPU perf-counter caps) auto-enables under debug only.
+		Debug: appCfg.Debug,
+		// `wendy run --profile` sets appCfg.Profiling — GPU profiling caps
+		// without the debug build.
+		Profiling: appCfg.Profiling,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
 	// derived (validated) values. This ensures ApplyEntitlements always receives
