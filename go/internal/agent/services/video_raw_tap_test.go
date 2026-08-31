@@ -171,11 +171,21 @@ func TestGetOrCreateHub_RawRefusedUpFrontOnceProducerDeclined(t *testing.T) {
 
 // --- pipeline planning ---
 
+// withYUYVModes describes a camera that advertises these modes in YUYV and
+// nothing in any other raw format -- the shape of every module measured, and
+// the case the stacked-mode geometry reasons about.
 func withYUYVModes(t *testing.T, modes [][2]uint32) {
 	t.Helper()
-	prev := enumerateYUYVFrameSizes
-	enumerateYUYVFrameSizes = func(string) [][2]uint32 { return modes }
-	t.Cleanup(func() { enumerateYUYVFrameSizes = prev })
+	withRawModes(t, map[uint32][][2]uint32{v4l2PixFmtYUYV: modes})
+}
+
+// withRawModes describes a camera per pixel format, for the cases where which
+// format the tap picks is the point.
+func withRawModes(t *testing.T, byFormat map[uint32][][2]uint32) {
+	t.Helper()
+	prev := enumerateRawFrameSizes
+	enumerateRawFrameSizes = func(_ string, pixfmt uint32) [][2]uint32 { return byFormat[pixfmt] }
+	t.Cleanup(func() { enumerateRawFrameSizes = prev })
 }
 
 func mustPlan(t *testing.T, req *agentpb.StreamVideoRequest, available map[string]bool) gstPipelinePlan {
@@ -431,5 +441,71 @@ func TestErrRawUnavailable_CarriesReasonAndCode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "because") {
 		t.Errorf("message must carry the cause: %v", err)
+	}
+}
+
+// --- raw formats beyond YUYV ---
+
+// A thermal core exposing 16-bit greyscale directly, rather than stacking it
+// onto a picture, was refused before: the tap only ever looked for YUYV. Its
+// bytes are exactly what raw exists to deliver.
+func TestPlan_OffersRawForAY16OnlyCamera(t *testing.T) {
+	// 640x480 rather than a thermal-native size: validateStreamParams applies
+	// its own resolution rules upstream, and the format is what is under test.
+	withRawModes(t, map[uint32][][2]uint32{v4l2PixFmtY16: {{640, 480}}})
+	plan := mustPlan(t, &agentpb.StreamVideoRequest{Width: 640, Height: 480}, map[string]bool{})
+	if plan.raw == nil {
+		t.Fatalf("raw not offered for a Y16 camera: %s", plan.rawWhy)
+	}
+	if got := plan.raw.GetFourcc(); got != "Y16 " {
+		t.Errorf("fourcc = %q, want %q", got, "Y16 ")
+	}
+	if got := plan.raw.GetBytesPerLine(); got != 640*2 {
+		t.Errorf("bytes per line = %d, want %d", got, 640*2)
+	}
+	if !strings.Contains(strings.Join(plan.args, " "), "format=GRAY16_LE") {
+		t.Errorf("capture caps must name the format for GStreamer: %v", plan.args)
+	}
+}
+
+// GREY is one byte per pixel, so bytes_per_line must not assume two -- a
+// subscriber decoding on a wrong stride reads a sheared image and no error.
+func TestPlan_GreyIsOneBytePerPixel(t *testing.T) {
+	withRawModes(t, map[uint32][][2]uint32{v4l2PixFmtGrey: {{640, 480}}})
+	plan := mustPlan(t, &agentpb.StreamVideoRequest{Width: 640, Height: 480}, map[string]bool{})
+	if plan.raw == nil {
+		t.Fatalf("raw not offered for a GREY camera: %s", plan.rawWhy)
+	}
+	if got := plan.raw.GetBytesPerLine(); got != 640 {
+		t.Errorf("bytes per line = %d, want %d", got, 640)
+	}
+}
+
+// YUYV stays preferred when a camera offers several, so the common path -- every
+// UVC webcam, and the thermal modules -- is unchanged by widening the table.
+func TestPlan_PrefersYUYVWhenACameraOffersSeveral(t *testing.T) {
+	withRawModes(t, map[uint32][][2]uint32{
+		v4l2PixFmtYUYV: {{640, 480}},
+		v4l2PixFmtY16:  {{640, 480}},
+	})
+	plan := mustPlan(t, &agentpb.StreamVideoRequest{Width: 640, Height: 480}, map[string]bool{})
+	if plan.raw == nil || plan.raw.GetFourcc() != "YUYV" {
+		t.Fatalf("want YUYV preferred, got %+v (%s)", plan.raw, plan.rawWhy)
+	}
+}
+
+// A camera offering only formats the tap cannot build a pipeline for is refused
+// with a reason naming what it CAN do -- "unsupported" alone tells nobody what
+// to try next.
+func TestPlan_RefusalNamesTheFormatsRawSupports(t *testing.T) {
+	withRawModes(t, map[uint32][][2]uint32{})
+	plan := mustPlan(t, &agentpb.StreamVideoRequest{Width: 640, Height: 480}, map[string]bool{})
+	if plan.raw != nil {
+		t.Fatalf("raw offered for a camera advertising nothing: %+v", plan.raw)
+	}
+	for _, want := range []string{"YUYV", "Y16", "GREY"} {
+		if !strings.Contains(plan.rawWhy, want) {
+			t.Errorf("refusal %q should name %s", plan.rawWhy, want)
+		}
 	}
 }

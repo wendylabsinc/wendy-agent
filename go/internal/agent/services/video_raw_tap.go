@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -122,11 +123,76 @@ func requestsDeviceDefault(req *agentpb.StreamVideoRequest) bool {
 	return req.GetWidth() == 0 && req.GetHeight() == 0 && req.GetFramerate() == 0
 }
 
+// rawPixelFormat is a capture format the tap can offer. Raw was originally
+// gated on YUYV alone, which is what the TOPDON happens to use -- but the
+// promise ("the bytes the camera produced") has nothing to do with that format,
+// and RawFormat already carries a fourcc to describe whatever arrives. A
+// thermal camera exposing Y16, or a mono sensor exposing GREY, was refused for
+// no reason beyond the table it was missing from.
+//
+// A format cannot simply be passed through, though: the capture caps must NAME
+// it to GStreamer, so each entry pairs the V4L2 fourcc with its caps spelling.
+// That is the real boundary -- not the fourcc, the format we can build a
+// pipeline for.
+type rawPixelFormat struct {
+	fourcc    string // what RawFormat reports, and what v4l2 calls it
+	v4l2      uint32 // V4L2_PIX_FMT_*
+	gstFormat string // video/x-raw,format=<this>
+	// bytesPerLine for one row. Packed formats only: a planar format's stride
+	// is not one number, and describing it as one would be a lie a subscriber
+	// would then decode against.
+	bytesPerLine func(width uint32) uint32
+}
+
+func twoBytesPerPixel(w uint32) uint32 { return w * 2 }
+func oneBytePerPixel(w uint32) uint32  { return w }
+
+// rawPixelFormats is tried in order, so the first entry is preferred when a
+// camera advertises several. YUYV stays first: it is what every UVC webcam
+// offers and what the thermal modules use, so the common path is unchanged.
+//
+// Deliberately packed formats only. NV12 and other planar layouts have a
+// per-plane stride that bytes_per_line cannot express, and Bayer needs
+// video/x-bayer rather than video/x-raw -- a different caps type, not just a
+// different name. Both are refusals with a reason, not silent omissions.
+var rawPixelFormats = []rawPixelFormat{
+	{fourcc: "YUYV", v4l2: v4l2PixFmtYUYV, gstFormat: "YUY2", bytesPerLine: twoBytesPerPixel},
+	{fourcc: "UYVY", v4l2: v4l2PixFmtUYVY, gstFormat: "UYVY", bytesPerLine: twoBytesPerPixel},
+	// Y16 is the one that matters for thermal: plenty of cores expose 16-bit
+	// per-pixel data directly rather than stacking it onto a picture.
+	{fourcc: "Y16 ", v4l2: v4l2PixFmtY16, gstFormat: "GRAY16_LE", bytesPerLine: twoBytesPerPixel},
+	{fourcc: "GREY", v4l2: v4l2PixFmtGrey, gstFormat: "GRAY8", bytesPerLine: oneBytePerPixel},
+}
+
+// rawFormatFor picks the format the tap will capture in: the first entry the
+// device advertises at exactly this size. Returns nil when the camera offers
+// none of them at that size, which is a refusal with a reason rather than a
+// silent fallback to a format the pipeline is not actually producing.
+func rawFormatFor(devicePath string, width, height uint32) *rawPixelFormat {
+	for i := range rawPixelFormats {
+		f := &rawPixelFormats[i]
+		if deviceSupportsRawSize(devicePath, f.v4l2, width, height) {
+			return f
+		}
+	}
+	return nil
+}
+
+// rawFormatNames lists what the tap can offer, for the refusal message: telling
+// someone their camera is unsupported is only useful alongside what is.
+func rawFormatNames() string {
+	names := make([]string, 0, len(rawPixelFormats))
+	for _, f := range rawPixelFormats {
+		names = append(names, strings.TrimSpace(f.fourcc))
+	}
+	return strings.Join(names, "/")
+}
+
 // enumerateYUYVFrameSizes lists the discrete YUYV modes a device advertises.
 // Behind a var so pipeline-construction tests can describe a camera without a
 // V4L2 node (same spirit as deviceSupportsMJPEGSize). Read-only open, so it
 // answers while the camera is streaming.
-var enumerateYUYVFrameSizes = func(path string) [][2]uint32 {
+var enumerateRawFrameSizes = func(path string, pixfmt uint32) [][2]uint32 {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil
@@ -134,7 +200,7 @@ var enumerateYUYVFrameSizes = func(path string) [][2]uint32 {
 	defer unix.Close(fd) //nolint:errcheck
 	var sizes [][2]uint32
 	for index := uint32(0); index < 64; index++ {
-		fse := v4l2FrmSizeEnum{Index: index, PixelFormat: v4l2PixFmtYUYV}
+		fse := v4l2FrmSizeEnum{Index: index, PixelFormat: pixfmt}
 		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocEnumFramesizes,
 			uintptr(unsafe.Pointer(&fse))); errno != 0 {
 			break // EINVAL marks the end of the list
@@ -147,11 +213,18 @@ var enumerateYUYVFrameSizes = func(path string) [][2]uint32 {
 	return sizes
 }
 
-// deviceSupportsYUYVSize reports whether the device advertises YUYV at exactly
-// width x height — the precondition for pinning format=YUY2 on the capture and
-// promising that layout to raw subscribers. Behind a var for tests.
-var deviceSupportsYUYVSize = func(path string, width, height uint32) bool {
-	for _, m := range enumerateYUYVFrameSizes(path) {
+// enumerateYUYVFrameSizes is the YUYV case of the above. The stacked-mode
+// geometry below reasons about the picture modes a thermal camera advertises,
+// and those are YUYV on every module measured.
+func enumerateYUYVFrameSizes(path string) [][2]uint32 {
+	return enumerateRawFrameSizes(path, v4l2PixFmtYUYV)
+}
+
+// deviceSupportsRawSize reports whether the device advertises this format at
+// exactly width x height — the precondition for pinning it on the capture and
+// promising that layout to raw subscribers.
+var deviceSupportsRawSize = func(path string, pixfmt, width, height uint32) bool {
+	for _, m := range enumerateRawFrameSizes(path, pixfmt) {
 		if m[0] == width && m[1] == height {
 			return true
 		}

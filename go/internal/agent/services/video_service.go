@@ -40,6 +40,9 @@ const (
 	v4l2PixFmtH264          = 0x34363248 // 'H264' little-endian FourCC
 	v4l2PixFmtYUYV          = 0x56595559 // 'YUYV'
 	v4l2PixFmtMJPEG         = 0x47504A4D // 'MJPG'
+	v4l2PixFmtUYVY          = 0x59565955 // 'UYVY'
+	v4l2PixFmtY16           = 0x20363159 // 'Y16 ' -- note the trailing space
+	v4l2PixFmtGrey          = 0x59455247 // 'GREY'
 	v4l2FieldNone           = 1
 
 	v4l2CapVideoCapture = 0x00000001
@@ -2584,18 +2587,22 @@ func planGStreamerPipeline(gstPath, devicePath string, req *agentpb.StreamVideoR
 		plan.rawWhy = fmt.Sprintf("camera is captured as MJPEG at %dx%d; raw frames are not offered", capW, capH)
 	case capW == 0 || capH == 0:
 		plan.rawWhy = "camera advertises no discrete frame size to capture raw frames at"
-	case !deviceSupportsYUYVSize(devicePath, capW, capH):
-		plan.rawWhy = fmt.Sprintf("camera does not advertise YUYV at %dx%d; raw frames are not offered", capW, capH)
-	case uint64(capW)*uint64(capH)*yuyvBytesPerPixel > maxRawFrameBytes:
-		plan.rawWhy = fmt.Sprintf("a %dx%d YUYV frame exceeds the %d-byte raw frame limit", capW, capH, maxRawFrameBytes)
+	case rawFormatFor(devicePath, capW, capH) == nil:
+		plan.rawWhy = fmt.Sprintf("camera advertises none of %s at %dx%d; raw frames are not offered",
+			rawFormatNames(), capW, capH)
+	case uint64(capH)*uint64(rawFormatFor(devicePath, capW, capH).bytesPerLine(capW)) > maxRawFrameBytes:
+		f := rawFormatFor(devicePath, capW, capH)
+		plan.rawWhy = fmt.Sprintf("a %dx%d %s frame exceeds the %d-byte raw frame limit",
+			capW, capH, strings.TrimSpace(f.fourcc), maxRawFrameBytes)
 	default:
+		f := rawFormatFor(devicePath, capW, capH)
 		plan.raw = &agentpb.RawFormat{
 			Width:        capW,
 			Height:       capH,
-			Fourcc:       fourccYUYV,
-			BytesPerLine: capW * yuyvBytesPerPixel,
+			Fourcc:       f.fourcc,
+			BytesPerLine: f.bytesPerLine(capW),
 		}
-		capsParts = append(capsParts, "format=YUY2")
+		capsParts = append(capsParts, "format="+f.gstFormat)
 	}
 
 	// The leaky queue goes as early as the source allows, so a backlog is shed
