@@ -65,18 +65,22 @@ type LANDevice struct {
 	// OrgID is the device's cloud organization id from the `orgid` TXT record;
 	// 0 when unprovisioned or pre-mesh.
 	OrgID int32 `json:"orgId,omitempty"`
-	// Sensorlink is true when the device advertises the `sensorlink=true` TXT
-	// record, meaning it can act as a remote sensor source for pairing.
-	Sensorlink       bool   `json:"sensorlink,omitempty"`
-	InterfaceType    string `json:"interfaceType"`
-	NetworkInterface string `json:"-"`
-	USB              string `json:"usb,omitempty"`
-	IsWendyDevice    bool   `json:"isWendyDevice"`
-	AgentVersion     string `json:"agentVersion,omitempty"`
-	DeviceType       string `json:"deviceType,omitempty"`
-	OS               string `json:"os,omitempty"`
-	OSVersion        string `json:"osVersion,omitempty"`
-	CPUArchitecture  string `json:"cpuArchitecture,omitempty"`
+	// Sensorlink is true when Caps contains "sensors" (from the `caps=` TXT
+	// record, or the legacy `sensorlink=true` TXT record it supersedes),
+	// meaning the device can act as a remote sensor source for pairing.
+	Sensorlink bool `json:"sensorlink,omitempty"`
+	// Caps is the device's advertised capability list from the `caps=`
+	// comma-separated TXT record (e.g. "sensors,foo"); nil when unadvertised.
+	Caps             []string `json:"caps,omitempty"`
+	InterfaceType    string   `json:"interfaceType"`
+	NetworkInterface string   `json:"-"`
+	USB              string   `json:"usb,omitempty"`
+	IsWendyDevice    bool     `json:"isWendyDevice"`
+	AgentVersion     string   `json:"agentVersion,omitempty"`
+	DeviceType       string   `json:"deviceType,omitempty"`
+	OS               string   `json:"os,omitempty"`
+	OSVersion        string   `json:"osVersion,omitempty"`
+	CPUArchitecture  string   `json:"cpuArchitecture,omitempty"`
 }
 
 func (d LANDevice) HumanReadable() string {
@@ -184,6 +188,9 @@ type DiscoveredDevice struct {
 	// Sensorlink is copied from LAN.Sensorlink when a LAN sighting is merged
 	// in; false when the device has no LAN sighting.
 	Sensorlink bool
+	// Caps is copied from LAN.Caps when a LAN sighting is merged in; nil when
+	// the device has no LAN sighting.
+	Caps []string
 	// AssetID and OrgID are copied from the LAN sighting's cloud asset/org TXT
 	// records; zero when the device has no LAN sighting or is unprovisioned.
 	AssetID int32
@@ -305,6 +312,7 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 			OSVersion:       d.OSVersion,
 			CPUArchitecture: d.CPUArchitecture,
 			Sensorlink:      d.Sensorlink,
+			Caps:            d.Caps,
 			AssetID:         d.AssetID,
 			OrgID:           d.OrgID,
 			IPAddress:       d.IPAddress,
