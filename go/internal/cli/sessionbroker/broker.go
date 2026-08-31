@@ -32,6 +32,11 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
+
+	// The proxy decompresses inbound messages and re-compresses them on the
+	// upstream call (see rpcCompression); both directions need the gzip codec
+	// registered in this process.
+	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/stats"
 )
@@ -300,6 +305,27 @@ func (a *activity) noteUpstreamError(upstream *grpc.ClientConn, err error) {
 	a.badOnce.Do(func() { close(a.upstreamBad) })
 }
 
+// rpcCompression carries the grpc-encoding an inbound RPC arrived with from
+// the stats layer — the only place grpc-go exposes it — to the proxy handler,
+// which mirrors it onto the upstream call. Without that mirror the proxy
+// silently decompresses: chunk pushes open WriteChunks with gzip specifically
+// because raw chunk payloads have stalled USB-NCM links (see chunkpush.go),
+// and a broker in the middle must keep that property on the real device link.
+//
+// TagRPC attaches the holder and HandleRPC's InHeader fills it on the same
+// goroutine that then invokes the handler (grpc-go's server does both before
+// dispatch), so the plain field needs no synchronization.
+type rpcCompression struct{ name string }
+
+type rpcCompressionKey struct{}
+
+func requestCompression(ctx context.Context) string {
+	if rc, ok := ctx.Value(rpcCompressionKey{}).(*rpcCompression); ok {
+		return rc.name
+	}
+	return ""
+}
+
 func proxyHandler(upstream *grpc.ClientConn, activity *activity) grpc.StreamHandler {
 	return func(_ any, downstream grpc.ServerStream) error {
 		method, ok := grpc.MethodFromServerStream(downstream)
@@ -317,7 +343,11 @@ func proxyHandler(upstream *grpc.ClientConn, activity *activity) grpc.StreamHand
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
 			ctx = metadata.NewOutgoingContext(ctx, md.Copy())
 		}
-		upstreamStream, err := upstream.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, method, grpc.ForceCodec(rawCodec{}))
+		callOpts := []grpc.CallOption{grpc.ForceCodec(rawCodec{})}
+		if comp := requestCompression(ctx); comp != "" && comp != "identity" {
+			callOpts = append(callOpts, grpc.UseCompressor(comp))
+		}
+		upstreamStream, err := upstream.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, method, callOpts...)
 		if err != nil {
 			activity.noteUpstreamError(upstream, err)
 			return err
@@ -339,6 +369,16 @@ func proxyHandler(upstream *grpc.ClientConn, activity *activity) grpc.StreamHand
 					return
 				}
 				if err := upstreamStream.SendMsg(&msg); err != nil {
+					// io.EOF here is gRPC's "the stream already completed"
+					// signal: the real terminal status — possibly a success
+					// response — is only available from the receive side.
+					// Returning it as the RPC's error would clobber that
+					// status with codes.Unknown "EOF", so stop sending and
+					// let the response loop deliver the upstream's verdict.
+					if errors.Is(err, io.EOF) {
+						requestDone <- nil
+						return
+					}
 					activity.noteUpstreamError(upstream, err)
 					requestDone <- err
 					return
@@ -388,9 +428,16 @@ func proxyHandler(upstream *grpc.ClientConn, activity *activity) grpc.StreamHand
 type connectionActivity struct{ activity *activity }
 
 func (h connectionActivity) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context {
-	return ctx
+	return context.WithValue(ctx, rpcCompressionKey{}, &rpcCompression{})
 }
-func (h connectionActivity) HandleRPC(context.Context, stats.RPCStats) { h.activity.touch() }
+func (h connectionActivity) HandleRPC(ctx context.Context, s stats.RPCStats) {
+	h.activity.touch()
+	if ih, ok := s.(*stats.InHeader); ok {
+		if rc, ok := ctx.Value(rpcCompressionKey{}).(*rpcCompression); ok {
+			rc.name = ih.Compression
+		}
+	}
+}
 func (h connectionActivity) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context {
 	return ctx
 }

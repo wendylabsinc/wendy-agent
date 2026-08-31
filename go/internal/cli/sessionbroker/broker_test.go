@@ -3,12 +3,14 @@
 package sessionbroker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	grpcgzip "google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/stats"
 )
 
 type testAgentServer struct {
@@ -49,13 +53,54 @@ func (testContainerServer) RunContainer(_ *agentpb.RunContainerLayersRequest, st
 	return stream.Send(&agentpb.RunContainerLayersResponse{})
 }
 
-func startUpstream(t *testing.T) (*grpc.ClientConn, func()) {
+// WriteChunks completes after a single message while the client is typically
+// still sending — the shape of a real agent finishing (or refusing) a chunk
+// upload early, which is exactly when the proxy must not replace the upstream's
+// terminal status with the send side's io.EOF.
+func (testContainerServer) WriteChunks(stream grpc.ClientStreamingServer[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]) error {
+	if _, err := stream.Recv(); err != nil {
+		return err
+	}
+	return stream.SendAndClose(&agentpb.WriteChunksResponse{})
+}
+
+// compressionRecorder records the grpc-encoding each inbound RPC arrived with,
+// in call order.
+type compressionRecorder struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (r *compressionRecorder) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context {
+	return ctx
+}
+
+func (r *compressionRecorder) HandleRPC(_ context.Context, s stats.RPCStats) {
+	if ih, ok := s.(*stats.InHeader); ok {
+		r.mu.Lock()
+		r.seen = append(r.seen, ih.Compression)
+		r.mu.Unlock()
+	}
+}
+
+func (r *compressionRecorder) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context {
+	return ctx
+}
+func (r *compressionRecorder) HandleConn(context.Context, stats.ConnStats) {}
+
+func (r *compressionRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.seen...)
+}
+
+func startUpstream(t *testing.T, opts ...grpc.ServerOption) (*grpc.ClientConn, func()) {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := grpc.NewServer()
+	server := grpc.NewServer(opts...)
 	agentpb.RegisterWendyAgentServiceServer(server, testAgentServer{})
 	agentpb.RegisterWendyContainerServiceServer(server, testContainerServer{})
 	go server.Serve(lis) //nolint:errcheck
@@ -69,6 +114,103 @@ func startUpstream(t *testing.T) (*grpc.ClientConn, func()) {
 		conn.Close()
 		server.Stop()
 		lis.Close()
+	}
+}
+
+// startServing runs serve() for spec against upstream and waits until the
+// broker's socket and state exist, returning the proxy paths and the serve
+// result channel.
+func startServing(t *testing.T, ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn, idleTTL time.Duration) (socketPath, statePath string, done chan error) {
+	t.Helper()
+	done = make(chan error, 1)
+	go func() { done <- serve(ctx, dir, spec, upstream, idleTTL) }()
+	socketPath, statePath = paths(dir, spec.Key, spec.Expected)
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(statePath); err == nil {
+			return socketPath, statePath, done
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("broker state did not appear")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestServePreservesRequestCompression(t *testing.T) {
+	dir := shortTempDir(t)
+	rec := &compressionRecorder{}
+	upstream, cleanup := startUpstream(t, grpc.StatsHandler(rec))
+	defer cleanup()
+	spec := Spec{
+		Key:             "gzip.local",
+		Host:            "gzip.local",
+		Addr:            "127.0.0.1:50052",
+		CertFingerprint: "public-cert-hash",
+		Expected:        certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "45"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	socketPath, _, _ := startServing(t, ctx, dir, spec, upstream, time.Hour)
+
+	proxy, err := grpcclient.ConnectSessionProxy(context.Background(), socketPath, spec.Host, spec.Addr, &config.CertificateInfo{OrganizationID: 7}, spec.Expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	// WriteChunks is opened with the gzip compressor specifically because raw
+	// chunk payloads have stalled USB-NCM links (see chunkpush.go). A broker in
+	// the middle must keep that property on the real device link.
+	if _, err := proxy.AgentService.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{}, grpc.UseCompressor(grpcgzip.Name)); err != nil {
+		t.Fatalf("compressed unary RPC through broker: %v", err)
+	}
+	if _, err := proxy.AgentService.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{}); err != nil {
+		t.Fatalf("uncompressed unary RPC through broker: %v", err)
+	}
+
+	seen := rec.snapshot()
+	if len(seen) != 2 || seen[0] != grpcgzip.Name || seen[1] != "" {
+		t.Fatalf("upstream saw request compression %q, want [%q \"\"]", seen, grpcgzip.Name)
+	}
+}
+
+func TestServeRelaysTerminalStatusWhenUpstreamEndsWhileSending(t *testing.T) {
+	dir := shortTempDir(t)
+	upstream, cleanup := startUpstream(t)
+	defer cleanup()
+	spec := Spec{
+		Key:             "earlyclose.local",
+		Host:            "earlyclose.local",
+		Addr:            "127.0.0.1:50052",
+		CertFingerprint: "public-cert-hash",
+		Expected:        certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "46"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	socketPath, _, _ := startServing(t, ctx, dir, spec, upstream, time.Hour)
+
+	proxy, err := grpcclient.ConnectSessionProxy(context.Background(), socketPath, spec.Host, spec.Addr, &config.CertificateInfo{OrganizationID: 7}, spec.Expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	wc, err := proxy.ContainerService.WriteChunks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep sending until the completed upstream surfaces: gRPC reports io.EOF
+	// from Send once the server has closed, and CloseAndRecv must then return
+	// the upstream's real terminal state — not the proxy's internal io.EOF.
+	payload := bytes.Repeat([]byte{0xAB}, 32*1024)
+	for i := 0; i < 4096; i++ {
+		if err := wc.Send(&agentpb.WriteChunksRequest{Data: payload}); err != nil {
+			break
+		}
+	}
+	if _, err := wc.CloseAndRecv(); err != nil {
+		t.Fatalf("terminal status through broker = %v, want the upstream's success response", err)
 	}
 }
 
