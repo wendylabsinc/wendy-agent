@@ -28,6 +28,7 @@ type SensorPairing struct {
 	Name            string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
 	SensorAllowlist []string               `protobuf:"bytes,4,rep,name=sensor_allowlist,json=sensorAllowlist,proto3" json:"sensor_allowlist,omitempty"`
 	Connected       bool                   `protobuf:"varint,5,opt,name=connected,proto3" json:"connected,omitempty"`
+	Transport       string                 `protobuf:"bytes,6,opt,name=transport,proto3" json:"transport,omitempty"` // "tcp" (default) or "grpc"
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -97,12 +98,20 @@ func (x *SensorPairing) GetConnected() bool {
 	return false
 }
 
+func (x *SensorPairing) GetTransport() string {
+	if x != nil {
+		return x.Transport
+	}
+	return ""
+}
+
 type AddSensorPairingRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	SourceAssetId   int32                  `protobuf:"varint,1,opt,name=source_asset_id,json=sourceAssetId,proto3" json:"source_asset_id,omitempty"`
 	SourceAddress   string                 `protobuf:"bytes,2,opt,name=source_address,json=sourceAddress,proto3" json:"source_address,omitempty"` // resolved LAN addr host:port
 	Name            string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
 	SensorAllowlist []string               `protobuf:"bytes,4,rep,name=sensor_allowlist,json=sensorAllowlist,proto3" json:"sensor_allowlist,omitempty"`
+	Transport       string                 `protobuf:"bytes,5,opt,name=transport,proto3" json:"transport,omitempty"` // "tcp" (default) or "grpc"
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -163,6 +172,13 @@ func (x *AddSensorPairingRequest) GetSensorAllowlist() []string {
 		return x.SensorAllowlist
 	}
 	return nil
+}
+
+func (x *AddSensorPairingRequest) GetTransport() string {
+	if x != nil {
+		return x.Transport
+	}
+	return ""
 }
 
 type AddSensorPairingResponse struct {
@@ -373,18 +389,20 @@ var File_wendy_agent_services_v2_sensor_pairing_service_proto protoreflect.FileD
 
 const file_wendy_agent_services_v2_sensor_pairing_service_proto_rawDesc = "" +
 	"\n" +
-	"4wendy/agent/services/v2/sensor_pairing_service.proto\x12\x17wendy.agent.services.v2\"\xab\x01\n" +
+	"4wendy/agent/services/v2/sensor_pairing_service.proto\x12\x17wendy.agent.services.v2\"\xc9\x01\n" +
 	"\rSensorPairing\x12&\n" +
 	"\x0fsource_asset_id\x18\x01 \x01(\x05R\rsourceAssetId\x12\x15\n" +
 	"\x06org_id\x18\x02 \x01(\x05R\x05orgId\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12)\n" +
 	"\x10sensor_allowlist\x18\x04 \x03(\tR\x0fsensorAllowlist\x12\x1c\n" +
-	"\tconnected\x18\x05 \x01(\bR\tconnected\"\xa7\x01\n" +
+	"\tconnected\x18\x05 \x01(\bR\tconnected\x12\x1c\n" +
+	"\ttransport\x18\x06 \x01(\tR\ttransport\"\xc5\x01\n" +
 	"\x17AddSensorPairingRequest\x12&\n" +
 	"\x0fsource_asset_id\x18\x01 \x01(\x05R\rsourceAssetId\x12%\n" +
 	"\x0esource_address\x18\x02 \x01(\tR\rsourceAddress\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12)\n" +
-	"\x10sensor_allowlist\x18\x04 \x03(\tR\x0fsensorAllowlist\"\\\n" +
+	"\x10sensor_allowlist\x18\x04 \x03(\tR\x0fsensorAllowlist\x12\x1c\n" +
+	"\ttransport\x18\x05 \x01(\tR\ttransport\"\\\n" +
 	"\x18AddSensorPairingResponse\x12@\n" +
 	"\apairing\x18\x01 \x01(\v2&.wendy.agent.services.v2.SensorPairingR\apairing\"D\n" +
 	"\x1aRemoveSensorPairingRequest\x12&\n" +

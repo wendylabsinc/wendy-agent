@@ -15,18 +15,30 @@ import (
 // resolveLANAddr is a seam over discovery.Discover so tests can stub LAN
 // resolution without a real mDNS browse.
 //
-// The discovered d.Port is the mDNS-advertised agent gRPC port (~50051), not
-// the sensorlink port the source's SensorPairing service actually listens
-// on. Dial the well-known sensorlink.Port instead so boot-resume agrees with
-// the address the CLI builds on `device pair`.
-var resolveLANAddr = func(ctx context.Context, sourceAssetID int32) (string, bool) {
-	devices, err := discovery.Discover(ctx, discovery.DiscoveryOptions{})
+// transport selects which port to dial: for "grpc" pairings (agent-hosted
+// sources) the source is reached through its own mTLS agent gRPC port, i.e.
+// the mDNS-advertised d.Port. For "tcp"/empty pairings (MCU raw-TCP sources)
+// d.Port is NOT the right port — it's the agent's own gRPC port, not the
+// sensorlink port the source's SensorPairing service listens on — so dial
+// the well-known sensorlink.Port instead, agreeing with the address the CLI
+// builds on `device pair`.
+// discoverFn is a seam over discovery.Discover so resolveLANAddr's own
+// transport→port selection logic can be exercised with a fake device list,
+// without a real mDNS browse.
+var discoverFn = discovery.Discover
+
+var resolveLANAddr = func(ctx context.Context, sourceAssetID int32, transport string) (string, bool) {
+	devices, err := discoverFn(ctx, discovery.DiscoveryOptions{})
 	if err != nil {
 		return "", false
 	}
 	for _, d := range devices.LANDevices {
 		if d.AssetID == sourceAssetID && d.IsMTLS && d.IPAddress != "" {
-			return net.JoinHostPort(d.IPAddress, strconv.Itoa(sensorlink.Port)), true
+			port := sensorlink.Port
+			if transport == "grpc" {
+				port = d.Port
+			}
+			return net.JoinHostPort(d.IPAddress, strconv.Itoa(port)), true
 		}
 	}
 	return "", false
@@ -82,7 +94,7 @@ func (r *Runner) resolveAddr(ctx context.Context, p SensorPairing, addr string) 
 	level := 0
 	for {
 		rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-		resolved, ok := resolveLANAddr(rctx, p.SourceAssetID)
+		resolved, ok := resolveLANAddr(rctx, p.SourceAssetID, p.Transport)
 		rcancel()
 		if ok {
 			return resolved, true

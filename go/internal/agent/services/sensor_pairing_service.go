@@ -46,6 +46,7 @@ func (s *SensorPairingService) AddSensorPairing(_ context.Context, req *agentpbv
 		OrgID:           s.agentOrgID(),
 		Name:            req.Name,
 		SensorAllowlist: req.SensorAllowlist,
+		Transport:       req.Transport,
 	}
 	if err := s.store.Add(p); err != nil {
 		return nil, err
@@ -85,5 +86,6 @@ func toProto(p mcusource.SensorPairing, connected bool) *agentpbv2.SensorPairing
 		Name:            p.Name,
 		SensorAllowlist: p.SensorAllowlist,
 		Connected:       connected,
+		Transport:       p.Transport,
 	}
 }

@@ -17,6 +17,10 @@ type SensorPairing struct {
 	Name            string    `json:"name"`
 	SensorAllowlist []string  `json:"sensorAllowlist,omitempty"`
 	CreatedAt       time.Time `json:"createdAt"`
+	// Transport selects how this source's manifest/frames are fetched:
+	// "grpc" (agent-hosted source) or "tcp"/empty (MCU raw-TCP, back-compat
+	// default for pairings written before this field existed).
+	Transport string `json:"transport,omitempty"`
 }
 
 // PairingStore persists pairings to a JSON file under the agent state dir.

@@ -22,12 +22,15 @@ func TestAddAndListSensorPairing(t *testing.T) {
 		nil,
 		func(sourceAssetID int32) bool { return running[sourceAssetID] })
 
-	addResp, err := svc.AddSensorPairing(context.Background(), &agentpbv2.AddSensorPairingRequest{SourceAssetId: 7, SourceAddress: "1.2.3.4:7000", Name: "hub"})
+	addResp, err := svc.AddSensorPairing(context.Background(), &agentpbv2.AddSensorPairingRequest{SourceAssetId: 7, SourceAddress: "1.2.3.4:7000", Name: "hub", Transport: "grpc"})
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
 	if addResp.Pairing.OrgId != agentOrgID {
 		t.Fatalf("expected returned pairing to carry the agent's org id %d, got %d", agentOrgID, addResp.Pairing.OrgId)
+	}
+	if addResp.Pairing.Transport != "grpc" {
+		t.Fatalf("expected Add response to round-trip transport=grpc, got %q", addResp.Pairing.Transport)
 	}
 	if started[7] != "1.2.3.4:7000" {
 		t.Fatalf("supervisor not started: %v", started)
@@ -41,6 +44,9 @@ func TestAddAndListSensorPairing(t *testing.T) {
 	}
 	if resp.Pairings[0].OrgId != agentOrgID {
 		t.Fatalf("expected stored pairing to carry the agent's org id %d, got %d", agentOrgID, resp.Pairings[0].OrgId)
+	}
+	if resp.Pairings[0].Transport != "grpc" {
+		t.Fatalf("expected listed pairing to carry transport=grpc, got %q", resp.Pairings[0].Transport)
 	}
 	if resp.Pairings[0].Connected {
 		t.Fatalf("expected asset 7 to list as not connected before its supervisor is marked running")
@@ -65,5 +71,10 @@ func TestAddAndListSensorPairing(t *testing.T) {
 	}
 	if connected[8] {
 		t.Fatalf("expected asset 8 (not started) to list as not connected: %+v", resp.Pairings)
+	}
+	for _, p := range resp.Pairings {
+		if p.SourceAssetId == 8 && p.Transport != "" {
+			t.Fatalf("expected asset 8 (no transport on Add) to list with empty transport (tcp back-compat default), got %q", p.Transport)
+		}
 	}
 }

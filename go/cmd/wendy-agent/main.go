@@ -371,6 +371,10 @@ func main() {
 		logger.Warn("loading sensor pairing store failed", zap.Error(err))
 	}
 	sensorTransportFor := func(p mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) {
+		if p.Transport == "grpc" {
+			certPEM, chainPEM, keyPEM := mcuIdentity()
+			return mcusource.NewGRPCTransport(logger, certPEM, chainPEM, keyPEM, p, addr)
+		}
 		d, err := mcusource.NewMTLSDialer(logger, mcuIdentity)(p)
 		if err != nil {
 			return nil, err
