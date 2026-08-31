@@ -74,6 +74,68 @@ func (EpisodeState) EnumDescriptor() ([]byte, []int) {
 	return file_cloud_data_ingest_proto_rawDescGZIP(), []int{0}
 }
 
+// What a file is to the episode it belongs to. Mirrors the device manifest's
+// per-file `role`, one word for one thing across device, wire and catalog.
+//
+// UNSPECIFIED means CAPTURED. Devices built before this field existed never
+// set it and upload nothing but capture payload and capture metadata, so an
+// absent role has exactly the meaning it always had; readers must treat
+// UNSPECIFIED and CAPTURED identically and must never report "unknown role".
+type EpisodeFileRole int32
+
+const (
+	EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED EpisodeFileRole = 0
+	// Capture payload, or capture metadata written while recording.
+	EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED EpisodeFileRole = 1
+	// Computed from capture payload at seal time rather than recorded during
+	// capture, e.g. the per-source cameras/<source>/playable.mp4 remux. A
+	// derived file is checksummed, uploaded and verified like any other file,
+	// but it is not capture payload: deleting one loses no recorded data, and
+	// per-source payload accounting must never count its bytes as capture.
+	EpisodeFileRole_EPISODE_FILE_ROLE_DERIVED EpisodeFileRole = 2
+)
+
+// Enum value maps for EpisodeFileRole.
+var (
+	EpisodeFileRole_name = map[int32]string{
+		0: "EPISODE_FILE_ROLE_UNSPECIFIED",
+		1: "EPISODE_FILE_ROLE_CAPTURED",
+		2: "EPISODE_FILE_ROLE_DERIVED",
+	}
+	EpisodeFileRole_value = map[string]int32{
+		"EPISODE_FILE_ROLE_UNSPECIFIED": 0,
+		"EPISODE_FILE_ROLE_CAPTURED":    1,
+		"EPISODE_FILE_ROLE_DERIVED":     2,
+	}
+)
+
+func (x EpisodeFileRole) Enum() *EpisodeFileRole {
+	p := new(EpisodeFileRole)
+	*p = x
+	return p
+}
+
+func (x EpisodeFileRole) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (EpisodeFileRole) Descriptor() protoreflect.EnumDescriptor {
+	return file_cloud_data_ingest_proto_enumTypes[1].Descriptor()
+}
+
+func (EpisodeFileRole) Type() protoreflect.EnumType {
+	return &file_cloud_data_ingest_proto_enumTypes[1]
+}
+
+func (x EpisodeFileRole) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use EpisodeFileRole.Descriptor instead.
+func (EpisodeFileRole) EnumDescriptor() ([]byte, []int) {
+	return file_cloud_data_ingest_proto_rawDescGZIP(), []int{1}
+}
+
 // Compact typed projection of the device episode manifest (manifest v2).
 // The full manifest JSON rides in attributes_json for fidelity; the typed
 // fields are what the catalog indexes on.
@@ -253,8 +315,11 @@ type EpisodeFileManifest struct {
 	TimeRangeEndNanos   int64 `protobuf:"varint,8,opt,name=time_range_end_nanos,json=timeRangeEndNanos,proto3" json:"time_range_end_nanos,omitempty"`
 	// Source-clock to canonical-clock mapping summary JSON, when present.
 	ClockMappingJson []byte `protobuf:"bytes,9,opt,name=clock_mapping_json,json=clockMappingJson,proto3" json:"clock_mapping_json,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// What this file is to the episode. Unset (UNSPECIFIED) means CAPTURED, so
+	// devices predating this field keep their existing meaning unchanged.
+	Role          EpisodeFileRole `protobuf:"varint,10,opt,name=role,proto3,enum=wendycloud.data.v1.EpisodeFileRole" json:"role,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EpisodeFileManifest) Reset() {
@@ -348,6 +413,13 @@ func (x *EpisodeFileManifest) GetClockMappingJson() []byte {
 		return x.ClockMappingJson
 	}
 	return nil
+}
+
+func (x *EpisodeFileManifest) GetRole() EpisodeFileRole {
+	if x != nil {
+		return x.Role
+	}
+	return EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED
 }
 
 type BeginEpisodeUploadRequest struct {
@@ -1165,7 +1237,10 @@ type EpisodeFileInfo struct {
 	Sha256    string                 `protobuf:"bytes,5,opt,name=sha256,proto3" json:"sha256,omitempty"`
 	// Short-lived retrieval URL for the stored object (signed in production,
 	// direct in local development).
-	RetrievalUrl  string `protobuf:"bytes,6,opt,name=retrieval_url,json=retrievalUrl,proto3" json:"retrieval_url,omitempty"`
+	RetrievalUrl string `protobuf:"bytes,6,opt,name=retrieval_url,json=retrievalUrl,proto3" json:"retrieval_url,omitempty"`
+	// What this file is to the episode, as recorded in the catalog. Unset
+	// (UNSPECIFIED) means CAPTURED, as on the upload manifest.
+	Role          EpisodeFileRole `protobuf:"varint,7,opt,name=role,proto3,enum=wendycloud.data.v1.EpisodeFileRole" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1242,6 +1317,13 @@ func (x *EpisodeFileInfo) GetRetrievalUrl() string {
 	return ""
 }
 
+func (x *EpisodeFileInfo) GetRole() EpisodeFileRole {
+	if x != nil {
+		return x.Role
+	}
+	return EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED
+}
+
 var File_cloud_data_ingest_proto protoreflect.FileDescriptor
 
 const file_cloud_data_ingest_proto_rawDesc = "" +
@@ -1263,7 +1345,7 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\x16utc_offset_upper_nanos\x18\v \x01(\x03R\x13utcOffsetUpperNanos\x12.\n" +
 	"\x13system_clock_status\x18\f \x01(\tR\x11systemClockStatus\x12=\n" +
 	"\x05files\x18\r \x03(\v2'.wendycloud.data.v1.EpisodeFileManifestR\x05files\x12'\n" +
-	"\x0fattributes_json\x18\x0e \x01(\fR\x0eattributesJson\"\xc8\x02\n" +
+	"\x0fattributes_json\x18\x0e \x01(\fR\x0eattributesJson\"\x81\x03\n" +
 	"\x13EpisodeFileManifest\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1d\n" +
 	"\n" +
@@ -1275,7 +1357,9 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\tsource_id\x18\x06 \x01(\tR\bsourceId\x123\n" +
 	"\x16time_range_start_nanos\x18\a \x01(\x03R\x13timeRangeStartNanos\x12/\n" +
 	"\x14time_range_end_nanos\x18\b \x01(\x03R\x11timeRangeEndNanos\x12,\n" +
-	"\x12clock_mapping_json\x18\t \x01(\fR\x10clockMappingJson\"\\\n" +
+	"\x12clock_mapping_json\x18\t \x01(\fR\x10clockMappingJson\x127\n" +
+	"\x04role\x18\n" +
+	" \x01(\x0e2#.wendycloud.data.v1.EpisodeFileRoleR\x04role\"\\\n" +
 	"\x19BeginEpisodeUploadRequest\x12?\n" +
 	"\bmanifest\x18\x01 \x01(\v2#.wendycloud.data.v1.EpisodeManifestR\bmanifest\"P\n" +
 	"\x0fFileUploadState\x12\x12\n" +
@@ -1337,7 +1421,7 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	" \x01(\fR\x14clockCorrelationJson\x12'\n" +
 	"\x0fattributes_json\x18\v \x01(\fR\x0eattributesJson\x12,\n" +
 	"\x12updated_unix_nanos\x18\f \x01(\x03R\x10updatedUnixNanos\x129\n" +
-	"\x05files\x18\r \x03(\v2#.wendycloud.data.v1.EpisodeFileInfoR\x05files\"\xbd\x01\n" +
+	"\x05files\x18\r \x03(\v2#.wendycloud.data.v1.EpisodeFileInfoR\x05files\"\xf6\x01\n" +
 	"\x0fEpisodeFileInfo\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1b\n" +
 	"\tsource_id\x18\x02 \x01(\tR\bsourceId\x12\x1d\n" +
@@ -1346,12 +1430,17 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\n" +
 	"size_bytes\x18\x04 \x01(\x04R\tsizeBytes\x12\x16\n" +
 	"\x06sha256\x18\x05 \x01(\tR\x06sha256\x12#\n" +
-	"\rretrieval_url\x18\x06 \x01(\tR\fretrievalUrl*\x80\x01\n" +
+	"\rretrieval_url\x18\x06 \x01(\tR\fretrievalUrl\x127\n" +
+	"\x04role\x18\a \x01(\x0e2#.wendycloud.data.v1.EpisodeFileRoleR\x04role*\x80\x01\n" +
 	"\fEpisodeState\x12\x1d\n" +
 	"\x19EPISODE_STATE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17EPISODE_STATE_UPLOADING\x10\x01\x12\x1a\n" +
 	"\x16EPISODE_STATE_COMPLETE\x10\x02\x12\x18\n" +
-	"\x14EPISODE_STATE_FAILED\x10\x032\x87\x04\n" +
+	"\x14EPISODE_STATE_FAILED\x10\x03*s\n" +
+	"\x0fEpisodeFileRole\x12!\n" +
+	"\x1dEPISODE_FILE_ROLE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aEPISODE_FILE_ROLE_CAPTURED\x10\x01\x12\x1d\n" +
+	"\x19EPISODE_FILE_ROLE_DERIVED\x10\x022\x87\x04\n" +
 	"\x11DataIngestService\x12s\n" +
 	"\x12BeginEpisodeUpload\x12-.wendycloud.data.v1.BeginEpisodeUploadRequest\x1a..wendycloud.data.v1.BeginEpisodeUploadResponse\x12_\n" +
 	"\x12UploadEpisodeChunk\x12 .wendycloud.data.v1.EpisodeChunk\x1a#.wendycloud.data.v1.EpisodeChunkAck(\x010\x01\x12d\n" +
@@ -1372,52 +1461,55 @@ func file_cloud_data_ingest_proto_rawDescGZIP() []byte {
 	return file_cloud_data_ingest_proto_rawDescData
 }
 
-var file_cloud_data_ingest_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_cloud_data_ingest_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_cloud_data_ingest_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_cloud_data_ingest_proto_goTypes = []any{
 	(EpisodeState)(0),                  // 0: wendycloud.data.v1.EpisodeState
-	(*EpisodeManifest)(nil),            // 1: wendycloud.data.v1.EpisodeManifest
-	(*EpisodeFileManifest)(nil),        // 2: wendycloud.data.v1.EpisodeFileManifest
-	(*BeginEpisodeUploadRequest)(nil),  // 3: wendycloud.data.v1.BeginEpisodeUploadRequest
-	(*FileUploadState)(nil),            // 4: wendycloud.data.v1.FileUploadState
-	(*BeginEpisodeUploadResponse)(nil), // 5: wendycloud.data.v1.BeginEpisodeUploadResponse
-	(*EpisodeChunk)(nil),               // 6: wendycloud.data.v1.EpisodeChunk
-	(*EpisodeChunkAck)(nil),            // 7: wendycloud.data.v1.EpisodeChunkAck
-	(*CommitEpisodeRequest)(nil),       // 8: wendycloud.data.v1.CommitEpisodeRequest
-	(*FileVerification)(nil),           // 9: wendycloud.data.v1.FileVerification
-	(*CommitEpisodeResponse)(nil),      // 10: wendycloud.data.v1.CommitEpisodeResponse
-	(*QueryEpisodesRequest)(nil),       // 11: wendycloud.data.v1.QueryEpisodesRequest
-	(*QueryEpisodesResponse)(nil),      // 12: wendycloud.data.v1.QueryEpisodesResponse
-	(*GetEpisodeRequest)(nil),          // 13: wendycloud.data.v1.GetEpisodeRequest
-	(*Episode)(nil),                    // 14: wendycloud.data.v1.Episode
-	(*EpisodeFileInfo)(nil),            // 15: wendycloud.data.v1.EpisodeFileInfo
+	(EpisodeFileRole)(0),               // 1: wendycloud.data.v1.EpisodeFileRole
+	(*EpisodeManifest)(nil),            // 2: wendycloud.data.v1.EpisodeManifest
+	(*EpisodeFileManifest)(nil),        // 3: wendycloud.data.v1.EpisodeFileManifest
+	(*BeginEpisodeUploadRequest)(nil),  // 4: wendycloud.data.v1.BeginEpisodeUploadRequest
+	(*FileUploadState)(nil),            // 5: wendycloud.data.v1.FileUploadState
+	(*BeginEpisodeUploadResponse)(nil), // 6: wendycloud.data.v1.BeginEpisodeUploadResponse
+	(*EpisodeChunk)(nil),               // 7: wendycloud.data.v1.EpisodeChunk
+	(*EpisodeChunkAck)(nil),            // 8: wendycloud.data.v1.EpisodeChunkAck
+	(*CommitEpisodeRequest)(nil),       // 9: wendycloud.data.v1.CommitEpisodeRequest
+	(*FileVerification)(nil),           // 10: wendycloud.data.v1.FileVerification
+	(*CommitEpisodeResponse)(nil),      // 11: wendycloud.data.v1.CommitEpisodeResponse
+	(*QueryEpisodesRequest)(nil),       // 12: wendycloud.data.v1.QueryEpisodesRequest
+	(*QueryEpisodesResponse)(nil),      // 13: wendycloud.data.v1.QueryEpisodesResponse
+	(*GetEpisodeRequest)(nil),          // 14: wendycloud.data.v1.GetEpisodeRequest
+	(*Episode)(nil),                    // 15: wendycloud.data.v1.Episode
+	(*EpisodeFileInfo)(nil),            // 16: wendycloud.data.v1.EpisodeFileInfo
 }
 var file_cloud_data_ingest_proto_depIdxs = []int32{
-	2,  // 0: wendycloud.data.v1.EpisodeManifest.files:type_name -> wendycloud.data.v1.EpisodeFileManifest
-	1,  // 1: wendycloud.data.v1.BeginEpisodeUploadRequest.manifest:type_name -> wendycloud.data.v1.EpisodeManifest
-	0,  // 2: wendycloud.data.v1.BeginEpisodeUploadResponse.state:type_name -> wendycloud.data.v1.EpisodeState
-	4,  // 3: wendycloud.data.v1.BeginEpisodeUploadResponse.files:type_name -> wendycloud.data.v1.FileUploadState
-	0,  // 4: wendycloud.data.v1.CommitEpisodeResponse.state:type_name -> wendycloud.data.v1.EpisodeState
-	9,  // 5: wendycloud.data.v1.CommitEpisodeResponse.files:type_name -> wendycloud.data.v1.FileVerification
-	0,  // 6: wendycloud.data.v1.QueryEpisodesRequest.state:type_name -> wendycloud.data.v1.EpisodeState
-	14, // 7: wendycloud.data.v1.QueryEpisodesResponse.episodes:type_name -> wendycloud.data.v1.Episode
-	0,  // 8: wendycloud.data.v1.Episode.state:type_name -> wendycloud.data.v1.EpisodeState
-	15, // 9: wendycloud.data.v1.Episode.files:type_name -> wendycloud.data.v1.EpisodeFileInfo
-	3,  // 10: wendycloud.data.v1.DataIngestService.BeginEpisodeUpload:input_type -> wendycloud.data.v1.BeginEpisodeUploadRequest
-	6,  // 11: wendycloud.data.v1.DataIngestService.UploadEpisodeChunk:input_type -> wendycloud.data.v1.EpisodeChunk
-	8,  // 12: wendycloud.data.v1.DataIngestService.CommitEpisode:input_type -> wendycloud.data.v1.CommitEpisodeRequest
-	11, // 13: wendycloud.data.v1.DataIngestService.QueryEpisodes:input_type -> wendycloud.data.v1.QueryEpisodesRequest
-	13, // 14: wendycloud.data.v1.DataIngestService.GetEpisode:input_type -> wendycloud.data.v1.GetEpisodeRequest
-	5,  // 15: wendycloud.data.v1.DataIngestService.BeginEpisodeUpload:output_type -> wendycloud.data.v1.BeginEpisodeUploadResponse
-	7,  // 16: wendycloud.data.v1.DataIngestService.UploadEpisodeChunk:output_type -> wendycloud.data.v1.EpisodeChunkAck
-	10, // 17: wendycloud.data.v1.DataIngestService.CommitEpisode:output_type -> wendycloud.data.v1.CommitEpisodeResponse
-	12, // 18: wendycloud.data.v1.DataIngestService.QueryEpisodes:output_type -> wendycloud.data.v1.QueryEpisodesResponse
-	14, // 19: wendycloud.data.v1.DataIngestService.GetEpisode:output_type -> wendycloud.data.v1.Episode
-	15, // [15:20] is the sub-list for method output_type
-	10, // [10:15] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	3,  // 0: wendycloud.data.v1.EpisodeManifest.files:type_name -> wendycloud.data.v1.EpisodeFileManifest
+	1,  // 1: wendycloud.data.v1.EpisodeFileManifest.role:type_name -> wendycloud.data.v1.EpisodeFileRole
+	2,  // 2: wendycloud.data.v1.BeginEpisodeUploadRequest.manifest:type_name -> wendycloud.data.v1.EpisodeManifest
+	0,  // 3: wendycloud.data.v1.BeginEpisodeUploadResponse.state:type_name -> wendycloud.data.v1.EpisodeState
+	5,  // 4: wendycloud.data.v1.BeginEpisodeUploadResponse.files:type_name -> wendycloud.data.v1.FileUploadState
+	0,  // 5: wendycloud.data.v1.CommitEpisodeResponse.state:type_name -> wendycloud.data.v1.EpisodeState
+	10, // 6: wendycloud.data.v1.CommitEpisodeResponse.files:type_name -> wendycloud.data.v1.FileVerification
+	0,  // 7: wendycloud.data.v1.QueryEpisodesRequest.state:type_name -> wendycloud.data.v1.EpisodeState
+	15, // 8: wendycloud.data.v1.QueryEpisodesResponse.episodes:type_name -> wendycloud.data.v1.Episode
+	0,  // 9: wendycloud.data.v1.Episode.state:type_name -> wendycloud.data.v1.EpisodeState
+	16, // 10: wendycloud.data.v1.Episode.files:type_name -> wendycloud.data.v1.EpisodeFileInfo
+	1,  // 11: wendycloud.data.v1.EpisodeFileInfo.role:type_name -> wendycloud.data.v1.EpisodeFileRole
+	4,  // 12: wendycloud.data.v1.DataIngestService.BeginEpisodeUpload:input_type -> wendycloud.data.v1.BeginEpisodeUploadRequest
+	7,  // 13: wendycloud.data.v1.DataIngestService.UploadEpisodeChunk:input_type -> wendycloud.data.v1.EpisodeChunk
+	9,  // 14: wendycloud.data.v1.DataIngestService.CommitEpisode:input_type -> wendycloud.data.v1.CommitEpisodeRequest
+	12, // 15: wendycloud.data.v1.DataIngestService.QueryEpisodes:input_type -> wendycloud.data.v1.QueryEpisodesRequest
+	14, // 16: wendycloud.data.v1.DataIngestService.GetEpisode:input_type -> wendycloud.data.v1.GetEpisodeRequest
+	6,  // 17: wendycloud.data.v1.DataIngestService.BeginEpisodeUpload:output_type -> wendycloud.data.v1.BeginEpisodeUploadResponse
+	8,  // 18: wendycloud.data.v1.DataIngestService.UploadEpisodeChunk:output_type -> wendycloud.data.v1.EpisodeChunkAck
+	11, // 19: wendycloud.data.v1.DataIngestService.CommitEpisode:output_type -> wendycloud.data.v1.CommitEpisodeResponse
+	13, // 20: wendycloud.data.v1.DataIngestService.QueryEpisodes:output_type -> wendycloud.data.v1.QueryEpisodesResponse
+	15, // 21: wendycloud.data.v1.DataIngestService.GetEpisode:output_type -> wendycloud.data.v1.Episode
+	17, // [17:22] is the sub-list for method output_type
+	12, // [12:17] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_cloud_data_ingest_proto_init() }
@@ -1430,7 +1522,7 @@ func file_cloud_data_ingest_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cloud_data_ingest_proto_rawDesc), len(file_cloud_data_ingest_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,

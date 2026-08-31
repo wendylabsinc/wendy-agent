@@ -621,6 +621,7 @@ func buildEpisodeManifest(mf data.Manifest, orgID, assetID uint64) (*cloudpb.Epi
 			MediaType: f.MediaType,
 			Format:    f.Format,
 			SourceId:  f.SourceID,
+			Role:      episodeFileRole(f.Role),
 		})
 	}
 	var lower, upper int64
@@ -648,6 +649,31 @@ func buildEpisodeManifest(mf data.Manifest, orgID, assetID uint64) (*cloudpb.Epi
 		Files:                files,
 		AttributesJson:       raw,
 	}, nil
+}
+
+// episodeFileRole maps the device manifest's per-file role onto the wire enum.
+//
+// The manifest omits the role for capture payload and capture metadata, so an
+// empty role means captured. This sends CAPTURED explicitly rather than
+// leaving the field at its default, so a manifest that went through this
+// mapper is distinguishable on the wire from one written by an agent built
+// before the field existed.
+//
+// Any other string maps to UNSPECIFIED, which the wire contract defines as
+// captured. The enum has no "unknown" member and inventing one would force
+// every reader to handle a state it cannot act on, so an unrecognised role
+// degrades to the pre-existing meaning instead. That only arises when an
+// older agent resumes an upload for an episode a newer build sealed; adding a
+// role to data.File must add it here in the same change.
+func episodeFileRole(role string) cloudpb.EpisodeFileRole {
+	switch role {
+	case "":
+		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED
+	case data.FileRoleDerived:
+		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_DERIVED
+	default:
+		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED
+	}
 }
 
 // byteRateLimiter paces a byte stream to at most ratePerSec bytes per second by

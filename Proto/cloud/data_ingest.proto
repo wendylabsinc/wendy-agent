@@ -54,6 +54,25 @@ enum EpisodeState {
   EPISODE_STATE_FAILED = 3;
 }
 
+// What a file is to the episode it belongs to. Mirrors the device manifest's
+// per-file `role`, one word for one thing across device, wire and catalog.
+//
+// UNSPECIFIED means CAPTURED. Devices built before this field existed never
+// set it and upload nothing but capture payload and capture metadata, so an
+// absent role has exactly the meaning it always had; readers must treat
+// UNSPECIFIED and CAPTURED identically and must never report "unknown role".
+enum EpisodeFileRole {
+  EPISODE_FILE_ROLE_UNSPECIFIED = 0;
+  // Capture payload, or capture metadata written while recording.
+  EPISODE_FILE_ROLE_CAPTURED = 1;
+  // Computed from capture payload at seal time rather than recorded during
+  // capture, e.g. the per-source cameras/<source>/playable.mp4 remux. A
+  // derived file is checksummed, uploaded and verified like any other file,
+  // but it is not capture payload: deleting one loses no recorded data, and
+  // per-source payload accounting must never count its bytes as capture.
+  EPISODE_FILE_ROLE_DERIVED = 2;
+}
+
 // Compact typed projection of the device episode manifest (manifest v2).
 // The full manifest JSON rides in attributes_json for fidelity; the typed
 // fields are what the catalog indexes on.
@@ -107,6 +126,9 @@ message EpisodeFileManifest {
   int64 time_range_end_nanos = 8;
   // Source-clock to canonical-clock mapping summary JSON, when present.
   bytes clock_mapping_json = 9;
+  // What this file is to the episode. Unset (UNSPECIFIED) means CAPTURED, so
+  // devices predating this field keep their existing meaning unchanged.
+  EpisodeFileRole role = 10;
 }
 
 message BeginEpisodeUploadRequest {
@@ -222,4 +244,7 @@ message EpisodeFileInfo {
   // Short-lived retrieval URL for the stored object (signed in production,
   // direct in local development).
   string retrieval_url = 6;
+  // What this file is to the episode, as recorded in the catalog. Unset
+  // (UNSPECIFIED) means CAPTURED, as on the upload manifest.
+  EpisodeFileRole role = 7;
 }

@@ -587,3 +587,56 @@ func TestIngestIdentityHeaderWithOverride(t *testing.T) {
 		t.Errorf("streaming call: x-wendy-client-cert = %q, want exactly [%q]", stream, want)
 	}
 }
+
+// TestBuildEpisodeManifestCarriesFileRole pins the derived-artifact contract on
+// the upload wire. The device marks the seal-time playable.mp4 remux as derived
+// and everything else as capture payload; before the manifest carried a role,
+// the catalog saw the remux as a second capture on the camera's source id and
+// double-counted its bytes.
+func TestBuildEpisodeManifestCarriesFileRole(t *testing.T) {
+	mf := data.Manifest{
+		ID: "ep-role",
+		Files: []data.File{
+			{Path: "cameras/front/index.jsonl", SourceID: "front", MediaType: "application/jsonl"},
+			{Path: "cameras/front/000001.h264", SourceID: "front", MediaType: "video/h264"},
+			{Path: "cameras/front/playable.mp4", SourceID: "front", MediaType: "video/mp4", Role: data.FileRoleDerived},
+		},
+	}
+	got, err := buildEpisodeManifest(mf, 7, 9)
+	if err != nil {
+		t.Fatalf("buildEpisodeManifest: %v", err)
+	}
+	want := map[string]cloudpb.EpisodeFileRole{
+		"cameras/front/index.jsonl":  cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED,
+		"cameras/front/000001.h264":  cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED,
+		"cameras/front/playable.mp4": cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_DERIVED,
+	}
+	if len(got.Files) != len(want) {
+		t.Fatalf("sent %d files, want %d", len(got.Files), len(want))
+	}
+	for _, f := range got.Files {
+		expected, ok := want[f.Path]
+		if !ok {
+			t.Fatalf("unexpected file %q on the wire", f.Path)
+		}
+		if f.Role != expected {
+			t.Errorf("file %q role = %v, want %v", f.Path, f.Role, expected)
+		}
+	}
+}
+
+// TestEpisodeFileRoleUnknownDegradesToUnspecified documents that a role string
+// this build does not know is sent as UNSPECIFIED, which the wire contract
+// defines as captured. The enum has no "unknown" member on purpose, so the only
+// honest option is the pre-existing meaning rather than a fabricated one.
+func TestEpisodeFileRoleUnknownDegradesToUnspecified(t *testing.T) {
+	if got := episodeFileRole("some-future-role"); got != cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED {
+		t.Errorf("unknown role = %v, want UNSPECIFIED", got)
+	}
+	if got := episodeFileRole(""); got != cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED {
+		t.Errorf("empty role = %v, want CAPTURED", got)
+	}
+	if got := episodeFileRole(data.FileRoleDerived); got != cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_DERIVED {
+		t.Errorf("derived role = %v, want DERIVED", got)
+	}
+}
