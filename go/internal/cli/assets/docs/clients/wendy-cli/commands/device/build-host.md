@@ -45,6 +45,7 @@ before pointing a build at it:
 ```
 Builder role: enabled
 BuildKit:     available (v0.32.2)
+Cache:        /data/buildkit/state (823.3 GiB free of 911.7 GiB)
 Platform:     linux/arm64
 Builds:       linux/arm64 natively
 ```
@@ -54,6 +55,9 @@ Builds:       linux/arm64 natively
   `/run/buildkit/buildkitd.sock`, and the `buildctl` version found on `PATH`.
   BuildKit is installed out-of-band (distro package, release tarball, or not at
   all), so "which version is on that box" is otherwise invisible from the CLI.
+- **Cache** — BuildKit's state directory and the free and total space on its
+  filesystem. If it reports `inspection failed`, remote builds are refused
+  until the cache location and available space can be determined.
 - **Builds** — the platforms this host builds natively. Only its own platform is
   claimed. Emulated platforms are reported empty rather than guessed at, so a
   cross-architecture build is refused up front instead of silently running under
@@ -61,6 +65,29 @@ Builds:       linux/arm64 natively
 
 `status` needs neither the builder role nor BuildKit to answer — that is the
 point of it. A device that is missing both still reports so.
+
+## Cache space safety
+
+Before starting a remote build, `wendy run --build-host` checks the free space
+where BuildKit keeps its cache:
+
+- Less than 8 GiB free: the build is refused.
+- At least 8 GiB but less than 25 GiB free: the build proceeds with a warning.
+- At least 25 GiB free: the build proceeds without a cache-space notice.
+
+To move the cache, set buildkitd's `--root` option or put a top-level `root` in
+the TOML file selected by its service, then restart buildkitd. For example:
+
+```toml
+root = "/data/buildkit/state"
+```
+
+The active file is not necessarily `/etc/buildkit/buildkitd.toml`: a service can
+select another one with `buildkitd --config`. After restarting, run
+`wendy device build-host status` and confirm that the `Cache` line names the
+intended path and filesystem. If it reports `inspection failed`, inspect the
+running buildkitd command and its active configuration rather than assuming the
+default path.
 
 ## A Mac cannot be a build host
 
@@ -76,4 +103,5 @@ running Ubuntu, say — is a legitimate build host, but Ubuntu ships no `buildki
 package. Install the upstream release tarball and make sure `buildctl` is on
 `PATH` by name (the agent runs it unqualified, and systemd units get a minimal
 `PATH`, so a symlink into `/usr/bin` is the reliable placement). `status` then
-reports the version it finds.
+reports the version it finds. If the host's root filesystem is small, configure
+BuildKit's state directory on a larger filesystem before submitting builds.

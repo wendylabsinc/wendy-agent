@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -36,11 +37,14 @@ type PeerDialer interface {
 // mTLS, so buildkitd can push plaintext to localhost and needs no per-registry
 // client certificates of its own.
 //
-// It records the FIRST outbound failure. Without that, a proxy that cannot
+// It records the most recent actionable outbound failure. Without that, a proxy that cannot
 // reach its target still accepts the local connection and then closes it, so
 // the pusher sees only "connection reset by peer" on 127.0.0.1 — a message that
 // cannot distinguish an unreachable peer from a rejected certificate, which are
-// the two causes with entirely different fixes.
+// the two causes with entirely different fixes. The most recent failure is the
+// useful one because BuildKit may retry an earlier 502 and reach a different
+// terminal outcome. Cleanup cancellation is retained only when no actionable
+// failure preceded it, so teardown cannot erase the cause a user can fix.
 type pushProxy struct {
 	addr string
 	ln   net.Listener
@@ -61,20 +65,32 @@ type pushProxy struct {
 	err error
 }
 
-// firstError returns the first outbound failure seen, or nil if the proxy never
-// failed (including the case where nothing ever connected to it).
-func (p *pushProxy) firstError() error {
+// latestError returns the most recent outbound failure seen, or nil if the
+// proxy never failed (including the case where nothing ever connected to it).
+func (p *pushProxy) latestError() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.err
 }
 
 func (p *pushProxy) recordError(err error) {
+	if err == nil {
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.err == nil {
-		p.err = err
+	if p.err != nil && pushProxyCleanupError(err) && !pushProxyCleanupError(p.err) {
+		return
 	}
+	p.err = err
+}
+
+// pushProxyCleanupError identifies errors commonly produced while a failed
+// request or the proxy itself is being torn down. They are useful when they are
+// the only cause available, but must not replace an earlier registry, mesh, or
+// TLS failure with the much less actionable "context canceled"/"closed".
+func pushProxyCleanupError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed)
 }
 
 // validRepositoryRe matches a bare OCI "repository:tag" with no registry host
@@ -137,6 +153,11 @@ func startPushProxy(ctx context.Context, dialer PeerDialer, target *agentpbv2.Pu
 // password carries entropy; the username exists because the registry credential
 // format has a slot for one.
 const pushProxyUser = "wendy-build"
+
+// pushIdleConnTimeout bounds how long an unused mesh tunnel stays in the HTTP
+// pool. It reduces stale reuse; it is not a liveness probe and does not replace
+// BuildKit's descriptor-level retry after a failed request.
+const pushIdleConnTimeout = 20 * time.Second
 
 // newPushProxy binds the loopback listener and mints this build's credential,
 // but serves nothing yet.
@@ -215,22 +236,49 @@ func (p *pushProxy) serve(ctx context.Context) {
 			// The loopback credential is ours, not the registry's. The registry
 			// authenticates us by client certificate.
 			pr.Out.Header.Del("Authorization")
+			// Count only this request body's reads. BuildKit can retry a failed
+			// upload and pushes several layers concurrently, so a proxy-wide total
+			// would be traffic volume rather than a meaningful completion point.
+			attempt := &deliveryAttempt{total: pr.Out.ContentLength}
+			pr.Out = pr.Out.WithContext(context.WithValue(
+				pr.Out.Context(), deliveryAttemptContextKey{}, attempt))
+			if pr.Out.Body != nil {
+				pr.Out.Body = &deliveryBodyCounter{
+					deliveryReader: &deliveryReader{inner: pr.Out.Body, c: &attempt.consumed},
+					closer:         pr.Out.Body,
+				}
+			}
 		},
 		Transport: &http.Transport{
+			// BuildKit retries registry 5xx responses at the descriptor layer,
+			// where it still has the source content needed to replay a request.
+			// The proxy must not stack another retry ladder underneath it: that
+			// multiplies attempts and still cannot resume a partially sent body.
 			DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return p.dial(ctx)
 			},
 			// Registry pushes are HTTP/1.1 with sized bodies; the byte relay this
 			// replaces never negotiated h2, so do not start now.
-			ForceAttemptHTTP2:     false,
-			MaxIdleConnsPerHost:   8,
+			ForceAttemptHTTP2:   false,
+			MaxIdleConnsPerHost: 8,
+			// Bound the age of an idle pooled tunnel to reduce stale reuse. This
+			// cannot detect a dead tunnel immediately or prevent the first failed
+			// write; BuildKit handles the resulting 502 at the request layer.
+			IdleConnTimeout:       pushIdleConnTimeout,
 			ResponseHeaderTimeout: 0,
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			// Same reason the byte relay recorded its dial failure: buildkit
 			// would otherwise see only a broken loopback connection, which
 			// cannot distinguish an unreachable peer from a rejected certificate.
-			p.recordError(fmt.Errorf("reaching device %d's registry over the mesh: %w", p.assetID, err))
+			attempt, _ := r.Context().Value(deliveryAttemptContextKey{}).(*deliveryAttempt)
+			var consumed, total int64
+			if attempt != nil {
+				consumed, total = attempt.consumed.bytes(), attempt.total
+			}
+			p.recordError(annotateDeliveryFailure(
+				fmt.Errorf("reaching device %d's registry over the mesh: %w", p.assetID, err),
+				consumed, total))
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}
