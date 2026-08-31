@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -310,5 +311,159 @@ func TestCaptureAndModelSubscriberShareOneProducer(t *testing.T) {
 	subscription.Close()
 	if !hub.broadcast(&videoFrame{data: []byte{1}, codec: agentpb.VideoCodec_VIDEO_CODEC_H264}) {
 		t.Fatal("the producer stopped when the model unsubscribed, starving the episode capture")
+	}
+}
+
+// TestSensorReattachGateSkipsToRandomAccess pins the reattach gate's
+// accounting deterministically: after a reattach the subscription delivers
+// nothing until a random-access unit arrives, and the skipped frames are
+// reported on that first delivered sample so its sample_id gap stays
+// explained.
+func TestSensorReattachGateSkipsToRandomAccess(t *testing.T) {
+	hub, cancel := newSampleHub(new(atomic.Uint64))
+	defer cancel()
+	subID, frames, err := hub.subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := &cameraSensorSubscription{hub: hub, subID: subID, frames: frames, awaitRandomAccess: true}
+
+	// A whole access unit that is not random access (no SPS/PPS) is gated.
+	hub.broadcast(&videoFrame{data: []byte{0, 0, 0, 1, 0x41, 1}, codec: agentpb.VideoCodec_VIDEO_CODEC_H264, auAligned: true})
+	rau := []byte{0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 3}
+	hub.broadcast(&videoFrame{data: rau, codec: agentpb.VideoCodec_VIDEO_CODEC_H264, auAligned: true})
+
+	sample, err := subscription.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sample.SampleID != 2 || !sample.SelfContained {
+		t.Fatalf("delivered sample = id %d selfContained %v, want the random-access unit (id 2)", sample.SampleID, sample.SelfContained)
+	}
+	if sample.DroppedBefore != 1 {
+		t.Fatalf("DroppedBefore = %d, want 1: the gated frame must be reported, not silently absent", sample.DroppedBefore)
+	}
+}
+
+// TestSensorSubscriptionReattachesAfterCaptureTakeover: the sensor socket's
+// guarantee is that subscribing never takes a device away, and its
+// counterpart is that a subscription survives episode capture taking the
+// producer over. The subscription reattaches to the replacement hub and the
+// app's new stream starts on a random-access unit.
+func TestSensorSubscriptionReattachesAfterCaptureTakeover(t *testing.T) {
+	svc := NewVideoService(context.Background(), zap.NewNop())
+	defer svc.Shutdown()
+	fp := installFakeProducers(svc)
+	ctx := context.Background()
+
+	subscription, err := svc.SubscribeSensor(ctx, "v4l2:/dev/video0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	if fp.count() != 1 {
+		t.Fatalf("started %d producers, want 1", fp.count())
+	}
+	rau := &videoFrame{
+		data:      []byte{0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 3},
+		codec:     agentpb.VideoCodec_VIDEO_CODEC_H264,
+		auAligned: true,
+	}
+	fp.hub(0).broadcast(rau)
+	first, err := subscription.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Episode capture takes the camera over at explicit campaign parameters.
+	req := &agentpb.StreamVideoRequest{DeviceId: 0, Width: 640, Height: 480, Framerate: 15}
+	newHub, captureID, _, _, _, _, restarted, err := svc.joinHubForCapture(ctx, "/dev/video0", req)
+	if err != nil || !restarted {
+		t.Fatalf("takeover failed: restarted=%v err=%v", restarted, err)
+	}
+	defer newHub.unsubscribe(captureID)
+
+	// Next reattaches to the replacement hub and delivers its frames. The
+	// reattach is asynchronous relative to this test, so keep broadcasting
+	// random-access units until one lands.
+	type result struct {
+		sample SensorSample
+		err    error
+	}
+	got := make(chan result, 1)
+	go func() {
+		s, err := subscription.Next(ctx)
+		got <- result{s, err}
+	}()
+	var second SensorSample
+	deadline := time.After(5 * time.Second)
+	for {
+		bcast := &videoFrame{
+			data:      append([]byte(nil), rau.data...),
+			codec:     agentpb.VideoCodec_VIDEO_CODEC_H264,
+			auAligned: true,
+		}
+		newHub.broadcast(bcast)
+		select {
+		case r := <-got:
+			if r.err != nil {
+				t.Fatalf("Next after takeover: %v", r.err)
+			}
+			second = r.sample
+		case <-time.After(2 * time.Millisecond):
+			continue
+		case <-deadline:
+			t.Fatal("subscription never delivered a frame from the replacement hub")
+		}
+		break
+	}
+	if !second.SelfContained {
+		t.Fatal("first sample after reattach is not a self-contained random-access unit")
+	}
+	if second.SampleID <= first.SampleID {
+		t.Fatalf("sample id did not advance across the restart: %d then %d", first.SampleID, second.SampleID)
+	}
+	if cs, ok := subscription.(*cameraSensorSubscription); !ok || cs.hub != newHub {
+		t.Fatal("subscription did not reattach to the replacement hub")
+	}
+}
+
+// TestSensorReattachCarriesTailDrops: drops the old subscription accrued after
+// the last delivered sample can no longer ride on a sample of their own once
+// the producer is taken over, so reattach must carry them into the first
+// sample the new subscription delivers.
+func TestSensorReattachCarriesTailDrops(t *testing.T) {
+	svc := newTestVideoService(nil, nil)
+	_ = installFakeProducers(svc)
+	ctx := context.Background()
+
+	hub, subID, frames, err := svc.joinHub(ctx, "/dev/video0", &agentpb.StreamVideoRequest{DeviceId: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := &cameraSensorSubscription{video: svc, key: "/dev/video0", hub: hub, subID: subID, frames: frames, lastDrops: 1}
+	hub.mu.Lock()
+	hub.subDrops[subID] = 4
+	hub.mu.Unlock()
+
+	req := &agentpb.StreamVideoRequest{DeviceId: 0, Width: 640, Height: 480, Framerate: 15}
+	newHub, captureID, _, _, _, _, restarted, err := svc.joinHubForCapture(ctx, "/dev/video0", req)
+	if err != nil || !restarted {
+		t.Fatalf("takeover failed: restarted=%v err=%v", restarted, err)
+	}
+	defer newHub.unsubscribe(captureID)
+
+	if err := subscription.reattach(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	if subscription.hub != newHub {
+		t.Fatal("reattach did not land on the replacement hub")
+	}
+	if subscription.gatedSkips != 3 {
+		t.Fatalf("gatedSkips = %d, want 3 (4 total drops minus 1 already reported)", subscription.gatedSkips)
+	}
+	if subscription.lastDrops != 0 || !subscription.awaitRandomAccess {
+		t.Fatalf("reattach state: lastDrops=%d awaitRandomAccess=%v, want 0/true", subscription.lastDrops, subscription.awaitRandomAccess)
 	}
 }

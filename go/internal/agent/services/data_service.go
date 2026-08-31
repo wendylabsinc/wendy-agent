@@ -63,11 +63,30 @@ type DataService struct {
 	// campaign-less episode started through the Start RPC.
 	activeCaptures map[string][]runningDataCapture
 	autoStopCancel map[string]context.CancelFunc
+	// armingAdapter is the capture adapter that supports pre-roll (the camera
+	// adapter). It is kept as a typed handle so the deploy, reconcile, and
+	// post-episode paths can arm and disarm campaigns; nil until a video service
+	// is registered.
+	armingAdapter dataArmingAdapter
 }
 
 type dataCaptureAdapter interface {
 	Discover(context.Context) []data.Source
 	Start(context.Context, data.CaptureSession, []data.Source) (runningDataCapture, error)
+}
+
+// dataArmingAdapter is the optional pre-roll extension of the capture-adapter
+// contract. An adapter that implements it can be Armed for a campaign that
+// requests a buffer: it subscribes to its producer as a non-owning consumer and
+// keeps a standby ring of the last `buffer` of encoded payload WITHOUT writing
+// an episode, so that when the campaign triggers the episode opens BEFORE the
+// trigger instant. The armed ring is consumed by the adapter's own Start, which
+// finds it by the episode's CaptureSession.CampaignKey. Only the camera adapter
+// implements it this round; audio and ROS 2 still begin at the trigger and
+// report their achieved offset honestly.
+type dataArmingAdapter interface {
+	Arm(campaignKey string, buffer time.Duration, selected []data.Source)
+	Disarm(campaignKey string)
 }
 
 type runningDataCapture interface {
@@ -90,9 +109,17 @@ func (s *DataService) addAdapter(adapter dataCaptureAdapter) {
 	s.adapterMu.Unlock()
 }
 
-// SetVideoService enables local V4L2/CSI and registered IP-camera capture.
+// SetVideoService enables local V4L2/CSI and registered IP-camera capture,
+// including camera pre-roll (the camera adapter can be armed for campaigns that
+// request a buffer).
 func (s *DataService) SetVideoService(video *VideoService) {
-	s.addAdapter(newCameraDataAdapter(video))
+	adapter := newCameraDataAdapter(video)
+	s.addAdapter(adapter)
+	if arming, ok := adapter.(dataArmingAdapter); ok {
+		s.adapterMu.Lock()
+		s.armingAdapter = arming
+		s.adapterMu.Unlock()
+	}
 }
 
 // SetAudioService enables microphone capture, including level-threshold
@@ -118,6 +145,79 @@ func (s *DataService) discoverAdapterSources(ctx context.Context) []data.Source 
 	var out []data.Source
 	for _, adapter := range s.adapterSnapshot() {
 		out = append(out, adapter.Discover(ctx)...)
+	}
+	return out
+}
+
+func (s *DataService) arming() dataArmingAdapter {
+	s.adapterMu.RLock()
+	defer s.adapterMu.RUnlock()
+	return s.armingAdapter
+}
+
+// ReconcileArming arms every deployed campaign that requests a buffer and names
+// at least one camera source. It is called once at startup, after the video
+// service is registered, so campaigns deployed in a previous agent lifetime
+// have their pre-roll rings running again before the first trigger.
+func (s *DataService) ReconcileArming(context.Context) {
+	if s.arming() == nil {
+		return
+	}
+	campaigns, err := s.manager.Campaigns()
+	if err != nil {
+		s.manager.Warnf("reconciling camera pre-roll arming: reading campaigns failed; armed campaigns will not pre-roll until redeployed: %v", err)
+		return
+	}
+	for _, campaign := range campaigns {
+		s.armCampaign(campaign)
+	}
+}
+
+// armCampaign (re)arms one campaign's camera sources for pre-roll. It is safe to
+// call repeatedly: the adapter disarms any prior ring for the same campaign key
+// before installing a fresh one. Campaigns without a buffer or without a camera
+// source are left untouched.
+func (s *DataService) armCampaign(campaign data.Campaign) {
+	arming := s.arming()
+	if arming == nil || campaign.State != "armed" || campaign.BufferDuration() <= 0 {
+		return
+	}
+	cameras := s.cameraSourcesFor(campaign)
+	if len(cameras) == 0 {
+		return
+	}
+	arming.Disarm(campaign.Name)
+	arming.Arm(campaign.Name, campaign.BufferDuration(), cameras)
+}
+
+// rearmByName re-arms the campaign with the given name after its episode has
+// finalized, so the next trigger again opens with pre-roll. A missing or
+// non-armed campaign simply leaves nothing armed.
+func (s *DataService) rearmByName(name string) {
+	if name == data.AdHocEpisodeKey || s.arming() == nil {
+		return
+	}
+	campaign, err := s.manager.Campaign(name)
+	if err != nil {
+		return
+	}
+	s.armCampaign(campaign)
+}
+
+// cameraSourcesFor resolves a campaign's camera sources to the source objects
+// the arming adapter needs (id plus capture policy), dropping non-camera and
+// unresolvable sources.
+func (s *DataService) cameraSourcesFor(campaign data.Campaign) []data.Source {
+	sources, _, captures, err := s.manager.ResolveCampaignSources(campaign)
+	if err != nil {
+		return nil
+	}
+	var out []data.Source
+	for _, id := range sources {
+		if _, ok := cameraDeviceID(id); !ok {
+			continue
+		}
+		out = append(out, data.Source{ID: id, Kind: "camera", Capture: captures[id]})
 	}
 	return out
 }
@@ -255,6 +355,12 @@ func (s *DataService) stopCaptureLocked(ctx context.Context, key string) (*agent
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	// The episode's camera pre-roll ring (if any) was consumed at trigger. Re-arm
+	// the campaign so its next trigger opens with pre-roll again. Arming
+	// subscribes to camera hubs, so it runs off the finalize path.
+	if key != data.AdHocEpisodeKey {
+		go s.rearmByName(key)
+	}
 	return manifestEpisode(m), nil
 }
 
@@ -275,6 +381,10 @@ func (s *DataService) CampaignDeploy(_ context.Context, req *agentpbv2.DataCampa
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	// Arm the campaign's camera sources for pre-roll so the very first trigger
+	// opens BEFORE the trigger instant. Arming subscribes to camera hubs, so it
+	// runs off the request path.
+	go s.armCampaign(campaign)
 	return message, nil
 }
 
