@@ -191,6 +191,9 @@ type DiscoveredDevice struct {
 	// Caps is copied from LAN.Caps when a LAN sighting is merged in; nil when
 	// the device has no LAN sighting.
 	Caps []string
+	// IsMTLS is copied from LAN.IsMTLS when a LAN sighting is merged in; false
+	// when the device has no LAN sighting.
+	IsMTLS bool
 	// AssetID and OrgID are copied from the LAN sighting's cloud asset/org TXT
 	// records; zero when the device has no LAN sighting or is unprovisioned.
 	AssetID int32
@@ -313,6 +316,7 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 			CPUArchitecture: d.CPUArchitecture,
 			Sensorlink:      d.Sensorlink,
 			Caps:            d.Caps,
+			IsMTLS:          d.IsMTLS,
 			AssetID:         d.AssetID,
 			OrgID:           d.OrgID,
 			IPAddress:       d.IPAddress,

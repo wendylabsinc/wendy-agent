@@ -35,6 +35,20 @@ func sensorSourceItems(devs []models.DiscoveredDevice) []tui.PickerItem {
 	return items
 }
 
+// transportForDevice returns the sensor pairing transport to use for a
+// discovered source: "grpc" for an mTLS agent advertising the "sensors"
+// capability, "tcp" for a legacy/MCU sensorlink device.
+func transportForDevice(d models.DiscoveredDevice) string {
+	if d.IsMTLS {
+		for _, c := range d.Caps {
+			if c == "sensors" {
+				return "grpc"
+			}
+		}
+	}
+	return "tcp"
+}
+
 // sameOrg rejects pairing across organizations: sensor pairing is only
 // allowed between devices in the same Wendy Cloud org.
 func sameOrg(cliOrg, sourceOrg int32) error {
@@ -179,6 +193,7 @@ func newDevicePairCmd() *cobra.Command {
 				SourceAddress:   addr,
 				Name:            pairingName(name, source),
 				SensorAllowlist: sensors,
+				Transport:       transportForDevice(*source),
 			})
 			if err != nil {
 				return cleanRPCError(err)
