@@ -28,6 +28,7 @@ const (
 	VideoTransport_VIDEO_TRANSPORT_USB     VideoTransport = 1
 	VideoTransport_VIDEO_TRANSPORT_CSI     VideoTransport = 2
 	VideoTransport_VIDEO_TRANSPORT_IP      VideoTransport = 3
+	VideoTransport_VIDEO_TRANSPORT_ROS2    VideoTransport = 4
 )
 
 // Enum value maps for VideoTransport.
@@ -37,12 +38,14 @@ var (
 		1: "VIDEO_TRANSPORT_USB",
 		2: "VIDEO_TRANSPORT_CSI",
 		3: "VIDEO_TRANSPORT_IP",
+		4: "VIDEO_TRANSPORT_ROS2",
 	}
 	VideoTransport_value = map[string]int32{
 		"VIDEO_TRANSPORT_UNKNOWN": 0,
 		"VIDEO_TRANSPORT_USB":     1,
 		"VIDEO_TRANSPORT_CSI":     2,
 		"VIDEO_TRANSPORT_IP":      3,
+		"VIDEO_TRANSPORT_ROS2":    4,
 	}
 )
 
@@ -187,6 +190,7 @@ type VideoDevice struct {
 	Mac            string                 `protobuf:"bytes,9,opt,name=mac,proto3" json:"mac,omitempty"`                                                          // stable identity for network cameras; empty for local cameras
 	HasCredentials bool                   `protobuf:"varint,10,opt,name=has_credentials,json=hasCredentials,proto3" json:"has_credentials,omitempty"`            // the agent holds a login for this camera
 	Online         bool                   `protobuf:"varint,11,opt,name=online,proto3" json:"online,omitempty"`                                                  // the most recent probe reached this camera
+	Topic          string                 `protobuf:"bytes,12,opt,name=topic,proto3" json:"topic,omitempty"`                                                     // ROS 2 image topic, e.g. "/camera/image_raw"; empty for other transports
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -296,6 +300,13 @@ func (x *VideoDevice) GetOnline() bool {
 		return x.Online
 	}
 	return false
+}
+
+func (x *VideoDevice) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
 }
 
 type ListVideoDevicesRequest struct {
@@ -981,7 +992,7 @@ var File_wendy_agent_services_v1_wendy_agent_v1_video_service_proto protoreflect
 
 const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = "" +
 	"\n" +
-	":wendy/agent/services/v1/wendy_agent_v1_video_service.proto\x12\x17wendy.agent.services.v1\"\xca\x02\n" +
+	":wendy/agent/services/v1/wendy_agent_v1_video_service.proto\x12\x17wendy.agent.services.v1\"\xe0\x02\n" +
 	"\vVideoDevice\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -994,7 +1005,8 @@ const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = 
 	"\x03mac\x18\t \x01(\tR\x03mac\x12'\n" +
 	"\x0fhas_credentials\x18\n" +
 	" \x01(\bR\x0ehasCredentials\x12\x16\n" +
-	"\x06online\x18\v \x01(\bR\x06online\"\x19\n" +
+	"\x06online\x18\v \x01(\bR\x06online\x12\x14\n" +
+	"\x05topic\x18\f \x01(\tR\x05topic\"\x19\n" +
 	"\x17ListVideoDevicesRequest\"Z\n" +
 	"\x18ListVideoDevicesResponse\x12>\n" +
 	"\adevices\x18\x01 \x03(\v2$.wendy.agent.services.v1.VideoDeviceR\adevices\"\xb8\x01\n" +
@@ -1037,12 +1049,13 @@ const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = 
 	"\ftimestamp_ns\x18\x02 \x01(\x04R\vtimestampNs\x129\n" +
 	"\x05codec\x18\x03 \x01(\x0e2#.wendy.agent.services.v1.VideoCodecR\x05codec\x12A\n" +
 	"\n" +
-	"raw_format\x18\x04 \x01(\v2\".wendy.agent.services.v1.RawFormatR\trawFormat*w\n" +
+	"raw_format\x18\x04 \x01(\v2\".wendy.agent.services.v1.RawFormatR\trawFormat*\x91\x01\n" +
 	"\x0eVideoTransport\x12\x1b\n" +
 	"\x17VIDEO_TRANSPORT_UNKNOWN\x10\x00\x12\x17\n" +
 	"\x13VIDEO_TRANSPORT_USB\x10\x01\x12\x17\n" +
 	"\x13VIDEO_TRANSPORT_CSI\x10\x02\x12\x16\n" +
-	"\x12VIDEO_TRANSPORT_IP\x10\x03*L\n" +
+	"\x12VIDEO_TRANSPORT_IP\x10\x03\x12\x18\n" +
+	"\x14VIDEO_TRANSPORT_ROS2\x10\x04*L\n" +
 	"\n" +
 	"VideoCodec\x12\x14\n" +
 	"\x10VIDEO_CODEC_H264\x10\x00\x12\x13\n" +

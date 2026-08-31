@@ -18,8 +18,9 @@ import (
 // unavailableContainerClient always fails QueryChunks with a gRPC Unavailable
 // status, modelling a tunnel that's already down by the time the chunk
 // push's capability probe goes out. calls counts invocations so tests can
-// assert a dead connection is probed exactly once per attempt (no layer work
-// is ever reached after the probe fails).
+// assert the authoritative capability probe runs exactly once per attempt.
+// The optional whole-layer query may start alongside it, but no layer is ever
+// materialized or uploaded after the capability probe fails.
 type unavailableContainerClient struct {
 	agentpb.WendyContainerServiceClient // embedded nil
 	calls                               int
@@ -27,6 +28,10 @@ type unavailableContainerClient struct {
 
 func (c *unavailableContainerClient) QueryChunks(_ context.Context, _ *agentpb.QueryChunksRequest, _ ...grpc.CallOption) (*agentpb.QueryChunksResponse, error) {
 	c.calls++
+	return nil, status.Error(codes.Unavailable, "tunnel dropped")
+}
+
+func (c *unavailableContainerClient) QueryLayers(_ context.Context, _ *agentpb.QueryLayersRequest, _ ...grpc.CallOption) (*agentpb.QueryLayersResponse, error) {
 	return nil, status.Error(codes.Unavailable, "tunnel dropped")
 }
 

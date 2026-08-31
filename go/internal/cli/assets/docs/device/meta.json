@@ -6,6 +6,7 @@
     "connecting-to-wifi",
     "discovering-devices",
     "managing-apps",
+    "managing-drivers",
     "entitlements"
   ]
 }

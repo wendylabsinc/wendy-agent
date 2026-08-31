@@ -28,6 +28,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
+	"github.com/wendylabsinc/wendy/go/internal/agent/ros2camera"
 	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -86,6 +87,7 @@ const (
 // v4l2Format matches struct v4l2_format (208 bytes) for V4L2_BUF_TYPE_VIDEO_CAPTURE.
 type v4l2Format struct {
 	Type         uint32
+	_            [4]byte // align the v4l2_format union to 8 bytes on 64-bit Linux
 	Width        uint32
 	Height       uint32
 	PixelFormat  uint32
@@ -98,8 +100,18 @@ type v4l2Format struct {
 	Enc          uint32
 	Quantization uint32
 	XferFunc     uint32
-	_            [156]byte
+	_            [152]byte
 }
+
+// VIDIOC_S_FMT encodes a 208-byte argument, and the anonymous format union
+// starts at byte 8 on Linux's 64-bit UAPI. Keep both properties compile-time
+// checked because shifted fields make valid H.264 devices look unsupported.
+var (
+	_ [208 - unsafe.Sizeof(v4l2Format{})]byte
+	_ [unsafe.Sizeof(v4l2Format{}) - 208]byte
+	_ [8 - unsafe.Offsetof(v4l2Format{}.Width)]byte
+	_ [unsafe.Offsetof(v4l2Format{}.Width) - 8]byte
+)
 
 // v4l2FrmSizeEnum matches struct v4l2_frmsizeenum (44 bytes). Only the discrete
 // branch of the union is read; Union covers the larger stepwise variant so the
@@ -526,12 +538,13 @@ func (h *deviceHub) rawRefusal() error {
 	return nil
 }
 
-// videoSourceKind distinguishes a local V4L2 node from a network camera.
+// videoSourceKind distinguishes physical/local V4L2, network, and ROS 2 cameras.
 type videoSourceKind int
 
 const (
 	sourceV4L2 videoSourceKind = iota
 	sourceIP
+	sourceROS2
 )
 
 // videoSource is what a device ID resolves to. Introducing it removes the
@@ -553,11 +566,12 @@ const ipHubKeyPrefix = "ip:"
 // the same way TEGRA_FIRMWARE_MISMATCH becomes an os install hint.
 const reasonIPCameraNoCredentials = streamreason.IPCameraNoCredentials
 
-// State paths for network cameras, under the agent's existing state directory.
+// State paths for virtual cameras, under the agent's existing state directory.
 // Declared as vars so tests can point them at a temporary directory.
 var (
-	ipcamRegistryPath   = "/var/lib/wendy/cameras.json"
-	ipcamCredentialPath = "/var/lib/wendy/camera-credentials.json"
+	ipcamRegistryPath      = "/var/lib/wendy/cameras.json"
+	ipcamCredentialPath    = "/var/lib/wendy/camera-credentials.json"
+	ros2CameraRegistryPath = "/var/lib/wendy/ros2-cameras.json"
 )
 
 // cameraLoopback is the seam VideoService uses to reach the v4l2loopback node
@@ -576,6 +590,7 @@ type cameraLoopback interface {
 	SetContainerConsumers(containerIDs []string)
 	CredentialsChanged(camID uint32)
 	RemoveCamera(camID uint32)
+	EnsureNode(ctx context.Context, id uint32, label string) error
 	Shutdown()
 }
 
@@ -594,6 +609,7 @@ type VideoService struct {
 	discoverer  *ipcam.Discoverer
 	links       *ipcam.LinkManager
 	loopback    cameraLoopback
+	ros2Cameras *ros2camera.Manager
 
 	// runGStreamer is the injection seam for the network capture subprocess.
 	runGStreamer func(ctx context.Context, args []string, onFrame func([]byte)) error
@@ -630,7 +646,7 @@ type VideoService struct {
 
 // NewVideoService creates a VideoService whose producer goroutines are tied to ctx.
 // Call Shutdown to cancel all active producers and wait for them to exit.
-func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
+func NewVideoService(ctx context.Context, logger *zap.Logger, rosRuntime ...ROS2Runtime) *VideoService {
 	svcCtx, cancel := context.WithCancel(ctx)
 	svc := &VideoService{
 		logger: logger,
@@ -691,6 +707,42 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 		func(ctx context.Context, args []string) error {
 			return svc.runGStreamer(ctx, args, func([]byte) {})
 		})
+	var graphs ros2camera.GraphSource
+	if len(rosRuntime) != 0 && rosRuntime[0] != nil {
+		graphs = func(ctx context.Context) ([]ros2camera.Graph, error) {
+			targets, err := rosRuntime[0].FindROS2Containers(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]ros2camera.Graph, 0, len(targets))
+			for _, target := range targets {
+				if target.Running && target.TaskPID != 0 {
+					target := target
+					key := target.AppID
+					if key == "" {
+						key = target.ContainerID
+					}
+					out = append(out, ros2camera.Graph{
+						Key: key, InstanceKey: target.ContainerID, DomainID: target.DomainID, NetworkNamespacePID: target.TaskPID,
+						Verify: func(ctx context.Context) bool {
+							current, err := rosRuntime[0].FindROS2Containers(ctx)
+							if err != nil {
+								return false
+							}
+							for _, candidate := range current {
+								if candidate.ContainerID == target.ContainerID && candidate.Running && candidate.TaskPID == target.TaskPID {
+									return true
+								}
+							}
+							return false
+						},
+					})
+				}
+			}
+			return out, nil
+		}
+	}
+	svc.ros2Cameras = ros2camera.NewManager(svcCtx, logger, svc.loopback, ros2CameraRegistryPath, graphs)
 	return svc
 }
 
@@ -707,6 +759,9 @@ const discoveryInterval = 60 * time.Second
 // answers a discovery probe. See ipcam.LinkGuard for the conditions under which
 // the agent is willing to be that server.
 func (s *VideoService) StartDiscovery() {
+	if s.ros2Cameras != nil {
+		s.ros2Cameras.Start()
+	}
 	if s.links != nil {
 		s.wg.Add(1)
 		go func() {
@@ -745,6 +800,9 @@ func (s *VideoService) StartDiscovery() {
 // shuttingDown check could still start a new supervisor moments after ctx
 // cancellation fires but before Loopback.Shutdown gets a chance to run.
 func (s *VideoService) Shutdown() {
+	if s.ros2Cameras != nil {
+		s.ros2Cameras.Shutdown()
+	}
 	if s.loopback != nil {
 		s.loopback.Shutdown()
 	}
@@ -780,7 +838,7 @@ func (s *VideoService) listCameras(ctx context.Context) ([]*agentpb.VideoDevice,
 		// EnsureNodes has created one, it would otherwise glob-enumerate here
 		// too and double-list the camera: once (correctly) from listIPCameras
 		// below and once (bogusly) as an indistinguishable local device.
-		if id >= uint64(ipcam.IDBandStart) && id <= uint64(ipcam.IDBandEnd) {
+		if id >= uint64(ipcam.LoopbackBandStart) && id <= uint64(ipcam.IDBandEnd) {
 			continue
 		}
 		if !s.hasVideoCapture(path) {
@@ -817,8 +875,25 @@ func (s *VideoService) listCameras(ctx context.Context) ([]*agentpb.VideoDevice,
 			devices[csiDeviceIdxs[0]].LibcameraId = id
 		}
 	}
+	devices = append(devices, s.listROS2Cameras()...)
 	devices = append(devices, s.listIPCameras()...)
 	return devices, nil
+}
+
+func (s *VideoService) listROS2Cameras() []*agentpb.VideoDevice {
+	if s.ros2Cameras == nil {
+		return nil
+	}
+	cameras := s.ros2Cameras.List()
+	out := make([]*agentpb.VideoDevice, 0, len(cameras))
+	for _, cam := range cameras {
+		out = append(out, &agentpb.VideoDevice{
+			Id: cam.ID, Name: cam.Name, Path: cam.Path,
+			Transport: agentpb.VideoTransport_VIDEO_TRANSPORT_ROS2,
+			Topic:     cam.Topic, Online: true,
+		})
+	}
+	return out
 }
 
 // listIPCameras renders registered network cameras as VideoDevices. Path stays
@@ -866,6 +941,16 @@ func (s *VideoService) ListVideoDevices(ctx context.Context, _ *agentpb.ListVide
 // resolveSource maps a device ID onto the thing it names. IDs in the network
 // camera band resolve through the registry; everything else is a V4L2 node.
 func (s *VideoService) resolveSource(devID uint32) (videoSource, error) {
+	if devID >= ros2camera.IDBandStart && devID <= ros2camera.IDBandEnd {
+		if s.ros2Cameras == nil {
+			return videoSource{}, status.Errorf(codes.NotFound, "camera %d not found", devID)
+		}
+		cam, ok := s.ros2Cameras.Get(devID)
+		if !ok {
+			return videoSource{}, status.Errorf(codes.NotFound, "camera %d not found", devID)
+		}
+		return videoSource{kind: sourceROS2, key: fmt.Sprintf("ros2:%d", devID), path: cam.Path}, nil
+	}
 	if devID >= ipcam.IDBandStart && devID <= ipcam.IDBandEnd {
 		if s.registry == nil {
 			return videoSource{}, status.Errorf(codes.NotFound, "camera %d not found", devID)
@@ -949,7 +1034,13 @@ func (s *VideoService) EnsureCameraNodes(ctx context.Context) error {
 	if s.loopback == nil {
 		return nil
 	}
-	return s.loopback.EnsureNodes(ctx)
+	if err := s.loopback.EnsureNodes(ctx); err != nil {
+		return err
+	}
+	if s.ros2Cameras != nil {
+		s.ros2Cameras.EnsureNodes(ctx)
+	}
+	return nil
 }
 
 // SetCameraContainerConsumers tells the loopback manager which entitled
@@ -961,6 +1052,9 @@ func (s *VideoService) SetCameraContainerConsumers(ctx context.Context, containe
 		return
 	}
 	s.loopback.SetContainerConsumers(containerIDs)
+	if s.ros2Cameras != nil {
+		s.ros2Cameras.SetContainerConsumers(containerIDs)
+	}
 }
 
 // RefreshCameras runs one discovery round and returns the full camera listing.
@@ -970,6 +1064,9 @@ func (s *VideoService) RefreshCameras(ctx context.Context, _ *agentpb.RefreshCam
 			// A failed probe still leaves previously discovered cameras listable.
 			s.logger.Warn("camera discovery failed", zap.Error(err))
 		}
+	}
+	if s.ros2Cameras != nil {
+		s.ros2Cameras.Refresh(ctx)
 	}
 	devices, err := s.listCameras(ctx)
 	if err != nil {
@@ -1464,6 +1561,17 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 		// V4L2 resolution allowlist does not apply. Width instead selects which
 		// of the camera's streams to open.
 		return s.streamIPCamera(stream, src, req)
+	}
+	if src.kind == sourceROS2 {
+		cam, release, err := s.ros2Cameras.Acquire(ctx, devID)
+		if err != nil {
+			return status.Errorf(codes.Unavailable, "starting ROS 2 camera %d: %v", devID, err)
+		}
+		defer release()
+		src.path = cam.Path
+		if src.path == "" {
+			return status.Errorf(codes.Unavailable, "ROS 2 camera %d has no loopback device", devID)
+		}
 	}
 
 	path := src.path

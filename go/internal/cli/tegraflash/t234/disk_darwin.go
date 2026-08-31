@@ -52,8 +52,15 @@ func listUMSDisks() ([]UMSDisk, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ioreg: %w", err)
 	}
+	return parseUMSDisks(string(out)), nil
+}
+
+// parseUMSDisks extracts flashpkg-style UMS LUNs from `ioreg -rc IOUSBHostDevice
+// -l -w0` output. Split out from listUMSDisks so the nested-hub topology parsing
+// can be exercised without a live device.
+func parseUMSDisks(out string) []UMSDisk {
 	var disks []UMSDisk
-	for _, chunk := range splitIoregSubtrees(string(out)) {
+	for _, chunk := range splitIoregSubtrees(out) {
 		if ioregInt(chunk, "idVendor") != GadgetVendorID || ioregInt(chunk, "idProduct") != GadgetProductID {
 			continue
 		}
@@ -78,7 +85,7 @@ func listUMSDisks() ([]UMSDisk, error) {
 		}
 		disks = append(disks, d)
 	}
-	return disks, nil
+	return disks
 }
 
 func macUSBPortPath(location int64) string {
@@ -129,13 +136,26 @@ func rawUMSInquiry() string {
 	return b.String()
 }
 
-// splitIoregSubtrees splits `ioreg -r` output into one chunk per matched
-// root object (each starts with "+-o " at column 0).
+// ioregDeviceLine matches an ioreg tree line that introduces an IOUSBHostDevice,
+// at any indentation depth — "+-o <name>@<loc>  <class IOUSBHostDevice, id …>"
+// whether it sits at column 0 or nested under a parent (e.g. "  | | +-o …").
+var ioregDeviceLine = regexp.MustCompile(`\+-o .*<class IOUSBHostDevice[,>]`)
+
+// splitIoregSubtrees breaks `ioreg -rc IOUSBHostDevice` output into one chunk per
+// USB device. It splits on every IOUSBHostDevice line at any depth, not only
+// column-0 roots: `ioreg -r` nests a device inside its parent hub when the target
+// sits behind one, and Apple Silicon's internal USB 2.0 hub is itself an
+// IOUSBHostDevice. Splitting only on column-0 boundaries collapsed hub+device
+// into a single chunk, so listUMSDisks read the hub's idVendor and discarded the
+// real gadget — a flash could never find its flashpkg LUN through that hub
+// (WDY-2621). A device's non-device descendants (USB interfaces, SCSI nubs,
+// IOMedia) carry no IOUSBHostDevice line, so they stay in the device's chunk,
+// which is where Vendor Identification and BSD Name live.
 func splitIoregSubtrees(out string) []string {
 	var chunks []string
 	var cur strings.Builder
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "+-o ") && cur.Len() > 0 {
+		if ioregDeviceLine.MatchString(line) && cur.Len() > 0 {
 			chunks = append(chunks, cur.String())
 			cur.Reset()
 		}

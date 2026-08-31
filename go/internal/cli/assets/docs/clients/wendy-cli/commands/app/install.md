@@ -6,7 +6,7 @@ wendy app install <app-id> [flags]
 
 This command is also available as `wendy device apps install <app-id>` for device-scoped workflows.
 
-`wendy app install` resolves the given AppStore app ID to an OCI image reference by querying the Wendy Cloud resolution API (`GET /v1/apps/{id}/image`), then deploys the image to the target device using the agent's `CreateContainer` RPC. By default it also starts the container immediately with the **`UNLESS_STOPPED`** restart policy.
+`wendy app install` resolves the given AppStore app ID to an OCI image reference by querying the Wendy Cloud resolution API (`GET /v1/apps/{id}/image`), then deploys the image to the target device. By default it also starts the container immediately with the **`UNLESS_STOPPED`** restart policy.
 
 > **Note:** The AppStore resolution API is still being finalized as a public endpoint. If `wendy app install` cannot resolve an app ID, verify the resolution API is reachable or override the endpoint with `--api`. Check [appstore.wendy.dev](https://appstore.wendy.dev) for the latest supported app IDs.
 
