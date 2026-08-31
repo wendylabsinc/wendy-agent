@@ -51,7 +51,7 @@ type SensorSource struct {
 	// frames on the two-plane data path, for example "/dev/video200". Empty when
 	// the source has no such node, which is the normal case: a node exists only
 	// for a source whose frames can be identified frame-for-frame, and only while
-	// an app entitled to BOTH sensors and camera is running.
+	// an app entitled to BOTH sensor-read and camera is running.
 	//
 	// An empty value is not an error and an app must handle it: it means the
 	// two-plane path is unavailable for this source and the app should fall back
