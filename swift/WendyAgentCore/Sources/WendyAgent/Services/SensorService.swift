@@ -115,7 +115,14 @@ struct SensorService: Wendy_Agent_Services_V2_WendySensorService.ServiceProtocol
         sampleRate: UInt32, channels: UInt32
     ) {
         guard audio is AudioController else { return (sampleRate: 48000, channels: 1) }
-        let format = AVAudioEngine().inputNode.inputFormat(forBus: 0)
+        // Retain the engine for the whole probe: reading `inputFormat` off a
+        // temporary `AVAudioEngine()` lets ARC deallocate the engine while its
+        // input node still references it, which segfaults deep in AVFAudio
+        // (AVAudioIONodeImpl::AUI() == nil). Keeping `engine` in a local and
+        // extending its lifetime past the read avoids the use-after-free.
+        let engine = AVAudioEngine()
+        let format = engine.inputNode.inputFormat(forBus: 0)
+        defer { withExtendedLifetime(engine) {} }
         guard format.sampleRate > 0, format.channelCount > 0 else { return (48000, 1) }
         return (sampleRate: UInt32(format.sampleRate), channels: UInt32(format.channelCount))
     }
