@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -255,5 +256,32 @@ func TestApplyStoredCameraControls_ReAppliesResolved(t *testing.T) {
 			t.Fatalf("controls %q and %q share cid %#x", prev, c.name, c.cid)
 		}
 		seen[c.cid] = c.name
+	}
+}
+
+// The store is device configuration that decides how a camera captures, so it
+// is readable and writable only by the agent -- same footing as ipcam's
+// credential store. It was 0o644/0o755, which let any local user read it and,
+// depending on the directory, replace it.
+func TestCameraControlStore_IsNotWorldReadable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "camera-controls.json")
+	store := newCameraControlStore(path)
+	if err := store.merge("/dev/video0", []storedControl{{Name: "gain", Value: 4}}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("store file mode = %#o, want 0600", perm)
+	}
+	di, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if perm := di.Mode().Perm(); perm != 0o700 {
+		t.Errorf("store dir mode = %#o, want 0700", perm)
 	}
 }

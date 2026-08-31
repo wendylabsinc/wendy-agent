@@ -386,11 +386,17 @@ func (c *cameraControlStore) save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {
+	// 0o700/0o600, matching ipcam's credential store rather than the 0o755/0o644
+	// this used to use. The contents are not secrets, but they are device
+	// configuration that decides how a camera captures -- and on a box where
+	// the picture feeds a detector, a local user who can rewrite the exposure
+	// can blind it without touching the detector at all. Only the agent needs
+	// to read or write this.
+	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return err
 	}
 	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, c.path)
