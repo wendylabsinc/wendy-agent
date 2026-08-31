@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/sensorlink"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
@@ -25,6 +27,28 @@ func TestTransportForDevice(t *testing.T) {
 	mcuDev := models.DiscoveredDevice{Sensorlink: true, IsMTLS: false, AssetID: 6} // legacy tcp sensorlink
 	if transportForDevice(mcuDev) != "tcp" {
 		t.Fatal("legacy/MCU source should be tcp")
+	}
+}
+
+func TestPairAddressPicksPortByTransport(t *testing.T) {
+	grpcDev := models.DiscoveredDevice{
+		Sensorlink: true, IsMTLS: true, Caps: []string{"sensors"}, AssetID: 5,
+		IPAddress: "10.0.0.5",
+		LAN:       &models.LANDevice{Port: 50051},
+	}
+	addr, transport := pairAddress(&grpcDev)
+	if transport != "grpc" || addr != "10.0.0.5:50051" {
+		t.Fatalf("grpc source: got addr=%q transport=%q, want 10.0.0.5:50051/grpc", addr, transport)
+	}
+
+	tcpDev := models.DiscoveredDevice{
+		Sensorlink: true, IsMTLS: false, AssetID: 6,
+		IPAddress: "10.0.0.6",
+	}
+	addr, transport = pairAddress(&tcpDev)
+	want := fmt.Sprintf("10.0.0.6:%d", sensorlink.Port)
+	if transport != "tcp" || addr != want {
+		t.Fatalf("tcp source: got addr=%q transport=%q, want %s/tcp", addr, transport, want)
 	}
 }
 

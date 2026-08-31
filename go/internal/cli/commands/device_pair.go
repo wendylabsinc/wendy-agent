@@ -49,6 +49,20 @@ func transportForDevice(d models.DiscoveredDevice) string {
 	return "tcp"
 }
 
+// pairAddress builds the SourceAddress and transport for AddSensorPairing,
+// picking the port the same way the agent's resolveLANAddr does: the mDNS
+// agent gRPC port for "grpc" sources, the well-known sensorlink.Port for
+// "tcp"/legacy MCU sources. Getting this wrong makes a grpc pairing dial the
+// raw-TCP port and fail mTLS forever.
+func pairAddress(source *models.DiscoveredDevice) (addr, transport string) {
+	transport = transportForDevice(*source)
+	port := sensorlink.Port
+	if transport == "grpc" {
+		port = source.Port()
+	}
+	return fmt.Sprintf("%s:%d", source.IPAddress, port), transport
+}
+
 // sameOrg rejects pairing across organizations: sensor pairing is only
 // allowed between devices in the same Wendy Cloud org.
 func sameOrg(cliOrg, sourceOrg int32) error {
@@ -187,13 +201,13 @@ func newDevicePairCmd() *cobra.Command {
 				return err
 			}
 
-			addr := fmt.Sprintf("%s:%d", source.IPAddress, sensorlink.Port)
+			addr, transport := pairAddress(source)
 			_, err = conn.SensorPairingService.AddSensorPairing(ctx, &agentpbv2.AddSensorPairingRequest{
 				SourceAssetId:   source.AssetID,
 				SourceAddress:   addr,
 				Name:            pairingName(name, source),
 				SensorAllowlist: sensors,
-				Transport:       transportForDevice(*source),
+				Transport:       transport,
 			})
 			if err != nil {
 				return cleanRPCError(err)
