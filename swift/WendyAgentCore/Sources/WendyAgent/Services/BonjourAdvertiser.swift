@@ -14,6 +14,7 @@ struct BonjourAdvertiser {
     let deviceID: String
     var tls: Bool = false
     var assetID: Int32? = nil
+    var orgID: Int32? = nil
     var caps: [String] = []
 
     private let logger = Logger(label: "sh.wendy.agent.bonjour")
@@ -37,20 +38,26 @@ struct BonjourAdvertiser {
             deviceID: self.deviceID,
             tls: self.tls,
             assetID: self.assetID,
+            orgID: self.orgID,
             caps: self.caps
         )
     }
 
-    /// Encodes DNS-SD TXT records as length-prefixed `key=value` fields. `tls`
-    /// and `assetid` mirror what the wendy CLI reads to decide mTLS vs plaintext
-    /// and to label the device (see discovery_*.go). `caps` advertises optional
-    /// capabilities (e.g. "sensors") as a comma-joined list; omitted when empty.
+    /// Encodes DNS-SD TXT records as length-prefixed `key=value` fields. `tls`,
+    /// `assetid`, and `orgid` mirror what the wendy CLI reads to decide mTLS vs
+    /// plaintext, to label the device, and to enforce same-org pairing (see
+    /// discovery_*.go). `caps` advertises optional capabilities (e.g. "sensors")
+    /// as a comma-joined list; omitted when empty.
     static func encodeTXT(
-        displayName: String, deviceID: String, tls: Bool, assetID: Int32?, caps: [String]
+        displayName: String, deviceID: String, tls: Bool, assetID: Int32?, orgID: Int32?,
+        caps: [String]
     ) -> Data {
         var fields = ["displayname=\(displayName)", "id=\(deviceID)", "tls=\(tls)"]
         if let assetID {
             fields.append("assetid=\(assetID)")
+        }
+        if let orgID {
+            fields.append("orgid=\(orgID)")
         }
         if !caps.isEmpty {
             fields.append("caps=\(caps.joined(separator: ","))")

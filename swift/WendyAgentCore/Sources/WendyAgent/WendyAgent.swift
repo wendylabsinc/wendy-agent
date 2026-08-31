@@ -610,6 +610,7 @@ public actor WendyAgent {
             deviceID: ProcessInfo.processInfo.hostName,
             tls: enrolled,
             assetID: enrolled ? info?.assetID : nil,
+            orgID: enrolled ? info?.orgID : nil,
             caps: enrolled ? ["sensors"] : []
         )
 

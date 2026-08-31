@@ -25,6 +25,7 @@ struct BonjourAdvertiserTests {
             deviceID: "mac",
             tls: false,
             assetID: nil,
+            orgID: nil,
             caps: []
         )
         let f = fields(data)
@@ -32,20 +33,23 @@ struct BonjourAdvertiserTests {
         #expect(f.contains("id=mac"))
         #expect(f.contains("tls=false"))
         #expect(!f.contains(where: { $0.hasPrefix("assetid=") }))
+        #expect(!f.contains(where: { $0.hasPrefix("orgid=") }))
     }
 
-    @Test("provisioned TXT carries tls=true and assetid")
+    @Test("provisioned TXT carries tls=true, assetid, and orgid")
     func provisioned() {
         let data = BonjourAdvertiser.encodeTXT(
             displayName: "mac",
             deviceID: "mac",
             tls: true,
             assetID: 42,
+            orgID: 2,
             caps: []
         )
         let f = fields(data)
         #expect(f.contains("tls=true"))
         #expect(f.contains("assetid=42"))
+        #expect(f.contains("orgid=2"))
     }
 
     @Test("TXT includes caps when non-empty")
@@ -55,6 +59,7 @@ struct BonjourAdvertiserTests {
             deviceID: "id",
             tls: true,
             assetID: 5,
+            orgID: 2,
             caps: ["sensors"]
         )
         let s = String(decoding: data, as: UTF8.self)
@@ -68,6 +73,7 @@ struct BonjourAdvertiserTests {
             deviceID: "id",
             tls: true,
             assetID: 5,
+            orgID: 2,
             caps: []
         )
         let f = fields(data)
