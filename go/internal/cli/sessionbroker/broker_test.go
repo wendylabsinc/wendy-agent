@@ -618,6 +618,51 @@ func TestServeExitsWhenRetainedTransportLeavesReadyWithoutTraffic(t *testing.T) 
 	}
 }
 
+func TestIdleExitDrainsStragglerConnections(t *testing.T) {
+	dir := shortTempDir(t)
+	socketPath := filepath.Join(dir, "drain.sock")
+	statePath := filepath.Join(dir, "drain.json")
+	for _, p := range []string{socketPath, statePath} {
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	activity := newActivity()
+	// A client that dialed between the idle check and the shutdown: it may have
+	// probed successfully and be relying on this broker for the rest of its
+	// command, so the exit must serve it until it releases its channel.
+	activity.connections.Store(1)
+	server := grpc.NewServer()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		drainThenStop(context.Background(), server, activity, socketPath, statePath)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("idle exit did not unpublish the socket")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-done:
+		t.Fatal("idle exit stopped the server while a straggler connection was active")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	activity.connections.Store(0)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("idle exit did not stop after the straggler released its channel")
+	}
+}
+
 func TestConnectRejectsNonPrivateSessionDirectory(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sessions")

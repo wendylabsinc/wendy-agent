@@ -29,6 +29,14 @@ func ConnectSessionProxy(ctx context.Context, socketPath, host, addr string, cer
 		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
 		grpc.WithReadBufferSize(grpcReadBufferSize),
 		grpc.WithWriteBufferSize(grpcWriteBufferSize),
+		// The open channel is what tells the broker this invocation still
+		// exists: its connection count keeps the broker alive through long
+		// local quiet periods (an image build between device RPCs). gRPC's
+		// default 30-minute client idle timeout would tear the transport down
+		// mid-command, letting the broker expire and unlink the socket the
+		// post-build RPC then re-dials — failing an invocation that direct
+		// dialing would have completed. Zero disables idleness.
+		grpc.WithIdleTimeout(0),
 	)
 	if err != nil {
 		return nil, err

@@ -627,7 +627,7 @@ func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn
 				}
 				last := time.Unix(0, activity.last.Load())
 				if activity.connections.Load() == 0 && activity.activeRPCs.Load() == 0 && time.Since(last) >= idleTTL {
-					server.GracefulStop()
+					drainThenStop(serveCtx, server, activity, socketPath, statePath)
 					return
 				}
 			}
@@ -640,6 +640,31 @@ func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn
 		return nil
 	}
 	return err
+}
+
+// drainThenStop is the broker's idle exit. The idle check and GracefulStop
+// used to race: a client could dial the socket between them, probe
+// successfully, and then lose the broker under its still-running command —
+// and with fallback existing only at probe time, that failed the invocation
+// outright. Unpublishing the socket first guarantees no further client can
+// arrive; any straggler that made it in is then served until it releases its
+// channel (which, with the proxy channel pinned non-idle client-side, is when
+// its invocation finishes).
+func drainThenStop(ctx context.Context, server *grpc.Server, activity *activity, socketPath, statePath string) {
+	_ = os.Remove(socketPath)
+	_ = os.Remove(statePath)
+	for activity.connections.Load() > 0 || activity.activeRPCs.Load() > 0 {
+		select {
+		case <-ctx.Done():
+			server.Stop()
+			return
+		case <-activity.upstreamBad:
+			server.Stop()
+			return
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	server.GracefulStop()
 }
 
 func writePrivateFile(path string, data []byte) error {
