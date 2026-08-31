@@ -1116,60 +1116,33 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 
 	addr, pinKey, isDefault, err := resolveDeviceAddress()
 	if err == nil {
-		startedAt := time.Now()
 		// The name the user asked for, used both to talk about this device and
 		// to decide which device is acceptable — see resolveDeviceAddress.
 		hostname := pinKey
-		provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
-		conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
-		if connErr != nil {
-			if errors.Is(connErr, ErrUserCancelled) {
-				return nil, connErr
+		// Same broker consult/seed pair as resolveTargetInner's named-device
+		// branch: the two ladders are parallel front doors to the same devices,
+		// and a broker only one of them can use leaves every command on the
+		// other paying the full post-quantum handshake per invocation.
+		conn, brokerHit := (*grpcclient.AgentConnection)(nil), false
+		if !cfg.disableSessionBroker {
+			conn, brokerHit = connectPinnedSession(ctx, addr)
+		}
+		if brokerHit {
+			// A broker hit passed a live health probe — a proof-of-life exit
+			// that must refresh the discovery/LKG entry like any other.
+			cacheConnectSuccess(addr, conn)
+			if isDefault {
+				noteImplicitDevice(hostname, implicitDefaultDevice)
 			}
-			// A cross-org mismatch is a credentials problem, not a reachability
-			// one: surface it directly rather than routing it into clock-skew
-			// retry, cert-refresh, or the default-device picker (none of which can
-			// resolve "you have no credentials for this device's org").
-			var orgMismatch orgMismatchDeviceError
-			if errors.As(connErr, &orgMismatch) {
-				return nil, connErr
-			}
-			retriedConn, connErr, retried := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
-				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
-			})
-			// retryOnHandshakeTimeout hands back the freshest error it saw, so a
-			// retry that revealed a more specific failure (e.g. a cert rejection)
-			// now drives the branches below instead of the original timeout.
-			if retried {
-				conn = retriedConn
-			} else if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
-				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
-			}); ok {
-				conn = syncedConn
-			} else if errors.Is(connErr, errProvisionedAgentUnauthorized) {
-				refreshedConn, ok := offerCertRefreshAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
-					return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
-				})
-				if !ok {
-					return nil, connErr
-				}
-				conn = refreshedConn
-			} else if usbConn, ok := usbDirectFallback(ctx, hostname); ok {
-				// The stored address is unreachable but the same device (verified
-				// by hostname) is on USB — use it directly.
-				conn = usbConn
-			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
-				// Default device is unreachable — offer interactive recovery.
-				hostname, _, _ := net.SplitHostPort(addr)
-				target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
-				if recErr != nil {
-					return nil, recErr
-				}
-				return connectFromSelectedDevice(target, cfg)
-			} else if isDefault {
-				return nil, defaultDeviceUnreachableError(hostname, connErr)
-			} else {
-				return nil, connErr
+		} else {
+			var finished bool
+			conn, finished, err = connectToAgentDirect(ctx, cfg, hostname, addr, isDefault)
+			if err != nil || finished {
+				// finished: default-device recovery resolved the target through
+				// the picker, whose path enforces its own pin and must not be
+				// seeded under the requested endpoint (it may have picked a
+				// different device).
+				return conn, err
 			}
 		}
 		// WDY-1149: verify the device that answered is still the same device, in
@@ -1195,6 +1168,9 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 				return nil, updateErr
 			}
 		}
+		if !brokerHit && !cfg.disableSessionBroker {
+			startPinnedSession(addr, conn)
+		}
 		return conn, nil
 	}
 
@@ -1209,6 +1185,70 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 	}
 
 	return connectFromSelectedDevice(target, cfg)
+}
+
+// connectToAgentDirect is connectToAgent's named-device dial with its recovery
+// ladder, split out so the broker consult above stays readable. finished
+// reports that the result is final: default-device recovery resolved the
+// target through the picker (whose path enforces its own pin), so the caller
+// must return it untouched instead of running the named-device pin, update,
+// and broker-seed steps.
+func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr string, isDefault bool) (_ *grpcclient.AgentConnection, finished bool, _ error) {
+	startedAt := time.Now()
+	provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
+	conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+	if connErr != nil {
+		if errors.Is(connErr, ErrUserCancelled) {
+			return nil, false, connErr
+		}
+		// A cross-org mismatch is a credentials problem, not a reachability
+		// one: surface it directly rather than routing it into clock-skew
+		// retry, cert-refresh, or the default-device picker (none of which can
+		// resolve "you have no credentials for this device's org").
+		var orgMismatch orgMismatchDeviceError
+		if errors.As(connErr, &orgMismatch) {
+			return nil, false, connErr
+		}
+		retriedConn, connErr, retried := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+			return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+		})
+		// retryOnHandshakeTimeout hands back the freshest error it saw, so a
+		// retry that revealed a more specific failure (e.g. a cert rejection)
+		// now drives the branches below instead of the original timeout.
+		if retried {
+			conn = retriedConn
+		} else if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+			return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+		}); ok {
+			conn = syncedConn
+		} else if errors.Is(connErr, errProvisionedAgentUnauthorized) {
+			refreshedConn, ok := offerCertRefreshAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+			})
+			if !ok {
+				return nil, false, connErr
+			}
+			conn = refreshedConn
+		} else if usbConn, ok := usbDirectFallback(ctx, hostname); ok {
+			// The stored address is unreachable but the same device (verified
+			// by hostname) is on USB — use it directly.
+			conn = usbConn
+		} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
+			// Default device is unreachable — offer interactive recovery.
+			hostname, _, _ := net.SplitHostPort(addr)
+			target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+			if recErr != nil {
+				return nil, true, recErr
+			}
+			picked, pickErr := connectFromSelectedDevice(target, cfg)
+			return picked, true, pickErr
+		} else if isDefault {
+			return nil, false, defaultDeviceUnreachableError(hostname, connErr)
+		} else {
+			return nil, false, connErr
+		}
+	}
+	return conn, false, nil
 }
 
 // connectFromSelectedDevice converts a SelectedDevice from the picker into a
