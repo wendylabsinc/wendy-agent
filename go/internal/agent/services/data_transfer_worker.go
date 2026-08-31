@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
@@ -52,7 +53,7 @@ const (
 // worker can populate the manifest the server cross-checks against the cert),
 // plus a closeFn the caller must invoke when the pass is done. Production dials
 // the cloud over mTLS; tests inject an in-process client.
-type ingestClientFactory func(ctx context.Context) (client cloudpb.DataIngestServiceClient, orgID, assetID uint64, closeFn func(), err error)
+type ingestClientFactory func(ctx context.Context) (client cloudpb.DataIngestServiceClient, closeFn func(), err error)
 
 // DataTransferWorker uploads sealed episodes to the cloud DataIngestService. It
 // consumes Manifest.Upload as a durable queue: episodes marked "pending" (and,
@@ -194,10 +195,10 @@ func contextSleeper(ctx context.Context) func(time.Duration) {
 
 // dialFactory is the production ingestClientFactory: it waits for provisioning,
 // dials the cloud over mTLS, and returns a DataIngestService client.
-func (w *DataTransferWorker) dialFactory(ctx context.Context) (cloudpb.DataIngestServiceClient, uint64, uint64, func(), error) {
+func (w *DataTransferWorker) dialFactory(ctx context.Context) (cloudpb.DataIngestServiceClient, func(), error) {
 	cloudHost, orgID, assetID, enrolled := w.provisioningSvc.ProvisioningInfo()
 	if !enrolled {
-		return nil, 0, 0, nil, errors.New("data transfer worker: not provisioned")
+		return nil, nil, errors.New("data transfer worker: not provisioned")
 	}
 	certPEM, chainPEM, keyData := w.provisioningSvc.ProvisioningCerts()
 	// The identity sent, when one is sent at all, is the one the enrolled asset
@@ -209,9 +210,9 @@ func (w *DataTransferWorker) dialFactory(ctx context.Context) (cloudpb.DataInges
 		return dialCloudMTLS(w.ingestDialHost(cloudHost), certPEM, chainPEM, keyData, extraOpts...)
 	}()
 	if err != nil {
-		return nil, 0, 0, nil, err
+		return nil, nil, err
 	}
-	return cloudpb.NewDataIngestServiceClient(conn), uint64(orgID), uint64(assetID), func() { _ = conn.Close() }, nil
+	return cloudpb.NewDataIngestServiceClient(conn), func() { _ = conn.Close() }, nil
 }
 
 // Run drives the transfer worker until ctx is cancelled. It waits for the agent
@@ -278,7 +279,7 @@ func (w *DataTransferWorker) backoff(ctx context.Context, attempt int) {
 // backoff); a failure uploading one episode is recorded on that episode's
 // manifest and does not abort the pass.
 func (w *DataTransferWorker) runPass(ctx context.Context) error {
-	client, orgID, assetID, closeFn, err := w.factory(ctx)
+	client, closeFn, err := w.factory(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire ingest client: %w", err)
 	}
@@ -298,7 +299,7 @@ func (w *DataTransferWorker) runPass(ctx context.Context) error {
 		if mf.Upload.State == uploadStatePending && mf.Upload.NextAttemptUnixNanos > now.UnixNano() {
 			continue
 		}
-		w.processEpisode(ctx, client, orgID, assetID, mf)
+		w.processEpisode(ctx, client, mf)
 	}
 	return nil
 }
@@ -356,7 +357,7 @@ func (w *DataTransferWorker) uploadRate(mf data.Manifest) int64 {
 // manifest; transient failures move the episode back to "pending" with a
 // backoff (or to "failed" once the retry ceiling is hit), verification failures
 // move it straight to "failed", and success marks it "uploaded".
-func (w *DataTransferWorker) processEpisode(ctx context.Context, client cloudpb.DataIngestServiceClient, orgID, assetID uint64, mf data.Manifest) {
+func (w *DataTransferWorker) processEpisode(ctx context.Context, client cloudpb.DataIngestServiceClient, mf data.Manifest) {
 	if ok, reason := w.resolveShouldUpload(mf); !ok {
 		w.logger.Debug("data transfer worker: skipping episode", zap.String("episode", mf.ID), zap.String("reason", reason))
 		return
@@ -373,7 +374,7 @@ func (w *DataTransferWorker) processEpisode(ctx context.Context, client cloudpb.
 	w.logger.Info("data transfer worker: uploading episode", zap.String("episode", mf.ID),
 		zap.Int("files", len(mf.Files)), zap.String("campaign", mf.Trigger.CampaignName))
 
-	verifyErr, retryErr := w.uploadEpisode(ctx, client, orgID, assetID, mf)
+	verifyErr, retryErr := w.uploadEpisode(ctx, client, mf)
 	switch {
 	case verifyErr != nil:
 		// Server-side verification failed: the stored bytes do not match the
@@ -448,8 +449,8 @@ func (w *DataTransferWorker) markFailed(id, detail string) {
 // episode. It returns (verifyErr, retryErr): verifyErr is a terminal
 // verification/corruption failure, retryErr is a retryable transport failure.
 // At most one is non-nil; both nil means success.
-func (w *DataTransferWorker) uploadEpisode(ctx context.Context, client cloudpb.DataIngestServiceClient, orgID, assetID uint64, mf data.Manifest) (verifyErr, retryErr error) {
-	manifest, err := buildEpisodeManifest(mf, orgID, assetID)
+func (w *DataTransferWorker) uploadEpisode(ctx context.Context, client cloudpb.DataIngestServiceClient, mf data.Manifest) (verifyErr, retryErr error) {
+	manifest, err := buildEpisodeManifest(mf)
 	if err != nil {
 		// A manifest we cannot even serialize is corrupt local state; do not
 		// spin on it.
@@ -470,7 +471,13 @@ func (w *DataTransferWorker) uploadEpisode(ctx context.Context, client cloudpb.D
 	// resume is a server-side follow-up.
 	committed := make(map[string]int64, len(begin.GetFiles()))
 	for _, f := range begin.GetFiles() {
-		committed[f.GetPath()] = f.GetCommittedOffset()
+		// Offsets are unsigned on the wire and signed here, because that is
+		// what the file APIs use. Any value a correct server can report fits;
+		// one that does not is treated as "nothing committed" so the file
+		// restarts from 0 rather than wrapping to a negative offset.
+		if v := f.GetCommittedOffset(); v <= math.MaxInt64 {
+			committed[f.GetPath()] = int64(v)
+		}
 	}
 
 	rate := w.uploadRate(mf)
@@ -577,7 +584,7 @@ func (w *DataTransferWorker) streamOneFile(ctx context.Context, stream grpc.Bidi
 			if err := stream.Send(&cloudpb.EpisodeChunk{
 				EpisodeId: episodeID,
 				Path:      file.Path,
-				Offset:    offset,
+				Offset:    uint64(offset),
 				Data:      buf[:n],
 				Eof:       eof,
 			}); err != nil {
@@ -604,10 +611,12 @@ func (w *DataTransferWorker) streamOneFile(ctx context.Context, stream grpc.Bidi
 
 // buildEpisodeManifest projects the device manifest onto the cloud
 // EpisodeManifest. The full device manifest JSON rides in attributes_json for
-// fidelity; the typed fields are what the catalog indexes on. org_id/asset_id
-// come from the asserted asset identity and the server cross-checks them
-// against the client certificate.
-func buildEpisodeManifest(mf data.Manifest, orgID, assetID uint64) (*cloudpb.EpisodeManifest, error) {
+// fidelity; the typed fields are what the catalog indexes on.
+//
+// The manifest carries no org or asset. The cloud reads both from the client
+// certificate presented on the connection, so there is nothing here for the
+// device to assert and nothing for the server to cross-check.
+func buildEpisodeManifest(mf data.Manifest) (*cloudpb.EpisodeManifest, error) {
 	raw, err := json.Marshal(mf)
 	if err != nil {
 		return nil, fmt.Errorf("marshal manifest: %w", err)
@@ -621,6 +630,7 @@ func buildEpisodeManifest(mf data.Manifest, orgID, assetID uint64) (*cloudpb.Epi
 			MediaType: f.MediaType,
 			Format:    f.Format,
 			SourceId:  f.SourceID,
+			Role:      episodeFileRole(f.Role),
 		})
 	}
 	var lower, upper int64
@@ -634,8 +644,6 @@ func buildEpisodeManifest(mf data.Manifest, orgID, assetID uint64) (*cloudpb.Epi
 	}
 	return &cloudpb.EpisodeManifest{
 		EpisodeId:            mf.ID,
-		OrgId:                orgID,
-		AssetId:              assetID,
 		Campaign:             mf.Trigger.CampaignName,
 		CampaignRevision:     mf.Trigger.CampaignRevision,
 		Trigger:              trigger,
@@ -648,6 +656,31 @@ func buildEpisodeManifest(mf data.Manifest, orgID, assetID uint64) (*cloudpb.Epi
 		Files:                files,
 		AttributesJson:       raw,
 	}, nil
+}
+
+// episodeFileRole maps the device manifest's per-file role onto the wire enum.
+//
+// The manifest omits the role for capture payload and capture metadata, so an
+// empty role means captured. This sends CAPTURED explicitly rather than
+// leaving the field at its default, so a manifest that went through this
+// mapper is distinguishable on the wire from one written by an agent built
+// before the field existed.
+//
+// Any other string maps to UNSPECIFIED, which the wire contract defines as
+// captured. The enum has no "unknown" member and inventing one would force
+// every reader to handle a state it cannot act on, so an unrecognised role
+// degrades to the pre-existing meaning instead. That only arises when an
+// older agent resumes an upload for an episode a newer build sealed; adding a
+// role to data.File must add it here in the same change.
+func episodeFileRole(role string) cloudpb.EpisodeFileRole {
+	switch role {
+	case "":
+		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED
+	case data.FileRoleDerived:
+		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_DERIVED
+	default:
+		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED
+	}
 }
 
 // byteRateLimiter paces a byte stream to at most ratePerSec bytes per second by
