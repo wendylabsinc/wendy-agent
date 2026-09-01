@@ -3,6 +3,8 @@ package commands
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -10,6 +12,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -48,13 +51,31 @@ func transportForDevice(d models.DiscoveredDevice) string {
 	return "tcp"
 }
 
-// sameOrg rejects pairing across organizations: sensor pairing is only
-// allowed between devices in the same Wendy Cloud org.
-func sameOrg(cliOrg, sourceOrg int32) error {
-	if cliOrg != sourceOrg {
-		return fmt.Errorf("device is in a different organization (yours: %d, device: %d); pairing is only allowed within one organization", cliOrg, sourceOrg)
+// orgAllowed permits sensor pairing when the source device's org is one the
+// CLI holds an authenticated session in. The user may be logged into several
+// orgs at once (e.g. org 2 and org 77); pairing must succeed for a device in
+// ANY of them, not just whichever session happens to be the default — the mTLS
+// connection to the consumer already used the right org's cert.
+func orgAllowed(cliOrgs map[int32]bool, sourceOrg int32) error {
+	if cliOrgs[sourceOrg] {
+		return nil
 	}
-	return nil
+	have := make([]int, 0, len(cliOrgs))
+	for org := range cliOrgs {
+		have = append(have, int(org))
+	}
+	sort.Ints(have)
+	labels := make([]string, len(have))
+	for i, org := range have {
+		labels[i] = fmt.Sprintf("%d", org)
+	}
+	yours := "no organizations"
+	if len(labels) == 1 {
+		yours = "organization " + labels[0]
+	} else if len(labels) > 1 {
+		yours = "organizations " + strings.Join(labels, ", ")
+	}
+	return fmt.Errorf("device is in organization %d, but you are logged in to %s; pairing is only allowed within an organization you belong to", sourceOrg, yours)
 }
 
 // discoverSensorSources runs LAN discovery and returns the merged device list
@@ -98,14 +119,27 @@ func runPicker(title string, items []tui.PickerItem) (*tui.PickerItem, error) {
 	return sel, nil
 }
 
-// currentCLIOrgID returns the organization ID of the CLI's own auth session,
-// resolved the same way other commands pick a default session.
-func currentCLIOrgID(_ context.Context) (int32, error) {
-	auth, err := pickAuthEntry("")
+// cliOrgIDs returns the set of organization IDs the CLI holds an authenticated
+// certificate for, across EVERY stored session. Pairing is allowed with a
+// device in any of them, so unlike currentCLIOrgID (which read only the default
+// session) this never rejects a device the user is legitimately logged in to.
+func cliOrgIDs() (map[int32]bool, error) {
+	cfg, err := config.Load()
 	if err != nil {
-		return 0, err
+		return nil, fmt.Errorf("loading config: %w", err)
 	}
-	return int32(auth.Certificates[0].OrganizationID), nil
+	orgs := make(map[int32]bool)
+	for i := range cfg.Auth {
+		for _, c := range cfg.Auth[i].Certificates {
+			if c.OrganizationID > 0 {
+				orgs[int32(c.OrganizationID)] = true
+			}
+		}
+	}
+	if len(orgs) == 0 {
+		return nil, config.ErrNotLoggedIn
+	}
+	return orgs, nil
 }
 
 // cleanRPCError maps a gRPC error to a human-readable message so a raw
@@ -178,11 +212,11 @@ func newDevicePairCmd() *cobra.Command {
 			}
 			source := sel.Value.(*models.DiscoveredDevice)
 
-			cliOrg, err := currentCLIOrgID(ctx) // auth.Certificates[0].OrganizationID
+			cliOrgs, err := cliOrgIDs() // every org the CLI is logged in to
 			if err != nil {
 				return err
 			}
-			if err := sameOrg(cliOrg, source.OrgID); err != nil {
+			if err := orgAllowed(cliOrgs, source.OrgID); err != nil {
 				return err
 			}
 
