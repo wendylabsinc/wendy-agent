@@ -218,11 +218,11 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
 
-	commonName, identityURN, err := enrollmentTokenIdentity(result.EnrollmentToken)
+	commonName, identityURIs, err := enrollmentTokenIdentity(result.EnrollmentToken)
 	if err != nil {
 		return fmt.Errorf("reading enrollment token identity: %w", err)
 	}
-	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), commonName, identityURN)
+	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), commonName, identityURIs)
 	if err != nil {
 		return fmt.Errorf("generating CSR: %w", err)
 	}
@@ -304,36 +304,47 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 // authoritative identity URI SAN from an enrollment token's claims. The URN
 // ("urn:wendy:org:<org>:user:<userID>" for users, "urn:wendy:org:<org>:asset:<assetID>"
 // for assets) is what IdentityFromCert prefers over the legacy CommonName.
-func enrollmentTokenIdentity(token string) (commonName, identityURN string, err error) {
+func enrollmentTokenIdentity(token string) (commonName string, identityURIs []string, err error) {
 	claims, err := enrolltoken.Parse(token)
 	if err != nil {
-		return "", "", err
+		return "", nil, err
+	}
+	// The tenant SPIFFE principal rides alongside the urn:wendy SAN whenever
+	// the token carries a tenant; cloud refuses to sign a relay grant without
+	// it. Orgs with no pki tenant get no claim, and enroll as they always did.
+	withTenant := func(cn, urn string) (string, []string, error) {
+		uris := []string{urn}
+		if spiffeURI, ok := claims.TenantSPIFFEURI(); ok {
+			uris = append(uris, spiffeURI)
+		}
+		return cn, uris, nil
 	}
 	switch claims.Type {
 	case "user_enrollment":
 		if claims.UserID == "" {
-			return "", "", fmt.Errorf("user enrollment token missing user_id")
+			return "", nil, fmt.Errorf("user enrollment token missing user_id")
 		}
 		if strings.Contains(claims.UserID, ":") {
 			// A ':' in the user ID would make the URN unreadable for every
 			// identity parser (they expect exactly 6 colon-separated parts),
 			// yielding a cert that cannot authenticate anywhere.
-			return "", "", fmt.Errorf("user_id %q contains ':', cannot build identity URN", claims.UserID)
+			return "", nil, fmt.Errorf("user_id %q contains ':', cannot build identity URN", claims.UserID)
 		}
 		cn := fmt.Sprintf("wendy/user/%s", claims.UserID)
 		if claims.OrganizationID == 0 {
 			// Legacy token without an org claim: keep login working, CN only.
-			return cn, "", nil
+			return cn, nil, nil
 		}
-		return cn, certs.UserURN(claims.OrganizationID, claims.UserID), nil
+		return withTenant(cn, certs.UserURN(claims.OrganizationID, claims.UserID))
 	case "asset_enrollment":
 		if claims.OrganizationID == 0 || claims.AssetID == 0 {
-			return "", "", fmt.Errorf("asset enrollment token missing org_id or asset_id")
+			return "", nil, fmt.Errorf("asset enrollment token missing org_id or asset_id")
 		}
-		return fmt.Sprintf("wendy/%d/%d", claims.OrganizationID, claims.AssetID),
-			certs.AssetURN(claims.OrganizationID, claims.AssetID), nil
+		return withTenant(
+			fmt.Sprintf("wendy/%d/%d", claims.OrganizationID, claims.AssetID),
+			certs.AssetURN(claims.OrganizationID, claims.AssetID))
 	default:
-		return "", "", fmt.Errorf("unsupported enrollment token type %q", claims.Type)
+		return "", nil, fmt.Errorf("unsupported enrollment token type %q", claims.Type)
 	}
 }
 
@@ -359,13 +370,16 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 	}
 	// Reconstruct the device_id that pki-core stored in the token.
 	deviceID := fmt.Sprintf("sh/wendy/%d/%d", tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
-	identityURN := certs.AssetURN(tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
+	identityURIs := []string{certs.AssetURN(tokenResp.GetOrganizationId(), tokenResp.GetAssetId())}
+	if spiffeURI, ok := enrolltoken.TenantSPIFFEURIFromToken(tokenResp.GetEnrollmentToken()); ok {
+		identityURIs = append(identityURIs, spiffeURI)
+	}
 
 	privateKeyPEM, err := certs.GenerateKeyPair()
 	if err != nil {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
-	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), deviceID, identityURN)
+	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), deviceID, identityURIs)
 	if err != nil {
 		return fmt.Errorf("generating CSR: %w", err)
 	}
@@ -609,7 +623,7 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
 
-	csrPEM, err := certs.GenerateCSR([]byte(newKeyPEM), cn, identityURN)
+	csrPEM, err := certs.GenerateCSR([]byte(newKeyPEM), cn, []string{identityURN})
 	if err != nil {
 		return fmt.Errorf("generating CSR: %w", err)
 	}
