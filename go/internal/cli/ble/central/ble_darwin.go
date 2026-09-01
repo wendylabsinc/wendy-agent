@@ -1,6 +1,6 @@
 //go:build darwin
 
-package ble
+package central
 
 /*
 #cgo CFLAGS: -fobjc-arc

@@ -1,21 +1,24 @@
-package ble
+// Package central is a generic, cross-platform BLE central (client): connect to
+// a peripheral, talk GATT, and open an L2CAP channel that can carry TLS.
+//
+// Nothing here is specific to any device or protocol — every method takes plain
+// service/characteristic UUIDs and PSMs. The Wendy protocol clients live one
+// level up in internal/cli/ble; peripheral discovery lives beside this package
+// in internal/cli/ble/scan, which yields the address Connect takes.
+//
+// The API is blocking, with whole-second timeouts, and Connection is not
+// goroutine-safe for GATT. See ../README.md for the capability matrix per
+// platform and the concurrency rules.
+package central
 
 import (
-	"crypto/tls"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 )
-
-// DefaultL2CAPPSM is the PSM both the WendyOS agent and the Wendy Lite firmware
-// listen on. It is the fallback when a device's PSM is not known from discovery.
-const DefaultL2CAPPSM uint16 = 128
 
 // ErrRecvTimeout reports that no L2CAP data arrived within the timeout passed to
 // (*Connection).L2CAPRecv. It is a sentinel, not a failure: the channel is still
@@ -28,13 +31,13 @@ var ErrRecvTimeout = errors.New("BLE L2CAP receive timeout")
 // Read to come back out of the platform layer, so keep it small.
 const recvChunkSeconds = 2
 
-// timeoutSeconds converts a duration to the whole seconds the platform layer
+// TimeoutSeconds converts a duration to the whole seconds the platform layer
 // takes, rounding up and never returning less than 1. Both backends read a
 // 0-second timeout as "return immediately" — dispatch_semaphore_wait with
 // DISPATCH_TIME_NOW on darwin, poll(2) with 0ms on Linux — so truncating a
 // sub-second budget to 0 would turn a short wait into a hot spin. A negative
 // value would make poll(2) block forever.
-func timeoutSeconds(d time.Duration) int {
+func TimeoutSeconds(d time.Duration) int {
 	if d <= 0 {
 		return 1
 	}
@@ -79,7 +82,7 @@ func (c *l2capNetConn) Read(b []byte) (int, error) {
 			if remaining <= 0 {
 				return 0, &timeoutErr{}
 			}
-			if secs := timeoutSeconds(remaining); secs < chunk {
+			if secs := TimeoutSeconds(remaining); secs < chunk {
 				chunk = secs
 			}
 		}
@@ -165,24 +168,3 @@ type timeoutErr struct{}
 func (e *timeoutErr) Error() string   { return "BLE L2CAP: i/o timeout" }
 func (e *timeoutErr) Timeout() bool   { return true }
 func (e *timeoutErr) Temporary() bool { return true }
-
-// NewClientTLSConfig builds a *tls.Config for the BLE client.
-// InsecureSkipVerify bypasses Go's built-in verifier (ML-DSA chain certs
-// fail to parse; no TLS hostname over L2CAP); opts.PinStore and chain
-// verification are handled by the VerifyConnection callback.
-func NewClientTLSConfig(certPEM, keyPEM string, opts certs.ServerVerifyOpts) (*tls.Config, error) {
-	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
-	if err != nil {
-		return nil, fmt.Errorf("loading BLE client certificate: %w", err)
-	}
-	verifyConn, err := certs.BuildServerVerifyConnection(opts)
-	if err != nil {
-		return nil, fmt.Errorf("building BLE server certificate verifier: %w", err)
-	}
-	return &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
-		VerifyConnection:   verifyConn,
-		MinVersion:         tls.VersionTLS12,
-	}, nil
-}

@@ -1,6 +1,6 @@
 //go:build linux
 
-package ble
+package central
 
 import (
 	"fmt"

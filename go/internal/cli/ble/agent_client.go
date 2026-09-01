@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/ble/central"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/protobuf/proto"
@@ -18,10 +19,15 @@ import (
 // deadline has to be set here.
 const agentReadTimeout = 30 * time.Second
 
+// DefaultL2CAPPSM is the PSM the WendyOS agent's L2CAP server listens on (see
+// agent/bluetooth/l2cap_server_linux.go, which must agree with this). It is the
+// fallback when discovery did not report the device's own PSM.
+const DefaultL2CAPPSM uint16 = 128
+
 // AgentClient communicates with a WendyOS agent over BLE L2CAP using
 // protobuf-framed messages (UInt16 BE length prefix) over mTLS.
 type AgentClient struct {
-	conn    *Connection
+	conn    *central.Connection
 	tlsConn *tls.Conn
 }
 
@@ -29,7 +35,7 @@ type AgentClient struct {
 // L2CAP channel, and performs the mTLS handshake. tlsConfig must include a
 // client certificate issued by the same PKI as the agent's server certificate.
 func ConnectAgent(device *models.BluetoothDevice, tlsConfig *tls.Config) (*AgentClient, error) {
-	conn, err := Connect(device.Address, 10)
+	conn, err := central.Connect(device.Address, 10)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to %s: %w", device.DisplayName, err)
 	}
@@ -44,7 +50,7 @@ func ConnectAgent(device *models.BluetoothDevice, tlsConfig *tls.Config) (*Agent
 		return nil, fmt.Errorf("opening L2CAP channel (PSM %d): %w", psm, err)
 	}
 
-	tlsConn := tls.Client(NewL2CAPStream(conn), tlsConfig)
+	tlsConn := tls.Client(central.NewL2CAPStream(conn), tlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("BLE mTLS handshake: %w", err)

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/ble/central"
 )
 
 // Wendy Lite device info service. Base 4E57454E-4459-0002-xxxx-000000000000
@@ -33,21 +35,22 @@ type LiteInfo struct {
 // ErrLiteInfoUnavailable reports that the device does not publish the info
 // service, or that this platform cannot read GATT at all — Linux and Windows
 // have no GATT client, so they always take this path. Callers fall back to
-// DefaultL2CAPPSM rather than failing.
+// liteclient.DefaultL2CAPPSM rather than failing.
 var ErrLiteInfoUnavailable = errors.New("Wendy Lite info service unavailable")
 
 // ReadLiteInfo reads the device's GATT info service, which carries the L2CAP
 // PSM to open along with the identity the device advertises for itself.
 //
 // It is a best-effort lookup: every failure is wrapped in
-// ErrLiteInfoUnavailable so a caller can fall back to DefaultL2CAPPSM. Only the
-// PSM characteristic is required; the identity and mTLS characteristics are
-// read opportunistically and left zero when a device omits them.
-func ReadLiteInfo(conn *Connection, timeout time.Duration) (*LiteInfo, error) {
+// ErrLiteInfoUnavailable so a caller can fall back to its own default PSM —
+// liteclient.DefaultL2CAPPSM for the Lite path. Only the PSM characteristic is
+// required; the identity and mTLS characteristics are read opportunistically
+// and left zero when a device omits them.
+func ReadLiteInfo(conn *central.Connection, timeout time.Duration) (*LiteInfo, error) {
 	// Required before any characteristic op: the darwin lookup walks the
 	// peripheral's discovered services and reports "not found" against an empty
 	// list. This is also where Linux and Windows bow out.
-	if err := conn.DiscoverServices(timeoutSeconds(timeout)); err != nil {
+	if err := conn.DiscoverServices(central.TimeoutSeconds(timeout)); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrLiteInfoUnavailable, err)
 	}
 	if !conn.HasService(liteInfoServiceUUID) {
@@ -83,7 +86,7 @@ func ReadLiteInfo(conn *Connection, timeout time.Duration) (*LiteInfo, error) {
 // readLiteInfoString reads one UTF-8 characteristic, yielding "" for both a
 // read failure and an empty value (ReadCharacteristic returns (nil, nil) when
 // the characteristic holds no bytes).
-func readLiteInfoString(conn *Connection, charUUID string) string {
+func readLiteInfoString(conn *central.Connection, charUUID string) string {
 	data, err := conn.ReadCharacteristic(liteInfoServiceUUID, charUUID)
 	if err != nil {
 		return ""

@@ -1,6 +1,6 @@
 //go:build windows
 
-package ble
+package central
 
 import "fmt"
 

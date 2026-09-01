@@ -4,10 +4,18 @@ This package is the **client side** of Wendy's Bluetooth Low Energy transport. I
 developer machine (the BLE *central*) and talks to a WendyOS device or a Wendy Lite (ESP32)
 board acting as the BLE *peripheral*.
 
-It provides two things:
+It is three packages, split along exactly that line — the generic BLE work in two subpackages, the
+Wendy protocol on top:
 
-1. A **generic, cross-platform BLE central API** — `Connection` — covering GATT and L2CAP.
-2. **Wendy-specific protocol clients** built on top of it (`LiteClient`, `AgentClient`).
+1. [`central`](central/) — a **generic, cross-platform BLE central API** (`Connection`) covering
+   GATT and L2CAP, plus the L2CAP-to-`net.Conn` adapter TLS runs over.
+2. [`scan`](scan/) — a **generic, cross-platform BLE scanner** that finds peripherals and yields the
+   addresses `central.Connect` takes.
+3. `ble` (this package) — the **Wendy-specific protocol clients** built on both (`LiteClient`,
+   `AgentClient`).
+
+Neither subpackage contains a Wendy identifier, and that is the point: see
+[what is generic, and what is Wendy-specific](#what-is-generic-and-what-is-wendy-specific).
 
 > The protocol clients themselves — `lite_client.go` and `agent_client.go` — are out of scope for
 > this document. They are mentioned only where they illustrate what the transport layer supports,
@@ -15,25 +23,37 @@ It provides two things:
 
 ## Files
 
+**`central/`** — the connection, generic:
+
 | File | Role |
 | --- | --- |
 | `ble_darwin.go` / `.h` / `.m` | macOS backend. cgo bridge to a CoreBluetooth implementation in Objective-C. |
 | `ble_linux.go` | Linux backend. Raw `AF_BLUETOOTH` / `BTPROTO_L2CAP` socket via `golang.org/x/sys/unix`. **L2CAP only.** |
 | `ble_windows.go` | Windows stub. Every method returns "not implemented". |
-| `conn.go` | Adapts an L2CAP channel to `net.Conn` so Go's `crypto/tls` can run over it, plus the Wendy client TLS config. |
+| `conn.go` | Adapts an L2CAP channel to `net.Conn` so Go's `crypto/tls` can run over it (`NewL2CAPStream`), plus `ErrRecvTimeout` and `TimeoutSeconds`. |
+
+**`scan/`** — finding peripherals, generic. Its own cgo bridge on macOS, BlueZ D-Bus on Linux, a
+WinRT advertisement watcher on Windows. See [its section](#scanning-the-scan-subpackage).
+
+**`ble/`** — the Wendy protocol, this package:
+
+| File | Role |
+| --- | --- |
 | `lite_client.go` | Wendy Lite (ESP32) Wi-Fi provisioning over GATT (not covered here). |
 | `lite_info.go` | Wendy Lite GATT info service — `ReadLiteInfo` reads the L2CAP PSM and the identity a device advertises for itself (not covered here). |
-| `agent_client.go` | WendyOS agent RPC over mTLS-over-L2CAP (not covered here). |
+| `agent_client.go` | WendyOS agent RPC over mTLS-over-L2CAP (not covered here), plus `DefaultL2CAPPSM` — the PSM the agent listens on. |
+| `agent_tls_over_ble.go` | `NewClientTLSConfig` — the mTLS config for the agent path, built on the Wendy PKI. |
 
-There are no tests in this package.
+There are no tests in `ble` or `central`. `scan/` has them — its engine is testable without a radio,
+and a live, hardware-driven test is gated behind `WENDY_BLE_LIVE_SCAN` (see below).
 
-## The `Connection` API
+## The `Connection` API ([`central`](central/))
 
-Each platform file defines the same `Connection` type and method set, selected by build tag. The
-API is blocking, with integer-second timeouts.
+Each platform file in `central/` defines the same `Connection` type and method set, selected by build
+tag. The API is blocking, with integer-second timeouts.
 
 ```go
-conn, err := ble.Connect(address, 10)   // address semantics differ per platform, see below
+conn, err := central.Connect(address, 10)   // address semantics differ per platform, see below
 defer conn.Close()
 
 // GATT
@@ -76,11 +96,12 @@ On Linux the GATT methods exist only to satisfy the shared method set; they retu
 * **Linux** — a Bluetooth MAC address, `"AA:BB:CC:DD:EE:FF"` (parsed to LSB-first `[6]byte`,
   `BDADDR_LE_PUBLIC`).
 
-Callers get this string from [`shared/discovery`](../../shared/discovery/), which fills
-`models.BluetoothDevice.Address` with the right kind of value per platform. **This package does no
-scanning or discovery of its own.**
+Either source of addresses hands you the right kind of value per platform: the [`scan`](scan/)
+subpackage in `BLEDeviceInfo.Address`, or [`shared/discovery`](../../shared/discovery/) in
+`models.BluetoothDevice.Address`. Windows is the gap — `scan` can find peripherals there, but
+`central.Connect` cannot reach them.
 
-### L2CAP-over-TLS bridge (`conn.go`)
+### L2CAP-over-TLS bridge (`central/conn.go`)
 
 `NewL2CAPStream(conn)` wraps a `*Connection` as a `net.Conn`. Call it after `OpenL2CAP`; closing the
 returned conn closes the underlying BLE connection.
@@ -99,14 +120,91 @@ returned conn closes the underlying BLE connection.
   CoreBluetooth wrapper to ARC while a blocked reader still holds a bare pointer to it.
 * `LocalAddr`/`RemoteAddr` are placeholders (`"ble-l2cap"` / `"ble"`).
 
-`NewClientTLSConfig` builds a `*tls.Config` for it. It sets `InsecureSkipVerify: true` — there is no
-hostname to verify over L2CAP, and ML-DSA chain certs don't parse in Go's built-in verifier — and
+`ble.NewClientTLSConfig` builds a `*tls.Config` for it. It sets `InsecureSkipVerify: true` — there is
+no hostname to verify over L2CAP, and ML-DSA chain certs don't parse in Go's built-in verifier — and
 performs real validation in a `VerifyConnection` callback from `shared/certs` (Wendy PKI + pin store).
-This function is **Wendy-specific**; the `l2capNetConn` adapter underneath it is not.
+That function is **Wendy-specific**, which is why it lives in `ble/agent_tls_over_ble.go` rather
+than in `central/` with the `l2capNetConn` adapter underneath it.
+
+## Scanning (the [`scan`](scan/) subpackage)
+
+`scan` is the other half of the generic story: `central.Connect` needs an address, and this is where
+addresses come from. It is deliberately as Wendy-free as `Connection` is — the services to look for are an
+argument, and a result carries only what a BLE advertisement can actually supply.
+
+```go
+devices, err := scan.DiscoverBluetoothContinuous(ctx, scan.Options{
+    Services: []string{"7565E9EB-4C20-4B67-9272-D708B397B631"}, // empty = every device in range
+})
+if err != nil {
+    return err // the scan could not start at all; a mid-stream failure closes the channel instead
+}
+for set := range devices {
+    // set is the COMPLETE list, sorted by RSSI descending — replace, don't merge.
+    // set[i].Address feeds straight into central.Connect.
+}
+```
+
+A stream re-emits the whole array whenever it changes and closes when `ctx` is cancelled. Devices
+accumulate and are never dropped: BLE has no "device went away" signal, and a disappearance timeout
+would make a peripheral blink out of a picker between advertisements. Emits are coalesced on
+`Options.Interval` (1 s by default), which is what stops RSSI churn — it changes on nearly every
+advertising packet — from spinning the channel.
+
+Two things it deliberately does *not* report:
+
+* **No L2CAP PSM.** A PSM is not in an advertisement. Get it from `ReadLiteInfo` after connecting,
+  or fall back to the relevant client's own `DefaultL2CAPPSM` — `ble`'s for the agent,
+  `liteclient`'s for Lite.
+* **No stable cross-platform identity.** `Address` is a CoreBluetooth UUID on macOS and a MAC on
+  Linux and Windows, exactly as `central.Connect` requires, so it cannot be compared across
+  machines.
+
+`Name` is the advertised local name, and it is a display label rather than an identity: macOS falls
+back to CoreBluetooth's cached name and Linux to BlueZ's persisted one, so it can outlive the
+advertisement it came from. Windows has no cache to fall back on and reports `""` instead.
+
+Service UUIDs are normalized through `scan.CanonicalUUID`, which matters more than it looks:
+CoreBluetooth renders a 16-bit UUID as four hex characters (`"180F"`) where BlueZ and WinRT give the
+full 128-bit form, so comparing raw strings across platforms silently misses matches.
+
+| Capability | macOS | Linux | Windows |
+| --- | :---: | :---: | :---: |
+| Continuous scan | ✅ CoreBluetooth | ✅ BlueZ D-Bus | ✅ WinRT advertisement watcher |
+| Filter by service UUID | ✅ (in Go) | ✅ (BlueZ + Go) | ✅ (WinRT + Go) |
+| RSSI | ✅ | ✅ | ✅ |
+| Advertised name | ✅ | ✅ | ✅ (no cache fallback) |
+| `RunBLECheck` is meaningful | ✅ | ❌ returns 0 | ❌ returns 0 |
+
+**The Windows column is unverified on hardware.** It compiles and its JSON parsing is covered by
+tests, but no one has run it against a real radio, and the WinRT event binding is the part most
+likely to need work — `Register-ObjectEvent` binds WinRT `TypedEventHandler` events unevenly, so the
+script may need an `Add-Type` inline-C# shim instead. Treat it as a first cut. Windows also has no
+`central` backend, so nothing it finds can be connected to yet.
+
+The macOS backend keeps a long-lived `CBCentralManager` and lets Go poll a snapshot, so there are no
+cgo→Go callbacks and nothing ever calls into Go from a CoreBluetooth thread. It scans with
+`AllowDuplicates: YES` and **no** native service filter — CoreBluetooth's own filter drops
+peripherals whose advertisement omits the UUID, which is exactly the case a name-based fallback
+exists to catch — and filters in Go instead. The Windows backend runs one long-lived Windows
+PowerShell 5.1 process (the WinRT-projecting host) driving a `BluetoothLEAdvertisementWatcher` and
+streaming JSON lines back.
+
+Because CI has no radio and no macOS job compiles this cgo at all, the only thing that exercises the
+real bridges is the hardware-gated test:
+
+```sh
+WENDY_BLE_LIVE_SCAN=1 go test ./internal/cli/ble/scan -run TestLiveScan -v
+# WENDY_BLE_LIVE_SERVICES=<uuid>[,<uuid>] to exercise filtering
+```
+
+`shared/discovery`'s `bluetooth_{darwin,linux,windows}.go` still carry their own one-shot scan; the
+intent is for them to keep only the Wendy policy (agent vs Lite UUIDs, name fallback, PSM 128/0) and
+sit on top of this package.
 
 ## Platform implementation notes
 
-### macOS (`ble_darwin.m`)
+### macOS (`central/ble_darwin.m`)
 
 The interesting part is that this runs inside a **CLI binary with no main run loop**, which
 CoreBluetooth normally assumes exists.
@@ -125,16 +223,21 @@ CoreBluetooth normally assumes exists.
   usable.
 * Incoming L2CAP bytes accumulate in an `NSMutableData` behind a lock; `L2CAPRecv` drains the whole
   buffer at once. Reads use a 4096-byte chunk.
-* Requires cgo, `-framework CoreBluetooth`, and the macOS Bluetooth TCC permission. (Sandboxed
-  terminals can `SIGABRT` on CoreBluetooth init — hence the separate `__ble-check` subprocess in
-  `shared/discovery`.)
+* Requires cgo, `-framework CoreBluetooth`, and the macOS Bluetooth TCC permission. Sandboxed
+  terminals can `SIGABRT` on CoreBluetooth init rather than returning an error, which is why the
+  probe runs in a throwaway subprocess: `shared/discovery` re-execs the CLI as `__ble-check`, and
+  `scan.RunBLECheck` is the same probe for a caller to wire into `scan.Options.Preflight`.
+* This file and `../scan/scan_darwin.m` both link into one binary, so their C symbols and
+  Objective-C class names must not collide — ObjC class names are process-global and a duplicate
+  makes the runtime pick one arbitrarily. Hence `wendy_ble_*` / `WendyBLEConnection` here versus
+  `wendy_blescan_*` / `WendyBLEScanSession` there.
 * Error codes are a small C enum (`timeout`, `not found`, `connect failed`, `discover failed`,
   `write failed`, `read failed`, `L2CAP failed`, `disconnected`) mapped to Go `error` strings by
   `bleError`. The one exception is `L2CAPRecv`, which returns the `ErrRecvTimeout` sentinel instead
   of routing a timeout through `bleError`, so a caller can tell an idle channel from a dead one and
   retry. Everything else surfaces as an opaque string.
 
-### Linux (`ble_linux.go`)
+### Linux (`central/ble_linux.go`)
 
 Pure Go, no cgo, no BlueZ D-Bus. `Connect` only creates the socket; `OpenL2CAP` does the
 non-blocking `connect(2)` + `Poll` (so the timeout is respected) + `SO_ERROR` check, then switches
@@ -143,9 +246,14 @@ back to blocking mode. Receive is `Poll` + one `read(2)` into a 64 KiB buffer, o
 Pairing/bonding is assumed to already exist (BlueZ handles it out of band); this package never
 initiates it.
 
+Note the asymmetry with the scanner: `../scan/scan_linux.go` *does* use BlueZ D-Bus, because typed
+`org.bluez.Device1` properties are the only sane way to get advertised service UUIDs and RSSI. Only
+the connection path avoids D-Bus, by going straight to an L2CAP socket.
+
 ## Known limitations
 
-Worth knowing before building anything else on this:
+These are all about `central`'s `Connection` API; `scan`'s own caveats are in its section above. Worth
+knowing before building anything else on this:
 
 * **GATT is not goroutine-safe.** There is one semaphore per operation class, so at most one
   outstanding GATT operation per connection, and no request/response correlation. Concurrent GATT
@@ -172,45 +280,32 @@ Worth knowing before building anything else on this:
 * On macOS, a disconnect wakes blocked waiters but `L2CAPRecv` may report `disconnected` rather
   than a clean EOF.
 
-## Can this be reused for generic (non-Wendy) BLE clients?
+## What is generic, and what is Wendy-specific
 
-**Partly — the transport layer is generic, the rest is not.** The package splits in two, almost
-cleanly:
+**The split is the directory layout**, so the compiler enforces it rather than a convention:
+`central/` and `scan/` know nothing about Wendy, and `ble` is where everything Wendy-specific lives.
+Adding a Wendy identifier to either subpackage is the change to push back on — and adding a
+`shared/models` or `shared/certs` import to one would be the first sign of it.
 
-**Generic** — nothing about the API shape or the platform backends is Wendy-specific:
+### Generic — no Wendy identifiers anywhere
 
-* `Connection` and all its methods take plain service/characteristic UUIDs and PSMs. There are no
-  hard-coded Wendy UUIDs anywhere in `ble_darwin.*`, `ble_linux.go`, or `ble_windows.go`.
-* The CoreBluetooth backend is a genuinely reusable macOS BLE central for CLI programs, and the
-  run-loop/threading work it does is the hard part of that problem.
-* `l2capNetConn` is a general-purpose L2CAP-to-`net.Conn` adapter, exported as `NewL2CAPStream`.
+| Piece | Why it is generic |
+| --- | --- |
+| `central.Connection` and every method on it | Takes plain service/characteristic UUIDs and PSMs. There are no hard-coded Wendy UUIDs in `central/`. |
+| The CoreBluetooth backend (`central/ble_darwin.*`) | A genuinely reusable macOS BLE central for CLI programs. The run-loop and threading work it does is the hard part of that problem. |
+| `central.NewL2CAPStream` (`l2capNetConn`) | A general-purpose L2CAP-to-`net.Conn` adapter. |
+| `central.ErrRecvTimeout`, `central.TimeoutSeconds` | Sentinel and duration conversion the layers above need; `TimeoutSeconds` is exported only because `ble/lite_info.go` must round the same way. |
+| The [`scan`](scan/) subpackage | Services to match are an argument; results carry only what an advertisement supplies. No PSM, no name prefixes. |
 
-**Wendy-specific** — everything above the transport:
+Neither subpackage imports `shared/models` or `shared/certs`.
 
-* `lite_client.go` — hard-coded Wendy Lite service/characteristic UUIDs and command/status bytes.
-* `lite_info.go` — likewise, for the Wendy Lite info service.
-* `agent_client.go` — protobuf framing, `agentpb` types, its own reply timeout.
-* `NewClientTLSConfig` — depends on `shared/certs` (Wendy PKI, pin store).
-* `ConnectLite`/`ConnectAgent` take `*models.BluetoothDevice`, a Wendy discovery type.
+### Wendy-specific — the `ble` package
 
-The split is clean except for one wart: `DefaultL2CAPPSM` (128) lives in `conn.go`, so a Wendy
-constant sits in the otherwise-generic transport file. It is shared by both protocol clients, which
-is why it ended up there; a generic fork should drop it.
-
-To use it for a generic BLE app you would need to:
-
-1. **Move it out of `internal/`.** As `go/internal/cli/ble` it is unimportable outside this module.
-2. **Drop or replace the `models` and `certs` dependencies**, and drop `DefaultL2CAPPSM`.
-   (`NewL2CAPStream` is already exported.)
-3. **Bring your own discovery** — this package cannot find devices, and the address format it needs
-   differs by platform, so callers can't be fully platform-agnostic.
-4. **Implement GATT on Linux** (BlueZ D-Bus or raw ATT) — as it stands, any GATT-based app works on
-   macOS only. A pure-L2CAP app already works on macOS *and* Linux.
-5. **Write a Windows backend** if you need it.
-6. **Fix the concurrency and notification-demux limitations** above for anything beyond a single
-   sequential request/response flow.
-
-For a general-purpose Go BLE library, an off-the-shelf option (e.g. `tinygo-org/bluetooth`,
-`go-ble/ble`) is the pragmatic choice. What this package has that they generally don't is a working
-**BLE L2CAP connection-oriented channel** client on both macOS and Linux, with TLS running over
-it — that is the piece worth lifting.
+| Piece | What ties it to Wendy |
+| --- | --- |
+| `lite_client.go` | Hard-coded Wendy Lite service/characteristic UUIDs and command/status bytes. |
+| `lite_info.go` | Likewise, for the Wendy Lite info service. |
+| `agent_client.go` | Protobuf framing, `agentpb` types, its own reply timeout. |
+| `agent_tls_over_ble.go` — `NewClientTLSConfig` | Depends on `shared/certs` — Wendy PKI and pin store. Agent-only; the Lite path builds its own config in `liteclient`. |
+| `DefaultL2CAPPSM` — one per protocol | `ble`'s (in `agent_client.go`) is the PSM the WendyOS agent listens on; `liteclient`'s (in `link_ble.go`) is the Lite firmware's. Both are 128 today and both are **independent** — two programs' listening PSMs, one of them firmware from another repo, either free to move. A PSM is a Wendy convention rather than a property of BLE, which is why neither lives in `central/`. |
+| `ConnectLite` / `ConnectAgent` | Take `*models.BluetoothDevice`, a `shared/models` type populated by `shared/discovery`. |

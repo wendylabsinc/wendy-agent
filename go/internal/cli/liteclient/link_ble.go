@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
+	"github.com/wendylabsinc/wendy/go/internal/cli/ble/central"
 )
 
 // bleDialTimeout covers each step of reaching a device — GAP connect, service
@@ -15,12 +16,17 @@ import (
 // second; this is the give-up point, not the expectation.
 const bleDialTimeout = 10 * time.Second
 
+// DefaultL2CAPPSM is the PSM the Wendy Lite firmware listens on. It is the last
+// fallback in ConnectViaBLE: used when the caller passed 0 and the device's GATT
+// info service could not be read.
+const DefaultL2CAPPSM uint16 = 128
+
 // ConnectViaBLE reaches a device over BLE: it opens the L2CAP channel, runs
 // the TLS handshake on it, and then speaks ordinary WendyCom. Everything above
 // the byte stream is identical to the TCP path.
 //
 // psm may be 0, in which case it comes from the device's GATT info service,
-// falling back to ble.DefaultL2CAPPSM where GATT is unavailable.
+// falling back to DefaultL2CAPPSM where GATT is unavailable.
 //
 // tlsCfg carries the client's side of the trust decision; nil selects the
 // insecure configuration an unprovisioned device needs.
@@ -29,7 +35,7 @@ func (c *WendyLiteClient) ConnectViaBLE(address string, psm uint16, tlsCfg *tls.
 	// whole number of them.
 	timeoutSecs := int(bleDialTimeout / time.Second)
 
-	conn, err := ble.Connect(address, timeoutSecs)
+	conn, err := central.Connect(address, timeoutSecs)
 	if err != nil {
 		return err
 	}
@@ -43,7 +49,7 @@ func (c *WendyLiteClient) ConnectViaBLE(address string, psm uint16, tlsCfg *tls.
 			psm = info.PSM
 		}
 		if psm == 0 {
-			psm = ble.DefaultL2CAPPSM
+			psm = DefaultL2CAPPSM
 		}
 	}
 
@@ -59,7 +65,7 @@ func (c *WendyLiteClient) ConnectViaBLE(address string, psm uint16, tlsCfg *tls.
 		}
 	}
 
-	stream := ble.NewL2CAPStream(conn)
+	stream := central.NewL2CAPStream(conn)
 	// Bound the handshake explicitly. A BLE read with no deadline blocks
 	// indefinitely by design, because that is what the read loop below needs,
 	// so a device that opens the channel and then says nothing would hang here
