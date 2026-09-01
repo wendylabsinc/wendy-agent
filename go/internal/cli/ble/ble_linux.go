@@ -105,7 +105,7 @@ func (c *Connection) L2CAPRecv(timeoutSeconds int) ([]byte, error) {
 		return nil, fmt.Errorf("poll recv: %w", err)
 	}
 	if n == 0 {
-		return nil, fmt.Errorf("recv timeout after %ds", timeoutSeconds)
+		return nil, fmt.Errorf("%w after %ds", ErrRecvTimeout, timeoutSeconds)
 	}
 
 	buf := make([]byte, 65536)

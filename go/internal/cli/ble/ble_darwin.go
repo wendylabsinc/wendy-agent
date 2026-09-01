@@ -152,6 +152,13 @@ func (c *Connection) L2CAPSend(data []byte) error {
 // L2CAPRecv receives data from the L2CAP channel.
 func (c *Connection) L2CAPRecv(timeoutSeconds int) ([]byte, error) {
 	result := C.wendy_ble_l2cap_recv(c.handle, C.int(timeoutSeconds))
+	if result.error == C.WENDY_BLE_ERR_TIMEOUT {
+		// Distinguishable so a caller with no deadline of its own can retry.
+		// bleError would flatten it into a string indistinguishable from a dead
+		// channel. Only recv does this: a timeout from OpenL2CAP,
+		// DiscoverServices or WaitNotification really is a hard failure.
+		return nil, ErrRecvTimeout
+	}
 	if result.error != C.WENDY_BLE_OK {
 		return nil, bleError(result.error, "receiving L2CAP data")
 	}

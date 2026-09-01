@@ -5,16 +5,18 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/protobuf/proto"
 )
 
-const (
-	// WendyOS BLE agent L2CAP PSM
-	wendyAgentL2CAPPSM = 128
-)
+// agentReadTimeout bounds how long we wait for an agent reply. The BLE
+// net.Conn blocks indefinitely without a deadline — liteclient's read loop
+// needs that — and there is no higher-level timeout on this path, so the
+// deadline has to be set here.
+const agentReadTimeout = 30 * time.Second
 
 // AgentClient communicates with a WendyOS agent over BLE L2CAP using
 // protobuf-framed messages (UInt16 BE length prefix) over mTLS.
@@ -32,7 +34,7 @@ func ConnectAgent(device *models.BluetoothDevice, tlsConfig *tls.Config) (*Agent
 		return nil, fmt.Errorf("connecting to %s: %w", device.DisplayName, err)
 	}
 
-	psm := uint16(wendyAgentL2CAPPSM)
+	psm := DefaultL2CAPPSM
 	if device.L2CAPPSM != 0 {
 		psm = device.L2CAPPSM
 	}
@@ -42,7 +44,7 @@ func ConnectAgent(device *models.BluetoothDevice, tlsConfig *tls.Config) (*Agent
 		return nil, fmt.Errorf("opening L2CAP channel (PSM %d): %w", psm, err)
 	}
 
-	tlsConn := tls.Client(newL2CAPNetConn(conn), tlsConfig)
+	tlsConn := tls.Client(NewL2CAPStream(conn), tlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("BLE mTLS handshake: %w", err)
@@ -73,13 +75,25 @@ func (c *AgentClient) sendCommand(cmd *agentpb.BluetoothCommand) (*agentpb.Bluet
 		return nil, fmt.Errorf("sending command: %w", err)
 	}
 
-	// Read the 2-byte length header, then the body.
+	// Read the 2-byte length header, then the body. The deadline is per-read
+	// rather than one budget for the whole exchange: a command like WiFi
+	// connect can legitimately keep the device busy for longer than
+	// agentReadTimeout before the first byte comes back, but once a reply
+	// starts arriving the rest of it should follow promptly.
+	defer c.tlsConn.SetReadDeadline(time.Time{}) //nolint:errcheck
+
 	var header [2]byte
+	if err := c.tlsConn.SetReadDeadline(time.Now().Add(agentReadTimeout)); err != nil {
+		return nil, fmt.Errorf("setting response deadline: %w", err)
+	}
 	if _, err := io.ReadFull(c.tlsConn, header[:]); err != nil {
 		return nil, fmt.Errorf("reading response header: %w", err)
 	}
 	msgLen := binary.BigEndian.Uint16(header[:])
 	body := make([]byte, msgLen)
+	if err := c.tlsConn.SetReadDeadline(time.Now().Add(agentReadTimeout)); err != nil {
+		return nil, fmt.Errorf("setting response deadline: %w", err)
+	}
 	if _, err := io.ReadFull(c.tlsConn, body); err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}

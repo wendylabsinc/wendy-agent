@@ -578,6 +578,14 @@ WendyBLEL2CAPRecvResult wendy_ble_l2cap_recv(WendyBLEConn handle, int timeout_se
         res.data = (uint8_t *)malloc(res.length);
         memcpy(res.data, conn.l2capRecvBuffer.bytes, res.length);
         conn.l2capRecvBuffer.length = 0;
+    } else if (conn.connected && conn.l2capIORunning && !conn.l2capError) {
+        // The buffered fast path above drains everything in one copy without
+        // consuming a semaphore count, so several signalled arrivals collapse
+        // into one return and leave the semaphore over-signalled. A later wait
+        // then succeeds immediately with the buffer already empty. The channel
+        // is still up, so report a timeout and let the caller retry rather than
+        // tearing the link down.
+        res.error = WENDY_BLE_ERR_TIMEOUT;
     } else {
         res.error = WENDY_BLE_ERR_DISCONNECTED;
     }

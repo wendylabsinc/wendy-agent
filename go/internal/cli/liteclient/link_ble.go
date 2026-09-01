@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/console/bleconn"
+	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
 )
 
-// bleDialTimeout covers GAP connect, service discovery and opening the L2CAP
-// channel. A cold connect to an advertising device is well under a second;
-// this is the give-up point, not the expectation.
+// bleDialTimeout covers each step of reaching a device — GAP connect, service
+// discovery, opening the L2CAP channel, the TLS handshake — rather than the
+// whole sequence. A cold connect to an advertising device is well under a
+// second; this is the give-up point, not the expectation.
 const bleDialTimeout = 10 * time.Second
 
 // ConnectViaBLE reaches a device over BLE: it opens the L2CAP channel, runs
@@ -19,31 +20,36 @@ const bleDialTimeout = 10 * time.Second
 // the byte stream is identical to the TCP path.
 //
 // psm may be 0, in which case it comes from the device's GATT info service,
-// falling back to bleconn.DefaultPSM where GATT is unavailable.
+// falling back to ble.DefaultL2CAPPSM where GATT is unavailable.
 //
 // tlsCfg carries the client's side of the trust decision; nil selects the
 // insecure configuration an unprovisioned device needs.
 func (c *WendyLiteClient) ConnectViaBLE(address string, psm uint16, tlsCfg *tls.Config) error {
-	conn, err := bleconn.Dial(address, bleDialTimeout)
+	// The BLE client takes whole seconds, not a Duration; bleDialTimeout is a
+	// whole number of them.
+	timeoutSecs := int(bleDialTimeout / time.Second)
+
+	conn, err := ble.Connect(address, timeoutSecs)
 	if err != nil {
 		return err
 	}
 
 	if psm == 0 {
-		// Not fatal: where GATT is unavailable the compile-time default is the
-		// answer, and a device that really disagrees fails the open below with
-		// a clearer error than this would give.
-		if info, ierr := conn.ReadInfo(bleDialTimeout); ierr == nil {
+		// Not fatal: where GATT is unavailable — Linux and Windows have no GATT
+		// client at all — the default is the answer, and a device that really
+		// disagrees fails the open below with a clearer error than this would
+		// give.
+		if info, ierr := ble.ReadLiteInfo(conn, bleDialTimeout); ierr == nil {
 			psm = info.PSM
 		}
 		if psm == 0 {
-			psm = bleconn.DefaultPSM
+			psm = ble.DefaultL2CAPPSM
 		}
 	}
 
-	if err := conn.OpenL2CAP(psm, bleDialTimeout); err != nil {
+	if err := conn.OpenL2CAP(psm, timeoutSecs); err != nil {
 		conn.Close()
-		return err
+		return fmt.Errorf("opening L2CAP channel (PSM %d): %w", psm, err)
 	}
 
 	if tlsCfg == nil {
@@ -52,11 +58,22 @@ func (c *WendyLiteClient) ConnectViaBLE(address string, psm uint16, tlsCfg *tls.
 			MinVersion:         tls.VersionTLS12,
 		}
 	}
-	tlsConn := tls.Client(conn.Stream(), tlsCfg)
+
+	stream := ble.NewL2CAPStream(conn)
+	// Bound the handshake explicitly. A BLE read with no deadline blocks
+	// indefinitely by design, because that is what the read loop below needs,
+	// so a device that opens the channel and then says nothing would hang here
+	// forever.
+	_ = stream.SetDeadline(time.Now().Add(bleDialTimeout))
+	tlsConn := tls.Client(stream, tlsCfg)
 	if err := tlsConn.Handshake(); err != nil {
-		conn.Close()
+		// Through the stream, not the connection: the stream is what tracks
+		// whether the underlying connection has already been closed.
+		stream.Close() //nolint:errcheck,gosec — teardown on an already-failed path
 		return fmt.Errorf("BLE TLS handshake: %w", err)
 	}
+	// Clear it before the read loop can inherit an expired deadline.
+	_ = stream.SetDeadline(time.Time{})
 
 	c.link = newDirectLink(tlsConn)
 	if err := c.handshake(); err != nil {
