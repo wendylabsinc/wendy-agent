@@ -212,12 +212,14 @@ func newDevicePairCmd() *cobra.Command {
 	return cmd
 }
 
-// newDeviceUnpairCmd removes a sensor pairing by source asset ID.
+// newDeviceUnpairCmd removes a sensor pairing. With no argument it shows a
+// picker of the device's current pairings; with a source asset id it removes
+// that pairing directly (handy for scripts).
 func newDeviceUnpairCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "unpair <source-asset-id>",
+		Use:   "unpair [source-asset-id]",
 		Short: "Remove a sensor-source pairing",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
@@ -227,8 +229,37 @@ func newDeviceUnpairCmd() *cobra.Command {
 			defer conn.Close()
 
 			var assetID int32
-			if _, err := fmt.Sscanf(args[0], "%d", &assetID); err != nil {
-				return fmt.Errorf("invalid source asset id %q: %w", args[0], err)
+			if len(args) == 1 {
+				if _, err := fmt.Sscanf(args[0], "%d", &assetID); err != nil {
+					return fmt.Errorf("invalid source asset id %q: %w", args[0], err)
+				}
+			} else {
+				// No id given: pick from the device's current pairings.
+				resp, err := conn.SensorPairingService.ListSensorPairings(ctx, &agentpbv2.ListSensorPairingsRequest{})
+				if err != nil {
+					return cleanRPCError(err)
+				}
+				if len(resp.Pairings) == 0 {
+					return fmt.Errorf("no sensor pairings to remove")
+				}
+				items := make([]tui.PickerItem, 0, len(resp.Pairings))
+				for _, p := range resp.Pairings {
+					state := "disconnected"
+					if p.Connected {
+						state = "connected"
+					}
+					items = append(items, tui.PickerItem{
+						Name:     p.Name,
+						Address:  fmt.Sprintf("asset %d · %s", p.SourceAssetId, state),
+						DedupKey: fmt.Sprintf("asset-%d", p.SourceAssetId),
+						Value:    p.SourceAssetId,
+					})
+				}
+				sel, err := runPicker("Select a pairing to remove", items)
+				if err != nil {
+					return err
+				}
+				assetID = sel.Value.(int32)
 			}
 
 			if _, err := conn.SensorPairingService.RemoveSensorPairing(ctx, &agentpbv2.RemoveSensorPairingRequest{
