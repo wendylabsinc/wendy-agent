@@ -321,6 +321,7 @@ func newCameraWatchCmd() *cobra.Command {
 // hidden alias.
 func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 	var deviceID, width, height, fps uint32
+	var byID string
 	var toStdout bool
 
 	cmd := &cobra.Command{
@@ -341,10 +342,16 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 			}
 			defer conn.Close()
 
-			// Without an explicit --id, list the cameras so a single camera is
-			// chosen silently and several open the picker. Before this, view
-			// defaulted to ID 0 with no sign that other cameras existed.
-			if !cmd.Flags().Changed("id") {
+			// --by-id addresses the camera by its stable udev identity and is
+			// resolved by the AGENT at request time. --id is the boot-order
+			// number, so a value written down yesterday can name a different
+			// camera today; --by-id cannot. When it is given the picker below
+			// is skipped, because the camera has already been named exactly.
+			if byID != "" {
+				if cmd.Flags().Changed("id") {
+					return fmt.Errorf("--id and --by-id both name a camera; pass one")
+				}
+			} else if !cmd.Flags().Changed("id") {
 				listed, err := conn.VideoService.ListVideoDevices(ctx, &agentpb.ListVideoDevicesRequest{})
 				if err != nil {
 					return fmt.Errorf("listing cameras: %w", err)
@@ -357,10 +364,11 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 			}
 
 			req := &agentpb.StreamVideoRequest{
-				DeviceId:  deviceID,
-				Width:     width,
-				Height:    height,
-				Framerate: fps,
+				DeviceId:   deviceID,
+				DeviceById: byID,
+				Width:      width,
+				Height:     height,
+				Framerate:  fps,
 			}
 			startStream := func() (videoStream, error) {
 				return conn.VideoService.StreamVideo(ctx, req)
@@ -396,7 +404,9 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Camera device ID")
+	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Camera device ID (boot order; see --by-id)")
+	cmd.Flags().StringVar(&byID, "by-id", "",
+		"Camera by-id name from `camera list` — stable across reboots and re-plugging")
 	cmd.Flags().Uint32Var(&width, "width", 0, "Frame width (0 = device default)")
 	cmd.Flags().Uint32Var(&height, "height", 0, "Frame height (0 = device default)")
 	cmd.Flags().Uint32Var(&fps, "fps", 0, "Framerate (0 = device default)")
