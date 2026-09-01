@@ -24,8 +24,7 @@ Cloud derives device and organization identity from device mTLS.
 Send(SendRequest) → SendResponse
 ```
 
-The agent forwards the request to Cloud with a 15-second deadline and makes one
-Cloud creation attempt per call. `notification_id` is the caller-chosen resource
+The agent forwards the request to Cloud. `notification_id` is the caller-chosen resource
 identity, not a retry token. After successful creation, every reuse of its
 canonical UUID—including an otherwise identical request or a differently cased
 spelling—returns `ALREADY_EXISTS`; the prior success is never replayed.

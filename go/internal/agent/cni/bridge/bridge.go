@@ -1015,6 +1015,14 @@ func CmdCheck(args *skel.CmdArgs) error {
 		return err
 	}
 
+	// SECURITY: prevResult is untrusted expected-state input, never proof that
+	// the network is healthy. Success below requires fresh observations from
+	// both namespaces: validateCniBrInterface/validateCniVethInterface query
+	// host netlink state, validateCniContainerInterface queries the opened
+	// container netns, and ValidateExpectedInterfaceIPs/ValidateExpectedRoute
+	// compare its live addresses and routes. Keep those live checks mandatory
+	// when syncing this vendored plugin with upstream.
+	//
 	// Parse previous result.
 	if n.NetConf.RawPrevResult == nil {
 		return fmt.Errorf("Required prevResult missing")

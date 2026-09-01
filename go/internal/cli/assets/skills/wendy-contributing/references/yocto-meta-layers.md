@@ -94,7 +94,7 @@ Generates unique device identity on first boot:
 ### edgeos-agent
 
 Downloads and installs wendy-agent from GitHub releases:
-- Binary: `/usr/local/bin/wendy-agent`
+- Binary: `/opt/wendyos/bin/wendy-agent`
 - Auto-updater via systemd timer
 - Data: `/var/lib/wendy-agent`
 

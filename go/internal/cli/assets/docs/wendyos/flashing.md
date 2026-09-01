@@ -64,13 +64,13 @@ While writing, the tool reports bytes written to the drive. There is no separate
 
 ### macOS
 
-The image is written via `dd` to the raw disk device (`/dev/rdiskN`), bypassing the filesystem buffer cache. NVMe drives in USB enclosures use a 64 MiB block size to reduce per-write overhead over the USB link. `dd` is invoked with `iflag=fullblock` so BSD `dd` reads until a full block is assembled before writing to the raw device. This prevents zero-padding corruption when the image is streamed through a pipe, such as from a ZIP entry.
+The image is written via `dd` to the raw disk device (`/dev/rdiskN`), bypassing the filesystem buffer cache.
 
 ### Linux
 
-Before writing, all mounted partitions on the target disk are unmounted automatically. `lsblk` is used to enumerate every partition (including nested ones), and each mounted partition is unmounted by its mountpoint using `sudo umount`. Partitions with deeper mountpoints are unmounted before shallower ones to avoid `EBUSY` errors. If any partition cannot be unmounted, the error is reported and the write does not proceed.
+Before writing, all mounted partitions on the target disk are unmounted automatically. If any partition cannot be unmounted, the error is reported and the write does not proceed.
 
-The image is written via `dd` with `conv=fdatasync` to ensure the device is flushed before the command exits. NVMe drives use a 64 MiB block size and `oflag=direct` to bypass the page cache.
+The image is written via `dd` with `conv=fdatasync` to ensure the device is flushed before the command exits.
 
 ### Windows
 

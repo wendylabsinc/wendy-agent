@@ -350,12 +350,43 @@ Cameras come in three transports, and `wendy device camera` treats them alike:
 | `usb` | `/dev/videoN`, `uvcvideo` and friends | native V4L2 H.264, GStreamer fallback |
 | `csi` | ribbon sensor, `tegra-*` / `unicam` | GStreamer (`libcamerasrc`, `nvarguscamerasrc` on Jetson) |
 | `ip` | network camera over Real Time Streaming Protocol (RTSP) | GStreamer depayload, no transcode |
+| `ros2` | `sensor_msgs/Image`, `sensor_msgs/CompressedImage`, or Unitree Go2 `/frontvideostream` | DDS subscriber into `/dev/video128`–`/dev/video199` |
 
 ```sh
 wendy device camera list          # every camera, whatever the transport
 wendy device camera view          # picker when several exist, silent when one
 wendy device camera view --id 203
 ```
+
+### ROS 2 cameras
+
+The agent discovers image writers in every running Wendy ROS 2 app without
+changing the app's discovery scope: for the default app-local scope it creates
+its DDS sockets inside that app's network namespace. It also watches domain 0
+on wired device interfaces for robot-native feeds. Supported messages are
+`sensor_msgs/msg/Image`, `sensor_msgs/msg/CompressedImage`, and Unitree's
+`unitree_go/msg/Go2FrontVideoData`; the last one makes a Go2's
+`/frontvideostream` appear as **Unitree Go2 front camera**.
+
+Each topic receives a stable ID in the 128–199 band and a matching
+v4l2loopback node. It appears in the normal commands:
+
+```sh
+wendy device camera list
+wendy device camera view --id 128
+```
+
+Raw ROS images are converted to MJPEG and compressed JPEG feeds stay
+compressed. Go2 firmware may publish either the SDK-declared JPEG fields or a
+resolution-tagged Annex-B H.264 access unit; both stay encoded on the way into
+the loopback device. Large DDS samples are reassembled from bounded RTPS
+DATA_FRAG sets in the agent.
+
+ROS 2 cameras require v4l2loopback 0.15.x's dynamic control API (the WendyOS
+recipe is pinned to 0.15.4). Ubuntu 22.04's `v4l2loopback-dkms` 0.12.7 package
+does not provide the compatible `/dev/v4l2loopback` interface. A previously
+failed availability check is retried, so loading the compatible module does
+not require restarting `wendy-agent`.
 
 ### Network cameras
 

@@ -69,13 +69,13 @@ image path.
 
 ### 1. Device detection
 
-The CLI scans for either the ESP32's native USB Serial/JTAG interface (VID `0x303a`, PID `0x1001`) or the Silicon Labs CP210x USB-to-UART bridge (VID `0x10c4`, PID `0xea60`) used on many Espressif development boards:
+The CLI scans for either the ESP32's native USB Serial/JTAG interface or the Silicon Labs CP210x USB-to-UART bridge used on many Espressif development boards:
 
-| Platform | Where it looks | Expected path |
-|----------|----------------|---------------|
-| macOS | `IOKit` framework, matching VID/PID | `/dev/cu.usbmodem*` or `/dev/cu.usbserial*` |
-| Linux | `/sys/class/tty/ttyACM*` and `/sys/class/tty/ttyUSB*`, matching VID/PID via sysfs | `/dev/ttyACM0` or `/dev/ttyUSB0` (typical) |
-| Windows | `Win32_PnPEntity` via PowerShell, filtered by VID/PID and `Ports` class | `COMN` (e.g. `COM7`) |
+| Platform | Expected path |
+|----------|---------------|
+| macOS | `/dev/cu.usbmodem*` or `/dev/cu.usbserial*` |
+| Linux | `/dev/ttyACM0` or `/dev/ttyUSB0` (typical) |
+| Windows | `COMN` (e.g. `COM7`) |
 
 When both transports are connected, the installer always prefers native USB. A CP210x ID identifies a generic UART adapter rather than a confirmed ESP32, so the CLI treats it as an install candidate and verifies the chip model through the ROM bootloader before writing firmware.
 
@@ -91,53 +91,13 @@ To enter bootloader mode: hold the BOOT button, press RESET, then release BOOT.
 
 ### 2. Firmware resolution
 
-Firmware versions are served from the same GCS manifest used for WendyOS images. Board selection and firmware resolution use the embedded Wendy Lite catalog plus a two-level manifest lookup:
+Firmware versions are served from the same manifest used for WendyOS images. With `--nightly`, the latest nightly build is used instead of the latest stable.
 
-1. **Board catalog** — maps each board model to its ESP32 target and firmware binary ID.
-2. **Main manifest** (`firmware` map) — maps that board-specific firmware ID (for example, `esp32c6_generic`) to a per-firmware manifest path and `latest`/`latest_nightly` version pointers.
-3. **Per-firmware manifest** — contains version entries with `download_url`, file size, and `is_latest` / `is_nightly` flags.
-
-With `--nightly`, `latest_nightly` is used instead of `latest`.
-
-Boards without published firmware are omitted from the picker. Immediately before any chip-specific initialization or flash erase, the ROM bootloader's detected chip model is checked against the selected board's catalog target; a mismatch is rejected before firmware is written. Wendy Lite currently supports ESP32-C5, C6, C61, P4, and S3 catalog targets.
-
-The downloaded `.bin` is a merged, board-specific firmware image (the catalog's `wendy_mcu_<board>.bin`) that covers the full flash from offset 0.
+Boards without published firmware are omitted from the picker. Immediately before any chip-specific initialization or flash erase, the ROM bootloader's detected chip model is checked against the selected board; a mismatch is rejected before firmware is written. Wendy Lite currently supports ESP32-C5, C6, C61, P4, and S3 targets.
 
 ### 3. Serial flash protocol
 
-The CLI implements the ESP32 ROM bootloader protocol directly over the USB serial port — no `esptool` dependency required.
-
-**Bootloader entry sequence**
-
-Some ESP boards expose the chip's built-in USB port and appear directly as an ACM device. Others use a CP210x USB-to-UART bridge whose DTR and RTS signals drive the ESP's reset and GPIO0 pins. The installer supports both connection styles.
-
-On a native interface, the installer uses esptool's `USBJTAGSerialReset` sequence. On a CP210x board, it uses esptool's `ClassicReset` sequence to operate the board's physical auto-reset circuit. These sequences are not interchangeable: using the native sequence through a CP210x bridge leaves the application running instead of entering the ROM bootloader.
-
-Documentation can be found [here](https://docs.espressif.com/projects/esptool/en/latest/esp32c6/advanced-topics/serial-protocol.html#32-bit-readwrite).
-
-**Flash sequence:**
-
-| Step | Command | Notes |
-|------|---------|-------|
-| 1 | Sync (`0x08`) | Sends 36-byte sync frame; retries up to 10×; 3 s timeout per attempt |
-| 2 | ChangeBaud (`0x0F`) | Negotiates 921600 baud (up from 115200) |
-| 3 | GetSecurityInfo (`0x14`) | Reads chip security info, including the chip ID |
-| 4 | Init | Series of `ReadReg`/`WriteReg` calls for chip identification and configuration (disabling watchdog) |
-| 5 | SPI Attach (`0x0D`) | Attaches internal SPI flash |
-| 6 | Init flash chip | Issues JEDEC RDID (`0x9F`), RSTEN (`0x66`), and RST (`0x99`) via SPI register writes; returns the flash JEDEC ID |
-| 7 | SPI Set Params (`0x0B`) | Flash size derived automatically from the JEDEC capacity byte (`1 << capacity`); defaults to 4 MB if the capacity byte is 0 |
-| 8 | Pre-flash eFuse checks | `ReadReg` calls on eFuse and chip-ID registers (result ignored) |
-| 9 | Flash Begin (`0x02`) | Erases the target region; timeout scales at 30 s per MB with a 3 s floor; sends a 20-byte payload (extra 4-byte encryption flag = 0) |
-| 10 | Flash Data (`0x03`) | Sends firmware in **4 KiB** blocks; each block XOR-checksummed (seed `0xEF`), padded with `0xFF` |
-| 11 | Hardware reset | Issues the transport-appropriate DTR/RTS sequence to reboot the device normally |
-
-Some of these steps are not needed but have been kept to match the esptool sequence as closely as possible.
-
-When put in download mode via USB, the chip has a watchdog that resets it after 9 seconds. The Init step is crucial to disable it. This watchdog is not active when the chip is put into download mode manually (BOOT + RESET).
-
-All messages are SLIP-framed (`0xC0` delimiters, `0xDB` escape byte). The CLI drains stale frames between retries and skips responses whose command echo doesn't match the sent opcode.
-
-**Progress** is reported as blocks written / total blocks, streamed to a Bubble Tea progress bar in the terminal.
+The CLI implements the ESP32 ROM bootloader protocol directly over the USB serial port — no `esptool` dependency required. It supports both connection styles (a chip's native USB port and a CP210x USB-to-UART bridge), selecting the correct reset sequence for each. Progress is reported as blocks written / total blocks in the terminal.
 
 ### 4. Post-flash
 
@@ -153,7 +113,7 @@ For Raspberry Pi devices—and Orin with `--rootfs-only`, the interactive flash-
 
 1. **Resolve version** — `--version` if provided, otherwise latest (or nightly with `--nightly`).
 2. **Resolve drive** — `--drive` if provided, otherwise an interactive picker of external drives. Internal drives require `--yes-overwrite-internal` in non-interactive mode; in interactive mode the user must type the device path to confirm.
-3. **Download image** — fetched from GCS with a progress bar. Downloaded to `~/Library/Caches/wendy/os-images/` (macOS) or `~/.cache/wendy/os-images/` (Linux). Zip archives are streamed through to the first `.img`, `.raw`, `.wic`, or `.sdimg` entry; gzip-compressed images (`.img.gz`, detected by magic bytes regardless of extension) are decompressed and streamed on the fly. Seekable-zstd images (`.img.zst`) are downloaded and cached directly; when a block map is present, only mapped ranges are decoded during the write step, skipping hole frames entirely. Parallel download (8 workers) is used when the server supports HTTP range requests.
+3. **Download image** — fetched from GCS with a progress bar. Downloaded to `~/Library/Caches/wendy/os-images/` (macOS) or `~/.cache/wendy/os-images/` (Linux). Zip archives are streamed through to the first `.img`, `.raw`, `.wic`, or `.sdimg` entry; gzip-compressed images (`.img.gz`, detected by magic bytes regardless of extension) are decompressed and streamed on the fly. Seekable-zstd images (`.img.zst`) are downloaded and cached directly; when a block map is present, only mapped ranges are decoded during the write step, skipping hole frames entirely. Parallel download is used when the server supports HTTP range requests.
 4. **Write image** — `dd`-equivalent write with elevated privileges (`sudo` on Unix, UAC on Windows), progress bar. When a block map is used and the bmap write fails (e.g. checksum mismatch or a stale/incorrect published bmap), the CLI automatically falls back to a full sequential write using the already-cached `.img.zst` or `.zip` — no re-download is required. A failure *during* the fallback write is fatal.
 5. **Write config partition** — downloads the latest stable `wendy-agent-linux-arm64` binary from GitHub, writes it along with any pre-seeded WiFi credentials and device name to the config partition on the newly written drive. Skipped silently on platforms that don't support config-partition writes. The OS image is already on the drive by this point, and the device boots regardless of this step — it runs the agent baked into the image and fetches updates and configuration after first boot. When provisioning was **not** explicitly requested, a failure here is advisory: a warning is printed and the install is still reported as successful. When `--wifi`, `--device-name`, or `--pre-enroll` **was** requested and could not be applied, the install exits non-zero (see the exit-code note below). On an interactive terminal the CLI offers to retry the write after each failed attempt (useful after, e.g., re-seating an SD card whose config partition couldn't be located); non-interactively it prints guidance and does not retry.
 6. **Eject** — the drive is ejected automatically after writing.

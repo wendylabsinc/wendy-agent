@@ -17,6 +17,7 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
@@ -502,6 +503,13 @@ func newAuthLogoutCmd() *cobra.Command {
 				return fmt.Errorf("saving config: %w", err)
 			}
 			config.DeleteStoredSecrets(&config.Config{Auth: entries})
+
+			// A prepared session broker retains an authenticated device
+			// transport; logging out must sever that too, not just future
+			// dials. Best-effort: the credentials above are already gone, and
+			// a broker that survives unpublication only lasts until its next
+			// liveness check.
+			_ = sessionbroker.InvalidateAll()
 
 			fmt.Println(tui.SuccessMessage("Logged out. All authentication credentials removed."))
 			return nil

@@ -10,6 +10,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/roughtime"
+	"golang.org/x/net/ipv4"
 )
 
 const (
@@ -138,41 +139,91 @@ func encodeProofPacket(result roughtime.Result) ([]byte, error) {
 }
 
 // BroadcastTime fetches a Roughtime proof and multicasts it as a WendyDatagram
-// on all active network interfaces. Best-effort: interface errors are skipped.
-// Returns an error only if all Roughtime servers are unreachable.
+// on all active multicast-capable network interfaces. Individual interface
+// errors are skipped, but an error is returned when no interface accepts the
+// packet so callers never report a broadcast that did not happen.
 func BroadcastTime(ctx context.Context) (roughtime.Result, error) {
 	pkt, result, err := FetchProofPacket(ctx)
 	if err != nil {
 		return roughtime.Result{}, err
 	}
-	sendMulticast(pkt) // best-effort
+	if err := sendMulticast(pkt); err != nil {
+		return roughtime.Result{}, err
+	}
 	return result, nil
 }
 
-func sendMulticast(pkt []byte) {
+type multicastPacketConn interface {
+	SetMulticastInterface(*net.Interface) error
+	SetMulticastTTL(int) error
+	WriteTo([]byte, *ipv4.ControlMessage, net.Addr) (int, error)
+	Close() error
+}
+
+var (
+	listMulticastInterfaces = net.Interfaces
+	newMulticastPacketConn  = func() (multicastPacketConn, error) {
+		conn, err := net.ListenPacket("udp4", "0.0.0.0:0")
+		if err != nil {
+			return nil, err
+		}
+		return ipv4.NewPacketConn(conn), nil
+	}
+)
+
+func sendMulticast(pkt []byte) error {
 	dst, err := net.ResolveUDPAddr("udp4", multicastAddr)
 	if err != nil {
-		return
+		return fmt.Errorf("resolving multicast destination: %w", err)
 	}
-	ifaces, err := net.Interfaces()
+	ifaces, err := listMulticastInterfaces()
 	if err != nil {
-		return
+		return fmt.Errorf("listing network interfaces: %w", err)
 	}
+
+	sent := 0
+	var failures []error
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+		if iface.Flags&net.FlagUp == 0 ||
+			iface.Flags&net.FlagLoopback != 0 ||
+			iface.Flags&net.FlagMulticast == 0 {
 			continue
 		}
-		conn, err := net.DialUDP("udp4", &net.UDPAddr{}, dst)
+
+		conn, err := newMulticastPacketConn()
 		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: opening UDP socket: %w", iface.Name, err))
 			continue
 		}
-		// Set TTL=1 (link-local).
-		if rc, err := conn.SyscallConn(); err == nil {
-			rc.Control(func(fd uintptr) { //nolint:errcheck
-				setMulticastTTL(fd, multicastTTL)
-			})
+
+		// Setting the outgoing interface is essential on multi-homed hosts. A
+		// wildcard UDP dial follows only the default multicast route, causing
+		// every iteration to leave through the same interface (for example Wi-Fi)
+		// even when the Wendy device is attached over USB Ethernet.
+		if err := conn.SetMulticastInterface(&iface); err != nil {
+			failures = append(failures, fmt.Errorf("%s: selecting multicast interface: %w", iface.Name, err))
+			_ = conn.Close()
+			continue
 		}
-		conn.Write(pkt) //nolint:errcheck
-		conn.Close()
+		if err := conn.SetMulticastTTL(multicastTTL); err != nil {
+			failures = append(failures, fmt.Errorf("%s: setting multicast TTL: %w", iface.Name, err))
+			_ = conn.Close()
+			continue
+		}
+		if _, err := conn.WriteTo(pkt, nil, dst); err != nil {
+			failures = append(failures, fmt.Errorf("%s: sending multicast packet: %w", iface.Name, err))
+			_ = conn.Close()
+			continue
+		}
+		sent++
+		_ = conn.Close()
 	}
+
+	if sent > 0 {
+		return nil
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("broadcasting time proof: %w", errors.Join(failures...))
+	}
+	return errors.New("broadcasting time proof: no active multicast-capable network interfaces")
 }

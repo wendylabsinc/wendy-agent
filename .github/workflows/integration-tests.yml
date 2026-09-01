@@ -56,7 +56,7 @@ jobs:
     if: inputs.jobs == 'all' || inputs.jobs == 'discover' || inputs.jobs == 'integration'
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, '${{ matrix.runner.os }}', '${{ matrix.runner.arch }}']
+      labels: [self-hosted, '${{ matrix.runner.os }}', '${{ matrix.runner.arch }}', '${{ matrix.runner.wendy_label }}']
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.explicit.outputs.matrix || steps.scan.outputs.matrix || '[]' }}
@@ -64,7 +64,7 @@ jobs:
       fail-fast: false
       matrix:
         runner:
-          - { name: macOS, os: macOS, arch: ARM64 }
+          - { name: macOS, os: macOS, arch: ARM64, wendy_label: wendy-macos-26 }
     steps:
       - name: Resolve explicit device
         id: explicit
@@ -245,7 +245,7 @@ jobs:
       (inputs.platform == 'all' || inputs.platform == 'macos')
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, macOS, ARM64]
+      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
     concurrency:
       group: device-${{ matrix.hostname }}
       cancel-in-progress: false

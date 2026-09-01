@@ -63,6 +63,7 @@ func newDeviceCmd() *cobra.Command {
 	// the top in rough order of usefulness.
 	addToGroup("common",
 		newAppsCmd(),
+		newDriversCmd(),
 		newDeviceLogsCmd(),
 		newDeviceOSLogsCmd(),
 		newROS2Cmd(),
@@ -2066,9 +2067,14 @@ type osUpdateOutcome struct {
 // device_type, so the pre-update snapshot may be stale. Non-WendyOS targets and
 // devices without an OTA backend are skipped silently, and any failure to
 // re-read or look up the OS is reported but non-fatal — `device update` still
-// succeeds as an agent-only update. The returned outcome reports whether an OTA
-// was actually applied and whether the device came back online in this run.
-func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, priorConn *grpcclient.AgentConnection, nightly, assumeYes bool, artifactURLOverride string) (osUpdateOutcome, error) {
+// succeeds as an agent-only update. Exception: when prNumber > 0 the OS
+// artifact resolves from that wendyos-builder PR's manifest, the already-current
+// skip is suppressed (a PR tag is constant across rebuilds), and failures on
+// the way to the install are hard errors instead — the PR OS install is the
+// explicitly requested outcome, so it must not degrade to an agent-only
+// success. The returned outcome reports whether an OTA was actually applied and
+// whether the device came back online in this run.
+func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, priorConn *grpcclient.AgentConnection, nightly, assumeYes bool, artifactURLOverride string, prNumber int) (osUpdateOutcome, error) {
 	if preUpdateVersion == nil {
 		return osUpdateOutcome{}, nil
 	}
@@ -2090,6 +2096,9 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	fmt.Println("Checking for OS updates...")
 	conn, err := reconnectAgentAfterRestart(ctx, priorConn)
 	if err != nil {
+		if prNumber > 0 {
+			return osUpdateOutcome{}, fmt.Errorf("reconnecting for the PR %d OS update: %w", prNumber, err)
+		}
 		fmt.Printf("Could not check for OS updates: %v\n", err)
 		return osUpdateOutcome{}, nil
 	}
@@ -2127,18 +2136,33 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		// newer agent may report it correctly where an older one did not.
 		versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 		if err != nil {
+			if prNumber > 0 {
+				return osUpdateOutcome{}, fmt.Errorf("reading the device version for the PR %d OS update: %w", prNumber, err)
+			}
 			fmt.Printf("Could not check for OS updates: %v\n", err)
 			return osUpdateOutcome{}, nil
 		}
 
 		deviceType := versionResp.GetDeviceType()
 		if deviceType == "" {
+			if prNumber > 0 {
+				return osUpdateOutcome{}, fmt.Errorf("device did not report a device type; cannot resolve the PR %d OS image", prNumber)
+			}
 			// No device type → cannot auto-select the GCS artifact; skip quietly.
 			return osUpdateOutcome{}, nil
 		}
 
-		u, latestVer, err := getLatestOTAInfoForDeviceType(deviceType, versionResp.GetStorageMedium(), nightly)
+		u, latestVer, err := func() (string, string, error) {
+			if prNumber > 0 {
+				return getPROTAInfoForDeviceType(prNumber, deviceType, versionResp.GetStorageMedium())
+			}
+			return getLatestOTAInfoForDeviceType(deviceType, versionResp.GetStorageMedium(), nightly)
+		}()
 		if err != nil {
+			// A --pr update must resolve to that PR's build or fail outright.
+			if prNumber > 0 {
+				return osUpdateOutcome{}, err
+			}
 			fmt.Printf("Could not check for OS updates: %v\n", err)
 			return osUpdateOutcome{}, nil
 		}
@@ -2150,7 +2174,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 			fromVer = "unknown"
 		}
 
-		decision := decideOSUpdate(currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal())
+		decision := decideOSUpdate(prNumber, currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal())
 
 		// Don't offer an update the device is guaranteed to reject (e.g. a
 		// wendyos-update release for a device whose image predates the
@@ -2167,16 +2191,28 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 
 		switch decision {
 		case osActionAlreadyCurrent:
+			// Unreachable under --pr: decideOSUpdate never returns AlreadyCurrent
+			// for prNumber > 0, so the plain-channel message is always accurate.
 			fmt.Printf("OS is already at the latest version (%s).\n", currentOS)
 			return osUpdateOutcome{}, nil
 		case osActionReportOnly:
+			if prNumber > 0 {
+				// The default text suggests plain `wendy os update`, which would
+				// not install the PR build — steer to a --yes re-run instead.
+				fmt.Printf("PR %d OS image available (%s). Re-run with --yes to apply.\n", prNumber, latestVer)
+				return osUpdateOutcome{}, nil
+			}
 			fmt.Printf("OS update available (%s). Re-run with --yes or run 'wendy os update' to apply.\n", latestVer)
 			return osUpdateOutcome{}, nil
 		case osActionApply:
 			// fall through to apply
 		case osActionPrompt:
 			ensureDeviceWiFiForOSUpdate(ctx, conn)
-			if !confirmDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now?", fromVer, latestVer)) {
+			prompt := fmt.Sprintf("OS update available (%s → %s). Apply now?", fromVer, latestVer)
+			if prNumber > 0 {
+				prompt = fmt.Sprintf("Install PR %d OS image (%s → %s)? It is an unhardened debug build.", prNumber, fromVer, latestVer)
+			}
+			if !confirmDefaultNoFn(prompt) {
 				fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
 				return osUpdateOutcome{}, nil
 			}
@@ -2280,17 +2316,32 @@ func newDeviceUpdateCmd() *cobra.Command {
 	var nightly bool
 	var assumeYes bool
 	var artifactURL string
+	var prNumber int
 
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Update the agent binary on the target device",
+		Short: "Update the agent binary and WendyOS on the target device",
 		Long: "Updates the agent binary on the device (downloaded from GitHub, or --binary for a local file), then checks for a newer WendyOS image. " +
 			"When an OS update is available it prompts before applying (default no); use --yes to apply without prompting. Non-interactive runs report the available update without applying it. " +
 			"--nightly selects the nightly channel for both the agent and the OS. " +
 			"--artifact-url applies a specific OS update artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL). " +
+			"--pr N applies the OS image built by wendyos-builder PR #N instead of the manifest's latest — an unhardened debug build for testing PRs on hardware; it also works over the cloud tunnel. --pr cannot be combined with --artifact-url or --json. " +
 			"macOS agents receive the signed app-bundle zip (wendy-agent-macos-<arch>.zip) instead of a Linux binary; --binary accepts one of those zips for dev pushes to a Mac agent.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+
+			if prNumber > 0 {
+				if artifactURL != "" {
+					return fmt.Errorf("--pr cannot be combined with --artifact-url")
+				}
+				// The OS step is the whole point of --pr, and JSON mode skips it
+				// (see the jsonOutput returns below) — refuse rather than let the
+				// user believe they tested the PR's image.
+				if jsonOutput {
+					return fmt.Errorf("--pr cannot be combined with --json: the OS-update step is skipped in JSON mode")
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
+			}
 
 			conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"), SuppressUpdateCheck())
 			if err != nil {
@@ -2490,7 +2541,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				// !isWendyOSUpdateTarget gate rejects a non-"WendyOS-" os_version
 				// and empty device_type before any reconnect/network call, so
 				// `device update` on a Mac only ever updates the agent binary.
-				outcome, err = maybeCheckOSUpdate(ctx, preUpdateVersion, conn, nightly, assumeYes, artifactURL)
+				outcome, err = maybeCheckOSUpdate(ctx, preUpdateVersion, conn, nightly, assumeYes, artifactURL, prNumber)
 				if err != nil {
 					return err
 				}
@@ -2532,6 +2583,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both the agent and the OS")
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Apply an available OS update without prompting")
 	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Apply this OS update artifact URL instead of the manifest's latest")
+	cmd.Flags().IntVar(&prNumber, "pr", 0, "OTA-update the OS to the image built by wendyos-builder PR #N (debug build; mutually exclusive with --artifact-url and --json)")
 
 	return cmd
 }
@@ -2856,8 +2908,14 @@ func agentUpdateTerminalError(recvErr error) error {
 	case codes.Unavailable, codes.Canceled:
 		return fmt.Errorf("%w (%s)", errAgentUpdateUnconfirmed, s.Message())
 	case codes.FailedPrecondition:
-		return fmt.Errorf("%s — if this repeats, a previous update likely applied without the agent restarting; "+
-			"reboot the device to finish it, then retry", s.Message())
+		// The agent names its own cause here, and most have nothing to do with a
+		// half-applied update. Add the reboot hint only where it fits: for the
+		// sysext-overlay refusal a reboot is the one action that makes it worse.
+		if strings.Contains(s.Message(), "update is already in progress") {
+			return fmt.Errorf("%s — if this repeats, a previous update likely applied without the agent restarting; "+
+				"reboot the device to finish it, then retry", s.Message())
+		}
+		return errors.New(s.Message())
 	default:
 		return fmt.Errorf("agent rejected the update: %s", s.Message())
 	}
@@ -2981,6 +3039,16 @@ func verifyAgentAfterUpdate(ctx context.Context, agentService agentpb.WendyAgent
 }
 
 func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentConnection) func(context.Context) (*grpcclient.AgentConnection, error) {
+	// A connection with a pinned Reconnect (cloud tunnel — bound to the exact
+	// asset id) reconnects through it. Re-running discovery instead would
+	// relaunch the interactive device picker in the middle of the restart wait
+	// when the device was picked interactively (cloudDeviceConfig.DeviceName is
+	// only the --device flag), and even a named lookup can misresolve while the
+	// restarting device's heartbeat lapses.
+	if previous != nil && previous.Reconnect != nil {
+		return previous.Reconnect
+	}
+
 	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {
 		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectToCloudAgent(waitCtx, cloudCfg.CloudGRPC, cloudCfg.DeviceName, cloudCfg.BrokerURL)
