@@ -54,8 +54,14 @@ type LANDevice struct {
 	DisplayName string `json:"displayName"`
 	Hostname    string `json:"hostname"`
 	IPAddress   string `json:"ipAddress,omitempty"`
-	Port        int    `json:"port"`
-	IsMTLS      bool   `json:"isMTLS,omitempty"`
+	// Addresses is the union of every IP this device was seen at across
+	// interfaces and sightings (e.g. a WiFi IPv4, a USB link-local, an IPv6),
+	// IPAddress-first. It lets the dial ladder try every reachable path when
+	// the primary is unreachable; IPAddress stays the primary for display and
+	// back-compat.
+	Addresses []string `json:"addresses,omitempty"`
+	Port      int      `json:"port"`
+	IsMTLS    bool     `json:"isMTLS,omitempty"`
 	// AssetID is the cloud asset ID from the assetid TXT record; 0 when the
 	// device is unprovisioned or pre-mesh.
 	AssetID int32 `json:"assetId,omitempty"`
@@ -201,6 +207,11 @@ type DiscoveredDevice struct {
 	// IPAddress is copied from the LAN sighting; empty when the device has no
 	// LAN sighting.
 	IPAddress string
+	// Addresses is copied from the LAN sighting's Addresses union (every IP the
+	// device was seen at across interfaces); nil when the device has no LAN
+	// sighting. IPAddress is the primary; this is the full set the dial ladder
+	// may try.
+	Addresses []string
 
 	LAN       *LANDevice
 	Bluetooth *BluetoothDevice
@@ -320,6 +331,7 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 			AssetID:         d.AssetID,
 			OrgID:           d.OrgID,
 			IPAddress:       d.IPAddress,
+			Addresses:       d.Addresses,
 			LAN:             d,
 		}
 		register(merged, d.HostKey(), strings.ToLower(d.DisplayName))

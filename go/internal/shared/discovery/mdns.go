@@ -71,6 +71,9 @@ func lanDeviceFromService(svc MDNSService) models.LANDevice {
 		IsWendyDevice:    true,
 		NetworkInterface: svc.InterfaceName,
 	}
+	if dev.IPAddress != "" {
+		dev.Addresses = []string{dev.IPAddress}
+	}
 	if v, ok := svc.TXTRecords["assetid"]; ok {
 		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n > 0 {
 			dev.AssetID = int32(n)

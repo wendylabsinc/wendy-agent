@@ -674,7 +674,11 @@ func hostPort(host string, port int) string {
 // port. connectWithAutoTLS derives the mTLS port as plaintext plus
 // agentMTLSPortOffset, so we subtract that offset here to keep that
 // convention working correctly.
-func lanAgentAddresses(dev models.LANDevice) []string {
+// lanAgentPort derives the plaintext gRPC port to dial for a LAN device,
+// undoing the mTLS-port offset baked into a provisioned device's advertisement
+// (connectWithAutoTLS adds it back). Shared by lanAgentAddresses and
+// lanDialCandidates so both agree on the port for every address.
+func lanAgentPort(dev models.LANDevice) int {
 	port := dev.Port
 	if port == 0 {
 		port = defaultAgentPort
@@ -682,6 +686,11 @@ func lanAgentAddresses(dev models.LANDevice) []string {
 	if dev.IsMTLS && dev.Port != 0 && port > agentMTLSPortOffset {
 		port -= agentMTLSPortOffset // advertised port is mTLS; connectWithAutoTLS will add the offset back
 	}
+	return port
+}
+
+func lanAgentAddresses(dev models.LANDevice) []string {
+	port := lanAgentPort(dev)
 
 	ip, hostname := strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)
 	hosts := []string{ip, hostname}
@@ -716,6 +725,42 @@ func preferredLANAddress(dev models.LANDevice) string {
 		return ""
 	}
 	return addresses[0]
+}
+
+// lanDialCandidates returns every gRPC address the dial ladder should try for a
+// picked LAN device, capped at maxDialCandidates. It starts from
+// lanAgentAddresses (primary IP + hostname, with the USB-first ordering that
+// path already applies) and appends every OTHER interface address the device was
+// seen at (dev.Addresses — e.g. a USB link-local when WiFi was the primary, or
+// vice versa). Without this the picker collapsed a multi-homed device to a single
+// address and the ladder never saw the reachable sibling; see the discovery
+// Addresses union in internal/shared/discovery/stream.go.
+func lanDialCandidates(dev models.LANDevice) []string {
+	base := lanAgentAddresses(dev)
+	if len(dev.Addresses) == 0 {
+		return base
+	}
+	port := lanAgentPort(dev)
+	seen := make(map[string]bool, len(base))
+	out := make([]string, 0, len(base)+len(dev.Addresses))
+	for _, a := range base {
+		if !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
+	for _, ip := range orderRoutedDialCandidates(dev.Addresses) {
+		hp := hostPort(ip, port)
+		if seen[hp] {
+			continue
+		}
+		seen[hp] = true
+		out = append(out, hp)
+	}
+	if len(out) > maxDialCandidates {
+		out = out[:maxDialCandidates]
+	}
+	return out
 }
 
 // resolveLANAgentVersion tries the discovered LAN addresses in order and
@@ -1019,9 +1064,13 @@ func connectAgentAtAddress(ctx context.Context, addr string) (*grpcclient.AgentC
 	return connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return false })
 }
 
-func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, provisionedMTLS func() bool) (*grpcclient.AgentConnection, error) {
+// extraCandidates, when non-empty, are additional pre-resolved host:port
+// addresses the dial ladder should try alongside addr — used by the picker to
+// feed every interface a multi-homed device was seen at, so a device reachable
+// only over its USB link is still dialed even when addr (its WiFi IP) is not.
+func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, provisionedMTLS func() bool, extraCandidates ...string) (*grpcclient.AgentConnection, error) {
 	tm := phaseTimer()
-	conn, mtlsErr, err := connectWithAutoTLSDiagnostics(ctx, addr)
+	conn, mtlsErr, err := connectWithAutoTLSDiagnostics(ctx, addr, extraCandidates...)
 	if err != nil {
 		return nil, err
 	}
@@ -1345,7 +1394,11 @@ func pinKeyForLANDevice(d *models.LANDevice) string {
 // an act aimed at a specific device, not a row in a list mDNS filled in.
 func connectPickedLANDevice(ctx context.Context, d *models.DiscoveredDevice, addr string, suppressUpdateCheck bool) (*SelectedDevice, error) {
 	mtls := d.LAN.IsMTLS
-	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls })
+	// Feed every interface the device was seen at to the ladder, not just addr:
+	// a device the CLI can reach only over its USB link (WiFi on another net)
+	// advertises both, and dialing addr alone (its unreachable WiFi IP) is what
+	// made `device info/shell/pair` report a reachable device as unreachable.
+	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls }, lanDialCandidates(*d.LAN)...)
 	if err != nil {
 		// Neither refusal is "the LAN attempt failed", and the BLE half of this
 		// row is named by the same unauthenticated advertisement that named the
@@ -1921,7 +1974,7 @@ func defaultDeviceUnreachableError(hostname string, err error) error {
 // here — a lazy plaintext "success" from this function proves nothing (see
 // cacheFastPathReachable's doc); it happens at
 // connectAgentAtAddressWithProvisionedHint's real post-connect proof of life.
-func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
+func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string, extraCandidates ...string) (*grpcclient.AgentConnection, error, error) {
 	// An admin-entitled on-device container reaches the agent over its local
 	// unix socket (bind-mounted by the `admin` entitlement) with no mTLS. When
 	// WENDY_AGENT_SOCKET is set, route every command through it and skip all
@@ -1979,7 +2032,17 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 		}
 	}
 	candidates := []string{plaintextAddr}
-	if !fromCache {
+	switch {
+	case fromCache:
+		// A live cached IP: dial it directly (the block above already set it as
+		// plaintextAddr); the stale-cache retry below re-resolves if it fails.
+	case len(extraCandidates) > 0:
+		// The caller (the picker) already resolved every interface this
+		// multi-homed device was seen at; use them verbatim rather than
+		// re-resolving plaintextAddr, which — being a literal IP — would
+		// short-circuit to itself and drop the siblings.
+		candidates = extraCandidates
+	default:
 		candidates = resolveAddrCandidates(ctx, plaintextAddr)
 	}
 
