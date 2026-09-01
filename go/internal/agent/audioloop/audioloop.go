@@ -112,11 +112,12 @@ func (m *Manager) OpenWriter(ctx context.Context, sub int, f PCMFormat) (AudioWr
 
 // aplayArgs builds the argv aplay needs to play raw S16_LE PCM into hwID.
 //
-// buffer-time/period-time cap the snd-aloop ring at ~100ms (4×25ms periods).
+// buffer-time/period-time cap the snd-aloop ring at ~200ms (8×25ms periods).
 // Without them aplay picks the device default (~500ms here), and every frame
 // then sits that long in the ring before a consumer reads it — pure added
-// latency for a live mic. Small periods keep the mounted audio close to
-// real time at the cost of less underrun slack.
+// latency for a live mic. But too tight (we tried 100ms) and network jitter
+// or Mac↔device clock drift overruns the ring and drops audio; 200ms is the
+// balance — small periods keep it responsive, the deeper ring absorbs jitter.
 func aplayArgs(hwID string, f PCMFormat) []string {
 	return []string{
 		"-D", hwID,
@@ -124,7 +125,7 @@ func aplayArgs(hwID string, f PCMFormat) []string {
 		"-r", strconv.FormatUint(uint64(f.SampleRate), 10),
 		"-c", strconv.FormatUint(uint64(f.Channels), 10),
 		"-t", "raw",
-		"--buffer-time=100000",
+		"--buffer-time=200000",
 		"--period-time=25000",
 		"-q", "-",
 	}

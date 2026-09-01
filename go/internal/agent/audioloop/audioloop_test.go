@@ -31,7 +31,7 @@ func TestAllocateExhaustion(t *testing.T) {
 
 func TestAplayArgs(t *testing.T) {
 	got := aplayArgs("hw:Loopback,0,3", PCMFormat{SampleRate: 48000, Channels: 2})
-	want := []string{"-D", "hw:Loopback,0,3", "-f", "S16_LE", "-r", "48000", "-c", "2", "-t", "raw", "--buffer-time=100000", "--period-time=25000", "-q", "-"}
+	want := []string{"-D", "hw:Loopback,0,3", "-f", "S16_LE", "-r", "48000", "-c", "2", "-t", "raw", "--buffer-time=200000", "--period-time=25000", "-q", "-"}
 	if len(got) != len(want) {
 		t.Fatalf("args %v != %v", got, want)
 	}
