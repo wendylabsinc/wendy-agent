@@ -188,8 +188,25 @@ type VideoDevice struct {
 	HasCredentials bool                   `protobuf:"varint,10,opt,name=has_credentials,json=hasCredentials,proto3" json:"has_credentials,omitempty"`            // the agent holds a login for this camera
 	Online         bool                   `protobuf:"varint,11,opt,name=online,proto3" json:"online,omitempty"`                                                  // the most recent probe reached this camera
 	Topic          string                 `protobuf:"bytes,12,opt,name=topic,proto3" json:"topic,omitempty"`                                                     // ROS 2 image topic, e.g. "/camera/image_raw"; empty for other transports
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Stable identity for a LOCAL camera, the counterpart of `mac` above.
+	//
+	// `id` and `path` are the kernel's enumeration order, which is a property
+	// of the boot and not of the camera: replugging or a reboot can renumber
+	// /dev/videoN, and a caller that pinned a number then silently streams a
+	// different camera. `name` and `driver` only identify the MODEL, so they
+	// cannot separate two cameras of the same type.
+	//
+	// by_id is derived from vendor + product + serial and survives both a
+	// reboot and a move to another USB port. by_path encodes the port topology
+	// instead: it survives a reboot but NOT a move, and is the only thing that
+	// can separate two same-model cameras whose serials are identical (a
+	// generic factory serial is common). Both are empty when the device has no
+	// /dev/v4l entry -- CSI and network cameras, or a kernel without the
+	// symlinks.
+	ById          string `protobuf:"bytes,13,opt,name=by_id,json=byId,proto3" json:"by_id,omitempty"`       // e.g. "usb-Acme_Camera_SN123-video-index0"
+	ByPath        string `protobuf:"bytes,14,opt,name=by_path,json=byPath,proto3" json:"by_path,omitempty"` // e.g. "platform-xhci-hcd.0-usb-0:2.3:1.0-video-index0"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VideoDevice) Reset() {
@@ -306,6 +323,20 @@ func (x *VideoDevice) GetTopic() string {
 	return ""
 }
 
+func (x *VideoDevice) GetById() string {
+	if x != nil {
+		return x.ById
+	}
+	return ""
+}
+
+func (x *VideoDevice) GetByPath() string {
+	if x != nil {
+		return x.ByPath
+	}
+	return ""
+}
+
 type ListVideoDevicesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -392,9 +423,20 @@ type StreamVideoRequest struct {
 	// For local cameras width/height/framerate configure capture. For network
 	// cameras the camera decides its own format, so width only selects which of
 	// its streams to open (sub or main) and height/framerate are ignored.
-	Width         uint32 `protobuf:"varint,2,opt,name=width,proto3" json:"width,omitempty"`         // pixels; 0 = device default
-	Height        uint32 `protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`       // pixels; 0 = device default
-	Framerate     uint32 `protobuf:"varint,4,opt,name=framerate,proto3" json:"framerate,omitempty"` // fps; 0 = device default
+	Width     uint32 `protobuf:"varint,2,opt,name=width,proto3" json:"width,omitempty"`         // pixels; 0 = device default
+	Height    uint32 `protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`       // pixels; 0 = device default
+	Framerate uint32 `protobuf:"varint,4,opt,name=framerate,proto3" json:"framerate,omitempty"` // fps; 0 = device default
+	// Address the camera by its stable identity instead of by device_id.
+	//
+	// When set this WINS over device_id and is resolved against the by_id
+	// reported by ListVideoDevices, at request time. That is the point: the
+	// number is resolved when the stream is opened rather than baked into a
+	// config that outlives the boot it was written on.
+	//
+	// No match is an error, deliberately. Falling back to device_id would
+	// stream whatever the kernel happened to put at that number, which is the
+	// silent-wrong-camera failure this field exists to remove.
+	DeviceById    string `protobuf:"bytes,6,opt,name=device_by_id,json=deviceById,proto3" json:"device_by_id,omitempty"` // empty = address by device_id, as before
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -455,6 +497,13 @@ func (x *StreamVideoRequest) GetFramerate() uint32 {
 		return x.Framerate
 	}
 	return 0
+}
+
+func (x *StreamVideoRequest) GetDeviceById() string {
+	if x != nil {
+		return x.DeviceById
+	}
+	return ""
 }
 
 // Credentials for a network camera. Stored on the device, never returned by any
@@ -886,7 +935,7 @@ var File_wendy_agent_services_v1_wendy_agent_v1_video_service_proto protoreflect
 
 const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = "" +
 	"\n" +
-	":wendy/agent/services/v1/wendy_agent_v1_video_service.proto\x12\x17wendy.agent.services.v1\"\xe0\x02\n" +
+	":wendy/agent/services/v1/wendy_agent_v1_video_service.proto\x12\x17wendy.agent.services.v1\"\x8e\x03\n" +
 	"\vVideoDevice\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -900,15 +949,19 @@ const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = 
 	"\x0fhas_credentials\x18\n" +
 	" \x01(\bR\x0ehasCredentials\x12\x16\n" +
 	"\x06online\x18\v \x01(\bR\x06online\x12\x14\n" +
-	"\x05topic\x18\f \x01(\tR\x05topic\"\x19\n" +
+	"\x05topic\x18\f \x01(\tR\x05topic\x12\x13\n" +
+	"\x05by_id\x18\r \x01(\tR\x04byId\x12\x17\n" +
+	"\aby_path\x18\x0e \x01(\tR\x06byPath\"\x19\n" +
 	"\x17ListVideoDevicesRequest\"Z\n" +
 	"\x18ListVideoDevicesResponse\x12>\n" +
-	"\adevices\x18\x01 \x03(\v2$.wendy.agent.services.v1.VideoDeviceR\adevices\"}\n" +
+	"\adevices\x18\x01 \x03(\v2$.wendy.agent.services.v1.VideoDeviceR\adevices\"\x9f\x01\n" +
 	"\x12StreamVideoRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12\x14\n" +
 	"\x05width\x18\x02 \x01(\rR\x05width\x12\x16\n" +
 	"\x06height\x18\x03 \x01(\rR\x06height\x12\x1c\n" +
-	"\tframerate\x18\x04 \x01(\rR\tframerate\"r\n" +
+	"\tframerate\x18\x04 \x01(\rR\tframerate\x12 \n" +
+	"\fdevice_by_id\x18\x06 \x01(\tR\n" +
+	"deviceById\"r\n" +
 	"\x1bSetCameraCredentialsRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
