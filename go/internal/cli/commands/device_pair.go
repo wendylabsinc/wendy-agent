@@ -9,7 +9,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/sensorlink"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -47,20 +46,6 @@ func transportForDevice(d models.DiscoveredDevice) string {
 		}
 	}
 	return "tcp"
-}
-
-// pairAddress builds the SourceAddress and transport for AddSensorPairing,
-// picking the port the same way the agent's resolveLANAddr does: the mDNS
-// agent gRPC port for "grpc" sources, the well-known sensorlink.Port for
-// "tcp"/legacy MCU sources. Getting this wrong makes a grpc pairing dial the
-// raw-TCP port and fail mTLS forever.
-func pairAddress(source *models.DiscoveredDevice) (addr, transport string) {
-	transport = transportForDevice(*source)
-	port := sensorlink.Port
-	if transport == "grpc" {
-		port = source.Port()
-	}
-	return fmt.Sprintf("%s:%d", source.IPAddress, port), transport
 }
 
 // sameOrg rejects pairing across organizations: sensor pairing is only
@@ -201,13 +186,18 @@ func newDevicePairCmd() *cobra.Command {
 				return err
 			}
 
-			addr, transport := pairAddress(source)
+			// Send no address: the consumer resolves the source by its asset
+			// ID on its own LAN view (runner.resolveLANAddr). Pinning the IP
+			// the CLI happens to see freezes a stale/unreachable address —
+			// the CLI's network view is often not the consumer's (e.g. the
+			// consumer reaches a laptop only over its USB link, never the
+			// laptop's roaming WiFi IP). Identity is stable; the address isn't.
 			_, err = conn.SensorPairingService.AddSensorPairing(ctx, &agentpbv2.AddSensorPairingRequest{
 				SourceAssetId:   source.AssetID,
-				SourceAddress:   addr,
+				SourceAddress:   "",
 				Name:            pairingName(name, source),
 				SensorAllowlist: sensors,
-				Transport:       transport,
+				Transport:       transportForDevice(*source),
 			})
 			if err != nil {
 				return cleanRPCError(err)

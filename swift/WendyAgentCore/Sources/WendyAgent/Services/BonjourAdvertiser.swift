@@ -116,73 +116,21 @@ final class BonjourRegistration: @unchecked Sendable {
         }
     }
 
-    /// Returns the `if_nametoindex` of the interface the kernel would use to
-    /// reach the public internet (the default-route / primary LAN interface),
-    /// or `0` (all interfaces) if it can't be determined. Uses the UDP-connect
-    /// trick: connecting a datagram socket sends no packets but makes the kernel
-    /// pick a source address, which `getsockname` then reveals; that address is
-    /// mapped back to its interface name.
-    static func primaryIPv4InterfaceIndex() -> UInt32 {
-        let sock = socket(AF_INET, SOCK_DGRAM, 0)
-        guard sock >= 0 else { return 0 }
-        defer { close(sock) }
-
-        var dst = sockaddr_in()
-        dst.sin_family = sa_family_t(AF_INET)
-        dst.sin_port = in_port_t(UInt16(53).bigEndian)
-        _ = "8.8.8.8".withCString { inet_pton(AF_INET, $0, &dst.sin_addr) }
-        let connected = withUnsafePointer(to: &dst) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard connected == 0 else { return 0 }
-
-        var local = sockaddr_in()
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let named = withUnsafeMutablePointer(to: &local) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(sock, $0, &len)
-            }
-        }
-        guard named == 0 else { return 0 }
-        let localAddr = local.sin_addr.s_addr
-
-        var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddrPtr) == 0 else { return 0 }
-        defer { freeifaddrs(ifaddrPtr) }
-        var cur = ifaddrPtr
-        while let ifa = cur {
-            defer { cur = ifa.pointee.ifa_next }
-            guard let sa = ifa.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) else {
-                continue
-            }
-            let addr = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
-                $0.pointee.sin_addr.s_addr
-            }
-            if addr == localAddr {
-                return if_nametoindex(ifa.pointee.ifa_name)
-            }
-        }
-        return 0
-    }
-
     private func startOnQueue(continuation: CheckedContinuation<Void, any Error>) {
         precondition(self.readyContinuation == nil)
         self.readyContinuation = continuation
 
         var serviceRef: DNSServiceRef?
-        // Advertise only on the primary LAN interface, not on every interface
-        // (index 0). A dev Mac often has junk utun/tunnel interfaces (Docker,
-        // VPNs, container runtimes) carrying unroutable network-base (.0)
-        // addresses; advertising on those makes a consumer's discovery pick an
-        // address it can't reach. 0 is used as a fallback when detection fails.
-        let interfaceIndex = Self.primaryIPv4InterfaceIndex()
+        // Advertise on every interface (index 0), including the USB link. A
+        // consumer only ever receives our advert over an interface it shares
+        // with us, so resolving by the source's identity there yields an
+        // address it can actually reach — restricting to one "primary" LAN
+        // interface would hide us from a peer reachable only over USB.
         let error = self.txtData.withUnsafeBytes { buffer in
             DNSServiceRegister(
                 &serviceRef,
                 0,
-                interfaceIndex,
+                0,
                 nil,
                 "_wendyos._udp.",
                 nil,
