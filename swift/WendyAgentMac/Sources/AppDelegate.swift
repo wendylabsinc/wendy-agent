@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         category: "AppDelegate"
     )
     private let wendyAgent = WendyAgent(configuration: .default)
+    private let localRuntime = WendyRuntimeVM()
+    private let meshVPN = MeshVPNController()
+    private let macDeploymentTargetSettings = MacDeploymentTargetSettings()
     private let welcomeAndPermissions = WelcomeAndPermissions()
     private var statusMenuController: StatusMenuController?
     private var welcomeAndPermissionsWindow: NSWindow?
@@ -21,14 +24,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     // Real fix: make onboarding/permissions run in a regular foreground app instead.
     // See WDY-930: https://linear.app/wendylabsinc/issue/WDY-930/explore-more-packaging-and-process-architecture-options-for-wendy-on
     private var welcomeAndPermissionsPresentationTask: Task<Void, any Error>?
+    private var macDeploymentTargetLifecycleTask: Task<Void, Never>?
+    private var localRuntimeLifecycleTask: Task<Void, Never>?
     private var isQuitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         self.welcomeAndPermissions.configureLaunchAtLoginOnStartup()
 
-        Task {
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            self.localRuntimeLifecycleTask = Task {
+                await self.localRuntime.start()
+                self.localRuntimeLifecycleTask = nil
+            }
+            Task {
+                do {
+                    try await MeshSystemExtensionInstaller.shared.installOrUpdate {
+                        self.openNetworkExtensionSettings()
+                    }
+                    await self.meshVPN.connectAutomatically()
+                } catch {
+                    self.logger.error(
+                        "Failed to install WendyNet: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
+        }
+
+        self.macDeploymentTargetLifecycleTask = Task { [self] in
+            let macDeploymentTargetEnabled = self.macDeploymentTargetSettings.isEnabled
             self.statusMenuController = await StatusMenuController(
                 wendyAgent: self.wendyAgent,
+                localRuntime: self.localRuntime,
+                meshVPN: self.meshVPN,
+                macDeploymentTargetEnabled: macDeploymentTargetEnabled,
+                macDeploymentTargetIsUserEditable: self.macDeploymentTargetSettings.isUserEditable,
                 delegate: self
             )
 
@@ -40,13 +69,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 await self?.performQuit()
             }
 
-            do {
-                try await self.wendyAgent.start()
-            } catch {
-                self.logger.error(
-                    "Failed to start WendyAgent: \(String(describing: error), privacy: .public)"
+            if macDeploymentTargetEnabled {
+                self.statusMenuController?.updateMacDeploymentTarget(
+                    enabled: true,
+                    isTransitioning: true
+                )
+                await self.startMacDeploymentTarget()
+                guard !Task.isCancelled else { return }
+                self.statusMenuController?.updateMacDeploymentTarget(
+                    enabled: true,
+                    isTransitioning: false
+                )
+            } else {
+                self.logger.info(
+                    "Mac deployment target is disabled; WendyAgent services will not start"
                 )
             }
+
+            self.macDeploymentTargetLifecycleTask = nil
         }
 
         if self.welcomeAndPermissions.shouldShowWelcomeAndPermissions {
@@ -69,6 +109,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         self.performQuit()
     }
 
+    func statusMenuController(
+        _ controller: StatusMenuController,
+        didSetMacDeploymentTargetEnabled enabled: Bool
+    ) {
+        guard self.macDeploymentTargetSettings.isUserEditable else { return }
+
+        self.macDeploymentTargetSettings.setEnabled(enabled)
+        self.statusMenuController?.updateMacDeploymentTarget(
+            enabled: enabled,
+            isTransitioning: true
+        )
+
+        self.macDeploymentTargetLifecycleTask = Task {
+            if enabled {
+                await self.startMacDeploymentTarget()
+            } else {
+                await self.wendyAgent.stop()
+            }
+
+            guard !Task.isCancelled else { return }
+            self.statusMenuController?.updateMacDeploymentTarget(
+                enabled: enabled,
+                isTransitioning: false
+            )
+            self.macDeploymentTargetLifecycleTask = nil
+        }
+    }
+
+    func statusMenuController(
+        _ controller: StatusMenuController,
+        didSetMeshVPNEnabled enabled: Bool
+    ) {
+        Task {
+            if enabled {
+                await self.meshVPN.connect()
+            } else {
+                await self.meshVPN.disable()
+            }
+        }
+    }
+
+    func statusMenuControllerDidSelectNetworkExtensionSettings(
+        _ controller: StatusMenuController
+    ) {
+        self.openNetworkExtensionSettings()
+    }
+
     /// Shuts the agent down and terminates the app. Shared by the Quit menu
     /// item and the agent's post-update termination handler; re-entrant calls
     /// are ignored.
@@ -77,10 +164,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         self.isQuitting = true
 
         Task {
+            let lifecycleTask = self.macDeploymentTargetLifecycleTask
+            lifecycleTask?.cancel()
+            await lifecycleTask?.value
+            self.macDeploymentTargetLifecycleTask = nil
             await self.statusMenuController?.invalidate()
             await self.wendyAgent.stop()
+            let localRuntimeLifecycleTask = self.localRuntimeLifecycleTask
+            localRuntimeLifecycleTask?.cancel()
+            await localRuntimeLifecycleTask?.value
+            self.localRuntimeLifecycleTask = nil
+            self.localRuntime.stop()
             NSApplication.shared.terminate(nil)
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        self.localRuntime.stop()
+    }
+
+    private func startMacDeploymentTarget() async {
+        do {
+            try await self.wendyAgent.start()
+        } catch {
+            self.logger.error(
+                "Failed to start WendyAgent: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    private func openNetworkExtensionSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+        ) else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     func windowWillClose(_ notification: Notification) {

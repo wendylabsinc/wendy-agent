@@ -1465,7 +1465,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Inject a read-only /etc/resolv.conf bind-mount for containers that need
-	// gateway DNS: meshed multi-service isolated apps (device-N.cloud.wendy.dev
+	// gateway DNS: meshed multi-service isolated apps (device-N.mesh.wendy.internal
 	// hostnames resolve via the mesh DNS listener on this app's bridge
 	// gateway) and, per specs/2026-07-05-network-bridge-default-design.md,
 	// single-service "bridge"-mode apps too — their isolated namespace has no

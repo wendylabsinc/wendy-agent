@@ -1,9 +1,21 @@
 import AppKit
+import Combine
 import WendyAgentCore
 
 protocol StatusMenuControllerDelegate: AnyObject {
     func statusMenuControllerDidSelectAbout(_ controller: StatusMenuController)
     func statusMenuControllerDidSelectWelcomeAndPermissions(_ controller: StatusMenuController)
+    func statusMenuController(
+        _ controller: StatusMenuController,
+        didSetMacDeploymentTargetEnabled enabled: Bool
+    )
+    func statusMenuController(
+        _ controller: StatusMenuController,
+        didSetMeshVPNEnabled enabled: Bool
+    )
+    func statusMenuControllerDidSelectNetworkExtensionSettings(
+        _ controller: StatusMenuController
+    )
     func statusMenuControllerDidSelectQuit(_ controller: StatusMenuController)
 }
 
@@ -13,14 +25,24 @@ final class StatusMenuController: NSObject {
 
     init(
         wendyAgent: WendyAgent,
+        localRuntime: WendyRuntimeVM,
+        meshVPN: MeshVPNController,
+        macDeploymentTargetEnabled: Bool,
+        macDeploymentTargetIsUserEditable: Bool,
         delegate: (any StatusMenuControllerDelegate)? = nil,
         bundle: Bundle = .main
     ) async {
         self.wendyAgent = wendyAgent
+        self.localRuntime = localRuntime
+        self.meshVPN = meshVPN
+        self.macDeploymentTargetEnabled = macDeploymentTargetEnabled
+        self.macDeploymentTargetIsUserEditable = macDeploymentTargetIsUserEditable
         self.delegate = delegate
         self.bundleDisplayName = AppDisplayName.resolve(from: bundle)
         self.currentStatus = await wendyAgent.status
         self.currentApps = await wendyAgent.apps
+        self.localRuntimeState = localRuntime.state
+        self.meshVPNStatus = meshVPN.status
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.menu = NSMenu()
         super.init()
@@ -31,6 +53,12 @@ final class StatusMenuController: NSObject {
         }
         self.appsObservation = await self.wendyAgent.observeApps { @MainActor [weak self] apps in
             self?.update(apps: apps)
+        }
+        self.localRuntimeObservation = localRuntime.$state.sink { @MainActor [weak self] state in
+            self?.update(localRuntimeState: state)
+        }
+        self.meshVPNObservation = meshVPN.$status.sink { @MainActor [weak self] status in
+            self?.update(meshVPNStatus: status)
         }
 
         self.menu.autoenablesItems = false
@@ -43,12 +71,21 @@ final class StatusMenuController: NSObject {
     weak var delegate: (any StatusMenuControllerDelegate)?
 
     private let bundleDisplayName: String
+    private let localRuntime: WendyRuntimeVM
+    private let meshVPN: MeshVPNController
     private let statusItem: NSStatusItem
     private let menu: NSMenu
     private var currentStatus: WendyAgentStatus
     private var currentApps: [WendyAppInfo]
+    private var localRuntimeState: WendyRuntimeVM.State
+    private var meshVPNStatus: MeshVPNController.Status
+    private var macDeploymentTargetEnabled: Bool
+    private let macDeploymentTargetIsUserEditable: Bool
+    private var macDeploymentTargetIsTransitioning = false
     private var statusObservation: WendyObservation?
     private var appsObservation: WendyObservation?
+    private var localRuntimeObservation: AnyCancellable?
+    private var meshVPNObservation: AnyCancellable?
 
     private var runningApps: [WendyAppInfo] {
         self.currentApps
@@ -64,6 +101,18 @@ final class StatusMenuController: NSObject {
 
     private func update(apps: [WendyAppInfo]) {
         self.currentApps = apps
+        self.rebuildMenu()
+    }
+
+    private func update(localRuntimeState: WendyRuntimeVM.State) {
+        self.localRuntimeState = localRuntimeState
+        self.updateStatusButton()
+        self.rebuildMenu()
+    }
+
+    private func update(meshVPNStatus: MeshVPNController.Status) {
+        self.meshVPNStatus = meshVPNStatus
+        self.updateStatusButton()
         self.rebuildMenu()
     }
 
@@ -88,6 +137,83 @@ final class StatusMenuController: NSObject {
 
         self.menu.addItem(.separator())
 
+        let runtimeItem = self.makeDisabledMenuItem(title: self.localRuntimeState.menuTitle)
+        runtimeItem.image = NSImage(
+            systemSymbolName: self.localRuntimeState.menuImageName,
+            accessibilityDescription: "Local Linux runtime"
+        )
+        self.menu.addItem(runtimeItem)
+
+        if let detail = self.localRuntimeState.failureDetail {
+            self.menu.addItem(self.makeDisabledMenuItem(title: detail))
+        }
+
+        self.menu.addItem(.separator())
+
+        let meshItem = NSMenuItem(
+            title: self.meshMenuTitle,
+            action: #selector(self.meshVPNSelected),
+            keyEquivalent: ""
+        )
+        meshItem.target = self
+        meshItem.state = self.meshVPNStatus == .connected ? .on : .off
+        meshItem.isEnabled = !self.meshVPNIsTransitioning
+        meshItem.image = NSImage(
+            systemSymbolName: self.meshMenuImageName,
+            accessibilityDescription: "Wendy Mesh"
+        )
+        self.menu.addItem(meshItem)
+
+        if case .failed(let detail) = self.meshVPNStatus {
+            self.menu.addItem(self.makeDisabledMenuItem(title: detail))
+        }
+        if self.meshVPNStatus == .needsApproval {
+            let settingsItem = NSMenuItem(
+                title: "Open Network Extension Settings…",
+                action: #selector(self.networkExtensionSettingsSelected),
+                keyEquivalent: ""
+            )
+            settingsItem.target = self
+            self.menu.addItem(settingsItem)
+        }
+
+        self.menu.addItem(.separator())
+
+        let deploymentTargetItem = NSMenuItem(
+            title: "Make This Mac a Deployment Target",
+            action: #selector(self.macDeploymentTargetSelected),
+            keyEquivalent: ""
+        )
+        deploymentTargetItem.target = self
+        deploymentTargetItem.state = self.macDeploymentTargetEnabled ? .on : .off
+        deploymentTargetItem.isEnabled =
+            self.macDeploymentTargetIsUserEditable
+            && !self.macDeploymentTargetIsTransitioning
+        self.menu.addItem(deploymentTargetItem)
+
+        if !self.macDeploymentTargetIsUserEditable {
+            self.menu.addItem(
+                self.makeDisabledMenuItem(
+                    title: "Controlled by \(MacDeploymentTargetSettings.environmentKey)"
+                )
+            )
+        }
+
+        self.menu.addItem(.separator())
+
+        guard self.macDeploymentTargetEnabled else {
+            let statusTitle =
+                self.macDeploymentTargetIsTransitioning
+                ? "Disabling Mac deployment target…"
+                : "Mac deployment target disabled"
+            let statusItem = self.makeDisabledMenuItem(title: statusTitle)
+            statusItem.image = self.makeStatusImage(for: .idle)
+            self.menu.addItem(statusItem)
+            self.menu.addItem(.separator())
+            self.addQuitItem()
+            return
+        }
+
         let statusItem = self.makeDisabledMenuItem(title: self.currentStatus.menuTitle)
         statusItem.image = self.makeStatusImage(for: self.currentStatus)
         self.menu.addItem(statusItem)
@@ -99,6 +225,10 @@ final class StatusMenuController: NSObject {
         self.addRunningAppsSection()
         self.menu.addItem(.separator())
 
+        self.addQuitItem()
+    }
+
+    private func addQuitItem() {
         let quitItem = NSMenuItem(
             title: "Quit \(self.bundleDisplayName)",
             action: #selector(self.quitSelected),
@@ -168,8 +298,40 @@ final class StatusMenuController: NSObject {
         button.title = self.buttonTitle(for: self.currentStatus, image: image)
         button.imagePosition = self.buttonImagePosition(for: self.currentStatus, image: image)
         button.imageScaling = .scaleProportionallyDown
-        button.toolTip = "\(self.bundleDisplayName) — \(self.currentStatus.menuTitle)"
+        let statusTitle =
+            "\(self.localRuntimeState.menuTitle); \(self.meshMenuTitle); "
+            + (self.macDeploymentTargetEnabled
+                ? self.currentStatus.menuTitle
+                : "Mac deployment target disabled")
+        button.toolTip = "\(self.bundleDisplayName) — \(statusTitle)"
         button.setAccessibilityTitle(self.bundleDisplayName)
+    }
+
+    private var meshMenuTitle: String {
+        switch self.meshVPNStatus {
+        case .disabled: "Wendy Mesh"
+        case .activatingExtension: "Installing Wendy Mesh…"
+        case .needsApproval: "Wendy Mesh needs approval"
+        case .connecting: "Connecting Wendy Mesh…"
+        case .connected: "Wendy Mesh connected"
+        case .failed: "Wendy Mesh failed"
+        }
+    }
+
+    private var meshMenuImageName: String {
+        switch self.meshVPNStatus {
+        case .connected: "network"
+        case .activatingExtension, .connecting: "clock.fill"
+        case .needsApproval, .failed: "exclamationmark.triangle.fill"
+        case .disabled: "network.slash"
+        }
+    }
+
+    private var meshVPNIsTransitioning: Bool {
+        switch self.meshVPNStatus {
+        case .activatingExtension, .connecting: true
+        default: false
+        }
     }
 
     private func buttonTitle(for status: WendyAgentStatus, image: NSImage?) -> String {
@@ -217,7 +379,18 @@ final class StatusMenuController: NSObject {
     }
 
     func invalidate() async {
+        self.localRuntimeObservation?.cancel()
+        self.localRuntimeObservation = nil
+        self.meshVPNObservation?.cancel()
+        self.meshVPNObservation = nil
         await self.cancelObservations()
+    }
+
+    func updateMacDeploymentTarget(enabled: Bool, isTransitioning: Bool) {
+        self.macDeploymentTargetEnabled = enabled
+        self.macDeploymentTargetIsTransitioning = isTransitioning
+        self.updateStatusButton()
+        self.rebuildMenu()
     }
 
     @objc
@@ -228,6 +401,35 @@ final class StatusMenuController: NSObject {
     @objc
     private func welcomeAndPermissionsSelected() {
         self.delegate?.statusMenuControllerDidSelectWelcomeAndPermissions(self)
+    }
+
+    @objc
+    private func macDeploymentTargetSelected() {
+        guard
+            self.macDeploymentTargetIsUserEditable,
+            !self.macDeploymentTargetIsTransitioning
+        else {
+            return
+        }
+
+        self.delegate?.statusMenuController(
+            self,
+            didSetMacDeploymentTargetEnabled: !self.macDeploymentTargetEnabled
+        )
+    }
+
+    @objc
+    private func meshVPNSelected() {
+        guard !self.meshVPNIsTransitioning else { return }
+        self.delegate?.statusMenuController(
+            self,
+            didSetMeshVPNEnabled: self.meshVPNStatus != .connected
+        )
+    }
+
+    @objc
+    private func networkExtensionSettingsSelected() {
+        self.delegate?.statusMenuControllerDidSelectNetworkExtensionSettings(self)
     }
 
     @objc

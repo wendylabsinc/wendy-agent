@@ -424,7 +424,7 @@ func (x *DockerfileBuild) GetBuildArgs() map[string]string {
 // hostname.
 //
 // It is an asset id and not a name on purpose. Resolving
-// "device-<id>.cloud.wendy.dev" requires the mesh DNS server, which only exists
+// "device-<id>.mesh.wendy.internal" requires the mesh DNS server, which only exists
 // on WendyOS hosts — an adopted Linux box (where systemd-resolved owns
 // 127.0.0.53) cannot resolve it, so a perfectly reachable peer looked
 // unreachable. The agent's peer dialer needs only the id, and it is also a

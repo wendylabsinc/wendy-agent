@@ -737,7 +737,7 @@ func main() {
 		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))
 	}
 
-	// Hybrid friendly-name resolver: <devicename>.<org-slug>.cloud.wendy.dev.
+	// Hybrid friendly-name resolver: <devicename>.<org-slug>.mesh.wendy.internal.
 	// Mirrors the meshDialer construction just above — not gated on
 	// alreadyProvisioned. On an unenrolled device orgID/assetID/chainPEM are
 	// zero/empty, so MeshRoster.Sync simply fails closed (logged, retried)
