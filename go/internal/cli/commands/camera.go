@@ -333,7 +333,13 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 				// Raw frames are bytes for a program, not a picture for a window.
 				return fmt.Errorf("--raw writes whole uncompressed frames and needs --stdout")
 			}
-			conn, err := connectToAgent(ctx)
+			// Camera streaming stays off the session broker: the proxy hop
+			// adds a second set of flow-control windows between device and
+			// viewer, and view latency is a fought-for property here (the
+			// #762–#764 latency work). Like watch, the stream also holds one
+			// connection for its whole lifetime, so reuse saves nothing after
+			// the first frame.
+			conn, err := connectToAgent(ctx, DisableSessionBroker())
 			if err != nil {
 				return err
 			}

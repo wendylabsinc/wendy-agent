@@ -19,6 +19,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
+	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 )
 
 // localLayer addresses a single image layer's COMPRESSED blob plus the metadata
@@ -679,7 +680,7 @@ func lockOCILayoutDir(ctx context.Context, dir string) (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening OCI layout lock: %w", err)
 	}
-	locked, err := tryLockFile(f)
+	locked, err := flock.TryLock(f)
 	if err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("acquiring OCI layout lock: %w", err)
@@ -691,7 +692,7 @@ func lockOCILayoutDir(ctx context.Context, dir string) (func(), error) {
 		}
 	}
 	return func() {
-		_ = unlockFile(f)
+		_ = flock.Unlock(f)
 		_ = f.Close()
 	}, nil
 }
