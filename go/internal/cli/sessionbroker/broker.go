@@ -304,7 +304,17 @@ func Run(ctx context.Context, encoded string, idleTTL time.Duration, parentLease
 	if err != nil {
 		return err
 	}
-	upstream, err := grpcclient.ConnectWithTLSExpecting(ctx, spec.Addr, certInfo, pins, &spec.Expected)
+	// WithIdleTimeout(0) pins the retained transport open: gRPC's default
+	// 30-minute client idle timeout would otherwise tear it down during a
+	// long RPC-quiet stretch — exactly the 30+ minute local build the parent
+	// lease and the proxy channel's own idle exemption keep this broker alive
+	// for — and watchUpstreamState treats that departure from Ready as fatal
+	// (correctly: a redial would re-verify against this process's startup pin
+	// snapshot), stopping the broker under a command that already hit it.
+	// The one verified transport must therefore simply never idle away;
+	// genuine transport loss still surfaces as TransientFailure/Shutdown and
+	// still evicts.
+	upstream, err := grpcclient.ConnectWithTLSExpecting(ctx, spec.Addr, certInfo, pins, &spec.Expected, grpc.WithIdleTimeout(0))
 	if err != nil {
 		return err
 	}
@@ -649,8 +659,11 @@ func proxyHandler(upstream *grpc.ClientConn, activity *activity) grpc.StreamHand
 }
 
 // watchUpstreamState ends the broker the moment the retained transport leaves
-// Ready — a drop to TransientFailure, or grpc-go's 30-minute client idle
-// teardown. The broker's whole value is the ALREADY-VERIFIED transport it
+// Ready. Any departure is treated as fatal, which is why Run dials the
+// upstream with WithIdleTimeout(0): without that exemption, gRPC's 30-minute
+// client idle teardown during an RPC-quiet stretch (a long local build) would
+// trip this watcher and stop the broker under a command that already hit it.
+// The broker's whole value is the ALREADY-VERIFIED transport it
 // retains; anything that replaces it would be re-dialed and re-verified
 // against the pin snapshot this process loaded at startup, and
 // devicepin.Store is not multi-process safe: another invocation may have

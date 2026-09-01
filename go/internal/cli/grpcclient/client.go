@@ -394,7 +394,12 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 
 // ConnectWithTLSExpecting is ConnectWithTLSAndPins with a required peer
 // identity. A nil expected is exactly ConnectWithTLSAndPins.
-func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker, expected *certs.WendyIdentity) (*AgentConnection, error) {
+//
+// extraOpts extends the standard dial options for callers whose channel has
+// different lifetime needs than a per-command connection — today the session
+// broker, which must pin its retained transport open (grpc.WithIdleTimeout(0))
+// because for it a teardown-and-redial is a trust event, not a transparency.
+func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker, expected *certs.WendyIdentity, extraOpts ...grpc.DialOption) (*AgentConnection, error) {
 	observedOrg := new(atomic.Int32)
 	observedIdentity := new(atomic.Pointer[certs.WendyIdentity])
 	mismatch := new(atomic.Pointer[certs.IdentityMismatchError])
@@ -404,8 +409,7 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 		return nil, err
 	}
 
-	conn, err := grpc.NewClient(
-		grpcTarget(address),
+	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
 		grpc.WithInitialWindowSize(grpcInitialStreamWindow),
 		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
@@ -416,7 +420,8 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 			Timeout:             grpcKeepaliveTimeout,
 			PermitWithoutStream: false,
 		}),
-	)
+	}
+	conn, err := grpc.NewClient(grpcTarget(address), append(opts, extraOpts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to agent at %s with TLS: %w", address, err)
 	}
