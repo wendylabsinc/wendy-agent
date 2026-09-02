@@ -481,7 +481,14 @@ func hostFromAddress(address string) string {
 }
 
 // Close closes the underlying gRPC connection.
+//
+// Safe on a nil receiver: callers defer Close on a connection variable that a
+// later reconnect may set back to nil, and a failed reconnect must surface its
+// own error rather than a panic from the deferred cleanup.
 func (c *AgentConnection) Close() error {
+	if c == nil {
+		return nil
+	}
 	var errs []error
 	if c.Conn != nil {
 		errs = append(errs, c.Conn.Close())
