@@ -68,12 +68,12 @@ func renderCameraControls(controls []*agentpb.CameraControl) error {
 		fmt.Println("No tunable controls found (is this a local USB/CSI camera?).")
 		return nil
 	}
-	headers := []string{"Control", "Value", "Min", "Max", "Default", "Settable"}
+	headers := []string{"Control", "Value", "Min", "Max", "Default", "Mutable"}
 	var rows [][]string
 	for _, c := range controls {
-		settable := "yes"
-		if !c.GetSettable() {
-			settable = "no"
+		mutable := "yes"
+		if !c.GetMutable() {
+			mutable = "no"
 		}
 		rows = append(rows, []string{
 			c.GetName(),
@@ -81,7 +81,7 @@ func renderCameraControls(controls []*agentpb.CameraControl) error {
 			fmt.Sprintf("%d", c.GetMinimum()),
 			fmt.Sprintf("%d", c.GetMaximum()),
 			fmt.Sprintf("%d", c.GetDefaultValue()),
-			settable,
+			mutable,
 		})
 	}
 	fmt.Print(tui.RenderTable(headers, rows))
@@ -114,14 +114,14 @@ Run "wendy device camera controls <id>" first to see the available controls and
 their ranges.
 
 To undo: --reset puts named controls back to the driver's default and stops
-persisting them, and --reset-all does that for every settable control:
+persisting them, and --reset-all does that for every mutable control:
 
   wendy device camera set-control 0 --reset auto_exposure,exposure_time_absolute
   wendy device camera set-control 0 --reset-all`,
 		// Not MinimumNArgs(2): the two things a caller has to know are which
 		// camera and which control names, and an arity error tells them
 		// neither. Bare, we list the cameras; with an id and no pairs, we list
-		// that camera's settable controls and their ranges.
+		// that camera's mutable controls and their ranges.
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -157,7 +157,7 @@ persisting them, and --reset-all does that for every settable control:
 				if err != nil {
 					return fmt.Errorf("getting camera controls: %w", err)
 				}
-				// Every control, not just the currently settable ones: a
+				// Every control, not just the currently mutable ones: a
 				// control gated inactive by a mode (exposure_time_absolute
 				// while auto_exposure is on) is exactly the one that would
 				// otherwise stay pinned in the store with no way to clear it.
@@ -207,7 +207,7 @@ persisting them, and --reset-all does that for every settable control:
 	cmd.Flags().StringSliceVar(&reset, "reset", nil,
 		"Put these controls back to the driver's default and stop persisting them")
 	cmd.Flags().BoolVar(&resetAll, "reset-all", false,
-		"Put every settable control back to the driver's default and forget them all")
+		"Put every mutable control back to the driver's default and forget them all")
 	return cmd
 }
 
@@ -309,21 +309,21 @@ func listControlsForChoice(cmd *cobra.Command, id uint32) error {
 	}
 	controls := resp.GetControls()
 
-	var settable []*agentpb.CameraControl
+	var mutable []*agentpb.CameraControl
 	for _, c := range controls {
-		if c.GetSettable() {
-			settable = append(settable, c)
+		if c.GetMutable() {
+			mutable = append(mutable, c)
 		}
 	}
-	if len(settable) == 0 {
-		return fmt.Errorf("camera %d exposes no settable controls (is it a local USB/CSI camera?)", id)
+	if len(mutable) == 0 {
+		return fmt.Errorf("camera %d exposes no mutable controls (is it a local USB/CSI camera?)", id)
 	}
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Which control? Camera %d accepts:\n\n", id)
 	headers := []string{"Control", "Now", "Min", "Max"}
 	var rows [][]string
-	for _, c := range settable {
+	for _, c := range mutable {
 		rows = append(rows, []string{
 			c.GetName(),
 			strconv.FormatInt(int64(c.GetValue()), 10),
@@ -334,6 +334,6 @@ func listControlsForChoice(cmd *cobra.Command, id uint32) error {
 	fmt.Fprint(out, tui.RenderTable(headers, rows))
 	fmt.Fprintf(out, "\nThen: wendy device camera set-control %d name=value [name=value ...]\n", id)
 	fmt.Fprintf(out, "e.g.  wendy device camera set-control %d %s=%d\n",
-		id, settable[0].GetName(), settable[0].GetValue())
+		id, mutable[0].GetName(), mutable[0].GetValue())
 	return nil
 }

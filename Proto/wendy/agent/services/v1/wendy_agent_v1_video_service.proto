@@ -151,13 +151,13 @@ message CameraControl {
     int32  maximum       = 4; // inclusive
     int32  step          = 5;
     int32  default_value = 6;
-    bool   settable      = 7; // false when the driver reports it read-only or disabled right now
+    bool   mutable       = 7; // false when the driver reports it read-only or disabled right now
 }
 
 // What a caller ASKS for. Deliberately not CameraControl: that message answers
 // "what does the driver report", and five of its seven fields are the driver's
 // answer rather than the caller's request. One message doing both jobs means a
-// writer fills in minimum/maximum/step/default/settable that the server then
+// writer fills in minimum/maximum/step/default/mutable that the server then
 // ignores -- the comments carry the contract instead of the types.
 message CameraControlSetting {
     string name  = 1;

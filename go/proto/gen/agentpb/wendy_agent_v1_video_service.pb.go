@@ -1003,7 +1003,7 @@ type CameraControl struct {
 	Maximum       int32                  `protobuf:"varint,4,opt,name=maximum,proto3" json:"maximum,omitempty"` // inclusive
 	Step          int32                  `protobuf:"varint,5,opt,name=step,proto3" json:"step,omitempty"`
 	DefaultValue  int32                  `protobuf:"varint,6,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"`
-	Settable      bool                   `protobuf:"varint,7,opt,name=settable,proto3" json:"settable,omitempty"` // false when the driver reports it read-only or disabled right now
+	Mutable       bool                   `protobuf:"varint,7,opt,name=mutable,proto3" json:"mutable,omitempty"` // false when the driver reports it read-only or disabled right now
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1080,9 +1080,9 @@ func (x *CameraControl) GetDefaultValue() int32 {
 	return 0
 }
 
-func (x *CameraControl) GetSettable() bool {
+func (x *CameraControl) GetMutable() bool {
 	if x != nil {
-		return x.Settable
+		return x.Mutable
 	}
 	return false
 }
@@ -1090,7 +1090,7 @@ func (x *CameraControl) GetSettable() bool {
 // What a caller ASKS for. Deliberately not CameraControl: that message answers
 // "what does the driver report", and five of its seven fields are the driver's
 // answer rather than the caller's request. One message doing both jobs means a
-// writer fills in minimum/maximum/step/default/settable that the server then
+// writer fills in minimum/maximum/step/default/mutable that the server then
 // ignores -- the comments carry the contract instead of the types.
 type CameraControlSetting struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1570,15 +1570,15 @@ const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = 
 	"\ftimestamp_ns\x18\x02 \x01(\x04R\vtimestampNs\x129\n" +
 	"\x05codec\x18\x03 \x01(\x0e2#.wendy.agent.services.v1.VideoCodecR\x05codec\x12A\n" +
 	"\n" +
-	"raw_format\x18\x04 \x01(\v2\".wendy.agent.services.v1.RawFormatR\trawFormat\"\xc2\x01\n" +
+	"raw_format\x18\x04 \x01(\v2\".wendy.agent.services.v1.RawFormatR\trawFormat\"\xc0\x01\n" +
 	"\rCameraControl\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x05R\x05value\x12\x18\n" +
 	"\aminimum\x18\x03 \x01(\x05R\aminimum\x12\x18\n" +
 	"\amaximum\x18\x04 \x01(\x05R\amaximum\x12\x12\n" +
 	"\x04step\x18\x05 \x01(\x05R\x04step\x12#\n" +
-	"\rdefault_value\x18\x06 \x01(\x05R\fdefaultValue\x12\x1a\n" +
-	"\bsettable\x18\a \x01(\bR\bsettable\"@\n" +
+	"\rdefault_value\x18\x06 \x01(\x05R\fdefaultValue\x12\x18\n" +
+	"\amutable\x18\a \x01(\bR\amutable\"@\n" +
 	"\x14CameraControlSetting\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x05R\x05value\"7\n" +

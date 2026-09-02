@@ -104,13 +104,13 @@ func (s *mcpServer) handleCameraControls(ctx context.Context, req mcpgo.CallTool
 	out := make([]map[string]any, 0, len(resp.GetControls()))
 	for _, c := range resp.GetControls() {
 		out = append(out, map[string]any{
-			"name":     c.GetName(),
-			"value":    c.GetValue(),
-			"minimum":  c.GetMinimum(),
-			"maximum":  c.GetMaximum(),
-			"step":     c.GetStep(),
-			"default":  c.GetDefaultValue(),
-			"settable": c.GetSettable(),
+			"name":    c.GetName(),
+			"value":   c.GetValue(),
+			"minimum": c.GetMinimum(),
+			"maximum": c.GetMaximum(),
+			"step":    c.GetStep(),
+			"default": c.GetDefaultValue(),
+			"mutable": c.GetMutable(),
 		})
 	}
 	return okResultBounded(map[string]any{"device_id": id, "controls": out},
@@ -145,7 +145,7 @@ func (s *mcpServer) handleCameraSetControl(ctx context.Context, req mcpgo.CallTo
 	if req.GetBool("reset_all", false) {
 		// Ask the camera what it has rather than keeping a list here, so this
 		// covers whatever the attached hardware exposes -- and every control,
-		// not only the currently settable ones: a control gated inactive by a
+		// not only the currently mutable ones: a control gated inactive by a
 		// mode is exactly the one that would otherwise stay pinned.
 		got, listErr := conn.VideoService.GetCameraControls(ctx,
 			&agentpb.GetCameraControlsRequest{DeviceId: id})

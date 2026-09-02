@@ -310,7 +310,7 @@ func queryCameraControlsV4L2(path string) ([]*agentpb.CameraControl, error) {
 			Maximum:      q.maximum(),
 			Step:         q.step(),
 			DefaultValue: q.defaultVal(),
-			Settable:     flags&(v4l2CtrlFlagDisabled|v4l2CtrlFlagReadOnly) == 0 && flags&v4l2CtrlFlagInactive == 0,
+			Mutable:      flags&(v4l2CtrlFlagDisabled|v4l2CtrlFlagReadOnly) == 0 && flags&v4l2CtrlFlagInactive == 0,
 		})
 	}
 	return out, nil

@@ -154,7 +154,7 @@ func newControlsTestService(t *testing.T) (*VideoService, *[]controlValue) {
 		return out, nil
 	}
 	svc.queryLocalControls = func(_ string) ([]*agentpb.CameraControl, error) {
-		return []*agentpb.CameraControl{{Name: "auto_exposure", Value: 3, Minimum: 0, Maximum: 3, Settable: true}}, nil
+		return []*agentpb.CameraControl{{Name: "auto_exposure", Value: 3, Minimum: 0, Maximum: 3, Mutable: true}}, nil
 	}
 	return svc, captured
 }
