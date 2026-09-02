@@ -132,7 +132,17 @@ const serialIdleTimeout = 8 * time.Second
 // mdnsExternalDevice maps a resolved _wendy-lite._tcp mDNS service to an
 // ExternalDevice.
 func (p *MicroWendyProvider) mdnsExternalDevice(svc discovery.MDNSService) models.ExternalDevice {
-	displayName := svc.InstanceName
+	deviceId := svc.TXTRecords["id"]
+	if deviceId == "" {
+		deviceId = svc.TXTRecords["name"]
+	}
+	if deviceId == "" {
+		deviceId = svc.Hostname
+	}
+	displayName := svc.TXTRecords["displayname"]
+	if displayName == "" {
+		displayName = svc.InstanceName
+	}
 	if displayName == "" {
 		displayName = svc.Hostname
 	}
@@ -142,6 +152,7 @@ func (p *MicroWendyProvider) mdnsExternalDevice(svc discovery.MDNSService) model
 		ProviderKey: p.Key(),
 		ConnectionInfo: map[string]string{
 			"type":     "LAN",
+			"deviceId": deviceId,
 			"name":     svc.TXTRecords["name"],
 			"hostname": svc.Hostname,
 			"ip":       svc.IPAddress,
@@ -187,6 +198,7 @@ func (p *MicroWendyProvider) serialExternalDevice(dev discovery.SerialDevice) mo
 		ProviderKey: p.Key(),
 		ConnectionInfo: map[string]string{
 			"type":       "USB",
+			"deviceId":   dev.ID,
 			"name":       dev.Name,
 			"serialPort": dev.Port,
 		},
@@ -204,11 +216,12 @@ func (p *MicroWendyProvider) bleExternalDevice(dev discovery.BLELiteDevice) mode
 		DisplayName: bleLiteDisplayName(dev),
 		ProviderKey: p.Key(),
 		ConnectionInfo: map[string]string{
-			"type":    "BLE",
-			"name":    dev.Info.DeviceName,
-			"address": dev.Address,
-			"psm":     strconv.FormatUint(uint64(dev.Info.PSM), 10),
-			"mtls":    fmt.Sprintf("%t", dev.Info.MTLSEnabled),
+			"type":     "BLE",
+			"deviceId": dev.Info.DeviceID,
+			"name":     dev.Info.DeviceName,
+			"address":  dev.Address,
+			"psm":      strconv.FormatUint(uint64(dev.Info.PSM), 10),
+			"mtls":     fmt.Sprintf("%t", dev.Info.MTLSEnabled),
 		},
 		IsWendyDevice: true,
 	}
