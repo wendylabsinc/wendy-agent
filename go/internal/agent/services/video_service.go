@@ -604,6 +604,10 @@ type VideoService struct {
 	globDevices     func() ([]string, error)
 	readDeviceName  func(base string) (string, error)
 	hasVideoCapture func(path string) bool
+	// readStableNames returns the udev by-id / by-path names keyed by resolved
+	// device path. Injectable so the enumeration can be tested without
+	// /dev/v4l. See video_stable_id.go for why these exist.
+	readStableNames func() map[string]stableNames
 
 	// Network camera state. registry and credentials are nil-safe throughout: a
 	// device that has never seen a network camera behaves exactly as before.
@@ -675,6 +679,9 @@ func NewVideoService(ctx context.Context, logger *zap.Logger, rosRuntime ...ROS2
 			var cap v4l2Capability
 			_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQueryCap, uintptr(unsafe.Pointer(&cap)))
 			return errno == 0 && cap.hasVideoCapture()
+		},
+		readStableNames: func() map[string]stableNames {
+			return readStableNames(v4lByIDDir, v4lByPathDir)
 		},
 		classifyTransport:  camera.Classify,
 		enumerateLibcamera: camera.EnumerateLibcamera,
@@ -825,6 +832,13 @@ func (s *VideoService) listCameras(ctx context.Context) ([]*agentpb.VideoDevice,
 		// Enumeration errors are non-fatal — we just lose the libcamera id enrichment.
 		s.logger.Debug("libcamera enumeration failed", zap.Error(libErr))
 	}
+	// Read once for the whole listing rather than per device: it is two
+	// directory walks, and a camera appearing or vanishing midway through would
+	// otherwise give some entries an identity and not others.
+	stable := map[string]stableNames{}
+	if s.readStableNames != nil {
+		stable = s.readStableNames()
+	}
 	var (
 		devices       []*agentpb.VideoDevice
 		csiDeviceIdxs []int
@@ -864,6 +878,10 @@ func (s *VideoService) listCameras(ctx context.Context) ([]*agentpb.VideoDevice,
 			Transport: transportToProto(transport),
 			Driver:    driver,
 		}
+		// Empty for a camera with no /dev/v4l entry, which is not an error --
+		// the numeric id still addresses it, it is just not stable across a
+		// reboot.
+		dev.StableId = stable[path].stableID()
 		if transport == camera.TransportCSI {
 			csiDeviceIdxs = append(csiDeviceIdxs, len(devices))
 		}
@@ -1541,11 +1559,59 @@ func validateStreamParams(devicePath string, req *agentpb.StreamVideoRequest) er
 	return nil
 }
 
+// streamDeviceID picks the camera this request names.
+//
+// `stable_id` wins over `device_id` when set, and is resolved HERE -- at
+// request time -- rather than by whoever wrote the config. That is the whole
+// point of the field: /dev/videoN is assigned in enumeration order at boot, so
+// a number written down yesterday may name a different camera today.
+//
+// A name that matches nothing is an error, deliberately. Falling back to
+// `device_id` would stream whatever the kernel happened to put at that number,
+// which is exactly the silent wrong-camera failure this field exists to
+// remove: opening the wrong camera succeeds, so nobody finds out. An error the
+// caller can retry and log beats a plausible picture of the wrong thing.
+func (s *VideoService) streamDeviceID(req *agentpb.StreamVideoRequest) (uint32, error) {
+	stableID := strings.TrimSpace(req.GetStableId())
+	if stableID == "" {
+		return req.GetDeviceId(), nil
+	}
+	if s.readStableNames == nil {
+		return 0, status.Errorf(codes.Unimplemented,
+			"stable_id is not supported on this agent")
+	}
+	names := s.readStableNames()
+	devID, ok := resolveStableID(names, stableID)
+	if !ok {
+		return 0, status.Errorf(codes.NotFound,
+			"no camera with stable id %q; ListVideoDevices reports %v",
+			stableID, knownStableIDs(names))
+	}
+	return devID, nil
+}
+
+// knownStableIDs lists the identities the agent can currently see, for the
+// error above. A caller that got the name wrong needs to see the real ones, and
+// the alternative is reading agent logs on a device they may not have.
+func knownStableIDs(names map[string]stableNames) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if id := n.stableID(); id != "" {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // StreamVideo streams H.264 frames from a V4L2 camera.
 // Multiple concurrent callers for the same device share one producer via a deviceHub.
 func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.ServerStreamingServer[agentpb.VideoFrame]) error {
 	ctx := stream.Context()
-	devID := req.GetDeviceId()
+	devID, err := s.streamDeviceID(req)
+	if err != nil {
+		return err
+	}
 	if devID > maxVideoDeviceID {
 		return status.Errorf(codes.InvalidArgument, "device ID out of range")
 	}

@@ -58,6 +58,9 @@ func newTestVideoService(glob func() ([]string, error), readName func(string) (s
 	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, nil }
 	svc.isJetson = func() bool { return false }
 	svc.findCameraSource = func(context.Context, string) (uint64, bool) { return 0, false }
+	// Keep enumeration off the host's real /dev/v4l; tests that care about
+	// stable identity override this.
+	svc.readStableNames = func() map[string]stableNames { return nil }
 	return svc
 }
 
