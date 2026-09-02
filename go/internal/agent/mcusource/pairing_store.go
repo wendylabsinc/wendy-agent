@@ -66,6 +66,19 @@ func (s *PairingStore) List() []SensorPairing {
 	return out
 }
 
+// NameFor returns the friendly name of the pairing for sourceAssetID, and
+// whether a pairing with a non-empty name exists. Used by the audio device
+// enumeration to name a mounted source's Loopback subdevice.
+func (s *PairingStore) NameFor(sourceAssetID int32) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.by[sourceAssetID]
+	if !ok || p.Name == "" {
+		return "", false
+	}
+	return p.Name, true
+}
+
 func (s *PairingStore) Add(p SensorPairing) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -19,7 +19,7 @@ import (
 // called.
 type noAudioLoop struct{}
 
-func (noAudioLoop) Allocate(int32, uint32) (int, error) { return 0, nil }
+func (noAudioLoop) Allocate(int32, uint32, string) (int, error) { return 0, nil }
 func (noAudioLoop) OpenWriter(context.Context, int, audioloop.PCMFormat) (audioloop.AudioWriter, error) {
 	return nil, nil
 }
@@ -47,7 +47,7 @@ func (w *recordingAudioWriter) count() int {
 // fakeAudioLoop is a stub AudioLoop that always returns the given writer.
 type fakeAudioLoop struct{ w *recordingAudioWriter }
 
-func (f *fakeAudioLoop) Allocate(int32, uint32) (int, error) { return 0, nil }
+func (f *fakeAudioLoop) Allocate(int32, uint32, string) (int, error) { return 0, nil }
 func (f *fakeAudioLoop) OpenWriter(context.Context, int, audioloop.PCMFormat) (audioloop.AudioWriter, error) {
 	return f.w, nil
 }
@@ -86,9 +86,14 @@ type fakeWriter struct {
 	frames int
 }
 
-func (w *fakeWriter) WriteFrame(ros2camera.Frame) error { w.mu.Lock(); w.frames++; w.mu.Unlock(); return nil }
-func (w *fakeWriter) Close() error                      { return nil }
-func (w *fakeWriter) count() int                        { w.mu.Lock(); defer w.mu.Unlock(); return w.frames }
+func (w *fakeWriter) WriteFrame(ros2camera.Frame) error {
+	w.mu.Lock()
+	w.frames++
+	w.mu.Unlock()
+	return nil
+}
+func (w *fakeWriter) Close() error { return nil }
+func (w *fakeWriter) count() int   { w.mu.Lock(); defer w.mu.Unlock(); return w.frames }
 
 func TestSupervisorMountsCameraAndWritesFrames(t *testing.T) {
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
@@ -102,7 +107,9 @@ func TestSupervisorMountsCameraAndWritesFrames(t *testing.T) {
 
 	lb := &fakeLoopback{}
 	w := &fakeWriter{}
-	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil }, func(string) ros2camera.CameraWriter { return w }, noAudioLoop{})
+	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) {
+		return mcusource.NewTCPTransport(tcpDialer{}, addr), nil
+	}, func(string) ros2camera.CameraWriter { return w }, noAudioLoop{})
 
 	rctx, rcancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer rcancel()
@@ -144,11 +151,15 @@ func TestSupervisorRunPairingReturnsPromptlyOnIdleStream(t *testing.T) {
 	})
 
 	lb := &fakeLoopback{}
-	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil }, func(string) ros2camera.CameraWriter { return &fakeWriter{} }, noAudioLoop{})
+	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) {
+		return mcusource.NewTCPTransport(tcpDialer{}, addr), nil
+	}, func(string) ros2camera.CameraWriter { return &fakeWriter{} }, noAudioLoop{})
 
 	rctx, rcancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- sup.RunPairing(rctx, mcusource.SensorPairing{SourceAssetID: 11, OrgID: 1}, ln.Addr().String()) }()
+	go func() {
+		done <- sup.RunPairing(rctx, mcusource.SensorPairing{SourceAssetID: 11, OrgID: 1}, ln.Addr().String())
+	}()
 
 	// Give the supervisor time to mount the node and open the frame stream.
 	time.Sleep(100 * time.Millisecond)
@@ -173,7 +184,9 @@ func TestSupervisorNodeIDsUniqueAcrossSources(t *testing.T) {
 	go sim.Serve(ctx, ln2, sim.Options{Manifest: camManifest(22, 1, "cam0"), Frames: [][]byte{[]byte("jpg")}, FrameInterval: time.Millisecond})
 
 	lb := &fakeLoopback{}
-	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil }, func(string) ros2camera.CameraWriter { return &fakeWriter{} }, noAudioLoop{})
+	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) {
+		return mcusource.NewTCPTransport(tcpDialer{}, addr), nil
+	}, func(string) ros2camera.CameraWriter { return &fakeWriter{} }, noAudioLoop{})
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -209,7 +222,9 @@ func TestSupervisorNodeIDStableAcrossReconnect(t *testing.T) {
 	defer cancel()
 
 	lb := &fakeLoopback{}
-	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) { return mcusource.NewTCPTransport(tcpDialer{}, addr), nil }, func(string) ros2camera.CameraWriter { return &fakeWriter{} }, noAudioLoop{})
+	sup := mcusource.NewSupervisor(zap.NewNop(), lb, func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) {
+		return mcusource.NewTCPTransport(tcpDialer{}, addr), nil
+	}, func(string) ros2camera.CameraWriter { return &fakeWriter{} }, noAudioLoop{})
 	pairing := mcusource.SensorPairing{SourceAssetID: 31, OrgID: 1, Name: "src31"}
 
 	connectOnce := func() {

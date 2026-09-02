@@ -383,6 +383,9 @@ func main() {
 		return mcusource.NewTCPTransport(d, addr), nil
 	}
 	audioLoop := audioloop.NewManager(logger)
+	// Let `wendy device audio list` name mounted Loopback capture subdevices
+	// after the remote source they carry, instead of a generic "plughw:2,1".
+	audioSvc.SetSensorLinkNaming(audioLoop.Mounts, sensorStore.NameFor)
 	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, ros2camera.NewFrameWriter, audioLoop)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
 	sensorAgentOrgID := func() int32 {

@@ -12,6 +12,7 @@ package audioloop
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 
@@ -46,6 +47,26 @@ type deps struct {
 	newWriter func(hwID string, f PCMFormat) (AudioWriter, error)
 }
 
+// Mount is one active snd-aloop subdevice allocation, so the audio device
+// enumeration can name a Loopback capture subdevice after the remote source it
+// carries. SensorName is the source's descriptor name for the channel (today a
+// generic channel label like "mic0"; see the TODO on Allocate).
+type Mount struct {
+	Sub           int
+	SourceAssetID int32
+	ChannelID     uint32
+	SensorName    string
+}
+
+// alloc is one entry in Manager.subs: the subdevice index plus enough source
+// identity to build a Mount for it.
+type alloc struct {
+	sub        int
+	assetID    int32
+	channelID  uint32
+	sensorName string
+}
+
 // Manager allocates snd-aloop subdevices and opens PCM writers on them.
 type Manager struct {
 	logger *zap.Logger
@@ -55,7 +76,7 @@ type Manager struct {
 	modprobeErr  error
 
 	mu   sync.Mutex
-	subs map[string]int // "sourceAssetID:channelID" -> subdevice index
+	subs map[string]alloc // "sourceAssetID:channelID" -> allocation
 }
 
 // NewManager returns a Manager wired to the real, platform-specific deps.
@@ -64,7 +85,7 @@ func NewManager(logger *zap.Logger) *Manager {
 	return &Manager{
 		logger: logger,
 		deps:   defaultDeps(),
-		subs:   make(map[string]int),
+		subs:   make(map[string]alloc),
 	}
 }
 
@@ -80,24 +101,44 @@ func (m *Manager) EnsureModule(ctx context.Context) error {
 // Allocate returns a stable snd-aloop subdevice index for (sourceAssetID,
 // channelID), allocating the lowest free index in [0, MaxSubdevices) on
 // first use. Mirrors mcusource.Supervisor.nodeID.
-func (m *Manager) Allocate(sourceAssetID int32, channelID uint32) (int, error) {
+//
+// sensorName is the source's descriptor name for this channel, recorded so
+// Mounts can name the resulting Loopback capture subdevice.
+// TODO(sensorlink): sensorName is today a generic channel label ("mic0") — the
+// real hardware name ("MacBook Pro Microphone") needs a new field on the
+// sensorlink SensorDescriptor proto, populated by the Swift SensorService.
+func (m *Manager) Allocate(sourceAssetID int32, channelID uint32, sensorName string) (int, error) {
 	key := fmt.Sprintf("%d:%d", sourceAssetID, channelID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if sub, ok := m.subs[key]; ok {
-		return sub, nil
+	if a, ok := m.subs[key]; ok {
+		return a.sub, nil
 	}
 	used := make(map[int]bool, len(m.subs))
-	for _, sub := range m.subs {
-		used[sub] = true
+	for _, a := range m.subs {
+		used[a.sub] = true
 	}
 	for sub := 0; sub < MaxSubdevices; sub++ {
 		if !used[sub] {
-			m.subs[key] = sub
+			m.subs[key] = alloc{sub: sub, assetID: sourceAssetID, channelID: channelID, sensorName: sensorName}
 			return sub, nil
 		}
 	}
 	return 0, fmt.Errorf("audioloop: snd-aloop subdevice band [0,%d) exhausted", MaxSubdevices)
+}
+
+// Mounts returns every active subdevice allocation, sorted by subdevice index,
+// so the audio device enumeration can name each Loopback capture subdevice
+// after the remote source it carries.
+func (m *Manager) Mounts() []Mount {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]Mount, 0, len(m.subs))
+	for _, a := range m.subs {
+		out = append(out, Mount{Sub: a.sub, SourceAssetID: a.assetID, ChannelID: a.channelID, SensorName: a.sensorName})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Sub < out[j].Sub })
+	return out
 }
 
 // OpenWriter ensures snd-aloop is loaded and opens a PCM writer on

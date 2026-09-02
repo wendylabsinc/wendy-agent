@@ -4,14 +4,14 @@ import "testing"
 
 func TestAllocateStableAndUnique(t *testing.T) {
 	m := NewManager(nil)
-	a, err := m.Allocate(1, 10)
+	a, err := m.Allocate(1, 10, "mic0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again, _ := m.Allocate(1, 10); again != a {
+	if again, _ := m.Allocate(1, 10, "mic0"); again != a {
 		t.Fatalf("expected stable subdevice, got %d then %d", a, again)
 	}
-	b, _ := m.Allocate(2, 10)
+	b, _ := m.Allocate(2, 10, "mic0")
 	if b == a {
 		t.Fatalf("different (source,channel) must get distinct subdevices, both %d", a)
 	}
@@ -20,12 +20,37 @@ func TestAllocateStableAndUnique(t *testing.T) {
 func TestAllocateExhaustion(t *testing.T) {
 	m := NewManager(nil)
 	for i := 0; i < MaxSubdevices; i++ {
-		if _, err := m.Allocate(int32(i), 0); err != nil {
+		if _, err := m.Allocate(int32(i), 0, "mic0"); err != nil {
 			t.Fatalf("alloc %d: %v", i, err)
 		}
 	}
-	if _, err := m.Allocate(99, 0); err == nil {
+	if _, err := m.Allocate(99, 0, "mic0"); err == nil {
 		t.Fatal("expected exhaustion error")
+	}
+}
+
+// TestMountsReportsAllocations asserts Mounts returns, per allocated subdevice,
+// the (source asset id, channel, sensor name) it was allocated for — the
+// mapping the audio device enumeration names Loopback capture subdevices from.
+func TestMountsReportsAllocations(t *testing.T) {
+	m := NewManager(nil)
+	subA, _ := m.Allocate(286, 1, "mic0")
+	subB, _ := m.Allocate(287, 2, "mic1")
+
+	mounts := m.Mounts()
+	if len(mounts) != 2 {
+		t.Fatalf("expected 2 mounts, got %d: %+v", len(mounts), mounts)
+	}
+	// Sorted by subdevice index.
+	by := map[int]Mount{}
+	for _, mt := range mounts {
+		by[mt.Sub] = mt
+	}
+	if got := by[subA]; got.SourceAssetID != 286 || got.ChannelID != 1 || got.SensorName != "mic0" {
+		t.Fatalf("mount for sub %d = %+v, want asset 286 chan 1 mic0", subA, got)
+	}
+	if got := by[subB]; got.SourceAssetID != 287 || got.ChannelID != 2 || got.SensorName != "mic1" {
+		t.Fatalf("mount for sub %d = %+v, want asset 287 chan 2 mic1", subB, got)
 	}
 }
 

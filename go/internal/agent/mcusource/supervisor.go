@@ -22,7 +22,7 @@ type Loopback interface {
 // AudioLoop is the subset of audioloop.Manager the supervisor needs to fan
 // microphone channels out to snd-aloop PCM sinks.
 type AudioLoop interface {
-	Allocate(sourceAssetID int32, channelID uint32) (int, error)
+	Allocate(sourceAssetID int32, channelID uint32, sensorName string) (int, error)
 	OpenWriter(ctx context.Context, sub int, f audioloop.PCMFormat) (audioloop.AudioWriter, error)
 }
 
@@ -207,7 +207,7 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		subs = append(subs, ch.ChannelId)
 	}
 	for _, ch := range mics {
-		sub, err := s.audioLoop.Allocate(p.SourceAssetID, ch.ChannelId)
+		sub, err := s.audioLoop.Allocate(p.SourceAssetID, ch.ChannelId, ch.GetName())
 		if err != nil {
 			s.logger.Warn("skipping sensor channel", zap.Int32("source", p.SourceAssetID), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
 			continue
