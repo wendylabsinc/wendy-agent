@@ -652,3 +652,41 @@ func TestAssessBuildkitRootSpace_ExactPolicyBoundaries(t *testing.T) {
 		})
 	}
 }
+
+// --chunking=force must fail loudly against a build host whose agent would
+// discard the mode and push through the registry; auto and off still work
+// there, because a registry push is what off asks for and what auto accepts.
+func TestCheckChunkDeliverySupported_ForceNeedsACapableHost(t *testing.T) {
+	old := &agentpbv2.GetBuildCapabilitiesResponse{}
+	err := checkChunkDeliverySupported("spark-office", old, chunkingForce)
+	if err == nil || !strings.Contains(err.Error(), "spark-office") || !strings.Contains(err.Error(), "force") {
+		t.Fatalf("force against an old build host must be refused, naming the host and the flag; got %v", err)
+	}
+	for _, mode := range []string{"", chunkingAuto, chunkingOff} {
+		if err := checkChunkDeliverySupported("spark-office", old, mode); err != nil {
+			t.Fatalf("--chunking=%q must still work against an older build host: %v", mode, err)
+		}
+	}
+	newer := &agentpbv2.GetBuildCapabilitiesResponse{ChunkDelivery: true}
+	for _, mode := range []string{"", chunkingAuto, chunkingForce, chunkingOff} {
+		if err := checkChunkDeliverySupported("spark-office", newer, mode); err != nil {
+			t.Fatalf("--chunking=%q against a capable build host: %v", mode, err)
+		}
+	}
+}
+
+// The flag reaches the build host as the same three modes, with empty meaning
+// auto as it does locally.
+func TestBuildChunkingMode_CarriesTheFlag(t *testing.T) {
+	cases := map[string]agentpbv2.ChunkingMode{
+		"":            agentpbv2.ChunkingMode_CHUNKING_MODE_AUTO,
+		chunkingAuto:  agentpbv2.ChunkingMode_CHUNKING_MODE_AUTO,
+		chunkingForce: agentpbv2.ChunkingMode_CHUNKING_MODE_FORCE,
+		chunkingOff:   agentpbv2.ChunkingMode_CHUNKING_MODE_OFF,
+	}
+	for in, want := range cases {
+		if got := buildChunkingMode(in); got != want {
+			t.Errorf("buildChunkingMode(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

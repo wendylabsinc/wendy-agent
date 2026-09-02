@@ -34,12 +34,13 @@ import (
 type fakeTargetAgent struct {
 	agentpb.UnimplementedWendyContainerServiceServer
 
-	mu       sync.Mutex
-	chunks   map[[32]byte][]byte
-	layers   map[string]int64 // diff ID -> size, for QueryLayers
-	prepared []*agentpb.RunContainerLayersRequest
-	written  int // chunks received over every stream
-	streams  int // WriteChunks streams opened
+	mu           sync.Mutex
+	chunks       map[[32]byte][]byte
+	layers       map[string]int64 // diff ID -> size, for QueryLayers
+	prepared     []*agentpb.RunContainerLayersRequest
+	written      int   // chunks received over every stream
+	writtenBytes int64 // bytes of chunk data received over every stream
+	streams      int   // WriteChunks streams opened
 
 	noChunks   bool  // QueryChunks answers Unimplemented: an agent with no chunk store
 	noPrepare  bool  // PrepareImage answers Unimplemented: an agent that cannot register by name
@@ -107,6 +108,7 @@ func (f *fakeTargetAgent) WriteChunks(stream grpc.ClientStreamingServer[agentpb.
 		f.mu.Lock()
 		f.chunks[h] = msg.GetData()
 		f.written++
+		f.writtenBytes += int64(len(msg.GetData()))
 		drop := f.dropAfter > 0 && !f.dropped && f.written >= f.dropAfter
 		if drop {
 			f.dropped = true
@@ -164,6 +166,12 @@ func (f *fakeTargetAgent) stage(refs []chunk.Ref, content []byte) {
 	for _, r := range refs {
 		f.chunks[r.Hash] = content[r.Offset : r.Offset+r.Len]
 	}
+}
+
+func (f *fakeTargetAgent) bytesWritten() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.writtenBytes
 }
 
 func (f *fakeTargetAgent) snapshot() (written, streams int, prepared []*agentpb.RunContainerLayersRequest) {
@@ -228,6 +236,44 @@ func deliveryService(t *testing.T, dial targetDialer) (*BuildService, *stubBuild
 	return svc, &stubBuildStream{}
 }
 
+// freshResolvedLayers is the per-build cache of decompressed layers that
+// BuildImage owns and deliverByChunks fills, for a test that delivers to one
+// device and does not care about reuse.
+func freshResolvedLayers(t *testing.T) map[string]*deliveryLayer {
+	t.Helper()
+	resolved := map[string]*deliveryLayer{}
+	t.Cleanup(func() { closeDeliveryLayers(resolved) })
+	return resolved
+}
+
+func chunkCount(t *testing.T, layers []testImageLayer) int {
+	t.Helper()
+	total := 0
+	for _, l := range layers {
+		refs, err := chunk.ChunkBytes(l.content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += len(refs)
+	}
+	return total
+}
+
+func scratchFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "deliver-layer-") {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
 func progressLines(s *stubBuildStream) []string {
 	var lines []string
 	for _, ev := range s.sent {
@@ -269,7 +315,7 @@ func TestDeliverByChunks_SendsOnlyMissingChunksAndRegistersImage(t *testing.T) {
 
 	svc, stream := deliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
 	target := &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"}
-	if err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, target); err != nil {
+	if err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, target, freshResolvedLayers(t)); err != nil {
 		t.Fatalf("deliverByChunks: %v", err)
 	}
 
@@ -328,7 +374,7 @@ func TestDeliverByChunks_ResumesAfterTransportDropWithoutResending(t *testing.T)
 	fake.dropAfter = 2
 	svc, stream := deliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
 	target := &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"}
-	if err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, target); err != nil {
+	if err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, target, freshResolvedLayers(t)); err != nil {
 		t.Fatalf("deliverByChunks should have resumed past one drop, got: %v", err)
 	}
 
@@ -358,7 +404,7 @@ func TestDeliverByChunks_ReportsUnsupportedAgentBeforeSendingAnything(t *testing
 	fake.noChunks = true
 	svc, stream := deliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
 
-	err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"})
+	err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"}, freshResolvedLayers(t))
 	if !errors.Is(err, errChunkDeliveryUnsupported) {
 		t.Fatalf("got %v, want errChunkDeliveryUnsupported so the caller falls back to a registry push", err)
 	}
@@ -376,7 +422,7 @@ func TestDeliverByChunks_PrepareUnimplementedIsTheFallbackCase(t *testing.T) {
 	fake.noPrepare = true
 	svc, stream := deliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
 
-	err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"})
+	err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"}, freshResolvedLayers(t))
 	if !errors.Is(err, errChunkDeliveryUnsupported) {
 		t.Fatalf("got %v, want errChunkDeliveryUnsupported", err)
 	}
@@ -397,7 +443,7 @@ func TestDeliverByChunks_DeviceRefusalIsNeitherRetriedNorFallenBack(t *testing.T
 		return inner(ctx, target)
 	})
 
-	err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"})
+	err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"}, freshResolvedLayers(t))
 	if err == nil || errors.Is(err, errChunkDeliveryUnsupported) {
 		t.Fatalf("got %v, want the device's refusal reported as this device's failure", err)
 	}
@@ -423,7 +469,7 @@ func TestDeliverByChunks_UnreachablePeerIsRetriedThenReported(t *testing.T) {
 		return nil, errors.New("no route to peer")
 	})
 
-	err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"})
+	err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"}, freshResolvedLayers(t))
 	if err == nil || !strings.Contains(err.Error(), "no route to peer") {
 		t.Fatalf("got %v, want the dial failure reported", err)
 	}
@@ -700,7 +746,7 @@ func TestDeliverByChunks_LayerPreCheckFailureIsLoggedAndChunksEveryLayer(t *test
 	fake.layers[ti.diffIDs[0]] = int64(len(layers[0].content))
 	svc, stream := deliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
 	target := &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"}
-	if err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, target); err != nil {
+	if err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, target, freshResolvedLayers(t)); err != nil {
 		t.Fatalf("deliverByChunks: a failed layer pre-check must not fail the delivery, got %v", err)
 	}
 
@@ -765,5 +811,165 @@ func settleWithin(t *testing.T, assetID int32, uploadErr error, prepareDone <-ch
 	case <-time.After(2 * time.Second):
 		t.Fatal("settleUploadFailure hung: it waited for a preparation result that had already been taken")
 		return nil
+	}
+}
+
+// One decompress-and-chunk per layer per build, not per device: the second
+// device of a fleet reuses the scratch the first one resolved.
+func TestDeliverByChunks_ReusesResolvedLayersAcrossDevices(t *testing.T) {
+	img, _ := deliveryFixture(t)
+	total := chunkCount(t, testImageLayers())
+	fakes := map[int32]*fakeTargetAgent{214: newFakeTargetAgent(), 215: newFakeTargetAgent()}
+	svc, stream := deliveryService(t, serveFakeTargets(t, fakes))
+	resolved := freshResolvedLayers(t)
+
+	deliverTo := func(id int32) {
+		t.Helper()
+		target := &agentpbv2.PushTarget{AssetId: id, RegistryPort: 5000, Repository: "myapp:latest"}
+		if err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, target, resolved); err != nil {
+			t.Fatalf("device %d: %v", id, err)
+		}
+	}
+	deliverTo(214)
+	if len(resolved) != len(img.layers) {
+		t.Fatalf("after the first device %d layer(s) are resolved, want %d", len(resolved), len(img.layers))
+	}
+	first := map[string]*deliveryLayer{}
+	for k, v := range resolved {
+		first[k] = v
+	}
+	scratchBefore := scratchFiles(t, svc.stateDir)
+
+	deliverTo(215)
+	for k, v := range resolved {
+		if first[k] != v {
+			t.Fatalf("layer %s was resolved again for the second device; the fleet must share one decompression", k)
+		}
+	}
+	if scratchAfter := scratchFiles(t, svc.stateDir); strings.Join(scratchAfter, ",") != strings.Join(scratchBefore, ",") {
+		t.Fatalf("scratch files changed between devices: %v -> %v", scratchBefore, scratchAfter)
+	}
+	for id, fake := range fakes {
+		written, _, prepared := fake.snapshot()
+		if written != total || len(prepared) != 1 {
+			t.Fatalf("device %d received %d chunks (want %d) and %d registrations (want 1)", id, written, total, len(prepared))
+		}
+	}
+}
+
+// The property WDY-2564 asked for: a small edit inside a large layer costs a
+// few chunks, not the layer.
+func TestDeliverByChunks_SmallEditInLargeLayerSendsAFraction(t *testing.T) {
+	const layerSize = 2 << 20
+	before := pseudoRandomBytes(7, layerSize)
+	after := append([]byte(nil), before...)
+	copy(after[layerSize/2:], pseudoRandomBytes(8, 1024))
+
+	fake := newFakeTargetAgent()
+	refs, err := chunk.ChunkBytes(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.stage(refs, before) // the previous version's chunks, from an earlier deploy
+
+	path := fixtureTarPath(t)
+	writeTestOCITar(t, path, []testImageLayer{{content: after}}, testImageOptions{OS: "linux", Arch: "arm64"})
+	img, err := readExportedImage(path, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, stream := deliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
+	target := &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"}
+	if err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, target, freshResolvedLayers(t)); err != nil {
+		t.Fatalf("deliverByChunks: %v", err)
+	}
+
+	sent := fake.bytesWritten()
+	if sent == 0 {
+		t.Fatal("the edit never reached the device")
+	}
+	if sent > layerSize/4 {
+		t.Fatalf("a 1 KiB edit in a %d-byte layer sent %d bytes; content-defined chunking should resend a few chunks, not the layer", layerSize, sent)
+	}
+}
+
+// --chunking=force means what it says on a build host too: an agent that
+// cannot receive chunks is a delivery failure, not a quiet registry push.
+func TestBuildImage_ForceRefusesRegistryFallbackForOldAgent(t *testing.T) {
+	invocations := stubBuildctlExport(t)
+	fake := newFakeTargetAgent()
+	fake.noChunks = true
+	svc := chunkDeliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
+
+	err := svc.BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		Chunking:   agentpbv2.ChunkingMode_CHUNKING_MODE_FORCE,
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"},
+		Context:    &agentpbv2.ChunkManifest{ChunkHashes: [][]byte{make([]byte, 32)}},
+		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
+		},
+	}})
+	if status.Code(err) != codes.Unavailable || !strings.HasPrefix(status.Convert(err).Message(), "pushing the built image to the target device failed:") {
+		t.Fatalf("got %v, want a delivery failure the CLI classifies as built-but-not-delivered", err)
+	}
+	if !strings.Contains(err.Error(), "force") {
+		t.Fatalf("the error must say the registry push was refused by the chunking mode, got %v", err)
+	}
+	if len(*invocations) != 1 {
+		t.Fatalf("buildctl ran %d times, want 1: force must not start the registry-push pass", len(*invocations))
+	}
+}
+
+// --chunking=off keeps the route this feature shipped with: one buildctl pass
+// per device pushing through its registry, with no export and no chunk store
+// involved at all.
+func TestBuildImage_OffTakesTheRegistryRouteWithoutExporting(t *testing.T) {
+	invocations := stubBuildctlExport(t)
+	fake := newFakeTargetAgent()
+	svc := chunkDeliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
+
+	stream := &stubBuildStream{spec: &agentpbv2.BuildSpec{
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		Chunking:   agentpbv2.ChunkingMode_CHUNKING_MODE_OFF,
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"},
+		Context:    &agentpbv2.ChunkManifest{ChunkHashes: [][]byte{make([]byte, 32)}},
+		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
+		},
+	}}
+	if err := svc.BuildImage(stream); err != nil {
+		t.Fatalf("BuildImage: %v", err)
+	}
+	if len(*invocations) != 1 || !hasOutputArg((*invocations)[0], "type=image,name=127.0.0.1:") {
+		t.Fatalf("off must run exactly one pass per device, pushing through the loopback proxy; got %q", *invocations)
+	}
+	if written, streams, prepared := fake.snapshot(); written != 0 || streams != 0 || len(prepared) != 0 {
+		t.Fatalf("off must not touch the device's chunk store: written=%d streams=%d prepared=%d", written, streams, len(prepared))
+	}
+	if lines := progressLines(stream); !containsLine(lines, "registry") {
+		t.Fatalf("the build log must say the registry route was taken and why; got %q", lines)
+	}
+	dir, err := svc.contextDir("app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir + exportedImageSuffix); !os.IsNotExist(err) {
+		t.Fatalf("off must not export an OCI tar it will never read (stat: %v)", err)
+	}
+}
+
+// A CLI sending force must be able to tell this agent from one that would
+// silently discard the field and push through the registry.
+func TestGetBuildCapabilities_AdvertisesChunkDelivery(t *testing.T) {
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{ConfigPath: enabledConfigDir(t)})
+	resp, err := svc.GetBuildCapabilities(context.Background(), &agentpbv2.GetBuildCapabilitiesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.GetChunkDelivery() {
+		t.Fatal("an agent that honours BuildSpec.chunking must say so, independently of buildkit being present")
 	}
 }

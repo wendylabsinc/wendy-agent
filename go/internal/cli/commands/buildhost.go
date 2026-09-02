@@ -154,6 +154,40 @@ func checkFleetDeliverySupported(host string, resp *agentpbv2.GetBuildCapabiliti
 	return fmt.Errorf("build host %s cannot deliver one build to several devices; update its agent, or deploy to one device at a time", host)
 }
 
+// checkChunkDeliverySupported refuses --chunking=force against a build host
+// whose agent predates chunked delivery: it would discard the mode and push
+// through the registry, which is the silent fallback force exists to forbid.
+// auto and off need nothing new from the host — an older one pushes through
+// the registry, which is what off asks for and what auto accepts, though auto
+// is told.
+func checkChunkDeliverySupported(host string, resp *agentpbv2.GetBuildCapabilitiesResponse, mode string) error {
+	if resp.GetChunkDelivery() {
+		return nil
+	}
+	switch mode {
+	case chunkingForce:
+		return fmt.Errorf("build host %s predates chunked delivery, so --chunking=force cannot be honoured there; update its agent, or use --chunking=auto or off", host)
+	case chunkingOff:
+		return nil
+	default:
+		cliNotice("build host %s predates chunked delivery; the image will be pushed through the device's registry", host)
+		return nil
+	}
+}
+
+// buildChunkingMode carries --chunking to the build host, so the flag means the
+// same thing whichever machine delivers the image. Empty is auto, as locally.
+func buildChunkingMode(mode string) agentpbv2.ChunkingMode {
+	switch mode {
+	case chunkingForce:
+		return agentpbv2.ChunkingMode_CHUNKING_MODE_FORCE
+	case chunkingOff:
+		return agentpbv2.ChunkingMode_CHUNKING_MODE_OFF
+	default:
+		return agentpbv2.ChunkingMode_CHUNKING_MODE_AUTO
+	}
+}
+
 // checkBuildHostCapabilities refuses a build host before any context is
 // transferred. Every failure names the host, and none falls back to a local
 // build: a long build the developer believed was running on the Spark is worse
@@ -261,6 +295,9 @@ func runRemoteBuild(
 	if err := checkBuildHostCapabilities(host, caps, platform); err != nil {
 		return err
 	}
+	if err := checkChunkDeliverySupported(host, caps, opts.chunking); err != nil {
+		return err
+	}
 
 	// Resolve the build file on THIS machine: a Stagefile compile pins digests
 	// and writes its lockfile into the project, which must happen where the repo
@@ -343,6 +380,7 @@ func runRemoteBuild(
 			AppId:    appCfg.AppID,
 			Platform: platform,
 			Context:  manifest,
+			Chunking: buildChunkingMode(opts.chunking),
 			Definition: &agentpbv2.BuildSpec_DockerfileBuild{
 				DockerfileBuild: &agentpbv2.DockerfileBuild{
 					Dockerfile: resolved,

@@ -331,6 +331,9 @@ func (s *BuildService) GetBuildCapabilities(_ context.Context, _ *agentpbv2.GetB
 		// Lets a newer client distinguish an older agent, which has no root
 		// fields, from this agent failing to inspect a daemon it expected to find.
 		BuildkitRootInspectionSupported: true,
+		// Lets a CLI sending CHUNKING_MODE_FORCE tell this agent from one that
+		// would discard the field and push through the registry regardless.
+		ChunkDelivery: true,
 	}
 	if available {
 		// Only the host's own platform is claimed native. Emulated platforms stay
@@ -523,12 +526,19 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 		}
 	}
 
+	// --chunking=off asks for the route this feature shipped with, whole: no
+	// export, no chunk store, a registry push per device.
+	if spec.GetChunking() == agentpbv2.ChunkingMode_CHUNKING_MODE_OFF {
+		return s.deliverAllByRegistry(ctx, stream, spec, df, dir, targets)
+	}
+
 	// Build ONCE, exporting an OCI layout beside the context directory. Delivery
 	// is then a separate step per device, fed from that export: which layers and
 	// chunks a device lacks is a question about that device, and a rebuild does
 	// not answer it. The registry push this replaces ran one buildctl pass per
-	// device because the push WAS the export; it survives only as the fallback
-	// for an agent too old to receive chunks (see deliver).
+	// device because the push WAS the export; it survives as the fallback for an
+	// agent too old to receive chunks, and as the whole route when the CLI asks
+	// for it (see deliver and deliverAllByRegistry).
 	imageTar := dir + exportedImageSuffix
 	defer os.Remove(imageTar)
 	args, err := buildctlOCIArgs(dir, df.GetDockerfile(), spec.GetPlatform(), df.GetBuildArgs(), imageTar)
@@ -543,10 +553,17 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 		return status.Errorf(codes.Internal, "reading the built image: %v", err)
 	}
 
+	// Decompressed and chunked once per layer for the whole fleet, not once per
+	// device: the second camera costs a diff, not another pass over a multi-GiB
+	// layer. The price is that every missing layer's scratch stays on disk until
+	// the last device is done — see the design note on disk.
+	resolved := make(map[string]*deliveryLayer, len(img.layers))
+	defer closeDeliveryLayers(resolved)
+
 	prog := &buildProgress{stream: stream}
 	deliveries := make([]*agentpbv2.DeliveryResult, 0, len(targets))
 	for i, t := range targets {
-		deliveryErr := s.deliver(ctx, prog, stream, spec, df, dir, img, i, t)
+		deliveryErr := s.deliver(ctx, prog, stream, spec, df, dir, img, resolved, i, t)
 		if len(targets) == 1 && deliveryErr != nil {
 			// Single-target behaviour is unchanged, including the code and the
 			// message prefix a CLI built before fleet delivery already uses to
@@ -580,10 +597,10 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 // registry push the feature shipped with, as a second buildctl pass that
 // BuildKit's cache turns into a re-export.
 //
-// The fallback is taken ONLY on errChunkDeliveryUnsupported. A genuine failure
-// is reported as one: retrying it over the slower path would blame the wrong
-// leg, and on a link that just dropped a whole-image push is the transfer least
-// likely to survive.
+// The fallback is taken ONLY on errChunkDeliveryUnsupported, and only when the
+// CLI's --chunking allows it. A genuine failure is reported as one: retrying it
+// over the slower path would blame the wrong leg, and on a link that just
+// dropped a whole-image push is the transfer least likely to survive.
 func (s *BuildService) deliver(
 	ctx context.Context,
 	prog *buildProgress,
@@ -592,12 +609,19 @@ func (s *BuildService) deliver(
 	df *agentpbv2.DockerfileBuild,
 	dir string,
 	img *exportedImage,
+	resolved map[string]*deliveryLayer,
 	index int,
 	target *agentpbv2.PushTarget,
 ) error {
-	err := s.deliverByChunks(ctx, prog, index, img, target)
+	err := s.deliverByChunks(ctx, prog, index, img, target, resolved)
 	if !errors.Is(err, errChunkDeliveryUnsupported) {
 		return err
+	}
+	if spec.GetChunking() == agentpbv2.ChunkingMode_CHUNKING_MODE_FORCE {
+		// force exists so a chunk-delivery problem is surfaced rather than
+		// masked by a slower path. An agent that cannot take chunks is one.
+		return fmt.Errorf("device %d predates chunked delivery, and --chunking=force forbids the registry push it would otherwise get; update its agent, or use --chunking=auto",
+			target.GetAssetId())
 	}
 	prog.logf("#%d 0.000 device %d predates chunked delivery; pushing through its registry instead",
 		deliveryVertexBase+index, target.GetAssetId())
@@ -608,6 +632,67 @@ func (s *BuildService) deliver(
 	// The export pass already proved the Dockerfile builds, so a failure here is
 	// this device's pass failing, not the build.
 	return buildErr
+}
+
+// deliverAllByRegistry is the route this feature shipped with, kept whole for
+// CHUNKING_MODE_OFF: one buildctl pass per device, its output pushed into that
+// device's registry. No export and no chunk store. The image is built once in
+// any real sense — BuildKit has solved it after the first pass, so the rest are
+// cache hits that re-export and push — and each pass gets its OWN proxy and
+// asset-pinned TLS config: one pinned identity standing in for several devices
+// is exactly the property the pin exists to deny.
+func (s *BuildService) deliverAllByRegistry(
+	ctx context.Context,
+	stream agentpbv2.WendyBuildService_BuildImageServer,
+	spec *agentpbv2.BuildSpec,
+	df *agentpbv2.DockerfileBuild,
+	dir string,
+	targets []*agentpbv2.PushTarget,
+) error {
+	prog := &buildProgress{stream: stream}
+	deliveries := make([]*agentpbv2.DeliveryResult, 0, len(targets))
+	multi := len(targets) > 1
+	for i, t := range targets {
+		prog.logf("#%d 0.000 device %d: pushing through its registry, as --chunking=off asks",
+			deliveryVertexBase+i, t.GetAssetId())
+		buildErr, deliveryErr := s.buildAndDeliver(ctx, stream, spec, df, dir, t)
+
+		// A build failure on the FIRST pass is a build failure, full stop: no
+		// device can receive this image and continuing would report N identical
+		// failures for one broken Dockerfile.
+		if buildErr != nil && i == 0 {
+			return buildErr
+		}
+		if !multi {
+			// Single-target behaviour keeps the code and the message prefix a
+			// CLI built before fleet delivery already distinguishes.
+			if deliveryErr != nil {
+				return status.Errorf(codes.Unavailable, "pushing the built image to the target device failed: %v", deliveryErr)
+			}
+			if buildErr != nil {
+				return buildErr
+			}
+			deliveries = append(deliveries, &agentpbv2.DeliveryResult{AssetId: t.GetAssetId(), Delivered: true})
+			break
+		}
+
+		// Past the first pass, one device's problem is one device's problem.
+		res := &agentpbv2.DeliveryResult{AssetId: t.GetAssetId(), Delivered: true}
+		switch {
+		case deliveryErr != nil:
+			res.Delivered, res.Error = false, deliveryErr.Error()
+		case buildErr != nil:
+			res.Delivered, res.Error = false, buildErr.Error()
+		}
+		deliveries = append(deliveries, res)
+	}
+	// No export was read, so no manifest digest is known — as before chunked
+	// delivery existed.
+	return stream.Send(&agentpbv2.BuildImageProgress{
+		Event: &agentpbv2.BuildImageProgress_Result{
+			Result: &agentpbv2.BuildImageResult{Deliveries: deliveries},
+		},
+	})
 }
 
 // deliveryTargets resolves where this build is delivered, preferring the fleet

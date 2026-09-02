@@ -265,6 +265,14 @@ func (l *deliveryLayer) close() {
 	l.f = nil
 }
 
+// closeDeliveryLayers removes every scratch file a build resolved. Called once
+// per build, after the last device, so a fleet shares one decompression.
+func closeDeliveryLayers(resolved map[string]*deliveryLayer) {
+	for _, l := range resolved {
+		l.close()
+	}
+}
+
 // decompressAndChunkLayer streams one layer out of the exported tar, through
 // its decompressor, into a file under dir, content-chunking and hashing the
 // uncompressed bytes in the same pass. Peak memory is the decompressor window
@@ -329,16 +337,16 @@ func decompressAndChunkLayer(img *exportedImage, l ociLayer, dir string) (*deliv
 //
 // Resume needs no bookkeeping of its own: WriteChunks stages each chunk on the
 // device as it lands, and the next attempt's QueryChunks reports only what is
-// still missing. Layers decompressed for one attempt are kept for the next, so a
-// resume costs round trips, not CPU.
-func (s *BuildService) deliverByChunks(ctx context.Context, prog *buildProgress, index int, img *exportedImage, target *agentpbv2.PushTarget) error {
+// still missing.
+//
+// resolved is the build's cache of decompressed, chunked layers, keyed by diff
+// ID and owned by the caller: layers resolved for one attempt serve the next,
+// and layers resolved for one device serve the rest of the fleet, so a resume
+// costs round trips and a second device costs a diff — not another
+// decompression. Deliveries share it sequentially; it is not safe for
+// concurrent callers.
+func (s *BuildService) deliverByChunks(ctx context.Context, prog *buildProgress, index int, img *exportedImage, target *agentpbv2.PushTarget, resolved map[string]*deliveryLayer) error {
 	rep := newDeliveryReporter(prog, index, target.GetAssetId())
-	resolved := make(map[string]*deliveryLayer, len(img.layers))
-	defer func() {
-		for _, l := range resolved {
-			l.close()
-		}
-	}()
 
 	for attempt := 1; ; attempt++ {
 		err := s.deliverByChunksOnce(ctx, rep, img, target, resolved)
