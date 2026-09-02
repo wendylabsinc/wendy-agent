@@ -15,7 +15,11 @@ import (
 // is untrusted: treat it as a label for picking a device, never as proof of
 // identity. The mTLS handshake is what authenticates.
 const (
-	liteInfoServiceUUID     = "4E57454E-4459-0002-0000-000000000000"
+	// LiteInfoServiceUUID is exported because a Lite board also advertises it,
+	// so it doubles as the scan filter that finds one (see shared/discovery's
+	// BLELiteDeviceDiscoverContinuous). Every other UUID here is only ever read
+	// off an open connection.
+	LiteInfoServiceUUID     = "4E57454E-4459-0002-0000-000000000000"
 	liteInfoPSMCharUUID     = "4E57454E-4459-0002-0001-000000000000"
 	liteInfoDeviceIDUUID    = "4E57454E-4459-0002-0002-000000000000"
 	liteInfoDeviceNameUUID  = "4E57454E-4459-0002-0003-000000000000"
@@ -38,6 +42,24 @@ type LiteInfo struct {
 // liteclient.DefaultL2CAPPSM rather than failing.
 var ErrLiteInfoUnavailable = errors.New("Wendy Lite info service unavailable")
 
+// ReadLiteInfoAt connects to a device, reads its info service and drops the
+// link before returning. It is what a discovery pass wants: a Lite board
+// accepts one BLE connection at a time, so a probe that kept the connection
+// open would lock out the ConnectViaBLE that follows when the user picks the
+// device.
+//
+// address is what a scan reported for this platform — a CoreBluetooth
+// peripheral UUID on macOS, a MAC elsewhere. timeout bounds each step, not the
+// whole sequence, matching ReadLiteInfo.
+func ReadLiteInfoAt(address string, timeout time.Duration) (*LiteInfo, error) {
+	conn, err := central.Connect(address, central.TimeoutSeconds(timeout))
+	if err != nil {
+		return nil, fmt.Errorf("%w: connecting to %s: %w", ErrLiteInfoUnavailable, address, err)
+	}
+	defer conn.Close()
+	return ReadLiteInfo(conn, timeout)
+}
+
 // ReadLiteInfo reads the device's GATT info service, which carries the L2CAP
 // PSM to open along with the identity the device advertises for itself.
 //
@@ -53,11 +75,11 @@ func ReadLiteInfo(conn *central.Connection, timeout time.Duration) (*LiteInfo, e
 	if err := conn.DiscoverServices(central.TimeoutSeconds(timeout)); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrLiteInfoUnavailable, err)
 	}
-	if !conn.HasService(liteInfoServiceUUID) {
+	if !conn.HasService(LiteInfoServiceUUID) {
 		return nil, fmt.Errorf("%w: device exposes [%s]", ErrLiteInfoUnavailable, conn.ListServices())
 	}
 
-	raw, err := conn.ReadCharacteristic(liteInfoServiceUUID, liteInfoPSMCharUUID)
+	raw, err := conn.ReadCharacteristic(LiteInfoServiceUUID, liteInfoPSMCharUUID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: reading PSM: %w", ErrLiteInfoUnavailable, err)
 	}
@@ -77,7 +99,7 @@ func ReadLiteInfo(conn *central.Connection, timeout time.Duration) (*LiteInfo, e
 	info.DeviceID = readLiteInfoString(conn, liteInfoDeviceIDUUID)
 	info.DeviceName = readLiteInfoString(conn, liteInfoDeviceNameUUID)
 	info.DisplayName = readLiteInfoString(conn, liteInfoDisplayNameUUID)
-	if mtls, err := conn.ReadCharacteristic(liteInfoServiceUUID, liteInfoMTLSUUID); err == nil && len(mtls) > 0 {
+	if mtls, err := conn.ReadCharacteristic(LiteInfoServiceUUID, liteInfoMTLSUUID); err == nil && len(mtls) > 0 {
 		info.MTLSEnabled = mtls[0] != 0
 	}
 	return info, nil
@@ -87,7 +109,7 @@ func ReadLiteInfo(conn *central.Connection, timeout time.Duration) (*LiteInfo, e
 // read failure and an empty value (ReadCharacteristic returns (nil, nil) when
 // the characteristic holds no bytes).
 func readLiteInfoString(conn *central.Connection, charUUID string) string {
-	data, err := conn.ReadCharacteristic(liteInfoServiceUUID, charUUID)
+	data, err := conn.ReadCharacteristic(LiteInfoServiceUUID, charUUID)
 	if err != nil {
 		return ""
 	}

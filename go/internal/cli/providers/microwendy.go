@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -193,18 +194,56 @@ func (p *MicroWendyProvider) serialExternalDevice(dev discovery.SerialDevice) mo
 	}
 }
 
+// bleExternalDevice maps a Wendy Lite board found over BLE to an
+// ExternalDevice. The PSM the board published travels with the row, but a 0 is
+// no problem: ConnectViaBLE reads the info service itself and falls back to
+// liteclient.DefaultL2CAPPSM.
+func (p *MicroWendyProvider) bleExternalDevice(dev discovery.BLELiteDevice) models.ExternalDevice {
+	return models.ExternalDevice{
+		ID:          fmt.Sprintf("wendy-lite:%s", dev.Address),
+		DisplayName: bleLiteDisplayName(dev),
+		ProviderKey: p.Key(),
+		ConnectionInfo: map[string]string{
+			"type":    "BLE",
+			"name":    dev.Info.DeviceName,
+			"address": dev.Address,
+			"psm":     strconv.FormatUint(uint64(dev.Info.PSM), 10),
+			"mtls":    fmt.Sprintf("%t", dev.Info.MTLSEnabled),
+		},
+		IsWendyDevice: true,
+	}
+}
+
+// bleLiteDisplayName picks the friendliest label the board offered. The
+// identity characteristics are best-effort reads (see ble.ReadLiteInfo), so
+// each one can be empty; the advertised local name is the last real fallback
+// before the generic label the other BLE paths already use.
+func bleLiteDisplayName(dev discovery.BLELiteDevice) string {
+	for _, name := range []string{dev.Info.DisplayName, dev.Info.DeviceName, dev.Name} {
+		if name != "" {
+			return name
+		}
+	}
+	return "Wendy Lite"
+}
+
 // DiscoverDevicesContinuous streams wendy-lite devices as they are found:
-// mDNS services via continuous browsing and serial devices via the background
-// serial scanner. Continuous mDNS browsing works on every platform — macOS
-// via mDNSResponder, Linux via Avahi over D-Bus (hashicorp/mdns when the
-// daemon is unreachable), Windows via hashicorp/mdns — so the polling
-// fallback in callers is now only reached if the browse itself fails to
-// start.
+// mDNS services via continuous browsing, serial devices via the background
+// serial scanner, and Wendy Lite boards over BLE. Continuous mDNS browsing
+// works on every platform — macOS via mDNSResponder, Linux via Avahi over
+// D-Bus (hashicorp/mdns when the daemon is unreachable), Windows via
+// hashicorp/mdns — so the polling fallback in callers is now only reached if
+// the browse itself fails to start.
+//
+// BLE reaches a board that is neither plugged in nor on the network, which is
+// the case the other two sources cannot cover at all.
 func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-chan models.ExternalDevice, error) {
 	svcCh, err := discovery.BrowseMDNSServicesContinuous(ctx, microWendyServiceType)
 	if err != nil {
 		return nil, err
 	}
+
+	bleCh := startBLELiteSource(ctx)
 
 	sd := discovery.GetSerialDiscovery()
 	sd.StartScan(3 * time.Second)
@@ -231,50 +270,107 @@ func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-c
 		defer close(ch)
 		defer sd.RemoveListener(listenerID)
 		defer sd.StopScan()
+		p.streamDevices(ctx, svcCh, serialUpdates, bleCh, sd.Devices(), ch)
+	}()
 
-		send := func(dev models.ExternalDevice) bool {
-			select {
-			case ch <- dev:
-				return true
-			case <-ctx.Done():
-				return false
-			}
+	return ch, nil
+}
+
+// startBLELiteSource forwards the BLE discovery stream, started off the
+// caller's goroutine: bringing up the radio waits several seconds for the
+// adapter when Bluetooth is switched off, and the mDNS and serial rows must
+// not queue behind that.
+//
+// BLE is best-effort — no radio, no Bluetooth permission, or no GATT client on
+// this platform is ordinary — so a failure to start is not reported: the
+// channel simply closes, which streamDevices reads as "no BLE source".
+func startBLELiteSource(ctx context.Context) <-chan []discovery.BLELiteDevice {
+	out := make(chan []discovery.BLELiteDevice)
+	go func() {
+		defer close(out)
+		devices, err := discovery.BLELiteDeviceDiscoverContinuous(ctx)
+		if err != nil {
+			return
 		}
-
-		// Emit serial devices already known before the listener registered.
-		for _, dev := range sd.Devices() {
-			if !send(p.serialExternalDevice(dev)) {
-				return
-			}
-		}
-
-		for {
+		for snapshot := range devices {
 			select {
-			case svc, ok := <-svcCh:
-				if !ok {
-					// Browse stream died; closing ch lets the consumer fall
-					// back to polling.
-					return
-				}
-				if !connectableLiteMDNSService(svc) {
-					continue
-				}
-				if !send(p.mdnsExternalDevice(svc)) {
-					return
-				}
-			case snap := <-serialUpdates:
-				for _, dev := range snap {
-					if !send(p.serialExternalDevice(dev)) {
-						return
-					}
-				}
+			case out <- snapshot:
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
+	return out
+}
 
-	return ch, nil
+// streamDevices merges the three discovery sources onto out until ctx is done
+// or the mDNS browse ends. known is the serial backlog — the devices the
+// scanner had already found before the listener was registered.
+//
+// Split out from DiscoverDevicesContinuous so the merge can be exercised with
+// plain channels: the real sources browse the network and open serial ports.
+func (p *MicroWendyProvider) streamDevices(
+	ctx context.Context,
+	svcCh <-chan discovery.MDNSService,
+	serialUpdates <-chan []discovery.SerialDevice,
+	bleCh <-chan []discovery.BLELiteDevice,
+	known []discovery.SerialDevice,
+	out chan<- models.ExternalDevice,
+) {
+	send := func(dev models.ExternalDevice) bool {
+		select {
+		case out <- dev:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+
+	for _, dev := range known {
+		if !send(p.serialExternalDevice(dev)) {
+			return
+		}
+	}
+
+	for {
+		select {
+		case svc, ok := <-svcCh:
+			if !ok {
+				// Browse stream died; ending the stream lets the consumer fall
+				// back to polling.
+				return
+			}
+			if !connectableLiteMDNSService(svc) {
+				continue
+			}
+			if !send(p.mdnsExternalDevice(svc)) {
+				return
+			}
+		case snap := <-serialUpdates:
+			for _, dev := range snap {
+				if !send(p.serialExternalDevice(dev)) {
+					return
+				}
+			}
+		case snap, ok := <-bleCh:
+			if !ok {
+				// Unlike the mDNS browse, a BLE stream that ends is not a
+				// reason to stop: drop the source and keep the other two
+				// running. Nothing to tear down — the scan stops with ctx.
+				bleCh = nil
+				continue
+			}
+			// Each emit is the whole set, re-sent rather than diffed, as with
+			// the serial snapshots above: the consumer deduplicates.
+			for _, dev := range snap {
+				if !send(p.bleExternalDevice(dev)) {
+					return
+				}
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func (p *MicroWendyProvider) SupportedBuildTypes() []string {
@@ -696,11 +792,13 @@ func (p *MicroWendyProvider) pushWifiConf(device models.ExternalDevice, wifi *li
 	return nil
 }
 
-// connectClient opens a WendyLiteClient connection to the device over serial
-// or LAN (with mTLS when advertised). The caller must Close the client.
+// connectClient opens a WendyLiteClient connection to the device over serial,
+// LAN or BLE (with mTLS when the device advertises it). The caller must Close
+// the client.
 func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*liteclient.WendyLiteClient, error) {
 	client := liteclient.NewWendyLiteClient()
-	if device.ConnectionInfo["type"] == "USB" {
+	switch device.ConnectionInfo["type"] {
+	case "USB":
 		serialPort := device.ConnectionInfo["serialPort"]
 		if serialPort == "" {
 			return nil, fmt.Errorf("wendy-lite provider: missing serial port in connection info")
@@ -708,7 +806,7 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		if err := connectSerialWithRetry(client, serialPort); err != nil {
 			return nil, fmt.Errorf("connect to device via serial: %w", err)
 		}
-	} else if device.ConnectionInfo["type"] == "LAN" {
+	case "LAN":
 		ip := device.ConnectionInfo["ip"]
 		port := device.ConnectionInfo["port"]
 		if ip == "" || port == "" {
@@ -716,53 +814,83 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		}
 		addr := net.JoinHostPort(ip, port)
 		if device.ConnectionInfo["mtls"] == "true" {
-			certInfos, err := loadAllCLICerts()
-			if err != nil {
-				return nil, fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
-			}
-			var connectErrs []error
-			connected := false
-			for _, certInfo := range certInfos {
-				keyPEM, err := certInfo.PrivateKeyPEM()
-				if err != nil {
-					return nil, fmt.Errorf("wendy-lite provider: loading client key: %w", err)
-				}
-				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(keyPEM))
-				if err != nil {
-					return nil, fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
-				}
-				rootCAs := x509.NewCertPool()
-				if certInfo.PemCertificateChain != "" {
-					rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
-				}
-				if err := client.ConnectWithMutualAuthentication(addr, cert, *rootCAs); err != nil {
-					connectErrs = append(connectErrs, err)
-				} else {
-					connected = true
-					break
-				}
-			}
-			if !connected {
-				var b strings.Builder
-				fmt.Fprintf(&b, "Wendy Lite connection error")
-				for i, e := range connectErrs {
-					if i == 0 {
-						fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
-					} else {
-						fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
-					}
-				}
-				return nil, errors.New(b.String())
+			if err := connectWithCLIIdentities(func(cert tls.Certificate, rootCAs x509.CertPool) error {
+				return client.ConnectWithMutualAuthentication(addr, cert, rootCAs)
+			}); err != nil {
+				return nil, err
 			}
 		} else {
 			if err := client.ConnectInsecure(addr); err != nil {
 				return nil, fmt.Errorf("connect to device: %w", err)
 			}
 		}
-	} else {
+	case "BLE":
+		address := device.ConnectionInfo["address"]
+		if address == "" {
+			return nil, fmt.Errorf("wendy-lite provider: missing BLE address in connection info")
+		}
+		// A missing or unparsable PSM is not an error: ConnectViaBLE reads the
+		// device's info service itself and falls back to the well-known PSM.
+		psm64, _ := strconv.ParseUint(device.ConnectionInfo["psm"], 10, 16)
+		psm := uint16(psm64)
+		if device.ConnectionInfo["mtls"] == "true" {
+			if err := connectWithCLIIdentities(func(cert tls.Certificate, rootCAs x509.CertPool) error {
+				return client.ConnectViaBLEWithMutualAuthentication(address, psm, cert, rootCAs)
+			}); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := client.ConnectViaBLEInsecure(address, psm); err != nil {
+				return nil, fmt.Errorf("connect to device over BLE: %w", err)
+			}
+		}
+	default:
 		return nil, fmt.Errorf("wendy-lite provider: unsupported connection type: %s", device.ConnectionInfo["type"])
 	}
 	return client, nil
+}
+
+// connectWithCLIIdentities tries connect once per CLI certificate, since the
+// user may hold identities from several organizations and only one of them is
+// the device's issuer. It reports the failures of every identity it tried:
+// with one certificate per organization, "which one was this device enrolled
+// with" is exactly what the reader needs to see.
+func connectWithCLIIdentities(connect func(cert tls.Certificate, rootCAs x509.CertPool) error) error {
+	certInfos, err := loadAllCLICerts()
+	if err != nil {
+		return fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
+	}
+	var connectErrs []error
+	for _, certInfo := range certInfos {
+		keyPEM, err := certInfo.PrivateKeyPEM()
+		if err != nil {
+			return fmt.Errorf("wendy-lite provider: loading client key: %w", err)
+		}
+		cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(keyPEM))
+		if err != nil {
+			return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
+		}
+		rootCAs := x509.NewCertPool()
+		if certInfo.PemCertificateChain != "" {
+			rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
+		}
+		if err := connect(cert, *rootCAs); err != nil {
+			connectErrs = append(connectErrs, err)
+			continue
+		}
+		return nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Wendy Lite connection error")
+	for i, e := range connectErrs {
+		if i == 0 {
+			fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
+		} else {
+			fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
+		}
+	}
+	return errors.New(b.String())
 }
 
 // serialConnectMaxAttempts bounds how many times connectSerialWithRetry
