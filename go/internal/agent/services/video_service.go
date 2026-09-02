@@ -881,10 +881,7 @@ func (s *VideoService) listCameras(ctx context.Context) ([]*agentpb.VideoDevice,
 		// Empty for a camera with no /dev/v4l entry, which is not an error --
 		// the numeric id still addresses it, it is just not stable across a
 		// reboot.
-		if n, ok := stable[path]; ok {
-			dev.ById = n.byID
-			dev.ByPath = n.byPath
-		}
+		dev.StableId = stable[path].stableID()
 		if transport == camera.TransportCSI {
 			csiDeviceIdxs = append(csiDeviceIdxs, len(devices))
 		}
@@ -1564,7 +1561,7 @@ func validateStreamParams(devicePath string, req *agentpb.StreamVideoRequest) er
 
 // streamDeviceID picks the camera this request names.
 //
-// `device_by_id` wins over `device_id` when set, and is resolved HERE -- at
+// `stable_id` wins over `device_id` when set, and is resolved HERE -- at
 // request time -- rather than by whoever wrote the config. That is the whole
 // point of the field: /dev/videoN is assigned in enumeration order at boot, so
 // a number written down yesterday may name a different camera today.
@@ -1575,32 +1572,32 @@ func validateStreamParams(devicePath string, req *agentpb.StreamVideoRequest) er
 // remove: opening the wrong camera succeeds, so nobody finds out. An error the
 // caller can retry and log beats a plausible picture of the wrong thing.
 func (s *VideoService) streamDeviceID(req *agentpb.StreamVideoRequest) (uint32, error) {
-	byID := strings.TrimSpace(req.GetDeviceById())
-	if byID == "" {
+	stableID := strings.TrimSpace(req.GetStableId())
+	if stableID == "" {
 		return req.GetDeviceId(), nil
 	}
 	if s.readStableNames == nil {
 		return 0, status.Errorf(codes.Unimplemented,
-			"device_by_id is not supported on this agent")
+			"stable_id is not supported on this agent")
 	}
 	names := s.readStableNames()
-	devID, ok := resolveByID(names, byID)
+	devID, ok := resolveStableID(names, stableID)
 	if !ok {
 		return 0, status.Errorf(codes.NotFound,
-			"no camera with by-id %q; ListVideoDevices reports %v",
-			byID, knownByIDs(names))
+			"no camera with stable id %q; ListVideoDevices reports %v",
+			stableID, knownStableIDs(names))
 	}
 	return devID, nil
 }
 
-// knownByIDs lists the by-id names the agent can currently see, for the error
-// above. A caller that got the name wrong needs to see the real ones, and the
-// alternative is reading agent logs on a device they may not have.
-func knownByIDs(names map[string]stableNames) []string {
+// knownStableIDs lists the identities the agent can currently see, for the
+// error above. A caller that got the name wrong needs to see the real ones, and
+// the alternative is reading agent logs on a device they may not have.
+func knownStableIDs(names map[string]stableNames) []string {
 	out := make([]string, 0, len(names))
 	for _, n := range names {
-		if n.byID != "" {
-			out = append(out, n.byID)
+		if id := n.stableID(); id != "" {
+			out = append(out, id)
 		}
 	}
 	slices.Sort(out)

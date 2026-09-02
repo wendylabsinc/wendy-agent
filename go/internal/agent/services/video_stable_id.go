@@ -10,20 +10,22 @@ package services
 // `name` and `driver` cannot rescue that: they identify the model, so two
 // cameras of the same type are indistinguishable.
 //
-// udev already publishes two stable names per node, and they trade off
-// differently:
+// udev publishes two stable names per node, and they are not equally durable:
 //
 //	/dev/v4l/by-id/    vendor + product + serial   survives a reboot AND a move
-//	                                               to another port; collides for
-//	                                               two same-model cameras whose
-//	                                               serial is a factory default
+//	                                               to another port
 //	/dev/v4l/by-path/  the USB port topology       survives a reboot but NOT a
-//	                                               move; the only thing that
-//	                                               separates identical cameras
+//	                                               move
 //
-// Both are reported so a caller can choose the property it needs. Only by-id is
-// resolvable in StreamVideo, because pinning a stream to a physical port is a
-// decision a caller should make deliberately rather than inherit.
+// A camera gets ONE identity, not two: by-id where udev has one, by-path only
+// where it does not. That case is real rather than theoretical -- two
+// same-model cameras sharing a factory serial produce the same by-id name, so
+// only one link exists and the camera that loses it has nothing else that tells
+// it apart from its twin.
+//
+// The value carries the scheme it came from ("by-id:" / "by-path:") so a
+// caller can see which of the two durability guarantees it actually holds,
+// rather than having to know how udev names things.
 
 import (
 	"fmt"
@@ -36,6 +38,11 @@ import (
 const (
 	v4lByIDDir   = "/dev/v4l/by-id"
 	v4lByPathDir = "/dev/v4l/by-path"
+
+	// Scheme tags on the reported identity, so a caller can see which
+	// durability guarantee it holds without knowing how udev names things.
+	schemeByID   = "by-id"
+	schemeByPath = "by-path"
 )
 
 // stableNames holds the udev names for one /dev/videoN node. Either may be
@@ -44,6 +51,19 @@ const (
 type stableNames struct {
 	byID   string
 	byPath string
+}
+
+// stableID is the single identity reported for a node: the by-id name when
+// there is one, the port otherwise, empty when udev knows neither.
+func (n stableNames) stableID() string {
+	switch {
+	case n.byID != "":
+		return schemeByID + ":" + n.byID
+	case n.byPath != "":
+		return schemeByPath + ":" + n.byPath
+	default:
+		return ""
+	}
 }
 
 // readStableNames maps a resolved device path ("/dev/video2") to its udev
@@ -95,20 +115,37 @@ func firstNamePerDevice(dir string) map[string]string {
 	return out
 }
 
-// resolveByID returns the /dev/videoN number for a by-id name, or false.
+// resolveStableID returns the /dev/videoN number for a scheme-tagged stable id,
+// or false.
+//
+// A "by-path:" name resolves even for a camera whose reported identity is its
+// by-id: asking to stream from a physical port is legitimate, it just has to be
+// asked for. Inheriting it from a listing is what we avoid.
 //
 // The match is exact. A substring or prefix rule would be friendlier to type
 // and is precisely the wrong trade here: "usb-Acme_Camera_SN1" would match both
 // "...SN1-video-index0" and "...SN10-video-index0", and the caller would get
 // one of them with no indication that the name was ambiguous. An exact name is
 // something ListVideoDevices already hands you.
-func resolveByID(names map[string]stableNames, byID string) (uint32, bool) {
-	want := strings.TrimSpace(byID)
-	if want == "" {
+func resolveStableID(names map[string]stableNames, stableID string) (uint32, bool) {
+	scheme, want, tagged := strings.Cut(strings.TrimSpace(stableID), ":")
+	if !tagged || want == "" {
+		return 0, false
+	}
+	// An untagged or unknown scheme is not an identity this API ever handed
+	// out. Guessing which of the two was meant is how a name for one camera
+	// quietly resolves to another.
+	var pick func(stableNames) string
+	switch scheme {
+	case schemeByID:
+		pick = func(n stableNames) string { return n.byID }
+	case schemeByPath:
+		pick = func(n stableNames) string { return n.byPath }
+	default:
 		return 0, false
 	}
 	for devPath, n := range names {
-		if n.byID != want {
+		if pick(n) != want {
 			continue
 		}
 		num, err := deviceNumber(devPath)

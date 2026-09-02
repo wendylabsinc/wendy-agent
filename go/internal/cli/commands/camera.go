@@ -321,7 +321,7 @@ func newCameraWatchCmd() *cobra.Command {
 // hidden alias.
 func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 	var deviceID, width, height, fps uint32
-	var byID string
+	var stableID string
 	var toStdout, raw bool
 
 	cmd := &cobra.Command{
@@ -346,14 +346,15 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 			}
 			defer conn.Close()
 
-			// --by-id addresses the camera by its stable udev identity and is
-			// resolved by the AGENT at request time. --id is the boot-order
+			// --stable-id addresses the camera by its stable udev identity and
+			// is resolved by the AGENT at request time. --id is the boot-order
 			// number, so a value written down yesterday can name a different
-			// camera today; --by-id cannot. When it is given the picker below
-			// is skipped, because the camera has already been named exactly.
-			if byID != "" {
+			// camera today; --stable-id cannot. When it is given the picker
+			// below is skipped, because the camera has already been named
+			// exactly.
+			if stableID != "" {
 				if cmd.Flags().Changed("id") {
-					return fmt.Errorf("--id and --by-id both name a camera; pass one")
+					return fmt.Errorf("--id and --stable-id both name a camera; pass one")
 				}
 			} else if !cmd.Flags().Changed("id") {
 				listed, err := conn.VideoService.ListVideoDevices(ctx, &agentpb.ListVideoDevicesRequest{})
@@ -372,12 +373,12 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 				codec = agentpb.VideoCodec_VIDEO_CODEC_RAW
 			}
 			req := &agentpb.StreamVideoRequest{
-				DeviceId:   deviceID,
-				DeviceById: byID,
-				Width:      width,
-				Height:     height,
-				Framerate:  fps,
-				Codec:      codec,
+				DeviceId:  deviceID,
+				StableId:  stableID,
+				Width:     width,
+				Height:    height,
+				Framerate: fps,
+				Codec:     codec,
 			}
 			startStream := func() (videoStream, error) {
 				return conn.VideoService.StreamVideo(ctx, req)
@@ -413,9 +414,9 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Camera device ID (boot order; see --by-id)")
-	cmd.Flags().StringVar(&byID, "by-id", "",
-		"Camera by-id name from `camera list` — stable across reboots and re-plugging")
+	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Camera device ID (boot order; see --stable-id)")
+	cmd.Flags().StringVar(&stableID, "stable-id", "",
+		"Camera stable ID from `camera list --json` — survives reboots and re-plugging")
 	cmd.Flags().Uint32Var(&width, "width", 0, "Frame width (0 = device default)")
 	cmd.Flags().Uint32Var(&height, "height", 0, "Frame height (0 = device default)")
 	cmd.Flags().Uint32Var(&fps, "fps", 0, "Framerate (0 = device default)")

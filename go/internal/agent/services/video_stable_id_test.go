@@ -102,9 +102,13 @@ func TestByIDSurvivesTheEnumerationSwap(t *testing.T) {
 	}
 }
 
-func TestByPathIsReportedSeparately(t *testing.T) {
-	// by-path is the only thing that separates two same-model cameras whose
-	// serial is a factory default, so it must not be conflated with by-id.
+func TestByPathIsTheFallbackNotASecondIdentity(t *testing.T) {
+	// A camera with both names reports one identity, the by-id one: it is the
+	// name that survives a move to another port. The port name only becomes
+	// the identity when there is no by-id link -- the two-same-model-cameras
+	// case, where udev publishes a single colliding by-id link and the camera
+	// that loses it has nothing else to tell it apart from its twin.
+	const portName = "platform-xhci-hcd.0-usb-0:2.3:1.0-video-index0"
 	root := t.TempDir()
 	devDir, byIDDir, byPathDir := filepath.Join(root, "dev"),
 		filepath.Join(root, "by-id"), filepath.Join(root, "by-path")
@@ -113,24 +117,36 @@ func TestByPathIsReportedSeparately(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	node := filepath.Join(devDir, "video2")
-	if err := os.WriteFile(node, nil, 0o644); err != nil {
-		t.Fatal(err)
+	mkNode := func(name string) string {
+		node := filepath.Join(devDir, name)
+		if err := os.WriteFile(node, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return node
 	}
-	if err := os.Symlink(node, filepath.Join(byIDDir, arducamByID)); err != nil {
-		t.Fatal(err)
+	link := func(dir, name, node string) {
+		if err := os.Symlink(node, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	const portName = "platform-xhci-hcd.0-usb-0:2.3:1.0-video-index0"
-	if err := os.Symlink(node, filepath.Join(byPathDir, portName)); err != nil {
-		t.Fatal(err)
-	}
+	// video2 has both names; video3 is the twin that lost the by-id link.
+	both, portOnly := mkNode("video2"), mkNode("video3")
+	link(byIDDir, arducamByID, both)
+	link(byPathDir, portName, both)
+	link(byPathDir, "platform-xhci-hcd.0-usb-0:2.4:1.0-video-index0", portOnly)
 
-	got := readStableNames(byIDDir, byPathDir)[resolved(t, node)]
-	if got.byID != arducamByID {
-		t.Errorf("byID = %q, want %q", got.byID, arducamByID)
+	names := readStableNames(byIDDir, byPathDir)
+	if got, want := names[resolved(t, both)].stableID(), "by-id:"+arducamByID; got != want {
+		t.Errorf("stableID = %q, want %q", got, want)
 	}
-	if got.byPath != portName {
-		t.Errorf("byPath = %q, want %q", got.byPath, portName)
+	if got, want := names[resolved(t, portOnly)].stableID(),
+		"by-path:platform-xhci-hcd.0-usb-0:2.4:1.0-video-index0"; got != want {
+		t.Errorf("camera with no by-id: stableID = %q, want %q", got, want)
+	}
+	// Both names still resolve for the camera that has both: pinning to a port
+	// is allowed when it is asked for explicitly.
+	if got, ok := resolveStableID(names, "by-path:"+portName); !ok || got != 2 {
+		t.Errorf("explicit by-path resolved to (%d, %v), want (2, true)", got, ok)
 	}
 }
 
@@ -154,7 +170,7 @@ func TestDanglingSymlinkDoesNotCostTheOthers(t *testing.T) {
 	}
 }
 
-func TestResolveByIDIsExactNotPrefix(t *testing.T) {
+func TestResolveStableIDIsExactNotPrefix(t *testing.T) {
 	// A prefix rule would make "…_SN1-video-index0" match "…_SN10-video-index0"
 	// and hand back one of them silently -- the same class of wrong-camera bug
 	// this whole change exists to remove.
@@ -162,22 +178,44 @@ func TestResolveByIDIsExactNotPrefix(t *testing.T) {
 		"/dev/video0": {byID: "usb-Acme_Cam_SN1-video-index0"},
 		"/dev/video2": {byID: "usb-Acme_Cam_SN10-video-index0"},
 	}
-	got, ok := resolveByID(names, "usb-Acme_Cam_SN1-video-index0")
+	got, ok := resolveStableID(names, "by-id:usb-Acme_Cam_SN1-video-index0")
 	if !ok || got != 0 {
 		t.Fatalf("exact name resolved to (%d, %v), want (0, true)", got, ok)
 	}
-	if _, ok := resolveByID(names, "usb-Acme_Cam_SN"); ok {
+	if _, ok := resolveStableID(names, "by-id:usb-Acme_Cam_SN"); ok {
 		t.Error("a prefix matched; resolution must be exact")
 	}
-	if _, ok := resolveByID(names, ""); ok {
+	if _, ok := resolveStableID(names, ""); ok {
 		t.Error("an empty name matched")
 	}
 }
 
-func TestResolveByIDReportsNoMatch(t *testing.T) {
+func TestResolveStableIDRequiresItsScheme(t *testing.T) {
+	// The tag is not decoration. An untagged name would have to be guessed
+	// against both namespaces, which is how a name meant for one camera
+	// quietly resolves to another.
+	names := map[string]stableNames{
+		"/dev/video0": {byID: topdonByID, byPath: "platform-xhci-hcd.0-usb-0:2.1:1.0-video-index0"},
+	}
+	for _, want := range []string{topdonByID, "by-serial:" + topdonByID, "by-id:", "by-path:"} {
+		if _, ok := resolveStableID(names, want); ok {
+			t.Errorf("%q resolved; only a tagged, non-empty name may", want)
+		}
+	}
+	if _, ok := resolveStableID(names, "by-id:"+topdonByID); !ok {
+		t.Error("the tagged name did not resolve")
+	}
+}
+
+func TestResolveStableIDReportsNoMatch(t *testing.T) {
 	names := map[string]stableNames{"/dev/video0": {byID: topdonByID}}
-	if _, ok := resolveByID(names, arducamByID); ok {
+	if _, ok := resolveStableID(names, "by-id:"+arducamByID); ok {
 		t.Error("an absent camera resolved; the caller must be able to refuse")
+	}
+	// A by-path name for a camera that only has a by-id must not fall through
+	// to it: they are different guarantees.
+	if _, ok := resolveStableID(names, "by-path:platform-xhci-hcd.0-usb-0:2.1:1.0-video-index0"); ok {
+		t.Error("a by-path name matched a camera that has no by-path")
 	}
 }
 
@@ -191,7 +229,8 @@ func TestListCamerasReportsStableIdentity(t *testing.T) {
 	svc.readStableNames = func() map[string]stableNames {
 		return map[string]stableNames{
 			"/dev/video0": {byID: topdonByID, byPath: "platform-xhci-hcd.0-usb-0:2.1:1.0-video-index0"},
-			"/dev/video2": {byID: arducamByID, byPath: "platform-xhci-hcd.0-usb-0:2.3:1.0-video-index0"},
+			// No by-id: the identity falls back to the port.
+			"/dev/video2": {byPath: "platform-xhci-hcd.0-usb-0:2.3:1.0-video-index0"},
 		}
 	}
 	devices, err := svc.listCameras(context.Background())
@@ -200,16 +239,13 @@ func TestListCamerasReportsStableIdentity(t *testing.T) {
 	}
 	got := map[uint32]string{}
 	for _, d := range devices {
-		got[d.GetId()] = d.GetById()
-		if d.GetByPath() == "" {
-			t.Errorf("device %d reported no by-path", d.GetId())
-		}
+		got[d.GetId()] = d.GetStableId()
 	}
-	if got[0] != topdonByID {
-		t.Errorf("video0 by-id = %q, want %q", got[0], topdonByID)
+	if want := "by-id:" + topdonByID; got[0] != want {
+		t.Errorf("video0 stable id = %q, want %q", got[0], want)
 	}
-	if got[2] != arducamByID {
-		t.Errorf("video2 by-id = %q, want %q", got[2], arducamByID)
+	if want := "by-path:platform-xhci-hcd.0-usb-0:2.3:1.0-video-index0"; got[2] != want {
+		t.Errorf("video2 stable id = %q, want %q", got[2], want)
 	}
 }
 
@@ -227,9 +263,8 @@ func TestListCamerasWithoutStableNamesIsUnchanged(t *testing.T) {
 	if len(devices) != 1 {
 		t.Fatalf("got %d devices, want 1", len(devices))
 	}
-	if devices[0].GetById() != "" || devices[0].GetByPath() != "" {
-		t.Errorf("identity invented from nothing: by-id %q by-path %q",
-			devices[0].GetById(), devices[0].GetByPath())
+	if devices[0].GetStableId() != "" {
+		t.Errorf("identity invented from nothing: %q", devices[0].GetStableId())
 	}
 	if devices[0].GetId() != 0 || devices[0].GetName() != "USB Camera" {
 		t.Errorf("existing fields changed: %+v", devices[0])
@@ -247,8 +282,8 @@ func TestStreamDeviceIDPrefersTheName(t *testing.T) {
 		}
 	}
 	got, err := svc.streamDeviceID(&agentpb.StreamVideoRequest{
-		DeviceId:   0,
-		DeviceById: arducamByID,
+		DeviceId: 0,
+		StableId: "by-id:" + arducamByID,
 	})
 	if err != nil {
 		t.Fatalf("streamDeviceID: %v", err)
@@ -266,8 +301,8 @@ func TestStreamDeviceIDRefusesAnUnknownName(t *testing.T) {
 		return map[string]stableNames{"/dev/video0": {byID: topdonByID}}
 	}
 	_, err := svc.streamDeviceID(&agentpb.StreamVideoRequest{
-		DeviceId:   0,
-		DeviceById: arducamByID,
+		DeviceId: 0,
+		StableId: "by-id:" + arducamByID,
 	})
 	if err == nil {
 		t.Fatal("an absent camera resolved; it must refuse rather than fall back")

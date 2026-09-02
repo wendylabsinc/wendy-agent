@@ -24,7 +24,8 @@ message VideoDevice {
     bool has_credentials    = 10; // the agent holds a login for this camera
     bool online             = 11; // the most recent probe reached this camera
     string topic            = 12; // ROS 2 image topic, e.g. "/camera/image_raw"; empty for other transports
-    // Stable identity for a LOCAL camera, the counterpart of `mac` above.
+    // Stable identity for a LOCAL camera, the counterpart of `mac` above, and
+    // the name to pass to StreamVideoRequest.stable_id.
     //
     // `id` and `path` are the kernel's enumeration order, which is a property
     // of the boot and not of the camera: replugging or a reboot can renumber
@@ -32,15 +33,21 @@ message VideoDevice {
     // different camera. `name` and `driver` only identify the MODEL, so they
     // cannot separate two cameras of the same type.
     //
-    // by_id is derived from vendor + product + serial and survives both a
-    // reboot and a move to another USB port. by_path encodes the port topology
-    // instead: it survives a reboot but NOT a move, and is the only thing that
-    // can separate two same-model cameras whose serials are identical (a
-    // generic factory serial is common). Both are empty when the device has no
-    // /dev/v4l entry -- CSI and network cameras, or a kernel without the
-    // symlinks.
-    string by_id            = 13; // e.g. "usb-Acme_Camera_SN123-video-index0"
-    string by_path          = 14; // e.g. "platform-xhci-hcd.0-usb-0:2.3:1.0-video-index0"
+    // One camera has one stable_id. The value carries the scheme it came from,
+    // because the two names udev publishes are not equally durable:
+    //
+    //   by-id:<name>    vendor + product + serial; survives a reboot AND a
+    //                   move to another USB port. Reported whenever udev has
+    //                   one.
+    //   by-path:<name>  the USB port topology; survives a reboot but NOT a
+    //                   move. Reported only when there is no by-id name --
+    //                   two same-model cameras sharing a factory serial
+    //                   collide on a single by-id link, and the camera that
+    //                   loses it has nothing else that separates the two.
+    //
+    // Empty when the device has no /dev/v4l entry -- CSI and network cameras,
+    // or a kernel without the udev symlinks.
+    string stable_id        = 13; // e.g. "by-id:usb-Acme_Camera_SN123-video-index0"
 }
 
 enum VideoTransport {
@@ -81,17 +88,22 @@ message StreamVideoRequest {
     // waiting forever. A codec the agent cannot produce for a camera is refused
     // the same way rather than silently downgraded.
     VideoCodec codec  = 5;
-    // Address the camera by its stable identity instead of by device_id.
+    // Address the camera by the stable_id ListVideoDevices reported for it,
+    // scheme tag included, instead of by device_id.
     //
-    // When set this WINS over device_id and is resolved against the by_id
-    // reported by ListVideoDevices, at request time. That is the point: the
-    // number is resolved when the stream is opened rather than baked into a
-    // config that outlives the boot it was written on.
+    // When set this WINS over device_id and is resolved at request time. That
+    // is the point: the number is resolved when the stream is opened rather
+    // than baked into a config that outlives the boot it was written on.
+    //
+    // A "by-path:" name resolves too, even for a camera whose reported
+    // stable_id is a "by-id:" one: pinning a stream to a physical port is a
+    // legitimate thing to ask for, as long as the caller asks for it rather
+    // than inheriting it.
     //
     // No match is an error, deliberately. Falling back to device_id would
     // stream whatever the kernel happened to put at that number, which is the
     // silent-wrong-camera failure this field exists to remove.
-    string device_by_id = 6; // empty = address by device_id, as before
+    string stable_id  = 6; // empty = address by device_id, as before
 }
 
 // Credentials for a network camera. Stored on the device, never returned by any
