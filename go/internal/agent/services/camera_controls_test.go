@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,6 +139,20 @@ func newControlsTestService(t *testing.T) (*VideoService, *[]controlValue) {
 		}
 		return res, nil
 	}
+	svc.controlDefaultsFor = func(_ string, names []string) (map[string]int32, error) {
+		// The driver's defaults, as QUERYCTRL would report them.
+		all := map[string]int32{
+			"auto_exposure": 3, "exposure_time_absolute": 156,
+			"brightness": 128, "gain": 0, "zoom_absolute": 100,
+		}
+		out := map[string]int32{}
+		for _, n := range names {
+			if v, ok := all[n]; ok {
+				out[n] = v
+			}
+		}
+		return out, nil
+	}
 	svc.queryLocalControls = func(_ string) ([]*agentpb.CameraControl, error) {
 		return []*agentpb.CameraControl{{Name: "auto_exposure", Value: 3, Minimum: 0, Maximum: 3, Settable: true}}, nil
 	}
@@ -148,7 +163,7 @@ func TestSetCameraControls_RejectsNetworkCamera(t *testing.T) {
 	svc, _ := newControlsTestService(t)
 	_, err := svc.SetCameraControls(context.Background(), &agentpb.SetCameraControlsRequest{
 		DeviceId: ipcam.IDBandStart,
-		Controls: []*agentpb.CameraControl{{Name: "auto_exposure", Value: 1}},
+		Controls: []*agentpb.CameraControlSetting{{Name: "auto_exposure", Value: 1}},
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("want InvalidArgument for a network camera, got %v", err)
@@ -159,7 +174,7 @@ func TestSetCameraControls_UnknownControlReportedAndKnownApplied(t *testing.T) {
 	svc, captured := newControlsTestService(t)
 	resp, err := svc.SetCameraControls(context.Background(), &agentpb.SetCameraControlsRequest{
 		DeviceId: 0,
-		Controls: []*agentpb.CameraControl{
+		Controls: []*agentpb.CameraControlSetting{
 			{Name: "auto_exposure", Value: 1},
 			{Name: "totally_bogus", Value: 5},
 		},
@@ -204,7 +219,7 @@ func TestSetCameraControls_NoPersistDoesNotStore(t *testing.T) {
 	svc, _ := newControlsTestService(t)
 	if _, err := svc.SetCameraControls(context.Background(), &agentpb.SetCameraControlsRequest{
 		DeviceId: 0,
-		Controls: []*agentpb.CameraControl{{Name: "gain", Value: 10}},
+		Controls: []*agentpb.CameraControlSetting{{Name: "gain", Value: 10}},
 		Persist:  false,
 	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -283,5 +298,102 @@ func TestCameraControlStore_IsNotWorldReadable(t *testing.T) {
 	}
 	if perm := di.Mode().Perm(); perm != 0o700 {
 		t.Errorf("store dir mode = %#o, want 0700", perm)
+	}
+}
+
+// ── ResetCameraControls ─────────────────────────────────────────────────────
+//
+// Reset is its own RPC because it is a different operation from Set: it changes
+// what is PERSISTED as well as the value. These pin the three things that makes
+// it, none of which had a test while reset was a flag on Set.
+
+func TestResetCameraControls_AppliesTheDriverDefault(t *testing.T) {
+	svc, captured := newControlsTestService(t)
+	if _, err := svc.SetCameraControls(context.Background(), &agentpb.SetCameraControlsRequest{
+		DeviceId: 0,
+		Controls: []*agentpb.CameraControlSetting{{Name: "brightness", Value: 200}},
+		Persist:  true,
+	}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if _, err := svc.ResetCameraControls(context.Background(), &agentpb.ResetCameraControlsRequest{
+		DeviceId: 0, Names: []string{"brightness"},
+	}); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	// 128 is the driver's default, not the 200 that was set.
+	if len(*captured) != 1 || (*captured)[0].value != 128 {
+		t.Fatalf("reset wrote %+v, want brightness=128 (the driver default)", *captured)
+	}
+}
+
+func TestResetCameraControls_ForgetsEvenWhenTheWriteFails(t *testing.T) {
+	// The load-bearing one. A control the driver reports inactive right now
+	// (exposure_time_absolute while auto_exposure is on) cannot be written. If
+	// that also blocked forgetting it, the stored value would be re-asserted on
+	// every reopen with NO way to clear it. Reset is two promises -- stop
+	// persisting this, and put it back -- and the first must hold when the
+	// second cannot.
+	svc, _ := newControlsTestService(t)
+	if _, err := svc.SetCameraControls(context.Background(), &agentpb.SetCameraControlsRequest{
+		DeviceId: 0,
+		Controls: []*agentpb.CameraControlSetting{{Name: "exposure_time_absolute", Value: 20}},
+		Persist:  true,
+	}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if got := svc.controls.get("/dev/video0"); len(got) != 1 {
+		t.Fatalf("precondition: want 1 stored control, got %v", got)
+	}
+
+	svc.applyLocalControls = func(string, []controlValue) ([]*agentpb.CameraControlResult, error) {
+		return nil, errors.New("device busy")
+	}
+	_, _ = svc.ResetCameraControls(context.Background(), &agentpb.ResetCameraControlsRequest{
+		DeviceId: 0, Names: []string{"exposure_time_absolute"},
+	})
+	if got := svc.controls.get("/dev/video0"); len(got) != 0 {
+		t.Errorf("a failed write kept the control stored (%v); it would be re-asserted forever", got)
+	}
+}
+
+func TestResetCameraControls_NoNamesMeansEveryPersistedControl(t *testing.T) {
+	// The case after a tuning session went wrong: put the camera back as it
+	// shipped without having to remember what was changed.
+	svc, captured := newControlsTestService(t)
+	if _, err := svc.SetCameraControls(context.Background(), &agentpb.SetCameraControlsRequest{
+		DeviceId: 0,
+		Controls: []*agentpb.CameraControlSetting{
+			{Name: "brightness", Value: 200},
+			{Name: "gain", Value: 40},
+		},
+		Persist: true,
+	}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if _, err := svc.ResetCameraControls(context.Background(), &agentpb.ResetCameraControlsRequest{
+		DeviceId: 0, // no Names
+	}); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	got := map[string]int32{}
+	for _, c := range *captured {
+		got[c.name] = c.value
+	}
+	if got["brightness"] != 128 || got["gain"] != 0 {
+		t.Errorf("reset-all wrote %v, want the driver defaults for both", got)
+	}
+	if left := svc.controls.get("/dev/video0"); len(left) != 0 {
+		t.Errorf("controls still persisted after reset-all: %v", left)
+	}
+}
+
+func TestResetCameraControls_RejectsNetworkCamera(t *testing.T) {
+	svc, _ := newControlsTestService(t)
+	_, err := svc.ResetCameraControls(context.Background(), &agentpb.ResetCameraControlsRequest{
+		DeviceId: ipcam.IDBandStart, Names: []string{"gain"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument for a network camera, got %v", err)
 	}
 }

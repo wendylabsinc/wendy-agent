@@ -135,7 +135,7 @@ persisting them, and --reset-all does that for every settable control:
 				return listControlsForChoice(cmd, id)
 			}
 
-			var controls []*agentpb.CameraControl
+			var controls []*agentpb.CameraControlSetting
 			if len(args) > 1 {
 				controls, err = parseControlAssignments(args[1:])
 				if err != nil {
@@ -165,24 +165,41 @@ persisting them, and --reset-all does that for every settable control:
 					reset = append(reset, c.GetName())
 				}
 			}
-			for _, name := range reset {
-				controls = append(controls, &agentpb.CameraControl{
-					Name: strings.TrimSpace(name), Reset_: true,
-				})
-			}
-			if len(controls) == 0 {
+			if len(controls) == 0 && len(reset) == 0 {
 				return fmt.Errorf("nothing to do: give name=value pairs, --reset <name>, or --reset-all")
 			}
 
-			resp, err := conn.VideoService.SetCameraControls(ctx, &agentpb.SetCameraControlsRequest{
-				DeviceId: id,
-				Controls: controls,
-				Persist:  !noPersist,
-			})
-			if err != nil {
-				return fmt.Errorf("setting camera controls: %w", err)
+			// Set and reset are separate RPCs because they are separate
+			// operations -- reset changes what is PERSISTED, not just the
+			// value. Both can appear in one command line, so both are sent,
+			// and the results are reported together as one list.
+			var results []*agentpb.CameraControlResult
+			if len(controls) > 0 {
+				resp, err := conn.VideoService.SetCameraControls(ctx, &agentpb.SetCameraControlsRequest{
+					DeviceId: id,
+					Controls: controls,
+					Persist:  !noPersist,
+				})
+				if err != nil {
+					return fmt.Errorf("setting camera controls: %w", err)
+				}
+				results = append(results, resp.GetResults()...)
 			}
-			return reportControlResults(cmd.OutOrStdout(), id, resp.GetResults())
+			if len(reset) > 0 {
+				names := make([]string, 0, len(reset))
+				for _, n := range reset {
+					names = append(names, strings.TrimSpace(n))
+				}
+				resp, err := conn.VideoService.ResetCameraControls(ctx, &agentpb.ResetCameraControlsRequest{
+					DeviceId: id,
+					Names:    names,
+				})
+				if err != nil {
+					return fmt.Errorf("resetting camera controls: %w", err)
+				}
+				results = append(results, resp.GetResults()...)
+			}
+			return reportControlResults(cmd.OutOrStdout(), id, results)
 		},
 	}
 	cmd.Flags().BoolVar(&noPersist, "no-persist", false,
@@ -197,8 +214,8 @@ persisting them, and --reset-all does that for every settable control:
 // parseControlAssignments turns name=value arguments into proto controls. Values
 // are integers: V4L2 controls are integer-valued (a menu like auto_exposure is
 // its numeric index, e.g. 1=Manual).
-func parseControlAssignments(args []string) ([]*agentpb.CameraControl, error) {
-	out := make([]*agentpb.CameraControl, 0, len(args))
+func parseControlAssignments(args []string) ([]*agentpb.CameraControlSetting, error) {
+	out := make([]*agentpb.CameraControlSetting, 0, len(args))
 	for _, a := range args {
 		name, val, ok := strings.Cut(a, "=")
 		name = strings.TrimSpace(name)
@@ -209,7 +226,7 @@ func parseControlAssignments(args []string) ([]*agentpb.CameraControl, error) {
 		if err != nil {
 			return nil, fmt.Errorf("control %q: value %q is not an integer", name, val)
 		}
-		out = append(out, &agentpb.CameraControl{Name: name, Value: int32(n)})
+		out = append(out, &agentpb.CameraControlSetting{Name: name, Value: int32(n)})
 	}
 	return out, nil
 }

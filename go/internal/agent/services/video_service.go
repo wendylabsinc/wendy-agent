@@ -651,6 +651,11 @@ type VideoService struct {
 	// A seam for the same reason as the two above: the tests must not need a
 	// real /dev/videoN to exercise name resolution.
 	controlIndexFor func(path string) (map[string]uint32, error)
+	// controlDefaultsFor reads the driver's own default for each named control.
+	// A seam for the same reason: ResetCameraControls has to ask the hardware
+	// what "default" means, and its behaviour -- including that it forgets a
+	// stored control even when the write fails -- must be testable without one.
+	controlDefaultsFor func(path string, names []string) (map[string]int32, error)
 
 	ctx    context.Context    // cancelled on Shutdown; hub contexts are derived from this
 	cancel context.CancelFunc // cancels ctx
@@ -711,6 +716,7 @@ func NewVideoService(ctx context.Context, logger *zap.Logger, rosRuntime ...ROS2
 	}
 	svc.controls = newCameraControlStore(cameraControlsPath)
 	svc.applyLocalControls = applyCameraControlsV4L2
+	svc.controlDefaultsFor = cameraControlDefaults
 	svc.queryLocalControls = queryCameraControlsV4L2
 	svc.controlIndexFor = cameraControlIndex
 	if err := svc.controls.Load(); err != nil {

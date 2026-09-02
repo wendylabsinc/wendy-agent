@@ -459,6 +459,11 @@ func (s *VideoService) GetCameraControls(_ context.Context, req *agentpb.GetCame
 
 // SetCameraControls sets controls on a local camera and, when persist is set,
 // remembers them so they survive a pipeline reopen and an agent restart.
+//
+// Setting only. Putting a control BACK is ResetCameraControls: it is a
+// different verb, changing the persisted state as well as the value, and
+// folding it in here as a flag meant every request carried a field that made
+// `value` meaningless whenever it was true.
 func (s *VideoService) SetCameraControls(_ context.Context, req *agentpb.SetCameraControlsRequest) (*agentpb.SetCameraControlsResponse, error) {
 	path, err := localCameraPath(req.GetDeviceId())
 	if err != nil {
@@ -476,49 +481,15 @@ func (s *VideoService) SetCameraControls(_ context.Context, req *agentpb.SetCame
 		return nil, status.Errorf(codes.Internal, "reading controls from %s: %v", path, err)
 	}
 
-	// A control asked to reset takes the driver's default instead of the value
-	// in the request, and is dropped from the store afterwards so the reopen
-	// hook stops re-asserting it.
-	var resetNames []string
-	for _, c := range req.GetControls() {
-		if c.GetReset_() {
-			resetNames = append(resetNames, c.GetName())
-		}
-	}
-	defaults := map[string]int32{}
-	if len(resetNames) > 0 {
-		defaults, err = cameraControlDefaults(path, resetNames)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "reading defaults from %s: %v", path, err)
-		}
-	}
-
 	var resolved []controlValue
 	results := make([]*agentpb.CameraControlResult, 0, len(req.GetControls()))
-	unknown := map[string]bool{}
 	for _, c := range req.GetControls() {
 		cid, ok := index[c.GetName()]
 		if !ok {
-			unknown[c.GetName()] = true
-			results = append(results, &agentpb.CameraControlResult{
-				Name: c.GetName(), Applied: false,
-				Detail: "this camera has no control by that name",
-			})
+			results = append(results, unknownControlResult(c.GetName()))
 			continue
 		}
-		value := c.GetValue()
-		if c.GetReset_() {
-			def, known := defaults[c.GetName()]
-			if !known {
-				results = append(results, &agentpb.CameraControlResult{
-					Name: c.GetName(), Applied: false,
-					Detail: "this camera reports no default for that control",
-				})
-				continue
-			}
-			value = def
-		}
-		resolved = append(resolved, controlValue{name: c.GetName(), cid: cid, value: value})
+		resolved = append(resolved, controlValue{name: c.GetName(), cid: cid, value: c.GetValue()})
 	}
 
 	if len(resolved) > 0 {
@@ -528,39 +499,15 @@ func (s *VideoService) SetCameraControls(_ context.Context, req *agentpb.SetCame
 		}
 		results = append(results, applied...)
 
-		// Forget what was reset before persisting the rest: a control that was
-		// both stored and reset must not survive in the store, or the next
-		// reopen puts the old value straight back.
-		if len(resetNames) > 0 && s.controls != nil {
-			// Forget UNCONDITIONALLY -- not only where the write succeeded.
-			// A control the driver reports inactive right now (exposure_time_
-			// absolute while auto_exposure is on) cannot be written, and if
-			// that also blocked forgetting it, the stored value would be
-			// re-asserted on every reopen with no way to clear it. Reset is
-			// two promises: stop persisting this, and put it back. The first
-			// must hold even when the second cannot.
-			if err := s.controls.remove(path, resetNames); err != nil {
-				s.logger.Warn("forgetting reset camera controls failed",
-					zap.String("device", path), zap.Error(err))
-			}
-		}
-
 		if req.GetPersist() && s.controls != nil {
-			// A reset must not be re-stored here: it was just removed above,
-			// and persisting the default would leave the control pinned to a
-			// value the driver would have chosen anyway -- and pinned is
-			// exactly what reset undoes.
-			isReset := make(map[string]bool, len(resetNames))
-			for _, n := range resetNames {
-				isReset[n] = true
-			}
 			var toStore []storedControl
 			for _, r := range applied {
-				if r.GetApplied() && !isReset[r.GetName()] {
-					for _, rv := range resolved {
-						if rv.name == r.GetName() {
-							toStore = append(toStore, storedControl{Name: rv.name, Value: rv.value})
-						}
+				if !r.GetApplied() {
+					continue
+				}
+				for _, rv := range resolved {
+					if rv.name == r.GetName() {
+						toStore = append(toStore, storedControl{Name: rv.name, Value: rv.value})
 					}
 				}
 			}
@@ -572,8 +519,103 @@ func (s *VideoService) SetCameraControls(_ context.Context, req *agentpb.SetCame
 			}
 		}
 	}
-	_ = unknown
 	return &agentpb.SetCameraControlsResponse{Results: results}, nil
+}
+
+// ResetCameraControls puts controls back to the driver's own defaults and stops
+// persisting them.
+//
+// Its own RPC rather than a flag on Set because it is a different operation:
+// Set says "make it this", Reset says "forget I ever said anything". It changes
+// the STORE as well as the value, and a caller that modelled it as "set to the
+// default value" would leave the control pinned to that default forever --
+// which is precisely what reset undoes.
+//
+// The default comes from the driver (QUERYCTRL), so the camera answers rather
+// than the caller having to know.
+func (s *VideoService) ResetCameraControls(_ context.Context, req *agentpb.ResetCameraControlsRequest) (*agentpb.ResetCameraControlsResponse, error) {
+	path, err := localCameraPath(req.GetDeviceId())
+	if err != nil {
+		return nil, err
+	}
+
+	// No names means every control currently persisted for this camera. That is
+	// the case that matters after a tuning session went wrong: the caller wants
+	// the camera back as it shipped and should not have to remember what it
+	// changed to get there.
+	names := req.GetNames()
+	if len(names) == 0 {
+		if s.controls == nil {
+			return &agentpb.ResetCameraControlsResponse{}, nil
+		}
+		for _, sc := range s.controls.get(path) {
+			names = append(names, sc.Name)
+		}
+		if len(names) == 0 {
+			return &agentpb.ResetCameraControlsResponse{}, nil
+		}
+	}
+
+	// Forget FIRST, and unconditionally -- not only where the write below
+	// succeeds. A control the driver reports inactive right now
+	// (exposure_time_absolute while auto_exposure is on) cannot be written, and
+	// if that also blocked forgetting it the stored value would be re-asserted
+	// on every reopen with no way to clear it. Reset is two promises: stop
+	// persisting this, and put it back. The first must hold even when the
+	// second cannot.
+	if s.controls != nil {
+		if err := s.controls.remove(path, names); err != nil {
+			s.logger.Warn("forgetting reset camera controls failed",
+				zap.String("device", path), zap.Error(err))
+		}
+	}
+
+	index, err := s.controlIndexFor(path)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "reading controls from %s: %v", path, err)
+	}
+	defaults, err := s.controlDefaultsFor(path, names)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "reading defaults from %s: %v", path, err)
+	}
+
+	var resolved []controlValue
+	results := make([]*agentpb.CameraControlResult, 0, len(names))
+	for _, name := range names {
+		cid, ok := index[name]
+		if !ok {
+			results = append(results, unknownControlResult(name))
+			continue
+		}
+		def, known := defaults[name]
+		if !known {
+			results = append(results, &agentpb.CameraControlResult{
+				Name: name, Applied: false,
+				Detail: "this camera reports no default for that control",
+			})
+			continue
+		}
+		resolved = append(resolved, controlValue{name: name, cid: cid, value: def})
+	}
+
+	if len(resolved) > 0 {
+		applied, err := s.applyLocalControls(path, resolved)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "opening %s: %v", path, err)
+		}
+		results = append(results, applied...)
+	}
+	return &agentpb.ResetCameraControlsResponse{Results: results}, nil
+}
+
+// unknownControlResult is the answer for a name this camera does not expose.
+// Shared so Set and Reset word it identically -- an operator comparing the two
+// should not have to wonder whether a different phrasing means something else.
+func unknownControlResult(name string) *agentpb.CameraControlResult {
+	return &agentpb.CameraControlResult{
+		Name: name, Applied: false,
+		Detail: "this camera has no control by that name",
+	}
 }
 
 // applyStoredCameraControls re-asserts any persisted controls for a local

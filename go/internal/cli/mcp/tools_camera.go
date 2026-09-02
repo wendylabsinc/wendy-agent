@@ -127,7 +127,7 @@ func (s *mcpServer) handleCameraSetControl(ctx context.Context, req mcpgo.CallTo
 		return errResultf(errCodeInvalidArgument, "%v", err), nil
 	}
 
-	var controls []*agentpb.CameraControl
+	var controls []*agentpb.CameraControlSetting
 	for _, pair := range splitList(stringParam(req, "controls")) {
 		name, val, ok := strings.Cut(pair, "=")
 		name = strings.TrimSpace(name)
@@ -138,7 +138,7 @@ func (s *mcpServer) handleCameraSetControl(ctx context.Context, req mcpgo.CallTo
 		if convErr != nil {
 			return errResultf(errCodeInvalidArgument, "control %q: value %q is not an integer", name, val), nil
 		}
-		controls = append(controls, &agentpb.CameraControl{Name: name, Value: int32(n)})
+		controls = append(controls, &agentpb.CameraControlSetting{Name: name, Value: int32(n)})
 	}
 
 	resetNames := splitList(stringParam(req, "reset"))
@@ -156,24 +156,38 @@ func (s *mcpServer) handleCameraSetControl(ctx context.Context, req mcpgo.CallTo
 			resetNames = append(resetNames, c.GetName())
 		}
 	}
-	for _, name := range resetNames {
-		controls = append(controls, &agentpb.CameraControl{Name: name, Reset_: true})
-	}
-	if len(controls) == 0 {
+	if len(controls) == 0 && len(resetNames) == 0 {
 		return errResultf(errCodeInvalidArgument,
 			"nothing to do: give controls, reset, or reset_all"), nil
 	}
 
-	resp, err := conn.VideoService.SetCameraControls(ctx, &agentpb.SetCameraControlsRequest{
-		DeviceId: id,
-		Controls: controls,
-		Persist:  req.GetBool("persist", true),
-	})
-	if err != nil {
-		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
+	// Setting and resetting are separate RPCs: reset changes what is PERSISTED,
+	// not just the value. Both may appear in one call, so both are sent and the
+	// results reported as one list.
+	var allResults []*agentpb.CameraControlResult
+	if len(controls) > 0 {
+		resp, err := conn.VideoService.SetCameraControls(ctx, &agentpb.SetCameraControlsRequest{
+			DeviceId: id,
+			Controls: controls,
+			Persist:  req.GetBool("persist", true),
+		})
+		if err != nil {
+			return errResult(codeFromGRPC(err), grpcErrString(err)), nil
+		}
+		allResults = append(allResults, resp.GetResults()...)
 	}
-	results := make([]map[string]any, 0, len(resp.GetResults()))
-	for _, r := range resp.GetResults() {
+	if len(resetNames) > 0 {
+		resp, err := conn.VideoService.ResetCameraControls(ctx, &agentpb.ResetCameraControlsRequest{
+			DeviceId: id,
+			Names:    resetNames,
+		})
+		if err != nil {
+			return errResult(codeFromGRPC(err), grpcErrString(err)), nil
+		}
+		allResults = append(allResults, resp.GetResults()...)
+	}
+	results := make([]map[string]any, 0, len(allResults))
+	for _, r := range allResults {
 		entry := map[string]any{"name": r.GetName(), "applied": r.GetApplied()}
 		// The reason a control did not apply is the useful half -- "this camera
 		// has no control by that name" is actionable, a bare false is not.
