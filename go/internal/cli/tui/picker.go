@@ -213,6 +213,21 @@ type PickerModel struct {
 	// If nil, 'r' is ignored.
 	OnRemoveItem func(item PickerItem) (string, bool, *PickerItem)
 
+	// OnCreateItem is called when the user presses 'c'. Returning quit=true
+	// closes the picker, which an action needing the terminal to itself must
+	// do: creating a VM downloads an image behind its own progress program,
+	// and two Bubble Tea programs cannot share a terminal.
+	// If nil, 'c' is ignored.
+	OnCreateItem func() (flash string, quit bool)
+
+	// OnStopItem is called when the user presses 's' on the highlighted item.
+	// Returns (flash message, isError). If nil, 's' is ignored.
+	OnStopItem func(item PickerItem) (string, bool)
+
+	// RemoveHint is the wording for 'r' in the header, for a picker whose rows
+	// are not cloud credentials. Empty keeps the default.
+	RemoveHint string
+
 	// OnCopyItem is called when the user presses Enter. The callback should
 	// perform the copy operation (e.g. write to clipboard) and return a flash
 	// confirmation message. When set, Enter does NOT navigate away — the picker
@@ -375,6 +390,25 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.flashMessage = m.OnUnsetDefault()
 				m.flashIsError = false
 				m.refreshTable()
+			}
+			return m, nil
+		case key == "c" && !m.Filterable:
+			if m.OnCreateItem != nil {
+				flash, quit := m.OnCreateItem()
+				m.flashMessage = flash
+				m.flashIsError = false
+				if quit {
+					return m, tea.Quit
+				}
+			}
+			return m, nil
+		case key == "s" && !m.Filterable:
+			if m.OnStopItem != nil {
+				visible := m.visibleItems()
+				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+					m.flashMessage, m.flashIsError = m.OnStopItem(visible[idx])
+					m.refreshTable()
+				}
 			}
 			return m, nil
 		case key == "r" && !m.Filterable:
@@ -563,7 +597,8 @@ func (m PickerModel) View() string {
 	if m.Filterable {
 		hint = " (type to filter, ↑/↓ navigate" + scrollHint + ", " + enterAction + ", esc quit)"
 	}
-	if m.OnSetDefault != nil || m.OnUnsetDefault != nil || m.OnRemoveItem != nil {
+	if m.OnSetDefault != nil || m.OnUnsetDefault != nil || m.OnRemoveItem != nil ||
+		m.OnCreateItem != nil || m.OnStopItem != nil {
 		extras := ""
 		if m.OnSetDefault != nil {
 			extras += ", d set default"
@@ -571,8 +606,18 @@ func (m PickerModel) View() string {
 		if m.OnUnsetDefault != nil {
 			extras += ", x clear default"
 		}
+		if m.OnCreateItem != nil {
+			extras += ", c create"
+		}
+		if m.OnStopItem != nil {
+			extras += ", s stop"
+		}
 		if m.OnRemoveItem != nil {
-			extras += ", r remove creds"
+			label := m.RemoveHint
+			if label == "" {
+				label = "remove creds"
+			}
+			extras += ", r " + label
 		}
 		hint = " (↑/↓ navigate" + scrollHint + ", " + enterAction + extras + ", q quit)"
 	}

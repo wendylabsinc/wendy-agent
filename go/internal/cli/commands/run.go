@@ -723,6 +723,11 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 	if errors.Is(err, ErrUserCancelled) {
 		return nil, err
 	}
+	// The user picked a local VM. Falling back to a cloud device here would
+	// deploy their app to an entirely different machine and report success.
+	if errors.Is(err, errSimulatorUnavailable) {
+		return nil, err
+	}
 
 	cfg, loadErr := config.Load()
 	if loadErr != nil || len(cfg.Auth) == 0 {
