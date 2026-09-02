@@ -119,10 +119,15 @@ the delivery and is neither retried nor pushed around.
 ## Disk on the build host
 
 The OCI tar (compressed image size) lives beside the context directory for the
-duration of the RPC and is removed after; up to four decompressed layers are on
-disk at a time and are removed with it. The registry-push path kept the same
-image in BuildKit's store, so the working set grows by roughly one compressed
-image plus the in-flight layers.
+duration of the RPC and is removed after. Each layer a device lacks is
+decompressed into a scratch file — at most four at a time — that is kept until
+the delivery to that device ends, so a resumed attempt costs round trips rather
+than CPU, and is removed with it. The peak working set is therefore one
+compressed image plus the uncompressed size of every layer the device lacks,
+and it lands on the state directory's filesystem, which need not be the BuildKit
+root whose free space `GetBuildCapabilities` reports. The registry-push path
+kept the same image in BuildKit's store, so the working set grows by roughly
+one compressed image plus those layers.
 
 ## Testing
 

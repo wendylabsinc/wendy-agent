@@ -44,6 +44,7 @@ type fakeTargetAgent struct {
 	noChunks   bool  // QueryChunks answers Unimplemented: an agent with no chunk store
 	noPrepare  bool  // PrepareImage answers Unimplemented: an agent that cannot register by name
 	prepareErr error // PrepareImage fails with this immediately
+	noLayers   bool  // QueryLayers answers Unimplemented: an agent that cannot say which layers it holds
 	// dropAfter, when > 0, fails the WriteChunks stream that receives the Nth
 	// chunk overall with Unavailable, once — a link dying mid-transfer.
 	dropAfter int
@@ -72,6 +73,9 @@ func (f *fakeTargetAgent) QueryChunks(_ context.Context, req *agentpb.QueryChunk
 }
 
 func (f *fakeTargetAgent) QueryLayers(_ context.Context, req *agentpb.QueryLayersRequest) (*agentpb.QueryLayersResponse, error) {
+	if f.noLayers {
+		return nil, status.Error(codes.Unimplemented, "unknown method QueryLayers")
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	resp := &agentpb.QueryLayersResponse{}
@@ -672,5 +676,94 @@ func TestBuildctlOCIArgs_ExportsToDest(t *testing.T) {
 	}
 	if _, err := buildctlOCIArgs("/ctx", "../Dockerfile", "linux/arm64", nil, "/x.tar"); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("got %v, want the same shape checks as the push variant", err)
+	}
+}
+
+// A device that cannot say which layers it holds costs the optimisation, not
+// the delivery: every layer is chunked, and the build log says so. A silent
+// fallback here would hide a link problem behind a slow transfer.
+func TestDeliverByChunks_LayerPreCheckFailureIsLoggedAndChunksEveryLayer(t *testing.T) {
+	img, ti := deliveryFixture(t)
+	layers := testImageLayers()
+	total := 0
+	for _, l := range layers {
+		refs, err := chunk.ChunkBytes(l.content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += len(refs)
+	}
+
+	fake := newFakeTargetAgent()
+	fake.noLayers = true
+	// The device does hold layer 0 in full; it just cannot be asked.
+	fake.layers[ti.diffIDs[0]] = int64(len(layers[0].content))
+	svc, stream := deliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
+	target := &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"}
+	if err := svc.deliverByChunks(context.Background(), &buildProgress{stream: stream}, 0, img, target); err != nil {
+		t.Fatalf("deliverByChunks: a failed layer pre-check must not fail the delivery, got %v", err)
+	}
+
+	written, _, prepared := fake.snapshot()
+	if written != total {
+		t.Fatalf("device received %d chunks, want all %d: without a pre-check every layer is chunked", written, total)
+	}
+	if len(prepared) != 1 {
+		t.Fatalf("PrepareImage called %d times, want 1", len(prepared))
+	}
+	if lines := progressLines(stream); !containsLine(lines, "which layers it already holds") {
+		t.Fatalf("the build log must say the pre-check failed and why; got %q", lines)
+	}
+}
+
+// An upload can fail after PrepareImage has already returned: when every chunk
+// was staged by an earlier attempt the device registers the image at once, and
+// the upload's own QueryChunks or CloseAndRecv then loses the link. The
+// preparation goroutine reports once; settling must not wait for it twice.
+func TestSettleUploadFailure_PrepareAlreadyFinishedDoesNotHang(t *testing.T) {
+	uploadErr := errors.New("querying missing chunks of layer sha256:abc: EOF")
+	prepareDone := make(chan error, 1)
+	prepareDone <- nil
+	got := settleWithin(t, 214, uploadErr, prepareDone, func() {})
+	if !errors.Is(got, uploadErr) {
+		t.Fatalf("got %v, want the upload's own error once preparation has succeeded", got)
+	}
+}
+
+func TestSettleUploadFailure_PrepareFailedFirstIsTheRealError(t *testing.T) {
+	prepareDone := make(chan error, 1)
+	prepareDone <- status.Error(codes.FailedPrecondition, "image config rejected")
+	got := settleWithin(t, 214, context.Canceled, prepareDone, func() {})
+	if code, _ := grpcStatusCode(got); code != codes.FailedPrecondition {
+		t.Fatalf("got %v, want the device's refusal, not the upload's cancellation", got)
+	}
+}
+
+func TestSettleUploadFailure_PrepareStillRunningIsCancelledAndAwaited(t *testing.T) {
+	uploadErr := errors.New("opening chunk upload for layer sha256:abc: EOF")
+	prepareDone := make(chan error, 1)
+	cancelled := make(chan struct{})
+	go func() {
+		<-cancelled
+		prepareDone <- context.Canceled
+	}()
+	got := settleWithin(t, 214, uploadErr, prepareDone, func() { close(cancelled) })
+	if !errors.Is(got, uploadErr) {
+		t.Fatalf("got %v, want the upload's error after preparation was cancelled", got)
+	}
+}
+
+// settleWithin bounds settleUploadFailure so a regression fails the test in
+// seconds instead of hanging the suite the way it would hang the RPC.
+func settleWithin(t *testing.T, assetID int32, uploadErr error, prepareDone <-chan error, cancelPrepare context.CancelFunc) error {
+	t.Helper()
+	out := make(chan error, 1)
+	go func() { out <- settleUploadFailure(assetID, uploadErr, prepareDone, cancelPrepare) }()
+	select {
+	case err := <-out:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatal("settleUploadFailure hung: it waited for a preparation result that had already been taken")
+		return nil
 	}
 }

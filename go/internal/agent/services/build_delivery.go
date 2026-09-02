@@ -385,7 +385,10 @@ func (s *BuildService) deliverByChunksOnce(ctx context.Context, rep *deliveryRep
 		}
 		return fmt.Errorf("querying device %d's chunk store: %w", assetID, err)
 	}
-	present := presentLayersOn(ctx, cs, img)
+	present, err := presentLayersOn(ctx, cs, img)
+	if err != nil {
+		rep.detail("could not ask device %d which layers it already holds (%v); chunking every layer", assetID, err)
+	}
 
 	// Classify every layer before resolving any, so the cache of decompressed
 	// layers is read and written from one goroutine.
@@ -474,18 +477,7 @@ func (s *BuildService) deliverByChunksOnce(ctx context.Context, rep *deliveryRep
 			g.Go(func() error { return uploadLayerChunks(gctx, cs, dl, rep) })
 		}
 		if uploadErr := g.Wait(); uploadErr != nil {
-			// When preparation failed first it cancelled the upload, and its
-			// error is the real one; the upload's is just "context canceled".
-			select {
-			case prepareErr := <-prepareDone:
-				if prepareErr != nil {
-					return classifyPrepareError(assetID, prepareErr)
-				}
-			default:
-			}
-			cancelPrepare()
-			<-prepareDone
-			return uploadErr
+			return settleUploadFailure(assetID, uploadErr, prepareDone, cancelPrepare)
 		}
 	}
 
@@ -498,23 +490,48 @@ func (s *BuildService) deliverByChunksOnce(ctx context.Context, rep *deliveryRep
 	}
 }
 
+// settleUploadFailure decides what an upload failure means once preparation
+// is accounted for. Preparation may have failed first — it cancels the upload
+// when it does, so its error is the real one and the upload's is just "context
+// canceled". It may still be running, in which case it is cancelled and
+// awaited so the goroutine does not outlive the attempt. Or it may already
+// have finished: when every chunk was staged by an earlier attempt the device
+// registers the image at once, and the upload's own QueryChunks or
+// CloseAndRecv can still lose the link afterwards. The goroutine reports
+// exactly once, so a second wait in that case would hang the RPC for good.
+func settleUploadFailure(assetID int32, uploadErr error, prepareDone <-chan error, cancelPrepare context.CancelFunc) error {
+	select {
+	case prepareErr := <-prepareDone:
+		if prepareErr != nil {
+			return classifyPrepareError(assetID, prepareErr)
+		}
+		return uploadErr
+	default:
+	}
+	cancelPrepare()
+	<-prepareDone
+	return uploadErr
+}
+
 // presentLayersOn asks the device which layers it already holds, by diff ID.
-// Purely an optimisation: an agent too old for QueryLayers, or any failure,
-// yields nil and every layer is chunked as before.
-func presentLayersOn(ctx context.Context, cs agentpb.WendyContainerServiceClient, img *exportedImage) map[string]int64 {
+// Purely an optimisation: on any failure, including an agent too old for
+// QueryLayers, the caller chunks every layer as before — but says so, since a
+// pre-check that fails on the link the delivery is about to use is worth a
+// line in the log.
+func presentLayersOn(ctx context.Context, cs agentpb.WendyContainerServiceClient, img *exportedImage) (map[string]int64, error) {
 	ids := make([]string, 0, len(img.layers))
 	for _, l := range img.layers {
 		ids = append(ids, l.diffID)
 	}
 	resp, err := cs.QueryLayers(ctx, &agentpb.QueryLayersRequest{DiffIds: ids})
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := make(map[string]int64, len(resp.GetPresent()))
 	for _, p := range resp.GetPresent() {
 		out[p.GetDiffId()] = p.GetSize()
 	}
-	return out
+	return out, nil
 }
 
 // uploadLayerChunks sends the chunks of one layer the device reports missing.
