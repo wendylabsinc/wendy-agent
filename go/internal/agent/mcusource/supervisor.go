@@ -85,13 +85,45 @@ func backoffDelay(level int) time.Duration {
 }
 
 // RunPairing reconciles a single pairing until ctx is cancelled.
+//
+// addr decides the dial target for every (re)connect. A non-empty addr is an
+// explicitly-pinned target (a caller that wants this exact address) and is
+// reused unchanged for the life of the pairing. An empty addr is the dynamic,
+// identity-resolved case — the common `device pair` path, which sends no
+// address — and is RE-resolved by asset id (via the resolveLANAddr seam)
+// before every attempt: when the source's address changes (e.g. a Mac
+// rejoins WiFi with a new IP), the next reconnect re-browses mDNS and dials
+// the source's CURRENT address instead of forever redialing the stale one.
 func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr string) error {
+	pinned := addr != ""
 	level := 0
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		delivered, err := s.streamOnce(ctx, p, addr)
+		dialAddr := addr
+		if !pinned {
+			rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
+			resolved, ok := resolveLANAddr(rctx, p.SourceAssetID, p.Transport)
+			rcancel()
+			if !ok {
+				// Source not (yet) on the LAN — boot-resume before it's up, or
+				// mid-move between addresses. Back off on the same schedule as
+				// a failed stream and retry the browse.
+				s.logger.Warn("sensor source not found on LAN, retrying", zap.Int32("source", p.SourceAssetID))
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoffDelay(level)):
+				}
+				if level < 5 {
+					level++
+				}
+				continue
+			}
+			dialAddr = resolved
+		}
+		delivered, err := s.streamOnce(ctx, p, dialAddr)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

@@ -5,7 +5,6 @@ import (
 	"net"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/sensorlink"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -61,9 +60,11 @@ func NewRunner(logger *zap.Logger, sup *Supervisor) *Runner {
 
 // Start (re)launches the supervisor goroutine for p. If a goroutine is
 // already running for this source asset id, it is stopped first. addr == ""
-// means resolve the source's LAN address by asset id (used on boot-resume,
-// where the pairing store has no address on file) before RunPairing takes
-// over reconnect/backoff for good.
+// means the source's LAN address is resolved by asset id (used on boot-resume
+// and the common `device pair` path, where the pairing store has no address
+// on file); RunPairing then owns that resolution and RE-resolves on every
+// reconnect so a source that changes IP is still found. A non-empty addr is a
+// pinned target RunPairing reuses unchanged.
 func (r *Runner) Start(p SensorPairing, addr string) {
 	r.Stop(p.SourceAssetID)
 
@@ -73,42 +74,10 @@ func (r *Runner) Start(p SensorPairing, addr string) {
 	r.mu.Unlock()
 
 	go func() {
-		a, ok := r.resolveAddr(ctx, p, addr)
-		if !ok {
-			return // ctx was cancelled (Stop/re-Start) while still resolving
-		}
-		if err := r.sup.RunPairing(ctx, p, a); err != nil && ctx.Err() == nil {
+		if err := r.sup.RunPairing(ctx, p, addr); err != nil && ctx.Err() == nil {
 			r.logger.Warn("sensor pairing supervisor exited", zap.Int32("source", p.SourceAssetID), zap.Error(err))
 		}
 	}()
-}
-
-// resolveAddr returns addr unchanged when non-empty; otherwise it repeatedly
-// browses the LAN for sourceAssetID (boot-resume has no address on file)
-// until it finds one or ctx is cancelled. ok is false only when ctx ended
-// first.
-func (r *Runner) resolveAddr(ctx context.Context, p SensorPairing, addr string) (string, bool) {
-	if addr != "" {
-		return addr, true
-	}
-	level := 0
-	for {
-		rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-		resolved, ok := resolveLANAddr(rctx, p.SourceAssetID, p.Transport)
-		rcancel()
-		if ok {
-			return resolved, true
-		}
-		r.logger.Warn("sensor source not found on LAN, retrying", zap.Int32("source", p.SourceAssetID))
-		select {
-		case <-ctx.Done():
-			return "", false
-		case <-time.After(backoffDelay(level)):
-		}
-		if level < 5 {
-			level++
-		}
-	}
 }
 
 // IsRunning reports whether a supervisor goroutine is currently active for
