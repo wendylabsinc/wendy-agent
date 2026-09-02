@@ -46,6 +46,11 @@ const (
 	// we see availability regressions.
 	grpcKeepaliveTime    = 15 * time.Minute
 	grpcKeepaliveTimeout = 10 * time.Second
+
+	// A connection probe and the command phase that consumes its metadata are
+	// normally adjacent. Bound reuse so long-running watch/build sessions still
+	// refresh mutable fields such as interfaces and disk usage.
+	agentVersionCacheTTL = 10 * time.Second
 )
 
 // tlsDebugWriter is where WENDY_TLS_DEBUG resumption logging is written.
@@ -60,6 +65,7 @@ type AgentConnection struct {
 	// pre-built (NewFromConn) connections.
 	Addr           string
 	IsMTLS         bool                    // true when connected via mutual TLS
+	IsSessionProxy bool                    // true when Conn reaches a local session broker retaining the mTLS transport
 	CertInfo       *config.CertificateInfo // cert used to establish mTLS; nil for plaintext
 	RegistryDialer func(context.Context, int) (net.Conn, error)
 	ExtraClosers   []io.Closer
@@ -80,6 +86,14 @@ type AgentConnection struct {
 	FileSyncService     agentpb.WendyFileSyncServiceClient
 	TimeSyncService     agentpbv2.WendyTimeSyncServiceClient
 	BuildService        agentpbv2.WendyBuildServiceClient
+	DriverService       agentpbv2.WendyDriverServiceClient
+	// cachedAgentVersion retains a successful liveness probe performed while
+	// establishing this connection. Direct-agent connects already call
+	// GetAgentVersion to force gRPC's lazy dial and authenticate the peer; run
+	// commands can reuse that exact response instead of immediately issuing the
+	// same RPC again. The cache is deliberately connection-local: it is never
+	// persisted across processes or carried across reconnects.
+	cachedAgentVersion atomic.Pointer[agentVersionCacheEntry]
 	// observedServerOrg holds the org ID read from the device's server
 	// certificate during the TLS handshake (set by the OnServerIdentity sink
 	// wired in ConnectWithTLSAndPins). Written on the handshake goroutine, read
@@ -105,6 +119,34 @@ type AgentConnection struct {
 	// out of gRPC's handshake-failure string. nil for connections that never
 	// install the sink.
 	pinMismatch *atomic.Pointer[devicepin.PinMismatchError]
+}
+
+type agentVersionCacheEntry struct {
+	response *agentpb.GetAgentVersionResponse
+	cachedAt time.Time
+}
+
+// CacheAgentVersion records a successful GetAgentVersion response for reuse by
+// a later caller on this same live connection. Responses returned by grpc-go
+// are immutable in Wendy's callers after receipt, so retaining the pointer is
+// safe; atomic storage also covers probes completed on gRPC/spinner goroutines.
+func (c *AgentConnection) CacheAgentVersion(resp *agentpb.GetAgentVersionResponse) {
+	if c != nil && resp != nil {
+		c.cachedAgentVersion.Store(&agentVersionCacheEntry{response: resp, cachedAt: time.Now()})
+	}
+}
+
+// CachedAgentVersion returns the version response already obtained while
+// proving this connection live, when one is available.
+func (c *AgentConnection) CachedAgentVersion() (*agentpb.GetAgentVersionResponse, bool) {
+	if c == nil {
+		return nil, false
+	}
+	entry := c.cachedAgentVersion.Load()
+	if entry == nil || time.Since(entry.cachedAt) > agentVersionCacheTTL {
+		return nil, false
+	}
+	return entry.response, true
 }
 
 // verifiedIdentitySink returns the OnVerifiedServerIdentity callback that
@@ -187,18 +229,16 @@ func Connect(ctx context.Context, address string) (*AgentConnection, error) {
 	return ac, nil
 }
 
-// ConnectUnix dials the agent over a local unix domain socket with plain h2c
-// (no TLS). It is used inside an `admin`-entitled container, where the agent's
-// control socket is bind-mounted in and WENDY_AGENT_SOCKET points at it. The
-// socket itself is the entire trust boundary (see the admin entitlement); there
-// is deliberately no authentication here.
-func ConnectUnix(ctx context.Context, socketPath string) (*AgentConnection, error) {
+// newUnixClient is the one place a local unix-domain gRPC channel is built —
+// used by ConnectUnix (agent control socket) and ConnectSessionProxy (session
+// broker socket) — so tuning such as window sizes and keepalive cannot drift
+// between the two local transports.
+func newUnixClient(socketPath, target string, extra ...grpc.DialOption) (*grpc.ClientConn, error) {
 	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
 		var d net.Dialer
 		return d.DialContext(ctx, "unix", socketPath)
 	}
-	conn, err := grpc.NewClient(
-		"passthrough:///unix",
+	opts := []grpc.DialOption{
 		grpc.WithContextDialer(dialer),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithInitialWindowSize(grpcInitialStreamWindow),
@@ -210,7 +250,17 @@ func ConnectUnix(ctx context.Context, socketPath string) (*AgentConnection, erro
 			Timeout:             grpcKeepaliveTimeout,
 			PermitWithoutStream: false,
 		}),
-	)
+	}
+	return grpc.NewClient("passthrough:///"+target, append(opts, extra...)...)
+}
+
+// ConnectUnix dials the agent over a local unix domain socket with plain h2c
+// (no TLS). It is used inside an `admin`-entitled container, where the agent's
+// control socket is bind-mounted in and WENDY_AGENT_SOCKET points at it. The
+// socket itself is the entire trust boundary (see the admin entitlement); there
+// is deliberately no authentication here.
+func ConnectUnix(ctx context.Context, socketPath string) (*AgentConnection, error) {
+	conn, err := newUnixClient(socketPath, "unix")
 	if err != nil {
 		return nil, fmt.Errorf("connecting to agent at unix:%s: %w", socketPath, err)
 	}
@@ -344,7 +394,12 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 
 // ConnectWithTLSExpecting is ConnectWithTLSAndPins with a required peer
 // identity. A nil expected is exactly ConnectWithTLSAndPins.
-func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker, expected *certs.WendyIdentity) (*AgentConnection, error) {
+//
+// extraOpts extends the standard dial options for callers whose channel has
+// different lifetime needs than a per-command connection — today the session
+// broker, which must pin its retained transport open (grpc.WithIdleTimeout(0))
+// because for it a teardown-and-redial is a trust event, not a transparency.
+func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker, expected *certs.WendyIdentity, extraOpts ...grpc.DialOption) (*AgentConnection, error) {
 	observedOrg := new(atomic.Int32)
 	observedIdentity := new(atomic.Pointer[certs.WendyIdentity])
 	mismatch := new(atomic.Pointer[certs.IdentityMismatchError])
@@ -354,8 +409,7 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 		return nil, err
 	}
 
-	conn, err := grpc.NewClient(
-		grpcTarget(address),
+	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
 		grpc.WithInitialWindowSize(grpcInitialStreamWindow),
 		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
@@ -366,7 +420,8 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 			Timeout:             grpcKeepaliveTimeout,
 			PermitWithoutStream: false,
 		}),
-	)
+	}
+	conn, err := grpc.NewClient(grpcTarget(address), append(opts, extraOpts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to agent at %s with TLS: %w", address, err)
 	}
@@ -515,6 +570,7 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 		FileSyncService:     agentpb.NewWendyFileSyncServiceClient(conn),
 		TimeSyncService:     agentpbv2.NewWendyTimeSyncServiceClient(conn),
 		BuildService:        agentpbv2.NewWendyBuildServiceClient(conn),
+		DriverService:       agentpbv2.NewWendyDriverServiceClient(conn),
 	}
 }
 

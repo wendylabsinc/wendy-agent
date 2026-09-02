@@ -169,11 +169,10 @@ func checkBuildHostCapabilities(host string, resp *agentpbv2.GetBuildCapabilitie
 		if strings.EqualFold(resp.GetOs(), "darwin") {
 			return fmt.Errorf("%s has no BuildKit daemon: macOS hosts run containers through Apple Container, which has no BuildKit underneath, so a Mac cannot be a build host", host)
 		}
-		// Say what to do, not only what is wrong. The agent's own refusal names
-		// the socket and the daemon -- but this check runs first, before any
-		// context is transferred, so that wording is unreachable in practice and
-		// the developer lands on this line instead.
-		return fmt.Errorf("%s has no BuildKit daemon and cannot build; install buildkitd on it and start it on unix:///run/buildkit/buildkitd.sock, or omit --build-host to build locally", host)
+		return fmt.Errorf("%s is enabled as a build host but has no BuildKit daemon; install buildkitd there and start it on unix:///run/buildkit/buildkitd.sock, or omit --build-host to build locally", host)
+	}
+	if err := checkBuildkitRootSpace(host, resp); err != nil {
+		return err
 	}
 	if slices.Contains(resp.GetNativePlatforms(), platform) {
 		return nil
@@ -627,4 +626,76 @@ func assertSamePlatform(ctx context.Context, name string, conn *grpcclient.Agent
 			name, got, platform, name)
 	}
 	return nil
+}
+
+// Thresholds for the build host's BuildKit cache directory.
+//
+// A cache is not incidental: an edge image that compiles a TensorRT engine
+// writes gigabytes, and the cache is designed to grow rather than to be
+// reclaimed. These numbers are about the FILESYSTEM the cache sits on, not the
+// size of one build.
+const (
+	// Below this, refuse. A build that fills the filesystem it is writing to is
+	// not a failed build -- on an image-based OS that filesystem is the one the
+	// device boots from, so the outcome is a damaged device. Measured case: a
+	// Jetson AGX Thor whose default cache location had 4.6 GB free on the A/B
+	// rootfs, beside a data partition with 862 GB.
+	buildkitRootMinFreeBytes = 8 << 30 // 8 GiB
+	// Between the two, build but say so. Plenty of real images fit; the point is
+	// that the operator finds out before the disk does.
+	buildkitRootWarnFreeBytes = 25 << 30 // 25 GiB
+)
+
+// checkBuildkitRootSpace refuses, or warns about, a build host whose BuildKit
+// cache is on a filesystem too small to hold one.
+//
+// An older agent reports no support bit and preserves the pre-existing behavior.
+// Once an agent advertises support, however, missing data is an inspection
+// failure and cannot be treated as evidence that the cache filesystem is safe.
+func checkBuildkitRootSpace(host string, resp *agentpbv2.GetBuildCapabilitiesResponse) error {
+	warning, err := assessBuildkitRootSpace(host, resp)
+	if err != nil {
+		return err
+	}
+	if warning != "" {
+		cliNotice("%s", warning)
+	}
+	return nil
+}
+
+// assessBuildkitRootSpace contains the policy separately from terminal output,
+// making the refusal and warning boundaries directly testable.
+func assessBuildkitRootSpace(host string, resp *agentpbv2.GetBuildCapabilitiesResponse) (string, error) {
+	if !resp.GetBuildkitRootInspectionSupported() {
+		// An older agent predates these fields. Preserve the behavior that worked
+		// before this safety check rather than turning a CLI update into an outage.
+		return "", nil
+	}
+	root, free := resp.GetBuildkitRoot(), resp.GetBuildkitRootFreeBytes()
+	if root == "" || resp.GetBuildkitRootTotalBytes() == 0 {
+		return "", fmt.Errorf("%s could not verify where its BuildKit cache is stored or how much space it has; inspect the running buildkitd configuration, restart it, and retry, or build elsewhere", host)
+	}
+	if free < buildkitRootMinFreeBytes {
+		return "", fmt.Errorf(
+			"%s keeps its BuildKit cache in %s, which has only %s free; a build cache there would fill that filesystem. Point buildkitd at a larger partition with --root (or add `root = \"/data/buildkit/root\"` to its active TOML configuration) and restart it, or build elsewhere",
+			host, root, humanBytes(free))
+	}
+	if free < buildkitRootWarnFreeBytes {
+		return fmt.Sprintf("%s keeps its BuildKit cache in %s, with %s free; a large image build may exhaust it",
+			host, root, humanBytes(free)), nil
+	}
+	return "", nil
+}
+
+// humanBytes renders a byte count at GiB/MiB granularity, which is the scale
+// these messages are about.
+func humanBytes(n uint64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(n)/float64(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.0f MiB", float64(n)/float64(1<<20))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }

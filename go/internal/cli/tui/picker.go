@@ -142,6 +142,12 @@ type PickerItem struct {
 	// Items with the same DedupKey (case-insensitive) are merged via MergeItem.
 	DedupKey string
 
+	// Supersedes, when set, is the DedupKey of a row this item replaces. The
+	// existing row is dropped before this one is added, so a provisional
+	// identity can be retired by the real one without the two colliding on a
+	// shared key.
+	Supersedes string
+
 	// DefaultKeys are optional alternate identities compared against
 	// PickerModel.DefaultKey when rendering the default marker.
 	DefaultKeys []string
@@ -477,8 +483,21 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case PickerAddMsg:
 		changed := false
+		// Captured before any supersede removes a row, since currentCursorKey
+		// reads the pre-rebuild table against the mutated item slice.
+		cursorKey := m.currentCursorKey()
 		for _, item := range msg.Items {
 			key := strings.ToLower(pickerItemKey(item))
+			if superseded := strings.ToLower(item.Supersedes); superseded != "" && superseded != key {
+				if m.removeItemByKey(superseded) {
+					changed = true
+					if cursorKey == superseded {
+						// Keep the highlight on the replacement rather than
+						// letting it slide onto a neighbour mid-selection.
+						cursorKey = key
+					}
+				}
+			}
 			if idx, ok := m.seenIdx[key]; ok {
 				if m.MergeItem != nil {
 					m.MergeItem(&m.items[idx], item)
@@ -491,7 +510,7 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			changed = true
 		}
 		if changed {
-			m.refreshTable()
+			m.refreshTableWithCursorKey(cursorKey)
 		}
 
 	case PickerDoneMsg:
@@ -932,14 +951,7 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 		return ki < kj
 	})
 
-	// Rebuild seenIdx to reflect the new positions after sorting.
-	// Keys are always stored lowercase to match the lookup in Update.
-	for k := range m.seenIdx {
-		delete(m.seenIdx, k)
-	}
-	for i, item := range m.items {
-		m.seenIdx[strings.ToLower(pickerItemKey(item))] = i
-	}
+	m.rebuildSeenIdx()
 
 	visible := m.visibleItems()
 	hasDefaultCol := m.OnSetDefault != nil
@@ -989,6 +1001,30 @@ func pickerItemKey(item PickerItem) string {
 		return item.DedupKey
 	}
 	return item.Name
+}
+
+// rebuildSeenIdx re-derives the key index from the current item positions.
+// Keys are always stored lowercase to match the lookup in Update.
+func (m *PickerModel) rebuildSeenIdx() {
+	for k := range m.seenIdx {
+		delete(m.seenIdx, k)
+	}
+	for i, item := range m.items {
+		m.seenIdx[strings.ToLower(pickerItemKey(item))] = i
+	}
+}
+
+// removeItemByKey drops the row with the given lowercase dedup key, reporting
+// whether one was found.
+func (m *PickerModel) removeItemByKey(key string) bool {
+	for i, item := range m.items {
+		if strings.ToLower(pickerItemKey(item)) == key {
+			m.items = append(m.items[:i], m.items[i+1:]...)
+			m.rebuildSeenIdx()
+			return true
+		}
+	}
+	return false
 }
 
 // withSectionHeaders interleaves non-selectable section-header rows ahead of

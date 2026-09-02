@@ -3,6 +3,7 @@ package rtps
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -28,8 +29,14 @@ func spdpMulticastPort(domainID int) int { return portBase + domainIDGain*domain
 // duration advertised is comfortably longer so a dropped packet does not evict
 // us from a peer's participant table.
 const (
-	announceInterval = 30 * time.Second
-	leaseSeconds     = 30
+	announceInterval   = 30 * time.Second
+	leaseSeconds       = 30
+	maxSampleSize      = 16 * 1024 * 1024
+	maxSampleFragments = 64 * 1024
+	maxFragmentSets    = 8
+	maxFragmentBytes   = 64 * 1024 * 1024
+	fragmentSetTTL     = 30 * time.Second
+	fragmentSweep      = fragmentSetTTL / 2
 )
 
 // Endpoint is a remote writer discovered over SEDP.
@@ -49,6 +56,19 @@ type Sample struct {
 	Payload []byte // serialized payload including its encapsulation header
 }
 
+type fragmentKey struct {
+	writer GUID
+	sn     SequenceNumber
+}
+
+type fragmentSet struct {
+	buf           []byte
+	received      []bool
+	receivedCount int
+	fragmentSize  int
+	updated       time.Time
+}
+
 // Config parameterises a Participant.
 type Config struct {
 	DomainID int
@@ -56,6 +76,15 @@ type Config struct {
 	// means every multicast-capable interface, which is rarely what you want on
 	// a robot with both a WiFi and an internal network.
 	Interface string
+	// NetworkNamespacePID creates the participant's sockets in the network
+	// namespace of this process. The sockets remain attached after the creating
+	// thread returns to the host namespace, allowing the Wendy agent to inspect
+	// app-local ROS 2 graphs without weakening their isolation.
+	NetworkNamespacePID uint32
+	// VerifyNetworkNamespace runs after entering NetworkNamespacePID and before
+	// any socket is opened. It lets callers reject a PID that was recycled after
+	// they enumerated the target process.
+	VerifyNetworkNamespace func() bool
 	// Logf, when set, receives progress lines. Discovery failures are usually
 	// silent by nature, so this is the only way to see what happened.
 	Logf func(format string, args ...any)
@@ -126,6 +155,15 @@ type Participant struct {
 	// or arrives before the peer has finished discovering us, the subscription
 	// never matches and no data ever flows.
 	subAnnounce [][]byte
+
+	// fragmentsMu isolates potentially large fragment copies from participant
+	// bookkeeping such as subscription changes and discovery updates.
+	fragmentsMu sync.Mutex
+	// fragments holds bounded in-flight DATA_FRAG samples. Camera messages are
+	// routinely larger than one UDP datagram; without this reassembly the DDS
+	// reader can discover image topics but can never receive a frame from them.
+	fragments     map[fragmentKey]*fragmentSet
+	fragmentBytes int
 }
 
 // WriterHistogram reports how many DATA and HEARTBEAT submessages arrived per
@@ -196,10 +234,13 @@ func NewParticipant(cfg Config) (*Participant, error) {
 		seenData:    map[uint32]int{},
 		seenHB:      map[uint32]int{},
 		unmatched:   map[GUID]int{},
-		samples:     make(chan Sample, 64),
+		// Four maximum-sized image samples cap queued payload memory at 64 MiB;
+		// the channel is lossy by design, so a slow consumer gets newer frames.
+		samples:     make(chan Sample, 4),
 		discov:      make(chan Endpoint, 32),
 		nextEntity:  1,
 		seqByWriter: map[uint32]SequenceNumber{},
+		fragments:   map[fragmentKey]*fragmentSet{},
 	}
 	if _, err := rand.Read(p.prefix[:]); err != nil {
 		return nil, fmt.Errorf("rtps: generating GUID prefix: %w", err)
@@ -207,16 +248,38 @@ func NewParticipant(cfg Config) (*Participant, error) {
 	// The first two octets of a GUID prefix are conventionally the vendor ID.
 	p.prefix[0], p.prefix[1] = 0x01, 0x0f
 
-	iface, err := p.resolveInterface()
-	if err != nil {
+	if err := withNetworkNamespace(cfg.NetworkNamespacePID, cfg.VerifyNetworkNamespace, p.openSockets); err != nil {
+		_ = p.Close()
 		return nil, err
 	}
+	return p, nil
+}
 
-	mport := spdpMulticastPort(cfg.DomainID)
+func verifyNamespaceTarget(pid uint32, verify func() bool) error {
+	if verify != nil && !verify() {
+		return fmt.Errorf("rtps: network namespace process %d changed", pid)
+	}
+	return nil
+}
+
+func combineNamespaceRestoreError(operationErr, restoreErr error) error {
+	if restoreErr == nil {
+		return operationErr
+	}
+	return errors.Join(operationErr, fmt.Errorf("rtps: restoring host network namespace: %w", restoreErr))
+}
+
+func (p *Participant) openSockets() error {
+	iface, err := p.resolveInterface()
+	if err != nil {
+		return err
+	}
+
+	mport := spdpMulticastPort(p.cfg.DomainID)
 	group := &net.UDPAddr{IP: net.ParseIP(spdpMulticastAddr), Port: mport}
 	mc, err := net.ListenMulticastUDP("udp4", iface, group)
 	if err != nil {
-		return nil, fmt.Errorf("rtps: joining %s:%d: %w", spdpMulticastAddr, mport, err)
+		return fmt.Errorf("rtps: joining %s:%d: %w", spdpMulticastAddr, mport, err)
 	}
 	_ = mc.SetReadBuffer(2 << 20)
 	p.mcast = mc
@@ -224,16 +287,11 @@ func NewParticipant(cfg Config) (*Participant, error) {
 	uc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: p.local, Port: 0})
 	if err != nil {
 		mc.Close()
-		return nil, fmt.Errorf("rtps: binding unicast socket: %w", err)
+		return fmt.Errorf("rtps: binding unicast socket: %w", err)
 	}
 	_ = uc.SetReadBuffer(4 << 20)
 	p.ucast = uc
 
-	// Pin outbound multicast to the same interface. Binding the socket's source
-	// address is not enough: Linux selects the egress interface for a multicast
-	// destination from IP_MULTICAST_IF and the route table, so on a device with
-	// both WiFi and a robot network the announcements otherwise leave by the
-	// wrong one and nothing ever discovers us.
 	if err := ipv4.NewPacketConn(uc).SetMulticastInterface(iface); err != nil {
 		p.logf("warning: pinning multicast egress to %s failed: %v", iface.Name, err)
 	} else {
@@ -242,10 +300,9 @@ func NewParticipant(cfg Config) (*Participant, error) {
 	if err := ipv4.NewPacketConn(uc).SetMulticastTTL(4); err != nil {
 		p.logf("warning: setting multicast TTL failed: %v", err)
 	}
-
 	p.logf("participant %x on domain %d, unicast %s, multicast %s:%d",
-		p.prefix, cfg.DomainID, uc.LocalAddr(), spdpMulticastAddr, mport)
-	return p, nil
+		p.prefix, p.cfg.DomainID, uc.LocalAddr(), spdpMulticastAddr, mport)
+	return nil
 }
 
 // resolveInterface picks the interface to bind multicast to and records its
@@ -318,14 +375,46 @@ func (p *Participant) Samples() <-chan Sample { return p.samples }
 // re-announces on a timer.
 func (p *Participant) Run(ctx context.Context) {
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); p.readLoop(ctx, p.mcast, true) }()
 	go func() { defer wg.Done(); p.readLoop(ctx, p.ucast, false) }()
 	go func() { defer wg.Done(); p.announceLoop(ctx) }()
+	go func() { defer wg.Done(); p.fragmentCleanupLoop(ctx) }()
 
 	<-ctx.Done()
 	p.Close()
 	wg.Wait()
+	p.fragmentsMu.Lock()
+	p.fragments = make(map[fragmentKey]*fragmentSet)
+	p.fragmentBytes = 0
+	p.fragmentsMu.Unlock()
+}
+
+func (p *Participant) fragmentCleanupLoop(ctx context.Context) {
+	t := time.NewTicker(fragmentSweep)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			p.expireFragmentSets(now)
+		}
+	}
+}
+
+func (p *Participant) expireFragmentSets(now time.Time) {
+	p.fragmentsMu.Lock()
+	p.dropExpiredFragmentSetsLocked(now)
+	p.fragmentsMu.Unlock()
+}
+
+func (p *Participant) dropExpiredFragmentSetsLocked(now time.Time) {
+	for key, set := range p.fragments {
+		if now.Sub(set.updated) > fragmentSetTTL {
+			p.dropFragmentSetLocked(key)
+		}
+	}
 }
 
 func (p *Participant) announceLoop(ctx context.Context) {
@@ -407,6 +496,22 @@ func (p *Participant) handle(pkt []byte, src *net.UDPAddr) {
 				p.statUserData.Add(1)
 				p.handleUserData(msg.Prefix, d)
 			}
+		case subDATAFRAG:
+			p.statData.Add(1)
+			f, err := ParseDataFrag(s)
+			if err != nil {
+				p.statDataErr.Add(1)
+				continue
+			}
+			// Builtin discovery traffic is small DATA, never DATA_FRAG. Treat a
+			// fragmented builtin writer as malformed instead of feeding it to the
+			// user-data reassembler.
+			if f.WriterID == entitySPDPWriter || f.WriterID == entitySEDPPubWriter || f.WriterID == entitySEDPSubWriter {
+				p.statDataErr.Add(1)
+				continue
+			}
+			p.statUserData.Add(1)
+			p.handleUserDataFrag(msg.Prefix, f)
 		}
 	}
 }
@@ -574,7 +679,10 @@ func (p *Participant) handleSEDPPublication(d *DataSubmessage) {
 // running — which shows up as spurious "payload too short" errors from small
 // messages of entirely unrelated topics.
 func (p *Participant) handleUserData(prefix GUIDPrefix, d *DataSubmessage) {
-	writer := GUID{Prefix: prefix, EntityID: d.WriterID}
+	p.deliverUserData(GUID{Prefix: prefix, EntityID: d.WriterID}, d.WriterSN, d.Payload)
+}
+
+func (p *Participant) deliverUserData(writer GUID, sn SequenceNumber, payload []byte) {
 	p.mu.Lock()
 	_, subscribed := p.subWriters[writer]
 	p.mu.Unlock()
@@ -589,13 +697,118 @@ func (p *Participant) handleUserData(prefix GUIDPrefix, d *DataSubmessage) {
 		return
 	}
 	s := Sample{
-		Writer:  GUID{Prefix: prefix, EntityID: d.WriterID},
-		SN:      d.WriterSN,
-		Payload: d.Payload,
+		Writer:  writer,
+		SN:      sn,
+		Payload: payload,
 	}
 	select {
 	case p.samples <- s:
 	default: // drop rather than block the read loop; the newest sample wins
+	}
+}
+
+// handleUserDataFrag reassembles one bounded serialized sample and delivers it
+// through the same subscription filter as ordinary DATA. Old/incomplete sets
+// are discarded so a publisher disappearing mid-frame cannot retain memory.
+func (p *Participant) handleUserDataFrag(prefix GUIDPrefix, f *DataFragSubmessage) {
+	if f.SampleSize == 0 || f.FragmentStartingNum == 0 || f.FragmentSize == 0 || f.FragmentsInSubmessage == 0 || f.SampleSize > maxSampleSize {
+		p.statDataErr.Add(1)
+		return
+	}
+	writer := GUID{Prefix: prefix, EntityID: f.WriterID}
+	p.mu.Lock()
+	if _, subscribed := p.subWriters[writer]; !subscribed {
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
+	payload, complete := p.addUserDataFrag(writer, f)
+	if complete {
+		p.deliverUserData(writer, f.WriterSN, payload)
+	}
+}
+
+func (p *Participant) addUserDataFrag(writer GUID, f *DataFragSubmessage) ([]byte, bool) {
+	now := time.Now()
+	p.fragmentsMu.Lock()
+	defer p.fragmentsMu.Unlock()
+	p.dropExpiredFragmentSetsLocked(now)
+	key := fragmentKey{writer: writer, sn: f.WriterSN}
+	set := p.fragments[key]
+	fragmentCount := (int(f.SampleSize) + int(f.FragmentSize) - 1) / int(f.FragmentSize)
+	if fragmentCount > maxSampleFragments {
+		p.statDataErr.Add(1)
+		return nil, false
+	}
+	if set == nil {
+		for len(p.fragments) >= maxFragmentSets || p.fragmentBytes+int(f.SampleSize) > maxFragmentBytes {
+			var oldestKey fragmentKey
+			var oldest time.Time
+			for candidate, existing := range p.fragments {
+				if oldest.IsZero() || existing.updated.Before(oldest) {
+					oldestKey, oldest = candidate, existing.updated
+				}
+			}
+			p.dropFragmentSetLocked(oldestKey)
+		}
+		set = &fragmentSet{
+			buf:          make([]byte, int(f.SampleSize)),
+			received:     make([]bool, fragmentCount),
+			fragmentSize: int(f.FragmentSize),
+			updated:      now,
+		}
+		p.fragments[key] = set
+		p.fragmentBytes += len(set.buf)
+	} else if len(set.buf) != int(f.SampleSize) || set.fragmentSize != int(f.FragmentSize) {
+		p.dropFragmentSetLocked(key)
+		p.statDataErr.Add(1)
+		return nil, false
+	}
+
+	start := int(f.FragmentStartingNum) - 1
+	payloadPos := 0
+	valid := true
+	for i := 0; i < int(f.FragmentsInSubmessage); i++ {
+		fragmentIndex := start + i
+		if fragmentIndex < 0 || fragmentIndex >= len(set.received) {
+			valid = false
+			break
+		}
+		offset := fragmentIndex * set.fragmentSize
+		n := set.fragmentSize
+		if remaining := len(set.buf) - offset; n > remaining {
+			n = remaining
+		}
+		if n < 0 || payloadPos+n > len(f.Payload) {
+			valid = false
+			break
+		}
+		copy(set.buf[offset:offset+n], f.Payload[payloadPos:payloadPos+n])
+		payloadPos += n
+		if !set.received[fragmentIndex] {
+			set.received[fragmentIndex] = true
+			set.receivedCount++
+		}
+	}
+	set.updated = now
+	if !valid {
+		p.dropFragmentSetLocked(key)
+		p.statDataErr.Add(1)
+		return nil, false
+	}
+	if set.receivedCount != len(set.received) {
+		return nil, false
+	}
+	payload := set.buf
+	p.dropFragmentSetLocked(key)
+	return payload, true
+}
+
+// dropFragmentSetLocked requires fragmentsMu.
+func (p *Participant) dropFragmentSetLocked(key fragmentKey) {
+	if set := p.fragments[key]; set != nil {
+		p.fragmentBytes -= len(set.buf)
+		delete(p.fragments, key)
 	}
 }
 

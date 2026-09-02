@@ -157,7 +157,9 @@ type BuildService struct {
 	maxContextBytes      int64
 	// dialTarget opens the gRPC hop to a target device's agent for chunked
 	// delivery. See targetDialer.
-	dialTarget targetDialer
+	dialTarget         targetDialer
+	buildkitProcDir    string
+	buildkitConfigPath string
 
 	// contextLocks serialises builds that share a context directory. See
 	// lockContextDir.
@@ -191,6 +193,8 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 		maxContextBytes:      opts.MaxContextBytes,
 		dialTarget:           meshTargetDialer(opts.Peers, opts.PushTLS, opts.TargetAgentPort),
 		contextLocks:         opts.ContextLocks,
+		buildkitProcDir:      "/proc",
+		buildkitConfigPath:   defaultBuildkitConfigPath,
 	}
 }
 
@@ -324,6 +328,9 @@ func (s *BuildService) GetBuildCapabilities(_ context.Context, _ *agentpbv2.GetB
 		// fleet of targets was discarded — and would report a deploy that went
 		// nowhere.
 		MultiTargetDelivery: true,
+		// Lets a newer client distinguish an older agent, which has no root
+		// fields, from this agent failing to inspect a daemon it expected to find.
+		BuildkitRootInspectionSupported: true,
 	}
 	if available {
 		// Only the host's own platform is claimed native. Emulated platforms stay
@@ -331,6 +338,15 @@ func (s *BuildService) GetBuildCapabilities(_ context.Context, _ *agentpbv2.GetB
 		// fast CLI refusal into a slow, mysterious remote failure.
 		resp.NativePlatforms = []string{runtime.GOOS + "/" + runtime.GOARCH}
 		resp.BuildkitVersion = buildctlVersion()
+
+		// Where the cache lands, and how much room is there. Reported even when
+		// it looks fine, so a client can decide rather than guess -- see
+		// buildkitRoot for why the default is dangerous on an image-based OS.
+		if location, ok := buildkitRoot(s.buildkitProcDir, s.buildkitAddress, s.buildkitConfigPath); ok {
+			resp.BuildkitRoot = location.displayPath
+			resp.BuildkitRootTotalBytes, resp.BuildkitRootFreeBytes = buildkitRootSpaceWithin(
+				location.statPath, location.statBoundary)
+		}
 	}
 	return resp, nil
 }
@@ -661,7 +677,35 @@ func (s *BuildService) buildAndDeliver(
 	}
 
 	buildErr = s.runBuildctl(ctx, stream, args, authDir)
-	if proxyErr := proxy.firstError(); proxyErr != nil {
+	// BuildKit retries registry 5xx responses itself. The proxy may therefore
+	// have observed an outbound failure even though a later attempt completed
+	// and buildctl exited successfully. In that case the successful solve is
+	// authoritative; retaining the proxy's earlier error would turn recovery into
+	// a false delivery failure.
+	if buildErr == nil {
+		return classifyBuildAndDeliveryResult(buildErr, proxy.latestError())
+	}
+	if proxyErr := proxy.latestError(); proxyErr != nil {
+		// Say what a new run can reuse without implying that containerd resumes
+		// the failed request: the build cache and fully committed layers survive,
+		// but a partial monolithic layer upload starts again.
+		if deliveryFailureStarted(proxyErr) {
+			proxyErr = fmt.Errorf("%w: %w", errDeliveryIncomplete, proxyErr)
+		}
+		return classifyBuildAndDeliveryResult(buildErr, proxyErr)
+	}
+	return classifyBuildAndDeliveryResult(buildErr, nil)
+}
+
+// classifyBuildAndDeliveryResult keeps a recovered proxy attempt from
+// outweighing buildctl's final result. BuildKit owns registry-request retries,
+// so only a failed buildctl invocation can promote the proxy's diagnostic to a
+// terminal delivery error.
+func classifyBuildAndDeliveryResult(buildErr, proxyErr error) (error, error) {
+	if buildErr == nil {
+		return nil, nil
+	}
+	if proxyErr != nil {
 		return nil, proxyErr
 	}
 	return buildErr, nil

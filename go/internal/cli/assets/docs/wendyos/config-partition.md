@@ -12,7 +12,7 @@ The `config` partition is outside the update boundary. Files placed there surviv
 
 Because the partition is FAT32, your computer mounts it automatically when you plug in the storage.
 
-- **macOS / Linux:** appears as a volume labelled `config`. On macOS, `wendy install` writes provisioning through this auto-mount directly; older versions remounted the partition via `mount_msdos`, which could fail with `Resource busy`.
+- **macOS / Linux:** appears as a volume labelled `config`. On macOS, `wendy install` writes provisioning through this auto-mount directly.
 - **Windows:** appears as a drive labelled `config`
 
 Write files there, eject, and they are available at `/config` on the device on next boot.
@@ -27,9 +27,45 @@ ls /config
 
 ## wendy-agent self-update
 
-If a file named `wendy-agent` is present in `/config` on boot, the agent validates it (must be a 64-bit ELF binary for the device's architecture) and, if valid, installs it to `/usr/local/bin/wendy-agent` and exits so systemd restarts it with the new binary. The file is deleted from `/config` regardless of outcome, so it is only applied once.
+If a file named `wendy-agent` is present in `/config` on boot, the agent validates it (must be a 64-bit ELF binary for the device's architecture) and, if valid, installs it over **the currently running agent binary** — `/opt/wendyos/bin/wendy-agent` on a stock image — then exits so systemd restarts it with the new binary. The file is deleted from `/config` regardless of outcome, so it is only applied once.
+
+The install is refused if the target directory sits on a merged systemd-sysext overlay. A binary written there is discarded when the overlay is rebuilt on the next boot, so the seed would appear to succeed, silently do nothing, and retry forever.
 
 `wendy install` writes the latest stable arm64 agent binary to the config partition automatically after flashing. If this write fails, `wendy install` warns rather than aborting (unless WiFi, device-name, or pre-enroll provisioning was explicitly requested — then the install exits non-zero, see [wendy.conf](#wendyconf)) — the device still boots using the agent baked into the image and fetches updates after first boot.
+
+## Driver add-ons (`extensions.json`)
+
+A file named `extensions.json` in `/config` seeds kernel driver add-ons at first boot,
+so a device can come up with an out-of-tree driver it needs to reach the network at
+all. It is a JSON array:
+
+```json
+[
+  {
+    "name": "your-driver",
+    "artifact_url": "https://example.com/your-driver.raw",
+    "kernel_version": "6.18.33-v8-16k",
+    "sha256": "9668b870...",
+    "signature": "<base64 detached signature>",
+    "modules_load": ["your_driver"]
+  }
+]
+```
+
+Only `name` and `artifact_url` are required. `modules_load` overrides the module list
+the image declares for itself, and is normally omitted.
+
+The file is **deleted before any entry is applied**, not after. A bad or unreachable
+URL therefore cannot wedge every subsequent boot, and a power cut mid-fetch leaves
+nothing to retry. The whole batch is bounded at 90 seconds, of which up to 15 are spent
+waiting for the network link, so a slow registry cannot stall startup. Anything dropped
+is recoverable afterwards with `wendy device drivers install`.
+
+> **Seeding is inert until a signing key ships.** Unlike a CLI install, the seed path
+> requires a verified signature and has no operator to accept the risk. The embedded
+> key is currently an empty placeholder, so every entry is refused with
+> `cannot be authenticated (no signing key embedded)`. See
+> [Managing drivers](/docs/device/managing-drivers).
 
 ## wendy.conf
 

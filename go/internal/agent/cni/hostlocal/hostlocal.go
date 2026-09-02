@@ -50,8 +50,13 @@ func CmdCheck(args *skel.CmdArgs) error {
 		return err
 	}
 
+	// SECURITY: do not treat prevResult as evidence of an allocation. CHECK
+	// reopens the live host-local allocation store and verifies that this exact
+	// container/interface still owns a lease. Keep this lookup mandatory when
+	// syncing the vendored plugin with upstream.
+	//
 	// Look to see if there is at least one IP address allocated to the container
-	// in the data dir, irrespective of what that address actually is
+	// in the data dir, irrespective of what that address actually is.
 	store, err := disk.New(ipamConf.Name, ipamConf.DataDir)
 	if err != nil {
 		return err

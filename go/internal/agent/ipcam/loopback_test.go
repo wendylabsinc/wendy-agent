@@ -143,25 +143,30 @@ func TestLoopback_AvailableWhenControlDeviceExists(t *testing.T) {
 	}
 }
 
-// When the module can't be loaded at all, Available must degrade to a wrapped
-// ErrLoopbackUnavailable — and detection, including the modprobe attempt,
-// must run at most once no matter how many times Available is called.
-func TestLoopback_AvailableAttemptsModprobeOnceThenDegrades(t *testing.T) {
+// A failed detection must not poison the Loopback for the life of the agent.
+// Operators can install or load the compatible module and retry without
+// restarting wendy-agent; a successful detection is cached afterward.
+func TestLoopback_AvailableRetriesAfterModuleBecomesAvailable(t *testing.T) {
 	h := newLoopbackHarness()
 	h.modprobeErr = errors.New("modprobe: FATAL: Module v4l2loopback not found")
 	l, _ := newTestLoopback(t, h)
 
 	err1 := l.Available()
-	err2 := l.Available()
-
 	if !errors.Is(err1, ErrLoopbackUnavailable) {
 		t.Fatalf("Available() #1 = %v, want an error wrapping ErrLoopbackUnavailable", err1)
 	}
-	if !errors.Is(err2, ErrLoopbackUnavailable) {
-		t.Fatalf("Available() #2 = %v, want an error wrapping ErrLoopbackUnavailable", err2)
+
+	h.mu.Lock()
+	h.modprobeErr = nil
+	h.mu.Unlock()
+	if err := l.Available(); err != nil {
+		t.Fatalf("Available() #2 = %v after module install, want nil", err)
 	}
-	if calls := h.modprobeCallCount(); calls != 1 {
-		t.Fatalf("modprobe called %d times across two Available() calls, want exactly 1", calls)
+	if err := l.Available(); err != nil {
+		t.Fatalf("Available() #3 = %v, want cached success", err)
+	}
+	if calls := h.modprobeCallCount(); calls != 2 {
+		t.Fatalf("modprobe called %d times, want one failed attempt and one successful retry", calls)
 	}
 }
 

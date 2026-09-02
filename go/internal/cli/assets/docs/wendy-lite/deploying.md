@@ -1,147 +1,96 @@
-# Deploying and Updating WASM Apps on Wendy Lite
+# Deploying Apps on ESP32 with Wendy
 
-Wendy Lite does not have a network-accessible container registry or an OTA pull mechanism. App deployment is a firmware rebuild: the WASM binary is baked into the firmware image as a C array and flashed to the device. This page covers the full flow from build to running code, and the CLI commands involved.
+Regular native ESP-IDF projects are the recommended way to build ESP32 apps with Wendy. Wendy also supports Swift and other WASM guests when a portable sandboxed runtime is useful.
 
-## Deployment Flow
+## Native ESP-IDF Apps (Recommended)
 
-```
-[App source code]
-      │
-      ▼  (swift build / cargo build / clang)
- app.wasm
-      │
-      ▼  wasm2header.sh
- main/demo_wasm.h   (C byte-array header)
-      │
-      ▼  idf.py build
- wendy_mcu_<target>.bin   (merged firmware)
-      │
-      ▼  idf.py flash  (USB)  — or —  wendy device run  (OTA via WiFi)
- Device running new app
+Use the standard ESP-IDF project structure, components, configuration, and APIs. A Wendy project needs only a `wendy.json` manifest alongside the files ESP-IDF already expects:
+
+```text
+my-app/
+├── CMakeLists.txt
+├── sdkconfig.defaults
+├── wendy.json
+└── main/
+    ├── CMakeLists.txt
+    └── main.c
 ```
 
-## Step 1: Build the WASM binary
-
-Pick your language and build to `.wasm`:
-
-**Swift:**
-```bash
-swiftly run +6.3.2 swift build \
-    --swift-sdk swift-6.3.2-RELEASE_wasm-embedded \
-    --triple wasm32-unknown-wasip1 \
-    -c release
-# Output: .build/wasm32-unknown-wasip1/release/MyApp.wasm
+```json
+{
+  "$schema": "https://wendy.dev/schemas/wendy.json",
+  "appId": "com.example.my-esp32-app",
+  "version": "0.1.0",
+  "platform": "wendy-lite",
+  "entitlements": []
+}
 ```
 
-**Rust:**
-```bash
-cargo build --release
-# Output: target/wasm32-unknown-unknown/release/my_app.wasm
-```
+The selected ESP32 must run a Wendy firmware variant with native app support. Install one with `wendy install`; for generic C5, C6, and S3 boards, choose the board variant labeled **native app support**.
 
-**C:**
-```bash
-clang --target=wasm32 -O2 -nostdlib \
-    -I Sources/CWendyLite/include \
-    -Wl,--no-entry -Wl,--export=_start -Wl,--allow-undefined \
-    -o app.wasm app.c
-```
+### Deploy with `wendy run`
 
-## Step 2: Convert the binary to a C header
-
-The `wasm2header.sh` script in the repository converts the `.wasm` file to a C header array that the firmware build embeds:
+From the ESP-IDF project directory:
 
 ```bash
-./wasm_apps/wasm2header.sh my_app.wasm main/demo_wasm.h
+wendy run --device <name>
 ```
 
-For a named build target (with a `build.sh` wrapper):
+The CLI performs the native deployment flow:
+
+1. Detects the project from its standard ESP-IDF markers.
+2. Reads the chip target from the connected device.
+3. Ensures ESP-IDF 5.5.4 is available through `eim`.
+4. Runs `idf.py set-target` if the project is configured for another chip.
+5. Runs `idf.py build` and finds the application binary named by `project(...)`.
+6. Uploads the native binary, reboots the device, reconnects, and streams console output.
+
+Install the ESP-IDF Installation Manager before the first build. On macOS:
+
 ```bash
-./wasm_apps/build.sh swift_blink
+brew install espressif/eim/eim
 ```
 
-## Step 3: Rebuild and flash the firmware
+If ESP-IDF 5.5.4 is missing, `wendy run` installs that version through `eim` automatically.
+
+### Use ESP-IDF Directly
+
+The project remains a normal ESP-IDF project. The conventional workflow continues to work:
 
 ```bash
-idf.py set-target esp32c6   # first time only
+idf.py set-target esp32c6
+idf.py menuconfig
 idf.py build
-idf.py flash
+idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
-The `idf.py build` step picks up the updated `main/demo_wasm.h` and links the WASM binary into the firmware. `idf.py flash` writes the merged binary over USB.
+Use ESP-IDF components, managed components, Kconfig options, and peripheral drivers without a Wendy-specific wrapper. This is especially important for displays, cameras, audio, and other hardware that needs full access to the native ESP-IDF APIs.
 
-> **Preview targets:** If you are targeting a chip that is in ESP-IDF preview (e.g. `esp32s31`), prepend `--preview` to every `idf.py` invocation:
-> ```bash
-> idf.py --preview set-target esp32s31
-> idf.py --preview build
-> idf.py --preview flash
-> ```
-> Without `--preview`, `set-target` prints a warning and exits without configuring the target.
+## Updating a Device
 
----
+`wendy run` can deploy over the native USB connection or over the network after Wi-Fi provisioning. A native app is device firmware, so the ESP32 reboots after every deployment and Wendy reconnects before attaching to its console.
 
-## Updating a running device
+You can always fall back to `idf.py flash` over USB when you want to manage the flash operation directly.
 
-### USB flash (always available)
+## WASM Apps (Optional)
 
-The simplest update path is to re-run `idf.py flash` with the device connected via USB. No WiFi required; no agent required.
+Wendy Lite firmware variants with WASM support can run Swift, Rust, C/C++, AssemblyScript, or WAT guests. This path trades direct access to all of ESP-IDF for a smaller portable application boundary and Wendy's host-imported hardware APIs.
 
-> **Boards without auto-reset:** some ESP32 devkits do not wire DTR/RTS to the chip's BOOT/RESET pins. On these boards, `idf.py flash` will fail with "No serial data received" unless you manually enter bootloader mode first: hold the **BOOT** button, press and release **RESET**, then release **BOOT**. The ESP32-S31-Korvo-1 is one such board.
+For Swift projects, `wendy run` builds the package for `wasm32-unknown-wasip1`, uploads the `.wasm` application, and attaches to its console. The lower-level manual flow is:
 
-### CLI via WiFi (when WiFi is provisioned)
+1. Build the application as `.wasm`.
+2. Convert it to a C header with `wasm2header.sh` when embedding it in a firmware build.
+3. Rebuild and flash the Wendy Lite firmware.
 
-Once a Wendy Lite device is connected to WiFi, the `wendy` CLI can interact with it over LAN using the standard gRPC transport. This works the same as for WendyOS devices — see [connectivity](../wendy-agent/connectivity/ble.md) and [device selection](../clients/wendy-cli/device-selection.md) for the full picture.
+See the [host API](host-api.md), [Swift SDK](swift-sdk.md), and [StdIO](stdio.md) references for WASM-specific development details.
+
+## Provisioning and Discovery
+
+ESP32 Wendy firmware supports native USB discovery and BLE-assisted Wi-Fi provisioning. Run:
 
 ```bash
-# Discover nearby devices (mDNS + BLE)
+wendy device setup
 wendy discover
-
-# Push a new firmware and flash remotely
-wendy device update --binary ./build/wendy_mcu_esp32c6.bin
 ```
 
-The `wendy device update` command streams the binary to the running agent over gRPC and triggers the replacement. For Wendy Lite devices, this flashes the merged firmware image rather than replacing an agent binary.
-
-### OTA via `wendy run`
-
-`wendy run` in a Wendy Lite app project directory performs the full build-and-deploy cycle:
-
-1. Queries the device for its target (ESP32-C5 or C6) and architecture.
-2. Builds the WASM binary for that target.
-3. Converts it to a C header and rebuilds the firmware.
-4. Uploads and flashes the firmware to the device.
-5. Streams logs from the device.
-
----
-
-## GitHub CI: nightly and release binaries
-
-Every push to `main` triggers a matrix build for `esp32c5` and `esp32c6` in CI (see [`build.yml`](../../wendy-lite/.github/workflows/build.yml)). Builds produce a merged binary (`wendy_mcu_<target>.bin`) that can be flashed directly.
-
-**Nightly builds** are published as a pre-release GitHub release (`nightly`) containing both targets. The tag is recreated on every `main` push.
-
-**Tagged releases** (e.g. `v1.2.0`) attach both binaries to a stable GitHub release.
-
-The CLI's `wendy device update --nightly` flag targets nightly pre-releases; omitting it targets the latest stable release.
-
----
-
-## App lifecycle in firmware
-
-The firmware loads the embedded WASM binary from the C array, instantiates it with WAMR, and calls the WASM entry point (`_start` or, for Swift apps, the `WendyLiteApp.main()` entrypoint synthesised by the SDK). There is no install/uninstall step — swapping the app is always a full firmware rebuild.
-
-Multiple WASM apps in a single firmware build are not currently supported. One binary per flash.
-
----
-
-## Provisioning JSON (current and planned)
-
-**Today (shipped):** Wendy Lite provisioning is done by manually editing a JSON file into the C source tree before flashing. The fields cover device identity, the cloud endpoint, and the certificate material. There is no on-device key generation; the certificate is baked into the firmware image.
-
-**Planned (not yet shipped, [WDY-1245](https://linear.app/wendylabsinc/issue/WDY-1245)):** an automated provisioning system that:
-
-- Generates a private key and a certificate signing request **on the device itself** rather than burning a pre-generated certificate into the firmware.
-- Adds an explicit `protocol` property to the provisioning JSON (e.g. `grpc`, `mtls`) so the transport choice is recorded rather than inferred from port numbers. WendyOS today supports port overriding, and the standard default ports are widely understood, so this field is informational rather than required for connection routing — until the unified TCP socket protocol ([WDY-1246](https://linear.app/wendylabsinc/issue/WDY-1246)) lands, at which point the field becomes the canonical transport selector.
-- Uses mDNS for device discovery, consistent with the rest of the WendyOS networking stack.
-
-Until those changes ship, the manual JSON-edit + flash workflow above remains the only supported provisioning path.
+Once the device joins Wi-Fi, it advertises over mDNS and accepts Wendy connections over the LAN. Cloud-enrolled devices can use the same remote selection workflow as other Wendy targets.
