@@ -553,6 +553,9 @@ type runOptions struct {
 // WENDY_SHOW_LOCAL_DEVICES is set; --yes suppresses the picker entirely.
 func runResolveOptions(opts runOptions) []resolveOption {
 	var resolveOpts []resolveOption
+	if opts.isWatch() {
+		resolveOpts = append(resolveOpts, DisableSessionBroker())
+	}
 	if opts.yes {
 		resolveOpts = append(resolveOpts, NonInteractive())
 	}

@@ -53,6 +53,22 @@ message StreamVideoRequest {
     uint32 width      = 2; // pixels; 0 = device default
     uint32 height     = 3; // pixels; 0 = device default
     uint32 framerate  = 4; // fps; 0 = device default
+    // The requested delivery codec. The default, VIDEO_CODEC_H264 (0), delivers
+    // encoded video exactly as before this field existed. VIDEO_CODEC_RAW instead
+    // delivers the camera's capture frames uncompressed: every VideoFrame then
+    // carries exactly one complete frame with codec VIDEO_CODEC_RAW and raw_format
+    // describing its layout. Other subscribers of the same camera keep receiving
+    // encoded video: raw and encoded consumers share one capture, so an analytic
+    // reader (a thermal module's per-pixel temperatures, for instance) and a
+    // viewer no longer compete for the node.
+    //
+    // VIDEO_CODEC_RAW is offered only for local cameras the agent captures in a
+    // raw pixel format; a camera streaming MJPEG or native H.264, a network
+    // camera, or one shared through PipeWire has no raw frames to give, and the
+    // request fails with FailedPrecondition (reason RAW_UNAVAILABLE) rather than
+    // waiting forever. A codec the agent cannot produce for a camera is refused
+    // the same way rather than silently downgraded.
+    VideoCodec codec  = 5;
 }
 
 // Credentials for a network camera. Stored on the device, never returned by any
@@ -99,12 +115,25 @@ message TestCameraCredentialsResponse {
 enum VideoCodec {
     VIDEO_CODEC_H264 = 0; // raw H.264 annexb NAL units (default)
     VIDEO_CODEC_VP8  = 1; // VP8 inside a WebM container (webmmux streamable=true)
+    VIDEO_CODEC_RAW  = 2; // one uncompressed capture frame per message; layout in VideoFrame.raw_format
+}
+
+// RawFormat describes the bytes of a VIDEO_CODEC_RAW frame: the V4L2 pixel
+// format the camera was captured in and the geometry needed to index it. It is
+// the camera's own layout, untouched — for a thermal module whose mode stacks
+// metadata rows onto the picture, those rows are included.
+message RawFormat {
+    uint32 width          = 1; // pixels
+    uint32 height         = 2; // rows, including any non-picture rows the mode carries
+    string fourcc         = 3; // V4L2 pixel format, e.g. "YUYV" (2 bytes per pixel)
+    uint32 bytes_per_line = 4; // stride; data is exactly bytes_per_line * height bytes
 }
 
 message VideoFrame {
-    bytes      data         = 1; // chunk of encoded video; concatenate chunks in order; format described by codec
+    bytes      data         = 1; // chunk of encoded video; concatenate chunks in order; format described by codec. For VIDEO_CODEC_RAW, one whole frame.
     uint64     timestamp_ns = 2; // wall-clock timestamp in nanoseconds
     VideoCodec codec        = 3; // codec used; default 0 = H264
+    RawFormat  raw_format   = 4; // set on VIDEO_CODEC_RAW frames only
 }
 
 // A tunable V4L2 control on a local camera -- exposure, gain, white balance and
