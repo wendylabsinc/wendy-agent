@@ -106,7 +106,6 @@ CLOUD_PROTOS=(
     "cloud/mesh.proto"
     "cloud/notifications.proto"
     "cloud/organizations.proto"
-    "cloud/remote_logging.proto"
     "cloud/tunnel.proto"
     "cloud/users.proto"
 )
