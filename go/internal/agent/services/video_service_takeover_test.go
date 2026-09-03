@@ -37,7 +37,10 @@ func installFakeProducers(svc *VideoService) *fakeProducers {
 			svc.mu.Unlock()
 			h.mu.Lock()
 			for _, sub := range h.subs {
-				close(sub)
+				if !sub.closed {
+					sub.closed = true
+					close(sub.ch)
+				}
 			}
 			h.mu.Unlock()
 			close(h.done)

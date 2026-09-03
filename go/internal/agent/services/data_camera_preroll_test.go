@@ -161,7 +161,7 @@ func TestPreRollReplayWritesNegativeOffsetsAndRealSampleIDs(t *testing.T) {
 func newDefaultHub(t *testing.T, video *VideoService, path string) (*deviceHub, int) {
 	t.Helper()
 	hctx, hcancel := context.WithCancel(context.Background())
-	hub := &deviceHub{subs: make(map[int]chan *videoFrame), subDrops: make(map[int]uint64), ctx: hctx, cancel: hcancel, done: make(chan struct{}), sampleSeq: video.sampleSeqLocked(path)}
+	hub := &deviceHub{subs: make(map[int]*hubSubscriber), subDrops: make(map[int]uint64), ctx: hctx, cancel: hcancel, done: make(chan struct{}), sampleSeq: video.sampleSeqLocked(path)}
 	t.Cleanup(hcancel)
 	id, _, err := hub.subscribe()
 	if err != nil {

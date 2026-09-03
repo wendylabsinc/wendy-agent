@@ -23,7 +23,7 @@ import (
 func newSampleHub(seq *atomic.Uint64) (*deviceHub, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &deviceHub{
-		subs: map[int]chan *videoFrame{}, subDrops: map[int]uint64{},
+		subs: map[int]*hubSubscriber{}, subDrops: map[int]uint64{},
 		ctx: ctx, cancel: cancel, done: make(chan struct{}), sampleSeq: seq,
 	}, cancel
 }

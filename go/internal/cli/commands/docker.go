@@ -1391,6 +1391,15 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool,
 	return builderName, effectiveAddr, nil
 }
 
+// ociBuilderName is the buildx builder used for OCI-layout export builds.
+func ociBuilderName() string {
+	base := os.Getenv("WENDY_BUILDX_BUILDER")
+	if base == "" {
+		base = "wendy"
+	}
+	return base + "-oci"
+}
+
 // ensureOCIExportBuilder ensures a dedicated buildx builder for OCI-layout
 // export exists and is running, returning its name. Unlike the registry
 // builders it needs NO registry config — OCI export never pushes to a registry
@@ -1403,11 +1412,7 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 	ensureBuildxBuilderMu.Lock()
 	defer ensureBuildxBuilderMu.Unlock()
 
-	base := os.Getenv("WENDY_BUILDX_BUILDER")
-	if base == "" {
-		base = "wendy"
-	}
-	builderName := base + "-oci"
+	builderName := ociBuilderName()
 
 	// Fast path: if the builder's buildkit container is already running, then the
 	// daemon is up, the builder exists, and it is bootstrapped — so we can skip
@@ -1773,7 +1778,8 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 // share one cache dir — BuildKit's local cache-export ingest store is not safe
 // for concurrent writers and parallel builds clobber each other's temp files
 // (WDY-1689). An empty cacheKey uses the shared base dir so single and
-// sequential builds keep their cross-run cache.
+// sequential builds keep their cross-run cache. Used by the registry-push build
+// path; the OCI-export path embeds its cache inline in the layout instead.
 func buildxLocalCacheDir(userCache, cacheKey string) string {
 	dir := filepath.Join(userCache, "wendy", "buildx")
 	if cacheKey != "" {
@@ -2185,11 +2191,8 @@ func buildAndPushImageViaOCILayout(ctx context.Context, dir, registryAddr, repo,
 	defer releaseLayout()
 	defer func() { _ = gcOCILayoutDir(layoutDir) }()
 
-	if cacheKey == "" {
-		cacheKey = repo
-	}
 	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
-		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(cacheKey, platform), streamOutput, logOutput)
+		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, streamOutput, logOutput)
 	})
 	if err != nil {
 		return err
@@ -2245,11 +2248,8 @@ func buildAndPrepareComposeImage(ctx context.Context, conn *grpcclient.AgentConn
 	defer releaseLayout()
 	defer func() { _ = gcOCILayoutDir(layoutDir) }()
 
-	if cacheKey == "" {
-		cacheKey = repo
-	}
 	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
-		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(cacheKey, platform), streamOutput, logOutput)
+		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, streamOutput, logOutput)
 	})
 	if err != nil {
 		return err
@@ -2860,7 +2860,7 @@ func tlsClientDialer(certPEM, keyPEM, caPEM string, dial func(context.Context) (
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
 	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
+	if certs.AppendChainToPool(caPool, caPEM) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
 	}
 	tlsCfg := &tls.Config{
@@ -3013,7 +3013,7 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 		return nil, fmt.Errorf("parsing mTLS certificate: %w", err)
 	}
 	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
+	if certs.AppendChainToPool(caPool, caPEM) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
 	}
 
@@ -3084,7 +3084,7 @@ func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy,
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
 	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain)) {
+	if certs.AppendChainToPool(caPool, certInfo.PemCertificateChain) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates found in certInfo.PemCertificateChain")
 	}
 	tlsCfg := &tls.Config{

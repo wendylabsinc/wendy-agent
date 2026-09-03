@@ -84,6 +84,9 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		return
 	}
 	path := executed.CommandPath()
+	if path == "wendy __session-broker" {
+		return
+	}
 	// Homebrew exports HOMEBREW_PREFIX/HOMEBREW_CELLAR/HOMEBREW_REPOSITORY into
 	// every interactive shell once `eval "$(brew shellenv)"` is set up (the
 	// standard ~/.zprofile line), so env presence alone cannot distinguish the

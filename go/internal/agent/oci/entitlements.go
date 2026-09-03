@@ -61,6 +61,10 @@ type ApplyOptions struct {
 	// AppSensorSocketManager containing only sensors.sock, which serves the
 	// read-only SensorService and nothing else.
 	SensorSocketDir string
+	// HostResolvConfPath is a wendy-managed resolv.conf that points at a live
+	// resolver in the host network namespace. When empty, host networking keeps
+	// the compatibility fallback of bind-mounting the host resolver file.
+	HostResolvConfPath string
 }
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
@@ -80,7 +84,7 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 		case appconfig.EntitlementGPU:
 			applyGPU(spec)
 		case appconfig.EntitlementNetwork:
-			applyNetwork(spec, ent)
+			applyNetwork(spec, ent, opts.HostResolvConfPath)
 		case appconfig.EntitlementAudio:
 			applyAudio(spec)
 			if !didSetDeviceCapabilities {
@@ -651,7 +655,7 @@ func applyAdmin(spec *Spec) {
 // intentionally unchanged here — only a WARN log at container create (in the
 // containerd package, see hasImplicitHostNetworkMode) flags it. This function
 // only gains the new "bridge" mode itself.
-func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
+func applyNetwork(spec *Spec, ent appconfig.Entitlement, hostResolvConfPath string) {
 	mode := ent.Mode
 	if mode == "" {
 		mode = "host"
@@ -695,13 +699,16 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 			spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, "CAP_NET_ADMIN")
 		}
 
-		// Mount a resolv.conf from the host so DNS works inside the container.
-		// The container has its own mount namespace, so its rootfs resolv.conf
-		// may be empty. Prefer systemd-resolved's upstream file, since on
-		// systemd hosts /etc/resolv.conf often points to the 127.0.0.53 stub
-		// listener; using the upstream file avoids depending on that stub in
-		// environments where the container has its own network namespace. When
-		// systemd-resolved is not in use, fall back to the host's /etc/resolv.conf.
+		// Host-network containers share the host's loopback interface. When a
+		// live systemd-resolved stub was detected, HostResolvConfPath points them
+		// at 127.0.0.53:53 so DHCP/VPN/upstream changes are followed by the daemon
+		// instead of being frozen into a bind-mounted resolver-file inode.
+		//
+		// systemd-resolved is optional on adopted Linux hosts (and on older
+		// WendyOS images), so retain the existing host-file fallback when the
+		// caller could not prepare that managed file. The fallback is only a
+		// compatibility path: atomic replacement of its source is not visible to
+		// a running container, which is why the containerd layer warns when used.
 		const resolvedConf = "/run/systemd/resolve/resolv.conf"
 		alreadyMounted := false
 		for _, m := range spec.Mounts {
@@ -711,11 +718,13 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 			}
 		}
 		if !alreadyMounted {
-			source := ""
-			if _, err := os.Stat(resolvedConf); err == nil {
-				source = resolvedConf
-			} else if _, err := os.Stat("/etc/resolv.conf"); err == nil {
-				source = "/etc/resolv.conf"
+			source := hostResolvConfPath
+			if source == "" {
+				if _, err := os.Stat(resolvedConf); err == nil {
+					source = resolvedConf
+				} else if _, err := os.Stat("/etc/resolv.conf"); err == nil {
+					source = "/etc/resolv.conf"
+				}
 			}
 			if source != "" {
 				spec.Mounts = append(spec.Mounts, Mount{

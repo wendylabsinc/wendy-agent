@@ -58,6 +58,9 @@ func newTestVideoService(glob func() ([]string, error), readName func(string) (s
 	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, nil }
 	svc.isJetson = func() bool { return false }
 	svc.findCameraSource = func(context.Context, string) (uint64, bool) { return 0, false }
+	// Keep enumeration off the host's real /dev/v4l; tests that care about
+	// stable identity override this.
+	svc.readStableNames = func() map[string]stableNames { return nil }
 	return svc
 }
 
@@ -687,7 +690,7 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	gstFallbackDirs = nil
 	t.Cleanup(func() { gstFallbackDirs = prev })
 	svc := NewVideoService(context.Background(), zap.NewNop())
-	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "", pipeWireSource{})
+	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "", pipeWireSource{}, noRawSink{})
 	if err == nil {
 		t.Fatal("expected error when gst-launch-1.0 not found")
 	}
@@ -704,7 +707,7 @@ func newTestHub(t *testing.T) (*deviceHub, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &deviceHub{
-		subs:   make(map[int]chan *videoFrame),
+		subs:   make(map[int]*hubSubscriber),
 		ctx:    ctx,
 		cancel: cancel,
 		done:   make(chan struct{}),
@@ -798,7 +801,7 @@ func TestDeviceHub_ProducerErrorPropagated(t *testing.T) {
 	h.mu.Lock()
 	h.err = wantErr
 	for _, c := range h.subs {
-		close(c)
+		close(c.ch)
 	}
 	h.mu.Unlock()
 

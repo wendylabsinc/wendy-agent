@@ -388,7 +388,7 @@ func TestSnapshotSkipsTruncatedFrameOnAlignedTransport(t *testing.T) {
 func newExplicitlyHeldHub(t *testing.T, video *VideoService) (hub *deviceHub, viewerID int, cancel context.CancelFunc) {
 	t.Helper()
 	hctx, hcancel := context.WithCancel(context.Background())
-	hub = &deviceHub{subs: make(map[int]chan *videoFrame), subDrops: make(map[int]uint64), ctx: hctx, cancel: hcancel, done: make(chan struct{}), width: 1920, height: 1080, framerate: 30}
+	hub = &deviceHub{subs: make(map[int]*hubSubscriber), subDrops: make(map[int]uint64), ctx: hctx, cancel: hcancel, done: make(chan struct{}), width: 1920, height: 1080, framerate: 30}
 	viewerID, _, err := hub.subscribeAs(hubHolderStreamClient)
 	if err != nil {
 		t.Fatal(err)
@@ -539,7 +539,7 @@ func TestStartRecordsRefusalAndContinuesEpisode(t *testing.T) {
 
 func TestDeviceHubCountsSubscriberDrops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	hub := &deviceHub{subs: make(map[int]chan *videoFrame), subDrops: make(map[int]uint64), ctx: ctx, cancel: cancel}
+	hub := &deviceHub{subs: make(map[int]*hubSubscriber), subDrops: make(map[int]uint64), ctx: ctx, cancel: cancel}
 	id, _, err := hub.subscribe()
 	if err != nil {
 		t.Fatal(err)

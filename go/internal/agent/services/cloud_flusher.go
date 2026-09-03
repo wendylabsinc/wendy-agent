@@ -14,6 +14,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -230,9 +232,7 @@ func dialCloudMTLS(host, certPEM, chainPEM string, keyData []byte, extraOpts ...
 	if err != nil {
 		caPool = x509.NewCertPool()
 	}
-	if chainPEM != "" {
-		caPool.AppendCertsFromPEM([]byte(chainPEM))
-	}
+	certs.AppendChainToPool(caPool, chainPEM)
 
 	tlsCfg := &tls.Config{
 		MinVersion:   tls.VersionTLS13,

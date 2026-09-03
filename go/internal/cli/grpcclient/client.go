@@ -65,6 +65,7 @@ type AgentConnection struct {
 	// pre-built (NewFromConn) connections.
 	Addr           string
 	IsMTLS         bool                    // true when connected via mutual TLS
+	IsSessionProxy bool                    // true when Conn reaches a local session broker retaining the mTLS transport
 	CertInfo       *config.CertificateInfo // cert used to establish mTLS; nil for plaintext
 	RegistryDialer func(context.Context, int) (net.Conn, error)
 	ExtraClosers   []io.Closer
@@ -229,18 +230,16 @@ func Connect(ctx context.Context, address string) (*AgentConnection, error) {
 	return ac, nil
 }
 
-// ConnectUnix dials the agent over a local unix domain socket with plain h2c
-// (no TLS). It is used inside an `admin`-entitled container, where the agent's
-// control socket is bind-mounted in and WENDY_AGENT_SOCKET points at it. The
-// socket itself is the entire trust boundary (see the admin entitlement); there
-// is deliberately no authentication here.
-func ConnectUnix(ctx context.Context, socketPath string) (*AgentConnection, error) {
+// newUnixClient is the one place a local unix-domain gRPC channel is built —
+// used by ConnectUnix (agent control socket) and ConnectSessionProxy (session
+// broker socket) — so tuning such as window sizes and keepalive cannot drift
+// between the two local transports.
+func newUnixClient(socketPath, target string, extra ...grpc.DialOption) (*grpc.ClientConn, error) {
 	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
 		var d net.Dialer
 		return d.DialContext(ctx, "unix", socketPath)
 	}
-	conn, err := grpc.NewClient(
-		"passthrough:///unix",
+	opts := []grpc.DialOption{
 		grpc.WithContextDialer(dialer),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithInitialWindowSize(grpcInitialStreamWindow),
@@ -252,7 +251,17 @@ func ConnectUnix(ctx context.Context, socketPath string) (*AgentConnection, erro
 			Timeout:             grpcKeepaliveTimeout,
 			PermitWithoutStream: false,
 		}),
-	)
+	}
+	return grpc.NewClient("passthrough:///"+target, append(opts, extra...)...)
+}
+
+// ConnectUnix dials the agent over a local unix domain socket with plain h2c
+// (no TLS). It is used inside an `admin`-entitled container, where the agent's
+// control socket is bind-mounted in and WENDY_AGENT_SOCKET points at it. The
+// socket itself is the entire trust boundary (see the admin entitlement); there
+// is deliberately no authentication here.
+func ConnectUnix(ctx context.Context, socketPath string) (*AgentConnection, error) {
+	conn, err := newUnixClient(socketPath, "unix")
 	if err != nil {
 		return nil, fmt.Errorf("connecting to agent at unix:%s: %w", socketPath, err)
 	}
@@ -386,7 +395,12 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 
 // ConnectWithTLSExpecting is ConnectWithTLSAndPins with a required peer
 // identity. A nil expected is exactly ConnectWithTLSAndPins.
-func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker, expected *certs.WendyIdentity) (*AgentConnection, error) {
+//
+// extraOpts extends the standard dial options for callers whose channel has
+// different lifetime needs than a per-command connection — today the session
+// broker, which must pin its retained transport open (grpc.WithIdleTimeout(0))
+// because for it a teardown-and-redial is a trust event, not a transparency.
+func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker, expected *certs.WendyIdentity, extraOpts ...grpc.DialOption) (*AgentConnection, error) {
 	observedOrg := new(atomic.Int32)
 	observedIdentity := new(atomic.Pointer[certs.WendyIdentity])
 	mismatch := new(atomic.Pointer[certs.IdentityMismatchError])
@@ -396,8 +410,7 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 		return nil, err
 	}
 
-	conn, err := grpc.NewClient(
-		grpcTarget(address),
+	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
 		grpc.WithInitialWindowSize(grpcInitialStreamWindow),
 		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
@@ -408,7 +421,8 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 			Timeout:             grpcKeepaliveTimeout,
 			PermitWithoutStream: false,
 		}),
-	)
+	}
+	conn, err := grpc.NewClient(grpcTarget(address), append(opts, extraOpts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to agent at %s with TLS: %w", address, err)
 	}

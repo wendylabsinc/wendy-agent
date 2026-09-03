@@ -1411,11 +1411,28 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}()
 	}
 
+	var hostResolvConfPath string
+	if entitlementsUseHostNetwork(appCfg.Entitlements) {
+		if systemdResolvedStubAvailable() {
+			path, writeErr := writeHostResolvConf()
+			if writeErr != nil {
+				c.logger.Warn("host DNS: could not prepare systemd-resolved stub configuration; falling back to a host resolver file that will not follow later replacements",
+					zap.String(logfields.AppID, appID), zap.Error(writeErr))
+			} else {
+				hostResolvConfPath = path
+			}
+		} else {
+			c.logger.Warn("host DNS: systemd-resolved stub is unavailable; falling back to a host resolver file that will not follow later replacements",
+				zap.String(logfields.AppID, appID), zap.String("stub", systemdResolvedStubAddress))
+		}
+	}
+
 	opts := localoci.ApplyOptions{
 		DBusProxySocketDir: dbusProxySocketDir,
 		SystemAPISocketDir: systemAPISocketDir,
 		DataSocketDir:      dataSocketDir,
 		SensorSocketDir:    sensorSocketDir,
+		HostResolvConfPath: hostResolvConfPath,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
 	// derived (validated) values. This ensures ApplyEntitlements always receives
@@ -1879,22 +1896,22 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	muHeld = false
 	c.mu.Unlock()
 
-	// Reboot resilience for meshed containers (C-final-review Fix 1): the
-	// container's OCI spec bind-mounts /etc/resolv.conf from a tmpfs path
-	// written once at CreateContainerWithProgress time. containerd persists
-	// the container/spec across a reboot but /run does not survive it, and
+	// Reboot resilience for wendy-managed DNS files: host-network and meshed
+	// containers bind-mount /etc/resolv.conf from tmpfs paths written once at
+	// CreateContainerWithProgress time. containerd persists the container/spec
+	// across a reboot but /run does not survive it, and
 	// ReconcileBootContainers reaches this function directly (never
 	// CreateContainer) to bring surviving containers back — so the source
 	// must be recreated here, before container.NewTask below processes the
 	// spec's mounts, or the runtime's bind mount fails and the container never
-	// starts again. The gate is the persisted spec's mesh resolv.conf mount
-	// itself (leak-free — see recreateMeshResolvConfForStart), so a Spec load
-	// failure just skips the hook.
+	// starts again. The gates are the exact persisted resolv.conf mount sources,
+	// so a Spec load failure just skips the hooks.
 	storedSpec, storedSpecErr := container.Spec(ctx)
 	if storedSpecErr == nil {
+		c.recreateHostResolvConfForStart(storedSpec.Mounts)
 		c.recreateMeshResolvConfForStart(storedSpec.Mounts)
 	} else {
-		c.logger.Warn("mesh: could not load container spec to recreate resolv.conf before start",
+		c.logger.Warn("could not load container spec to recreate managed resolv.conf before start",
 			zap.String("app_name", appName), zap.Error(storedSpecErr))
 	}
 
