@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 )
 
 // The persistent build caches under ~/Library/Caches/wendy grow without bound:
@@ -238,13 +240,13 @@ func tryLockCacheUnit(dir string) (release func(), ok bool) {
 		}
 		return nil, false // unreadable lock: can't tell, leave the dir alone
 	}
-	locked, err := tryLockFile(f)
+	locked, err := flock.TryLock(f)
 	if err != nil || !locked {
 		_ = f.Close()
 		return nil, false
 	}
 	return func() {
-		_ = unlockFile(f)
+		_ = flock.Unlock(f)
 		_ = f.Close()
 	}, true
 }
