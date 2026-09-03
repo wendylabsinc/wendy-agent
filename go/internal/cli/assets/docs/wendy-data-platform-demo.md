@@ -289,12 +289,14 @@ Enrollment is untouched by the demo, so there is nothing to restore there.
   directory was created or that a topic was subscribed, so a recorder that
   fails just after that window reports a successful start and surfaces the
   failure only at Stop.
-- The audio capture's `canonical_uncertainty_nanos` is the width of the
-  `clock_gettime` bracket taken in `beginSegment`, which runs after a chunk of
-  pulse-code modulation (PCM) data has already been read from the pipe. The
-  published uncertainty therefore describes the read of the clock, not the
-  buffering delay ahead of it, and understates the true error on a segment
-  start.
+- The audio capture now backdates a segment stamp past the chunk of pulse-code
+  modulation (PCM) data it read and past a constant for the delay still
+  outstanding behind it, and publishes a 20 ms uncertainty half-width to cover
+  that constant (`mapping_segment` reads `receipt-minus-pipeline-v1`). The
+  constant is an estimate, not a reading: nothing queries the actual ALSA or
+  PipeWire delay per chunk, so a device whose buffering departs markedly from
+  the Jetson Orin Nano the constants were measured on could fall outside the
+  published bound.
 - `wendy data download` mutates its own `--output` flag variable when the flag
   is empty, so re-running the same command object in one process writes to the
   first episode's directory.
