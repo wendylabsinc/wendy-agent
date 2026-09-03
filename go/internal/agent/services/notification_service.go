@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	systempb "github.com/wendylabsinc/wendy/go/proto/gen/systempb"
 )
@@ -333,17 +334,22 @@ type notificationDeviceProof struct {
 	signature         string
 }
 
+// canonicalNotificationDeviceProof builds the NUL-framed byte string the device
+// signs. uri is the device's canonical Wendy identity URN and is signature
+// input, not a comparison: Cloud rebuilds these exact bytes from the URI the
+// device puts in the x-wendy-device-uri header, so the two spellings must agree
+// byte for byte or every proof fails verification.
 func canonicalNotificationDeviceProof(
 	request *cloudpb.CreateNotificationV2Request,
-	orgID, assetID int32,
+	uri string,
 	certificateSerial string,
 	timestamp int64,
 ) ([]byte, string, string, error) {
 	if request == nil {
 		return nil, "", "", fmt.Errorf("notification request is required")
 	}
-	if orgID <= 0 || assetID <= 0 {
-		return nil, "", "", fmt.Errorf("device proof requires positive organization and asset IDs")
+	if !validCanonicalIdentityURI(uri) {
+		return nil, "", "", fmt.Errorf("device proof identity must be a canonical lowercase urn:wendy URN")
 	}
 	if !validCanonicalCertificateSerial(certificateSerial) {
 		return nil, "", "", fmt.Errorf("device proof certificate serial must be canonical lowercase octet hexadecimal")
@@ -355,7 +361,6 @@ func canonicalNotificationDeviceProof(
 	if err != nil {
 		return nil, "", "", fmt.Errorf("deterministically serialize notification request: %w", err)
 	}
-	uri := fmt.Sprintf("urn:wendy:org:%d:asset:%d", orgID, assetID)
 	timestampText := strconv.FormatInt(timestamp, 10)
 	canonical := make([]byte, 0, len(deviceProofDomain)+len(deviceProofFullMethod)+len(uri)+len(certificateSerial)+len(timestampText)+len(requestBytes)+5)
 	canonical = append(canonical, deviceProofDomain...)
@@ -370,6 +375,34 @@ func canonicalNotificationDeviceProof(
 	canonical = append(canonical, 0)
 	canonical = append(canonical, requestBytes...)
 	return canonical, uri, timestampText, nil
+}
+
+// validCanonicalIdentityURI accepts only the canonical lowercase spelling of a
+// Wendy identity URN. Cloud's parser re-renders what it parses and compares, so
+// an upper-case variant of the same identity is rejected there rather than
+// accepted as a second spelling; refusing to sign one here means the device
+// never produces a proof Cloud will throw away. The character bound also keeps
+// a NUL or a space out of the URN, which would otherwise let one field of the
+// NUL-framed preimage bleed into the next.
+func validCanonicalIdentityURI(value string) bool {
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	for _, character := range value {
+		if character < '!' || character > '~' || (character >= 'A' && character <= 'Z') {
+			return false
+		}
+	}
+	// "urn:wendy:org:<org>:(asset|user):<id>". Six non-empty fields holds for
+	// both the int-era spelling and the uuid one, since a uuid carries no colon.
+	fields := strings.Split(value, ":")
+	if len(fields) != 6 || fields[0] != "urn" || fields[1] != "wendy" || fields[2] != "org" {
+		return false
+	}
+	if fields[4] != "asset" && fields[4] != "user" {
+		return false
+	}
+	return fields[3] != "" && fields[5] != ""
 }
 
 func validCanonicalCertificateSerial(value string) bool {
@@ -439,13 +472,13 @@ func parseDeviceProofPrivateKey(keyData []byte) (*ecdsa.PrivateKey, error) {
 
 func signNotificationDeviceProof(
 	request *cloudpb.CreateNotificationV2Request,
-	orgID, assetID int32,
+	uri string,
 	certificateSerial string,
 	timestamp int64,
 	keyData []byte,
 	random io.Reader,
 ) (notificationDeviceProof, error) {
-	canonical, uri, timestampText, err := canonicalNotificationDeviceProof(request, orgID, assetID, certificateSerial, timestamp)
+	canonical, uri, timestampText, err := canonicalNotificationDeviceProof(request, uri, certificateSerial, timestamp)
 	if err != nil {
 		return notificationDeviceProof{}, err
 	}
@@ -469,7 +502,7 @@ func signNotificationDeviceProof(
 func notificationDeviceProofContext(
 	ctx context.Context,
 	request *cloudpb.CreateNotificationV2Request,
-	orgID, assetID int32,
+	uri string,
 	timestamp int64,
 	certPEM string,
 	keyData []byte,
@@ -479,7 +512,7 @@ func notificationDeviceProofContext(
 	if err != nil {
 		return nil, err
 	}
-	proof, err := signNotificationDeviceProof(request, orgID, assetID, certificateSerial, timestamp, keyData, random)
+	proof, err := signNotificationDeviceProof(request, uri, certificateSerial, timestamp, keyData, random)
 	if err != nil {
 		return nil, err
 	}
@@ -515,6 +548,9 @@ func (s *CloudNotificationSender) CreateNotificationV2(
 	if !enrolled {
 		return nil, status.Error(codes.FailedPrecondition, "device must be enrolled before sending notifications")
 	}
+	if orgID <= 0 || assetID <= 0 {
+		return nil, status.Error(codes.FailedPrecondition, "device proof requires positive organization and asset IDs")
+	}
 	certPEM, chainPEM, keyData := s.provisioningSvc.ProvisioningCerts()
 	defer func() {
 		for i := range keyData {
@@ -525,8 +561,7 @@ func (s *CloudNotificationSender) CreateNotificationV2(
 	proofCtx, err := notificationDeviceProofContext(
 		ctx,
 		request,
-		orgID,
-		assetID,
+		certs.AssetURN(orgID, assetID),
 		time.Now().Unix(),
 		certPEM,
 		keyData,
