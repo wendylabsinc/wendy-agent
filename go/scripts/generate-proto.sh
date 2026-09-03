@@ -128,6 +128,7 @@ CLOUD_V2_PROTOS=(
     "wendycloud/v2/assets.proto"
     "wendycloud/v2/certificates.proto"
     "wendycloud/v2/deployments.proto"
+    "wendycloud/v2/mesh.proto"
     "wendycloud/v2/notifications.proto"
     "wendycloud/v2/organizations.proto"
     "wendycloud/v2/tunnel.proto"
