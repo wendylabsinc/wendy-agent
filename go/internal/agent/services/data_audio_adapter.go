@@ -27,11 +27,17 @@ import (
 // map hardware capture timestamps instead of the agent receipt, and support
 // per-crossing pre-roll from the rolling buffer.
 const (
-	audioSampleRate      = 48000
-	audioChannels        = 1
-	audioBytesPerSample  = 2
-	audioBytesPerSecond  = audioSampleRate * audioChannels * audioBytesPerSample
-	audioChunkBytes      = audioBytesPerSecond / 10 // ~100 ms per read
+	audioSampleRate     = 48000
+	audioChannels       = 1
+	audioBytesPerSample = 2
+	audioBytesPerSecond = audioSampleRate * audioChannels * audioBytesPerSample
+	// audioChunkBytes is the size of the read buffer, not the size of a read.
+	// A pipe read returns whatever the capture process has produced: MEASURED
+	// on a Jetson Orin Nano with a Logitech C920 microphone, reads arrive as
+	// 8192 bytes (4096 frames, 85.33 ms), never the 9600 this bound would
+	// suggest. Every duration derived from a chunk must therefore use the
+	// length actually read.
+	audioChunkBytes      = audioBytesPerSecond / 10
 	audioSegmentDuration = 10 * time.Second
 	audioSegmentBytes    = int64(audioBytesPerSecond) * int64(audioSegmentDuration/time.Second)
 	// defaultAudioFragment is the sealed duration when a threshold source omits
@@ -40,6 +46,25 @@ const (
 	// audioLevelField is the only field the audio threshold trigger understands.
 	audioLevelField = "level_db"
 	wavHeaderBytes  = 44
+	// audioPipelineDelayEstimate is the capture delay still outstanding once
+	// the chunk in hand has been accounted for: audio already sitting in the
+	// device buffer when that chunk was handed over, plus its transit through
+	// the capture subprocess pipe. MEASURED on a Jetson Orin Nano with a
+	// Logitech C920 microphone over 60 reads, the ALSA device delay ran 12.6 ms
+	// to 20.9 ms and pipe transit about 4 ms, giving 16.6 ms to 24.9 ms and
+	// centring near 20 ms. The 102 ms by which the oldest sample in a chunk was
+	// stale on that hardware is this residue plus the 85.33 ms chunk itself.
+	audioPipelineDelayEstimate = 20 * time.Millisecond
+	// audioPipelineDelayBound is the uncertainty half-width published alongside
+	// a corrected stamp. It covers a residual delay anywhere between 0 and
+	// 40 ms, which absorbs the period-size and scheduling variation a single
+	// point measurement cannot pin down, and contains the arecord fallback path
+	// now that audio.ArecordCommand bounds its device buffer to 40 ms.
+	audioPipelineDelayBound = 20 * time.Millisecond
+	// audioMappingSegment labels a stamp corrected by the two constants above,
+	// so a reader can tell corrected audio stamps from the uncorrected
+	// "receipt-bracket-v1" stamps the camera adapters still publish.
+	audioMappingSegment = "receipt-minus-pipeline-v1"
 )
 
 // audioStream is the PCM source the capture loop reads from. It is an interface
@@ -61,6 +86,10 @@ type audioDataAdapter struct {
 	audio *AudioService
 	// openStream is a seam over the real PCM capture; tests inject fake PCM.
 	openStream func(ctx context.Context, deviceID uint32) (audioStream, error)
+	// captureReceipt is a seam over data.CaptureReceipt, threaded into every
+	// capture this adapter starts; tests script the clock so the stamping
+	// arithmetic can be asserted exactly. Nil means read the real clock.
+	captureReceipt func() (int64, int64, int64, error)
 }
 
 func newAudioDataAdapter(audioSvc *AudioService) dataCaptureAdapter {
@@ -253,6 +282,7 @@ func (a *audioDataAdapter) startOne(ctx context.Context, session data.CaptureSes
 		source: source, session: session, dir: dir, stream: stream, index: index,
 		ctx: captureCtx, cancel: cancel, done: make(chan struct{}), ready: make(chan error, 1),
 		mode: mode, op: op, threshold: threshold, fragmentBytes: fragmentBytes, notes: notes,
+		captureReceipt: a.captureReceipt,
 	}
 	go c.run()
 	select {
@@ -402,7 +432,7 @@ func (c *audioCapture) handleThresholdChunk(pcm []byte) error {
 			c.missedCrossings++
 		} else {
 			level := float64(peak)
-			if err := c.beginSegment(&level); err != nil {
+			if err := c.beginSegment(&level, len(pcm)); err != nil {
 				return err
 			}
 			c.sealing = true
@@ -440,7 +470,7 @@ func (c *audioCapture) handleThresholdChunk(pcm []byte) error {
 // handleContinuousChunk appends PCM to a rotating WAV segment.
 func (c *audioCapture) handleContinuousChunk(pcm []byte) error {
 	if c.seg == nil {
-		if err := c.beginSegment(nil); err != nil {
+		if err := c.beginSegment(nil, len(pcm)); err != nil {
 			return err
 		}
 	}
@@ -458,10 +488,22 @@ func (c *audioCapture) handleContinuousChunk(pcm []byte) error {
 
 // beginSegment stamps the segment start on the canonical episode timeline and
 // opens a WAV file with a placeholder header (patched on finish).
-func (c *audioCapture) beginSegment(triggerLevel *float64) error {
+//
+// firstChunkBytes is the length of the chunk that opened the segment, which has
+// already been read from the capture pipe by the time the clock is read. The
+// segment stamp labels that chunk's FIRST sample, so the receipt has to be
+// walked back past the whole chunk and past the delay still outstanding behind
+// it. Passing the length rather than assuming audioChunkBytes matters: a pipe
+// read routinely returns less than the buffer holds.
+func (c *audioCapture) beginSegment(triggerLevel *float64, firstChunkBytes int) error {
 	canonical, uncertainty, receipt, err := c.canonicalTime()
 	if err != nil {
 		return err
+	}
+	canonical -= pcmDurationNanos(firstChunkBytes) + int64(audioPipelineDelayEstimate)
+	uncertainty += int64(audioPipelineDelayBound)
+	if uncertainty > c.maxCanonicalError {
+		c.maxCanonicalError = uncertainty
 	}
 	c.segNumber++
 	prefix := "segment"
@@ -530,12 +572,12 @@ func (c *audioCapture) finishSegment(truncated bool) error {
 		CanonicalEpisodeNanos:     c.segCanonical - c.session.RequestBootNanos,
 		CanonicalUncertaintyNanos: c.segUncert,
 		AgentReceiptBootNanos:     c.segReceipt,
-		MappingSegment:            "receipt-bracket-v1",
+		MappingSegment:            audioMappingSegment,
 		Segment:                   c.segRel,
 		ByteSize:                  dataBytes,
 		SampleRate:                audioSampleRate,
 		Channels:                  audioChannels,
-		DurationNanos:             dataBytes * int64(time.Second) / int64(audioBytesPerSecond),
+		DurationNanos:             pcmDurationNanos(int(dataBytes)),
 		Mode:                      c.mode,
 		TriggerLevelDb:            c.segTrigger,
 		Truncated:                 truncated,
@@ -546,6 +588,10 @@ func (c *audioCapture) finishSegment(truncated bool) error {
 	return err
 }
 
+// canonicalTime reads the agent receipt and the half-width of the clock bracket
+// it was taken in. Both are reported raw: the bracket measures how long the two
+// CLOCK_BOOTTIME reads took and nothing else, and it is beginSegment that folds
+// in the capture delay the receipt knows nothing about.
 func (c *audioCapture) canonicalTime() (canonical, uncertainty, receipt int64, err error) {
 	before, mid, after, err := c.receiptNow()
 	if err != nil {
@@ -553,10 +599,13 @@ func (c *audioCapture) canonicalTime() (canonical, uncertainty, receipt int64, e
 	}
 	canonical = mid
 	uncertainty = (after - before + 1) / 2
-	if uncertainty > c.maxCanonicalError {
-		c.maxCanonicalError = uncertainty
-	}
 	return canonical, uncertainty, mid, nil
+}
+
+// pcmDurationNanos converts a count of captured bytes to the time they span at
+// the fixed s16le / 48 kHz / mono capture format.
+func pcmDurationNanos(n int) int64 {
+	return int64(n) * int64(time.Second) / int64(audioBytesPerSecond)
 }
 
 // finish flushes any in-progress segment and folds accounting into the result.
