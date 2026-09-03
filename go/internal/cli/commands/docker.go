@@ -2860,7 +2860,7 @@ func tlsClientDialer(certPEM, keyPEM, caPEM string, dial func(context.Context) (
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
 	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
+	if certs.AppendChainToPool(caPool, caPEM) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
 	}
 	tlsCfg := &tls.Config{
@@ -3013,7 +3013,7 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 		return nil, fmt.Errorf("parsing mTLS certificate: %w", err)
 	}
 	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
+	if certs.AppendChainToPool(caPool, caPEM) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
 	}
 
@@ -3084,7 +3084,7 @@ func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy,
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
 	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain)) {
+	if certs.AppendChainToPool(caPool, certInfo.PemCertificateChain) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates found in certInfo.PemCertificateChain")
 	}
 	tlsCfg := &tls.Config{
