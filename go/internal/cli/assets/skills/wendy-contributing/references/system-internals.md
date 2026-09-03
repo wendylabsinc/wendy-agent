@@ -111,8 +111,12 @@ virtualize mode. The image is now UEFI-bootable, which removes one obstacle, but
 does not expose (it offers a virtio console, `hvc0`) — so a VZ guest would very
 likely boot mute. UTM in *emulate* mode runs QEMU and should behave like QEMU.
 
-`--net user` (the default) forwards the agent port but carries no multicast, so
-`wendy discover` cannot see the VM; `--net shared` uses `socket_vmnet` and can.
+`--net user` (the default) forwards the agent port; nothing else can reach the
+guest, but its mDNS announcement still leaks out through SLIRP one way, with an
+undialable 10.0.2.15 address. `wendy discover` files a VM under the Simulator
+tab either way (by the agent's `devicetype` TXT record or the hostname the VM
+reported), never among Local devices; `--net shared` uses `socket_vmnet` and
+puts the VM on the real network.
 See the *WendyOS in a Virtual Machine* installation guide for the full flow.
 
 ## Offline Container Image Bundling

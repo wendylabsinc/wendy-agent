@@ -39,14 +39,7 @@ func newDiscoverCmd() *cobra.Command {
 		Short: "Discover local and cloud WendyOS devices",
 		Long:  "Continuously discover WendyOS devices in Local and Cloud tabs until Ctrl+C. Use --timeout to scan local devices once for a fixed duration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts := discovery.DiscoveryOptions{
-				// The continuous TUI path streams LAN devices directly via
-				// lanStreamFn/startLANStream and never reads opts.LAN, so
-				// setting it unconditionally here only affects the JSON and
-				// one-shot paths below — both want the CLI's cache+probe LAN
-				// collection instead of the old mDNS-only confirmation.
-				LAN: cliLANStreamOptions(),
-			}
+			var opts discovery.DiscoveryOptions
 
 			switch discoverType {
 			case "usb":
@@ -70,11 +63,17 @@ func newDiscoverCmd() *cobra.Command {
 
 			timeoutSet := cmd.Flags().Changed("timeout")
 
+			// Only the JSON and one-shot paths read opts.LAN; the continuous
+			// TUI streams LAN devices itself (startLANStream). Both want the
+			// CLI's cache+probe collection, and building it here rather than
+			// up front spares the TUI a second simulator filter, whose
+			// learners would dial every booting VM twice.
 			if jsonOutput {
 				if !timeoutSet {
 					timeout = 5 * time.Second
 				}
 				opts.Timeout = timeout
+				opts.LAN = cliLANStreamOptions(cmd.Context())
 				// JSON output always lists every target so scripts/MCP keep the
 				// full set regardless of WENDY_SHOW_LOCAL_DEVICES.
 				return discoverJSON(cmd.Context(), opts)
@@ -82,6 +81,7 @@ func newDiscoverCmd() *cobra.Command {
 
 			if timeoutSet {
 				opts.Timeout = timeout
+				opts.LAN = cliLANStreamOptions(cmd.Context())
 				return discoverOnce(cmd.Context(), opts, providers.ShowLocalDevices())
 			}
 			return discoverContinuous(cmd.Context(), opts, providers.ShowLocalDevices())
@@ -471,7 +471,7 @@ func (m discoverModel) scanEthernet() tea.Cmd {
 // model just mirrors whatever it reports. Prober must be set: with a nil
 // Prober a cached row can never be confirmed offline.
 func (m discoverModel) startLANStream() tea.Cmd {
-	events := lanStreamFn(m.ctx, discovery.StreamOptions{UseCache: true, Prober: lanProber})
+	events := lanStreamFn(m.ctx, cliLANStreamOptions(m.ctx))
 	return waitLANEvent(events)
 }
 
@@ -609,6 +609,13 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delay := m.ethernetInterval.delay(env.DiscoverEthernetInterval())
 		return m, delayThen(delay, m.scanEthernet())
 	case lanEventMsg:
+		if msg.ev.Kind == discovery.LANRetracted {
+			// Listed, then found to be one of this machine's VMs: it belongs
+			// on the Simulator tab, not here.
+			m.removeLANDevice(discoverycache.Key(msg.ev.Device.ID, msg.ev.Device.DisplayName))
+			m.refreshTable()
+			return m, waitLANEvent(msg.ch)
+		}
 		// A superseded identity is this same device under a stale,
 		// connect-minted hostname key; dropping it keeps one row per device.
 		if msg.ev.Supersedes != "" {
@@ -1281,6 +1288,32 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 			lanName:       lanName,
 			lanKey:        lanKey,
 			defaultDevice: defaultDevice,
+		})
+	}
+	for _, d := range collection.Simulators {
+		// The one-shot table has no Simulator tab, so the type column is what
+		// tells a VM apart from a device on the network.
+		const deviceType = "Simulator"
+		address := preferredLANAddress(d)
+		items = append(items, discoverTableItem{
+			picker: tui.PickerItem{
+				Name:          discovery.SanitiseDisplayName(d.DisplayName),
+				Type:          deviceType,
+				Address:       address,
+				AgentVersion:  discovery.SanitiseDisplayName(d.AgentVersion),
+				AgentOutdated: agentBehindCLI(version.Version, d.AgentVersion),
+				OS:            d.OS,
+				OSVersion:     d.OSVersion,
+				DedupKey:      d.ID,
+				SortKey:       deviceSortKey(d.DisplayName, ""),
+			},
+			info: discoverDeviceInfo{
+				Name:    d.DisplayName,
+				Type:    deviceType,
+				Address: address,
+				Version: d.AgentVersion,
+			},
+			defaultDevice: d.ID,
 		})
 	}
 	for _, d := range collection.ExternalDevices {

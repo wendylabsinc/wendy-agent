@@ -30,6 +30,11 @@ type Meta struct {
 	// AgentPort is the host port this VM last bound successfully. Sticky, so a
 	// VM forced off the default port keeps the address the user wrote down.
 	AgentPort int `json:"agentPort,omitempty"`
+
+	// Hostname is what the guest calls itself, learned the first time the CLI
+	// reaches its agent. It is how a stray mDNS announcement of this VM is
+	// recognised as such, and it is stable across reboots.
+	Hostname string `json:"hostname,omitempty"`
 }
 
 // State describes one run of a VM. Its absence means the VM is not running.
@@ -118,6 +123,27 @@ func (s *Store) ReadMeta(name string) (m Meta, ok bool) {
 	}
 	m.Name = name
 	return m, true
+}
+
+// RecordHostname stores the hostname the guest reports. An empty hostname says
+// nothing and is ignored. An unreadable record is left alone rather than
+// replaced by a hostname-only one, which would lose the VM's provenance.
+func (s *Store) RecordHostname(name, hostname string) error {
+	if hostname == "" {
+		return nil
+	}
+	if err := ValidName(name); err != nil {
+		return err
+	}
+	m, ok := s.ReadMeta(name)
+	if !ok {
+		return fmt.Errorf("VM %q has no readable record at %s", name, s.MetaPath(name))
+	}
+	if m.Hostname == hostname {
+		return nil
+	}
+	m.Hostname = hostname
+	return s.WriteMeta(m)
 }
 
 // WriteState records the current run.

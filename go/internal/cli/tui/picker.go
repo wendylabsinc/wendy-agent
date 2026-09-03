@@ -185,6 +185,14 @@ type PickerSetMsg struct {
 	Items []PickerItem
 }
 
+// PickerRemoveMsg drops the item whose DedupKey (or Name, when it has none)
+// matches Key, case-insensitively like every other key comparison here. It is
+// how a discovery source takes a row back -- a LAN sighting that turned out to
+// be a local VM. An unknown key is a no-op.
+type PickerRemoveMsg struct {
+	Key string
+}
+
 // PickerModel is a Bubble Tea model that presents a live-updating list of
 // items and lets the user select one with arrow keys + Enter.
 type PickerModel struct {
@@ -566,6 +574,12 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case PickerDoneMsg:
 		m.scanning = false
+
+	case PickerRemoveMsg:
+		cursorKey := m.currentCursorKey()
+		if m.removeItemByKey(strings.ToLower(msg.Key)) {
+			m.refreshTableWithCursorKey(cursorKey)
+		}
 
 	case PickerSetMsg:
 		cursorKey := m.currentCursorKey()

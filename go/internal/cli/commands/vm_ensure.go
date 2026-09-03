@@ -132,8 +132,9 @@ func waitForSimulatorAgent(ctx context.Context, name, addr string, budget time.D
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		conn, _, err := connectSimulatorAgent(waitCtx, name, addr)
+		conn, resp, err := connectSimulatorAgent(waitCtx, name, addr)
 		if err == nil {
+			_ = vmRecordHostnameFn(name, resp.GetHostname())
 			return conn, nil
 		}
 		if blocksUnauthenticatedFallback(err) {
