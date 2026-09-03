@@ -292,6 +292,18 @@ func applyDeviceName(logger *zap.Logger, name string) error {
 	}
 	logger.Info("Wrote device name", zap.String("name", name), zap.String("path", deviceNamePath))
 
+	// A device-name apply is a deliberate re-identification, so clear any explicit
+	// rename — it outranks device-name (hostname.go, update-mdns-uuid.sh) and would
+	// otherwise override this name on the next boot.
+	const explicitHostnamePath = "/etc/wendy-agent/hostname"
+	if err := os.Remove(explicitHostnamePath); err == nil {
+		logger.Info("Cleared explicit hostname so the device name takes effect",
+			zap.String("path", explicitHostnamePath))
+	} else if !os.IsNotExist(err) {
+		logger.Warn("Could not clear explicit hostname; it will keep overriding the device name",
+			zap.String("path", explicitHostnamePath), zap.Error(err))
+	}
+
 	// Build an env with a full system PATH so scripts can find standard
 	// utilities (mkdir, logger, etc.) even when the agent runs under systemd
 	// with a restricted PATH.
