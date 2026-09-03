@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -971,7 +972,45 @@ func pickAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 	if isInteractiveTerminal() {
 		pick = pickAuthSessionFn
 	}
-	return config.ResolveAuth(cfg, cloudGRPC, pick)
+	auth, err := config.ResolveAuth(cfg, cloudGRPC, pick)
+	if err != nil {
+		return nil, err
+	}
+	// Pre-flight: renew the client certificate before it expires rather than
+	// after something rejects it (WDY-2829). pki-core renews only while the
+	// presented certificate is still valid, so this is the last point at which
+	// the cheap path is still available. A nil return means "carry on" —
+	// including when no renew frontend is configured.
+	//
+	// The renewal gets its own bounded context rather than the caller's: this
+	// helper is on 13 call paths that do not share a context parameter, and the
+	// request already carries its own timeout.
+	if rerr := ensureFreshCertificateFn(context.Background(), auth); rerr != nil {
+		reportStaleCertificate(rerr)
+	}
+	return auth, nil
+}
+
+// reportStaleCertificate prints why the stored certificate could not be renewed
+// and what to do about it. It does not fail the command: the connection attempt
+// is still worth making — the certificate may be accepted anyway, and a
+// connection error carries better context than a guess made here.
+func reportStaleCertificate(err error) {
+	if jsonOutput {
+		return
+	}
+	fmt.Fprintln(os.Stderr, tui.WarningMessage(capitalizeFirst(err.Error())+"."))
+	fmt.Fprintln(os.Stderr, "  Sign in again to get a new one: wendy auth login")
+}
+
+// capitalizeFirst upper-cases the first rune so an error string reads as a
+// sentence when printed as one.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	return string(unicode.ToUpper(r[0])) + string(r[1:])
 }
 
 func newDeviceUnenrollCmd() *cobra.Command {
