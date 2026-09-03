@@ -138,7 +138,13 @@ type CampaignTrigger struct {
 }
 
 type CampaignCapture struct {
-	Buffer       string            `json:"buffer" yaml:"buffer"`
+	Buffer string `json:"buffer" yaml:"buffer"`
+	// Drain holds the episode open for late application records after its
+	// capture adapters stop. An empty value takes DefaultSealDrain; "0s" opts
+	// out. The omitempty tag is load-bearing: planOnly is marshalled to JSON to
+	// compute Revision, so a field rendered on every campaign would change the
+	// revision digest of every already-deployed campaign.
+	Drain        string            `json:"drain,omitempty" yaml:"drain,omitempty"`
 	AfterTrigger string            `json:"after_trigger" yaml:"after_trigger"`
 	Triggers     []CampaignTrigger `json:"triggers" yaml:"triggers"`
 }
@@ -266,6 +272,12 @@ func (c Campaign) validate() error {
 	if err != nil || buffer < 0 || buffer > preRollWindow {
 		return fmt.Errorf("capture.buffer must be a duration from 0s through %s", preRollWindow)
 	}
+	if c.Capture.Drain != "" {
+		drain, drainErr := time.ParseDuration(c.Capture.Drain)
+		if drainErr != nil || drain < 0 || drain > maxSealDrain {
+			return fmt.Errorf("capture.drain must be a duration from 0s through %s", maxSealDrain)
+		}
+	}
 	after, err := time.ParseDuration(c.Capture.AfterTrigger)
 	if err != nil || after <= 0 || after > 24*time.Hour {
 		return errors.New("capture.after_trigger must be a duration greater than 0s and no more than 24h")
@@ -311,6 +323,18 @@ func (c Campaign) validate() error {
 
 func (c Campaign) BufferDuration() time.Duration {
 	d, _ := time.ParseDuration(c.Capture.Buffer)
+	return d
+}
+
+// DrainDuration is how long an episode this campaign triggers stays open for
+// late application records after its capture adapters stop. A campaign that
+// declares nothing takes DefaultSealDrain, so asynchronous scoring is filed
+// correctly by default; "drain: 0s" opts out and seals immediately.
+func (c Campaign) DrainDuration() time.Duration {
+	if c.Capture.Drain == "" {
+		return DefaultSealDrain
+	}
+	d, _ := time.ParseDuration(c.Capture.Drain)
 	return d
 }
 
