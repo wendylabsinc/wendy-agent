@@ -330,13 +330,20 @@ type StartOptions struct {
 	Calibrations          map[string][]byte
 	CalibrationRevisions  map[string]string
 	PreRollDuration       time.Duration
-	Trigger               EpisodeTrigger
-	CollectorVersion      string
-	ModelVersions         map[string]string
-	RequestedTopics       []string
-	Privacy               []PrivacyTransformation
-	Upload                WorkflowState
-	Labeling              WorkflowState
+	// DrainDuration holds an episode that captures applications open for this
+	// long after its capture adapters stop, so an application that scores
+	// asynchronously files its verdict into the episode it read rather than
+	// into the next one. Zero or less means no drain. The manager applies no
+	// default of its own; callers choose the policy, and the service call sites
+	// use data.DefaultSealDrain.
+	DrainDuration    time.Duration
+	Trigger          EpisodeTrigger
+	CollectorVersion string
+	ModelVersions    map[string]string
+	RequestedTopics  []string
+	Privacy          []PrivacyTransformation
+	Upload           WorkflowState
+	Labeling         WorkflowState
 }
 
 type EpisodeInfo struct {

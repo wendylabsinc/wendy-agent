@@ -68,6 +68,10 @@ type DataService struct {
 	// post-episode paths can arm and disarm campaigns; nil until a video service
 	// is registered.
 	armingAdapter dataArmingAdapter
+	// adHocDrain is the post-seal drain applied to episodes started through the
+	// Start RPC, which carry no campaign to declare one. Campaign episodes take
+	// their own value from the plan.
+	adHocDrain time.Duration
 }
 
 type dataCaptureAdapter interface {
@@ -94,7 +98,7 @@ type runningDataCapture interface {
 }
 
 func NewDataService(m *data.Manager) *DataService {
-	s := &DataService{manager: m, activeCaptures: make(map[string][]runningDataCapture), autoStopCancel: make(map[string]context.CancelFunc)}
+	s := &DataService{manager: m, activeCaptures: make(map[string][]runningDataCapture), autoStopCancel: make(map[string]context.CancelFunc), adHocDrain: data.DefaultSealDrain}
 	m.SetSourceProvider(s.discoverAdapterSources)
 	m.SetApplicationObserver(s.observeApplicationRecord)
 	return s
@@ -235,7 +239,7 @@ func (s *DataService) Start(ctx context.Context, req *agentpbv2.DataStartRequest
 	for _, c := range req.GetCalibrations() {
 		cal[c.GetSource()] = c.GetContents()
 	}
-	return s.startCapture(ctx, data.StartOptions{Name: req.GetName(), Sources: req.GetSources(), ExcludeSources: req.GetExcludeSources(), RequireUTCUncertainty: time.Duration(req.GetRequireUtcUncertaintyNanos()), Calibrations: cal, CollectorVersion: version.Version})
+	return s.startCapture(ctx, data.StartOptions{Name: req.GetName(), Sources: req.GetSources(), ExcludeSources: req.GetExcludeSources(), RequireUTCUncertainty: time.Duration(req.GetRequireUtcUncertaintyNanos()), Calibrations: cal, DrainDuration: s.adHocDrain, CollectorVersion: version.Version})
 }
 
 func (s *DataService) startCapture(ctx context.Context, opts data.StartOptions) (*agentpbv2.DataEpisode, error) {
@@ -456,6 +460,7 @@ func (s *DataService) triggerCampaign(ctx context.Context, campaign data.Campaig
 		Sources:              sources,
 		SourceCaptures:       captures,
 		PreRollDuration:      campaign.BufferDuration(),
+		DrainDuration:        campaign.DrainDuration(),
 		Trigger:              data.EpisodeTrigger{Reason: reason, CampaignName: campaign.Name, CampaignRevision: campaign.Revision, Expression: expression, Notify: campaign.Notify},
 		CollectorVersion:     version.Version,
 		ModelVersions:        campaign.Models,

@@ -32,6 +32,17 @@ const (
 	// them where a device wants a different bound.
 	DefaultMaxQuotaBytes = int64(50 << 30)
 	DefaultReserveBytes  = int64(5 << 30)
+	// DefaultSealDrain is how long an episode that captures applications stays
+	// open for late application records after its capture adapters have shut
+	// down. An application that scores asynchronously writes its prediction
+	// after the samples it read, so without a drain that write lands past the
+	// seal and is filed against a later episode. The manager itself applies no
+	// default: the value arrives through StartOptions.DrainDuration, and the
+	// policy of using this default lives at the service call sites.
+	DefaultSealDrain = 2 * time.Second
+	// maxSealDrain bounds the configurable drain. Beyond this the wait stops
+	// being a seal detail and becomes an unannounced extension of the episode.
+	maxSealDrain = 30 * time.Second
 )
 
 var ErrNoActiveEpisode = errors.New("no active episode")
@@ -145,8 +156,15 @@ func (m *Manager) Sources(ctx context.Context) []Source {
 }
 
 type bufferedRecord struct {
+	// bootNanos is the record's presentation stamp: the client's own
+	// CLOCK_BOOTTIME value when it was accepted, otherwise the agent receipt.
+	// It is what the pre-roll offset is derived from, and a client can move it.
 	bootNanos int64
-	encoded   []byte
+	// receiptNanos is the agent-authoritative CLOCK_BOOTTIME reading taken when
+	// the record arrived. No client can influence it, so it is the timestamp
+	// that decides ring eviction and pre-roll window membership.
+	receiptNanos int64
+	encoded      []byte
 }
 
 type ApplicationRecord struct {
@@ -173,6 +191,11 @@ type storedApplicationRecord struct {
 	TimestampUncertaintyNanos int64  `json:"timestamp_uncertainty_nanos"`
 	AgentReceiptBootNanos     int64  `json:"agent_receipt_boottime_nanos"`
 	ClientTimestampAccepted   bool   `json:"client_timestamp_accepted"`
+	// PrerollFlushed marks a record this episode received from the pre-roll ring
+	// rather than live. It is provenance, not a defect: a pre-trigger record is
+	// legitimately replayed into an episode that started after it arrived. The
+	// key is absent on live-recorded lines, so those stay byte-identical.
+	PrerollFlushed bool `json:"preroll_flushed,omitempty"`
 }
 
 // SetConsensusProvider configures a fresh direct observation at episode start
@@ -192,6 +215,12 @@ type activeEpisode struct {
 	// capturesApplications reports whether the applications source was
 	// selected; episodes that excluded it receive no application records.
 	capturesApplications bool
+	// drain is how long this episode stays in m.active after its capture
+	// adapters have stopped, so that a record an application writes about the
+	// samples it just read is still filed into this episode instead of the
+	// next one. Zero or less means no drain, and it is honoured only for
+	// episodes that capture applications.
+	drain time.Duration
 	// modelInputs is the append handle for the model-input ledger, opened on
 	// the first sample a model consumed (see openModelInputLedger). It is not
 	// fsynced per sample: at sensor rates that would dominate the write path,
@@ -244,6 +273,11 @@ func bootID() string {
 	}
 	return strings.TrimSpace(string(b))
 }
+
+// readBootIDForAcceptance is the boot identity RecordApplication checks a
+// client's claimed one against. It is a variable so a test can present both a
+// healthy agent identity and an unavailable one without a real /proc.
+var readBootIDForAcceptance = bootID
 
 func deviceIdentity(currentBootID string) DeviceIdentity {
 	hostname, _ := os.Hostname()
@@ -459,7 +493,7 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 		_ = os.RemoveAll(dir)
 		return Manifest{}, err
 	}
-	a := &activeEpisode{key: key, dir: dir, manifest: manifest, capturesApplications: capturesApplications, awaitConsensus: deferConsensus}
+	a := &activeEpisode{key: key, dir: dir, manifest: manifest, capturesApplications: capturesApplications, drain: opts.DrainDuration, awaitConsensus: deferConsensus}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	a.done = make(chan struct{})
@@ -562,6 +596,9 @@ func (m *Manager) ApplyCaptureResults(key string, results []CaptureResult) error
 
 // Interrupt finalizes an active episode after adapter startup failed. Existing
 // monotonic data is retained for auditability and is never silently deleted.
+// An interrupted episode drains for late application records exactly as a
+// stopped one does: the records an application still owes are no less its own
+// for the episode having ended badly.
 func (m *Manager) Interrupt(key, reason string) (Manifest, error) {
 	m.mu.Lock()
 	a := m.active[key]
@@ -576,6 +613,7 @@ func (m *Manager) Interrupt(key, reason string) (Manifest, error) {
 	if a.done != nil {
 		<-a.done
 	}
+	m.drainSeal(a)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.active[key] != a {
@@ -763,7 +801,16 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 		return "rejected", err
 	}
 	receipt := before + (after-before)/2
-	accepted := record.ClientBootID == bootID() && record.ClientBootNanos >= 0 && abs64(record.ClientBootNanos-receipt) <= preRollWindow.Nanoseconds()
+	// bootID reports the literal "unavailable" when the kernel boot identity
+	// cannot be read, so comparing against it unguarded would let a client that
+	// sends "unavailable" match on exactly the hosts where the agent has no
+	// boot identity to check against, and have its arbitrary timestamp trusted.
+	// An agent that cannot name its own boot cannot vouch for a client's, so it
+	// accepts no client timestamp at all. Reading it once per record also drops
+	// one /proc read from the per-record path.
+	agentBootID := readBootIDForAcceptance()
+	accepted := agentBootID != "unavailable" && record.ClientBootID == agentBootID &&
+		record.ClientBootNanos >= 0 && abs64(record.ClientBootNanos-receipt) <= preRollWindow.Nanoseconds()
 	stamp := receipt
 	if accepted {
 		stamp = record.ClientBootNanos
@@ -799,7 +846,7 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 		m.mu.Unlock()
 		return "rejected", err
 	}
-	m.preRoll = append(m.preRoll, bufferedRecord{bootNanos: stamp, encoded: b})
+	m.preRoll = append(m.preRoll, bufferedRecord{bootNanos: stamp, receiptNanos: receipt, encoded: b})
 	m.preRollBytes += len(b)
 	m.evictPreRoll(receipt)
 	observer := m.appObserver
@@ -813,9 +860,15 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 	return "buffered", nil
 }
 
+// evictPreRoll drops ring entries that have aged out of the pre-roll window or
+// that no longer fit the byte budget. Age is measured on the agent receipt, not
+// on the presentation stamp: the ring is appended in receipt order, so the head
+// is always the oldest arrival and dropping from the front is provably correct.
+// Measuring the client-supplied stamp instead let one forward-dated entry sit at
+// the head and hold back the eviction of genuinely older entries behind it.
 func (m *Manager) evictPreRoll(now int64) {
 	cutoff := now - preRollWindow.Nanoseconds()
-	for len(m.preRoll) > 0 && (m.preRoll[0].bootNanos < cutoff || m.preRollBytes > preRollLimit) {
+	for len(m.preRoll) > 0 && (m.preRoll[0].receiptNanos < cutoff || m.preRollBytes > preRollLimit) {
 		m.preRollBytes -= len(m.preRoll[0].encoded)
 		m.preRoll = m.preRoll[1:]
 		m.preRollLost++
@@ -826,6 +879,15 @@ func (m *Manager) evictPreRoll(now int64) {
 // starting episode. The ring buffer is not consumed: with per-campaign
 // concurrency another campaign's later episode is entitled to the same
 // pre-trigger records on its own timeline.
+//
+// Admission is the intersection of two timelines. A record enters the window
+// only when both its agent receipt and its presentation stamp fall inside it.
+// Testing the stamp alone let an accepted client choose which later episode
+// windows it appeared in, by back- or forward-dating its own CLOCK_BOOTTIME
+// within the five minute acceptance band; requiring the receipt as well means
+// a record can only reach a window it was physically present for. The offset
+// arithmetic still uses the stamp, so ActualOffset keeps its meaning and
+// offsets stay within [-window, 0].
 func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration) (uint64, *int64, error) {
 	window := preRollWindow
 	if requested > 0 && requested < window {
@@ -835,7 +897,7 @@ func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration
 	var count uint64
 	var earliest *int64
 	for _, r := range m.preRoll {
-		if r.bootNanos < cutoff || r.bootNanos > origin {
+		if r.receiptNanos < cutoff || r.receiptNanos > origin || r.bootNanos < cutoff || r.bootNanos > origin {
 			continue
 		}
 		var stored storedApplicationRecord
@@ -843,6 +905,7 @@ func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration
 			continue
 		}
 		stored.EpisodeNanos = r.bootNanos - origin
+		stored.PrerollFlushed = true
 		if earliest == nil || stored.EpisodeNanos < *earliest {
 			value := stored.EpisodeNanos
 			earliest = &value
@@ -873,8 +936,27 @@ func abs64(v int64) int64 {
 	return v
 }
 
+// drainSeal holds an episode open for late application records after its
+// capture adapters have stopped and before it is finalized. It must be called
+// with m.mu released: the whole point is that RecordApplication proceeds
+// normally throughout, so records written about the samples the episode just
+// produced are still filed into that episode. Episodes that do not capture
+// applications have nothing to wait for and never sleep.
+func (m *Manager) drainSeal(a *activeEpisode) {
+	if a.capturesApplications && a.drain > 0 {
+		time.Sleep(a.drain)
+	}
+}
+
 // Stop finalizes the episode keyed by the given campaign name
 // (AdHocEpisodeKey for campaign-less episodes).
+//
+// For an episode that captures applications the window for application records
+// does not close when the capture adapters do: the episode stays in m.active
+// for its configured drain (see drainSeal) so an application that scores
+// asynchronously can still file its verdict here. StoppedEpisodeNS is stamped
+// in finalizeLocked, after the drain, so records that arrive during the drain
+// carry an EpisodeNanos below it exactly as live ones do.
 func (m *Manager) Stop(key string) (Manifest, error) {
 	m.mu.Lock()
 	a := m.active[key]
@@ -889,6 +971,7 @@ func (m *Manager) Stop(key string) (Manifest, error) {
 	if a.done != nil {
 		<-a.done
 	}
+	m.drainSeal(a)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.active[key] != a {

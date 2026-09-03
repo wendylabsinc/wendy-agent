@@ -148,6 +148,44 @@ func TestCameraSensorSubscriptionReportsDropsPerSample(t *testing.T) {
 	}
 }
 
+// TestCameraSensorSamplesKeepZeroBufferFields pins camera samples to
+// single-instant semantics. sample_rate_hz, channels and duration_nanos exist
+// for a source that hands over a BUFFER of equally spaced samples; a camera
+// frame is one instant, so all three must stay zero and boottime_nanos must
+// remain the time of the whole payload. A camera provider that started
+// reporting a rate would tell an app to count samples into a frame.
+func TestCameraSensorSamplesKeepZeroBufferFields(t *testing.T) {
+	hub, cancel := newSampleHub(new(atomic.Uint64))
+	defer cancel()
+	subID, frames, err := hub.subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := &cameraSensorSubscription{hub: hub, subID: subID, frames: frames}
+	hub.broadcast(&videoFrame{
+		data:      []byte{0, 0, 0, 1, 0x67, 1},
+		codec:     agentpb.VideoCodec_VIDEO_CODEC_H264,
+		auAligned: true,
+	})
+	sample, err := subscription.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sample.SampleRateHz != 0 || sample.Channels != 0 || sample.DurationNanos != 0 {
+		t.Errorf("a camera sample reports buffer shape %d Hz / %d channels / %d ns, want zeros",
+			sample.SampleRateHz, sample.Channels, sample.DurationNanos)
+	}
+	// The same must hold on the wire, which is what an app actually reads.
+	message := sensorSampleMessage(sample)
+	if message.GetSampleRateHz() != 0 || message.GetChannels() != 0 || message.GetDurationNanos() != 0 {
+		t.Errorf("the camera sample message reports buffer shape %d Hz / %d channels / %d ns, want zeros",
+			message.GetSampleRateHz(), message.GetChannels(), message.GetDurationNanos())
+	}
+	if message.GetBoottimeNanos() == 0 {
+		t.Error("the camera sample lost its boot-clock receipt")
+	}
+}
+
 // TestCameraCaptureIndexCarriesSampleIdentity is the other half of the tee: the
 // episode's own index must name the frame with the identifier the model saw, so
 // the two can be joined without duplicating a single byte of video.

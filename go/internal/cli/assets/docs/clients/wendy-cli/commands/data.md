@@ -34,6 +34,14 @@ wendy data inspect <episode-id>
 wendy data download <episode-id> --output ./commissioning-episode
 ```
 
+`wendy data stop` seals an Episode that captures application records only after
+its post-seal drain has elapsed, so the command takes up to two seconds longer
+than the capture itself. That wait is what lets an app file a prediction about
+the samples the Episode just produced into that Episode. Campaigns set it with
+`capture.drain`; an ad-hoc Episode started by `wendy data record` uses the two
+second default whenever it includes the applications source, which it does
+unless `--source` or `--exclude-source` leaves it out.
+
 `sources` prints an aligned table whose `DETAIL` column carries the device's own
 description of each source, truncated to keep the table readable. A single kind
 can dominate a board: an NVIDIA Jetson exposes 20 internal audio-DMA routing
@@ -149,8 +157,28 @@ running, and the explicit values are reported as requested but not achieved in
 the episode manifest. Deployment prints a warning naming each source in that
 position. Set one or the other: a buffer for pre-roll, or explicit parameters
 for a clip that must be captured at a specific resolution or rate.
-`capture.after_trigger` must be greater than `0s` and no more than `24h`. At
-least one trigger is required, and each trigger selects exactly one condition:
+`capture.after_trigger` must be greater than `0s` and no more than `24h`.
+
+`capture.drain` is the opposite end of the same idea: `buffer` decides how much
+happened *before* the trigger that the Episode keeps, and `drain` decides how
+long the Episode stays open for application records *after* capture stops. An
+app that scores asynchronously reads samples, spends time computing, and writes
+its prediction once the Episode has already finished recording. Without a drain
+that write arrives too late, is acknowledged `buffered`, and is then replayed
+into whichever Episode records next, where it appears as that Episode's
+pre-trigger context. The drain keeps the Episode open long enough for the
+verdict to be filed against the recording it was computed from.
+
+It must be a duration from `0s` through `30s`. Omitting it takes the default of
+`2s`, so campaigns get the behavior without being rewritten; `drain: 0s` opts
+out and seals the moment capture stops. Only Episodes that capture application
+records wait at all, so a telemetry-only or camera-only plan pays nothing for
+the default. The wait is added to the Episode's own lifetime, after
+`after_trigger` has expired, and it is included in the `stopped_episode_nanos`
+the manifest records.
+
+At least one trigger is required, and each trigger selects exactly one
+condition:
 
 | Trigger | Description |
 |---|---|
@@ -199,6 +227,7 @@ sources:
 
 capture:
   buffer: 10s
+  drain: 2s
   after_trigger: 20s
   triggers:
     - event: emergency_stop
@@ -330,6 +359,14 @@ still start at the trigger. Every source's manifest entry preserves both the
 requested offset and the achieved offset; campaign deployment prints a warning
 when audio or ROS 2 pre-roll was requested. Unknown drop counts are displayed
 as unknown, never as zero.
+
+A record the ring replays into an Episode is written with
+`preroll_flushed: true` in `events.jsonl`. Records the Episode observed live
+omit the key entirely, so the two are distinguishable offline without changing
+any existing line. Window membership is decided on both the agent's own receipt time and the
+record's presentation timestamp: a record reaches an Episode's pre-roll only if
+it physically arrived inside that window, so a client cannot place itself into
+a later Episode by choosing its own `client_boottime_nanos`.
 
 ## Concurrency and retention
 

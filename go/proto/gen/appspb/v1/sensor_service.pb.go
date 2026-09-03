@@ -303,7 +303,21 @@ type SensorSample struct {
 	// explanation for gaps in sample_id.
 	DroppedBefore uint64 `protobuf:"varint,8,opt,name=dropped_before,json=droppedBefore,proto3" json:"dropped_before,omitempty"`
 	// boot_id is the kernel boot the timestamps belong to.
-	BootId        string `protobuf:"bytes,9,opt,name=boot_id,json=bootId,proto3" json:"boot_id,omitempty"`
+	BootId string `protobuf:"bytes,9,opt,name=boot_id,json=bootId,proto3" json:"boot_id,omitempty"`
+	// sample_rate_hz, channels and duration_nanos describe a payload that carries
+	// a BUFFER of equally spaced samples rather than a single instant. When
+	// sample_rate_hz is non-zero, boottime_nanos names the FIRST sample in the
+	// payload, and the k-th sample (zero-based, counting frames of `channels`
+	// interleaved values) lies at
+	// boottime_nanos + k * 1000000000 / sample_rate_hz. duration_nanos is the
+	// span the whole payload covers, derived from its length. A consumer must
+	// count samples into the buffer rather than assume a fixed chunk size,
+	// because a producer may deliver buffers of varying length. All three are
+	// zero for a single-instant sample, such as a camera frame, which is the
+	// compatible default.
+	SampleRateHz  uint32 `protobuf:"varint,10,opt,name=sample_rate_hz,json=sampleRateHz,proto3" json:"sample_rate_hz,omitempty"`
+	Channels      uint32 `protobuf:"varint,11,opt,name=channels,proto3" json:"channels,omitempty"`
+	DurationNanos int64  `protobuf:"varint,12,opt,name=duration_nanos,json=durationNanos,proto3" json:"duration_nanos,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -399,6 +413,27 @@ func (x *SensorSample) GetBootId() string {
 		return x.BootId
 	}
 	return ""
+}
+
+func (x *SensorSample) GetSampleRateHz() uint32 {
+	if x != nil {
+		return x.SampleRateHz
+	}
+	return 0
+}
+
+func (x *SensorSample) GetChannels() uint32 {
+	if x != nil {
+		return x.Channels
+	}
+	return 0
+}
+
+func (x *SensorSample) GetDurationNanos() int64 {
+	if x != nil {
+		return x.DurationNanos
+	}
+	return 0
 }
 
 type FrameIdentitySubscribeRequest struct {
@@ -633,7 +668,7 @@ const file_wendy_agent_apps_v1_sensor_service_proto_rawDesc = "" +
 	"\x16SensorSubscribeRequest\x12\x1d\n" +
 	"\n" +
 	"source_ids\x18\x01 \x03(\tR\tsourceIds\x12\x14\n" +
-	"\x05model\x18\x02 \x01(\tR\x05model\"\xdb\x02\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\"\xc4\x03\n" +
 	"\fSensorSample\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x1b\n" +
 	"\tsample_id\x18\x02 \x01(\x04R\bsampleId\x12%\n" +
@@ -643,7 +678,11 @@ const file_wendy_agent_apps_v1_sensor_service_proto_rawDesc = "" +
 	"\bencoding\x18\x06 \x01(\tR\bencoding\x124\n" +
 	"\x16payload_self_contained\x18\a \x01(\bR\x14payloadSelfContained\x12%\n" +
 	"\x0edropped_before\x18\b \x01(\x04R\rdroppedBefore\x12\x17\n" +
-	"\aboot_id\x18\t \x01(\tR\x06bootId\"T\n" +
+	"\aboot_id\x18\t \x01(\tR\x06bootId\x12$\n" +
+	"\x0esample_rate_hz\x18\n" +
+	" \x01(\rR\fsampleRateHz\x12\x1a\n" +
+	"\bchannels\x18\v \x01(\rR\bchannels\x12%\n" +
+	"\x0eduration_nanos\x18\f \x01(\x03R\rdurationNanos\"T\n" +
 	"\x1dFrameIdentitySubscribeRequest\x12\x1d\n" +
 	"\n" +
 	"source_ids\x18\x01 \x03(\tR\tsourceIds\x12\x14\n" +

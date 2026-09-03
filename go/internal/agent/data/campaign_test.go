@@ -372,3 +372,70 @@ func TestResolveROS2SelectorSkipsUnhealthyGraphs(t *testing.T) {
 		t.Fatal("an unhealthy graph resolved through the fallback path")
 	}
 }
+
+// drainDigestPinYAML is a campaign that declares no drain. Its revision digest
+// is pinned below at the value the digest had before capture.drain existed.
+const drainDigestPinYAML = `version: 1
+name: drain-digest-pin
+sources:
+  - telemetry: true
+capture:
+  buffer: 1s
+  after_trigger: 5s
+  triggers:
+    - event: pinned
+upload: {when: wifi, destination: example-episodes}
+export: {annotation: cvat}
+`
+
+// drainDigestPinRevision is the SHA-256 of drainDigestPinYAML's canonical plan,
+// recorded before capture.drain was added. Every deployed campaign is
+// identified by this digest, so a drain-less plan must keep hashing to exactly
+// the same value; that is what the omitempty tag on CampaignCapture.Drain buys.
+// Changing this constant to match new output would be defeating the test.
+const drainDigestPinRevision = "bbb81df5f017616a7c3156f7aaeb064ed00e632ae01546cfce265610a4129e23"
+
+func TestCampaignDrainValidation(t *testing.T) {
+	withDrain := func(drain string) []byte {
+		return []byte(strings.Replace(drainDigestPinYAML, "  buffer: 1s\n", "  buffer: 1s\n  drain: "+drain+"\n", 1))
+	}
+	for _, drain := range []string{"-1s", "31s", "notaduration"} {
+		if _, err := ParseCampaign(withDrain(drain)); err == nil || !strings.Contains(err.Error(), "capture.drain") {
+			t.Errorf("capture.drain %q was accepted: %v", drain, err)
+		}
+	}
+	// An absent drain takes the default, so campaigns get the post-seal drain
+	// without being rewritten.
+	base, err := ParseCampaign([]byte(drainDigestPinYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.DrainDuration() != DefaultSealDrain {
+		t.Fatalf("absent capture.drain gives %s, want the %s default", base.DrainDuration(), DefaultSealDrain)
+	}
+	// An explicit zero is the opt-out, and must be distinguishable from absent.
+	optedOut, err := ParseCampaign(withDrain("0s"))
+	if err != nil {
+		t.Fatalf("capture.drain 0s was rejected: %v", err)
+	}
+	if optedOut.DrainDuration() != 0 {
+		t.Fatalf("capture.drain 0s gives %s, want 0s", optedOut.DrainDuration())
+	}
+	accepted, err := ParseCampaign(withDrain("30s"))
+	if err != nil {
+		t.Fatalf("capture.drain at the upper bound was rejected: %v", err)
+	}
+	if accepted.DrainDuration() != maxSealDrain {
+		t.Fatalf("capture.drain 30s gives %s, want %s", accepted.DrainDuration(), maxSealDrain)
+	}
+	// The digest pin. A campaign that says nothing about the drain must hash
+	// exactly as it did before the field existed, or every already-deployed
+	// campaign silently changes revision on upgrade.
+	if base.Revision != drainDigestPinRevision {
+		t.Fatalf("a drain-less campaign now hashes to %s, want the pre-existing %s: capture.drain must stay omitempty", base.Revision, drainDigestPinRevision)
+	}
+	// A declared drain is part of the plan and must change the digest.
+	if optedOut.Revision == base.Revision {
+		t.Fatal("declaring capture.drain did not change the revision hash")
+	}
+}
