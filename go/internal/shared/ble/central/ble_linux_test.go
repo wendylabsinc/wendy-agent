@@ -3,21 +3,26 @@
 package central
 
 import (
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"golang.org/x/sys/unix"
 )
 
 func TestParseBTAddr(t *testing.T) {
-	t.Run("byte order is LSB-first", func(t *testing.T) {
-		// SockaddrL2 wants Bluetooth byte order: the first array element is the
-		// least significant byte, i.e. the last pair in the printed address.
+	t.Run("byte order is MSB-first, as SockaddrL2 wants", func(t *testing.T) {
+		// The kernel's bdaddr_t is little-endian, but x/sys/unix reverses
+		// SockaddrL2.Addr while marshalling, so it takes the human order and
+		// converts. Pre-reversing here cancels that out and aims the connect at
+		// a byte-reversed peer that never answers — which is exactly how this
+		// failed: every PSM timed out instead of being refused.
 		got, err := parseBTAddr("AA:BB:CC:DD:EE:FF")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		want := [6]byte{0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA}
+		want := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
 		if got != want {
 			t.Errorf("parseBTAddr = %v, want %v", got, want)
 		}
@@ -39,7 +44,7 @@ func TestParseBTAddr(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		want := [6]byte{0x60, 0x50, 0x40, 0x30, 0x20, 0x10}
+		want := [6]byte{0x10, 0x20, 0x30, 0x40, 0x50, 0x60}
 		if got != want {
 			t.Errorf("parseBTAddr = %v, want %v", got, want)
 		}
@@ -173,5 +178,79 @@ func TestConnectDefaultsToPublicButUnknown(t *testing.T) {
 	}
 	if conn.g != nil {
 		t.Error("Connect allocated a GATT session; it must stay nil until a GATT call")
+	}
+}
+
+func TestL2CAPSendChunksToNegotiatedMTU(t *testing.T) {
+	// A socketpair gives the same SOCK_SEQPACKET semantics the L2CAP socket has:
+	// one write is one datagram, and an oversized write fails rather than being
+	// split. That is what makes chunking necessary in the first place.
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Skipf("socketpair unavailable: %v", err)
+	}
+	defer unix.Close(fds[1]) //nolint:errcheck
+
+	const mtu = 16
+	conn := &Connection{fd: fds[0], sndMTU: mtu}
+	defer conn.Close()
+
+	payload := make([]byte, 40)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	if err := conn.L2CAPSend(payload); err != nil {
+		t.Fatalf("L2CAPSend: %v", err)
+	}
+
+	// Expect 16 + 16 + 8, in order, reassembling to the original bytes.
+	var got []byte
+	for _, want := range []int{mtu, mtu, 8} {
+		buf := make([]byte, 64)
+		n, err := unix.Read(fds[1], buf)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if n != want {
+			t.Errorf("SDU length %d, want %d", n, want)
+		}
+		got = append(got, buf[:n]...)
+	}
+	if !reflect.DeepEqual(got, payload) {
+		t.Error("reassembled payload does not match what was sent")
+	}
+}
+
+func TestL2CAPSendWithoutNegotiatedMTUFallsBackToMinimum(t *testing.T) {
+	// sndMTU is 0 before a channel is open. Falling back to 0 would busy-loop
+	// on a zero-length chunk, so it has to become the LE CoC minimum.
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Skipf("socketpair unavailable: %v", err)
+	}
+	defer unix.Close(fds[1]) //nolint:errcheck
+
+	conn := &Connection{fd: fds[0], sndMTU: 0}
+	defer conn.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- conn.L2CAPSend(make([]byte, l2capMinMTU+5)) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("L2CAPSend: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("L2CAPSend hung, likely looping on a zero-length chunk")
+	}
+
+	buf := make([]byte, 64)
+	n, err := unix.Read(fds[1], buf)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if n != l2capMinMTU {
+		t.Errorf("first SDU is %d bytes, want the %d-byte LE CoC minimum", n, l2capMinMTU)
 	}
 }

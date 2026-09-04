@@ -85,23 +85,39 @@ data, err = conn.L2CAPRecv(30)
 | Read / write characteristic | ✅ | ✅ | ❌ |
 | Write without response | ✅ | ✅ | ❌ |
 | Notifications (subscribe + wait) | ✅ | ✅ (per-characteristic queues) | ❌ |
-| L2CAP channel (open / send / recv) | ✅ | ⚠️ unverified | ❌ |
-| `net.Conn` + TLS over L2CAP | ✅ | ⚠️ unverified | ❌ |
+| L2CAP channel (open / send / recv) | ✅ | ✅ | ❌ |
+| `net.Conn` + TLS over L2CAP | ✅ | ✅ transport only, see below | ❌ |
 
 On Windows the GATT methods exist only to satisfy the shared method set; they return
 `"not implemented"`.
 
-**The Linux L2CAP column is not known to work.** Until recently `parseBTAddr` guarded its
-separator check on the loop index rather than the offset, so it indexed `s[-1]` and **panicked on
-every valid address** — meaning `central.Connect` could never return on Linux and nothing
-downstream of it had ever run. With that fixed, GATT works (verified against a Wendy Lite board),
-but the raw-socket `OpenL2CAP` still times out: against a board advertising PSM 128 the kernel's
-connect-scan never establishes a link, and every PSM behaves identically — including one nothing
-listens on, which a reachable peer would *refuse* rather than let time out. Neither the LE address
-type nor the `BT_SECURITY` level changes it, and it happens equally on a link BlueZ has already
-established. So the failure is below L2CAP, and where it lives — this host's controller, the
-kernel, or the peripheral's CoC listener — is still open. `central/live_test.go`'s
-`gatt_then_l2cap` and `l2cap_only` subtests are the gates for it.
+**The Linux L2CAP path was broken in three ways at once**, and all three are fixed. They are
+recorded here because each looked like the others from the outside — every failure presented as a
+uniform connect timeout or an idle-connection error, and none of them pointed at its own cause.
+
+1. `parseBTAddr` guarded its separator check on the loop index rather than the byte offset, so it
+   indexed `s[-1]` and **panicked on every valid address**. `central.Connect` could never return.
+2. `parseBTAddr` then returned the address least-significant-byte first, but `x/sys/unix` reverses
+   `SockaddrL2.Addr` while marshalling — it wants the human order and does the conversion itself.
+   Pre-reversing cancelled that out and aimed every connect at a byte-reversed peer, so nothing
+   answered. Every PSM timed out identically, including ones nothing listens on, which a reachable
+   peer would have *refused*.
+3. `L2CAPSend` looped over the unwritten remainder, which cannot chunk anything: the socket is
+   `SOCK_SEQPACKET`, so one write is one SDU and the kernel fails with `EMSGSIZE` rather than
+   writing part of it. The first TLS record was larger than the negotiated MTU and simply failed.
+   It now splits at the MTU read back from `BT_SNDMTU` once the channel is up.
+
+A fourth, separate bug: `poll(2)` returning `EINTR` was reported as a failure. The Go runtime
+preempts goroutines with `SIGURG`, so a long idle wait is interrupted routinely — an idle channel
+would surface "interrupted system call" instead of the timeout sentinel `l2capNetConn.Read` knows to
+retry, which breaks any connection that goes quiet. Poll, read and write now retry on `EINTR`.
+
+What is verified against a Wendy Lite board: the channel opens in under a second, with and without a
+prior GATT connection, and bytes flow both ways. **The TLS handshake over it is not working yet**,
+and that is above this layer — the board closes the connection on a valid 183-byte single-SDU
+TLS 1.2 ClientHello, while holding the channel open indefinitely for arbitrary non-TLS bytes. So its
+TLS server is reached and parsing, and rejects the handshake for reasons that live in the firmware
+or in the board's provisioning state, not in this transport.
 
 ### Addressing is platform-dependent
 
@@ -109,7 +125,8 @@ kernel, or the peripheral's CoC listener — is still open. `central/live_test.g
 
 * **macOS** — a CoreBluetooth peripheral UUID (`"XXXXXXXX-XXXX-…"`). CoreBluetooth never exposes
   the hardware MAC address.
-* **Linux** — a Bluetooth MAC address, `"AA:BB:CC:DD:EE:FF"` (parsed to LSB-first `[6]byte`). The LE
+* **Linux** — a Bluetooth MAC address, `"AA:BB:CC:DD:EE:FF"` (parsed to a `[6]byte` in written
+  order, which is what `unix.SockaddrL2` takes — see the note below). The LE
   address type is read from BlueZ's `Device1.AddressType` where the device is known, so
   random-static and resolvable-private addresses work; when BlueZ has never seen the device,
   `OpenL2CAP` tries public then random.
@@ -265,8 +282,14 @@ a best-effort, non-fatal BlueZ lookup for the peer's LE address type, then the n
 blocking mode. Receive is `Poll` + one `read(2)` into a 64 KiB buffer, one SDU per call. When BlueZ
 has no object for the device its address type is unknown, so the caller's timeout is split and
 public is tried before random — a wrong type times out rather than failing fast, because the
-controller ends up paging an address nobody answers. See the capability matrix above: this path
-compiles and is exercised, but has never been seen to complete against real hardware.
+controller ends up paging an address nobody answers.
+
+Two things are easy to get wrong here and were. `SockaddrL2.Addr` takes the address in the order it
+is written, most significant byte first: `x/sys/unix` reverses it into the kernel's little-endian
+`bdaddr_t` itself, so handing it a pre-reversed address silently targets the wrong peer. And sends
+must be split at the negotiated SDU size — `SOCK_SEQPACKET` means one write is one SDU, so an
+oversized buffer fails with `EMSGSIZE` and a write loop never gets the chance to chunk it. The size
+comes from `BT_SNDMTU`, which is only meaningful once the channel is open.
 
 `Connect` stays lazy on purpose: the kernel's L2CAP connect does its own scan-and-connect and reaches
 a device BlueZ has no object for at all, which is the normal case some seconds after a scan stops.

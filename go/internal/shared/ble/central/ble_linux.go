@@ -23,10 +23,11 @@ import (
 // goroutine.
 type Connection struct {
 	fd        int     // -1 once closed, so Close is idempotent
-	addr      [6]byte // LSB-first, for SockaddrL2
+	addr      [6]byte // MSB-first; x/sys reverses it into the kernel's bdaddr_t
 	addrType  uint8   // unix.BDADDR_LE_PUBLIC / BDADDR_LE_RANDOM
 	addrKnown bool    // false: nothing authoritative has told us the type yet
 	l2capOpen bool    // an open channel forbids tearing the ACL link down
+	sndMTU    int     // negotiated max SDU for L2CAPSend; 0 until a channel is open
 
 	address string // "AA:BB:CC:DD:EE:FF", uppercased, for BlueZ lookups
 
@@ -69,6 +70,18 @@ func Connect(peripheralAddress string, _ int) (*Connection, error) {
 // and the fallback below handles that fine.
 const addressProbeTimeout = 2 * time.Second
 
+// Socket options for the negotiated LE CoC SDU sizes. They are absent from
+// x/sys/unix, so the values come from the kernel's bluetooth.h.
+const (
+	solBluetooth = 274
+	btSndMTU     = 12
+)
+
+// l2capMinMTU is the smallest SDU an LE credit-based channel may negotiate
+// (Core Specification, Vol 3, Part A, 4.22). It is the fallback when the
+// kernel will not report the negotiated value: slow, but never wrong.
+const l2capMinMTU = 23
+
 // OpenL2CAP connects the socket to the remote device on the given PSM, using
 // non-blocking connect + Poll to respect the timeout.
 //
@@ -92,7 +105,7 @@ func (c *Connection) OpenL2CAP(psm uint16, timeoutSeconds int) error {
 		if err := c.connectL2CAP(psm, c.addrType, timeoutSeconds); err != nil {
 			return err
 		}
-		c.l2capOpen = true
+		c.noteChannelOpen()
 		return nil
 	}
 
@@ -106,7 +119,8 @@ func (c *Connection) OpenL2CAP(psm uint16, timeoutSeconds int) error {
 	}
 	publicErr := c.connectL2CAP(psm, unix.BDADDR_LE_PUBLIC, each)
 	if publicErr == nil {
-		c.addrType, c.addrKnown, c.l2capOpen = unix.BDADDR_LE_PUBLIC, true, true
+		c.addrType, c.addrKnown = unix.BDADDR_LE_PUBLIC, true
+		c.noteChannelOpen()
 		return nil
 	}
 	// A socket whose connect failed cannot be reconnected; start clean.
@@ -116,8 +130,43 @@ func (c *Connection) OpenL2CAP(psm uint16, timeoutSeconds int) error {
 	if randomErr := c.connectL2CAP(psm, unix.BDADDR_LE_RANDOM, each); randomErr != nil {
 		return fmt.Errorf("connect as public address: %w; as random address: %w", publicErr, randomErr)
 	}
-	c.addrType, c.addrKnown, c.l2capOpen = unix.BDADDR_LE_RANDOM, true, true
+	c.addrType, c.addrKnown = unix.BDADDR_LE_RANDOM, true
+	c.noteChannelOpen()
 	return nil
+}
+
+// noteChannelOpen records a freshly opened channel and reads back the SDU size
+// the two ends negotiated, which is what L2CAPSend has to chunk to.
+func (c *Connection) noteChannelOpen() {
+	c.l2capOpen = true
+	c.sndMTU = l2capMinMTU
+	// Only known once the channel is up: it comes from the peer's half of the
+	// LE credit-based connection response.
+	if mtu, err := unix.GetsockoptInt(c.fd, solBluetooth, btSndMTU); err == nil && mtu >= l2capMinMTU {
+		c.sndMTU = mtu
+	}
+}
+
+// pollFD waits for events on fd, retrying when a signal interrupts the wait.
+//
+// The Go runtime preempts goroutines by sending SIGURG, so any poll long enough
+// to matter gets interrupted sooner or later on a busy process. Reporting that
+// as a failure turned an ordinary idle wait into "interrupted system call" —
+// which is what an L2CAP receive did whenever nothing arrived promptly.
+func pollFD(fd int, events int16, timeout time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining < 0 {
+			remaining = 0
+		}
+		pfd := []unix.PollFd{{Fd: int32(fd), Events: events}}
+		n, err := unix.Poll(pfd, int(remaining.Milliseconds()))
+		if err == unix.EINTR {
+			continue
+		}
+		return n, err
+	}
 }
 
 // connectL2CAP performs one non-blocking connect attempt with a specific LE
@@ -140,9 +189,7 @@ func (c *Connection) connectL2CAP(psm uint16, addrType uint8, timeoutSeconds int
 
 	if err == unix.EINPROGRESS {
 		// Wait for connection to complete.
-		pfd := []unix.PollFd{{Fd: int32(c.fd), Events: unix.POLLOUT}}
-		timeoutMs := timeoutSeconds * 1000
-		n, pollErr := unix.Poll(pfd, timeoutMs)
+		n, pollErr := pollFD(c.fd, unix.POLLOUT, time.Duration(timeoutSeconds)*time.Second)
 		if pollErr != nil {
 			return fmt.Errorf("poll connect: %w", pollErr)
 		}
@@ -179,18 +226,40 @@ func (c *Connection) resetSocket() error {
 		return fmt.Errorf("recreate L2CAP socket: %w", err)
 	}
 	c.fd = fd
+	c.l2capOpen, c.sndMTU = false, 0
 	return nil
 }
 
-// L2CAPSend sends raw bytes over the L2CAP channel.
+// L2CAPSend sends raw bytes over the L2CAP channel, splitting them across as
+// many SDUs as the negotiated MTU requires.
+//
+// The socket is SOCK_SEQPACKET, so one write is one SDU: the kernel either
+// takes the whole buffer or fails with EMSGSIZE, and never reports a partial
+// write. A loop over the remainder therefore cannot chunk anything on its own —
+// it just fails on the first oversized buffer, which is what a TLS handshake
+// record is. Splitting here is safe because the channel is a byte stream to
+// everything above (see NewL2CAPStream): both peers reassemble by the length
+// prefix, not by SDU boundary.
+//
 // Framing (length prefix) is handled by the caller (agent_client.go).
 func (c *Connection) L2CAPSend(data []byte) error {
 	if c.fd < 0 {
 		return fmt.Errorf("connection is closed")
 	}
-	written := 0
-	for written < len(data) {
-		n, err := unix.Write(c.fd, data[written:])
+	chunk := c.sndMTU
+	if chunk <= 0 {
+		chunk = l2capMinMTU
+	}
+
+	for written := 0; written < len(data); {
+		end := written + chunk
+		if end > len(data) {
+			end = len(data)
+		}
+		n, err := unix.Write(c.fd, data[written:end])
+		if err == unix.EINTR {
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("write: %w", err)
 		}
@@ -209,9 +278,7 @@ func (c *Connection) L2CAPRecv(timeoutSeconds int) ([]byte, error) {
 		return nil, fmt.Errorf("connection is closed")
 	}
 	// Poll with timeout.
-	pfd := []unix.PollFd{{Fd: int32(c.fd), Events: unix.POLLIN}}
-	timeoutMs := timeoutSeconds * 1000
-	n, err := unix.Poll(pfd, timeoutMs)
+	n, err := pollFD(c.fd, unix.POLLIN, time.Duration(timeoutSeconds)*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("poll recv: %w", err)
 	}
@@ -221,6 +288,9 @@ func (c *Connection) L2CAPRecv(timeoutSeconds int) ([]byte, error) {
 
 	buf := make([]byte, 65536)
 	nRead, err := unix.Read(c.fd, buf)
+	for err == unix.EINTR {
+		nRead, err = unix.Read(c.fd, buf)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read: %w", err)
 	}
@@ -245,7 +315,7 @@ func (c *Connection) Close() {
 		unix.Close(c.fd) //nolint:errcheck
 		c.fd = -1
 	}
-	c.l2capOpen = false
+	c.l2capOpen, c.sndMTU = false, 0
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -296,19 +366,25 @@ func addressTypeFromProps(props map[string]dbus.Variant) (uint8, bool) {
 	}
 }
 
-// parseBTAddr parses "AA:BB:CC:DD:EE:FF" into a [6]byte in LSB-first order
-// (Bluetooth byte order: the first byte in the array is the least significant).
+// parseBTAddr parses "AA:BB:CC:DD:EE:FF" into the [6]byte unix.SockaddrL2
+// takes: most-significant byte first, the order the address is written in.
+//
+// That is deliberately NOT the kernel's byte order. A bdaddr_t is little-endian,
+// but x/sys/unix reverses SockaddrL2.Addr while marshalling the struct, so it
+// wants the human order and does the conversion itself. Handing it an
+// already-reversed address cancels the reversal out and aims the connect at a
+// byte-reversed peer, which nothing answers — every PSM then times out
+// identically instead of being refused, which is what this looked like.
 func parseBTAddr(s string) ([6]byte, error) {
 	var addr [6]byte
 	s = strings.ToUpper(s)
 	if len(s) != 17 {
 		return addr, fmt.Errorf("invalid BT address length: %q", s)
 	}
-	for i, offset := range []int{15, 12, 9, 6, 3, 0} {
-		// Guard on offset, not on i: the last pair read is the leftmost one, at
-		// offset 0, and it is the one with no separator in front of it. Testing
-		// i>0 instead indexed s[-1] on every valid address, so this panicked
-		// for every caller rather than parsing anything.
+	for i, offset := range []int{0, 3, 6, 9, 12, 15} {
+		// Guard on offset, not on i: the pair at offset 0 is the one with no
+		// separator in front of it. Guarding on i once indexed s[-1] on every
+		// valid address, which panicked instead of parsing.
 		if offset > 0 && s[offset-1] != ':' {
 			return addr, fmt.Errorf("invalid BT address separator at position %d: %q", offset-1, s)
 		}
