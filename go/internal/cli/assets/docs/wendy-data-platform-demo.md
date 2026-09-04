@@ -7,10 +7,11 @@ flight-recorder campaign, and episode uploads into a deployed cloud ingest
 service.
 
 The path this runbook walks has been executed on real hardware. An episode
-fires organically on the `model.uncertainty > 0.65` trigger, carries the app's
-YOLOv8n prediction records in `events.jsonl` (including the pre-trigger
-buffer), and reaches the ingest catalog with upload state `uploaded`, which
-only flips after `CommitEpisode` verifies every file hash server-side.
+fires on the app's edge-triggered `person_detected` event, or on demand with
+`data campaign trigger`, carries the app's YOLOv8n prediction records in
+`events.jsonl` (including the pre-trigger buffer), and reaches the ingest
+catalog with upload state `uploaded`, which only flips after `CommitEpisode`
+verifies every file hash server-side.
 
 Placeholders used throughout, to be replaced with your own values:
 
@@ -201,14 +202,25 @@ through the business intelligence surface once it is wired.
 
 ## What to expect in the episode
 
-With nothing in front of the camera the app reports uncertainty 1.0, so the
-`model.uncertainty > 0.65` trigger fires organically; walking into the frame
-fires the edge-triggered `person_detected` trigger instead. Each trigger seals
-one episode (10 seconds of pre-trigger buffer, 20 seconds after) which uploads
-within seconds. The app holds itself to a ceiling of 5 predictions per second, but
-what it achieves is set by inference, not by the ceiling: an episode of that
-length carried on the order of a hundred prediction records, nearer three per
-second. Quote the ceiling as a ceiling.
+`person_detected` is the only trigger. The app emits it edge-triggered when a
+person enters frame, once per appearance rather than once per frame, so walking
+through produces one episode rather than fifty; with nobody in view, seal one on
+demand with `data campaign trigger`. Each trigger seals one episode, 10 seconds
+of pre-trigger buffer and 10 seconds after, which uploads within seconds. The
+app holds itself to a ceiling of 5 predictions per second, but what it achieves
+is set by inference, not by the ceiling: measured nearer three per second
+sustained, so a 20-second episode carries on the order of sixty prediction
+records. Quote the ceiling as a ceiling.
+
+Earlier revisions of this runbook told you to expect an episode to fire by
+itself on a `model.uncertainty > 0.65` trigger. That trigger is gone from
+`campaign.yaml`, and the advice was wrong rather than merely stale: the app
+scores uncertainty as 1 minus its best detection confidence, so a scene the
+detector has no class for sits at exactly 1.0 and the threshold fires on every
+prediction. Measured on the device, that produced a fresh episode every 30
+seconds with nobody in frame. Collecting on uncertainty is still the right idea;
+it needs a real uncertainty signal behind it, entropy across classes or the
+margin between the top two, rather than one minus a confidence.
 
 To pair those outcomes with the frames that produced them:
 
