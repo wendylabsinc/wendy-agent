@@ -365,6 +365,7 @@ func runRemoteBuild(
 	}
 
 	buildTitle := fmt.Sprintf("Building on %s for %s...", tui.Value(host), tui.Value(platform))
+	var buildResult *agentpbv2.BuildImageResult
 	if err := runBuildWithProgress(ctx, buildTitle, dumpRawAlways, func(buildCtx context.Context, stream, logw io.Writer) error {
 		manifest, err := pushBuildContext(buildCtx, builder.ContainerService, tarBytes)
 		if err != nil {
@@ -393,7 +394,8 @@ func runRemoteBuild(
 		} else {
 			spec.PushTargets = pushTargets
 		}
-		return streamRemoteBuild(buildCtx, builder, spec, stream)
+		buildResult, err = streamRemoteBuild(buildCtx, builder, spec, stream)
+		return err
 	}); err != nil {
 		return classifyRemoteBuildError(host, err)
 	}
@@ -411,6 +413,9 @@ func runRemoteBuild(
 		Env:           deployEnv,
 	}
 	if len(fleetConns) == 0 {
+		if err := reportedDeliveryError(buildResult, pushTargets[0].GetAssetId()); err != nil {
+			return fmt.Errorf("image built on %s but could not be delivered to %s: %w", host, deviceFlag, err)
+		}
 		return startAndStreamContainer(ctx, target, appCfg, createReq, opts)
 	}
 
@@ -418,7 +423,9 @@ func runRemoteBuild(
 	// created, and one device failing that must not strand the others -- the
 	// image is already on them.
 	report := make([]*agentpbv2.DeliveryResult, 0, len(pushTargets))
-	primaryErr := startAndStreamContainer(ctx, target, appCfg, createReq, opts)
+	primaryErr := startAfterReportedDelivery(buildResult, pushTargets[0].GetAssetId(), func() error {
+		return startAndStreamContainer(ctx, target, appCfg, createReq, opts)
+	})
 	report = append(report, deliveryOutcome(pushTargets[0].GetAssetId(), primaryErr))
 
 	for i, conn := range fleetConns {
@@ -431,8 +438,11 @@ func runRemoteBuild(
 			UserArgs:      opts.userArgs,
 			Env:           deployEnv,
 		}
-		report = append(report, deliveryOutcome(pushTargets[i+1].GetAssetId(),
-			startAndStreamContainer(ctx, conn, appCfg, req, opts)))
+		assetID := pushTargets[i+1].GetAssetId()
+		targetErr := startAfterReportedDelivery(buildResult, assetID, func() error {
+			return startAndStreamContainer(ctx, conn, appCfg, req, opts)
+		})
+		report = append(report, deliveryOutcome(assetID, targetErr))
 	}
 
 	lines, failed := fleetDeliveryReport(report, nameOf)
@@ -444,6 +454,41 @@ func runRemoteBuild(
 		return &errPartialFleetDeploy{failed: failed, total: len(report)}
 	}
 	return nil
+}
+
+func startAfterReportedDelivery(result *agentpbv2.BuildImageResult, assetID int32, start func() error) error {
+	if err := reportedDeliveryError(result, assetID); err != nil {
+		return err
+	}
+	return start()
+}
+
+// reportedDeliveryError returns the build host's failure for one target. An
+// empty delivery list is the legacy single-target contract: older build hosts
+// reported delivery failure through the stream status and success by EOF, so
+// there is no per-target result to inspect.
+//
+// Once a host sends any per-target results, absence is a failure. Failing
+// closed prevents the CLI from creating a container from an older image that
+// happens to remain registered under the same :latest name.
+func reportedDeliveryError(result *agentpbv2.BuildImageResult, assetID int32) error {
+	if result == nil || len(result.GetDeliveries()) == 0 {
+		return nil
+	}
+	for _, delivery := range result.GetDeliveries() {
+		if delivery.GetAssetId() != assetID {
+			continue
+		}
+		if delivery.GetDelivered() {
+			return nil
+		}
+		reason := delivery.GetError()
+		if reason == "" {
+			reason = "delivery failed (no reason reported)"
+		}
+		return errors.New(reason)
+	}
+	return fmt.Errorf("build host returned no delivery result for asset %d", assetID)
 }
 
 // deliveryOutcome records what happened to one device without collapsing a
@@ -571,16 +616,16 @@ func targetAgentOS(ctx context.Context, target *grpcclient.AgentConnection) (str
 
 // streamRemoteBuild drives one BuildImage stream, forwarding the build host's
 // plain-mode output into the CLI's existing progress renderer.
-func streamRemoteBuild(ctx context.Context, builder *grpcclient.AgentConnection, spec *agentpbv2.BuildSpec, out io.Writer) error {
+func streamRemoteBuild(ctx context.Context, builder *grpcclient.AgentConnection, spec *agentpbv2.BuildSpec, out io.Writer) (*agentpbv2.BuildImageResult, error) {
 	stream, err := builder.BuildService.BuildImage(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := stream.Send(&agentpbv2.BuildImageRequest{Spec: spec}); err != nil {
-		return err
+		return nil, err
 	}
 	if err := stream.CloseSend(); err != nil {
-		return err
+		return nil, err
 	}
 	return consumeBuildProgress(stream.Recv, out)
 }
@@ -589,14 +634,14 @@ func streamRemoteBuild(ctx context.Context, builder *grpcclient.AgentConnection,
 //
 // Split from streamRemoteBuild so the termination rule can be tested without a
 // gRPC connection: it is the part with a way to go wrong.
-func consumeBuildProgress(recv func() (*agentpbv2.BuildImageProgress, error), out io.Writer) error {
+func consumeBuildProgress(recv func() (*agentpbv2.BuildImageProgress, error), out io.Writer) (*agentpbv2.BuildImageResult, error) {
 	for {
 		msg, err := recv()
 		if err == io.EOF {
-			return nil
+			return nil, nil
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if line := msg.GetLogLine(); line != "" {
 			fmt.Fprintln(out, line)
@@ -605,8 +650,8 @@ func consumeBuildProgress(recv func() (*agentpbv2.BuildImageProgress, error), ou
 		// right after sending it, so EOF follows immediately — but a client that
 		// stops only on EOF is one trailing event away from waiting forever on a
 		// build that has already finished.
-		if msg.GetResult() != nil {
-			return nil
+		if result := msg.GetResult(); result != nil {
+			return result, nil
 		}
 	}
 }

@@ -275,8 +275,12 @@ func TestConsumeBuildProgress_StopsAtResultWithoutWaitingForEOF(t *testing.T) {
 	}
 
 	var out strings.Builder
-	if err := consumeBuildProgress(recv, &out); err != nil {
+	result, err := consumeBuildProgress(recv, &out)
+	if err != nil {
 		t.Fatalf("consumeBuildProgress: %v", err)
+	}
+	if result == nil || result.GetImageDigest() != "sha256:abc" {
+		t.Fatalf("result = %#v, want terminal build result", result)
 	}
 	if !strings.Contains(out.String(), "[app 1/2] FROM python") {
 		t.Fatalf("log lines must still be forwarded, got %q", out.String())
@@ -286,8 +290,70 @@ func TestConsumeBuildProgress_StopsAtResultWithoutWaitingForEOF(t *testing.T) {
 // EOF without a result is still a clean end: an older agent may not send one.
 func TestConsumeBuildProgress_StopsAtEOF(t *testing.T) {
 	recv := func() (*agentpbv2.BuildImageProgress, error) { return nil, io.EOF }
-	if err := consumeBuildProgress(recv, io.Discard); err != nil {
+	result, err := consumeBuildProgress(recv, io.Discard)
+	if err != nil {
 		t.Fatalf("a stream that just ends must not be an error, got %v", err)
+	}
+	if result != nil {
+		t.Fatalf("legacy EOF result = %#v, want nil", result)
+	}
+}
+
+func TestReportedDeliveryError_PreventsStartingFailedOrUnreportedTarget(t *testing.T) {
+	result := &agentpbv2.BuildImageResult{Deliveries: []*agentpbv2.DeliveryResult{
+		{AssetId: 1, Delivered: true},
+		{AssetId: 2, Error: "mesh link dropped"},
+	}}
+
+	if err := reportedDeliveryError(result, 1); err != nil {
+		t.Fatalf("delivered target rejected: %v", err)
+	}
+	if err := reportedDeliveryError(result, 2); err == nil || !strings.Contains(err.Error(), "mesh link dropped") {
+		t.Fatalf("failed target error = %v, want delivery reason", err)
+	}
+	if err := reportedDeliveryError(result, 3); err == nil || !strings.Contains(err.Error(), "no delivery result") {
+		t.Fatalf("unreported target error = %v, want fail-closed error", err)
+	}
+}
+
+func TestReportedDeliveryError_PreservesLegacySingleTargetContract(t *testing.T) {
+	for _, result := range []*agentpbv2.BuildImageResult{nil, {ImageDigest: "sha256:legacy"}} {
+		if err := reportedDeliveryError(result, 7); err != nil {
+			t.Fatalf("legacy result %#v rejected: %v", result, err)
+		}
+	}
+}
+
+func TestStartAfterReportedDelivery_DoesNotStartAStaleImage(t *testing.T) {
+	started := false
+	result := &agentpbv2.BuildImageResult{Deliveries: []*agentpbv2.DeliveryResult{
+		{AssetId: 7, Error: "target delivery failed"},
+	}}
+	err := startAfterReportedDelivery(result, 7, func() error {
+		started = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "target delivery failed") {
+		t.Fatalf("error = %v, want target delivery failure", err)
+	}
+	if started {
+		t.Fatal("container start was attempted after delivery failed; it could use a stale :latest image")
+	}
+}
+
+func TestStartAfterReportedDelivery_StartsDeliveredTarget(t *testing.T) {
+	started := false
+	result := &agentpbv2.BuildImageResult{Deliveries: []*agentpbv2.DeliveryResult{
+		{AssetId: 7, Delivered: true},
+	}}
+	if err := startAfterReportedDelivery(result, 7, func() error {
+		started = true
+		return nil
+	}); err != nil {
+		t.Fatalf("delivered target rejected: %v", err)
+	}
+	if !started {
+		t.Fatal("delivered target was not started")
 	}
 }
 
