@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/cli/ble/central"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/central"
 )
 
 // Wendy Lite device info service. Base 4E57454E-4459-0002-xxxx-000000000000

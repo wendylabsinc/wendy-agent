@@ -1,7 +1,7 @@
-// CoreBluetooth scanning bridge for internal/cli/ble/scan.
+// CoreBluetooth scanning bridge for internal/shared/ble/scan.
 //
 // Symbol naming is not free here: three cgo BLE translation units link into one
-// wendy binary — this one, internal/cli/ble/ble_darwin.m (wendy_ble_connect and
+// wendy binary — this one, internal/shared/ble/central/ble_darwin.m (wendy_ble_connect and
 // friends, class WendyBLEConnection) and
 // internal/shared/discovery/bluetooth_darwin.m (wendy_ble_scan/_check/
 // _free_result, class WendyBLEScanner). Objective-C class names are

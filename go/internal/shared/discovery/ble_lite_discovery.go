@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
-	"github.com/wendylabsinc/wendy/go/internal/cli/ble/scan"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/scan"
 )
 
 // BLELiteDevice is one Wendy Lite board seen over BLE, carrying the content of

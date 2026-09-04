@@ -4,7 +4,7 @@
 // Nothing here is specific to any device or protocol — every method takes plain
 // service/characteristic UUIDs and PSMs. The Wendy protocol clients live one
 // level up in internal/cli/ble; peripheral discovery lives beside this package
-// in internal/cli/ble/scan, which yields the address Connect takes.
+// in internal/shared/ble/scan, which yields the address Connect takes.
 //
 // The API is blocking, with whole-second timeouts, and Connection is not
 // goroutine-safe for GATT. See ../README.md for the capability matrix per

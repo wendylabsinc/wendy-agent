@@ -1,4 +1,4 @@
-# `internal/cli/ble` — BLE central (client) for the Wendy CLI
+# `internal/shared/ble` — BLE central (client) for the Wendy CLI
 
 This package is the **client side** of Wendy's Bluetooth Low Energy transport. It runs on the
 developer machine (the BLE *central*) and talks to a WendyOS device or a Wendy Lite (ESP32)
@@ -194,7 +194,7 @@ Because CI has no radio and no macOS job compiles this cgo at all, the only thin
 real bridges is the hardware-gated test:
 
 ```sh
-WENDY_BLE_LIVE_SCAN=1 go test ./internal/cli/ble/scan -run TestLiveScan -v
+WENDY_BLE_LIVE_SCAN=1 go test ./internal/shared/ble/scan -run TestLiveScan -v
 # WENDY_BLE_LIVE_SERVICES=<uuid>[,<uuid>] to exercise filtering
 ```
 

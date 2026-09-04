@@ -3,7 +3,7 @@ package ble
 import (
 	"fmt"
 
-	"github.com/wendylabsinc/wendy/go/internal/cli/ble/central"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/central"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 

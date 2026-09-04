@@ -1,5 +1,5 @@
 // Package scan is a generic, continuously-streaming BLE scanner for the
-// central (client) side. It complements internal/cli/ble, which connects to a
+// central (client) side. It complements internal/shared/ble, which connects to a
 // peripheral but, as its README says, "does no scanning or discovery of its
 // own".
 //

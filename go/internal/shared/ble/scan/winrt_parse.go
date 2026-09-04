@@ -58,7 +58,7 @@ func parseWinRTLine(line string) (BLEDeviceInfo, bool) {
 }
 
 // formatBTAddress renders 12 hex characters as "AA:BB:CC:DD:EE:FF", the form
-// ble.Connect parses on Linux and Windows. Anything else yields "".
+// central.Connect parses on Linux and Windows. Anything else yields "".
 func formatBTAddress(hex string) string {
 	hex = strings.ToUpper(strings.TrimSpace(hex))
 	if len(hex) != 12 || !isHex(hex) {

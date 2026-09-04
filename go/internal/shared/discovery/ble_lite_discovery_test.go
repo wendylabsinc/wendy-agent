@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
-	"github.com/wendylabsinc/wendy/go/internal/cli/ble/scan"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/scan"
 )
 
 // swapBLELiteSeams installs fake scan and probe backends for the duration of a

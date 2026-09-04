@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )

@@ -12,7 +12,7 @@ import (
 // macOS no CI job compiles this package's cgo at all, so this is the only thing
 // that exercises the CoreBluetooth bridge.
 //
-//	WENDY_BLE_LIVE_SCAN=1 go test ./internal/cli/ble/scan -run TestLiveScan -v
+//	WENDY_BLE_LIVE_SCAN=1 go test ./internal/shared/ble/scan -run TestLiveScan -v
 //
 // Set WENDY_BLE_LIVE_SERVICES to a comma-separated UUID list to exercise
 // filtering; leave it unset to report every device in range.

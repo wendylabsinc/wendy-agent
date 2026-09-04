@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/cli/ble/central"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/central"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/protobuf/proto"

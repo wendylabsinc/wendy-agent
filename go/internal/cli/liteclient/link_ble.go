@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
-	"github.com/wendylabsinc/wendy/go/internal/cli/ble/central"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/central"
 )
 
 // bleDialTimeout covers each step of reaching a device — GAP connect, service
