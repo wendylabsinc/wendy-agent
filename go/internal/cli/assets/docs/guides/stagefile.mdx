@@ -1,0 +1,301 @@
+---
+title: Stagefile
+description: Describe an app's container build in YAML so Wendy can cache dependencies, skip unnecessary image builds, and upload only what changed
+---
+
+Most application edits change a few source files, not the operating system, language runtime, or dependencies beneath them. A traditional container build cannot always see that distinction clearly. It may resend a large build context, invalidate an expensive layer, start `buildx`, export the image again, and then discover that almost every byte already exists on the device.
+
+A **Stagefile** makes the distinction explicit. It is a declarative YAML build descriptor named `build.stagefile.yaml`. Wendy compiles it into a real, digest-pinned Dockerfile, builds a standard OCI image, and deploys that image with the normal `wendy run` workflow.
+
+The result is a faster edit-deploy loop without maintaining the easy-to-miss performance details of a hand-written Dockerfile.
+
+## Why use a Stagefile?
+
+### Send a smaller build context
+
+Every local input is declared in `copy.from: local` or by an install step such as `pip.requirements`. From those declarations, Wendy generates a Dockerfile-specific `.dockerignore` that denies everything else.
+
+If an app needs only `app.py` and `requirements.txt`, the builder does not receive `.git`, local virtual environments, model caches, test output, or an unrelated README. This reduces context-transfer work and prevents unrelated edits from invalidating a `COPY` layer. It is the allowlist version of Docker's recommendation to [keep the build context small](https://docs.docker.com/build/cache/optimize/#keep-the-context-small).
+
+### Keep expensive work cached
+
+The compiler puts stable work before frequently changed source and emits persistent, concurrency-safe BuildKit cache mounts for the tools it understands:
+
+- pip, uv, npm, yarn, and pnpm package downloads
+- Cargo package and Go build caches
+- SwiftPM dependency and incremental compilation caches
+- CMake build trees
+
+For example, a Stagefile builds pip dependencies in an independent stage and links their `/usr/local` filesystem overlay onto the stage that installs APT packages. Editing application source does not reinstall Python packages; changing APT does not re-layer pip, and changing pip does not rebuild APT. If the pip layer must run again, its wheel cache avoids downloading unchanged packages. These are the same [layer-ordering and cache-mount techniques Docker recommends](https://docs.docker.com/build/cache/optimize/), generated consistently for each supported ecosystem.
+
+### Skip the image builder on source-only iterations
+
+On an eligible `wendy run`, the first normal build records the dependency state and adopts the final stage's local `copy` layers in Wendy's persistent OCI layout. On the next run, if only those app files changed, Wendy rebuilds the small copy layers directly and skips `buildx`.
+
+Wendy then compares the image layers with the device through the default chunk-diff deploy path. Unchanged dependency and runtime content stays on the device; only missing content chunks are uploaded. This is why the Stagefile structure improves both halves of the loop: less work to produce the image and less data to transfer afterward.
+
+<Callout type="info">
+  The builder-free fast path applies when the final stage has one or more local
+  `copy` entries, those entries come after any cross-stage copies, and the final
+  stage has no `build` step. If dependencies, build arguments, the target
+  platform, a build-stage source, or the Stagefile itself changes, Wendy safely
+  falls back to a normal image build. `wendy run` also falls back to a registry
+  push if its default chunk-diff deploy cannot be used.
+</Callout>
+
+### Make the optimized path the ordinary path
+
+A Stagefile also removes several sources of build drift:
+
+- Base-image tags resolve to immutable digests in a committed lockfile.
+- npm, yarn, pnpm, and uv use their frozen-lockfile install modes.
+- apt omits recommended packages by default and removes package indexes from the image layer; apk uses `--no-cache` by default.
+- Multi-stage builds copy only declared runtime artifacts into the final image.
+- Unknown or misspelled YAML fields fail validation instead of being ignored.
+- Entrypoints and commands use argv form, and the format has no raw-shell build step.
+- The final stage runs as the non-root UID `65532` unless `user` is set explicitly. CUDA stages default to root because Jetson GPU access requires it.
+
+You still get a conventional Dockerfile and OCI image, but the compiler owns the repetitive correctness and caching details.
+
+## Create your first Stagefile
+
+Suppose a Python app contains these files:
+
+```text
+my-app/
+  app.py
+  requirements.txt
+  wendy.json
+```
+
+Add `build.stagefile.yaml` at the project root:
+
+```yaml
+version: 1
+stages:
+  - name: app
+    from: python:3.12-slim
+    workdir: /app
+    env:
+      PYTHONUNBUFFERED: "1"
+    install:
+      pip:
+        - requirements: requirements.txt
+    copy:
+      - from: local
+        paths: [app.py]
+    healthcheck:
+      exec: [python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 3s
+      startPeriod: 5s
+      retries: 3
+    cmd: [python, app.py]
+```
+
+The order in the YAML describes intent; the compiler produces the optimized sequence:
+
+1. Pin and start from the Python base image.
+2. Copy `requirements.txt` and install dependencies with a pip cache mount.
+3. Copy `app.py` as a separate, late layer.
+4. Add the health check, command, and default non-root user.
+5. Generate an allowlist build context containing only `requirements.txt` and `app.py`.
+
+Run it exactly like any other Wendy app:
+
+```bash
+wendy run
+```
+
+Wendy auto-detects `build.stagefile.yaml`; no build-type flag is required. Use watch mode for the tightest source-edit loop:
+
+```bash
+wendy run --watch
+```
+
+You can validate the image without deploying it:
+
+```bash
+wendy build
+```
+
+The first build writes three files beside the Stagefile:
+
+| File | What to do with it |
+| --- | --- |
+| `build.stagefile.lock.yaml` | Commit it. It records resolved base-image digests, remote-download checksums, and GPU profiles. |
+| `Dockerfile.generated` | Do not edit or commit it. It is regenerated build output. |
+| `Dockerfile.generated.dockerignore` | Do not edit or commit it. It is the derived build-context allowlist. |
+
+Add the generated namespace to `.gitignore`:
+
+```text
+Dockerfile.generated*
+```
+
+<Callout type="warning">
+  Stagefiles are a Wendy build input, not a Docker CLI format. Run `wendy build`
+  or `wendy run` to compile one. If another tool must build the result, generate
+  it first and point that tool at `Dockerfile.generated`.
+</Callout>
+
+## Understand the building blocks
+
+A Stagefile contains a version and an ordered list of stages. Each stage starts from one image and may install dependencies, download pinned content, copy files, or compile a project. The last stage becomes the runtime image.
+
+| Field | Purpose |
+| --- | --- |
+| `name`, `from` | Give the stage a unique name and base image. Base images are pinned by default. |
+| `workdir` | Set the absolute working directory for the stage and, on the final stage, the running container. |
+| `args`, `env` | Declare build arguments and image environment variables. |
+| `install` | Install apt, apk, CMake, pip, npm/yarn/pnpm, or uv dependencies using compiler-selected commands and caches. |
+| `download` | Fetch a URL with a SHA-256 supplied in the Stagefile or resolved into the lockfile. Archives can be extracted as `tar.gz` or `zip`. |
+| `copy` | Copy explicit paths from `local` or from an earlier named stage. Local paths also define the generated build-context allowlist. |
+| `build` | Build Rust, Go, Swift, npm, yarn, or pnpm projects. Release is the default for Rust and Swift; `wendy run --debug` overrides it. |
+| `cuda` | Resolve the CUDA runtime, Python wheel index, library path, and runtime packages from the target device's GPU architecture. |
+| `healthcheck` | Add an exec-form container health check on the final stage. |
+| `entrypoint`, `cmd`, `user` | Configure final-stage runtime behavior without shell-string command parsing. |
+
+### Install dependencies
+
+Use a requirements file or list packages directly. `pip` is a list so packages from different indexes can remain in separate install groups:
+
+```yaml
+install:
+  apt:
+    packages: [libgomp1]
+  pip:
+    - requirements: requirements.txt
+      buildPackages: [build-essential, python3-dev]
+    - packages: ["numpy==2.3.2"]
+```
+
+Pip groups are built as a sibling of the stage's APT or APK work, then applied with a linked filesystem overlay. Put compilers and development headers needed to build native wheels in `buildPackages`; Wendy installs them only in the pip dependency stage. Keep shared libraries needed when the application runs under `install.apt.packages` or `install.apk.packages`. Build package names use APK when the stage declares `install.apk`, and APT otherwise.
+
+When a pip build depends on a library produced by an earlier Stagefile stage,
+use that stage's name as `from`. The pip overlay then inherits the built native
+filesystem without coupling it to unrelated changes in the final application
+stage:
+
+```yaml
+stages:
+  - name: native
+    from: python:3.11-slim
+    install:
+      apt:
+        packages: [build-essential, cmake, git]
+      cmake:
+        - repository: https://example.com/native.git
+          commit: 0123456789abcdef0123456789abcdef01234567
+  - name: app
+    from: native
+    install:
+      pip:
+        - packages: [native-python-binding==1.0.0]
+```
+
+For Node, commit the matching lockfile. The compiler copies the manifest and lockfile before source and selects the frozen install command:
+
+```yaml
+install:
+  npm:
+    manager: npm       # npm, yarn, or pnpm
+    production: true
+```
+
+For a uv project, the base image must already provide `uv`:
+
+```yaml
+install:
+  uv:
+    extras: [server]
+    dev: false
+```
+
+### Build in one stage, run in another
+
+Compiled apps should keep the toolchain out of the runtime image. This Swift example builds with the full toolchain, then copies only the product into a slim final stage:
+
+```yaml
+version: 1
+stages:
+  - name: build
+    from: swift:6.3.2-noble
+    workdir: /build
+    copy:
+      - from: local
+        paths: [Package.swift]
+      - from: local
+        paths: [Sources]
+    build:
+      lang: swift
+      product: MyApp
+
+  - name: app
+    from: swift:6.3.2-noble-slim
+    copy:
+      - from: build
+        paths: [/build/.build/release/MyApp]
+        dest: /MyApp
+    cmd: [/MyApp]
+```
+
+This still uses Stagefile's SwiftPM caches on incremental builds. Because source compilation happens in the build stage, source edits require the builder; the builder-free app-layer shortcut is intended for copy-only runtime code such as Python scripts, configuration, and static assets.
+
+### Target NVIDIA GPUs without hard-coding a board
+
+Set `cuda: true` on the stage and on the pip group that needs GPU wheels:
+
+```yaml
+version: 1
+stages:
+  - name: app
+    from: ubuntu:22.04
+    workdir: /app
+    cuda: true
+    install:
+      apt:
+        packages: [python3-pip, libgomp1]
+      pip:
+        - packages: ["torch==2.8.0"]
+          cuda: true
+    copy:
+      - from: local
+        paths: [inference.py]
+    cmd: [python3, inference.py]
+```
+
+When you run against a device, Wendy reads its GPU architecture and resolves the matching CUDA profile. The same source can target an Orin or Thor without embedding a JetPack-specific wheel index and runtime package list. The resolved profile is recorded per architecture in `build.stagefile.lock.yaml`.
+
+## Preserve the fast path
+
+Stagefile applies the optimizations automatically, but the shape you declare still matters:
+
+- List the specific files and directories the image needs. `paths: [.]` intentionally opts out of the generated allowlist and sends the project according to your own `.dockerignore`.
+- Keep dependency manifests in `install` and application files in later `copy` entries.
+- In the final stage, place cross-stage copies before local copies. This lets Wendy identify the final local layers safely.
+- Put compilation in an earlier build stage when practical, then copy its runtime artifacts into a smaller final stage.
+- Commit both the Stagefile and its lockfile. Do not hand-edit generated Dockerfiles.
+
+For several build variants, keep one Stagefile per variant:
+
+```text
+build.stagefile.yaml
+build.stagefile.lock.yaml
+gpu.stagefile.yaml
+gpu.stagefile.lock.yaml
+```
+
+The canonical `build.stagefile.yaml` is selected by default. Choose another variant explicitly in automation:
+
+```bash
+wendy run --dockerfile gpu.stagefile.yaml
+```
+
+Variant names may contain letters, digits, underscores, and hyphens, but not dots. See [`wendy build`](/docs/advanced/clients/wendy-cli/commands/build) for detection order, generated filenames, flags, and builder compatibility.
+
+## Next steps
+
+- Browse the [Wendy example Stagefiles](https://github.com/wendylabsinc/wendyos/tree/main/Examples) for Python, Swift, Rust, ROS 2, Compose, and GPU applications.
+- Use [multi-app deployments](/docs/guides/multi-app-deployments) with one Stagefile in each service directory.
+- Read the [`wendy run` reference](/docs/advanced/clients/wendy-cli/commands/run) for watch mode, chunk-diff deployment, and fallback behavior.

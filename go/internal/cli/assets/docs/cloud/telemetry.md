@@ -2,8 +2,6 @@ Wendy devices produce their structured logs, metrics and tracing through [OpenTe
 
 These logs are received by a local on-device collector, which forwards the stream to other targets. One of those targets is the Wendy Cloud.
 
-> **NOTE (nit)**: This **should** re-use an [existing gRPC connection](connectivity.md) between Wendy-Agent and Wendy Cloud.
-
 The OTel spec is a standard wire protocol, also based on gRPC, that we can implement and codegen. Wendy Cloud then collects the OTel data, and "processes" it. Any queries over structured logs, visualisation and forwarding of data happens on these streams.
 
 ## Environment variables injected into app containers
@@ -32,7 +30,7 @@ left untouched if the image already sets it, so image-provided values win:
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://127.0.0.1:4317` (port from `WENDY_OTEL_PORT`, default `4317`) | Only set if the image hasn't configured an endpoint. |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Only set together with the default endpoint above (i.e. when the image hasn't set an endpoint) and only if absent. An image that sets its own endpoint keeps full control of the protocol. |
-| `OTEL_SERVICE_NAME` | `<appId>` | Only set if absent and `appId` is non-empty. |
+| `OTEL_SERVICE_NAME` | `<appId>` for a single-container app; `<appId>_<serviceName>` for a multi-service app | Only set if absent and `appId` is non-empty. |
 | `OTEL_RESOURCE_ATTRIBUTES` | `wendy.app.name=<appId>` | Only set if absent and `appId` is non-empty. |
 
 `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` set the `service.name` and
@@ -45,7 +43,3 @@ at its own collector still produces app-filterable logs.
 
 The agent uses the OTLP receiver port (`4317`, gRPC) for the injected endpoint;
 an HTTP/protobuf receiver is also available on `4318` for clients that prefer it.
-
-## Processing (TODO: @martien)
-
-TODO

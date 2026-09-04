@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -389,7 +391,7 @@ func TestWendyLabels_EntitlementsStoredAsKeyValue(t *testing.T) {
 		wantVal string
 	}{
 		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementNetwork, "mode=host"},
-		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementGPU, ""},
+		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementGPU, "enabled=true"},
 	}
 	for _, tc := range cases {
 		raw, ok := labels[tc.key]
@@ -634,5 +636,101 @@ func TestSafeJoin(t *testing.T) {
 	// Reject traversal via filepath.Join normalisation.
 	if _, err := safeJoin(base, "sub/../../../etc/passwd"); err == nil {
 		t.Error("safeJoin: traversal via .. should be rejected")
+	}
+}
+
+func TestContainerArgs(t *testing.T) {
+	entrypointOnly := ocispec.ImageConfig{Entrypoint: []string{"/app/server"}}
+	cmdOnly := ocispec.ImageConfig{Cmd: []string{"python3", "main.py"}}
+	both := ocispec.ImageConfig{Entrypoint: []string{"/usr/bin/entry"}, Cmd: []string{"--serve"}}
+
+	cases := []struct {
+		name     string
+		cmd      string
+		userArgs []string
+		cfg      ocispec.ImageConfig
+		want     []string
+	}{
+		{
+			// The bug this guards: --user-args used to replace the image
+			// entrypoint entirely, so the container exec'd "--port".
+			name:     "user args append to image entrypoint",
+			userArgs: []string{"--port", "8080"},
+			cfg:      entrypointOnly,
+			want:     []string{"/app/server", "--port", "8080"},
+		},
+		{
+			name:     "user args append to image cmd",
+			userArgs: []string{"--verbose"},
+			cfg:      cmdOnly,
+			want:     []string{"python3", "main.py", "--verbose"},
+		},
+		{
+			name:     "user args append after entrypoint and cmd",
+			userArgs: []string{"--extra"},
+			cfg:      both,
+			want:     []string{"/usr/bin/entry", "--serve", "--extra"},
+		},
+		{
+			name: "no user args keeps image config",
+			cfg:  both,
+			want: []string{"/usr/bin/entry", "--serve"},
+		},
+		{
+			// Explicit Cmd still overrides the image, with user args after it.
+			name:     "explicit cmd replaces image config",
+			cmd:      "/bin/custom",
+			userArgs: []string{"--flag"},
+			cfg:      both,
+			want:     []string{"/bin/custom", "--flag"},
+		},
+		{
+			name: "explicit cmd is field-split",
+			cmd:  "sh -c",
+			cfg:  both,
+			want: []string{"sh", "-c"},
+		},
+		{
+			name:     "empty image config falls back to /bin/sh",
+			userArgs: []string{"-c", "echo hi"},
+			want:     []string{"/bin/sh", "-c", "echo hi"},
+		},
+		{
+			name: "empty everything falls back to /bin/sh",
+			want: []string{"/bin/sh"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := containerArgs(tc.cmd, tc.userArgs, tc.cfg)
+			if len(got) != len(tc.want) {
+				t.Fatalf("containerArgs() = %q; want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("containerArgs() = %q; want %q", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// The image's Entrypoint/Cmd slices come straight out of the shared image spec,
+// so containerArgs must never append into their backing arrays.
+func TestContainerArgs_DoesNotMutateImageConfig(t *testing.T) {
+	entrypoint := make([]string, 1, 4)
+	entrypoint[0] = "/app/server"
+	cfg := ocispec.ImageConfig{Entrypoint: entrypoint}
+
+	if got := containerArgs("", []string{"--first"}, cfg); got[1] != "--first" {
+		t.Fatalf("containerArgs() = %q", got)
+	}
+	got := containerArgs("", []string{"--second"}, cfg)
+	if len(got) != 2 || got[0] != "/app/server" || got[1] != "--second" {
+		t.Fatalf("containerArgs() = %q; want [/app/server --second]", got)
+	}
+	if len(cfg.Entrypoint) != 1 || cfg.Entrypoint[0] != "/app/server" {
+		t.Fatalf("image config entrypoint mutated: %q", cfg.Entrypoint)
 	}
 }

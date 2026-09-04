@@ -105,6 +105,7 @@ func TestOSUpdateShouldSkipAlreadyCurrent(t *testing.T) {
 func TestDecideOSUpdate(t *testing.T) {
 	tests := []struct {
 		name        string
+		prNumber    int
 		current     string
 		latest      string
 		nightly     bool
@@ -112,18 +113,21 @@ func TestDecideOSUpdate(t *testing.T) {
 		interactive bool
 		want        osUpdateAction
 	}{
-		{"already current", "WendyOS-0.10.4", "0.10.4", false, false, false, osActionAlreadyCurrent},
-		{"newer with yes", "WendyOS-0.10.4", "0.12.0", false, true, false, osActionApply},
-		{"newer with yes overrides tty", "WendyOS-0.10.4", "0.12.0", false, true, true, osActionApply},
-		{"newer interactive prompts", "WendyOS-0.10.4", "0.12.0", false, false, true, osActionPrompt},
-		{"newer noninteractive reports", "WendyOS-0.10.4", "0.12.0", false, false, false, osActionReportOnly},
+		{"already current", 0, "WendyOS-0.10.4", "0.10.4", false, false, false, osActionAlreadyCurrent},
+		{"newer with yes", 0, "WendyOS-0.10.4", "0.12.0", false, true, false, osActionApply},
+		{"newer with yes overrides tty", 0, "WendyOS-0.10.4", "0.12.0", false, true, true, osActionApply},
+		{"newer interactive prompts", 0, "WendyOS-0.10.4", "0.12.0", false, false, true, osActionPrompt},
+		{"newer noninteractive reports", 0, "WendyOS-0.10.4", "0.12.0", false, false, false, osActionReportOnly},
+		{"pr identical tag interactive prompts", 123, "WendyOS-pr-123", "pr-123", false, false, true, osActionPrompt},
+		{"pr identical tag with yes applies", 123, "WendyOS-pr-123", "pr-123", false, true, false, osActionApply},
+		{"pr noninteractive reports", 123, "WendyOS-0.17.0", "pr-123", false, false, false, osActionReportOnly},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := decideOSUpdate(tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive)
+			got := decideOSUpdate(tc.prNumber, tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive)
 			if got != tc.want {
-				t.Fatalf("decideOSUpdate(%q,%q,nightly=%v,yes=%v,tty=%v) = %v, want %v",
-					tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive, got, tc.want)
+				t.Fatalf("decideOSUpdate(pr=%d,%q,%q,nightly=%v,yes=%v,tty=%v) = %v, want %v",
+					tc.prNumber, tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive, got, tc.want)
 			}
 		})
 	}
@@ -352,16 +356,95 @@ func TestProgressLabel(t *testing.T) {
 	}
 }
 
+// TestClassifyOSRollback pins the boundary between a genuine healthcheck
+// failure and an update that never booted (WDY-2200). Every marker corresponds
+// to a real wendyos-update rejection message; an unrecognised note must stay
+// unknown so the CLI reports no cause rather than the wrong one.
+func TestClassifyOSRollback(t *testing.T) {
+	failed := []*agentpb.GetOSUpdateStatusResponse_ServiceResult{
+		{Unit: "avahi-daemon.service", Status: agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED},
+	}
+	skipped := []*agentpb.GetOSUpdateStatusResponse_ServiceResult{
+		{Unit: "avahi-daemon.service", Status: agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_SKIPPED},
+	}
+
+	tests := []struct {
+		name     string
+		services []*agentpb.GetOSUpdateStatusResponse_ServiceResult
+		note     string
+		want     osRollbackReason
+	}{
+		{"a failed service is a healthcheck failure", failed, "", rollbackReasonHealthchecks},
+		{"a failed service wins over a never-booted note", failed,
+			"pending update x is marked failed; run rollback", rollbackReasonHealthchecks},
+		{"skipped services are not failures", skipped, "", rollbackReasonUnknown},
+		{"marked-failed deployment never booted", nil,
+			"wendyos-update commit failed: exit status 1 (pending update x is marked failed; run rollback)", rollbackReasonNotBooted},
+		{"firmware fallback never booted", nil,
+			"running slot A but the update targeted slot 1 (firmware fallback)", rollbackReasonNotBooted},
+		{"written but never swapped never booted", nil,
+			"pending update x was written but never swapped; run rollback or mark-good", rollbackReasonNotBooted},
+		{"marker matching ignores case", nil, "PENDING UPDATE X IS MARKED FAILED", rollbackReasonNotBooted},
+		{"empty record is unknown", nil, "", rollbackReasonUnknown},
+		{"unrecognised rejection is unknown", nil,
+			"wendyos-update commit failed: exit status 3 (something we have never seen)", rollbackReasonUnknown},
+		// engine.HookError formats a gating hook failure as
+		// `health hook "<name>" failed: <err>`. That IS a real healthcheck
+		// rejection even though no per-service results accompany it, so the
+		// delegated path must keep the healthcheck wording rather than degrade
+		// to the neutral one.
+		{"a health.d hook rejection is a healthcheck failure", nil,
+			`wendyos-update commit failed: exit status 4 (health hook "50-containerd.sh" failed: exit status 1)`,
+			rollbackReasonHealthchecks},
+		{"a platform-verify rejection is neither", nil,
+			"wendyos-update commit failed: exit status 4 (platform verify: ESRT status 6163)", rollbackReasonUnknown},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyOSRollback(tc.services, tc.note); got != tc.want {
+				t.Errorf("classifyOSRollback(%v, %q) = %v, want %v", tc.services, tc.note, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFormatOSUpdateStatus(t *testing.T) {
 	tests := []struct {
-		name         string
-		resp         *agentpb.GetOSUpdateStatusResponse
-		wantContains []string
+		name            string
+		resp            *agentpb.GetOSUpdateStatusResponse
+		wantContains    []string
+		wantNotContains []string
 	}{
 		{
 			name:         "no record",
 			resp:         &agentpb.GetOSUpdateStatusResponse{HasResult: false},
 			wantContains: []string{"No OS update"},
+		},
+		{
+			// WDY-2200: this record is what `wendy os update-status` showed for
+			// days on a stranded Thor, claiming healthchecks failed when
+			// health.d had never run.
+			name: "rolled back because the OS never booted does not blame healthchecks",
+			resp: &agentpb.GetOSUpdateStatusResponse{
+				HasResult:    true,
+				Outcome:      agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK,
+				OldOsVersion: "WendyOS-0.17.0",
+				NewOsVersion: "WendyOS-0.17.0",
+				Note:         "wendyos-update commit failed: exit status 1 (pending update wendyos-image-jetson-agx-thor-devkit-nvme-wendyos-0.18.2 is marked failed; run rollback)",
+			},
+			wantContains:    []string{"did not boot", "is marked failed"},
+			wantNotContains: []string{"healthcheck"},
+		},
+		{
+			name: "rolled back with an unrecognised reason does not blame healthchecks",
+			resp: &agentpb.GetOSUpdateStatusResponse{
+				HasResult: true,
+				Outcome:   agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK,
+				Note:      "wendyos-update commit failed: exit status 3 (something we have never seen)",
+			},
+			wantContains:    []string{"rolled back"},
+			wantNotContains: []string{"healthcheck"},
 		},
 		{
 			name: "commit failed shows the captured reason",
@@ -393,6 +476,11 @@ func TestFormatOSUpdateStatus(t *testing.T) {
 			for _, want := range tc.wantContains {
 				if !strings.Contains(msg, want) {
 					t.Errorf("formatOSUpdateStatus() = %q, missing %q", msg, want)
+				}
+			}
+			for _, unwanted := range tc.wantNotContains {
+				if strings.Contains(strings.ToLower(msg), strings.ToLower(unwanted)) {
+					t.Errorf("formatOSUpdateStatus() = %q, must not mention %q", msg, unwanted)
 				}
 			}
 		})
@@ -588,14 +676,26 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 		RollbackError: "wendyos-update reported nothing to roll back",
 	}
 
+	// A rollback whose commit rejection matches none of the recognised
+	// "never booted" signatures: the CLI cannot tell why, so it must not
+	// invent a cause.
+	unclassifiedRolledBack := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK,
+		OldOsVersion:  "WendyOS-0.10.4",
+		CreatedAtUnix: fresh,
+		Note:          "wendyos-update commit failed: exit status 3 (something we have never seen)",
+	}
+
 	tests := []struct {
-		name         string
-		resp         *agentpb.GetOSUpdateStatusResponse
-		rpcErr       error
-		preVer       string
-		postVer      string
-		wantErr      bool
-		wantContains []string
+		name            string
+		resp            *agentpb.GetOSUpdateStatusResponse
+		rpcErr          error
+		preVer          string
+		postVer         string
+		wantErr         bool
+		wantContains    []string
+		wantNotContains []string
 	}{
 		{
 			name:         "committed is verified success",
@@ -648,6 +748,49 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 				"WendyOS-0.10.4",
 				"is marked failed",
 			},
+		},
+		{
+			// WDY-2200: the boot verifier marks the deployment failed before
+			// commit, so health.d never runs. Blaming healthchecks sent a real
+			// investigation to the wrong layer entirely.
+			name:    "rollback for an OS that never booted does not blame healthchecks",
+			resp:    delegatedRolledBack,
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.10.4",
+			wantErr: true,
+			wantContains: []string{
+				"did not boot",
+				"WendyOS-0.10.4",
+			},
+			wantNotContains: []string{"healthcheck"},
+		},
+		{
+			name:            "rollback with an unrecognised reason does not blame healthchecks",
+			resp:            unclassifiedRolledBack,
+			preVer:          "WendyOS-0.10.4",
+			postVer:         "WendyOS-0.10.4",
+			wantErr:         true,
+			wantContains:    []string{"rolled back", "something we have never seen"},
+			wantNotContains: []string{"healthcheck"},
+		},
+		{
+			// The agent-run CheckAll path genuinely is a healthcheck failure,
+			// so that wording must survive.
+			name:         "rollback with failed services still reports healthchecks",
+			resp:         rolledBack,
+			preVer:       "WendyOS-0.10.4",
+			postVer:      "WendyOS-0.10.4",
+			wantErr:      true,
+			wantContains: []string{"healthcheck", "avahi-daemon.service"},
+		},
+		{
+			name:            "rollback-failed for an OS that never booted does not blame healthchecks",
+			resp:            rollbackFailedWithNote,
+			preVer:          "WendyOS-0.10.4",
+			postVer:         "WendyOS-0.11.0",
+			wantErr:         true,
+			wantContains:    []string{"did not boot", "nothing to roll back"},
+			wantNotContains: []string{"healthcheck"},
 		},
 		{
 			name:         "rollback failed reports degraded state",
@@ -732,6 +875,18 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 			for _, want := range tc.wantContains {
 				if !strings.Contains(msg, want) {
 					t.Errorf("message %q missing %q", msg, want)
+				}
+			}
+			for _, unwanted := range tc.wantNotContains {
+				if strings.Contains(strings.ToLower(msg), strings.ToLower(unwanted)) {
+					t.Errorf("message %q must not mention %q", msg, unwanted)
+				}
+			}
+			if err != nil {
+				for _, unwanted := range tc.wantNotContains {
+					if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(unwanted)) {
+						t.Errorf("error %q must not mention %q", err, unwanted)
+					}
 				}
 			}
 		})

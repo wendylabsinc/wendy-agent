@@ -2,16 +2,21 @@ package configpartition
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/sysextfs"
 	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/network"
@@ -28,7 +33,7 @@ var elfMachineByArch = map[string]uint16{
 const (
 	configDir          = "/config"
 	agentBinaryName    = "wendy-agent"
-	defaultInstallPath = "/usr/local/bin/wendy-agent"
+	defaultInstallPath = "/opt/wendyos/bin/wendy-agent"
 )
 
 // validateELF checks that the file at path is a 64-bit ELF binary compiled for
@@ -140,6 +145,14 @@ func applyBinaryUpdate(logger *zap.Logger, cfgDir, installPath string) bool {
 		logger.Error("Config partition binary failed ELF validation, removing",
 			zap.String("path", src), zap.Error(err))
 		os.Remove(src) //nolint:errcheck
+		return false
+	}
+
+	// A seeded binary written under a merged sysext hierarchy is discarded on the
+	// next boot, so the seed would silently do nothing and retry forever.
+	if err := sysextfs.CheckDurable(filepath.Dir(installPath)); err != nil {
+		logger.Error("Refusing to install agent binary from config partition",
+			zap.String("dst", installPath), zap.Error(err))
 		return false
 	}
 
@@ -279,6 +292,18 @@ func applyDeviceName(logger *zap.Logger, name string) error {
 	}
 	logger.Info("Wrote device name", zap.String("name", name), zap.String("path", deviceNamePath))
 
+	// A device-name apply is a deliberate re-identification, so clear any explicit
+	// rename — it outranks device-name (hostname.go, update-mdns-uuid.sh) and would
+	// otherwise override this name on the next boot.
+	const explicitHostnamePath = "/etc/wendy-agent/hostname"
+	if err := os.Remove(explicitHostnamePath); err == nil {
+		logger.Info("Cleared explicit hostname so the device name takes effect",
+			zap.String("path", explicitHostnamePath))
+	} else if !os.IsNotExist(err) {
+		logger.Warn("Could not clear explicit hostname; it will keep overriding the device name",
+			zap.String("path", explicitHostnamePath), zap.Error(err))
+	}
+
 	// Build an env with a full system PATH so scripts can find standard
 	// utilities (mkdir, logger, etc.) even when the agent runs under systemd
 	// with a restricted PATH.
@@ -306,8 +331,12 @@ func applyDeviceName(logger *zap.Logger, name string) error {
 		logger.Info("Hostname updated", zap.String("hostname", "wendyos-"+name))
 	}
 
-	// update-mdns-uuid.sh is a first-boot placeholder replacer and is a no-op
-	// on a running device. Update the avahi service file directly instead.
+	// update-mdns-uuid.sh runs at boot, before the agent, so it cannot publish a
+	// name applied here at runtime. Update the avahi service file directly
+	// instead. (It is no longer the one-shot placeholder replacer it once was —
+	// it now re-derives name/displayname from device-name on every boot, which is
+	// why services.ReassertHostnameAdvertisement re-applies an explicit rename
+	// over the top of it at startup.)
 	updateAvahiDeviceName(logger, name, env)
 
 	return nil
@@ -601,8 +630,12 @@ func applyPreProvisioning(logger *zap.Logger, cfgDir, configPath string) {
 // the process exits so systemd can restart it with the new binary.
 // configPath is the agent's configuration directory (e.g. /etc/wendy-agent).
 func Apply(logger *zap.Logger, configPath string) {
+	// The running binary is the target. EvalSymlinks is best effort: it walks
+	// every component and fails outright when a parent directory has been torn
+	// down under the process, but the unresolved path still names the file.
 	installPath := defaultInstallPath
 	if exe, err := os.Executable(); err == nil {
+		installPath = exe
 		if real, err := filepath.EvalSymlinks(exe); err == nil {
 			installPath = real
 		}
@@ -613,6 +646,7 @@ func Apply(logger *zap.Logger, configPath string) {
 	applyWendyConf(logger, configDir)
 	applyPreProvisioning(logger, configDir, configPath)
 	applyClockFloor(logger, configDir, configPath)
+	applyExtensions(logger, configDir)
 }
 
 // applyClockFloor copies clock_floor from cfgDir (the FAT32 config partition,
@@ -640,4 +674,115 @@ func applyClockFloor(logger *zap.Logger, cfgDir, configPath string) {
 			logger.Error("configpartition: failed to write clock_floor", zap.Error(err))
 		}
 	}
+}
+
+// seededExtension is one driver add-on declared in the config partition's
+// extensions.json. It mirrors the registry's resolution shape: the agent
+// fetches and verifies the .raw itself.
+//
+// Nothing in the tree writes this file yet, so the path below is reachable only
+// by placing it on the config partition by hand. It also fails closed until a
+// signing key is embedded — the seed requires a real signature.
+type seededExtension struct {
+	Name          string   `json:"name"`
+	KernelVersion string   `json:"kernel_version,omitempty"`
+	SHA256        string   `json:"sha256,omitempty"`
+	Signature     string   `json:"signature,omitempty"` // base64 detached signature
+	ArtifactURL   string   `json:"artifact_url"`
+	ModulesLoad   []string `json:"modules_load,omitempty"`
+}
+
+// applyExtensions checks cfgDir for an extensions.json placed on the config
+// partition at imaging time and installs each declared driver add-on
+// (fetch -> verify sha256 + signature -> place on /data -> apply), then deletes
+// the source (consume-and-erase). Absent file is the normal case and a no-op.
+func applyExtensions(logger *zap.Logger, cfgDir string) {
+	srcPath := filepath.Join(cfgDir, "extensions.json")
+	data, err := os.ReadFile(srcPath)
+	if os.IsNotExist(err) {
+		return
+	}
+	// Consume-and-erase FIRST: whatever happens below, the seed is gone, so a bad
+	// or unreachable entry can never re-wedge subsequent boots (e.g. if the device
+	// is power-cycled while a fetch is in flight).
+	if rmErr := os.Remove(srcPath); rmErr != nil {
+		logger.Warn("Failed to remove seeded extensions from config partition",
+			zap.String("path", srcPath), zap.Error(rmErr))
+	}
+	if err != nil {
+		logger.Error("Failed to read seeded extensions from config partition",
+			zap.String("path", srcPath), zap.Error(err))
+		return
+	}
+
+	var exts []seededExtension
+	if err := json.Unmarshal(data, &exts); err != nil {
+		logger.Error("Failed to parse seeded extensions", zap.Error(err))
+		return
+	}
+	if len(exts) == 0 {
+		return
+	}
+
+	// This runs on the boot path before the network is reliably up, so bound the
+	// whole batch: a slow or unreachable artifact URL must not stall startup. A
+	// dropped seed is recoverable later via `wendy device drivers install`.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	svc := services.NewSeedDriverService(logger)
+	linkDeadline := time.Now().Add(seedLinkWait)
+	for _, e := range exts {
+		sig, decErr := base64.StdEncoding.DecodeString(e.Signature)
+		if decErr != nil {
+			logger.Error("Skipping seeded driver with invalid signature encoding",
+				zap.String("name", e.Name), zap.Error(decErr))
+			continue
+		}
+		spec := services.DriverInstallSpec{
+			Name:          e.Name,
+			KernelVersion: e.KernelVersion,
+			SHA256:        e.SHA256,
+			Signature:     sig,
+			ArtifactURL:   e.ArtifactURL,
+			ModulesLoad:   e.ModulesLoad,
+		}
+		// This Apply() registers WiFi just above, so the link may not be up for the
+		// first fetch. The seed is already erased, so retry rather than lose it;
+		// briefly, because nothing is served until this returns.
+		var err error
+		for delay := time.Second; ; delay *= 2 {
+			if err = svc.InstallFromURL(ctx, spec); err == nil || !linkNotReady(err) {
+				break
+			}
+			if time.Now().Add(delay).After(linkDeadline) {
+				break
+			}
+			time.Sleep(delay)
+		}
+		if err != nil {
+			logger.Error("Failed to apply seeded driver",
+				zap.String("name", e.Name), zap.Error(err))
+			continue
+		}
+		logger.Info("Applied seeded driver add-on", zap.String("name", e.Name))
+	}
+}
+
+// seedLinkWait bounds how long a seeded install waits for a still-associating
+// link. Kept short deliberately: applyExtensions runs synchronously before the
+// agent starts serving, so an unreachable artifact URL delays every RPC by this
+// much. Long enough for DHCP after association, far short of the batch budget.
+const seedLinkWait = 15 * time.Second
+
+// linkNotReady reports whether err is the link still coming up (DNS or connect),
+// as opposed to a validation, verification or apply failure.
+func linkNotReady(err error) bool {
+	// The SSRF guard rejects from inside the dialer, which wraps it in
+	// *net.OpError too; retrying that just re-probes the blocked address.
+	if strings.Contains(err.Error(), "refusing to fetch") {
+		return false
+	}
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	return errors.As(err, &dnsErr) || errors.As(err, &opErr)
 }

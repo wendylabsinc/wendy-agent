@@ -533,7 +533,7 @@ func TestSyncFiles_DeterministicOperationOrder(t *testing.T) {
 	conn, cleanup := startFakeServer(t, srv)
 	defer cleanup()
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := syncFiles(context.Background(), conn, "sh.wendy.App", []fileSyncEntry{{
 			localPath:  dir,
 			remotePath: "",
@@ -561,10 +561,10 @@ func TestSyncFiles_DeterministicOperationOrder(t *testing.T) {
 		t.Fatalf("operation order = %v, want %v", gotOrder, wantOrder)
 	}
 	if !strings.Contains(output, "mode changed: a.bin 0644 -> 0755") {
-		t.Fatalf("stdout missing mode change line: %q", output)
+		t.Fatalf("stderr missing mode change line: %q", output)
 	}
 	if !strings.Contains(output, "deleted: stale.bin") {
-		t.Fatalf("stdout missing deletion line: %q", output)
+		t.Fatalf("stderr missing deletion line: %q", output)
 	}
 }
 
@@ -603,7 +603,10 @@ func TestSyncFiles_ProgressReportedPerFile(t *testing.T) {
 	conn, cleanup := startFakeServer(t, srv)
 	defer cleanup()
 
-	output := captureStdout(t, func() {
+	// syncFiles' per-file progress lines (printFileSyncProgress) print straight
+	// to stdout, but its "Syncing files..." header and "Total: ..." summary go
+	// through cliLogln, which now writes to stderr (WDY-2435). Capture both.
+	stdout, stderr := captureBoth(t, func() {
 		if err := syncFiles(context.Background(), conn, "sh.wendy.App", []fileSyncEntry{{
 			localPath:  dir,
 			remotePath: "",
@@ -615,20 +618,20 @@ func TestSyncFiles_ProgressReportedPerFile(t *testing.T) {
 	if len(srv.ackedPaths) != 2 {
 		t.Fatalf("ackedPaths count = %d, want 2", len(srv.ackedPaths))
 	}
-	if !strings.Contains(output, "Syncing files...") {
-		t.Fatalf("stdout missing sync header: %q", output)
+	if !strings.Contains(stderr, "Syncing files...") {
+		t.Fatalf("stderr missing sync header: %q", stderr)
 	}
-	if !strings.Contains(output, "a.bin") {
-		t.Fatalf("stdout missing a.bin progress line: %q", output)
+	if !strings.Contains(stdout, "a.bin") {
+		t.Fatalf("stdout missing a.bin progress line: %q", stdout)
 	}
-	if !strings.Contains(output, "b.bin") {
-		t.Fatalf("stdout missing b.bin progress line: %q", output)
+	if !strings.Contains(stdout, "b.bin") {
+		t.Fatalf("stdout missing b.bin progress line: %q", stdout)
 	}
-	if !strings.Contains(output, "/s") {
-		t.Fatalf("stdout missing transfer rate: %q", output)
+	if !strings.Contains(stdout, "/s") {
+		t.Fatalf("stdout missing transfer rate: %q", stdout)
 	}
-	if !strings.Contains(output, "Total: 8 B in 2 file(s)") {
-		t.Fatalf("stdout missing total line: %q", output)
+	if !strings.Contains(stderr, "Total: 8 B in 2 file(s)") {
+		t.Fatalf("stderr missing total line: %q", stderr)
 	}
 }
 
@@ -647,7 +650,7 @@ func TestSyncFiles_NothingToSyncPrintsUpToDate(t *testing.T) {
 	conn, cleanup := startFakeServer(t, srv)
 	defer cleanup()
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := syncFiles(context.Background(), conn, "sh.wendy.App", []fileSyncEntry{{
 			localPath:  filepath.Join(dir, "app"),
 			remotePath: "app",
@@ -657,7 +660,7 @@ func TestSyncFiles_NothingToSyncPrintsUpToDate(t *testing.T) {
 	})
 
 	if !strings.Contains(output, "Files up to date.") {
-		t.Fatalf("stdout missing up-to-date line: %q", output)
+		t.Fatalf("stderr missing up-to-date line: %q", output)
 	}
 	for _, r := range srv.snapshotRequests() {
 		switch r.RequestType.(type) {
@@ -676,7 +679,7 @@ func TestSyncFiles_StaleOnlySendsExplicitDelete(t *testing.T) {
 	conn, cleanup := startFakeServer(t, srv)
 	defer cleanup()
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := syncFiles(context.Background(), conn, "sh.wendy.App", []fileSyncEntry{}); err != nil {
 			t.Fatalf("syncFiles: %v", err)
 		}
@@ -686,10 +689,10 @@ func TestSyncFiles_StaleOnlySendsExplicitDelete(t *testing.T) {
 		t.Fatalf("deletedPaths = %v, want [stale.bin]", srv.deletedPaths)
 	}
 	if !strings.Contains(output, "deleted: stale.bin") {
-		t.Fatalf("stdout missing deletion line: %q", output)
+		t.Fatalf("stderr missing deletion line: %q", output)
 	}
 	if strings.Contains(output, "Syncing files...") {
-		t.Fatalf("stdout should not contain sync header for delete-only sync: %q", output)
+		t.Fatalf("stderr should not contain sync header for delete-only sync: %q", output)
 	}
 }
 
@@ -721,6 +724,31 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 	os.Stdout = w
 	defer func() { os.Stdout = old }()
+
+	outputCh := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		outputCh <- buf.String()
+	}()
+
+	fn()
+	_ = w.Close()
+	return <-outputCh
+}
+
+// captureStderr mirrors captureStdout but swaps os.Stderr instead. cliLogln
+// and cliSuccess write status lines to stderr (WDY-2435), so tests asserting
+// on that text need this instead of captureStdout.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = old }()
 
 	outputCh := make(chan string, 1)
 	go func() {

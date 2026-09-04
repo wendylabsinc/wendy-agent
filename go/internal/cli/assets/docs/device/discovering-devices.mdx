@@ -5,6 +5,18 @@ description: Find WendyOS devices on your network using the Wendy CLI
 
 ## Discovering WendyOS Devices
 
+<iframe
+  className="aspect-video w-full rounded-lg border-0"
+  src="https://www.youtube.com/embed/9vZIOcpbkl0"
+  title="Deploying to a WendyOS device over USB-C, Wi-Fi, and Wendy Cloud"
+  loading="lazy"
+  referrerPolicy="strict-origin-when-cross-origin"
+  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+  allowFullScreen
+/>
+
+This walkthrough deploys a YOLOv8 app with `wendy run` over USB-C, connects the device to Wi-Fi with `wendy device wifi connect` and keeps deploying over the LAN, then enrolls the device with `wendy cloud enroll-device` to reach a Unitree Go2 from another location — the CLI picks the fastest available transport each time.
+
 The Wendy CLI can automatically discover WendyOS devices connected to your development machine. This works over USB connections and over your Local Area Network (LAN).
 
 ### Prerequisites
@@ -91,7 +103,7 @@ LAN discovery uses mDNS (also known as Bonjour on macOS or Avahi on Linux) to fi
 
 ## Device address selection
 
-When mDNS returns both IPv4 and IPv6 addresses for the same device — which happens because Avahi emits one resolve record per protocol, and macOS dns-sd lookups can list IPv6 first — the CLI prefers the IPv4 address. IPv6 address sets typically lead with an RFC 4941 temporary (privacy) address that rotates away, making a stored IPv6 address go stale before the next deploy or readiness probe. IPv6 is used only as a fallback when no IPv4 address is available.
+When mDNS returns both IPv4 and IPv6 addresses for the same device, the CLI prefers the IPv4 address, because a device's IPv6 address often rotates and goes stale between deploys. IPv6 is used only as a fallback when no IPv4 address is available.
 
 ## Troubleshooting LAN Discovery
 

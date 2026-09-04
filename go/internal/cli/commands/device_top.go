@@ -237,12 +237,13 @@ func listAppContainers(ctx context.Context, conn *grpcclient.AgentConnection) ([
 }
 
 type topJSONHost struct {
-	CPUPercent    float64          `json:"cpuPercent"`
-	CPUCount      uint32           `json:"cpuCount"`
-	MemUsedBytes  int64            `json:"memUsedBytes"`
-	MemTotalBytes int64            `json:"memTotalBytes"`
-	GPUs          []topJSONGPU     `json:"gpus,omitempty"`
-	ThermalZones  []topJSONThermal `json:"thermalZones,omitempty"`
+	CPUPercent         float64          `json:"cpuPercent"`
+	CPUCount           uint32           `json:"cpuCount"`
+	MemUsedBytes       int64            `json:"memUsedBytes"`
+	MemTotalBytes      int64            `json:"memTotalBytes"`
+	GPUs               []topJSONGPU     `json:"gpus,omitempty"`
+	ThermalZones       []topJSONThermal `json:"thermalZones,omitempty"`
+	MaximumTemperature *topJSONThermal  `json:"maximumTemperature,omitempty"`
 	// Absent on mains-powered devices. Consumers must read "no battery key" as
 	// "no battery", never as a flat one.
 	Battery *topJSONBattery `json:"battery,omitempty"`
@@ -308,6 +309,9 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 				Name:  z.GetName(),
 				TempC: z.GetTempC(),
 			})
+		}
+		if summary, ok := summarizeTemperature(cur.host); ok {
+			out.Host.MaximumTemperature = &topJSONThermal{Name: summary.Max.Name, TempC: summary.Max.TempC}
 		}
 		if b := cur.host.GetBattery(); b != nil {
 			out.Host.Battery = &topJSONBattery{
@@ -392,6 +396,9 @@ func writeTopPlainSnapshot(w io.Writer, prev, cur topSample, containers []*agent
 			fmt.Fprintf(w, "GPU%d %s: %.0f%%  %s\n", g.GetIndex(), g.GetName(),
 				g.GetUtilPercent(), formatGPUMem(g))
 		}
+		if summary, ok := summarizeTemperature(cur.host); ok {
+			fmt.Fprintf(w, "TEMP MAX: %s\n", formatTemperatureSummary(summary))
+		}
 		if zones := cur.host.GetThermalZones(); len(zones) > 0 {
 			fmt.Fprintf(w, "TEMP: %s\n", formatThermalZones(zones))
 		}
@@ -420,7 +427,7 @@ func newTopCmd() *cobra.Command {
 	var interval time.Duration
 	cmd := &cobra.Command{
 		Use:   "top",
-		Short: "Live CPU, memory, and GPU usage for the device and its containers",
+		Short: "Live CPU, memory, GPU, and temperature for the device and its containers",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx)
@@ -440,13 +447,17 @@ func newTopCmd() *cobra.Command {
 }
 
 type topStatsMsg struct {
-	resp *agentpb.GetResourceStatsResponse
-	err  error
+	resp       *agentpb.GetResourceStatsResponse
+	err        error
+	startedAt  time.Time
+	finishedAt time.Time
 }
 
 type topContainersMsg struct {
 	containers []*agentpb.AppContainer
 	err        error
+	startedAt  time.Time
+	finishedAt time.Time
 }
 
 type topModel struct {
@@ -460,6 +471,10 @@ type topModel struct {
 	prev, cur        topSample
 	havePrev         bool
 	cachedContainers []*agentpb.AppContainer
+	// Keep near-equal temperatures from trading places on every sample. The
+	// dashboard preserves this order across refreshes; snapshots remain a
+	// stateless representation of the agent response.
+	displayThermalZones []*agentpb.ThermalZone
 
 	rows      []topRow
 	cursor    int
@@ -467,6 +482,13 @@ type topModel struct {
 	width     int
 	height    int
 	flash     string
+
+	// Liveness. The stats and container polls run independently, so their
+	// results can reach Update out of order. Keep the latest proof on each side
+	// so a slow failure cannot overwrite a newer successful reply.
+	lastReplyAt       time.Time
+	lastUnreachableAt time.Time
+	offlineSince      time.Time
 
 	// Lifecycle action state is separate from poll errors so a successful poll
 	// cannot erase stop progress or its result.
@@ -605,9 +627,16 @@ func (m topModel) runStatsPoll() {
 	// tick); it only stops when the agent does not implement the RPC at all,
 	// since that will never succeed.
 	fetch := func() bool {
-		resp, err := sampleResourceStats(m.ctx, m.conn)
+		// Deadline per poll: a device that lost power leaves the socket
+		// black-holed, and an undeadlined call would block here — stalling the
+		// ticker too — until gRPC keepalive gives up 15 minutes later.
+		startedAt := time.Now()
+		ctx, cancel := context.WithTimeout(m.ctx, topPollTimeout(m.interval))
+		resp, err := sampleResourceStats(ctx, m.conn)
+		cancel()
+		finishedAt := time.Now()
 		select {
-		case m.statsCh <- topStatsMsg{resp: resp, err: err}:
+		case m.statsCh <- topStatsMsg{resp: resp, err: err, startedAt: startedAt, finishedAt: finishedAt}:
 		case <-m.ctx.Done():
 			return false
 		}
@@ -632,9 +661,13 @@ func (m topModel) runContainersPoll() {
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
 	fetch := func() {
-		containers, err := listAppContainers(m.ctx, m.conn)
+		startedAt := time.Now()
+		ctx, cancel := context.WithTimeout(m.ctx, topPollTimeout(m.interval))
+		containers, err := listAppContainers(ctx, m.conn)
+		cancel()
+		finishedAt := time.Now()
 		select {
-		case m.containersCh <- topContainersMsg{containers: containers, err: err}:
+		case m.containersCh <- topContainersMsg{containers: containers, err: err, startedAt: startedAt, finishedAt: finishedAt}:
 		case <-m.ctx.Done():
 		}
 	}
@@ -688,16 +721,23 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case topStatsMsg:
+		startedAt, finishedAt := topPollTimes(msg.startedAt, msg.finishedAt)
 		if msg.err != nil {
-			m.flash = userFacingGRPCError(msg.err)
+			m.noteOfflineErr(msg.err, startedAt, finishedAt)
 			return m, waitForTopStats(m.statsCh)
 		}
 		m.flash = ""
+		m.noteOnline(finishedAt)
 		if m.cur.host != nil || len(m.cur.containers) > 0 {
 			m.prev = m.cur
 			m.havePrev = true
 		}
-		m.cur = newTopSample(msg.resp, time.Now().UnixNano())
+		m.cur = newTopSample(msg.resp, finishedAt.UnixNano())
+		if m.cur.host != nil {
+			m.displayThermalZones = stabilizeThermalZoneOrder(m.displayThermalZones, m.cur.host.GetThermalZones())
+		} else {
+			m.displayThermalZones = nil
+		}
 		m.rebuildRows()
 		// Refresh ports for the selected app on every tick so they stay current.
 		sel := m.selectedAppName()
@@ -705,10 +745,16 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(waitForTopStats(m.statsCh), m.fetchPortsCmd(sel))
 
 	case topContainersMsg:
+		startedAt, finishedAt := topPollTimes(msg.startedAt, msg.finishedAt)
 		if msg.err != nil {
-			m.flash = userFacingGRPCError(msg.err)
+			// Both polls ride the same connection, so this normally fails
+			// alongside the stats poll.
+			m.noteOfflineErr(msg.err, startedAt, finishedAt)
 			return m, waitForTopContainers(m.containersCh)
 		}
+		// A container list is a reply, so it ends an outage — but it is not a
+		// sample, so it does not refresh the age of the meters above it.
+		m.noteReachable(finishedAt)
 		m.cachedContainers = msg.containers
 		m.rebuildRows()
 		return m, tea.Batch(waitForTopContainers(m.containersCh), m.maybeFetchPorts())
@@ -790,9 +836,14 @@ var (
 	topValDim     = lipgloss.NewStyle().Foreground(tui.ColorDim)
 	topHeaderBar  = lipgloss.NewStyle().Bold(true).Background(tui.Emerald500).Foreground(lipgloss.Color("#02160f"))
 	// Bright mint selection bar for strong contrast with the black row text.
-	topSelRow     = lipgloss.NewStyle().Background(lipgloss.Color("#9FE2BF")).Foreground(lipgloss.Color("#000000"))
-	topRunningRow = lipgloss.NewStyle().Foreground(tui.Emerald400)
-	topCrashRow   = lipgloss.NewStyle().Foreground(tui.Red500)
+	topSelRow      = lipgloss.NewStyle().Background(lipgloss.Color("#9FE2BF")).Foreground(lipgloss.Color("#000000"))
+	topRunningRow  = lipgloss.NewStyle().Foreground(tui.Emerald400)
+	topCrashRow    = lipgloss.NewStyle().Foreground(tui.Red500)
+	topThermalNear = lipgloss.NewStyle().Bold(true).Foreground(tui.Amber500)
+	topThermalHot  = lipgloss.NewStyle().Bold(true).Foreground(tui.Red500)
+	// Reversed rather than merely red: an offline device is the one condition
+	// that must not blend into the meter stack above the app table.
+	topOfflineBar = lipgloss.NewStyle().Bold(true).Background(tui.Red500).Foreground(lipgloss.Color("#ffffff"))
 	topKeyCap     = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(lipgloss.Color("#d0d0d0"))
 	topKeyLabel   = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(tui.Emerald500)
 )
@@ -900,9 +951,27 @@ func (m topModel) View() string {
 
 	var top []string // full-width meters + summary
 
+	// An unreachable device keeps its last sample on screen — there is nothing
+	// newer to draw — so the banner is what stops those frozen meters from
+	// reading as live telemetry.
+	if m.isOffline() {
+		var lastBattery *agentpb.BatteryStats
+		if m.cur.host != nil {
+			lastBattery = m.cur.host.GetBattery()
+		}
+		headline := topOfflineHeadline(m.silentFor(time.Now()), lastBattery)
+		top = append(top, topOfflineBar.Render(padOrCrop(" "+headline, width)))
+		if m.cur.host != nil {
+			top = append(top, topValDim.Render(" Readings below are the last values received, not live."))
+		}
+	}
+
 	if m.cur.host != nil {
 		h := m.cur.host
 		meterW := width - 2
+		if summary, ok := summarizeTemperature(h); ok {
+			top = append(top, renderTemperatureHeader(summary))
+		}
 		cpuRatio, cpuVal := 0.0, "—"
 		if m.havePrev {
 			pct := hostCPUPercent(m.prev, m.cur)
@@ -944,10 +1013,16 @@ func (m topModel) View() string {
 			top = append(top, topMeter("GPU", g.GetUtilPercent()/100, val, meterW))
 		}
 
-		if zones := h.GetThermalZones(); len(zones) > 0 {
+		zones := m.displayThermalZones
+		// Some view tests construct a model directly instead of sending a stats
+		// message through Update. Use the sample's order for that initial frame.
+		if zones == nil {
+			zones = h.GetThermalZones()
+		}
+		if len(zones) > 0 {
 			top = append(top, topValDim.Render(" Temp: "+formatThermalZones(zones)))
 		}
-	} else {
+	} else if !m.isOffline() {
 		top = append(top, topValDim.Render(" Connecting…"))
 	}
 
@@ -1136,8 +1211,9 @@ func runTopDashboard(ctx context.Context, conn *grpcclient.AgentConnection, inte
 	return err
 }
 
-// formatThermalZones renders thermal zones (already sorted hottest-first by the
-// agent) as a compact one-line summary, e.g. "cpu 49°C  gpu 48°C  soc0 47°C".
+// formatThermalZones renders thermal zones in the supplied order as a compact
+// one-line summary, e.g. "cpu 49°C  gpu 48°C  soc0 47°C". The agent supplies
+// them hottest-first; the live dashboard applies a small ordering hysteresis.
 // Zone names are shortened by trimming the conventional "-thermal"/"-therm"
 // suffix for readability.
 func formatThermalZones(zones []*agentpb.ThermalZone) string {
@@ -1149,4 +1225,191 @@ func formatThermalZones(zones []*agentpb.ThermalZone) string {
 		parts = append(parts, fmt.Sprintf("%s %.0f°C", name, z.GetTempC()))
 	}
 	return strings.Join(parts, "  ")
+}
+
+const thermalOrderHysteresisC = 1.0
+
+// stabilizeThermalZoneOrder keeps the live temperature list hottest-first
+// without allowing insignificant fluctuations to reorder it. Starting with
+// the prior displayed order, a sensor only overtakes the one above it after it
+// becomes more than thermalOrderHysteresisC hotter. Reversing that move needs
+// the same clear lead in the other direction, which prevents oscillation while
+// still surfacing a meaningfully hotter sensor promptly.
+func stabilizeThermalZoneOrder(previous, current []*agentpb.ThermalZone) []*agentpb.ThermalZone {
+	if len(current) == 0 {
+		return nil
+	}
+
+	indicesByName := make(map[string][]int, len(current))
+	for i, zone := range current {
+		indicesByName[zone.GetName()] = append(indicesByName[zone.GetName()], i)
+	}
+
+	ordered := make([]*agentpb.ThermalZone, 0, len(current))
+	used := make([]bool, len(current))
+	for _, zone := range previous {
+		name := zone.GetName()
+		indices := indicesByName[name]
+		if len(indices) > 0 {
+			index := indices[0]
+			indicesByName[name] = indices[1:]
+			ordered = append(ordered, current[index])
+			used[index] = true
+		}
+	}
+	// ResolveThermal sends new sensors hottest-first, so retaining its order
+	// here gives a sensible initial placement before hysteresis is applied.
+	for i, zone := range current {
+		if !used[i] {
+			ordered = append(ordered, zone)
+		}
+	}
+
+	// Insertion-sort from the previous visual order. Unlike a comparator that
+	// embeds hysteresis, this remains deterministic and cannot violate Go's
+	// strict-ordering requirement.
+	for i := 1; i < len(ordered); i++ {
+		for j := i; j > 0 && ordered[j].GetTempC() > ordered[j-1].GetTempC()+thermalOrderHysteresisC; j-- {
+			ordered[j], ordered[j-1] = ordered[j-1], ordered[j]
+		}
+	}
+	return ordered
+}
+
+const (
+	// These are operational thresholds measured on Woof, not vendor ratings.
+	// Keep the source-specific distinction: Go2 motors have a lower warning
+	// point than the Jetson and Go2 IMU.
+	deviceThermalWarningC = 85.0
+	go2MotorWarningC      = 70.0
+	thermalNearDeltaC     = 5.0
+)
+
+type thermalRisk uint8
+
+const (
+	thermalNormal thermalRisk = iota
+	thermalNear
+	thermalOver
+)
+
+type thermalReading struct {
+	Name  string
+	TempC float64
+}
+
+type temperatureSummary struct {
+	Max            thermalReading
+	Risk           thermalRisk
+	Alert          thermalReading
+	AlertThreshold float64
+}
+
+// summarizeTemperature finds the maximum temperature while separately
+// classifying every reading against its own operational threshold. This is
+// important on a Go2: a 66C motor is near its 70C warning point even when a
+// hotter 79C IMU is still more than 5C below its 85C warning point.
+func summarizeTemperature(host *agentpb.HostStats) (temperatureSummary, bool) {
+	var readings []thermalReading
+	for _, zone := range host.GetThermalZones() {
+		if zone.GetTempC() > 0 {
+			readings = append(readings, thermalReading{Name: zone.GetName(), TempC: zone.GetTempC()})
+		}
+	}
+	for _, gpu := range host.GetGpus() {
+		if gpu.TempC != nil && gpu.GetTempC() > 0 {
+			readings = append(readings, thermalReading{
+				Name:  fmt.Sprintf("gpu/%d", gpu.GetIndex()),
+				TempC: gpu.GetTempC(),
+			})
+		}
+	}
+	if len(readings) == 0 {
+		return temperatureSummary{}, false
+	}
+
+	summary := temperatureSummary{Max: readings[0]}
+	bestMargin := thermalNearDeltaC + 1
+	for _, reading := range readings {
+		if reading.TempC > summary.Max.TempC {
+			summary.Max = reading
+		}
+		threshold, classified := thermalWarningThreshold(reading.Name)
+		if !classified {
+			continue
+		}
+		margin := threshold - reading.TempC
+		risk := thermalNormal
+		switch {
+		case margin <= 0:
+			risk = thermalOver
+		case margin <= thermalNearDeltaC:
+			risk = thermalNear
+		}
+		if risk > summary.Risk || (risk == summary.Risk && risk != thermalNormal && margin < bestMargin) {
+			summary.Risk = risk
+			summary.Alert = reading
+			summary.AlertThreshold = threshold
+			bestMargin = margin
+		}
+	}
+	return summary, true
+}
+
+// thermalWarningThreshold returns an applicable operational warning point.
+// Names under go2/ are emitted by the LowState decoder and therefore form a
+// stable typed seam rather than a heuristic over arbitrary sysfs labels.
+func thermalWarningThreshold(name string) (float64, bool) {
+	name = strings.ToLower(name)
+	switch {
+	case strings.HasPrefix(name, "go2/motor/"):
+		return go2MotorWarningC, true
+	case name == "go2/imu":
+		return deviceThermalWarningC, true
+	case strings.HasPrefix(name, "go2/"):
+		return 0, false
+	default:
+		return deviceThermalWarningC, true
+	}
+}
+
+func formatTemperatureName(name string) string {
+	if name == "go2/imu" {
+		return "Go2 IMU"
+	}
+	if motor, ok := strings.CutPrefix(name, "go2/motor/"); ok {
+		return "Go2 " + strings.ReplaceAll(motor, "-", " ")
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(name, "-thermal"), "-therm")
+}
+
+func formatTemperatureSummary(summary temperatureSummary) string {
+	value := fmt.Sprintf("%.0f°C (%s)", summary.Max.TempC, formatTemperatureName(summary.Max.Name))
+	if summary.Risk == thermalNormal {
+		return value
+	}
+	alert := formatTemperatureName(summary.Alert.Name)
+	if summary.Alert.Name == summary.Max.Name {
+		return fmt.Sprintf("%s, %s %.0f°C warning", value, thermalRiskLabel(summary.Risk), summary.AlertThreshold)
+	}
+	return fmt.Sprintf("%s — %s %.0f°C, %s %.0f°C warning", value, alert, summary.Alert.TempC, thermalRiskLabel(summary.Risk), summary.AlertThreshold)
+}
+
+func thermalRiskLabel(risk thermalRisk) string {
+	if risk == thermalOver {
+		return "at/above"
+	}
+	return "near"
+}
+
+func renderTemperatureHeader(summary temperatureSummary) string {
+	line := " Temp max: " + formatTemperatureSummary(summary)
+	switch summary.Risk {
+	case thermalNear:
+		return " " + topThermalNear.Render("●") + line
+	case thermalOver:
+		return " " + topThermalHot.Render("●") + line
+	default:
+		return topValDim.Render(line)
+	}
 }

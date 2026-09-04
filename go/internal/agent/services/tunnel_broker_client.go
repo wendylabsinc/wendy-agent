@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
@@ -170,7 +172,7 @@ func brokerTLSConfig(logger *zap.Logger, certPEM, keyPEM, chainPEM string) (*tls
 	if err != nil {
 		caPool = x509.NewCertPool()
 	}
-	if chainPEM != "" && !caPool.AppendCertsFromPEM([]byte(chainPEM)) {
+	if chainPEM != "" && certs.AppendChainToPool(caPool, chainPEM) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates in chainPEM")
 	}
 	tlsCfg := &tls.Config{
@@ -267,6 +269,11 @@ func (c *TunnelBrokerClient) handleDialRequest(ctx context.Context, client cloud
 		return
 	}
 
+	if req.GetProtocol() == cloudpb.TunnelProtocol_TUNNEL_PROTOCOL_DATAGRAM {
+		c.handleDatagramDial(ctx, client, req, devMD)
+		return
+	}
+
 	port := int(req.Port)
 	if c.mtlsPort != 0 && port == defaultMTLSPort && c.mtlsPort != defaultMTLSPort {
 		port = c.mtlsPort
@@ -303,6 +310,29 @@ func (c *TunnelBrokerClient) handleDialRequest(ctx context.Context, client cloud
 	c.relay(callCtx, cancel, tcpConn, agentStream)
 }
 
+// handleDatagramDial claims the session and serves a multiplexed datagram
+// relay (UDP flows + ICMP echo). Nothing is dialed upfront; UDP sockets are
+// created per flow on first sight, restricted to loopback like TCP dials.
+func (c *TunnelBrokerClient) handleDatagramDial(ctx context.Context, client cloudpb.TunnelBrokerServiceClient,
+	req *cloudpb.DialRequest, devMD metadata.MD) {
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if devMD != nil {
+		callCtx = metadata.NewOutgoingContext(callCtx, devMD)
+	}
+	agentStream, err := client.AgentTunnel(callCtx)
+	if err != nil {
+		c.logger.Error("failed to open AgentTunnel stream", zap.Error(err))
+		return
+	}
+	if err := agentStream.Send(&cloudpb.TunnelData{SessionId: req.SessionId}); err != nil {
+		c.logger.Error("failed to send join message", zap.Error(err))
+		return
+	}
+	c.logger.Info("serving datagram session", zap.String("session_id", req.SessionId))
+	newDatagramRelay(c.logger, agentStream, datagramFlowIdleTimeout).run(callCtx)
+}
+
 type agentTunnelStream interface {
 	Send(*cloudpb.TunnelData) error
 	Recv() (*cloudpb.TunnelData, error)
@@ -313,25 +343,44 @@ func (c *TunnelBrokerClient) relay(ctx context.Context, cancel context.CancelFun
 	tcpConn net.Conn, stream agentTunnelStream) {
 	done := make(chan struct{}, 2)
 
+	// A hard failure in either copy direction invalidates the whole byte
+	// stream. Closing the TCP side is essential: the opposite goroutine may be
+	// parked in Read forever, which used to leave this method waiting for its
+	// second completion after a registry reset. Cancelling the gRPC side does
+	// the symmetric job for a goroutine parked in Recv or Send.
+	abort := func() {
+		cancel()
+		_ = tcpConn.Close()
+	}
+	closeWrite := func() {
+		if tc, ok := tcpConn.(*net.TCPConn); ok {
+			_ = tc.CloseWrite()
+		}
+	}
+
 	// gRPC -> TCP
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
+				if errors.Is(err, io.EOF) {
+					closeWrite()
+				} else {
+					abort()
+				}
 				break
 			}
 			if len(msg.Payload) > 0 {
 				if _, err := tcpConn.Write(msg.Payload); err != nil {
+					abort()
 					break
 				}
 			}
 			if msg.HalfClose {
 				// Half-close: only close the write side so the TCP->gRPC
 				// goroutine can still read and forward the backend response.
-				if tc, ok := tcpConn.(*net.TCPConn); ok {
-					_ = tc.CloseWrite()
-				}
+				closeWrite()
 				break
 			}
 		}
@@ -347,12 +396,17 @@ func (c *TunnelBrokerClient) relay(ctx context.Context, cancel context.CancelFun
 				payload := make([]byte, n)
 				copy(payload, buf[:n])
 				if sendErr := stream.Send(&cloudpb.TunnelData{Payload: payload}); sendErr != nil {
+					abort()
 					break
 				}
 			}
 			if readErr != nil {
-				if readErr == io.EOF {
-					_ = stream.Send(&cloudpb.TunnelData{HalfClose: true})
+				if errors.Is(readErr, io.EOF) {
+					if sendErr := stream.Send(&cloudpb.TunnelData{HalfClose: true}); sendErr != nil {
+						abort()
+					}
+				} else {
+					abort()
 				}
 				break
 			}
@@ -366,7 +420,7 @@ func (c *TunnelBrokerClient) relay(ctx context.Context, cancel context.CancelFun
 		select {
 		case <-done:
 		case <-ctx.Done():
-			cancel()
+			abort()
 			<-done
 			return
 		}

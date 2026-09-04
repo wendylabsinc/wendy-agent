@@ -1,0 +1,35 @@
+version: 1
+stages:
+  - name: app
+    # AMD x86 ROCm. Unlike the NVIDIA examples, ROCm is NOT wired into the
+    # `cuda:` resolver — that path is NVIDIA/Jetson only. So this deliberately
+    # does the plain thing: an amd64 base plus PyTorch's ROCm wheel index.
+    # The ROCm runtime libs are bundled inside the wheel; only the kernel
+    # driver (amdgpu + /dev/kfd, /dev/dri) comes from the host at runtime.
+    from: ubuntu:22.04
+    workdir: /app
+    env:
+      PYTHONUNBUFFERED: "1"
+      # gfx1151 (Strix Halo APU — e.g. Radeon 8060S on the ROG Flow Z13) is newer
+      # than the ROCm 6.2 wheels, which ship no gfx1151 kernels — every kernel
+      # launch fails with "HIP error: invalid device function". Run the gfx1100
+      # (RDNA3) kernels instead; RDNA3.5 is ISA-compatible. The matmul self-check
+      # in rocm-test.py is what verifies the substituted kernels compute correctly.
+      # Remove this once the wheels carry native gfx1151 kernels (ROCm 6.4+).
+      HSA_OVERRIDE_GFX_VERSION: "11.0.0"
+    install:
+      apt:
+        packages:
+          - python3-pip
+          - python3-dev
+      pip:
+        # ROCm PyTorch wheels. `index:` maps to pip --index-url; do NOT use
+        # `cuda: true` here — there is no ROCm GPU profile to resolve against.
+        - packages: ["torch", "torchvision"]
+          index: "https://download.pytorch.org/whl/rocm6.2"
+        # NumPy pinned to 1.x to match the prebuilt torch wheels' ABI.
+        - packages: ["numpy==1.26.4"]
+    copy:
+      - from: local
+        paths: [rocm-test.py]
+    cmd: [python3, rocm-test.py]

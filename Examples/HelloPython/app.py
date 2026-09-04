@@ -22,35 +22,56 @@ class HelloWorldHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/':
             html_content = """
-            <!DOCTYPE html charset="utf-8">
+            <!doctype html>
             <html lang="en">
             <head>
-                <title>Hello World Server</title>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+                <meta name="theme-color" content="#f1eee7">
+                <title>Hello Python · Wendy</title>
                 <style>
-                    body { 
-                        font-family: Arial, sans-serif; 
-                        max-width: 800px; 
-                        margin: 50px auto; 
-                        padding: 20px;
-                        background-color: #ffffff;
+                    :root {
+                        --cream:#f1eee7; --slate:#171c23; --muted:#5b5a56;
+                        --border:#d7d5cf; --seafoam:#9fe2bf; --green:#2a7050;
+                        font-family:"Geist",ui-sans-serif,system-ui,-apple-system,sans-serif;
+                        background:var(--cream); color:var(--slate);
                     }
-                    .container {
-                        background-color: white;
-                        padding: 30px;
-                        border-radius: 10px;
-                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                        text-align: center;
+                    * { box-sizing:border-box; }
+                    body { margin:0; min-height:100vh; }
+                    main { margin:auto; max-width:1040px; padding:clamp(28px,6vw,80px); }
+                    .brand { align-items:center; border-bottom:1px solid var(--border); display:flex; gap:14px; padding-bottom:28px; }
+                    .mark { height:34px; position:relative; transform:rotate(45deg); width:34px; }
+                    .mark::before { border:6px solid var(--slate); content:""; inset:0; position:absolute; }
+                    .mark::after { background:var(--slate); content:""; height:22px; left:18px; position:absolute; top:-6px; width:22px; }
+                    .brand strong { font-size:18px; letter-spacing:.08em; }
+                    .eyebrow { color:var(--green); font:600 12px/1.2 ui-monospace,SFMono-Regular,monospace; letter-spacing:.16em; text-transform:uppercase; }
+                    h1 { font-size:clamp(52px,9vw,104px); font-weight:500; letter-spacing:-.06em; line-height:.92; margin:72px 0 20px; }
+                    .lede { color:var(--muted); font-size:clamp(18px,2vw,24px); line-height:1.45; max-width:680px; }
+                    .status { align-items:center; border-bottom:1px solid var(--border); border-top:1px solid var(--border); display:grid; gap:20px; grid-template-columns:1fr auto; margin-top:64px; padding:24px 0; }
+                    .status strong { color:var(--green); font-size:18px; }
+                    .status strong::before { background:var(--green); border-radius:50%; content:""; display:inline-block; height:9px; margin-right:10px; width:9px; }
+                    .links { display:flex; flex-wrap:wrap; gap:10px; }
+                    a { background:var(--seafoam); color:var(--slate); font-weight:650; min-height:48px; padding:13px 17px; text-decoration:none; }
+                    a.secondary { background:transparent; border:1px solid var(--border); }
+                    a.home { background:transparent; border:1px solid var(--border); margin-left:auto; }
+                    @media(max-width:640px) {
+                        main { padding:24px; }
+                        h1 { margin-top:54px; }
+                        .status { align-items:start; grid-template-columns:1fr; }
                     }
-                    h1 { color: #333; }
-                    .status { color: #28a745; font-weight: bold; }
                 </style>
             </head>
             <body>
-                <div class="container">
-                    <h1>Hello World</h1>
-                    <p class="status">Server is running successfully!</p>
-                    <p>This is a simple Python HTTP server running in a Docker container.</p>
-                </div>
+                <main>
+                    <header class="brand"><span class="mark" aria-hidden="true"></span><strong>WENDY</strong><a class="home" href="http://127.0.0.1:8088/">← Home</a></header>
+                    <p class="eyebrow">WendyOS example · Python</p>
+                    <h1>Hello,<br>edge.</h1>
+                    <p class="lede">A small Python HTTP service running locally on a WendyOS device.</p>
+                    <section class="status" aria-label="Service status">
+                        <strong>Service online</strong>
+                        <nav class="links"><a href="/api/hello">Open JSON API ↗</a><a class="secondary" href="/health">Health check</a></nav>
+                    </section>
+                </main>
             </body>
             </html>
             """

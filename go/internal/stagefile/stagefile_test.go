@@ -35,7 +35,7 @@ stages:
 		return "", fmt.Errorf("no fake digest for %q", ref)
 	}
 
-	dockerfile, dockerignore, err := compileFile(dir, "linux/arm64", "", "", fakeResolver, refuseHasher(t))
+	dockerfile, dockerignore, err := compileFile(dir, SourceName, "linux/arm64", "", "", fakeResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestCompileFileReusesExistingLockPin(t *testing.T) {
 		return "sha256:shouldnothappen", nil
 	}
 
-	dockerfile, _, err := compileFile(dir, "", "", "", fakeResolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", "", fakeResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -98,14 +98,14 @@ func TestCompileFileReturnsErrorForInvalidSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := compileFile(dir, "", "", "", func(string) (string, error) { return "", nil }, refuseHasher(t)); err == nil {
+	if _, _, err := compileFile(dir, SourceName, "", "", "", func(string) (string, error) { return "", nil }, refuseHasher(t)); err == nil {
 		t.Fatal("expected an error for an unsupported version, got nil")
 	}
 }
 
 func TestCompileFileReturnsErrorWhenSourceMissing(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := compileFile(dir, "", "", "", func(string) (string, error) { return "", nil }, refuseHasher(t)); err == nil {
+	if _, _, err := compileFile(dir, SourceName, "", "", "", func(string) (string, error) { return "", nil }, refuseHasher(t)); err == nil {
 		t.Fatal("expected an error when build.stagefile.yaml is missing, got nil")
 	}
 }
@@ -166,11 +166,43 @@ func TestCompileFileSkipsResolutionForUnpinnedStage(t *testing.T) {
 		t.Fatalf("resolver must not be called for an unpinned ref, got %q", ref)
 		return "", nil
 	}
-	dockerfile, _, err := compileFile(dir, "", "", "", resolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", "", resolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
 	if !strings.Contains(dockerfile, "FROM mlx-server:0.1 AS app") {
 		t.Fatalf("unpinned FROM must have no digest:\n%s", dockerfile)
+	}
+}
+
+func TestCompileFileDoesNotResolvePriorStageAsImage(t *testing.T) {
+	dir := t.TempDir()
+	source := `version: 1
+stages:
+  - name: native
+    from: python:3.11-slim
+  - name: app
+    from: native
+    install:
+      pip:
+        - packages: [cyclonedds==0.10.2]
+`
+	if err := os.WriteFile(filepath.Join(dir, SourceName), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var refs []string
+	resolver := func(ref string) (string, error) {
+		refs = append(refs, ref)
+		return "sha256:abc123", nil
+	}
+	dockerfile, _, err := compileFile(dir, SourceName, "linux/arm64", "", "", resolver, refuseHasher(t))
+	if err != nil {
+		t.Fatalf("compileFile: %v", err)
+	}
+	if len(refs) != 1 || refs[0] != "python:3.11-slim" {
+		t.Fatalf("resolved refs = %v, want only the external base image", refs)
+	}
+	if !strings.Contains(dockerfile, "FROM --platform=linux/arm64 native AS stagefile-pip-deps-1") {
+		t.Fatalf("pip overlay does not inherit the prior stage:\n%s", dockerfile)
 	}
 }

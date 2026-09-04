@@ -60,7 +60,9 @@ __pycache__/
 go/internal/cli/assets/docs/superpowers
 .superpowers/
 
-# Stagefile build output — regenerated from build.stagefile.yaml on every
-# build; the lockfile (build.stagefile.lock.yaml) is what's committed.
+# Stagefile build output — regenerated from <name>.stagefile.yaml on every
+# build; the lockfile (<name>.stagefile.lock.yaml) is what's committed. The
+# glob covers per-variant artifacts too (Dockerfile.generated.prod and its
+# paired .dockerignore) alongside the canonical Stagefile's bare name.
 Dockerfile.generated
-Dockerfile.generated.dockerignore
+Dockerfile.generated.*

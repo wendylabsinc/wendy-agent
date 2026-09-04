@@ -98,6 +98,33 @@ type ContainerdClient interface {
 	GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error)
 }
 
+// ImagePreparer is the optional fast-deploy capability that assembles
+// chunk-backed image layers and unpacks their snapshots before RunContainer.
+// It stays separate from ContainerdClient so older test doubles and alternate
+// runtimes can decline the optimization without affecting normal deploys.
+type ImagePreparer interface {
+	PrepareImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error
+}
+
+// CachePruneResult describes Wendy-managed container cache pins released by a
+// ContainerdCachePruner. The byte counts are the aggregate sizes of the
+// affected objects, not a promise that all of those bytes are unreachable:
+// containerd keeps anything still referenced by an image or active container.
+type CachePruneResult struct {
+	ContentBlobs      uint64
+	ContentBytes      uint64
+	Snapshots         uint64
+	SnapshotBytes     uint64
+	MinimumAgeSeconds uint64
+}
+
+// ContainerdCachePruner is an optional capability implemented by the real
+// containerd client. It remains separate from ContainerdClient so existing
+// service fakes do not need to implement maintenance operations.
+type ContainerdCachePruner interface {
+	PruneCache(ctx context.Context, dryRun bool) (CachePruneResult, error)
+}
+
 // ContainerExecer is the optional capability to run a process inside a running
 // container with an interactive PTY (docker `exec -it`). The ExecContainer RPC
 // type-asserts for it; a client that does not implement it yields Unimplemented.
@@ -183,7 +210,7 @@ type ContainerMonitorRegistrar interface {
 	// Unregister removes appName from the monitor.
 	Unregister(appName string)
 	// MarkExplicitStop marks appName as intentionally stopped so it won't be
-	// automatically restarted by an unless-stopped or on-failure policy.
+	// automatically restarted, regardless of restart policy.
 	MarkExplicitStop(appName string)
 	// ClearExplicitStop reverts a prior MarkExplicitStop call, re-enabling
 	// automatic restarts for appName. Used to undo a pre-emptive mark when the

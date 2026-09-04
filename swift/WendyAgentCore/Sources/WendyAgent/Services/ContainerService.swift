@@ -22,11 +22,41 @@ typealias PIDExecutablePathLookup = @Sendable (Int32) -> String?
 /// which were not.
 typealias PIDSignalSender = @Sendable (Int32, Int32) -> Void
 
+/// Client-facing view of an app-owned stdout/stderr drain. Finishing this
+/// stream stops delivery to a disconnected RPC without stopping pipe reads or
+/// telemetry broadcast by the app-lifetime task.
+private final class ContainerTaskLifetimeOutput: Sendable {
+    let stream: AsyncStream<Wendy_Agent_Services_V1_RunContainerLayersResponse>
+    private let continuation:
+        AsyncStream<Wendy_Agent_Services_V1_RunContainerLayersResponse>.Continuation
+
+    init() {
+        (self.stream, self.continuation) = AsyncStream.makeStream(
+            of: Wendy_Agent_Services_V1_RunContainerLayersResponse.self,
+            bufferingPolicy: .bufferingNewest(256)
+        )
+    }
+
+    func yield(data: Data, fromStdout: Bool) {
+        var response = Wendy_Agent_Services_V1_RunContainerLayersResponse()
+        var consoleOutput = Wendy_Agent_Services_V1_RunContainerLayersResponse.ConsoleOutput()
+        consoleOutput.data = data
+        response.responseType =
+            fromStdout ? .stdoutOutput(consoleOutput) : .stderrOutput(consoleOutput)
+        self.continuation.yield(response)
+    }
+
+    func finish() {
+        self.continuation.finish()
+    }
+}
+
 actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServiceProtocol {
     private let appsBase: URL
     private let blobsDirectory: String
     private let broadcaster: TelemetryBroadcaster
     private let infoFileURL: URL
+    private let otelPort: Int
     private let onAppsChanged: @Sendable ([WendyAppInfo]) async -> Void
     private typealias NativeLaunchInfo = WendyApp.NativeMetadata
 
@@ -60,6 +90,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         linuxBackend: (any LinuxContainerBackend)? = nil,
         linuxUnavailableMessage: String =
             "No Linux container runtime found. Install Apple's `container` (recommended) or Docker on the Mac agent.",
+        otelPort: Int = 4317,
         supervisorInterval: Duration = .seconds(15),
         restartFloor: Duration = .seconds(10),
         pidExecutablePath: @escaping PIDExecutablePathLookup = {
@@ -74,6 +105,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         self.sandboxProfilePath = sandboxProfilePath
         self.linuxBackend = linuxBackend
         self.linuxUnavailableMessage = linuxUnavailableMessage
+        self.otelPort = otelPort
         self.supervisorInterval = supervisorInterval
         self.restartFloorSeconds = Self.seconds(restartFloor)
         self.pidExecutablePath = pidExecutablePath
@@ -642,7 +674,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let broadcaster = self.broadcaster
         let stdout = launched.stdout
         let stderr = launched.stderr
-        Task.detached {
+        Task {
             await withTaskGroup(of: Void.self) { group in
                 group.addTask {
                     for await data in stdout.fileHandleForReading.bytes(for: appName) {
@@ -1177,6 +1209,44 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
         environment["PATH"] = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
         environment["HOMEBREW_NO_ANALYTICS"] = "1"
+        return environment
+    }
+
+    /// Builds the environment for a native app process. Native apps share the
+    /// host network namespace with the agent, so point their OTLP exporter at
+    /// the agent's loopback receiver and stamp the resource identity used by
+    /// `wendy device logs --app` and attached `wendy run` subscriptions.
+    nonisolated static func nativeAppEnvironment(
+        appName: String,
+        otelPort: Int,
+        source: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var environment = source
+        environment["NSUnbufferedIO"] = "YES"
+        environment["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:\(otelPort)"
+        environment["OTEL_EXPORTER_OTLP_PROTOCOL"] = "grpc"
+        for signal in ["LOGS", "METRICS", "TRACES"] {
+            environment.removeValue(forKey: "OTEL_EXPORTER_OTLP_\(signal)_ENDPOINT")
+            environment.removeValue(forKey: "OTEL_EXPORTER_OTLP_\(signal)_PROTOCOL")
+        }
+        environment["OTEL_SERVICE_NAME"] = appName
+
+        let appAttribute = "wendy.app.name=\(appName)"
+        if let attributes = environment["OTEL_RESOURCE_ATTRIBUTES"], !attributes.isEmpty {
+            var foundAppAttribute = false
+            let merged = attributes.split(separator: ",").map { attribute -> String in
+                let key = attribute.split(separator: "=", maxSplits: 1).first.map(String.init)
+                guard key == "wendy.app.name" else { return String(attribute) }
+                foundAppAttribute = true
+                return appAttribute
+            }
+            environment["OTEL_RESOURCE_ATTRIBUTES"] =
+                (foundAppAttribute
+                ? merged
+                : merged + [appAttribute]).joined(separator: ",")
+        } else {
+            environment["OTEL_RESOURCE_ATTRIBUTES"] = appAttribute
+        }
         return environment
     }
 
@@ -1727,13 +1797,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         let process = Foundation.Process()
-        var environment = ProcessInfo.processInfo.environment
         // Child stdout/stderr are connected to pipes, not a TTY. Without
         // unbuffered I/O, Swift's `print()` output may sit in stdio buffers for
         // a long time (or until exit), which makes `wendy run` appear silent
         // for long-running native macOS apps like HelloMLX.
-        environment["NSUnbufferedIO"] = "YES"
-        process.environment = environment
+        process.environment = Self.nativeAppEnvironment(
+            appName: appName,
+            otelPort: self.otelPort
+        )
         if let profilePath {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
             process.arguments = ["-f", profilePath, binaryPath] + processArgs
@@ -1779,18 +1850,31 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     /// Builds the streaming RPC response shared by both the native-process and
     /// Linux-container launch paths: sends a `.started` message, then streams
-    /// stdout/stderr as they're produced (also broadcasting them as telemetry
-    /// logs) until the process exits.
+    /// stdout/stderr as they're produced until the process exits. Output is
+    /// drained and broadcast to telemetry on a task whose lifetime belongs to
+    /// the launched app, not to this RPC. That keeps logs flowing (and prevents
+    /// pipe backpressure) after a detached/watch client disconnects at Started.
     private func makeStreamingResponse(
         appName: String,
         process: Foundation.Process,
         stdoutPipe: Pipe,
         stderrPipe: Pipe
     ) -> StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse> {
-        // Capture values for the sendable closure.
-        let broadcaster = self.broadcaster
+        let output = ContainerTaskLifetimeOutput()
+        Self.startTaskLifetimeOutputDrain(
+            output: output,
+            broadcaster: self.broadcaster,
+            appName: appName,
+            stdoutPipe: stdoutPipe,
+            stderrPipe: stderrPipe
+        )
 
         return StreamingServerResponse { writer in
+            // The pipe drain deliberately outlives this RPC, but its client-facing
+            // stream must not. Finishing here makes later yields no-ops instead of
+            // buffering them after a watcher disconnects.
+            defer { output.finish() }
+
             // Send "started" message.
             var started = Wendy_Agent_Services_V1_RunContainerLayersResponse()
             started.responseType = .started(
@@ -1798,52 +1882,57 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
             try await writer.write(started)
 
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                // Stream stdout.
-                group.addTask {
-                    let handle = stdoutPipe.fileHandleForReading
-                    for try await data in handle.bytes(for: appName) {
-                        var response = Wendy_Agent_Services_V1_RunContainerLayersResponse()
-                        response.responseType = .stdoutOutput(.with { $0.data = data })
-                        try await writer.write(response)
-
-                        await Self.broadcastLog(
-                            broadcaster: broadcaster,
-                            appName: appName,
-                            text: String(decoding: data, as: UTF8.self),
-                            stream: "stdout",
-                            severity: .info
-                        )
-                    }
-                }
-
-                // Stream stderr.
-                group.addTask {
-                    let handle = stderrPipe.fileHandleForReading
-                    for try await data in handle.bytes(for: appName) {
-                        var response = Wendy_Agent_Services_V1_RunContainerLayersResponse()
-                        response.responseType = .stderrOutput(.with { $0.data = data })
-                        try await writer.write(response)
-
-                        await Self.broadcastLog(
-                            broadcaster: broadcaster,
-                            appName: appName,
-                            text: String(decoding: data, as: UTF8.self),
-                            stream: "stderr",
-                            severity: .warn
-                        )
-                    }
-                }
-
-                // Wait for process exit.
-                group.addTask {
-                    process.waitUntilExit()
-                }
-
-                try await group.waitForAll()
+            for await response in output.stream {
+                try await writer.write(response)
             }
 
             return Metadata()
+        }
+    }
+
+    private static func startTaskLifetimeOutputDrain(
+        output: ContainerTaskLifetimeOutput,
+        broadcaster: TelemetryBroadcaster,
+        appName: String,
+        stdoutPipe: Pipe,
+        stderrPipe: Pipe
+    ) {
+        Task {
+            async let stdoutDrain: Void = Self.drainTaskLifetimeOutput(
+                stdoutPipe.fileHandleForReading,
+                output: output,
+                broadcaster: broadcaster,
+                appName: appName,
+                fromStdout: true
+            )
+            async let stderrDrain: Void = Self.drainTaskLifetimeOutput(
+                stderrPipe.fileHandleForReading,
+                output: output,
+                broadcaster: broadcaster,
+                appName: appName,
+                fromStdout: false
+            )
+            _ = await (stdoutDrain, stderrDrain)
+            output.finish()
+        }
+    }
+
+    private static func drainTaskLifetimeOutput(
+        _ handle: FileHandle,
+        output: ContainerTaskLifetimeOutput,
+        broadcaster: TelemetryBroadcaster,
+        appName: String,
+        fromStdout: Bool
+    ) async {
+        for await data in handle.bytes(for: appName) {
+            output.yield(data: data, fromStdout: fromStdout)
+            await Self.broadcastLog(
+                broadcaster: broadcaster,
+                appName: appName,
+                text: String(decoding: data, as: UTF8.self),
+                stream: fromStdout ? "stdout" : "stderr",
+                severity: fromStdout ? .info : .warn
+            )
         }
     }
 
@@ -2308,6 +2397,27 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         severity: Opentelemetry_Proto_Logs_V1_SeverityNumber
     ) async {
         let timestamp = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
+        await broadcaster.broadcastLogs(
+            Self.containerLogRequest(
+                appName: appName,
+                text: text,
+                stream: stream,
+                severity: severity,
+                timestamp: timestamp
+            )
+        )
+    }
+
+    /// Produces the canonical OTLP representation of adapted process output.
+    /// The instrumentation scope is the discriminator CLI clients use to avoid
+    /// displaying this record once from the process stream and again from OTLP.
+    nonisolated static func containerLogRequest(
+        appName: String,
+        text: String,
+        stream: String,
+        severity: Opentelemetry_Proto_Logs_V1_SeverityNumber,
+        timestamp: UInt64
+    ) -> Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest {
 
         var logRecord = Opentelemetry_Proto_Logs_V1_LogRecord()
         logRecord.timeUnixNano = timestamp
@@ -2323,6 +2433,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         )
 
         var scopeLogs = Opentelemetry_Proto_Logs_V1_ScopeLogs()
+        scopeLogs.scope.name = "wendy.container"
         scopeLogs.logRecords = [logRecord]
 
         var resourceLogs = Opentelemetry_Proto_Logs_V1_ResourceLogs()
@@ -2340,11 +2451,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             }
         )
 
-        await broadcaster.broadcastLogs(
-            Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest.with {
-                $0.resourceLogs = [resourceLogs]
-            }
-        )
+        return Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest.with {
+            $0.resourceLogs = [resourceLogs]
+        }
     }
 }
 

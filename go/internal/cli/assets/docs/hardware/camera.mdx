@@ -1,6 +1,6 @@
 ---
 title: Camera Access
-description: Use USB and CSI cameras from WendyOS apps
+description: Use USB, CSI, IP, and ROS 2 cameras from WendyOS apps
 ---
 
 ## Camera Access
@@ -23,7 +23,7 @@ Use the device camera commands to see which cameras WendyOS can see:
 wendy device camera list
 ```
 
-The output includes a device ID, transport type (usb or csi), name, and path such as `/dev/video0`. Use the ID with view commands:
+The output includes a device ID, transport type (`usb`, `csi`, `ip`, or `ros2`), name, and — for local cameras — a path such as `/dev/video0`. Network cameras show their address, while ROS 2 cameras show their topic. Use the ID with view commands:
 
 ```bash
 wendy device camera view --id 0
@@ -46,6 +46,104 @@ For broad hardware inspection, filter the device capability list:
 ```bash
 wendy device hardware list --category camera
 ```
+
+## ROS 2 Camera Topics
+
+The WendyOS agent automatically presents ROS 2 video publishers as ordinary
+cameras. It recognizes `sensor_msgs/msg/Image` and JPEG-encoded
+`sensor_msgs/msg/CompressedImage`, allocates each topic a stable ID from
+`128`–`199`, and feeds a matching `/dev/video<ID>` v4l2loopback device. The
+topic then works with the same commands as a USB camera:
+
+```bash
+wendy device camera list
+wendy device camera view --id 128
+```
+
+App-local ROS 2 graphs stay app-local. The agent creates its DDS reader inside
+the running app's network namespace instead of changing the app's discovery
+scope. Host/robot feeds on domain 0 are discovered on wired interfaces.
+
+<Callout type="warning">
+  DDS discovery on host-facing wired interfaces is unauthenticated. WendyOS
+  treats peers on those robot networks as trusted: any peer publishing a
+  supported image topic on domain 0 can appear as a camera. Keep untrusted
+  devices on a separate network segment.
+</Callout>
+
+Unitree Go2 robots receive special handling: the native
+`unitree_go/msg/Go2FrontVideoData` publisher on `/frontvideostream` appears as
+**Unitree Go2 front camera**. Wendy accepts both the SDK-declared JPEG fields
+and the resolution-tagged Annex-B H.264 layout emitted by current Go2 firmware,
+preserving either codec through the loopback rather than transcoding it.
+
+ROS 2 camera mirroring requires v4l2loopback 0.15.x's dynamic control API; the
+WendyOS recipe is pinned to 0.15.4. Ubuntu 22.04's packaged 0.12.7 DKMS module
+is not compatible even if it loads successfully. If a compatible module is
+installed or loaded after an initial failure, retry the camera command; the
+agent rechecks availability without requiring a restart.
+
+The loopback uses exclusive capabilities. A container process that opens its
+device immediately at startup may briefly find it output-only while the first
+ROS 2 frame configures the capture format. Retry the initial format/open step
+for up to the agent's 15-second first-frame window.
+
+## IP Cameras
+
+WendyOS also manages network (RTSP/ONVIF) cameras alongside local USB and CSI ones. A discovered camera is registered by its MAC address — the one identity that survives a DHCP address change — and given a stable device ID from a reserved band, `200`–`255`. That ID never changes for the life of the camera, even if its address does.
+
+Cameras are picked up automatically as the agent's periodic discovery runs. To force a discovery round immediately and list the results in one step:
+
+```bash
+wendy device camera list --refresh
+```
+
+Network cameras appear in the same `camera list` table as local ones, with `ip` in the Type column, the camera's address in the Where column, and a Status of `needs login`, `offline`, or `ready`.
+
+### Credentials
+
+Most IP cameras require a login before they will stream. Store one with:
+
+```bash
+wendy device camera login <id>
+```
+
+This prompts for the password without echoing it, or reads it from the `WENDY_CAMERA_PASSWORD` environment variable when there is no terminal to prompt on (for example, in CI). The username defaults to `admin`; pass `--user` to override it. Credentials are stored on the device and are never returned by any command.
+
+Remove a camera and its stored credentials with:
+
+```bash
+wendy device camera forget <id>
+```
+
+To validate a camera's stored login without starting a stream:
+
+```bash
+wendy device camera test <id>
+```
+
+`test` dials the camera's RTSP port directly and reports one of three outcomes: the credentials were accepted, the camera rejected them (with a `wendy device camera login <id>` hint), or the camera was unreachable. One nuance worth knowing: a camera that never actually challenged for a login — no authentication required, or just a bad stream path — is still reported as success, with a detail like *"did not request authentication; the stream path returned RTSP 404 and may be wrong"* rather than claiming the credentials were verified.
+
+`wendy device camera view --id <id>` works the same way for network cameras as for local ones. If no credentials are stored yet, it reads `user`/`password` from a `camera` entitlement in `wendy.json` if present, or prompts once interactively, before retrying the stream — see the [`camera` entitlement fields](/docs/apps/wendy.json#camera) for the wendy.json-based option and its plaintext-storage caveat.
+
+### Container Access
+
+Apps with the `camera` entitlement (see [Camera Entitlement](/docs/device/entitlements#camera-entitlement)) see network cameras exactly like local ones: each registered camera is mirrored into a `/dev/video2xx` loopback node numbered to match its own device ID — camera `212` is always `/dev/video212` — and mounted into the container the same way USB and CSI devices are.
+
+<Callout type="info">
+  The loopback node always carries the camera's **sub-stream** — the same lower-resolution feed `camera view` chooses automatically for anything ≤1024px wide. There is currently no way for a container to request the camera's main/high-resolution stream instead.
+</Callout>
+
+<Callout type="warning">
+  **Builds without the kernel module**: mirroring a camera into a container needs compatible v4l2loopback 0.15.x support. On a WendyOS build that lacks it (or in local development), the agent logs this once and moves on:
+
+  > running build lacks compatible v4l2loopback 0.15.x support
+
+  Direct IP-camera `wendy device camera view` and `camera test` are unaffected;
+  only the in-container `/dev/video2xx` mirror is unavailable. ROS 2 cameras
+  use a loopback node for both viewing and container access, so neither path is
+  available until the compatible module is present.
+</Callout>
 
 ## App Configuration
 

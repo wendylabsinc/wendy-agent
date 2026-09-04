@@ -13,6 +13,11 @@ type Config struct {
 	Auth          []AuthConfig     `json:"auth,omitempty"`
 	Analytics     *AnalyticsConfig `json:"analytics,omitempty"`
 	DefaultDevice string           `json:"defaultDevice,omitempty"`
+	// DefaultBuildHost is the device `wendy run` delegates the image
+	// build to when --build-host is not passed. Per-developer rather than
+	// per-project: the right build host depends on which network the developer is
+	// sitting on, not on the repository.
+	DefaultBuildHost string `json:"defaultBuildHost,omitempty"`
 	// DefaultCloudGRPC names the auth session (by its gRPC endpoint) used when
 	// several sessions exist and no --cloud-grpc flag is given. Empty means no
 	// default; resolution then falls back to an interactive picker or an error.

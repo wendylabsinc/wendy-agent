@@ -115,7 +115,7 @@ jobs:
     if: inputs.deploy == true
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, macOS, ARM64]
+      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.explicit.outputs.matrix || steps.scan.outputs.matrix || '[]' }}
@@ -233,7 +233,7 @@ jobs:
       fail-fast: false
       matrix:
         runner:
-          - { name: macOS, labels: [self-hosted, macOS, ARM64] }
+          - { name: macOS, labels: [self-hosted, macOS, ARM64, wendy-macos-26] }
           - { name: Linux, labels: [self-hosted, Linux, X64] }
         hostname: ${{ fromJson(needs.resolve-deploy-devices.outputs.matrix) }}
     env:
@@ -289,9 +289,12 @@ jobs:
           builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
           BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
           BUILDER="${BUILDER:0:128}"
-          docker buildx rm "$BUILDER" --force 2>/dev/null || true
-          cleanup() { docker buildx rm "$BUILDER" --force 2>/dev/null || true; }
-          trap cleanup EXIT
+          cleanup_builders() {
+            docker buildx rm "${BUILDER}-oci" --force 2>/dev/null || true
+            docker buildx rm "$BUILDER" --force 2>/dev/null || true
+          }
+          cleanup_builders
+          trap cleanup_builders EXIT
 
           WENDY_BUILDX_BUILDER="$BUILDER" scripts/test-templates.sh "${ARGS[@]}"
 

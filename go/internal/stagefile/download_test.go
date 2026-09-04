@@ -59,7 +59,7 @@ stages:
 		return fakeDigest, nil
 	}
 
-	dockerfile, _, err := compileFile(dir, "", "", "", fakeImageResolver, hasher)
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", "", fakeImageResolver, hasher)
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -100,7 +100,7 @@ stages:
 		t.Fatal(err)
 	}
 
-	dockerfile, _, err := compileFile(dir, "", "", "", fakeImageResolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", "", fakeImageResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -123,7 +123,7 @@ stages:
       exec: [/app/run]
 `)
 
-	dockerfile, _, err := compileFile(dir, "", "", "", fakeImageResolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", "", fakeImageResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -157,7 +157,7 @@ stages:
       exec: [python3, app.py]
 `)
 
-	_, dockerignore, err := compileFile(dir, "", "", "", fakeImageResolver,
+	_, dockerignore, err := compileFile(dir, SourceName, "", "", "", fakeImageResolver,
 		func(string) (string, error) { return fakeDigest, nil })
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)

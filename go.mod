@@ -1,6 +1,6 @@
 module github.com/wendylabsinc/wendy
 
-go 1.26.5
+go 1.26.6
 
 require (
 	cuelabs.dev/go/oci/ociregistry v0.0.0-20251212221603-3adeb8663819
@@ -33,6 +33,7 @@ require (
 	github.com/klauspost/compress v1.19.1
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/miekg/dns v1.1.72
+	github.com/moby/patternmatcher v0.6.1
 	github.com/muesli/termenv v0.16.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1

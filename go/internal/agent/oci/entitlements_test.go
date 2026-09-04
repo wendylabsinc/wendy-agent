@@ -169,6 +169,83 @@ func TestApplyEntitlements_GPU(t *testing.T) {
 	}
 }
 
+func TestApplyGPU_JetsonAddsResolvedRenderGID(t *testing.T) {
+	origBoard := boardDetect
+	origRender := lookupRenderGID
+	t.Cleanup(func() {
+		boardDetect = origBoard
+		lookupRenderGID = origRender
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
+	lookupRenderGID = func() (uint32, bool) { return 104, true }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	if !hasGID(spec, nvidiaGroupGID) {
+		t.Errorf("Jetson GPU entitlement missing NVIDIA/video GID %d", nvidiaGroupGID)
+	}
+	if !hasGID(spec, 104) {
+		t.Error("Jetson GPU entitlement missing resolved render GID 104")
+	}
+}
+
+func TestApplyGPU_JetsonWithoutRenderGroupKeepsVideoGID(t *testing.T) {
+	origBoard := boardDetect
+	origRender := lookupRenderGID
+	t.Cleanup(func() {
+		boardDetect = origBoard
+		lookupRenderGID = origRender
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
+	lookupRenderGID = func() (uint32, bool) { return 0, false }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	if !hasGID(spec, nvidiaGroupGID) {
+		t.Errorf("Jetson GPU entitlement missing NVIDIA/video GID %d", nvidiaGroupGID)
+	}
+	if hasGID(spec, 0) {
+		t.Error("Jetson GPU entitlement added a render GID when lookup failed")
+	}
+}
+
+func TestApplyGPU_NonJetsonDoesNotAddRenderGID(t *testing.T) {
+	origBoard := boardDetect
+	origRender := lookupRenderGID
+	t.Cleanup(func() {
+		boardDetect = origBoard
+		lookupRenderGID = origRender
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+	lookupRenderGID = func() (uint32, bool) {
+		t.Fatal("non-Jetson GPU entitlement must not resolve the render group")
+		return 0, false
+	}
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+}
+
 // installFakeVCIO points vcioDevicePath at a temp file, makes statMajor report
 // the given major for it, and reports the host as a Raspberry Pi — so the
 // vcio branch of applyGPU can be exercised without a real /dev/vcio (which only
@@ -313,7 +390,44 @@ func TestApplyEntitlements_Network_HostAdmin(t *testing.T) {
 	}
 }
 
-func TestApplyEntitlements_Network_Host_ResolvConf(t *testing.T) {
+func TestApplyEntitlements_Network_Host_ResolvedStub(t *testing.T) {
+	for _, mode := range []string{"", "host", "host-admin"} {
+		name := mode
+		if name == "" {
+			name = "implicit-host"
+		}
+		t.Run(name, func(t *testing.T) {
+			managed := filepath.Join(t.TempDir(), "resolv.conf")
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementNetwork, Mode: mode},
+				},
+			}
+
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{HostResolvConfPath: managed}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+
+			for _, m := range spec.Mounts {
+				if m.Destination != "/etc/resolv.conf" {
+					continue
+				}
+				if m.Source != managed {
+					t.Fatalf("/etc/resolv.conf source = %q, want managed stub %q", m.Source, managed)
+				}
+				if m.Type != "bind" {
+					t.Fatalf("/etc/resolv.conf mount type = %q, want bind", m.Type)
+				}
+				return
+			}
+			t.Fatal("host network entitlement did not mount the managed stub resolv.conf")
+		})
+	}
+}
+
+func TestApplyEntitlements_Network_Host_ResolvConfFallback(t *testing.T) {
 	const resolvedConf = "/run/systemd/resolve/resolv.conf"
 	_, errSystemd := os.Stat(resolvedConf)
 	_, errHost := os.Stat("/etc/resolv.conf")
@@ -2049,10 +2163,9 @@ func TestApplyEntitlements_NoBuild_LeavesSandboxHardened(t *testing.T) {
 
 // ---------- GPU fallback device derivation (WDY-1804) ----------
 
-// installFakeNvidiaDevTree builds a fake /dev with the Jetson AGX Thor
-// (JetPack 7.2) NVIDIA node layout and injects each node's real-world
-// major:minor via statCharDevice (plain files can't carry device numbers
-// without root/mknod). Restored on cleanup.
+// installFakeNvidiaDevTree builds a fake /dev with NVIDIA device nodes and
+// injects each node's real-world major:minor via statCharDevice (plain files
+// can't carry device numbers without root/mknod). Restored on cleanup.
 func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string {
 	t.Helper()
 	dev := t.TempDir()
@@ -2060,24 +2173,38 @@ func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string 
 		t.Fatal(err)
 	}
 	for name := range numbers {
-		if err := os.WriteFile(filepath.Join(dev, name), nil, 0o644); err != nil {
+		devicePath := filepath.Join(dev, name)
+		if err := os.MkdirAll(filepath.Dir(devicePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(devicePath, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	origGlobs := nvidiaDeviceGlobs
+	origRenderGlobs := renderDeviceGlobs
 	origStat := statCharDevice
 	origBoard := boardDetect
+	origKFD := kfdDevicePath
 	t.Cleanup(func() {
 		nvidiaDeviceGlobs = origGlobs
+		renderDeviceGlobs = origRenderGlobs
 		statCharDevice = origStat
 		boardDetect = origBoard
+		kfdDevicePath = origKFD
 	})
+	// These tests exercise the NVIDIA path; point kfd at a node that cannot
+	// exist so applyGPU never takes the AMD branch even on an AMD test host.
+	kfdDevicePath = filepath.Join(dev, "no-such-kfd")
 
 	nvidiaDeviceGlobs = []string{
 		filepath.Join(dev, "nvidia*"),
 		filepath.Join(dev, "nvidia-caps", "*"),
+		filepath.Join(dev, "nvhost-*gpu"),
+		filepath.Join(dev, "nvgpu", "igpu*", "*"),
 	}
+	renderDeviceGlobs = []string{filepath.Join(dev, "dri", "renderD*")}
 	statCharDevice = func(p string) (int64, int64, error) {
 		rel, err := filepath.Rel(dev, p)
 		if err != nil {
@@ -2091,6 +2218,109 @@ func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string 
 	}
 	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
 	return dev
+}
+
+func TestApplyGPU_JetsonAddsOnlyDRMRenderNodes(t *testing.T) {
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvidia0":        {195, 0},
+		"dri/renderD128": {226, 128},
+		"dri/renderD129": {226, 129},
+		"dri/card0":      {226, 0},
+		"dri/renderDfoo": {226, 200},
+	})
+
+	spec := gpuSpec(t)
+	for path, minor := range map[string]int64{
+		filepath.Join(dev, "dri", "renderD128"): 128,
+		filepath.Join(dev, "dri", "renderD129"): 129,
+	} {
+		d, ok := deviceForPath(spec, path)
+		if !ok {
+			t.Errorf("Jetson GPU entitlement did not add %s", path)
+			continue
+		}
+		if d.Major != 226 || d.Minor != minor {
+			t.Errorf("%s = c %d:%d, want c 226:%d", path, d.Major, d.Minor, minor)
+		}
+		if !hasExactDeviceRule(spec, 226, minor) {
+			t.Errorf("Jetson GPU entitlement did not allow c 226:%d", minor)
+		}
+	}
+
+	for _, path := range []string{
+		filepath.Join(dev, "dri", "card0"),
+		filepath.Join(dev, "dri", "renderDfoo"),
+	} {
+		if _, ok := deviceForPath(spec, path); ok {
+			t.Errorf("Jetson GPU entitlement granted non-render node %s", path)
+		}
+	}
+	if hasMountDest(spec, "/dev/dri") {
+		t.Error("GPU entitlement must not bind the whole /dev/dri tree")
+	}
+}
+
+func TestApplyGPU_NonJetsonOmitsDRMRenderNodes(t *testing.T) {
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvidia0":        {195, 0},
+		"dri/renderD128": {226, 128},
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "dri", "renderD128")); ok {
+		t.Error("non-Jetson GPU entitlement must not add DRM render nodes")
+	}
+}
+
+func TestApplyGPU_SupplementsStaleJetsonCSVWithSchedulerControlDevices(t *testing.T) {
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvhost-nvsched_ctrl_fifo-gpu":  {487, 10},
+		"nvgpu/igpu0/nvsched_ctrl_fifo": {487, 22},
+		"nvhost-evil-gpu":               {8, 1},
+		"nvgpu/igpu0/evil":              {8, 2},
+	})
+
+	spec := gpuSpec(t)
+
+	for path, want := range map[string][2]int64{
+		filepath.Join(dev, "nvhost-nvsched_ctrl_fifo-gpu"):        {487, 10},
+		filepath.Join(dev, "nvgpu", "igpu0", "nvsched_ctrl_fifo"): {487, 22},
+	} {
+		d, ok := deviceForPath(spec, path)
+		if !ok {
+			t.Errorf("GPU entitlement did not add %s", path)
+			continue
+		}
+		if d.Major != want[0] || d.Minor != want[1] {
+			t.Errorf("%s = c %d:%d, want c %d:%d", path, d.Major, d.Minor, want[0], want[1])
+		}
+		if !hasExactDeviceRule(spec, want[0], want[1]) {
+			t.Errorf("GPU entitlement did not allow c %d:%d", want[0], want[1])
+		}
+	}
+
+	for _, path := range []string{
+		filepath.Join(dev, "nvhost-evil-gpu"),
+		filepath.Join(dev, "nvgpu", "igpu0", "evil"),
+	} {
+		if _, ok := deviceForPath(spec, path); ok {
+			t.Errorf("GPU entitlement granted unexpected node %s", path)
+		}
+	}
+}
+
+func hasExactDeviceRule(spec *Spec, major, minor int64) bool {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && d.Minor != nil && *d.Major == major && *d.Minor == minor && d.Access == "rw" {
+			return true
+		}
+	}
+	return false
 }
 
 func gpuSpec(t *testing.T) *Spec {
@@ -2244,6 +2474,114 @@ func TestApplyGPU_UnexpectedNodeNameRejected(t *testing.T) {
 	for _, d := range spec.Linux.Resources.Devices {
 		if d.Allow && d.Major != nil && *d.Major == 8 {
 			t.Error("GPU entitlement emitted an allow rule for the rejected node's major")
+		}
+	}
+}
+
+// installFakeAMDDevTree builds a fake /dev with an AMD ROCm layout — /dev/kfd
+// (the compute device) and /dev/dri/renderD* (the GPU) — and points the apply
+// path's stat/glob vars at it. Restored on cleanup.
+func installFakeAMDDevTree(t *testing.T, kfd [2]int64, renderNodes map[string][2]int64) string {
+	t.Helper()
+	dev := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dev, "dri"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kfdPath := filepath.Join(dev, "kfd")
+	if err := os.WriteFile(kfdPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	renderNums := map[string][2]int64{}
+	for name, nums := range renderNodes {
+		p := filepath.Join(dev, "dri", name)
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		renderNums[p] = nums
+	}
+
+	origKFD := kfdDevicePath
+	origRenderGlobs := renderDeviceGlobs
+	origStatChar := statCharDevice
+	origStatNode := statDeviceNode
+	origRender := lookupRenderGID
+	t.Cleanup(func() {
+		kfdDevicePath = origKFD
+		renderDeviceGlobs = origRenderGlobs
+		statCharDevice = origStatChar
+		statDeviceNode = origStatNode
+		lookupRenderGID = origRender
+	})
+
+	kfdDevicePath = kfdPath
+	renderDeviceGlobs = []string{filepath.Join(dev, "dri", "renderD*")}
+	statCharDevice = func(p string) (int64, int64, error) {
+		if nums, ok := renderNums[p]; ok {
+			return nums[0], nums[1], nil
+		}
+		return 0, 0, fmt.Errorf("%s is not a character device node", p)
+	}
+	statDeviceNode = func(p string) (int64, int64, error) {
+		if p == kfdPath {
+			return kfd[0], kfd[1], nil
+		}
+		if nums, ok := renderNums[p]; ok {
+			return nums[0], nums[1], nil
+		}
+		return 0, 0, os.ErrNotExist
+	}
+	lookupRenderGID = func() (uint32, bool) { return 107, true }
+	return dev
+}
+
+// TestApplyGPU_AMDExposesKFDAndRenderNode is the load-bearing AMD ROCm test:
+// the gpu entitlement on a host with /dev/kfd must expose BOTH the compute
+// device and the DRM render node (KFD alone initializes but every allocation
+// fails), add the render/video groups, and NOT fall through to the NVIDIA
+// static-node fallback.
+func TestApplyGPU_AMDExposesKFDAndRenderNode(t *testing.T) {
+	dev := installFakeAMDDevTree(t,
+		[2]int64{511, 0},
+		map[string][2]int64{"renderD128": {226, 128}, "card0": {226, 0}},
+	)
+
+	spec := gpuSpec(t)
+
+	// /dev/kfd is bound and its exact major:minor is allowed (rw, no mknod).
+	kfdPath := filepath.Join(dev, "kfd")
+	if !hasMountDest(spec, kfdPath) {
+		t.Error("AMD GPU entitlement did not bind /dev/kfd")
+	}
+	if !hasExactDeviceRule(spec, 511, 0) {
+		t.Error("AMD GPU entitlement did not allow the kfd major:minor")
+	}
+
+	// The render node is granted; card0 (display) is not.
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "dri", "renderD128")); !ok {
+		t.Error("AMD GPU entitlement did not add the DRM render node")
+	}
+	if !hasExactDeviceRule(spec, 226, 128) {
+		t.Error("AMD GPU entitlement did not allow the render node major:minor")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "dri", "card0")); ok {
+		t.Error("AMD GPU entitlement granted the display card node")
+	}
+
+	// Render + video groups.
+	if !hasGID(spec, 107) {
+		t.Error("AMD GPU entitlement did not add the render GID")
+	}
+	if !hasGID(spec, videoGroupGID) {
+		t.Error("AMD GPU entitlement did not add the video GID")
+	}
+
+	// No NVIDIA fallback: the AMD branch returns before the major-195 path.
+	if hasMajorRule(spec, 195) {
+		t.Error("AMD host must not get the NVIDIA major-195 fallback rule")
+	}
+	for _, e := range spec.Process.Env {
+		if strings.HasPrefix(e, "NVIDIA_") {
+			t.Errorf("AMD host must not get NVIDIA env vars, got %q", e)
 		}
 	}
 }

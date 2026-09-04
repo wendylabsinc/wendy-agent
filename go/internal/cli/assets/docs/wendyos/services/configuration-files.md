@@ -17,10 +17,10 @@ All files under `/etc/wendyos/` are bind-mounted from `/data/etc/wendyos/` by `w
 
 | Path | Description |
 |------|-------------|
-| `/etc/wendy-agent/hostname` | Literal hostname set by `wendy device rename`. Takes precedence over `/etc/wendyos/device-name` in hostname generation. |
+| `/etc/wendy-agent/hostname` | Literal hostname set by `wendy device rename`. Backed by `/data`, it survives reboots and OTA updates and takes precedence over `/etc/wendyos/device-name` in hostname generation. At agent startup, `ReassertHostnameAdvertisement` also uses it to restore hostname-derived Avahi TXT records that were replaced during boot or by a fresh OTA slot. |
 | `/etc/default/wendy-agent` | Shell-format environment file sourced by both `wendyos-agent.service` and `wendyos-agent-updater.sh`. Supports `WENDYOS_AGENT_GITHUB_REPO`, `WENDYOS_AGENT_VERSION`. Not created by default; create it to override release channel. |
 | `/var/lib/wendy-agent/` | Runtime state directory for the agent (current-version file, working data). |
-| `/usr/local/bin/wendy-agent` | Agent binary. Installed at build time; overwritten in-place by `wendyos-agent-updater.service`. |
+| `/opt/wendyos/bin/wendy-agent` | Agent binary. Installed at build time; overwritten in-place by `wendyos-agent-updater.service`. Outside `/usr` on purpose: a merged sysext replaces that hierarchy, which would hide an updated binary. |
 | `/opt/wendyos/bin/wendyos-agent-updater.sh` | Updater logic: checks GitHub releases API, downloads, replaces binary, restarts service. The timer and service are temporarily stopped during `wendy os update` to prevent interference with the in-flight OTA operation (wendyos-update on current images). |
 | `/opt/wendyos/bin/download-wendyos-agent.sh` | Low-level downloader used by the updater. Fetches `wendy-agent-linux-arm64-*.tar.gz` from the latest stable GitHub release. |
 

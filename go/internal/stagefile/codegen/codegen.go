@@ -24,6 +24,27 @@ import (
 // /etc/passwd entry, so it works on any base image.
 const defaultUser = "65532"
 
+// Option configures a Generate call.
+type Option func(*options)
+
+type options struct {
+	cacheScope string
+}
+
+// WithCacheScope names the project being built, for the cache-mount ids that
+// must not be shared between projects — currently the Swift build tree, which
+// is the only compiler cache here that holds object files rather than
+// self-describing downloaded artifacts.
+//
+// It is an option rather than a parameter because it is not needed to produce
+// a correct Dockerfile, only an efficient one: without it, projects whose
+// stages agree on toolchain, platform and profile take turns invalidating one
+// build tree. Callers pass something stable and unique per project;
+// CompileFile passes the project directory.
+func WithCacheScope(scope string) Option {
+	return func(o *options) { o.cacheScope = scope }
+}
+
 // Generate compiles f into Dockerfile text. images maps every pinned from:
 // value in f to its resolved "sha256:..." digest, and downloads maps every
 // download url that declared no sha256 of its own to the one resolved for it
@@ -36,12 +57,18 @@ const defaultUser = "65532"
 // for, and is required if any stage declares cuda:. It is passed in rather
 // than looked up here because it is pinned in the lockfile: the compiler must
 // emit what was recorded, not what this binary's table says today.
-func Generate(f *spec.File, images, downloads map[string]string, platform string, cudaProfile *gpu.Profile) (string, error) {
+func Generate(f *spec.File, images, downloads map[string]string, platform string, cudaProfile *gpu.Profile, opts ...Option) (string, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	var blocks []string
 	lastIdx := len(f.Stages) - 1
+	priorStages := make(map[string]bool, len(f.Stages))
 
 	for i, s := range f.Stages {
-		pinned := s.Pin == nil || *s.Pin
+		fromPriorStage := priorStages[s.From]
+		pinned := !fromPriorStage && (s.Pin == nil || *s.Pin)
 		digest := images[s.From]
 		if pinned && digest == "" {
 			return "", fmt.Errorf("stage %q: no resolved digest for %q; run `stagefile lock`", s.Name, s.From)
@@ -57,6 +84,35 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 
 		if s.CUDA && cudaProfile == nil {
 			return "", fmt.Errorf("stage %q declares cuda: but no GPU target was resolved for this build", s.Name)
+		}
+
+		// Treat pip as a linked filesystem overlay rather than a linear child of
+		// the app's OS-package layer. Both branches now depend directly on the
+		// pinned base, so editing APT cannot invalidate or re-layer pip and
+		// editing pip cannot rebuild APT. pip installs under a compiler-owned
+		// root; COPY --link later promotes only the resulting /usr/local tree.
+		pipDependencyStage := ""
+		if s.Install != nil && len(s.Install.Pip) > 0 {
+			pipDependencyStage = generatedStageName("stagefile-pip-deps", i, f.Stages)
+		}
+
+		// CUDA runtime wheels are by far the largest dependency layer in a GPU
+		// image. Build them from the pinned base in an independent stage so an
+		// unrelated edit to the app stage's APT/CMake dependencies cannot evict
+		// several gigabytes of otherwise-identical CUDA content. The final
+		// COPY --link below rebases this content onto the app stage without
+		// coupling its cache key to the app stage's parent filesystem.
+		cudaRuntimeStage := ""
+		if s.CUDA {
+			cudaRuntimeStage = cudaRuntimeStageName(i, f.Stages)
+			blocks = append(blocks, strings.Join(cudaRuntimeStageLines(
+				s, digest, pinned, stagePlatform, cudaRuntimeStage, *cudaProfile,
+			), "\n"))
+		}
+		if pipDependencyStage != "" {
+			blocks = append(blocks, strings.Join(pipDependencyStageLines(
+				s, digest, pinned, stagePlatform, pipDependencyStage, cudaProfile,
+			), "\n"))
 		}
 
 		lines := []string{fromLine(s.From, digest, s.Name, stagePlatform)}
@@ -77,16 +133,24 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 		lines = append(lines, fetches...)
 
 		// An absent install: is compiled as an empty one rather than skipped,
-		// because pipGroupLines is also where a GPU stage's CUDA runtime is
-		// spliced in, and that stage needs the runtime whether or not it
-		// declares any install of its own — the collection below imports it.
+		// because a GPU stage still needs its generated runtime even when it
+		// declares no install of its own — the collection below imports it.
 		// With no fields set, nothing else here emits a line.
 		install := s.Install
 		if install == nil {
 			install = &spec.Install{}
 		}
 		if install.Apt != nil {
-			lines = append(lines, aptInstallLines(install.Apt)...)
+			// Include the resolved base-image digest in the APT cache scope. Two
+			// Stagefiles using the same pinned base can safely share indexes and
+			// .debs, while a moved tag (or a different distro) gets a fresh cache.
+			// An unpinned stage has no immutable base identity, so leave aptBase
+			// empty to disable persistent APT caches for that stage.
+			aptBase := ""
+			if pinned {
+				aptBase = s.From + "@" + digest
+			}
+			lines = append(lines, aptInstallLines(install.Apt, aptBase, stagePlatform)...)
 		}
 		if install.Apk != nil {
 			lines = append(lines, apkInstallLines(install.Apk)...)
@@ -94,7 +158,14 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 		if len(install.CMake) > 0 {
 			lines = append(lines, cmakeInstallLines(install.CMake, stagePlatform)...)
 		}
-		lines = append(lines, pipGroupLines(install.Pip, s.CUDA, cudaProfile, stagePlatform)...)
+		if cudaRuntimeStage != "" {
+			lines = append(lines, fmt.Sprintf("COPY --link --from=%s %s %s",
+				cudaRuntimeStage, cudaPythonRoot, cudaPythonRoot))
+		}
+		if pipDependencyStage != "" {
+			lines = append(lines, fmt.Sprintf("COPY --link --from=%s %s/ /",
+				pipDependencyStage, pipOverlayRoot))
+		}
 		if install.Npm != nil {
 			lines = append(lines, npmInstallLines(install.Npm)...)
 		}
@@ -118,7 +189,7 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 		}
 
 		if s.Build != nil {
-			bl, err := buildLines(s.Build)
+			bl, err := buildLines(s.Build, s.From, stagePlatform, o.cacheScope)
 			if err != nil {
 				return "", fmt.Errorf("stage %q: %w", s.Name, err)
 			}
@@ -152,6 +223,7 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 		}
 
 		blocks = append(blocks, strings.Join(lines, "\n"))
+		priorStages[s.Name] = true
 	}
 
 	return strings.Join(blocks, "\n\n") + "\n", nil
@@ -264,11 +336,39 @@ func cacheRun(dir, cmd string) string {
 // object files that must never meet. An id lets the caller say exactly what
 // may share.
 func cacheRunID(id, dir, cmd string) string {
+	return "RUN " + mountFlag(cacheMount{id: id, target: dir}) + " " + cmd
+}
+
+// cacheMount is one BuildKit cache mount: a target path, and the id that
+// decides which other builds may share it (empty means "scoped by target
+// path", BuildKit's default).
+type cacheMount struct {
+	id     string
+	target string
+}
+
+// mountFlag renders one cache mount's --mount= flag. Every cache mount in the
+// generated Dockerfile is rendered here, so none can be emitted without a
+// sharing mode — see cacheRun for why sharing=locked rather than BuildKit's
+// default.
+func mountFlag(m cacheMount) string {
 	mount := "type=cache,sharing=locked"
-	if id != "" {
-		mount += ",id=" + id
+	if m.id != "" {
+		mount += ",id=" + m.id
 	}
-	return fmt.Sprintf("RUN --mount=%s,target=%s %s", mount, dir, cmd)
+	return fmt.Sprintf("--mount=%s,target=%s", mount, m.target)
+}
+
+// cacheRunMounts is cacheRunID for a step that needs more than one cache
+// mount, which a compiled build usually does: one cache for the dependencies
+// it downloads and a separate one for the object files it produces, because
+// the two are invalidated by completely different things.
+func cacheRunMounts(mounts []cacheMount, cmd string) string {
+	parts := make([]string, 0, len(mounts)+1)
+	for _, m := range mounts {
+		parts = append(parts, mountFlag(m))
+	}
+	return "RUN " + strings.Join(append(parts, cmd), " \\\n    ")
 }
 
 // scopedCacheID hashes the parts that decide whether two builds can share a
@@ -284,8 +384,9 @@ func scopedCacheID(kind string, parts ...string) string {
 	return "stagefile-" + kind + "-" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// pipCacheID scopes pip's wheel cache to the index set it can download from and
-// the platform whose wheels it stores.
+// pipCacheID scopes pip's wheel cache to the index set it can download from,
+// the platform whose wheels it stores, and the build-only OS packages that can
+// affect locally compiled wheel contents.
 //
 // Both matter because the mount stays sharing=locked: without an id, BuildKit
 // scopes by target path, so every pip install in every concurrently-built
@@ -300,6 +401,7 @@ func scopedCacheID(kind string, parts ...string) string {
 // is exactly the mixing this ID exists to prevent.
 func pipCacheID(p *spec.PipInstall, index, platform string) string {
 	parts := append([]string{platform, index}, p.ExtraIndex...)
+	parts = append(parts, p.BuildPackages...)
 	return scopedCacheID("pip", parts...)
 }
 
@@ -320,14 +422,14 @@ func cmakeCacheID(repository, platform string) string {
 // by BuildKit itself (ADD --checksum, so the fetch never runs inside the
 // container and the key can't drift), and one sources.list.d entry per
 // repository.
-func aptRepositoryLines(repos []spec.AptRepository) []string {
+func aptRepositoryLines(repos []spec.AptRepository, base, platform string) []string {
 	if len(repos) == 0 {
 		return nil
 	}
-	lines := []string{
-		"RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \\",
-		"    && rm -rf /var/lib/apt/lists/*",
-	}
+	// The bootstrap can only use the base image's repositories; the declared
+	// repositories are added after ca-certificates and their pinned keys exist.
+	lines := []string{aptRun(base, platform, nil,
+		"apt-get update && apt-get install -y --no-install-recommends ca-certificates")}
 	for _, r := range repos {
 		ext := ".gpg"
 		if r.Key.Format == "armored" {
@@ -347,8 +449,47 @@ func aptRepositoryLines(repos []spec.AptRepository) []string {
 	return lines
 }
 
-func aptInstallLines(a *spec.AptInstall) []string {
-	lines := aptRepositoryLines(a.Repositories)
+// aptCacheScope returns a stable description of every input that controls the
+// contents of APT's indexes and package archive. Package names are deliberately
+// excluded: compatible Stagefiles should share downloads even when they install
+// different subsets. Repository order is preserved because it can affect APT
+// priority when otherwise-equivalent sources are declared more than once.
+func aptCacheScope(base, platform string, repos []spec.AptRepository) []string {
+	parts := []string{base, platform}
+	for _, r := range repos {
+		parts = append(parts, r.Name, r.URL, strings.Join(r.Suites, "\x1f"), strings.Join(r.Components, "\x1f"), r.Key.URL, r.Key.SHA256, r.Key.Format)
+	}
+	return parts
+}
+
+// aptRun gives APT two persistent BuildKit caches: package indexes (so update
+// can use conditional requests instead of downloading every index afresh) and
+// downloaded .debs. Explicit IDs make those caches reusable across separately
+// compiled Stagefiles. sharing=locked is required because APT itself takes
+// exclusive locks in both directories.
+func aptRun(base, platform string, repos []spec.AptRepository, command string) string {
+	// pin: false deliberately leaves the base image unresolved. Without an
+	// immutable base identity, a persistent cache could carry indexes or .debs
+	// across incompatible images after a tag moves. Keep the uncached layer
+	// small by removing its package indexes after each APT invocation.
+	if base == "" {
+		return "RUN " + command + " \\\n" +
+			"    && rm -rf /var/lib/apt/lists/*"
+	}
+	scope := aptCacheScope(base, platform, repos)
+	mounts := []cacheMount{
+		{id: scopedCacheID("apt-lists", scope...), target: "/var/lib/apt/lists"},
+		{id: scopedCacheID("apt-archives", scope...), target: "/var/cache/apt"},
+	}
+	// Debian/Ubuntu container images normally install docker-clean, whose APT
+	// hooks delete every downloaded .deb after the command. Removing that hook
+	// is what lets the archive mount actually retain packages for sibling builds;
+	// the mount itself remains outside the resulting image layer.
+	return cacheRunMounts(mounts, "rm -f /etc/apt/apt.conf.d/docker-clean && "+command)
+}
+
+func aptInstallLines(a *spec.AptInstall, base, platform string) []string {
+	lines := aptRepositoryLines(a.Repositories, base, platform)
 	parts := []string{"apt-get", "update", "&&", "apt-get", "install", "-y"}
 	if !a.Recommends {
 		parts = append(parts, "--no-install-recommends")
@@ -356,10 +497,7 @@ func aptInstallLines(a *spec.AptInstall) []string {
 	for _, p := range a.Packages {
 		parts = append(parts, shellQuote(p))
 	}
-	return append(lines,
-		"RUN "+strings.Join(parts, " ")+" \\",
-		"    && rm -rf /var/lib/apt/lists/*",
-	)
+	return append(lines, aptRun(base, platform, a.Repositories, strings.Join(parts, " ")))
 }
 
 func apkInstallLines(a *spec.ApkInstall) []string {
@@ -436,8 +574,10 @@ func cmakeInstallLines(installs []spec.CMakeInstall, platform string) []string {
 
 // pipInstallLines emits one pip group. A group marked cuda: takes its index
 // from cudaProfile instead of the Stagefile, which is what lets the same
-// source resolve GPU wheels for whichever board it is being built for.
-func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile, platform string) []string {
+// source resolve GPU wheels for whichever board it is being built for. root,
+// when non-empty, turns the install into a filesystem overlay whose contents
+// can be promoted onto a sibling stage with COPY --link.
+func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile, platform, root string) []string {
 	var lines []string
 	if p.Requirements != "" {
 		lines = append(lines, fmt.Sprintf("COPY %s %s", p.Requirements, p.Requirements))
@@ -446,6 +586,13 @@ func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile, platform stri
 	// cache out of the image layer, and disabling the cache would force a
 	// full wheel re-download every time this layer rebuilds.
 	parts := []string{"pip", "install"}
+	if root != "" {
+		// Let pip select the base image's default installation scheme underneath
+		// the overlay root. Passing --prefix /usr/local is not portable: Debian's
+		// patched sysconfig scheme expands it to /usr/local/local, leaving copied
+		// packages outside Python's import path in Debian and ROS images.
+		parts = append(parts, "--root", shellQuote(root))
+	}
 	index := p.Index
 	if p.CUDA && cudaProfile != nil {
 		index = cudaProfile.Index
@@ -463,6 +610,148 @@ func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile, platform stri
 		parts = append(parts, shellQuote(pkg))
 	}
 	lines = append(lines, cacheRunID(pipCacheID(p, index, platform), "/root/.cache/pip", strings.Join(parts, " ")))
+	return lines
+}
+
+// cudaPythonRoot is a dedicated, compiler-owned Python import root for the
+// generated CUDA runtime stage. Keeping these packages out of the base
+// interpreter's site-packages makes the directory safe to promote wholesale
+// with COPY --link, independently of the app stage's APT/CMake history.
+const cudaPythonRoot = "/opt/stagefile/cuda/python"
+
+// pipOverlayRoot is the staging root for user-declared pip dependencies. pip
+// recreates the absolute /usr/local hierarchy underneath it; copying the
+// root's contents to / therefore places packages and scripts at their normal
+// runtime paths without copying pip's build-only OS packages.
+const pipOverlayRoot = "/opt/stagefile/pip/root"
+
+// generatedStageName returns a deterministic compiler-owned stage name that
+// cannot collide with a user-declared stage.
+func generatedStageName(prefix string, stageIndex int, stages []spec.Stage) string {
+	used := make(map[string]bool, len(stages))
+	for _, s := range stages {
+		used[s.Name] = true
+	}
+	base := fmt.Sprintf("%s-%d", prefix, stageIndex)
+	name := base
+	for suffix := 2; used[name]; suffix++ {
+		name = fmt.Sprintf("%s-%d", base, suffix)
+	}
+	return name
+}
+
+// cudaRuntimeStageName returns a generated stage name that cannot collide with
+// a user-declared stage. Stage names are references rather than image-visible
+// state, so the stable stage index is sufficient to keep generated output
+// deterministic.
+func cudaRuntimeStageName(stageIndex int, stages []spec.Stage) string {
+	return generatedStageName("stagefile-cuda-runtime", stageIndex, stages)
+}
+
+// pipDependencyStageLines builds all user pip groups as a sibling of the app
+// stage. BuildPackages are deliberately installed only here: headers and
+// compilers can build wheels, but cannot leak into the runtime root copied to
+// the app stage.
+func pipDependencyStageLines(s spec.Stage, digest string, pinned bool, platform, name string, cudaProfile *gpu.Profile) []string {
+	lines := []string{fromLine(s.From, digest, name, platform)}
+	lines = append(lines, kvLines("ARG", s.Args)...)
+	lines = append(lines, kvLines("ENV", s.Env)...)
+	if s.Workdir != "" {
+		lines = append(lines, "WORKDIR "+s.Workdir)
+	}
+
+	aptBase := ""
+	if pinned {
+		aptBase = s.From + "@" + digest
+	}
+	lines = append(lines, pipBuildPackageLines(s.Install, aptBase, platform)...)
+	lines = append(lines, pipGroupLines(s.Install.Pip, cudaProfile, platform, pipOverlayRoot)...)
+	return lines
+}
+
+// pipBuildPackageLines bootstraps pip when the base does not provide it and
+// installs the de-duplicated build-only package set. A declared apk manager
+// selects apk; apt is the default because Debian/Ubuntu bases are the common
+// case and existing pip-only Stagefiles need no additional syntax.
+func pipBuildPackageLines(inst *spec.Install, aptBase, platform string) []string {
+	var packages []string
+	seen := map[string]bool{}
+	for _, group := range inst.Pip {
+		for _, pkg := range group.BuildPackages {
+			if !seen[pkg] {
+				seen[pkg] = true
+				packages = append(packages, pkg)
+			}
+		}
+	}
+
+	if inst.Apk != nil && inst.Apt == nil {
+		var lines []string
+		if len(inst.Apk.Repositories) > 0 && len(packages) > 0 {
+			var quoted []string
+			for _, repo := range inst.Apk.Repositories {
+				quoted = append(quoted, shellQuote(repo))
+			}
+			lines = append(lines, fmt.Sprintf("RUN printf '%%s\\n' %s >> /etc/apk/repositories", strings.Join(quoted, " ")))
+		}
+		withPip := append([]string{"py3-pip"}, packages...)
+		if len(packages) == 0 {
+			return append(lines, "RUN command -v pip >/dev/null 2>&1 || apk add --no-cache 'py3-pip'")
+		}
+		command := fmt.Sprintf("if command -v pip >/dev/null 2>&1; then apk add --no-cache %s; else apk add --no-cache %s; fi",
+			shellQuoteList(packages), shellQuoteList(withPip))
+		return append(lines, "RUN "+command)
+	}
+
+	var repos []spec.AptRepository
+	if inst.Apt != nil && len(packages) > 0 {
+		repos = inst.Apt.Repositories
+	}
+	lines := aptRepositoryLines(repos, aptBase, platform)
+	if len(packages) == 0 {
+		bootstrap := "command -v pip >/dev/null 2>&1 || " +
+			"(apt-get update && apt-get install -y --no-install-recommends 'python3-pip')"
+		return append(lines, aptRun(aptBase, platform, repos, bootstrap))
+	}
+	withPip := append([]string{"python3-pip"}, packages...)
+	command := fmt.Sprintf("if command -v pip >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends %s; else apt-get update && apt-get install -y --no-install-recommends %s; fi",
+		shellQuoteList(packages), shellQuoteList(withPip))
+	return append(lines, aptRun(aptBase, platform, repos, command))
+}
+
+func shellQuoteList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, shellQuote(value))
+	}
+	return strings.Join(quoted, " ")
+}
+
+// cudaRuntimeStageLines builds the target profile's large, stable runtime in
+// an independent stage. pip is bootstrapped only when the pinned base does not
+// already provide it; the APT caches are scoped exactly like a normal
+// install.apt block, but user-declared packages and repositories deliberately
+// do not participate in this stage's cache key.
+func cudaRuntimeStageLines(s spec.Stage, digest string, pinned bool, platform, name string, profile gpu.Profile) []string {
+	lines := []string{fromLine(s.From, digest, name, platform)}
+	aptBase := ""
+	if pinned {
+		aptBase = s.From + "@" + digest
+	}
+	bootstrap := "command -v pip >/dev/null 2>&1 || " +
+		"(apt-get update && apt-get install -y --no-install-recommends 'python3-pip')"
+	lines = append(lines, aptRun(aptBase, platform, nil, bootstrap))
+
+	p := spec.PipInstall{Packages: profile.Runtime}
+	parts := []string{"pip", "install", "--target", shellQuote(cudaPythonRoot)}
+	for _, pkg := range p.Packages {
+		parts = append(parts, shellQuote(pkg))
+	}
+	lines = append(lines, cacheRunID(
+		pipCacheID(&p, "", platform),
+		"/root/.cache/pip",
+		strings.Join(parts, " "),
+	))
 	return lines
 }
 
@@ -638,55 +927,26 @@ func stageEnv(s *spec.Stage, cudaProfile *gpu.Profile) map[string]string {
 	if !s.CUDA || cudaProfile == nil {
 		return s.Env
 	}
-	env := make(map[string]string, len(s.Env)+1)
+	env := make(map[string]string, len(s.Env)+2)
 	for k, v := range s.Env {
 		env[k] = v
 	}
 	env[spec.LDLibraryPath] = cudaProfile.LibDir
+	if existing := env["PYTHONPATH"]; existing != "" {
+		env["PYTHONPATH"] = cudaPythonRoot + ":" + existing
+	} else {
+		env["PYTHONPATH"] = cudaPythonRoot
+	}
 	return env
 }
 
-// pipGroupLines emits the stage's pip groups, splicing in the CUDA runtime
-// group a GPU stage needs.
-//
-// The runtime lands directly after the last group that asked for the GPU
-// index, and before any ordinary PyPI group. That position is not cosmetic:
-// the runtime changes only when the profile does, while app dependencies
-// change constantly, and a later group's edit must not invalidate the layer
-// holding several hundred megabytes of CUDA libraries.
-func pipGroupLines(groups []spec.PipInstall, stageCUDA bool, cudaProfile *gpu.Profile, platform string) []string {
-	runtimeAfter := -1
-	for i, g := range groups {
-		if g.CUDA {
-			runtimeAfter = i
-		}
-	}
-
+// pipGroupLines emits user-declared pip groups into root. These groups live in
+// an independent generated stage and are promoted onto the app stage as one
+// linked filesystem overlay.
+func pipGroupLines(groups []spec.PipInstall, cudaProfile *gpu.Profile, platform, root string) []string {
 	var lines []string
-	emitRuntime := func() {
-		if !stageCUDA || cudaProfile == nil {
-			return
-		}
-		// A separate invocation from the wheels above, with no --index-url,
-		// so it resolves from PyPI. Folding the two together would make the
-		// vendor index primary and PyPI an extra index, and pip would then be
-		// free to satisfy either package from either source — resolving torch
-		// from PyPI, which is the wrong-architecture wheel this whole feature
-		// exists to avoid.
-		lines = append(lines, pipInstallLines(&spec.PipInstall{Packages: cudaProfile.Runtime}, nil, platform)...)
-	}
-
 	for i := range groups {
-		lines = append(lines, pipInstallLines(&groups[i], cudaProfile, platform)...)
-		if i == runtimeAfter {
-			emitRuntime()
-		}
-	}
-	if runtimeAfter == -1 {
-		// A GPU stage that installs no GPU wheels of its own still gets the
-		// runtime — it may be loading CUDA through something apt or cmake
-		// installed.
-		emitRuntime()
+		lines = append(lines, pipInstallLines(&groups[i], cudaProfile, platform, root)...)
 	}
 	return lines
 }
@@ -720,7 +980,104 @@ func copyLines(entries []spec.CopyEntry) []string {
 	return lines
 }
 
-func buildLines(b *spec.Build) ([]string, error) {
+// buildLines compiles a stage's build: step. from, platform and scope are not
+// used by every language — they are the inputs that scope a compiler's cache
+// mounts, and only a language whose object files are cached needs them.
+// swiftScratchPath and swiftCachePath are where a Swift stage's build tree and
+// SwiftPM's shared cache live while the stage builds. Both are cache mounts,
+// and neither is the package's own .build — deliberately.
+//
+// Mounting over .build would be the obvious thing and is wrong: a cache mount
+// is not part of any layer, so the product binary would vanish the moment the
+// RUN finished, and every Swift entrypoint naming .build/release/<product>
+// (which is where SwiftPM puts it, and what a hand-written Swift Dockerfile
+// therefore copies from) would point at nothing. Building into a scratch path
+// off to the side leaves .build an ordinary directory that the binary can be
+// installed into, so the cache is invisible to the rest of the Stagefile.
+const (
+	swiftScratchPath = "/var/cache/stagefile/swift/scratch"
+	swiftCachePath   = "/var/cache/stagefile/swift/pm"
+)
+
+// swiftScratchID scopes a Swift build tree to everything that decides which
+// object files belong in it: the toolchain image, the target platform, the
+// compile profile, and the project itself.
+//
+// The project is in the scope even though sharing a tree across projects would
+// not produce a wrong binary — SwiftPM rebuilds what it does not recognise.
+// It would produce the one thing this mount exists to prevent: two projects
+// alternately invalidating each other's tree, and, because the mount stays
+// sharing=locked, queueing to do it. scope is empty when the caller did not
+// name a project, which falls back to sharing per (toolchain, platform,
+// profile) — no worse than having no id at all.
+func swiftScratchID(scope, from, platform, profile string) string {
+	return scopedCacheID("swift-scratch", scope, from, platform, profile)
+}
+
+// swiftCacheID scopes SwiftPM's shared cache to the toolchain and platform,
+// and deliberately not to the project. It holds bare dependency clones keyed
+// by repository URL and compiled manifests keyed by their own contents, so two
+// projects depending on swift-nio genuinely share one clone instead of each
+// fetching it — the same reason the pip cache is scoped by index rather than
+// by project.
+func swiftCacheID(from, platform string) string {
+	return scopedCacheID("swiftpm", from, platform)
+}
+
+// swiftBuildLines compiles a Swift build stage.
+//
+// Two things are cached, because two different things are slow and they are
+// invalidated by different events. The scratch tree holds every object file in
+// the build including all of its dependencies', and is the entire reason a
+// second build is incremental: without it a one-line edit to app code
+// recompiles SwiftNIO from source. The shared cache holds SwiftPM's dependency
+// clones and compiled manifests, so a rebuild also stops re-cloning every
+// package in the graph over the network before it can start compiling.
+//
+// The binary is then installed from the scratch tree into .build/<profile>/,
+// which is what SwiftPM would have written had it built in place. That keeps
+// the cache an implementation detail: an entrypoint written against the
+// conventional path keeps working, and nothing in the Stagefile has to know
+// the build tree moved.
+func swiftBuildLines(b *spec.Build, profile, from, platform, scope string) []string {
+	// Always spell the configuration out. Bare `swift build` already means
+	// debug, so an implicit debug build is indistinguishable from someone
+	// having forgotten the flag — both in the generated Dockerfile and to the
+	// optimizer check that scans for it.
+	flags := "--scratch-path " + swiftScratchPath +
+		" --cache-path " + swiftCachePath +
+		" -c " + profile
+	build := "swift build " + flags
+	if b.Product != "" {
+		build += " --product " + shellQuote(b.Product)
+	}
+
+	dest := ".build/" + profile
+	commands := []string{
+		build,
+		// The bin path is asked of SwiftPM rather than assembled from profile:
+		// the real directory carries the target triple, so composing it here
+		// would mean hardcoding a per-architecture guess that breaks quietly
+		// the first time it is wrong. --product is omitted because the path is
+		// the same for every product in the package.
+		`BIN="$(swift build ` + flags + ` --show-bin-path)"`,
+		"mkdir -p " + dest,
+		// Only the top level, and only files and resource bundles. The
+		// per-target *.build/ directories sitting beside them hold the object
+		// files, which belong in the cache mount and would otherwise be copied
+		// into the image — several hundred megabytes of build intermediates in
+		// a layer, for nothing.
+		`find "$BIN" -mindepth 1 -maxdepth 1 \( -type f -o -name '*.bundle' \) ` +
+			`-exec cp -a '{}' ` + dest + `/ ';'`,
+	}
+	mounts := []cacheMount{
+		{id: swiftScratchID(scope, from, platform, profile), target: swiftScratchPath},
+		{id: swiftCacheID(from, platform), target: swiftCachePath},
+	}
+	return []string{cacheRunMounts(mounts, strings.Join(commands, " \\\n    && "))}
+}
+
+func buildLines(b *spec.Build, from, platform, scope string) ([]string, error) {
 	profile := b.Profile
 	if profile == "" {
 		profile = "release"
@@ -744,15 +1101,7 @@ func buildLines(b *spec.Build) ([]string, error) {
 		}
 		return []string{cacheRun("/root/.cache/go-build", "go build ./...")}, nil
 	case "swift":
-		// Always spell the configuration out. Bare `swift build` already means
-		// debug, so an implicit debug build is indistinguishable from someone
-		// having forgotten the flag — both in the generated Dockerfile and to the
-		// optimizer check that scans for it.
-		cmd := "swift build -c " + profile
-		if b.Product != "" {
-			cmd += " --product " + shellQuote(b.Product)
-		}
-		return []string{cacheRun("/root/.swiftpm", cmd)}, nil
+		return swiftBuildLines(b, profile, from, platform, scope), nil
 	case "npm", "yarn", "pnpm":
 		script := b.Script
 		if script == "" {

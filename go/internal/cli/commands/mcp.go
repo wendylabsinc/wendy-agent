@@ -50,16 +50,21 @@ func newMCPServeCmd() *cobra.Command {
 				// agent socket regardless of any configured device. connectFn
 				// (connectWithAutoTLS) honors WENDY_AGENT_SOCKET, so the address
 				// passed here is ignored.
-				if err := srv.ConnectTo(ctx, ""); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: could not connect to agent socket: %v\n", err)
-				}
+				srv.SetStartupConnect(func(connectCtx context.Context) {
+					if err := srv.ConnectToOnStartup(connectCtx, ""); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: could not connect to agent socket: %v\n", err)
+					}
+				})
 			case address != "":
 				if _, _, err := net.SplitHostPort(address); err != nil {
 					address = hostPort(address, defaultAgentPort)
 				}
-				if err := srv.ConnectTo(ctx, address); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: could not connect to %s: %v\n", address, err)
-				}
+				startupAddress := address
+				srv.SetStartupConnect(func(connectCtx context.Context) {
+					if err := srv.ConnectToOnStartup(connectCtx, startupAddress); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: could not connect to %s: %v\n", startupAddress, err)
+					}
+				})
 			}
 			return srv.Start(ctx)
 		},

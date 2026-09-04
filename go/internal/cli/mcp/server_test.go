@@ -4,11 +4,96 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
+
+func TestStart_ServesWhileStartupConnectIsBlocked(t *testing.T) {
+	originalServeStdio := serveStdio
+	t.Cleanup(func() { serveStdio = originalServeStdio })
+
+	serveStarted := make(chan map[string]*server.ServerTool, 1)
+	allowServeReturn := make(chan struct{})
+	serveStdio = func(srv *server.MCPServer) error {
+		serveStarted <- srv.ListTools()
+		<-allowServeReturn
+		return nil
+	}
+
+	connectStarted := make(chan struct{})
+	connectCanceled := make(chan struct{})
+	s := New(&config.Config{}, nil)
+	s.SetStartupConnect(func(ctx context.Context) {
+		close(connectStarted)
+		<-ctx.Done()
+		close(connectCanceled)
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- s.Start(context.Background()) }()
+
+	select {
+	case tools := <-serveStarted:
+		if _, ok := tools["wendy_status"]; !ok {
+			t.Fatal("stdio server started without built-in Wendy tools")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stdio server did not start while startup connection was blocked")
+	}
+
+	select {
+	case <-connectStarted:
+	case <-time.After(time.Second):
+		t.Fatal("startup connection did not begin")
+	}
+
+	close(allowServeReturn)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not return after stdio server stopped")
+	}
+
+	select {
+	case <-connectCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("startup connection context was not canceled when stdio stopped")
+	}
+}
+
+func TestConnectToOnStartup_DoesNotOverwriteExplicitConnection(t *testing.T) {
+	connectStarted := make(chan struct{})
+	allowConnect := make(chan struct{})
+	startupConn := &grpcclient.AgentConnection{}
+	explicitConn := &grpcclient.AgentConnection{}
+	s := New(&config.Config{}, func(context.Context, string) (*grpcclient.AgentConnection, error) {
+		close(connectStarted)
+		<-allowConnect
+		return startupConn, nil
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- s.ConnectToOnStartup(context.Background(), "default.local:50051") }()
+	<-connectStarted
+
+	// This models device_connect/cloud_connect winning while the automatic
+	// default-device attempt is still pending.
+	s.SetConn(explicitConn)
+	close(allowConnect)
+	if err := <-done; err != nil {
+		t.Fatalf("ConnectToOnStartup returned error: %v", err)
+	}
+	if got := s.GetConn(); got != explicitConn {
+		t.Fatalf("startup connection overwrote explicit connection: got %p, want %p", got, explicitConn)
+	}
+}
 
 func TestNew_NotNil(t *testing.T) {
 	srv := New(&config.Config{}, nil)
@@ -67,6 +152,7 @@ func TestDeadTools_NotRegistered(t *testing.T) {
 	s.registerWiFiTools(srv)
 	s.registerBluetoothTools(srv)
 	s.registerHardwareTools(srv)
+	s.registerCameraTools(srv)
 	s.registerProvisioningTools(srv)
 	s.registerOSTools(srv)
 	s.registerCloudTools(srv)

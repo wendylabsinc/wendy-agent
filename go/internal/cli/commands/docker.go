@@ -22,36 +22,32 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
-	"unicode"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/optimize"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/buildargs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-// stagefileSourceName is the conventional filename for a Stagefile source,
-// matching the standalone stagefile tool's own CLI default.
-const stagefileSourceName = "build.stagefile.yaml"
-
-// stagefileLockName is the lockfile the Stagefile compiler maintains next to
-// its source (digest pins; see go/internal/stagefile/lock).
-const stagefileLockName = "build.stagefile.lock.yaml"
+// stagefileSourceName is the canonical Stagefile source filename. A project may
+// also carry variants ("prod.stagefile.yaml"); stagefile.SourceNames enumerates
+// the whole family and this one is the member every picker prefers.
+const stagefileSourceName = stagefile.SourceName
 
 // generatedDockerfileName is the internal build artifact prepareDockerBuildFile
-// writes (compiled Stagefile or auto-fixed Dockerfile copy). The writer, the
-// build-file-detection exclusion, and the watch ignore list all key off this
-// one name so they can't drift.
+// writes for the canonical Stagefile (or for an auto-fixed Dockerfile copy).
+// The writer, the build-file-detection exclusion, and the watch ignore list all
+// key off this one name so they can't drift.
 const generatedDockerfileName = "Dockerfile.generated"
 
 // generatedDockerignoreName is the ignore file BuildKit pairs with
@@ -59,6 +55,66 @@ const generatedDockerfileName = "Dockerfile.generated"
 // letting the Stagefile compiler's derived allowlist apply without touching a
 // user-authored .dockerignore.
 const generatedDockerignoreName = generatedDockerfileName + ".dockerignore"
+
+// generatedBuildFileFor returns the compiled-Dockerfile filename for a Stagefile
+// source, and the .dockerignore BuildKit pairs with it.
+//
+// The canonical source keeps the historical bare "Dockerfile.generated" — users
+// have it in .gitignore and CI globs — while each variant gets its own
+// "Dockerfile.generated.<variant>". Distinct names are not cosmetic: compose
+// routinely points several services at ONE build context with different build
+// files, so two variants compiling into a shared context would otherwise race
+// to overwrite a single artifact and could build each other's Dockerfile.
+func generatedBuildFileFor(source string) (dockerfileName, dockerignoreName string) {
+	variant, ok := stagefile.SourceVariant(source)
+	if !ok || stagefile.IsCanonicalSourceName(source) {
+		return generatedDockerfileName, generatedDockerignoreName
+	}
+	name := generatedDockerfileName + "." + variant
+	return name, name + ".dockerignore"
+}
+
+// isGeneratedBuildFileName reports whether name is one of the build artifacts
+// the CLI itself writes into a project dir — "Dockerfile.generated" and every
+// "Dockerfile.generated.<variant>".
+//
+// A prefix test rather than an equality test because the variant names are
+// themselves valid container-build-file names ("Dockerfile.generated.prod"
+// matches validDockerfileNameRe), so without this each compiled variant would
+// reappear in the next run's picker as a rival user build file.
+func isGeneratedBuildFileName(name string) bool {
+	return name == generatedDockerfileName || strings.HasPrefix(name, generatedDockerfileName+".")
+}
+
+// isStagefileLockName reports whether name is the lockfile of some Stagefile in
+// the family — a build artifact the compiler maintains, not a project source.
+func isStagefileLockName(name string) bool {
+	return stagefile.IsLockName(name)
+}
+
+// stagefileSourceForGenerated inverts generatedBuildFileFor: given a compiled
+// build file it names the Stagefile that would have produced it. ok is false for
+// anything outside the generated namespace.
+//
+// It answers from the filename alone, so "Dockerfile.generated" maps back to the
+// canonical Stagefile even when this particular copy came from the auto-fix path
+// instead. Callers (nativeBuildEligibility) then fail to read that source and
+// bail, which is the same answer they gave before variants existed.
+func stagefileSourceForGenerated(name string) (string, bool) {
+	base := filepath.Base(name)
+	if base == generatedDockerfileName {
+		return stagefileSourceName, true
+	}
+	variant, found := strings.CutPrefix(base, generatedDockerfileName+".")
+	if !found {
+		return "", false
+	}
+	source := variant + ".stagefile.yaml"
+	if !stagefile.IsSourceName(source) {
+		return "", false
+	}
+	return source, true
+}
 
 // writeGeneratedFile writes data to path only when the current content
 // differs, via a same-directory temp file + rename. The rename keeps
@@ -128,17 +184,6 @@ func normalizeImageBuilder(builder string) (string, error) {
 		return imageBuilderBuildkit, nil
 	default:
 		return "", fmt.Errorf("invalid value %q for --builder: must be one of docker, apple-container, or buildkit", builder)
-	}
-}
-
-func imageBuilderDisplayName(builder string) string {
-	switch builder {
-	case imageBuilderAppleContainer:
-		return "Apple Container"
-	case imageBuilderBuildkit:
-		return "BuildKit"
-	default:
-		return "Docker"
 	}
 }
 
@@ -265,7 +310,7 @@ func detectProjectType(dir string) (string, error) {
 			return "compose", nil
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+	if len(stagefile.SourceNames(dir)) > 0 {
 		return "docker", nil
 	}
 	// Check base build files first (fast path), then any variant.
@@ -314,7 +359,6 @@ func detectProjectType(dir string) (string, error) {
 // "Containerfile", or either base name followed by a dot or hyphen and one or
 // more safe characters.
 var validDockerfileNameRe = regexp.MustCompile(`^(Dockerfile|Containerfile)([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
-var validBuildArgNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Device-reported build-arg hints (see applyDeviceBuildArgHints) are meant to be
 // clean identifier/version tokens, never free text, so they keep a narrow
@@ -331,12 +375,17 @@ func isContainerBuildFileName(name string) bool {
 	// prepareDockerBuildFile writes and deliberately never deletes, so no
 	// detection path (project-type, build options, provider fallback) may
 	// treat it as a rival candidate on later runs.
-	if name == generatedDockerfileName {
+	if isGeneratedBuildFileName(name) {
 		return false
 	}
 	return validDockerfileNameRe.MatchString(name)
 }
 
+// preferredContainerBuildFileOption returns the build file a project builds when
+// nobody chose one: the canonical Stagefile, else the conventional Dockerfile or
+// Containerfile. A project whose only build files are variants
+// ("prod.stagefile.yaml", "Dockerfile.prod") has no such default and returns
+// nil, so the caller asks instead of guessing.
 func preferredContainerBuildFileOption(options []BuildOption) *BuildOption {
 	for _, preferred := range []string{stagefileSourceName, "Dockerfile", "Containerfile"} {
 		for i := range options {
@@ -356,36 +405,23 @@ func validateDockerfileName(name string) error {
 	if strings.HasSuffix(cleaned, ".dockerignore") {
 		return fmt.Errorf("invalid container build file name %q: .dockerignore files are not build files", cleaned)
 	}
+	// A Stagefile is a container build file too: --dockerfile is how a project
+	// with several of them names one non-interactively (CI has no picker).
+	if stagefile.IsSourceName(cleaned) {
+		return nil
+	}
 	if !validDockerfileNameRe.MatchString(cleaned) {
-		return fmt.Errorf("invalid container build file name %q: must be Dockerfile, Containerfile, or a dot/hyphen variant of either", cleaned)
+		return fmt.Errorf("invalid container build file name %q: must be Dockerfile, Containerfile, a %s variant, or a dot/hyphen variant of either", cleaned, stagefileSourceName)
 	}
 	return nil
 }
 
 // validateBuildArgPair gates a KEY=VALUE build arg headed for a builder CLI.
-// Values are user-authored (docker-compose args, wendy.json) and legitimately
-// hold spaces, slashes, and other punctuation — a Minecraft MOTD or a log path,
-// say. Their content is not dangerous: each pair is handed to exec.Command as a
-// single "KEY=VALUE" argv element (no shell is involved), and because KEY is
-// validated to [A-Za-z_][A-Za-z0-9_]* the token always starts with a letter, so
-// a builder CLI can never mistake the value for a flag. So the rejections are
-// only:
-//   - a leading '-', kept as defense-in-depth so a value can never look like a
-//     flag even if a future call site passed it as a standalone argv token; and
-//   - control characters, which are genuinely unsafe regardless: NUL truncates
-//     C strings (Go's exec rejects it outright) and CR/LF/escape sequences can
-//     inject lines or terminal escapes into the streamed build log.
+// The rules live in shared/buildargs because the agent's remote build service
+// must apply the same ones to what a client sends — see that package for why
+// each rejection exists.
 func validateBuildArgPair(key, value string) error {
-	if !validBuildArgNameRe.MatchString(key) {
-		return fmt.Errorf("invalid build arg name %q: must match [A-Za-z_][A-Za-z0-9_]*", key)
-	}
-	if strings.HasPrefix(value, "-") {
-		return fmt.Errorf("invalid build arg %q: value must not start with '-'", key)
-	}
-	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
-		return fmt.Errorf("invalid build arg %q: value must not contain control characters", key)
-	}
-	return nil
+	return buildargs.ValidatePair(key, value)
 }
 
 // applyDeviceBuildArgHints injects the optional device/GPU build-arg hints the
@@ -439,15 +475,7 @@ func jetpackMajor(version string) string {
 }
 
 func sortedValidatedBuildArgKeys(buildArgs map[string]string) ([]string, error) {
-	keys := make([]string, 0, len(buildArgs))
-	for k, v := range buildArgs {
-		if err := validateBuildArgPair(k, v); err != nil {
-			return nil, err
-		}
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys, nil
+	return buildargs.SortedValidatedKeys(buildArgs)
 }
 
 // validComposeDockerfileNameRe matches the broader naming convention allowed by
@@ -531,19 +559,20 @@ func confinedDockerfilePath(base, dockerfile string) (string, error) {
 // actual image builder, without ever modifying a real, user-authored
 // Dockerfile on disk:
 //
-//   - If dockerfile is stagefileSourceName, it's compiled via the stagefile
-//     package into "Dockerfile.generated" (plus ".dockerignore").
+//   - If dockerfile is a Stagefile (any variant), it's compiled via the
+//     stagefile package into that variant's generated Dockerfile (plus its
+//     paired ".dockerignore") — see generatedBuildFileFor.
 //   - Otherwise, if any purely-additive `wendy project optimize` fix
 //     applies to it (see optimize.SafeAutoApplyFindings), the fixed text is
 //     written to "Dockerfile.generated" and that name is returned instead.
 //   - If neither applies, dockerfile is returned unchanged.
 //
-// Both branches write to the same generated filename — detectBuildOptions
-// already excludes it from re-entering detection as a rival build file, so
-// this covers both origins with one exclusion.
+// Every branch writes into the "Dockerfile.generated*" namespace, which
+// isGeneratedBuildFileName excludes from re-entering detection as a rival build
+// file, so one exclusion covers all origins.
 func prepareDockerBuildFile(dir, dockerfile, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
-	if dockerfile == stagefileSourceName {
-		return compileStagefile(dir, gpuArch, sfOpts...)
+	if stagefile.IsSourceName(dockerfile) {
+		return compileStagefile(dir, dockerfile, gpuArch, sfOpts...)
 	}
 	return applySafeOptimizeFixes(dir, dockerfile)
 }
@@ -559,12 +588,30 @@ func debugStagefileOptions(debug bool) []stagefile.Option {
 	return []stagefile.Option{stagefile.WithBuildProfile(stagefile.BuildProfileDebug)}
 }
 
+// frameworkStagefileOptions translates runtime framework configuration into
+// compiler inputs. The project declares ROS 2 once in wendy.json; Stagefile
+// then supplies the matching middleware package instead of making every
+// service repeat Wendy's resolved distro/RMW choice in install.apt.
+func frameworkStagefileOptions(frameworks *appconfig.FrameworksConfig) []stagefile.Option {
+	if frameworks == nil || frameworks.ROS2 == nil {
+		return nil
+	}
+	return ros2StagefileOptions(frameworks.ROS2)
+}
+
+func ros2StagefileOptions(ros2 *appconfig.ROS2Config) []stagefile.Option {
+	if ros2 == nil {
+		return nil
+	}
+	return []stagefile.Option{stagefile.WithROS2Runtime(ros2.ResolvedDistro(), ros2.ResolvedRMW())}
+}
+
 // hasContainerBuildFile reports whether dir holds any docker build source
-// (Stagefile, Dockerfile/Containerfile, or a variant) without the compile /
-// write side effects resolveDockerfile now has — for callers that only need
-// existence, not a build-ready filename.
+// (Stagefile, Dockerfile/Containerfile, or a variant of either) without the
+// compile / write side effects resolveDockerfile now has — for callers that
+// only need existence, not a build-ready filename.
 func hasContainerBuildFile(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+	if len(stagefile.SourceNames(dir)) > 0 {
 		return true
 	}
 	entries, err := os.ReadDir(dir)
@@ -624,7 +671,7 @@ func resolveGPUArchForDirs(ctx context.Context, dirs []string, flagArch string, 
 	if !needed {
 		return ""
 	}
-	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	resp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		// Deliberately not fatal. The compiler is where "a GPU stage needs a
 		// target" is enforced, and its error names the fix; failing here would
@@ -634,10 +681,11 @@ func resolveGPUArchForDirs(ctx context.Context, dirs []string, flagArch string, 
 	return resp.GetGpuArch()
 }
 
-// compileStagefile compiles dir's Stagefile into a real Dockerfile, writing
-// "Dockerfile.generated" and ".dockerignore" into dir and returning the
-// generated Dockerfile's filename.
-func compileStagefile(dir, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
+// compileStagefile compiles the named Stagefile in dir into a real Dockerfile,
+// writing that source's generated Dockerfile and paired .dockerignore into dir
+// and returning the generated Dockerfile's filename.
+func compileStagefile(dir, source, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
+	generatedName, generatedIgnoreName := generatedBuildFileFor(source)
 	// A download with no sha256 in the Stagefile is pinned by fetching it
 	// once, here, inline in the build. For model weights that is minutes of
 	// silence on the first build, so say which URL is being pinned rather
@@ -646,25 +694,37 @@ func compileStagefile(dir, gpuArch string, sfOpts ...stagefile.Option) (string, 
 	// sfOpts comes last so a caller-supplied override (--debug's build profile)
 	// wins over the defaults assembled here.
 	opts := append([]stagefile.Option{
+		stagefile.WithSource(source),
 		stagefile.WithGPUArch(gpuArch),
 		stagefile.WithProgress(func(url string) {
-			cliNotice("pinning download %s (first build only; writes its sha256 to %s)", url, stagefileLockName)
+			cliNotice("pinning download %s (first build only; writes its sha256 to %s)", url, stagefile.LockName(source))
 		}),
 	}, sfOpts...)
 	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "", opts...)
 	if err != nil {
-		return "", fmt.Errorf("compiling %s: %w", stagefileSourceName, err)
+		return "", fmt.Errorf("compiling %s: %w", source, err)
 	}
-	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerfileName), []byte(dockerfileText)); err != nil {
-		return "", fmt.Errorf("writing %s: %w", generatedDockerfileName, err)
+	if err := writeGeneratedFile(filepath.Join(dir, generatedName), []byte(dockerfileText)); err != nil {
+		return "", fmt.Errorf("writing %s: %w", generatedName, err)
 	}
 	// BuildKit prefers <dockerfile>.dockerignore over .dockerignore for the
 	// file passed via -f, so the derived allowlist rides along without ever
 	// touching (or destroying) a user-authored .dockerignore in the project.
-	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerignoreName), []byte(dockerignoreText)); err != nil {
-		return "", fmt.Errorf("writing %s: %w", generatedDockerignoreName, err)
+	//
+	// That precedence is also why an empty derivation must leave no file behind
+	// rather than write one: winning the precedence with a file that ignores
+	// nothing would disable the project's own .dockerignore. An earlier build of
+	// the same project may have written one, so remove it rather than assume
+	// absence.
+	ignorePath := filepath.Join(dir, generatedIgnoreName)
+	if dockerignoreText == "" {
+		if err := os.Remove(ignorePath); err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("removing stale %s: %w", generatedIgnoreName, err)
+		}
+	} else if err := writeGeneratedFile(ignorePath, []byte(dockerignoreText)); err != nil {
+		return "", fmt.Errorf("writing %s: %w", generatedIgnoreName, err)
 	}
-	return generatedDockerfileName, nil
+	return generatedName, nil
 }
 
 // applySafeOptimizeFixes runs the `wendy project optimize` analyzers against
@@ -727,6 +787,18 @@ func resolveDockerfile(cwd, requested string, interactive bool, gpuArch string, 
 		}
 		if _, err := confinedDockerfilePath(cwd, requested); err != nil {
 			return "", err
+		}
+		// An explicitly named Dockerfile is handed to the builder verbatim —
+		// "build exactly what I named" — but a Stagefile is not a Dockerfile, so
+		// naming one still has to go through the compiler. Without this the
+		// builder would receive the YAML source as its -f argument.
+		//
+		// sfOpts is forwarded here for the same reason the detection path below
+		// forwards it: --debug has to reach a Stagefile the user named as much as
+		// one the picker found, or `--dockerfile prod.stagefile.yaml --debug`
+		// would quietly produce a release build.
+		if stagefile.IsSourceName(requested) {
+			return compileStagefile(cwd, requested, gpuArch, sfOpts...)
 		}
 		return requested, nil
 	}
@@ -801,14 +873,20 @@ func detectBuildOptions(dir string) []BuildOption {
 		}
 	}
 
-	// Stagefile — the most specific, most intentional signal in a project
+	// Stagefiles — the most specific, most intentional signal in a project
 	// (nobody has one by accident), so detected ahead of any plain
 	// Dockerfile/Containerfile that also happens to be present.
-	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+	//
+	// Every variant is listed, not just the canonical build.stagefile.yaml.
+	// Container build files have always been enumerated by pattern, so a project
+	// with Dockerfile.prod/Dockerfile.gpu saw all of them in the picker while its
+	// Stagefiles were matched by one hard-coded filename and stayed invisible.
+	// SourceNames orders the family canonical-first.
+	for _, name := range stagefile.SourceNames(dir) {
 		options = append(options, BuildOption{
-			Label: stagefileSourceName + " (Stagefile)",
+			Label: name + " (Stagefile)",
 			Type:  "docker",
-			File:  stagefileSourceName,
+			File:  name,
 		})
 	}
 
@@ -1313,6 +1391,15 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool,
 	return builderName, effectiveAddr, nil
 }
 
+// ociBuilderName is the buildx builder used for OCI-layout export builds.
+func ociBuilderName() string {
+	base := os.Getenv("WENDY_BUILDX_BUILDER")
+	if base == "" {
+		base = "wendy"
+	}
+	return base + "-oci"
+}
+
 // ensureOCIExportBuilder ensures a dedicated buildx builder for OCI-layout
 // export exists and is running, returning its name. Unlike the registry
 // builders it needs NO registry config — OCI export never pushes to a registry
@@ -1325,11 +1412,7 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 	ensureBuildxBuilderMu.Lock()
 	defer ensureBuildxBuilderMu.Unlock()
 
-	base := os.Getenv("WENDY_BUILDX_BUILDER")
-	if base == "" {
-		base = "wendy"
-	}
-	builderName := base + "-oci"
+	builderName := ociBuilderName()
 
 	// Fast path: if the builder's buildkit container is already running, then the
 	// daemon is up, the builder exists, and it is bootstrapped — so we can skip
@@ -1340,7 +1423,7 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 	// plugin load, no buildkit gRPC handshake). On any miss we fall through to the
 	// full robust path below.
 	containerName := "buildx_buildkit_" + builderName + "0"
-	if out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
+	if out, err := imageBuilderCommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
 		return builderName, nil
 	}
 
@@ -1348,10 +1431,10 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 		return "", err
 	}
 
-	exists := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil
+	exists := imageBuilderCommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil
 	if !exists {
 		fmt.Fprintf(w, "[buildx] creating OCI-export builder %q\n", builderName)
-		cmd := exec.CommandContext(ctx, "docker", "buildx", "create",
+		cmd := imageBuilderCommandContext(ctx, "docker", "buildx", "create",
 			"--name", builderName,
 			"--driver", "docker-container",
 			"--driver-opt", "network=host",
@@ -1361,13 +1444,56 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 		}
 	}
 
-	// Ensure the builder is running. This is cheap when it is already up and,
-	// crucially, performs no config injection or container restart.
-	bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
-	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("bootstrapping builder %q: %s: %w", builderName, string(out), err)
+	// Ensure the builder is running and bootstrapped. This is cheap when it is
+	// already up and, crucially, performs no config injection or container
+	// restart; on a cold builder it pulls the BuildKit image inline, which
+	// bootstrapOCIBuilder bounds and streams to w so the wait isn't silent.
+	if err := bootstrapOCIBuilder(ctx, builderName, w); err != nil {
+		return "", err
 	}
 	return builderName, nil
+}
+
+// ociBuilderBootstrapTimeout bounds `docker buildx inspect --bootstrap`: a cold
+// start pulls the BuildKit image (minutes, not seconds), but a wedged daemon
+// must not stall the deploy forever. Package var so tests can shrink it.
+var ociBuilderBootstrapTimeout = 3 * time.Minute
+
+// bootstrapOCIBuilder runs `docker buildx inspect --bootstrap` for builderName,
+// streaming its output to w as it arrives — a cold builder pulls the BuildKit
+// image inline with this call, so without live output the wait looks like a
+// hang — while also buffering it for error context. ociBuilderBootstrapTimeout
+// bounds the wait so a wedged Docker daemon cannot stall the deploy forever.
+func bootstrapOCIBuilder(ctx context.Context, builderName string, w io.Writer) error {
+	fmt.Fprintf(w, "[buildx] bootstrapping builder %q (a cold start pulls the BuildKit image; this can take a few minutes)\n", builderName)
+
+	bootstrapCtx, cancel := context.WithTimeout(ctx, ociBuilderBootstrapTimeout)
+	defer cancel()
+
+	var buf bytes.Buffer
+	// Stdout and Stderr are set to the *same* MultiWriter value (not two
+	// separate io.MultiWriter calls) so os/exec recognizes them as equal and
+	// combines them into a single pipe/copy goroutine — the same trick
+	// CombinedOutput relies on — avoiding concurrent, unsynchronized writes
+	// into buf from interleaved stdout/stderr output.
+	mw := io.MultiWriter(w, &buf)
+	cmd := imageBuilderCommandContext(bootstrapCtx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
+	cmd.Stdout = mw
+	cmd.Stderr = mw
+	if err := cmd.Run(); err != nil {
+		// Only claim *our* bootstrap timeout fired if the parent ctx is still
+		// alive: bootstrapCtx also reports DeadlineExceeded when an ancestor
+		// context's own deadline expires first (ctx.Err() != nil in that case),
+		// and blaming that on the bootstrap would misattribute the failure.
+		// Plain Ctrl+C is unaffected — that propagates context.Canceled, not
+		// DeadlineExceeded. (Same convention as buildprogress.go:135,173.)
+		if errors.Is(bootstrapCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return fmt.Errorf("bootstrapping builder %q timed out after %s (is the Docker daemon healthy?); output so far:\n%s",
+				builderName, ociBuilderBootstrapTimeout, buf.String())
+		}
+		return fmt.Errorf("bootstrapping builder %q: %s: %w", builderName, buf.String(), err)
+	}
+	return nil
 }
 
 // buildkitRegistryConfig generates a buildkitd.toml snippet for the given
@@ -1389,21 +1515,23 @@ func buildkitRegistryConfig(registryAddr string, plainHTTP bool, keypair *[2]str
 	return sb.String()
 }
 
-// removeBuilder removes a buildx builder, falling back to deleting the
-// instance file directly when `docker buildx rm` fails (e.g. because the
-// stored config contains IPv6 brackets that the host TOML parser rejects).
-func removeBuilder(ctx context.Context, name string) {
-	rmCmd := exec.CommandContext(ctx, "docker", "buildx", "rm", name)
-	if rmCmd.Run() == nil {
-		return
+// ensureRegistryBuilderInstance creates builderName only when it does not
+// already exist. Registry configuration changes are deliberately not handled
+// here: callers update the existing container in place so its BuildKit state
+// volume survives dynamic proxy-port and certificate changes.
+func ensureRegistryBuilderInstance(ctx context.Context, builderName string) (created bool, err error) {
+	if exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil {
+		return false, nil
 	}
-	// Fallback: remove the instance file and kill the container directly.
-	home, err := os.UserHomeDir()
-	if err == nil {
-		os.Remove(filepath.Join(home, ".docker", "buildx", "instances", name))
-		os.Remove(filepath.Join(home, ".docker", "buildx", "activity", name))
+	cmd := exec.CommandContext(ctx, "docker", "buildx", "create",
+		"--name", builderName,
+		"--driver", "docker-container",
+		"--driver-opt", "network=host",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
 	}
-	exec.CommandContext(ctx, "docker", "rm", "-f", "buildx_buildkit_"+name+"0").Run()
+	return true, nil
 }
 
 // ensurePlaintextBuilder ensures the "wendy" buildx builder exists with plain
@@ -1423,27 +1551,18 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string,
 	appliedConfig, _ := os.ReadFile(appliedPath)
 	configChanged := string(appliedConfig) != fullConfig
 
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName)
-	builderExists := cmd.Run() == nil
-
-	if builderExists && configChanged {
-		removeBuilder(ctx, builderName)
-		builderExists = false
+	created, err := ensureRegistryBuilderInstance(ctx, builderName)
+	if err != nil {
+		return "", err
 	}
-
-	if !builderExists {
-		cmd = exec.CommandContext(ctx, "docker", "buildx", "create",
-			"--name", builderName,
-			"--driver", "docker-container",
-			"--driver-opt", "network=host",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
-		}
+	if created {
 		configChanged = true // always inject config into a newly created builder
 	}
 
-	// Inject the real config into the builder container and restart only when needed.
+	// Inject the real config into the existing builder container and restart only
+	// when needed. In particular, do not remove/recreate the builder when the
+	// per-run registry proxy port changes: its /var/lib/buildkit state is held in
+	// a Docker volume, and an in-place restart preserves warm image snapshots.
 	// Also re-inject if the container was destroyed (e.g. after colima restart) or
 	// was bootstrapped without config injection (default buildkitd.toml lacks http=true).
 	containerName := "buildx_buildkit_" + builderName + "0"
@@ -1528,7 +1647,7 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	// public leaf certificate. The certificate is public material; no private
 	// key material or derivative is persisted (SOC2-C1, NIST-SC-28, ISO27001-A.8).
 	// When the cert changes (rotation, new device), the digest changes and the
-	// builder is torn down and rebuilt.
+	// builder is reconfigured and restarted in place.
 	certDigest := sha256.Sum256([]byte(leafCertPEM))
 	appliedState := fullConfig +
 		"\n---CERTHASH---\n" + hex.EncodeToString(certDigest[:])
@@ -1536,27 +1655,17 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	appliedConfig, _ := os.ReadFile(appliedPath)
 	configChanged := string(appliedConfig) != appliedState
 
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName)
-	builderExists := cmd.Run() == nil
-
-	if builderExists && configChanged {
-		removeBuilder(ctx, builderName)
-		builderExists = false
+	created, err := ensureRegistryBuilderInstance(ctx, builderName)
+	if err != nil {
+		return "", err
 	}
-
-	if !builderExists {
-		cmd = exec.CommandContext(ctx, "docker", "buildx", "create",
-			"--name", builderName,
-			"--driver", "docker-container",
-			"--driver-opt", "network=host",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
-		}
+	if created {
 		configChanged = true // always inject certs and config into a newly created builder
 	}
 
 	// Only copy certs and restart the builder when something actually changed.
+	// Reconfigure an existing builder in place so its /var/lib/buildkit volume —
+	// and therefore its warm image snapshots — survives per-run proxy-port changes.
 	// Restarting while another parallel build uses the same builder kills that build.
 	if configChanged {
 		if err := copyCertsToBuilder(ctx, builderName, hostCertDir, containerCertDir); err != nil {
@@ -1669,7 +1778,8 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 // share one cache dir — BuildKit's local cache-export ingest store is not safe
 // for concurrent writers and parallel builds clobber each other's temp files
 // (WDY-1689). An empty cacheKey uses the shared base dir so single and
-// sequential builds keep their cross-run cache.
+// sequential builds keep their cross-run cache. Used by the registry-push build
+// path; the OCI-export path embeds its cache inline in the layout instead.
 func buildxLocalCacheDir(userCache, cacheKey string) string {
 	dir := filepath.Join(userCache, "wendy", "buildx")
 	if cacheKey != "" {
@@ -2029,6 +2139,26 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 	if err != nil {
 		return err
 	}
+
+	// Docker deployments build through the stable OCI-export builder and push
+	// from the host. BuildKit therefore never receives a deployment's temporary
+	// registry address, so one `wendy run` cannot reconfigure/restart the shared
+	// builder underneath another. Independent app/service layouts and local
+	// caches are keyed separately and may build concurrently; the same key is
+	// serialized by lockOCILayoutDir.
+	if normalized == imageBuilderDocker {
+		registryAddr, useMTLS, cleanup, dialErr, resolveErr := resolveRegistryForSwiftAgent(ctx, conn, regPort)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		defer cleanup()
+
+		if err := buildAndPushImageViaOCILayout(ctx, dir, registryAddr, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS); err != nil {
+			return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
+		}
+		return nil
+	}
+
 	registryAddr, cleanup, useMTLS, dialErr, err := resolveRegistryForImageBuilder(ctx, conn, regPort, normalized)
 	if err != nil {
 		return err
@@ -2036,8 +2166,161 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 	defer cleanup()
 
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
-	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
 	if err := buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS, dialErr); err != nil {
+		return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
+	}
+	return nil
+}
+
+// buildAndPushImageViaOCILayout is the concurrency-safe Docker deployment
+// path. A stable, registry-agnostic BuildKit builder writes a persistent OCI
+// layout; the host then pushes that image to the device. Per-app/service locks
+// protect the lazy OCI files while allowing unrelated deployments to overlap.
+func buildAndPushImageViaOCILayout(ctx context.Context, dir, registryAddr, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("finding user cache directory: %w", err)
+	}
+
+	repo = strings.ToLower(repo)
+	layoutDir := chunkLayoutDir(userCache, repo, platform)
+	releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
+	if err != nil {
+		return err
+	}
+	defer releaseLayout()
+	defer func() { _ = gcOCILayoutDir(layoutDir) }()
+
+	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
+		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, streamOutput, logOutput)
+	})
+	if err != nil {
+		return err
+	}
+	if native {
+		fmt.Fprintln(logOutput, "[stagefile] app layer(s) resolved natively; buildx and cache export skipped")
+	}
+
+	fmt.Fprintf(logOutput, "[registry] pushing OCI image to %s/%s:latest\n", registryAddr, repo)
+	if err := pushOCILayoutToRegistry(ctx, layoutDir, platform, registryAddr, repo, useMTLS); err != nil {
+		return err
+	}
+	return nil
+}
+
+// buildAndPrepareComposeImageForAgent is the default Compose image path. It
+// builds into the same persistent OCI layout used by single-service chunk
+// deploys, updates Stagefile app layers natively when dependencies are stable,
+// and transfers missing content-defined chunks straight to the agent. The
+// prepared image is registered under repo:latest, so Compose's existing
+// CreateContainer orchestration can consume it without a registry round-trip.
+//
+// Agents that predate PrepareImage (or any other non-build chunk-path failure)
+// fall back to pushing this exact already-built layout to the device registry;
+// the image is never rebuilt for the fallback.
+func buildAndPrepareComposeImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
+	return buildAndPrepareComposeImage(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, true)
+}
+
+func buildAndPrepareComposeImageForAgentForce(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
+	return buildAndPrepareComposeImage(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, false)
+}
+
+func buildAndPrepareComposeImage(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, allowRegistryFallback bool) error {
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+	if normalized != imageBuilderDocker {
+		return buildAndPushImageForAgent(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
+	}
+
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("finding user cache directory: %w", err)
+	}
+	repo = strings.ToLower(repo)
+	layoutDir := chunkLayoutDir(userCache, repo, platform)
+	releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
+	if err != nil {
+		return err
+	}
+	defer releaseLayout()
+	defer func() { _ = gcOCILayoutDir(layoutDir) }()
+
+	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
+		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, streamOutput, logOutput)
+	})
+	if err != nil {
+		return err
+	}
+	if native {
+		fmt.Fprintln(logOutput, "[stagefile] app layer(s) resolved natively; buildx and cache export skipped")
+	}
+
+	layers, imageConfig, err := readOCILayoutDirLayers(layoutDir, platform)
+	if err != nil {
+		return err
+	}
+	if reporter, ok := streamOutput.(interface{ ReportImageContent([]string) }); ok {
+		diffIDs := make([]string, 0, len(layers))
+		for _, layer := range layers {
+			if layer.DiffID == "" {
+				diffIDs = nil
+				break
+			}
+			diffIDs = append(diffIDs, layer.DiffID)
+		}
+		if len(diffIDs) > 0 {
+			reporter.ReportImageContent(diffIDs)
+		}
+	}
+	imageSignature, err := readOptionalSignature(os.Getenv(imageSignaturePathEnv))
+	if err != nil {
+		return fmt.Errorf("reading image signature from %s: %w", imageSignaturePathEnv, err)
+	}
+	if reporter, ok := streamOutput.(interface{ ReportImagePreparationQueued() }); ok {
+		reporter.ReportImagePreparationQueued()
+	}
+	releasePrepare, err := acquireComposePrepare(ctx)
+	if err != nil {
+		return err
+	}
+	defer releasePrepare()
+	// Match the reference Compose passes to CreateContainer below. PrepareImage
+	// records this exact name in containerd even though no registry is involved.
+	imageName := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
+	prepare := func(prepareCtx context.Context, headers []*agentpb.RunContainerLayerHeader) error {
+		_, prepareErr := conn.ContainerService.PrepareImage(prepareCtx, &agentpb.RunContainerLayersRequest{
+			ImageName:      imageName,
+			Layers:         headers,
+			ImageConfig:    imageConfig,
+			ImageSignature: imageSignature,
+		})
+		return prepareErr
+	}
+	if _, chunkErr := pushLayersByChunksWithStrictPrepareOutput(ctx, conn.ContainerService, layers, prepare, streamOutput); chunkErr == nil {
+		fmt.Fprintf(logOutput, "[chunks] prepared %s from missing content\n", imageName)
+		return nil
+	} else if ctx.Err() != nil {
+		return chunkErr
+	} else if blocksChunkPrepareFallback(chunkErr) {
+		return chunkErr
+	} else if !allowRegistryFallback {
+		return fmt.Errorf("chunk-diff image preparation failed and --chunking=force disables the registry fallback: %w", chunkErr)
+	} else {
+		fmt.Fprintf(logOutput, "[chunks] prepare unavailable (%v); falling back to registry push of the existing OCI layout\n", chunkErr)
+		if reporter, ok := streamOutput.(interface{ ReportRegistryFallback(error) }); ok {
+			reporter.ReportRegistryFallback(chunkErr)
+		}
+	}
+
+	registryAddr, useMTLS, cleanup, dialErr, resolveErr := resolveRegistryForSwiftAgent(ctx, conn, regPort)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	defer cleanup()
+	if err := pushOCILayoutToRegistry(ctx, layoutDir, platform, registryAddr, repo, useMTLS); err != nil {
 		return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
 	}
 	return nil
@@ -2577,7 +2860,7 @@ func tlsClientDialer(certPEM, keyPEM, caPEM string, dial func(context.Context) (
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
 	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
+	if certs.AppendChainToPool(caPool, caPEM) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
 	}
 	tlsCfg := &tls.Config{
@@ -2730,7 +3013,7 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 		return nil, fmt.Errorf("parsing mTLS certificate: %w", err)
 	}
 	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
+	if certs.AppendChainToPool(caPool, caPEM) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
 	}
 
@@ -2801,7 +3084,7 @@ func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy,
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
 	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain)) {
+	if certs.AppendChainToPool(caPool, certInfo.PemCertificateChain) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates found in certInfo.PemCertificateChain")
 	}
 	tlsCfg := &tls.Config{

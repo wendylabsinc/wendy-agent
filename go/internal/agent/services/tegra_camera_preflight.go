@@ -7,12 +7,12 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 )
 
-const tegraFirmwareMismatchReason = "TEGRA_FIRMWARE_MISMATCH"
+const tegraFirmwareMismatchReason = streamreason.TegraFirmwareMismatch
 
 var (
 	tegraReleaseFamilyRE = regexp.MustCompile(`(?i)\bR([0-9]{2})\b`)
@@ -60,19 +60,11 @@ func (s *VideoService) preflightTegraCSI(ctx context.Context) error {
 	if versions.RootfsFamily == versions.BootFamily {
 		return nil
 	}
-	st := status.New(codes.FailedPrecondition, fmt.Sprintf(
+	return streamreason.New(codes.FailedPrecondition, fmt.Sprintf(
 		"Jetson rootfs %s does not match boot firmware %s; CSI camera drivers cannot be initialized safely",
-		versions.RootfsVersion, versions.BootVersion))
-	withInfo, err := st.WithDetails(&errdetails.ErrorInfo{
-		Reason: tegraFirmwareMismatchReason,
-		Domain: "wendy.dev",
-		Metadata: map[string]string{
+		versions.RootfsVersion, versions.BootVersion),
+		tegraFirmwareMismatchReason, map[string]string{
 			"rootfs_l4t":        versions.RootfsVersion,
 			"boot_firmware_l4t": versions.BootVersion,
-		},
-	})
-	if err != nil {
-		return st.Err()
-	}
-	return withInfo.Err()
+		})
 }

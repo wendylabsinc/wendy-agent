@@ -55,6 +55,28 @@ func TestIsImageBuildFailure(t *testing.T) {
 	}
 }
 
+// TestTotalCompressedLayerBytes covers file-backed layers (Size), in-memory
+// layers (len(Blob)), a mix of both, and the empty-slice case.
+func TestTotalCompressedLayerBytes(t *testing.T) {
+	cases := []struct {
+		name   string
+		layers []localLayer
+		want   int64
+	}{
+		{"empty", nil, 0},
+		{"file-backed", []localLayer{{TarPath: "/tmp/a.tar", Size: 100}, {TarPath: "/tmp/b.tar", Size: 250}}, 350},
+		{"in-memory", []localLayer{{Blob: make([]byte, 10)}, {Blob: make([]byte, 5)}}, 15},
+		{"mixed", []localLayer{{TarPath: "/tmp/a.tar", Size: 100}, {Blob: make([]byte, 5)}, {TarPath: "/tmp/c.tar", Size: 20}}, 125},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := totalCompressedLayerBytes(tc.layers); got != tc.want {
+				t.Fatalf("totalCompressedLayerBytes(%+v) = %d, want %d", tc.layers, got, tc.want)
+			}
+		})
+	}
+}
+
 // sha256Hex returns the lowercase hex-encoded SHA-256 digest of b.
 func sha256Hex(b []byte) string {
 	h := sha256.Sum256(b)
@@ -494,20 +516,88 @@ func TestChunkLayoutDir(t *testing.T) {
 	}
 }
 
+// Independent OCI solves must overlap. This is the regression test for the
+// process-wide build.lock queue: both fake buildx commands must start before
+// either is allowed to finish. It also verifies they receive distinct OCI output
+// layout destinations — with the cache now embedded inline in each app's own
+// layout dir, distinct per-app output dirs are the safety condition for
+// concurrent exporters (the old separate per-app local cache dirs are gone).
+func TestBuildxOCIExportAllowsIndependentConcurrentSolves(t *testing.T) {
+	isolateBuildLockDir(t)
+	originalLock := buildLock
+	buildLock = &processBuildLock{}
+	defer func() { buildLock = originalLock }()
+
+	originalEnsure := ensureOCIExportBuilderForBuild
+	ensureOCIExportBuilderForBuild = func(context.Context, io.Writer) (string, error) {
+		return "wendy-oci", nil
+	}
+	defer func() { ensureOCIExportBuilderForBuild = originalEnsure }()
+
+	entered := make(chan string, 2)
+	allowFinish := make(chan struct{})
+	originalRun := runBuildxOCIExportCommand
+	runBuildxOCIExportCommand = func(_ context.Context, _ string, args, _ []string, _, _ io.Writer) error {
+		outputDest := ""
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "type=oci,dest=") {
+				outputDest = arg
+			}
+		}
+		entered <- outputDest
+		<-allowFinish
+		return nil
+	}
+	defer func() { runBuildxOCIExportCommand = originalRun }()
+
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results := make(chan error, 2)
+	for i, app := range []string{"app-a", "app-b"} {
+		dest := filepath.Join(t.TempDir(), fmt.Sprintf("layout-%d", i))
+		go func(app, dest string) {
+			results <- buildImageWithBuildxOCIExport(context.Background(), cwd, "Dockerfile", "linux/arm64", nil, dest, true, io.Discard, io.Discard)
+		}(app, dest)
+	}
+
+	outputDests := map[string]bool{}
+	for range 2 {
+		select {
+		case dest := <-entered:
+			outputDests[dest] = true
+		case <-time.After(2 * time.Second):
+			close(allowFinish)
+			t.Fatal("independent OCI solve was still queued behind the first")
+		}
+	}
+	close(allowFinish)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(outputDests) != 2 {
+		t.Fatalf("concurrent solves used %d output destinations, want 2: %v", len(outputDests), outputDests)
+	}
+}
+
 func TestBuildxOCIExportArgs(t *testing.T) {
 	t.Run("dir mode, no cache index, sorted build args", func(t *testing.T) {
-		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "/proj/Dockerfile", "/c/buildx", "/dest/layout", true,
-			map[string]string{"ZED": "2", "ALPHA": "1"}, false)
+		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "/proj/Dockerfile", "", "/dest/layout", true,
+			map[string]string{"ZED": "2", "ALPHA": "1"})
 		want := []string{
 			"buildx", "build",
 			"--builder", "wendy-oci",
 			"--platform", "linux/arm64",
 			"--progress", "plain",
 			"-f", "/proj/Dockerfile",
-			"--cache-to", "type=local,dest=/c/buildx",
+			"--cache-to", "type=inline",
 			"--build-arg", "ALPHA=1",
 			"--build-arg", "ZED=2",
-			"--output", "type=oci,dest=/dest/layout,tar=false",
+			"--output", "type=oci,dest=/dest/layout,compression=uncompressed,tar=false",
 			".",
 		}
 		if fmt.Sprint(got) != fmt.Sprint(want) {
@@ -515,15 +605,15 @@ func TestBuildxOCIExportArgs(t *testing.T) {
 		}
 	})
 	t.Run("tar mode with cache index, no dockerfile", func(t *testing.T) {
-		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "", "/c/buildx", "/tmp/image.tar", false, nil, true)
+		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "", "/c/prev-layout", "/tmp/image.tar", false, nil)
 		want := []string{
 			"buildx", "build",
 			"--builder", "wendy-oci",
 			"--platform", "linux/arm64",
 			"--progress", "plain",
-			"--cache-from", "type=local,src=/c/buildx",
-			"--cache-to", "type=local,dest=/c/buildx",
-			"--output", "type=oci,dest=/tmp/image.tar",
+			"--cache-from", "type=local,src=/c/prev-layout",
+			"--cache-to", "type=inline",
+			"--output", "type=oci,dest=/tmp/image.tar,compression=uncompressed",
 			".",
 		}
 		if fmt.Sprint(got) != fmt.Sprint(want) {

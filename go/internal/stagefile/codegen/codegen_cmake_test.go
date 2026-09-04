@@ -7,7 +7,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
 
-func TestGenerateCMakeInstallPinnedDeterministicAndBeforePip(t *testing.T) {
+func TestGenerateCMakeInstallPinnedDeterministicAndPipIsIndependent(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	out := genOne(t, spec.Stage{
 		Name: "app", From: "python:3.11-slim",
@@ -43,11 +43,55 @@ func TestGenerateCMakeInstallPinnedDeterministicAndBeforePip(t *testing.T) {
 		}
 	}
 
-	aptAt := strings.Index(out, "apt-get install")
+	appAt := strings.Index(out, " AS app\n")
+	if appAt < 0 {
+		t.Fatalf("missing app stage:\n%s", out)
+	}
+	aptAt := strings.Index(out[appAt:], "apt-get install")
+	if aptAt >= 0 {
+		aptAt += appAt
+	}
 	cmakeAt := strings.Index(out, "git init '/tmp/stagefile-cmake-0/source'")
 	pipAt := strings.Index(out, "pip install")
-	if !(aptAt >= 0 && aptAt < cmakeAt && cmakeAt < pipAt) {
-		t.Fatalf("install order must be apt -> cmake -> pip:\n%s", out)
+	overlayAt := strings.Index(out, "COPY --link --from=stagefile-pip-deps-0")
+	if !(pipAt >= 0 && pipAt < appAt && aptAt >= appAt && aptAt < cmakeAt && overlayAt > cmakeAt) {
+		t.Fatalf("pip must branch from the base while APT/CMake finish before its linked overlay:\n%s", out)
+	}
+}
+
+func TestGeneratePipOverlayCanBuildFromPriorNativeStage(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	f := &spec.File{Version: 1, Stages: []spec.Stage{
+		{
+			Name: "native", From: "python:3.11-slim",
+			Install: &spec.Install{CMake: []spec.CMakeInstall{{
+				Repository: "https://github.com/eclipse-cyclonedds/cyclonedds.git",
+				Commit:     commit,
+			}}},
+		},
+		{
+			Name: "builder", From: "native",
+			Install: &spec.Install{Pip: []spec.PipInstall{{
+				Packages: []string{"cyclonedds==0.10.2"},
+			}}},
+		},
+	}}
+	out, err := Generate(f, map[string]string{"python:3.11-slim": "sha256:abc123"}, nil, "linux/arm64", nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, want := range []string{
+		"FROM --platform=linux/arm64 python:3.11-slim@sha256:abc123 AS native",
+		"FROM --platform=linux/arm64 native AS stagefile-pip-deps-1",
+		"FROM --platform=linux/arm64 native AS builder",
+		"COPY --link --from=stagefile-pip-deps-1 /opt/stagefile/pip/root/ /",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "native@sha256:") {
+		t.Fatalf("prior stage reference was treated as an external image:\n%s", out)
 	}
 }
 

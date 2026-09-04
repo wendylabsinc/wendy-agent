@@ -212,6 +212,59 @@ func TestSchemaJSON_HTTPEntitlement(t *testing.T) {
 	}
 }
 
+// TestSchemaJSON_CameraEntitlement is a Go↔schema sync guard (WDY-2430): it
+// asserts the schema's camera oneOf branch declares additionalProperties:false
+// with a property set that exactly matches the unexported
+// allowedKeys[EntitlementCamera], reachable because this test lives in-package.
+// Without this, Go accepting "user"/"password" while the schema omits them
+// causes editors/$schema validators to reject a wendy.json that Go itself loads.
+func TestSchemaJSON_CameraEntitlement(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	entitlement := defOf(t, schema, "entitlement")
+	branches, ok := entitlement["oneOf"].([]any)
+	if !ok {
+		t.Fatal("$defs.entitlement missing oneOf")
+	}
+
+	var cameraBranch map[string]any
+	for _, raw := range branches {
+		branch, _ := raw.(map[string]any)
+		props, _ := branch["properties"].(map[string]any)
+		typeProp, _ := props["type"].(map[string]any)
+		if typeProp["const"] == "camera" {
+			cameraBranch = branch
+			break
+		}
+	}
+	if cameraBranch == nil {
+		t.Fatal("$defs.entitlement.oneOf missing camera branch")
+	}
+	if additional, ok := cameraBranch["additionalProperties"].(bool); !ok || additional {
+		t.Errorf("camera entitlement additionalProperties = %v, want false", cameraBranch["additionalProperties"])
+	}
+
+	want := make(map[string]bool)
+	for _, key := range allowedKeys[EntitlementCamera] {
+		want[key] = true
+	}
+
+	props := schemaProps(t, cameraBranch)
+	for key := range want {
+		if _, ok := props[key]; !ok {
+			t.Errorf("camera entitlement schema is missing %q, which allowedKeys[EntitlementCamera] permits", key)
+		}
+	}
+	for key := range props {
+		if !want[key] {
+			t.Errorf("camera entitlement schema declares %q, which allowedKeys[EntitlementCamera] does not permit", key)
+		}
+	}
+}
+
 func TestSchemaJSON_DeclaresROS2ExampleKeys(t *testing.T) {
 	// The flagship ROS 2 example must validate against the schema (WDY-1700):
 	// every top-level key it uses must be a declared property, else

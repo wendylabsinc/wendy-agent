@@ -13,6 +13,9 @@ wendy init
 # Create ./my-app and scaffold into it
 wendy init my-app
 
+# Already inside an empty my-app/ — scaffold here instead of nesting ./my-app/my-app
+wendy init --here my-app
+
 # Fully non-interactive
 wendy init \
   --app-id my-app \
@@ -22,13 +25,13 @@ wendy init \
   --assistant skip
 ```
 
-An `[app-id]` argument (or `--app-id`) always creates a new subdirectory of that name. With neither, the wizard offers to scaffold into the current directory instead.
+An `[app-id]` argument (or `--app-id`) always creates a new subdirectory of that name. With neither, the wizard offers to scaffold into the current directory instead. Pass `--here` to scaffold into the current directory directly instead of nesting a subdirectory — with an app ID it still writes that as `wendy.json`'s app ID; without one, it infers the app ID from the current directory's name.
 
 ## What it produces
 
-1. Picks the **target**, so template and language choices can be filtered to what that target supports.
+1. Picks the **target**, so template and language choices can be filtered to what that target supports. A concrete `--template <name>` resolves first instead: when the template supports exactly one target, the question is skipped and the target is inferred with a notice; when it supports several, the picker is narrowed to those.
 2. Picks a **template** (`--template`), or continues with the plain wizard.
-3. Picks the **language**.
+3. Picks the **language**. Skipped with a notice when the chosen template offers exactly one language.
 4. Collects **entitlements** — the capabilities the app needs. See [Entitlements](../../../apps/wendy.json.md#entitlements-1).
 5. Collects **framework** configuration — currently ROS 2. See [Frameworks](#frameworks).
 6. Writes `wendy.json` and scaffolds the project files.
@@ -40,9 +43,11 @@ An `[app-id]` argument (or `--app-id`) always creates a new subdirectory of that
 |---|---|---|
 | `wendyos` | `linux` | `swift`, `python` |
 | `darwin` (aliases: `mac`, `macos`) | `darwin` | `swift` only |
-| `wendy-lite` | `wendy-lite` | `swift` only |
+| `wendy-lite` | `wendy-lite` | `swift` only (optional WASM scaffold) |
 
 Templates may offer additional languages (for example `rust`, `node`, or `cpp`) on a `wendyos` target; the plain wizard writes `swift` or `python`.
+
+For ESP32, regular native ESP-IDF projects are recommended. Create them with the standard ESP-IDF tooling and add a `wendy.json` whose platform is `wendy-lite`; you do not need `wendy init`. The `wendy-lite` wizard target remains available for scaffolding an optional Swift/WASM guest.
 
 ## Flags
 
@@ -51,6 +56,7 @@ Templates may offer additional languages (for example `rust`, `node`, or `cpp`) 
 | Flag | Description |
 |---|---|
 | `--app-id <id>` | Application ID written to `wendy.json`. Creates a subdirectory of that name. |
+| `--here` | Scaffold into the current directory instead of creating a subdirectory. With no `[app-id]`/`--app-id`, infers the app ID from the current directory's name. |
 | `--target <name>` | Target platform: `wendyos`, `darwin`, or `wendy-lite`. Required when running non-interactively. |
 | `--language <name>` | Project language. `swift` or `python` for the plain wizard; templates may offer more. |
 | `--git-init <yes\|no>` | Initialize a git repo in the project directory. |
@@ -59,7 +65,7 @@ Templates may offer additional languages (for example `rust`, `node`, or `cpp`) 
 
 | Flag | Description |
 |---|---|
-| `--template [<name>]` | Scaffold from a template. Passing it **without** a value opens a picker filtered by target. |
+| `--template [<name>]` | Scaffold from a template. Passing it **without** a value opens a picker filtered by target, auto-selecting when only one template exists for the target. With a value, `--target` becomes optional: it is inferred when the template's metadata maps to exactly one target. |
 | `--branch <name>` | Branch of the templates repo to read templates from. |
 | `--var KEY=VALUE` | Override a template variable. Repeatable. |
 
@@ -149,8 +155,9 @@ Entitlement and framework flags are merged into the template's own `wendy.json` 
 
 `wendy init` detects whether a real terminal is attached. In CI, in scripts, and under AI agents there is none, so the interactive pickers are skipped rather than failing on a TTY that cannot be opened. Instead the CLI prints the choices as plain text and exits with an error naming the flag to pass:
 
-- **No `--target`** — prints the available targets, then errors with `--target is required when running non-interactively`.
-- **Bare `--template` with no value** — prints the templates available for the selected target, then errors with `--template requires a value when running non-interactively`. If the target has no templates at all, it errors with `no templates available for <target>` instead.
+- **No `--target`** — prints the available targets, then errors with `--target is required when running non-interactively`. With `--template <name>`, the target is inferred when the template's metadata maps to exactly one target; otherwise the error lists only that template's targets.
+- **Bare `--template` with no value** — prints the templates available for the selected target, then errors with `--template requires a value when running non-interactively`. If the target has exactly one template it is auto-selected instead; if it has none, the error is `no templates available for <target>`.
+- **Template with several languages and no `--language`** — prints the languages available for the template, then errors with `--language is required when running non-interactively`. A single-language template is auto-selected with a notice.
 - **No app ID** — errors with `an app ID is required when running non-interactively`; pass `--app-id` or the `[app-id]` argument.
 
 So discovering the valid values is a matter of running the command and reading the list:
@@ -187,6 +194,10 @@ wendy init \
 # Scaffold from a template, picking the language interactively
 wendy init --template simple-api
 
+# Target and language inferred from the template's metadata
+# (go2-rc supports only WendyOS + Python, so neither is asked)
+wendy init go2-app --template go2-rc
+
 # Non-interactive template scaffold with a variable override
 wendy init --app-id my-api --template simple-api --language rust --var PORT=8080
 
@@ -213,7 +224,7 @@ wendy init \
   --i2c-device /dev/i2c-1 \
   --assistant skip
 
-# Wendy Lite always uses Swift
+# Optional Wendy Lite Swift/WASM scaffold
 wendy init \
   --app-id lite-app \
   --target wendy-lite \

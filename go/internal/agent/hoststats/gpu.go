@@ -19,7 +19,16 @@ const maxGPUToolOutput = 64 << 10 // 64 KiB
 // name cannot corrupt downstream proto/TUI rendering.
 const maxGPUNameLen = 64
 
-// GPUStat is a single GPU's instantaneous utilization snapshot.
+// Jetson GPU work is often bursty (for example, one short inference every few
+// hundred milliseconds). A short series of samples is more representative
+// than one point that can land between bursts.
+const (
+	tegraSampleIntervalMS = 100
+	tegraSampleWindow     = 650 * time.Millisecond
+)
+
+// GPUStat is a single GPU utilization snapshot. Samplers may average over a
+// short observation window when the underlying device reports point samples.
 // Mem fields are zero when the sampler cannot report per-GPU memory — e.g.
 // Jetson unified memory, where nvidia-smi answers "[N/A]" because the GPU
 // shares host RAM. A real GPU never has 0 bytes of total memory, so zero
@@ -45,7 +54,17 @@ type GPUStat struct {
 // Memory fields are MiB. Missing/[N/A] numeric fields are left zero, which
 // renderers treat as "not applicable" (unified memory), never as a real size.
 func ParseNvidiaSMI(csv string) []GPUStat {
+	out, _ := parseNvidiaSMI(csv)
+	return out
+}
+
+// parseNvidiaSMI also reports whether the output had any numeric utilization
+// value. Jetson Orin exposes nvidia-smi, but reports utilization as [N/A];
+// callers must continue to tegrastats instead of turning that into a
+// plausible-looking 0%.
+func parseNvidiaSMI(csv string) ([]GPUStat, bool) {
 	var out []GPUStat
+	utilizationAvailable := false
 	for _, line := range strings.Split(csv, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -68,6 +87,7 @@ func ParseNvidiaSMI(csv string) []GPUStat {
 		}
 		if v, err := strconv.ParseFloat(f[2], 64); err == nil {
 			g.UtilPercent = v
+			utilizationAvailable = true
 		}
 		if v, err := strconv.ParseInt(f[3], 10, 64); err == nil {
 			g.MemUsedBytes = v * 1024 * 1024
@@ -87,7 +107,7 @@ func ParseNvidiaSMI(csv string) []GPUStat {
 		}
 		out = append(out, g)
 	}
-	return out
+	return out, utilizationAvailable
 }
 
 var (
@@ -135,10 +155,36 @@ func ParseTegrastats(line string) []GPUStat {
 	return []GPUStat{g}
 }
 
-// SampleGPU returns a one-shot GPU sample, preferring nvidia-smi (discrete GPUs)
-// and falling back to tegrastats (Jetson). Returns nil when neither tool is
-// available — callers treat that as "no GPU panel", not an error.
+// ParseTegrastatsWindow combines consecutive tegrastats lines into one GPU
+// sample. Utilization is averaged across the observation window so short GPU
+// bursts remain visible without presenting a peak as sustained utilization.
+// Temperature and power use the most recent reading.
+func ParseTegrastatsWindow(output string) []GPUStat {
+	var samples []GPUStat
+	for _, line := range strings.Split(output, "\n") {
+		if parsed := ParseTegrastats(strings.TrimSpace(line)); len(parsed) > 0 {
+			samples = append(samples, parsed[0])
+		}
+	}
+	if len(samples) == 0 {
+		return nil
+	}
+
+	combined := samples[len(samples)-1]
+	combined.UtilPercent = 0
+	for _, sample := range samples {
+		combined.UtilPercent += sample.UtilPercent
+	}
+	combined.UtilPercent /= float64(len(samples))
+	return []GPUStat{combined}
+}
+
+// SampleGPU returns GPU metrics, preferring complete nvidia-smi data (discrete
+// GPUs and newer Jetsons) and falling back to a short tegrastats window when
+// nvidia-smi reports utilization as unavailable. Returns nil when neither tool
+// is available — callers treat that as "no GPU panel", not an error.
 func SampleGPU(ctx context.Context) []GPUStat {
+	var nvidiaFallback []GPUStat
 	if path, err := exec.LookPath("nvidia-smi"); err == nil {
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
@@ -146,21 +192,36 @@ func SampleGPU(ctx context.Context) []GPUStat {
 			"--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
 			"--format=csv,noheader,nounits"))
 		if err == nil {
-			if gpus := ParseNvidiaSMI(string(out)); len(gpus) > 0 {
+			gpus, utilizationAvailable := parseNvidiaSMI(string(out))
+			if utilizationAvailable {
+				return gpus
+			}
+			nvidiaFallback = gpus
+		}
+	}
+	if path, err := exec.LookPath("tegrastats"); err == nil {
+		// JetPack 6 tegrastats does not support --count, so bound its streaming
+		// output by time. Multiple 100 ms readings catch bursty inference and
+		// replace nvidia-smi's unavailable utilization on Orin.
+		cctx, cancel := context.WithTimeout(ctx, tegraSampleWindow)
+		defer cancel()
+		out, _ := runBounded(exec.CommandContext(cctx, path,
+			"--interval", strconv.Itoa(tegraSampleIntervalMS)))
+		if strings.TrimSpace(string(out)) != "" {
+			if gpus := ParseTegrastatsWindow(string(out)); len(gpus) > 0 {
+				// Keep nvidia-smi's more specific device identity while using
+				// tegrastats for the fields that nvidia-smi cannot report.
+				if len(gpus) == 1 && len(nvidiaFallback) == 1 {
+					gpus[0].Index = nvidiaFallback[0].Index
+					gpus[0].Name = nvidiaFallback[0].Name
+					gpus[0].MemUsedBytes = nvidiaFallback[0].MemUsedBytes
+					gpus[0].MemTotalBytes = nvidiaFallback[0].MemTotalBytes
+				}
 				return gpus
 			}
 		}
 	}
-	if path, err := exec.LookPath("tegrastats"); err == nil {
-		// tegrastats streams; --interval + a short deadline yields one line.
-		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		out, _ := runBounded(exec.CommandContext(cctx, path, "--interval", "500", "--count", "1"))
-		if line := strings.TrimSpace(string(out)); line != "" {
-			return ParseTegrastats(line)
-		}
-	}
-	return nil
+	return nvidiaFallback
 }
 
 // runBounded starts cmd and returns up to maxGPUToolOutput bytes of its stdout.

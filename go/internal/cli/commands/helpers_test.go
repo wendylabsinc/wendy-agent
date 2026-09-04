@@ -1090,16 +1090,23 @@ func TestConnectWithAutoTLSDiagnostics_DoesNotWriteCacheDirectly(t *testing.T) {
 	}
 }
 
-// A proven cert rejection (a real TLS handshake happened; the cached address
-// answered) must not be retried — retrying can't fix a cert mismatch, and
-// could only replace this proven diagnostic with a weaker or misleading
-// result from a re-resolved address.
-func TestConnectWithAutoTLSDiagnostics_RejectionClassNotRetried(t *testing.T) {
+// A cert rejection against a CACHED address must be retried at the address the
+// name resolves to now.
+//
+// This used to assert the opposite, on the reasoning that a completed handshake
+// proves the cached address wasn't stale. On a network that rotates DHCP leases
+// it isn't sound: the cached address gets reassigned to a different Wendy
+// device, that device answers and legitimately fails the check, and skipping the
+// re-resolve wedged the cache entry — reporting a correct pin as an identity
+// problem, at an address the device had not held for hours. A handshake proves
+// something answered, not that the right something answered at the right place.
+func TestConnectWithAutoTLSDiagnostics_RejectionClassRetriedWhenAddressRotated(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 
-	origLoad, origLadder, origReachable, origTCP := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn, tcpDialTimeoutFn
+	origLoad, origLookup, origLadder, origReachable, origTCP := deviceCacheLoadFn, osLookupHostFn, dialAgentLadderFn, cacheFastPathReachableFn, tcpDialTimeoutFn
 	defer func() {
 		deviceCacheLoadFn = origLoad
+		osLookupHostFn = origLookup
 		dialAgentLadderFn = origLadder
 		cacheFastPathReachableFn = origReachable
 		tcpDialTimeoutFn = origTCP
@@ -1111,20 +1118,24 @@ func TestConnectWithAutoTLSDiagnostics_RejectionClassNotRetried(t *testing.T) {
 	})
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
 
-	// This entry is LKG-ineligible (MTLS unset), so the fromCache path now
-	// runs through the same TCP-bounded pre-check (Finding 2). Stub it live
-	// so the test still exercises the fromCache ladder + retry-skip logic
-	// below, not a real network dial.
+	// This entry is LKG-ineligible (MTLS unset), so the fromCache path runs
+	// through the same TCP-bounded pre-check. Stub it live so the test
+	// exercises the fromCache ladder + retry logic, not a real network dial.
 	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
 		c1, c2 := net.Pipe()
 		go c2.Close()
 		return c1, nil
 	}
 
-	calls := 0
+	// The lease moved: the name now resolves somewhere else entirely.
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		return []string{"10.0.0.9"}, nil
+	}
+
+	var dialled []string
 	rejectionErr := newTLSHandshakeRejectedError(errors.New("cert rejected"))
-	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
-		calls++
+	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		dialled = append(dialled, target.Addr)
 		return nil, nil, rejectionErr
 	}
 	cacheFastPathReachableFn = func(context.Context, *grpcclient.AgentConnection, error) bool { return false }
@@ -1134,22 +1145,24 @@ func TestConnectWithAutoTLSDiagnostics_RejectionClassNotRetried(t *testing.T) {
 
 	_, _, err := connectWithAutoTLSDiagnostics(ctx, "orin.local:50051")
 	if !errors.Is(err, errTLSHandshakeRejected) {
-		t.Fatalf("err = %v, want the original handshake-rejected error preserved unretried", err)
+		t.Fatalf("err = %v, want the handshake-rejected error to survive the retry", err)
 	}
-	if calls != 1 {
-		t.Fatalf("dialAgentLadderFn called %d times, want 1 (a proven cert rejection must not be retried)", calls)
+	if len(dialled) != 2 || dialled[0] != "10.0.0.5:50051" || dialled[1] != "10.0.0.9:50051" {
+		t.Fatalf("addresses dialled = %v, want the cached address then the freshly resolved one", dialled)
 	}
 }
 
-// A cross-org mismatch is the other rejection-class outcome (see
-// isHandshakeRejectionClass) and must equally skip the retry.
-func TestConnectWithAutoTLSDiagnostics_OrgMismatchNotRetried(t *testing.T) {
+// A cross-org mismatch is the other rejection-class outcome and must equally be
+// retried at the freshly resolved address — a reassigned lease is exactly how a
+// device from another org ends up answering at the address we cached.
+func TestConnectWithAutoTLSDiagnostics_OrgMismatchRetriedWhenAddressRotated(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 	stubOrgNameResolver(t, nil)
 
-	origLoad, origLadder, origReachable, origTCP := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn, tcpDialTimeoutFn
+	origLoad, origLookup, origLadder, origReachable, origTCP := deviceCacheLoadFn, osLookupHostFn, dialAgentLadderFn, cacheFastPathReachableFn, tcpDialTimeoutFn
 	defer func() {
 		deviceCacheLoadFn = origLoad
+		osLookupHostFn = origLookup
 		dialAgentLadderFn = origLadder
 		cacheFastPathReachableFn = origReachable
 		tcpDialTimeoutFn = origTCP
@@ -1161,14 +1174,13 @@ func TestConnectWithAutoTLSDiagnostics_OrgMismatchNotRetried(t *testing.T) {
 	})
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
 
-	// This entry is LKG-ineligible (MTLS unset), so the fromCache path now
-	// runs through the same TCP-bounded pre-check (Finding 2). Stub it live
-	// so the test still exercises the fromCache ladder + retry-skip logic
-	// below, not a real network dial.
 	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
 		c1, c2 := net.Pipe()
 		go c2.Close()
 		return c1, nil
+	}
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		return []string{"10.0.0.9"}, nil
 	}
 
 	calls := 0
@@ -1186,10 +1198,10 @@ func TestConnectWithAutoTLSDiagnostics_OrgMismatchNotRetried(t *testing.T) {
 	var mismatch orgMismatchDeviceError
 	_, _, err := connectWithAutoTLSDiagnostics(ctx, "orin.local:50051")
 	if !errors.As(err, &mismatch) {
-		t.Fatalf("err = %v (%T), want an orgMismatchDeviceError preserved unretried", err, err)
+		t.Fatalf("err = %v (%T), want an orgMismatchDeviceError", err, err)
 	}
-	if calls != 1 {
-		t.Fatalf("dialAgentLadderFn called %d times, want 1 (an org mismatch must not be retried)", calls)
+	if calls != 2 {
+		t.Fatalf("dialAgentLadderFn called %d times, want 2 (a rotated lease must be re-resolved before the mismatch is believed)", calls)
 	}
 }
 
@@ -1323,25 +1335,6 @@ func TestCacheFastPathReachable_BoundsProbeByRemainingDeadline(t *testing.T) {
 	}
 }
 
-func TestIsHandshakeRejectionClass(t *testing.T) {
-	if isHandshakeRejectionClass(nil) {
-		t.Error("nil error must not be a rejection class")
-	}
-	if isHandshakeRejectionClass(errors.New("connection refused")) {
-		t.Error("a plain connectivity error must not be a rejection class")
-	}
-	if !isHandshakeRejectionClass(newTLSHandshakeRejectedError(errors.New("boom"))) {
-		t.Error("a tlsHandshakeRejectedError must be a rejection class")
-	}
-
-	stubOrgNameResolver(t, nil)
-	certs := []config.CertificateInfo{{OrganizationID: 3}}
-	orgErr := chooseRejectionError(context.Background(), 42, certs, errors.New("boom"))
-	if !isHandshakeRejectionClass(orgErr) {
-		t.Error("an org-mismatch error must be a rejection class")
-	}
-}
-
 func TestIsMDNSShapedHost(t *testing.T) {
 	cases := []struct {
 		host string
@@ -1416,6 +1409,9 @@ func TestConnectAgentAtAddressWithProvisionedHint_SelfHealsExistingDiscoveryEntr
 		t.Fatalf("connectAgentAtAddressWithProvisionedHint: %v", err)
 	}
 	defer conn.Close()
+	if _, ok := conn.CachedAgentVersion(); !ok {
+		t.Fatal("successful plaintext liveness probe was not retained on the connection")
+	}
 
 	reloaded, err := discoverycache.LoadFrom(cachePath)
 	if err != nil {
@@ -2197,6 +2193,97 @@ func TestExternalProviderPickerItem(t *testing.T) {
 		}
 		if len(entry.mergedDevice.Externals) != 1 || entry.mergedDevice.Externals[0].ID != dev.ID {
 			t.Errorf("mergedDevice.Externals = %#v, want the source device", entry.mergedDevice.Externals)
+		}
+		// A LAN row carries no serial port, so it must not take part in the
+		// unflashed-row supersede at all.
+		if item.DedupKey != dev.DisplayName || item.Supersedes != "" {
+			t.Errorf("DedupKey = %q, Supersedes = %q, want the display name and no supersede",
+				item.DedupKey, item.Supersedes)
+		}
+	})
+
+	// An unflashed board and the same board once it identifies itself must share
+	// one row: the unflashed row is keyed by port so the identified one can
+	// retire it, instead of both display names sitting in the picker at once.
+	t.Run("unflashed USB device is keyed by port", func(t *testing.T) {
+		prov := &fakeProvider{key: "wendy-lite"}
+		dev := models.ExternalDevice{
+			ID:          "wendy-lite:/dev/cu.usbmodem2101",
+			DisplayName: "ESP32 (unflashed) — /dev/cu.usbmodem2101",
+			ProviderKey: "wendy-lite",
+			ConnectionInfo: map[string]string{
+				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "needsInstall": "true",
+			},
+		}
+		item := externalProviderPickerItem(prov, &dev)
+
+		if want := unflashedLiteDedupKey("/dev/cu.usbmodem2101"); item.DedupKey != want {
+			t.Errorf("DedupKey = %q, want %q", item.DedupKey, want)
+		}
+		if item.Supersedes != "" {
+			t.Errorf("Supersedes = %q, want empty on the unflashed row", item.Supersedes)
+		}
+		if want := strings.ToLower(dev.DisplayName); item.SortKey != want {
+			t.Errorf("SortKey = %q, want %q so the row keeps its position", item.SortKey, want)
+		}
+	})
+
+	t.Run("identified USB device supersedes the unflashed row", func(t *testing.T) {
+		prov := &fakeProvider{key: "wendy-lite"}
+		dev := models.ExternalDevice{
+			ID:          "wendy-lite:/dev/cu.usbmodem2101",
+			DisplayName: "Lite Board",
+			ProviderKey: "wendy-lite",
+			ConnectionInfo: map[string]string{
+				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "name": "lite-board",
+			},
+		}
+		item := externalProviderPickerItem(prov, &dev)
+
+		if item.DedupKey != dev.DisplayName {
+			t.Errorf("DedupKey = %q, want the display name so LAN/USB rows still merge", item.DedupKey)
+		}
+		if want := unflashedLiteDedupKey("/dev/cu.usbmodem2101"); item.Supersedes != want {
+			t.Errorf("Supersedes = %q, want %q", item.Supersedes, want)
+		}
+	})
+
+	// End to end over the picker: the reported bug was a board that stayed
+	// listed as unflashed after a later probe identified it.
+	t.Run("identified board replaces its unflashed row in the picker", func(t *testing.T) {
+		prov := &fakeProvider{key: "wendy-lite"}
+		const port = "/dev/cu.usbmodem2101"
+		unflashed := models.ExternalDevice{
+			ID:          "wendy-lite:" + port,
+			DisplayName: "ESP32 (unflashed) — " + port,
+			ProviderKey: "wendy-lite",
+			ConnectionInfo: map[string]string{
+				"type": "USB", "serialPort": port, "needsInstall": "true",
+			},
+		}
+		identified := models.ExternalDevice{
+			ID:          "wendy-lite:" + port,
+			DisplayName: "Lite Board",
+			ProviderKey: "wendy-lite",
+			ConnectionInfo: map[string]string{
+				"type": "USB", "serialPort": port, "name": "lite-board",
+			},
+		}
+
+		picker := tui.NewPicker()
+		updated, _ := picker.Update(tui.PickerAddMsg{
+			Items: []tui.PickerItem{externalProviderPickerItem(prov, &unflashed)},
+		})
+		updated, _ = updated.(tui.PickerModel).Update(tui.PickerAddMsg{
+			Items: []tui.PickerItem{externalProviderPickerItem(prov, &identified)},
+		})
+
+		view := updated.(tui.PickerModel).View()
+		if !strings.Contains(view, identified.DisplayName) {
+			t.Errorf("picker does not list the identified device:\n%s", view)
+		}
+		if strings.Contains(view, "unflashed") {
+			t.Errorf("picker still lists the superseded unflashed row:\n%s", view)
 		}
 	})
 

@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -29,8 +28,6 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-const mcpDefaultBrokerPort = "50052"
-
 type mcpCloseFunc func()
 
 func (f mcpCloseFunc) Close() error {
@@ -41,6 +38,8 @@ func (f mcpCloseFunc) Close() error {
 type mcpCloudTunnel struct {
 	cancel     context.CancelFunc
 	listener   net.Listener
+	udpConn    *net.UDPConn
+	session    *mcpDatagramSession
 	brokerConn *grpc.ClientConn
 }
 
@@ -54,6 +53,12 @@ func (t *mcpCloudTunnel) Close() error {
 	var errs []error
 	if t.listener != nil {
 		errs = append(errs, t.listener.Close())
+	}
+	if t.udpConn != nil {
+		errs = append(errs, t.udpConn.Close())
+	}
+	if t.session != nil {
+		t.session.close()
 	}
 	if t.brokerConn != nil {
 		errs = append(errs, t.brokerConn.Close())
@@ -112,13 +117,17 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("cloud_enroll_device", enrollOpts...), s.handleCloudEnrollDevice)
 
 	tunnelOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Forward a local TCP port to a port on a cloud-enrolled device"),
+		mcpgo.WithDescription("Forward a local TCP or UDP port to a port on a cloud-enrolled device"),
 		mcpgo.WithNumber("local_port",
 			mcpgo.Required(),
-			mcpgo.Description("Local TCP port to listen on (1-65535)"),
+			mcpgo.Description("Local port to listen on (1-65535)"),
 		),
 		mcpgo.WithNumber("remote_port",
 			mcpgo.Description("Remote device port (1-65535); defaults to local_port"),
+		),
+		mcpgo.WithString("protocol",
+			mcpgo.Enum("tcp", "udp"),
+			mcpgo.Description("Transport protocol to forward: tcp or udp (default tcp)"),
 		),
 		mcpgo.WithString("device_name",
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
@@ -134,6 +143,26 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	tunnelOpts = append(tunnelOpts, idempotent()...)
 	tunnelOpts = append(tunnelOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("cloud_tunnel", tunnelOpts...), s.handleCloudTunnel)
+
+	pingOpts := []mcpgo.ToolOption{
+		mcpgo.WithDescription("Ping a cloud-enrolled device through the Wendy Cloud tunnel broker using an echo request/reply over the datagram session (no ICMP sockets or privileges required)"),
+		mcpgo.WithString("device_name",
+			mcpgo.Required(),
+			mcpgo.Description("Device name"),
+		),
+		mcpgo.WithNumber("count",
+			mcpgo.Description("Number of echoes to send (default 4, max 20)"),
+		),
+		mcpgo.WithString("cloud_grpc",
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
+		),
+		mcpgo.WithString("broker_url",
+			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
+		),
+	}
+	pingOpts = append(pingOpts, readOnly()...)
+	pingOpts = append(pingOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("cloud_ping", pingOpts...), s.handleCloudPing)
 
 	runOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Build and deploy a local project to a cloud-enrolled device. Runs 'wendy cloud run' with your configured cloud credentials. The project's wendy.json entitlements (e.g. gpu, network, persistence) apply on the device; if a required entitlement is denied, the run fails with error_code ENTITLEMENT_DENIED."),
@@ -246,6 +275,13 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 	if err := validatePort(remotePort); err != nil {
 		return errResult(errCodeInvalidArgument, "remote_port "+err.Error()), nil
 	}
+	protocol := stringParam(req, "protocol")
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	if protocol != "tcp" && protocol != "udp" {
+		return errResult(errCodeInvalidArgument, `protocol must be "tcp" or "udp"`), nil
+	}
 
 	auth, err := s.cloudAuthEntry(stringParam(req, "cloud_grpc"))
 	if err != nil {
@@ -255,20 +291,62 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	brokerConn, err := mcpDialCloudBroker(auth, stringParam(req, "broker_url"))
+	brokerConn, err := clouddefaults.DialBroker(auth, stringParam(req, "broker_url"))
 	if err != nil {
-		return errResult(errCodeDeviceUnreachable, err.Error()), nil
+		return cloudErrResult(err), nil
+	}
+
+	key := fmt.Sprintf("%s:%s:%d:%d", protocol, asset.GetName(), localPort, remotePort)
+	tunnelCtx, cancel := context.WithCancel(context.Background())
+
+	if protocol == "udp" {
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: localPort})
+		if err != nil {
+			cancel()
+			_ = brokerConn.Close()
+			return errResultf(errCodeInternal, "listening on udp 127.0.0.1:%d: %s", localPort, err.Error()), nil
+		}
+		session, err := mcpOpenDatagramSession(tunnelCtx, brokerConn, auth, asset.GetId())
+		if err != nil {
+			cancel()
+			_ = pc.Close()
+			_ = brokerConn.Close()
+			return errResult(errCodeDeviceUnreachable, mcpDatagramOpenError(err, asset.GetName()).Error()), nil
+		}
+
+		tunnel := &mcpCloudTunnel{cancel: cancel, udpConn: pc, session: session, brokerConn: brokerConn}
+		s.mu.Lock()
+		if existing := s.cloudTunnels[key]; existing != nil {
+			_ = existing.Close()
+		}
+		s.cloudTunnels[key] = tunnel
+		s.mu.Unlock()
+
+		go func() {
+			defer pc.Close()
+			defer session.close()
+			_ = mcpServeUDPForward(tunnelCtx, pc, session, uint32(remotePort), mcpUDPFlowIdleTimeout)
+		}()
+
+		out := map[string]any{
+			"id":          key,
+			"protocol":    protocol,
+			"local_addr":  pc.LocalAddr().String(),
+			"device_name": asset.GetName(),
+			"asset_id":    asset.GetId(),
+			"remote_port": remotePort,
+		}
+		return okResult(out), nil
 	}
 
 	listenAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
+		cancel()
 		_ = brokerConn.Close()
 		return errResultf(errCodeInternal, "listening on %s: %s", listenAddr, err.Error()), nil
 	}
-	tunnelCtx, cancel := context.WithCancel(context.Background())
 	tunnel := &mcpCloudTunnel{cancel: cancel, listener: ln, brokerConn: brokerConn}
-	key := fmt.Sprintf("%s:%d:%d", asset.GetName(), localPort, remotePort)
 	s.mu.Lock()
 	if existing := s.cloudTunnels[key]; existing != nil {
 		_ = existing.Close()
@@ -288,10 +366,63 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 
 	out := map[string]any{
 		"id":          key,
+		"protocol":    protocol,
 		"local_addr":  ln.Addr().String(),
 		"device_name": asset.GetName(),
 		"asset_id":    asset.GetId(),
 		"remote_port": remotePort,
+	}
+	return okResult(out), nil
+}
+
+func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	deviceName := stringParam(req, "device_name")
+	if deviceName == "" {
+		return errResult(errCodeInvalidArgument, "device_name is required"), nil
+	}
+	count := intParam(req, "count", 4)
+	if count < 1 || count > 20 {
+		return errResult(errCodeInvalidArgument, "count must be between 1 and 20"), nil
+	}
+
+	auth, err := s.cloudAuthEntry(stringParam(req, "cloud_grpc"))
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	asset, err := s.pickCloudAsset(ctx, auth, deviceName)
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	brokerConn, err := clouddefaults.DialBroker(auth, stringParam(req, "broker_url"))
+	if err != nil {
+		return errResult(errCodeDeviceUnreachable, err.Error()), nil
+	}
+	defer brokerConn.Close()
+
+	session, err := mcpOpenDatagramSession(ctx, brokerConn, auth, asset.GetId())
+	if err != nil {
+		return errResult(errCodeDeviceUnreachable, mcpDatagramOpenError(err, asset.GetName()).Error()), nil
+	}
+	defer session.close()
+
+	stats := mcpRunPingLoop(ctx, session, asset.GetName(), count, time.Second, io.Discard)
+	if stats.Received == 0 {
+		if stats.Err != nil {
+			// A genuine transport error (PermissionDenied, Unauthenticated,
+			// mesh-disabled, ...) ended the recv loop — surface it instead of
+			// the generic hint. mcpDatagramOpenError still folds
+			// DeadlineExceeded/Unavailable into that same hint.
+			return errResult(codeFromGRPC(stats.Err), mcpDatagramOpenError(stats.Err, asset.GetName()).Error()), nil
+		}
+		return errResultf(errCodeDeviceUnreachable, "no replies from %s: the device may be offline or need a WendyOS update for ping support", asset.GetName()), nil
+	}
+
+	out := map[string]any{
+		"sent":       stats.Sent,
+		"received":   stats.Received,
+		"min_rtt_ms": stats.Min.Seconds() * 1000,
+		"avg_rtt_ms": stats.Avg.Seconds() * 1000,
+		"max_rtt_ms": stats.Max.Seconds() * 1000,
 	}
 	return okResult(out), nil
 }
@@ -403,7 +534,7 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 	if err != nil {
 		return nil, nil, err
 	}
-	brokerConn, err := mcpDialCloudBroker(auth, brokerURL)
+	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -470,15 +601,16 @@ func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig,
 	if err != nil {
 		return nil, err
 	}
-	if len(assets) == 0 {
-		return nil, &cloudResolveErr{code: errCodeNotFound, msg: "no enrolled devices found for this org; enroll a device with cloud_enroll_device"}
-	}
 	if deviceName == "" {
+		if len(assets) == 0 {
+			return nil, &cloudResolveErr{code: errCodeNotFound, msg: "no enrolled devices found for this org; enroll a device with cloud_enroll_device"}
+		}
 		if len(assets) == 1 {
 			return assets[0], nil
 		}
 		return nil, &cloudResolveErr{code: errCodeInvalidArgument, msg: "multiple cloud devices found; pass device_name"}
 	}
+
 	lower := strings.ToLower(deviceName)
 	var matched *cloudpb.Asset
 	for _, a := range assets {
@@ -490,9 +622,59 @@ func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig,
 		}
 	}
 	if matched == nil {
-		return nil, &cloudResolveErr{code: errCodeNotFound, msg: fmt.Sprintf("no device named %q found; call cloud_discover to list devices", deviceName)}
+		// Numeric asset-id fallback: allows targeting unnamed (or
+		// differently-named) devices by id, mirroring resolveCloudAsset's
+		// fallback in commands/cloud_tunnel.go. No ambiguity check here —
+		// ids are unique, unlike names, so unlike the name loop above a
+		// second match can't happen.
+		if id, err := strconv.Atoi(strings.TrimSpace(deviceName)); err == nil {
+			for _, a := range assets {
+				if a.GetId() == int32(id) {
+					matched = a
+					break
+				}
+			}
+		}
 	}
-	return matched, nil
+	if matched != nil {
+		return matched, nil
+	}
+
+	// No match in the online-only listing (by name or id), including the
+	// degenerate case where that listing was empty. Re-check the
+	// offline-inclusive listing before concluding the device doesn't exist:
+	// it may just be enrolled-but-unreachable right now.
+	if err := s.offlineDeviceErr(ctx, auth, deviceName); err != nil {
+		return nil, err
+	}
+	return nil, &cloudResolveErr{code: errCodeNotFound, msg: fmt.Sprintf("no device named %q found; call cloud_discover to list devices", deviceName)}
+}
+
+// offlineDeviceErr distinguishes "enrolled but currently offline" from
+// "never enrolled" once the online-only asset listing has failed to produce
+// a match for deviceName. It re-queries the cloud without the online-only
+// filter; if the device turns up there (by name or numeric id — see
+// clouddefaults.FindAssetByNameOrID), it's enrolled but unreachable right
+// now, so that's reported as errCodeDeviceUnreachable instead of the
+// generic NOT_FOUND the caller would otherwise return. Returns nil (not an
+// error) both when the re-query also misses AND when the re-query itself
+// fails (e.g. a transient cloud-API outage) — in both cases the caller's
+// original NOT_FOUND message is preserved unchanged, mirroring
+// upgradeOfflineResolveErr in commands/cloud_tunnel.go. Surfacing a re-query
+// transport failure here instead would route through
+// cloudErrResult/codeFromGRPC and, for an Unavailable-shaped status,
+// mislabel a cloud-API outage as DEVICE_UNREACHABLE — implying this
+// specific device is known-and-offline, when the lookup itself simply
+// couldn't be completed.
+func (s *mcpServer) offlineDeviceErr(ctx context.Context, auth *config.AuthConfig, deviceName string) error {
+	all, err := mcpListCloudAssets(ctx, auth, "", false)
+	if err != nil {
+		return nil
+	}
+	if clouddefaults.FindAssetByNameOrID(all, deviceName) == nil {
+		return nil
+	}
+	return &cloudResolveErr{code: errCodeDeviceUnreachable, msg: fmt.Sprintf("device %q is enrolled but currently reported offline; check the device's power and network connection, or call cloud_discover with online_only=false to list enrolled devices", deviceName)}
 }
 
 func mcpCreateAssetEnrollmentToken(ctx context.Context, auth *config.AuthConfig, name string) (*cloudpb.CreateAssetEnrollmentTokenResponse, error) {
@@ -586,7 +768,7 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
 	var transport grpc.DialOption
-	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
 		certInfo := auth.Certificates[0]
 		keyPEM, err := certInfo.PrivateKeyPEM()
 		if err != nil {
@@ -608,54 +790,6 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	conn, err := grpc.NewClient(auth.CloudGRPC, transport)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
-	}
-	return conn, nil
-}
-
-func mcpDialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientConn, error) {
-	brokerURL = clouddefaults.BrokerURL(auth.CloudGRPC, brokerURL, mcpDefaultBrokerPort)
-	if len(auth.Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	certInfo := auth.Certificates[0]
-	keyPEM, err := certInfo.PrivateKeyPEM()
-	if err != nil {
-		return nil, fmt.Errorf("loading client key: %w", err)
-	}
-	tlsCfg, err := certs.LoadTLSConfig(
-		certInfo.PemCertificate,
-		certInfo.PemCertificateChain,
-		keyPEM,
-		"",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("loading broker TLS config: %w", err)
-	}
-	// Broker cert CN is localhost and won't match the cloud host — skip hostname
-	// verification but still validate the chain against the Wendy CA.
-	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain)) {
-		return nil, fmt.Errorf("no valid CA certificates in PemCertificateChain")
-	}
-	tlsCfg.InsecureSkipVerify = true //nolint:gosec
-	tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
-		if len(cs.PeerCertificates) == 0 {
-			return fmt.Errorf("broker presented no TLS certificate")
-		}
-		intermediates := x509.NewCertPool()
-		for _, c := range cs.PeerCertificates[1:] {
-			intermediates.AddCert(c)
-		}
-		_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-			Roots:         caPool,
-			Intermediates: intermediates,
-			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		})
-		return err
-	}
-	conn, err := grpc.NewClient(brokerURL, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
-	if err != nil {
-		return nil, fmt.Errorf("connecting to broker at %s: %w", brokerURL, err)
 	}
 	return conn, nil
 }

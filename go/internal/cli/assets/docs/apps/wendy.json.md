@@ -40,7 +40,7 @@ Target platform. One of:
 |-------|-------------|
 | `linux` | Linux edge device; the device architecture is inferred |
 | `wendyos` | Compatibility alias for `linux`; passed to container builders as `linux` |
-| `wendy-lite` | ESP32 WASM target |
+| `wendy-lite` | ESP32 target for native ESP-IDF or WASM apps |
 | `darwin` | Native macOS app running through Headless Mac |
 | `linux/arm64`, `linux/amd64`, etc. | Explicit Linux architecture target |
 
@@ -177,7 +177,7 @@ Prefer `openURL` over a `cli` command that shells out to a platform-specific ope
 
 > **Note:** `hooks.postStart.agent` is executed directly on the device, not through a shell. Shell features such as pipes (`|`), redirects (`>`), command chaining (`;`, `&&`), and command substitution (`$(...)`) are **not** interpreted — they are passed through as literal arguments. If you need them, put the logic in a script file (e.g. `/app/post-start.sh`) and invoke that. `${WENDY_APP_ID}`, `${WENDY_HOSTNAME}`, `${WENDY_SERVICE_NAME}` (the declaring service's name; empty for single-container apps), and environment variables are still expanded.
 
-For multi-service apps, declare `hooks` per service under `services.<name>.hooks` instead of (or in addition to) the top-level field. A top-level `hooks` becomes an app-level fallback that fires once after every service has started; its `postStart.agent` is ignored for multi-service apps, since there is no app-level container to run it in — `wendy run` warns about this when it loads `wendy.json`. See [Readiness and lifecycle hooks](./wendy-services.md#readiness-and-lifecycle-hooks) for the full scoping and attached/detached rules.
+For multi-service apps, declare `hooks` per service under `services.<name>.hooks` instead of (or in addition to) the top-level field. A top-level `hooks` becomes an app-level fallback that fires once after every service has started; its `postStart.agent` is ignored for multi-service apps, since there is no single app-level container start to trigger it — `wendy run` warns about this when it loads `wendy.json`. See [Readiness and lifecycle hooks](./wendy-services.md#readiness-and-lifecycle-hooks) for the full scoping and attached/detached rules.
 
 ### `python`
 
@@ -304,6 +304,7 @@ Hardware-dependent GPU or board-telemetry access.
 | Host hardware | Grant |
 |---------------|-------|
 | NVIDIA Jetson | NVIDIA CDI specs, CUDA env vars, `/dev/nvidia*` |
+| AMD (ROCm) | `/dev/kfd` (compute) and `/dev/dri/renderD*` (GPU), plus the `render`/`video` groups |
 | Raspberry Pi | `/dev/vcio` (VideoCore mailbox) for board telemetry — power, voltage/current, temperature, throttling, Pi 5 PMIC ADC |
 | Other | No hardware-specific grant |
 
@@ -316,11 +317,16 @@ Camera / V4L2 device access.
 ```json
 { "type": "camera" }
 { "type": "camera", "allowlist": ["/dev/video0"] }
+{ "type": "camera", "user": "admin", "password": "secret" }
 ```
 
 | Field | Description |
 |-------|-------------|
 | `allowlist` | Restrict access to specific device paths. Omit to allow all cameras. |
+| `user` | Username for a registered IP camera. Ignored for local cameras. |
+| `password` | Password for a registered IP camera. Ignored for local cameras. |
+
+> **Security:** `user`/`password` set here are stored in **plaintext** in `wendy.json` and deployed as-is. Prefer the interactive `wendy device camera login` command, which keeps credentials out of the app config.
 
 ### `audio`
 
@@ -420,11 +426,7 @@ HID input device access (barcode scanners, keyboards, etc.).
 
 ### `mcp`
 
-Registers the container as a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server. When this entitlement is present the wendy agent:
-
-1. Stores the port in the container's `sh.wendy/mcp.port` label.
-2. Exposes the container's tools through `wendy mcp serve` so that AI assistants (Claude Desktop, etc.) can call them automatically.
-3. Makes the port available via the `StreamMCP` gRPC API for secure proxying.
+Registers the container as a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server. When this entitlement is present, the wendy agent exposes the container's tools through `wendy mcp serve` so that AI assistants (Claude Desktop, etc.) can call them automatically.
 
 ```json
 { "type": "mcp", "port": 3000 }
@@ -447,7 +449,7 @@ The container must serve the [MCP Streamable HTTP](https://modelcontextprotocol.
 
 ### `http`
 
-Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContainer.http_port`) for any client — including `wendy device apps` and remote management apps — to discover and open. `wendy run` uses it automatically: it waits for the port to accept connections before printing "App reachable at ..." and opens it in your default browser, with no extra `hooks.postStart` configuration required. If readiness times out, the CLI warns but does not print the success message or perform this automatic browser open.
+Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContainer.http_port`) for any client — including `wendy device apps` and remote management apps — to discover and open. An attached `wendy run` uses it automatically: it waits for the port to accept connections before printing "App reachable at ..." and opens it in your default browser, with no extra `hooks.postStart` configuration required. If readiness times out, the CLI warns but does not print the success message or perform this automatic browser open.
 
 ```json
 { "type": "http", "port": 8080 }
@@ -504,18 +506,12 @@ changed, or differently cased requests—returns `ALREADY_EXISTS`; it does not
 replay success. A local validation or rate-limit rejection occurs before Cloud
 and leaves that UUID valid for retry. Selector categories have union semantics.
 The agent accepts at most 100 selector entries, then normalizes and deduplicates
-them; Cloud resolves at most 10,000 recipients. The socket handler stamps Cloud
-`app_id` from trusted container metadata. Wendy Cloud stores
-that identity as `created_by_app_id` and derives `created_by_asset_id` and
-organization identity from the provisioned device certificate; none of those
-identities can be supplied by the app.
+them; Cloud resolves at most 10,000 recipients. An app cannot supply its own
+app, device, or organization identity; the agent and Cloud derive those from
+trusted device identity.
 
-Each send has a 15-second Cloud deadline. The per-app host directory lives under
-`/var/lib/wendy/app-system`, so its inode remains stable while the agent/daemon
-restarts and recreates `system.sock` from persisted container labels. Running
-containers reconnect on their next call without a redeploy. Multi-service
-ownership is reference-counted and the directory is removed after the last
-entitled container is deleted.
+The socket is recreated after an agent restart, so running containers reconnect
+on their next call without a redeploy.
 
 > **Security:** `notifications` exposes only entitled app-facing APIs. It does
 > not expose `WENDY_AGENT_SOCKET` or any app/device administration RPC.

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
@@ -326,16 +328,35 @@ func TestNativeStateRoundTrip(t *testing.T) {
 		t.Fatal("missing state must load as not-ok")
 	}
 	want := nativeState{
-		DepsHash:        "sha256:aaa",
-		ManifestDigest:  "sha256:bbb",
-		AppLayerDigests: []string{"sha256:ccc"},
+		DepsHash:          "sha256:aaa",
+		ManifestDigest:    "sha256:bbb",
+		AppLayerDigests:   []string{"sha256:ccc"},
+		AppLayerPositions: []int{2},
 	}
 	if err := saveNativeState(dir, want); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := loadNativeState(dir)
-	if !ok || got.DepsHash != want.DepsHash || got.ManifestDigest != want.ManifestDigest || len(got.AppLayerDigests) != 1 || got.AppLayerDigests[0] != "sha256:ccc" {
+	if !ok || got.DepsHash != want.DepsHash || got.ManifestDigest != want.ManifestDigest || len(got.AppLayerDigests) != 1 || got.AppLayerDigests[0] != "sha256:ccc" || len(got.AppLayerPositions) != 1 || got.AppLayerPositions[0] != 2 {
 		t.Fatalf("round-trip mismatch: %+v ok=%v", got, ok)
+	}
+
+	for name, state := range map[string]nativeState{
+		"missing positions": {
+			DepsHash: "sha256:aaa", ManifestDigest: "sha256:bbb", AppLayerDigests: []string{"sha256:ccc"},
+		},
+		"duplicate positions": {
+			DepsHash: "sha256:aaa", ManifestDigest: "sha256:bbb", AppLayerDigests: []string{"sha256:ccc", "sha256:ddd"}, AppLayerPositions: []int{2, 2},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := saveNativeState(dir, state); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := loadNativeState(dir); ok {
+				t.Fatal("invalid position mapping must load as not-ok")
+			}
+		})
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte("{corrupt"), 0o600); err != nil {
@@ -404,6 +425,159 @@ func writeTwoLayerLayoutDir(t *testing.T, dir string, depsTar, appTar []byte, wo
 		"blobs/sha256/" + sha256Hex(appTar):  appTar,
 	})
 	return appDigest
+}
+
+// writeLayerLayoutDir builds a layout with an arbitrary ordered layer list and
+// aligned diff IDs. Layers are uncompressed tar blobs, which exercises the
+// same reader path as buildx's OCI exporter without making tests depend on
+// Docker.
+func writeLayerLayoutDir(t *testing.T, dir string, layerTars [][]byte, workingDir string) []string {
+	t.Helper()
+	digests := make([]string, len(layerTars))
+	diffIDs := make([]string, len(layerTars))
+	descs := make([]ociManifestDesc, len(layerTars))
+	entries := map[string][]byte{
+		"oci-layout": []byte(`{"imageLayoutVersion":"1.0.0"}`),
+	}
+	for i, layer := range layerTars {
+		digests[i] = "sha256:" + sha256Hex(layer)
+		diffIDs[i] = digests[i]
+		descs[i] = ociManifestDesc{
+			MediaType: "application/vnd.oci.image.layer.v1.tar",
+			Digest:    digests[i],
+			Size:      int64(len(layer)),
+		}
+		entries["blobs/sha256/"+sha256Hex(layer)] = layer
+	}
+	config, err := json.Marshal(map[string]any{
+		"architecture": "arm64",
+		"os":           "linux",
+		"config":       map[string]any{"WorkingDir": workingDir},
+		"rootfs":       map[string]any{"type": "layers", "diff_ids": diffIDs},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configDigest := "sha256:" + sha256Hex(config)
+	manifest, err := json.Marshal(ociManifest{
+		SchemaVersion: 2,
+		MediaType:     "application/vnd.oci.image.manifest.v1+json",
+		Config: ociManifestDesc{
+			MediaType: "application/vnd.oci.image.config.v1+json",
+			Digest:    configDigest,
+			Size:      int64(len(config)),
+		},
+		Layers: descs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDigest := "sha256:" + sha256Hex(manifest)
+	index, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"manifests": []map[string]any{{
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest":    manifestDigest,
+			"size":      len(manifest),
+			"platform":  map[string]any{"os": "linux", "architecture": "arm64"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries["index.json"] = index
+	entries["blobs/sha256/"+sha256Hex(config)] = config
+	entries["blobs/sha256/"+sha256Hex(manifest)] = manifest
+	writeOCILayoutDir(t, dir, entries)
+	return digests
+}
+
+func TestNativeAppLayerPositions(t *testing.T) {
+	sf := &spec.File{Stages: []spec.Stage{{Copy: []spec.CopyEntry{
+		{From: "local", Paths: []string{"a"}},
+		{From: "builder", Paths: []string{"/out"}},
+		{From: "local", Paths: []string{"b"}},
+	}}}}
+	got, ok := nativeAppLayerPositions(7, sf)
+	if !ok || len(got) != 2 || got[0] != 4 || got[1] != 6 {
+		t.Fatalf("nativeAppLayerPositions = %v, %v; want [4 6], true", got, ok)
+	}
+	if _, ok := nativeAppLayerPositions(2, sf); ok {
+		t.Fatal("a manifest shorter than the complete final copy list must be rejected")
+	}
+	sf.Stages[0].Build = &spec.Build{Lang: "go"}
+	if _, ok := nativeAppLayerPositions(7, sf); ok {
+		t.Fatal("a final-stage build after copy layers must be rejected")
+	}
+}
+
+func TestAdoptNativeLayersInterleavedWithStageCopies(t *testing.T) {
+	proj := t.TempDir()
+	writeFile(t, proj, "a.txt", "a-v1\n")
+	writeFile(t, proj, "b.txt", "b-v1\n")
+	sf := &spec.File{Version: 1, Stages: []spec.Stage{
+		{Name: "builder", From: "debian:12"},
+		{Name: "app", From: "debian:12", Copy: []spec.CopyEntry{
+			{From: "local", Paths: []string{"a.txt"}, Dest: "app/"},
+			{From: "builder", Paths: []string{"/out"}, Dest: "/runtime/out"},
+			{From: "local", Paths: []string{"b.txt"}, Dest: "app/"},
+		}},
+	}}
+
+	baseTar := tarBytes(t, map[string]string{"usr/lib/base": "base"})
+	aTar := tarBytes(t, map[string]string{"app/": "", "app/a.txt": "a-v1\n"})
+	bTar := tarBytes(t, map[string]string{"app/": "", "app/b.txt": "b-v1\n"})
+	// Deliberately duplicate the following local layer blob. Digest-only
+	// splicing would find this cross-stage layer first and replace the wrong
+	// descriptor; explicit instruction positions must leave it untouched.
+	crossStageTar := bTar
+	dir := t.TempDir()
+	original := writeLayerLayoutDir(t, dir, [][]byte{baseTar, aTar, crossStageTar, bTar}, "/")
+
+	ok, err := adoptNativeLayers(dir, "linux/arm64", proj, sf, "sha256:deps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("adoption should accept verified local copies interleaved with stage copies")
+	}
+	st, stateOK := loadNativeState(dir)
+	if !stateOK || len(st.AppLayerPositions) != 2 || st.AppLayerPositions[0] != 1 || st.AppLayerPositions[1] != 3 {
+		t.Fatalf("state positions = %+v, ok=%v; want [1 3]", st, stateOK)
+	}
+	layers, _, err := readOCILayoutDirLayers(dir, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layers[0].Digest != original[0] || layers[2].Digest != original[2] {
+		t.Fatal("adoption changed a base or interleaved cross-stage layer")
+	}
+	if layers[1].Digest == original[1] || layers[3].Digest == original[3] {
+		t.Fatal("adoption did not replace both mapped local-copy layers")
+	}
+
+	firstNative := layers[1].Digest
+	writeFile(t, proj, "b.txt", "b-v2\n")
+	rebuilt, err := tryNativeRebuild(dir, "linux/arm64", proj, sf, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rebuilt {
+		t.Fatal("interleaved local copies should rebuild without buildx")
+	}
+	layers, _, err = readOCILayoutDirLayers(dir, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layers[0].Digest != original[0] || layers[2].Digest != original[2] {
+		t.Fatal("native rebuild changed a base or interleaved cross-stage layer")
+	}
+	if layers[1].Digest != firstNative {
+		t.Fatal("unchanged first local-copy layer changed")
+	}
+	if layers[3].Digest == st.AppLayerDigests[1] {
+		t.Fatal("edited second local-copy layer did not change")
+	}
 }
 
 func TestAdoptAndSpliceNativeLayers(t *testing.T) {
@@ -483,6 +657,75 @@ func TestAdoptAndSpliceNativeLayers(t *testing.T) {
 	st2, _ := loadNativeState(dir)
 	if st2 == nil || st2.AppLayerDigests[0] != layers2[1].Digest {
 		t.Fatal("state must track the rebuilt layer")
+	}
+
+	// A second pass with byte-identical app inputs must be a true no-op. In
+	// particular, do not rewrite index/state merely because the native fast path
+	// was entered; those writes made zero-change Compose runs look dirty.
+	indexPath := filepath.Join(dir, "index.json")
+	statePath := filepath.Join(dir, nativeStateName)
+	indexBefore, err := os.Stat(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateBefore, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	unchanged, err := tryNativeRebuild(dir, "linux/arm64", proj, sf, st2)
+	if err != nil || !unchanged {
+		t.Fatalf("unchanged native rebuild = %v, %v", unchanged, err)
+	}
+	indexAfter, _ := os.Stat(indexPath)
+	stateAfter, _ := os.Stat(statePath)
+	if !indexAfter.ModTime().Equal(indexBefore.ModTime()) || !stateAfter.ModTime().Equal(stateBefore.ModTime()) {
+		t.Fatal("unchanged native rebuild rewrote index.json or state.json")
+	}
+}
+
+func TestBuildOrUpdateOCILayoutSkipsBuildxAfterAdoption(t *testing.T) {
+	proj := t.TempDir()
+	writeFile(t, proj, "build.stagefile.yaml", `version: 1
+stages:
+  - name: app
+    from: python:3.11-slim
+    copy:
+      - from: local
+        paths: [main.py]
+        dest: app/
+`)
+	writeFile(t, proj, "Dockerfile.generated", "FROM python:3.11-slim AS app\nCOPY main.py app/\n")
+	writeFile(t, proj, "main.py", "print('v1')\n")
+
+	layout := t.TempDir()
+	buildxCalls := 0
+	buildx := func() error {
+		buildxCalls++
+		depsTar := tarBytes(t, map[string]string{"usr/lib/python/dep.py": "dep"})
+		appTar := tarBytes(t, map[string]string{"app/": "", "app/main.py": "print('v1')\n"})
+		writeTwoLayerLayoutDir(t, layout, depsTar, appTar, "")
+		return nil
+	}
+
+	native, err := buildOrUpdateOCILayout(proj, "Dockerfile.generated", "linux/arm64", nil, layout, buildx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if native || buildxCalls != 1 {
+		t.Fatalf("first build: native=%v buildxCalls=%d, want false/1", native, buildxCalls)
+	}
+	if _, ok := loadNativeState(layout); !ok {
+		t.Fatal("first build should adopt native app layers")
+	}
+
+	writeFile(t, proj, "main.py", "print('v2')\n")
+	native, err = buildOrUpdateOCILayout(proj, "Dockerfile.generated", "linux/arm64", nil, layout, buildx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !native || buildxCalls != 1 {
+		t.Fatalf("warm app edit: native=%v buildxCalls=%d, want true/1", native, buildxCalls)
 	}
 }
 
@@ -586,11 +829,11 @@ func TestNativeBuildEligibility(t *testing.T) {
 		}
 	})
 
-	t.Run("local copy before a stage copy is ineligible", func(t *testing.T) {
+	t.Run("local copy before a stage copy is eligible", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, dir, "build.stagefile.yaml", "version: 1\nstages:\n  - name: builder\n    from: golang:1\n    copy:\n      - from: local\n        paths: [main.go]\n  - name: app\n    from: debian:12\n    copy:\n      - from: local\n        paths: [main.go]\n      - from: builder\n        paths: [/out]\n        dest: /out\n")
-		if _, ok := nativeBuildEligibility(dir, "Dockerfile.generated"); ok {
-			t.Fatal("local copies must be the final layers to be eligible")
+		if _, ok := nativeBuildEligibility(dir, "Dockerfile.generated"); !ok {
+			t.Fatal("interleaved local and stage copies should be eligible")
 		}
 	})
 

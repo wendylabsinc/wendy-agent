@@ -6,6 +6,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -113,7 +114,7 @@ func TestNewOSInstallCmd_SinglePositionalArgRejected(t *testing.T) {
 }
 
 func TestNewOSInstallCmd_ESP32DeviceTypeRejected(t *testing.T) {
-	for _, dt := range []string{"esp32-c6", "esp32-c5"} {
+	for _, dt := range []string{"esp32-c5", "esp32-c6", "esp32-c61", "esp32-p4", "esp32-s3"} {
 		t.Run(dt, func(t *testing.T) {
 			cmd := newOSInstallCmd()
 			cmd.SetArgs([]string{"--device-type", dt})
@@ -1355,6 +1356,72 @@ func TestShouldPromptFlashMode(t *testing.T) {
 	for _, tc := range tests {
 		if got := shouldPromptFlashMode(tc.deviceType, tc.installMode, tc.rootfsOnlyExplicit, tc.storageOverride, tc.interactive); got != tc.want {
 			t.Errorf("%s: shouldPromptFlashMode = %v; want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestFlashRetryAction covers installESP32Firmware's post-flash decision
+// rules. The load-bearing case is cancellation: tui.ProgressModel reports q,
+// Ctrl+C and SIGINT as context.Canceled, and the retry prompt defaults to Yes,
+// so a cancelled flash must never come back as retryable.
+func TestFlashRetryAction(t *testing.T) {
+	genericErr := errors.New("sync: failed to sync with ESP32 bootloader")
+	busyErr := fmt.Errorf("%w: opening USB device /dev/fake", errPortBusy)
+
+	tests := []struct {
+		name        string
+		flashErr    error
+		interactive bool
+		wantRetry   bool
+		wantFatal   error // errors.Is target; nil means "fatal must be nil"
+	}{
+		{"success interactive", nil, true, false, nil},
+		{"success non-interactive", nil, false, false, nil},
+
+		// Cancellation is fatal in both modes, and is returned unwrapped so
+		// callers up the stack can still recognise it.
+		{"cancelled interactive", context.Canceled, true, false, context.Canceled},
+		{"cancelled non-interactive", context.Canceled, false, false, context.Canceled},
+		{"cancelled wrapped", fmt.Errorf("flash: %w", context.Canceled), true, false, context.Canceled},
+
+		{"busy interactive", busyErr, true, true, nil},
+		{"busy non-interactive", busyErr, false, false, errPortBusy},
+
+		{"generic interactive", genericErr, true, true, nil},
+		{"generic non-interactive", genericErr, false, false, genericErr},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			retry, fatal := flashRetryAction(tt.flashErr, tt.interactive)
+
+			if retry != tt.wantRetry {
+				t.Errorf("retry = %v, want %v", retry, tt.wantRetry)
+			}
+			if tt.wantFatal == nil {
+				if fatal != nil {
+					t.Errorf("fatal = %v, want nil", fatal)
+				}
+			} else if !errors.Is(fatal, tt.wantFatal) {
+				t.Errorf("fatal = %v, want one matching %v", fatal, tt.wantFatal)
+			}
+			if retry && fatal != nil {
+				t.Errorf("retry and fatal are mutually exclusive, got retry=%v fatal=%v", retry, fatal)
+			}
+		})
+	}
+}
+
+// A cancelled flash must be fatal no matter what the interactive flag says —
+// the single most important property of flashRetryAction.
+func TestFlashRetryAction_CancellationNeverRetries(t *testing.T) {
+	for _, interactive := range []bool{true, false} {
+		retry, fatal := flashRetryAction(context.Canceled, interactive)
+		if retry {
+			t.Errorf("interactive=%v: retry = true, want false on cancellation", interactive)
+		}
+		if !errors.Is(fatal, context.Canceled) {
+			t.Errorf("interactive=%v: fatal = %v, want context.Canceled", interactive, fatal)
 		}
 	}
 }

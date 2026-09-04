@@ -1,0 +1,14 @@
+{
+  "title": "Hello Python",
+  "description": "Small Wendy HTTP example running on the device.",
+  "category": "Example",
+  "safety": "view",
+  "links": [
+    {
+      "label": "Open demo",
+      "port": 8000,
+      "path": "/",
+      "kind": "ui"
+    }
+  ]
+}

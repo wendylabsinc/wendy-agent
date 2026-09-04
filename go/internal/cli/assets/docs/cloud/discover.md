@@ -29,7 +29,7 @@ If no devices are found, a descriptive message is shown instead:
 
 ## Asset limit
 
-To prevent unbounded memory growth from a misbehaving backend, `cloud discover` caps results at **10 000 devices**. If the backend streams more than 10 000 assets, the command exits with an error:
+`cloud discover` caps results at **10,000 devices**. If more are returned, the command exits with an error:
 
 ```
 cloud returned more than 10000 devices

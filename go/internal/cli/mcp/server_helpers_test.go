@@ -128,6 +128,8 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args map[string]a
 		return s.handleCloudEnrollDevice(ctx, req)
 	case "cloud_tunnel":
 		return s.handleCloudTunnel(ctx, req)
+	case "cloud_ping":
+		return s.handleCloudPing(ctx, req)
 	case "run":
 		return s.handleRun(ctx, req)
 	default:

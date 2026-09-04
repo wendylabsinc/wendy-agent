@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -29,12 +31,25 @@ func main() {
 	memguard.Start()
 	cmd := commands.NewRootCmd()
 
+	// A Bubble Tea program (device picker, spinners, progress bars) calls
+	// signal.Notify then signal.Stop for SIGINT/SIGTERM on every run
+	// (bubbletea's handleSignals). Stop only detaches its own channel — Go's
+	// os/signal never restores the pre-Notify default (process-terminating)
+	// disposition once Notify has been called, so after the first TUI exits,
+	// a bare SIGINT is silently swallowed for the rest of the process and any
+	// unbounded call made afterward (e.g. an RPC to a selected device) can
+	// never be interrupted. Keeping our own listener registered for the whole
+	// process lifetime, and threading its cancellation through every command's
+	// context, keeps Ctrl+C effective no matter how many TUIs have already run.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Reject an unknown subcommand before cobra can quietly answer it with the
 	// parent group's help page and a zero exit code. See UnknownSubcommandError.
 	var executed *cobra.Command
 	err := commands.UnknownSubcommandError(os.Args[1:])
 	if err == nil {
-		executed, err = cmd.ExecuteC()
+		executed, err = cmd.ExecuteContextC(ctx)
 	}
 	trackCommand(executed, err, time.Since(start))
 	analytics.Close()
@@ -69,6 +84,9 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		return
 	}
 	path := executed.CommandPath()
+	if path == "wendy __session-broker" {
+		return
+	}
 	// Homebrew exports HOMEBREW_PREFIX/HOMEBREW_CELLAR/HOMEBREW_REPOSITORY into
 	// every interactive shell once `eval "$(brew shellenv)"` is set up (the
 	// standard ~/.zprofile line), so env presence alone cannot distinguish the

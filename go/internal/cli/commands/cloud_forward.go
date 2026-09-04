@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -21,16 +22,16 @@ func newCloudTunnelCmd() *cobra.Command {
 	var brokerURL string
 
 	cmd := &cobra.Command{
-		Use:   "tunnel <local-port>:<remote-port>",
-		Short: "Forward a local TCP port to a port on a cloud-enrolled device",
+		Use:   "tunnel <local-port>:<remote-port>[/udp]",
+		Short: "Forward a local TCP or UDP port to a port on a cloud-enrolled device",
 		Long:  "Listens on <local-port> and forwards each connection through the Wendy Cloud tunnel broker to <remote-port> on the target device.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			localPort, remotePort, err := parseTunnelArg(args[0])
+			localPort, remotePort, udp, err := parseTunnelArg(args[0])
 			if err != nil {
 				return err
 			}
-			return cloudTunnelCommand(cmd.Context(), cloudGRPC, effectiveDeviceName(deviceName), brokerURL, localPort, remotePort)
+			return cloudTunnelCommand(cmd.Context(), cloudGRPC, effectiveDeviceName(deviceName), brokerURL, localPort, remotePort, udp)
 		},
 	}
 
@@ -41,8 +42,19 @@ func newCloudTunnelCmd() *cobra.Command {
 	return cmd
 }
 
-// parseTunnelArg parses "localPort:remotePort" or just "port" (same for both sides).
-func parseTunnelArg(arg string) (localPort, remotePort uint32, err error) {
+// parseTunnelArg parses "localPort:remotePort" or "port", with an optional
+// docker-style "/udp" (or explicit "/tcp") protocol suffix.
+func parseTunnelArg(arg string) (localPort, remotePort uint32, udp bool, err error) {
+	if i := strings.LastIndex(arg, "/"); i >= 0 {
+		switch strings.ToLower(arg[i+1:]) {
+		case "udp":
+			udp = true
+		case "tcp":
+		default:
+			return 0, 0, false, fmt.Errorf("unknown protocol %q (use tcp or udp)", arg[i+1:])
+		}
+		arg = arg[:i]
+	}
 	parts := strings.SplitN(arg, ":", 2)
 	parse := func(s string) (uint32, error) {
 		n, e := strconv.ParseUint(s, 10, 32)
@@ -53,17 +65,17 @@ func parseTunnelArg(arg string) (localPort, remotePort uint32, err error) {
 	}
 	if len(parts) == 1 {
 		p, e := parse(parts[0])
-		return p, p, e
+		return p, p, udp, e
 	}
 	lp, e := parse(parts[0])
 	if e != nil {
-		return 0, 0, e
+		return 0, 0, false, e
 	}
 	rp, e := parse(parts[1])
-	return lp, rp, e
+	return lp, rp, udp, e
 }
 
-func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL string, localPort, remotePort uint32) error {
+func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL string, localPort, remotePort uint32, udp bool) error {
 	auth, err := pickAuthEntry(cloudGRPC)
 	if err != nil {
 		return err
@@ -75,11 +87,32 @@ func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL st
 		return err
 	}
 
-	brokerConn, err := dialCloudBroker(auth, brokerURL)
+	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
 	if err != nil {
 		return err
 	}
 	defer brokerConn.Close()
+
+	if udp {
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(localPort)})
+		if err != nil {
+			return fmt.Errorf("listening on udp 127.0.0.1:%d: %w", localPort, err)
+		}
+		defer pc.Close()
+		session, err := openDatagramSession(ctx, brokerConn, auth, asset.GetId())
+		if err != nil {
+			return datagramOpenError(err, asset.GetName())
+		}
+		defer session.close()
+		cliSuccess("Forwarding udp 127.0.0.1:%d → %s:%d (via cloud)", localPort, asset.GetName(), remotePort)
+		cliLogln("Press Ctrl+C to stop.")
+		go func() { <-ctx.Done(); pc.Close() }()
+		udpErr := serveUDPForward(ctx, pc, session, remotePort, udpFlowIdleTimeout)
+		if ctx.Err() != nil {
+			return nil
+		}
+		return datagramOpenError(udpErr, asset.GetName())
+	}
 
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", localPort)
 	ln, err := net.Listen("tcp", listenAddr)

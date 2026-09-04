@@ -60,6 +60,9 @@ func cameraWhere(d *agentpb.VideoDevice) string {
 	if d.GetTransport() == agentpb.VideoTransport_VIDEO_TRANSPORT_IP {
 		return d.GetAddress()
 	}
+	if d.GetTransport() == agentpb.VideoTransport_VIDEO_TRANSPORT_ROS2 {
+		return d.GetTopic()
+	}
 	return d.GetPath()
 }
 

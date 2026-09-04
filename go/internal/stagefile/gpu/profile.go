@@ -58,6 +58,7 @@ var cuda12Runtime = []string{
 	"nvidia-cusolver-cu12",
 	"nvidia-cusparse-cu12",
 	"nvidia-cusparselt-cu12",
+	"nvidia-cufile-cu12",
 	"nvidia-nccl-cu12",
 	"nvidia-nvtx-cu12",
 	"nvidia-nvjitlink-cu12",

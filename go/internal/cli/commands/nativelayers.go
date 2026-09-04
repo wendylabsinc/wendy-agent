@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/gzip"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
 
@@ -59,10 +60,14 @@ func nativeDepsHash(cwd, dockerfile, platform string, buildArgs map[string]strin
 	h.Write(dfData)
 
 	// The lockfile pins base-image digests; absent is a valid state (hashed as
-	// absent — creating it later changes the hash, correctly).
-	if lockData, err := os.ReadFile(filepath.Join(cwd, stagefileLockName)); err == nil {
-		fmt.Fprintf(h, "lock %d\n", len(lockData))
-		h.Write(lockData)
+	// absent — creating it later changes the hash, correctly). Each Stagefile
+	// variant owns its own lockfile, so hash the one belonging to the source
+	// this dockerfile was compiled from, not whichever happens to be canonical.
+	if source, ok := stagefileSourceForGenerated(dockerfile); ok {
+		if lockData, err := os.ReadFile(filepath.Join(cwd, stagefile.LockName(source))); err == nil {
+			fmt.Fprintf(h, "lock %d\n", len(lockData))
+			h.Write(lockData)
+		}
 	}
 
 	for _, p := range nativeDepsPaths(sf) {
@@ -167,12 +172,15 @@ const nativeStateName = "state.json"
 
 // nativeState records the native path's ground truth: the deps-input hash the
 // current layout was built against, the manifest we last wrote (or adopted),
-// and OUR app-layer digests in copy-entry order. A later run may go native
-// only when all three still match reality.
+// and our app-layer digests plus exact manifest positions in copy-entry order.
+// Positions make the instruction mapping explicit: digest-only replacement is ambiguous when an
+// identical layer blob appears more than once in an image. A later run may go
+// native only when all of this state still matches reality.
 type nativeState struct {
-	DepsHash        string   `json:"deps_hash"`
-	ManifestDigest  string   `json:"manifest_digest"`
-	AppLayerDigests []string `json:"app_layer_digests"`
+	DepsHash          string   `json:"deps_hash"`
+	ManifestDigest    string   `json:"manifest_digest"`
+	AppLayerDigests   []string `json:"app_layer_digests"`
+	AppLayerPositions []int    `json:"app_layer_positions"`
 }
 
 // loadNativeState returns the recorded state, or (nil, false) on any miss or
@@ -186,8 +194,14 @@ func loadNativeState(dir string) (*nativeState, bool) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, false
 	}
-	if s.DepsHash == "" || s.ManifestDigest == "" || len(s.AppLayerDigests) == 0 {
+	if s.DepsHash == "" || s.ManifestDigest == "" || len(s.AppLayerDigests) == 0 ||
+		len(s.AppLayerPositions) != len(s.AppLayerDigests) {
 		return nil, false
+	}
+	for i, pos := range s.AppLayerPositions {
+		if pos < 0 || (i > 0 && pos <= s.AppLayerPositions[i-1]) {
+			return nil, false
+		}
 	}
 	return &s, true
 }
@@ -226,17 +240,19 @@ const nativeLayersEnv = "WENDY_NATIVE_LAYERS"
 // nativeBuildEligibility decides whether this build may use the native
 // app-layer path. All must hold: the resolved dockerfile is the compiled
 // Stagefile output, the Stagefile parses, the final stage does not compile
-// (`build:`), it has at least one `from: local` copy, and every local copy
-// comes after all cross-stage copies — the local copies must be the image's
-// LAST layers for the adoption mapping to hold.
+// (`build:`), and it has at least one `from: local` copy. Local and cross-stage
+// copies may be interleaved: the compiler emits every final-stage copy as the
+// final ordered filesystem-layer sequence, so adoption can map local entries
+// to their exact positions within that sequence.
 func nativeBuildEligibility(cwd, dockerfile string) (*spec.File, bool) {
 	if os.Getenv(nativeLayersEnv) == "off" {
 		return nil, false
 	}
-	if filepath.Base(dockerfile) != generatedDockerfileName {
+	source, ok := stagefileSourceForGenerated(dockerfile)
+	if !ok {
 		return nil, false
 	}
-	data, err := os.ReadFile(filepath.Join(cwd, stagefileSourceName))
+	data, err := os.ReadFile(filepath.Join(cwd, source))
 	if err != nil {
 		return nil, false
 	}
@@ -252,18 +268,54 @@ func nativeBuildEligibility(cwd, dockerfile string) (*spec.File, bool) {
 	for _, c := range final.Copy {
 		if c.From == "local" {
 			locals++
-			continue
-		}
-		if locals > 0 {
-			// A cross-stage copy after a local one breaks the "local copies are
-			// the last layers" invariant.
-			return nil, false
 		}
 	}
 	if locals == 0 {
 		return nil, false
 	}
 	return sf, true
+}
+
+// buildOrUpdateOCILayout gives every persistent OCI-layout caller the same
+// Stagefile-aware fast path. If only final-stage local copies changed, their
+// deterministic layers are rebuilt and content-addressed in-process; Docker,
+// the multi-gigabyte local cache exporter, and unchanged dependency layers are
+// skipped entirely. A dependency change or any failed safety guard falls back
+// to buildx, after which the resulting app layers are adopted for the next
+// iteration.
+//
+// The caller must hold the layout directory lock for the whole call. buildx is
+// responsible only for updating the layout; pushing or chunking it remains the
+// caller's concern.
+func buildOrUpdateOCILayout(cwd, dockerfile, platform string, buildArgs map[string]string, layoutDir string, buildx func() error) (native bool, err error) {
+	sf, eligible := nativeBuildEligibility(cwd, dockerfile)
+	depsHash := ""
+	if eligible {
+		if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, buildArgs, sf); hashErr == nil {
+			depsHash = h
+		} else {
+			eligible = false
+		}
+	}
+
+	if eligible {
+		if st, ok := loadNativeState(layoutDir); ok && st.DepsHash == depsHash {
+			if done, rebuildErr := tryNativeRebuild(layoutDir, platform, cwd, sf, st); rebuildErr == nil && done {
+				return true, nil
+			}
+		}
+	}
+
+	if err := buildx(); err != nil {
+		return false, err
+	}
+	if eligible {
+		// Adoption is an optimization. Refusing a layout whose final layers do
+		// not exactly match Stagefile's declared local copies leaves the valid
+		// buildx image untouched and simply retries buildx next time.
+		_, _ = adoptNativeLayers(layoutDir, platform, cwd, sf, depsHash)
+	}
+	return false, nil
 }
 
 // ociManifest captures the standard OCI image-manifest fields the splice
@@ -350,14 +402,14 @@ func writeLayoutBlob(dir string, data []byte) (string, error) {
 }
 
 // spliceNativeLayers rewrites the layout dir's image for the target platform:
-// the layers whose digests are `replace` (matched BY DIGEST, in order) become
-// `with`, the config's rootfs.diff_ids follow 1:1, and index.json atomically
-// points at the rewritten manifest (any attestation entries are dropped —
+// the layers at `positions` become `with` after their current digests are
+// verified against `replace`; the config's rootfs.diff_ids follow 1:1, and
+// index.json atomically points at the rewritten manifest (any attestation entries are dropped —
 // provenance no longer describes the spliced image). Superseded blobs stay on
 // disk for the deploy-time GC. Returns the new manifest digest.
-func spliceNativeLayers(dir, platform string, replace []string, with []*nativeLayer) (string, error) {
-	if len(replace) != len(with) {
-		return "", fmt.Errorf("splice: %d digests to replace but %d layers given", len(replace), len(with))
+func spliceNativeLayers(dir, platform string, positions []int, replace []string, with []*nativeLayer) (string, error) {
+	if len(positions) != len(replace) || len(replace) != len(with) {
+		return "", fmt.Errorf("splice: %d positions, %d digests, and %d layers given", len(positions), len(replace), len(with))
 	}
 	manifestData, _, err := ociLayoutDirManifest(dir, platform)
 	if err != nil {
@@ -386,17 +438,16 @@ func spliceNativeLayers(dir, platform string, replace []string, with []*nativeLa
 		return "", fmt.Errorf("splice: config diff_ids (%d) do not align with manifest layers (%d)", len(diffIDs), len(m.Layers))
 	}
 
-	// Locate every replace digest, in order.
-	positions := make([]int, 0, len(replace))
-	next := 0
-	for i := range m.Layers {
-		if next < len(replace) && m.Layers[i].Digest == replace[next] {
-			positions = append(positions, i)
-			next++
+	for i, pos := range positions {
+		if pos < 0 || pos >= len(m.Layers) {
+			return "", fmt.Errorf("splice: layer position %d is outside manifest with %d layers", pos, len(m.Layers))
 		}
-	}
-	if next != len(replace) {
-		return "", fmt.Errorf("splice: layer %q not found in manifest", replace[next])
+		if i > 0 && pos <= positions[i-1] {
+			return "", fmt.Errorf("splice: layer positions must be strictly increasing")
+		}
+		if m.Layers[pos].Digest != replace[i] {
+			return "", fmt.Errorf("splice: layer at position %d is %q, want %q", pos, m.Layers[pos].Digest, replace[i])
+		}
 	}
 
 	for j, pos := range positions {
@@ -465,6 +516,33 @@ func spliceNativeLayers(dir, platform string, replace []string, with []*nativeLa
 		return "", err
 	}
 	return manifestDigest, nil
+}
+
+// nativeAppLayerPositions maps final-stage local copy entries to manifest
+// positions. With no final-stage build step, codegen emits the complete copy:
+// list as the image's final ordered filesystem-layer sequence. Counting the
+// whole list, rather than only local entries, permits local and cross-stage
+// copies to be interleaved without guessing which descriptors belong to us.
+func nativeAppLayerPositions(manifestLayers int, sf *spec.File) ([]int, bool) {
+	if len(sf.Stages) == 0 {
+		return nil, false
+	}
+	final := sf.Stages[len(sf.Stages)-1]
+	if final.Build != nil {
+		return nil, false
+	}
+	copies := final.Copy
+	if len(copies) == 0 || manifestLayers < len(copies) {
+		return nil, false
+	}
+	base := manifestLayers - len(copies)
+	positions := make([]int, 0, len(copies))
+	for i, entry := range copies {
+		if entry.From == "local" {
+			positions = append(positions, base+i)
+		}
+	}
+	return positions, len(positions) > 0
 }
 
 // nativeAppCopyEntries returns the final stage's `from: local` copy entries —
@@ -555,9 +633,9 @@ func nativeNonDirNames(l *nativeLayer) map[string]bool {
 
 // adoptNativeLayers runs after a successful buildx build of an eligible
 // project: it rebuilds each final-stage local copy entry natively, sanity
-// checks the manifest's LAST M layers against them (the file-name sets must
-// match — this is the one place the position→instruction assumption is
-// trusted, and only under verification), splices, and records state. Returns
+// maps them into the final stage's complete copy-layer tail, checks the mapped
+// layers against them (the file-name sets must match), splices, and records
+// the verified positions. Returns
 // false with no error when the check rejects; the buildx layers then ship
 // as-is and the native path stays disabled until the next buildx build.
 func adoptNativeLayers(dir, platform, cwd string, sf *spec.File, depsHash string) (bool, error) {
@@ -573,7 +651,8 @@ func adoptNativeLayers(dir, platform, cwd string, sf *spec.File, depsHash string
 	if err := json.Unmarshal(manifestData, &m); err != nil {
 		return false, nil
 	}
-	if len(m.Layers) < len(entries) {
+	positions, ok := nativeAppLayerPositions(len(m.Layers), sf)
+	if !ok || len(positions) != len(entries) {
 		return false, nil
 	}
 	cfgHex, err := digestToHex(m.Config.Digest)
@@ -590,28 +669,28 @@ func adoptNativeLayers(dir, platform, cwd string, sf *spec.File, depsHash string
 		return false, nil
 	}
 
-	base := len(m.Layers) - len(entries)
 	replace := make([]string, len(entries))
 	for i, nl := range native {
-		got, err := layoutLayerFileNames(dir, m.Layers[base+i])
+		pos := positions[i]
+		got, err := layoutLayerFileNames(dir, m.Layers[pos])
 		if err != nil {
 			return false, nil
 		}
 		want := nativeNonDirNames(nl)
 		if len(got) != len(want) {
-			cliLogln("native layers: buildx layer %d file set differs from copy entry %d; keeping buildx layers", base+i, i)
+			cliLogln("native layers: buildx layer %d file set differs from copy entry %d; keeping buildx layers", pos, i)
 			return false, nil
 		}
 		for n := range want {
 			if !got[n] {
-				cliLogln("native layers: buildx layer %d is missing %q; keeping buildx layers", base+i, n)
+				cliLogln("native layers: buildx layer %d is missing %q; keeping buildx layers", pos, n)
 				return false, nil
 			}
 		}
-		replace[i] = m.Layers[base+i].Digest
+		replace[i] = m.Layers[pos].Digest
 	}
 
-	manifestDigest, err := spliceNativeLayers(dir, platform, replace, native)
+	manifestDigest, err := spliceNativeLayers(dir, platform, positions, replace, native)
 	if err != nil {
 		return false, err
 	}
@@ -620,9 +699,10 @@ func adoptNativeLayers(dir, platform, cwd string, sf *spec.File, depsHash string
 		digests[i] = nl.Digest
 	}
 	if err := saveNativeState(dir, nativeState{
-		DepsHash:        depsHash,
-		ManifestDigest:  manifestDigest,
-		AppLayerDigests: digests,
+		DepsHash:          depsHash,
+		ManifestDigest:    manifestDigest,
+		AppLayerDigests:   digests,
+		AppLayerPositions: positions,
 	}); err != nil {
 		return false, err
 	}
@@ -638,7 +718,8 @@ func tryNativeRebuild(dir, platform, cwd string, sf *spec.File, st *nativeState)
 		return false, nil
 	}
 	entries := nativeAppCopyEntries(sf)
-	if len(entries) == 0 || len(entries) != len(st.AppLayerDigests) {
+	if len(entries) == 0 || len(entries) != len(st.AppLayerDigests) ||
+		len(st.AppLayerPositions) != len(st.AppLayerDigests) {
 		return false, nil
 	}
 	cfgData, _, err := ociLayoutDirConfig(dir, platform)
@@ -649,7 +730,20 @@ func tryNativeRebuild(dir, platform, cwd string, sf *spec.File, st *nativeState)
 	if err != nil {
 		return false, nil
 	}
-	newDigest, err := spliceNativeLayers(dir, platform, st.AppLayerDigests, native)
+	unchanged := len(native) == len(st.AppLayerDigests)
+	for i, nl := range native {
+		if !unchanged || nl.Digest != st.AppLayerDigests[i] {
+			unchanged = false
+			break
+		}
+	}
+	if unchanged {
+		// The layout already names these deterministic layers. Rewriting the
+		// config, manifest, index, and native state would produce identical bytes
+		// while invalidating mtimes and making an unchanged run look like work.
+		return true, nil
+	}
+	newDigest, err := spliceNativeLayers(dir, platform, st.AppLayerPositions, st.AppLayerDigests, native)
 	if err != nil {
 		return false, nil
 	}
@@ -658,9 +752,10 @@ func tryNativeRebuild(dir, platform, cwd string, sf *spec.File, st *nativeState)
 		digests[i] = nl.Digest
 	}
 	if err := saveNativeState(dir, nativeState{
-		DepsHash:        st.DepsHash,
-		ManifestDigest:  newDigest,
-		AppLayerDigests: digests,
+		DepsHash:          st.DepsHash,
+		ManifestDigest:    newDigest,
+		AppLayerDigests:   digests,
+		AppLayerPositions: append([]int(nil), st.AppLayerPositions...),
 	}); err != nil {
 		return false, err
 	}

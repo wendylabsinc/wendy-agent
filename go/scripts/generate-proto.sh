@@ -44,6 +44,7 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/device_info_service.proto"
     "wendy/agent/services/v2/agent_update_service.proto"
     "wendy/agent/services/v2/os_update_service.proto"
+    "wendy/agent/services/v2/driver_service.proto"
     "wendy/agent/services/v2/wifi_service.proto"
     "wendy/agent/services/v2/bluetooth_service.proto"
     "wendy/agent/services/v2/container_service.proto"
@@ -54,6 +55,7 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/mesh_service.proto"
     "wendy/agent/services/v2/ros2_service.proto"
     "wendy/agent/services/v2/timesync_service.proto"
+    "wendy/agent/services/v2/build_service.proto"
 )
 
 V2_AGENT_M_OPTS=""

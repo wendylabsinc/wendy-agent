@@ -14,6 +14,12 @@ DNSServiceErrorType wendy_dnssd_browse(DNSServiceRef *ref, const char *regtype,
 
 DNSServiceErrorType wendy_dnssd_resolve(DNSServiceRef *ref, const char *name,
                                         const char *regtype, const char *domain,
+                                        uint32_t interface_index,
                                         uintptr_t handle);
+
+DNSServiceErrorType wendy_dnssd_getaddrinfo(DNSServiceRef *ref,
+                                            const char *hostname,
+                                            uint32_t interface_index,
+                                            uintptr_t handle);
 
 #endif

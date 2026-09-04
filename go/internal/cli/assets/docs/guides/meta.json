@@ -1,5 +1,5 @@
 {
   "title": "Guides & Tutorials",
   "description": "Learn how to build with Wendy through practical examples",
-  "pages": ["tutorials", "multi-app-deployments", "llm-integration"]
+  "pages": ["tutorials", "stagefile", "multi-app-deployments", "llm-integration"]
 }
