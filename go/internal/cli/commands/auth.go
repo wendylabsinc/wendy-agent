@@ -33,6 +33,12 @@ import (
 
 const defaultCloudDashboard = "https://cloud.wendy.sh"
 const defaultCloudGRPC = "wendy-cloud-services-114319063177.us-central1.run.app:443"
+const defaultDevAuthBase = "https://auth.dev.wendy.sh"
+const defaultDevCloudDashboard = "https://cloud.dev.wendy.sh"
+const defaultDevCloudGRPC = "api.dev.wendy.sh:443"
+const defaultDevCloudResource = "https://cloud.dev.wendy.sh/api"
+const defaultPKIIdentityResource = "https://pki.wendy.sh/identity"
+const defaultDevPKIIdentityEndpoint = "https://identity.dev.pki.wendy.sh/v1/identity/certificate"
 
 func newAuthCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -58,12 +64,62 @@ func newAuthLoginCmd() *cobra.Command {
 	var cloudGRPC string
 	var apiKey string
 	var orgID int32
+	var issuer string
+	var email string
+	var authBase string
+	var clientID string
+	var resource string
+	var identityResource string
+	var identityEndpoint string
+	var printClaims bool
 
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Wendy Cloud or a local pki-core instance",
-		Long:  "Without --api-key: opens a browser for authentication, receives a callback with an enrollment token, generates certificates, and saves them to config.\nWith --api-key: issues a certificate from a self-hosted pki-core instance using a Bearer API key.",
+		Long: "Without --api-key: opens a browser for authentication, creates an operator CSR, obtains its certificate, and saves it to config.\n" +
+			"With --api-key: issues a certificate from a self-hosted pki-core instance using a Bearer API key.\n" +
+			"With --email: discovers your wendy-auth organization, signs in with authorization code + PKCE, obtains the certificate directly from pki-core, and saves a refreshable Cloud API session. --issuer skips email discovery.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if issuer != "" || email != "" {
+				if apiKey != "" {
+					return fmt.Errorf("OIDC and --api-key select different login modes; pass only one")
+				}
+				if authBase == "" {
+					authBase = defaultDevAuthBase
+				}
+				if issuer == "" {
+					var err error
+					issuer, err = discoverOIDCIssuer(cmd.Context(), authBase, email)
+					if err != nil {
+						return err
+					}
+				}
+				if cloudDashboard == "" {
+					cloudDashboard = defaultDevCloudDashboard
+				}
+				if cloudGRPC == "" {
+					cloudGRPC = defaultDevCloudGRPC
+				}
+				if resource == "" {
+					resource = defaultDevCloudResource
+				}
+				if identityResource == "" {
+					identityResource = defaultPKIIdentityResource
+				}
+				if identityEndpoint == "" {
+					identityEndpoint = defaultDevPKIIdentityEndpoint
+				}
+				return performOIDCLogin(cmd.Context(), oidcLoginOptions{
+					Issuer:           issuer,
+					ClientID:         clientID,
+					CloudResource:    resource,
+					IdentityResource: identityResource,
+					IdentityEndpoint: identityEndpoint,
+					CloudURL:         cloudDashboard,
+					CloudGRPC:        cloudGRPC,
+					PrintClaims:      printClaims,
+				})
+			}
 			if apiKey != "" {
 				if cloudGRPC == "" {
 					return fmt.Errorf("--cloud-grpc is required for local authentication")
@@ -88,6 +144,14 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint, or local pki-core address (host:port) when using --api-key")
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "Bearer API key for local pki-core authentication")
 	cmd.Flags().Int32Var(&orgID, "org", 1, "Organization ID (used with --api-key)")
+	cmd.Flags().StringVar(&issuer, "issuer", "", "wendy-auth realm issuer URL, e.g. https://auth.wendy.sh/realms/acme (enables OIDC login)")
+	cmd.Flags().StringVar(&email, "email", "", "Email address used to discover your organization and sign in with wendy-auth")
+	cmd.Flags().StringVar(&authBase, "auth", defaultDevAuthBase, "wendy-auth base URL used with --email")
+	cmd.Flags().StringVar(&clientID, "client-id", "wendy-cli", "public DPoP OAuth client ID registered in wendy-auth")
+	cmd.Flags().StringVar(&resource, "resource", "", "RFC 8707 API resource indicator (used with OIDC login)")
+	cmd.Flags().StringVar(&identityResource, "pki-resource", defaultPKIIdentityResource, "RFC 8707 pki-core identity resource (used with OIDC login)")
+	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", defaultDevPKIIdentityEndpoint, "pki-core operator identity CSR endpoint (used with OIDC login)")
+	cmd.Flags().BoolVar(&printClaims, "print-claims", false, "Print the decoded access-token claims after login (used with --issuer)")
 	return cmd
 }
 
@@ -603,6 +667,9 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 	if len(auth.Certificates) == 0 {
 		return fmt.Errorf("no existing certificates")
 	}
+	if auth.OAuthIssuer != "" {
+		return refreshOIDCCertificate(ctx, auth)
+	}
 
 	existingCert := auth.Certificates[0]
 
@@ -718,6 +785,7 @@ type authStatusSession struct {
 	CloudGRPC      string          `json:"cloudGrpc,omitempty"`
 	UserID         string          `json:"userId,omitempty"`
 	OrganizationID int             `json:"organizationId,omitempty"`
+	PrincipalURI   string          `json:"principalUri,omitempty"`
 	Certificate    *authStatusCert `json:"certificate,omitempty"`
 }
 
@@ -795,6 +863,9 @@ func newAuthStatusCmd() *cobra.Command {
 				}
 
 				cert := auth.Certificates[0]
+				if cert.PrincipalURI != "" {
+					fmt.Fprintf(out, "  Identity: %s\n", cert.PrincipalURI)
+				}
 				if cert.UserID != "" {
 					fmt.Fprintf(out, "  User: %s\n", cert.UserID)
 				}
@@ -837,6 +908,7 @@ func writeAuthStatusJSON(w io.Writer, cfg *config.Config, now time.Time) error {
 			cert := auth.Certificates[0]
 			session.UserID = cert.UserID
 			session.OrganizationID = cert.OrganizationID
+			session.PrincipalURI = cert.PrincipalURI
 			session.Certificate = authStatusCertInfo(cert.PemCertificate, now)
 		}
 		status.Sessions = append(status.Sessions, session)

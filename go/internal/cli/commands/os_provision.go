@@ -35,10 +35,10 @@ type PreProvisionedState struct {
 	ChainPEM  string `json:"chainPem,omitempty"`
 }
 
-type PreEnrollDialer func(ctx context.Context, addr string, opt grpc.DialOption) (*grpc.ClientConn, error)
+type PreEnrollDialer func(ctx context.Context, addr string, opts ...grpc.DialOption) (*grpc.ClientConn, error)
 
-func defaultPreEnrollDialer(_ context.Context, addr string, opt grpc.DialOption) (*grpc.ClientConn, error) {
-	return grpc.NewClient(addr, opt)
+func defaultPreEnrollDialer(_ context.Context, addr string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	return grpc.NewClient(addr, opts...)
 }
 
 // preEnrollDevice generates a device key pair, gets an enrollment token from
@@ -71,7 +71,11 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 		transportOpt = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
 
-	cloudConn, err := dialer(ctx, auth.CloudGRPC, transportOpt)
+	dialOptions, err := withCloudRequestSigning(auth, transportOpt)
+	if err != nil {
+		return nil, err
+	}
+	cloudConn, err := dialer(ctx, auth.CloudGRPC, dialOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
 	}

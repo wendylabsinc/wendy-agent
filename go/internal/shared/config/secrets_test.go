@@ -120,9 +120,9 @@ func TestAccessorUnknownRefVersion(t *testing.T) {
 }
 
 func TestAccountDerivationDeterministic(t *testing.T) {
-	a1 := keyAccount("grpc.wendy.com:443", 7, "user-1", 0)
-	a2 := keyAccount("grpc.wendy.com:443", 7, "user-1", 0)
-	b := keyAccount("grpc.wendy.com:443", 8, "user-1", 0)
+	a1 := keyAccount("grpc.wendy.com:443", 7, "user-1", 0, "")
+	a2 := keyAccount("grpc.wendy.com:443", 7, "user-1", 0, "")
+	b := keyAccount("grpc.wendy.com:443", 8, "user-1", 0, "")
 	if a1 != a2 {
 		t.Errorf("same inputs → different accounts: %q vs %q", a1, a2)
 	}
@@ -166,10 +166,18 @@ func TestAccountDerivationDashboardVariance(t *testing.T) {
 // UserID, only an AssetID, so two asset certs on the same endpoint+org with
 // different AssetID must not collide on one key account.
 func TestAccountDerivationAssetVariance(t *testing.T) {
-	a := keyAccount("grpc.wendy.com:443", 7, "", 100)
-	b := keyAccount("grpc.wendy.com:443", 7, "", 200)
+	a := keyAccount("grpc.wendy.com:443", 7, "", 100, "")
+	b := keyAccount("grpc.wendy.com:443", 7, "", 200, "")
 	if a == b {
 		t.Error("differing AssetID with empty UserID (same endpoint+org) → same key account")
+	}
+}
+
+func TestAccountDerivationSPIFFEPrincipalVariance(t *testing.T) {
+	a := keyAccount("grpc.wendy.com:443", 0, "", 0, "spiffe://wendy.sh/tenant/a/operator/alice")
+	b := keyAccount("grpc.wendy.com:443", 0, "", 0, "spiffe://wendy.sh/tenant/b/operator/alice")
+	if a == b {
+		t.Error("differing SPIFFE principals → same key account")
 	}
 }
 
@@ -197,8 +205,12 @@ func TestSaveDehydratesAndLoadResolves(t *testing.T) {
 	t.Cleanup(func() { secretsPlatformDefault = origDefault })
 
 	cfg := &Config{Auth: []AuthConfig{{
-		CloudGRPC: "grpc.wendy.com:443",
-		APIKey:    "tok-123",
+		CloudGRPC:      "grpc.wendy.com:443",
+		APIKey:         "tok-123",
+		OAuthIssuer:    "https://auth.dev.wendy.sh/realms/acme",
+		OAuthClientID:  "wendy-cli",
+		RefreshToken:   "refresh-123",
+		DPoPPrivateKey: "-----BEGIN EC PRIVATE KEY-----\ndpop-secret-material",
 		Certificates: []CertificateInfo{{
 			PemCertificate: "CERT",
 			PemPrivateKey:  "-----BEGIN PRIVATE KEY-----\nabc",
@@ -219,7 +231,7 @@ func TestSaveDehydratesAndLoadResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	for _, secret := range []string{"tok-123", "BEGIN PRIVATE KEY"} {
+	for _, secret := range []string{"tok-123", "refresh-123", "dpop-secret-material", "BEGIN PRIVATE KEY"} {
 		if strings.Contains(string(raw), secret) {
 			t.Errorf("config.json still contains secret %q", secret)
 		}
@@ -232,9 +244,20 @@ func TestSaveDehydratesAndLoadResolves(t *testing.T) {
 	if !isRef(loaded.Auth[0].APIKey) {
 		t.Fatalf("APIKey on disk = %q, want a reference", loaded.Auth[0].APIKey)
 	}
+	if !isRef(loaded.Auth[0].RefreshToken) || !isRef(loaded.Auth[0].DPoPPrivateKey) {
+		t.Fatalf("OAuth secrets on disk = %q / %q, want references", loaded.Auth[0].RefreshToken, loaded.Auth[0].DPoPPrivateKey)
+	}
 	tok, err := loaded.Auth[0].BearerToken()
 	if err != nil || tok != "tok-123" {
 		t.Fatalf("BearerToken = %q, %v", tok, err)
+	}
+	refresh, err := loaded.Auth[0].OAuthRefreshToken()
+	if err != nil || refresh != "refresh-123" {
+		t.Fatalf("OAuthRefreshToken = %q, %v", refresh, err)
+	}
+	dpopKey, err := loaded.Auth[0].OAuthDPoPKey()
+	if err != nil || !strings.Contains(dpopKey, "BEGIN EC PRIVATE KEY") {
+		t.Fatalf("OAuthDPoPKey = %q, %v", dpopKey, err)
 	}
 	key, err := loaded.Auth[0].Certificates[0].PrivateKeyPEM()
 	if err != nil || !strings.Contains(key, "BEGIN PRIVATE KEY") {

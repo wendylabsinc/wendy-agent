@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -51,6 +52,9 @@ func (f closeFunc) Close() error {
 }
 
 func certXFCC(cert config.CertificateInfo) string {
+	if cert.PrincipalURI != "" {
+		return "URI=" + cert.PrincipalURI
+	}
 	if cert.UserID != "" {
 		return fmt.Sprintf("URI=urn:wendy:org:%d:user:%s", cert.OrganizationID, cert.UserID)
 	}
@@ -61,10 +65,11 @@ func certXFCC(cert config.CertificateInfo) string {
 }
 
 func cloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context, error) {
-	if len(auth.Certificates) == 0 {
-		return ctx, nil
+	if auth.OAuthIssuer != "" {
+		if err := ensureOAuthAccessToken(ctx, auth); err != nil {
+			return nil, err
+		}
 	}
-	cert := auth.Certificates[0]
 	md := metadata.MD{}
 	if auth.HasAPIKey() {
 		bearerToken, err := auth.BearerToken()
@@ -73,10 +78,12 @@ func cloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context
 		}
 		md.Set("authorization", "Bearer "+bearerToken)
 	}
-	certHeader := certXFCC(cert)
-	if certHeader != "" {
-		md.Set("x-wendy-client-cert", certHeader)
-		md.Set("x-forwarded-client-cert", certHeader)
+	if len(auth.Certificates) > 0 {
+		certHeader := certXFCC(auth.Certificates[0])
+		if certHeader != "" {
+			md.Set("x-wendy-client-cert", certHeader)
+			md.Set("x-forwarded-client-cert", certHeader)
+		}
 	}
 	return metadata.NewOutgoingContext(ctx, md), nil
 }
@@ -610,30 +617,31 @@ func boolPtr(b bool) *bool { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 
 func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
-	if len(auth.Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	cert := auth.Certificates[0]
 	var transport grpc.DialOption
 	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
-		keyPEM, err := cert.PrivateKeyPEM()
-		if err != nil {
-			return nil, fmt.Errorf("loading client key: %w", err)
+		if len(auth.Certificates) > 0 {
+			cert := auth.Certificates[0]
+			keyPEM, err := cert.PrivateKeyPEM()
+			if err != nil {
+				return nil, fmt.Errorf("loading client key: %w", err)
+			}
+			tlsCfg, err := certs.LoadTLSConfig(
+				cert.PemCertificate,
+				cert.PemCertificateChain,
+				keyPEM,
+				"",
+			)
+			if err != nil {
+				return nil, fmt.Errorf("loading TLS config: %w", err)
+			}
+			transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
+		} else {
+			transport = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
 		}
-		tlsCfg, err := certs.LoadTLSConfig(
-			cert.PemCertificate,
-			cert.PemCertificateChain,
-			keyPEM,
-			"",
-		)
-		if err != nil {
-			return nil, fmt.Errorf("loading TLS config: %w", err)
-		}
-		transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
 	} else {
 		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
-	conn, err := grpc.NewClient(auth.CloudGRPC,
+	dialOptions, err := withCloudRequestSigning(auth,
 		transport,
 		grpc.WithInitialWindowSize(8*1024*1024),
 		grpc.WithInitialConnWindowSize(16*1024*1024),
@@ -646,9 +654,27 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		}),
 	)
 	if err != nil {
+		return nil, err
+	}
+	conn, err := grpc.NewClient(auth.CloudGRPC, dialOptions...)
+	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
 	}
 	return conn, nil
+}
+
+// withCloudRequestSigning installs the pki-core operator-certificate signer
+// for OIDC sessions. The bootstrap paths that construct their own connection
+// use this helper too, so all Cloud mutations share one wire contract.
+func withCloudRequestSigning(auth *config.AuthConfig, options ...grpc.DialOption) ([]grpc.DialOption, error) {
+	signingOption, err := cloudrequest.DialOption(auth)
+	if err != nil {
+		return nil, fmt.Errorf("configuring Cloud request signing: %w", err)
+	}
+	if signingOption != nil {
+		options = append(options, signingOption)
+	}
+	return options, nil
 }
 
 func tunnelDialer(tunnelConn net.Conn) (grpc.DialOption, func()) {

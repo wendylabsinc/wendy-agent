@@ -53,6 +53,14 @@ func TestResolveAuthSingleSessionNoCerts(t *testing.T) {
 	}
 }
 
+func TestResolveAuthSingleTokenOnlySession(t *testing.T) {
+	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "api.dev.wendy.sh:443", APIKey: "access-token"}}}
+	auth, err := ResolveAuth(cfg, "", nil)
+	if err != nil || auth.CloudGRPC != "api.dev.wendy.sh:443" {
+		t.Fatalf("token-only session should resolve, got %v / %v", auth, err)
+	}
+}
+
 func TestResolveAuthValidDefault(t *testing.T) {
 	cfg := twoSessions()
 	cfg.DefaultCloudGRPC = "localhost:50051"
