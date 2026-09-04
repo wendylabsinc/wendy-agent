@@ -1,56 +1,60 @@
-# `internal/shared/ble` — BLE central (client) for the Wendy CLI
+# `internal/shared/ble` — generic BLE central (client)
 
-This package is the **client side** of Wendy's Bluetooth Low Energy transport. It runs on the
-developer machine (the BLE *central*) and talks to a WendyOS device or a Wendy Lite (ESP32)
-board acting as the BLE *peripheral*.
+A **cross-platform BLE central**: connect to a peripheral, talk GATT, and open an L2CAP channel that
+can carry TLS. It runs on the machine acting as the BLE *central* and talks to whatever is acting as
+the *peripheral*.
 
-It is three packages, split along exactly that line — the generic BLE work in two subpackages, the
-Wendy protocol on top:
+Two subpackages, each free of any Wendy identifier:
 
-1. [`central`](central/) — a **generic, cross-platform BLE central API** (`Connection`) covering
-   GATT and L2CAP, plus the L2CAP-to-`net.Conn` adapter TLS runs over.
-2. [`scan`](scan/) — a **generic, cross-platform BLE scanner** that finds peripherals and yields the
+1. [`central`](central/) — the connection API (`Connection`), covering GATT and L2CAP, plus the
+   L2CAP-to-`net.Conn` adapter TLS runs over.
+2. [`scan`](scan/) — a continuously-streaming scanner that finds peripherals and yields the
    addresses `central.Connect` takes.
-3. `ble` (this package) — the **Wendy-specific protocol clients** built on both (`LiteClient`,
-   `AgentClient`).
+3. [`bluez`](bluez/) — the BlueZ D-Bus plumbing both use on Linux (object enumeration, adapter and
+   device resolution, property readers, D-Bus error mapping).
 
-Neither subpackage contains a Wendy identifier, and that is the point: see
-[what is generic, and what is Wendy-specific](#what-is-generic-and-what-is-wendy-specific).
+Everything Wendy-specific lives in [`internal/cli/ble`](../../cli/ble/) — the Wendy Lite and WendyOS
+agent protocol clients, their UUIDs, PSMs and framing. **Adding a Wendy identifier to `central`,
+`scan` or `bluez` is the change to push back on**; a `shared/models` or `shared/certs` import into
+one of them would be the first sign of it. (`WENDY_BT_ADAPTER`, the controller override `bluez`
+honors, is the single deliberate exception — it has to match the name the agent already reads.)
 
-> The protocol clients themselves — `lite_client.go` and `agent_client.go` — are out of scope for
-> this document. They are mentioned only where they illustrate what the transport layer supports,
-> or where they are the reason a piece of it is Wendy-specific.
+There is one Wendy file at the root of this directory: `lite_info.go`, the Wendy Lite GATT info
+service. It lives here rather than with its siblings in `cli/ble` because `shared/discovery` reads a
+board's L2CAP PSM from it, and a `shared/` package importing a `cli/` one is an upward edge. It is
+outside `central/` and `scan/` for the reason above, and nothing else should join it.
+
+**This package must never import `shared/discovery`**, which imports it.
 
 ## Files
 
-**`central/`** — the connection, generic:
+**`central/`** — the connection:
 
 | File | Role |
 | --- | --- |
 | `ble_darwin.go` / `.h` / `.m` | macOS backend. cgo bridge to a CoreBluetooth implementation in Objective-C. |
-| `ble_linux.go` | Linux backend. Raw `AF_BLUETOOTH` / `BTPROTO_L2CAP` socket via `golang.org/x/sys/unix`. **L2CAP only.** |
+| `ble_linux.go` | Linux backend. Raw `AF_BLUETOOTH` / `BTPROTO_L2CAP` socket via `golang.org/x/sys/unix`. |
+| `bluez_linux.go` / `gatt_linux.go` | Linux GATT client over BlueZ D-Bus — session, device resolution, characteristic index, notification router. |
 | `ble_windows.go` | Windows stub. Every method returns "not implemented". |
-| `conn.go` | Adapts an L2CAP channel to `net.Conn` so Go's `crypto/tls` can run over it (`NewL2CAPStream`), plus `ErrRecvTimeout` and `TimeoutSeconds`. |
+| `conn.go` | Adapts an L2CAP channel to `net.Conn` so Go's `crypto/tls` can run over it (`NewL2CAPStream`), plus `ErrRecvTimeout`, `ErrGATTNotFound`, `ErrGATTDisconnected` and `TimeoutSeconds`. |
+| `uuid.go`, `gatt_errors.go` | Untagged, so their tests run on every platform. |
 
-**`scan/`** — finding peripherals, generic. Its own cgo bridge on macOS, BlueZ D-Bus on Linux, a
-WinRT advertisement watcher on Windows. See [its section](#scanning-the-scan-subpackage).
+**`scan/`** — finding peripherals. Its own cgo bridge on macOS, BlueZ D-Bus on Linux, a WinRT
+advertisement watcher on Windows. See [its section](#scanning-the-scan-subpackage).
 
-**`ble/`** — the Wendy protocol, this package:
+**`bluez/`** — Linux-only helpers plus an untagged `errors.go`, so the D-Bus error table is testable
+without a bus. `central` and `scan` are its only callers; `internal/agent/bluetooth` still carries
+its own older copies of some of these.
 
-| File | Role |
-| --- | --- |
-| `lite_client.go` | Wendy Lite (ESP32) Wi-Fi provisioning over GATT (not covered here). |
-| `lite_info.go` | Wendy Lite GATT info service — `ReadLiteInfo` reads the L2CAP PSM and the identity a device advertises for itself (not covered here). |
-| `agent_client.go` | WendyOS agent RPC over mTLS-over-L2CAP (not covered here), plus `DefaultL2CAPPSM` — the PSM the agent listens on. |
-| `agent_tls_over_ble.go` | `NewClientTLSConfig` — the mTLS config for the agent path, built on the Wendy PKI. |
-
-There are no tests in `ble` or `central`. `scan/` has them — its engine is testable without a radio,
-and a live, hardware-driven test is gated behind `WENDY_BLE_LIVE_SCAN` (see below).
+`scan/` and `bluez/` have tests that run without a radio; `central`'s pure pieces (UUID
+canonicalization, the characteristic index build, the notification router, address parsing, error
+mapping) do too. The parts that need hardware are gated behind `WENDY_BLE_LIVE_*` (see below).
 
 ## The `Connection` API ([`central`](central/))
 
 Each platform file in `central/` defines the same `Connection` type and method set, selected by build
-tag. The API is blocking, with integer-second timeouts.
+tag — there is no Go interface, so the build tags are the contract. The API is blocking, with
+integer-second timeouts.
 
 ```go
 conn, err := central.Connect(address, 10)   // address semantics differ per platform, see below
@@ -76,16 +80,28 @@ data, err = conn.L2CAPRecv(30)
 
 | Capability | macOS | Linux | Windows |
 | --- | :---: | :---: | :---: |
-| Connect to peripheral | ✅ CoreBluetooth | ✅ (socket created; actual link comes up in `OpenL2CAP`) | ❌ |
-| Service / characteristic discovery | ✅ | ❌ | ❌ |
-| Read / write characteristic | ✅ | ❌ | ❌ |
-| Write without response | ✅ | ❌ | ❌ |
-| Notifications (subscribe + wait) | ✅ | ❌ | ❌ |
-| L2CAP channel (open / send / recv) | ✅ | ✅ | ❌ |
-| `net.Conn` + TLS over L2CAP | ✅ | ✅ | ❌ |
+| Connect to peripheral | ✅ CoreBluetooth | ✅ (socket created; the link comes up in `OpenL2CAP` or `DiscoverServices`) | ❌ |
+| Service / characteristic discovery | ✅ | ✅ BlueZ D-Bus | ❌ |
+| Read / write characteristic | ✅ | ✅ | ❌ |
+| Write without response | ✅ | ✅ | ❌ |
+| Notifications (subscribe + wait) | ✅ | ✅ (per-characteristic queues) | ❌ |
+| L2CAP channel (open / send / recv) | ✅ | ⚠️ unverified | ❌ |
+| `net.Conn` + TLS over L2CAP | ✅ | ⚠️ unverified | ❌ |
 
-On Linux the GATT methods exist only to satisfy the shared method set; they return
-`"GATT not implemented on Linux"`.
+On Windows the GATT methods exist only to satisfy the shared method set; they return
+`"not implemented"`.
+
+**The Linux L2CAP column is not known to work.** Until recently `parseBTAddr` guarded its
+separator check on the loop index rather than the offset, so it indexed `s[-1]` and **panicked on
+every valid address** — meaning `central.Connect` could never return on Linux and nothing
+downstream of it had ever run. With that fixed, GATT works (verified against a Wendy Lite board),
+but the raw-socket `OpenL2CAP` still times out: against a board advertising PSM 128 the kernel's
+connect-scan never establishes a link, and every PSM behaves identically — including one nothing
+listens on, which a reachable peer would *refuse* rather than let time out. Neither the LE address
+type nor the `BT_SECURITY` level changes it, and it happens equally on a link BlueZ has already
+established. So the failure is below L2CAP, and where it lives — this host's controller, the
+kernel, or the peripheral's CoC listener — is still open. `central/live_test.go`'s
+`gatt_then_l2cap` and `l2cap_only` subtests are the gates for it.
 
 ### Addressing is platform-dependent
 
@@ -93,11 +109,13 @@ On Linux the GATT methods exist only to satisfy the shared method set; they retu
 
 * **macOS** — a CoreBluetooth peripheral UUID (`"XXXXXXXX-XXXX-…"`). CoreBluetooth never exposes
   the hardware MAC address.
-* **Linux** — a Bluetooth MAC address, `"AA:BB:CC:DD:EE:FF"` (parsed to LSB-first `[6]byte`,
-  `BDADDR_LE_PUBLIC`).
+* **Linux** — a Bluetooth MAC address, `"AA:BB:CC:DD:EE:FF"` (parsed to LSB-first `[6]byte`). The LE
+  address type is read from BlueZ's `Device1.AddressType` where the device is known, so
+  random-static and resolvable-private addresses work; when BlueZ has never seen the device,
+  `OpenL2CAP` tries public then random.
 
 Either source of addresses hands you the right kind of value per platform: the [`scan`](scan/)
-subpackage in `BLEDeviceInfo.Address`, or [`shared/discovery`](../../shared/discovery/) in
+subpackage in `BLEDeviceInfo.Address`, or [`shared/discovery`](../discovery/) in
 `models.BluetoothDevice.Address`. Windows is the gap — `scan` can find peripherals there, but
 `central.Connect` cannot reach them.
 
@@ -114,23 +132,23 @@ returned conn closes the underlying BLE connection.
   polling granularity, not a timeout callers see. With a deadline it returns a `net.Error` whose
   `Timeout()` is true, which is what stops `crypto/tls` treating a deadline as a broken connection.
   Write deadlines are ignored.
-* `Close` is idempotent and takes the same lock `Read` holds across `L2CAPRecv`, so it waits out an
-  in-flight read (at most 2 s). Both matter: `Connection.Close` is *not* idempotent (on Linux it
-  closes a bare fd without clearing it), and on macOS `wendy_ble_disconnect` hands the
-  CoreBluetooth wrapper to ARC while a blocked reader still holds a bare pointer to it.
+* `Close` takes the same lock `Read` holds across `L2CAPRecv`, so it waits out an in-flight read (at
+  most 2 s). That matters on macOS, where `wendy_ble_disconnect` hands the CoreBluetooth wrapper to
+  ARC while a blocked reader still holds a bare pointer to it. Its idempotency flag is now belt and
+  braces — `Connection.Close` is idempotent on both backends.
 * `LocalAddr`/`RemoteAddr` are placeholders (`"ble-l2cap"` / `"ble"`).
 
-`ble.NewClientTLSConfig` builds a `*tls.Config` for it. It sets `InsecureSkipVerify: true` — there is
-no hostname to verify over L2CAP, and ML-DSA chain certs don't parse in Go's built-in verifier — and
-performs real validation in a `VerifyConnection` callback from `shared/certs` (Wendy PKI + pin store).
-That function is **Wendy-specific**, which is why it lives in `ble/agent_tls_over_ble.go` rather
-than in `central/` with the `l2capNetConn` adapter underneath it.
+The TLS config that runs over this is the caller's business. Wendy's is
+`ble.NewClientTLSConfig` in [`internal/cli/ble`](../../cli/ble/): it sets `InsecureSkipVerify: true`
+— there is no hostname to verify over L2CAP, and ML-DSA chain certs don't parse in Go's built-in
+verifier — and performs real validation in a `VerifyConnection` callback from `shared/certs`. That
+function depends on the Wendy PKI, which is exactly why it is not here.
 
 ## Scanning (the [`scan`](scan/) subpackage)
 
-`scan` is the other half of the generic story: `central.Connect` needs an address, and this is where
-addresses come from. It is deliberately as Wendy-free as `Connection` is — the services to look for are an
-argument, and a result carries only what a BLE advertisement can actually supply.
+`central.Connect` needs an address, and this is where addresses come from. It is as protocol-free as
+`Connection` is — the services to look for are an argument, and a result carries only what a BLE
+advertisement can actually supply.
 
 ```go
 devices, err := scan.DiscoverBluetoothContinuous(ctx, scan.Options{
@@ -153,9 +171,8 @@ advertising packet — from spinning the channel.
 
 Two things it deliberately does *not* report:
 
-* **No L2CAP PSM.** A PSM is not in an advertisement. Get it from `ReadLiteInfo` after connecting,
-  or fall back to the relevant client's own `DefaultL2CAPPSM` — `ble`'s for the agent,
-  `liteclient`'s for Lite.
+* **No L2CAP PSM.** A PSM is not in an advertisement. Read it from the peripheral over GATT after
+  connecting, or fall back to a per-protocol default the caller owns.
 * **No stable cross-platform identity.** `Address` is a CoreBluetooth UUID on macOS and a MAC on
   Linux and Windows, exactly as `central.Connect` requires, so it cannot be compared across
   machines.
@@ -166,7 +183,8 @@ advertisement it came from. Windows has no cache to fall back on and reports `""
 
 Service UUIDs are normalized through `scan.CanonicalUUID`, which matters more than it looks:
 CoreBluetooth renders a 16-bit UUID as four hex characters (`"180F"`) where BlueZ and WinRT give the
-full 128-bit form, so comparing raw strings across platforms silently misses matches.
+full 128-bit form, so comparing raw strings across platforms silently misses matches. `central` has
+its own copy of that function — it must not import `scan` — and the two must stay identical.
 
 | Capability | macOS | Linux | Windows |
 | --- | :---: | :---: | :---: |
@@ -237,75 +255,85 @@ CoreBluetooth normally assumes exists.
   of routing a timeout through `bleError`, so a caller can tell an idle channel from a dead one and
   retry. Everything else surfaces as an opaque string.
 
-### Linux (`central/ble_linux.go`)
+### Linux (`central/ble_linux.go`, `bluez_linux.go`, `gatt_linux.go`)
 
-Pure Go, no cgo, no BlueZ D-Bus. `Connect` only creates the socket; `OpenL2CAP` does the
-non-blocking `connect(2)` + `Poll` (so the timeout is respected) + `SO_ERROR` check, then switches
-back to blocking mode. Receive is `Poll` + one `read(2)` into a 64 KiB buffer, one SDU per call.
+Two halves that share only the peer's address, and the split is deliberate.
 
-Pairing/bonding is assumed to already exist (BlueZ handles it out of band); this package never
-initiates it.
+**L2CAP** is a raw socket, no cgo and no D-Bus. `Connect` only creates the socket; `OpenL2CAP` does
+a best-effort, non-fatal BlueZ lookup for the peer's LE address type, then the non-blocking
+`connect(2)` + `Poll` (so the timeout is respected) + `SO_ERROR` check, then switches back to
+blocking mode. Receive is `Poll` + one `read(2)` into a 64 KiB buffer, one SDU per call. When BlueZ
+has no object for the device its address type is unknown, so the caller's timeout is split and
+public is tried before random — a wrong type times out rather than failing fast, because the
+controller ends up paging an address nobody answers. See the capability matrix above: this path
+compiles and is exercised, but has never been seen to complete against real hardware.
 
-Note the asymmetry with the scanner: `../scan/scan_linux.go` *does* use BlueZ D-Bus, because typed
-`org.bluez.Device1` properties are the only sane way to get advertised service UUIDs and RSSI. Only
-the connection path avoids D-Bus, by going straight to an L2CAP socket.
+`Connect` stays lazy on purpose: the kernel's L2CAP connect does its own scan-and-connect and reaches
+a device BlueZ has no object for at all, which is the normal case some seconds after a scan stops.
+Making `Connect` establish a link through BlueZ would break that, and the pure-L2CAP callers never
+ask for GATT anyway.
+
+**GATT** goes through BlueZ over D-Bus, because there is no reasonable alternative — an ATT client on
+a raw socket would mean implementing the protocol by hand, and BlueZ owns the link anyway.
+`DiscoverServices` resolves the device object by matching its `Address` property (never by
+synthesizing `/org/bluez/hciX/dev_AA_BB_…`), calls `Device1.Connect()`, waits for `ServicesResolved`,
+then walks `GattService1` / `GattCharacteristic1` objects under the device path into a
+`(service UUID, characteristic UUID) → object path` index. BlueZ reports UUIDs lowercase and 128-bit
+where callers pass uppercase, so both sides go through `canonicalUUID`.
+
+BlueZ evicts unpaired devices from its object tree roughly 30 s after discovery stops, so a MAC that
+a scan produced often has no D-Bus object left by the time GATT runs. On that miss `DiscoverServices`
+runs a short `StartDiscovery`, polls until the device appears, and **stops discovery before
+connecting** — an outgoing LE connect while the controller is scanning fails on older kernels.
+
+Notifications arrive as `PropertiesChanged` signals carrying `Value`. One match rule on the device's
+path namespace covers the device object and every characteristic under it; a single router goroutine
+fans those into **one bounded queue per characteristic**, which is why `WaitNotification` is
+per-characteristic here and not per-connection as it is on macOS. The router never blocks — godbus
+spawns a goroutine per signal rather than dropping when a registered channel is full, so a stuck
+router would leak unboundedly — and drops the oldest value when a queue fills.
+
+Two BlueZ behaviors to know: `ReadValue` also updates `Value` and emits `PropertiesChanged`, so a
+read on a subscribed characteristic enqueues a phantom notification; and gdbus batches property
+changes per main-loop iteration, so two notifications in the same iteration can collapse into one.
+Neither is worth working around for a rate-limited status characteristic, and the escape hatch if a
+streaming one ever appears is `AcquireNotify`, which hands back a seqpacket fd and bypasses D-Bus.
+
+`Close` tears the ACL link down only if this connection brought it up *and* no L2CAP channel is
+riding on it — `Device1.Disconnect()` drops the HCI link, which would kill a channel belonging to us
+or to another process.
+
+Pairing/bonding is assumed to already exist; this package never initiates it and registers no
+`org.bluez.Agent1`. A peripheral that demands encryption surfaces `NotPermitted` / `NotAuthorized`,
+mapped to a message telling the user to pair with `bluetoothctl` first.
 
 ## Known limitations
 
-These are all about `central`'s `Connection` API; `scan`'s own caveats are in its section above. Worth
-knowing before building anything else on this:
+These are all about `central`'s `Connection` API; `scan`'s own caveats are in its section above.
 
-* **GATT is not goroutine-safe.** There is one semaphore per operation class, so at most one
-  outstanding GATT operation per connection, and no request/response correlation. Concurrent GATT
-  calls will cross-signal. The L2CAP data path is the exception: one concurrent sender plus one
-  concurrent receiver is supported and relied on (`liteclient`'s framing writes from command
-  goroutines while its read loop blocks in `Read`). On macOS that holds because sends are
-  dispatched onto the I/O thread and never touch the recv buffer or its semaphore; on Linux because
-  `write(2)` and `read(2)` on one socket are independent. Two concurrent *senders* are still unsafe
-  — on macOS they race on the shared write result, and on Linux `L2CAPSend`'s write loop would
-  interleave and corrupt the stream — so callers must serialize writes, as `liteclient` does.
-* **`WaitNotification` is per-connection, not per-characteristic.** All subscriptions share one
-  semaphore; a notification on characteristic *A* wakes a waiter on *B*, which then finds its own
-  queue empty and reports a timeout. Fine with one subscription, fragile with several.
-* **A read on a subscribed characteristic lands in the notification queue.** The macOS
+* **GATT is not goroutine-safe**, on either backend. At most one outstanding GATT operation per
+  connection. The L2CAP data path is the exception: one concurrent sender plus one concurrent
+  receiver is supported and relied on (`liteclient`'s framing writes from command goroutines while
+  its read loop blocks in `Read`). On macOS that holds because sends are dispatched onto the I/O
+  thread and never touch the recv buffer or its semaphore; on Linux because `write(2)` and `read(2)`
+  on one socket are independent. Two concurrent *senders* are still unsafe — on macOS they race on
+  the shared write result, and on Linux `L2CAPSend`'s write loop would interleave and corrupt the
+  stream — so callers must serialize writes, as `liteclient` does.
+* **macOS only: `WaitNotification` is per-connection, not per-characteristic.** All subscriptions
+  share one semaphore; a notification on characteristic *A* wakes a waiter on *B*, which then finds
+  its own queue empty and reports a timeout. Fine with one subscription, fragile with several. Linux
+  gives each characteristic its own queue.
+* **macOS only: a read on a subscribed characteristic lands in the notification queue.** The
   `didUpdateValueForCharacteristic:` handler checks the notify queues first, so `ReadCharacteristic`
-  on a characteristic you've subscribed to never gets its response and times out after 10 s.
+  on a characteristic you've subscribed to never gets its response and times out after 10 s. On
+  Linux a read is a D-Bus method call with its own reply and cannot be confused with a notification.
 * **No `context.Context`**, no cancellation; timeouts are whole seconds only, and several
   (GATT read/write/subscribe: 10 s) are hard-coded.
-* **No MTU or max-SDU negotiation** is exposed.
+* **No MTU or max-SDU negotiation** is exposed. Linux reads `GattCharacteristic1.MTU` where BlueZ
+  publishes it, but only to decide whether a read may have been truncated.
 * **No descriptor access, no indications** (only notifications), no characteristic-property
-  inspection.
+  inspection beyond the `Flags` Linux puts in error messages.
 * **Central role only** — no advertising, no GATT server, no peripheral role.
 * **No reconnect or retry logic**; a disconnect surfaces as an error on the next call.
 * On macOS, a disconnect wakes blocked waiters but `L2CAPRecv` may report `disconnected` rather
   than a clean EOF.
-
-## What is generic, and what is Wendy-specific
-
-**The split is the directory layout**, so the compiler enforces it rather than a convention:
-`central/` and `scan/` know nothing about Wendy, and `ble` is where everything Wendy-specific lives.
-Adding a Wendy identifier to either subpackage is the change to push back on — and adding a
-`shared/models` or `shared/certs` import to one would be the first sign of it.
-
-### Generic — no Wendy identifiers anywhere
-
-| Piece | Why it is generic |
-| --- | --- |
-| `central.Connection` and every method on it | Takes plain service/characteristic UUIDs and PSMs. There are no hard-coded Wendy UUIDs in `central/`. |
-| The CoreBluetooth backend (`central/ble_darwin.*`) | A genuinely reusable macOS BLE central for CLI programs. The run-loop and threading work it does is the hard part of that problem. |
-| `central.NewL2CAPStream` (`l2capNetConn`) | A general-purpose L2CAP-to-`net.Conn` adapter. |
-| `central.ErrRecvTimeout`, `central.TimeoutSeconds` | Sentinel and duration conversion the layers above need; `TimeoutSeconds` is exported only because `ble/lite_info.go` must round the same way. |
-| The [`scan`](scan/) subpackage | Services to match are an argument; results carry only what an advertisement supplies. No PSM, no name prefixes. |
-
-Neither subpackage imports `shared/models` or `shared/certs`.
-
-### Wendy-specific — the `ble` package
-
-| Piece | What ties it to Wendy |
-| --- | --- |
-| `lite_client.go` | Hard-coded Wendy Lite service/characteristic UUIDs and command/status bytes. |
-| `lite_info.go` | Likewise, for the Wendy Lite info service. |
-| `agent_client.go` | Protobuf framing, `agentpb` types, its own reply timeout. |
-| `agent_tls_over_ble.go` — `NewClientTLSConfig` | Depends on `shared/certs` — Wendy PKI and pin store. Agent-only; the Lite path builds its own config in `liteclient`. |
-| `DefaultL2CAPPSM` — one per protocol | `ble`'s (in `agent_client.go`) is the PSM the WendyOS agent listens on; `liteclient`'s (in `link_ble.go`) is the Lite firmware's. Both are 128 today and both are **independent** — two programs' listening PSMs, one of them firmware from another repo, either free to move. A PSM is a Wendy convention rather than a property of BLE, which is why neither lives in `central/`. |
-| `ConnectLite` / `ConnectAgent` | Take `*models.BluetoothDevice`, a `shared/models` type populated by `shared/discovery`. |

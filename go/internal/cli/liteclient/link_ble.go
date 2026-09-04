@@ -41,10 +41,10 @@ func (c *WendyLiteClient) ConnectViaBLE(address string, psm uint16, tlsCfg *tls.
 	}
 
 	if psm == 0 {
-		// Not fatal: where GATT is unavailable — Linux and Windows have no GATT
-		// client at all — the default is the answer, and a device that really
-		// disagrees fails the open below with a clearer error than this would
-		// give.
+		// Not fatal: where GATT is unavailable — Windows has no GATT client at
+		// all, and a board may simply not publish the service — the default is
+		// the answer, and a device that really disagrees fails the open below
+		// with a clearer error than this would give.
 		if info, ierr := ble.ReadLiteInfo(conn, bleDialTimeout); ierr == nil {
 			psm = info.PSM
 		}

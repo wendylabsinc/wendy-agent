@@ -2,9 +2,9 @@
 // a peripheral, talk GATT, and open an L2CAP channel that can carry TLS.
 //
 // Nothing here is specific to any device or protocol — every method takes plain
-// service/characteristic UUIDs and PSMs. The Wendy protocol clients live one
-// level up in internal/cli/ble; peripheral discovery lives beside this package
-// in internal/shared/ble/scan, which yields the address Connect takes.
+// service/characteristic UUIDs and PSMs. The Wendy protocol clients live in
+// internal/cli/ble; peripheral discovery lives beside this package in
+// internal/shared/ble/scan, which yields the address Connect takes.
 //
 // The API is blocking, with whole-second timeouts, and Connection is not
 // goroutine-safe for GATT. See ../README.md for the capability matrix per
@@ -24,6 +24,20 @@ import (
 // (*Connection).L2CAPRecv. It is a sentinel, not a failure: the channel is still
 // open, and a caller with no deadline of its own is expected to retry.
 var ErrRecvTimeout = errors.New("BLE L2CAP receive timeout")
+
+// ErrGATTNotFound reports that a service or characteristic is absent from what
+// discovery found — the device is reachable, it simply does not have this. It
+// is the one GATT failure a caller can reasonably act on differently, which is
+// why it is a sentinel and the rest are strings.
+//
+// It also covers a GATT call made before DiscoverServices, since the effect is
+// the same: nothing is in the index.
+var ErrGATTNotFound = errors.New("BLE GATT service or characteristic not found")
+
+// ErrGATTDisconnected reports that the link dropped while an operation was in
+// flight or a waiter was parked. Distinguishable from a timeout because there
+// is nothing to wait for any more.
+var ErrGATTDisconnected = errors.New("BLE peripheral disconnected")
 
 // recvChunkSeconds bounds one L2CAPRecv call. It is polling granularity, not a
 // timeout any caller sees: Read retries until its own deadline expires, or
@@ -130,9 +144,14 @@ func (c *l2capNetConn) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// Close is idempotent: Connection.Close is not (on Linux it closes a bare fd
-// without clearing it, so a second call would close an unrelated descriptor).
-// It waits out an in-flight Read, which takes at most recvChunkSeconds.
+// Close waits out an in-flight Read, which takes at most recvChunkSeconds, so
+// the platform connection cannot be torn down while a reader is still inside
+// it. That is what matters on darwin, where wendy_ble_disconnect hands the
+// CoreBluetooth wrapper to ARC.
+//
+// Its idempotency is belt and braces these days — Connection.Close is
+// idempotent on both backends — but it costs a bool and keeps this type's own
+// contract independent of theirs.
 func (c *l2capNetConn) Close() error {
 	if c.closed.Swap(true) {
 		return nil

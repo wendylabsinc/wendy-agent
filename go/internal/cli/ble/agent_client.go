@@ -1,3 +1,12 @@
+// Package ble is the Wendy protocol layer over the generic BLE central in
+// internal/shared/ble: the WendyOS agent's RPC over mTLS-over-L2CAP, its TLS
+// configuration, and Wendy Lite Wi-Fi provisioning over GATT. Every Wendy UUID,
+// PSM and framing rule the CLI needs lives here; internal/shared/ble/central
+// and .../scan know none of it.
+//
+// The Lite info service is the exception — it sits in internal/shared/ble,
+// which is also named ble, because internal/shared/discovery needs it. No file
+// currently imports both; a future one must alias.
 package ble
 
 import (

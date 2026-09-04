@@ -13,8 +13,8 @@ import (
 //	WENDY_BLE_LIVE_SCAN=1 go test ./internal/shared/discovery -run TestLiveLiteDiscovery -v
 //
 // It is skipped otherwise, because CI has no radio — the same gate as
-// ble/scan's TestLiveScan. Linux and Windows have no GATT client, so the stream
-// stays empty there by design; only macOS can pass this.
+// ble/scan's TestLiveScan. Windows has no GATT client, so the stream stays
+// empty there by design; macOS and Linux can both pass this.
 func TestLiveLiteDiscovery(t *testing.T) {
 	if os.Getenv("WENDY_BLE_LIVE_SCAN") == "" {
 		t.Skip("set WENDY_BLE_LIVE_SCAN=1 to run a real BLE scan")

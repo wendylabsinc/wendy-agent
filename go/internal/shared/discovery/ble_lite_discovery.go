@@ -37,8 +37,8 @@ const (
 
 	// bleLiteProbeAttempts caps how many times one address is probed before it
 	// is abandoned for the life of the stream. A cap rather than endless retry
-	// because on Linux and Windows every probe fails by design (no GATT
-	// client), and each attempt reaches for the board's single BLE link.
+	// because each attempt reaches for the board's single BLE link, and because
+	// on Windows every probe fails by design (no GATT client).
 	bleLiteProbeAttempts = 3
 
 	// bleLiteStreamBuffer decouples the loop from a consumer that renders
@@ -69,7 +69,7 @@ var (
 // policy: BLE offers no "device went away" signal.
 //
 // A board appears only once its info service was read, which takes a GATT
-// connection: Linux and Windows have no GATT client at all (see
+// connection: Windows has no GATT client at all (see
 // ble.ErrLiteInfoUnavailable), so the stream stays empty there. A new emit
 // happens when a board is identified, not when its signal moves — RSSI changes
 // on nearly every advertising packet, and the value carried is simply the

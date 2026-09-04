@@ -1,3 +1,16 @@
+// Package ble is the one Wendy-specific resident of internal/shared/ble, whose
+// central and scan subpackages are otherwise free of Wendy identifiers.
+//
+// It lives here rather than in internal/cli/ble — where the rest of the Wendy
+// protocol layer is — for one reason: internal/shared/discovery reads a Lite
+// board's info service to learn its L2CAP PSM, and a shared package importing a
+// cli one is an upward edge. Nothing else about it wants to be shared, so keep
+// this package to the info service and let internal/cli/ble own the rest.
+//
+// internal/cli/ble is also named ble. No file currently needs both, and none
+// should have to; a future one must alias.
+//
+// This package must never import internal/shared/discovery, which imports it.
 package ble
 
 import (
@@ -37,8 +50,8 @@ type LiteInfo struct {
 }
 
 // ErrLiteInfoUnavailable reports that the device does not publish the info
-// service, or that this platform cannot read GATT at all — Linux and Windows
-// have no GATT client, so they always take this path. Callers fall back to
+// service, or that this platform cannot read GATT at all — Windows has no GATT
+// client, so it always takes this path. Callers fall back to
 // liteclient.DefaultL2CAPPSM rather than failing.
 var ErrLiteInfoUnavailable = errors.New("Wendy Lite info service unavailable")
 
@@ -69,9 +82,9 @@ func ReadLiteInfoAt(address string, timeout time.Duration) (*LiteInfo, error) {
 // required; the identity and mTLS characteristics are read opportunistically
 // and left zero when a device omits them.
 func ReadLiteInfo(conn *central.Connection, timeout time.Duration) (*LiteInfo, error) {
-	// Required before any characteristic op: the darwin lookup walks the
-	// peripheral's discovered services and reports "not found" against an empty
-	// list. This is also where Linux and Windows bow out.
+	// Required before any characteristic op: both backends resolve a
+	// characteristic against what discovery found, and report "not found"
+	// against an empty index. This is also where Windows bows out.
 	if err := conn.DiscoverServices(central.TimeoutSeconds(timeout)); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrLiteInfoUnavailable, err)
 	}

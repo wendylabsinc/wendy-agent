@@ -1,14 +1,14 @@
 // Package scan is a generic, continuously-streaming BLE scanner for the
-// central (client) side. It complements internal/shared/ble, which connects to a
-// peripheral but, as its README says, "does no scanning or discovery of its
-// own".
+// central (client) side. It complements the sibling central package, which
+// connects to a peripheral but, as the README says, "does no scanning or
+// discovery of its own".
 //
 // Nothing here knows about any particular device or protocol: the service UUIDs
 // to look for are an argument, and the results carry only what a BLE
 // advertisement can actually supply. An L2CAP PSM is deliberately absent — it
 // is not advertised, and can only be learned from a GATT read after connecting.
 //
-// The Address a scan reports is the string ble.Connect expects on the same
+// The Address a scan reports is the string central.Connect expects on the same
 // platform, so results feed straight into a connection.
 package scan
 
