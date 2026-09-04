@@ -87,10 +87,18 @@ uncertainty = 1 - max(confidence over detections >= threshold)
 ```
 
 Clamped to 0..1. A frame the model is sure about scores near 0; an empty
-or ambiguous frame scores 1.0. That makes `model.uncertainty > 0.65` in
-the campaign collect exactly the frames worth labeling: the ones the
-current model cannot explain. The formula lives in
+or ambiguous frame scores 1.0. The formula lives in
 `wendydata.uncertainty_score` and is unit-tested.
+
+Read that second line carefully before arming a `model.uncertainty` trigger
+on it. Because the score is 1 minus a confidence, it does not separate "the
+model was unsure about what it saw" from "the model recognised nothing": any
+scene without a class the detector knows sits at exactly 1.0. A threshold of
+0.65 therefore fires on every prediction, which is why `campaign.yaml` no
+longer arms one. Measured on a Jetson with nobody in frame, it produced a
+fresh episode every 30 seconds. The score is still worth recording, and every
+prediction carries it, so it remains queryable after the fact; triggering on
+it needs entropy across classes or the margin between the top two.
 
 ### Prediction rate limiting
 
@@ -201,11 +209,11 @@ wendy data campaign deploy campaign.yaml
 wendy data campaign list
 ```
 
-`campaign.yaml` arms two triggers — the `person_detected` event and
-`model.uncertainty > 0.65` — and captures the camera continuously so the
-episode holds the frames the model actually consumed. The `applications`
-source is always captured; it does not appear under `sources:` because it
-cannot be deselected.
+`campaign.yaml` arms one trigger, the edge-triggered `person_detected`
+event, and captures the camera continuously and uncapped so the episode
+holds the frames the model actually consumed. The `applications` source is
+always captured; it does not appear under `sources:` because it cannot be
+deselected.
 
 This one campaign works with the app running, on a single-camera device.
 It replaces the pair of campaigns the example used to ship.
