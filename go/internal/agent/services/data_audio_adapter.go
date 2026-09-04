@@ -359,9 +359,16 @@ type audioCapture struct {
 	segUncert    int64
 	segReceipt   int64
 	segTrigger   *float64
+	// segClamped and segClampShortfall carry the origin clamp (see
+	// beginSegment) from the stamp to the segment's index record.
+	segClamped        bool
+	segClampShortfall int64
 
 	// Accounting.
-	missedCrossings   uint64
+	missedCrossings uint64
+	// clampedSegments counts segment stamps held at the episode origin because
+	// the pipeline correction would have placed them before it.
+	clampedSegments   uint64
 	maxCanonicalError int64
 	firstOffset       *int64
 	notes             []string
@@ -502,6 +509,24 @@ func (c *audioCapture) beginSegment(triggerLevel *float64, firstChunkBytes int) 
 	}
 	canonical -= pcmDurationNanos(firstChunkBytes) + int64(audioPipelineDelayEstimate)
 	uncertainty += int64(audioPipelineDelayBound)
+	// The correction is an estimate walking backwards, and nothing stops it
+	// walking back past the start of the episode. Audio has no pre-roll ring:
+	// capture begins when the episode does, so there are no samples from before
+	// the origin and a stamp before it would advertise pre-trigger audio that
+	// does not exist. A negative offset is how this tree says "pre-roll was
+	// achieved", and the audio adapter is never entitled to say it.
+	//
+	// So the stamp is held at the origin — and said so, rather than quietly
+	// maxed. The shortfall widens the published uncertainty, which keeps the
+	// true instant inside the bracket, and the segment's index record carries
+	// the flag and the amount so a reader can tell a bound from an estimate.
+	segmentClamped, clampShortfall := false, int64(0)
+	if shortfall := c.session.RequestBootNanos - canonical; shortfall > 0 {
+		canonical = c.session.RequestBootNanos
+		uncertainty += shortfall
+		segmentClamped, clampShortfall = true, shortfall
+		c.clampedSegments++
+	}
 	if uncertainty > c.maxCanonicalError {
 		c.maxCanonicalError = uncertainty
 	}
@@ -526,6 +551,8 @@ func (c *audioCapture) beginSegment(triggerLevel *float64, firstChunkBytes int) 
 	c.segUncert = uncertainty
 	c.segReceipt = receipt
 	c.segTrigger = triggerLevel
+	c.segClamped = segmentClamped
+	c.segClampShortfall = clampShortfall
 	if c.firstOffset == nil {
 		offset := canonical - c.session.RequestBootNanos
 		c.firstOffset = &offset
@@ -581,6 +608,8 @@ func (c *audioCapture) finishSegment(truncated bool) error {
 		Mode:                      c.mode,
 		TriggerLevelDb:            c.segTrigger,
 		Truncated:                 truncated,
+		ClampedToOrigin:           c.segClamped,
+		ClampShortfallNanos:       c.segClampShortfall,
 	}
 	b, _ := json.Marshal(record)
 	_, err := c.index.Write(append(b, '\n'))
@@ -623,6 +652,14 @@ func (c *audioCapture) finish() {
 	c.result.SourceID = c.source.ID
 	c.result.ClockDomain = c.source.ClockDomain
 	c.result.ActualOffset = c.firstOffset
+	if c.clampedSegments > 0 {
+		// Said in the manifest as well as per segment: an operator reading the
+		// episode summary should not have to open the audio index to learn that
+		// some stamps are bounds held at the origin rather than estimates.
+		c.notes = append(c.notes, fmt.Sprintf(
+			"%d segment stamp(s) clamped to the episode origin: the pipeline correction reached before it, and their canonical uncertainty is widened by the shortfall",
+			c.clampedSegments))
+	}
 	if c.maxCanonicalError > 0 {
 		maxError := c.maxCanonicalError
 		c.result.MappingError = &maxError
@@ -659,6 +696,18 @@ type audioIndexRecord struct {
 	Mode                      string   `json:"mode"`
 	TriggerLevelDb            *float64 `json:"trigger_level_db,omitempty"`
 	Truncated                 bool     `json:"truncated,omitempty"`
+	// ClampedToOrigin marks a stamp whose pipeline correction reached back past
+	// the episode origin and was held at it. Audio has no pre-roll ring, so it
+	// cannot have captured anything before the origin; the correction is an
+	// estimate and a segment opened within roughly a chunk of the origin can
+	// therefore be walked back further than the capture actually goes.
+	// CanonicalUncertaintyNanos is widened by the shortfall on such a record,
+	// so the true instant still lies inside the published bracket, and this
+	// flag says the stamp is a bound rather than an estimate.
+	ClampedToOrigin bool `json:"clamped_to_origin,omitempty"`
+	// ClampShortfallNanos is how far past the episode origin the correction
+	// would have reached. Present only alongside ClampedToOrigin.
+	ClampShortfallNanos int64 `json:"clamp_shortfall_nanos,omitempty"`
 }
 
 // writeWAVHeader writes a 44-byte canonical PCM WAV header at the file cursor.
