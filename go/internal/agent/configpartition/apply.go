@@ -257,8 +257,8 @@ func applyWendyConf(logger *zap.Logger, cfgDir string) {
 // characters for the name; longer names produce an invalid hostname label.
 const maxDeviceNameLen = 55
 
-// validDeviceName reports whether name satisfies the WendyOS device name rules:
-// starts with a lowercase letter, followed by 2–54 lowercase letters, digits, or hyphens.
+// validDeviceName: letter-led, 3-55 chars of [a-z0-9-], no trailing hyphen so the
+// derived "wendyos-<name>" stays a valid DNS label. Mirrors is_valid_device_name.
 func validDeviceName(name string) bool {
 	if len(name) < 3 || len(name) > maxDeviceNameLen {
 		return false
@@ -275,12 +275,12 @@ func validDeviceName(name string) bool {
 			return false
 		}
 	}
-	return true
+	return name[len(name)-1] != '-'
 }
 
 func applyDeviceName(logger *zap.Logger, name string) error {
 	if !validDeviceName(name) {
-		return fmt.Errorf("invalid device name %q: must match ^[a-z][a-z0-9-]{2,54}$", name)
+		return fmt.Errorf("invalid device name %q: must match ^[a-z][a-z0-9-]{1,53}[a-z0-9]$", name)
 	}
 
 	const deviceNamePath = "/etc/wendyos/device-name"
