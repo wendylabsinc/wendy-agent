@@ -256,10 +256,25 @@ func (b *v4l2Buf) setIndex(i uint32) { *(*uint32)(unsafe.Pointer(&b[0])) = i }
 func (b *v4l2Buf) setType(t uint32)  { *(*uint32)(unsafe.Pointer(&b[4])) = t }
 func (b *v4l2Buf) bytesUsed() uint32 { return *(*uint32)(unsafe.Pointer(&b[8])) }
 func (b *v4l2Buf) flags() uint32     { return *(*uint32)(unsafe.Pointer(&b[12])) }
+func (b *v4l2Buf) setFlags(f uint32) { *(*uint32)(unsafe.Pointer(&b[12])) = f }
 func (b *v4l2Buf) timestampNanos() int64 {
 	sec := *(*int64)(unsafe.Pointer(&b[24]))
 	usec := *(*int64)(unsafe.Pointer(&b[32]))
 	return sec*int64(time.Second) + usec*int64(time.Microsecond)
+}
+
+// setTimestampNanos writes nanos into the struct timeval at offsets 24 and 32,
+// mirroring timestampNanos above exactly so a value written here reads back
+// through that accessor.
+//
+// The microsecond field truncates: struct timeval has no finer resolution. The
+// truncation is exact rather than lossy-and-rounded, because 1e9 is divisible
+// by 1000, so sec*1e6 + usec == nanos/1000 for any non-negative nanos. That
+// identity is what lets a consumer derive the expected buffer value from
+// FrameIdentity.boottime_nanos without a second field on the wire.
+func (b *v4l2Buf) setTimestampNanos(nanos int64) {
+	*(*int64)(unsafe.Pointer(&b[24])) = nanos / int64(time.Second)
+	*(*int64)(unsafe.Pointer(&b[32])) = (nanos % int64(time.Second)) / int64(time.Microsecond)
 }
 func (b *v4l2Buf) sequence() uint32   { return *(*uint32)(unsafe.Pointer(&b[56])) }
 func (b *v4l2Buf) setMemory(m uint32) { *(*uint32)(unsafe.Pointer(&b[60])) = m }
