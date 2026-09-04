@@ -40,6 +40,7 @@ import (
 	"github.com/opencontainers/image-spec/identity"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
@@ -1295,7 +1296,28 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Apply the NVIDIA CDI spec before entitlements so that entitlements can
 	// override CDI-injected env vars (e.g. NVIDIA_VISIBLE_DEVICES=void → =all).
 	if needsNvidiaCDI(appCfg) {
-		c.applyNvidiaCDI(spec)
+		if cdiErr := c.applyNvidiaCDI(spec); cdiErr != nil {
+			// A CDI spec that names devices this host cannot resolve is a
+			// broken hand-off, not an absent one: give a gpu-entitled app that
+			// container and it starts cleanly, then dies at its first CUDA
+			// call with a message naming neither the container nor the device
+			// — which is how a provisioning failure comes to look like an app
+			// bug. Fail the create so the error reaches the deploy that caused
+			// it.
+			//
+			// Deliberately narrow. applyNvidiaCDI returns this error only when
+			// NVIDIA CDI provisioning is present and unusable; a host with no
+			// CDI spec at all still warns and continues, because the gpu
+			// entitlement discovers and injects the NVIDIA nodes by itself
+			// (see oci.applyGPU) and plenty of boards — a Pi with DRM, an AMD
+			// box, any host without nvidia-ctk — legitimately have no spec to
+			// apply. A display-only app stays best-effort for the same reason.
+			if appCfg.HasEntitlement(appconfig.EntitlementGPU) && errors.Is(cdiErr, cdi.ErrDevicesUnresolved) {
+				return fmt.Errorf("provisioning NVIDIA devices for gpu entitlement: %w", cdiErr)
+			}
+			c.logger.Warn("NVIDIA CDI provisioning incomplete; continuing",
+				zap.String("app_id", appID), zap.Error(cdiErr))
+		}
 	}
 
 	var systemAPISocketDir string
@@ -1679,9 +1701,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 // on a Jetson the EGL/GLES userspace a display app needs arrives through this
 // same injection. A warning naming a GPU would send someone debugging a
 // display-only app looking for an entitlement it never declared.
-func (c *Client) applyNvidiaCDI(spec *localoci.Spec) {
+func (c *Client) applyNvidiaCDI(spec *localoci.Spec) error {
 	mgr := cdi.NewManager()
-	cdiSpec, err := mgr.LoadNVIDIACDISpec()
+	cdiSpec, specPath, err := mgr.LoadNVIDIACDISpec()
 	if err != nil {
 		// No nvidia-ctk-generated CDI spec. On Tegra/L4T this is expected when the
 		// device's nvidia-container-toolkit predates `nvidia-ctk cdi generate`
@@ -1693,26 +1715,134 @@ func (c *Client) applyNvidiaCDI(spec *localoci.Spec) {
 		} else if applied > 0 {
 			c.logger.Info("Applied L4T CSV NVIDIA driver provisioning (no CDI spec; nvidia-ctk predates CDI)",
 				zap.Int("count", applied))
-			return
+			return nil
 		}
 		c.logger.Warn("No NVIDIA CDI spec and no usable L4T CSV files; NVIDIA driver library mounts may be incomplete",
 			zap.Error(err))
-		return
+		return fmt.Errorf("no NVIDIA CDI spec and no usable L4T CSV files: %w", err)
 	}
 
 	// nvidia-ctk in CSV mode generates a device named "all".
 	// Try that first, then fall back to the first device in the spec.
-	if err := cdi.ApplyCDIDevice(spec, cdiSpec, "all"); err == nil {
-		c.logger.Info("Applied NVIDIA CDI spec")
-		return
+	allErr := cdi.ApplyCDIDevice(spec, cdiSpec, "all")
+	if allErr == nil {
+		c.logger.Info("Applied NVIDIA CDI spec", zap.String("cdi_spec_path", specPath))
+		return nil
 	}
 	if len(cdiSpec.Devices) > 0 {
-		if err := cdi.ApplyCDIDevice(spec, cdiSpec, cdiSpec.Devices[0].Name); err == nil {
-			c.logger.Info("Applied NVIDIA CDI device", zap.String("device", cdiSpec.Devices[0].Name))
-			return
+		first := cdiSpec.Devices[0].Name
+		if firstErr := cdi.ApplyCDIDevice(spec, cdiSpec, first); firstErr == nil {
+			c.logger.Info("Applied NVIDIA CDI device",
+				zap.String("device", first), zap.String("cdi_spec_path", specPath))
+			return nil
+		} else if !errors.Is(firstErr, cdi.ErrDeviceNotFound) {
+			// The named device exists but some of its nodes would not resolve.
+			// Report that rather than the "all" lookup miss, which is the
+			// expected outcome on a spec that names its devices individually.
+			c.logger.Warn("NVIDIA CDI device could not be fully applied",
+				zap.String("device", first), zap.String("cdi_spec_path", specPath), zap.Error(firstErr))
+			return fmt.Errorf("applying NVIDIA CDI device %q from %s: %w", first, specPath, firstErr)
 		}
 	}
-	c.logger.Warn("CDI spec found but no devices could be applied")
+	c.logger.Warn("CDI spec found but no devices could be applied", zap.String("cdi_spec_path", specPath))
+	return fmt.Errorf("CDI spec %s has no applicable device: %w", specPath, allErr)
+}
+
+// refreshGPUDeviceNumbersForStart re-resolves the host device numbers pinned in
+// a GPU-entitled container's stored spec and persists the spec when any of them
+// have moved. Best-effort: every failure leaves the container exactly as it was
+// and lets the start proceed, because a start that used to work must not begin
+// failing on account of a repair step.
+//
+// The spec record is updated in place rather than through delete+recreate (as
+// refreshSecondaryNamespaces does) because there is no task yet at this point
+// and containerd's full-record update accepts a new spec — so the container
+// keeps its snapshot, and with it anything the app has written to its own
+// filesystem.
+func (c *Client) refreshGPUDeviceNumbersForStart(ctx context.Context, container containerd.Container, appName string, labels map[string]string) {
+	if !hasGPUEntitlement(parseEntitlementsFromAnnotations(labels)) {
+		return
+	}
+
+	info, err := container.Info(ctx)
+	if err != nil {
+		c.logger.Warn("Could not load container record to re-resolve GPU device numbers; starting with the stored spec",
+			zap.String("app_name", appName), zap.Error(err))
+		return
+	}
+	if info.Spec == nil {
+		return
+	}
+
+	var spec localoci.Spec
+	if err := json.Unmarshal(info.Spec.GetValue(), &spec); err != nil {
+		c.logger.Warn("Could not decode stored spec to re-resolve GPU device numbers; starting with the stored spec",
+			zap.String("app_name", appName), zap.Error(err))
+		return
+	}
+
+	refresh, err := cdi.RefreshDeviceNumbers(&spec)
+	if err != nil {
+		c.logger.Warn("Could not re-resolve GPU device numbers; starting with the stored spec",
+			zap.String("app_name", appName), zap.Error(err))
+		return
+	}
+	if len(refresh.Missing) > 0 {
+		// Nothing to repair — a device that is gone cannot be re-pointed — but
+		// this is the log line that tells whoever is debugging a GPU app that
+		// the host, not the container, is what changed.
+		c.logger.Warn("GPU container names host devices that no longer exist",
+			zap.String("app_name", appName), zap.Strings("devices", refresh.Missing))
+	}
+	if !refresh.Changed() {
+		return
+	}
+
+	newSpecJSON, err := json.Marshal(&spec)
+	if err != nil {
+		c.logger.Warn("Could not encode refreshed spec; starting with the stored spec",
+			zap.String("app_name", appName), zap.Error(err))
+		return
+	}
+
+	if err := container.Update(ctx, func(ctx context.Context, _ *containerd.Client, ctr *containers.Container) error {
+		ctr.Spec = &anypb.Any{TypeUrl: info.Spec.GetTypeUrl(), Value: newSpecJSON}
+		return nil
+	}); err != nil {
+		c.logger.Warn("Could not persist refreshed GPU device numbers; starting with the stored spec",
+			zap.String("app_name", appName), zap.Error(err))
+		return
+	}
+
+	c.logger.Info("Re-resolved stale GPU device numbers before start",
+		zap.String("app_name", appName), zap.Strings("devices", refresh.Updated))
+}
+
+// HasGPUEntitlement implements services.GPUDeviceReporter. It reads the
+// entitlements from the container's own labels (written at create time), so it
+// answers for a container that is currently down — which is exactly when the
+// monitor asks.
+func (c *Client) HasGPUEntitlement(ctx context.Context, appName string) bool {
+	ctx = c.withNamespace(ctx)
+	container, err := c.client.LoadContainer(ctx, appName)
+	if err != nil {
+		return false
+	}
+	labels, err := container.Labels(ctx)
+	if err != nil {
+		return false
+	}
+	return hasGPUEntitlement(parseEntitlementsFromAnnotations(labels))
+}
+
+// hasGPUEntitlement reports whether a gpu entitlement is present.
+func hasGPUEntitlement(ents []appconfig.Entitlement) bool {
+	for _, e := range ents {
+		if e.Type == appconfig.EntitlementGPU {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
@@ -1819,6 +1949,20 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		c.logger.Warn("could not load container spec to recreate managed resolv.conf before start",
 			zap.String("app_name", appName), zap.Error(storedSpecErr))
 	}
+
+	// Same class of problem as the resolv.conf hook above, for device numbers:
+	// the spec pins the major/minor pairs the host had when the container was
+	// created, and the NVIDIA nodes on a Jetson are allocated dynamically at
+	// module load, so they are stable for a boot rather than for the life of a
+	// container definition. Re-resolve them here, before NewTask consumes the
+	// spec, so a container whose numbers have gone stale is repaired by an
+	// ordinary restart instead of needing a reboot or a redeploy.
+	//
+	// Scoped to GPU-entitled containers deliberately. Every pinned device
+	// number in a long-lived spec has this weakness, but GPU nodes are the ones
+	// known to move, and a start is the wrong moment to start rewriting specs
+	// more broadly than the evidence supports.
+	c.refreshGPUDeviceNumbersForStart(ctx, container, appName, containerLabels)
 
 	// Resolve network policy before NewTask. A sandbox is reusable only when
 	// both its health/identity checks pass and the stored OCI spec explicitly
