@@ -20,6 +20,14 @@ func TestLiveLiteDiscovery(t *testing.T) {
 		t.Skip("set WENDY_BLE_LIVE_SCAN=1 to run a real BLE scan")
 	}
 
+	// permission.Preflight re-execs os.Executable() as "__ble-check" — under
+	// `go test` that's this test binary, which doesn't understand that
+	// argument. Skip the canary here; a human running this against real
+	// hardware has already dealt with Bluetooth permission.
+	origPreflight := blePreflightFn
+	t.Cleanup(func() { blePreflightFn = origPreflight })
+	blePreflightFn = func(context.Context) error { return nil }
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

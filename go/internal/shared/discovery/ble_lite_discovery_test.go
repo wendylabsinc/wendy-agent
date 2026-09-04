@@ -280,3 +280,44 @@ func TestBLELiteDiscoveryScanEndEndsStream(t *testing.T) {
 		t.Fatal("stream stayed open after the scan ended")
 	}
 }
+
+// TestBLELiteDiscoveryWiresPreflight proves BLELiteDeviceDiscoverContinuous
+// passes a non-nil Preflight into scan.Options.
+func TestBLELiteDiscoveryWiresPreflight(t *testing.T) {
+	var gotOpts scan.Options
+	swapBLELiteSeams(t,
+		func(_ context.Context, opts scan.Options) (<-chan []scan.BLEDeviceInfo, error) {
+			gotOpts = opts
+			ch := make(chan []scan.BLEDeviceInfo)
+			close(ch)
+			return ch, nil
+		},
+		func(string, time.Duration) (*ble.LiteInfo, error) { return nil, nil })
+
+	ch, err := BLELiteDeviceDiscoverContinuous(context.Background())
+	if err != nil {
+		t.Fatalf("BLELiteDeviceDiscoverContinuous: %v", err)
+	}
+	for range ch { //nolint:revive — drain until the stream goroutine exits
+	}
+	if gotOpts.Preflight == nil {
+		t.Fatal("BLELiteDeviceDiscoverContinuous did not wire a Preflight into scan.Options")
+	}
+}
+
+// TestBLELiteDiscoveryPreflightFailurePropagates proves a failing Preflight
+// surfaces as BLELiteDeviceDiscoverContinuous's returned error. This does not
+// swap bleLiteScanFn — it runs the real scan.DiscoverBluetoothContinuous,
+// which checks Preflight before touching any scanner backend, so this never
+// reaches cgo.
+func TestBLELiteDiscoveryPreflightFailurePropagates(t *testing.T) {
+	origPreflight := blePreflightFn
+	t.Cleanup(func() { blePreflightFn = origPreflight })
+
+	wantErr := errors.New("bluetooth unavailable - your terminal may not have Bluetooth permission")
+	blePreflightFn = func(context.Context) error { return wantErr }
+
+	if _, err := BLELiteDeviceDiscoverContinuous(context.Background()); !errors.Is(err, wantErr) {
+		t.Errorf("got error %v, want %v", err, wantErr)
+	}
+}

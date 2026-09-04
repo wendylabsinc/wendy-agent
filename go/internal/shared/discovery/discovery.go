@@ -130,6 +130,7 @@ func Discover(ctx context.Context, opts DiscoveryOptions) (*models.DevicesCollec
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// discoverBluetooth is disabled; see its doc comment.
 			activeScan := len(opts.Types) == 0 || len(opts.Types) == 1
 			if devices, err := discoverBluetooth(ctx, activeScan); err == nil {
 				mu.Lock()

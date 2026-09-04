@@ -4,7 +4,7 @@ A **cross-platform BLE central**: connect to a peripheral, talk GATT, and open a
 can carry TLS. It runs on the machine acting as the BLE *central* and talks to whatever is acting as
 the *peripheral*.
 
-Two subpackages, each free of any Wendy identifier:
+Four subpackages, each free of any Wendy identifier:
 
 1. [`central`](central/) — the connection API (`Connection`), covering GATT and L2CAP, plus the
    L2CAP-to-`net.Conn` adapter TLS runs over.
@@ -12,6 +12,8 @@ Two subpackages, each free of any Wendy identifier:
    addresses `central.Connect` takes.
 3. [`bluez`](bluez/) — the BlueZ D-Bus plumbing both use on Linux (object enumeration, adapter and
    device resolution, property readers, D-Bus error mapping).
+4. [`permission`](permission/) — checks OS Bluetooth permission before a scan or connection touches
+   the platform BLE stack for the first time.
 
 Everything Wendy-specific lives in [`internal/cli/ble`](../../cli/ble/) — the Wendy Lite and WendyOS
 agent protocol clients, their UUIDs, PSMs and framing. **Adding a Wendy identifier to `central`,
@@ -243,9 +245,19 @@ WENDY_BLE_LIVE_SCAN=1 go test ./internal/shared/ble/scan -run TestLiveScan -v
 # WENDY_BLE_LIVE_SERVICES=<uuid>[,<uuid>] to exercise filtering
 ```
 
-`shared/discovery`'s `bluetooth_{darwin,linux,windows}.go` still carry their own one-shot scan; the
-intent is for them to keep only the Wendy policy (agent vs Lite UUIDs, name fallback, PSM 128/0) and
-sit on top of this package.
+## Permission preflight (the [`permission`](permission/) subpackage)
+
+`permission.Preflight(ctx)` is meant to be wired into `scan.Options.Preflight` (or run before any
+other first touch of the platform BLE stack) by a caller that wants a clean error instead of a
+crash on macOS. It re-execs the running binary as the hidden `__ble-check` subcommand
+(`permission.CheckArg`) — `cmd/wendy` registers that subcommand to run `scan.RunBLECheck()` and
+exit with its result — so the CoreBluetooth touch that can `SIGABRT` a process with no Bluetooth
+TCC permission kills a disposable child instead of the caller. The result is cached with
+`sync.Once` for the life of the process, since terminal Bluetooth permission cannot change while a
+`wendy` invocation is running.
+
+It has no platform build tags and no dependency on `scan` or `central` — it only knows how to
+re-exec itself and interpret an exit code, so it is safe for any caller in this module to import.
 
 ## Platform implementation notes
 
@@ -270,8 +282,9 @@ CoreBluetooth normally assumes exists.
   buffer at once. Reads use a 4096-byte chunk.
 * Requires cgo, `-framework CoreBluetooth`, and the macOS Bluetooth TCC permission. Sandboxed
   terminals can `SIGABRT` on CoreBluetooth init rather than returning an error, which is why the
-  probe runs in a throwaway subprocess: `shared/discovery` re-execs the CLI as `__ble-check`, and
-  `scan.RunBLECheck` is the same probe for a caller to wire into `scan.Options.Preflight`.
+  probe runs in a throwaway subprocess: [`permission.Preflight`](permission/) re-execs the CLI as
+  `__ble-check`, and `scan.RunBLECheck` is the same probe for a caller to wire into
+  `scan.Options.Preflight`.
 * This file and `../scan/scan_darwin.m` both link into one binary, so their C symbols and
   Objective-C class names must not collide — ObjC class names are process-global and a duplicate
   makes the runtime pick one arbitrarily. Hence `wendy_ble_*` / `WendyBLEConnection` here versus

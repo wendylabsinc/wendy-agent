@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/permission"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/scan"
 )
 
@@ -57,6 +58,7 @@ var bleLiteProbeRetryDelay = 15 * time.Second
 var (
 	bleLiteScanFn  = scan.DiscoverBluetoothContinuous
 	bleLiteProbeFn = ble.ReadLiteInfoAt
+	blePreflightFn = permission.Preflight
 )
 
 // BLELiteDeviceDiscoverContinuous streams the Wendy Lite boards found over BLE,
@@ -78,12 +80,17 @@ var (
 // The returned error reports only that the scan could not be started (no BLE
 // support on this platform). A scan that fails mid-stream closes the channel.
 func BLELiteDeviceDiscoverContinuous(ctx context.Context) (<-chan []BLELiteDevice, error) {
-	// No Preflight: where Bluetooth permission is missing macOS reports no
-	// peripherals rather than failing, which for a background discovery source
-	// is the right degradation. The one-shot DiscoverBluetooth keeps its
-	// __ble-check subprocess and its explanatory error for the paths that need
-	// to tell the user why nothing showed up.
-	sightings, err := bleLiteScanFn(ctx, scan.Options{Services: []string{ble.LiteInfoServiceUUID}})
+	// Preflight runs permission.Preflight before the scan first touches
+	// CoreBluetooth in this process. Ordinary permission denial is fine to let
+	// through un-preflighted — macOS reports no peripherals rather than an
+	// error, which is the right degradation for a background discovery source
+	// — but a sandboxed terminal without Bluetooth TCC access can SIGABRT the
+	// whole process on that first touch, which no downstream error handling
+	// can recover from.
+	sightings, err := bleLiteScanFn(ctx, scan.Options{
+		Services:  []string{ble.LiteInfoServiceUUID},
+		Preflight: blePreflightFn,
+	})
 	if err != nil {
 		return nil, err
 	}
