@@ -552,6 +552,9 @@ func main() {
 			Chunks:       buildChunkSource,
 			Peers:        meshDialer,
 			ContextLocks: buildContextLocks,
+			// Legacy fallback for a CLI that does not put each target's actual
+			// mTLS agent port in PushTarget.
+			TargetAgentPort: uint16(mtlsPortNum),
 			// Read fresh per build rather than captured: a certificate rotated
 			// while the agent runs must be picked up without a restart.
 			//
