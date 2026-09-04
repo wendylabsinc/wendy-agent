@@ -92,10 +92,14 @@ type targetDialer func(ctx context.Context, target *agentpbv2.PushTarget) (*grpc
 // with mTLS on top pinned to the asset the image was built for. The pin is
 // not optional — see BuildServiceOptions.PushTLS — and it holds for this hop
 // exactly as for the registry one, since the image content is the same.
-func meshTargetDialer(peers PeerDialer, pushTLS func(int32) (*tls.Config, error), port uint16) targetDialer {
+func meshTargetDialer(peers PeerDialer, pushTLS func(int32) (*tls.Config, error), defaultPort uint16) targetDialer {
 	return func(ctx context.Context, target *agentpbv2.PushTarget) (*grpc.ClientConn, error) {
 		if peers == nil || pushTLS == nil {
 			return nil, errors.New("this build host has no mesh dialer or client certificate")
+		}
+		port, err := deliveryTargetAgentPort(target, defaultPort)
+		if err != nil {
+			return nil, err
 		}
 		tlsCfg, err := pushTLS(target.GetAssetId())
 		if err != nil {
@@ -118,6 +122,17 @@ func meshTargetDialer(peers PeerDialer, pushTLS func(int32) (*tls.Config, error)
 			}),
 		)
 	}
+}
+
+func deliveryTargetAgentPort(target *agentpbv2.PushTarget, fallback uint16) (uint16, error) {
+	port := target.GetAgentPort()
+	if port == 0 {
+		return fallback, nil
+	}
+	if port > 65535 {
+		return 0, fmt.Errorf("target device %d has invalid agent port %d", target.GetAssetId(), port)
+	}
+	return uint16(port), nil
 }
 
 // targetImageName is the reference the target's own registry would have stored

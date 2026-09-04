@@ -446,6 +446,31 @@ func TestUploadLayerChunks_SendsDuplicateHashOnce(t *testing.T) {
 	}
 }
 
+func TestDeliveryTargetAgentPortUsesEachTargetsPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   *agentpbv2.PushTarget
+		fallback uint16
+		want     uint16
+		wantErr  bool
+	}{
+		{name: "target override", target: &agentpbv2.PushTarget{AssetId: 1, AgentPort: 51002}, fallback: 50052, want: 51002},
+		{name: "legacy fallback", target: &agentpbv2.PushTarget{AssetId: 2}, fallback: 50052, want: 50052},
+		{name: "out of range", target: &agentpbv2.PushTarget{AssetId: 3, AgentPort: 70000}, fallback: 50052, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := deliveryTargetAgentPort(tt.target, tt.fallback)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("port = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 // A device whose agent has no chunk store is the fallback case, recognised
 // before any layer is decompressed or any byte sent.
 func TestDeliverByChunks_ReportsUnsupportedAgentBeforeSendingAnything(t *testing.T) {

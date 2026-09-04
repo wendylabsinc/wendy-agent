@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -354,6 +355,32 @@ func TestStartAfterReportedDelivery_StartsDeliveredTarget(t *testing.T) {
 	}
 	if !started {
 		t.Fatal("delivered target was not started")
+	}
+}
+
+func TestConnectedTargetAgentPortUsesEndpointThatAnswered(t *testing.T) {
+	tests := []struct {
+		name    string
+		addr    string
+		want    uint32
+		wantErr bool
+	}{
+		{name: "IPv4 custom port", addr: "192.0.2.10:51002", want: 51002},
+		{name: "IPv6 custom port", addr: "[fe80::1%en0]:52002", want: 52002},
+		{name: "cloud default", addr: "", want: uint32(defaultAgentPort + agentMTLSPortOffset)},
+		{name: "missing port", addr: "192.0.2.10", wantErr: true},
+		{name: "out of range", addr: "192.0.2.10:70000", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := connectedTargetAgentPort(&grpcclient.AgentConnection{Addr: tt.addr})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("port = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -134,6 +134,10 @@ message PushTarget {
   uint32 registry_port = 2;
   // "repository:tag" only — never a host component.
   string repository = 3;
+  // mTLS gRPC port of this target's agent. The CLI copies the port from the
+  // connection that actually reached this device; zero is a legacy client and
+  // makes the build host use its configured/default target-agent port.
+  uint32 agent_port = 4;
 }
 
 // ChunkingMode is how the finished image reaches each device. It carries the

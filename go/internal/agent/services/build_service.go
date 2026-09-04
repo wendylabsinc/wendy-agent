@@ -137,9 +137,8 @@ type BuildServiceOptions struct {
 	// A function rather than a value so a certificate rotated while the agent
 	// runs is picked up on the next build.
 	PushTLS func(targetAssetID int32) (*tls.Config, error)
-	// TargetAgentPort is the mTLS gRPC port target agents listen on, which is
-	// where a device's chunk store is reached to deliver an image. Zero means
-	// DefaultTargetAgentPort.
+	// TargetAgentPort is the fallback mTLS gRPC port for a PushTarget sent by a
+	// legacy CLI without its own agent_port. Zero means DefaultTargetAgentPort.
 	TargetAgentPort uint16
 }
 

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -588,11 +590,35 @@ func targetPushTarget(ctx context.Context, target *grpcclient.AgentConnection, a
 	if err != nil {
 		return nil, err
 	}
+	agentPort, err := connectedTargetAgentPort(target)
+	if err != nil {
+		return nil, fmt.Errorf("determining the target device's agent port: %w", err)
+	}
 	return &agentpbv2.PushTarget{
 		AssetId:      prov.Provisioned.GetAssetId(),
 		RegistryPort: uint32(registryPort(agentOS)),
 		Repository:   strings.ToLower(appCfg.AppID) + ":latest",
+		AgentPort:    agentPort,
 	}, nil
+}
+
+// connectedTargetAgentPort reports the mTLS endpoint the CLI actually used.
+// Direct and session-proxy connections retain that address in Addr. A cloud
+// connection is a pre-built gRPC channel with no network Addr; cloud tunnelling
+// currently reaches the standard provisioned-agent port, so use that default.
+func connectedTargetAgentPort(target *grpcclient.AgentConnection) (uint32, error) {
+	if target.Addr == "" {
+		return uint32(defaultAgentPort + agentMTLSPortOffset), nil
+	}
+	_, portText, err := net.SplitHostPort(target.Addr)
+	if err != nil {
+		return 0, fmt.Errorf("parsing connected address %q: %w", target.Addr, err)
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 {
+		return 0, fmt.Errorf("invalid port in connected address %q", target.Addr)
+	}
+	return uint32(port), nil
 }
 
 // localRegistryReference is the same image as the target itself sees it. The
