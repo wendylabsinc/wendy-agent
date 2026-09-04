@@ -41,6 +41,20 @@ type SensorSample struct {
 	// DroppedBefore counts samples lost between the producer and this
 	// subscriber since the previous delivered sample.
 	DroppedBefore uint64
+	// SampleRateHz, Channels and DurationNanos describe a Payload that carries
+	// a BUFFER of equally spaced samples rather than a single instant. When
+	// SampleRateHz is non-zero, BootNanos names the FIRST sample in the
+	// payload, and the k-th sample (zero-based, counting frames of Channels
+	// interleaved values) lies at
+	// BootNanos + k * 1000000000 / SampleRateHz. DurationNanos is the span the
+	// whole payload covers, derived from its length. A consumer must count
+	// samples into the buffer rather than assume a fixed chunk size, because a
+	// producer may deliver buffers of varying length. All three are zero for a
+	// single-instant sample, such as a camera frame, which is the compatible
+	// default.
+	SampleRateHz  uint32
+	Channels      uint32
+	DurationNanos int64
 }
 
 // sensorSubscription is one live subscription to a source's producer.
@@ -336,6 +350,10 @@ func sensorSampleMessage(sample SensorSample) *appspbv1.SensorSample {
 		Payload: sample.Payload, Encoding: sample.Encoding,
 		PayloadSelfContained: sample.SelfContained, DroppedBefore: sample.DroppedBefore,
 		BootId: data.BootID(),
+		// Zero for a single-instant sample, which is every sample any provider
+		// produces today; a buffer-delivering producer sets all three.
+		SampleRateHz: sample.SampleRateHz, Channels: sample.Channels,
+		DurationNanos: sample.DurationNanos,
 	}
 }
 

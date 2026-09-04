@@ -69,7 +69,11 @@ func TestLegacyPersistedCampaignStillTriggersAfterUpgrade(t *testing.T) {
 	if _, err := manager.RecordApplication("test.app", data.ApplicationRecord{Version: 1, Type: "event", Name: "emergency_stop"}); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// The fixture deliberately declares no capture.drain, because a campaign
+	// persisted by the previous release could not have. It therefore takes the
+	// default post-seal drain on top of its 30ms after_trigger, and the wait
+	// here has to allow for that.
+	deadline := time.Now().Add(data.DefaultSealDrain + 3*time.Second)
 	for time.Now().Before(deadline) {
 		list, listErr := manager.List()
 		if listErr != nil {
@@ -90,6 +94,10 @@ func TestLegacyPersistedCampaignStillTriggersAfterUpgrade(t *testing.T) {
 	t.Fatal("legacy persisted campaign no longer triggers after the upgrade")
 }
 
+// deployTestCampaign arms a campaign whose episodes seal as soon as
+// after_trigger expires. The post-seal drain is switched off because these
+// tests exercise the campaign lifecycle rather than late application records,
+// and the default two second drain would otherwise dominate every timing here.
 func deployTestCampaign(t *testing.T, service *DataService, name, afterTrigger string) {
 	t.Helper()
 	yaml := fmt.Sprintf(`version: 1
@@ -98,6 +106,7 @@ sources:
   - telemetry: true
 capture:
   buffer: 10ms
+  drain: 0s
   after_trigger: %s
   triggers:
     - event: trigger-%s
@@ -117,6 +126,9 @@ func TestStopPrefersAdHocThenRefusesAmbiguousCampaigns(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewDataService(manager)
+	// The ad-hoc Start RPC carries the default drain; this test is about which
+	// episode Stop picks, not about waiting for one.
+	service.adHocDrain = 0
 	deployTestCampaign(t, service, "stop-a", "10s")
 	deployTestCampaign(t, service, "stop-b", "10s")
 	first, err := service.CampaignTrigger(context.Background(), &agentpbv2.DataCampaignTriggerRequest{Name: "stop-a"})
@@ -172,6 +184,11 @@ func TestServiceConcurrentTriggerRecordAndStopStress(t *testing.T) {
 	}
 	manager.SetWarnLogger(func(string) {})
 	service := NewDataService(manager)
+	// This test races the episode lifecycle, and its ad-hoc goroutine starts
+	// and stops twenty applications episodes in a row. The default drain would
+	// add two seconds to each of them without exercising anything this test is
+	// about.
+	service.adHocDrain = 0
 	campaigns := []string{"stress-x", "stress-y", "stress-z"}
 	for _, name := range campaigns {
 		deployTestCampaign(t, service, name, "40ms")

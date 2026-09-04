@@ -52,7 +52,10 @@ func (m *Manager) RecordModelInput(input ModelInput) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var errs []error
-	for _, a := range m.active {
+	// Episodes inside their post-seal drain are included: they are still open
+	// for records, and before the drain gave up its campaign key they were
+	// literally in m.active, so this keeps the ledger's contents unchanged.
+	for _, a := range m.openEpisodesLocked() {
 		// The summary counters are folded into the in-memory manifest and
 		// written when the episode is sealed, exactly like the per-source
 		// capture counters: rewriting manifest.json once per sample would mean

@@ -34,6 +34,14 @@ wendy data inspect <episode-id>
 wendy data download <episode-id> --output ./commissioning-episode
 ```
 
+`wendy data stop` seals an Episode that captures application records only after
+its post-seal drain has elapsed, so the command takes up to two seconds longer
+than the capture itself. That wait is what lets an app file a prediction about
+the samples the Episode just produced into that Episode. Campaigns set it with
+`capture.drain`; an ad-hoc Episode started by `wendy data record` uses the two
+second default whenever it includes the applications source, which it does
+unless `--source` or `--exclude-source` leaves it out.
+
 `sources` prints an aligned table whose `DETAIL` column carries the device's own
 description of each source, truncated to keep the table readable. A single kind
 can dominate a board: an NVIDIA Jetson exposes 20 internal audio-DMA routing
@@ -87,7 +95,8 @@ A complete plan is in `Examples/WendyDataCampaign` in the WendyOS repository.
 ## Campaign YAML reference
 
 A campaign file contains exactly one YAML document. Unknown fields are
-rejected.
+rejected, with one exception: unknown keys inside the `notify` block warn at
+deployment instead (see the `notify` section below).
 
 | Top-level field | Required | Description |
 |---|---|---|
@@ -101,6 +110,7 @@ rejected.
 | `export` | yes | Annotation integration lifecycle intent. |
 | `models` | no | Map of model name to deployed version, copied into Episodes. |
 | `privacy` | no | List of declared transforms with optional revisions. |
+| `notify` | no | Optional cloud-side notification intent; see below. |
 
 Each `sources` item selects exactly one source:
 
@@ -137,8 +147,47 @@ mode is not implemented for its kind; those sources record continuously for
 now.
 
 `capture.buffer` must be a Go-style duration from `0s` through `5m`.
-`capture.after_trigger` must be greater than `0s` and no more than `24h`. At
-least one trigger is required, and each trigger selects exactly one condition:
+`capture.after_trigger` must be greater than `0s` and no more than `24h`.
+
+`capture.drain` is the opposite end of the same idea: `buffer` decides how much
+happened *before* the trigger that the Episode keeps, and `drain` decides how
+long the Episode stays open for application records *after* capture stops. An
+app that scores asynchronously reads samples, spends time computing, and writes
+its prediction once the Episode has already finished recording. Without a drain
+that write arrives too late, is acknowledged `buffered`, and is then replayed
+into whichever Episode records next, where it appears as that Episode's
+pre-trigger context. The drain keeps the Episode open long enough for the
+verdict to be filed against the recording it was computed from.
+
+It must be a duration from `0s` through `30s`. Omitting it takes the default of
+`2s`, so campaigns get the behavior without being rewritten; `drain: 0s` opts
+out and seals the moment capture stops. Every campaign Episode pays it: a
+campaign plan always selects the applications source, whatever `sources`
+declares, because that source is what arms the plan's triggers. A telemetry-only
+or camera-only campaign therefore waits exactly as long as any other one. Only
+an ad-hoc `wendy data record` Episode can avoid the wait, and only by leaving
+the applications source out with `--source` or `--exclude-source`, as described
+above. The wait is added
+to the Episode's own lifetime, after `after_trigger` has expired, and it is
+included in the `stopped_episode_nanos` the manifest records.
+
+A draining Episode has already stopped capturing, so it no longer holds its
+campaign. A trigger that matches during the drain starts the campaign's next
+Episode rather than being dropped. It does have to wait for the previous
+Episode to finish draining before it can begin, because starting and stopping
+capture are serialized on the device, so with the default the next Episode
+begins up to two seconds after the trigger that asked for it. Set `drain: 0s`
+on a campaign whose events arrive in bursts and whose applications write their
+records live rather than asynchronously.
+
+A failed capture adapter start is the one path that does not drain. That
+Episode never delivered a sample to any application, so no record about it can
+be outstanding; it is sealed as `interrupted` with reason
+`capture_adapter_start_failed` and `wendy data record` returns immediately
+instead of after the drain.
+
+At least one trigger is required, and each trigger selects exactly one
+condition:
 
 | Trigger | Description |
 |---|---|
@@ -157,6 +206,20 @@ The `upload` and `retention` blocks:
 | `upload.max_rate` | no | Upload bandwidth cap in bytes per second; plain integers and rates such as `5MB/s` are accepted. |
 | `retention.local_quota` | no | Declared on-device episode storage bound in bytes; plain integers and sizes such as `10GiB` are accepted. Stored with the plan; this release enforces only the device-wide quota and deployment prints a warning. |
 
+The optional `notify` block:
+
+| Field | Required | Description |
+|---|---|---|
+| `notify.on` | yes | The event to notify on. `episode_committed` is the only supported value; anything else is a deploy-time error. |
+
+The `notify` block is inert on the device. It rides verbatim in each committed
+episode manifest (under `trigger.notify`), and the cloud ingest service reads
+it there to decide whether to send a notification; devices never open a
+network connection because of it. Unlike the rest of the document, unknown
+keys inside `notify` do not fail deployment: the cloud side may understand
+keys an older agent does not, so deployment prints a warning naming each
+unrecognized key and ignores it.
+
 ```yaml
 version: 1
 name: forklift-failures
@@ -173,6 +236,7 @@ sources:
 
 capture:
   buffer: 10s
+  drain: 2s
   after_trigger: 20s
   triggers:
     - event: emergency_stop
@@ -188,6 +252,9 @@ retention:
 
 export:
   annotation: cvat
+
+notify:
+  on: episode_committed
 ```
 
 ## Playing back camera capture
@@ -296,6 +363,14 @@ start at the trigger. Their manifest entries preserve both the requested offset
 and the achieved offset; campaign deployment prints a warning when sensor
 pre-roll was requested. Unknown drop counts are displayed as unknown, never as
 zero.
+
+A record the ring replays into an Episode is written with
+`preroll_flushed: true` in `events.jsonl`. Records the Episode observed live
+omit the key entirely, so the two are distinguishable offline without changing
+any existing line. Window membership is decided on both the agent's own receipt time and the
+record's presentation timestamp: a record reaches an Episode's pre-roll only if
+it physically arrived inside that window, so a client cannot place itself into
+a later Episode by choosing its own `client_boottime_nanos`.
 
 ## Concurrency and retention
 

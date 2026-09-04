@@ -51,7 +51,7 @@ type SensorSource struct {
 	// frames on the two-plane data path, for example "/dev/video200". Empty when
 	// the source has no such node, which is the normal case: a node exists only
 	// for a source whose frames can be identified frame-for-frame, and only while
-	// an app entitled to BOTH sensors and camera is running.
+	// an app entitled to BOTH sensor-read and camera is running.
 	//
 	// An empty value is not an error and an app must handle it: it means the
 	// two-plane path is unavailable for this source and the app should fall back
@@ -303,7 +303,21 @@ type SensorSample struct {
 	// explanation for gaps in sample_id.
 	DroppedBefore uint64 `protobuf:"varint,8,opt,name=dropped_before,json=droppedBefore,proto3" json:"dropped_before,omitempty"`
 	// boot_id is the kernel boot the timestamps belong to.
-	BootId        string `protobuf:"bytes,9,opt,name=boot_id,json=bootId,proto3" json:"boot_id,omitempty"`
+	BootId string `protobuf:"bytes,9,opt,name=boot_id,json=bootId,proto3" json:"boot_id,omitempty"`
+	// sample_rate_hz, channels and duration_nanos describe a payload that carries
+	// a BUFFER of equally spaced samples rather than a single instant. When
+	// sample_rate_hz is non-zero, boottime_nanos names the FIRST sample in the
+	// payload, and the k-th sample (zero-based, counting frames of `channels`
+	// interleaved values) lies at
+	// boottime_nanos + k * 1000000000 / sample_rate_hz. duration_nanos is the
+	// span the whole payload covers, derived from its length. A consumer must
+	// count samples into the buffer rather than assume a fixed chunk size,
+	// because a producer may deliver buffers of varying length. All three are
+	// zero for a single-instant sample, such as a camera frame, which is the
+	// compatible default.
+	SampleRateHz  uint32 `protobuf:"varint,10,opt,name=sample_rate_hz,json=sampleRateHz,proto3" json:"sample_rate_hz,omitempty"`
+	Channels      uint32 `protobuf:"varint,11,opt,name=channels,proto3" json:"channels,omitempty"`
+	DurationNanos int64  `protobuf:"varint,12,opt,name=duration_nanos,json=durationNanos,proto3" json:"duration_nanos,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -401,6 +415,27 @@ func (x *SensorSample) GetBootId() string {
 	return ""
 }
 
+func (x *SensorSample) GetSampleRateHz() uint32 {
+	if x != nil {
+		return x.SampleRateHz
+	}
+	return 0
+}
+
+func (x *SensorSample) GetChannels() uint32 {
+	if x != nil {
+		return x.Channels
+	}
+	return 0
+}
+
+func (x *SensorSample) GetDurationNanos() int64 {
+	if x != nil {
+		return x.DurationNanos
+	}
+	return 0
+}
+
 type FrameIdentitySubscribeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// source_ids are the sources whose frame identities to stream, as reported by
@@ -476,6 +511,22 @@ func (x *FrameIdentitySubscribeRequest) GetModel() string {
 // and requires no assumption that frames arrive in a particular order, which is
 // what makes the join trustworthy.
 //
+// # The buffer TIMESTAMP, unlike the sequence, is the agent's own
+//
+// That limit applies to the sequence field alone. Verified against v4l2loopback
+// v0.15.4, the same QBUF handler copies a writer-supplied timestamp through
+// verbatim and substitutes the module's own clock only when the writer supplies
+// a zero one. It also latches V4L2_BUF_FLAG_TIMESTAMP_COPY on the buffer, which
+// means precisely "this timestamp came from the writer"; DQBUF clears only the
+// QUEUED and DONE flags, so both the value and that flag reach the reader.
+//
+// The agent therefore stamps every buffer with this message's boottime_nanos,
+// truncated to whole microseconds by struct timeval. Identity rides IN BAND as
+// well as on this stream, and a reader that checks the COPY flag can prove the
+// value is the agent's rather than a clock reading. There is no separate field
+// for it here because it is exactly boottime_nanos / 1000: see
+// loopback_sequence below for the derivation and why it is exact.
+//
 // # Dropped frames: two different losses, two different signals
 //
 // A consumer that watches only one of these will believe frames were delivered
@@ -511,9 +562,26 @@ type FrameIdentity struct {
 	BoottimeNanos             int64 `protobuf:"varint,3,opt,name=boottime_nanos,json=boottimeNanos,proto3" json:"boottime_nanos,omitempty"`
 	TimestampUncertaintyNanos int64 `protobuf:"varint,4,opt,name=timestamp_uncertainty_nanos,json=timestampUncertaintyNanos,proto3" json:"timestamp_uncertainty_nanos,omitempty"`
 	// loopback_sequence is the v4l2_buffer.sequence the KERNEL assigned to this
-	// frame on the node. It is the join key: match it against the sequence of the
-	// buffer dequeued from the node. See the message comment for why the agent
-	// cannot choose this value.
+	// frame on the node. It is the PRIMARY join key: match it against the
+	// sequence of the buffer dequeued from the node. See the message comment for
+	// why the agent cannot choose this value.
+	//
+	// The dequeued buffer's timestamp is a secondary key and a cross-check on
+	// that join, because the agent stamps it rather than the module. Its expected
+	// value is derived, not carried: a v4l2_buffer timestamp is a struct timeval,
+	// so the frame whose identity this is has
+	//
+	//	timestamp.tv_sec * 1000000 + timestamp.tv_usec == boottime_nanos / 1000
+	//
+	// The truncation to whole microseconds is exact rather than approximate,
+	// because 1000000000 divides evenly by 1000, so the equality is not a
+	// tolerance. Nothing in this message repeats that value: a second copy of a
+	// derivable number could only ever agree or rot.
+	//
+	// Two microsecond stamps cannot collide at any realistic frame rate: at 30
+	// frames per second consecutive frames are about 33333 microseconds apart.
+	// The sequence stays primary all the same, because it alone makes an
+	// application-side drop visible, as case 2 above describes.
 	LoopbackSequence uint32 `protobuf:"varint,5,opt,name=loopback_sequence,json=loopbackSequence,proto3" json:"loopback_sequence,omitempty"`
 	// dropped_before counts samples lost between the producer and the node since
 	// the previous frame written. It is the ONLY report of loss case 1 above,
@@ -633,7 +701,7 @@ const file_wendy_agent_apps_v1_sensor_service_proto_rawDesc = "" +
 	"\x16SensorSubscribeRequest\x12\x1d\n" +
 	"\n" +
 	"source_ids\x18\x01 \x03(\tR\tsourceIds\x12\x14\n" +
-	"\x05model\x18\x02 \x01(\tR\x05model\"\xdb\x02\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\"\xc4\x03\n" +
 	"\fSensorSample\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x1b\n" +
 	"\tsample_id\x18\x02 \x01(\x04R\bsampleId\x12%\n" +
@@ -643,7 +711,11 @@ const file_wendy_agent_apps_v1_sensor_service_proto_rawDesc = "" +
 	"\bencoding\x18\x06 \x01(\tR\bencoding\x124\n" +
 	"\x16payload_self_contained\x18\a \x01(\bR\x14payloadSelfContained\x12%\n" +
 	"\x0edropped_before\x18\b \x01(\x04R\rdroppedBefore\x12\x17\n" +
-	"\aboot_id\x18\t \x01(\tR\x06bootId\"T\n" +
+	"\aboot_id\x18\t \x01(\tR\x06bootId\x12$\n" +
+	"\x0esample_rate_hz\x18\n" +
+	" \x01(\rR\fsampleRateHz\x12\x1a\n" +
+	"\bchannels\x18\v \x01(\rR\bchannels\x12%\n" +
+	"\x0eduration_nanos\x18\f \x01(\x03R\rdurationNanos\"T\n" +
 	"\x1dFrameIdentitySubscribeRequest\x12\x1d\n" +
 	"\n" +
 	"source_ids\x18\x01 \x03(\tR\tsourceIds\x12\x14\n" +

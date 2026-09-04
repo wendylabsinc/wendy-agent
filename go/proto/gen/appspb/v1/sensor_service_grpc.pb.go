@@ -78,10 +78,16 @@ type SensorServiceClient interface {
 	// scores is provably the frame the episode recorded, which is not true of an
 	// app that opens the camera device itself.
 	//
-	// The join key is loopback_sequence, which an app reads from the
+	// The primary join key is loopback_sequence, which an app reads from the
 	// v4l2_buffer.sequence of the buffer it dequeued. See FrameIdentity for why
 	// that number is assigned by the kernel rather than chosen by the agent, and
 	// for what a consumer must do about dropped frames.
+	//
+	// The buffer's timestamp is a SECONDARY key carrying the same identity
+	// in-band. The agent stamps each buffer with boottime_nanos truncated to
+	// whole microseconds, so an app can match a dequeued buffer by
+	// boottime_nanos / 1000 as well, and can cross-check the sequence join it
+	// already made. See FrameIdentity for the exact derivation.
 	//
 	// This grants strictly less than Subscribe, which already carries every
 	// identity field below alongside the payload. It does NOT grant the loopback
@@ -187,10 +193,16 @@ type SensorServiceServer interface {
 	// scores is provably the frame the episode recorded, which is not true of an
 	// app that opens the camera device itself.
 	//
-	// The join key is loopback_sequence, which an app reads from the
+	// The primary join key is loopback_sequence, which an app reads from the
 	// v4l2_buffer.sequence of the buffer it dequeued. See FrameIdentity for why
 	// that number is assigned by the kernel rather than chosen by the agent, and
 	// for what a consumer must do about dropped frames.
+	//
+	// The buffer's timestamp is a SECONDARY key carrying the same identity
+	// in-band. The agent stamps each buffer with boottime_nanos truncated to
+	// whole microseconds, so an app can match a dequeued buffer by
+	// boottime_nanos / 1000 as well, and can cross-check the sequence join it
+	// already made. See FrameIdentity for the exact derivation.
 	//
 	// This grants strictly less than Subscribe, which already carries every
 	// identity field below alongside the payload. It does NOT grant the loopback

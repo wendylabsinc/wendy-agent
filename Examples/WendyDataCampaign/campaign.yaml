@@ -51,3 +51,10 @@ retention:
 
 export:
   annotation: cvat
+
+notify:
+  # Optional. Device-inert notification intent: the block rides verbatim in
+  # each committed episode manifest and the cloud ingest service acts on it;
+  # the device itself never sends anything because of it. episode_committed
+  # is the only supported event.
+  on: episode_committed
