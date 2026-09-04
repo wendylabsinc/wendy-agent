@@ -33,6 +33,7 @@ sources:
   - camera: front
 capture:
   buffer: 10ms
+  drain: 0s
   after_trigger: 30ms
   triggers:
     - event: emergency_stop
@@ -95,6 +96,7 @@ sources:
   - telemetry: true
 capture:
   buffer: 1s
+  drain: 0s
   after_trigger: 30ms
   triggers:
     - event: emergency_stop
@@ -132,6 +134,11 @@ export: {annotation: cvat}
 	}
 	t.Fatal("application event did not produce a finalized episode")
 }
+
+// deployEventCampaign arms a campaign that an application event triggers. Like
+// deployTestCampaign it opts out of the post-seal drain: these tests measure
+// the campaign lifecycle, and the default drain would add two seconds to every
+// episode without exercising anything they assert.
 func deployEventCampaign(t *testing.T, service *DataService, name, event string) {
 	t.Helper()
 	yaml := []byte(`version: 1
@@ -140,6 +147,7 @@ sources:
   - telemetry: true
 capture:
   buffer: 1s
+  drain: 0s
   after_trigger: 150ms
   triggers:
     - event: ` + event + `
@@ -291,5 +299,35 @@ func TestDataServiceRunsAdaptersAndSealsResults(t *testing.T) {
 	}
 	if len(manifest.Sources) != 1 || manifest.Sources[0].Count != 9 || manifest.Sources[0].Drops == nil || *manifest.Sources[0].Drops != 3 {
 		t.Fatalf("adapter results not sealed: %+v", manifest.Sources)
+	}
+}
+
+// TestAdHocEpisodesCarryTheDefaultSealDrain pins the policy for the Start RPC.
+// An ad-hoc episode has no campaign plan to declare a drain of its own, so the
+// service supplies the default; without it a `wendy data record` session would
+// seal the moment capture stopped and file an application's late verdict into
+// whatever recorded next.
+func TestAdHocEpisodesCarryTheDefaultSealDrain(t *testing.T) {
+	manager, err := data.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewDataService(manager)
+	if service.adHocDrain != data.DefaultSealDrain {
+		t.Fatalf("ad-hoc drain = %s, want the %s default", service.adHocDrain, data.DefaultSealDrain)
+	}
+	// Shortened so the assertion below costs a fifth of a second rather than
+	// the full default. What is under test is that the value reaches the
+	// episode at all.
+	service.adHocDrain = 200 * time.Millisecond
+	if _, err = service.Start(context.Background(), &agentpbv2.DataStartRequest{Sources: []string{"applications"}}); err != nil {
+		t.Fatal(err)
+	}
+	begin := time.Now()
+	if _, err = service.Stop(context.Background(), &agentpbv2.DataStopRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(begin); elapsed < 150*time.Millisecond {
+		t.Fatalf("ad-hoc Stop returned after %s; the configured drain did not reach the episode", elapsed)
 	}
 }
