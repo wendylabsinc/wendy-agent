@@ -307,7 +307,7 @@ type Manifest struct {
 	// cameras/<source>/playable.mp4 or why the one it wrote omits frames.
 	// Absence of a note plus absence of the file means the episode captured
 	// no camera; a note is the seal's honest account of a mux it refused.
-	PlayableNotes     []string `json:"playable_notes,omitempty"`
+	PlayableNotes []string `json:"playable_notes,omitempty"`
 	// PreRollLost counts the application records that would have reached THIS
 	// episode's pre-roll window and did not, because the ring buffer hit its
 	// byte budget and dropped them while they were still inside their window.
