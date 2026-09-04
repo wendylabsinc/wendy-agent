@@ -18,6 +18,29 @@ type testAgentTunnelStream struct {
 	sent     chan *cloudpb.TunnelData
 }
 
+func TestIsTunnelLoopbackHost(t *testing.T) {
+	for _, host := range []string{"localhost", "127.0.0.1", "127.99.5.4", "::1"} {
+		if !isTunnelLoopbackHost(host) {
+			t.Errorf("isTunnelLoopbackHost(%q) = false, want true", host)
+		}
+	}
+	for _, host := range []string{"10.0.0.1", "192.168.1.5", "example.com", "127", "127.0.0"} {
+		if isTunnelLoopbackHost(host) {
+			t.Errorf("isTunnelLoopbackHost(%q) = true, want false", host)
+		}
+	}
+}
+
+func TestTunnelDialPortOnlyRemapsLoopbackAgentPort(t *testing.T) {
+	const actualAgentPort = 50123
+	if got := tunnelDialPort("localhost", defaultMTLSPort, actualAgentPort); got != actualAgentPort {
+		t.Errorf("loopback agent port = %d, want remapped port %d", got, actualAgentPort)
+	}
+	if got := tunnelDialPort("db.internal", defaultMTLSPort, actualAgentPort); got != defaultMTLSPort {
+		t.Errorf("remote host port = %d, want requested port %d", got, defaultMTLSPort)
+	}
+}
+
 func (s *testAgentTunnelStream) Send(message *cloudpb.TunnelData) error {
 	messageCopy := &cloudpb.TunnelData{
 		SessionId: message.SessionId,

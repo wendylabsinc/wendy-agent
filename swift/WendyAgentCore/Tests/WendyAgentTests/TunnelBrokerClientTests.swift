@@ -63,7 +63,7 @@ struct TunnelBrokerClientTests {
         )
     }
 
-    // MARK: - SSRF guard
+    // MARK: - loopback detection
 
     @Test("isLoopback accepts only loopback targets")
     func isLoopback() {
@@ -86,6 +86,20 @@ struct TunnelBrokerClientTests {
         #expect(TunnelBrokerClient.remapPort(requested: 50052, mtlsPort: 50052) == 50052)
         #expect(TunnelBrokerClient.remapPort(requested: 8080, mtlsPort: 50053) == 8080)
         #expect(TunnelBrokerClient.remapPort(requested: 50052, mtlsPort: 0) == 50052)
+    }
+
+    @Test("tunnelDialPort remaps the agent port only for loopback targets")
+    func tunnelDialPort() {
+        #expect(
+            TunnelBrokerClient.tunnelDialPort(
+                host: "localhost", requested: 50052, mtlsPort: 50123
+            ) == 50123
+        )
+        #expect(
+            TunnelBrokerClient.tunnelDialPort(
+                host: "db.internal", requested: 50052, mtlsPort: 50123
+            ) == 50052
+        )
     }
 
     // MARK: - backoff

@@ -261,23 +261,12 @@ func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, certPEM, keyPEM, c
 
 func (c *TunnelBrokerClient) handleDialRequest(ctx context.Context, client cloudpb.TunnelBrokerServiceClient,
 	req *cloudpb.DialRequest, devMD metadata.MD) {
-	// Only allow loopback connections to prevent broker-directed SSRF.
-	ip := net.ParseIP(req.Host)
-	if req.Host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		c.logger.Error("broker dial request rejected: only loopback targets allowed",
-			zap.String("host", req.Host))
-		return
-	}
-
 	if req.GetProtocol() == cloudpb.TunnelProtocol_TUNNEL_PROTOCOL_DATAGRAM {
 		c.handleDatagramDial(ctx, client, req, devMD)
 		return
 	}
 
-	port := int(req.Port)
-	if c.mtlsPort != 0 && port == defaultMTLSPort && c.mtlsPort != defaultMTLSPort {
-		port = c.mtlsPort
-	}
+	port := tunnelDialPort(req.Host, int(req.Port), c.mtlsPort)
 	addr := net.JoinHostPort(req.Host, fmt.Sprint(port))
 	c.logger.Info("dialing local service for tunnel",
 		zap.String("session_id", req.SessionId), zap.String("addr", addr))
@@ -310,9 +299,24 @@ func (c *TunnelBrokerClient) handleDialRequest(ctx context.Context, client cloud
 	c.relay(callCtx, cancel, tcpConn, agentStream)
 }
 
+// isTunnelLoopbackHost identifies targets for which the well-known agent mTLS
+// port may be remapped to this process's actual listen port. Remote targets must
+// always receive the port requested by the CLI.
+func isTunnelLoopbackHost(host string) bool {
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
+}
+
+func tunnelDialPort(host string, requestedPort, mtlsPort int) int {
+	if isTunnelLoopbackHost(host) && mtlsPort != 0 && requestedPort == defaultMTLSPort && mtlsPort != defaultMTLSPort {
+		return mtlsPort
+	}
+	return requestedPort
+}
+
 // handleDatagramDial claims the session and serves a multiplexed datagram
 // relay (UDP flows + ICMP echo). Nothing is dialed upfront; UDP sockets are
-// created per flow on first sight, restricted to loopback like TCP dials.
+// created per flow on first sight and restricted to loopback.
 func (c *TunnelBrokerClient) handleDatagramDial(ctx context.Context, client cloudpb.TunnelBrokerServiceClient,
 	req *cloudpb.DialRequest, devMD metadata.MD) {
 	callCtx, cancel := context.WithCancel(ctx)
