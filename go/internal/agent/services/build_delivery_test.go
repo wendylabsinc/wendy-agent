@@ -396,6 +396,56 @@ func TestDeliverByChunks_ResumesAfterTransportDropWithoutResending(t *testing.T)
 	}
 }
 
+func TestUploadLayerChunks_SendsDuplicateHashOnce(t *testing.T) {
+	chunkData := []byte("the same content appears twice")
+	layerData := append(append([]byte(nil), chunkData...), chunkData...)
+	path := t.TempDir() + "/layer.tar"
+	if err := os.WriteFile(path, layerData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	h := sha256.Sum256(chunkData)
+	dl := &deliveryLayer{
+		header: &agentpb.RunContainerLayerHeader{
+			DiffId:      "sha256:duplicate-layer",
+			ChunkHashes: [][]byte{h[:], h[:]},
+		},
+		refs: []chunk.Ref{
+			{Hash: h, Offset: 0, Len: uint64(len(chunkData))},
+			{Hash: h, Offset: uint64(len(chunkData)), Len: uint64(len(chunkData))},
+		},
+		f: f,
+	}
+
+	fake := newFakeTargetAgent()
+	dial := serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake})
+	conn, err := dial(context.Background(), &agentpbv2.PushTarget{AssetId: 214})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_, stream := deliveryService(t, nil)
+	rep := newDeliveryReporter(&buildProgress{stream: stream}, 0, 214)
+	if err := uploadLayerChunks(context.Background(), agentpb.NewWendyContainerServiceClient(conn), dl, rep); err != nil {
+		t.Fatal(err)
+	}
+
+	written, _, _ := fake.snapshot()
+	if written != 1 {
+		t.Fatalf("device received %d copies of one missing hash, want 1", written)
+	}
+	if got := fake.bytesWritten(); got != int64(len(chunkData)) {
+		t.Fatalf("device received %d bytes, want one %d-byte chunk", got, len(chunkData))
+	}
+	if got := rep.sentBytes(); got != int64(len(chunkData)) {
+		t.Fatalf("reported %d sent bytes, want %d", got, len(chunkData))
+	}
+}
+
 // A device whose agent has no chunk store is the fallback case, recognised
 // before any layer is decompressed or any byte sent.
 func TestDeliverByChunks_ReportsUnsupportedAgentBeforeSendingAnything(t *testing.T) {

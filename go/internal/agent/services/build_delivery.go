@@ -556,10 +556,13 @@ func uploadLayerChunks(ctx context.Context, cs agentpb.WendyContainerServiceClie
 		missing[h] = true
 	}
 	var missingBytes int64
+	planned := make(map[[32]byte]bool, len(missing))
 	for _, ref := range dl.refs {
-		if missing[ref.Hash] {
-			missingBytes += int64(ref.Len)
+		if !missing[ref.Hash] || planned[ref.Hash] {
+			continue
 		}
+		planned[ref.Hash] = true
+		missingBytes += int64(ref.Len)
 	}
 	rep.planned(missingBytes)
 	if len(missing) == 0 {
@@ -597,6 +600,10 @@ func uploadLayerChunks(ctx context.Context, cs agentpb.WendyContainerServiceClie
 			}
 			return fmt.Errorf("sending chunk %d/%d of layer %s: %w", i+1, len(dl.refs), diffID, err)
 		}
+		// The ordered manifest may reference identical content more than once.
+		// One staged copy satisfies every occurrence, so do not spend network or
+		// progress budget sending it again during this attempt.
+		delete(missing, ref.Hash)
 		rep.advanced(len(buf))
 		inStream++
 		if inStream == maxChunksPerDeliveryStream {
