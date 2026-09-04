@@ -71,8 +71,10 @@ def uncertainty_score(confidences, threshold: float) -> float:
     Formula: 1 - max(confidence) over detections at or above the
     confidence threshold; 1.0 when nothing was detected above the
     threshold. A frame the model is sure about scores near 0, an empty or
-    ambiguous frame scores near 1, which is exactly what a campaign
-    trigger such as "model.uncertainty > 0.65" wants to collect.
+    ambiguous frame scores near 1. Being 1 minus a confidence, it does not
+    separate "unsure about what it saw" from "recognised nothing": both sit
+    at 1.0. Record it, query it, but see README "The uncertainty formula"
+    before arming a model.uncertainty trigger on it.
     """
     best = 0.0
     for c in confidences:

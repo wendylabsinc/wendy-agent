@@ -463,7 +463,7 @@ func TestStartOneRecordsRequestedVersusAchievedOnCollision(t *testing.T) {
 			case <-stop:
 				return
 			case <-time.After(5 * time.Millisecond):
-				existing.broadcast(testH264Frame(testRAUFrame))
+				existing.produce(testH264Frame(testRAUFrame))
 			}
 		}
 	}()
@@ -545,7 +545,7 @@ func TestDeviceHubCountsSubscriberDrops(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 6; i++ {
-		hub.broadcast(&videoFrame{data: []byte{byte(i)}})
+		hub.produce(&videoFrame{data: []byte{byte(i)}})
 	}
 	if got := hub.unsubscribe(id); got != 2 {
 		t.Fatalf("drops = %d, want 2", got)

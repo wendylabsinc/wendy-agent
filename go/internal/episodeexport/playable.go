@@ -36,14 +36,22 @@
 // external dependency to be missing: there is no ffmpeg, mkvmerge or PyAV in
 // the path from an episode to a playable file.
 //
-// The episode is read-only here. Output is written to a separate destination
+// The episode is read-only here. Convert writes into a separate destination
 // directory. The elementary stream and index are the checksummed archival
 // truth, and index.jsonl addresses frames by byte offset within the stream, so
 // rewriting it in place would break the join between a frame and the model
 // input recorded against it.
+//
+// ConvertSourceInPlace is the one sanctioned exception to that separation: the
+// agent calls it while sealing an episode, before the manifest's file list is
+// finalized, to add cameras/<source>/playable.mp4 beside the raw capture. The
+// raw segments and index are still only read; the derived clip is a new file
+// that the seal then checksums, lists and uploads like everything else, so a
+// browser can play the episode straight from the bucket.
 package episodeexport
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -62,6 +70,11 @@ import (
 // per-sample duration stays inside the 32-bit stts field for any gap short of
 // 71 minutes.
 const playableTimescale = 1_000_000
+
+// PlayableFileName is the derived MP4 written into a camera source directory
+// at seal time by ConvertSourceInPlace. The agent's manifest code and the
+// episode-playable command both key on this name.
+const PlayableFileName = "playable.mp4"
 
 // ClipResult reports what one camera source produced, in the numbers needed to
 // check the conversion without watching it.
@@ -106,6 +119,16 @@ type ClipResult struct {
 	// pictures). A clip with none is not seekable and most players refuse it,
 	// so it must not be reported as a clean conversion on frame count alone.
 	SyncSamples int
+	// ParameterSetChanges counts in-band SPS or PPS units whose bytes differ
+	// from the first ones seen. Encoders repeat identical parameter sets
+	// before every IDR and those repeats are not counted; a change means the
+	// producer restarted mid-episode with new parameters (a different
+	// resolution, most likely). The MP4 written here carries exactly one
+	// decoder configuration, built from the first SPS/PPS, so every frame
+	// after a change would be decoded against the wrong parameters. A clip
+	// with this non-zero must not be presented as a faithful rendering of the
+	// capture.
+	ParameterSetChanges int
 	// MinInterval, MaxInterval and MeanInterval describe the spread of
 	// inter-frame intervals actually written. They differ from each other
 	// whenever the capture rate varied, which is the point.
@@ -150,6 +173,25 @@ func Convert(episodeDir, outDir string) ([]ClipResult, []error) {
 	return results, errs
 }
 
+// ConvertSourceInPlace remuxes one camera source into
+// <sourceDir>/playable.mp4, reading timing from <sourceDir>/index.jsonl. It is
+// the seal-time variant of Convert: the caller is the agent finalizing an
+// episode, and the output lands inside the episode so the manifest can list
+// it. The raw segment files and the index are only ever read. The output is
+// written through a temporary file and renamed, so a crash mid-mux leaves no
+// half-written playable.mp4 behind (sealing ignores *.tmp files).
+//
+// A non-nil error means no playable.mp4 was left in place. A nil error means
+// the file exists, but the caller must still judge the ClipResult before
+// trusting it: BFrames, UndecodedSliceHeaders and SyncSamples report
+// conditions under which the clip's timing or seekability cannot be vouched
+// for, and Convert deliberately does not decide policy for its callers.
+func ConvertSourceInPlace(episodeDir, sourceDir string) (ClipResult, error) {
+	result, err := convertSource(episodeDir, sourceDir, filepath.Join(sourceDir, "index.jsonl"), filepath.Join(sourceDir, PlayableFileName))
+	result.Source = filepath.Base(sourceDir)
+	return result, err
+}
+
 func convertSource(episodeDir, sourceDir, indexPath, out string) (ClipResult, error) {
 	frames, result, err := readCameraIndex(indexPath)
 	if err != nil {
@@ -173,6 +215,7 @@ func convertSource(episodeDir, sourceDir, indexPath, out string) (ClipResult, er
 	result.BFrames = stats.bFrames
 	result.UndecodedSliceHeaders = stats.undecodedSliceHeaders
 	result.SyncSamples = stats.syncSamples
+	result.ParameterSetChanges = stats.parameterSetChanges
 	result.MinInterval, result.MaxInterval, result.MeanInterval = stats.min, stats.max, stats.mean
 	if err := errors.Join(writeErr, closeErr); err != nil {
 		return result, err
@@ -252,6 +295,9 @@ type muxStats struct {
 	undecodedSliceHeaders int
 	// syncSamples counts written samples a decoder can start on.
 	syncSamples int
+	// parameterSetChanges counts SPS/PPS units that differ byte-wise from the
+	// first ones seen; identical repeats before each IDR are not counted.
+	parameterSetChanges int
 }
 
 // isBSlice reports whether a VCL NAL unit carries a B slice. It matters
@@ -347,11 +393,20 @@ func muxAnnexBToMP4(w *os.File, episodeDir string, frames []cameraIndexLine) (mu
 			case 7: // sequence parameter set, carried in avcC instead
 				if sps == nil {
 					sps = append([]byte(nil), nal...)
+				} else if !bytes.Equal(sps, nal) {
+					// The producer restarted with new parameters. avcC holds
+					// only the first SPS, so frames after this point would be
+					// decoded against the wrong configuration; count it so
+					// callers can refuse the clip instead of shipping one that
+					// silently misdecodes its tail.
+					stats.parameterSetChanges++
 				}
 				continue
 			case 8: // picture parameter set, carried in avcC instead
 				if pps == nil {
 					pps = append([]byte(nil), nal...)
+				} else if !bytes.Equal(pps, nal) {
+					stats.parameterSetChanges++
 				}
 				continue
 			case 9, 12: // access unit delimiter, filler

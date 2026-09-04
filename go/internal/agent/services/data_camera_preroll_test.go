@@ -213,9 +213,9 @@ func TestArmedCampaignFlushesPreRollOnTrigger(t *testing.T) {
 	// Broadcast a handful of GOPs before the trigger, paced so the 4-deep
 	// subscriber channel never overflows and the fill goroutine keeps up.
 	for i := 0; i < 6; i++ {
-		hub.broadcast(testH264Frame(testRAUFrame))
+		hub.produce(testH264Frame(testRAUFrame))
 		time.Sleep(2 * time.Millisecond)
-		hub.broadcast(testH264Frame(testInterFrame))
+		hub.produce(testH264Frame(testInterFrame))
 		time.Sleep(2 * time.Millisecond)
 	}
 	time.Sleep(30 * time.Millisecond)

@@ -148,6 +148,63 @@ func TestSubscribeStreamsIdentifiedSamples(t *testing.T) {
 	}
 }
 
+// TestSensorSampleMessageCarriesBufferFields pins the buffer-shape half of the
+// sample contract. Every other field models a sample as a single instant, which
+// is right for a camera frame and wrong for any source that delivers a buffer:
+// at 48 kHz a 100 ms payload holds 4,800 samples, so without a sample rate an
+// event at the last of them is indistinguishable from one at the first. The
+// zero case is asserted alongside it because that is what every single-instant
+// source reports and what makes the addition compatible.
+func TestSensorSampleMessageCarriesBufferFields(t *testing.T) {
+	const (
+		rate     = uint32(48000)
+		duration = int64(100 * time.Millisecond)
+	)
+	buffered := sensorSampleMessage(SensorSample{
+		SourceID: "alsa:hw:0,0", SampleID: 7,
+		BootNanos: int64(time.Second), UncertaintyNanos: 1000,
+		Payload: make([]byte, 9600), Encoding: "s16le",
+		SampleRateHz: rate, Channels: 1, DurationNanos: duration,
+	})
+	if got := buffered.GetSampleRateHz(); got != rate {
+		t.Errorf("sample_rate_hz = %d, want %d", got, rate)
+	}
+	if got := buffered.GetChannels(); got != 1 {
+		t.Errorf("channels = %d, want 1", got)
+	}
+	if got := buffered.GetDurationNanos(); got != duration {
+		t.Errorf("duration_nanos = %d, want %d", got, duration)
+	}
+	// The fields exist so a consumer can place the k-th sample of the buffer,
+	// which is the thing a single boottime_nanos cannot express. The last
+	// sample of this payload must land inside the span it declares and strictly
+	// after the first.
+	const k = 4799
+	first := buffered.GetBoottimeNanos()
+	last := first + int64(k)*int64(time.Second)/int64(buffered.GetSampleRateHz())
+	if last <= first || last >= first+buffered.GetDurationNanos() {
+		t.Errorf("sample %d lands at %d, outside the buffer span [%d, %d)",
+			k, last, first, first+buffered.GetDurationNanos())
+	}
+
+	// A single-instant sample leaves all three zero. A consumer reading zero
+	// must keep treating boottime_nanos as the time of the whole payload,
+	// exactly as it did before these fields existed.
+	instant := sensorSampleMessage(SensorSample{
+		SourceID: "v4l2:/dev/video0", SampleID: 1,
+		BootNanos: int64(time.Second), UncertaintyNanos: 1000,
+		Payload: []byte{1}, Encoding: "h264", SelfContained: true,
+	})
+	if instant.GetSampleRateHz() != 0 || instant.GetChannels() != 0 || instant.GetDurationNanos() != 0 {
+		t.Errorf("a single-instant sample reports buffer shape %d Hz / %d channels / %d ns, want zeros",
+			instant.GetSampleRateHz(), instant.GetChannels(), instant.GetDurationNanos())
+	}
+	// The rest of the sample must be untouched by the addition.
+	if instant.GetBoottimeNanos() != int64(time.Second) || instant.GetTimestampUncertaintyNanos() != 1000 {
+		t.Errorf("the single-instant sample lost its bracketed boot time: %+v", instant)
+	}
+}
+
 func TestSubscribeRejectsMalformedRequests(t *testing.T) {
 	service := NewSensorService("sh.wendy.test", nil)
 	service.AddProvider(&fakeSensorProvider{sourceID: "a"})

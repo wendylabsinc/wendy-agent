@@ -7,10 +7,11 @@ flight-recorder campaign, and episode uploads into a deployed cloud ingest
 service.
 
 The path this runbook walks has been executed on real hardware. An episode
-fires organically on the `model.uncertainty > 0.65` trigger, carries the app's
-YOLOv8n prediction records in `events.jsonl` (including the pre-trigger
-buffer), and reaches the ingest catalog with upload state `uploaded`, which
-only flips after `CommitEpisode` verifies every file hash server-side.
+fires on the app's edge-triggered `person_detected` event, or on demand with
+`data campaign trigger`, carries the app's YOLOv8n prediction records in
+`events.jsonl` (including the pre-trigger buffer), and reaches the ingest
+catalog with upload state `uploaded`, which only flips after `CommitEpisode`
+verifies every file hash server-side.
 
 Placeholders used throughout, to be replaced with your own values:
 
@@ -201,14 +202,25 @@ through the business intelligence surface once it is wired.
 
 ## What to expect in the episode
 
-With nothing in front of the camera the app reports uncertainty 1.0, so the
-`model.uncertainty > 0.65` trigger fires organically; walking into the frame
-fires the edge-triggered `person_detected` trigger instead. Each trigger seals
-one episode (10 seconds of pre-trigger buffer, 20 seconds after) which uploads
-within seconds. The app holds itself to a ceiling of 5 predictions per second, but
-what it achieves is set by inference, not by the ceiling: an episode of that
-length carried on the order of a hundred prediction records, nearer three per
-second. Quote the ceiling as a ceiling.
+`person_detected` is the only trigger. The app emits it edge-triggered when a
+person enters frame, once per appearance rather than once per frame, so walking
+through produces one episode rather than fifty; with nobody in view, seal one on
+demand with `data campaign trigger`. Each trigger seals one episode, 10 seconds
+of pre-trigger buffer and 10 seconds after, which uploads within seconds. The
+app holds itself to a ceiling of 5 predictions per second, but what it achieves
+is set by inference, not by the ceiling: measured nearer three per second
+sustained, so a 20-second episode carries on the order of sixty prediction
+records. Quote the ceiling as a ceiling.
+
+Earlier revisions of this runbook told you to expect an episode to fire by
+itself on a `model.uncertainty > 0.65` trigger. That trigger is gone from
+`campaign.yaml`, and the advice was wrong rather than merely stale: the app
+scores uncertainty as 1 minus its best detection confidence, so a scene the
+detector has no class for sits at exactly 1.0 and the threshold fires on every
+prediction. Measured on the device, that produced a fresh episode every 30
+seconds with nobody in frame. Collecting on uncertainty is still the right idea;
+it needs a real uncertainty signal behind it, entropy across classes or the
+margin between the top two, rather than one minus a confidence.
 
 To pair those outcomes with the frames that produced them:
 
@@ -225,8 +237,13 @@ counts the predictions that named their inputs, and — per source — whether t
 episode retains payloads for all of the consumed samples or only the subset the
 capture policy kept.
 
-To watch the camera capture rather than join against it, convert the episode
-with `episode-playable`; the camera capture is a raw elementary stream with no
+To watch the camera capture rather than join against it, open the
+`cameras/<source>/playable.mp4` the episode already carries: the agent remuxes
+each camera source into a browser-playable MP4 while sealing, lists it in the
+manifest as a derived file, and uploads it with everything else. Only an
+episode sealed by an older agent (or a source whose seal-time remux was
+refused, see the manifest's `playable_notes`) still needs the laptop-side
+`episode-playable` conversion; the raw capture is an elementary stream with no
 container, so players otherwise invent a frame rate and the clip runs at the
 wrong speed. See "Playing back camera capture" in the `wendy data` command
 documentation.
@@ -289,12 +306,14 @@ Enrollment is untouched by the demo, so there is nothing to restore there.
   directory was created or that a topic was subscribed, so a recorder that
   fails just after that window reports a successful start and surfaces the
   failure only at Stop.
-- The audio capture's `canonical_uncertainty_nanos` is the width of the
-  `clock_gettime` bracket taken in `beginSegment`, which runs after a chunk of
-  pulse-code modulation (PCM) data has already been read from the pipe. The
-  published uncertainty therefore describes the read of the clock, not the
-  buffering delay ahead of it, and understates the true error on a segment
-  start.
+- The audio capture now backdates a segment stamp past the chunk of pulse-code
+  modulation (PCM) data it read and past a constant for the delay still
+  outstanding behind it, and publishes a 20 ms uncertainty half-width to cover
+  that constant (`mapping_segment` reads `receipt-minus-pipeline-v1`). The
+  constant is an estimate, not a reading: nothing queries the actual ALSA or
+  PipeWire delay per chunk, so a device whose buffering departs markedly from
+  the Jetson Orin Nano the constants were measured on could fall outside the
+  published bound.
 - `wendy data download` mutates its own `--output` flag variable when the flag
   is empty, so re-running the same command object in one process writes to the
   first episode's directory.
