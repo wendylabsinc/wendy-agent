@@ -678,3 +678,131 @@ card 0: C920 [HD Pro Webcam C920], device 0: USB Audio [USB Audio]
 		t.Errorf("detail = %q, want %q", sources[0].Detail, want)
 	}
 }
+
+// TestAudioSegmentStampNeverPrecedesTheEpisodeOrigin pins the one direction the
+// backdating correction is not allowed to go.
+//
+// The correction walks the stamp back past the chunk in hand and past the
+// pipeline delay behind it, and nothing stopped it walking back past the start
+// of the episode. Audio has no pre-roll ring: capture opens when the episode
+// does, so there are no samples from before the origin. A negative ActualOffset
+// is how this tree says "pre-roll was achieved" (see the camera adapter and
+// data_service_test), so a negative audio offset advertises pre-trigger audio
+// that does not exist, on the strength of an estimated constant.
+//
+// The gap here is the realistic one the existing stamping tests dodge: an
+// episode origin at ten seconds and the first 8192-byte read a hundred
+// milliseconds later, which is what a Jetson Orin Nano with a Logitech C920
+// actually delivers. Unclamped that produced canonical_episode_nanos of
+// -5333333.
+func TestAudioSegmentStampNeverPrecedesTheEpisodeOrigin(t *testing.T) {
+	const (
+		// 8192 bytes is what a real pipe read returns: 85.333 ms of PCM.
+		chunkBytes    = 8192
+		origin        = int64(10 * time.Second)
+		receiptDelay  = int64(100 * time.Millisecond)
+		clockHalfWide = 3 * time.Microsecond
+	)
+	chunkNanos := pcmDurationNanos(chunkBytes)
+	stamp := bootReceipt(time.Duration(origin+receiptDelay), clockHalfWide)
+
+	// The premise, computed rather than asserted from memory: the uncorrected
+	// arithmetic really does reach back past the origin here, so this test
+	// exercises the clamp instead of quietly agreeing with an unclamped stamp.
+	wantShortfall := chunkNanos + int64(audioPipelineDelayEstimate) - receiptDelay
+	if wantShortfall <= 0 {
+		t.Fatalf("this gap does not reach past the origin (shortfall %d); the test would prove nothing", wantShortfall)
+	}
+
+	result, dir := runAudioCaptureWith(t, audioRun{
+		chunks:           [][]byte{pcmChunk(chunkBytes)},
+		receipts:         scriptedReceipts(stamp),
+		requestBootNanos: origin,
+	})
+
+	records := readAudioIndex(t, dir)
+	if len(records) != 1 {
+		t.Fatalf("got %d index records, want 1: %+v", len(records), records)
+	}
+	record := records[0]
+
+	if record.CanonicalEpisodeNanos != 0 {
+		t.Errorf("canonical_episode_nanos = %d, want 0: audio has no pre-roll ring, so a segment stamp may not precede the episode origin",
+			record.CanonicalEpisodeNanos)
+	}
+	// Clamped, and said so. A silent max would leave a reader unable to tell a
+	// bound from an estimate that happened to land on the origin.
+	if !record.ClampedToOrigin {
+		t.Error("clamped_to_origin is absent; the clamp must be visible in the record, not silent")
+	}
+	if record.ClampShortfallNanos != wantShortfall {
+		t.Errorf("clamp_shortfall_nanos = %d, want %d", record.ClampShortfallNanos, wantShortfall)
+	}
+	// And the uncertainty widened by the shortfall, so the instant the
+	// correction pointed at is still inside the published bracket.
+	wantUncertainty := stamp.bracket() + int64(audioPipelineDelayBound) + wantShortfall
+	if record.CanonicalUncertaintyNanos != wantUncertainty {
+		t.Errorf("canonical_uncertainty_nanos = %d, want %d (clock bracket %d, the %v delay bound, and the %d ns shortfall)",
+			record.CanonicalUncertaintyNanos, wantUncertainty, stamp.bracket(), audioPipelineDelayBound, wantShortfall)
+	}
+	if record.CanonicalEpisodeNanos-record.CanonicalUncertaintyNanos > -wantShortfall {
+		t.Error("the widened bracket does not reach back to where the correction pointed")
+	}
+
+	if result.ActualOffset == nil || *result.ActualOffset != 0 {
+		t.Errorf("result.ActualOffset = %v, want 0: a negative offset would claim pre-trigger audio that was never captured",
+			result.ActualOffset)
+	}
+	if result.MappingError == nil || *result.MappingError != wantUncertainty {
+		t.Errorf("result.MappingError = %v, want %d so the episode summary carries the widened bound",
+			result.MappingError, wantUncertainty)
+	}
+	if !strings.Contains(result.SourceDetail, "clamped to the episode origin") {
+		t.Errorf("source detail = %q, want it to name the clamp so an operator need not open the audio index",
+			result.SourceDetail)
+	}
+}
+
+// TestAudioSegmentStampIsNotClampedWhenItNeedNotBe is the other half: the clamp
+// must fire only when the correction really would reach past the origin. A
+// clamp that fired early would flatten genuine sub-origin arithmetic into a
+// pile of stamps all reading zero, which is a different lie.
+func TestAudioSegmentStampIsNotClampedWhenItNeedNotBe(t *testing.T) {
+	const (
+		chunkBytes    = 8192
+		origin        = int64(10 * time.Second)
+		receiptDelay  = int64(200 * time.Millisecond)
+		clockHalfWide = 3 * time.Microsecond
+	)
+	chunkNanos := pcmDurationNanos(chunkBytes)
+	stamp := bootReceipt(time.Duration(origin+receiptDelay), clockHalfWide)
+
+	result, dir := runAudioCaptureWith(t, audioRun{
+		chunks:           [][]byte{pcmChunk(chunkBytes)},
+		receipts:         scriptedReceipts(stamp),
+		requestBootNanos: origin,
+	})
+
+	records := readAudioIndex(t, dir)
+	if len(records) != 1 {
+		t.Fatalf("got %d index records, want 1: %+v", len(records), records)
+	}
+	record := records[0]
+	wantCanonical := receiptDelay - chunkNanos - int64(audioPipelineDelayEstimate)
+	if wantCanonical <= 0 {
+		t.Fatalf("this gap does reach past the origin; the test would prove nothing")
+	}
+	if record.CanonicalEpisodeNanos != wantCanonical {
+		t.Errorf("canonical_episode_nanos = %d, want the uncorrected %d", record.CanonicalEpisodeNanos, wantCanonical)
+	}
+	if record.ClampedToOrigin || record.ClampShortfallNanos != 0 {
+		t.Errorf("a stamp that lands after the origin was reported as clamped: %+v", record)
+	}
+	if record.CanonicalUncertaintyNanos != stamp.bracket()+int64(audioPipelineDelayBound) {
+		t.Errorf("canonical_uncertainty_nanos = %d, want the unwidened %d",
+			record.CanonicalUncertaintyNanos, stamp.bracket()+int64(audioPipelineDelayBound))
+	}
+	if strings.Contains(result.SourceDetail, "clamped") {
+		t.Errorf("source detail = %q mentions a clamp that did not happen", result.SourceDetail)
+	}
+}
