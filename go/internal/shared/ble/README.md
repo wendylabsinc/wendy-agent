@@ -86,14 +86,15 @@ data, err = conn.L2CAPRecv(30)
 | Write without response | ✅ | ✅ | ❌ |
 | Notifications (subscribe + wait) | ✅ | ✅ (per-characteristic queues) | ❌ |
 | L2CAP channel (open / send / recv) | ✅ | ✅ | ❌ |
-| `net.Conn` + TLS over L2CAP | ✅ | ✅ transport only, see below | ❌ |
+| `net.Conn` + TLS over L2CAP | ✅ | ✅ | ❌ |
 
 On Windows the GATT methods exist only to satisfy the shared method set; they return
 `"not implemented"`.
 
-**The Linux L2CAP path was broken in three ways at once**, and all three are fixed. They are
-recorded here because each looked like the others from the outside — every failure presented as a
-uniform connect timeout or an idle-connection error, and none of them pointed at its own cause.
+**The Linux L2CAP path was broken in four ways at once**, and all four are fixed. They are recorded
+because each masked the others: every one presented as the same uniform connect timeout or
+mid-handshake disconnect, and none pointed at its own cause. Two of them also invalidated the
+experiments that would have found the others, so the order they were fixed in mattered.
 
 1. `parseBTAddr` guarded its separator check on the loop index rather than the byte offset, so it
    indexed `s[-1]` and **panicked on every valid address**. `central.Connect` could never return.
@@ -102,22 +103,31 @@ uniform connect timeout or an idle-connection error, and none of them pointed at
    Pre-reversing cancelled that out and aimed every connect at a byte-reversed peer, so nothing
    answered. Every PSM timed out identically, including ones nothing listens on, which a reachable
    peer would have *refused*.
-3. `L2CAPSend` looped over the unwritten remainder, which cannot chunk anything: the socket is
+3. **The socket was never bound**, so the channel ran in basic L2CAP mode rather than LE
+   credit-based flow control. `l2cap_sock_connect` only switches mode when the channel's source
+   address type is LE, and only `bind` sets that. In basic mode the kernel writes each payload as a
+   bare PDU **with no 2-byte SDU-length header**, so the peer reads the first two bytes of the data
+   as the SDU length. A TLS ClientHello begins `0x16 0x03`, which reads as an SDU of 790 bytes —
+   past the peer's MTU, so it dropped the channel immediately. This is why the failure looked
+   content-dependent: a payload of `00 00` reads as a legal empty SDU and is accepted, while three
+   zero bytes read as an empty SDU with a stray byte after it and are not.
+4. `L2CAPSend` looped over the unwritten remainder, which cannot chunk anything: the socket is
    `SOCK_SEQPACKET`, so one write is one SDU and the kernel fails with `EMSGSIZE` rather than
    writing part of it. The first TLS record was larger than the negotiated MTU and simply failed.
    It now splits at the MTU read back from `BT_SNDMTU` once the channel is up.
 
-A fourth, separate bug: `poll(2)` returning `EINTR` was reported as a failure. The Go runtime
+A fifth, separate bug: `poll(2)` returning `EINTR` was reported as a failure. The Go runtime
 preempts goroutines with `SIGURG`, so a long idle wait is interrupted routinely — an idle channel
 would surface "interrupted system call" instead of the timeout sentinel `l2capNetConn.Read` knows to
 retry, which breaks any connection that goes quiet. Poll, read and write now retry on `EINTR`.
 
-What is verified against a Wendy Lite board: the channel opens in under a second, with and without a
-prior GATT connection, and bytes flow both ways. **The TLS handshake over it is not working yet**,
-and that is above this layer — the board closes the connection on a valid 183-byte single-SDU
-TLS 1.2 ClientHello, while holding the channel open indefinitely for arbitrary non-TLS bytes. So its
-TLS server is reached and parsing, and rejects the handshake for reasons that live in the firmware
-or in the board's provisioning state, not in this transport.
+Verified against a Wendy Lite board end to end: channel open, TLS handshake, WendyCom handshake and
+round-tripping pings.
+
+Note for anyone debugging this layer again: the socket API gives almost no visibility here — a
+malformed K-frame is indistinguishable from an unreachable peer, because both simply fail to get a
+reply. `btmon` is the tool that settles it, since the missing SDU-length header and the peer's
+`Disconnection Request` are both plainly visible on the wire and neither is inferable from `errno`.
 
 ### Addressing is platform-dependent
 
@@ -284,10 +294,13 @@ has no object for the device its address type is unknown, so the caller's timeou
 public is tried before random — a wrong type times out rather than failing fast, because the
 controller ends up paging an address nobody answers.
 
-Two things are easy to get wrong here and were. `SockaddrL2.Addr` takes the address in the order it
-is written, most significant byte first: `x/sys/unix` reverses it into the kernel's little-endian
-`bdaddr_t` itself, so handing it a pre-reversed address silently targets the wrong peer. And sends
-must be split at the negotiated SDU size — `SOCK_SEQPACKET` means one write is one SDU, so an
+Three things are easy to get wrong here and were. The socket must be **bound** before connect, with
+an LE source address type — that, and nothing else, is what puts the channel into LE credit-based
+flow control instead of basic mode; the bound address itself is irrelevant, `BDADDR_ANY` is fine.
+`SockaddrL2.Addr` takes the address in the order it is written, most significant byte first:
+`x/sys/unix` reverses it into the kernel's little-endian `bdaddr_t` itself, so handing it a
+pre-reversed address silently targets the wrong peer. And sends must be split at the negotiated SDU
+size — `SOCK_SEQPACKET` means one write is one SDU, so an
 oversized buffer fails with `EMSGSIZE` and a write loop never gets the chance to chunk it. The size
 comes from `BT_SNDMTU`, which is only meaningful once the channel is open.
 

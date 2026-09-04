@@ -254,3 +254,30 @@ func TestL2CAPSendWithoutNegotiatedMTUFallsBackToMinimum(t *testing.T) {
 		t.Errorf("first SDU is %d bytes, want the %d-byte LE CoC minimum", n, l2capMinMTU)
 	}
 }
+
+func TestConnectBindsSocketAsLE(t *testing.T) {
+	// The bind is what puts the channel into LE credit-based flow control.
+	// Without it the kernel stays in basic L2CAP mode and omits the 2-byte
+	// SDU-length header from every K-frame, so the peer reads the first two
+	// bytes of payload as the SDU length and drops the channel. Nothing about
+	// the local API changes, which is exactly why this needs a test.
+	conn, err := Connect("AA:BB:CC:DD:EE:FF", 10)
+	if err != nil {
+		t.Skipf("cannot create an AF_BLUETOOTH socket here: %v", err)
+	}
+	defer conn.Close()
+
+	sa, err := unix.Getsockname(conn.fd)
+	if err != nil {
+		t.Fatalf("Getsockname: %v", err)
+	}
+	l2, ok := sa.(*unix.SockaddrL2)
+	if !ok {
+		t.Fatalf("socket is not bound to an L2CAP address: %T", sa)
+	}
+	if l2.AddrType != unix.BDADDR_LE_PUBLIC {
+		t.Errorf("bound source address type is %d, want BDADDR_LE_PUBLIC (%d) — "+
+			"a non-LE source type leaves the channel in basic mode",
+			l2.AddrType, unix.BDADDR_LE_PUBLIC)
+	}
+}

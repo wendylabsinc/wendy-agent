@@ -51,9 +51,9 @@ func Connect(peripheralAddress string, _ int) (*Connection, error) {
 		return nil, fmt.Errorf("parse BT address: %w", err)
 	}
 
-	fd, err := unix.Socket(unix.AF_BLUETOOTH, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, unix.BTPROTO_L2CAP)
+	fd, err := newL2CAPSocket()
 	if err != nil {
-		return nil, fmt.Errorf("create L2CAP socket: %w", err)
+		return nil, err
 	}
 
 	return &Connection{
@@ -62,6 +62,32 @@ func Connect(peripheralAddress string, _ int) (*Connection, error) {
 		addrType: unix.BDADDR_LE_PUBLIC,
 		address:  strings.ToUpper(peripheralAddress),
 	}, nil
+}
+
+// newL2CAPSocket creates an L2CAP socket and binds it as an LE one.
+//
+// The bind is not optional and its address is not the point: binding is what
+// sets the channel's source address type, and l2cap_sock_connect only switches
+// the channel into LE credit-based flow control when that type is LE. Without
+// it the channel stays in basic L2CAP mode, and the kernel then writes each
+// payload as a bare PDU with no 2-byte SDU-length header — so the peer reads
+// the first two bytes of the data as the SDU length, gets a nonsense value, and
+// drops the channel. A TLS ClientHello starts 0x16 0x03, which reads as an SDU
+// of 790 bytes; anything over the peer's MTU is an instant disconnect.
+//
+// BDADDR_ANY leaves the controller choice to the kernel. The peripheral side in
+// internal/agent/bluetooth/l2cap_server_linux.go binds the same way, for the
+// same reason.
+func newL2CAPSocket() (int, error) {
+	fd, err := unix.Socket(unix.AF_BLUETOOTH, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, unix.BTPROTO_L2CAP)
+	if err != nil {
+		return -1, fmt.Errorf("create L2CAP socket: %w", err)
+	}
+	if err := unix.Bind(fd, &unix.SockaddrL2{AddrType: unix.BDADDR_LE_PUBLIC}); err != nil {
+		unix.Close(fd) //nolint:errcheck
+		return -1, fmt.Errorf("bind L2CAP socket as LE: %w", err)
+	}
+	return fd, nil
 }
 
 // addressProbeTimeout bounds the best-effort BlueZ lookup OpenL2CAP does to
@@ -221,7 +247,7 @@ func (c *Connection) resetSocket() error {
 		unix.Close(c.fd) //nolint:errcheck
 		c.fd = -1
 	}
-	fd, err := unix.Socket(unix.AF_BLUETOOTH, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, unix.BTPROTO_L2CAP)
+	fd, err := newL2CAPSocket()
 	if err != nil {
 		return fmt.Errorf("recreate L2CAP socket: %w", err)
 	}
