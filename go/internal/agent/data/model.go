@@ -247,6 +247,11 @@ type EpisodeTrigger struct {
 	CampaignName     string `json:"campaign_name,omitempty"`
 	CampaignRevision string `json:"campaign_revision,omitempty"`
 	Expression       string `json:"expression,omitempty"`
+	// Notify carries the triggering campaign's notify block verbatim into the
+	// committed manifest, and from there into the manifest JSON the cloud
+	// ingest service receives. The device attaches no behavior to it; the
+	// cloud reads it to decide whether to notify.
+	Notify *CampaignNotify `json:"notify,omitempty"`
 }
 
 type PrivacyTransformation struct {
@@ -302,10 +307,15 @@ type Manifest struct {
 	// cameras/<source>/playable.mp4 or why the one it wrote omits frames.
 	// Absence of a note plus absence of the file means the episode captured
 	// no camera; a note is the seal's honest account of a mux it refused.
-	PlayableNotes     []string `json:"playable_notes,omitempty"`
-	PreRollLost       uint64   `json:"pre_roll_lost"`
-	PreRollAccounting string   `json:"pre_roll_accounting"`
-	ModelIO           ModelIO  `json:"model_io"`
+	PlayableNotes []string `json:"playable_notes,omitempty"`
+	// PreRollLost counts the application records that would have reached THIS
+	// episode's pre-roll window and did not, because the ring buffer hit its
+	// byte budget and dropped them while they were still inside their window.
+	// Records that merely aged out of the ring are not counted: they were no
+	// longer pre-roll for anything, so nothing was lost.
+	PreRollLost       uint64  `json:"pre_roll_lost"`
+	PreRollAccounting string  `json:"pre_roll_accounting"`
+	ModelIO           ModelIO `json:"model_io"`
 }
 
 type StartOptions struct {
@@ -319,13 +329,20 @@ type StartOptions struct {
 	Calibrations          map[string][]byte
 	CalibrationRevisions  map[string]string
 	PreRollDuration       time.Duration
-	Trigger               EpisodeTrigger
-	CollectorVersion      string
-	ModelVersions         map[string]string
-	RequestedTopics       []string
-	Privacy               []PrivacyTransformation
-	Upload                WorkflowState
-	Labeling              WorkflowState
+	// DrainDuration holds an episode that captures applications open for this
+	// long after its capture adapters stop, so an application that scores
+	// asynchronously files its verdict into the episode it read rather than
+	// into the next one. Zero or less means no drain. The manager applies no
+	// default of its own; callers choose the policy, and the service call sites
+	// use data.DefaultSealDrain.
+	DrainDuration    time.Duration
+	Trigger          EpisodeTrigger
+	CollectorVersion string
+	ModelVersions    map[string]string
+	RequestedTopics  []string
+	Privacy          []PrivacyTransformation
+	Upload           WorkflowState
+	Labeling         WorkflowState
 }
 
 type EpisodeInfo struct {

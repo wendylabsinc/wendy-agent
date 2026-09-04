@@ -18,7 +18,7 @@ import (
 )
 
 // newSampleHub builds a hub with a sample counter but no producer, so a test
-// can broadcast frames by hand and inspect the identities they are stamped with.
+// can produce frames by hand and inspect the identities they are stamped with.
 func newSampleHub(seq *atomic.Uint64) (*deviceHub, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &deviceHub{
@@ -27,10 +27,10 @@ func newSampleHub(seq *atomic.Uint64) (*deviceHub, context.CancelFunc) {
 	}, cancel
 }
 
-// TestBroadcastAssignsMonotonicSampleIdentities is the foundation of the whole
+// TestProduceAssignsMonotonicSampleIdentities is the foundation of the whole
 // correlation: every consumer of a frame must see the same identifier for it,
-// and the identifiers must increase by one per delivered frame.
-func TestBroadcastAssignsMonotonicSampleIdentities(t *testing.T) {
+// and the identifiers must increase by one per produced frame.
+func TestProduceAssignsMonotonicSampleIdentities(t *testing.T) {
 	hub, cancel := newSampleHub(new(atomic.Uint64))
 	defer cancel()
 	_, first, err := hub.subscribe()
@@ -42,8 +42,8 @@ func TestBroadcastAssignsMonotonicSampleIdentities(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		if !hub.broadcast(&videoFrame{data: []byte{byte(i)}}) {
-			t.Fatal("broadcast reported no subscribers")
+		if !hub.produce(&videoFrame{data: []byte{byte(i)}}) {
+			t.Fatal("produce reported no subscribers")
 		}
 	}
 	for i := uint64(1); i <= 3; i++ {
@@ -70,8 +70,8 @@ func TestOversizedFrameConsumesNoSampleIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hub.broadcast(&videoFrame{data: make([]byte, maxFrameBytes+1)})
-	hub.broadcast(&videoFrame{data: []byte{1}})
+	hub.produce(&videoFrame{data: make([]byte, maxFrameBytes+1)})
+	hub.produce(&videoFrame{data: []byte{1}})
 	frame := <-frames
 	if frame.sampleID != 1 {
 		t.Fatalf("sample id = %d, want 1: the dropped oversized frame consumed an identifier", frame.sampleID)
@@ -89,8 +89,8 @@ func TestSampleIdentitiesSurviveProducerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hub.broadcast(&videoFrame{data: []byte{1}})
-	hub.broadcast(&videoFrame{data: []byte{2}})
+	hub.produce(&videoFrame{data: []byte{1}})
+	hub.produce(&videoFrame{data: []byte{2}})
 	<-frames
 	<-frames
 	cancel()
@@ -102,7 +102,7 @@ func TestSampleIdentitiesSurviveProducerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarted.broadcast(&videoFrame{data: []byte{3}})
+	restarted.produce(&videoFrame{data: []byte{3}})
 	if frame := <-restartedFrames; frame.sampleID != 3 {
 		t.Fatalf("sample id after producer restart = %d, want 3", frame.sampleID)
 	}
@@ -124,7 +124,7 @@ func TestCameraSensorSubscriptionReportsDropsPerSample(t *testing.T) {
 	subscription := &cameraSensorSubscription{hub: hub, subID: subID, frames: frames}
 	// The subscriber channel holds four frames; broadcasting six drops two.
 	for i := 0; i < 6; i++ {
-		hub.broadcast(&videoFrame{data: []byte{byte(i)}, codec: agentpb.VideoCodec_VIDEO_CODEC_H264, auAligned: true})
+		hub.produce(&videoFrame{data: []byte{byte(i)}, codec: agentpb.VideoCodec_VIDEO_CODEC_H264, auAligned: true})
 	}
 	ctx := context.Background()
 	var reported []uint64
@@ -144,6 +144,44 @@ func TestCameraSensorSubscriptionReportsDropsPerSample(t *testing.T) {
 	}
 	if total != 2 {
 		t.Fatalf("reported drops %v sum to %d, want the 2 frames the hub dropped", reported, total)
+	}
+}
+
+// TestCameraSensorSamplesKeepZeroBufferFields pins camera samples to
+// single-instant semantics. sample_rate_hz, channels and duration_nanos exist
+// for a source that hands over a BUFFER of equally spaced samples; a camera
+// frame is one instant, so all three must stay zero and boottime_nanos must
+// remain the time of the whole payload. A camera provider that started
+// reporting a rate would tell an app to count samples into a frame.
+func TestCameraSensorSamplesKeepZeroBufferFields(t *testing.T) {
+	hub, cancel := newSampleHub(new(atomic.Uint64))
+	defer cancel()
+	subID, frames, err := hub.subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := &cameraSensorSubscription{hub: hub, subID: subID, frames: frames}
+	hub.produce(&videoFrame{
+		data:      []byte{0, 0, 0, 1, 0x67, 1},
+		codec:     agentpb.VideoCodec_VIDEO_CODEC_H264,
+		auAligned: true,
+	})
+	sample, err := subscription.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sample.SampleRateHz != 0 || sample.Channels != 0 || sample.DurationNanos != 0 {
+		t.Errorf("a camera sample reports buffer shape %d Hz / %d channels / %d ns, want zeros",
+			sample.SampleRateHz, sample.Channels, sample.DurationNanos)
+	}
+	// The same must hold on the wire, which is what an app actually reads.
+	message := sensorSampleMessage(sample)
+	if message.GetSampleRateHz() != 0 || message.GetChannels() != 0 || message.GetDurationNanos() != 0 {
+		t.Errorf("the camera sample message reports buffer shape %d Hz / %d channels / %d ns, want zeros",
+			message.GetSampleRateHz(), message.GetChannels(), message.GetDurationNanos())
+	}
+	if message.GetBoottimeNanos() == 0 {
+		t.Error("the camera sample lost its boot-clock receipt")
 	}
 }
 
@@ -273,7 +311,7 @@ func TestCaptureAndModelSubscriberShareOneProducer(t *testing.T) {
 
 	const frames = 3
 	for i := 0; i < frames; i++ {
-		if !hub.broadcast(&videoFrame{
+		if !hub.produce(&videoFrame{
 			data:      []byte{0, 0, 0, 1, 0x67, byte(i)},
 			codec:     agentpb.VideoCodec_VIDEO_CODEC_H264,
 			auAligned: true,
@@ -308,7 +346,7 @@ func TestCaptureAndModelSubscriberShareOneProducer(t *testing.T) {
 
 	// One consumer leaving must not stop the producer for the other.
 	subscription.Close()
-	if !hub.broadcast(&videoFrame{data: []byte{1}, codec: agentpb.VideoCodec_VIDEO_CODEC_H264}) {
+	if !hub.produce(&videoFrame{data: []byte{1}, codec: agentpb.VideoCodec_VIDEO_CODEC_H264}) {
 		t.Fatal("the producer stopped when the model unsubscribed, starving the episode capture")
 	}
 }

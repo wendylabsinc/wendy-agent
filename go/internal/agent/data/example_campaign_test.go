@@ -29,10 +29,13 @@ func TestShippedModelAppCampaignParses(t *testing.T) {
 	// episode would then hold payload bytes for only a subset of the samples
 	// the model saw, which is a weaker demonstration of the contract.
 	capture := campaign.Sources[0].Capture
+	if capture == nil {
+		t.Fatal("the camera source declares no capture block; the assertions below would pass vacuously")
+	}
 	if capture.EffectiveMode() != "continuous" {
 		t.Errorf("camera capture mode = %q, want continuous", capture.EffectiveMode())
 	}
-	if capture != nil && capture.Rate != 0 {
+	if capture.Rate != 0 {
 		t.Errorf("camera capture rate cap = %v, want none", capture.Rate)
 	}
 	if campaign.Upload.When != "always" {
@@ -49,16 +52,20 @@ func TestShippedModelAppCampaignParses(t *testing.T) {
 	if _, _, matched := campaign.Match(ApplicationRecord{Version: 1, Type: "event", Name: "person_detected"}); !matched {
 		t.Error("person_detected event did not fire the campaign")
 	}
-	// A prediction record above the uncertainty threshold, in the shape the
-	// app emits (uncertainty rides in attributes).
+	// person_detected is deliberately the campaign's ONLY trigger. The app
+	// scores uncertainty as 1 minus its best detection confidence, so a scene
+	// the detector has no class for sits at exactly 1.0 and a
+	// model.uncertainty threshold would fire on every prediction: measured on
+	// a Jetson with nobody in frame, a fresh episode every 30 seconds. No
+	// prediction may fire this campaign, whatever its uncertainty.
 	uncertain := ApplicationRecord{
 		Version:    1,
 		Type:       "prediction",
 		Model:      "yolov8n",
 		Attributes: map[string]any{"uncertainty": 0.9, "model_version": "8.3.63"},
 	}
-	if _, _, matched := campaign.Match(uncertain); !matched {
-		t.Error("high-uncertainty prediction did not fire the campaign")
+	if reason, _, matched := campaign.Match(uncertain); matched {
+		t.Errorf("uncertain prediction fired the campaign (%s); the example arms no model.uncertainty trigger", reason)
 	}
 	confident := ApplicationRecord{
 		Version:    1,
