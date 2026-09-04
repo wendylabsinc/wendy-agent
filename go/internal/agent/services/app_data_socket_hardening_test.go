@@ -3,10 +3,13 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -85,13 +88,38 @@ func TestAppDataRateLimitIsPerAppNotPerConnection(t *testing.T) {
 	}
 
 	// The per-app budget is now exhausted; a brand-new connection must not get
-	// its own allotment.
+	// its own allotment. serveConn checks the shared budget BEFORE its first
+	// read and closes the connection right after writing the rejection ack, so
+	// this write races that close and can fail with EPIPE (or ECONNRESET).
+	// That early close only happens on the rejection path: a connection with
+	// its own fresh allotment would sit in readDataFrame, accept the record,
+	// and answer "buffered" on a still-open connection. So a broken write
+	// followed by the rejection ack still waiting in the socket buffer, or by
+	// end-of-stream, proves the same contract as a clean write/read pair.
 	conn2, err := net.Dial("unix", sockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn2.Close()
-	if ack := sendRecord(t, conn2, rec); ack.State != "rejected" || ack.Error != "rate limit exceeded" {
+	body, _ := json.Marshal(rec)
+	writeErr := writeDataFrame(conn2, json.RawMessage(body))
+	if writeErr != nil && !errors.Is(writeErr, syscall.EPIPE) && !errors.Is(writeErr, syscall.ECONNRESET) {
+		t.Fatalf("write frame: %v", writeErr)
+	}
+	ackBody, err := readDataFrame(conn2)
+	if err != nil {
+		if writeErr != nil && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET)) {
+			// The server closed before the write landed and no ack survived;
+			// only the rejection path closes before reading a frame.
+			return
+		}
+		t.Fatalf("read ack: %v (write err: %v)", err, writeErr)
+	}
+	var ack dataAck
+	if err := json.Unmarshal(ackBody, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if ack.State != "rejected" || ack.Error != "rate limit exceeded" {
 		t.Fatalf("conn2 record: ack = %+v, want rejected/rate limit exceeded (budget must be shared)", ack)
 	}
 }
