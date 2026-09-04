@@ -48,6 +48,20 @@ The episode directory is never modified.
 		dest = episode + "-playable"
 	}
 
+	// Episodes sealed since the agent learned to remux at seal time already
+	// carry cameras/<source>/playable.mp4, listed in their manifest. When
+	// every camera source has one there is nothing to convert; reconverting
+	// would only duplicate bytes the manifest already vouches for.
+	existing, _ := filepath.Glob(filepath.Join(episode, "cameras", "*", episodeexport.PlayableFileName))
+	indexes, _ := filepath.Glob(filepath.Join(episode, "cameras", "*", "index.jsonl"))
+	if len(existing) > 0 && len(existing) >= len(indexes) {
+		fmt.Println("episode already carries playable files written at seal time; nothing to convert:")
+		for _, p := range existing {
+			fmt.Printf("  %s\n", p)
+		}
+		return
+	}
+
 	results, errs := episodeexport.Convert(episode, dest)
 	for _, r := range results {
 		if r.Output == "" {
@@ -70,6 +84,9 @@ The episode directory is never modified.
 		}
 		if r.SyncSamples == 0 {
 			fmt.Fprintf(os.Stderr, "episode-playable: warning: camera %s clip carries no random-access frame, so players cannot seek in it and many will not open it at all\n", r.Source)
+		}
+		if r.ParameterSetChanges > 0 {
+			fmt.Fprintf(os.Stderr, "episode-playable: warning: camera %s changes its SPS/PPS mid-stream (%d changed unit(s), a producer restart); the clip carries only the first decoder configuration, so frames after the change will misdecode\n", r.Source, r.ParameterSetChanges)
 		}
 		if r.BFrames {
 			fmt.Fprintf(os.Stderr, "episode-playable: warning: camera %s contains B slices, so its presentation order differs from the coded order index.jsonl records; the timing written for it is approximate\n", r.Source)

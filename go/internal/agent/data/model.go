@@ -207,6 +207,15 @@ type MonotonicMappingSample struct {
 	OffsetUpperNanos int64 `json:"offset_upper_nanos"`
 }
 
+// FileRoleDerived marks a manifest file computed from capture payload at seal
+// time rather than recorded during capture. Today that is the per-source
+// cameras/<source>/playable.mp4 remux. A derived file is checksummed, uploaded
+// and verified exactly like every other listed file, but it is not capture
+// payload: model-input and payload-retention accounting resolve payload bytes
+// through cameras/<source>/index.jsonl into the raw segments and must never
+// count a derived file, and deleting one loses no recorded data.
+const FileRoleDerived = "derived"
+
 type File struct {
 	Path      string `json:"path"`
 	Size      int64  `json:"size"`
@@ -214,6 +223,10 @@ type File struct {
 	SourceID  string `json:"source_id,omitempty"`
 	Format    string `json:"format"`
 	MediaType string `json:"media_type"`
+	// Role distinguishes what a file is to the episode. Empty means capture
+	// payload or capture metadata written while recording; FileRoleDerived
+	// marks an artifact computed from that payload at seal time.
+	Role string `json:"role,omitempty"`
 }
 
 type Calibration struct {
@@ -290,6 +303,11 @@ type Manifest struct {
 	Upload            WorkflowState           `json:"upload"`
 	Labeling          WorkflowState           `json:"labeling"`
 	RecoveryActions   []string                `json:"recovery_actions,omitempty"`
+	// PlayableNotes records, per camera source, why the seal wrote no
+	// cameras/<source>/playable.mp4 or why the one it wrote omits frames.
+	// Absence of a note plus absence of the file means the episode captured
+	// no camera; a note is the seal's honest account of a mux it refused.
+	PlayableNotes []string `json:"playable_notes,omitempty"`
 	// PreRollLost counts the application records that would have reached THIS
 	// episode's pre-roll window and did not, because the ring buffer hit its
 	// byte budget and dropped them while they were still inside their window.

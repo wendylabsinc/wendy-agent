@@ -237,8 +237,13 @@ counts the predictions that named their inputs, and — per source — whether t
 episode retains payloads for all of the consumed samples or only the subset the
 capture policy kept.
 
-To watch the camera capture rather than join against it, convert the episode
-with `episode-playable`; the camera capture is a raw elementary stream with no
+To watch the camera capture rather than join against it, open the
+`cameras/<source>/playable.mp4` the episode already carries: the agent remuxes
+each camera source into a browser-playable MP4 while sealing, lists it in the
+manifest as a derived file, and uploads it with everything else. Only an
+episode sealed by an older agent (or a source whose seal-time remux was
+refused, see the manifest's `playable_notes`) still needs the laptop-side
+`episode-playable` conversion; the raw capture is an elementary stream with no
 container, so players otherwise invent a frame rate and the clip runs at the
 wrong speed. See "Playing back camera capture" in the `wendy data` command
 documentation.
