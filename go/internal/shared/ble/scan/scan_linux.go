@@ -5,36 +5,21 @@ package scan
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 
 	"github.com/godbus/dbus/v5"
-)
 
-// BlueZ D-Bus names.
-const (
-	bluezService = "org.bluez"
-	adapterIface = "org.bluez.Adapter1"
-	deviceIface  = "org.bluez.Device1"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/bluez"
 )
-
-// managedObjects is the shape org.freedesktop.DBus.ObjectManager returns.
-type managedObjects = map[dbus.ObjectPath]map[string]map[string]dbus.Variant
 
 // RunBLECheck is a no-op on Linux. The CoreBluetooth entitlement problem it
 // exists for is macOS-only, and BlueZ reports adapter trouble as an ordinary
 // error from newScanner instead of aborting the process.
 func RunBLECheck() int { return 0 }
 
-// linuxScanner holds a BlueZ discovery session.
-//
-// The D-Bus plumbing below deliberately mirrors
-// internal/agent/bluetooth/manager_linux.go, which solved the same problems on
-// the device side (the onboard radio is not always hci0; BlueZ synthesizes
-// placeholder aliases). Those helpers are unexported in a device-side package,
-// so this duplicates roughly sixty lines rather than exporting agent internals
-// into a CLI package. If a third caller appears, extract them.
+// linuxScanner holds a BlueZ discovery session. The D-Bus plumbing lives in
+// the sibling bluez package, which the central's GATT client shares.
 type linuxScanner struct {
 	mu          sync.Mutex
 	conn        *dbus.Conn
@@ -50,24 +35,24 @@ func newScanner(ctx context.Context, services []string) (scanner, error) {
 		return nil, fmt.Errorf("connecting to system bus: %w", err)
 	}
 
-	managed, err := getManagedObjects(ctx, conn)
-	if err != nil {
-		conn.Close() //nolint:errcheck
-		return nil, fmt.Errorf("enumerating BlueZ objects: %w", err)
-	}
-
-	adapterPath, err := resolveAdapterPath(managed)
+	managed, err := bluez.GetManagedObjects(ctx, conn)
 	if err != nil {
 		conn.Close() //nolint:errcheck
 		return nil, err
 	}
 
-	if err := powerOnAdapter(ctx, conn, adapterPath); err != nil {
+	adapterPath, err := bluez.ResolveAdapterPath(managed)
+	if err != nil {
+		conn.Close() //nolint:errcheck
+		return nil, err
+	}
+
+	if err := bluez.PowerOn(ctx, conn, adapterPath); err != nil {
 		conn.Close() //nolint:errcheck
 		return nil, fmt.Errorf("powering on adapter %s: %w", adapterPath, err)
 	}
 
-	adapter := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
+	adapter := conn.Object(bluez.Service, dbus.ObjectPath(adapterPath))
 
 	// Ask BlueZ to filter for us. Transport "le" keeps classic Bluetooth out,
 	// DuplicateData keeps advertisement fields refreshing rather than being
@@ -80,13 +65,13 @@ func newScanner(ctx context.Context, services []string) (scanner, error) {
 	if len(services) > 0 {
 		filter["UUIDs"] = dbus.MakeVariant(services)
 	}
-	if call := adapter.CallWithContext(ctx, adapterIface+".SetDiscoveryFilter", 0, filter); call.Err != nil {
+	if call := adapter.CallWithContext(ctx, bluez.AdapterIface+".SetDiscoveryFilter", 0, filter); call.Err != nil {
 		// Not fatal: an older BlueZ may reject a key, and an unfiltered scan
 		// still produces correct results once the engine filters in Go.
 		_ = call.Err
 	}
 
-	if call := adapter.CallWithContext(ctx, adapterIface+".StartDiscovery", 0); call.Err != nil {
+	if call := adapter.CallWithContext(ctx, bluez.AdapterIface+".StartDiscovery", 0); call.Err != nil {
 		conn.Close() //nolint:errcheck
 		return nil, fmt.Errorf("starting discovery on %s: %w", adapterPath, call.Err)
 	}
@@ -104,9 +89,9 @@ func (s *linuxScanner) Snapshot() ([]BLEDeviceInfo, error) {
 		return nil, fmt.Errorf("BLE scan session is closed")
 	}
 
-	managed, err := getManagedObjects(context.Background(), s.conn)
+	managed, err := bluez.GetManagedObjects(context.Background(), s.conn)
 	if err != nil {
-		return nil, fmt.Errorf("enumerating BlueZ devices: %w", err)
+		return nil, err
 	}
 
 	// Device objects are nested under the adapter, e.g.
@@ -114,19 +99,19 @@ func (s *linuxScanner) Snapshot() ([]BLEDeviceInfo, error) {
 	prefix := s.adapterPath + "/"
 	var devices []BLEDeviceInfo
 	for path, ifaces := range managed {
-		props, ok := ifaces[deviceIface]
+		props, ok := ifaces[bluez.DeviceIface]
 		if !ok || !strings.HasPrefix(string(path), prefix) {
 			continue
 		}
-		address, ok := stringProp(props, "Address")
+		address, ok := bluez.StringProp(props, "Address")
 		if !ok || address == "" {
 			continue
 		}
 		devices = append(devices, BLEDeviceInfo{
 			Address:      address,
 			Name:         deviceName(props, address),
-			ServiceUUIDs: stringsProp(props, "UUIDs"),
-			RSSI:         rssiProp(props),
+			ServiceUUIDs: bluez.StringsProp(props, "UUIDs"),
+			RSSI:         bluez.RSSIProp(props),
 		})
 	}
 	return devices, nil
@@ -141,117 +126,22 @@ func (s *linuxScanner) Close() {
 	}
 	s.closed = true
 
-	adapter := s.conn.Object(bluezService, dbus.ObjectPath(s.adapterPath))
+	adapter := s.conn.Object(bluez.Service, dbus.ObjectPath(s.adapterPath))
 	// Best-effort: the adapter may already have gone away.
-	_ = adapter.Call(adapterIface+".StopDiscovery", 0).Err
+	_ = adapter.Call(bluez.AdapterIface+".StopDiscovery", 0).Err
 	s.conn.Close() //nolint:errcheck
 }
 
 // deviceName resolves the display name. Alias is the user-facing value and
 // falls back to Name, but BlueZ synthesizes an Alias for devices advertising no
-// name — the address with ':' replaced by '-' — which must not count as a name
-// or every anonymous device would appear named.
+// name, which must not count as a name or every anonymous device would appear
+// named.
 func deviceName(props map[string]dbus.Variant, address string) string {
-	if alias, ok := stringProp(props, "Alias"); ok && alias != "" && !isDefaultAlias(alias, address) {
+	if alias, ok := bluez.StringProp(props, "Alias"); ok && alias != "" && !bluez.IsDefaultAlias(alias, address) {
 		return alias
 	}
-	if name, ok := stringProp(props, "Name"); ok {
+	if name, ok := bluez.StringProp(props, "Name"); ok {
 		return name
 	}
 	return ""
-}
-
-func isDefaultAlias(alias, address string) bool {
-	if address == "" {
-		return false
-	}
-	return strings.EqualFold(alias, strings.ReplaceAll(address, ":", "-"))
-}
-
-func getManagedObjects(ctx context.Context, conn *dbus.Conn) (managedObjects, error) {
-	var managed managedObjects
-	root := conn.Object(bluezService, "/")
-	call := root.CallWithContext(ctx, "org.freedesktop.DBus.ObjectManager.GetManagedObjects", 0)
-	if call.Err != nil {
-		return nil, call.Err
-	}
-	if err := call.Store(&managed); err != nil {
-		return nil, err
-	}
-	return managed, nil
-}
-
-// resolveAdapterPath finds the adapter to scan with. The onboard radio is not
-// always hci0, so the tree is searched for an org.bluez.Adapter1 rather than
-// assuming a path. WENDY_BT_ADAPTER pins a specific controller, matching the
-// override the agent honors.
-func resolveAdapterPath(managed managedObjects) (string, error) {
-	if want := os.Getenv("WENDY_BT_ADAPTER"); want != "" {
-		for path, ifaces := range managed {
-			if _, ok := ifaces[adapterIface]; !ok {
-				continue
-			}
-			if string(path) == want || strings.HasSuffix(string(path), "/"+want) {
-				return string(path), nil
-			}
-		}
-		return "", fmt.Errorf("no Bluetooth adapter matching WENDY_BT_ADAPTER=%q", want)
-	}
-
-	// Lowest path wins so repeated runs pick the same controller on a host with
-	// several; map iteration order alone would be arbitrary.
-	best := ""
-	for path, ifaces := range managed {
-		if _, ok := ifaces[adapterIface]; !ok {
-			continue
-		}
-		if best == "" || string(path) < best {
-			best = string(path)
-		}
-	}
-	if best == "" {
-		return "", fmt.Errorf("no Bluetooth adapter available")
-	}
-	return best, nil
-}
-
-func powerOnAdapter(ctx context.Context, conn *dbus.Conn, adapterPath string) error {
-	adapter := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
-	return adapter.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Set", 0,
-		adapterIface, "Powered", dbus.MakeVariant(true)).Err
-}
-
-func stringProp(props map[string]dbus.Variant, key string) (string, bool) {
-	v, ok := props[key]
-	if !ok {
-		return "", false
-	}
-	s, ok := v.Value().(string)
-	return s, ok
-}
-
-func stringsProp(props map[string]dbus.Variant, key string) []string {
-	v, ok := props[key]
-	if !ok {
-		return nil
-	}
-	ss, ok := v.Value().([]string)
-	if !ok {
-		return nil
-	}
-	return ss
-}
-
-// rssiProp reads the RSSI property, which BlueZ types as int16 and omits
-// entirely for a device it is not currently seeing.
-func rssiProp(props map[string]dbus.Variant) int {
-	v, ok := props["RSSI"]
-	if !ok {
-		return 0
-	}
-	rssi, ok := v.Value().(int16)
-	if !ok {
-		return 0
-	}
-	return int(rssi)
 }
