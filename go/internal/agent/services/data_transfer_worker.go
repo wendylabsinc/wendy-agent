@@ -490,6 +490,32 @@ func (w *DataTransferWorker) uploadEpisode(ctx context.Context, client cloudpb.D
 	}
 
 	// Drain acks concurrently so large uploads do not deadlock on flow control.
+	//
+	// The acks are read and discarded, not matched. That is deliberate, and it
+	// is why the (episode_id, path) matching rule the wire contract states for
+	// EpisodeChunkAck does not apply to this client today.
+	//
+	// Nothing here is keyed on an ack. Resume offsets come from
+	// BeginEpisodeUpload's per-file FileUploadState, above, which is scoped to
+	// one episode by construction; the acks contribute no state. Draining them
+	// serves two other purposes: gRPC flow control stalls a large upload if the
+	// receive side is never read, and a server-side stream error arrives here
+	// rather than being lost.
+	//
+	// The contract's hazard is a client that matches acks on `path` alone while
+	// one stream carries chunks for several episodes, which credits one
+	// episode's committed offset to another. This client cannot hit it from
+	// either direction: it matches on nothing, and it opens exactly one
+	// UploadEpisodeChunk stream per episode, here inside uploadEpisode, which
+	// processEpisode calls once per manifest. That is precisely the "keep to one
+	// stream per episode" fallback the contract requires of a client that cannot
+	// rely on the new episode_id field, and a server built before that field
+	// leaves it empty anyway.
+	//
+	// TestUploadStreamCarriesOneEpisode pins the one-stream-per-episode
+	// invariant. Batching several episodes onto a single stream, or using ack
+	// offsets to drive resume, means matching on the (episode_id, path) pair
+	// first; do not do one without the other.
 	ackErrCh := make(chan error, 1)
 	go func() {
 		for {
@@ -623,6 +649,10 @@ func buildEpisodeManifest(mf data.Manifest) (*cloudpb.EpisodeManifest, error) {
 	}
 	files := make([]*cloudpb.EpisodeFileManifest, 0, len(mf.Files))
 	for _, f := range mf.Files {
+		role, err := episodeFileRole(f.Role)
+		if err != nil {
+			return nil, fmt.Errorf("file %s: %w", f.Path, err)
+		}
 		files = append(files, &cloudpb.EpisodeFileManifest{
 			Path:      f.Path,
 			SizeBytes: uint64(f.Size),
@@ -630,7 +660,7 @@ func buildEpisodeManifest(mf data.Manifest) (*cloudpb.EpisodeManifest, error) {
 			MediaType: f.MediaType,
 			Format:    f.Format,
 			SourceId:  f.SourceID,
-			Role:      episodeFileRole(f.Role),
+			Role:      role,
 		})
 	}
 	var lower, upper int64
@@ -666,20 +696,33 @@ func buildEpisodeManifest(mf data.Manifest) (*cloudpb.EpisodeManifest, error) {
 // mapper is distinguishable on the wire from one written by an agent built
 // before the field existed.
 //
-// Any other string maps to UNSPECIFIED, which the wire contract defines as
-// captured. The enum has no "unknown" member and inventing one would force
-// every reader to handle a state it cannot act on, so an unrecognised role
-// degrades to the pre-existing meaning instead. That only arises when an
-// older agent resumes an upload for an episode a newer build sealed; adding a
-// role to data.File must add it here in the same change.
-func episodeFileRole(role string) cloudpb.EpisodeFileRole {
+// Any other string is a hard error rather than a value on the wire. The wire
+// contract gives UNSPECIFIED exactly one meaning, "the sender predates this
+// field", and states that a sender holding a role it cannot express MUST NOT
+// send UNSPECIFIED: doing so books the file as capture payload, corrupts
+// capture-only accounting, and tells the reader nothing was lost, so no
+// reader can flag it. The enum has no "unknown" member to fall back to, and
+// inventing one is not ours to do.
+//
+// Failing is the honest option because the role string is produced by this
+// same repository. Every value comes from a data.FileRole constant that seal
+// wrote, so a role this mapper does not know is a programming error on our
+// own side: someone added a role to the manifest and did not extend this
+// switch or the wire enum. It is deterministic, so a retry re-sends the same
+// manifest and fails identically. buildEpisodeManifest's error reaches
+// processEpisode as verifyErr, which marks the episode failed with the
+// offending role recorded and does not spin on it. The gap then surfaces on
+// the first episode that carries the new role, which is the whole point;
+// silently mis-accounting every such file forever is the alternative.
+func episodeFileRole(role string) (cloudpb.EpisodeFileRole, error) {
 	switch role {
 	case "":
-		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED
+		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED, nil
 	case data.FileRoleDerived:
-		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_DERIVED
+		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_DERIVED, nil
 	default:
-		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED
+		return cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED,
+			fmt.Errorf("unmappable manifest file role %q: add it to the EpisodeFileRole wire enum and to episodeFileRole", role)
 	}
 }
 

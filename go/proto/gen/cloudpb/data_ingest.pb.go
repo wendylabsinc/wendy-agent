@@ -77,10 +77,25 @@ func (EpisodeState) EnumDescriptor() ([]byte, []int) {
 // What a file is to the episode it belongs to. Mirrors the device manifest's
 // per-file `role`, one word for one thing across device, wire and catalog.
 //
-// UNSPECIFIED means CAPTURED. Devices built before this field existed never
-// set it and upload nothing but capture payload and capture metadata, so an
-// absent role has exactly the meaning it always had; readers must treat
-// UNSPECIFIED and CAPTURED identically and must never report "unknown role".
+// UNSPECIFIED carries exactly one meaning: the sender predates this field and
+// said nothing about roles. A file with no role is accounted as CAPTURED,
+// which is the meaning it carried before the field existed.
+//
+// That default is a best reading of a silent sender, not a proof about what
+// such senders produced. Derived files, including the playable remux, existed
+// on the device before the wire role did, so a manifest sealed in that window
+// can legitimately contain a derived file with no role on it.
+//
+// A sender that HAS a role but cannot express it on this enum MUST NOT send
+// UNSPECIFIED. Doing so books the file as capture payload, corrupts
+// capture-only accounting, and leaves no signal that anything was lost. Add
+// the role to this enum and send it.
+//
+// A reader that receives a role number it does not know must retain the
+// number as received, must not coerce it to CAPTURED, and must not fail the
+// episode. Carry it through storage, count its bytes in size totals, and
+// leave them out of capture-only sums. An unknown role means a newer peer,
+// not a corrupt one.
 type EpisodeFileRole int32
 
 const (
@@ -146,12 +161,29 @@ type EpisodeManifest struct {
 	// capture, a human-authored slug such as "forklift-failures". It is not an
 	// identifier minted by the cloud, and it is not unique over time; the
 	// (campaign, campaign_revision) pair is what identifies an exact plan.
+	//
+	// EMPTY when the episode has no campaign. A manual or otherwise ad-hoc
+	// capture is armed by an operator, not by a campaign file, so there is no
+	// campaign name to report; such an episode carries "manual" as its trigger
+	// reason and leaves both campaign fields empty together. This is ordinary
+	// traffic, not an edge case, so consumers must accept the empty value
+	// rather than reject or substitute it.
 	Campaign string `protobuf:"bytes,4,opt,name=campaign,proto3" json:"campaign,omitempty"`
-	// Lowercase hex SHA-256 of the canonical campaign plan, so always exactly
-	// 64 characters. The device computes it in WendyOS at
-	// go/internal/agent/data/campaign.go:219, as
-	// hex(sha256(json(campaign.planOnly()))), where planOnly() strips deployment
-	// state so only author-declared plan fields feed the digest.
+	// Revision digest of the campaign plan that armed this capture.
+	//
+	// EMPTY when the episode has no campaign, for the same reason `campaign` is
+	// empty: a manual or ad-hoc capture never had a plan to digest. Otherwise
+	// it is a lowercase hex SHA-256 and therefore exactly 64 characters. A
+	// consumer that validates 64 hex characters unconditionally will reject
+	// legitimate and common data; check the length only after finding the value
+	// non-empty.
+	//
+	// Derivation: the device serialises the campaign to canonical JSON with
+	// deployment state stripped, so that only author-declared plan fields feed
+	// the digest, and takes the lowercase hex SHA-256 of those bytes. Two
+	// devices running the same plan report the same revision. Described rather
+	// than cited by file and line: the implementation lives in another
+	// repository and any line number given here is stale on its next edit.
 	//
 	// String, not an integer: 256 bits of digest do not fit in a uint64, and no
 	// truncation of a hash preserves it as an identifier. It is a content
@@ -322,8 +354,10 @@ type EpisodeFileManifest struct {
 	TimeRangeEndNanos   int64 `protobuf:"varint,8,opt,name=time_range_end_nanos,json=timeRangeEndNanos,proto3" json:"time_range_end_nanos,omitempty"`
 	// Source-clock to canonical-clock mapping summary JSON, when present.
 	ClockMappingJson []byte `protobuf:"bytes,9,opt,name=clock_mapping_json,json=clockMappingJson,proto3" json:"clock_mapping_json,omitempty"`
-	// What this file is to the episode. Unset (UNSPECIFIED) means CAPTURED, so
-	// devices predating this field keep their existing meaning unchanged.
+	// What this file is to the episode. Unset (UNSPECIFIED) means the sender
+	// predates this field, and is accounted as CAPTURED. See EpisodeFileRole
+	// for what a sender must do with a role it cannot express, and what a
+	// reader must do with a role number it does not know.
 	Role          EpisodeFileRole `protobuf:"varint,10,opt,name=role,proto3,enum=wendycloud.data.v1.EpisodeFileRole" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -681,8 +715,25 @@ type EpisodeChunkAck struct {
 	// persisted, then equals the file size. Never claims durability that
 	// does not exist.
 	CommittedOffset uint64 `protobuf:"varint,3,opt,name=committed_offset,json=committedOffset,proto3" json:"committed_offset,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The episode the acknowledged path belongs to; echoes the `episode_id` of
+	// the chunk being acknowledged.
+	//
+	// A client MUST match an ack on the (episode_id, path) pair, never on path
+	// alone. EpisodeChunk carries episode_id per chunk, so one stream may carry
+	// chunks for more than one episode, and the server keys its assembler on
+	// the same pair. A path is unique only within an episode: two episodes on
+	// one stream that both contain "manifest.json" produce acks that path alone
+	// cannot tell apart, and a client matching on path credits one episode's
+	// committed offset to the other, then skips a file it never uploaded. That
+	// is silent data loss, not a retry.
+	//
+	// Added after `path`, so a server built before this field leaves it empty.
+	// A client that finds it empty cannot match safely on a multi-episode
+	// stream, and must keep to one stream per episode until the server carries
+	// the field.
+	EpisodeId     string `protobuf:"bytes,4,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EpisodeChunkAck) Reset() {
@@ -734,6 +785,13 @@ func (x *EpisodeChunkAck) GetCommittedOffset() uint64 {
 		return x.CommittedOffset
 	}
 	return 0
+}
+
+func (x *EpisodeChunkAck) GetEpisodeId() string {
+	if x != nil {
+		return x.EpisodeId
+	}
+	return ""
 }
 
 type CommitEpisodeRequest struct {
@@ -916,10 +974,20 @@ func (x *CommitEpisodeResponse) GetFiles() []*FileVerification {
 
 type QueryEpisodesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Organization scope. With certificate-identity credentials this must
-	// match the caller's organization; with the PoC static read token it
-	// selects the organization to read (chosen debt until user auth carries
-	// org membership).
+	// Organization to read. This is a filter the caller supplies, not an
+	// identity the server verifies. With certificate-identity credentials it
+	// must match the organization on the certificate.
+	//
+	// AUTHORIZATION GAP, unresolved: the read credential today is a single
+	// shared bearer token that is scoped to no organization, and the server
+	// does NOT check that the caller is a member of the organization named
+	// here. Possession of that token therefore grants catalog read across every
+	// organization, obtained by passing a different number in this field. The
+	// field is not the defect and must not be removed, because a filter is the
+	// right shape once membership is enforced. A server-side membership check,
+	// against the caller's own credential rather than against this value, is
+	// REQUIRED before this RPC is exposed to anything but a trusted internal
+	// caller.
 	OrgId uint64 `protobuf:"varint,1,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
 	// Optional filters; zero values mean "no filter".
 	AssetId                uint64       `protobuf:"varint,2,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
@@ -1057,9 +1125,26 @@ func (x *QueryEpisodesResponse) GetEpisodes() []*Episode {
 }
 
 type GetEpisodeRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OrgId         uint64                 `protobuf:"varint,1,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
-	EpisodeId     string                 `protobuf:"bytes,2,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Organization the named episode belongs to. Same caller-supplied filter as
+	// QueryEpisodesRequest.org_id, unverified in the same way, under the same
+	// shared read token.
+	//
+	// AUTHORIZATION GAP, sharper here than on the query: this RPC returns
+	// per-file retrieval URLs, short-lived signed object-storage URLs that read
+	// the stored bytes. Absent a membership check, the shared read token is not
+	// merely a cross-organization catalog read; it is a cross-organization
+	// data-egress capability. Name another organization's identifier here with
+	// one of its episode identifiers and the response hands back signed URLs to
+	// that organization's captured data. Those URLs are bearer capabilities in
+	// their own right: they work for anyone they are passed to, and revoking
+	// the read token afterwards does not revoke URLs already issued.
+	//
+	// The fix is authorization, not schema; the field stays. A server-side
+	// membership check is REQUIRED before this RPC is exposed to anything but a
+	// trusted internal caller.
+	OrgId         uint64 `protobuf:"varint,1,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
+	EpisodeId     string `protobuf:"bytes,2,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1276,7 +1361,9 @@ type EpisodeFileInfo struct {
 	// direct in local development).
 	RetrievalUrl string `protobuf:"bytes,6,opt,name=retrieval_url,json=retrievalUrl,proto3" json:"retrieval_url,omitempty"`
 	// What this file is to the episode, as recorded in the catalog. Unset
-	// (UNSPECIFIED) means CAPTURED, as on the upload manifest.
+	// (UNSPECIFIED) means the uploading sender predated the field, as on the
+	// upload manifest. A role the catalog did not recognise at write time is
+	// reported here as the number it arrived as, never rewritten to CAPTURED.
 	Role          EpisodeFileRole `protobuf:"varint,7,opt,name=role,proto3,enum=wendycloud.data.v1.EpisodeFileRole" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1409,11 +1496,13 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x04R\x06offset\x12\x12\n" +
 	"\x04data\x18\x04 \x01(\fR\x04data\x12\x10\n" +
-	"\x03eof\x18\x05 \x01(\bR\x03eof\"y\n" +
+	"\x03eof\x18\x05 \x01(\bR\x03eof\"\x98\x01\n" +
 	"\x0fEpisodeChunkAck\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12'\n" +
 	"\x0freceived_offset\x18\x02 \x01(\x04R\x0ereceivedOffset\x12)\n" +
-	"\x10committed_offset\x18\x03 \x01(\x04R\x0fcommittedOffset\"5\n" +
+	"\x10committed_offset\x18\x03 \x01(\x04R\x0fcommittedOffset\x12\x1d\n" +
+	"\n" +
+	"episode_id\x18\x04 \x01(\tR\tepisodeId\"5\n" +
 	"\x14CommitEpisodeRequest\x12\x1d\n" +
 	"\n" +
 	"episode_id\x18\x01 \x01(\tR\tepisodeId\"\x9c\x01\n" +
