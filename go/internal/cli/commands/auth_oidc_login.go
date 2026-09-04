@@ -316,7 +316,7 @@ func requestPKIIdentityCertificate(
 		u.User != nil || u.Fragment != "" || u.Path != "/v1/identity/certificate" {
 		return config.CertificateInfo{}, fmt.Errorf("invalid pki-core identity endpoint %q: want HTTPS (or loopback HTTP) with path /v1/identity/certificate", endpoint)
 	}
-	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), subject, "")
+	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), subject, nil)
 	if err != nil {
 		return config.CertificateInfo{}, fmt.Errorf("generating operator CSR: %w", err)
 	}
