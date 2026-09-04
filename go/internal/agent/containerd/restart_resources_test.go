@@ -212,3 +212,27 @@ func TestRefreshSerialMountsFailsClearlyWhenIdentityIsUnavailable(t *testing.T) 
 		t.Fatal("refreshSerialMountsForStart() error = nil, want missing stable identity error")
 	}
 }
+
+func TestRefreshSerialMountsWithoutIdentityKeepsCompatibleExistingPath(t *testing.T) {
+	origStat := statSerialPath
+	defer func() { statSerialPath = origStat }()
+	statSerialPath = func(path string) (int64, int64, error) {
+		if path != "/dev/ttyUSB0" {
+			return 0, 0, errors.New("unexpected path")
+		}
+		return 188, 0, nil
+	}
+	spec := &specs.Spec{Mounts: []specs.Mount{{
+		Destination: "/dev/ttyUSB0",
+		Source:      "/dev/ttyUSB0",
+		Type:        "bind",
+	}}}
+
+	changed, err := refreshSerialMountsForStart(spec, nil)
+	if err != nil {
+		t.Fatalf("refreshSerialMountsForStart() error = %v", err)
+	}
+	if changed {
+		t.Fatal("refreshSerialMountsForStart() changed = true, want unchanged fallback path")
+	}
+}

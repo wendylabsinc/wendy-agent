@@ -81,8 +81,9 @@ func (c *Client) restoreDBusProxyForRunningTask(
 
 // captureSerialIdentities records stable by-id names at container creation.
 // Missing by-id entries are left uncaptured: the exact tty mount continues to
-// work while present, and a later renumber fails clearly rather than attaching
-// an unrelated serial device.
+// work while present, but it cannot distinguish a different physical device
+// that later appears under the same tty name. A missing or incompatible node
+// still fails clearly instead of broadening access beyond the declared class.
 func captureSerialIdentities(entitlements []appconfig.Entitlement) map[string]string {
 	paths, err := globSerialByID(serialByIDPattern)
 	if err != nil || len(paths) == 0 {
