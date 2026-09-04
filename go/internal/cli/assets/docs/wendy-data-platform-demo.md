@@ -256,10 +256,13 @@ documentation.
    Without that, no record ever reaches the agent.
 4. After any agent restart the app's data socket listener is gone and the app
    gets ECONNREFUSED until the app is redeployed
-   (`device apps remove --force`, then `wendy run`). Cause: the chunk-diff
-   deploy path creates containers without `sh.wendy/entitlement.*` labels, so
-   `RestoreAppSystemAPISockets` skips them. Open bug; until it is fixed, order
-   the deploy agent first, app last.
+   (`device apps remove --force`, then `wendy run`). Cause: containerd's
+   metadata store drops labels with empty values, so type-only entitlements
+   (camera, episode-write) lost their `sh.wendy/entitlement.*` labels and
+   `RestoreAppSystemAPISockets` skipped the container. Fixed: `wendyLabels`
+   now writes a `present=true` marker for type-only entitlements. Containers
+   created by an older agent still carry the broken labels, so after updating
+   the agent redeploy the app once.
 5. An episode that exhausts its 5 upload attempts is terminally `failed` and is
    never retried; trigger a fresh episode after fixing connectivity.
 6. `wendy device apps start` streams logs and does not return with `--detach`
@@ -280,7 +283,6 @@ Enrollment is untouched by the demo, so there is nothing to restore there.
 
 ## Open gaps
 
-- Chunk-diff deploys omit entitlement labels (pitfall 4), which is an open bug.
 - Catalog read verification from the CLI needs a user bearer token; today the
   proof is the commit-gated `uploaded` state plus a direct ClickHouse read.
 - The graphics processing unit (GPU) variant of the app, using
