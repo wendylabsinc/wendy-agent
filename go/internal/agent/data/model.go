@@ -285,9 +285,14 @@ type Manifest struct {
 	Upload            WorkflowState           `json:"upload"`
 	Labeling          WorkflowState           `json:"labeling"`
 	RecoveryActions   []string                `json:"recovery_actions,omitempty"`
-	PreRollLost       uint64                  `json:"pre_roll_lost"`
-	PreRollAccounting string                  `json:"pre_roll_accounting"`
-	ModelIO           ModelIO                 `json:"model_io"`
+	// PreRollLost counts the application records that would have reached THIS
+	// episode's pre-roll window and did not, because the ring buffer hit its
+	// byte budget and dropped them while they were still inside their window.
+	// Records that merely aged out of the ring are not counted: they were no
+	// longer pre-roll for anything, so nothing was lost.
+	PreRollLost       uint64  `json:"pre_roll_lost"`
+	PreRollAccounting string  `json:"pre_roll_accounting"`
+	ModelIO           ModelIO `json:"model_io"`
 }
 
 type StartOptions struct {

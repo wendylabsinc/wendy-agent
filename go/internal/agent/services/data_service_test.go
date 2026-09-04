@@ -313,13 +313,11 @@ func TestAdHocEpisodesCarryTheDefaultSealDrain(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewDataService(manager)
-	if service.adHocDrain != data.DefaultSealDrain {
-		t.Fatalf("ad-hoc drain = %s, want the %s default", service.adHocDrain, data.DefaultSealDrain)
-	}
-	// Shortened so the assertion below costs a fifth of a second rather than
-	// the full default. What is under test is that the value reaches the
-	// episode at all.
-	service.adHocDrain = 200 * time.Millisecond
+
+	// The default, measured rather than restated. Comparing service.adHocDrain
+	// against data.DefaultSealDrain only reads the constructor back to itself:
+	// it cannot tell whether the value reaches the episode, which is the whole
+	// claim. Stopping an untouched ad-hoc episode can.
 	if _, err = service.Start(context.Background(), &agentpbv2.DataStartRequest{Sources: []string{"applications"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +325,28 @@ func TestAdHocEpisodesCarryTheDefaultSealDrain(t *testing.T) {
 	if _, err = service.Stop(context.Background(), &agentpbv2.DataStopRequest{}); err != nil {
 		t.Fatal(err)
 	}
-	if elapsed := time.Since(begin); elapsed < 150*time.Millisecond {
+	// Slack below the default absorbs timer granularity without admitting a
+	// drain that was skipped or halved.
+	if elapsed := time.Since(begin); elapsed < data.DefaultSealDrain-200*time.Millisecond {
+		t.Fatalf("an ad-hoc Stop returned after %s; a `wendy data record` episode must serve the %s default drain",
+			elapsed, data.DefaultSealDrain)
+	}
+
+	// And the duration is a value the service supplies, not a constant baked
+	// into the episode: a different one produces a different wait.
+	service.adHocDrain = 200 * time.Millisecond
+	if _, err = service.Start(context.Background(), &agentpbv2.DataStartRequest{Sources: []string{"applications"}}); err != nil {
+		t.Fatal(err)
+	}
+	begin = time.Now()
+	if _, err = service.Stop(context.Background(), &agentpbv2.DataStopRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(begin)
+	if elapsed < 150*time.Millisecond {
 		t.Fatalf("ad-hoc Stop returned after %s; the configured drain did not reach the episode", elapsed)
+	}
+	if elapsed >= data.DefaultSealDrain {
+		t.Fatalf("ad-hoc Stop took %s with a 200ms drain configured; the episode ignored it and used the default", elapsed)
 	}
 }
