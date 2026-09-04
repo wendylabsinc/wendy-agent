@@ -339,7 +339,8 @@ type videoFrame struct {
 	// be truncated mid-IDR.
 	auAligned bool
 	// sampleID is the harness-wide identity of this sample within its source,
-	// assigned by the hub at broadcast so that EVERY consumer of the frame — an
+	// assigned by the hub in produce, once per physical frame arriving from the
+	// producer and never again for a further plane, so that EVERY consumer of the frame — an
 	// app subscribing through SensorService, the episode capture adapter, a
 	// dashboard viewer — names it identically. It is what makes an episode able
 	// to say "this is the frame the model saw". The counter is owned by the
@@ -347,7 +348,7 @@ type videoFrame struct {
 	// a producer is torn down and restarted mid-episode.
 	sampleID uint64
 	// receiptBootNanos is the agent's bracketed CLOCK_BOOTTIME receipt of this
-	// frame, taken once at broadcast so all consumers agree; the bracket
+	// frame, taken once in produce so all consumers agree; the bracket
 	// half-width is receiptUncertaintyNanos. Zero when the clock read failed.
 	receiptBootNanos        int64
 	receiptUncertaintyNanos int64
@@ -460,30 +461,69 @@ func (h *deviceHub) terminalErr() error {
 // malfunctioning or compromised device from triggering memory exhaustion.
 const maxFrameBytes = 2 * 1024 * 1024 // 2 MiB
 
-// broadcast delivers a frame to all subscribers, dropping for slow consumers.
-// Returns false when there are no subscribers left (producer should stop).
-// Late-joining subscribers receive whatever frame the producer sends next;
-// they will not see an IDR/keyframe until the next one arrives naturally (at most
-// one GOP interval away for GStreamer pipelines with key-int-max set).
+// frameTooLarge reports whether a frame exceeds what the hub is willing to
+// distribute. It is the single place the limit is applied, so the identity
+// minted in produce and the delivery done by broadcast can never disagree
+// about which frames exist.
+func frameTooLarge(frame *videoFrame) bool {
+	return len(frame.data) > maxFrameBytes
+}
+
+// produce takes one physical frame from the camera producer, stamps it with its
+// harness-wide identity and agent receipt, and delivers it. Every producer path
+// funnels through here (see the closure in runProducer), and this is the ONLY
+// place a sample identity is minted.
+//
+// Minting belongs to the arrival of a frame, not to a delivery of it. The hub
+// can deliver one physical frame on more than one plane — encoded video to
+// viewers, to the sensor subscribers a model app reads, and to episode capture;
+// and, where the producer tees it, the uncompressed capture frame to analytic
+// subscribers — and each plane is a separate broadcast call. Minting inside
+// broadcast made a single camera frame consume one identifier per plane, so the
+// encoded stream's identifiers came out [2 4 6] with no drops recorded. That
+// breaks two contracts at once: hub_loopback_binding reads a jump in sample_id
+// on a dense loopback sequence as a producer-side drop, so every frame read as
+// a drop; and the model-input ledger's sample_id is supposed to name the
+// episode index entry for the same frame, so the join returned nothing at all.
+//
+// An oversized frame is dropped here without consuming an identifier, so a gap
+// in sample_id always means a sample that existed and was lost, never one that
+// never existed.
+func (h *deviceHub) produce(frame *videoFrame) bool {
+	if frameTooLarge(frame) {
+		return true // oversized frame: drop silently, keep the hub alive
+	}
+	// Stamp the identity and receipt before the frame becomes shared: it is
+	// immutable from the moment the first subscriber can see it, and every
+	// consumer must read the same values.
+	if h.sampleSeq != nil {
+		frame.sampleID = h.sampleSeq.Add(1)
+	}
+	if before, receipt, after, err := data.CaptureReceipt(); err == nil {
+		frame.receiptBootNanos, frame.receiptUncertaintyNanos = receipt, (after-before+1)/2
+	}
+	return h.broadcast(frame)
+}
+
+// broadcast delivers an already-stamped frame to all subscribers, dropping for
+// slow consumers. Returns false when there are no subscribers left (producer
+// should stop). Late-joining subscribers receive whatever frame the producer
+// sends next; they will not see an IDR/keyframe until the next one arrives
+// naturally (at most one GOP interval away for GStreamer pipelines with
+// key-int-max set).
+//
+// This is delivery only: it mints nothing. Call produce for a frame arriving
+// from the producer, and broadcast to put an existing frame onto a further
+// plane. A second plane must never consume a second identifier for the same
+// physical frame.
 //
 // Sends are performed while holding h.mu so that runProducer cannot close
 // subscriber channels concurrently — sending on a closed channel panics. With
 // maxSubscribersPerHub = 16 and non-blocking selects, the lock is held for
 // O(16) nanoseconds, making the contention cost negligible.
 func (h *deviceHub) broadcast(frame *videoFrame) bool {
-	if len(frame.data) > maxFrameBytes {
+	if frameTooLarge(frame) {
 		return true // oversized frame: drop silently, keep the hub alive
-	}
-	// Stamp the identity and receipt before the frame becomes shared: it is
-	// immutable from the moment the first subscriber can see it, and every
-	// consumer must read the same values. An oversized frame is dropped above
-	// without consuming an identifier, so a gap in sample_id always means a
-	// sample that existed and was lost, never one that never existed.
-	if h.sampleSeq != nil {
-		frame.sampleID = h.sampleSeq.Add(1)
-	}
-	if before, receipt, after, err := data.CaptureReceipt(); err == nil {
-		frame.receiptBootNanos, frame.receiptUncertaintyNanos = receipt, (after-before+1)/2
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1226,7 +1266,7 @@ func (s *VideoService) subscribeExistingHub(path string) (h *deviceHub, id int, 
 func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path string, req *agentpb.StreamVideoRequest) {
 	defer s.wg.Done()
 	broadcast := func(payload []byte, stamp frameTimestamp, codec agentpb.VideoCodec) bool {
-		return h.broadcast(&videoFrame{data: payload, tsNs: stamp.wallNs, codec: codec, nativeNs: stamp.nativeNs, nativeClock: stamp.nativeClock, nativeFlags: stamp.nativeFlags, sequence: stamp.sequence, sequenceValid: stamp.sequenceValid, auAligned: stamp.auAligned})
+		return h.produce(&videoFrame{data: payload, tsNs: stamp.wallNs, codec: codec, nativeNs: stamp.nativeNs, nativeClock: stamp.nativeClock, nativeFlags: stamp.nativeFlags, sequence: stamp.sequence, sequenceValid: stamp.sequenceValid, auAligned: stamp.auAligned})
 	}
 
 	// The hub key carries the source kind: network cameras key on "ip:<id>" and
