@@ -367,9 +367,9 @@ func TestSensorReattachGateSkipsToRandomAccess(t *testing.T) {
 	subscription := &cameraSensorSubscription{hub: hub, subID: subID, frames: frames, awaitRandomAccess: true}
 
 	// A whole access unit that is not random access (no SPS/PPS) is gated.
-	hub.broadcast(&videoFrame{data: []byte{0, 0, 0, 1, 0x41, 1}, codec: agentpb.VideoCodec_VIDEO_CODEC_H264, auAligned: true})
+	hub.produce(&videoFrame{data: []byte{0, 0, 0, 1, 0x41, 1}, codec: agentpb.VideoCodec_VIDEO_CODEC_H264, auAligned: true})
 	rau := []byte{0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 3}
-	hub.broadcast(&videoFrame{data: rau, codec: agentpb.VideoCodec_VIDEO_CODEC_H264, auAligned: true})
+	hub.produce(&videoFrame{data: rau, codec: agentpb.VideoCodec_VIDEO_CODEC_H264, auAligned: true})
 
 	sample, err := subscription.Next(context.Background())
 	if err != nil {
@@ -407,7 +407,7 @@ func TestSensorSubscriptionReattachesAfterCaptureTakeover(t *testing.T) {
 		codec:     agentpb.VideoCodec_VIDEO_CODEC_H264,
 		auAligned: true,
 	}
-	fp.hub(0).broadcast(rau)
+	fp.hub(0).produce(rau)
 	first, err := subscription.Next(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -441,7 +441,7 @@ func TestSensorSubscriptionReattachesAfterCaptureTakeover(t *testing.T) {
 			codec:     agentpb.VideoCodec_VIDEO_CODEC_H264,
 			auAligned: true,
 		}
-		newHub.broadcast(bcast)
+		newHub.produce(bcast)
 		select {
 		case r := <-got:
 			if r.err != nil {
