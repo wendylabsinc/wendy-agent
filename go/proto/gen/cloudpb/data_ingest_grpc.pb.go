@@ -43,18 +43,29 @@ const (
 //  2. UploadEpisodeChunk streams file chunks (at most 1 MiB of data per
 //     chunk, sequential offsets per file, eof on the last chunk). Each
 //     chunk is acknowledged with the received (spooled) offset and the
-//     committed (durably stored in object storage) offset.
+//     committed (durably stored in object storage) offset. An ack names the
+//     (episode_id, path) it belongs to and must be matched on that pair,
+//     because one stream may carry chunks for more than one episode and a
+//     path is unique only within an episode.
 //  3. CommitEpisode verifies the SHA-256 of every stored object against
 //     the manifest and flips the catalog state to `complete`, or `failed`
 //     with per-file detail on any mismatch.
 //
 // Authentication:
 //   - Begin/Upload/Commit require a device asset identity (mTLS client
-//     certificate SAN). Uploads are scoped to the asserted org and asset; a
-//     manifest whose org_id or asset_id differs from the certificate
-//     identity is rejected with PERMISSION_DENIED.
+//     certificate SAN). The owning organization and asset are read from that
+//     certificate and attested by the cloud; they are not carried on the
+//     request. Every catalog row and every storage object name is written
+//     from the certificate identity, so an upload cannot name a tenant it
+//     does not hold a certificate for.
 //   - QueryEpisodes/GetEpisode are read RPCs for users and services; the
-//     serving implementation defines the accepted credential.
+//     serving implementation defines the accepted credential. Both carry an
+//     org_id whose membership the server does not verify today, and the read
+//     credential in use is a single shared token scoped to no organization.
+//     GetEpisode returns signed object URLs, so that combination is a
+//     cross-organization data-egress path, not just a catalog read. Read the
+//     org_id documentation on QueryEpisodesRequest and GetEpisodeRequest
+//     before exposing either RPC beyond a trusted internal caller.
 type DataIngestServiceClient interface {
 	// Registers (or re-registers) an episode upload. Idempotent.
 	BeginEpisodeUpload(ctx context.Context, in *BeginEpisodeUploadRequest, opts ...grpc.CallOption) (*BeginEpisodeUploadResponse, error)
@@ -149,18 +160,29 @@ func (c *dataIngestServiceClient) GetEpisode(ctx context.Context, in *GetEpisode
 //  2. UploadEpisodeChunk streams file chunks (at most 1 MiB of data per
 //     chunk, sequential offsets per file, eof on the last chunk). Each
 //     chunk is acknowledged with the received (spooled) offset and the
-//     committed (durably stored in object storage) offset.
+//     committed (durably stored in object storage) offset. An ack names the
+//     (episode_id, path) it belongs to and must be matched on that pair,
+//     because one stream may carry chunks for more than one episode and a
+//     path is unique only within an episode.
 //  3. CommitEpisode verifies the SHA-256 of every stored object against
 //     the manifest and flips the catalog state to `complete`, or `failed`
 //     with per-file detail on any mismatch.
 //
 // Authentication:
 //   - Begin/Upload/Commit require a device asset identity (mTLS client
-//     certificate SAN). Uploads are scoped to the asserted org and asset; a
-//     manifest whose org_id or asset_id differs from the certificate
-//     identity is rejected with PERMISSION_DENIED.
+//     certificate SAN). The owning organization and asset are read from that
+//     certificate and attested by the cloud; they are not carried on the
+//     request. Every catalog row and every storage object name is written
+//     from the certificate identity, so an upload cannot name a tenant it
+//     does not hold a certificate for.
 //   - QueryEpisodes/GetEpisode are read RPCs for users and services; the
-//     serving implementation defines the accepted credential.
+//     serving implementation defines the accepted credential. Both carry an
+//     org_id whose membership the server does not verify today, and the read
+//     credential in use is a single shared token scoped to no organization.
+//     GetEpisode returns signed object URLs, so that combination is a
+//     cross-organization data-egress path, not just a catalog read. Read the
+//     org_id documentation on QueryEpisodesRequest and GetEpisodeRequest
+//     before exposing either RPC beyond a trusted internal caller.
 type DataIngestServiceServer interface {
 	// Registers (or re-registers) an episode upload. Idempotent.
 	BeginEpisodeUpload(context.Context, *BeginEpisodeUploadRequest) (*BeginEpisodeUploadResponse, error)

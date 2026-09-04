@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +44,11 @@ type fakeIngestServer struct {
 
 	beginCalls  int
 	commitCalls int
+
+	// Distinct episode ids seen on each UploadEpisodeChunk stream, one entry
+	// per stream opened. The client must keep to one episode per stream while
+	// it does not match acks on the (episode_id, path) pair.
+	streamEpisodes []map[string]bool
 
 	// Incoming request metadata recorded by startFakeIngest, per call kind, so
 	// tests can assert on what the client actually put on the wire.
@@ -92,12 +99,16 @@ func (s *fakeIngestServer) BeginEpisodeUpload(_ context.Context, req *cloudpb.Be
 		if off > 0 {
 			s.committed[f.GetPath()] = off
 		}
-		files = append(files, &cloudpb.FileUploadState{Path: f.GetPath(), CommittedOffset: off})
+		files = append(files, &cloudpb.FileUploadState{Path: f.GetPath(), CommittedOffset: uint64(off)})
 	}
 	return &cloudpb.BeginEpisodeUploadResponse{State: s.beginState, Files: files}, nil
 }
 
 func (s *fakeIngestServer) UploadEpisodeChunk(stream grpc.BidiStreamingServer[cloudpb.EpisodeChunk, cloudpb.EpisodeChunkAck]) error {
+	seen := map[string]bool{}
+	s.mu.Lock()
+	s.streamEpisodes = append(s.streamEpisodes, seen)
+	s.mu.Unlock()
 	for {
 		chunk, err := stream.Recv()
 		if err == io.EOF {
@@ -107,6 +118,7 @@ func (s *fakeIngestServer) UploadEpisodeChunk(stream grpc.BidiStreamingServer[cl
 			return err
 		}
 		s.mu.Lock()
+		seen[chunk.GetEpisodeId()] = true
 		s.received[chunk.GetPath()] = append(s.received[chunk.GetPath()], chunk.GetData()...)
 		recv := int64(len(s.received[chunk.GetPath()]))
 		var committed int64
@@ -115,7 +127,14 @@ func (s *fakeIngestServer) UploadEpisodeChunk(stream grpc.BidiStreamingServer[cl
 			committed = recv
 		}
 		s.mu.Unlock()
-		if err := stream.Send(&cloudpb.EpisodeChunkAck{Path: chunk.GetPath(), ReceivedOffset: recv, CommittedOffset: committed}); err != nil {
+		// A server that carries the field echoes the chunk's episode_id, so the
+		// ack names the (episode_id, path) pair the contract matches on.
+		if err := stream.Send(&cloudpb.EpisodeChunkAck{
+			EpisodeId:       chunk.GetEpisodeId(),
+			Path:            chunk.GetPath(),
+			ReceivedOffset:  uint64(recv),
+			CommittedOffset: uint64(committed),
+		}); err != nil {
 			return err
 		}
 	}
@@ -205,8 +224,8 @@ func newTestWorker(mgr *data.Manager, client cloudpb.DataIngestServiceClient) *D
 		now:         time.Now,
 		newSleeper:  contextSleeper,
 	}
-	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, uint64, uint64, func(), error) {
-		return client, 7, 42, func() {}, nil
+	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, func(), error) {
+		return client, func() {}, nil
 	}
 	return w
 }
@@ -536,8 +555,8 @@ func runIdentityHeaderPass(t *testing.T, override string, orgID, assetID int32) 
 	// The client is dialed with exactly the options dialFactory would pass, so
 	// the production interceptors (when there are any) run for real.
 	client := startFakeIngest(t, srv, w.ingestDialOptions(orgID, assetID)...)
-	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, uint64, uint64, func(), error) {
-		return client, uint64(orgID), uint64(assetID), func() {}, nil
+	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, func(), error) {
+		return client, func() {}, nil
 	}
 
 	if err := w.runPass(context.Background()); err != nil {
@@ -585,5 +604,165 @@ func TestIngestIdentityHeaderWithOverride(t *testing.T) {
 	}
 	if len(stream) != 1 || stream[0] != want {
 		t.Errorf("streaming call: x-wendy-client-cert = %q, want exactly [%q]", stream, want)
+	}
+}
+
+// TestBuildEpisodeManifestCarriesFileRole pins the derived-artifact contract on
+// the upload wire. The device marks the seal-time playable.mp4 remux as derived
+// and everything else as capture payload; before the manifest carried a role,
+// the catalog saw the remux as a second capture on the camera's source id and
+// double-counted its bytes.
+func TestBuildEpisodeManifestCarriesFileRole(t *testing.T) {
+	mf := data.Manifest{
+		ID: "ep-role",
+		Files: []data.File{
+			{Path: "cameras/front/index.jsonl", SourceID: "front", MediaType: "application/jsonl"},
+			{Path: "cameras/front/000001.h264", SourceID: "front", MediaType: "video/h264"},
+			{Path: "cameras/front/playable.mp4", SourceID: "front", MediaType: "video/mp4", Role: data.FileRoleDerived},
+		},
+	}
+	got, err := buildEpisodeManifest(mf)
+	if err != nil {
+		t.Fatalf("buildEpisodeManifest: %v", err)
+	}
+	want := map[string]cloudpb.EpisodeFileRole{
+		"cameras/front/index.jsonl":  cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED,
+		"cameras/front/000001.h264":  cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED,
+		"cameras/front/playable.mp4": cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_DERIVED,
+	}
+	if len(got.Files) != len(want) {
+		t.Fatalf("sent %d files, want %d", len(got.Files), len(want))
+	}
+	for _, f := range got.Files {
+		expected, ok := want[f.Path]
+		if !ok {
+			t.Fatalf("unexpected file %q on the wire", f.Path)
+		}
+		if f.Role != expected {
+			t.Errorf("file %q role = %v, want %v", f.Path, f.Role, expected)
+		}
+	}
+}
+
+// TestEpisodeFileRoleUnmappableFails pins the wire contract's rule that a
+// sender holding a role it cannot express MUST NOT send UNSPECIFIED, because
+// UNSPECIFIED means only "the sender predates this field" and is accounted as
+// capture payload. A role string this build does not know is a programming
+// error in this repository, so the mapper refuses it instead of quietly
+// booking the file as capture.
+//
+// The error assertions are what stop the old degrade-to-UNSPECIFIED default
+// from coming back: restoring it makes episodeFileRole return a nil error, and
+// both the mapper case and the buildEpisodeManifest case below fail.
+func TestEpisodeFileRoleUnmappableFails(t *testing.T) {
+	got, err := episodeFileRole("some-future-role")
+	if err == nil {
+		t.Errorf("unknown role returned %v and no error, want an error refusing to map it", got)
+	}
+	if err != nil && !strings.Contains(err.Error(), "some-future-role") {
+		t.Errorf("error %q does not name the offending role", err)
+	}
+	if got != cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED {
+		// The zero value is the only thing a failed mapping may return; what
+		// matters is that it never reaches the wire.
+		t.Errorf("unknown role value = %v, want the zero value alongside the error", got)
+	}
+
+	if got, err := episodeFileRole(""); err != nil || got != cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED {
+		t.Errorf("empty role = %v (err %v), want CAPTURED and no error", got, err)
+	}
+	if got, err := episodeFileRole(data.FileRoleDerived); err != nil || got != cloudpb.EpisodeFileRole_EPISODE_FILE_ROLE_DERIVED {
+		t.Errorf("derived role = %v (err %v), want DERIVED and no error", got, err)
+	}
+}
+
+// TestBuildEpisodeManifestRejectsUnmappableRole proves the refusal is not
+// confined to the mapper: a manifest carrying an unknown role produces no
+// EpisodeManifest at all, so nothing is uploaded under a wrong role. The
+// caller must propagate the error rather than drop it.
+func TestBuildEpisodeManifestRejectsUnmappableRole(t *testing.T) {
+	mf := data.Manifest{
+		ID: "ep-unmappable",
+		Files: []data.File{
+			{Path: "cameras/front/000001.h264", Size: 1, SHA256: "a"},
+			{Path: "cameras/front/thumbnail.jpg", Size: 1, SHA256: "b", Role: "some-future-role"},
+		},
+	}
+	got, err := buildEpisodeManifest(mf)
+	if err == nil {
+		t.Fatalf("buildEpisodeManifest accepted an unmappable role and returned %v, want an error", got)
+	}
+	if got != nil {
+		t.Errorf("buildEpisodeManifest returned a manifest alongside the error: %v", got)
+	}
+	if !strings.Contains(err.Error(), "some-future-role") {
+		t.Errorf("error %q does not name the offending role", err)
+	}
+	if !strings.Contains(err.Error(), "cameras/front/thumbnail.jpg") {
+		t.Errorf("error %q does not name the offending file", err)
+	}
+}
+
+// TestUploadStreamCarriesOneEpisode pins the invariant that lets the upload
+// loop read acks without matching them.
+//
+// The wire contract requires an ack to be matched on the (episode_id, path)
+// pair, because one stream may carry chunks for several episodes and a path is
+// unique only within an episode. This client matches on nothing: it drains acks
+// for flow control and error surfacing, and takes resume offsets from
+// BeginEpisodeUpload instead. The contract's fallback for a client that cannot
+// match is to keep to one stream per episode, which is what uploadEpisode does
+// by opening its stream per manifest.
+//
+// So this test guards the assumption rather than the ack handling. Two pending
+// episodes in one pass must produce two streams, each carrying exactly one
+// episode id. If someone batches episodes onto a shared stream, this fails, and
+// the ack matching has to be built before it can pass again.
+func TestUploadStreamCarriesOneEpisode(t *testing.T) {
+	mgr, root := newTestManager(t)
+	writeFixtureEpisode(t, root, "ep-one", "", "pending", map[string][]byte{
+		"video/000001.jpg": []byte("first episode payload"),
+	})
+	writeFixtureEpisode(t, root, "ep-two", "", "pending", map[string][]byte{
+		"video/000002.jpg": []byte("second episode payload"),
+	})
+
+	srv := newFakeIngestServer()
+	client := startFakeIngest(t, srv)
+	w := newTestWorker(mgr, client)
+
+	if err := w.runPass(context.Background()); err != nil {
+		t.Fatalf("runPass: %v", err)
+	}
+
+	for _, id := range []string{"ep-one", "ep-two"} {
+		if got := uploadState(t, mgr, id).State; got != uploadStateUploaded {
+			t.Fatalf("episode %s state = %q, want uploaded", id, got)
+		}
+	}
+
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+
+	if len(srv.streamEpisodes) != 2 {
+		t.Fatalf("opened %d upload streams for 2 episodes, want 2", len(srv.streamEpisodes))
+	}
+	all := map[string]bool{}
+	for i, seen := range srv.streamEpisodes {
+		if len(seen) != 1 {
+			ids := make([]string, 0, len(seen))
+			for id := range seen {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			t.Errorf("stream %d carried %d episodes (%v), want exactly 1; "+
+				"a multi-episode stream requires matching acks on (episode_id, path)", i, len(seen), ids)
+		}
+		for id := range seen {
+			all[id] = true
+		}
+	}
+	if !all["ep-one"] || !all["ep-two"] {
+		t.Errorf("streams carried %v, want both ep-one and ep-two", all)
 	}
 }

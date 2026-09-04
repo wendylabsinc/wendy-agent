@@ -74,16 +74,121 @@ func (EpisodeState) EnumDescriptor() ([]byte, []int) {
 	return file_cloud_data_ingest_proto_rawDescGZIP(), []int{0}
 }
 
+// What a file is to the episode it belongs to. Mirrors the device manifest's
+// per-file `role`, one word for one thing across device, wire and catalog.
+//
+// UNSPECIFIED carries exactly one meaning: the sender predates this field and
+// said nothing about roles. A file with no role is accounted as CAPTURED,
+// which is the meaning it carried before the field existed.
+//
+// That default is a best reading of a silent sender, not a proof about what
+// such senders produced. Derived files, including the playable remux, existed
+// on the device before the wire role did, so a manifest sealed in that window
+// can legitimately contain a derived file with no role on it.
+//
+// A sender that HAS a role but cannot express it on this enum MUST NOT send
+// UNSPECIFIED. Doing so books the file as capture payload, corrupts
+// capture-only accounting, and leaves no signal that anything was lost. Add
+// the role to this enum and send it.
+//
+// A reader that receives a role number it does not know must retain the
+// number as received, must not coerce it to CAPTURED, and must not fail the
+// episode. Carry it through storage, count its bytes in size totals, and
+// leave them out of capture-only sums. An unknown role means a newer peer,
+// not a corrupt one.
+type EpisodeFileRole int32
+
+const (
+	EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED EpisodeFileRole = 0
+	// Capture payload, or capture metadata written while recording.
+	EpisodeFileRole_EPISODE_FILE_ROLE_CAPTURED EpisodeFileRole = 1
+	// Computed from capture payload at seal time rather than recorded during
+	// capture, e.g. the per-source cameras/<source>/playable.mp4 remux. A
+	// derived file is checksummed, uploaded and verified like any other file,
+	// but it is not capture payload: deleting one loses no recorded data, and
+	// per-source payload accounting must never count its bytes as capture.
+	EpisodeFileRole_EPISODE_FILE_ROLE_DERIVED EpisodeFileRole = 2
+)
+
+// Enum value maps for EpisodeFileRole.
+var (
+	EpisodeFileRole_name = map[int32]string{
+		0: "EPISODE_FILE_ROLE_UNSPECIFIED",
+		1: "EPISODE_FILE_ROLE_CAPTURED",
+		2: "EPISODE_FILE_ROLE_DERIVED",
+	}
+	EpisodeFileRole_value = map[string]int32{
+		"EPISODE_FILE_ROLE_UNSPECIFIED": 0,
+		"EPISODE_FILE_ROLE_CAPTURED":    1,
+		"EPISODE_FILE_ROLE_DERIVED":     2,
+	}
+)
+
+func (x EpisodeFileRole) Enum() *EpisodeFileRole {
+	p := new(EpisodeFileRole)
+	*p = x
+	return p
+}
+
+func (x EpisodeFileRole) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (EpisodeFileRole) Descriptor() protoreflect.EnumDescriptor {
+	return file_cloud_data_ingest_proto_enumTypes[1].Descriptor()
+}
+
+func (EpisodeFileRole) Type() protoreflect.EnumType {
+	return &file_cloud_data_ingest_proto_enumTypes[1]
+}
+
+func (x EpisodeFileRole) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use EpisodeFileRole.Descriptor instead.
+func (EpisodeFileRole) EnumDescriptor() ([]byte, []int) {
+	return file_cloud_data_ingest_proto_rawDescGZIP(), []int{1}
+}
+
 // Compact typed projection of the device episode manifest (manifest v2).
 // The full manifest JSON rides in attributes_json for fidelity; the typed
 // fields are what the catalog indexes on.
 type EpisodeManifest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	EpisodeId string                 `protobuf:"bytes,1,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
-	// Must match the certificate identity of the uploading device.
-	OrgId            uint64 `protobuf:"varint,2,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
-	AssetId          uint64 `protobuf:"varint,3,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
-	Campaign         string `protobuf:"bytes,4,opt,name=campaign,proto3" json:"campaign,omitempty"`
+	// Campaign name: the `name:` field of the campaign file that armed this
+	// capture, a human-authored slug such as "forklift-failures". It is not an
+	// identifier minted by the cloud, and it is not unique over time; the
+	// (campaign, campaign_revision) pair is what identifies an exact plan.
+	//
+	// EMPTY when the episode has no campaign. A manual or otherwise ad-hoc
+	// capture is armed by an operator, not by a campaign file, so there is no
+	// campaign name to report; such an episode carries "manual" as its trigger
+	// reason and leaves both campaign fields empty together. This is ordinary
+	// traffic, not an edge case, so consumers must accept the empty value
+	// rather than reject or substitute it.
+	Campaign string `protobuf:"bytes,4,opt,name=campaign,proto3" json:"campaign,omitempty"`
+	// Revision digest of the campaign plan that armed this capture.
+	//
+	// EMPTY when the episode has no campaign, for the same reason `campaign` is
+	// empty: a manual or ad-hoc capture never had a plan to digest. Otherwise
+	// it is a lowercase hex SHA-256 and therefore exactly 64 characters. A
+	// consumer that validates 64 hex characters unconditionally will reject
+	// legitimate and common data; check the length only after finding the value
+	// non-empty.
+	//
+	// Derivation: the device serialises the campaign to canonical JSON with
+	// deployment state stripped, so that only author-declared plan fields feed
+	// the digest, and takes the lowercase hex SHA-256 of those bytes. Two
+	// devices running the same plan report the same revision. Described rather
+	// than cited by file and line: the implementation lives in another
+	// repository and any line number given here is stale on its next edit.
+	//
+	// String, not an integer: 256 bits of digest do not fit in a uint64, and no
+	// truncation of a hash preserves it as an identifier. It is a content
+	// digest rather than a sequence number, so it identifies the exact plan
+	// that produced this episode but does not order two revisions.
 	CampaignRevision string `protobuf:"bytes,5,opt,name=campaign_revision,json=campaignRevision,proto3" json:"campaign_revision,omitempty"`
 	// Trigger reason (e.g. "manual", "campaign-trigger", or the fired
 	// expression such as "model.uncertainty > 0.65").
@@ -95,16 +200,26 @@ type EpisodeManifest struct {
 	// from the device's clock-sandwich observations. system_clock_status is
 	// the device's own verdict ("ok", "conflict", ...); a "conflict" episode
 	// is flagged in the catalog, never silently resolved.
-	StartedUnixNanos    int64                  `protobuf:"varint,9,opt,name=started_unix_nanos,json=startedUnixNanos,proto3" json:"started_unix_nanos,omitempty"`
-	UtcOffsetLowerNanos int64                  `protobuf:"varint,10,opt,name=utc_offset_lower_nanos,json=utcOffsetLowerNanos,proto3" json:"utc_offset_lower_nanos,omitempty"`
-	UtcOffsetUpperNanos int64                  `protobuf:"varint,11,opt,name=utc_offset_upper_nanos,json=utcOffsetUpperNanos,proto3" json:"utc_offset_upper_nanos,omitempty"`
-	SystemClockStatus   string                 `protobuf:"bytes,12,opt,name=system_clock_status,json=systemClockStatus,proto3" json:"system_clock_status,omitempty"`
-	Files               []*EpisodeFileManifest `protobuf:"bytes,13,rep,name=files,proto3" json:"files,omitempty"`
+	StartedUnixNanos    int64  `protobuf:"varint,9,opt,name=started_unix_nanos,json=startedUnixNanos,proto3" json:"started_unix_nanos,omitempty"`
+	UtcOffsetLowerNanos int64  `protobuf:"varint,10,opt,name=utc_offset_lower_nanos,json=utcOffsetLowerNanos,proto3" json:"utc_offset_lower_nanos,omitempty"`
+	UtcOffsetUpperNanos int64  `protobuf:"varint,11,opt,name=utc_offset_upper_nanos,json=utcOffsetUpperNanos,proto3" json:"utc_offset_upper_nanos,omitempty"`
+	SystemClockStatus   string `protobuf:"bytes,12,opt,name=system_clock_status,json=systemClockStatus,proto3" json:"system_clock_status,omitempty"`
 	// The complete device manifest JSON (manifest v2), stored verbatim in the
 	// catalog attributes column.
+	//
+	// Deliberately bytes rather than map<string, string> or google.protobuf.
+	// Struct. This is not a flat key-value bag: it is a nested document (a
+	// files array, a per-file clock-mapping object, a trigger object, a device
+	// identity object), which a string map cannot hold at all. Struct could
+	// hold the shape but not the bytes, and byte fidelity is the point of the
+	// field: it is the artifact the device sealed, kept as sent so the catalog
+	// can be audited against the device rather than against our re-encoding of
+	// it. The typed fields above are what the catalog indexes on.
 	AttributesJson []byte `protobuf:"bytes,14,opt,name=attributes_json,json=attributesJson,proto3" json:"attributes_json,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Declared last by convention; field number 13 is unchanged.
+	Files         []*EpisodeFileManifest `protobuf:"bytes,13,rep,name=files,proto3" json:"files,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EpisodeManifest) Reset() {
@@ -142,20 +257,6 @@ func (x *EpisodeManifest) GetEpisodeId() string {
 		return x.EpisodeId
 	}
 	return ""
-}
-
-func (x *EpisodeManifest) GetOrgId() uint64 {
-	if x != nil {
-		return x.OrgId
-	}
-	return 0
-}
-
-func (x *EpisodeManifest) GetAssetId() uint64 {
-	if x != nil {
-		return x.AssetId
-	}
-	return 0
 }
 
 func (x *EpisodeManifest) GetCampaign() string {
@@ -221,16 +322,16 @@ func (x *EpisodeManifest) GetSystemClockStatus() string {
 	return ""
 }
 
-func (x *EpisodeManifest) GetFiles() []*EpisodeFileManifest {
+func (x *EpisodeManifest) GetAttributesJson() []byte {
 	if x != nil {
-		return x.Files
+		return x.AttributesJson
 	}
 	return nil
 }
 
-func (x *EpisodeManifest) GetAttributesJson() []byte {
+func (x *EpisodeManifest) GetFiles() []*EpisodeFileManifest {
 	if x != nil {
-		return x.AttributesJson
+		return x.Files
 	}
 	return nil
 }
@@ -253,8 +354,13 @@ type EpisodeFileManifest struct {
 	TimeRangeEndNanos   int64 `protobuf:"varint,8,opt,name=time_range_end_nanos,json=timeRangeEndNanos,proto3" json:"time_range_end_nanos,omitempty"`
 	// Source-clock to canonical-clock mapping summary JSON, when present.
 	ClockMappingJson []byte `protobuf:"bytes,9,opt,name=clock_mapping_json,json=clockMappingJson,proto3" json:"clock_mapping_json,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// What this file is to the episode. Unset (UNSPECIFIED) means the sender
+	// predates this field, and is accounted as CAPTURED. See EpisodeFileRole
+	// for what a sender must do with a role it cannot express, and what a
+	// reader must do with a role number it does not know.
+	Role          EpisodeFileRole `protobuf:"varint,10,opt,name=role,proto3,enum=wendycloud.data.v1.EpisodeFileRole" json:"role,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EpisodeFileManifest) Reset() {
@@ -350,6 +456,13 @@ func (x *EpisodeFileManifest) GetClockMappingJson() []byte {
 	return nil
 }
 
+func (x *EpisodeFileManifest) GetRole() EpisodeFileRole {
+	if x != nil {
+		return x.Role
+	}
+	return EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED
+}
+
 type BeginEpisodeUploadRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Manifest      *EpisodeManifest       `protobuf:"bytes,1,opt,name=manifest,proto3" json:"manifest,omitempty"`
@@ -399,7 +512,7 @@ type FileUploadState struct {
 	Path  string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	// Bytes durably stored in object storage for this file: 0 (not stored or
 	// partially stored; restart from 0) or the full file size (stored; skip).
-	CommittedOffset int64 `protobuf:"varint,2,opt,name=committed_offset,json=committedOffset,proto3" json:"committed_offset,omitempty"`
+	CommittedOffset uint64 `protobuf:"varint,2,opt,name=committed_offset,json=committedOffset,proto3" json:"committed_offset,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -441,7 +554,7 @@ func (x *FileUploadState) GetPath() string {
 	return ""
 }
 
-func (x *FileUploadState) GetCommittedOffset() int64 {
+func (x *FileUploadState) GetCommittedOffset() uint64 {
 	if x != nil {
 		return x.CommittedOffset
 	}
@@ -506,8 +619,20 @@ type EpisodeChunk struct {
 	Path      string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
 	// Byte offset of this chunk within the file; must equal the number of
 	// bytes already sent for the file (sequential, no gaps).
-	Offset int64 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
-	// At most 1 MiB per chunk.
+	Offset uint64 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	// At most 1 MiB of payload per chunk.
+	//
+	// Why 1 MiB: gRPC's default maximum received message size is 4 MiB, and
+	// that budget covers the whole encoded EpisodeChunk, not just this field.
+	// 1 MiB leaves room for path, offset and framing while staying well inside
+	// the default on every runtime, so neither end has to raise its limit to
+	// speak this protocol. It also bounds what one failed chunk costs to send
+	// again, which is what makes a retry cheap on a slow uplink. It is the
+	// device transfer worker's buffer size too, so cap and sender agree by
+	// construction rather than by luck.
+	//
+	// The cloud enforces this: an oversized chunk is INVALID_ARGUMENT naming
+	// the limit and the size received. The cap is a rule, not a request.
 	Data []byte `protobuf:"bytes,4,opt,name=data,proto3" json:"data,omitempty"`
 	// True on the last chunk of the file; the server then persists the file
 	// to object storage.
@@ -560,7 +685,7 @@ func (x *EpisodeChunk) GetPath() string {
 	return ""
 }
 
-func (x *EpisodeChunk) GetOffset() int64 {
+func (x *EpisodeChunk) GetOffset() uint64 {
 	if x != nil {
 		return x.Offset
 	}
@@ -585,13 +710,30 @@ type EpisodeChunkAck struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Path  string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	// Contiguous bytes received (spooled server-side, not yet durable).
-	ReceivedOffset int64 `protobuf:"varint,2,opt,name=received_offset,json=receivedOffset,proto3" json:"received_offset,omitempty"`
+	ReceivedOffset uint64 `protobuf:"varint,2,opt,name=received_offset,json=receivedOffset,proto3" json:"received_offset,omitempty"`
 	// Bytes durably stored in object storage. Stays 0 until the eof chunk is
 	// persisted, then equals the file size. Never claims durability that
 	// does not exist.
-	CommittedOffset int64 `protobuf:"varint,3,opt,name=committed_offset,json=committedOffset,proto3" json:"committed_offset,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	CommittedOffset uint64 `protobuf:"varint,3,opt,name=committed_offset,json=committedOffset,proto3" json:"committed_offset,omitempty"`
+	// The episode the acknowledged path belongs to; echoes the `episode_id` of
+	// the chunk being acknowledged.
+	//
+	// A client MUST match an ack on the (episode_id, path) pair, never on path
+	// alone. EpisodeChunk carries episode_id per chunk, so one stream may carry
+	// chunks for more than one episode, and the server keys its assembler on
+	// the same pair. A path is unique only within an episode: two episodes on
+	// one stream that both contain "manifest.json" produce acks that path alone
+	// cannot tell apart, and a client matching on path credits one episode's
+	// committed offset to the other, then skips a file it never uploaded. That
+	// is silent data loss, not a retry.
+	//
+	// Added after `path`, so a server built before this field leaves it empty.
+	// A client that finds it empty cannot match safely on a multi-episode
+	// stream, and must keep to one stream per episode until the server carries
+	// the field.
+	EpisodeId     string `protobuf:"bytes,4,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EpisodeChunkAck) Reset() {
@@ -631,18 +773,25 @@ func (x *EpisodeChunkAck) GetPath() string {
 	return ""
 }
 
-func (x *EpisodeChunkAck) GetReceivedOffset() int64 {
+func (x *EpisodeChunkAck) GetReceivedOffset() uint64 {
 	if x != nil {
 		return x.ReceivedOffset
 	}
 	return 0
 }
 
-func (x *EpisodeChunkAck) GetCommittedOffset() int64 {
+func (x *EpisodeChunkAck) GetCommittedOffset() uint64 {
 	if x != nil {
 		return x.CommittedOffset
 	}
 	return 0
+}
+
+func (x *EpisodeChunkAck) GetEpisodeId() string {
+	if x != nil {
+		return x.EpisodeId
+	}
+	return ""
 }
 
 type CommitEpisodeRequest struct {
@@ -697,6 +846,10 @@ type FileVerification struct {
 	ExpectedSha256 string                 `protobuf:"bytes,3,opt,name=expected_sha256,json=expectedSha256,proto3" json:"expected_sha256,omitempty"`
 	ActualSha256   string                 `protobuf:"bytes,4,opt,name=actual_sha256,json=actualSha256,proto3" json:"actual_sha256,omitempty"`
 	// Human-readable detail on failure (missing object, size mismatch, ...).
+	// Plain string rather than optional: `ok` is the discriminator, and the
+	// server sets detail on every failure and never on success, so empty and
+	// absent would mean the same thing. Presence here would add a has-check to
+	// every consumer without letting any of them decide anything new.
 	Detail        string `protobuf:"bytes,5,opt,name=detail,proto3" json:"detail,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -821,10 +974,20 @@ func (x *CommitEpisodeResponse) GetFiles() []*FileVerification {
 
 type QueryEpisodesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Organization scope. With certificate-identity credentials this must
-	// match the caller's organization; with the PoC static read token it
-	// selects the organization to read (chosen debt until user auth carries
-	// org membership).
+	// Organization to read. This is a filter the caller supplies, not an
+	// identity the server verifies. With certificate-identity credentials it
+	// must match the organization on the certificate.
+	//
+	// AUTHORIZATION GAP, unresolved: the read credential today is a single
+	// shared bearer token that is scoped to no organization, and the server
+	// does NOT check that the caller is a member of the organization named
+	// here. Possession of that token therefore grants catalog read across every
+	// organization, obtained by passing a different number in this field. The
+	// field is not the defect and must not be removed, because a filter is the
+	// right shape once membership is enforced. A server-side membership check,
+	// against the caller's own credential rather than against this value, is
+	// REQUIRED before this RPC is exposed to anything but a trusted internal
+	// caller.
 	OrgId uint64 `protobuf:"varint,1,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
 	// Optional filters; zero values mean "no filter".
 	AssetId                uint64       `protobuf:"varint,2,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
@@ -962,9 +1125,26 @@ func (x *QueryEpisodesResponse) GetEpisodes() []*Episode {
 }
 
 type GetEpisodeRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OrgId         uint64                 `protobuf:"varint,1,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
-	EpisodeId     string                 `protobuf:"bytes,2,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Organization the named episode belongs to. Same caller-supplied filter as
+	// QueryEpisodesRequest.org_id, unverified in the same way, under the same
+	// shared read token.
+	//
+	// AUTHORIZATION GAP, sharper here than on the query: this RPC returns
+	// per-file retrieval URLs, short-lived signed object-storage URLs that read
+	// the stored bytes. Absent a membership check, the shared read token is not
+	// merely a cross-organization catalog read; it is a cross-organization
+	// data-egress capability. Name another organization's identifier here with
+	// one of its episode identifiers and the response hands back signed URLs to
+	// that organization's captured data. Those URLs are bearer capabilities in
+	// their own right: they work for anyone they are passed to, and revoking
+	// the read token afterwards does not revoke URLs already issued.
+	//
+	// The fix is authorization, not schema; the field stays. A server-side
+	// membership check is REQUIRED before this RPC is exposed to anything but a
+	// trusted internal caller.
+	OrgId         uint64 `protobuf:"varint,1,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
+	EpisodeId     string `protobuf:"bytes,2,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1015,16 +1195,30 @@ func (x *GetEpisodeRequest) GetEpisodeId() string {
 
 // A catalog row plus its files.
 type Episode struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	EpisodeId        string                 `protobuf:"bytes,1,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
-	OrgId            uint64                 `protobuf:"varint,2,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
-	AssetId          uint64                 `protobuf:"varint,3,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
-	Campaign         string                 `protobuf:"bytes,4,opt,name=campaign,proto3" json:"campaign,omitempty"`
-	Trigger          string                 `protobuf:"bytes,5,opt,name=trigger,proto3" json:"trigger,omitempty"`
-	StartedUnixNanos int64                  `protobuf:"varint,6,opt,name=started_unix_nanos,json=startedUnixNanos,proto3" json:"started_unix_nanos,omitempty"`
-	EndedUnixNanos   int64                  `protobuf:"varint,7,opt,name=ended_unix_nanos,json=endedUnixNanos,proto3" json:"ended_unix_nanos,omitempty"`
-	State            EpisodeState           `protobuf:"varint,8,opt,name=state,proto3,enum=wendycloud.data.v1.EpisodeState" json:"state,omitempty"`
-	SizeBytes        uint64                 `protobuf:"varint,9,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	EpisodeId string                 `protobuf:"bytes,1,opt,name=episode_id,json=episodeId,proto3" json:"episode_id,omitempty"`
+	// Owning tenant, as attested by the cloud. Unlike the upload manifest, this
+	// is server output, not a client claim: it reports the identity the episode
+	// was actually stored under. It stays on the response because a query with
+	// no asset filter spans assets, and a reader that cannot tell the rows
+	// apart would have to reach into attributes_json to do it.
+	OrgId   uint64 `protobuf:"varint,2,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
+	AssetId uint64 `protobuf:"varint,3,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
+	// Campaign name and its trigger, as recorded at capture time.
+	Campaign         string       `protobuf:"bytes,4,opt,name=campaign,proto3" json:"campaign,omitempty"`
+	Trigger          string       `protobuf:"bytes,5,opt,name=trigger,proto3" json:"trigger,omitempty"`
+	StartedUnixNanos int64        `protobuf:"varint,6,opt,name=started_unix_nanos,json=startedUnixNanos,proto3" json:"started_unix_nanos,omitempty"`
+	EndedUnixNanos   int64        `protobuf:"varint,7,opt,name=ended_unix_nanos,json=endedUnixNanos,proto3" json:"ended_unix_nanos,omitempty"`
+	State            EpisodeState `protobuf:"varint,8,opt,name=state,proto3,enum=wendycloud.data.v1.EpisodeState" json:"state,omitempty"`
+	// Total bytes the episode occupies in object storage: the sum of every
+	// file's size, derived files included. It is deliberately NOT capture-only.
+	// This number answers "what does this episode cost to store", which is what
+	// retention and quota act on, and it stays equal to the sum of the file
+	// sizes so the two can be checked against each other. A total that silently
+	// omitted some of its own parts would match neither storage nor the file
+	// list. Capture-only bytes are a filter over the per-file roles, e.g.
+	// summing size_bytes where role is CAPTURED or UNSPECIFIED.
+	SizeBytes uint64 `protobuf:"varint,9,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
 	// Clock correlation summary JSON (UTC offset bounds, clock status).
 	ClockCorrelationJson []byte `protobuf:"bytes,10,opt,name=clock_correlation_json,json=clockCorrelationJson,proto3" json:"clock_correlation_json,omitempty"`
 	// Full device manifest JSON as uploaded.
@@ -1165,7 +1359,12 @@ type EpisodeFileInfo struct {
 	Sha256    string                 `protobuf:"bytes,5,opt,name=sha256,proto3" json:"sha256,omitempty"`
 	// Short-lived retrieval URL for the stored object (signed in production,
 	// direct in local development).
-	RetrievalUrl  string `protobuf:"bytes,6,opt,name=retrieval_url,json=retrievalUrl,proto3" json:"retrieval_url,omitempty"`
+	RetrievalUrl string `protobuf:"bytes,6,opt,name=retrieval_url,json=retrievalUrl,proto3" json:"retrieval_url,omitempty"`
+	// What this file is to the episode, as recorded in the catalog. Unset
+	// (UNSPECIFIED) means the uploading sender predated the field, as on the
+	// upload manifest. A role the catalog did not recognise at write time is
+	// reported here as the number it arrived as, never rewritten to CAPTURED.
+	Role          EpisodeFileRole `protobuf:"varint,7,opt,name=role,proto3,enum=wendycloud.data.v1.EpisodeFileRole" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1242,16 +1441,21 @@ func (x *EpisodeFileInfo) GetRetrievalUrl() string {
 	return ""
 }
 
+func (x *EpisodeFileInfo) GetRole() EpisodeFileRole {
+	if x != nil {
+		return x.Role
+	}
+	return EpisodeFileRole_EPISODE_FILE_ROLE_UNSPECIFIED
+}
+
 var File_cloud_data_ingest_proto protoreflect.FileDescriptor
 
 const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\n" +
-	"\x17cloud/data_ingest.proto\x12\x12wendycloud.data.v1\"\xe1\x04\n" +
+	"\x17cloud/data_ingest.proto\x12\x12wendycloud.data.v1\"\xcd\x04\n" +
 	"\x0fEpisodeManifest\x12\x1d\n" +
 	"\n" +
-	"episode_id\x18\x01 \x01(\tR\tepisodeId\x12\x15\n" +
-	"\x06org_id\x18\x02 \x01(\x04R\x05orgId\x12\x19\n" +
-	"\basset_id\x18\x03 \x01(\x04R\aassetId\x12\x1a\n" +
+	"episode_id\x18\x01 \x01(\tR\tepisodeId\x12\x1a\n" +
 	"\bcampaign\x18\x04 \x01(\tR\bcampaign\x12+\n" +
 	"\x11campaign_revision\x18\x05 \x01(\tR\x10campaignRevision\x12\x18\n" +
 	"\atrigger\x18\x06 \x01(\tR\atrigger\x124\n" +
@@ -1261,9 +1465,9 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\x16utc_offset_lower_nanos\x18\n" +
 	" \x01(\x03R\x13utcOffsetLowerNanos\x123\n" +
 	"\x16utc_offset_upper_nanos\x18\v \x01(\x03R\x13utcOffsetUpperNanos\x12.\n" +
-	"\x13system_clock_status\x18\f \x01(\tR\x11systemClockStatus\x12=\n" +
-	"\x05files\x18\r \x03(\v2'.wendycloud.data.v1.EpisodeFileManifestR\x05files\x12'\n" +
-	"\x0fattributes_json\x18\x0e \x01(\fR\x0eattributesJson\"\xc8\x02\n" +
+	"\x13system_clock_status\x18\f \x01(\tR\x11systemClockStatus\x12'\n" +
+	"\x0fattributes_json\x18\x0e \x01(\fR\x0eattributesJson\x12=\n" +
+	"\x05files\x18\r \x03(\v2'.wendycloud.data.v1.EpisodeFileManifestR\x05filesJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x06org_idR\basset_id\"\x81\x03\n" +
 	"\x13EpisodeFileManifest\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1d\n" +
 	"\n" +
@@ -1275,12 +1479,14 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\tsource_id\x18\x06 \x01(\tR\bsourceId\x123\n" +
 	"\x16time_range_start_nanos\x18\a \x01(\x03R\x13timeRangeStartNanos\x12/\n" +
 	"\x14time_range_end_nanos\x18\b \x01(\x03R\x11timeRangeEndNanos\x12,\n" +
-	"\x12clock_mapping_json\x18\t \x01(\fR\x10clockMappingJson\"\\\n" +
+	"\x12clock_mapping_json\x18\t \x01(\fR\x10clockMappingJson\x127\n" +
+	"\x04role\x18\n" +
+	" \x01(\x0e2#.wendycloud.data.v1.EpisodeFileRoleR\x04role\"\\\n" +
 	"\x19BeginEpisodeUploadRequest\x12?\n" +
 	"\bmanifest\x18\x01 \x01(\v2#.wendycloud.data.v1.EpisodeManifestR\bmanifest\"P\n" +
 	"\x0fFileUploadState\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12)\n" +
-	"\x10committed_offset\x18\x02 \x01(\x03R\x0fcommittedOffset\"\x8f\x01\n" +
+	"\x10committed_offset\x18\x02 \x01(\x04R\x0fcommittedOffset\"\x8f\x01\n" +
 	"\x1aBeginEpisodeUploadResponse\x126\n" +
 	"\x05state\x18\x01 \x01(\x0e2 .wendycloud.data.v1.EpisodeStateR\x05state\x129\n" +
 	"\x05files\x18\x02 \x03(\v2#.wendycloud.data.v1.FileUploadStateR\x05files\"\x7f\n" +
@@ -1288,13 +1494,15 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\n" +
 	"episode_id\x18\x01 \x01(\tR\tepisodeId\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x16\n" +
-	"\x06offset\x18\x03 \x01(\x03R\x06offset\x12\x12\n" +
+	"\x06offset\x18\x03 \x01(\x04R\x06offset\x12\x12\n" +
 	"\x04data\x18\x04 \x01(\fR\x04data\x12\x10\n" +
-	"\x03eof\x18\x05 \x01(\bR\x03eof\"y\n" +
+	"\x03eof\x18\x05 \x01(\bR\x03eof\"\x98\x01\n" +
 	"\x0fEpisodeChunkAck\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12'\n" +
-	"\x0freceived_offset\x18\x02 \x01(\x03R\x0ereceivedOffset\x12)\n" +
-	"\x10committed_offset\x18\x03 \x01(\x03R\x0fcommittedOffset\"5\n" +
+	"\x0freceived_offset\x18\x02 \x01(\x04R\x0ereceivedOffset\x12)\n" +
+	"\x10committed_offset\x18\x03 \x01(\x04R\x0fcommittedOffset\x12\x1d\n" +
+	"\n" +
+	"episode_id\x18\x04 \x01(\tR\tepisodeId\"5\n" +
 	"\x14CommitEpisodeRequest\x12\x1d\n" +
 	"\n" +
 	"episode_id\x18\x01 \x01(\tR\tepisodeId\"\x9c\x01\n" +
@@ -1337,7 +1545,7 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	" \x01(\fR\x14clockCorrelationJson\x12'\n" +
 	"\x0fattributes_json\x18\v \x01(\fR\x0eattributesJson\x12,\n" +
 	"\x12updated_unix_nanos\x18\f \x01(\x03R\x10updatedUnixNanos\x129\n" +
-	"\x05files\x18\r \x03(\v2#.wendycloud.data.v1.EpisodeFileInfoR\x05files\"\xbd\x01\n" +
+	"\x05files\x18\r \x03(\v2#.wendycloud.data.v1.EpisodeFileInfoR\x05files\"\xf6\x01\n" +
 	"\x0fEpisodeFileInfo\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1b\n" +
 	"\tsource_id\x18\x02 \x01(\tR\bsourceId\x12\x1d\n" +
@@ -1346,12 +1554,17 @@ const file_cloud_data_ingest_proto_rawDesc = "" +
 	"\n" +
 	"size_bytes\x18\x04 \x01(\x04R\tsizeBytes\x12\x16\n" +
 	"\x06sha256\x18\x05 \x01(\tR\x06sha256\x12#\n" +
-	"\rretrieval_url\x18\x06 \x01(\tR\fretrievalUrl*\x80\x01\n" +
+	"\rretrieval_url\x18\x06 \x01(\tR\fretrievalUrl\x127\n" +
+	"\x04role\x18\a \x01(\x0e2#.wendycloud.data.v1.EpisodeFileRoleR\x04role*\x80\x01\n" +
 	"\fEpisodeState\x12\x1d\n" +
 	"\x19EPISODE_STATE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17EPISODE_STATE_UPLOADING\x10\x01\x12\x1a\n" +
 	"\x16EPISODE_STATE_COMPLETE\x10\x02\x12\x18\n" +
-	"\x14EPISODE_STATE_FAILED\x10\x032\x87\x04\n" +
+	"\x14EPISODE_STATE_FAILED\x10\x03*s\n" +
+	"\x0fEpisodeFileRole\x12!\n" +
+	"\x1dEPISODE_FILE_ROLE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aEPISODE_FILE_ROLE_CAPTURED\x10\x01\x12\x1d\n" +
+	"\x19EPISODE_FILE_ROLE_DERIVED\x10\x022\x87\x04\n" +
 	"\x11DataIngestService\x12s\n" +
 	"\x12BeginEpisodeUpload\x12-.wendycloud.data.v1.BeginEpisodeUploadRequest\x1a..wendycloud.data.v1.BeginEpisodeUploadResponse\x12_\n" +
 	"\x12UploadEpisodeChunk\x12 .wendycloud.data.v1.EpisodeChunk\x1a#.wendycloud.data.v1.EpisodeChunkAck(\x010\x01\x12d\n" +
@@ -1372,52 +1585,55 @@ func file_cloud_data_ingest_proto_rawDescGZIP() []byte {
 	return file_cloud_data_ingest_proto_rawDescData
 }
 
-var file_cloud_data_ingest_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_cloud_data_ingest_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_cloud_data_ingest_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_cloud_data_ingest_proto_goTypes = []any{
 	(EpisodeState)(0),                  // 0: wendycloud.data.v1.EpisodeState
-	(*EpisodeManifest)(nil),            // 1: wendycloud.data.v1.EpisodeManifest
-	(*EpisodeFileManifest)(nil),        // 2: wendycloud.data.v1.EpisodeFileManifest
-	(*BeginEpisodeUploadRequest)(nil),  // 3: wendycloud.data.v1.BeginEpisodeUploadRequest
-	(*FileUploadState)(nil),            // 4: wendycloud.data.v1.FileUploadState
-	(*BeginEpisodeUploadResponse)(nil), // 5: wendycloud.data.v1.BeginEpisodeUploadResponse
-	(*EpisodeChunk)(nil),               // 6: wendycloud.data.v1.EpisodeChunk
-	(*EpisodeChunkAck)(nil),            // 7: wendycloud.data.v1.EpisodeChunkAck
-	(*CommitEpisodeRequest)(nil),       // 8: wendycloud.data.v1.CommitEpisodeRequest
-	(*FileVerification)(nil),           // 9: wendycloud.data.v1.FileVerification
-	(*CommitEpisodeResponse)(nil),      // 10: wendycloud.data.v1.CommitEpisodeResponse
-	(*QueryEpisodesRequest)(nil),       // 11: wendycloud.data.v1.QueryEpisodesRequest
-	(*QueryEpisodesResponse)(nil),      // 12: wendycloud.data.v1.QueryEpisodesResponse
-	(*GetEpisodeRequest)(nil),          // 13: wendycloud.data.v1.GetEpisodeRequest
-	(*Episode)(nil),                    // 14: wendycloud.data.v1.Episode
-	(*EpisodeFileInfo)(nil),            // 15: wendycloud.data.v1.EpisodeFileInfo
+	(EpisodeFileRole)(0),               // 1: wendycloud.data.v1.EpisodeFileRole
+	(*EpisodeManifest)(nil),            // 2: wendycloud.data.v1.EpisodeManifest
+	(*EpisodeFileManifest)(nil),        // 3: wendycloud.data.v1.EpisodeFileManifest
+	(*BeginEpisodeUploadRequest)(nil),  // 4: wendycloud.data.v1.BeginEpisodeUploadRequest
+	(*FileUploadState)(nil),            // 5: wendycloud.data.v1.FileUploadState
+	(*BeginEpisodeUploadResponse)(nil), // 6: wendycloud.data.v1.BeginEpisodeUploadResponse
+	(*EpisodeChunk)(nil),               // 7: wendycloud.data.v1.EpisodeChunk
+	(*EpisodeChunkAck)(nil),            // 8: wendycloud.data.v1.EpisodeChunkAck
+	(*CommitEpisodeRequest)(nil),       // 9: wendycloud.data.v1.CommitEpisodeRequest
+	(*FileVerification)(nil),           // 10: wendycloud.data.v1.FileVerification
+	(*CommitEpisodeResponse)(nil),      // 11: wendycloud.data.v1.CommitEpisodeResponse
+	(*QueryEpisodesRequest)(nil),       // 12: wendycloud.data.v1.QueryEpisodesRequest
+	(*QueryEpisodesResponse)(nil),      // 13: wendycloud.data.v1.QueryEpisodesResponse
+	(*GetEpisodeRequest)(nil),          // 14: wendycloud.data.v1.GetEpisodeRequest
+	(*Episode)(nil),                    // 15: wendycloud.data.v1.Episode
+	(*EpisodeFileInfo)(nil),            // 16: wendycloud.data.v1.EpisodeFileInfo
 }
 var file_cloud_data_ingest_proto_depIdxs = []int32{
-	2,  // 0: wendycloud.data.v1.EpisodeManifest.files:type_name -> wendycloud.data.v1.EpisodeFileManifest
-	1,  // 1: wendycloud.data.v1.BeginEpisodeUploadRequest.manifest:type_name -> wendycloud.data.v1.EpisodeManifest
-	0,  // 2: wendycloud.data.v1.BeginEpisodeUploadResponse.state:type_name -> wendycloud.data.v1.EpisodeState
-	4,  // 3: wendycloud.data.v1.BeginEpisodeUploadResponse.files:type_name -> wendycloud.data.v1.FileUploadState
-	0,  // 4: wendycloud.data.v1.CommitEpisodeResponse.state:type_name -> wendycloud.data.v1.EpisodeState
-	9,  // 5: wendycloud.data.v1.CommitEpisodeResponse.files:type_name -> wendycloud.data.v1.FileVerification
-	0,  // 6: wendycloud.data.v1.QueryEpisodesRequest.state:type_name -> wendycloud.data.v1.EpisodeState
-	14, // 7: wendycloud.data.v1.QueryEpisodesResponse.episodes:type_name -> wendycloud.data.v1.Episode
-	0,  // 8: wendycloud.data.v1.Episode.state:type_name -> wendycloud.data.v1.EpisodeState
-	15, // 9: wendycloud.data.v1.Episode.files:type_name -> wendycloud.data.v1.EpisodeFileInfo
-	3,  // 10: wendycloud.data.v1.DataIngestService.BeginEpisodeUpload:input_type -> wendycloud.data.v1.BeginEpisodeUploadRequest
-	6,  // 11: wendycloud.data.v1.DataIngestService.UploadEpisodeChunk:input_type -> wendycloud.data.v1.EpisodeChunk
-	8,  // 12: wendycloud.data.v1.DataIngestService.CommitEpisode:input_type -> wendycloud.data.v1.CommitEpisodeRequest
-	11, // 13: wendycloud.data.v1.DataIngestService.QueryEpisodes:input_type -> wendycloud.data.v1.QueryEpisodesRequest
-	13, // 14: wendycloud.data.v1.DataIngestService.GetEpisode:input_type -> wendycloud.data.v1.GetEpisodeRequest
-	5,  // 15: wendycloud.data.v1.DataIngestService.BeginEpisodeUpload:output_type -> wendycloud.data.v1.BeginEpisodeUploadResponse
-	7,  // 16: wendycloud.data.v1.DataIngestService.UploadEpisodeChunk:output_type -> wendycloud.data.v1.EpisodeChunkAck
-	10, // 17: wendycloud.data.v1.DataIngestService.CommitEpisode:output_type -> wendycloud.data.v1.CommitEpisodeResponse
-	12, // 18: wendycloud.data.v1.DataIngestService.QueryEpisodes:output_type -> wendycloud.data.v1.QueryEpisodesResponse
-	14, // 19: wendycloud.data.v1.DataIngestService.GetEpisode:output_type -> wendycloud.data.v1.Episode
-	15, // [15:20] is the sub-list for method output_type
-	10, // [10:15] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	3,  // 0: wendycloud.data.v1.EpisodeManifest.files:type_name -> wendycloud.data.v1.EpisodeFileManifest
+	1,  // 1: wendycloud.data.v1.EpisodeFileManifest.role:type_name -> wendycloud.data.v1.EpisodeFileRole
+	2,  // 2: wendycloud.data.v1.BeginEpisodeUploadRequest.manifest:type_name -> wendycloud.data.v1.EpisodeManifest
+	0,  // 3: wendycloud.data.v1.BeginEpisodeUploadResponse.state:type_name -> wendycloud.data.v1.EpisodeState
+	5,  // 4: wendycloud.data.v1.BeginEpisodeUploadResponse.files:type_name -> wendycloud.data.v1.FileUploadState
+	0,  // 5: wendycloud.data.v1.CommitEpisodeResponse.state:type_name -> wendycloud.data.v1.EpisodeState
+	10, // 6: wendycloud.data.v1.CommitEpisodeResponse.files:type_name -> wendycloud.data.v1.FileVerification
+	0,  // 7: wendycloud.data.v1.QueryEpisodesRequest.state:type_name -> wendycloud.data.v1.EpisodeState
+	15, // 8: wendycloud.data.v1.QueryEpisodesResponse.episodes:type_name -> wendycloud.data.v1.Episode
+	0,  // 9: wendycloud.data.v1.Episode.state:type_name -> wendycloud.data.v1.EpisodeState
+	16, // 10: wendycloud.data.v1.Episode.files:type_name -> wendycloud.data.v1.EpisodeFileInfo
+	1,  // 11: wendycloud.data.v1.EpisodeFileInfo.role:type_name -> wendycloud.data.v1.EpisodeFileRole
+	4,  // 12: wendycloud.data.v1.DataIngestService.BeginEpisodeUpload:input_type -> wendycloud.data.v1.BeginEpisodeUploadRequest
+	7,  // 13: wendycloud.data.v1.DataIngestService.UploadEpisodeChunk:input_type -> wendycloud.data.v1.EpisodeChunk
+	9,  // 14: wendycloud.data.v1.DataIngestService.CommitEpisode:input_type -> wendycloud.data.v1.CommitEpisodeRequest
+	12, // 15: wendycloud.data.v1.DataIngestService.QueryEpisodes:input_type -> wendycloud.data.v1.QueryEpisodesRequest
+	14, // 16: wendycloud.data.v1.DataIngestService.GetEpisode:input_type -> wendycloud.data.v1.GetEpisodeRequest
+	6,  // 17: wendycloud.data.v1.DataIngestService.BeginEpisodeUpload:output_type -> wendycloud.data.v1.BeginEpisodeUploadResponse
+	8,  // 18: wendycloud.data.v1.DataIngestService.UploadEpisodeChunk:output_type -> wendycloud.data.v1.EpisodeChunkAck
+	11, // 19: wendycloud.data.v1.DataIngestService.CommitEpisode:output_type -> wendycloud.data.v1.CommitEpisodeResponse
+	13, // 20: wendycloud.data.v1.DataIngestService.QueryEpisodes:output_type -> wendycloud.data.v1.QueryEpisodesResponse
+	15, // 21: wendycloud.data.v1.DataIngestService.GetEpisode:output_type -> wendycloud.data.v1.Episode
+	17, // [17:22] is the sub-list for method output_type
+	12, // [12:17] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_cloud_data_ingest_proto_init() }
@@ -1430,7 +1646,7 @@ func file_cloud_data_ingest_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cloud_data_ingest_proto_rawDesc), len(file_cloud_data_ingest_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
