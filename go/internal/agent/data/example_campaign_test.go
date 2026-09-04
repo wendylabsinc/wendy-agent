@@ -29,10 +29,13 @@ func TestShippedModelAppCampaignParses(t *testing.T) {
 	// episode would then hold payload bytes for only a subset of the samples
 	// the model saw, which is a weaker demonstration of the contract.
 	capture := campaign.Sources[0].Capture
+	if capture == nil {
+		t.Fatal("the camera source declares no capture block; the assertions below would pass vacuously")
+	}
 	if capture.EffectiveMode() != "continuous" {
 		t.Errorf("camera capture mode = %q, want continuous", capture.EffectiveMode())
 	}
-	if capture != nil && capture.Rate != 0 {
+	if capture.Rate != 0 {
 		t.Errorf("camera capture rate cap = %v, want none", capture.Rate)
 	}
 	if campaign.Upload.When != "always" {

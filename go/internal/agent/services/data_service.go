@@ -175,7 +175,16 @@ func (s *DataService) startCapture(ctx context.Context, opts data.StartOptions) 
 		if applyErr := s.manager.ApplyCaptureResults(key, results); applyErr != nil {
 			s.manager.Warnf("recording capture results for episode key %q after a failed adapter start: %v", key, applyErr)
 		}
-		_, _ = s.manager.Interrupt(key, "capture_adapter_start_failed")
+		// Without the drain, deliberately. captureMu has been held since the top
+		// of this function and is what serialises every start and stop on the
+		// device, so a drain taken here is charged to every other caller: with
+		// the default two second drain a Start whose adapter errors took two
+		// seconds to return FailedPrecondition, and with capture.drain: 30s a
+		// flapping camera stalled the data service for thirty seconds per
+		// attempt. Nothing on this path needs the wait either: the adapters
+		// never started, so no application ever read a sample from this episode
+		// and no record about it can be outstanding.
+		_, _ = s.manager.InterruptWithoutDrain(key, "capture_adapter_start_failed")
 		return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("starting capture adapter: %v", startErr))
 	}
 	s.activeCaptures[key] = captures
@@ -384,8 +393,14 @@ func (s *DataService) triggerCampaign(ctx context.Context, campaign data.Campaig
 }
 
 func (s *DataService) observeApplicationRecord(_ string, record data.ApplicationRecord) {
-	// Triggers are dropped only for campaigns that already have an active
-	// episode; other campaigns (and ad-hoc recordings) capture independently.
+	// Triggers are dropped only for campaigns that are still CAPTURING; other
+	// campaigns (and ad-hoc recordings) capture independently. A campaign whose
+	// previous episode is inside its post-seal drain is not capturing, and
+	// ActiveEpisodeKeys no longer names it, so a record that matches during the
+	// drain starts the next episode instead of being dropped. That episode
+	// still has to wait for captureMu, which the stopping episode holds until
+	// its drain ends, so it begins up to one capture.drain late rather than not
+	// at all -- documented for operators in the data command reference.
 	activeKeys := map[string]bool{}
 	for _, key := range s.manager.ActiveEpisodeKeys() {
 		activeKeys[key] = true

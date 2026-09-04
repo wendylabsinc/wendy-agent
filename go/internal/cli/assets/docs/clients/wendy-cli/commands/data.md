@@ -159,11 +159,30 @@ verdict to be filed against the recording it was computed from.
 
 It must be a duration from `0s` through `30s`. Omitting it takes the default of
 `2s`, so campaigns get the behavior without being rewritten; `drain: 0s` opts
-out and seals the moment capture stops. Only Episodes that capture application
-records wait at all, so a telemetry-only or camera-only plan pays nothing for
-the default. The wait is added to the Episode's own lifetime, after
-`after_trigger` has expired, and it is included in the `stopped_episode_nanos`
-the manifest records.
+out and seals the moment capture stops. Every campaign Episode pays it: a
+campaign plan always selects the applications source, whatever `sources`
+declares, because that source is what arms the plan's triggers. A telemetry-only
+or camera-only campaign therefore waits exactly as long as any other one. Only
+an ad-hoc `wendy data record` Episode can avoid the wait, and only by leaving
+the applications source out with `--source` or `--exclude-source`, as described
+above. The wait is added
+to the Episode's own lifetime, after `after_trigger` has expired, and it is
+included in the `stopped_episode_nanos` the manifest records.
+
+A draining Episode has already stopped capturing, so it no longer holds its
+campaign. A trigger that matches during the drain starts the campaign's next
+Episode rather than being dropped. It does have to wait for the previous
+Episode to finish draining before it can begin, because starting and stopping
+capture are serialized on the device, so with the default the next Episode
+begins up to two seconds after the trigger that asked for it. Set `drain: 0s`
+on a campaign whose events arrive in bursts and whose applications write their
+records live rather than asynchronously.
+
+A failed capture adapter start is the one path that does not drain. That
+Episode never delivered a sample to any application, so no record about it can
+be outstanding; it is sealed as `interrupted` with reason
+`capture_adapter_start_failed` and `wendy data record` returns immediately
+instead of after the drain.
 
 At least one trigger is required, and each trigger selects exactly one
 condition:

@@ -497,3 +497,84 @@ func containsName(names []string, want string) bool {
 	}
 	return false
 }
+
+// TestPreRollLostIsThisEpisodesLossNotTheAgentsTotal pins the meaning of the
+// manifest's pre_roll_lost.
+//
+// The field was set from a counter that ran for the manager's whole lifetime
+// and was never reset, so every episode published the agent's running total
+// since start as its own loss. It also counted entries that simply aged out of
+// the five minute ring, which are not losses at all: an entry past the window
+// is no longer pre-roll for any episode that could start now. A status field
+// that lies is worse than no status field, and this one lied twice.
+func TestPreRollLostIsThisEpisodesLossNotTheAgentsTotal(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now, err := readBootTime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One record that aged out of the ring long ago, and one dropped by the
+	// byte budget while it was still inside its window. Only the second is a
+	// loss, and only for an episode whose window covers it.
+	aged := now - (10 * time.Minute).Nanoseconds()
+	budgeted := now - time.Second.Nanoseconds()
+	// One pass per reason, so each is attributed on its own. First the entry
+	// that is simply past the window: it is pre-roll for nobody and its
+	// departure costs nothing.
+	m.preRoll = []bufferedRecord{{bootNanos: aged, receiptNanos: aged, encoded: []byte(`{"name":"aged-out"}`)}}
+	m.preRollBytes = len(m.preRoll[0].encoded)
+	m.evictPreRoll(now)
+	if len(m.preRollEvicted) != 0 {
+		t.Fatalf("an entry that aged out was counted as a loss: %v", m.preRollEvicted)
+	}
+	// Then the entry the byte budget takes while it is still inside its
+	// window. That one WOULD have reached the next episode and did not.
+	m.preRoll = []bufferedRecord{{bootNanos: budgeted, receiptNanos: budgeted, encoded: []byte(`{"name":"budget-evicted"}`)}}
+	m.preRollBytes = preRollLimit + 1
+	m.evictPreRoll(now)
+	m.preRollBytes = 0
+
+	if len(m.preRollEvicted) != 1 {
+		t.Fatalf("recorded %d in-window eviction(s), want exactly the one the byte budget dropped", len(m.preRollEvicted))
+	}
+
+	started, err := m.Start(StartOptions{Sources: []string{"applications"}, DrainDuration: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.Stop(AdHocEpisodeKey); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _, err := m.Inspect(started.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.PreRollLost != 1 {
+		t.Fatalf("pre_roll_lost = %d, want 1: the aged-out entry was never this episode's to lose", manifest.PreRollLost)
+	}
+
+	// A second episode must not inherit the first one's number. Nothing has
+	// been lost since, so its own loss is zero.
+	second, err := m.Start(StartOptions{
+		Sources:         []string{"applications"},
+		PreRollDuration: 100 * time.Millisecond,
+		DrainDuration:   0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.Stop(AdHocEpisodeKey); err != nil {
+		t.Fatal(err)
+	}
+	secondManifest, _, err := m.Inspect(second.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondManifest.PreRollLost != 0 {
+		t.Fatalf("second episode's pre_roll_lost = %d, want 0: its 100ms window does not reach the eviction a second before it, "+
+			"and the first episode's loss is not its own", secondManifest.PreRollLost)
+	}
+}
