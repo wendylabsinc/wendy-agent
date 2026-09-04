@@ -40,8 +40,46 @@ import (
 // (and identically in the write() path). dev->write_position is the module's
 // own monotonic count of frames written to that node. Whatever sequence value a
 // writer supplies is discarded. There is no module option, format flag, or
-// ioctl that disables this. So a design that says "sequence IS the sample id"
-// would be claiming a guarantee the kernel actively prevents us from keeping.
+// ioctl that disables this overwrite OF THE SEQUENCE. So a design that says
+// "sequence IS the sample id" would be claiming a guarantee the kernel actively
+// prevents us from keeping.
+//
+// # The timestamp, unlike the sequence, IS the writer's
+//
+// That limit is specific to the sequence field, and it would be wrong to read
+// it as "the writer controls nothing per buffer". Verified against v4l2loopback
+// v0.15.4, the version the Yocto recipe pins, the very same OUTPUT branch of
+// vidioc_qbuf hands the writer's timestamp straight through:
+//
+//	if (!(bufd->buffer.flags & V4L2_BUF_FLAG_TIMESTAMP_COPY) &&
+//	    (buf->timestamp.tv_sec == 0 && buf->timestamp.tv_usec == 0)) {
+//	        v4l2l_get_timestamp(&bufd->buffer);
+//	} else {
+//	        bufd->buffer.timestamp = buf->timestamp;
+//	        bufd->buffer.flags |= V4L2_BUF_FLAG_TIMESTAMP_COPY;
+//	        bufd->buffer.flags &= ~V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+//	}
+//
+// The module substitutes its own clock only for a writer that supplies a ZERO
+// timestamp. A nonzero one is copied verbatim and latches
+// V4L2_BUF_FLAG_TIMESTAMP_COPY, which says exactly "this value came from the
+// writer". On the read side vidioc_dqbuf's CAPTURE branch does
+// `*buf = dev->buffers[index].buffer;` and then unset_flags, which clears only
+// V4L2_BUF_FLAG_QUEUED and V4L2_BUF_FLAG_DONE, so both the timestamp and the
+// COPY flag reach the reading application intact.
+//
+// So identity does ride in-band after all, just not in the field the naive
+// design wanted. The pump stamps each buffer with the frame's canonical
+// CLOCK_BOOTTIME receipt truncated to whole microseconds by struct timeval,
+// which is the same number FrameIdentity.boottime_nanos carries divided by
+// 1000; the truncation is exact because 1e9 divides evenly by 1000. A consumer
+// can therefore check every frame it dequeues against the identity it resolved,
+// with no extra field on the wire and no side channel needed for the check.
+//
+// The sequence remains the PRIMARY join key and the timestamp is a secondary
+// one. Two reasons: the sequence is what makes an application-side drop visible
+// (see drop case 2 below), which a timestamp cannot do, and the sequence is
+// exact where microseconds are truncated. Nothing below changes.
 //
 // # What is sound instead: observe the kernel's number, publish the mapping
 //

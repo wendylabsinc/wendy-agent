@@ -511,6 +511,22 @@ func (x *FrameIdentitySubscribeRequest) GetModel() string {
 // and requires no assumption that frames arrive in a particular order, which is
 // what makes the join trustworthy.
 //
+// # The buffer TIMESTAMP, unlike the sequence, is the agent's own
+//
+// That limit applies to the sequence field alone. Verified against v4l2loopback
+// v0.15.4, the same QBUF handler copies a writer-supplied timestamp through
+// verbatim and substitutes the module's own clock only when the writer supplies
+// a zero one. It also latches V4L2_BUF_FLAG_TIMESTAMP_COPY on the buffer, which
+// means precisely "this timestamp came from the writer"; DQBUF clears only the
+// QUEUED and DONE flags, so both the value and that flag reach the reader.
+//
+// The agent therefore stamps every buffer with this message's boottime_nanos,
+// truncated to whole microseconds by struct timeval. Identity rides IN BAND as
+// well as on this stream, and a reader that checks the COPY flag can prove the
+// value is the agent's rather than a clock reading. There is no separate field
+// for it here because it is exactly boottime_nanos / 1000: see
+// loopback_sequence below for the derivation and why it is exact.
+//
 // # Dropped frames: two different losses, two different signals
 //
 // A consumer that watches only one of these will believe frames were delivered
@@ -546,9 +562,26 @@ type FrameIdentity struct {
 	BoottimeNanos             int64 `protobuf:"varint,3,opt,name=boottime_nanos,json=boottimeNanos,proto3" json:"boottime_nanos,omitempty"`
 	TimestampUncertaintyNanos int64 `protobuf:"varint,4,opt,name=timestamp_uncertainty_nanos,json=timestampUncertaintyNanos,proto3" json:"timestamp_uncertainty_nanos,omitempty"`
 	// loopback_sequence is the v4l2_buffer.sequence the KERNEL assigned to this
-	// frame on the node. It is the join key: match it against the sequence of the
-	// buffer dequeued from the node. See the message comment for why the agent
-	// cannot choose this value.
+	// frame on the node. It is the PRIMARY join key: match it against the
+	// sequence of the buffer dequeued from the node. See the message comment for
+	// why the agent cannot choose this value.
+	//
+	// The dequeued buffer's timestamp is a secondary key and a cross-check on
+	// that join, because the agent stamps it rather than the module. Its expected
+	// value is derived, not carried: a v4l2_buffer timestamp is a struct timeval,
+	// so the frame whose identity this is has
+	//
+	//	timestamp.tv_sec * 1000000 + timestamp.tv_usec == boottime_nanos / 1000
+	//
+	// The truncation to whole microseconds is exact rather than approximate,
+	// because 1000000000 divides evenly by 1000, so the equality is not a
+	// tolerance. Nothing in this message repeats that value: a second copy of a
+	// derivable number could only ever agree or rot.
+	//
+	// Two microsecond stamps cannot collide at any realistic frame rate: at 30
+	// frames per second consecutive frames are about 33333 microseconds apart.
+	// The sequence stays primary all the same, because it alone makes an
+	// application-side drop visible, as case 2 above describes.
 	LoopbackSequence uint32 `protobuf:"varint,5,opt,name=loopback_sequence,json=loopbackSequence,proto3" json:"loopback_sequence,omitempty"`
 	// dropped_before counts samples lost between the producer and the node since
 	// the previous frame written. It is the ONLY report of loss case 1 above,

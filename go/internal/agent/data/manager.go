@@ -73,13 +73,32 @@ var (
 const AdHocEpisodeKey = ""
 
 type Manager struct {
-	mu             sync.Mutex
-	root           string
-	active         map[string]*activeEpisode
-	consensus      func(context.Context) (timesync.Consensus, error)
-	preRoll        []bufferedRecord
-	preRollBytes   int
-	preRollLost    uint64
+	mu     sync.Mutex
+	root   string
+	active map[string]*activeEpisode
+	// sealing holds episodes that have stopped capturing and are inside their
+	// post-seal drain. They still receive application records, but they no
+	// longer hold their campaign key: an episode whose cameras are already off
+	// must not make its campaign look busy to the trigger path, or a detection
+	// arriving during the drain is filed into a recording that captured
+	// nothing of it and no new episode is ever started for it. Ordering is
+	// irrelevant, so a slice is enough; a campaign can have several sealing
+	// episodes at once only if its drain outlasts its next episode.
+	sealing      []*activeEpisode
+	consensus    func(context.Context) (timesync.Consensus, error)
+	preRoll      []bufferedRecord
+	preRollBytes int
+	// preRollEvicted holds the agent receipt of every record the ring dropped
+	// while it was still inside its window, which happens only when the ring
+	// hits its byte budget. Records that simply aged out are not recorded here:
+	// they left because they were no longer pre-roll for anything, which is the
+	// ring working, not losing.
+	//
+	// Timestamps rather than a counter, because an episode's pre_roll_lost is
+	// supposed to name what THAT episode's window lost. A cumulative counter
+	// reported every episode's number as the agent's total since boot, which
+	// grows forever and is never that episode's loss.
+	preRollEvicted []int64
 	downloads      map[string]int
 	sourceProvider func(context.Context) []Source
 	appObserver    func(string, ApplicationRecord)
@@ -215,12 +234,17 @@ type activeEpisode struct {
 	// capturesApplications reports whether the applications source was
 	// selected; episodes that excluded it receive no application records.
 	capturesApplications bool
-	// drain is how long this episode stays in m.active after its capture
+	// drain is how long this episode stays open for records after its capture
 	// adapters have stopped, so that a record an application writes about the
 	// samples it just read is still filed into this episode instead of the
 	// next one. Zero or less means no drain, and it is honoured only for
 	// episodes that capture applications.
 	drain time.Duration
+	// draining reports that the episode has left m.active for m.sealing: its
+	// capture adapters have stopped, it still accepts application records for
+	// the rest of its drain, and it no longer holds its campaign key. Written
+	// and read under m.mu.
+	draining bool
 	// modelInputs is the append handle for the model-input ledger, opened on
 	// the first sample a model consumed (see openModelInputLedger). It is not
 	// fsynced per sample: at sensor rates that would dominate the write path,
@@ -472,7 +496,7 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 		}
 	}
 	if capturesApplications {
-		manifest.PreRollLost = m.preRollLost
+		manifest.PreRollLost = m.preRollLostInWindowLocked(origin, opts.PreRollDuration)
 		preRollCount, earliestPreRoll, err := m.flushPreRoll(dir, origin, opts.PreRollDuration)
 		if err != nil {
 			_ = os.RemoveAll(dir)
@@ -543,9 +567,16 @@ func (m *Manager) ActiveSession(key string) (CaptureSession, bool) {
 	return CaptureSession{ID: a.manifest.ID, Directory: a.dir, RequestBootNanos: a.manifest.RequestBootNanos, BootID: a.manifest.BootID, CampaignKey: a.key}, true
 }
 
-// ActiveEpisodeKeys returns the sorted concurrency keys of active episodes.
-// AdHocEpisodeKey marks a campaign-less episode; every other key is a
-// campaign name.
+// ActiveEpisodeKeys returns the sorted concurrency keys of episodes that are
+// still capturing. AdHocEpisodeKey marks a campaign-less episode; every other
+// key is a campaign name.
+//
+// An episode inside its post-seal drain is deliberately absent: it holds no key
+// any more, its capture adapters have stopped, and the next episode for that
+// campaign may start while it is still accepting late records. Callers that
+// mean "is this campaign busy" want exactly this list; callers that mean "which
+// episodes can still receive a record" want the drain window as well, and that
+// question is answered inside RecordApplication rather than here.
 func (m *Manager) ActiveEpisodeKeys() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -594,29 +625,40 @@ func (m *Manager) ApplyCaptureResults(key string, results []CaptureResult) error
 	return writeManifest(a.dir, a.manifest)
 }
 
-// Interrupt finalizes an active episode after adapter startup failed. Existing
-// monotonic data is retained for auditability and is never silently deleted.
-// An interrupted episode drains for late application records exactly as a
-// stopped one does: the records an application still owes are no less its own
-// for the episode having ended badly.
+// Interrupt finalizes an active episode that ended badly. Existing monotonic
+// data is retained for auditability and is never silently deleted. An
+// interrupted episode drains for late application records exactly as a stopped
+// one does: the records an application still owes are no less its own for the
+// episode having ended badly.
 func (m *Manager) Interrupt(key, reason string) (Manifest, error) {
-	m.mu.Lock()
-	a := m.active[key]
-	if a == nil {
-		m.mu.Unlock()
-		return Manifest{}, ErrNoActiveEpisode
+	return m.interrupt(key, reason, true)
+}
+
+// InterruptWithoutDrain finalizes an episode that never began capturing, and
+// returns immediately instead of serving its post-seal drain.
+//
+// The drain buys exactly one thing: time for an application to file a record
+// about the samples it read from this episode. An episode whose capture
+// adapters failed to start delivered no samples to anyone, so there is no such
+// record outstanding and nothing to wait for. Paying the drain there is pure
+// latency on a failing path, and the caller holds its own start/stop lock
+// across it, so a flapping camera would stall every other start and stop on the
+// device for one drain per attempt.
+//
+// Use this only where the absence of delivered samples is certain. Any episode
+// that captured, however briefly, must go through Interrupt.
+func (m *Manager) InterruptWithoutDrain(key, reason string) (Manifest, error) {
+	return m.interrupt(key, reason, false)
+}
+
+func (m *Manager) interrupt(key, reason string, drain bool) (Manifest, error) {
+	a, err := m.beginSeal(key, drain)
+	if err != nil {
+		return Manifest{}, err
 	}
-	if a.cancel != nil {
-		a.cancel()
-	}
-	m.mu.Unlock()
-	if a.done != nil {
-		<-a.done
-	}
-	m.drainSeal(a)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active[key] != a {
+	if !m.stillOpenLocked(a) {
 		return Manifest{}, ErrNoActiveEpisode
 	}
 	return m.finalizeLocked(a, "interrupted", reason)
@@ -816,10 +858,13 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 		stamp = record.ClientBootNanos
 	}
 	stored := storedApplicationRecord{ApplicationRecord: record, AppID: appID, AgentReceiptBootNanos: receipt, ClientTimestampAccepted: accepted, TimestampUncertaintyNanos: (after - before + 1) / 2}
-	// Every active episode that selected the applications source receives the
-	// record on its own timeline; episodes that excluded it are skipped.
+	// Every open episode that selected the applications source receives the
+	// record on its own timeline; episodes that excluded it are skipped. Open
+	// means capturing OR inside its post-seal drain: the drain exists precisely
+	// so a record written about the samples an episode just produced still
+	// reaches it, and an episode in that window has left m.active for m.sealing.
 	recorded := false
-	for _, a := range m.active {
+	for _, a := range m.openEpisodesLocked() {
 		if !a.capturesApplications {
 			continue
 		}
@@ -866,13 +911,49 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 // is always the oldest arrival and dropping from the front is provably correct.
 // Measuring the client-supplied stamp instead let one forward-dated entry sit at
 // the head and hold back the eviction of genuinely older entries behind it.
+// Only a record dropped while still inside its window is a loss, and the two
+// reasons are therefore counted apart: an entry that aged out is no longer
+// pre-roll for any episode that could start now, so its departure costs nobody
+// anything, while an entry evicted by the byte budget WOULD have reached the
+// next episode and did not.
 func (m *Manager) evictPreRoll(now int64) {
 	cutoff := now - preRollWindow.Nanoseconds()
 	for len(m.preRoll) > 0 && (m.preRoll[0].receiptNanos < cutoff || m.preRollBytes > preRollLimit) {
+		if m.preRoll[0].receiptNanos >= cutoff {
+			m.preRollEvicted = append(m.preRollEvicted, m.preRoll[0].receiptNanos)
+		}
 		m.preRollBytes -= len(m.preRoll[0].encoded)
 		m.preRoll = m.preRoll[1:]
-		m.preRollLost++
 	}
+	// The eviction log is itself a pre-roll window's worth of history: an
+	// eviction older than the widest window an episode can ask for can no
+	// longer be any episode's loss, so it is forgotten rather than accumulated.
+	kept := m.preRollEvicted[:0]
+	for _, receipt := range m.preRollEvicted {
+		if receipt >= cutoff {
+			kept = append(kept, receipt)
+		}
+	}
+	m.preRollEvicted = kept
+}
+
+// preRollLostInWindowLocked counts the records the ring dropped, while they
+// were still inside their window, that would have reached an episode starting
+// at origin with the requested pre-roll depth. This is what an episode's
+// pre_roll_lost has always claimed to mean.
+func (m *Manager) preRollLostInWindowLocked(origin int64, requested time.Duration) uint64 {
+	window := preRollWindow
+	if requested > 0 && requested < window {
+		window = requested
+	}
+	cutoff := origin - window.Nanoseconds()
+	var lost uint64
+	for _, receipt := range m.preRollEvicted {
+		if receipt >= cutoff && receipt <= origin {
+			lost++
+		}
+	}
+	return lost
 }
 
 // flushPreRoll copies the buffered records inside the requested window into a
@@ -936,33 +1017,56 @@ func abs64(v int64) int64 {
 	return v
 }
 
-// drainSeal holds an episode open for late application records after its
-// capture adapters have stopped and before it is finalized. It must be called
-// with m.mu released: the whole point is that RecordApplication proceeds
-// normally throughout, so records written about the samples the episode just
-// produced are still filed into that episode. Episodes that do not capture
-// applications have nothing to wait for and never sleep.
-func (m *Manager) drainSeal(a *activeEpisode) {
-	if a.capturesApplications && a.drain > 0 {
-		time.Sleep(a.drain)
+// openEpisodesLocked returns every episode that can still receive a record:
+// the capturing ones in m.active and the ones serving a post-seal drain in
+// m.sealing. Callers hold m.mu.
+func (m *Manager) openEpisodesLocked() []*activeEpisode {
+	open := make([]*activeEpisode, 0, len(m.active)+len(m.sealing))
+	for _, a := range m.active {
+		open = append(open, a)
 	}
+	return append(open, m.sealing...)
 }
 
-// Stop finalizes the episode keyed by the given campaign name
-// (AdHocEpisodeKey for campaign-less episodes).
+// wantsDrain reports whether this episode has a post-seal drain to serve.
+// Episodes that do not capture applications have nothing to wait for.
+func (a *activeEpisode) wantsDrain() bool {
+	return a.capturesApplications && a.drain > 0
+}
+
+// beginSeal ends capture for the episode keyed by key and serves its post-seal
+// drain, returning the episode ready to be finalized. It is the shared front
+// half of Stop and Interrupt.
 //
-// For an episode that captures applications the window for application records
-// does not close when the capture adapters do: the episode stays in m.active
-// for its configured drain (see drainSeal) so an application that scores
-// asynchronously can still file its verdict here. StoppedEpisodeNS is stamped
-// in finalizeLocked, after the drain, so records that arrive during the drain
-// carry an EpisodeNanos below it exactly as live ones do.
-func (m *Manager) Stop(key string) (Manifest, error) {
+// The drain exists so that a record an application writes about the samples it
+// has just read still lands in the episode those samples came from, so
+// RecordApplication has to proceed normally throughout and the sleep is
+// therefore taken with m.mu released.
+//
+// The campaign key is released BEFORE the sleep, not after. A draining episode
+// is no longer capturing: its cameras are off and its adapters have stopped.
+// Leaving it in m.active for the drain made its campaign look busy to the
+// trigger path, which skips any campaign named in ActiveEpisodeKeys, so a
+// matching record arriving inside the window was dropped outright -- not
+// queued, not delayed. With DefaultSealDrain at two seconds and every campaign
+// paying it (campaign plans always select the applications source), a second
+// person walking in within two seconds of the previous episode produced no
+// recording at all, while the detection itself was filed into the episode whose
+// cameras had already stopped. An event with no video is the exact failure this
+// platform exists to prevent.
+//
+// Moving the episode to m.sealing rather than merely flagging it keeps
+// Manager.Start's "one episode per key" rule doing the work it already does:
+// the key is genuinely free, so the next episode is admitted, and there is
+// still no way to have two capturing episodes for one campaign.
+// drain false skips the wait entirely; see InterruptWithoutDrain for the one
+// caller that may.
+func (m *Manager) beginSeal(key string, drain bool) (*activeEpisode, error) {
 	m.mu.Lock()
 	a := m.active[key]
 	if a == nil {
 		m.mu.Unlock()
-		return Manifest{}, ErrNoActiveEpisode
+		return nil, ErrNoActiveEpisode
 	}
 	if a.cancel != nil {
 		a.cancel()
@@ -971,10 +1075,56 @@ func (m *Manager) Stop(key string) (Manifest, error) {
 	if a.done != nil {
 		<-a.done
 	}
-	m.drainSeal(a)
+	if !drain || !a.wantsDrain() {
+		return a, nil
+	}
+	m.mu.Lock()
+	if m.active[key] != a {
+		m.mu.Unlock()
+		return nil, ErrNoActiveEpisode
+	}
+	delete(m.active, key)
+	a.draining = true
+	m.sealing = append(m.sealing, a)
+	m.mu.Unlock()
+	time.Sleep(a.drain)
+	return a, nil
+}
+
+// stillOpenLocked reports whether an episode returned by beginSeal is still the
+// manager's to finalize, which is the post-drain half of the identity check
+// Stop and Interrupt have always made.
+func (m *Manager) stillOpenLocked(a *activeEpisode) bool {
+	if !a.draining {
+		return m.active[a.key] == a
+	}
+	for _, sealing := range m.sealing {
+		if sealing == a {
+			return true
+		}
+	}
+	return false
+}
+
+// Stop finalizes the episode keyed by the given campaign name
+// (AdHocEpisodeKey for campaign-less episodes).
+//
+// For an episode that captures applications the window for application records
+// does not close when the capture adapters do: the episode stays open for its
+// configured drain (see beginSeal) so an application that scores asynchronously
+// can still file its verdict here. It gives up its campaign key as it enters
+// that window, so the campaign can start its next episode immediately.
+// StoppedEpisodeNS is stamped in finalizeLocked, after the drain, so records
+// that arrive during the drain carry an EpisodeNanos below it exactly as live
+// ones do.
+func (m *Manager) Stop(key string) (Manifest, error) {
+	a, err := m.beginSeal(key, true)
+	if err != nil {
+		return Manifest{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active[key] != a {
+	if !m.stillOpenLocked(a) {
 		return Manifest{}, ErrNoActiveEpisode
 	}
 	return m.finalizeLocked(a, "complete", "")
@@ -1035,8 +1185,25 @@ func (m *Manager) finalizeLocked(a *activeEpisode, state, reason string) (Manife
 	if err := os.Rename(a.dir, final); err != nil {
 		return Manifest{}, err
 	}
-	delete(m.active, a.key)
+	m.forgetLocked(a)
 	return a.manifest, nil
+}
+
+// forgetLocked drops a finalized episode from whichever collection holds it:
+// m.active while it was capturing, m.sealing once it entered its drain and gave
+// up its campaign key.
+func (m *Manager) forgetLocked(a *activeEpisode) {
+	if !a.draining {
+		delete(m.active, a.key)
+		return
+	}
+	for i, sealing := range m.sealing {
+		if sealing != a {
+			continue
+		}
+		m.sealing = append(m.sealing[:i], m.sealing[i+1:]...)
+		return
+	}
 }
 
 // Status reports one active episode for status displays: the ad-hoc episode

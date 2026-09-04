@@ -313,10 +313,15 @@ type Manifest struct {
 	// cameras/<source>/playable.mp4 or why the one it wrote omits frames.
 	// Absence of a note plus absence of the file means the episode captured
 	// no camera; a note is the seal's honest account of a mux it refused.
-	PlayableNotes     []string `json:"playable_notes,omitempty"`
-	PreRollLost       uint64   `json:"pre_roll_lost"`
-	PreRollAccounting string   `json:"pre_roll_accounting"`
-	ModelIO           ModelIO  `json:"model_io"`
+	PlayableNotes []string `json:"playable_notes,omitempty"`
+	// PreRollLost counts the application records that would have reached THIS
+	// episode's pre-roll window and did not, because the ring buffer hit its
+	// byte budget and dropped them while they were still inside their window.
+	// Records that merely aged out of the ring are not counted: they were no
+	// longer pre-roll for anything, so nothing was lost.
+	PreRollLost       uint64  `json:"pre_roll_lost"`
+	PreRollAccounting string  `json:"pre_roll_accounting"`
+	ModelIO           ModelIO `json:"model_io"`
 }
 
 type StartOptions struct {
