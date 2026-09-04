@@ -149,7 +149,23 @@ When connecting to a device, the CLI automatically checks for clock skew. If the
    ```
    This exposes `wendycloud.v1.CertificateService` on the configured listen address (default `:50051`).
 
-### Provision a device
+### Authenticate the CLI
+
+Do this first: `wendy device enroll` mints its enrollment token from your stored
+auth session, so the CLI has to be logged in to the same pki-core before it can
+enroll anything. `--api-key` selects the local pki-core flow.
+
+```sh
+wendy auth login \
+  --api-key <key-from-config.yaml> \
+  --cloud-grpc <your-lan-ip>:50051
+```
+
+The same step issues the CLI its own client certificate, which is what lets
+`wendy device version`, `wendy run`, and the other device commands connect over
+mTLS afterwards.
+
+### Enroll a device
 
 Find your machine's LAN IP (the address the device can reach):
 
@@ -157,23 +173,12 @@ Find your machine's LAN IP (the address the device can reach):
 ifconfig | grep "inet " | grep -v 127.0.0.1
 ```
 
-Then provision the target device:
+Then enroll the target device:
 
 ```sh
-wendy device provision \
-  --cloud <your-lan-ip>:50051 \
-  --api-key <key-from-config.yaml> \
+wendy device enroll \
+  --cloud-grpc <your-lan-ip>:50051 \
   --name my-device
-```
-
-### Authenticate the CLI
-
-Issue a client certificate from the same pki-core so the CLI can connect over mTLS:
-
-```sh
-wendy auth login-local \
-  --cloud <your-lan-ip>:50051 \
-  --api-key <key-from-config.yaml>
 ```
 
 After this, `wendy device version`, `wendy run`, and other device commands automatically use the mTLS port (plaintext port + 1) when the device's Avahi advertisement includes `tls=true`.
