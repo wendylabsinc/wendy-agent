@@ -1191,9 +1191,6 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 
 	for _, d := range collection.USBDevices {
 		deviceType := "USB"
-		if d.IsESP32 {
-			deviceType = "ESP32"
-		}
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
 				Name:          discovery.SanitiseDisplayName(d.DisplayName),
