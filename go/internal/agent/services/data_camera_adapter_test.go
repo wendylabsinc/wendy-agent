@@ -383,21 +383,34 @@ func TestSnapshotSkipsTruncatedFrameOnAlignedTransport(t *testing.T) {
 	}
 }
 
-func TestHubCollisionFallsBackToExistingParameters(t *testing.T) {
-	video := NewVideoService(context.Background(), zap.NewNop())
+// newExplicitlyHeldHub builds a hub as a dashboard viewer's explicit
+// 1920x1080@30 StreamVideo request would, registered under /dev/video0.
+func newExplicitlyHeldHub(t *testing.T, video *VideoService) (hub *deviceHub, viewerID int, cancel context.CancelFunc) {
+	t.Helper()
 	hctx, hcancel := context.WithCancel(context.Background())
-	existing := &deviceHub{subs: make(map[int]chan *videoFrame), subDrops: make(map[int]uint64), ctx: hctx, cancel: hcancel, done: make(chan struct{}), width: 1920, height: 1080, framerate: 30}
-	viewerID, _, err := existing.subscribe()
+	hub = &deviceHub{subs: make(map[int]chan *videoFrame), subDrops: make(map[int]uint64), ctx: hctx, cancel: hcancel, done: make(chan struct{}), width: 1920, height: 1080, framerate: 30}
+	viewerID, _, err := hub.subscribeAs(hubHolderStreamClient)
 	if err != nil {
 		t.Fatal(err)
 	}
-	video.hubs["/dev/video0"] = existing
+	video.hubs["/dev/video0"] = hub
+	return hub, viewerID, hcancel
+}
+
+// A capture that asserts no parameters keeps the old fallback: it joins the
+// running hub at whatever parameters it has and reports them as achieved.
+func TestParameterlessCaptureFallsBackToExistingParameters(t *testing.T) {
+	video := NewVideoService(context.Background(), zap.NewNop())
+	existing, viewerID, _ := newExplicitlyHeldHub(t, video)
 	adapter := &cameraDataAdapter{video: video}
 
-	req := &agentpb.StreamVideoRequest{DeviceId: 0, Width: 1280, Height: 720, Framerate: 15}
-	hub, id, ch, w, h, fps, err := adapter.subscribeHub(context.Background(), "/dev/video0", req)
+	req := &agentpb.StreamVideoRequest{DeviceId: 0}
+	hub, id, ch, w, h, fps, restarted, err := adapter.subscribeHub(context.Background(), "/dev/video0", req)
 	if err != nil {
 		t.Fatalf("collision failed the episode: %v", err)
+	}
+	if restarted {
+		t.Fatal("a parameter-less capture must never restart a running producer")
 	}
 	if hub != existing || ch == nil {
 		t.Fatal("did not join the existing hub")
@@ -409,16 +422,37 @@ func TestHubCollisionFallsBackToExistingParameters(t *testing.T) {
 	existing.unsubscribe(viewerID)
 }
 
+// A capture with explicit campaign parameters conflicting with a hub held at
+// another consumer's explicit parameters is refused by name, never downgraded.
+func TestExplicitCaptureRefusedAgainstExplicitlyHeldHub(t *testing.T) {
+	video := NewVideoService(context.Background(), zap.NewNop())
+	existing, viewerID, _ := newExplicitlyHeldHub(t, video)
+	defer existing.unsubscribe(viewerID)
+	adapter := &cameraDataAdapter{video: video}
+
+	req := &agentpb.StreamVideoRequest{DeviceId: 0, Width: 1280, Height: 720, Framerate: 15}
+	_, _, _, _, _, _, _, err := adapter.subscribeHub(context.Background(), "/dev/video0", req)
+	if !errors.Is(err, errCameraHeldExplicitly) {
+		t.Fatalf("expected errCameraHeldExplicitly, got %v", err)
+	}
+	for _, want := range []string{hubHolderStreamClient, "1920x1080 at 30 fps", "1280x720 at 15 fps"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not name %q", err.Error(), want)
+		}
+	}
+	if existing.wasRestarted() {
+		t.Fatal("refused takeover must not restart the held hub")
+	}
+}
+
+// A parameter-less capture joining a hub at someone else's parameters still
+// records requested-versus-achieved in the manifest. The rate cap here (10 Hz)
+// is deliberately below the smallest source framerate, so the request asserts
+// nothing at the source and the cap is enforced adapter-side.
 func TestStartOneRecordsRequestedVersusAchievedOnCollision(t *testing.T) {
 	video := NewVideoService(context.Background(), zap.NewNop())
-	hctx, hcancel := context.WithCancel(context.Background())
-	existing := &deviceHub{subs: make(map[int]chan *videoFrame), subDrops: make(map[int]uint64), ctx: hctx, cancel: hcancel, done: make(chan struct{}), width: 1920, height: 1080, framerate: 30}
-	viewerID, _, err := existing.subscribe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	existing, viewerID, _ := newExplicitlyHeldHub(t, video)
 	defer existing.unsubscribe(viewerID)
-	video.hubs["/dev/video0"] = existing
 	adapter := &cameraDataAdapter{video: video}
 
 	stop := make(chan struct{})
@@ -439,7 +473,7 @@ func TestStartOneRecordsRequestedVersusAchievedOnCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := data.CaptureSession{Directory: t.TempDir(), RequestBootNanos: origin}
-	source := data.Source{ID: "v4l2:/dev/video0", Kind: "camera", Capture: &data.SourceCapture{Rate: 15, MaxResolution: "1280x720"}}
+	source := data.Source{ID: "v4l2:/dev/video0", Kind: "camera", Capture: &data.SourceCapture{Rate: 10}}
 	capture, err := adapter.startOne(context.Background(), session, source, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -455,11 +489,51 @@ func TestStartOneRecordsRequestedVersusAchievedOnCollision(t *testing.T) {
 	if !strings.Contains(detail, "capturing at 1920x1080 at 30 fps") || !strings.Contains(detail, "requested") {
 		t.Fatalf("requested-vs-achieved resolution not recorded: %q", detail)
 	}
-	if !strings.Contains(detail, "rate cap 15 Hz") {
+	if !strings.Contains(detail, "rate cap 10 Hz") {
 		t.Fatalf("rate cap note not recorded: %q", detail)
 	}
 	if results[0].Count == 0 {
 		t.Fatal("no frames captured through the existing hub")
+	}
+}
+
+// A refused camera source must not fail the episode: Start continues, and the
+// refusal is delivered at Stop as that source's manifest entry, naming who
+// holds the camera and at what parameters.
+func TestStartRecordsRefusalAndContinuesEpisode(t *testing.T) {
+	video := NewVideoService(context.Background(), zap.NewNop())
+	existing, viewerID, _ := newExplicitlyHeldHub(t, video)
+	defer existing.unsubscribe(viewerID)
+	adapter := &cameraDataAdapter{video: video}
+
+	_, origin, _, err := data.CaptureReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := data.CaptureSession{Directory: t.TempDir(), RequestBootNanos: origin}
+	source := data.Source{ID: "v4l2:/dev/video0", Kind: "camera", Detail: "USB Cam", Capture: &data.SourceCapture{Rate: 15, MaxResolution: "1280x720"}}
+	capture, err := adapter.Start(context.Background(), session, []data.Source{source})
+	if err != nil {
+		t.Fatalf("a refused camera source failed the whole episode: %v", err)
+	}
+	if capture == nil {
+		t.Fatal("refusal produced no capture group, so the manifest would never see the refusal note")
+	}
+	results, err := capture.Stop(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SourceID != "v4l2:/dev/video0" {
+		t.Fatalf("results = %+v", results)
+	}
+	detail := results[0].SourceDetail
+	for _, want := range []string{"not captured", hubHolderStreamClient, "1920x1080 at 30 fps", "1280x720 at 15 fps"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("refusal detail %q does not name %q", detail, want)
+		}
+	}
+	if results[0].Count != 0 {
+		t.Fatalf("refused source claims %d captured frames", results[0].Count)
 	}
 }
 

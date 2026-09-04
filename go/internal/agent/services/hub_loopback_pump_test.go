@@ -379,3 +379,179 @@ func TestPumpWritesFramePayloadVerbatim(t *testing.T) {
 		t.Errorf("wrote %v, want %v (payload must reach the node unaltered)", writer.writes[0], want)
 	}
 }
+
+// TestPumpSignalsRejoinAfterCaptureTakeover: a hub torn down by an episode
+// capture takeover must not end the data plane. The pump reports the restart
+// so Run rejoins the replacement hub instead of stopping.
+func TestPumpSignalsRejoinAfterCaptureTakeover(t *testing.T) {
+	hub, subID, frames := newPumpTestHub(t)
+	writer := newFakeLoopbackWriter(0)
+	pump := newHubLoopbackPump(zap.NewNop(), "v4l2:/dev/video0", "/dev/video200")
+
+	// Simulate takeOverDefaultedHub plus the old producer's teardown: mark the
+	// hub restarted, then close the subscriber channel as runProducer does.
+	hub.mu.Lock()
+	hub.restarted = true
+	hub.mu.Unlock()
+	close(frames)
+
+	err := pump.pump(context.Background(), hub, subID, frames, writer)
+	if !errors.Is(err, errLoopbackHubRestarted) {
+		t.Fatalf("pump returned %v, want errLoopbackHubRestarted", err)
+	}
+}
+
+// TestPumpGatesRejoinedStreamToRandomAccess: after a rejoin the node's new
+// stream must begin on a random-access unit, and the frames the gate skipped
+// are reported on the next binding like hub-side drops, never lost silently.
+func TestPumpGatesRejoinedStreamToRandomAccess(t *testing.T) {
+	hub, subID, frames := newPumpTestHub(t)
+	writer := newFakeLoopbackWriter(100)
+	pump := newHubLoopbackPump(zap.NewNop(), "v4l2:/dev/video0", "/dev/video200")
+
+	// A bare IDR without SPS/PPS is a whole access unit but not a
+	// random-access one; the gate must skip it.
+	frames <- bindableFrame(7, 700, 5)
+	rau := &videoFrame{
+		data:             append([]byte(nil), testRAUFrame...),
+		codec:            agentpb.VideoCodec_VIDEO_CODEC_H264,
+		auAligned:        true,
+		sampleID:         8,
+		receiptBootNanos: 800,
+	}
+	frames <- rau
+	close(frames)
+
+	if _, err := pump.pumpFrom(context.Background(), hub, subID, frames, writer, true, 0); err != nil {
+		t.Fatalf("pumpFrom: %v", err)
+	}
+	if len(writer.writes) != 1 {
+		t.Fatalf("wrote %d frames, want only the random-access unit", len(writer.writes))
+	}
+	binding, ok := pump.Bindings().Lookup(100)
+	if !ok {
+		t.Fatal("no binding recorded for the written frame")
+	}
+	if binding.SampleID != 8 {
+		t.Fatalf("binding sample id = %d, want 8", binding.SampleID)
+	}
+	if binding.HubDropsBefore != 1 {
+		t.Fatalf("HubDropsBefore = %d, want 1: the gated frame never reached the node and must be reported", binding.HubDropsBefore)
+	}
+}
+
+// TestPumpRunRejoinsReplacementHub drives Run across a capture takeover: the
+// pump must survive the restart as one more parameter-less subscriber, keep
+// the same writer, and continue recording bindings from the replacement hub.
+func TestPumpRunRejoinsReplacementHub(t *testing.T) {
+	svc := newTestVideoService(nil, nil)
+	fp := installFakeProducers(svc)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	writer := newFakeLoopbackWriter(400)
+	restore := openLoopbackFrameWriter
+	openLoopbackFrameWriter = func(string) (loopbackFrameWriter, error) { return writer, nil }
+	defer func() { openLoopbackFrameWriter = restore }()
+
+	pump := newHubLoopbackPump(zap.NewNop(), "v4l2:/dev/video0", "/dev/video200")
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- pump.Run(ctx, svc, videoSource{kind: sourceV4L2, key: "/dev/video0", path: "/dev/video0"}, 0)
+	}()
+
+	// Wait for the pump's parameter-less join to create the defaulted hub.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && fp.count() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if fp.count() == 0 {
+		t.Fatal("pump never created a hub")
+	}
+	fp.hub(0).broadcast(mustRAUVideoFrame(1))
+	waitForBindings(t, pump, 1)
+
+	// A campaign takes the camera over at explicit parameters.
+	req := &agentpb.StreamVideoRequest{DeviceId: 0, Width: 640, Height: 480, Framerate: 15}
+	newHub, captureID, _, _, _, _, restarted, err := svc.joinHubForCapture(ctx, "/dev/video0", req)
+	if err != nil || !restarted {
+		t.Fatalf("takeover failed: restarted=%v err=%v", restarted, err)
+	}
+	defer newHub.unsubscribe(captureID)
+
+	// The pump rejoins the replacement hub and keeps binding frames. Keep
+	// broadcasting until its binding lands: the rejoin is asynchronous.
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && pump.Bindings().Len() < 2 {
+		newHub.broadcast(mustRAUVideoFrame(0))
+		time.Sleep(2 * time.Millisecond)
+	}
+	if pump.Bindings().Len() < 2 {
+		t.Fatal("pump recorded no binding from the replacement hub")
+	}
+
+	cancel()
+	if err := <-runDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run returned %v, want context.Canceled", err)
+	}
+	if !writer.closed {
+		t.Fatal("writer not closed on Run exit")
+	}
+}
+
+// mustRAUVideoFrame builds an access-unit-aligned SPS/PPS/IDR frame the hub
+// stamps with its own sample identity at broadcast.
+func mustRAUVideoFrame(_ uint64) *videoFrame {
+	return &videoFrame{
+		data:      append([]byte(nil), testRAUFrame...),
+		codec:     agentpb.VideoCodec_VIDEO_CODEC_H264,
+		auAligned: true,
+	}
+}
+
+// TestPumpReturnsUnreportedLossesOnRestart: when the hub is torn down by a
+// capture takeover, this subscription will never write another binding, so
+// everything still unreported (the carried count plus hub drops since the last
+// written frame) must be handed back for the replacement subscription's first
+// binding.
+func TestPumpReturnsUnreportedLossesOnRestart(t *testing.T) {
+	hub, subID, frames := newPumpTestHub(t)
+	writer := newFakeLoopbackWriter(0)
+	pump := newHubLoopbackPump(zap.NewNop(), "v4l2:/dev/video0", "/dev/video200")
+
+	hub.mu.Lock()
+	hub.subDrops[subID] = 3
+	hub.restarted = true
+	hub.mu.Unlock()
+	close(frames)
+
+	carried, err := pump.pumpFrom(context.Background(), hub, subID, frames, writer, false, 2)
+	if !errors.Is(err, errLoopbackHubRestarted) {
+		t.Fatalf("pumpFrom returned %v, want errLoopbackHubRestarted", err)
+	}
+	if carried != 5 {
+		t.Fatalf("carried = %d, want 5 (2 carried in + 3 hub drops never reported)", carried)
+	}
+}
+
+// TestPumpReportsCarriedLossesOnFirstBinding: losses inherited from a previous
+// subscription ride on the first binding the new subscription writes.
+func TestPumpReportsCarriedLossesOnFirstBinding(t *testing.T) {
+	hub, subID, frames := newPumpTestHub(t)
+	writer := newFakeLoopbackWriter(50)
+	pump := newHubLoopbackPump(zap.NewNop(), "v4l2:/dev/video0", "/dev/video200")
+
+	frames <- bindableFrame(9, 900, 5)
+	close(frames)
+
+	if _, err := pump.pumpFrom(context.Background(), hub, subID, frames, writer, false, 4); err != nil {
+		t.Fatalf("pumpFrom: %v", err)
+	}
+	binding, ok := pump.Bindings().Lookup(50)
+	if !ok {
+		t.Fatal("no binding recorded")
+	}
+	if binding.HubDropsBefore != 4 {
+		t.Fatalf("HubDropsBefore = %d, want the 4 carried losses", binding.HubDropsBefore)
+	}
+}

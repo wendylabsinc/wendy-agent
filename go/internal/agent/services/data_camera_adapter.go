@@ -82,13 +82,27 @@ func (a *cameraDataAdapter) Start(ctx context.Context, session data.CaptureSessi
 			continue
 		}
 		capture, err := a.startOne(ctx, session, source, devID)
+		if errors.Is(err, errCameraHeldExplicitly) {
+			// Another consumer holds this camera at explicitly requested
+			// parameters that conflict with the campaign's. Refusing this one
+			// source, with the named error in its manifest entry, is the
+			// honest outcome: the episode continues with its other sources and
+			// the manifest says exactly who holds the camera and at what
+			// parameters, instead of recording a capture the campaign did not
+			// ask for.
+			group.refused = append(group.refused, data.CaptureResult{
+				SourceID:     source.ID,
+				SourceDetail: strings.TrimSpace(source.Detail + " (not captured: " + err.Error() + ")"),
+			})
+			continue
+		}
 		if err != nil {
 			_, _ = group.Stop(context.Background())
 			return nil, fmt.Errorf("%s: %w", source.ID, err)
 		}
 		group.captures = append(group.captures, capture)
 	}
-	if len(group.captures) == 0 {
+	if len(group.captures) == 0 && len(group.refused) == 0 {
 		return nil, nil
 	}
 	return group, nil
@@ -135,11 +149,15 @@ func (a *cameraDataAdapter) startOne(ctx context.Context, session data.CaptureSe
 		index.Close()
 		return nil, err
 	}
-	hub, subID, frames, achievedW, achievedH, achievedFPS, err := a.subscribeHub(ctx, src.key, req)
+	hub, subID, frames, achievedW, achievedH, achievedFPS, restarted, err := a.subscribeHub(ctx, src.key, req)
 	if err != nil {
 		index.Close()
 		mappings.Close()
 		return nil, err
+	}
+	if restarted {
+		notes = append(notes, fmt.Sprintf("campaign capture parameters took over the camera: restarted the producer, previously running at producer-default parameters for parameter-less subscribers, at the requested %s; those subscribers reattached to the new stream",
+			describeStreamParams(achievedW, achievedH, achievedFPS)))
 	}
 	if achievedW != req.GetWidth() || achievedH != req.GetHeight() || achievedFPS != req.GetFramerate() {
 		notes = append(notes, fmt.Sprintf("stream already active with different parameters; requested %s, capturing at %s",
@@ -147,7 +165,10 @@ func (a *cameraDataAdapter) startOne(ctx context.Context, session data.CaptureSe
 			describeStreamParams(achievedW, achievedH, achievedFPS)))
 	}
 	captureCtx, cancel := context.WithCancel(context.Background())
-	c := &cameraCapture{source: source, session: session, dir: dir, hub: hub, subID: subID, frames: frames, index: index, mappingFile: mappings, ctx: captureCtx, cancel: cancel, done: make(chan struct{}), ready: make(chan error, 1), mode: mode, interval: interval.Nanoseconds(), rateCap: rateCap, notes: notes, lastSnapshotIdx: -1}
+	rejoin := func(ctx context.Context) (*deviceHub, int, chan *videoFrame, error) {
+		return a.video.joinHub(ctx, src.key, &agentpb.StreamVideoRequest{DeviceId: devID})
+	}
+	c := &cameraCapture{source: source, session: session, dir: dir, hub: hub, subID: subID, frames: frames, rejoin: rejoin, index: index, mappingFile: mappings, ctx: captureCtx, cancel: cancel, done: make(chan struct{}), ready: make(chan error, 1), mode: mode, interval: interval.Nanoseconds(), rateCap: rateCap, notes: notes, lastSnapshotIdx: -1}
 	go c.run()
 	select {
 	case err := <-c.ready:
@@ -226,20 +247,27 @@ func describeStreamParams(w, h, fps uint32) string {
 	return size + " at default rate"
 }
 
-// subscribeHub joins the device's frame hub. When the hub already runs with
-// different stream parameters (for example a live dashboard viewer or a model
-// subscriber), the episode must not fail: fall back to subscribing at the
-// existing parameters and let the capture reconcile adapter-side, reporting
-// requested-vs-achieved. The retry-and-fall-back logic is shared with the model
-// subscribe path, which needs exactly the same behavior.
-func (a *cameraDataAdapter) subscribeHub(ctx context.Context, key string, req *agentpb.StreamVideoRequest) (*deviceHub, int, chan *videoFrame, uint32, uint32, uint32, error) {
-	return a.video.joinHubReportingParams(ctx, key, req)
+// subscribeHub joins the device's frame hub with episode capture's parameter
+// priority (see joinHubForCapture): explicit campaign parameters win over a
+// hub running at defaults for parameter-less subscribers (the producer is
+// restarted, reported via the restarted return), an explicit conflict with
+// another explicit-parameter consumer is a named error rather than a silent
+// downgrade, and a capture that asserts no parameters joins whatever runs and
+// reports requested-vs-achieved.
+func (a *cameraDataAdapter) subscribeHub(ctx context.Context, key string, req *agentpb.StreamVideoRequest) (*deviceHub, int, chan *videoFrame, uint32, uint32, uint32, bool, error) {
+	return a.video.joinHubForCapture(ctx, key, req)
 }
 
-type cameraCaptureGroup struct{ captures []*cameraCapture }
+type cameraCaptureGroup struct {
+	captures []*cameraCapture
+	// refused carries the manifest entries of sources this episode did not
+	// capture because another consumer held the camera at conflicting explicit
+	// parameters. Delivered at Stop like every other capture result.
+	refused []data.CaptureResult
+}
 
 func (g *cameraCaptureGroup) Stop(ctx context.Context) ([]data.CaptureResult, error) {
-	var results []data.CaptureResult
+	results := append([]data.CaptureResult(nil), g.refused...)
 	var errs []error
 	for i := len(g.captures) - 1; i >= 0; i-- {
 		r, err := g.captures[i].Stop(ctx)
@@ -252,12 +280,23 @@ func (g *cameraCaptureGroup) Stop(ctx context.Context) ([]data.CaptureResult, er
 }
 
 type cameraCapture struct {
-	source             data.Source
-	session            data.CaptureSession
-	dir                string
-	hub                *deviceHub
-	subID              int
-	frames             chan *videoFrame
+	source  data.Source
+	session data.CaptureSession
+	dir     string
+	hub     *deviceHub
+	subID   int
+	frames  chan *videoFrame
+	// rejoin resubscribes to the device's hub, asserting no parameters. A
+	// capture that itself asserted none is a parameter-less subscriber, so
+	// when a concurrent episode's explicit campaign parameters restart the
+	// producer (takeOverDefaultedHub) this capture reattaches to the restarted
+	// stream instead of ending. A capture with explicit parameters never
+	// observes such a restart: its own explicit subscription refuses the
+	// takeover. Nil only in unit tests that drive a bare hub.
+	rejoin func(ctx context.Context) (*deviceHub, int, chan *videoFrame, error)
+	// carriedDrops accumulates subscriber-channel drops from hub
+	// subscriptions this capture already left when reattaching.
+	carriedDrops       uint64
 	index, mappingFile *os.File
 	segment            *os.File
 	segmentRel         string
@@ -356,7 +395,7 @@ func (c *cameraCapture) run() {
 			c.result.ClockDomain = "GSTREAMER_PIPE/AGENT_RECEIPT"
 			c.notes = append([]string{"pipeline PTS unavailable; canonical time uses bounded agent receipt"}, c.notes...)
 		}
-		subscriberDrops := c.hub.unsubscribe(c.subID)
+		subscriberDrops := c.hub.unsubscribe(c.subID) + c.carriedDrops
 		end := int64(0)
 		if _, receipt, _, err := c.receiptNow(); err == nil {
 			end = receipt
@@ -398,10 +437,20 @@ func (c *cameraCapture) run() {
 			return
 		case frame, ok := <-c.frames:
 			if !ok {
-				c.runErr = c.hub.terminalErr()
-				if c.runErr == nil {
-					c.runErr = errors.New("camera producer stopped")
+				if err := c.hub.terminalErr(); err != nil {
+					c.runErr = err
+					c.signalReady(err)
+					return
 				}
+				if c.rejoin != nil && c.hub.wasRestarted() {
+					if err := c.reattachAfterRestart(); err != nil {
+						c.runErr = err
+						c.signalReady(err)
+						return
+					}
+					continue
+				}
+				c.runErr = errors.New("camera producer stopped")
 				c.signalReady(c.runErr)
 				return
 			}
@@ -415,6 +464,37 @@ func (c *cameraCapture) run() {
 			c.signalReady(nil)
 		}
 	}
+}
+
+// reattachAfterRestart rejoins the device's hub after an explicit-parameter
+// capture takeover replaced the producer this parameter-less capture was
+// consuming. The old stream has ended; the new one must not be spliced into
+// the current segment, because a segment holds one sequence parameter set and
+// downstream reads it as one timeline. Closing the segment forces the next
+// write through ensureSegment's random-access gate
+// (errAwaitCameraRandomAccess), so the new stream starts a fresh,
+// independently decodable segment. Driver sequence numbers and access-unit
+// alignment are properties of the producer, so both classifications reset.
+func (c *cameraCapture) reattachAfterRestart() error {
+	c.carriedDrops += c.hub.unsubscribe(c.subID)
+	hub, subID, frames, err := c.rejoin(c.ctx)
+	if err != nil {
+		return err
+	}
+	c.hub, c.subID, c.frames = hub, subID, frames
+	if c.segment != nil {
+		if err := c.segment.Sync(); err != nil {
+			return err
+		}
+		if err := c.segment.Close(); err != nil {
+			return err
+		}
+		c.segment = nil
+	}
+	c.haveSequence = false
+	c.alignmentKnown = false
+	c.notes = append(c.notes, "camera producer was restarted at another episode's explicit capture parameters; this parameter-less capture reattached and continues in a new segment on the new stream")
+	return nil
 }
 
 // handleFrame dispatches one hub frame to the active capture mode.
