@@ -117,6 +117,32 @@ for p in "${CLOUD_PROTOS[@]}"; do
     CLOUD_M_OPTS="$CLOUD_M_OPTS --go-grpc_opt=M${p}=${CLOUD_PKG}"
 done
 
+# ---- Cloud v2 protos ----
+# wendycloud.v2 is vendored beside v1, not instead of it: v1 stays the shipping
+# wire contract until the fleet has crossed over (WDY-2824). Paths match
+# service-protos exactly so a re-copy is a plain cp and the imports need no
+# rewriting.
+CLOUD_V2_PKG="$MODULE/go/proto/gen/cloudpb/v2"
+CLOUD_V2_PROTOS=(
+    "wendycloud/v2/apps.proto"
+    "wendycloud/v2/assets.proto"
+    "wendycloud/v2/certificates.proto"
+    "wendycloud/v2/deployments.proto"
+    "wendycloud/v2/mesh.proto"
+    "wendycloud/v2/notifications.proto"
+    "wendycloud/v2/organizations.proto"
+    "wendycloud/v2/tunnel.proto"
+    "wendycloud/v2/users.proto"
+)
+
+# The import path ends in "/v2", which would name the Go package "v2"; the
+# ";cloudpbv2" suffix pins a usable name without editing the vendored protos.
+CLOUD_V2_M_OPTS=""
+for p in "${CLOUD_V2_PROTOS[@]}"; do
+    CLOUD_V2_M_OPTS="$CLOUD_V2_M_OPTS --go_opt=M${p}=${CLOUD_V2_PKG};cloudpbv2"
+    CLOUD_V2_M_OPTS="$CLOUD_V2_M_OPTS --go-grpc_opt=M${p}=${CLOUD_V2_PKG};cloudpbv2"
+done
+
 # ---- Wendy System API protos ----
 SYSTEM_PKG="$MODULE/go/proto/gen/systempb"
 SYSTEM_PROTOS=(
@@ -130,7 +156,7 @@ for p in "${SYSTEM_PROTOS[@]}"; do
 done
 
 # All M opts combined for cross-package imports
-ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $SYSTEM_M_OPTS"
+ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $CLOUD_V2_M_OPTS $SYSTEM_M_OPTS"
 
 echo "Generating Wendy Agent protos..."
 mkdir -p "$GEN_DIR/agentpb"
@@ -164,6 +190,17 @@ protoc \
     --go-grpc_out="$GEN_DIR/cloudpb" \
     --go-grpc_opt=module="$CLOUD_PKG" \
     ${CLOUD_PROTOS[@]}
+
+echo "Generating Wendy Cloud v2 protos..."
+mkdir -p "$GEN_DIR/cloudpb/v2"
+protoc \
+    --proto_path="$PROTO_DIR" \
+    --go_out="$GEN_DIR/cloudpb/v2" \
+    --go_opt=module="$CLOUD_V2_PKG" \
+    $ALL_M_OPTS \
+    --go-grpc_out="$GEN_DIR/cloudpb/v2" \
+    --go-grpc_opt=module="$CLOUD_V2_PKG" \
+    ${CLOUD_V2_PROTOS[@]}
 
 echo "Generating Wendy System API protos..."
 mkdir -p "$GEN_DIR/systempb"
