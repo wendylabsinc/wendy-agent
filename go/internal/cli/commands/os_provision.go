@@ -14,6 +14,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/enrolltoken"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"github.com/wendylabsinc/wendy/go/proto/gen/litepb"
@@ -108,8 +109,12 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 
 	// Device identity acts as both a TLS client (to the cloud) and a TLS server
 	// (agent gRPC and tunnel endpoints), so request both EKUs.
+	identityURIs := []string{certs.AssetURN(resolvedOrgID, assetID)}
+	if spiffeURI, ok := enrolltoken.TenantSPIFFEURIFromToken(tokenResp.GetEnrollmentToken()); ok {
+		identityURIs = append(identityURIs, spiffeURI)
+	}
 	csrPEM, err := certs.GenerateCSR([]byte(keyPEM), fmt.Sprintf("sh/wendy/%d/%d", resolvedOrgID, assetID),
-		certs.AssetURN(resolvedOrgID, assetID),
+		identityURIs,
 		x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return nil, fmt.Errorf("generating CSR: %w", err)

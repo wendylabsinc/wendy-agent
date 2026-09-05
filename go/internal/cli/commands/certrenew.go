@@ -180,7 +180,7 @@ func renewCSRFor(current config.CertificateInfo) (csrPEM, keyPEM string, err err
 	if err != nil {
 		return "", "", fmt.Errorf("generating key pair: %w", err)
 	}
-	csr, err := certs.GenerateCSR([]byte(newKeyPEM), cn, storedCertIdentityURN(current))
+	csr, err := certs.GenerateCSR([]byte(newKeyPEM), cn, []string{storedCertIdentityURN(current)})
 	if err != nil {
 		return "", "", fmt.Errorf("generating CSR: %w", err)
 	}

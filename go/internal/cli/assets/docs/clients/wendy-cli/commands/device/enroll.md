@@ -16,10 +16,15 @@ wendy device enroll [--name <name>] [--cloud-grpc <endpoint>] [flags]
 
 `wendy device enroll` creates an enrollment token using your stored auth session, then has the connected agent fetch its certificate. Run [`wendy cloud login`](../cloud/login.md) first.
 
-› **Certificate identity:** The CSR submitted during provisioning includes the
-› device's authoritative Wendy identity as a URI Subject Alternative Name
-› (`urn:wendy:org:‹org›:asset:‹assetID›`). The cloud certificate service
-› validates this SAN against the enrollment token at issuance time.
+› **Certificate identity:** The CSR submitted during provisioning always
+› includes the device's authoritative Wendy identity as a URI Subject
+› Alternative Name (`urn:wendy:org:‹org›:asset:‹assetID›`). When the
+› enrollment token carries a `tenant_uuid` claim, a second URI SAN
+› (`spiffe://wendy.sh/tenant/‹uuid›/service/asset-‹assetID›`) is added
+› alongside it — cloud requires that SPIFFE principal to sign a relay grant.
+› Organizations with no pki tenant get no `tenant_uuid` claim and receive only
+› the urn:wendy SAN, exactly as before. The cloud certificate service
+› validates these SANs against the enrollment token at issuance time.
 
 The enrolled device is registered in Wendy Cloud under a human-readable **name**. The name can be changed later with `wendy device rename`, so the command resolves it as follows:
 

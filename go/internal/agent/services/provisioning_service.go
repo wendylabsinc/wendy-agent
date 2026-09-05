@@ -9,7 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/enrolltoken"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
@@ -41,19 +42,47 @@ type provisioningState struct {
 
 type CloudDialer func(ctx context.Context, addr string) (*grpc.ClientConn, error)
 
-// DefaultCloudDialer connects to the cloud gRPC server with plaintext transport.
-func DefaultCloudDialer(ctx context.Context, addr string) (*grpc.ClientConn, error) {
-	if strings.HasSuffix(addr, ":443") {
-		return grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})))
-	}
-	return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+// cloudInsecureEnv opts the enrollment dial out of TLS. It exists only so a
+// developer can point the agent at a local plaintext pki-core; it must never
+// be set on a real device. Anything other than an explicit true value keeps
+// the dial on TLS.
+const cloudInsecureEnv = "WENDY_CLOUD_INSECURE"
+
+// cloudDialInsecure reports whether the operator explicitly asked for a
+// plaintext enrollment dial.
+func cloudDialInsecure() bool {
+	v, err := strconv.ParseBool(os.Getenv(cloudInsecureEnv))
+	return err == nil && v
 }
+
+// DefaultCloudDialer connects to the cloud gRPC server over TLS.
+//
+// TLS is the default for every address. Previously the transport was chosen by
+// a port heuristic — ":443" meant TLS, anything else meant plaintext — so a
+// cloudHost without a port became "<host>:50051" (see certificateServiceAddr)
+// and the enrollment token, a bearer credential, went out in cleartext to a
+// public host (WDY-2799). A downgrade now requires WENDY_CLOUD_INSECURE, so it
+// can only ever be a deliberate local-dev choice rather than a side effect of
+// how the caller happened to spell the address.
+func DefaultCloudDialer(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+	if cloudDialInsecure() {
+		return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+	return grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})))
+}
+
+// defaultCloudPort is appended to a cloudHost that carries no port. It is the
+// TLS port: a bare hostname denotes Wendy Cloud, which is TLS-only. It used to
+// be the plaintext provisioning port 50051, which is what made a port-less
+// host downgrade (WDY-2799). A local pki-core is still reachable by naming its
+// port explicitly ("localhost:50051") alongside WENDY_CLOUD_INSECURE.
+const defaultCloudPort = "443"
 
 func certificateServiceAddr(cloudHost string) string {
 	if _, _, err := net.SplitHostPort(cloudHost); err == nil {
 		return cloudHost
 	}
-	return net.JoinHostPort(cloudHost, "50051")
+	return net.JoinHostPort(cloudHost, defaultCloudPort)
 }
 
 // OnProvisionedFunc is called when provisioning completes successfully.
@@ -169,8 +198,14 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 	// as both a TLS client (to the cloud) and a TLS server (agent gRPC and tunnel
 	// endpoints), so request both EKUs.
 	commonName := fmt.Sprintf("sh/wendy/%d/%d", req.GetOrganizationId(), req.GetAssetId())
-	identityURN := certs.AssetURN(req.GetOrganizationId(), req.GetAssetId())
-	csrPEM, err := certs.GenerateCSR(keyPEM, commonName, identityURN,
+	identityURIs := []string{certs.AssetURN(req.GetOrganizationId(), req.GetAssetId())}
+	// Cloud will not sign a relay grant unless the CSR carries the tenant
+	// SPIFFE principal too. The tenant comes from the enrollment token, and is
+	// absent for orgs with no pki tenant — then we enroll exactly as before.
+	if spiffeURI, ok := enrolltoken.TenantSPIFFEURIFromToken(req.GetEnrollmentToken()); ok {
+		identityURIs = append(identityURIs, spiffeURI)
+	}
+	csrPEM, err := certs.GenerateCSR(keyPEM, commonName, identityURIs,
 		x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to generate CSR: %v", err)
@@ -178,6 +213,15 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 
 	// Connect to the cloud gRPC server.
 	cloudAddr := certificateServiceAddr(req.GetCloudHost())
+	if cloudDialInsecure() {
+		// The enrollment token is a bearer credential. If someone has opted out
+		// of TLS, say so loudly and name the host it is being sent to, so a
+		// stray environment variable on a real device is visible in the logs.
+		s.logger.Warn("Enrollment dial is PLAINTEXT: the enrollment token will be sent in cleartext",
+			zap.String("env", cloudInsecureEnv),
+			zap.String("addr", cloudAddr),
+		)
+	}
 	cloudConn, err := s.CloudDialer(ctx, cloudAddr)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "connecting to cloud: %v", err)
