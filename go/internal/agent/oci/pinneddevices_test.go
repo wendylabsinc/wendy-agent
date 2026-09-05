@@ -237,3 +237,44 @@ func TestPinnedDevices_SurviveSpecRoundTrip(t *testing.T) {
 		t.Errorf("pins after round-trip = %+v; want /dev/kfd", pins)
 	}
 }
+
+// The upgrade path has to persist. A container created before pins were
+// recorded gains its record on the next start even though no number moved —
+// caught on real hardware, where a Jetson's GPU container kept an empty
+// annotation across restarts because the caller only persisted on a change.
+func TestRefreshHostDeviceNumbers_RecordCompletedSignalsAPersist(t *testing.T) {
+	withStubbedStat(t, map[string][2]int64{"/dev/nvhost-gpu": {497, 1}})
+
+	spec := pinnedSpec()
+	spec.Linux.Devices = []LinuxDevice{{Path: "/dev/nvhost-gpu", Type: "c", Major: 497, Minor: 1}}
+
+	got := RefreshHostDeviceNumbers(spec)
+	if got.Changed() {
+		t.Errorf("Changed() = true; nothing moved (%+v)", got)
+	}
+	if !got.RecordCompleted {
+		t.Error("RecordCompleted = false; the record was written and must be persisted")
+	}
+	if !got.SpecModified() {
+		t.Error("SpecModified() = false; the caller would skip the write and the record would never land")
+	}
+	if len(decodePinnedDevices(spec)) != 1 {
+		t.Errorf("pins = %+v; want the device recorded", decodePinnedDevices(spec))
+	}
+}
+
+// Once recorded, a start must not rewrite the spec again — otherwise every
+// start of every GPU app becomes a containerd write.
+func TestRefreshHostDeviceNumbers_RecordCompletedOnlyOnce(t *testing.T) {
+	withStubbedStat(t, map[string][2]int64{"/dev/nvhost-gpu": {497, 1}})
+
+	spec := pinnedSpec()
+	spec.Linux.Devices = []LinuxDevice{{Path: "/dev/nvhost-gpu", Type: "c", Major: 497, Minor: 1}}
+
+	if first := RefreshHostDeviceNumbers(spec); !first.RecordCompleted {
+		t.Fatal("first refresh did not record")
+	}
+	if second := RefreshHostDeviceNumbers(spec); second.SpecModified() {
+		t.Errorf("second refresh reported SpecModified = true (%+v); want no further writes", second)
+	}
+}

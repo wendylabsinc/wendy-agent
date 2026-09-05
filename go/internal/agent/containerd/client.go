@@ -1783,13 +1783,19 @@ func (c *Client) refreshGPUDeviceNumbersForStart(ctx context.Context, container 
 
 	refresh := localoci.RefreshHostDeviceNumbers(&spec)
 
-	if refresh.Changed() {
+	if refresh.SpecModified() {
 		if perr := c.persistRefreshedSpec(ctx, container, info, &spec, appName); perr != nil {
 			c.logger.Warn("Could not persist refreshed device numbers; starting with the stored spec",
 				zap.String("app_name", appName), zap.Error(perr))
-		} else {
+		} else if refresh.Changed() {
 			c.logger.Info("Re-resolved stale host device numbers before start",
 				zap.String("app_name", appName), zap.Strings("devices", refresh.Updated))
+		} else {
+			// One-time upgrade for a container created before pins were
+			// recorded: nothing moved, but its cgroup-only devices now have a
+			// path attached and become repairable.
+			c.logger.Info("Recorded pinned device paths for an existing container",
+				zap.String("app_name", appName))
 		}
 	}
 

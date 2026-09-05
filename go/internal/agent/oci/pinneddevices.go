@@ -35,10 +35,21 @@ type DeviceRefresh struct {
 	// a device that is genuinely gone is a different problem from one that
 	// moved.
 	Missing []string
+	// RecordCompleted reports that the pin record was written or extended even
+	// though no number moved — the upgrade path for a container created before
+	// pins were recorded. Without it such a container would keep deriving its
+	// pins from the device list on every start and never gain a record for its
+	// cgroup-only devices, because the caller persists on Changed() alone and
+	// nothing had changed.
+	RecordCompleted bool
 }
 
-// Changed reports whether the spec was modified.
+// Changed reports whether any device number was repaired.
 func (r DeviceRefresh) Changed() bool { return len(r.Updated) > 0 }
+
+// SpecModified reports whether the spec needs persisting — a repaired number,
+// or a record that was completed on the way.
+func (r DeviceRefresh) SpecModified() bool { return r.Changed() || r.RecordCompleted }
 
 // RecordPinnedDevice notes that this spec pins path at major:minor, so the pair
 // can be re-resolved against the host later. Every site that writes an exact
@@ -171,6 +182,7 @@ func RefreshHostDeviceNumbers(spec *Spec) DeviceRefresh {
 	// entries.
 	if changed || recordIncomplete {
 		encodePinnedDevices(spec, pins)
+		out.RecordCompleted = !changed && recordIncomplete
 	}
 
 	sort.Strings(out.Updated)
