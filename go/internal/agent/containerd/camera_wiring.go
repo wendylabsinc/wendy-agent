@@ -85,61 +85,34 @@ func cameraConsumerNames(infos []containerCameraInfo) []string {
 }
 
 // twoPlaneConsumerNames returns the names of containers entitled to the
-// two-plane camera path: a Running task holding BOTH the sensor-read entitlement
-// and the camera entitlement (or its deprecated alias, video).
+// two-plane camera path: a Running task holding the camera entitlement (or its
+// deprecated alias, video).
 //
-// # Why both, and why neither alone is enough
+// # Why camera alone is the whole grant
 //
-// The two-plane path has two halves, and they are grants of different kinds.
+// The path has two halves. The data plane is a v4l2loopback device node the app
+// opens and reads, which is a device-node grant, and device-node grants are what
+// the camera entitlement is.
 //
-// The data plane is a v4l2loopback device node the app opens and reads. That is
-// a device-node grant, and device-node grants are what the camera entitlement
-// is. The sensor-read entitlement documents itself as granting "no device nodes;
-// raw device access remains the separate camera entitlement", and honouring
-// that sentence is the point: if holding sensors alone caused a readable
-// /dev/video* to appear in the container, sensors would have silently become a
-// device-access entitlement. So sensors alone must not create a node, and does
-// not here.
+// The control plane is frame identity: source id, sample id, canonical time and
+// uncertainty. It used to travel as its own gRPC stream, which is why this gate
+// once demanded a second entitlement to authorise it. It no longer does. Identity
+// now rides in-band, in the v4l2 buffer timestamp the agent writes when it feeds
+// the node, so the app that is entitled to the pixels receives the identity with
+// them and there is no second channel to authorise.
 //
-// The control plane is the frame identity stream, which carries source id,
-// sample id, canonical time, uncertainty and a sequence number. That is strictly
-// LESS than SensorService.Subscribe already gives an app holding sensors, which
-// carries every one of those fields plus the pixels. It widens nothing, so it
-// belongs to sensors and needs no new grant.
-//
-// Camera alone is not enough either, and this is the more interesting half. An
-// app holding only camera can already open the physical device today. What it
-// cannot do is prove which frame it saw: it is an independent second reader, so
-// the frame it scored is not provably the frame the episode recorded. Handing
-// such an app a hub-fed node without the identity stream would give it
-// better-looking pixels with the same unprovable join, which is the very defect
-// the harness exists to remove. The identity stream is what makes the node worth
-// having, and that stream is a sensors grant.
-//
-// Requiring both is therefore not belt-and-braces caution: each entitlement
-// covers exactly one plane, and one plane on its own does not deliver the
-// property. An app holding one of the two keeps precisely the behaviour it has
-// today, and nothing it already had is taken away.
+// That in-band carriage is what makes one entitlement correct rather than merely
+// convenient. The node is agent-fed, so the app is not an independent second
+// reader: the frame it scores is provably the frame the episode recorded, which
+// is the property the harness exists to deliver. An app holding camera without
+// the agent-fed path keeps exactly the behaviour it has today.
 func twoPlaneConsumerNames(infos []containerCameraInfo) []string {
-	var names []string
-	for _, info := range infos {
-		if !info.running {
-			continue
-		}
-		appID := info.labels[labelKeyAppID]
-		serviceName := info.labels[labelKeyServiceName]
-		if appconfig.ValidateAppID(appID) != nil || (serviceName != "" && appconfig.ValidateServiceName(serviceName) != nil) {
-			continue
-		}
-		entitlements := parseEntitlementsFromAnnotations(info.labels)
-		hasCamera := entitlementsContain(entitlements, appconfig.EntitlementCamera) ||
-			entitlementsContain(entitlements, appconfig.EntitlementVideo)
-		hasSensorRead := entitlementsContain(entitlements, appconfig.EntitlementSensorRead)
-		if hasCamera && hasSensorRead {
-			names = append(names, info.name)
-		}
-	}
-	return names
+	// Identical to the camera set, and deliberately still its own call. The two
+	// gates collapsed into one when frame identity moved in-band and the second
+	// entitlement went away; the two-plane pump keeps its own lifecycle, so the
+	// caller still says which set it means rather than relying on them being the
+	// same list forever.
+	return cameraConsumerNames(infos)
 }
 
 // shouldEnsureCameraNodes reports whether appCfg's entitlements include the

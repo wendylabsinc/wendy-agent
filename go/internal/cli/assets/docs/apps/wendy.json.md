@@ -546,26 +546,6 @@ holding it can start recordings. The socket is restored from container labels
 after agent restart; the entitlement never exposes the administrative agent
 socket, and grants no sensor read access.
 
-### `sensor-read`
-
-Allows an app to subscribe, read-only, to agent-hosted sensor streams through a
-separate app-private Unix socket. In practice it is permission to see the
-cameras and microphones the allowlist names.
-
-```json
-{ "type": "sensor-read", "allowlist": ["v4l2:/dev/video0"] }
-```
-
-The `allowlist` is required and must name at least one source id, written
-exactly as `wendy data sources` reports it. Omitting it is rejected rather than
-read as "every source", so the grant cannot silently widen as new source kinds
-become subscribable. The agent mounts `/run/wendy/sensors` read-only and injects
-`WENDY_SENSOR_SOCKET=/run/wendy/sensors/sensors.sock`, serving only
-`wendy.agent.apps.v1.SensorService`. It grants no device nodes — raw device
-access is the separate `camera` entitlement — and no write access to the
-recorded dataset, which is `episode-write`. See
-[entitlements](../device/entitlements.md) for the full boundary.
-
 ### `admin`
 
 Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with **no authentication**.
