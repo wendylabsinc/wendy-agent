@@ -191,8 +191,32 @@ type VideoDevice struct {
 	HasCredentials bool                   `protobuf:"varint,10,opt,name=has_credentials,json=hasCredentials,proto3" json:"has_credentials,omitempty"`            // the agent holds a login for this camera
 	Online         bool                   `protobuf:"varint,11,opt,name=online,proto3" json:"online,omitempty"`                                                  // the most recent probe reached this camera
 	Topic          string                 `protobuf:"bytes,12,opt,name=topic,proto3" json:"topic,omitempty"`                                                     // ROS 2 image topic, e.g. "/camera/image_raw"; empty for other transports
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Stable identity for a LOCAL camera, the counterpart of `mac` above, and
+	// the name to pass to StreamVideoRequest.stable_id.
+	//
+	// `id` and `path` are the kernel's enumeration order, which is a property
+	// of the boot and not of the camera: replugging or a reboot can renumber
+	// /dev/videoN, and a caller that pinned a number then silently streams a
+	// different camera. `name` and `driver` only identify the MODEL, so they
+	// cannot separate two cameras of the same type.
+	//
+	// One camera has one stable_id. The value carries the scheme it came from,
+	// because the two names udev publishes are not equally durable:
+	//
+	//	by-id:<name>    vendor + product + serial; survives a reboot AND a
+	//	                move to another USB port. Reported whenever udev has
+	//	                one.
+	//	by-path:<name>  the USB port topology; survives a reboot but NOT a
+	//	                move. Reported only when there is no by-id name --
+	//	                two same-model cameras sharing a factory serial
+	//	                collide on a single by-id link, and the camera that
+	//	                loses it has nothing else that separates the two.
+	//
+	// Empty when the device has no /dev/v4l entry -- CSI and network cameras,
+	// or a kernel without the udev symlinks.
+	StableId      string `protobuf:"bytes,13,opt,name=stable_id,json=stableId,proto3" json:"stable_id,omitempty"` // e.g. "by-id:usb-Acme_Camera_SN123-video-index0"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VideoDevice) Reset() {
@@ -309,6 +333,13 @@ func (x *VideoDevice) GetTopic() string {
 	return ""
 }
 
+func (x *VideoDevice) GetStableId() string {
+	if x != nil {
+		return x.StableId
+	}
+	return ""
+}
+
 type ListVideoDevicesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -413,7 +444,23 @@ type StreamVideoRequest struct {
 	// request fails with FailedPrecondition (reason RAW_UNAVAILABLE) rather than
 	// waiting forever. A codec the agent cannot produce for a camera is refused
 	// the same way rather than silently downgraded.
-	Codec         VideoCodec `protobuf:"varint,5,opt,name=codec,proto3,enum=wendy.agent.services.v1.VideoCodec" json:"codec,omitempty"`
+	Codec VideoCodec `protobuf:"varint,5,opt,name=codec,proto3,enum=wendy.agent.services.v1.VideoCodec" json:"codec,omitempty"`
+	// Address the camera by the stable_id ListVideoDevices reported for it,
+	// scheme tag included, instead of by device_id.
+	//
+	// When set this WINS over device_id and is resolved at request time. That
+	// is the point: the number is resolved when the stream is opened rather
+	// than baked into a config that outlives the boot it was written on.
+	//
+	// A "by-path:" name resolves too, even for a camera whose reported
+	// stable_id is a "by-id:" one: pinning a stream to a physical port is a
+	// legitimate thing to ask for, as long as the caller asks for it rather
+	// than inheriting it.
+	//
+	// No match is an error, deliberately. Falling back to device_id would
+	// stream whatever the kernel happened to put at that number, which is the
+	// silent-wrong-camera failure this field exists to remove.
+	StableId      string `protobuf:"bytes,6,opt,name=stable_id,json=stableId,proto3" json:"stable_id,omitempty"` // empty = address by device_id, as before
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -481,6 +528,13 @@ func (x *StreamVideoRequest) GetCodec() VideoCodec {
 		return x.Codec
 	}
 	return VideoCodec_VIDEO_CODEC_H264
+}
+
+func (x *StreamVideoRequest) GetStableId() string {
+	if x != nil {
+		return x.StableId
+	}
+	return ""
 }
 
 // Credentials for a network camera. Stored on the device, never returned by any
@@ -992,7 +1046,7 @@ var File_wendy_agent_services_v1_wendy_agent_v1_video_service_proto protoreflect
 
 const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = "" +
 	"\n" +
-	":wendy/agent/services/v1/wendy_agent_v1_video_service.proto\x12\x17wendy.agent.services.v1\"\xe0\x02\n" +
+	":wendy/agent/services/v1/wendy_agent_v1_video_service.proto\x12\x17wendy.agent.services.v1\"\xfd\x02\n" +
 	"\vVideoDevice\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -1006,16 +1060,18 @@ const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = 
 	"\x0fhas_credentials\x18\n" +
 	" \x01(\bR\x0ehasCredentials\x12\x16\n" +
 	"\x06online\x18\v \x01(\bR\x06online\x12\x14\n" +
-	"\x05topic\x18\f \x01(\tR\x05topic\"\x19\n" +
+	"\x05topic\x18\f \x01(\tR\x05topic\x12\x1b\n" +
+	"\tstable_id\x18\r \x01(\tR\bstableId\"\x19\n" +
 	"\x17ListVideoDevicesRequest\"Z\n" +
 	"\x18ListVideoDevicesResponse\x12>\n" +
-	"\adevices\x18\x01 \x03(\v2$.wendy.agent.services.v1.VideoDeviceR\adevices\"\xb8\x01\n" +
+	"\adevices\x18\x01 \x03(\v2$.wendy.agent.services.v1.VideoDeviceR\adevices\"\xd5\x01\n" +
 	"\x12StreamVideoRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12\x14\n" +
 	"\x05width\x18\x02 \x01(\rR\x05width\x12\x16\n" +
 	"\x06height\x18\x03 \x01(\rR\x06height\x12\x1c\n" +
 	"\tframerate\x18\x04 \x01(\rR\tframerate\x129\n" +
-	"\x05codec\x18\x05 \x01(\x0e2#.wendy.agent.services.v1.VideoCodecR\x05codec\"r\n" +
+	"\x05codec\x18\x05 \x01(\x0e2#.wendy.agent.services.v1.VideoCodecR\x05codec\x12\x1b\n" +
+	"\tstable_id\x18\x06 \x01(\tR\bstableId\"r\n" +
 	"\x1bSetCameraCredentialsRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
