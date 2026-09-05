@@ -4,8 +4,77 @@ Runs your app on a Wendy-enabled device:
 2. [Queries the platform and architecture](./device/version.md) of this device
 3. Invokes a [build](./build.md) using the target triple, and injects a [debugger](../../../debugging/) if needed
 4. Uploads the artifact(s) for [Linux](../../../wendy-agent/connectivity/container-registry.md) or [macOS](../../../wendy-agent/macos/)
-5. [Starts the app](./device/apps/start.md), then (attached runs only) waits for readiness and prints the reachable URL
+5. [Starts the app](./device/apps/start.md) and, on supported agents, verifies its configured readiness probe before reporting deployment success
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
+
+## Verified deployment and recovery
+
+On an agent that supports verified container deployments, `wendy run` prepares
+the candidate image before replacing the current container. The agent retains
+the previous container's specification and writable snapshot, starts the
+candidate, and checks its readiness on the device. TCP and HTTP probes run in
+the container's network namespace; exec probes run inside the container.
+
+```sh
+wendy run --detach --wait-ready --readiness-timeout 90s
+```
+
+`--detach` skips log attachment and host-side browser/command hooks, but still
+waits for the agent's deployment result. `--wait-ready` requires a configured
+probe (or an implicit TCP probe from an `http` entitlement) and an agent/runtime
+that supports verification. It fails when either is unavailable. Use
+`--readiness-timeout` to override the total probe deadline for this deployment;
+the value is a whole-second duration from `1s` to `1h`. These checks require
+starting the container, so `--wait-ready` cannot be combined with `--deploy`.
+
+The result distinguishes the following outcomes:
+
+| Result | Meaning |
+|--------|---------|
+| `READY` | The candidate is running and its configured probe passed on the agent. |
+| `RUNNING` | The candidate is running, but no readiness probe is configured. |
+| `ROLLED_BACK` | Activation or readiness failed and the previous revision was restored. The command fails. |
+| `FAILED` | Deployment failed and no previous revision was available to restore. |
+| `ROLLBACK_FAILED` | Deployment failed and the agent could not restore the previous revision. |
+
+For scripts and coding agents, add `--json`:
+
+```sh
+wendy --json run --detach --wait-ready
+```
+
+Each verified deployment emits an object with `app_name`, `revision`,
+`previous_revision`, `state`, `readiness_checked`, and `message`. Service groups
+emit one object per outcome as JSON Lines. Application output is sent to stderr
+so stdout remains available for these results. Only `READY` with
+`readiness_checked: true` confirms a successful probe; `RUNNING` does not.
+
+After a successful deployment, the agent retains the current container and at
+most one preceding revision's specification and writable snapshot. At agent
+startup it reconciles interrupted deployment journals before normal restart
+monitoring, restoring the previous revision when cutover never committed.
+
+Verification is a bounded deployment check, not continuous health monitoring.
+Once cutover begins, the agent finishes verification or recovery even if the
+CLI disconnects. Recovery restores container state; it does not undo writes to
+mounted persistent volumes, database migrations, or external services. Cutover
+may interrupt service, including when exclusive hardware or host ports must be
+released by the old process.
+
+Verified deployment supports a single container and isolated services. Each
+isolated service is deployed and verified in dependency order; recovery is per
+container, not atomic across the entire group. Shared-namespace groups and
+older agents use the legacy path with an explicit unverified notice. Passing
+`--wait-ready` rejects those paths rather than reporting unverified success.
+See [`readiness` configuration](../../../apps/wendy.json.md#readiness) for probe
+examples and defaults.
+
+The MCP `run` tool exposes the same controls as `wait_ready: true` and
+`readiness_timeout_seconds` (an integer from 1 to 3600). It defaults to detached
+operation while still waiting for configured agent readiness. Its separate
+`timeout_seconds` bounds the entire command, so allow time for building,
+verification, and possible recovery; the readiness timeout bounds only the
+readiness phase.
 
 ## Reachable app URLs
 
@@ -19,11 +88,15 @@ App reachable at http://[2001:db8::1]:3000
 The CLI derives this URL from either:
 
 - `hooks.postStart.openURL`, when the URL contains `WENDY_HOSTNAME`
+- The app's `http` entitlement
 - `readiness.tcpSocket.port`
 
 The printed URL uses a routable IP address reported by the device instead of the `.local` hostname, which makes it easier to open from browsers that do not resolve mDNS names reliably. If neither an `openURL` hook nor a TCP readiness port is configured, or if the device cannot report an IP address, `wendy run` skips this line.
 
-> **Note:** If the readiness probe fails (timeout or connection error), `wendy run` skips the `App reachable at` line and the `postStart` hook and prints a warning instead. This prevents opening a browser tab pointed at a container that has already exited.
+If verified deployment fails, the command returns an error and suppresses
+host-side success actions for that candidate. On the legacy path, host-side
+readiness failures produce a warning; they do not provide agent-owned
+verification or recovery.
 
 > **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Headless Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
 
@@ -156,7 +229,9 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | Flag | Description |
 |------|-------------|
 | `--deploy` | Build and create the container but do not start it. |
-| `--detach` | Start the container and return without streaming logs, waiting for readiness, or opening the app URL. |
+| `--detach` | Wait for the agent's deployment result, then return without streaming logs or running host-side browser/command hooks. Legacy agents retain their unverified behavior. |
+| `--wait-ready` | Require an agent-verified readiness result. Fails without a probe, on unsupported agents/runtimes, or with `--deploy`. |
+| `--readiness-timeout <duration>` | Override the total readiness deadline for this deployment, from `1s` to `1h` in whole seconds. |
 | `--restart-unless-stopped` | Restart the container unless manually stopped. |
 | `--restart-on-failure` | Restart the container on failure. |
 | `--no-restart` | Do not restart the container on exit. |
@@ -405,12 +480,13 @@ Deploy records written before this version carry no layer IDs, so they cannot be
 ## postStart hooks
 
 In an attached run, `wendy run` runs `openURL` and `cli` postStart actions after
-the app reports readiness. This applies to both registry-push and chunk-diff
-deploys. If readiness fails, Wendy skips these actions and prints a warning.
+successful deployment and any configured readiness check. This applies to both
+registry-push and chunk-diff deploys. A failed verified deployment skips these
+actions and returns an error.
 
-`--detach` returns after the selected containers start and does not run
-readiness checks, `openURL`, or `cli`; `postStart.agent` still runs on the
-device. See [Readiness and lifecycle hooks](../../../apps/wendy-services.md#readiness-and-lifecycle-hooks)
+`--detach` still waits for agent verification on supported container runtimes,
+but does not run `openURL` or `cli`; `postStart.agent` still runs on the device
+when the container starts. See [Readiness and lifecycle hooks](../../../apps/wendy-services.md#readiness-and-lifecycle-hooks)
 for multi-service details.
 `--deploy` creates the app without starting it, so no postStart action runs.
 

@@ -84,7 +84,7 @@ Wendy honours the following compose fields. Fields not listed here are ignored.
 | `ports` | Records `host:container` mappings on a `network` entitlement. This does not implement bridge DNAT or publish an isolated container to the host browser. |
 | `network_mode: host` | Adds a `host` network entitlement. |
 | `volumes` | Named volumes are created as `persist` entitlements. Host bind mounts (paths starting with `.` or `/`) are silently skipped. |
-| `depends_on` | Dependency order: list or condition-map form. Services are created in dependency order; detached starts follow the same order, but the condition-map's own health-check conditions (e.g. `condition: service_healthy`) are not evaluated; ordering is purely topological. To gate a service's own postStart hook on its readiness instead, see [Readiness probes and postStart hooks](#readiness-probes-and-poststart-hooks). |
+| `depends_on` | Dependency order: list or condition-map form. The condition-map's own health-check conditions (e.g. `condition: service_healthy`) are not evaluated. On supported agents, isolated services deploy in this order and wait for their Wendy readiness result before continuing. See [Readiness probes and postStart hooks](#readiness-probes-and-poststart-hooks). |
 | `restart` | Restart policy: `no`, `on-failure`, `always`, `unless-stopped`. Overridden by CLI flags if specified. |
 | `x-wendy` | Wendy-specific per-service extensions: `readiness` (a readiness probe) and `hooks` (postStart hooks). Same camelCase schema as `wendy.json`'s top-level `readiness`/`hooks` fields. See [Readiness probes and postStart hooks](#readiness-probes-and-poststart-hooks) below. |
 
@@ -163,13 +163,37 @@ services:
           openURL: "http://${WENDY_HOSTNAME}:3000"
 ```
 
-`readiness` here gates only `frontend`'s own `postStart` hook; it never delays any other service's startup (`depends_on` ordering is unaffected). `hooks.postStart.agent` runs directly on the device host and is triggered only by the declaring service's own container start.
+On supported agents, `readiness` controls `frontend`'s verified deployment and
+its own `postStart` hook. Isolated services are deployed and verified in
+dependency order before proceeding to the next service. The probe can be TCP,
+HTTP GET, or exec; see the [readiness reference](./wendy.json.md#readiness).
+`hooks.postStart.agent` runs directly on the device host when the declaring
+service starts.
 
 A companion `wendy.json` in the same directory can also declare `services.<name>.readiness` / `services.<name>.hooks` for a service. When both are present, the companion wins wholesale per field: its `readiness` and `hooks` each replace the `x-wendy` value entirely rather than merging with it.
 
 A companion `wendy.json`'s *top-level* `readiness`/`hooks` or `http` entitlement act instead as an app-level fallback: they fire once after every service in the project has started, rather than gating any single service. Inherited top-level HTTP remains in every service's container create configuration, but it is not executed once per service. A companion `services.<name>.entitlements` HTTP declaration is service-scoped; if both scopes declare HTTP, both actions run at their respective scopes. [Examples/WendyMC](../../Examples/WendyMC) uses a top-level `{ "type": "http", "port": 8080 }` entitlement with `readiness.timeoutSeconds: 180`, so the CLI preserves that timeout and opens the UI once after both services start. A top-level `hooks.postStart.agent` is the one exception: a compose app has no single app-level container start to trigger it, so it is ignored (with a warning); declare an agent-side hook under a service's `x-wendy.hooks` or the companion's `services.<name>.hooks` instead.
 
-In attached mode, each service's readiness→postStart sequence runs asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service; Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. In detached mode none of this runs: no readiness wait, no `App reachable` line, and no host-side `postStart` action — only the agent-side `postStart.agent` hooks run, on the device. With `wendy run --watch`, each container's `openURL` and `cli` actions run once per session after its first successful readiness check; later saves do not repeat them, while a failed or canceled attempt may retry after a later deploy. `--watch --detach` skips these actions. A non-cancellation timeout in attached mode warns without failing the command: explicitly configured multi-service hooks still run, while `App reachable` and any synthesized HTTP browser open are suppressed. Cancellation suppresses all three. An explicit readiness TCP port remains the probe target; presentation prefers a hostname-templated `openURL`, then the HTTP entitlement port, then the readiness port. See [Watch mode](../clients/wendy-cli/commands/run.md#watch-mode) for details.
+Both attached and detached runs wait for agent-owned verification on supported
+runtimes. Detached runs skip `App reachable`, `openURL`, and `cli` actions;
+agent-side `postStart.agent` hooks still run when the container starts. A
+verification failure fails deployment and attempts to restore that service's
+previous container revision. This is per-container recovery, not an atomic
+rollback of the whole Compose project or its mounted volume data.
+
+Pass `--wait-ready` to require a probe for every selected service and an
+agent/runtime that supports verification. A top-level companion readiness
+fallback is a host-side lifecycle check and does not satisfy this requirement.
+Older agents and shared-namespace groups use the legacy path with an
+unverified notice unless `--wait-ready` rejects them.
+
+With `wendy run --watch`, each container's `openURL` and `cli` actions run once
+per session after its first successful readiness check. Later saves do not
+repeat them; a failed or canceled attempt may retry after a later deploy.
+`--watch --detach` skips these host actions. An explicit probe takes precedence
+over an implicit HTTP-entitlement TCP probe; displayed URLs prefer a
+hostname-templated `openURL`, then the HTTP entitlement port, then a TCP
+readiness port. See [Watch mode](../clients/wendy-cli/commands/run.md#watch-mode).
 
 Hook commands may reference `${WENDY_HOSTNAME}` (the device host), `${WENDY_APP_ID}`, and `${WENDY_SERVICE_NAME}` (the declaring service's name; empty for the app-level fallback). Windows-style `%VAR%` forms are accepted too.
 

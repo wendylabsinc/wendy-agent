@@ -125,19 +125,5 @@ func httpEntitlementPort(entitlements []appconfig.Entitlement) (int, bool) {
 // come up before announcing or opening it — an `http` entitlement gets this
 // gating without a separate readiness.tcpSocket config.
 func effectiveReadiness(appCfg *appconfig.AppConfig) *appconfig.ReadinessConfig {
-	if appCfg.Readiness != nil && appCfg.Readiness.TCPSocket != nil {
-		return appCfg.Readiness
-	}
-	port, ok := httpEntitlementPort(appCfg.Entitlements)
-	if !ok {
-		return appCfg.Readiness
-	}
-	timeout := 0
-	if appCfg.Readiness != nil {
-		timeout = appCfg.Readiness.TimeoutSeconds
-	}
-	return &appconfig.ReadinessConfig{
-		TCPSocket:      &appconfig.TCPSocketProbe{Port: port},
-		TimeoutSeconds: timeout,
-	}
+	return appconfig.EffectiveReadiness(appCfg)
 }

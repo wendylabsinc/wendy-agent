@@ -1234,6 +1234,16 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 	}
 	svcLifecycleCfgs := composeServiceLifecycleConfigs(svcCfgs, companion)
+	verifiedCfgs := make(map[string]*appconfig.AppConfig, len(svcCfgs))
+	for name, full := range svcCfgs {
+		verifiedCfgs[name] = verifiedServiceConfig(full, svcLifecycleCfgs[name])
+	}
+	if err := configureVerifiedServices(versionResp, verifiedCfgs, &opts); err != nil {
+		return err
+	}
+	if opts.verifiedDeployment {
+		svcCfgs = verifiedCfgs
+	}
 
 	// App-level lifecycle fallback: only a companion wendy.json can declare
 	// top-level HTTP/readiness/hooks for a compose project (x-wendy is
@@ -1337,7 +1347,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	// an unchanged running container untouched, so merge those services into the
 	// build skip set after evaluating the session-scoped watch state.
 	skipBuild := planComposeBuildSkips(ctx, conn, deviceKey, desiredHashes, svcCfgs, states)
-	if opts.watchState != nil {
+	if opts.watchState != nil && !opts.verifiedDeployment {
 		preserve = selectPreservedWatchServices(opts.watchState, deviceKey, candidates, states)
 		for name := range preserve {
 			skipBuild[name] = true
@@ -1395,6 +1405,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 	}
 
+	verifiedRequests := make(map[string]*agentpb.CreateContainerRequest, len(ordered))
 	for _, name := range ordered {
 		svc := cfg.Services[name]
 		appCfg := svcCfgs[name]
@@ -1446,6 +1457,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			Env:           composeEnv(svc),
 		}
 
+		if opts.verifiedDeployment && !opts.deploy {
+			verifiedRequests[name] = createReq
+			continue
+		}
 		cliLogln("Creating container for service %s (%s)...", name, appCfg.ContainerName())
 		if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
 			return fmt.Errorf("creating container for service %s: %w", name, err)
@@ -1456,6 +1471,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	if opts.deploy {
 		cliLogln("All %d service containers created (not started).", len(cfg.Services))
 		return nil
+	}
+
+	if opts.verifiedDeployment {
+		return runVerifiedServiceGroup(ctx, conn, ordered, svcCfgs, svcLifecycleCfgs, verifiedRequests, appLevelCfg, opts)
 	}
 
 	// Start all containers and stream their output concurrently.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -192,7 +193,13 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Create container but do not start it"),
 		),
 		mcpgo.WithBoolean("detach",
-			mcpgo.Description("Start container but do not stream logs (default true for MCP)"),
+			mcpgo.Description("Do not keep streaming logs after deployment (default true for MCP). Agents supporting verified deployments still check configured application readiness before returning."),
+		),
+		mcpgo.WithBoolean("wait_ready",
+			mcpgo.Description("Require agent-owned readiness and recoverable deployment; fail before replacement if the target or project does not support it"),
+		),
+		mcpgo.WithNumber("readiness_timeout_seconds",
+			mcpgo.Description("Override the application's readiness deadline, from 1 to 3600 whole seconds. Set timeout_seconds high enough to include build, readiness, and recovery."),
 		),
 		mcpgo.WithNumber("timeout_seconds",
 			mcpgo.Description("Maximum command runtime in seconds (default 300)"),
@@ -467,6 +474,16 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	}
 	if req.GetBool("detach", true) {
 		args = append(args, "--detach")
+	}
+	if req.GetBool("wait_ready", false) {
+		args = append(args, "--wait-ready")
+	}
+	if _, supplied := req.GetArguments()["readiness_timeout_seconds"]; supplied {
+		seconds := req.GetFloat("readiness_timeout_seconds", math.NaN())
+		if math.IsNaN(seconds) || seconds < 1 || seconds > 3600 || seconds != math.Trunc(seconds) {
+			return errResult(errCodeInvalidArgument, "readiness_timeout_seconds must be a whole number between 1 and 3600"), nil
+		}
+		args = append(args, "--readiness-timeout", fmt.Sprintf("%ds", int(seconds)))
 	}
 
 	tok := progressToken(req)

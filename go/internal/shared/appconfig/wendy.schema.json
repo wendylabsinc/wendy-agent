@@ -366,8 +366,13 @@
     },
     "readiness": {
       "type": "object",
-      "description": "Probe configuration the CLI uses to determine when the app is ready.",
+      "description": "Agent-owned readiness probe of the running app. Configure at most one of tcpSocket, httpGet, or exec. Without an explicit probe, an http entitlement implies a TCP probe; otherwise only running state can be reported.",
       "additionalProperties": false,
+      "allOf": [
+        { "not": { "required": ["tcpSocket", "httpGet"] } },
+        { "not": { "required": ["tcpSocket", "exec"] } },
+        { "not": { "required": ["httpGet", "exec"] } }
+      ],
       "properties": {
         "tcpSocket": {
           "type": "object",
@@ -383,11 +388,55 @@
             }
           }
         },
+        "httpGet": {
+          "type": "object",
+          "description": "HTTP GET against the running app. Status codes 200 through 399 succeed.",
+          "required": ["port"],
+          "additionalProperties": false,
+          "properties": {
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "path": {
+              "type": "string",
+              "format": "uri-reference",
+              "pattern": "^($|/([^/\\\\\\s#]|$)[^\\\\\\s#]*)$",
+              "default": "/",
+              "description": "Local request path, optionally including a query; defaults to /. No host, fragment, whitespace, or control characters."
+            }
+          }
+        },
+        "exec": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Command and optional arguments executed directly inside the running app, without an implicit shell. Exit code 0 succeeds.",
+          "prefixItems": [
+            { "type": "string", "minLength": 1, "pattern": "\\S", "not": { "pattern": "\u0000" } }
+          ],
+          "items": { "type": "string", "not": { "pattern": "\u0000" } }
+        },
         "timeoutSeconds": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 3600,
           "default": 30,
-          "description": "Readiness timeout in seconds (default 30)."
+          "description": "Total readiness deadline in seconds. 0 selects the default of 30."
+        },
+        "periodSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 300,
+          "default": 1,
+          "description": "Delay after a failed probe before the next attempt, in seconds. 0 selects the default of 1."
+        },
+        "probeTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 300,
+          "default": 2,
+          "description": "Maximum duration of one attempt, also bounded by the remaining total readiness deadline. 0 selects the default of 2 seconds."
         }
       }
     },

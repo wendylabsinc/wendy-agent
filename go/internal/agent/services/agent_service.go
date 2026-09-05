@@ -392,6 +392,9 @@ func detectNvidiaGPUArch() string {
 
 func detectFeatureset() []string {
 	var features []string
+	if runtime.GOOS == "linux" {
+		features = append(features, "verified-deployment")
+	}
 
 	if _, err := os.Stat("/dev/nvidia0"); err == nil {
 		features = append(features, "gpu")

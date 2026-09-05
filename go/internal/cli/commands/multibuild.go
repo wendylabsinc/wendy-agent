@@ -388,6 +388,24 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		}
 	}
 
+	// Preflight every selected service before authentication, build planning, or
+	// image transfer. Each probe sees only its service's lifecycle configuration;
+	// inherited HTTP entitlements still belong to the app-level fallback.
+	svcCfgs := make(map[string]*appconfig.AppConfig, len(services))
+	svcLifecycleCfgs := make(map[string]*appconfig.AppConfig, len(services))
+	verifiedCfgs := make(map[string]*appconfig.AppConfig, len(services))
+	for name, svc := range services {
+		svcCfgs[name] = multiServiceCreateConfig(appCfg, name, svc)
+		svcLifecycleCfgs[name] = multiServiceLifecycleConfig(appCfg.AppID, name, svc)
+		verifiedCfgs[name] = verifiedServiceConfig(svcCfgs[name], svcLifecycleCfgs[name])
+	}
+	if err := configureVerifiedServices(versionResp, verifiedCfgs, &opts); err != nil {
+		return err
+	}
+	if opts.verifiedDeployment {
+		svcCfgs = verifiedCfgs
+	}
+
 	if err := requireRegistryAuth(ctx, conn); err != nil {
 		return err
 	}
@@ -423,19 +441,9 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	sfOpts := debugStagefileOptions(opts.debug)
 	skip, hashes, dockerfiles := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, appCfg, services, buildArgs, sfOpts...)
 
-	// Build the full per-service create configs before selecting watch work: a
-	// service is unchanged only when both its image inputs and its effective
-	// runtime configuration match the last successful cycle.
-	svcCfgs := make(map[string]*appconfig.AppConfig, len(services))
-	svcLifecycleCfgs := make(map[string]*appconfig.AppConfig, len(services))
-	for name, svc := range services {
-		svcCfgs[name] = multiServiceCreateConfig(appCfg, name, svc)
-		svcLifecycleCfgs[name] = multiServiceLifecycleConfig(appCfg.AppID, name, svc)
-	}
-
 	preserve := map[string]bool{}
 	desiredHashes := map[string]string{}
-	if opts.watchState != nil {
+	if opts.watchState != nil && !opts.verifiedDeployment {
 		states := deviceContainerStates(ctx, conn)
 		candidates := map[string]watchServiceCandidate{}
 		for name, svc := range services {
@@ -530,6 +538,26 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	appLevelCfg := appLevelLifecycleConfig(appCfg.AppID, appCfg)
 	if opts.service != "" {
 		appLevelCfg = nil
+	}
+
+	if opts.verifiedDeployment && !opts.deploy {
+		requests := make(map[string]*agentpb.CreateContainerRequest, len(ordered))
+		for _, name := range ordered {
+			serviceCfg := svcCfgs[name]
+			data, err := json.Marshal(serviceCfg)
+			if err != nil {
+				return err
+			}
+			requests[name] = &agentpb.CreateContainerRequest{
+				ImageName: fmt.Sprintf("localhost:%d/%s-%s:latest", regPort, strings.ToLower(appCfg.AppID), strings.ToLower(name)),
+				AppName:   serviceCfg.ContainerName(), AppConfig: data,
+				RestartPolicy: resolveRestartPolicy(opts), Env: expandServiceEnv(appCfg, services[name]),
+			}
+		}
+		if err := runVerifiedServiceGroup(ctx, conn, ordered, svcCfgs, svcLifecycleCfgs, requests, appLevelCfg, opts); err != nil {
+			return err
+		}
+		return partialErr
 	}
 
 	createService := func(name string) error {

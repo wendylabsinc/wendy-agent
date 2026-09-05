@@ -189,8 +189,8 @@ type ServiceConfig struct {
 	// Resources optionally caps this service's CPU/memory/PID usage, overriding
 	// any app-level resources wholesale.
 	Resources *ResourceLimits `json:"resources,omitempty"`
-	// Readiness gates only this service's postStart hooks — it never delays
-	// other services' startup order (that is dependsOn/WDY-879 territory).
+	// Readiness declares when this service is ready and gates its postStart
+	// hooks. It does not change the services' startup dependency order.
 	Readiness *ReadinessConfig `json:"readiness,omitempty"`
 	Hooks     *HooksConfig     `json:"hooks,omitempty"`
 }
@@ -297,15 +297,30 @@ type XcodeConfig struct {
 	Scheme string `json:"scheme,omitempty"`
 }
 
-// ReadinessConfig defines a probe the CLI uses to determine when the app is ready.
+// ReadinessConfig defines an agent-owned probe of the running app. At most one
+// probe may be set. Timing-only configs customize the implicit TCP probe for an
+// HTTP entitlement; without an explicit probe or HTTP entitlement, readiness is
+// not configured and the app can only be reported as running.
 type ReadinessConfig struct {
-	TCPSocket      *TCPSocketProbe `json:"tcpSocket,omitempty"`
-	TimeoutSeconds int             `json:"timeoutSeconds,omitempty"` // Default 30
+	TCPSocket           *TCPSocketProbe `json:"tcpSocket,omitempty"`
+	HTTPGet             *HTTPGetProbe   `json:"httpGet,omitempty"`
+	Exec                []string        `json:"exec,omitempty"`
+	TimeoutSeconds      int             `json:"timeoutSeconds,omitempty"`      // Whole readiness window; default 30.
+	PeriodSeconds       int             `json:"periodSeconds,omitempty"`       // Delay between attempts; default 1.
+	ProbeTimeoutSeconds int             `json:"probeTimeoutSeconds,omitempty"` // Per-attempt timeout; default 2.
 }
 
 // TCPSocketProbe checks readiness by dialing a TCP port.
 type TCPSocketProbe struct {
 	Port int `json:"port"`
+}
+
+// HTTPGetProbe checks an HTTP endpoint on the running app. A response status
+// from 200 through 399 is successful. Path is a local request path, optionally
+// including a query, and defaults to "/"; it cannot select another host.
+type HTTPGetProbe struct {
+	Port int    `json:"port"`
+	Path string `json:"path,omitempty"`
 }
 
 // HooksConfig holds optional lifecycle hook commands.
@@ -591,26 +606,6 @@ func ValidateEnv(prefix string, env map[string]string) error {
 func ValidateEnvKey(prefix, key string) error {
 	if !envVarNamePattern.MatchString(key) {
 		return fmt.Errorf("%s: %q is not a valid environment variable name (letters, digits and '_' only, not starting with a digit)", prefix, key)
-	}
-	return nil
-}
-
-// ValidateReadiness checks a readiness probe configuration: tcpSocket.port
-// must be 1-65535 and timeoutSeconds must be non-negative. prefix is used in
-// error messages (e.g. "readiness" for top-level, or
-// `services["foo"].readiness` for service-level readiness). A nil r is valid.
-func ValidateReadiness(prefix string, r *ReadinessConfig) error {
-	if r == nil {
-		return nil
-	}
-	if r.TCPSocket != nil {
-		port := r.TCPSocket.Port
-		if port < 1 || port > 65535 {
-			return fmt.Errorf("%s.tcpSocket.port must be between 1 and 65535, got %d", prefix, port)
-		}
-	}
-	if r.TimeoutSeconds < 0 {
-		return fmt.Errorf("%s.timeoutSeconds must not be negative, got %d", prefix, r.TimeoutSeconds)
 	}
 	return nil
 }

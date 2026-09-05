@@ -295,6 +295,7 @@ func runRemoteBuild(
 	// reached is worth an error now, not after the build host has spent minutes
 	// on an image most of the fleet will never see.
 	fleetConns := make([]*grpcclient.AgentConnection, 0, len(opts.fleetDevices))
+	fleetOptions := make([]runOptions, 0, len(opts.fleetDevices))
 	defer func() {
 		for _, c := range fleetConns {
 			c.Close()
@@ -313,6 +314,15 @@ func runRemoteBuild(
 		if err := assertSamePlatform(ctx, name, conn, platform); err != nil {
 			return err
 		}
+		version, err := agentVersionForRun(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("querying target %s capabilities: %w", name, err)
+		}
+		targetOpts := opts
+		if err := configureVerifiedDeployment(version, appCfg, &targetOpts); err != nil {
+			return fmt.Errorf("target %s: %w", name, err)
+		}
+		fleetOptions = append(fleetOptions, targetOpts)
 		t, err := targetPushTarget(ctx, conn, appCfg)
 		if err != nil {
 			return fmt.Errorf("resolving %s as a delivery target: %w", name, err)
@@ -392,7 +402,7 @@ func runRemoteBuild(
 			Env:           deployEnv,
 		}
 		report = append(report, deliveryOutcome(pushTargets[i+1].GetAssetId(),
-			startAndStreamContainer(ctx, conn, appCfg, req, opts)))
+			startAndStreamContainer(ctx, conn, appCfg, req, fleetOptions[i])))
 	}
 
 	lines, failed := fleetDeliveryReport(report, nameOf)

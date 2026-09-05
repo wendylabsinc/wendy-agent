@@ -134,21 +134,52 @@ Use [`wendy init --framework ros2`](../clients/wendy-cli/commands/init.md#framew
 
 ### `readiness`
 
-Configures how the CLI determines when the app is ready after starting.
+Configures how the agent checks the running container before reporting a
+verified deployment as `READY`. A process that starts without a probe is
+reported as `RUNNING` instead. Declare at most one probe: `tcpSocket`, `httpGet`,
+or `exec`.
 
 ```json
 {
   "readiness": {
-    "tcpSocket": { "port": 8080 },
-    "timeoutSeconds": 30
+    "httpGet": { "port": 8080, "path": "/health/ready" },
+    "timeoutSeconds": 30,
+    "periodSeconds": 1,
+    "probeTimeoutSeconds": 2
   }
 }
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `tcpSocket.port` | integer (1–65535) | — | TCP port to probe |
-| `timeoutSeconds` | integer | `30` | How long to wait before giving up |
+| `tcpSocket.port` | integer (1–65535) | — | Succeeds when a TCP connection to this container port opens. |
+| `httpGet.port` | integer (1–65535) | — | Container port for an HTTP GET; status 200–399 succeeds. |
+| `httpGet.path` | string | `/` | Local request path, optionally with a query. Hosts, fragments, whitespace, and control characters are rejected. |
+| `exec` | array of strings | — | Command and arguments executed directly inside the container. Exit code 0 succeeds; no shell is implied. |
+| `timeoutSeconds` | integer (0–3600) | `30` | Total readiness deadline. |
+| `periodSeconds` | integer (0–300) | `1` | Delay after a failed attempt before trying again. |
+| `probeTimeoutSeconds` | integer (0–300) | `2` | Maximum duration of one attempt, also limited by the remaining total deadline. |
+
+Zero timing values select their defaults. An exec probe requires a nonempty
+command already present in the image, for example:
+
+```json
+{ "readiness": { "exec": ["/app/check-ready", "--check", "model-loaded"] } }
+```
+
+TCP and HTTP checks run in the container's network namespace, so the port need
+not be exposed to the developer's machine. The agent checks that the process
+is still running after a successful probe. If no probe is explicit, an `http`
+entitlement supplies a TCP probe on its port; a timing-only readiness block
+such as `{ "timeoutSeconds": 180 }` customizes that implicit probe. Declaring
+an HTTP port does not implicitly require `GET /` to return a successful status.
+
+An activation failure or readiness timeout fails verified deployment and
+triggers recovery of the previous container revision when one is available.
+Mounted volume data and external effects are not rolled back. See
+[`wendy run` verified deployment](../clients/wendy-cli/commands/run.md#verified-deployment-and-recovery)
+for supported runtimes, detached behavior, compatibility, and
+`--readiness-timeout` overrides.
 
 For multi-service apps, declare `readiness` per service under `services.<name>.readiness` instead of (or in addition to) the top-level field. A top-level `readiness` becomes an app-level fallback that fires once after every service has started, rather than gating any single service — see [Readiness and lifecycle hooks](./wendy-services.md#readiness-and-lifecycle-hooks) for the full scoping and attached/detached rules.
 
@@ -449,7 +480,15 @@ The container must serve the [MCP Streamable HTTP](https://modelcontextprotocol.
 
 ### `http`
 
-Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContainer.http_port`) for any client — including `wendy device apps` and remote management apps — to discover and open. An attached `wendy run` uses it automatically: it waits for the port to accept connections before printing "App reachable at ..." and opens it in your default browser, with no extra `hooks.postStart` configuration required. If readiness times out, the CLI warns but does not print the success message or perform this automatic browser open.
+Declares the app's primary HTTP port. The agent reports it over gRPC
+(`AppContainer.http_port`) so clients can discover and open it. Unless an
+explicit readiness probe takes precedence, supported agents check this port
+with a TCP readiness probe during deployment, including detached runs. An
+attached `wendy run` also prints "App reachable at ..." and opens the URL in
+your default browser after success, with no extra `hooks.postStart`
+configuration required. A failed verified deployment suppresses these success
+actions and returns an error; older agents retain their explicitly unverified
+legacy behavior.
 
 ```json
 { "type": "http", "port": 8080 }
