@@ -114,7 +114,7 @@ func TestNewOSInstallCmd_SinglePositionalArgRejected(t *testing.T) {
 }
 
 func TestNewOSInstallCmd_ESP32DeviceTypeRejected(t *testing.T) {
-	for _, dt := range []string{"esp32-c6", "esp32-c5"} {
+	for _, dt := range []string{"esp32-c5", "esp32-c6", "esp32-c61", "esp32-p4", "esp32-s3"} {
 		t.Run(dt, func(t *testing.T) {
 			cmd := newOSInstallCmd()
 			cmd.SetArgs([]string{"--device-type", dt})

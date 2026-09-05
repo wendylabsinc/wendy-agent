@@ -30,14 +30,6 @@ Local discovery combines these mechanisms and merges their results:
 
 ## Platform support
 
-### Ethernet discovery
-
-| Platform | Implementation |
-|----------|---------------|
-| Linux | Reads `/sys/class/net` and checks adapter names/descriptions |
-| macOS | Uses `SCNetworkConfiguration` to enumerate interfaces |
-| Windows | Shells out to PowerShell (`Get-NetAdapter` joined with `Get-NetIPAddress`) and filters adapters whose `Name` or `InterfaceDescription` contains "wendy" (case-insensitive) |
-
 ### LAN (mDNS) discovery
 
 mDNS discovery works on all platforms. On Linux, the CLI performs an mDNS browse

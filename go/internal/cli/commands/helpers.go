@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -1029,7 +1031,7 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 		// command UIs don't surface delayed transport errors, and so provisioned
 		// agents that only expose the mTLS port can report an auth error.
 		probeCtx, cancel := context.WithTimeout(ctx, agentPlaintextProbeTimeout)
-		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		cancel()
 		tm("  ↳ plaintext probe (GetAgentVersion)")
 		if probeErr != nil {
@@ -1043,6 +1045,7 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 			}
 			return nil, probeErr
 		}
+		conn.CacheAgentVersion(resp)
 	}
 	// This is the choke point's only real proof-of-life exit: conn.IsMTLS
 	// means dialAgentLadder already verified it with a live probe, and the
@@ -1114,60 +1117,33 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 
 	addr, pinKey, isDefault, err := resolveDeviceAddress()
 	if err == nil {
-		startedAt := time.Now()
 		// The name the user asked for, used both to talk about this device and
 		// to decide which device is acceptable — see resolveDeviceAddress.
 		hostname := pinKey
-		provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
-		conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
-		if connErr != nil {
-			if errors.Is(connErr, ErrUserCancelled) {
-				return nil, connErr
+		// Same broker consult/seed pair as resolveTargetInner's named-device
+		// branch: the two ladders are parallel front doors to the same devices,
+		// and a broker only one of them can use leaves every command on the
+		// other paying the full post-quantum handshake per invocation.
+		conn, brokerHit := (*grpcclient.AgentConnection)(nil), false
+		if !cfg.disableSessionBroker {
+			conn, brokerHit = connectPinnedSession(ctx, addr)
+		}
+		if brokerHit {
+			// A broker hit passed a live health probe — a proof-of-life exit
+			// that must refresh the discovery/LKG entry like any other.
+			cacheConnectSuccess(addr, conn)
+			if isDefault {
+				noteImplicitDevice(hostname, implicitDefaultDevice)
 			}
-			// A cross-org mismatch is a credentials problem, not a reachability
-			// one: surface it directly rather than routing it into clock-skew
-			// retry, cert-refresh, or the default-device picker (none of which can
-			// resolve "you have no credentials for this device's org").
-			var orgMismatch orgMismatchDeviceError
-			if errors.As(connErr, &orgMismatch) {
-				return nil, connErr
-			}
-			retriedConn, connErr, retried := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
-				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
-			})
-			// retryOnHandshakeTimeout hands back the freshest error it saw, so a
-			// retry that revealed a more specific failure (e.g. a cert rejection)
-			// now drives the branches below instead of the original timeout.
-			if retried {
-				conn = retriedConn
-			} else if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
-				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
-			}); ok {
-				conn = syncedConn
-			} else if errors.Is(connErr, errProvisionedAgentUnauthorized) {
-				refreshedConn, ok := offerCertRefreshAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
-					return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
-				})
-				if !ok {
-					return nil, connErr
-				}
-				conn = refreshedConn
-			} else if usbConn, ok := usbDirectFallback(ctx, hostname); ok {
-				// The stored address is unreachable but the same device (verified
-				// by hostname) is on USB — use it directly.
-				conn = usbConn
-			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
-				// Default device is unreachable — offer interactive recovery.
-				hostname, _, _ := net.SplitHostPort(addr)
-				target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
-				if recErr != nil {
-					return nil, recErr
-				}
-				return connectFromSelectedDevice(target, cfg)
-			} else if isDefault {
-				return nil, defaultDeviceUnreachableError(hostname, connErr)
-			} else {
-				return nil, connErr
+		} else {
+			var finished bool
+			conn, finished, err = connectToAgentDirect(ctx, cfg, hostname, addr, isDefault)
+			if err != nil || finished {
+				// finished: default-device recovery resolved the target through
+				// the picker, whose path enforces its own pin and must not be
+				// seeded under the requested endpoint (it may have picked a
+				// different device).
+				return conn, err
 			}
 		}
 		// WDY-1149: verify the device that answered is still the same device, in
@@ -1193,6 +1169,9 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 				return nil, updateErr
 			}
 		}
+		if !brokerHit && !cfg.disableSessionBroker {
+			startPinnedSession(addr, conn)
+		}
 		return conn, nil
 	}
 
@@ -1207,6 +1186,70 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 	}
 
 	return connectFromSelectedDevice(target, cfg)
+}
+
+// connectToAgentDirect is connectToAgent's named-device dial with its recovery
+// ladder, split out so the broker consult above stays readable. finished
+// reports that the result is final: default-device recovery resolved the
+// target through the picker (whose path enforces its own pin), so the caller
+// must return it untouched instead of running the named-device pin, update,
+// and broker-seed steps.
+func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr string, isDefault bool) (_ *grpcclient.AgentConnection, finished bool, _ error) {
+	startedAt := time.Now()
+	provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
+	conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+	if connErr != nil {
+		if errors.Is(connErr, ErrUserCancelled) {
+			return nil, false, connErr
+		}
+		// A cross-org mismatch is a credentials problem, not a reachability
+		// one: surface it directly rather than routing it into clock-skew
+		// retry, cert-refresh, or the default-device picker (none of which can
+		// resolve "you have no credentials for this device's org").
+		var orgMismatch orgMismatchDeviceError
+		if errors.As(connErr, &orgMismatch) {
+			return nil, false, connErr
+		}
+		retriedConn, connErr, retried := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+			return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+		})
+		// retryOnHandshakeTimeout hands back the freshest error it saw, so a
+		// retry that revealed a more specific failure (e.g. a cert rejection)
+		// now drives the branches below instead of the original timeout.
+		if retried {
+			conn = retriedConn
+		} else if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+			return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+		}); ok {
+			conn = syncedConn
+		} else if errors.Is(connErr, errProvisionedAgentUnauthorized) {
+			refreshedConn, ok := offerCertRefreshAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+			})
+			if !ok {
+				return nil, false, connErr
+			}
+			conn = refreshedConn
+		} else if usbConn, ok := usbDirectFallback(ctx, hostname); ok {
+			// The stored address is unreachable but the same device (verified
+			// by hostname) is on USB — use it directly.
+			conn = usbConn
+		} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
+			// Default device is unreachable — offer interactive recovery.
+			hostname, _, _ := net.SplitHostPort(addr)
+			target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+			if recErr != nil {
+				return nil, true, recErr
+			}
+			picked, pickErr := connectFromSelectedDevice(target, cfg)
+			return picked, true, pickErr
+		} else if isDefault {
+			return nil, false, defaultDeviceUnreachableError(hostname, connErr)
+		} else {
+			return nil, false, connErr
+		}
+	}
+	return conn, false, nil
 }
 
 // connectFromSelectedDevice converts a SelectedDevice from the picker into a
@@ -2031,7 +2074,10 @@ func cacheFastPathReachable(ctx context.Context, conn *grpcclient.AgentConnectio
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+	resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+	if probeErr == nil {
+		conn.CacheAgentVersion(resp)
+	}
 	return probeErr == nil
 }
 
@@ -2055,8 +2101,9 @@ var cacheFastPathReachableFn = cacheFastPathReachable
 //     resolution gap issue #1155 exists to work around.
 //
 // Callers must only invoke this once liveness is actually confirmed (a real
-// probe, not a lazy plaintext "connect") — see
-// connectAgentAtAddressWithProvisionedHint, the sole caller.
+// probe, not a lazy plaintext "connect"): connectAgentAtAddressWithProvisionedHint
+// after its dial-ladder or plaintext probe, and resolveTargetInner's broker-hit
+// branch after the broker's health probe.
 //
 // When an existing entry (any age) already matches this hostname (by
 // normalizeMDNSHost equality — e.g. a discovery scan's TXT-id-keyed row),
@@ -2267,9 +2314,10 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 			// the old 8s budget (which also covered .local mDNS resolution) made
 			// an unreachable mTLS port cost 8s before the plaintext fallback.
 			probeCtx, cancel := context.WithTimeout(ctx, mtlsProbeTimeout)
-			_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+			resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 			cancel()
 			if probeErr == nil {
+				conn.CacheAgentVersion(resp)
 				rememberCertOrg(host, w.allCerts[i].OrganizationID)
 				return conn, nil
 			}
@@ -2631,11 +2679,16 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	if updateCheckRecentlyPassed(conn.Host) {
 		return conn, nil
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	resp, err := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
-	cancel()
-	if err != nil {
-		return conn, nil
+	resp, ok := conn.CachedAgentVersion()
+	if !ok {
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		var err error
+		resp, err = conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		cancel()
+		if err != nil {
+			return conn, nil
+		}
+		conn.CacheAgentVersion(resp)
 	}
 
 	agentVer := resp.GetVersion()
@@ -2740,9 +2793,10 @@ func waitForAgentRestart(ctx context.Context, addr string) (*grpcclient.AgentCon
 			continue
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		cancel()
 		if probeErr == nil {
+			conn.CacheAgentVersion(resp)
 			return conn, nil
 		}
 		conn.Close()
@@ -2882,6 +2936,50 @@ type resolveConfig struct {
 	suppressUpdateCheck      bool
 	nonInteractive           bool
 	device                   string
+	disableSessionBroker     bool
+}
+
+var (
+	connectSessionBrokerFn = sessionbroker.Connect
+	startSessionBrokerFn   = sessionbroker.Start
+)
+
+// connectPinnedSession consults the session broker for addr — the normalized
+// host:port the caller is about to dial. The broker key is that full endpoint,
+// never just the host: two agents can share a hostname on different ports (a
+// dev agent pushed beside the production one), present the SAME asset
+// certificate, and still be different endpoints — so the identity check alone
+// cannot tell them apart, and a host-keyed broker would route an explicit
+// :51000 request to whichever agent a previous default-port command brokered.
+// The pin lookup, by contrast, is host-keyed on purpose: identity is a
+// property of the device, not of the port it answers on.
+func connectPinnedSession(ctx context.Context, addr string) (*grpcclient.AgentConnection, bool) {
+	// The GOOS check lives here as well as in sessionbroker.Connect: bailing
+	// only inside Connect would still charge Windows the expectedIdentityFor
+	// config read on every invocation, for a feature it never uses.
+	if runtime.GOOS == "windows" {
+		return nil, false
+	}
+	expected := expectedIdentityFor(pinKeyForAddr(addr))
+	if expected == nil {
+		return nil, false
+	}
+	conn, err := connectSessionBrokerFn(ctx, addr, *expected)
+	return conn, err == nil && conn != nil
+}
+
+func startPinnedSession(addr string, conn *grpcclient.AgentConnection) {
+	// The current invocation already has a verified connection. Broker startup
+	// is an optimization for the next invocation and must never affect this one.
+	// Same endpoint key as connectPinnedSession, or the next consult misses.
+	_ = startSessionBrokerFn(addr, conn)
+}
+
+// DisableSessionBroker forces a fresh device transport. Watch already retains
+// one connection for its whole lifetime, so routing it through the short-lived
+// cross-process broker adds a hop without avoiding any setup.
+func DisableSessionBroker() resolveOption {
+	return func(c *resolveConfig) { c.disableSessionBroker = true }
 }
 
 // SelectDevice makes device selection an explicit property of this resolve
@@ -3060,40 +3158,58 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		if _, _, splitErr := net.SplitHostPort(device); splitErr != nil {
 			addr = hostPort(device, defaultAgentPort)
 		}
-		startedAt := time.Now()
-		provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
-		conn, err := connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
-		rt("  ↳ connectResolvedAgent (dial+probe)")
-		if err != nil {
-			if errors.Is(err, ErrUserCancelled) {
-				return nil, err
+		conn, brokerHit := (*grpcclient.AgentConnection)(nil), false
+		if !cfg.disableSessionBroker {
+			conn, brokerHit = connectPinnedSession(ctx, addr)
+		}
+		if brokerHit {
+			rt("  ↳ reusable session connection")
+			// A broker hit passed a live health probe: it is a proof-of-life
+			// exit like connectAgentAtAddressWithProvisionedHint's, and must
+			// refresh the discovery/LKG entry the same way — otherwise a
+			// device reached exclusively through its broker ages out of the
+			// cache while being connected to continuously.
+			cacheConnectSuccess(addr, conn)
+			if isDefault {
+				noteImplicitDevice(device, implicitDefaultDevice)
 			}
-			if syncedConn, ok := autoSyncTimeAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
-				return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
-			}); ok {
-				conn = syncedConn
-			} else if errors.Is(err, errProvisionedAgentUnauthorized) {
-				refreshedConn, ok := offerCertRefreshAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
-					return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
-				})
-				if !ok {
+		} else {
+			startedAt := time.Now()
+			provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
+			var err error
+			conn, err = connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+			rt("  ↳ connectResolvedAgent (dial+probe)")
+			if err != nil {
+				if errors.Is(err, ErrUserCancelled) {
 					return nil, err
 				}
-				conn = refreshedConn
-			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
-				// Default device is unreachable — offer interactive recovery.
-				recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
-				if recErr != nil {
-					return nil, recErr
+				if syncedConn, ok := autoSyncTimeAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
+					return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+				}); ok {
+					conn = syncedConn
+				} else if errors.Is(err, errProvisionedAgentUnauthorized) {
+					refreshedConn, ok := offerCertRefreshAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
+						return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+					})
+					if !ok {
+						return nil, err
+					}
+					conn = refreshedConn
+				} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
+					// Default device is unreachable — offer interactive recovery.
+					recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+					if recErr != nil {
+						return nil, recErr
+					}
+					if pinErr := enforceSelectedDevicePin(recovered); pinErr != nil {
+						return nil, pinErr
+					}
+					return recovered, nil
+				} else if isDefault {
+					return nil, defaultDeviceUnreachableError(device, err)
+				} else {
+					return nil, err
 				}
-				if pinErr := enforceSelectedDevicePin(recovered); pinErr != nil {
-					return nil, pinErr
-				}
-				return recovered, nil
-			} else if isDefault {
-				return nil, defaultDeviceUnreachableError(device, err)
-			} else {
-				return nil, err
 			}
 		}
 		// Same pin key as connectToAgent's: the host of the address dialled, via
@@ -3111,6 +3227,9 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 			}
 		}
 		rt("  ↳ checkAndOfferUpdate")
+		if !brokerHit && !cfg.disableSessionBroker {
+			startPinnedSession(addr, conn)
+		}
 		return &SelectedDevice{Agent: conn}, nil
 	}
 
@@ -3414,12 +3533,19 @@ func hideLocalProviders(excludes map[string]bool) map[string]bool {
 	return merged
 }
 
+// unflashedLiteDedupKey keys a board with no Wendy Lite firmware by its port
+// rather than its synthetic display name, so the row it gets once it identifies
+// itself can supersede it.
+func unflashedLiteDedupKey(serialPort string) string {
+	return "wendy-lite-unflashed:" + serialPort
+}
+
 // externalProviderPickerItem builds the picker row for a device discovered
 // through an external provider. wendy-lite devices are presented as merged
 // devices (like LAN discoveries) so they share the LAN row layout.
 func externalProviderPickerItem(prov providers.DeviceProvider, dev *models.ExternalDevice) tui.PickerItem {
 	if prov.Key() == "wendy-lite" {
-		return tui.PickerItem{
+		item := tui.PickerItem{
 			Name:         dev.DisplayName,
 			DedupKey:     dev.DisplayName,
 			Type:         dev.ConnectionType() + " (Lite)",
@@ -3435,6 +3561,17 @@ func externalProviderPickerItem(prov providers.DeviceProvider, dev *models.Exter
 				Externals:       []*models.ExternalDevice{dev},
 			}},
 		}
+		if port := dev.ConnectionInfo["serialPort"]; port != "" {
+			if dev.ConnectionInfo["needsInstall"] == "true" {
+				item.DedupKey = unflashedLiteDedupKey(port)
+				// The branch sets no SortKey, so ordering falls back to the
+				// dedup key; pin it to the name to keep the row's position.
+				item.SortKey = strings.ToLower(dev.DisplayName)
+			} else {
+				item.Supersedes = unflashedLiteDedupKey(port)
+			}
+		}
+		return item
 	}
 	return tui.PickerItem{
 		Name:         dev.DisplayName,

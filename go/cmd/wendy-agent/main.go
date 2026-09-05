@@ -244,6 +244,10 @@ func main() {
 
 	installer := &services.AgentInstaller{}
 	agentSvc := services.NewAgentService(logger, networkMgr, hwDiscoverer, btManager, installer)
+	// Pin the executable path while the mount topology this process started
+	// under is intact: merging and later removing a driver add-on leaves
+	// /proc/self/exe reporting a path that no longer resolves.
+	agentSvc.PrimeExecPath()
 	agentSvc.WarmBinaryHash()
 
 	var monitor *container.ContainerMonitor
@@ -278,7 +282,12 @@ func main() {
 	wifiSvc := services.NewWiFiService(logger, networkMgr)
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
 	agentUpdateSvc := services.NewAgentUpdateService(logger, installer)
+	agentUpdateSvc.PrimeExecPath()
 	osUpdateSvc := services.NewOSUpdateService(logger)
+	driverSvc := services.NewDriverService(logger)
+	// Before anything reads the store: devices updated from an older agent still
+	// have add-ons in the pre-keyed flat layout.
+	driverSvc.MigrateStore()
 	containerSvcV2 := services.NewContainerServiceV2(containerSvc)
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
@@ -310,7 +319,11 @@ func main() {
 
 	startROS2BatteryMonitor(ctx, logger, configPath)
 
-	videoSvc := services.NewVideoService(ctx, logger)
+	var videoROSRuntime []services.ROS2Runtime
+	if ctrdClient != nil {
+		videoROSRuntime = append(videoROSRuntime, ctrdClient)
+	}
+	videoSvc := services.NewVideoService(ctx, logger, videoROSRuntime...)
 	defer videoSvc.Shutdown()
 	// Network cameras have to be found before they can be listed, so probe
 	// periodically rather than only when a client asks.
@@ -644,6 +657,17 @@ func main() {
 		// plaintext pre-provisioning server (handing anyone on the LAN a host
 		// root shell) and on the local admin socket.
 		agentpb.RegisterWendyShellServiceServer(srv, shellSvc)
+
+		// WendyDriverService installs kernel driver add-ons — loading a module is
+		// ring-0 code execution, as privileged as the root shell above. So it is
+		// registered ONLY here on the mTLS server (authenticated, org-checked),
+		// never via registerAllServices: signature verification guards WHAT runs,
+		// but the transport must still guard WHO may install or remove a driver.
+		// Linux only: the store is systemd-sysext and modprobe. Elsewhere the
+		// client sees Unimplemented and treats the device as having no add-ons.
+		if runtime.GOOS == "linux" {
+			agentpbv2.RegisterWendyDriverServiceServer(srv, driverSvc)
+		}
 
 		// Compute mTLS port = agentPort + 1.
 		portNum, err := strconv.Atoi(agentPort)

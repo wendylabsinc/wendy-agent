@@ -60,7 +60,7 @@ Avahi service file: `/etc/avahi/services/wendyos.service`
 | Path | Purpose |
 |------|---------|
 | `/etc/edgeos/` | Device config (UUID, name) |
-| `/usr/local/bin/wendy-agent` | Agent binary |
+| `/opt/wendyos/bin/wendy-agent` | Agent binary |
 | `/usr/share/edgeos/offline-images/` | Pre-loaded container images |
 | `/var/lib/edgeos/` | Runtime state |
 | `/run/containerd/containerd.sock` | containerd socket |

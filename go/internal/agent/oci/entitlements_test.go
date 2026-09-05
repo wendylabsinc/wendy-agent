@@ -390,7 +390,44 @@ func TestApplyEntitlements_Network_HostAdmin(t *testing.T) {
 	}
 }
 
-func TestApplyEntitlements_Network_Host_ResolvConf(t *testing.T) {
+func TestApplyEntitlements_Network_Host_ResolvedStub(t *testing.T) {
+	for _, mode := range []string{"", "host", "host-admin"} {
+		name := mode
+		if name == "" {
+			name = "implicit-host"
+		}
+		t.Run(name, func(t *testing.T) {
+			managed := filepath.Join(t.TempDir(), "resolv.conf")
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementNetwork, Mode: mode},
+				},
+			}
+
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{HostResolvConfPath: managed}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+
+			for _, m := range spec.Mounts {
+				if m.Destination != "/etc/resolv.conf" {
+					continue
+				}
+				if m.Source != managed {
+					t.Fatalf("/etc/resolv.conf source = %q, want managed stub %q", m.Source, managed)
+				}
+				if m.Type != "bind" {
+					t.Fatalf("/etc/resolv.conf mount type = %q, want bind", m.Type)
+				}
+				return
+			}
+			t.Fatal("host network entitlement did not mount the managed stub resolv.conf")
+		})
+	}
+}
+
+func TestApplyEntitlements_Network_Host_ResolvConfFallback(t *testing.T) {
 	const resolvedConf = "/run/systemd/resolve/resolv.conf"
 	_, errSystemd := os.Stat(resolvedConf)
 	_, errHost := os.Stat("/etc/resolv.conf")

@@ -44,19 +44,40 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 
 ## Update sequence
 
-1. **Validate target identity** — query `GetAgentVersion` and confirm the target is a WendyOS OTA target. Exits immediately with an error if not.
+1. **Validate target identity** — query the agent and confirm the target is a WendyOS OTA target. Exits immediately with an error if not.
 2. **Check minimum OS version** — if the device reports a WendyOS version older than 0.17.0, exit non-zero with guidance to reflash using `wendy os install`. Dev builds, empty, and unparseable versions are allowed through. This check runs before the agent is updated, so no agent update is wasted on a device that must be reflashed.
 3. **Update the agent** — ensure the agent binary is at the latest release before proceeding with the OS image update. GitHub release lookups use the `GITHUB_TOKEN` environment variable when present, and fall back to unauthenticated requests otherwise.
-4. **Re-query version** — query `GetAgentVersion` again after the agent update.
+4. **Re-query version** — query the agent's version again after the agent update.
 5. **Validate OTA support** — confirm the device advertises the `wendyos-update` featureset.
 6. **Resolve artifact** — if no artifact or URL was provided, look up the latest OTA artifact for the device's reported `device_type`. If the device type is missing or not recognized, shows a warning and prompts the user to select the correct device type.
 7. **Check current version** — if the device is already at the latest version, exits without updating.
 8. **Stack-mismatch check** — if the resolved artifact is a `.wendy` file and the device does not advertise the `wendyos-update` featureset, exit non-zero with an explanation that a reflash is required. Skipped only when the device was already reported current in step 7.
-9. **Stream update** — call `UpdateOS` on the agent, which runs `wendyos-update install` and streams progress to the terminal. The agent then reboots into the updated OS.
+9. **Stream update** — instruct the agent to apply the update, which runs `wendyos-update install` and streams progress to the terminal. The agent then reboots into the updated OS.
 10. **Wait for reboot** — poll the device until it is reachable again (up to 10 minutes, enough for a rollback's second reboot).
 11. **Report the outcome** — query the device for the post-update commit/rollback verdict and print it. The command exits non-zero when the update was rolled back.
 
 ---
+
+## How the agent reboots
+
+The agent always flushes filesystems before restarting. Without that, an
+immediate kernel restart can discard recently written data — and on Jetson the
+data at risk is the UEFI capsule that `wendyos-update` staged onto the ESP.
+
+On WendyOS images older than **0.18.1** the agent additionally hands the reboot
+to systemd (`systemctl --no-block reboot`) so filesystems are unmounted, not just
+flushed. Those images ship a `wendyos-update` that fsyncs only the capsule file
+and not the ESP, and because the capsule path deliberately leaves the rootfs slot
+switch to the firmware, a lost capsule means the update silently reboots back into
+the old OS and rolls back (WDY-2200). The orderly shutdown is the combination
+validated on hardware for those releases.
+
+An orderly shutdown can hang, so it is bounded: if the device is still running a
+minute after the request, the agent forces an immediate restart. Expect an update
+on a pre-0.18.1 image to take slightly longer to go down than on a current one.
+
+Devices on 0.18.1 or newer, dev builds, and images whose version cannot be parsed
+all take the plain flush-and-restart path.
 
 ## Post-update commit and automatic rollback
 
@@ -109,7 +130,7 @@ Engine status (wendyos-update):
 
 The booted slot is marked with `*`. Diagnostic keys and values are connector-specific (e.g. tegra `RootfsStatusSlot{A,B}` bytes, EFI boot-chain/capsule variables, or uboot env entries) and may vary between firmware versions.
 
-Pass `--json` to emit the complete `GetOSUpdateStatusResponse` as indented JSON (useful in scripts or when capturing diagnostics off a device without shell access):
+Pass `--json` to emit the complete status as indented JSON (useful in scripts or when capturing diagnostics off a device without shell access):
 
 ```sh
 wendy os update-status --json

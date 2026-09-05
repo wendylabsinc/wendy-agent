@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -264,6 +265,38 @@ func TestMeshDialUnblocksWhenClientStreamDies(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("MeshDial did not return after the client stream died")
+	}
+}
+
+func TestMeshDialRelayHardWriteFailureUnblocksOppositeDirection(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan *agentpbv2.MeshDialMessage, 1)
+	in <- &agentpbv2.MeshDialMessage{Content: &agentpbv2.MeshDialMessage_Data{
+		Data: &agentpbv2.MeshDialData{Payload: []byte("upload bytes")},
+	}}
+	stream := &ctxAwareMeshDialStream{
+		ctx: ctx,
+		in:  in,
+		out: make(chan *agentpbv2.MeshDialData, 1),
+	}
+
+	relayPipe, blockedPeer := net.Pipe()
+	defer blockedPeer.Close()
+	conn := &failWriteConn{Conn: relayPipe, err: errors.New("registry reset")}
+
+	svc, _ := newMeshServiceForTest(t)
+	done := make(chan error, 1)
+	go func() { done <- svc.relay(stream, conn) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("relay returned %v, want graceful handler teardown", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mesh relay remained blocked after the registry-side write failed")
 	}
 }
 

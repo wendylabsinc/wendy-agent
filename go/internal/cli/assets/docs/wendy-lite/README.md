@@ -1,25 +1,26 @@
 # Wendy Lite
 
-Wendy Lite is the WebAssembly runtime layer for ESP32 microcontrollers. It runs WASM guest applications on device and exposes the hardware via host-imported functions from the `"wendy"` module.
+Wendy Lite is Wendy's runtime and deployment layer for ESP32 microcontrollers. It supports native ESP-IDF applications as the recommended project model and can also run portable WASM guest applications.
 
 ## Role in the Wendy Platform
 
-The broader Wendy platform targets Linux/macOS edge devices (Raspberry Pi, Jetson, Mac) via WendyOS and wendy-agent. Wendy Lite covers the other end: bare-metal MCUs where containers and a full OS are not viable. The same hardware APIs (BLE, WiFi, sockets, TLS, OTel) are available from WASM guests as are exposed by wendy-agent to containerised apps, making the programming model portable across device classes.
+The broader Wendy platform targets Linux/macOS edge devices (Raspberry Pi, Jetson, Mac) via WendyOS and wendy-agent. Wendy Lite covers bare-metal MCUs where containers and a full OS are not viable. Native apps use the complete ESP-IDF API and normal ESP-IDF project layout; `wendy run` detects, builds, and deploys them. WASM remains available when a smaller portable application boundary is preferable.
 
-> **Scope note:** wendy-lite host imports cover GPIO, I2C, SPI, UART, RMT, NeoPixel, Timer, Storage, System, OTel, BLE, WiFi, Sockets, TLS, and USB. **Camera and display/framebuffer peripherals are not exposed to WASM guests.** Boards with cameras or RGB LCD panels (e.g. ESP32-S31-Korvo-1, ESP32-P4-Function-EV) must drive those peripherals with native ESP-IDF drivers; the wendy-lite runtime can run alongside a native display loop but does not control the panel.
+> **Recommendation:** Start new applications as regular native ESP-IDF projects. Use the optional WASM runtime when portability or sandboxing matters more than full ESP-IDF access. Camera and display/framebuffer peripherals are not exposed to WASM guests and should be driven by native ESP-IDF drivers.
 
 ## Supported Targets
 
 | Target | Status |
 |--------|--------|
-| ESP32-C6 | CI-built, nightly releases |
 | ESP32-C5 | CI-built, nightly releases |
-| ESP32-S3 | CI-built, nightly releases |
+| ESP32-C6 | CI-built, nightly releases |
 | ESP32-C61 | CI-built, nightly releases |
+| ESP32-P4 | Supported boards are listed by `wendy install` |
+| ESP32-S3 | CI-built, nightly releases |
 
-All other ESP32 variants (including ESP32-S3, ESP32-P4, and the preview ESP32-S31) are **not currently supported** by wendy-lite. The firmware build image is pinned to `espressif/idf:v5.5.1`; chips that require IDF 6.x / `master` (such as ESP32-S31) cannot be built with this image. There is no camera or display/framebuffer host API — imaging peripherals cannot be driven through a WASM guest today.
+Boards without a published Wendy firmware variant are not shown by `wendy install`. Native app capability is firmware-specific; where the installer offers multiple choices, select a board variant labeled **native app support**.
 
-Firmware is built with [ESP-IDF v5.5.1](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32c6/index.html) via the official Espressif Docker image.
+Native applications are built with ESP-IDF 5.5.4 through the ESP-IDF Installation Manager (`eim`).
 
 ## Repository Layout
 
@@ -57,11 +58,19 @@ wendy-lite/
 
 ## CI and Releases
 
-Every push to `main` and every pull request against `main` runs a matrix build for `esp32c5` and `esp32c6` using `espressif/idf:v5.5.1`. On merge to `main`, a `nightly` pre-release is created (or replaced) on GitHub containing both merged firmware `.bin` files. On a `v*` tag push, the firmware is attached to the corresponding GitHub release.
+Wendy publishes installable firmware variants through its stable and nightly release channels. `wendy install` reads the current firmware catalog and only presents board variants that have a published binary for the selected channel.
 
-> **IDF version constraint:** the pinned `v5.5.1` image does not support chips that require IDF 6.x or later (such as ESP32-S31). Adding a new chip target requires either upgrading the pinned IDF version or introducing a parallel `master`/nightly IDF build lane.
+## Native ESP-IDF Apps
 
-## Guest Languages
+Native apps are regular ESP-IDF projects. Add `wendy.json` with `"platform": "wendy-lite"`, then deploy with:
+
+```bash
+wendy run --device <name>
+```
+
+Wendy selects the connected device's target, runs the standard ESP-IDF build, uploads the application firmware, reboots, and reconnects to its console. See [`deploying.md`](deploying.md) for the complete workflow.
+
+## Optional WASM Guest Languages
 
 | Language | Entry point | Library |
 |----------|-------------|---------|
@@ -73,9 +82,11 @@ Every push to `main` and every pull request against `main` runs a matrix build f
 
 See [`host-api.md`](host-api.md) for the full function reference, [`swift-sdk.md`](swift-sdk.md) for Swift-specific internals, [`deploying.md`](deploying.md) for the full build-to-device flow including OTA updates, and [`wendy-com.md`](wendy-com.md) for the WendyCom protocol reference.
 
-## Deploying a WASM App to Device
+## Manually Embedding a WASM App
 
-1. Build your app to `.wasm` (see the README in the repository root for per-language build commands).
+For low-level firmware development, a WASM guest can still be embedded directly:
+
+1. Build your app to `.wasm`.
 2. Convert the binary to a C header array: `./wasm_apps/wasm2header.sh my_app.wasm main/demo_wasm.h`
 3. Rebuild the firmware: `idf.py build`
 4. Flash: `idf.py flash`

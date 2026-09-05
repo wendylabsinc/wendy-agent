@@ -443,7 +443,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	if flagDeviceType != "" {
 		// --device-type is only supported for Linux devices, not ESP32/Wendy Lite.
 		switch flagDeviceType {
-		case "esp32-c6", "esp32-c5", "esp32-s3", "esp32-c61":
+		case "esp32-c5", "esp32-c6", "esp32-c61", "esp32-p4", "esp32-s3":
 			return fmt.Errorf("--device-type does not support ESP32 targets; use the interactive picker for Wendy Lite devices")
 		}
 		if _, ok := deviceMap[flagDeviceType]; !ok {
@@ -508,7 +508,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	device := deviceMap[selected]
 
 	if device.IsESP32 {
-		return installESP32Firmware(ctx, nightly, device.ESP32Board, "", wifi, deviceName, preOpts)
+		return installESP32Firmware(ctx, nightly, device.ESP32Board, discovery.SerialPortInfo{}, wifi, deviceName, preOpts)
 	}
 	if storageOverride == "emmc" && selected != orinDeviceType {
 		return fmt.Errorf("--storage emmc is supported only for --device-type %s", orinDeviceType)
@@ -2455,9 +2455,19 @@ func flashRetryAction(flashErr error, interactive bool) (retry bool, fatal error
 }
 
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.
-// board is a Wendy Lite catalog board name, e.g. "esp32c6_generic". serialPort
-// is optional: when empty, the device is located by scanning the serial ports.
-func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+// board is a Wendy Lite catalog board name, e.g. "esp32c6_generic". An empty
+// serialDevice means the device should be located by scanning install-capable
+// serial ports. A supplied device carries its already-known transport.
+func installESP32Firmware(ctx context.Context, nightly bool, board string, serialDevice discovery.SerialPortInfo, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+	target, err := WendyLiteTargetForBoard(board)
+	if err != nil {
+		return err
+	}
+	expectedChip, err := chipModelForTarget(target)
+	if err != nil {
+		return err
+	}
+
 	provCreds, err := resolveWiFiCredentialsList(wifi)
 	if err != nil {
 		return err
@@ -2493,11 +2503,11 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 		return fmt.Errorf("this device only supports one Wi-Fi network")
 	}
 
-	// An empty serialPort means "find it for me", which stays true across
+	// An empty serial device means "find it for me", which stays true across
 	// retries below: a reset re-enumerates the USB device and the node can
-	// come back under a different path. An explicitly requested port is used
-	// verbatim, every attempt.
-	autoDiscoverPort := serialPort == ""
+	// come back under a different path. An explicitly supplied device is used
+	// verbatim on every attempt.
+	autoDiscoverPort := serialDevice.Port == ""
 	if autoDiscoverPort {
 		fmt.Println("\nScanning for ESP32 devices...")
 
@@ -2506,7 +2516,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 		// Retry briefly rather than failing on the very first attempt.
 		deadline := time.Now().Add(1 * time.Second)
 		for {
-			serialPort, err = discovery.ResolveESP32SerialPort()
+			serialDevice, err = discovery.ResolveESP32InstallSerialPort()
 			if err == nil || time.Now().After(deadline) {
 				break
 			}
@@ -2518,8 +2528,15 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 			fmt.Println("To enter bootloader mode: hold the BOOT button, press RESET, then release BOOT.")
 			return fmt.Errorf("ESP32 not found: %w", err)
 		}
+	}
 
-		fmt.Printf("Found ESP32 at %s\n", serialPort)
+	fmt.Println(esp32InstallCandidateMessage(serialDevice))
+	if serialDevice.Transport == discovery.SerialTransportUARTBridge {
+		fmt.Fprintln(os.Stderr, tui.WarningMessage(esp32UARTBridgeInstallWarning(len(provCreds) > 0)))
+		if requiresESP32UARTConfirmation(serialDevice, len(provCreds) > 0, isInteractiveTerminal()) &&
+			!confirmDefaultNoFn("Continue flashing through USB-UART without WiFi?") {
+			return ErrUserCancelled
+		}
 	}
 
 	fmt.Println("Fetching latest Wendy Lite firmware...")
@@ -2567,25 +2584,24 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 	// first attempt, unchanged from before this loop existed.
 	interactive := !jsonOutput && isInteractiveTerminal()
 	for attempt := 1; ; attempt++ {
-		// espResetViaUsbJtag forces USB re-enumeration, after which the device
-		// node can reappear at a different path (macOS: /dev/cu.usbmodem101 →
-		// /dev/cu.usbmodem1101). Re-scan before each retry so the loop follows
-		// the device instead of hammering a path that no longer exists. A
-		// failed re-scan keeps the last known path and lets the attempt report
-		// the real error.
+		// Native USB reset can re-enumerate at a different path (macOS:
+		// /dev/cu.usbmodem101 → /dev/cu.usbmodem1101). Re-scan install-capable
+		// ports before each retry so both the path and transport stay current.
+		// A failed re-scan keeps the last known candidate and lets the attempt
+		// report the real error.
 		if attempt > 1 && autoDiscoverPort {
-			if rescanned, rescanErr := discovery.ResolveESP32SerialPort(); rescanErr == nil && rescanned != serialPort {
-				fmt.Printf("ESP32 reappeared at %s\n", rescanned)
-				serialPort = rescanned
+			if rescanned, rescanErr := discovery.ResolveESP32InstallSerialPort(); rescanErr == nil && rescanned != serialDevice {
+				fmt.Printf("ESP32 reappeared at %s\n", rescanned.Port)
+				serialDevice = rescanned
 			}
 		}
 
 		fmt.Println()
-		flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
+		flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialDevice.Port))
 		fp := tui.NewProgressProgram(flashProg)
 
 		go func() {
-			flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {
+			flashErr := flashFirmwareImage(serialDevice.Port, img, serialDevice.Transport, expectedChip, func(pct float64) {
 				fp.Send(tui.ProgressUpdateMsg{Percent: pct})
 			})
 			fp.Send(tui.ProgressDoneMsg{Err: flashErr})
@@ -2616,7 +2632,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 
 		retriedAutomatically := false
 		if errors.Is(flashErr, errPortBusy) {
-			retriedAutomatically = offerPortBusyRetry(serialPort)
+			retriedAutomatically = offerPortBusyRetry(serialDevice.Port)
 		}
 		if !retriedAutomatically && !confirmFn("Do you want to try again?") {
 			return fmt.Errorf("flashing failed: %w", flashErr)
@@ -2626,4 +2642,23 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 	fmt.Printf("\nSuccessfully flashed Wendy Lite %s!\n", asset.Version)
 	fmt.Println("The device will reboot automatically.")
 	return nil
+}
+
+func esp32InstallCandidateMessage(device discovery.SerialPortInfo) string {
+	if device.Transport == discovery.SerialTransportUARTBridge {
+		return fmt.Sprintf("Found USB-UART candidate at %s (the ESP32 model will be verified before writing)", device.Port)
+	}
+	return fmt.Sprintf("Found native ESP32 USB candidate at %s (the ESP32 model will be verified before writing)", device.Port)
+}
+
+func esp32UARTBridgeInstallWarning(hasWiFi bool) string {
+	const base = "This USB-UART connection can flash Wendy Lite, but it cannot carry Wendy's runtime USB connection after installation."
+	if hasWiFi {
+		return base + " Wendy will rely on the configured WiFi network, or you can reconnect using the board's native USB port."
+	}
+	return base + " No WiFi network is configured, so reconnect using the board's native USB port or reinstall with WiFi to manage the device."
+}
+
+func requiresESP32UARTConfirmation(device discovery.SerialPortInfo, hasWiFi, interactive bool) bool {
+	return device.Transport == discovery.SerialTransportUARTBridge && !hasWiFi && interactive
 }

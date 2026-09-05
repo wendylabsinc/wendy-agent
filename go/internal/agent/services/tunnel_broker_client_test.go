@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync/atomic"
@@ -44,6 +45,16 @@ func (s *testAgentTunnelStream) Recv() (*cloudpb.TunnelData, error) {
 }
 
 func (s *testAgentTunnelStream) CloseSend() error { return nil }
+
+// failWriteConn models the hardware failure that motivated this regression:
+// the registry-side write fails, but the opposite Read remains blocked until
+// the relay explicitly closes the connection.
+type failWriteConn struct {
+	net.Conn
+	err error
+}
+
+func (c *failWriteConn) Write([]byte) (int, error) { return 0, c.err }
 
 func TestTunnelBrokerRelayDoesNotCancelAfterBackendEOF(t *testing.T) {
 	ctx, cancelContext := context.WithCancel(context.Background())
@@ -102,5 +113,42 @@ receivedHalfClose:
 	case <-relayDone:
 	case <-time.After(time.Second):
 		t.Fatal("relay did not finish after both directions closed")
+	}
+}
+
+func TestTunnelBrokerRelayHardWriteFailureUnblocksOppositeDirection(t *testing.T) {
+	ctx, cancelContext := context.WithCancel(context.Background())
+	defer cancelContext()
+
+	var cancelled atomic.Bool
+	cancel := func() {
+		cancelled.Store(true)
+		cancelContext()
+	}
+	stream := &testAgentTunnelStream{
+		ctx:      ctx,
+		received: make(chan *cloudpb.TunnelData, 1),
+		sent:     make(chan *cloudpb.TunnelData, 1),
+	}
+	stream.received <- &cloudpb.TunnelData{Payload: []byte("upload bytes")}
+
+	relayPipe, blockedPeer := net.Pipe()
+	defer blockedPeer.Close()
+	relayConn := &failWriteConn{Conn: relayPipe, err: errors.New("registry reset")}
+
+	client := &TunnelBrokerClient{}
+	relayDone := make(chan struct{})
+	go func() {
+		client.relay(ctx, cancel, relayConn, stream)
+		close(relayDone)
+	}()
+
+	select {
+	case <-relayDone:
+	case <-time.After(time.Second):
+		t.Fatal("relay remained blocked after the registry-side write failed")
+	}
+	if !cancelled.Load() {
+		t.Fatal("hard TCP failure did not cancel the broker stream")
 	}
 }

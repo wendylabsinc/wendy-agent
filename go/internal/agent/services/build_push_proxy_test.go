@@ -21,11 +21,15 @@ import (
 // stubPeerDialer stands in for MeshDialer so the proxy can be tested without a
 // broker or a real peer.
 type stubPeerDialer struct {
-	addr string // when set, dial this instead of a mesh peer
-	err  error
+	addr  string // when set, dial this instead of a mesh peer
+	err   error
+	calls *int
 }
 
 func (d stubPeerDialer) DialDevice(_ context.Context, _ int32, _ uint16) (net.Conn, string, error) {
+	if d.calls != nil {
+		(*d.calls)++
+	}
 	if d.err != nil {
 		return nil, "", d.err
 	}
@@ -45,7 +49,8 @@ func testTarget() *agentpbv2.PushTarget {
 // which says nothing about whether the mesh is unreachable or the registry
 // rejected our certificate — the two causes with completely different fixes.
 func TestPushProxy_SurfacesDialFailure(t *testing.T) {
-	dialer := stubPeerDialer{err: errors.New("no route to peer")}
+	var calls int
+	dialer := stubPeerDialer{err: errors.New("no route to peer"), calls: &calls}
 
 	proxy, err := startPushProxy(context.Background(), dialer, testTarget(), &tls.Config{MinVersion: tls.VersionTLS12})
 	if err != nil {
@@ -60,8 +65,51 @@ func TestPushProxy_SurfacesDialFailure(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	if got := proxy.firstError(); got == nil {
+	if got := proxy.latestError(); got == nil {
 		t.Fatal("the proxy must record why the outbound dial failed, not discard it")
+	}
+	if calls != 1 {
+		t.Fatalf("proxy dialled %d times, want one attempt; BuildKit owns request retries", calls)
+	}
+}
+
+func TestPushProxy_CleanupFailureDoesNotReplaceActionableCause(t *testing.T) {
+	actionableCause := errors.New("registry connection reset")
+	actionable := annotateDeliveryFailure(actionableCause, 8<<20, 96<<20)
+
+	for _, cleanup := range []error{context.Canceled, net.ErrClosed} {
+		proxy := &pushProxy{}
+		proxy.recordError(actionable)
+		proxy.recordError(annotateDeliveryFailure(cleanup, 0, 0))
+
+		got := proxy.latestError()
+		if !errors.Is(got, actionableCause) {
+			t.Fatalf("cleanup error %v replaced actionable cause: %v", cleanup, got)
+		}
+		if errors.Is(got, cleanup) {
+			t.Fatalf("latest error = %v, want the prior actionable cause", got)
+		}
+	}
+}
+
+func TestPushProxy_ActionableFailureReplacesEarlierCleanup(t *testing.T) {
+	proxy := &pushProxy{}
+	proxy.recordError(context.Canceled)
+
+	actionableCause := errors.New("registry refused connection")
+	proxy.recordError(annotateDeliveryFailure(actionableCause, 0, 0))
+
+	got := proxy.latestError()
+	if !errors.Is(got, actionableCause) {
+		t.Fatalf("latest error = %v, want later actionable cause", got)
+	}
+}
+
+func TestPushProxy_RecordsCleanupWhenItIsTheOnlyCause(t *testing.T) {
+	proxy := &pushProxy{}
+	proxy.recordError(context.Canceled)
+	if got := proxy.latestError(); !errors.Is(got, context.Canceled) {
+		t.Fatalf("latest error = %v, want the only available cancellation cause", got)
 	}
 }
 
@@ -202,6 +250,97 @@ func TestPushProxy_ForwardsAuthenticatedRequestWithoutTheCredential(t *testing.T
 	}
 }
 
+// BuildKit retries a 502 by opening a new request from the descriptor content it
+// still owns. An outbound failure from the first request must remain diagnostic
+// history, not turn the successful final result into a delivery failure.
+func TestPushProxy_RecoveredRequestRetryDoesNotBecomeFailure(t *testing.T) {
+	var attempts int
+	proxy := proxyToBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		_, _ = io.Copy(io.Discard, r.Body)
+		if attempts == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijacking failed backend connection: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	request := func(body string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut,
+			"http://"+proxy.addr+"/v2/myapp/blobs/uploads/retry", strings.NewReader(body))
+		req.SetBasicAuth(pushProxyUser, proxy.credential)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("requesting through proxy: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if status := request("first-attempt-body"); status != http.StatusBadGateway {
+		t.Fatalf("first status = %d, want 502 to trigger BuildKit retry", status)
+	}
+	if status := request("first-attempt-body"); status != http.StatusCreated {
+		t.Fatalf("retried status = %d, want 201", status)
+	}
+	if attempts != 2 {
+		t.Fatalf("backend saw %d attempts, want 2", attempts)
+	}
+	if proxy.latestError() == nil {
+		t.Fatal("test setup did not retain the first attempt's diagnostic")
+	}
+	buildErr, deliveryErr := classifyBuildAndDeliveryResult(nil, proxy.latestError())
+	if buildErr != nil || deliveryErr != nil {
+		t.Fatalf("recovered request classified as build=%v delivery=%v, want success", buildErr, deliveryErr)
+	}
+}
+
+// When every request fails, the diagnostic must describe the last request only.
+// Adding attempts together can exceed the layer size and is not progress.
+func TestPushProxy_FailedRetriesReportLastRequestOnly(t *testing.T) {
+	proxy := proxyToBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijacking failed backend connection: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+
+	request := func(body string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut,
+			"http://"+proxy.addr+"/v2/myapp/blobs/uploads/retry", strings.NewReader(body))
+		req.SetBasicAuth(pushProxyUser, proxy.credential)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("requesting through proxy: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502", resp.StatusCode)
+		}
+	}
+
+	request(strings.Repeat("x", 64))
+	request("last")
+
+	got := proxy.latestError()
+	if got == nil {
+		t.Fatal("proxy did not retain the terminal request failure")
+	}
+	if strings.Contains(got.Error(), "64 B") || !strings.Contains(got.Error(), "4 B of a 4 B") {
+		t.Fatalf("terminal diagnostic is not request-local: %v", got)
+	}
+}
+
 // buildctl must be able to find the credential, and must find it in a file
 // rather than anywhere argv-visible.
 func TestDockerConfigWithPushAuth_WritesUsableCredential(t *testing.T) {
@@ -252,7 +391,7 @@ func TestPushProxy_NoErrorWhenNothingConnects(t *testing.T) {
 	}
 	defer proxy.stop()
 
-	if got := proxy.firstError(); got != nil {
+	if got := proxy.latestError(); got != nil {
 		t.Fatalf("a proxy nothing dialed must report no error, got: %v", got)
 	}
 }
