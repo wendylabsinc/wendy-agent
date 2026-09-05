@@ -1,5 +1,18 @@
 package containerd
 
+import (
+	"context"
+	"time"
+)
+
+// Cleanup can run long after preparation and after its caller disconnects.
+// Allocate the deadline when cleanup starts, never when the snapshot is staged.
+func (c *Client) cleanupRuntimeOperation(operation func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(c.withNamespace(context.Background()), 5*time.Second)
+	defer cancel()
+	return operation(ctx)
+}
+
 // preparedSnapshot is a fresh active snapshot that has never backed a task.
 // remove and release are idempotent at the containerd layer; the small once
 // guards keep our bookkeeping deterministic under replacement/close races.

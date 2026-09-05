@@ -412,6 +412,79 @@ func TestDeleteContainer_Error(t *testing.T) {
 	}
 }
 
+type revisionDeletingRuntime struct {
+	*mockContainerdClient
+	deleted             bool
+	afterDelete         func()
+	revisionDeleteCalls [][]string
+	revisionDeleteErr   error
+	cleanupContextErr   error
+	cleanupHasDeadline  bool
+	cleanupBeforeDelete bool
+}
+
+func (m *revisionDeletingRuntime) DeleteContainer(ctx context.Context, name string, deleteImage bool) error {
+	if err := m.mockContainerdClient.DeleteContainer(ctx, name, deleteImage); err != nil {
+		return err
+	}
+	m.deleted = true
+	if m.afterDelete != nil {
+		m.afterDelete()
+	}
+	return nil
+}
+
+func (m *revisionDeletingRuntime) DeleteDeploymentRevisions(ctx context.Context, ids []string) error {
+	m.cleanupBeforeDelete = !m.deleted
+	m.revisionDeleteCalls = append(m.revisionDeleteCalls, append([]string(nil), ids...))
+	m.cleanupContextErr = ctx.Err()
+	_, m.cleanupHasDeadline = ctx.Deadline()
+	return m.revisionDeleteErr
+}
+
+func TestDeleteContainerCleansResolvedDeploymentRevisions(t *testing.T) {
+	for _, tc := range []struct {
+		name, appName         string
+		deleteErr, cleanupErr error
+		disconnect            bool
+		wantIDs               []string
+	}{
+		{name: "app group", appName: "myapp", wantIDs: []string{"myapp_alpha", "myapp_beta"}},
+		{name: "one service", appName: "myapp_alpha", wantIDs: []string{"myapp_alpha"}},
+		{name: "runtime failure preserves revisions", appName: "myapp", deleteErr: errors.New("delete failed")},
+		{name: "cleanup failure reported", appName: "myapp", cleanupErr: errors.New("cleanup failed"), wantIDs: []string{"myapp_alpha", "myapp_beta"}},
+		{name: "disconnect after deletion", appName: "myapp", disconnect: true, wantIDs: []string{"myapp_alpha", "myapp_beta"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			runtime := &revisionDeletingRuntime{mockContainerdClient: multiServiceMock(), revisionDeleteErr: tc.cleanupErr}
+			runtime.deleteErr = tc.deleteErr
+			if tc.disconnect {
+				runtime.afterDelete = cancel
+			}
+			svc := NewContainerService(zap.NewNop(), runtime)
+			_, err := svc.DeleteContainer(ctx, &agentpb.DeleteContainerRequest{AppName: tc.appName})
+			if wantErr := tc.deleteErr != nil || tc.cleanupErr != nil; (err != nil) != wantErr {
+				t.Fatalf("DeleteContainer error = %v; want error %v", err, wantErr)
+			}
+			if tc.wantIDs == nil {
+				if len(runtime.revisionDeleteCalls) != 0 {
+					t.Fatal("failed runtime deletion removed rollback revisions")
+				}
+				return
+			}
+			if !reflect.DeepEqual(runtime.revisionDeleteCalls, [][]string{tc.wantIDs}) {
+				t.Fatalf("revision deletion = %v; want %v", runtime.revisionDeleteCalls, tc.wantIDs)
+			}
+			if runtime.cleanupBeforeDelete || runtime.cleanupContextErr != nil || !runtime.cleanupHasDeadline {
+				t.Fatalf("cleanup must follow deletion with independent bounded context: before=%v err=%v deadline=%v",
+					runtime.cleanupBeforeDelete, runtime.cleanupContextErr, runtime.cleanupHasDeadline)
+			}
+		})
+	}
+}
+
 func TestListLayers(t *testing.T) {
 	layers := []*agentpb.LayerHeader{
 		{Digest: "sha256:abc123", Size: 1024},

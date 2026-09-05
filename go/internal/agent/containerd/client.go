@@ -30,7 +30,6 @@ import (
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/core/leases"
-	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oci"
@@ -1060,6 +1059,17 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	c.logger.Info("Creating container", logFields...)
 
+	// Resolve and validate the image before touching a currently running app.
+	// Verified deployments pin an immutable candidate reference during prepare;
+	// ordinary creates also benefit from failing an unavailable image here.
+	imageResolveStarted := time.Now()
+	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_UNPACKING})
+	image, err := c.resolveDeploymentImage(ctx, imageName)
+	if err != nil {
+		return err
+	}
+	imageResolveDuration = time.Since(imageResolveStarted)
+
 	// Determine version from the app config or default.
 	version := appCfg.Version
 	if version == "" {
@@ -1119,7 +1129,12 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			// service directly so the runtime clears the old task ID.
 			c.forceDeleteTask(ctx, containerName)
 		}
-		delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup)
+		deleteOpts := []containerd.DeleteOpts{containerd.WithSnapshotCleanup}
+		if deploymentCreateFromContext(ctx) != nil {
+			// The hidden revision record retains this exact writable snapshot.
+			deleteOpts = nil
+		}
+		delErr := existing.Delete(ctx, deleteOpts...)
 		if delErr != nil && errdefs.IsFailedPrecondition(delErr) {
 			// A task exists again despite the kill above — most likely the
 			// restart monitor's tick winning a race against suppressRestarts
@@ -1140,7 +1155,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 					c.forceDeleteTask(ctx, containerName)
 				}
 			}
-			delErr = existing.Delete(ctx, containerd.WithSnapshotCleanup)
+			delErr = existing.Delete(ctx, deleteOpts...)
 		}
 		if delErr != nil && !errdefs.IsNotFound(delErr) {
 			return fmt.Errorf("deleting existing container %q during replace: %w", containerName, delErr)
@@ -1154,33 +1169,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 		replaceDuration = time.Since(phaseStarted)
 	}
-
-	// Try the local image store first. The device-local registry shares
-	// containerd's content store, so anything just pushed to it is already
-	// available via GetImage — pulling would just round-trip bytes over
-	// loopback. Fall back to a pull only on miss; use PlainHTTP for the
-	// local-registry case.
-	var image containerd.Image
-	var err error
-	phaseStarted = time.Now()
-	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_UNPACKING})
-	image, err = c.client.GetImage(ctx, imageName)
-	if err != nil {
-		c.logger.Info("Image not in local store, attempting pull from registry",
-			zap.String("image", imageName),
-		)
-		pullOpts := []containerd.RemoteOpt{containerd.WithPullUnpack}
-		if isLocalRegistryImage(imageName) {
-			pullOpts = append(pullOpts,
-				containerd.WithResolver(docker.NewResolver(docker.ResolverOptions{PlainHTTP: true})),
-			)
-		}
-		image, err = c.client.Pull(ctx, imageName, pullOpts...)
-		if err != nil {
-			return fmt.Errorf("getting/pulling image %q: %w", imageName, err)
-		}
-	}
-	imageResolveDuration = time.Since(phaseStarted)
 
 	// Start D-Bus proxy if bluetooth entitlement is present. The returned
 	// socket directory is keyed by containerName (which includes the service
@@ -1424,6 +1412,10 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements, appCfg.Isolation, dependsOn)
+	if deployment := deploymentCreateFromContext(ctx); deployment != nil {
+		labels[labelDeploymentRevision] = deployment.revision
+		labels[labelDeploymentPending] = deployment.revision
+	}
 	if desiredNetworkIdentity != "" {
 		labels[labelKeyNetworkIdentity] = desiredNetworkIdentity
 		if reusedNetworkSandbox != nil {
@@ -1579,6 +1571,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// critical path. A prepared snapshot is single-use and has never backed a
 	// task, so runtime filesystem mutations can never leak across deployments.
 	snapshotKey := SnapshotKey(appID, serviceName)
+	if deployment := deploymentCreateFromContext(ctx); deployment != nil {
+		snapshotKey = deployment.snapshotKey
+	}
 	phaseStarted = time.Now()
 	snapshotOpt := containerd.WithNewSnapshot(snapshotKey, image)
 	var prepared *preparedSnapshot
@@ -2931,6 +2926,15 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 	if err != nil {
 		return fmt.Errorf("getting container info: %w", err)
 	}
+	if info.Labels[labelDeploymentRevision] != "" {
+		// A verified revision's writable snapshot is authoritative. Rebuilding
+		// from Image here could silently replace a rollback with a newer :latest.
+		if err := ctr.Delete(ctx); err != nil {
+			return fmt.Errorf("deleting orphaned revision metadata: %w", err)
+		}
+		_, err := c.client.ContainerService().Create(ctx, info)
+		return err
+	}
 
 	image, err := ctr.Image(ctx)
 	if err != nil {
@@ -4047,6 +4051,9 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 
 		if info.Labels[labelKeyStoppedByUser] == "true" {
 			continue // user stopped it on purpose — stay down across reboot
+		}
+		if deploymentIsPending(info.Labels) {
+			continue // recovery must resolve the unverified candidate first
 		}
 		policy, maxRetries := parseRestartPolicyLabel(info.Labels[labelKeyRestartPolicy])
 		if policy == "no" {

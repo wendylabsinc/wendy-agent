@@ -69,10 +69,28 @@ type appMutex struct {
 
 // lockApp acquires the per-app lock for appName and returns an unlock function.
 func (a *appMutex) lockApp(appName string) func() {
-	v, _ := a.m.LoadOrStore(appName, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	// '_' is valid inside an app ID as well as between app and service. Lock
+	// each possible app prefix in order so a group stop and a service deploy
+	// cannot bypass one another through that ambiguity. Unrelated prefixes
+	// remain concurrent. Unlock is idempotent so streaming handlers can release
+	// after mutation while retaining a deferred cleanup on error paths.
+	var locks []*sync.Mutex
+	for i := 0; i <= len(appName); i++ {
+		if i == len(appName) || (i > 0 && appName[i] == '_') {
+			v, _ := a.m.LoadOrStore(appName[:i], &sync.Mutex{})
+			mu := v.(*sync.Mutex)
+			mu.Lock()
+			locks = append(locks, mu)
+		}
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			for i := len(locks) - 1; i >= 0; i-- {
+				locks[i].Unlock()
+			}
+		})
+	}
 }
 
 func NewContainerService(logger *zap.Logger, client ContainerdClient, opts ...ContainerServiceOption) *ContainerService {
@@ -193,6 +211,11 @@ func (s *ContainerService) CreateContainer(ctx context.Context, req *agentpb.Cre
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid app config: %v", err)
 	}
+	if err := appconfig.ValidateAppID(req.GetAppName()); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid app name: %v", err)
+	}
+	unlock := s.appMu.lockApp(req.GetAppName())
+	defer unlock()
 
 	if err := s.containerd.CreateContainer(ctx, req, appCfg); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create container: %v", err)
@@ -210,6 +233,11 @@ func (s *ContainerService) CreateContainerWithProgress(req *agentpb.CreateContai
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid app config: %v", err)
 	}
+	if err := appconfig.ValidateAppID(req.GetAppName()); err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid app name: %v", err)
+	}
+	unlock := s.appMu.lockApp(req.GetAppName())
+	defer unlock()
 
 	onProgress := func(p *agentpb.CreateContainerProgress) {
 		if err := stream.Send(&agentpb.CreateContainerProgressResponse{
@@ -378,6 +406,11 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid app config: %v", err)
 	}
+	if err := appconfig.ValidateAppID(req.GetAppName()); err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid app name: %v", err)
+	}
+	unlock := s.appMu.lockApp(req.GetAppName())
+	defer unlock()
 
 	// Verify the container image signature before assembling or creating the
 	// container. Contract for the cross-repo image signer (must match
@@ -461,7 +494,7 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 		zap.Duration("create_container", createDur),
 		zap.Duration("total_before_start", time.Since(runStartedAt)))
 
-	return s.streamContainerOutput(ctx, req.GetAppName(), postStartAgentHookFromContext(ctx), nil, stream)
+	return s.streamContainerOutputWhileLocked(ctx, req.GetAppName(), postStartAgentHookFromContext(ctx), nil, stream, unlock)
 }
 
 func (s *ContainerService) StartContainer(req *agentpb.StartContainerRequest, stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]) error {
@@ -667,6 +700,25 @@ func (s *ContainerService) streamContainerOutput(
 	restartPolicy *agentpb.RestartPolicy,
 	stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse],
 ) error {
+	if err := appconfig.ValidateAppID(appName); err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid app name: %v", err)
+	}
+	unlock := s.appMu.lockApp(appName)
+	defer unlock()
+	return s.streamContainerOutputWhileLocked(ctx, appName, postStartAgentCommand, restartPolicy, stream, unlock)
+}
+
+// RunContainer passes its existing lifecycle lock so another deployment cannot
+// replace the just-created container between creation and its first start.
+func (s *ContainerService) streamContainerOutputWhileLocked(
+	ctx context.Context,
+	appName string,
+	postStartAgentCommand string,
+	restartPolicy *agentpb.RestartPolicy,
+	stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse],
+	unlock func(),
+) error {
+	defer unlock()
 	// Starting a container must not be abortable by the client that requested
 	// it. A detached `apps start` returns the instant the stream is opened and
 	// closes the connection, which cancels this RPC's context; if the start
@@ -703,6 +755,7 @@ func (s *ContainerService) streamContainerOutput(
 	}
 
 	s.registerContainerWithMonitor(startCtx, appName, restartPolicy)
+	unlock()
 
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
 		ResponseType: &agentpb.RunContainerLayersResponse_Started_{
@@ -759,6 +812,11 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 	if appName == "" {
 		return status.Error(codes.InvalidArgument, "app_name required as first message")
 	}
+	if err := appconfig.ValidateAppID(appName); err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid app name: %v", err)
+	}
+	unlock := s.appMu.lockApp(appName)
+	defer unlock()
 
 	ctx := stream.Context()
 	postStartAgentCommand := postStartAgentHookFromContext(ctx)
@@ -807,6 +865,7 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 			zap.String("app_name", appName), zap.Error(err))
 	}
 	s.registerContainerWithMonitor(startCtx, appName, nil)
+	unlock()
 
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
 		ResponseType: &agentpb.RunContainerLayersResponse_Started_{
@@ -1094,9 +1153,20 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 	if err := s.containerd.DeleteContainer(ctx, appName, req.GetDeleteImage()); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete container: %v", err)
 	}
+	var revisionCleanupErr error
+	if remover, ok := s.containerd.(DeploymentRevisionRemover); ok {
+		// Once the app is removed, a disconnected caller must not leave a
+		// rollback journal that could restore it on the next agent restart.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		revisionCleanupErr = remover.DeleteDeploymentRevisions(cleanupCtx, ids)
+		cancel()
+	}
 
 	if req.GetDeleteVolumes() {
 		s.deleteVolumes(volumesToDelete)
+	}
+	if revisionCleanupErr != nil {
+		return nil, status.Errorf(codes.Internal, "container deleted but retained revision cleanup failed: %v", revisionCleanupErr)
 	}
 
 	s.logger.Info("App deleted",
