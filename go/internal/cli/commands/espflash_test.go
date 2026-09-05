@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/seriallock"
 	"go.bug.st/serial"
 )
@@ -210,7 +211,7 @@ func TestConnectAttemptGivesUpAfterAttempts(t *testing.T) {
 		return &fakeSerialPort{}, nil
 	}
 
-	_, err := connectAttempt("/dev/fake", &serial.Mode{BaudRate: initialBaudRate})
+	_, err := connectAttempt("/dev/fake", &serial.Mode{BaudRate: initialBaudRate}, discovery.SerialTransportNativeUSB)
 	if err == nil {
 		t.Fatal("connectAttempt() = nil error, want failure since the fake port never syncs")
 	}
@@ -224,6 +225,31 @@ func TestConnectAttemptGivesUpAfterAttempts(t *testing.T) {
 	wantMsg := fmt.Sprintf("did not respond after %d bootloader-reset attempts", connectAttemptRetries)
 	if !strings.Contains(err.Error(), wantMsg) {
 		t.Errorf("connectAttempt() error = %q, want it to contain %q", err.Error(), wantMsg)
+	}
+}
+
+func TestConnectAttemptUARTBridgeKeepsPortOpenAcrossRetries(t *testing.T) {
+	origOpen := serialOpenFn
+	origRetries := connectAttemptRetries
+	defer func() {
+		serialOpenFn = origOpen
+		connectAttemptRetries = origRetries
+	}()
+
+	connectAttemptRetries = 2
+	port := &fakeSerialPort{}
+	openCalls := 0
+	serialOpenFn = func(portPath string, mode *serial.Mode) (serial.Port, error) {
+		openCalls++
+		return port, nil
+	}
+
+	_, err := connectAttempt("/dev/fake", &serial.Mode{BaudRate: initialBaudRate}, discovery.SerialTransportUARTBridge)
+	if err == nil {
+		t.Fatal("connectAttempt() = nil error, want failure since the fake port never syncs")
+	}
+	if openCalls != 1 {
+		t.Errorf("serialOpenFn called %d times, want 1 (UART bridge must remain open across ESP resets)", openCalls)
 	}
 }
 
@@ -335,7 +361,7 @@ func TestConnectAttemptPassesThroughLockFailure(t *testing.T) {
 		return nil, wantErr
 	}
 
-	_, err := connectAttempt("/dev/fake", &serial.Mode{BaudRate: initialBaudRate})
+	_, err := connectAttempt("/dev/fake", &serial.Mode{BaudRate: initialBaudRate}, discovery.SerialTransportNativeUSB)
 	if !errors.Is(err, errPortBusy) {
 		t.Errorf("connectAttempt() error = %v, want errPortBusy", err)
 	}

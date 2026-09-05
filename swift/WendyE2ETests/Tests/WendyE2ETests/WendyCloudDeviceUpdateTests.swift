@@ -22,6 +22,7 @@ struct `'wendy cloud device update'` {
                 #expect(result.stdout.contains("--binary"))
                 #expect(result.stdout.contains("--nightly"))
                 #expect(result.stdout.contains("--artifact-url"))
+                #expect(result.stdout.contains("--pr"))
                 #expect(result.stdout.contains("--yes"))
                 #expect(result.stdout.contains("--device"))
                 #expect(result.stderr == "")

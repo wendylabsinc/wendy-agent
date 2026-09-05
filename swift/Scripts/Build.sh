@@ -167,6 +167,7 @@ if [[ "$DEV_BUILD" -ne 1 ]]; then
 
   xcrun notarytool submit "$NOTARY_ZIP" \
     --keychain-profile "$NOTARY_PROFILE" \
+    --keychain "$KEYCHAIN_PATH" \
     --wait
 
   xcrun stapler staple -v "$APP_PATH"

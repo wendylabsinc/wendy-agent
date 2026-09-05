@@ -391,7 +391,7 @@ func TestWendyLabels_EntitlementsStoredAsKeyValue(t *testing.T) {
 		wantVal string
 	}{
 		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementNetwork, "mode=host"},
-		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementGPU, ""},
+		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementGPU, "enabled=true"},
 	}
 	for _, tc := range cases {
 		raw, ok := labels[tc.key]

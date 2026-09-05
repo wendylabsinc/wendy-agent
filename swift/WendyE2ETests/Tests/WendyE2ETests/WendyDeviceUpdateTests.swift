@@ -22,6 +22,7 @@ struct `'wendy device update'` {
                 #expect(result.stdout.contains("--binary"))
                 #expect(result.stdout.contains("--nightly"))
                 #expect(result.stdout.contains("--artifact-url"))
+                #expect(result.stdout.contains("--pr"))
                 #expect(result.stdout.contains("--yes"))
                 #expect(result.stdout.contains("--device"))
                 #expect(result.stderr == "")
@@ -123,6 +124,31 @@ struct `'wendy device update'` {
                 #expect(result.status.isFailure)
                 #expect(result.stdout == "")
                 #expect(result.stderr.contains("unknown flag"))
+            }
+        }
+    }
+
+    /**
+     Rejects requests that combine `--pr` with another OS artifact source or
+     with `--json` (which skips the OS-update step entirely).
+
+     Source validation fails before device discovery, downloading, or
+     contacting update services, so no device or authentication is needed.
+     */
+    @Test
+    func `rejects conflicting artifact sources locally`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh(
+                "wendy device update --pr 123 --artifact-url https://example.invalid/update.wendy"
+            ) { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("--pr cannot be combined"))
+            }
+            try await cli.sh("wendy device update --pr 123 --json") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("--pr cannot be combined with --json"))
             }
         }
     }

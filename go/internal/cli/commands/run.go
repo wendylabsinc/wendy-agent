@@ -33,7 +33,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/seriallock"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -551,6 +553,9 @@ type runOptions struct {
 // WENDY_SHOW_LOCAL_DEVICES is set; --yes suppresses the picker entirely.
 func runResolveOptions(opts runOptions) []resolveOption {
 	var resolveOpts []resolveOption
+	if opts.isWatch() {
+		resolveOpts = append(resolveOpts, DisableSessionBroker())
+	}
 	if opts.yes {
 		resolveOpts = append(resolveOpts, NonInteractive())
 	}
@@ -1050,11 +1055,30 @@ func appConfigFileMissing(cfgPath string) (bool, error) {
 	return false, nil
 }
 
+// agentVersionForRun reuses the liveness/version probe already performed while
+// establishing a direct-agent connection. Cloud and test connections that do
+// not probe during dial still perform the RPC here, then make the result
+// available to later run phases on this connection.
+func agentVersionForRun(ctx context.Context, conn *grpcclient.AgentConnection) (*agentpb.GetAgentVersionResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if resp, ok := conn.CachedAgentVersion(); ok {
+		return resp, nil
+	}
+	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return nil, err
+	}
+	conn.CacheAgentVersion(resp)
+	return resp, nil
+}
+
 func preflightMissingAppConfigForMacTarget(ctx context.Context, target *SelectedDevice, projectType string) error {
 	if target == nil || target.Agent == nil {
 		return nil
 	}
-	versionResp, err := target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, target.Agent)
 	if err != nil {
 		return fmt.Errorf("querying device version for Mac target preflight: %w", err)
 	}
@@ -1266,7 +1290,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 
 	// Query the device OS and architecture.
-	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
@@ -1364,7 +1388,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 // via SyncFiles gRPC, and creates/starts the container.
 func runMacOSSwiftPMWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	// Verify CPU architecture matches.
-	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
@@ -1721,6 +1745,37 @@ func deviceNeedsInstall(device models.ExternalDevice) bool {
 	return device.ConnectionInfo["needsInstall"] == "true"
 }
 
+var (
+	serialPortFreeBudget = 6 * time.Second // probe worst case: 3s handshake + 3s identity
+	serialPortFreePoll   = 200 * time.Millisecond
+)
+
+// waitForSerialPortFree reports whether port is free of an advisory lock, waiting
+// up to serialPortFreeBudget for a holder to release it. Only ErrLocked is waited
+// on; other Acquire failures aren't contention and the caller's own open reports
+// them better. Always true on Windows, where Acquire is a no-op.
+func waitForSerialPortFree(ctx context.Context, port string) bool {
+	deadline := time.Now().Add(serialPortFreeBudget)
+	for {
+		lock, err := seriallock.Acquire(port)
+		if err == nil {
+			lock.Release()
+			return true
+		}
+		if !errors.Is(err, seriallock.ErrLocked) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-time.After(serialPortFreePoll):
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
 // offerLiteReinstallAndRebuild handles a provider build that failed because
 // the device cannot host the app: either its existing firmware does not
 // support the app's requirements (native or WASM apps), or it has no Wendy
@@ -1764,7 +1819,22 @@ func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvide
 		return nil, err
 	}
 
-	if err := installESP32Firmware(ctx, false, board, device.ConnectionInfo["serialPort"], wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollAuto}); err != nil {
+	if freshInstall {
+		// Improbable, but the picker's scanner may still be probing this port,
+		// so wait until the port is free. The lock is released immediately:
+		// installESP32Firmware takes its own, and flock is per-descriptor, so
+		// holding ours would block it.
+		port := device.ConnectionInfo["serialPort"]
+		if !waitForSerialPortFree(ctx, port) {
+			cliNotice("Serial port %s is still in use; attempting the install anyway.", port)
+		}
+	}
+
+	serialDevice := discovery.SerialPortInfo{
+		Port:      device.ConnectionInfo["serialPort"],
+		Transport: discovery.SerialTransportNativeUSB,
+	}
+	if err := installESP32Firmware(ctx, false, board, serialDevice, wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollAuto}); err != nil {
 		return nil, fmt.Errorf("reinstalling Wendy Lite: %w", err)
 	}
 
@@ -1844,12 +1914,12 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 
 	// Resolve the target platform. Query the agent for its OS and architecture,
 	// then determine the effective platform from wendy.json or defaults.
-	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
 	printRunDiskUsageWarning(versionResp)
-	mark("agent GetAgentVersion (in runWithAgent)")
+	mark("agent version metadata (in runWithAgent)")
 	agentOS := versionResp.GetOs()
 	architecture := versionResp.GetCpuArchitecture()
 	if architecture == "" {
@@ -1975,8 +2045,19 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
+	if hashErr == nil {
+		var basesPinned bool
+		basesPinned, hashErr = dockerfileBasesContentPinned(cwd, opts.dockerfile)
+		if hashErr == nil && !basesPinned {
+			hashErr = fmt.Errorf("persistent build skip requires digest-pinned base images")
+		}
+	}
+	desiredHash := ""
+	if hashErr == nil {
+		desiredHash, hashErr = computeDeployDesiredHash(inputHash, appCfg, opts.userArgs, deployEnv, resolveRestartPolicy(opts))
+	}
 	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
-		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
+		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
 			mark("fast-path (skipped build)")
 			return nil
 		}
@@ -2023,7 +2104,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 				// Record the layer diff IDs we deployed so the next run's fast path
 				// can verify the device still holds this content before skipping the
 				// build (WDY-1824).
-				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
+				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: desiredHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
 			}
 			return nil
 		} else if isChunkDeployCancellation(ctx, err) {
@@ -2524,7 +2605,7 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 		return ""
 	}
 
-	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	resp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return ""
 	}
@@ -3038,7 +3119,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		}
 		defer releaseLayout()
 		build := func(buildCtx context.Context, stream, logw io.Writer) error {
-			return buildImageToOCILayoutDirWithDocker(buildCtx, cwd, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(appCfg.AppID, platform), stream, logw)
+			return buildImageToOCILayoutDirWithDocker(buildCtx, cwd, dockerfile, platform, buildArgs, layoutDir, stream, logw)
 		}
 
 		// Native fast path: for a Stagefile project whose deps inputs are
@@ -3106,9 +3187,19 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		// record it so a chunk-diff failure below can fall back to reusing it
 		// (see ociReuseHint) instead of a redundant second buildx build.
 		hint = &ociReuseHint{layoutDir: layoutDir, platform: platform}
-		// Prune blobs superseded by this build once the deploy is done with them.
-		// Best-effort: reachable blobs are never touched, so a failed GC only
-		// leaves garbage for the next run to collect.
+		// Once the deploy is done with the layout: GC blobs superseded by this
+		// build, THEN dedup identical blobs across app layout dirs, evict
+		// least-recently-used caches over the size cap, and bound the daemon
+		// store. Defers run LIFO, so maintenance is registered first and GC
+		// last — otherwise the size cap would measure this build's soon-to-be-
+		// pruned orphans as live usage and evict other apps for nothing. Both
+		// are best-effort; this build's own layout is protected (keep) so
+		// maintenance never yanks it, and a failed GC only leaves garbage for
+		// the next run to collect.
+		if userCache, cacheErr := os.UserCacheDir(); cacheErr == nil {
+			keep := map[string]bool{layoutDir: true}
+			defer func() { _, _ = maintainBuildCaches(ctx, userCache, buildCacheMaxBytes(), keep) }()
+		}
 		defer func() { _ = gcOCILayoutDir(layoutDir) }()
 	} else {
 		tmp, err := os.MkdirTemp("", "wendy-oci-*")
@@ -3118,7 +3209,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		defer os.RemoveAll(tmp)
 		ociTar := filepath.Join(tmp, "image.tar")
 		if err := runBuild(func(buildCtx context.Context, stream, logw io.Writer) error {
-			return buildImageToOCILayout(buildCtx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, ociDeploymentCacheKey(appCfg.AppID, platform), stream, logw)
+			return buildImageToOCILayout(buildCtx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
 		}); err != nil {
 			return nil, hint, err
 		}

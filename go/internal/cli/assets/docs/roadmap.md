@@ -15,7 +15,7 @@ This page mirrors the current public roadmap language for engineering and docs r
 ## Available Preview
 
 - **Jetson AGX Thor** — _preview_: WendyOS support for AGX Thor-class physical AI workloads, including the dedicated USB-recovery flash path that writes QSPI and internal NVMe directly. Install, deploy, GPU, and camera all work; see the [AGX Thor install guide](/docs/installation/wendyos-nvidia-jetson-agx-thor).
-- **Wendy Lite** — _preview_: WASM runtime for microcontrollers. Deploy Swift, Rust, C, or Zig apps to ESP32-C6 and ESP32-C5 with the same CLI workflow. Host APIs cover GPIO, I2C, SPI, UART, RMT, NeoPixel, timers, storage, BLE, WiFi, sockets, TLS, USB, and OTel. Camera and display peripherals are not exposed to WASM guests. See [Wendy Lite](/docs/advanced/wendy-lite).
+- **Wendy Lite** — _preview_: ESP32 runtime and deployment layer for C5, C6, C61, P4, and S3 targets. Regular native ESP-IDF projects are the recommended app model and deploy with `wendy run`; Swift and other WASM guests remain available as an optional portable runtime. See [ESP32 installation](/docs/installation/wendy-lite-esp32) and the [Wendy Lite reference](/docs/advanced/wendy-lite).
 
 ## Shipped
 

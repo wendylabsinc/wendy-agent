@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"strings"
 	"sync"
 	"syscall"
@@ -63,6 +66,7 @@ func newDeviceCmd() *cobra.Command {
 	// the top in rough order of usefulness.
 	addToGroup("common",
 		newAppsCmd(),
+		newDriversCmd(),
 		newDeviceLogsCmd(),
 		newDeviceOSLogsCmd(),
 		newROS2Cmd(),
@@ -2058,9 +2062,14 @@ type osUpdateOutcome struct {
 // device_type, so the pre-update snapshot may be stale. Non-WendyOS targets and
 // devices without an OTA backend are skipped silently, and any failure to
 // re-read or look up the OS is reported but non-fatal — `device update` still
-// succeeds as an agent-only update. The returned outcome reports whether an OTA
-// was actually applied and whether the device came back online in this run.
-func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, priorConn *grpcclient.AgentConnection, nightly, assumeYes bool, artifactURLOverride string) (osUpdateOutcome, error) {
+// succeeds as an agent-only update. Exception: when prNumber > 0 the OS
+// artifact resolves from that wendyos-builder PR's manifest, the already-current
+// skip is suppressed (a PR tag is constant across rebuilds), and failures on
+// the way to the install are hard errors instead — the PR OS install is the
+// explicitly requested outcome, so it must not degrade to an agent-only
+// success. The returned outcome reports whether an OTA was actually applied and
+// whether the device came back online in this run.
+func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, priorConn *grpcclient.AgentConnection, nightly, assumeYes bool, artifactURLOverride string, prNumber int) (osUpdateOutcome, error) {
 	if preUpdateVersion == nil {
 		return osUpdateOutcome{}, nil
 	}
@@ -2082,6 +2091,9 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	fmt.Println("Checking for OS updates...")
 	conn, err := reconnectAgentAfterRestart(ctx, priorConn)
 	if err != nil {
+		if prNumber > 0 {
+			return osUpdateOutcome{}, fmt.Errorf("reconnecting for the PR %d OS update: %w", prNumber, err)
+		}
 		fmt.Printf("Could not check for OS updates: %v\n", err)
 		return osUpdateOutcome{}, nil
 	}
@@ -2119,18 +2131,33 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		// newer agent may report it correctly where an older one did not.
 		versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 		if err != nil {
+			if prNumber > 0 {
+				return osUpdateOutcome{}, fmt.Errorf("reading the device version for the PR %d OS update: %w", prNumber, err)
+			}
 			fmt.Printf("Could not check for OS updates: %v\n", err)
 			return osUpdateOutcome{}, nil
 		}
 
 		deviceType := versionResp.GetDeviceType()
 		if deviceType == "" {
+			if prNumber > 0 {
+				return osUpdateOutcome{}, fmt.Errorf("device did not report a device type; cannot resolve the PR %d OS image", prNumber)
+			}
 			// No device type → cannot auto-select the GCS artifact; skip quietly.
 			return osUpdateOutcome{}, nil
 		}
 
-		u, latestVer, err := getLatestOTAInfoForDeviceType(deviceType, versionResp.GetStorageMedium(), nightly)
+		u, latestVer, err := func() (string, string, error) {
+			if prNumber > 0 {
+				return getPROTAInfoForDeviceType(prNumber, deviceType, versionResp.GetStorageMedium())
+			}
+			return getLatestOTAInfoForDeviceType(deviceType, versionResp.GetStorageMedium(), nightly)
+		}()
 		if err != nil {
+			// A --pr update must resolve to that PR's build or fail outright.
+			if prNumber > 0 {
+				return osUpdateOutcome{}, err
+			}
 			fmt.Printf("Could not check for OS updates: %v\n", err)
 			return osUpdateOutcome{}, nil
 		}
@@ -2142,7 +2169,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 			fromVer = "unknown"
 		}
 
-		decision := decideOSUpdate(currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal())
+		decision := decideOSUpdate(prNumber, currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal())
 
 		// Don't offer an update the device is guaranteed to reject (e.g. a
 		// wendyos-update release for a device whose image predates the
@@ -2159,16 +2186,28 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 
 		switch decision {
 		case osActionAlreadyCurrent:
+			// Unreachable under --pr: decideOSUpdate never returns AlreadyCurrent
+			// for prNumber > 0, so the plain-channel message is always accurate.
 			fmt.Printf("OS is already at the latest version (%s).\n", currentOS)
 			return osUpdateOutcome{}, nil
 		case osActionReportOnly:
+			if prNumber > 0 {
+				// The default text suggests plain `wendy os update`, which would
+				// not install the PR build — steer to a --yes re-run instead.
+				fmt.Printf("PR %d OS image available (%s). Re-run with --yes to apply.\n", prNumber, latestVer)
+				return osUpdateOutcome{}, nil
+			}
 			fmt.Printf("OS update available (%s). Re-run with --yes or run 'wendy os update' to apply.\n", latestVer)
 			return osUpdateOutcome{}, nil
 		case osActionApply:
 			// fall through to apply
 		case osActionPrompt:
 			ensureDeviceWiFiForOSUpdate(ctx, conn)
-			if !confirmDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now?", fromVer, latestVer)) {
+			prompt := fmt.Sprintf("OS update available (%s → %s). Apply now?", fromVer, latestVer)
+			if prNumber > 0 {
+				prompt = fmt.Sprintf("Install PR %d OS image (%s → %s)? It is an unhardened debug build.", prNumber, fromVer, latestVer)
+			}
+			if !confirmDefaultNoFn(prompt) {
 				fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
 				return osUpdateOutcome{}, nil
 			}
@@ -2272,17 +2311,32 @@ func newDeviceUpdateCmd() *cobra.Command {
 	var nightly bool
 	var assumeYes bool
 	var artifactURL string
+	var prNumber int
 
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Update the agent binary on the target device",
+		Short: "Update the agent binary and WendyOS on the target device",
 		Long: "Updates the agent binary on the device (downloaded from GitHub, or --binary for a local file), then checks for a newer WendyOS image. " +
 			"When an OS update is available it prompts before applying (default no); use --yes to apply without prompting. Non-interactive runs report the available update without applying it. " +
 			"--nightly selects the nightly channel for both the agent and the OS. " +
 			"--artifact-url applies a specific OS update artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL). " +
+			"--pr N applies the OS image built by wendyos-builder PR #N instead of the manifest's latest — an unhardened debug build for testing PRs on hardware; it also works over the cloud tunnel. --pr cannot be combined with --artifact-url or --json. " +
 			"macOS agents receive the signed app-bundle zip (wendy-agent-macos-<arch>.zip) instead of a Linux binary; --binary accepts one of those zips for dev pushes to a Mac agent.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+
+			if prNumber > 0 {
+				if artifactURL != "" {
+					return fmt.Errorf("--pr cannot be combined with --artifact-url")
+				}
+				// The OS step is the whole point of --pr, and JSON mode skips it
+				// (see the jsonOutput returns below) — refuse rather than let the
+				// user believe they tested the PR's image.
+				if jsonOutput {
+					return fmt.Errorf("--pr cannot be combined with --json: the OS-update step is skipped in JSON mode")
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
+			}
 
 			conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"), SuppressUpdateCheck())
 			if err != nil {
@@ -2387,9 +2441,17 @@ func newDeviceUpdateCmd() *cobra.Command {
 			// Hash the binary we're about to upload. Skipped when already
 			// current: no binary was downloaded and no upload happens.
 			var sha256Hash string
+			var verificationSHA string
 			if !agentAlreadyCurrent {
 				h := sha256.Sum256(binaryData)
 				sha256Hash = hex.EncodeToString(h[:])
+				verificationSHA = sha256Hash
+				if strings.EqualFold(preUpdateVersion.GetOs(), "darwin") {
+					verificationSHA, err = darwinAgentExecutableSHA256(binaryData)
+					if err != nil {
+						return fmt.Errorf("inspecting macOS agent bundle: %w", err)
+					}
+				}
 			}
 
 			if agentAlreadyCurrent {
@@ -2439,17 +2501,18 @@ func newDeviceUpdateCmd() *cobra.Command {
 				// swap landed — always check what the device actually runs
 				// before claiming success (a silent no-op or rollback still
 				// reports the old binary here). The darwin artifact is an
-				// app-bundle ZIP, so its hash can never equal a hash of the
-				// running executable: skip the hash comparison there and let
-				// the version check carry the verdict. The verify window
+				// app-bundle ZIP, so compare the executable inside that ZIP with
+				// the executable hash snapshotted by the Mac agent at launch. This
+				// proves both the swap and the restart; older agents leave it empty.
+				// The verify window
 				// matches the restart budget so a mismatch re-poll can
 				// outlast a lingering old agent.
-				verifySHA := sha256Hash
-				if strings.EqualFold(preUpdateVersion.GetOs(), "darwin") {
-					verifySHA = ""
-				}
-				verified, verifyErr := verifyAgentAfterUpdate(ctx, conn.AgentService, verifySHA, expectedAgentVersion,
-					agentVerifyWaitOptions{Timeout: agentRestartTimeoutFor(preUpdateVersion.GetOs())})
+				requireHash := strings.EqualFold(preUpdateVersion.GetOs(), "darwin")
+				verified, verifyErr := verifyAgentAfterUpdate(ctx, conn.AgentService, verificationSHA, expectedAgentVersion,
+					agentVerifyWaitOptions{
+						Timeout:     agentRestartTimeoutFor(preUpdateVersion.GetOs()),
+						RequireHash: requireHash,
+					})
 				if verifyErr != nil {
 					return verifyErr
 				}
@@ -2482,7 +2545,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				// !isWendyOSUpdateTarget gate rejects a non-"WendyOS-" os_version
 				// and empty device_type before any reconnect/network call, so
 				// `device update` on a Mac only ever updates the agent binary.
-				outcome, err = maybeCheckOSUpdate(ctx, preUpdateVersion, conn, nightly, assumeYes, artifactURL)
+				outcome, err = maybeCheckOSUpdate(ctx, preUpdateVersion, conn, nightly, assumeYes, artifactURL, prNumber)
 				if err != nil {
 					return err
 				}
@@ -2524,6 +2587,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both the agent and the OS")
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Apply an available OS update without prompting")
 	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Apply this OS update artifact URL instead of the manifest's latest")
+	cmd.Flags().IntVar(&prNumber, "pr", 0, "OTA-update the OS to the image built by wendyos-builder PR #N (debug build; mutually exclusive with --artifact-url and --json)")
 
 	return cmd
 }
@@ -2584,6 +2648,46 @@ func checkELFArchitecture(data []byte, deviceArch string) error {
 // magic "PK\x03\x04" (what ditto -c -k produces).
 func isZipArchive(data []byte) bool {
 	return len(data) >= 4 && data[0] == 'P' && data[1] == 'K' && data[2] == 0x03 && data[3] == 0x04
+}
+
+// darwinAgentExecutableSHA256 extracts and hashes the executable the Mac agent
+// will launch from the uploaded app-bundle ZIP. The relaunched agent reports
+// the hash of its mapped executable, making even same-version dev updates
+// distinguishable from the process that performed the on-disk replacement.
+func darwinAgentExecutableSHA256(data []byte) (string, error) {
+	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", fmt.Errorf("opening ZIP: %w", err)
+	}
+
+	var executable *zip.File
+	for _, file := range archive.File {
+		name := path.Clean(strings.TrimPrefix(file.Name, "./"))
+		parts := strings.Split(name, "/")
+		if len(parts) != 4 || !strings.HasSuffix(parts[0], ".app") ||
+			parts[1] != "Contents" || parts[2] != "MacOS" || parts[3] != "WendyAgentMac" {
+			continue
+		}
+		if executable != nil {
+			return "", errors.New("ZIP contains more than one WendyAgentMac executable")
+		}
+		executable = file
+	}
+	if executable == nil {
+		return "", errors.New("ZIP does not contain a top-level WendyAgentMac.app executable")
+	}
+
+	reader, err := executable.Open()
+	if err != nil {
+		return "", fmt.Errorf("opening WendyAgentMac executable: %w", err)
+	}
+	defer reader.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, reader); err != nil {
+		return "", fmt.Errorf("hashing WendyAgentMac executable: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // isELFBinary reports whether data begins with the ELF magic (0x7f 'E' 'L'
@@ -2848,8 +2952,14 @@ func agentUpdateTerminalError(recvErr error) error {
 	case codes.Unavailable, codes.Canceled:
 		return fmt.Errorf("%w (%s)", errAgentUpdateUnconfirmed, s.Message())
 	case codes.FailedPrecondition:
-		return fmt.Errorf("%s — if this repeats, a previous update likely applied without the agent restarting; "+
-			"reboot the device to finish it, then retry", s.Message())
+		// The agent names its own cause here, and most have nothing to do with a
+		// half-applied update. Add the reboot hint only where it fits: for the
+		// sysext-overlay refusal a reboot is the one action that makes it worse.
+		if strings.Contains(s.Message(), "update is already in progress") {
+			return fmt.Errorf("%s — if this repeats, a previous update likely applied without the agent restarting; "+
+				"reboot the device to finish it, then retry", s.Message())
+		}
+		return errors.New(s.Message())
 	default:
 		return fmt.Errorf("agent rejected the update: %s", s.Message())
 	}
@@ -2883,6 +2993,10 @@ func agentUpdateVerified(reported, expected string) bool {
 type agentVerifyWaitOptions struct {
 	Timeout      time.Duration
 	PollInterval time.Duration
+	// RequireHash refuses the version-only fallback. macOS uses this because
+	// its executable digest is what proves a new process started, even
+	// when two dev bundles carry the same version string.
+	RequireHash bool
 }
 
 const (
@@ -2894,10 +3008,10 @@ const (
 // against what the update uploaded. A reported binary hash compared to the
 // uploaded one is definitive in both directions — it is what makes dev pushes
 // provable, since dev builds share identical version strings. Version
-// comparison is only the fallback for agents that cannot report a hash (the
-// mac agent, pre-hash releases), and with nothing to compare a reachable
-// agent is accepted.
-func evaluateAgentUpdateOutcome(resp *agentpb.GetAgentVersionResponse, uploadedSHA256, expectedVersion string) error {
+// comparison is only the fallback for agents that cannot report a hash. When
+// requireHash is true (macOS), an empty hash means the old process or a broken
+// replacement answered and is not accepted.
+func evaluateAgentUpdateOutcome(resp *agentpb.GetAgentVersionResponse, uploadedSHA256, expectedVersion string, requireHash bool) error {
 	reportedHash := resp.GetBinarySha256()
 	if reportedHash != "" && uploadedSHA256 != "" {
 		if strings.EqualFold(reportedHash, uploadedSHA256) {
@@ -2906,6 +3020,9 @@ func evaluateAgentUpdateOutcome(resp *agentpb.GetAgentVersionResponse, uploadedS
 		return fmt.Errorf("the device is not running the binary that was uploaded "+
 			"(running sha256 %s, uploaded %s); the update did not apply — re-run 'wendy device update'",
 			reportedHash, uploadedSHA256)
+	}
+	if requireHash {
+		return fmt.Errorf("the updated agent did not report its executable hash; restart was not verified — re-run 'wendy device update'")
 	}
 	if agentUpdateVerified(resp.GetVersion(), expectedVersion) {
 		return nil
@@ -2918,8 +3035,7 @@ func evaluateAgentUpdateOutcome(resp *agentpb.GetAgentVersionResponse, uploadedS
 // agentVerifyResult is what verifyAgentAfterUpdate learned about the agent
 // that answered. HashVerified reports whether the running binary's hash was
 // actually compared and matched — callers must not claim cryptographic proof
-// without it, since a hash-less agent (mac, pre-hash releases) passes the
-// version fallback vacuously.
+// without it, since a hash-less pre-hash agent can pass the version fallback.
 type agentVerifyResult struct {
 	Version      string
 	HashVerified bool
@@ -2948,7 +3064,7 @@ func verifyAgentAfterUpdate(ctx context.Context, agentService agentpb.WendyAgent
 	for {
 		resp, err := agentService.GetAgentVersion(waitCtx, &agentpb.GetAgentVersionRequest{})
 		if err == nil {
-			if verdict := evaluateAgentUpdateOutcome(resp, uploadedSHA256, expectedVersion); verdict != nil {
+			if verdict := evaluateAgentUpdateOutcome(resp, uploadedSHA256, expectedVersion, opts.RequireHash); verdict != nil {
 				lastVerdictErr = verdict
 			} else {
 				return agentVerifyResult{
@@ -2973,6 +3089,16 @@ func verifyAgentAfterUpdate(ctx context.Context, agentService agentpb.WendyAgent
 }
 
 func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentConnection) func(context.Context) (*grpcclient.AgentConnection, error) {
+	// A connection with a pinned Reconnect (cloud tunnel — bound to the exact
+	// asset id) reconnects through it. Re-running discovery instead would
+	// relaunch the interactive device picker in the middle of the restart wait
+	// when the device was picked interactively (cloudDeviceConfig.DeviceName is
+	// only the --device flag), and even a named lookup can misresolve while the
+	// restarting device's heartbeat lapses.
+	if previous != nil && previous.Reconnect != nil {
+		return previous.Reconnect
+	}
+
 	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {
 		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectToCloudAgent(waitCtx, cloudCfg.CloudGRPC, cloudCfg.DeviceName, cloudCfg.BrokerURL)

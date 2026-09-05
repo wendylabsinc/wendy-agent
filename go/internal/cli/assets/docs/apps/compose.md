@@ -45,7 +45,7 @@ services:
 wendy run
 ```
 
-Wendy selects a device, builds each service image, pushes them to the device, and starts them concurrently with interleaved log output. Each service's lines are prefixed with a color-coded, column-aligned service name. Colors rotate through cyan, yellow, green, magenta, blue, and red. Log lines are never interleaved mid-line; each line is written atomically:
+Wendy selects a device, builds each service image, pushes them to the device, and starts them concurrently with interleaved log output. Each service's lines are prefixed with a color-coded, column-aligned service name. Log lines are never interleaved mid-line; each line is written atomically:
 
 ```
 [api]     Listening on :8080
@@ -55,11 +55,9 @@ Wendy selects a device, builds each service image, pushes them to the device, an
 
 Service builds run in parallel, while the device-intensive image preparation
 phase is limited to two services at a time so a high `--max-concurrency` value
-does not overload device storage. After a successful chunk-based preparation,
-Wendy records the service's complete desired-state hash and exact layer IDs. A
-later run with unchanged source and runtime configuration skips image building,
-chunking, transfer, and preparation only after confirming that the service's
-container and every recorded layer are still present on the device. Missing or
+does not overload device storage. A later run with unchanged source and runtime
+configuration skips image building, transfer, and preparation when the service's
+container and its content are still present on the device; missing or
 unverifiable content fails closed and performs a normal preparation. Set
 `WENDY_PUSH_SKIP=0` to disable this optimization while diagnosing builds.
 

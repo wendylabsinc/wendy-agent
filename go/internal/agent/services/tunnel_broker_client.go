@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
@@ -170,7 +172,7 @@ func brokerTLSConfig(logger *zap.Logger, certPEM, keyPEM, chainPEM string) (*tls
 	if err != nil {
 		caPool = x509.NewCertPool()
 	}
-	if chainPEM != "" && !caPool.AppendCertsFromPEM([]byte(chainPEM)) {
+	if chainPEM != "" && certs.AppendChainToPool(caPool, chainPEM) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates in chainPEM")
 	}
 	tlsCfg := &tls.Config{
@@ -341,25 +343,44 @@ func (c *TunnelBrokerClient) relay(ctx context.Context, cancel context.CancelFun
 	tcpConn net.Conn, stream agentTunnelStream) {
 	done := make(chan struct{}, 2)
 
+	// A hard failure in either copy direction invalidates the whole byte
+	// stream. Closing the TCP side is essential: the opposite goroutine may be
+	// parked in Read forever, which used to leave this method waiting for its
+	// second completion after a registry reset. Cancelling the gRPC side does
+	// the symmetric job for a goroutine parked in Recv or Send.
+	abort := func() {
+		cancel()
+		_ = tcpConn.Close()
+	}
+	closeWrite := func() {
+		if tc, ok := tcpConn.(*net.TCPConn); ok {
+			_ = tc.CloseWrite()
+		}
+	}
+
 	// gRPC -> TCP
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
+				if errors.Is(err, io.EOF) {
+					closeWrite()
+				} else {
+					abort()
+				}
 				break
 			}
 			if len(msg.Payload) > 0 {
 				if _, err := tcpConn.Write(msg.Payload); err != nil {
+					abort()
 					break
 				}
 			}
 			if msg.HalfClose {
 				// Half-close: only close the write side so the TCP->gRPC
 				// goroutine can still read and forward the backend response.
-				if tc, ok := tcpConn.(*net.TCPConn); ok {
-					_ = tc.CloseWrite()
-				}
+				closeWrite()
 				break
 			}
 		}
@@ -375,12 +396,17 @@ func (c *TunnelBrokerClient) relay(ctx context.Context, cancel context.CancelFun
 				payload := make([]byte, n)
 				copy(payload, buf[:n])
 				if sendErr := stream.Send(&cloudpb.TunnelData{Payload: payload}); sendErr != nil {
+					abort()
 					break
 				}
 			}
 			if readErr != nil {
-				if readErr == io.EOF {
-					_ = stream.Send(&cloudpb.TunnelData{HalfClose: true})
+				if errors.Is(readErr, io.EOF) {
+					if sendErr := stream.Send(&cloudpb.TunnelData{HalfClose: true}); sendErr != nil {
+						abort()
+					}
+				} else {
+					abort()
 				}
 				break
 			}
@@ -394,7 +420,7 @@ func (c *TunnelBrokerClient) relay(ctx context.Context, cancel context.CancelFun
 		select {
 		case <-done:
 		case <-ctx.Done():
-			cancel()
+			abort()
 			<-done
 			return
 		}

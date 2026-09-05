@@ -1,6 +1,6 @@
 //go:build windows
 
-package commands
+package flock
 
 import (
 	"errors"
@@ -9,10 +9,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// tryLockFile attempts a non-blocking exclusive lock on f via LockFileEx. It
+// TryLock attempts a non-blocking exclusive lock on f via LockFileEx. It
 // returns (true, nil) when the lock was acquired, (false, nil) when another
 // process holds it, and a non-nil error for any other failure.
-func tryLockFile(f *os.File) (bool, error) {
+func TryLock(f *os.File) (bool, error) {
 	ol := new(windows.Overlapped)
 	err := windows.LockFileEx(
 		windows.Handle(f.Fd()),
@@ -28,8 +28,8 @@ func tryLockFile(f *os.File) (bool, error) {
 	return false, err
 }
 
-// unlockFile releases the lock held on f.
-func unlockFile(f *os.File) error {
+// Unlock releases the lock held on f.
+func Unlock(f *os.File) error {
 	ol := new(windows.Overlapped)
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ol)
 }
