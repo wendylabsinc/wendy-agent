@@ -410,6 +410,9 @@ func addExactDeviceNodes(spec *Spec, nodes []nvidiaDeviceNode) {
 			Major: n.major,
 			Minor: n.minor,
 		})
+		// Record where this pair came from so a later boot can re-resolve it;
+		// these majors are dynamically allocated (see the WDY-1804 note above).
+		RecordPinnedDevice(spec, n.path, "c", n.major, n.minor)
 		key := [2]int64{n.major, n.minor}
 		if seen[key] {
 			continue
@@ -1282,6 +1285,10 @@ func addScopedCharDevice(spec *Spec, devPath string) (major, minor int64, err er
 		Minor:  &min,
 		Access: "rw",
 	})
+	// This path pins numbers in a cgroup rule and nowhere else — the bind mount
+	// carries no numbers, so without this record the rule is an anonymous
+	// triple that nothing can ever re-resolve. See pinnedDevicesAnnotation.
+	RecordPinnedDevice(spec, devPath, "c", major, minor)
 	return major, minor, nil
 }
 

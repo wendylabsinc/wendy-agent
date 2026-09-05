@@ -1,0 +1,241 @@
+package oci
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+)
+
+// pinnedDevicesAnnotation records every host device whose major/minor pair this
+// spec pins, and the path each pair was resolved from.
+//
+// The pairs themselves are already in the spec — as device entries, as cgroup
+// allow rules, or as both — but a cgroup rule is only a triple of numbers. It
+// does not say which device it was written for, so nothing could ever re-resolve
+// it: a rule reading "allow c 497:16" gives no hint that it once meant
+// /dev/kfd. That is why a stale number used to be repairable only by rebuilding
+// the container. This annotation is the missing half.
+const pinnedDevicesAnnotation = "sh.wendy/pinned-devices"
+
+// PinnedDevice is one host device node whose numbers this spec has pinned.
+type PinnedDevice struct {
+	Path  string `json:"path"`
+	Type  string `json:"type"`
+	Major int64  `json:"major"`
+	Minor int64  `json:"minor"`
+}
+
+// DeviceRefresh reports what RefreshHostDeviceNumbers found.
+type DeviceRefresh struct {
+	// Updated describes each device whose pinned pair no longer matched the
+	// host and was rewritten, as "path (old -> new)".
+	Updated []string
+	// Missing names the pinned devices that no longer exist on the host at all.
+	// Their numbers are left alone: there is nothing to re-resolve them to, and
+	// a device that is genuinely gone is a different problem from one that
+	// moved.
+	Missing []string
+}
+
+// Changed reports whether the spec was modified.
+func (r DeviceRefresh) Changed() bool { return len(r.Updated) > 0 }
+
+// RecordPinnedDevice notes that this spec pins path at major:minor, so the pair
+// can be re-resolved against the host later. Every site that writes an exact
+// major:minor into a spec must call it; a pair recorded nowhere is a pair
+// nothing can repair.
+//
+// Exported for the cdi package, which injects device nodes from a vendor's CDI
+// spec. A site that adds a device *entry* is also picked up from the device
+// list (see RefreshHostDeviceNumbers), so forgetting the call there degrades to
+// the old coverage rather than losing it; a site that pins only a cgroup rule
+// has no such safety net.
+func RecordPinnedDevice(spec *Spec, path, devType string, major, minor int64) {
+	if spec == nil || path == "" {
+		return
+	}
+	pins := decodePinnedDevices(spec)
+	for i := range pins {
+		if pins[i].Path == path {
+			pins[i].Type, pins[i].Major, pins[i].Minor = devType, major, minor
+			encodePinnedDevices(spec, pins)
+			return
+		}
+	}
+	encodePinnedDevices(spec, append(pins, PinnedDevice{Path: path, Type: devType, Major: major, Minor: minor}))
+}
+
+// decodePinnedDevices returns the recorded pins, or nil when the spec carries
+// none. A malformed annotation is treated as absent rather than fatal: it can
+// only cost a repair opportunity, and refusing to start a container over
+// unreadable repair metadata would be worse than the problem it prevents.
+func decodePinnedDevices(spec *Spec) []PinnedDevice {
+	if spec == nil || spec.Annotations == nil {
+		return nil
+	}
+	raw, ok := spec.Annotations[pinnedDevicesAnnotation]
+	if !ok || raw == "" {
+		return nil
+	}
+	var pins []PinnedDevice
+	if err := json.Unmarshal([]byte(raw), &pins); err != nil {
+		return nil
+	}
+	return pins
+}
+
+func encodePinnedDevices(spec *Spec, pins []PinnedDevice) {
+	if len(pins) == 0 {
+		return
+	}
+	// Stable order so an unchanged spec serializes identically.
+	sort.Slice(pins, func(i, j int) bool { return pins[i].Path < pins[j].Path })
+	raw, err := json.Marshal(pins)
+	if err != nil {
+		return
+	}
+	if spec.Annotations == nil {
+		spec.Annotations = make(map[string]string)
+	}
+	spec.Annotations[pinnedDevicesAnnotation] = string(raw)
+}
+
+// RefreshHostDeviceNumbers re-resolves every device number this spec pins and
+// rewrites the ones the host has moved, keeping device entries, cgroup allow
+// rules, and the pin record in step.
+//
+// Why a container needs this at all: the numbers in a spec are a snapshot of
+// the host taken when the container was created. Several of the device majors
+// an AI box depends on — Jetson's nvgpu and nvidia-uvm nodes, AMD's /dev/kfd —
+// are allocated from the kernel's dynamic pool at module load, so they are
+// stable for a boot rather than for the life of a container definition. A
+// container definition outlives a boot: containerd persists it and recreates
+// only the task. A spec can therefore name a number the running kernel has
+// since moved, which from inside the container is indistinguishable from the
+// hardware being absent — CUDA reports "no device", or the kernel denies
+// permission, while the host looks perfectly healthy.
+//
+// Both failure shapes are covered, because both kinds of pin are recorded:
+//   - a device entry plus its cgroup rule (the GPU nodes) — the container's own
+//     node ends up pointing at nothing;
+//   - a bind-mounted host node with only a cgroup rule (/dev/kfd, i2c, serial)
+//     — the node is right but the rule blocks it.
+//
+// Specs written before pins were recorded fall back to the device list, so a
+// container created by an older agent is still repairable without a redeploy,
+// and picks up a pin record on its first refresh.
+func RefreshHostDeviceNumbers(spec *Spec) DeviceRefresh {
+	var out DeviceRefresh
+	if spec == nil || spec.Linux == nil {
+		return out
+	}
+
+	// The record is the only way to reach a cgroup-only pin, but device entries
+	// carry their own path, so union the two rather than trusting the record to
+	// be complete. That keeps a container created by an older agent repairable,
+	// and keeps an injection site that forgets to record from silently dropping
+	// out of coverage.
+	recorded := decodePinnedDevices(spec)
+	pins := unionWithDeviceList(recorded, spec)
+	if len(pins) == 0 {
+		return out
+	}
+	recordIncomplete := len(pins) != len(recorded)
+
+	// Rules already rewritten this pass, so two pins that shared a rule and now
+	// disagree cannot both claim it.
+	claimed := make(map[int]bool)
+	changed := false
+
+	for i := range pins {
+		pin := &pins[i]
+		major, minor, err := statDeviceNode(pin.Path)
+		if err != nil {
+			out.Missing = append(out.Missing, pin.Path)
+			continue
+		}
+		if major == pin.Major && minor == pin.Minor {
+			continue
+		}
+
+		out.Updated = append(out.Updated, fmt.Sprintf("%s (%d:%d -> %d:%d)", pin.Path, pin.Major, pin.Minor, major, minor))
+		updateDeviceEntry(spec, pin.Path, major, minor)
+		updateCgroupRule(spec, *pin, major, minor, claimed)
+		pin.Major, pin.Minor = major, minor
+		changed = true
+	}
+
+	// Re-encode when anything moved, and also when the union found pins the
+	// record was missing — that is the chance to complete it, so a later
+	// refresh has a path for every pinned rule rather than only for the
+	// entries.
+	if changed || recordIncomplete {
+		encodePinnedDevices(spec, pins)
+	}
+
+	sort.Strings(out.Updated)
+	sort.Strings(out.Missing)
+	return out
+}
+
+// unionWithDeviceList adds a pin for every device entry the record does not
+// already cover. Only device entries carry a path, so this recovers the
+// entry-shaped pins — the coverage the code had before pins were recorded — and
+// never the bind-mounted, cgroup-only ones, which is precisely why the record
+// exists.
+func unionWithDeviceList(recorded []PinnedDevice, spec *Spec) []PinnedDevice {
+	pinned := make(map[string]bool, len(recorded))
+	for _, p := range recorded {
+		pinned[p.Path] = true
+	}
+	pins := recorded
+	for _, dev := range spec.Linux.Devices {
+		if dev.Path == "" || pinned[dev.Path] {
+			continue
+		}
+		pinned[dev.Path] = true
+		pins = append(pins, PinnedDevice{Path: dev.Path, Type: dev.Type, Major: dev.Major, Minor: dev.Minor})
+	}
+	return pins
+}
+
+func updateDeviceEntry(spec *Spec, path string, major, minor int64) {
+	for i := range spec.Linux.Devices {
+		if spec.Linux.Devices[i].Path == path {
+			spec.Linux.Devices[i].Major = major
+			spec.Linux.Devices[i].Minor = minor
+		}
+	}
+}
+
+// updateCgroupRule re-points the allow rule that matches pin's old numbers.
+// Wildcard rules (a whole major, no minor) are left alone: they are the
+// deliberate choice made for hotplug-heavy classes like video and USB, and they
+// cannot go stale.
+func updateCgroupRule(spec *Spec, pin PinnedDevice, major, minor int64, claimed map[int]bool) {
+	if spec.Linux.Resources == nil {
+		return
+	}
+	for i := range spec.Linux.Resources.Devices {
+		rule := &spec.Linux.Resources.Devices[i]
+		if claimed[i] || rule.Major == nil || rule.Minor == nil {
+			continue
+		}
+		if rule.Type != pin.Type || *rule.Major != pin.Major || *rule.Minor != pin.Minor {
+			continue
+		}
+		maj, min := major, minor
+		rule.Major, rule.Minor = &maj, &min
+		claimed[i] = true
+		return
+	}
+
+	// The pin had no rule of its own — it shared one with a device that has
+	// since moved elsewhere, and that rule is now spoken for. Add the rule this
+	// device needs rather than leaving it unauthorized.
+	maj, min := major, minor
+	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
+		Allow: true, Type: pin.Type, Major: &maj, Minor: &min, Access: "rw",
+	})
+	claimed[len(spec.Linux.Resources.Devices)-1] = true
+}

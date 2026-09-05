@@ -1748,11 +1748,11 @@ func (c *Client) applyNvidiaCDI(spec *localoci.Spec) error {
 	return fmt.Errorf("CDI spec %s has no applicable device: %w", specPath, allErr)
 }
 
-// refreshGPUDeviceNumbersForStart re-resolves the host device numbers pinned in
-// a GPU-entitled container's stored spec and persists the spec when any of them
-// have moved. Best-effort: every failure leaves the container exactly as it was
-// and lets the start proceed, because a start that used to work must not begin
-// failing on account of a repair step.
+// refreshGPUDeviceNumbersForStart re-resolves every host device number pinned
+// in a GPU-entitled container's stored spec and persists the spec when any of
+// them have moved. Best-effort: every failure leaves the container exactly as
+// it was and lets the start proceed, because a start that used to work must not
+// begin failing on account of a repair step.
 //
 // The spec record is updated in place rather than through delete+recreate (as
 // refreshSecondaryNamespaces does) because there is no task yet at this point
@@ -1781,17 +1781,12 @@ func (c *Client) refreshGPUDeviceNumbersForStart(ctx context.Context, container 
 		return
 	}
 
-	refresh, err := cdi.RefreshDeviceNumbers(&spec)
-	if err != nil {
-		c.logger.Warn("Could not re-resolve GPU device numbers; starting with the stored spec",
-			zap.String("app_name", appName), zap.Error(err))
-		return
-	}
+	refresh := localoci.RefreshHostDeviceNumbers(&spec)
 	if len(refresh.Missing) > 0 {
 		// Nothing to repair — a device that is gone cannot be re-pointed — but
 		// this is the log line that tells whoever is debugging a GPU app that
 		// the host, not the container, is what changed.
-		c.logger.Warn("GPU container names host devices that no longer exist",
+		c.logger.Warn("Container names host devices that no longer exist",
 			zap.String("app_name", appName), zap.Strings("devices", refresh.Missing))
 	}
 	if !refresh.Changed() {
@@ -1814,7 +1809,7 @@ func (c *Client) refreshGPUDeviceNumbersForStart(ctx context.Context, container 
 		return
 	}
 
-	c.logger.Info("Re-resolved stale GPU device numbers before start",
+	c.logger.Info("Re-resolved stale host device numbers before start",
 		zap.String("app_name", appName), zap.Strings("devices", refresh.Updated))
 }
 
@@ -1952,16 +1947,18 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 
 	// Same class of problem as the resolv.conf hook above, for device numbers:
 	// the spec pins the major/minor pairs the host had when the container was
-	// created, and the NVIDIA nodes on a Jetson are allocated dynamically at
+	// created, and several of the majors an accelerator depends on — Jetson's
+	// nvgpu and nvidia-uvm nodes, AMD's /dev/kfd — are allocated dynamically at
 	// module load, so they are stable for a boot rather than for the life of a
 	// container definition. Re-resolve them here, before NewTask consumes the
 	// spec, so a container whose numbers have gone stale is repaired by an
 	// ordinary restart instead of needing a reboot or a redeploy.
 	//
-	// Scoped to GPU-entitled containers deliberately. Every pinned device
-	// number in a long-lived spec has this weakness, but GPU nodes are the ones
-	// known to move, and a start is the wrong moment to start rewriting specs
-	// more broadly than the evidence supports.
+	// Which pins are repaired is decided by the spec itself (every site that
+	// writes an exact pair records the path it came from), so this covers both
+	// the GPU's own device entries and the bind-mounted, cgroup-only pins that
+	// AMD compute, i2c and serial use. Which containers are refreshed is still
+	// gated on the gpu entitlement here.
 	c.refreshGPUDeviceNumbersForStart(ctx, container, appName, containerLabels)
 
 	// Resolve network policy before NewTask. A sandbox is reusable only when

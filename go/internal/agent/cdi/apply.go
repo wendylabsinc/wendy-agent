@@ -85,6 +85,9 @@ func applyContainerEdits(spec *oci.Spec, edits *CDIContainerEdits) error {
 			Minor: int64(minor),
 		}
 		spec.Linux.Devices = append(spec.Linux.Devices, ociDevice)
+		// Record where this pair came from, so a boot that renumbers the device
+		// can be repaired instead of leaving the container pointing at nothing.
+		oci.RecordPinnedDevice(spec, node.Path, deviceType, int64(major), int64(minor))
 
 		// Add cgroup device allowance.
 		if spec.Linux.Resources == nil {
