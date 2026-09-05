@@ -51,10 +51,13 @@ type repoMeta struct {
 }
 
 type repoMetaTemplate struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Targets     []string `json:"targets"`   // optional; empty means all targets
-	Languages   []string `json:"languages"` // optional; empty means discover from repo layout
+	Name         string   `json:"name"`
+	DisplayName  string   `json:"displayName,omitempty"`
+	Category     string   `json:"category,omitempty"`
+	Requirements string   `json:"requirements,omitempty"`
+	Description  string   `json:"description"`
+	Targets      []string `json:"targets"`   // optional; empty means all targets
+	Languages    []string `json:"languages"` // optional; empty means discover from repo layout
 }
 
 type repoMetaLanguage struct {
@@ -133,6 +136,11 @@ type templateVariable struct {
 // If ctx is cancelled, the in-flight request is aborted.
 func fetchRepoMeta(ctx context.Context, branch string) (*repoMeta, error) {
 	branch = resolveTemplateBranch(branch)
+	if index, err := fetchTemplateIndex(ctx, branch); err == nil && index != nil {
+		return &index.Catalog, nil
+	} else if templateFetchCancelled(err) {
+		return nil, err
+	}
 	url := fmt.Sprintf("%s/%s/%s/%s/meta.json",
 		strings.TrimRight(templateRawBaseURL, "/"), templateRepoOwner, templateRepoName, branch)
 
@@ -296,6 +304,11 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 // If ctx is cancelled, the in-flight request is aborted.
 func downloadTemplateArchive(ctx context.Context, language, templateName, branch string, onProgress progressCallback) (map[string][]byte, *templateManifest, error) {
 	branch = resolveTemplateBranch(branch)
+	if index, err := fetchTemplateIndex(ctx, branch); err == nil && index != nil {
+		return downloadTemplateBundle(ctx, index, language, templateName, branch, onProgress)
+	} else if templateFetchCancelled(err) {
+		return nil, nil, err
+	}
 	// Use codeload directly to avoid an extra redirect through github.com for the
 	// repository archive download.
 	url := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/refs/heads/%s",
@@ -488,27 +501,10 @@ func extractTemplateArchive(r io.Reader, language, templateName string) (map[str
 // collectTemplateValues gathers values for all template variables.
 // It uses varOverrides (from --var flags) for non-interactive values,
 // falling back to bubbletea prompts for anything missing.
-// If all variables can be resolved without prompting (via overrides or defaults),
-// no interactive prompts are shown. Otherwise all non-overridden variables are
-// prompted interactively with defaults pre-filled.
+// Defaults are always accepted silently; only values without defaults prompt.
 func collectTemplateValues(manifest *templateManifest, appID string, varOverrides map[string]string) (map[string]interface{}, error) {
 	vals := map[string]interface{}{
 		"APP_ID": appID,
-	}
-
-	// Determine if any variables need interactive input.
-	needsPrompt := false
-	for _, v := range manifest.Variables {
-		if v.Name == "APP_ID" {
-			continue
-		}
-		if _, ok := varOverrides[v.Name]; ok {
-			continue
-		}
-		if v.Default == nil {
-			needsPrompt = true
-			break
-		}
 	}
 
 	for _, v := range manifest.Variables {
@@ -529,13 +525,15 @@ func collectTemplateValues(manifest *templateManifest, appID string, varOverride
 			continue
 		}
 
-		// If no prompting needed, use defaults silently.
-		if !needsPrompt && v.Default != nil {
+		// Use optional defaults even when another variable needs input.
+		if v.Default != nil {
 			vals[v.Name] = v.Default
 			continue
 		}
 
-		// Interactive prompt with default pre-filled.
+		if !isInteractiveTerminal() {
+			return nil, fmt.Errorf("template variable %s requires a value; pass --var %s=<value>", v.Name, v.Name)
+		}
 		val, err := promptForVariable(v)
 		if err != nil {
 			return nil, err

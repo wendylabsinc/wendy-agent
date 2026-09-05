@@ -4,6 +4,38 @@ Creates a new Wendy project: a [`wendy.json`](../../../apps/wendy.json.md), scaf
 
 Run it with no arguments for an interactive wizard, or pass flags to script it end to end. Every prompt has a matching flag, so any wizard answer can be supplied up front.
 
+## Start and run a template
+
+```sh
+wendy init my-app --template fullstack --language python --run
+```
+
+The Web app starter opens one React page backed by a greeting endpoint. Choose
+**API**, **Web app**, **Camera**, or **Audio** in the WendyOS picker; **Browse
+examples** contains larger integrations such as the Device dashboard, AI, and
+robot apps. Wendy Lite offers Hello World and Blink. Direct `--template` names
+continue to work, and older catalogs without categories still display normally.
+
+Template defaults such as ports are accepted without prompting, even when a
+required credential still needs an answer. Use `--var` to override them. Git is
+initialized automatically unless the project is inside an existing repository;
+pass `--git-init=no` to opt out. The interactive language picker remembers your
+last successful choice when the selected template supports it; `--language`
+always overrides that preference. Scripts still supply a language explicitly
+when a template has more than one.
+
+`--run` starts the generated project using the normal build/deploy path and the
+global `--device` selection. If deployment fails, the generated files remain;
+fix the reported problem and run `wendy run` from the project directory.
+Omit `--run` to scaffold without deploying.
+
+The CLI downloads only the selected template bundle, checks its SHA-256, and
+caches it by content. Catalog indexes refresh after five minutes. Previously
+cached templates remain usable when the server is unreachable. Branches without
+bundles use the existing repository-archive download, so older branch previews
+continue working. Offline scaffolding does not imply that uncached runtime
+images, packages, or model weights can be downloaded without a connection.
+
 ## Usage
 
 ```sh
@@ -59,7 +91,7 @@ For ESP32, regular native ESP-IDF projects are recommended. Create them with the
 | `--here` | Scaffold into the current directory instead of creating a subdirectory. With no `[app-id]`/`--app-id`, infers the app ID from the current directory's name. |
 | `--target <name>` | Target platform: `wendyos`, `darwin`, or `wendy-lite`. Required when running non-interactively. |
 | `--language <name>` | Project language. `swift` or `python` for the plain wizard; templates may offer more. |
-| `--git-init <yes\|no>` | Initialize a git repo in the project directory. |
+| `--git-init <yes\|no>` | Initialize Git; defaults to yes outside an existing repository. |
 
 ### Template flags
 
@@ -68,6 +100,7 @@ For ESP32, regular native ESP-IDF projects are recommended. Create them with the
 | `--template [<name>]` | Scaffold from a template. Passing it **without** a value opens a picker filtered by target, auto-selecting when only one template exists for the target. With a value, `--target` becomes optional: it is inferred when the template's metadata maps to exactly one target. |
 | `--branch <name>` | Branch of the templates repo to read templates from. |
 | `--var KEY=VALUE` | Override a template variable. Repeatable. |
+| `--run` | Build and run the template immediately after scaffolding. |
 
 ### Entitlement flags
 

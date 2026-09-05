@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 const (
@@ -75,6 +76,8 @@ type entitlementQuestion struct {
 
 type initOptions struct {
 	appID               string
+	run                 bool
+	ctx                 context.Context
 	here                bool
 	target              string
 	language            string
@@ -145,6 +148,9 @@ func newInitCmd() *cobra.Command {
 			"\"frameworks\" in wendy.json afterwards.",
 		Example: `  # Interactive wizard
   wendy init
+
+  # Create and launch a minimal Web app
+  wendy init my-app --template fullstack --language python --run
 
   # Scaffold from a template (interactive language picker)
   wendy init --template simple-api
@@ -229,6 +235,7 @@ func newInitCmd() *cobra.Command {
     --assistant skip`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.ctx = cmd.Context()
 			opts.appIDSet = cmd.Flags().Changed("app-id")
 			opts.targetSet = cmd.Flags().Changed("target")
 			opts.languageSet = cmd.Flags().Changed("language")
@@ -254,6 +261,7 @@ func newInitCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().BoolVar(&opts.run, "run", false, "Build and run the generated template immediately")
 	cmd.Flags().StringVar(&opts.appID, "app-id", "", "Application ID to write into wendy.json")
 	cmd.Flags().BoolVar(&opts.here, "here", false, "Scaffold into the current directory instead of creating a subdirectory")
 	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos (writes \"linux\" to wendy.json), wendy-lite, or darwin")
@@ -261,7 +269,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.template, "template", "", "Project template (e.g. simple-api, fullstack)")
 	cmd.Flags().StringVar(&opts.branch, "branch", "", fmt.Sprintf("Branch of the templates repo to use (default: %s)", templateRepoBranch))
 	cmd.Flags().StringSliceVar(&opts.vars, "var", nil, "Template variable override (repeatable, KEY=VALUE)")
-	cmd.Flags().StringVar(&opts.gitInit, "git-init", "", "Initialize a git repo in the project directory (yes or no)")
+	cmd.Flags().StringVar(&opts.gitInit, "git-init", "", "Initialize a git repo in the project directory (yes or no; default yes outside an existing repo)")
 	cmd.Flags().StringSliceVar(&opts.entitlements, "entitlement", nil, "App entitlement to enable (repeatable or comma-separated)")
 	cmd.Flags().BoolVar(&opts.allEntitlements, "all-entitlements", false, "Enable all entitlements (requires field flags for gpio, i2c, persist)")
 	cmd.Flags().BoolVar(&opts.noExtraEntitlements, "no-extra-entitlements", false, "Skip entitlement prompts and use only the default network entitlement")
@@ -327,6 +335,10 @@ func runInitWizard(args []string, opts initOptions) error {
 			return err
 		}
 		return runTemplateFlow(cwd, destDir, appID, tmpl, target, meta, opts)
+	}
+
+	if opts.run {
+		return fmt.Errorf("--run requires a template; choose one or pass --template=<name>")
 	}
 
 	// Standard wizard flow (no template) — check wendy.json doesn't already exist.
@@ -536,8 +548,8 @@ func templateItemsForTarget(target string, meta *repoMeta) []tui.PickerItem {
 	for _, t := range meta.Templates {
 		if templateTargetMatch(t, target) {
 			items = append(items, tui.PickerItem{
-				Name:        t.Name,
-				Description: t.Description,
+				Name:        templateDisplayName(t),
+				Description: templateDescription(t),
 				Value:       t.Name,
 			})
 		}
@@ -547,12 +559,7 @@ func templateItemsForTarget(target string, meta *repoMeta) []tui.PickerItem {
 
 // pickTemplateNameForTarget shows a picker with templates available for the given target.
 func pickTemplateNameForTarget(target string, meta *repoMeta) (string, error) {
-	fmt.Println()
-	items := templateItemsForTarget(target, meta)
-	if len(items) == 0 {
-		return "", fmt.Errorf("no templates available for %s", target)
-	}
-	return pickFromItems("Choose a template", items)
+	return pickStarterOrExample(target, meta, false)
 }
 
 // resolveBareTemplatePick handles a bare `--template` (rewritten to the
@@ -582,24 +589,66 @@ func resolveBareTemplatePick(target string, meta *repoMeta) (string, error) {
 
 // pickTemplateOrSkipForTarget shows templates for the given target plus a "No template" option.
 func pickTemplateOrSkipForTarget(target string, meta *repoMeta) (string, error) {
-	fmt.Println()
-	var items []tui.PickerItem
-	for _, t := range meta.Templates {
-		if templateTargetMatch(t, target) {
-			items = append(items, tui.PickerItem{
-				Name:        t.Name,
-				Description: t.Description,
-				Value:       t.Name,
-			})
+	return pickStarterOrExample(target, meta, true)
+}
+
+func templateDisplayName(t repoMetaTemplate) string {
+	if t.DisplayName != "" {
+		return t.DisplayName
+	}
+	return t.Name
+}
+
+func templateDescription(t repoMetaTemplate) string {
+	if t.Requirements != "" {
+		return t.Description + " · Requires: " + t.Requirements
+	}
+	return t.Description
+}
+
+func starterAndExampleItems(target string, meta *repoMeta) ([]tui.PickerItem, []tui.PickerItem) {
+	var starters, examples []tui.PickerItem
+	for i, t := range meta.Templates {
+		if !templateTargetMatch(t, target) {
+			continue
+		}
+		item := tui.PickerItem{Name: templateDisplayName(t), Description: templateDescription(t), Value: t.Name, SortKey: fmt.Sprintf("%04d", i)}
+		if t.Category == "example" {
+			examples = append(examples, item)
+		} else {
+			starters = append(starters, item)
 		}
 	}
-	items = append(items, tui.PickerItem{
-		Name:        "No template",
-		Description: "Configure target, language, and entitlements manually",
-		Value:       "",
-		SortKey:     "~",
-	})
-	return pickFromItems("Start from a template?", items)
+	return starters, examples
+}
+
+var pickInitTemplateItem = pickFromItems
+
+func pickStarterOrExample(target string, meta *repoMeta, allowManual bool) (string, error) {
+	starters, examples := starterAndExampleItems(target, meta)
+	if len(starters) == 0 {
+		starters, examples = examples, nil
+	}
+	if len(starters) == 0 && !allowManual {
+		return "", fmt.Errorf("no templates available for %s", target)
+	}
+	if len(examples) > 0 {
+		starters = append(starters, tui.PickerItem{Name: "Browse examples", Description: "AI, robotics, and device integrations", Value: "_examples", SortKey: "~1"})
+	}
+	if allowManual {
+		starters = append(starters, tui.PickerItem{Name: "No template", Description: "Configure an app manually", Value: "", SortKey: "~2"})
+	}
+	for {
+		choice, err := pickInitTemplateItem("What would you like to build?", starters)
+		if err != nil || choice != "_examples" {
+			return choice, err
+		}
+		items := append(append([]tui.PickerItem{}, examples...), tui.PickerItem{Name: "Back to starters", Value: "_back", SortKey: "~"})
+		choice, err = pickInitTemplateItem("Choose an example", items)
+		if err != nil || choice != "_back" {
+			return choice, err
+		}
+	}
 }
 
 // resolveTemplateLanguage picks the language for the template flow.
@@ -648,6 +697,12 @@ func resolveTemplateLanguage(target, tmpl string, meta *repoMeta, opts initOptio
 		return languages[0].Key, nil
 	}
 
+	if isInteractiveTerminal() {
+		if preferred := preferredTemplateLanguage(); templateLanguageAvailable(preferred, languages) {
+			cliNotice("Using %s from your last project; override with --language.", preferred)
+			return preferred, nil
+		}
+	}
 	items := templateLanguageItems(languages)
 	if !isInteractiveTerminal() {
 		printPickerItemsPlainText("Available languages for template "+tmpl, items)
@@ -874,11 +929,6 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 
 	cliSuccess("\nScaffolded %s project from template %q", language, tmpl)
 	cliLogln("  Directory: %s", tui.Path(destDir+"/"))
-	for _, v := range manifest.Variables {
-		if val, ok := vals[v.Name]; ok {
-			cliLogln("  %s: %v", v.Name, val)
-		}
-	}
 	if addedFrameworks {
 		cliLogln("  Frameworks added from flags: ros2")
 	}
@@ -891,7 +941,35 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 		return err
 	}
 
+	rememberTemplateLanguage(language)
+	if opts.run {
+		ctx := opts.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return runInitializedTemplate(ctx, destDir)
+	}
 	return finishTemplateInit(cwd, destDir, appID)
+}
+
+var preferredTemplateLanguage = func() string {
+	if cfg, err := config.Load(); err == nil {
+		return cfg.PreferredTemplateLanguage
+	}
+	return ""
+}
+
+var rememberTemplateLanguage = func(language string) {
+	if cfg, err := config.Load(); err == nil {
+		cfg.PreferredTemplateLanguage = language
+		_ = config.Save(cfg)
+	}
+}
+
+var runInitializedTemplate = func(ctx context.Context, dir string) error {
+	return runWithInterruptContext(ctx, func(runCtx context.Context) error {
+		return runCommand(runCtx, runOptions{prefix: dir})
+	})
 }
 
 func finishTemplateInit(cwd, destDir, appID string) error {
@@ -1056,12 +1134,11 @@ func maybeGitInit(dir string, opts initOptions) error {
 			return fmt.Errorf("invalid --git-init value %q (expected yes or no)", opts.gitInit)
 		}
 	} else {
-		// Interactive yes/no prompt.
-		fmt.Println()
-		var err error
-		doInit, err = tui.ConfirmDefaultYes("Initialize a git repository?")
-		if err != nil {
-			return err
+		// A new starter should be ready to edit without another setup question.
+		// Avoid creating a nested repository when scaffolding within a checkout.
+		probe := exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree")
+		if output, err := probe.Output(); err == nil && strings.TrimSpace(string(output)) == "true" {
+			return nil
 		}
 	}
 
