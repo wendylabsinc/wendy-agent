@@ -567,30 +567,37 @@ func TestManagerConcurrentLifecycleStress(t *testing.T) {
 	}
 }
 
-// TestUploadStateVocabularyMatchesEviction pins the awaitingUpload state set
-// against the states the agent actually writes, so a renamed workflow state
-// cannot silently revert eviction to oldest-first.
+// TestUploadStateVocabularyMatchesEviction pins the eviction tier of every
+// upload state the agent writes, so a renamed workflow state cannot silently
+// change what gets deleted first under quota pressure.
 func TestUploadStateVocabularyMatchesEviction(t *testing.T) {
-	// States produced by this agent today: "local" (ad-hoc default) and
-	// "pending" (campaign episodes). "uploaded" is written by the future
-	// transfer worker. Anything unknown must stay protected (fail-safe).
-	for state, awaiting := range map[string]bool{
-		"":          false,
-		"local":     false,
-		"uploaded":  false,
-		"pending":   true,
-		"uploading": true,
-		"failed":    true,
+	// Tier 0 is evicted first, tier 2 last. "" and "local" never leave the
+	// device; "uploaded" has a copy in the cloud. "failed" sits between: the
+	// worker gave up, so it must not hold quota against live candidates, but
+	// its bytes are the only copy and RequeueFailedUploads can revive it, so it
+	// still outranks episodes that are already safe.
+	for state, tier := range map[string]int{
+		"":          0,
+		"local":     0,
+		"uploaded":  0,
+		"failed":    1,
+		"pending":   2,
+		"uploading": 2,
 	} {
-		if got := awaitingUpload(state); got != awaiting {
-			t.Errorf("awaitingUpload(%q) = %v, want %v", state, got, awaiting)
+		if got := evictionTier(state); got != tier {
+			t.Errorf("evictionTier(%q) = %d, want %d", state, got, tier)
 		}
+	}
+	// Fail-safe: a state this build has never heard of must be treated as still
+	// on its way out, not as safe to delete.
+	if got := evictionTier("some-future-state"); got != 2 {
+		t.Errorf("evictionTier(unknown) = %d, want 2 (most protected)", got)
 	}
 	var manifest Manifest
 	if err := json.Unmarshal([]byte(`{"upload":{"state":"pending"}}`), &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if !awaitingUpload(manifest.Upload.State) {
+	if evictionTier(manifest.Upload.State) != 2 {
 		t.Fatal("persisted pending state lost eviction protection")
 	}
 }
