@@ -357,7 +357,7 @@ type videoFrame struct {
 	// sampleID is the harness-wide identity of this sample within its source,
 	// assigned by the hub in produce, once per physical frame arriving from the
 	// producer and never again for a further plane, so that EVERY consumer of the frame — an
-	// app subscribing through SensorService, the episode capture adapter, a
+	// app reading the agent-fed node, the episode capture adapter, a
 	// dashboard viewer — names it identically. It is what makes an episode able
 	// to say "this is the frame the model saw". The counter is owned by the
 	// VideoService per device key, not by the hub, so it does not restart when

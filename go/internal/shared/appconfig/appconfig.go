@@ -53,8 +53,9 @@ const (
 	// episodes are active, so it writes into the recorded training corpus. It
 	// is stronger than "may log something": campaign triggers match on
 	// application event names and prediction attributes, so an app holding this
-	// entitlement can start recordings. It grants no read access to sensors —
-	// that is the separate sensor-read entitlement.
+	// entitlement can start recordings. It grants no read access to sensors:
+	// reading is native, through the agent-fed node the camera entitlement
+	// grants.
 	EntitlementEpisodeWrite = "episode-write"
 	// EntitlementNotifications grants access only to the app-attributed Wendy
 	// System Notification API. It does not expose the Agent control plane.

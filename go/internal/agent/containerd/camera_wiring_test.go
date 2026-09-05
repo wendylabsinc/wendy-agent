@@ -212,35 +212,33 @@ func TestTwoPlaneConsumerNames_RequiresCamera(t *testing.T) {
 	}
 }
 
-// TestTwoPlaneConsumerNames_IsSubsetOfCameraConsumers pins the containment
-// relation the design depends on: every two-plane consumer is also a camera
-// consumer, so the narrower path can never entitle a container the existing
-// camera path would not.
-func TestTwoPlaneConsumerNames_IsSubsetOfCameraConsumers(t *testing.T) {
+// TestTwoPlaneConsumerNames_MatchesCameraConsumers pins the relation the design
+// depends on. It used to be containment, because the two-plane path demanded a
+// second entitlement; with frame identity in-band the two sets are equal, and
+// asserting equality keeps this test honest. Containment alone would now pass
+// no matter what the gate did, since identical sets satisfy it trivially.
+func TestTwoPlaneConsumerNames_MatchesCameraConsumers(t *testing.T) {
 	infos := []containerCameraInfo{
-		{name: "both", labels: map[string]string{
-			labelKeyAppID:                      "both",
-			"sh.wendy/entitlement.camera":      `{"mode":"detect"}`,
-			"sh.wendy/entitlement.sensor-read": `{}`,
-		}, running: true},
-		{name: "camonly", labels: map[string]string{
-			labelKeyAppID:                 "camonly",
+		{name: "cam", labels: map[string]string{
+			labelKeyAppID:                 "cam",
 			"sh.wendy/entitlement.camera": `{"mode":"detect"}`,
 		}, running: true},
-		{name: "sensoronly", labels: map[string]string{
-			labelKeyAppID:                      "sensoronly",
-			"sh.wendy/entitlement.sensor-read": `{}`,
+		{name: "alias", labels: map[string]string{
+			labelKeyAppID:                "alias",
+			"sh.wendy/entitlement.video": `{"mode":"detect"}`,
 		}, running: true},
+		{name: "writer", labels: map[string]string{
+			labelKeyAppID:                        "writer",
+			"sh.wendy/entitlement.episode-write": `{}`,
+		}, running: true},
+		{name: "stopped", labels: map[string]string{
+			labelKeyAppID:                 "stopped",
+			"sh.wendy/entitlement.camera": `{"mode":"detect"}`,
+		}, running: false},
 	}
 
-	cameras := map[string]bool{}
-	for _, n := range cameraConsumerNames(infos) {
-		cameras[n] = true
-	}
-	for _, n := range twoPlaneConsumerNames(infos) {
-		if !cameras[n] {
-			t.Errorf("%q is a two-plane consumer but not a camera consumer; the two-plane "+
-				"path must never entitle a container the camera path would not", n)
-		}
+	if got, want := twoPlaneConsumerNames(infos), cameraConsumerNames(infos); !reflect.DeepEqual(got, want) {
+		t.Errorf("twoPlaneConsumerNames() = %#v, cameraConsumerNames() = %#v; the two-plane "+
+			"path is the camera path and the two must not drift apart", got, want)
 	}
 }

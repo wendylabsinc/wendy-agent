@@ -27,9 +27,9 @@ type CameraLoopbackProvider interface {
 	// start or stop its pumps to match.
 	SetCameraContainerConsumers(ctx context.Context, containerIDs []string)
 	// SetTwoPlaneContainerConsumers replaces, wholesale, the set of running
-	// containers entitled to the TWO-PLANE camera path, which is a strictly
-	// narrower set: it requires both sensor-read and camera. See
-	// twoPlaneConsumerNames for why both.
+	// containers entitled to the two-plane camera path. Since frame identity
+	// moved in-band, that is the camera set; the call stays separate because
+	// the two-plane pump has its own lifecycle.
 	SetTwoPlaneContainerConsumers(ctx context.Context, containerIDs []string)
 }
 
