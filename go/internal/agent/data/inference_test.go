@@ -136,3 +136,31 @@ func TestDetectionNotificationRequiresValidWebhook(t *testing.T) {
 		}
 	}
 }
+
+func TestNamedEventNotificationValidation(t *testing.T) {
+	raw, err := os.ReadFile("../../../../Examples/WendyDataPeople/campaign.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"person_detected", "door.open", "person-left"} {
+		configured := strings.ReplaceAll(string(raw), "  on: episode_committed", "  on: event\n  event: "+event+"\n  webhook: https://notify.example/events")
+		campaign, err := ParseCampaign([]byte(configured))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if campaign.Notify.Event != event {
+			t.Fatal("event name was not preserved")
+		}
+	}
+	for _, notify := range []string{
+		"  on: event\n  webhook: https://notify.example/events",
+		"  on: event\n  event: person detected\n  webhook: https://notify.example/events",
+		"  on: event\n  event: person_detected",
+		"  on: episode_committed\n  event: person_detected",
+		"  on: detection\n  event: person_detected\n  webhook: https://notify.example/events",
+	} {
+		if _, err := ParseCampaign([]byte(strings.ReplaceAll(string(raw), "  on: episode_committed", notify))); err == nil {
+			t.Fatalf("accepted invalid notification: %s", notify)
+		}
+	}
+}
