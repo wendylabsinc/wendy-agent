@@ -73,16 +73,6 @@ type AppDataSocketProvider interface {
 	ReleaseApp(appID string)
 }
 
-// AppSensorSocketProvider prepares the app-private sensor socket that serves the
-// read-only SensorService for apps holding the sensor-read entitlement. It is the
-// same shape as the data socket provider; keeping it a separate interface keeps
-// the two grants independently wireable (and independently absent).
-type AppSensorSocketProvider interface {
-	Ensure(appID, serviceName string, sourceAllowlist []string) (string, error)
-	Release(appID, serviceName string)
-	ReleaseApp(appID string)
-}
-
 // restartSuppressor is the narrow capability the client needs from the
 // container-restart monitor: pause automatic restarts for a container name
 // while a replace or stop operation holds the handle, so the monitor's
@@ -105,7 +95,6 @@ type Client struct {
 	proxyManager            *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
 	systemAPISocketProvider AppSystemAPISocketProvider
 	dataSocketProvider      AppDataSocketProvider
-	sensorSocketProvider    AppSensorSocketProvider
 
 	// cameraLoopbackProvider is the VideoService camera-loopback API (Task
 	// C6), injected via SetCameraLoopbackProvider (camera_wiring.go). Nil is
@@ -240,11 +229,6 @@ func (c *Client) SetAppSystemAPISocketProvider(provider AppSystemAPISocketProvid
 	c.systemAPISocketProvider = provider
 }
 
-// SetAppSensorSocketProvider injects the manager for private app sensor sockets.
-func (c *Client) SetAppSensorSocketProvider(provider AppSensorSocketProvider) {
-	c.sensorSocketProvider = provider
-}
-
 func (c *Client) SetAppDataSocketProvider(provider AppDataSocketProvider) {
 	c.dataSocketProvider = provider
 }
@@ -273,7 +257,7 @@ func appSystemAPIOwnersFromLabels(labelSets []map[string]string) []appSystemAPIO
 // persisted container labels after an Agent restart. Stopped containers count
 // too because they retain the socket directory mount and may be started later.
 func (c *Client) RestoreAppSystemAPISockets(ctx context.Context) {
-	if c.systemAPISocketProvider == nil && c.dataSocketProvider == nil && c.sensorSocketProvider == nil {
+	if c.systemAPISocketProvider == nil && c.dataSocketProvider == nil {
 		return
 	}
 	ctx = c.withNamespace(ctx)
@@ -304,13 +288,6 @@ func (c *Client) RestoreAppSystemAPISockets(ctx context.Context) {
 		if c.dataSocketProvider != nil && entitlementsContain(entitlements, appconfig.EntitlementEpisodeWrite) {
 			if _, err := c.dataSocketProvider.Ensure(appID, serviceName); err != nil {
 				c.logger.Warn("restore app data socket failed", zap.String(logfields.AppID, appID), zap.Error(err))
-			}
-		}
-		if c.sensorSocketProvider != nil {
-			if sensors, ok := entitlementOfType(entitlements, appconfig.EntitlementSensorRead); ok {
-				if _, err := c.sensorSocketProvider.Ensure(appID, serviceName, sensors.Allowlist); err != nil {
-					c.logger.Warn("restore app sensor socket failed", zap.String(logfields.AppID, appID), zap.Error(err))
-				}
 			}
 		}
 	}
@@ -1127,12 +1104,10 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 		oldHadSystemAPI := false
 		oldHadData := false
-		oldHadSensors := false
 		if oldLabels, labelErr := existing.Labels(ctx); labelErr == nil {
 			oldEntitlements := parseEntitlementsFromAnnotations(oldLabels)
 			oldHadSystemAPI = entitlementsContain(oldEntitlements, appconfig.EntitlementNotifications)
 			oldHadData = entitlementsContain(oldEntitlements, appconfig.EntitlementEpisodeWrite)
-			oldHadSensors = entitlementsContain(oldEntitlements, appconfig.EntitlementSensorRead)
 			oldSpec, _ := existing.Spec(ctx)
 			if oldLabels[labelKeyNetworkIdentity] == desiredNetworkIdentity {
 				reusedNetworkSandbox, _ = c.reusableNetworkSandbox(ctx, containerName, desiredNetworkIdentity)
@@ -1200,9 +1175,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 		if oldHadData && c.dataSocketProvider != nil {
 			c.dataSocketProvider.Release(appID, serviceName)
-		}
-		if oldHadSensors && c.sensorSocketProvider != nil {
-			c.sensorSocketProvider.Release(appID, serviceName)
 		}
 		// Stop old D-Bus proxy if any.
 		if c.proxyManager != nil {
@@ -1358,8 +1330,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	systemAPIRefOwned := false
 	var dataSocketDir string
 	dataRefOwned := false
-	var sensorSocketDir string
-	sensorRefOwned := false
 	if appCfg.HasEntitlement(appconfig.EntitlementNotifications) {
 		if c.systemAPISocketProvider == nil {
 			return fmt.Errorf("notifications entitlement unavailable: app System API socket manager is not configured")
@@ -1395,22 +1365,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}()
 	}
 
-	if sensors, hasSensors := entitlementOfType(appCfg.Entitlements, appconfig.EntitlementSensorRead); hasSensors {
-		if c.sensorSocketProvider == nil {
-			return fmt.Errorf("sensor-read entitlement unavailable: app sensor socket manager is not configured")
-		}
-		sensorSocketDir, err = c.sensorSocketProvider.Ensure(appID, serviceName, sensors.Allowlist)
-		if err != nil {
-			return fmt.Errorf("preparing app sensor socket: %w", err)
-		}
-		sensorRefOwned = true
-		defer func() {
-			if sensorRefOwned {
-				c.sensorSocketProvider.Release(appID, serviceName)
-			}
-		}()
-	}
-
 	var hostResolvConfPath string
 	if entitlementsUseHostNetwork(appCfg.Entitlements) {
 		if systemdResolvedStubAvailable() {
@@ -1431,7 +1385,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		DBusProxySocketDir: dbusProxySocketDir,
 		SystemAPISocketDir: systemAPISocketDir,
 		DataSocketDir:      dataSocketDir,
-		SensorSocketDir:    sensorSocketDir,
 		HostResolvConfPath: hostResolvConfPath,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
@@ -1717,7 +1670,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	dbusProxyStarted = false
 	systemAPIRefOwned = false
 	dataRefOwned = false
-	sensorRefOwned = false
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_COMPLETE})
 
@@ -4084,9 +4036,6 @@ func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage b
 	// The system-API socket is per app: only release it once the app is gone.
 	if len(errs) == 0 && wholeApp && c.systemAPISocketProvider != nil {
 		c.systemAPISocketProvider.ReleaseApp(appID)
-	}
-	if len(errs) == 0 && wholeApp && c.sensorSocketProvider != nil {
-		c.sensorSocketProvider.ReleaseApp(appID)
 	}
 	if len(errs) == 0 && wholeApp && c.dataSocketProvider != nil {
 		c.dataSocketProvider.ReleaseApp(appID)

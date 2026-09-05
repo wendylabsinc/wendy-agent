@@ -50,8 +50,8 @@ type frameIdentitySubscription interface {
 }
 
 // errNoDataPlane reports that a source has no v4l2loopback node, which is the
-// normal state rather than a fault: a node exists only while an app entitled to
-// both sensor-read and camera is running, and only for a source whose frames can be
+// normal state rather than a fault: a node exists only while an app holding the
+// camera entitlement is running, and only for a source whose frames can be
 // identified frame-for-frame.
 var errNoDataPlane = errors.New("source has no two-plane data path")
 

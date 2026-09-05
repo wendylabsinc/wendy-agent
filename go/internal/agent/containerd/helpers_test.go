@@ -790,7 +790,7 @@ func TestChunkDiffCreateLabels_RoundTripThroughContainerd(t *testing.T) {
 		"entitlements": [
 			{"type": "camera"},
 			{"type": "episode-write"},
-			{"type": "sensor-read", "allowlist": ["front"]}
+			{"type": "serial", "device": "ttyACM0"}
 		]
 	}`)
 	var cfg appconfig.AppConfig
@@ -805,14 +805,16 @@ func TestChunkDiffCreateLabels_RoundTripThroughContainerd(t *testing.T) {
 	for _, want := range []string{
 		appconfig.EntitlementCamera,
 		appconfig.EntitlementEpisodeWrite,
-		appconfig.EntitlementSensorRead,
+		appconfig.EntitlementSerial,
 	} {
 		if !entitlementsContain(got, want) {
 			t.Errorf("entitlement %q did not survive the containerd label round-trip; persisted labels: %v", want, persisted)
 		}
 	}
-	sensors, ok := entitlementOfType(got, appconfig.EntitlementSensorRead)
-	if !ok || len(sensors.Allowlist) != 1 || sensors.Allowlist[0] != "front" {
-		t.Errorf("sensor-read allowlist did not survive the round-trip: %+v", sensors)
+	// The other half: an entitlement carrying a payload must keep it, not just
+	// survive as a bare type.
+	serial, ok := entitlementOfType(got, appconfig.EntitlementSerial)
+	if !ok || serial.Device != "ttyACM0" {
+		t.Errorf("serial device did not survive the round-trip: %+v", serial)
 	}
 }

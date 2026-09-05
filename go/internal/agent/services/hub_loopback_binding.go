@@ -9,19 +9,18 @@ import (
 // The two-plane camera path, and why the frame identity binding is shaped the
 // way it is.
 //
-// An application that wants to use ordinary tooling (ffmpeg, GStreamer) cannot
-// consume SensorService.Subscribe without a bespoke gRPC integration, and the
-// camera entitlement's raw device node makes the app an INDEPENDENT second
-// reader of the camera, so the frame a model scores is not provably the frame
-// the episode recorded. The two-plane path fixes both: one producer, two
-// planes.
+// An application that wants to use ordinary tooling (ffmpeg, GStreamer) should
+// not need a bespoke gRPC integration to read frames, and a raw device node
+// makes the app an INDEPENDENT second reader of the camera, so the frame a
+// model scores is not provably the frame the episode recorded. The two-plane
+// path fixes both: one producer, two planes.
 //
 //   - Data plane: a v4l2loopback node fed from the SAME producer hub that
 //     episode capture and gRPC subscribers already consume. The app reads that
 //     node with any standard tool, unmodified.
-//   - Control plane: the existing SensorService stream carries identity only
-//     (source id, sample id, canonical boottime, uncertainty). The pixels never
-//     travel that way, so per-frame gRPC framing cost stays negligible.
+//   - Control plane: identity (source id, sample id, canonical boottime,
+//     uncertainty) rides in-band, in the buffer timestamp the agent writes when
+//     it feeds the node, so it needs no channel of its own.
 //
 // The binding between them is this file's subject.
 //

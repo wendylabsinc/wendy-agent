@@ -5,10 +5,7 @@
     "language": "python",
     "entitlements": [
         {
-            "type": "sensor-read",
-            "allowlist": [
-                "v4l2:/dev/video0"
-            ]
+            "type": "camera"
         },
         {
             "type": "episode-write"

@@ -175,13 +175,7 @@ func TestCameraSensorSamplesKeepZeroBufferFields(t *testing.T) {
 		t.Errorf("a camera sample reports buffer shape %d Hz / %d channels / %d ns, want zeros",
 			sample.SampleRateHz, sample.Channels, sample.DurationNanos)
 	}
-	// The same must hold on the wire, which is what an app actually reads.
-	message := sensorSampleMessage(sample)
-	if message.GetSampleRateHz() != 0 || message.GetChannels() != 0 || message.GetDurationNanos() != 0 {
-		t.Errorf("the camera sample message reports buffer shape %d Hz / %d channels / %d ns, want zeros",
-			message.GetSampleRateHz(), message.GetChannels(), message.GetDurationNanos())
-	}
-	if message.GetBoottimeNanos() == 0 {
+	if sample.BootNanos == 0 {
 		t.Error("the camera sample lost its boot-clock receipt")
 	}
 }

@@ -8,9 +8,9 @@ import (
 
 // TestWendyDataModelAppExampleValidates guards the real
 // Examples/WendyDataModelApp app config: the reference app for the model
-// harness must parse, validate, declare exactly the sensor-read and
-// episode-write entitlements it documents, and produce no ValidateJSON
-// warnings. It fails when the example and the config schema drift apart.
+// harness must parse, validate, declare exactly the camera and episode-write
+// entitlements it documents, and produce no ValidateJSON warnings. It fails
+// when the example and the config schema drift apart.
 func TestWendyDataModelAppExampleValidates(t *testing.T) {
 	const path = "../../../../Examples/WendyDataModelApp/wendy.json"
 	raw, err := os.ReadFile(path)
@@ -28,36 +28,24 @@ func TestWendyDataModelAppExampleValidates(t *testing.T) {
 		t.Fatalf("model app wendy.json produced warnings: %v", warnings)
 	}
 
-	var sensorRead, episodeWrite, camera bool
-	var sensorAllowlist []string
+	var episodeWrite, camera bool
 	for _, e := range cfg.Entitlements {
 		switch e.Type {
-		case EntitlementSensorRead:
-			sensorRead = true
-			sensorAllowlist = e.Allowlist
 		case EntitlementEpisodeWrite:
 			episodeWrite = true
 		case EntitlementCamera:
 			camera = true
 		}
 	}
-	if !sensorRead {
-		t.Error("missing sensor-read entitlement (sensors-in contract)")
-	}
 	if !episodeWrite {
 		t.Error("missing episode-write entitlement (predictions-out contract)")
 	}
-	// The allowlist is mandatory, and the reference app is what an author
-	// copies, so it must name its source rather than model a bare grant.
-	if len(sensorAllowlist) == 0 {
-		t.Error("the sensor-read entitlement must name the source the example subscribes to")
-	}
-	// The reference app must demonstrate the first-class path, not the raw
-	// one. Holding the camera entitlement would let it open /dev/videoN and
-	// reintroduce the device conflict the sensor-read entitlement removes —
-	// the whole reason this example once needed a telemetry-only campaign.
-	if camera {
-		t.Error("the reference app must not hold the camera entitlement: it consumes frames through the harness")
+	// Reads are native: the app opens the agent-fed v4l2loopback node, and
+	// that node is a device-node grant, which is what the camera entitlement
+	// is. Frame identity arrives in-band in the buffer timestamp, so there is
+	// no second entitlement and no second socket to declare.
+	if !camera {
+		t.Error("missing camera entitlement (the agent-fed node the app reads)")
 	}
 
 	// The published JSON schema must accept every entitlement type the
@@ -116,27 +104,4 @@ func schemaEntitlementConsts(t *testing.T) map[string]bool {
 		t.Fatal("wendy.schema.json declares no entitlement type consts")
 	}
 	return consts
-}
-
-// TestExampleSensorProtoMatchesCanonical keeps the reference app's build-time
-// copy of the sensor proto identical to the canonical one. The example
-// generates its Python stubs from the copy (its Docker build context is the
-// example directory, which cannot reach Proto/), so a silent divergence would
-// give the app stubs for a contract the agent no longer serves.
-func TestExampleSensorProtoMatchesCanonical(t *testing.T) {
-	const (
-		canonical = "../../../../Proto/wendy/agent/apps/v1/sensor_service.proto"
-		copied    = "../../../../Examples/WendyDataModelApp/proto/wendy/agent/apps/v1/sensor_service.proto"
-	)
-	want, err := os.ReadFile(canonical)
-	if err != nil {
-		t.Fatalf("reading the canonical sensor proto: %v", err)
-	}
-	got, err := os.ReadFile(copied)
-	if err != nil {
-		t.Fatalf("reading the example's sensor proto copy: %v", err)
-	}
-	if string(got) != string(want) {
-		t.Fatalf("Examples/WendyDataModelApp/proto/.../sensor_service.proto has drifted from Proto/.../sensor_service.proto; copy the canonical file over it")
-	}
 }

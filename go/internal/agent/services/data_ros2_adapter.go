@@ -113,8 +113,8 @@ func ros2DomainSource(sc ros2SC, healthy bool, detail string) data.Source {
 // is what `wendy data sources` prints in its DETAIL column, and the type is
 // the one fact that tells a person whether this is the topic they meant.
 //
-// Subscribable is not set here and must stay false: SensorService derives it
-// from whether a provider can multiplex the source to a model subscriber, and
+// Subscribable is not set here and must stay false: it reports whether a
+// provider can multiplex the source to an in-agent consumer, and
 // ROS 2 has no producer hub, so a topic can be captured into an episode but
 // not streamed to an app. Making it true would advertise a stream that
 // Subscribe would then refuse.

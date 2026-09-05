@@ -53,22 +53,10 @@ const (
 	// episodes are active, so it writes into the recorded training corpus. It
 	// is stronger than "may log something": campaign triggers match on
 	// application event names and prediction attributes, so an app holding this
-	// entitlement can start recordings. It grants no read access to sensors —
-	// that is the separate sensor-read entitlement.
+	// entitlement can start recordings. It grants no read access to sensors:
+	// reading is native, through the agent-fed node the camera entitlement
+	// grants.
 	EntitlementEpisodeWrite = "episode-write"
-	// EntitlementSensorRead grants read-only subscription to agent-hosted
-	// sensor streams over an app-private socket that serves nothing else. It is
-	// the first-class model-input path: the app becomes one more subscriber of
-	// the same producer episode capture consumes, so the two never fight over a
-	// device, and every sample the app receives is recorded into the active
-	// episode under the identifier the app was given. In practice it means the
-	// app can see the cameras and microphones, so it grants no device nodes;
-	// raw device access remains the separate "camera" entitlement, and writing
-	// into the recorded dataset remains the separate episode-write
-	// entitlement. A non-empty allowlist is required: it names the source ids
-	// the app may subscribe to, so the grant cannot silently widen as new
-	// source kinds become subscribable.
-	EntitlementSensorRead = "sensor-read"
 	// EntitlementNotifications grants access only to the app-attributed Wendy
 	// System Notification API. It does not expose the Agent control plane.
 	EntitlementNotifications = "notifications"
@@ -106,7 +94,6 @@ var ValidEntitlementTypes = []string{
 	EntitlementMCP,
 	EntitlementDisplay,
 	EntitlementEpisodeWrite,
-	EntitlementSensorRead,
 	EntitlementNotifications,
 	EntitlementAdmin,
 	EntitlementBuild,
@@ -144,7 +131,6 @@ var allowedKeys = map[string][]string{
 	EntitlementMCP:           {"type", "port"},
 	EntitlementDisplay:       {"type"},
 	EntitlementEpisodeWrite:  {"type"},
-	EntitlementSensorRead:    {"type", "allowlist"},
 	EntitlementNotifications: {"type"},
 	EntitlementAdmin:         {"type"},
 	EntitlementBuild:         {"type"},
@@ -370,7 +356,7 @@ type PortMapping struct {
 type Entitlement struct {
 	Type      string        `json:"type"`
 	Mode      string        `json:"mode,omitempty"`      // Network, Bluetooth, Video
-	Allowlist []string      `json:"allowlist,omitempty"` // Camera, Video, SensorRead
+	Allowlist []string      `json:"allowlist,omitempty"` // Camera, Video
 	Name      string        `json:"name,omitempty"`      // Persist
 	Path      string        `json:"path,omitempty"`      // Persist
 	Device    string        `json:"device,omitempty"`    // I2C, Serial
@@ -484,24 +470,6 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 			}
 		case EntitlementGPIO:
 			// Pins are optional; omitting them grants access to all GPIO chips.
-		case EntitlementSensorRead:
-			// The allowlist is mandatory, unlike the camera entitlement's.
-			// Omitting it would grant every source the device can multiplex
-			// today AND every source kind that becomes subscribable later, so
-			// an app declaring the bare entitlement would silently widen from
-			// cameras to microphones and the ROS 2 graph on an agent upgrade.
-			// Naming the sources keeps the grant the size the author intended.
-			if len(e.Allowlist) == 0 {
-				return fmt.Errorf(
-					"%s[%d]: the sensor-read entitlement requires a non-empty allowlist naming the sensor source ids this app subscribes to, for example \"allowlist\": [\"v4l2:/dev/video0\"]; run `wendy data sources` against the device to list the ids it offers",
-					prefix, i,
-				)
-			}
-			for j, sourceID := range e.Allowlist {
-				if strings.TrimSpace(sourceID) == "" {
-					return fmt.Errorf("%s[%d]: sensor-read allowlist entry %d must be a non-empty sensor source id", prefix, i, j)
-				}
-			}
 		case EntitlementMCP:
 			if e.Port < 1 || e.Port > 65535 {
 				return fmt.Errorf("%s[%d]: mcp port must be between 1 and 65535, got %d", prefix, i, e.Port)
