@@ -12,7 +12,9 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
@@ -38,6 +40,44 @@ const (
 	// backlog, to avoid busy-looping the disk scan.
 	transferIdlePause = 10 * time.Second
 )
+
+// errIngestBlocked wraps a failure that says the ROUTE is wrong rather than the
+// episode. Retrying cannot fix it and every other episode in the backlog will
+// fail identically, so the pass aborts instead of walking the queue and burning
+// each episode's retry budget against the same wall.
+type errIngestBlocked struct {
+	code  codes.Code
+	cause error
+}
+
+func (e *errIngestBlocked) Error() string {
+	return fmt.Sprintf("ingest endpoint rejected the request as %s: %v", e.code, e.cause)
+}
+func (e *errIngestBlocked) Unwrap() error { return e.cause }
+
+// ingestBlocked reports whether err is a route/configuration failure rather
+// than a transport one.
+//
+// These three codes share a property that no amount of retrying changes: the
+// endpoint understood us and refused. Unimplemented is the one that matters
+// most in practice, because dialling a host that does not serve
+// DataIngestService (the enrolled cloud host, when no ingest endpoint is
+// configured) returns exactly that, and treating it as transient quietly
+// converts every sealed episode on the device into a permanent failure.
+func ingestBlocked(err error) *errIngestBlocked {
+	if err == nil {
+		return nil
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		return nil
+	}
+	switch st.Code() {
+	case codes.Unimplemented, codes.Unauthenticated, codes.PermissionDenied:
+		return &errIngestBlocked{code: st.Code(), cause: err}
+	}
+	return nil
+}
 
 // Upload workflow states persisted in Manifest.Upload.State. These mirror the
 // vocabulary the data manager already understands (see awaitingUpload).
@@ -68,6 +108,9 @@ type DataTransferWorker struct {
 	factory         ingestClientFactory  // set in tests; production builds one from provisioningSvc
 
 	maxAttempts int
+	// lastBlockedCause is the most recent route-level rejection, so a blocked
+	// endpoint is reported once rather than once a minute forever.
+	lastBlockedCause string
 	// ingestHostOverride, when non-empty, replaces the provisioning cloud host
 	// as the DataIngestService dial target. Enrollment is still required (the
 	// asset identity and client certificate come from provisioning); only the
@@ -236,6 +279,15 @@ func (w *DataTransferWorker) Run(ctx context.Context) {
 		}
 	}
 
+	// A restart is usually what follows fixing whatever broke uploads, so give
+	// the episodes that exhausted their budget one more life. Bounded: this
+	// runs once per process, not per pass.
+	if moved, err := w.manager.RequeueFailedUploads(); err != nil {
+		w.logger.Warn("data transfer worker: requeue of failed episodes failed", zap.Error(err))
+	} else if moved > 0 {
+		w.logger.Info("data transfer worker: requeued previously failed episodes", zap.Int("episodes", moved))
+	}
+
 	w.logger.Info("data transfer worker: started")
 	attempt := 0
 	for {
@@ -247,7 +299,22 @@ func (w *DataTransferWorker) Run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			w.logger.Warn("data transfer worker: pass failed", zap.Error(err))
+			// A blocked route persists until someone changes configuration, so
+			// it would otherwise log identically every minute forever. Say it
+			// loudly once, then keep it at debug until the cause changes.
+			if blocked := ingestBlocked(err); blocked != nil {
+				if w.lastBlockedCause != blocked.Error() {
+					w.lastBlockedCause = blocked.Error()
+					w.logger.Error("data transfer worker: ingest endpoint is not accepting uploads; "+
+						"no episode will be retried against it and none has been marked failed",
+						zap.String("code", blocked.code.String()), zap.Error(blocked))
+				} else {
+					w.logger.Debug("data transfer worker: ingest still blocked", zap.Error(blocked))
+				}
+			} else {
+				w.lastBlockedCause = ""
+				w.logger.Warn("data transfer worker: pass failed", zap.Error(err))
+			}
 			w.backoff(ctx, attempt)
 			if attempt < 6 { // 2^6 = 64s > 60s cap
 				attempt++
@@ -299,7 +366,10 @@ func (w *DataTransferWorker) runPass(ctx context.Context) error {
 		if mf.Upload.State == uploadStatePending && mf.Upload.NextAttemptUnixNanos > now.UnixNano() {
 			continue
 		}
-		w.processEpisode(ctx, client, mf)
+		if err := w.processEpisode(ctx, client, mf); err != nil {
+			// Route failure: the rest of the backlog would fail identically.
+			return err
+		}
 	}
 	return nil
 }
@@ -357,10 +427,15 @@ func (w *DataTransferWorker) uploadRate(mf data.Manifest) int64 {
 // manifest; transient failures move the episode back to "pending" with a
 // backoff (or to "failed" once the retry ceiling is hit), verification failures
 // move it straight to "failed", and success marks it "uploaded".
-func (w *DataTransferWorker) processEpisode(ctx context.Context, client cloudpb.DataIngestServiceClient, mf data.Manifest) {
+//
+// It returns a non-nil error ONLY when the failure is the route rather than the
+// episode, which is the caller's signal to abandon the pass. The episode is
+// left exactly as it was found in that case: it did nothing wrong, so it keeps
+// its attempt count and its place in the queue.
+func (w *DataTransferWorker) processEpisode(ctx context.Context, client cloudpb.DataIngestServiceClient, mf data.Manifest) error {
 	if ok, reason := w.resolveShouldUpload(mf); !ok {
 		w.logger.Debug("data transfer worker: skipping episode", zap.String("episode", mf.ID), zap.String("reason", reason))
-		return
+		return nil
 	}
 
 	// Mark uploading (durably) before any network work so a crash mid-transfer
@@ -369,7 +444,7 @@ func (w *DataTransferWorker) processEpisode(ctx context.Context, client cloudpb.
 		ws.State = uploadStateUploading
 	}); err != nil {
 		w.logger.Warn("data transfer worker: mark uploading failed", zap.String("episode", mf.ID), zap.Error(err))
-		return
+		return nil
 	}
 	w.logger.Info("data transfer worker: uploading episode", zap.String("episode", mf.ID),
 		zap.Int("files", len(mf.Files)), zap.String("campaign", mf.Trigger.CampaignName))
@@ -388,7 +463,18 @@ func (w *DataTransferWorker) processEpisode(ctx context.Context, client cloudpb.
 			// Shutdown mid-transfer: leave the episode "uploading" so the next
 			// run resumes it. Nothing is silently dropped.
 			w.logger.Info("data transfer worker: shutdown mid-upload, episode left for resume", zap.String("episode", mf.ID))
-			return
+			return nil
+		}
+		if blocked := ingestBlocked(retryErr); blocked != nil {
+			// The route is wrong, not the episode. Put it back exactly as it
+			// was and let the caller stop the pass.
+			if _, err := w.manager.UpdateUploadState(mf.ID, func(ws *data.WorkflowState) {
+				ws.State = mf.Upload.State
+				ws.LastError = blocked.Error()
+			}); err != nil {
+				w.logger.Warn("data transfer worker: restore state failed", zap.String("episode", mf.ID), zap.Error(err))
+			}
+			return blocked
 		}
 		w.handleRetryable(mf, retryErr)
 	default:
@@ -398,10 +484,11 @@ func (w *DataTransferWorker) processEpisode(ctx context.Context, client cloudpb.
 			ws.NextAttemptUnixNanos = 0
 		}); err != nil {
 			w.logger.Warn("data transfer worker: mark uploaded failed", zap.String("episode", mf.ID), zap.Error(err))
-			return
+			return nil
 		}
 		w.logger.Info("data transfer worker: episode uploaded", zap.String("episode", mf.ID))
 	}
+	return nil
 }
 
 // handleRetryable records a retryable failure: it bumps the attempt count and
