@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -17,8 +18,10 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
@@ -764,5 +767,98 @@ func TestUploadStreamCarriesOneEpisode(t *testing.T) {
 	}
 	if !all["ep-one"] || !all["ep-two"] {
 		t.Errorf("streams carried %v, want both ep-one and ep-two", all)
+	}
+}
+
+// startBareIngest starts a server that implements nothing, so every call
+// returns Unimplemented. This is not a contrived error: it is exactly what a
+// device gets today when no ingest endpoint is configured and the worker falls
+// back to dialling the enrolled cloud host, which serves the broker and not
+// DataIngestService.
+func startBareIngest(t *testing.T) cloudpb.DataIngestServiceClient {
+	t.Helper()
+	lis := bufconn.Listen(1024 * 1024)
+	g := grpc.NewServer()
+	cloudpb.RegisterDataIngestServiceServer(g, &cloudpb.UnimplementedDataIngestServiceServer{})
+	go func() { _ = g.Serve(lis) }()
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { conn.Close(); g.Stop(); lis.Close() })
+	return cloudpb.NewDataIngestServiceClient(conn)
+}
+
+// TestBlockedRouteSpendsNoRetryBudget is the regression that matters most here.
+// Before this, an endpoint that does not serve the service was classified as a
+// transient transport failure, so every sealed episode on the device burned its
+// five attempts and was then marked permanently failed. The route being wrong
+// is not the episode's fault and must cost it nothing.
+func TestBlockedRouteSpendsNoRetryBudget(t *testing.T) {
+	mgr, root := newTestManager(t)
+	writeFixtureEpisode(t, root, "ep-blocked", "", "pending", map[string][]byte{"a.bin": []byte("x")})
+
+	w := newTestWorker(mgr, startBareIngest(t))
+	err := w.runPass(context.Background())
+	if err == nil {
+		t.Fatal("runPass returned nil; a blocked route must surface as a pass failure")
+	}
+	if ingestBlocked(err) == nil {
+		t.Fatalf("runPass error %v is not classified as blocked", err)
+	}
+
+	st := uploadState(t, mgr, "ep-blocked")
+	if st.State == uploadStateFailed {
+		t.Error("episode was marked failed because the endpoint was wrong")
+	}
+	if st.Attempts != 0 {
+		t.Errorf("attempts = %d, want 0: a blocked route must not consume the retry budget", st.Attempts)
+	}
+}
+
+// TestBlockedRouteStopsTheWholePass: every episode in the backlog would fail
+// identically, so the worker must stop rather than walk the queue.
+func TestBlockedRouteStopsTheWholePass(t *testing.T) {
+	mgr, root := newTestManager(t)
+	for _, id := range []string{"ep-1", "ep-2", "ep-3"} {
+		writeFixtureEpisode(t, root, id, "", "pending", map[string][]byte{"a.bin": []byte("x")})
+	}
+
+	w := newTestWorker(mgr, startBareIngest(t))
+	if err := w.runPass(context.Background()); err == nil {
+		t.Fatal("runPass returned nil on a blocked route")
+	}
+	for _, id := range []string{"ep-1", "ep-2", "ep-3"} {
+		if st := uploadState(t, mgr, id); st.Attempts != 0 {
+			t.Errorf("%s: attempts = %d, want 0", id, st.Attempts)
+		}
+	}
+}
+
+// TestBlockedClassification pins which codes are permanent. Getting this set
+// wrong in either direction is costly: too wide and a transient outage stops
+// uploads entirely, too narrow and a misconfiguration silently kills episodes.
+func TestBlockedClassification(t *testing.T) {
+	for code, want := range map[codes.Code]bool{
+		codes.Unimplemented:     true,
+		codes.Unauthenticated:   true,
+		codes.PermissionDenied:  true,
+		codes.Unavailable:       false,
+		codes.DeadlineExceeded:  false,
+		codes.ResourceExhausted: false,
+		codes.Internal:          false,
+		codes.Aborted:           false,
+	} {
+		if got := ingestBlocked(status.Error(code, "x")) != nil; got != want {
+			t.Errorf("ingestBlocked(%s) = %v, want %v", code, got, want)
+		}
+	}
+	if ingestBlocked(nil) != nil {
+		t.Error("ingestBlocked(nil) must be nil")
+	}
+	if ingestBlocked(errors.New("plain")) != nil {
+		t.Error("a non-status error is not a blocked route")
 	}
 }

@@ -748,7 +748,7 @@ func (m *Manager) enforceQuota() error {
 		path          string
 		started, size int64
 		id, campaign  string
-		awaitUpload   bool
+		tier          int
 	}
 	var candidates []candidate
 	var used int64
@@ -776,14 +776,13 @@ func (m *Manager) enforceQuota() error {
 		})
 		used += size
 		if m.downloads[mf.ID] == 0 {
-			candidates = append(candidates, candidate{dir, mf.StartedUnixNanos, size, mf.ID, mf.Trigger.CampaignName, awaitingUpload(mf.Upload.State)})
+			candidates = append(candidates, candidate{dir, mf.StartedUnixNanos, size, mf.ID, mf.Trigger.CampaignName, evictionTier(mf.Upload.State)})
 		}
 	}
-	// Episodes that still await upload are evicted only after every uploaded or
-	// local-only episode; within each group the oldest goes first.
+	// Lower tier is evicted first; within a tier the oldest goes first.
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].awaitUpload != candidates[j].awaitUpload {
-			return !candidates[i].awaitUpload
+		if candidates[i].tier != candidates[j].tier {
+			return candidates[i].tier < candidates[j].tier
 		}
 		return candidates[i].started < candidates[j].started
 	})
@@ -791,8 +790,11 @@ func (m *Manager) enforceQuota() error {
 		if used <= quota && free >= reserve {
 			break
 		}
-		if c.awaitUpload {
+		switch c.tier {
+		case 2:
 			m.warnf("evicting episode %s (campaign %s) before its upload completed to preserve the data quota", c.id, c.campaign)
+		case 1:
+			m.warnf("evicting episode %s (campaign %s), which failed to upload and was never retried, to preserve the data quota", c.id, c.campaign)
 		}
 		if err := os.RemoveAll(c.path); err != nil {
 			return fmt.Errorf("evicting %s: %w", filepath.Base(c.path), err)
@@ -809,12 +811,24 @@ func (m *Manager) enforceQuota() error {
 // awaitingUpload reports whether an episode's payload has not reached its
 // upload destination yet. Local-only episodes ("local" or empty) never upload
 // and are evictable; "uploaded" episodes already have a durable remote copy.
-func awaitingUpload(state string) bool {
+// evictionTier orders episodes for quota eviction, lowest evicted first.
+//
+// Three tiers rather than two. "uploaded" and "local" go first as before: one
+// has a copy in the cloud and the other was never meant to leave. "failed" sits
+// in the middle, because the worker gave up on it and it is not going anywhere
+// on its own; leaving it level with live candidates let a device whose route
+// was broken fill its quota with episodes that could never ship while newer
+// captures were pushed out. It still outranks data that is already safe, since
+// its bytes are the only copy and RequeueFailedUploads can bring it back.
+// "pending" and "uploading" are evicted last: they are still on their way out.
+func evictionTier(state string) int {
 	switch state {
 	case "", "local", "uploaded":
-		return false
+		return 0
+	case "failed":
+		return 1
 	}
-	return true
+	return 2
 }
 
 func (m *Manager) BeginDownload(id string) { m.mu.Lock(); defer m.mu.Unlock(); m.downloads[id]++ }
@@ -1235,6 +1249,54 @@ func (m *Manager) Status() *Manifest {
 // single source of truth for upload progress; the transfer worker consumes this
 // queue and calls UpdateUploadState to persist each transition. Episodes are
 // returned oldest-first so the backlog drains in capture order.
+// RequeueFailedUploads moves every "failed" episode back to "pending" and
+// returns how many it moved.
+//
+// "failed" means the worker gave up, not that the episode is unshippable: a
+// wrong endpoint, an expired certificate or a cloud outage long enough to
+// exhaust the retry budget all land here, and every one of them is fixed by a
+// change OUTSIDE the episode. Without this the fix arrives and the backlog
+// stays dead, because EpisodesAwaitingUpload only ever returns pending and
+// uploading, so nothing would look at those episodes again.
+//
+// The attempt counter resets with the state; keeping it would exhaust the
+// budget again on the first retry and undo the requeue.
+func (m *Manager) RequeueFailedUploads() (int, error) {
+	// Collect under the lock, then update outside it: UpdateUploadState takes
+	// the same mutex, so mutating in place here would deadlock.
+	m.mu.Lock()
+	entries, err := os.ReadDir(m.root)
+	if err != nil {
+		m.mu.Unlock()
+		return 0, err
+	}
+	var ids []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasSuffix(e.Name(), ".partial") {
+			continue
+		}
+		mf, err := readManifest(filepath.Join(m.root, e.Name()))
+		if err != nil || mf.Upload.State != "failed" {
+			continue
+		}
+		ids = append(ids, mf.ID)
+	}
+	m.mu.Unlock()
+
+	moved := 0
+	for _, id := range ids {
+		if _, err := m.UpdateUploadState(id, func(ws *WorkflowState) {
+			ws.State = "pending"
+			ws.Attempts = 0
+			ws.NextAttemptUnixNanos = 0
+		}); err != nil {
+			continue
+		}
+		moved++
+	}
+	return moved, nil
+}
+
 func (m *Manager) EpisodesAwaitingUpload() ([]Manifest, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
