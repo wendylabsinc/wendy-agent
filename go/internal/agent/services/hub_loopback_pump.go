@@ -60,8 +60,7 @@ var errLoopbackDataPlaneUnsupported = errors.New("two-plane camera data path una
 type hubLoopbackPump struct {
 	logger *zap.Logger
 	// sourceID is the canonical harness identifier of the camera being pumped,
-	// used only for logging and for the control plane to match a node to a
-	// SensorService source.
+	// used only for logging and to match a node to its producer source.
 	sourceID string
 	// nodePath is the v4l2loopback node being fed.
 	nodePath string

@@ -334,12 +334,9 @@ func main() {
 	notificationSender := services.NewCloudNotificationSender(logger, provisioningSvc)
 	systemAPISocketManager := services.NewAppSystemAPISocketManager(ctx, logger, notificationSender)
 	appDataSocketManager := services.NewAppDataSocketManager(ctx, logger, dataManager)
-	appSensorSocketManager := services.NewAppSensorSocketManager(ctx, logger, dataManager)
-	appSensorSocketManager.AddProvider(videoSvc)
 	if ctrdClient != nil {
 		ctrdClient.SetAppSystemAPISocketProvider(systemAPISocketManager)
 		ctrdClient.SetAppDataSocketProvider(appDataSocketManager)
-		ctrdClient.SetAppSensorSocketProvider(appSensorSocketManager)
 		ctrdClient.RestoreAppSystemAPISockets(ctx)
 	}
 

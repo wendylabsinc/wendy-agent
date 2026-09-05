@@ -9,10 +9,25 @@ cannot see.
 
 import json
 import struct
+import sys
 import threading
+import types
 import unittest
+import unittest.mock
 
 import wendydata
+
+# wendyframes decodes pixels, so it imports cv2 and numpy. Neither is needed by
+# the logic under test here (draining and the reconnect budget), and requiring
+# them would mean no one runs these tests outside the runtime image. Stub them
+# the way the transport dependencies used to be stubbed.
+for _name in ("cv2", "numpy"):
+    if _name not in sys.modules:
+        _stub = types.ModuleType(_name)
+        _stub.ndarray = object
+        sys.modules[_name] = _stub
+
+import wendyframes
 
 
 class TestUncertaintyScore(unittest.TestCase):
@@ -104,333 +119,6 @@ class TestInputReferences(unittest.TestCase):
         self.assertEqual(record["inputs"][-1]["sample_id"], 99)
 
 
-class TestSampleAttribution(unittest.TestCase):
-    """Every decoded frame must keep the sample identifiers it was computed
-    from. A frame that loses them produces a prediction with no `inputs` field,
-    which is the silent failure this whole change exists to prevent."""
-
-    @staticmethod
-    def _sensors():
-        """Import wendysensors with its transport dependencies stubbed.
-
-        The module needs grpc and the generated stubs only to make the call;
-        the attribution rule under test needs neither, and a unit test must not
-        require a gRPC toolchain to exercise it."""
-        import sys
-        import types
-
-        for name in ("grpc",):
-            sys.modules.setdefault(name, types.ModuleType(name))
-        for name in (
-            "wendy",
-            "wendy.agent",
-            "wendy.agent.apps",
-            "wendy.agent.apps.v1",
-        ):
-            module = sys.modules.setdefault(name, types.ModuleType(name))
-            module.__path__ = []
-        for name in (
-            "wendy.agent.apps.v1.sensor_service_pb2",
-            "wendy.agent.apps.v1.sensor_service_pb2_grpc",
-        ):
-            sys.modules.setdefault(name, types.ModuleType(name))
-        import wendysensors
-
-        return wendysensors
-
-    class _Sample:
-        def __init__(self, sample_id, dropped_before=0, payload=b"x", encoding="h264"):
-            self.sample_id = sample_id
-            self.dropped_before = dropped_before
-            self.payload = payload
-            self.encoding = encoding
-            self.source_id = "v4l2:/dev/video0"
-            self.boottime_nanos = sample_id * 1000
-            self.timestamp_uncertainty_nanos = 10
-
-    class _Decoded:
-        def to_ndarray(self, format=None):
-            return format
-
-    class _Decoder:
-        """A decoder that yields `per_packet` frames out of every payload."""
-
-        def __init__(self, per_packet):
-            self.per_packet = per_packet
-
-        def parse(self, payload):
-            return [payload]
-
-        def decode(self, packet):
-            return [TestSampleAttribution._Decoded() for _ in range(self.per_packet)]
-
-    def test_every_frame_from_one_packet_keeps_its_sample_ids(self):
-        sensors = self._sensors()
-        frames = list(
-            sensors.decode_samples(
-                [self._Sample(1), self._Sample(2)],
-                lambda encoding: self._Decoder(per_packet=2),
-            )
-        )
-        self.assertEqual(len(frames), 4)
-        for frame in frames:
-            self.assertTrue(
-                frame.sample_ids,
-                "a decoded frame lost the sample identifiers it was computed from",
-            )
-            self.assertTrue(frame.input_refs())
-        self.assertEqual([f.sample_ids for f in frames], [[1], [1], [2], [2]])
-
-    def test_samples_that_decode_to_nothing_accumulate(self):
-        sensors = self._sensors()
-        decoders = [self._Decoder(per_packet=0), self._Decoder(per_packet=1)]
-
-        class Growing:
-            """No frame until the third sample, then one frame from all three."""
-
-            def __init__(self):
-                self.calls = 0
-
-            def parse(self, payload):
-                self.calls += 1
-                return [payload]
-
-            def decode(self, packet):
-                if self.calls < 3:
-                    return []
-                return [TestSampleAttribution._Decoded()]
-
-        del decoders
-        frames = list(
-            sensors.decode_samples(
-                [self._Sample(1), self._Sample(2), self._Sample(3, dropped_before=4)],
-                lambda encoding: Growing(),
-            )
-        )
-        self.assertEqual(len(frames), 1)
-        self.assertEqual(frames[0].sample_ids, [1, 2, 3])
-        self.assertEqual(frames[0].dropped_before, 4)
-
-    def test_drops_are_counted_once_per_byte_run(self):
-        sensors = self._sensors()
-        frames = list(
-            sensors.decode_samples(
-                [self._Sample(1, dropped_before=3)],
-                lambda encoding: self._Decoder(per_packet=3),
-            )
-        )
-        self.assertEqual([f.dropped_before for f in frames], [3, 0, 0])
-
-
-class TestDecoderFollowsTheEncoding(unittest.TestCase):
-    """The proto sets `encoding` per sample, not per stream. A decoder built
-    once from the first sample decodes nothing at all after a mid-stream switch,
-    which loses every frame from that point on without saying so."""
-
-    _sensors = staticmethod(TestSampleAttribution._sensors)
-    _Sample = TestSampleAttribution._Sample
-    _Decoder = TestSampleAttribution._Decoder
-    _Decoded = TestSampleAttribution._Decoded
-
-    class _Buffering:
-        """Turns no packet into a frame, but holds one back for the flush."""
-
-        def parse(self, payload):
-            return [payload]
-
-        def decode(self, packet):
-            if packet is None:
-                return [TestSampleAttribution._Decoded()]
-            return []
-
-    def test_a_mid_stream_encoding_change_rebuilds_the_decoder(self):
-        sensors = self._sensors()
-        asked_for = []
-
-        def make_decoder(encoding):
-            asked_for.append(encoding)
-            return self._Decoder(per_packet=1)
-
-        frames = list(
-            sensors.decode_samples(
-                [
-                    self._Sample(1, encoding="h264"),
-                    self._Sample(2, encoding="h264"),
-                    self._Sample(3, encoding="vp8"),
-                ],
-                make_decoder,
-            )
-        )
-        # One decoder per encoding, not one per sample and not one per stream.
-        self.assertEqual(asked_for, ["h264", "vp8"])
-        self.assertEqual([f.sample_ids for f in frames], [[1], [2], [3]])
-
-    def test_an_empty_first_encoding_does_not_pin_the_decoder(self):
-        sensors = self._sensors()
-        asked_for = []
-
-        def make_decoder(encoding):
-            asked_for.append(encoding)
-            return self._Decoder(per_packet=1)
-
-        frames = list(
-            sensors.decode_samples(
-                [
-                    self._Sample(1, encoding=""),
-                    self._Sample(2, encoding="h264"),
-                    self._Sample(3, encoding="vp8"),
-                ],
-                make_decoder,
-            )
-        )
-        # The empty encoding resolves to the documented default, so the explicit
-        # "h264" that follows is the same codec and must not rebuild anything.
-        self.assertEqual(asked_for, ["h264", "vp8"])
-        self.assertEqual([f.sample_ids for f in frames], [[1], [2], [3]])
-
-    def test_the_retired_decoder_is_flushed_with_its_own_attribution(self):
-        sensors = self._sensors()
-        built = []
-
-        def make_decoder(encoding):
-            decoder = self._Buffering() if encoding == "h264" else self._Decoder(per_packet=1)
-            built.append(encoding)
-            return decoder
-
-        frames = list(
-            sensors.decode_samples(
-                [
-                    self._Sample(1, encoding="h264", dropped_before=2),
-                    self._Sample(2, encoding="h264"),
-                    self._Sample(3, encoding="vp8"),
-                ],
-                make_decoder,
-            )
-        )
-        self.assertEqual(built, ["h264", "vp8"])
-        self.assertEqual(len(frames), 2)
-        # The flushed frame belongs to the samples that fed the old decoder, and
-        # carries their drop count and the timestamp of the last of them, not
-        # those of the first sample under the new encoding.
-        self.assertEqual(frames[0].sample_ids, [1, 2])
-        self.assertEqual(frames[0].dropped_before, 2)
-        self.assertEqual(frames[0].boottime_nanos, 2 * 1000)
-        # The bytes buffered under the old codec are not credited to the new one.
-        self.assertEqual(frames[1].sample_ids, [3])
-        self.assertEqual(frames[1].dropped_before, 0)
-
-    def test_a_decoder_that_cannot_be_flushed_does_not_end_the_stream(self):
-        sensors = self._sensors()
-
-        class Unflushable:
-            def parse(self, payload):
-                return [payload]
-
-            def decode(self, packet):
-                if packet is None:
-                    raise RuntimeError("this codec cannot be flushed")
-                return []
-
-        def make_decoder(encoding):
-            return Unflushable() if encoding == "h264" else self._Decoder(per_packet=1)
-
-        with self.assertLogs("wendysensors", level="WARNING"):
-            frames = list(
-                sensors.decode_samples(
-                    [self._Sample(1, encoding="h264"), self._Sample(2, encoding="vp8")],
-                    make_decoder,
-                )
-            )
-        self.assertEqual([f.sample_ids for f in frames], [[2]])
-
-
-class TestSensorStreamReconnect(unittest.TestCase):
-    """A stream that ends mid-life (an agent restart, a dropped socket) must be
-    redialled, or the app exits while the campaign is still armed. Bounded, so a
-    socket that is gone for good still exits with a diagnosis."""
-
-    _sensors = staticmethod(TestSampleAttribution._sensors)
-
-    class _Client:
-        """Replays a scripted series of subscriptions, one per frames() call."""
-
-        def __init__(self, streams):
-            self.streams = list(streams)
-            self.calls = 0
-            self.closes = 0
-
-        def frames(self):
-            self.calls += 1
-            if not self.streams:
-                return
-            stream = self.streams.pop(0)
-            if isinstance(stream, Exception):
-                raise stream
-            yield from stream
-
-        def close(self):
-            self.closes += 1
-
-    def test_frames_resume_after_the_stream_ends(self):
-        sensors = self._sensors()
-        client = self._Client([["a"], ["b", "c"]])
-        slept = []
-        with self.assertLogs("wendysensors", level="WARNING"):
-            got = list(
-                sensors.frames_with_reconnect(client, attempts=2, delay=0.5, sleep=slept.append)
-            )
-        # The frames from before and after the drop are one stream to the caller.
-        self.assertEqual(got, ["a", "b", "c"])
-        # Redialled after each of the two scripted streams ended, and once more
-        # after the empty third: an end of stream is never assumed to be final.
-        self.assertEqual(slept, [0.5, 0.5, 0.5])
-        self.assertEqual(client.closes, 3)
-        self.assertEqual(client.calls, 4)
-
-    def test_a_failing_stream_is_retried_then_given_up_on(self):
-        sensors = self._sensors()
-        client = self._Client([RuntimeError("socket gone")] * 10)
-        slept = []
-        with self.assertLogs("wendysensors", level="WARNING"):
-            got = list(
-                sensors.frames_with_reconnect(client, attempts=3, delay=0.1, sleep=slept.append)
-            )
-        self.assertEqual(got, [])
-        # Three reconnects, so four subscription attempts in total, and then it
-        # stops rather than spinning on a socket that is not coming back.
-        self.assertEqual(len(slept), 3)
-        self.assertEqual(client.calls, 4)
-
-    def test_the_budget_is_refilled_by_every_frame(self):
-        sensors = self._sensors()
-        # A budget of one, spent by every drop and refilled by every frame. Three
-        # short-lived streams therefore all get through; a lifetime budget of one
-        # would have stopped after the second.
-        client = self._Client([["a"], ["b"], ["c"]])
-        with self.assertLogs("wendysensors", level="WARNING"):
-            got = list(sensors.frames_with_reconnect(client, attempts=1, delay=0, sleep=lambda _: None))
-        self.assertEqual(got, ["a", "b", "c"])
-
-    def test_consecutive_drops_exhaust_the_budget(self):
-        sensors = self._sensors()
-        # The same budget of one, but nothing arrives to refill it: the stream
-        # that ends and the failure after it are two consecutive drops, so the
-        # third subscription is never attempted.
-        client = self._Client([["a"], RuntimeError("socket gone"), ["b"]])
-        with self.assertLogs("wendysensors", level="WARNING"):
-            got = list(sensors.frames_with_reconnect(client, attempts=1, delay=0, sleep=lambda _: None))
-        self.assertEqual(got, ["a"])
-        self.assertEqual(client.calls, 2)
-
-    def test_zero_attempts_exits_on_the_first_end_of_stream(self):
-        sensors = self._sensors()
-        client = self._Client([["a"], ["b"]])
-        with self.assertLogs("wendysensors", level="WARNING"):
-            got = list(sensors.frames_with_reconnect(client, attempts=0, delay=0, sleep=lambda _: None))
-        self.assertEqual(got, ["a"])
-        self.assertEqual(client.calls, 1)
-
-
 class TestPersonAppearance(unittest.TestCase):
     """`person_detected` is a campaign trigger, and the campaign starts one
     episode per trigger. So the event must fire once when a person arrives and
@@ -443,12 +131,11 @@ class TestPersonAppearance(unittest.TestCase):
 
         The appearance rule needs neither a model nor OpenCV, and a unit test
         must not require onnxruntime to exercise it."""
-        import sys
-        import types
-
-        TestSampleAttribution._sensors()
         for name in ("cv2", "numpy", "onnxruntime"):
-            sys.modules.setdefault(name, types.ModuleType(name))
+            if name not in sys.modules:
+                stub = types.ModuleType(name)
+                stub.ndarray = object
+                sys.modules[name] = stub
         import app
 
         return app
@@ -502,84 +189,124 @@ class TestPersonAppearance(unittest.TestCase):
         self.assertEqual((present, again), (True, 0.7))
 
 
-class TestFreshestFrame(unittest.TestCase):
-    """Inference is far slower than capture, so a loop that scores every frame
-    it is handed falls steadily behind and its predictions reference samples the
-    episode has moved past. The backlog has to be discarded, and discarding it
-    has to be counted: an episode that silently drops frames is not honest."""
 
-    _sensors = staticmethod(TestSampleAttribution._sensors)
+
+class _FakeNode:
+    """A CameraNode stand-in: a scripted queue of frames and failures.
+
+    Each entry is either a Frame to deliver or an OSError to raise. `ready`
+    says how many are already waiting, which is what readable() reports and
+    what freshest_frames drains.
+    """
+
+    def __init__(self, script, ready=0):
+        self.script = list(script)
+        self.ready = ready
+        self.path = "/dev/videoFake"
+        self.source_id = "fake"
+        self.closed = 0
+
+    def read(self):
+        if not self.script:
+            raise OSError("node ended")
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        if self.ready:
+            self.ready -= 1
+        return item
+
+    def readable(self):
+        return self.ready > 0
+
+    def close(self):
+        self.closed += 1
+
+
+def _frame(boottime):
+    return wendyframes.Frame(image=None, source_id="fake", boottime_nanos=boottime)
+
+
+class TestFreshestFrames(unittest.TestCase):
+    """The drain is what keeps predictions on current input; if it silently
+    stopped draining, every prediction would still be produced and would still
+    reference a real frame, just an increasingly stale one. So assert the
+    discard count, not merely that frames arrive."""
 
     def test_every_frame_is_yielded_when_the_consumer_keeps_up(self):
-        sensors = self._sensors()
-        # Nothing is dropped just for passing through: a consumer fast enough to
-        # take each frame as it arrives must still see all of them. The producer
-        # is gated so exactly one frame exists at a time, which makes "kept up"
-        # a fact of the test rather than a race against the reader thread.
-        gate = threading.Semaphore(0)
-
-        def stream():
-            for frame in ("a", "b", "c"):
-                gate.acquire()
-                yield frame
-
-        frames = sensors.freshest_frames(stream())
+        node = _FakeNode([_frame(1), _frame(2), _frame(3)], ready=0)
         got = []
-        for _ in range(3):
-            gate.release()
-            got.append(next(frames))
-        self.assertEqual([f for f, _ in got], ["a", "b", "c"])
-        self.assertEqual(sum(d for _, d in got), 0)
+        for frame, discarded in wendyframes.freshest_frames(node):
+            got.append((frame.boottime_nanos, discarded))
+            if len(got) == 3:
+                break
+        self.assertEqual(got, [(1, 0), (2, 0), (3, 0)])
 
     def test_a_slow_consumer_gets_the_newest_frame_and_the_discard_count(self):
-        sensors = self._sensors()
-        took_first = threading.Event()
-        produced_rest = threading.Event()
-
-        def stream():
-            yield "a"
-            # Hold until the consumer has taken "a", then produce a burst it
-            # never asked for: the reader running ahead while an inference is
-            # in flight, which is the situation this whole helper exists for.
-            took_first.wait(timeout=5)
-            yield "b"
-            yield "c"
-            yield "d"
-            produced_rest.set()
-
-        frames = sensors.freshest_frames(stream())
-        first = next(frames)
-        self.assertEqual(first, ("a", 0))
-        took_first.set()
-        self.assertTrue(produced_rest.wait(timeout=5))
-        # The consumer skips straight to the newest frame rather than working
-        # through b and c, and is told exactly how many it passed over.
-        self.assertEqual(next(frames), ("d", 2))
-        # Four produced, two yielded, two counted: nothing vanishes unrecorded.
-        self.assertEqual(list(frames), [])
-
-    def test_the_last_frames_survive_the_end_of_the_stream(self):
-        sensors = self._sensors()
-        # A stream that ends immediately still has its frames delivered; the
-        # end of stream must not race the final frame out of the slot.
-        got = list(sensors.freshest_frames(iter(["only"])))
-        self.assertEqual(got, [("only", 0)])
+        # Three already queued: the consumer must be handed the third and told
+        # two were dropped, not handed the first.
+        node = _FakeNode([_frame(1), _frame(2), _frame(3), _frame(4)], ready=3)
+        frame, discarded = next(iter(wendyframes.freshest_frames(node)))
+        self.assertEqual((frame.boottime_nanos, discarded), (3, 2))
 
     def test_a_reader_failure_reaches_the_consumer(self):
-        sensors = self._sensors()
-
-        def stream():
-            yield "a"
-            raise RuntimeError("decoder exploded")
-
-        frames = sensors.freshest_frames(stream())
-        # The frame decoded before the failure is still delivered, and the
-        # failure is then raised on the consumer's thread rather than vanishing
-        # into the reader and stalling the app forever.
-        self.assertEqual(next(frames), ("a", 0))
-        with self.assertRaises(RuntimeError):
-            next(frames)
+        node = _FakeNode([OSError("device gone")])
+        with self.assertRaises(OSError):
+            next(iter(wendyframes.freshest_frames(node)))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestResilientFrames(unittest.TestCase):
+    """The reconnect budget must refill on delivered frames, or weeks of
+    unrelated agent restarts eventually add up to a shutdown."""
+
+    def setUp(self):
+        self.opened = []
+
+    def _patch(self, nodes):
+        seq = list(nodes)
+
+        def factory(path, source_id=""):
+            if not seq:
+                raise OSError("no node")
+            item = seq.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            self.opened.append(item)
+            return item
+
+        return unittest.mock.patch.object(wendyframes, "CameraNode", factory)
+
+    def test_frames_resume_after_the_node_goes_away(self):
+        first = _FakeNode([_frame(1), OSError("node ended")])
+        second = _FakeNode([_frame(2)])
+        got = []
+        with self._patch([first, second]):
+            for frame, _ in wendyframes.resilient_frames("/dev/videoFake", "fake", 2, 0):
+                got.append(frame.boottime_nanos)
+                if len(got) == 2:
+                    break
+        self.assertEqual(got, [1, 2])
+        self.assertEqual(first.closed, 1)
+
+    def test_a_failing_open_is_retried_then_given_up_on(self):
+        with self._patch([OSError("a"), OSError("b"), OSError("c")]):
+            with self.assertRaises(OSError):
+                next(iter(wendyframes.resilient_frames("/dev/videoFake", "fake", 2, 0)))
+
+    def test_zero_attempts_exits_on_the_first_failure(self):
+        with self._patch([OSError("gone")]):
+            with self.assertRaises(OSError):
+                next(iter(wendyframes.resilient_frames("/dev/videoFake", "fake", 0, 0)))
+
+    def test_the_budget_is_refilled_by_every_frame(self):
+        # Two failures, a delivered frame, then two more failures. With a
+        # budget of 2 that only survives if the frame refilled it.
+        nodes = [OSError("1"), OSError("2"), _FakeNode([_frame(7), OSError("end")]),
+                 OSError("3"), OSError("4"), _FakeNode([_frame(8)])]
+        got = []
+        with self._patch(nodes):
+            for frame, _ in wendyframes.resilient_frames("/dev/videoFake", "fake", 2, 0):
+                got.append(frame.boottime_nanos)
+                if len(got) == 2:
+                    break
+        self.assertEqual(got, [7, 8])

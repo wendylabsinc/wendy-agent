@@ -60,8 +60,9 @@ identity from that socket; the administrative agent socket is never exposed.
 The name says write, because that is what it grants, and the grant is stronger
 than plain logging: campaign triggers match on application event names and
 prediction attributes, so an app holding `episode-write` can start recordings.
-It grants no read access to any sensor; reading is the separate `sensor-read`
-entitlement.
+It grants no read access to any sensor. Reading is native: an app opens the
+agent-fed device node granted by `camera`, and frame identity arrives in-band
+with the frames.
 
 | Boundary | Value |
 |---|---|
@@ -84,65 +85,6 @@ A `prediction` record may carry an optional `inputs` list of
 Wendy Sensors). The agent records the references in the Episode so
 `(input, outcome)` pairs can be reconstructed offline; a record without them is
 still accepted.
-
-## Wendy Sensors (sensor-read)
-
-Use `{ "type": "sensor-read", "allowlist": [...] }` when a model needs sensor
-data. The harness feeds the app rather than the app opening a device, so the app
-and the Episode capture adapter consume the same producer instead of fighting
-over a single-holder device node.
-
-The name says read, because that is all it grants. In practice it is permission
-to see the cameras and microphones the allowlist names. It writes nothing into
-the recorded dataset; writing is the separate `episode-write` entitlement.
-
-| Boundary | Value |
-|---|---|
-| Read-only mount | `/run/wendy/sensors` |
-| Injected environment | `WENDY_SENSOR_SOCKET=/run/wendy/sensors/sensors.sock` |
-| Supplementary group | GID `2000` |
-| Service exposed | `wendy.agent.apps.v1.SensorService` only (`Sources`, `Subscribe`) |
-| Device nodes granted | none |
-| Socket restoration | Recreated from persisted container labels after agent/daemon restart |
-
-Every sample carries its source id, a monotonically increasing per-source
-`sample_id`, the agent's bracketed `CLOCK_BOOTTIME` receipt, the payload, and
-the number of samples the subscriber missed since the previous one. While an
-Episode is recording, each delivered sample is recorded in the Episode's
-`model_inputs.jsonl` under the same `sample_id`, and the capture index carries
-that `sample_id` on the payload bytes the Episode kept — so an Episode can be
-replayed as the inputs the model consumed paired with the outcomes it produced.
-
-The `allowlist` of source ids is **required and must name at least one source**.
-Sources outside it are neither listed nor subscribable. Unlike the `camera`
-entitlement's optional allowlist, omitting it is rejected rather than treated as
-"everything": a bare grant would cover every source the device can multiplex
-today and every source kind that becomes subscribable in a later release, so an
-app asking only for a camera would silently gain microphones and the ROS 2 graph
-on an agent upgrade. A manifest without one fails validation with a message
-naming the fix. All services of a multi-service app share one socket, so it
-permits the union of what they declared.
-
-Only camera sources have a producer that can multiplex to a model subscriber in
-this release. Audio and ROS 2 sources are captured into Episodes but are not
-subscribable: `wendy data sources` reports them with `subscribable=false`, and
-subscribing to one is refused with an error saying that source kind is not
-subscribable in this release.
-
-Source ids must be written exactly as `wendy data sources` reports them.
-Near-miss spellings are refused rather than resolved: `ipcamera:0` and
-`v4l2:/dev/video00` do not name `v4l2:/dev/video0`. An allowlist entry must not
-silently grant a different camera than the one it names, and the Episode joins a
-model's inputs to the captured bytes on the source id, so a second spelling for
-one camera would produce ledger entries nothing can resolve.
-
-The entitlement is read-only: it cannot start or stop Episodes, deploy
-campaigns, download recorded data, or write records into an Episode. Raw device
-access remains the separate `camera` entitlement, which is unchanged; an app may
-hold both. `sensor-read` and `episode-write` are deliberately separate grants
-running in opposite directions, so an app that logs an event does not thereby
-get the camera, and an app that reads a sensor does not thereby get to write the
-training corpus.
 
 ## Network
 

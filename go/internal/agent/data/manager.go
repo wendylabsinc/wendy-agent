@@ -195,7 +195,7 @@ type ApplicationRecord struct {
 	Attributes map[string]any `json:"attributes,omitempty"`
 	// Inputs binds this record to the harness samples it was computed from, by
 	// the same (source_id, sample_id) pair the app received from
-	// SensorService.Subscribe. It is optional: a record that names no inputs is
+	// node. It is optional: a record that names no inputs is
 	// accepted exactly as before, and is counted as an outcome whose input is
 	// unknown rather than being rejected.
 	Inputs          []SampleRef `json:"inputs,omitempty"`

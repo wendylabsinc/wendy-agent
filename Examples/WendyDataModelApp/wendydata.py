@@ -15,7 +15,7 @@ running agent. The protocol matches the agent's application-record socket
     place them on the device timeline.
   - A prediction may carry an optional "inputs" list naming the harness
     samples it was computed from, as [{"source_id", "sample_id"}]. The
-    identifiers come from SensorService.Subscribe (see wendysensors.py);
+    identifiers come from the agent-fed node's buffer timestamps;
     the agent records the same identifiers in the episode, so an outcome
     can be paired with the exact input bytes offline. The field is
     optional and a prediction without it is still accepted.
@@ -120,7 +120,7 @@ def build_prediction(
 
     `inputs` binds the outcome to the harness samples the model consumed,
     as an iterable of {"source_id", "sample_id"} mappings. Pass the value
-    of wendysensors.SensorFrame.input_refs(). It is optional — a
+    of a frame's input_refs(). It is optional — a
     prediction with no inputs is accepted and recorded, and counted in the
     episode manifest as an outcome whose input is unknown."""
     record = _base_record("prediction")

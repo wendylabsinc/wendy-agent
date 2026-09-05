@@ -6,16 +6,16 @@ WendyOS, so a Wendy Arm demo needs nothing beyond `wendy run` and
 
 | Contract | Mechanism in this app |
 |---|---|
-| Sensors in | Camera frames **fed by the harness** over the app-private sensor socket granted by the `sensor-read` entitlement (`WENDY_SENSOR_SOCKET`). Read-only, and narrowed to the source the manifest names. The app opens no device. |
+| Frames in | Camera frames **fed by the harness** on a v4l2loopback node granted by the `camera` entitlement (`WENDY_CAMERA_NODE`). The app never opens the physical device. |
 | Predictions out | One `prediction` record per scored frame, naming the sample identifiers it was computed from, plus a `person_detected` event, over the app-private data socket granted by the `episode-write` entitlement (`WENDY_DATA_SOCKET`) |
 | Actuation out | A Robot Operating System 2 (ROS 2) `geometry_msgs/Twist` on `/cmd_vel` when ROS 2 is enabled; the identical control decision is logged when it is not |
 
 ```
 WendyDataModelApp/
-├── wendy.json          ← sensor-read + episode-write entitlements (no camera device access)
+├── wendy.json          ← camera + episode-write entitlements
 ├── Dockerfile          ← YOLOv8n ONNX export + gRPC stub generation, CPU runtime
 ├── app.py              ← subscribe, detect, record, actuate loop
-├── wendysensors.py     ← sensor subscribe client (gRPC + PyAV decode)
+├── wendyframes.py      ← reads the agent-fed node (V4L2 + OpenCV decode)
 ├── wendydata.py        ← data socket client (standard library only)
 ├── test_wendydata.py   ← unit tests for framing, uncertainty, input references
 ├── proto/              ← build-time copy of sensor_service.proto (parity-tested)
@@ -27,11 +27,11 @@ WendyDataModelApp/
 The harness feeds the model, and the episode records exactly what it fed
 it.
 
-1. The app calls `SensorService.Subscribe` for a camera source (the same
-   identifier `wendy data sources` prints) and receives samples carrying
-   `source_id`, a monotonically increasing `sample_id`, the agent's
-   bracketed `CLOCK_BOOTTIME` receipt, and the encoded payload.
-2. Because the app subscribes rather than opening `/dev/video0`, it is one
+1. The app reads the agent-fed v4l2loopback node and gets, with each frame,
+   the agent's `CLOCK_BOOTTIME` receipt in the V4L2 buffer timestamp. That
+   timestamp is the frame's identity, and the episode records the same
+   value, so a prediction can name the frame it scored.
+2. Because the app reads that node rather than `/dev/video0`, it is one
    more consumer of the producer the campaign's capture adapter consumes.
    Video4Linux2 admits a single holder of a capture device; the agent is
    that holder. **This is why the example no longer ships a
@@ -65,13 +65,9 @@ below):
    creep forward when centered — and publishes it as a Twist (ROS 2 mode)
    or logs it (default mode).
 
-Set `WENDY_CAMERA_SOURCE` to pick a source explicitly; by default the app
-takes the first healthy, subscribable camera the harness offers and logs
-which one. Either way the source must appear in the `sensor-read` allowlist
-in `wendy.json`, which ships naming `v4l2:/dev/video0`. On a device whose
-camera has another identifier, edit that allowlist to match what `wendy data
-sources` prints; a source outside it is neither listed nor subscribable, so
-the app will report that it has no camera to score.
+Set `WENDY_CAMERA_NODE` to pick the node explicitly; it defaults to
+`/dev/video10`, the first node the agent creates. `WENDY_CAMERA_SOURCE`
+labels the frames in prediction records and defaults to the node path.
 
 A camera the harness lists but cannot stream to models is reported with the
 reason rather than silently skipped. Only camera sources are subscribable in
@@ -133,25 +129,24 @@ cd Examples/WendyDataModelApp
 wendy run
 ```
 
-The build has two throwaway stages: one installs Ultralytics (pinned to
-8.3.63) and exports `yolov8n.onnx` at opset 12, the other generates the
-Python gRPC stubs for `SensorService` from `proto/`. The runtime image
-carries onnxruntime, OpenCV, NumPy, grpcio, and PyAV.
+The build has one throwaway stage: it installs Ultralytics (pinned to
+8.3.63) and exports `yolov8n.onnx` at opset 12. The runtime image carries
+onnxruntime, OpenCV, NumPy and grpcio.
 
-Sensor input is not optional the way the data socket is: without
-`WENDY_SENSOR_SOCKET` the app has no frames to score and exits with a
-clear message naming the missing entitlement.
+Frame input is not optional the way the data socket is: if the node cannot
+be opened the app has no frames to score and exits with a clear message
+naming the missing entitlement.
 
-A socket that was there and whose stream then ends is a different case, and
-is treated as transient: an agent restart or a dropped subscription ends
-`Subscribe` while the app itself is perfectly healthy. The app redials, up
-to `WENDY_SENSOR_RECONNECT_ATTEMPTS` consecutive times (default 5), one
-every `WENDY_SENSOR_RECONNECT_DELAY_SECONDS` (default 2), and the budget is
+A node that was there and then goes away is a different case, and is treated
+as transient: an agent restart removes the node while the app itself is
+perfectly healthy. The app reopens it, up to
+`WENDY_CAMERA_RECONNECT_ATTEMPTS` consecutive times (default 5), one every
+`WENDY_CAMERA_RECONNECT_DELAY_SECONDS` (default 2), and the budget is
 refilled by every frame that arrives, so weeks of unrelated restarts do not
 add up to a shutdown. Only once the stream stays gone for the whole budget
 does the app exit, and it says so rather than stopping quietly with the
-campaign still armed. Set the attempts to 0 to exit on the first end of
-stream instead.
+campaign still armed. Set the attempts to 0 to exit on the first failure
+instead.
 
 Without a data socket (running outside WendyOS, or without the
 `episode-write` entitlement) it keeps running and logs each dropped record;

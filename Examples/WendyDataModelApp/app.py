@@ -3,13 +3,13 @@
 
 Demonstrates the three harness contracts end to end:
 
-  1. Sensors in    — camera frames FED BY THE HARNESS over the app-private
-                     sensor socket granted by the sensor-read entitlement. The
-                     app opens no device: it subscribes to the same
-                     producer the episode capture adapter consumes, so the
-                     two never fight over the camera, and every frame the
-                     model sees is recorded into the active episode under
-                     the identifier the app was given.
+  1. Frames in     — camera frames FED BY THE HARNESS on a v4l2loopback node
+                     granted by the camera entitlement. The app never opens
+                     the physical device: it reads the same producer the
+                     episode capture adapter consumes, so the two never fight
+                     over the camera, and every frame the model sees is
+                     recorded into the active episode under the identity that
+                     arrives with it in the buffer timestamp.
   2. Predictions out — one "prediction" record per processed frame, naming
                      the sample identifiers it was computed from, plus a
                      "person_detected" event, over the app-private data
@@ -36,7 +36,7 @@ import numpy as np
 import onnxruntime as ort
 
 import wendydata
-import wendysensors
+import wendyframes
 
 log = logging.getLogger("model-app")
 
@@ -48,6 +48,14 @@ MODEL_PATH = os.environ.get("WENDY_MODEL_PATH", os.path.join(os.path.dirname(__f
 # (for example "v4l2:/dev/video0" or "ipcamera:200"). Empty means "pick the
 # first subscribable camera the harness offers", which is what a
 # single-camera demo device wants.
+# The agent-fed node. wendy sets WENDY_CAMERA_NODE when it wires the two-plane
+# path; the default is the first loopback node it creates.
+CAMERA_NODE = os.environ.get("WENDY_CAMERA_NODE", "/dev/video10")
+# An agent restart takes the node away while the app is perfectly healthy, so
+# that is treated as transient. The budget refills on every frame delivered;
+# 0 exits on the first failure.
+CAMERA_RECONNECT_ATTEMPTS = int(os.environ.get("WENDY_CAMERA_RECONNECT_ATTEMPTS", "5"))
+CAMERA_RECONNECT_DELAY_SECONDS = float(os.environ.get("WENDY_CAMERA_RECONNECT_DELAY_SECONDS", "2"))
 CAMERA_SOURCE = os.environ.get("WENDY_CAMERA_SOURCE", "")
 CONFIDENCE_THRESHOLD = float(os.environ.get("WENDY_CONFIDENCE_THRESHOLD", "0.25"))
 IOU_THRESHOLD = float(os.environ.get("WENDY_IOU_THRESHOLD", "0.45"))
@@ -57,7 +65,7 @@ IOU_THRESHOLD = float(os.environ.get("WENDY_IOU_THRESHOLD", "0.45"))
 # Jetson Orin Nano one YOLOv8n inference takes roughly 450 ms, so the loop
 # runs at about 2 predictions per second and this gate never binds. What
 # actually keeps the app current is discarding the backlog rather than
-# draining it (see freshest_frames in wendysensors.py); lower this only to
+# draining it (see freshest_frames in wendyframes.py); lower this only to
 # spend less CPU on inference deliberately.
 #
 # Frames the app receives but does not score are still delivered, so the
@@ -65,12 +73,6 @@ IOU_THRESHOLD = float(os.environ.get("WENDY_IOU_THRESHOLD", "0.45"))
 # prediction reports how many it passed over.
 PREDICTIONS_PER_SECOND = float(os.environ.get("WENDY_PREDICTIONS_PER_SECOND", "5"))
 # The sensor stream can end while the app is still healthy: the agent
-# restarts, or the subscription is dropped with the socket. The data socket
-# client already reconnects and retries, so the frame source does too, up to
-# this many consecutive attempts (0 disables it and exits on the first end of
-# stream). The budget is refilled by every frame that arrives.
-SENSOR_RECONNECT_ATTEMPTS = int(os.environ.get("WENDY_SENSOR_RECONNECT_ATTEMPTS", "5"))
-SENSOR_RECONNECT_DELAY_SECONDS = float(os.environ.get("WENDY_SENSOR_RECONNECT_DELAY_SECONDS", "2"))
 # Actuation is optional: a plain Jetson demo has no ROS 2 stack. Set
 # WENDY_MODEL_APP_ROS2=1 (and run an image with rclpy) to publish Twists.
 ROS2_REQUESTED = os.environ.get("WENDY_MODEL_APP_ROS2", "0") == "1"
@@ -223,28 +225,6 @@ def detect(session: ort.InferenceSession, input_name: str, frame: np.ndarray) ->
     return detections
 
 
-def resolve_camera_source(client: wendysensors.SensorClient) -> str:
-    """Pick the camera source to subscribe to, reporting honestly when the
-    harness has none to give."""
-    if CAMERA_SOURCE:
-        return CAMERA_SOURCE
-    try:
-        sources = client.sources()
-    except Exception as exc:  # grpc.RpcError and connection failures alike
-        log.error("cannot reach the sensor socket at %s (%s); is the sensor-read entitlement granted, and does its allowlist name this source?", client.target, exc)
-        sys.exit(1)
-    cameras = [s for s in sources if s.kind == "camera" and s.subscribable and s.healthy]
-    if not cameras:
-        for source in sources:
-            if source.kind == "camera":
-                log.error("camera %s is not available to models: %s", source.id, source.detail)
-        log.error("no subscribable camera source; set WENDY_CAMERA_SOURCE to choose one explicitly")
-        sys.exit(1)
-    if len(cameras) > 1:
-        log.info("several cameras available; using %s (set WENDY_CAMERA_SOURCE to choose)", cameras[0].id)
-    return cameras[0].id
-
-
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     log.info("model %s v%s from %s", MODEL_NAME, MODEL_VERSION, MODEL_PATH)
@@ -256,18 +236,12 @@ def main() -> None:
     log.info("data socket: %s", client.path)
     actuator = Actuator()
 
-    sensors = wendysensors.SensorClient("", model=MODEL_NAME)
-    source_id = resolve_camera_source(sensors)
-    sensors.source_id = source_id
-    log.info("sensor socket: %s, source: %s", sensors.target, source_id)
+    log.info("camera node: %s", CAMERA_NODE)
 
     interval = 1.0 / max(PREDICTIONS_PER_SECOND, 0.1)
     next_score_at = 0.0
     person_present = False
     skipped = 0
-    frame_stream = wendysensors.frames_with_reconnect(
-        sensors, SENSOR_RECONNECT_ATTEMPTS, SENSOR_RECONNECT_DELAY_SECONDS
-    )
     try:
         # freshest_frames decodes on its own thread and hands over only the most
         # recent frame, so inference always runs on current input rather than
@@ -275,7 +249,9 @@ def main() -> None:
         # however much slower inference is than capture, and the sample
         # identifiers each prediction references drift out of the range the
         # episode recorded, which is what makes the join unresolvable.
-        for sensor_frame, discarded in wendysensors.freshest_frames(frame_stream):
+        for sensor_frame, discarded in wendyframes.resilient_frames(
+            CAMERA_NODE, CAMERA_SOURCE, CAMERA_RECONNECT_ATTEMPTS, CAMERA_RECONNECT_DELAY_SECONDS
+        ):
             # Decoded while the previous inference was still running, then
             # dropped on purpose. Added to the same counter the rate gate feeds
             # so one field accounts for every frame that arrived and was not
@@ -285,10 +261,10 @@ def main() -> None:
                 # The harness produced frames this app never received. Say so
                 # rather than leaving a silent gap in the sample identifiers.
                 log.warning(
-                    "the harness dropped %d sample(s) before %s#%s: the model is not keeping up",
+                    "the harness dropped %d frame(s) before %s@%d: the model is not keeping up",
                     sensor_frame.dropped_before,
                     sensor_frame.source_id,
-                    sensor_frame.sample_ids[-1] if sensor_frame.sample_ids else "?",
+                    sensor_frame.boottime_nanos,
                 )
             now = time.monotonic()
             if now < next_score_at:
