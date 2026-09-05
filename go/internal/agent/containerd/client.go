@@ -1748,69 +1748,77 @@ func (c *Client) applyNvidiaCDI(spec *localoci.Spec) error {
 	return fmt.Errorf("CDI spec %s has no applicable device: %w", specPath, allErr)
 }
 
-// refreshGPUDeviceNumbersForStart re-resolves every host device number pinned
-// in a GPU-entitled container's stored spec and persists the spec when any of
-// them have moved. Best-effort: every failure leaves the container exactly as
-// it was and lets the start proceed, because a start that used to work must not
-// begin failing on account of a repair step.
+// refreshGPUDeviceNumbersForStart re-resolves every host device number pinned in
+// a GPU-entitled container's stored spec, persists the spec when any of them
+// have moved, and refuses the start when any of them are gone.
 //
-// The spec record is updated in place rather than through delete+recreate (as
-// refreshSecondaryNamespaces does) because there is no task yet at this point
-// and containerd's full-record update accepts a new spec — so the container
-// keeps its snapshot, and with it anything the app has written to its own
-// filesystem.
-func (c *Client) refreshGPUDeviceNumbersForStart(ctx context.Context, container containerd.Container, appName string, labels map[string]string) {
+// The repair half is best-effort: a failure to read or write the spec leaves the
+// container exactly as it was and lets the start proceed, because a start that
+// used to work must not begin failing on account of a repair step.
+//
+// The refusal half is not best-effort. A device that no longer exists cannot be
+// repaired, and starting the app regardless is what produces a crash loop whose
+// exit code names nothing — see ErrDeviceUnavailable.
+func (c *Client) refreshGPUDeviceNumbersForStart(ctx context.Context, container containerd.Container, appName string, labels map[string]string) error {
 	if !hasGPUEntitlement(parseEntitlementsFromAnnotations(labels)) {
-		return
+		return nil
 	}
 
 	info, err := container.Info(ctx)
 	if err != nil {
 		c.logger.Warn("Could not load container record to re-resolve GPU device numbers; starting with the stored spec",
 			zap.String("app_name", appName), zap.Error(err))
-		return
+		return nil
 	}
 	if info.Spec == nil {
-		return
+		return nil
 	}
 
 	var spec localoci.Spec
 	if err := json.Unmarshal(info.Spec.GetValue(), &spec); err != nil {
 		c.logger.Warn("Could not decode stored spec to re-resolve GPU device numbers; starting with the stored spec",
 			zap.String("app_name", appName), zap.Error(err))
-		return
+		return nil
 	}
 
 	refresh := localoci.RefreshHostDeviceNumbers(&spec)
+
+	if refresh.Changed() {
+		if perr := c.persistRefreshedSpec(ctx, container, info, &spec, appName); perr != nil {
+			c.logger.Warn("Could not persist refreshed device numbers; starting with the stored spec",
+				zap.String("app_name", appName), zap.Error(perr))
+		} else {
+			c.logger.Info("Re-resolved stale host device numbers before start",
+				zap.String("app_name", appName), zap.Strings("devices", refresh.Updated))
+		}
+	}
+
 	if len(refresh.Missing) > 0 {
-		// Nothing to repair — a device that is gone cannot be re-pointed — but
-		// this is the log line that tells whoever is debugging a GPU app that
-		// the host, not the container, is what changed.
-		c.logger.Warn("Container names host devices that no longer exist",
+		// A device that is gone cannot be re-pointed, so the repair path ends
+		// here and the preflight begins.
+		c.logger.Warn("Refusing to start: container names host devices that no longer exist",
 			zap.String("app_name", appName), zap.Strings("devices", refresh.Missing))
+		return fmt.Errorf("%w: %s names %s, absent on this host",
+			ErrDeviceUnavailable, appName, strings.Join(refresh.Missing, ", "))
 	}
-	if !refresh.Changed() {
-		return
-	}
+	return nil
+}
 
-	newSpecJSON, err := json.Marshal(&spec)
+// persistRefreshedSpec writes a repaired spec back to the container record. The
+// record is updated in place rather than through delete+recreate (as
+// refreshSecondaryNamespaces does) because there is no task yet at this point
+// and containerd's full-record update accepts a new spec — so the container
+// keeps its snapshot, and with it anything the app has written to its own
+// filesystem.
+func (c *Client) persistRefreshedSpec(ctx context.Context, container containerd.Container, info containers.Container, spec *localoci.Spec, appName string) error {
+	newSpecJSON, err := json.Marshal(spec)
 	if err != nil {
-		c.logger.Warn("Could not encode refreshed spec; starting with the stored spec",
-			zap.String("app_name", appName), zap.Error(err))
-		return
+		return fmt.Errorf("encoding refreshed spec for %q: %w", appName, err)
 	}
-
-	if err := container.Update(ctx, func(ctx context.Context, _ *containerd.Client, ctr *containers.Container) error {
+	return container.Update(ctx, func(ctx context.Context, _ *containerd.Client, ctr *containers.Container) error {
 		ctr.Spec = &anypb.Any{TypeUrl: info.Spec.GetTypeUrl(), Value: newSpecJSON}
 		return nil
-	}); err != nil {
-		c.logger.Warn("Could not persist refreshed GPU device numbers; starting with the stored spec",
-			zap.String("app_name", appName), zap.Error(err))
-		return
-	}
-
-	c.logger.Info("Re-resolved stale host device numbers before start",
-		zap.String("app_name", appName), zap.Strings("devices", refresh.Updated))
+	})
 }
 
 // HasGPUEntitlement implements services.GPUDeviceReporter. It reads the
@@ -1959,7 +1967,16 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	// the GPU's own device entries and the bind-mounted, cgroup-only pins that
 	// AMD compute, i2c and serial use. Which containers are refreshed is still
 	// gated on the gpu entitlement here.
-	c.refreshGPUDeviceNumbersForStart(ctx, container, appName, containerLabels)
+	if devErr := c.refreshGPUDeviceNumbersForStart(ctx, container, appName, containerLabels); devErr != nil {
+		// Preflight: the app declared hardware this host no longer has. Starting
+		// anyway produces a container that runs, fails inside the vendor runtime,
+		// and crash-loops with an exit code that names nothing — the failure mode
+		// this refuses to create. The monitor retries on its usual backoff, so a
+		// device that comes back (a driver finishing its load, a re-probe) still
+		// recovers with nobody involved.
+		c.recordStartFailure(ctx, appName, devErr)
+		return nil, devErr
+	}
 
 	// Resolve network policy before NewTask. A sandbox is reusable only when
 	// both its health/identity checks pass and the stored OCI spec explicitly
