@@ -1,6 +1,6 @@
 # Multi-Service Apps with `wendy.json`
 
-When your project needs more than one container managed through a `wendy.json` file (rather than a `docker-compose.yml`), declare a `services` map in `wendy.json`. `wendy run` detects the map and automatically orchestrates a parallel multi-service build and deployment.
+When your project needs more than one container managed through a `wendy.json` file (rather than a `docker-compose.yml`), declare a `services` map in `wendy.json`. `wendy run` detects the map and automatically orchestrates a parallel multi-service build and deployment. `wendy build` detects the same map and builds the images locally without deploying — see [Building without deploying](#building-without-deploying).
 
 ## `wendy.json` structure
 
@@ -110,33 +110,38 @@ In attached mode, each service's readiness→postStart sequence fires asynchrono
 
 ## How `wendy run` handles multi-service projects
 
-When `appCfg.Services` is non-empty, `wendy run` routes to the multi-service pipeline:
+When `wendy.json` defines a `services` map, `wendy run` routes to the multi-service pipeline:
 
 1. **Parallel build** — all service images are built and pushed concurrently, with up to 4 simultaneous builds by default. Override with `--max-concurrency`. In interactive terminals a per-service spinner displays each service's status (`waiting` → `building…` → `built (Xs)` / `failed`). While a service builds, its row names the Dockerfile step currently running and, where that step's output exposes it, appends live progress after a `·` separator:
 
     ⠹ api         [4/9] RUN pip install -r requirements.txt · 61%  128.0MB/797.3MB  95.2MB/s
 
-In non-interactive terminals plain log lines are printed instead, with a heartbeat for each running step every 15 seconds.
+In non-interactive terminals plain log lines are printed instead.
 2. **Ordered container creation** — containers are created one at a time in topological dependency order. A service listed in another service's `dependsOn` is created first.
 3. **Start and stream** — all containers are started and their combined stdout/stderr is multiplexed to the terminal. Each line is prefixed with `[serviceName]`.
 
-Press **Ctrl-C** to stop all services. The CLI cancels all streams, issues a `StopContainer` for each service concurrently, and waits up to 30 seconds before exiting.
+Press **Ctrl-C** to stop all services. The CLI cancels all streams and stops each service concurrently before exiting.
 
 ### Container naming
 
 Each service container ID follows the `{appId}_{serviceName}` convention (`_`
 is the separator because `/` is not permitted in containerd container IDs). For
 example, with `appId: "com.example.myapp"` and service `"api"`, the containerd
-container ID is `com.example.myapp_api`. The corresponding snapshot key uses
-`@` as the separator (`wendy-com.example.myapp@api`) to remain unambiguous when
-either component contains a hyphen. The cgroup path component uses `@` as the
-separator: `system.slice:edge-agent:com.example.myapp@api` (the systemd service segment
-reflects the `WENDY_SYSTEMD_SERVICE_NAME` env var, which defaults to `edge-agent`;
-`@` is used because it cannot appear in either a valid appId or serviceName,
-eliminating any collision risk from the hyphen separator).
+container ID is `com.example.myapp_api`.
 
 > **Note:** Single-container apps (no `serviceName` in the top-level
 > `wendy.json`) are unaffected — their container ID remains the bare `appId`.
+
+## Building without deploying
+
+`wendy build` detects the same `services` map and builds every service (or a `--service` closure) into the local image store, tagged `<appid>-<service>:latest`, without deploying: nothing is pushed to a registry and nothing is created or started on a device. Useful for CI and pre-flight checks — confirm every service builds before running `wendy run`:
+
+```sh
+wendy build
+wendy build --service api
+```
+
+See [`wendy build`](../clients/wendy-cli/commands/build.md#multi-service-manifests) for the full flag reference (`--service`, `--max-concurrency`, `--builder`, `--gpu-arch`, `--debug`).
 
 ## Filtering with `--service`
 
@@ -195,5 +200,5 @@ naming the individual service.
 ## Limitations
 
 - Log output is multiplexed with a `[serviceName]` prefix on each line. Per-service log stream routing is not yet available.
-- Containers are created via individual `CreateContainer` calls in dependency order. A grouped `CreateAppGroup` RPC for atomic creation is planned as a follow-up.
+- Containers are created one at a time in dependency order, not atomically as a group. Grouped atomic creation is planned as a follow-up.
 - Headless Mac is not supported. `wendy run` rejects multi-service `wendy.json` projects when the selected target is Headless Mac, before any build or registry operation. Target a Linux/WendyOS device for multi-service workloads.

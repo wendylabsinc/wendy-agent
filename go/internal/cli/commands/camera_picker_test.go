@@ -27,6 +27,10 @@ func usbCam(id uint32, name string) *agentpb.VideoDevice {
 	}
 }
 
+func rosCam(id uint32, topic string) *agentpb.VideoDevice {
+	return &agentpb.VideoDevice{Id: id, Name: "ROS 2 " + topic, Topic: topic, Path: "/dev/video128", Transport: agentpb.VideoTransport_VIDEO_TRANSPORT_ROS2, Online: true}
+}
+
 // An explicit --id must never open the picker, even with several cameras.
 func TestResolveCameraIDExplicitWins(t *testing.T) {
 	devices := []*agentpb.VideoDevice{usbCam(0, "webcam"), ipCam(200, "RLC-520A", "10.98.0.50")}
@@ -168,6 +172,19 @@ func TestCameraStatus(t *testing.T) {
 	}
 	if got := cameraStatus(ipCam(200, "RLC-520A", "10.98.0.50")); got != "ready" {
 		t.Fatalf("status = %q, want ready", got)
+	}
+}
+
+func TestROS2CameraColumns(t *testing.T) {
+	cam := rosCam(128, "/front_camera/image/compressed")
+	if got := transportLabel(cam.GetTransport()); got != "ros2" {
+		t.Fatalf("transport = %q", got)
+	}
+	if got := cameraWhere(cam); got != "/front_camera/image/compressed" {
+		t.Fatalf("where = %q", got)
+	}
+	if got := cameraStatus(cam); got != "ready" {
+		t.Fatalf("status = %q", got)
 	}
 }
 

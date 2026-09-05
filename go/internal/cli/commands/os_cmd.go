@@ -211,9 +211,14 @@ const (
 
 // decideOSUpdate chooses how the OS-update step behaves when a newer OS may be
 // available. It is pure so it can be unit-tested; the caller is responsible for
-// running the interactive prompt when the result is osActionPrompt.
-func decideOSUpdate(currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
-	if osAlreadyCurrent(currentOSVersion, latestVersion, nightly) {
+// running the interactive prompt when the result is osActionPrompt. A --pr
+// request (prNumber > 0) never resolves to osActionAlreadyCurrent: a PR's
+// version tag ("pr-N") is constant across rebuilds, so treating a matching tag
+// as current would silently no-op a re-test after a new push to the same PR
+// (same rationale as osUpdateShouldSkipAlreadyCurrent, which implements the
+// suppression).
+func decideOSUpdate(prNumber int, currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
+	if osUpdateShouldSkipAlreadyCurrent(prNumber, currentOSVersion, latestVersion, nightly) {
 		return osActionAlreadyCurrent
 	}
 	switch {
@@ -230,6 +235,8 @@ func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
 	var prNumber int
+	var noDrivers bool
+	var driversDir string
 
 	cmd := &cobra.Command{
 		Use:   "update [artifact-path]",
@@ -248,6 +255,10 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 			// Determine the artifact URL: local path, remote URL, or manifest picker.
 			if len(args) > 0 && artifactURL != "" {
 				return fmt.Errorf("provide either a local artifact path or --artifact-url, not both")
+			}
+
+			if noDrivers && driversDir != "" {
+				return fmt.Errorf("--no-drivers cannot be combined with --drivers-dir")
 			}
 
 			if prNumber > 0 {
@@ -305,6 +316,10 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				fmt.Printf("Current OS version: %s\n", preUpdateOSVersion)
 			}
 
+			// Only set when the manifest resolved the target; a local artifact or
+			// --artifact-url leaves it empty and limits the pre-flight to a warning.
+			var targetVersion string
+
 			// No artifact provided — auto-detect from the reported device type.
 			if len(args) == 0 && artifactURL == "" {
 				deviceType := versionResp.GetDeviceType()
@@ -352,6 +367,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 						fmt.Printf("Latest OS version: %s\n", latestVer)
 					}
 					artifactURL = otaURL
+					targetVersion = latestVer
 				}
 			}
 
@@ -410,6 +426,22 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				return err
 			}
 
+			if driversDir != "" {
+				if err := checkDriversDir(conn, driversDir); err != nil {
+					return err
+				}
+			}
+
+			// Last point before anything transfers. Staging a rebuild that fails is
+			// the case where the device loses a driver it has today, so the operator
+			// decides rather than finding out after the reboot.
+			pf := warnDriverAddonsBeforeUpdate(ctx, conn, versionResp.GetDeviceType(), targetVersion, driversDir, prNumber, !noDrivers)
+			if !noDrivers && pf.blocking() {
+				if err := confirmDriverPreflight(pf); err != nil {
+					return err
+				}
+			}
+
 			if err := streamOSUpdate(ctx, conn, artifactURL, ""); err != nil {
 				return err
 			}
@@ -426,6 +458,10 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 
 	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "OS update artifact URL (remote)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both agent and OS")
+	cmd.Flags().StringVar(&driversDir, "drivers-dir", "",
+		"Stage driver add-ons for the target kernel from local .raw files in this directory, instead of the registry (for networks with no internet access)")
+	cmd.Flags().BoolVar(&noDrivers, "no-drivers", false,
+		"Update even though driver add-ons will not be staged for the target kernel; skips staging and the confirmation")
 	cmd.Flags().IntVar(&prNumber, "pr", 0, "OTA-update to the image built by wendyos-builder PR #N (debug build; mutually exclusive with a positional artifact path and --artifact-url)")
 
 	return cmd
@@ -702,6 +738,7 @@ func reportOSUpdateOutcome(ctx context.Context, host, preUpdateOSVersion string)
 
 	msg, outcomeErr := evaluateOSUpdateOutcome(resp, rpcErr, preUpdateOSVersion, postUpdateOSVersion, time.Now())
 	fmt.Println(msg)
+	reportDriverAddonsAfterUpdate(ctx, host)
 	return outcomeErr
 }
 

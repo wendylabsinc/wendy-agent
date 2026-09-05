@@ -26,6 +26,10 @@ import (
 
 const maxConcurrentBuilds = 4
 
+// serviceBuildFn builds the image for one service. repo is the lowercased
+// "<appID>-<service>" name that is both the image repo and the cache key.
+type serviceBuildFn func(ctx context.Context, contextDir, repo, dockerfile string, buildOut, logOut io.Writer) error
+
 // multiBuildConcurrency returns the default number of service images to
 // build+push at once for a group of numServices.
 func multiBuildConcurrency(numServices int) int {
@@ -102,10 +106,11 @@ func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, e
 	return appconfig.ServiceTopoOrder(services)
 }
 
-// buildServiceImage is the per-service build+push step. It is a package var so
-// stress/concurrency tests can substitute a fake builder and exercise the
-// parallel scheduling, skip handling, and failure-map collection without Docker.
-var buildServiceImage = buildAndPushImageForAgent
+// buildServiceImage is the default per-service build+prepare step. It shares
+// Compose's persistent OCI-layout/chunk path, including its registry fallback,
+// so successful builds can report device-verifiable layer diff IDs. It is a
+// package var so stress/concurrency tests can substitute a fake builder.
+var buildServiceImage = buildAndPrepareComposeImageForAgent
 
 // serviceGPUArch is the GPU architecture every service in a multi-service
 // project builds against: one device, so one answer, resolved once for the
@@ -134,8 +139,9 @@ const maxConcurrentPlans = 8
 // whether a service's build+push can be skipped: which build file it builds
 // from, and the hash of everything that could change its image.
 type servicePlan struct {
-	dockerfile string
-	inputHash  string
+	dockerfile    string
+	inputHash     string
+	contentPinned bool
 }
 
 // computeServicePlans resolves each service's build file and build-input hash.
@@ -172,9 +178,13 @@ func computeServicePlans(cwd, platform, gpuArch string, appCfg *appconfig.AppCon
 			if err != nil {
 				return
 			}
+			contentPinned, err := dockerfileBasesContentPinned(contextDir, dockerfile)
+			if err != nil {
+				return
+			}
 
 			mu.Lock()
-			plans[name] = servicePlan{dockerfile: dockerfile, inputHash: hash}
+			plans[name] = servicePlan{dockerfile: dockerfile, inputHash: hash, contentPinned: contentPinned}
 			mu.Unlock()
 		})
 	}
@@ -256,19 +266,6 @@ func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection)
 // never changes the input hash), so skipping on those alone could leave the
 // device running a stale/partial image while the CLI reports success.
 //
-// Content verification for the multi-service builder path is a known gap: these
-// services are built and pushed to the *device registry* (buildAndPushImageForAgent),
-// whose compressed layer blobs are keyed by compressed digest, so the diff-ID
-// QueryLayers check that guards the single-service chunk-diff fast path
-// (deviceHasAllLayers) can never confirm them. The WDY-1692 commit already
-// called this out ("a device-registry digest pre-check is a planned follow-up
-// for full robustness against a wiped registry") and it is tracked as the
-// WDY-1824 follow-up. Until that registry-digest RPC lands, contentPresent
-// fails closed for every registry-push service, so this path never skips — the
-// safe behavior, at the cost of re-pushing unchanged images (the WDY-1692
-// optimization stays dormant for multi-service, deliberately and visibly, not
-// via a silently-unsatisfiable diff-ID check).
-//
 // Best-effort throughout: any error for a service (or WENDY_PUSH_SKIP=0) just
 // means "don't skip it".
 //
@@ -287,6 +284,12 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 
 	plans := computeServicePlans(cwd, platform, serviceGPUArch(ctx, cwd, services, conn), appCfg, services, buildArgs, sfOpts...)
 	present := deviceContainerNames(ctx, conn)
+	type candidate struct {
+		name string
+		fp   *deployFingerprint
+	}
+	var candidates []candidate
+	allDiffIDs := map[string]struct{}{}
 	for name := range services {
 		plan, planned := plans[name]
 		if !planned {
@@ -294,6 +297,12 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 		}
 		hashes[name] = plan.inputHash
 		dockerfiles[name] = plan.dockerfile
+		if !plan.contentPinned {
+			// A mutable FROM tag must be resolved by a normal build. Presence of
+			// the last deployment's layers is not proof that tag is unchanged.
+			delete(hashes, name)
+			continue
+		}
 
 		fp, ok := loadDeployFingerprint(serviceFingerprintKey(appID, name), deviceKey)
 		if !ok || fp.InputHash != plan.inputHash {
@@ -302,29 +311,50 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 		if !present[strings.ToLower(multiServiceContainerName(appID, name))] {
 			continue
 		}
-		// Container presence is not enough: confirm the device still holds the
-		// image content we pushed. Without this a skip can leave a stale/partial
-		// image running while we report success (WDY-1824).
-		if !contentPresentForService(ctx, conn, fp) {
+		if len(fp.LayerDiffIDs) == 0 {
 			continue
 		}
-		skip[name] = true
+		candidates = append(candidates, candidate{name: name, fp: fp})
+		for _, id := range fp.LayerDiffIDs {
+			allDiffIDs[id] = struct{}{}
+		}
+	}
+
+	// Container presence is not enough: confirm the device still holds the
+	// exact content we prepared. Query every candidate service in one RPC to
+	// avoid making push-skip latency scale with the service count.
+	ids := make([]string, 0, len(allDiffIDs))
+	for id := range allDiffIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	confirmed, ok := devicePresentLayers(ctx, conn, ids)
+	if !ok {
+		return skip, hashes, dockerfiles
+	}
+	for _, candidate := range candidates {
+		allPresent := true
+		for _, id := range candidate.fp.LayerDiffIDs {
+			if !confirmed[id] {
+				allPresent = false
+				break
+			}
+		}
+		if allPresent {
+			skip[candidate.name] = true
+		}
 	}
 	return skip, hashes, dockerfiles
 }
 
 // contentPresentForService reports whether the device is confirmed to still hold
-// the image content recorded for a registry-push service, gating a push-skip
+// the image content recorded for a service, gating a push-skip
 // (WDY-1824).
 //
-// It is fail-closed. The multi-service builder pushes to the device registry,
-// whose layers the diff-ID QueryLayers check cannot see (compressed blobs are
-// keyed by compressed digest, not by uncompressed diff ID). So recorded layer
-// diff IDs are still verified via QueryLayers when present — a future
-// chunk-diff-based multi-service push would record verifiable IDs — but a
-// fingerprint without them (every registry push today) can never be confirmed
-// and returns false. Confirming registry-pushed content needs the device
-// registry-digest pre-check deferred from WDY-1692; see WDY-1824 follow-up.
+// It is fail-closed. The default chunk-preparation path records diff IDs that
+// QueryLayers can verify. Registry-only builds do not expose an equivalent
+// device-verifiable identity yet, so their fingerprints omit diff IDs and this
+// returns false.
 func contentPresentForService(ctx context.Context, conn *grpcclient.AgentConnection, fp *deployFingerprint) bool {
 	if fp == nil {
 		return false
@@ -340,7 +370,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		return err
 	}
 
-	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
@@ -386,9 +416,9 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// to still hold. This is the WDY-1692 optimization (avoid re-pushing unchanged
 	// images — notably the multi-GB GPU base — and the HEAD-check storm re-push
 	// triggers), tightened for WDY-1824 so it never skips onto stale/partial
-	// content. NOTE: the registry-push builder path can't yet prove content
-	// presence, so this currently skips nothing for multi-service; see
-	// planServicePushSkips / contentPresentForService.
+	// content. The default builder now uses the same chunk-preparation path as
+	// Compose and records its layer diff IDs; registry-only builds continue to
+	// fail closed because they do not provide a verifiable content identity.
 	deviceKey := deviceFingerprintKey(versionResp)
 	sfOpts := debugStagefileOptions(opts.debug)
 	skip, hashes, dockerfiles := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, appCfg, services, buildArgs, sfOpts...)
@@ -439,22 +469,12 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	failed, buildErr := buildServicesParallel(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, dockerfiles, opts.maxConcurrency, opts.quietBuild, sfOpts...)
+	failed, preparedContent, buildErr := buildServicesParallelWithContent(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, opts.chunking, skip, dockerfiles, opts.maxConcurrency, opts.quietBuild, sfOpts...)
 	if buildErr != nil {
 		return buildErr
 	}
 
-	// Record fingerprints for the services we actually built+pushed, so the next
-	// run can skip them. Skipped services already have a matching fingerprint;
-	// failed services must not be recorded (their image isn't on the device).
-	for name := range services {
-		if skip[name] || failed[name] != nil {
-			continue
-		}
-		if h, ok := hashes[name]; ok {
-			saveDeployFingerprint(serviceFingerprintKey(appCfg.AppID, name), deviceKey, deployFingerprint{InputHash: h, AppVersion: appCfg.Version})
-		}
-	}
+	recordServiceDeployFingerprints(appCfg.AppID, appCfg.Version, deviceKey, services, skip, failed, hashes, preparedContent)
 
 	// Default (all-or-nothing): any build/push failure aborts the whole group so
 	// no half-deployed group is left behind. --keep-going deploys what built and
@@ -577,6 +597,27 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	return partialErr
 }
 
+// recordServiceDeployFingerprints persists only successful build/preparations.
+// Skipped services retain their already-matching fingerprint; failed services
+// must never record content that may only have been partially transferred.
+func recordServiceDeployFingerprints(appID, appVersion, deviceKey string, services map[string]*appconfig.ServiceConfig, skip map[string]bool, failed map[string]error, hashes map[string]string, preparedContent map[string][]string) {
+	for name := range services {
+		if skip[name] || failed[name] != nil {
+			continue
+		}
+		// Registry-only/fallback builds do not surface device-verifiable diff
+		// IDs. Leave any existing verifiable fingerprint intact instead of
+		// replacing it with one that can never authorize a content check.
+		if h, ok := hashes[name]; ok && len(preparedContent[name]) > 0 {
+			saveDeployFingerprint(serviceFingerprintKey(appID, name), deviceKey, deployFingerprint{
+				InputHash:    h,
+				AppVersion:   appVersion,
+				LayerDiffIDs: preparedContent[name],
+			})
+		}
+	}
+}
+
 // droppedSummary formats the services skipped because a dependency failed, for
 // the partial-deploy notice. Returns "" when nothing was dropped.
 func droppedSummary(dropped map[string]string) string {
@@ -591,11 +632,11 @@ func droppedSummary(dropped map[string]string) string {
 	return fmt.Sprintf(", %d skipped (failed dependency: %s)", len(names), strings.Join(names, ", "))
 }
 
-// buildServicesParallel builds all service images concurrently (up to
-// maxConcurrentBuilds at a time). Services in skip are already on the device with
-// unchanged inputs, so their build+push is skipped (WDY-1692). Progress is shown
-// via a Bubbletea multi-spinner in interactive terminals and via plain log lines
-// otherwise.
+// buildServicesParallelCore builds all service images concurrently (up to
+// maxConcurrentBuilds at a time), invoking build for each one. Services in skip
+// are already on the device with unchanged inputs, so their build+push is
+// skipped (WDY-1692). Progress is shown via a Bubbletea multi-spinner in
+// interactive terminals and via plain log lines otherwise.
 //
 // dockerfiles carries the build file planning already resolved per service, so a
 // Stagefile project is not compiled twice in the same run. It is best-effort:
@@ -603,16 +644,12 @@ func droppedSummary(dropped map[string]string) string {
 // could not plan, so a service missing from the map resolves its own build file
 // here — which is also where that resolution's error belongs, since this is the
 // path that reports per-service failures.
-func buildServicesParallel(
+func buildServicesParallelCore(
 	ctx context.Context,
-	conn *grpcclient.AgentConnection,
-	regPort int,
-	agentOS string,
+	build serviceBuildFn,
 	cwd, appID string,
 	services map[string]*appconfig.ServiceConfig,
-	platform string,
-	buildArgs map[string]string,
-	builder string,
+	gpuArch string,
 	skip map[string]bool,
 	dockerfiles map[string]string,
 	maxConcurrency int,
@@ -627,10 +664,6 @@ func buildServicesParallel(
 		names = append(names, n)
 	}
 	sort.Strings(names)
-
-	// Resolved once for the group: every service deploys to this one device,
-	// so they share its GPU architecture.
-	gpuArch := serviceGPUArch(buildCtx, cwd, services, conn)
 
 	type result struct {
 		name string
@@ -732,7 +765,7 @@ func buildServicesParallel(
 				// Pass the per-service repo as the build's cache key so each concurrent
 				// build gets its own isolated local buildx cache dir (WDY-1689); sharing
 				// one dir corrupts BuildKit's cache-export ingest store under concurrency.
-				err = buildServiceImage(buildCtx, conn, regPort, agentOS, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
+				err = build(buildCtx, contextDir, repo, dockerfile, buildOut, logOutW)
 			}
 			dur := time.Since(start)
 
@@ -804,6 +837,109 @@ func buildServicesParallel(
 		return nil, ctx.Err()
 	}
 	return failed, nil
+}
+
+// buildServicesParallel is retained as the test/build scheduling seam. Normal
+// multi-service runs use buildServicesParallelWithContent so successful chunk
+// preparations can persist their exact image identities.
+func buildServicesParallel(
+	ctx context.Context,
+	conn *grpcclient.AgentConnection,
+	regPort int,
+	agentOS string,
+	cwd, appID string,
+	services map[string]*appconfig.ServiceConfig,
+	platform string,
+	buildArgs map[string]string,
+	builder string,
+	skip map[string]bool,
+	dockerfiles map[string]string,
+	maxConcurrency int,
+	quietBuild bool,
+	sfOpts ...stagefile.Option,
+) (map[string]error, error) {
+	failed, _, err := buildServicesParallelWithContent(ctx, conn, regPort, agentOS, cwd, appID, services, platform, buildArgs, builder, chunkingAuto, skip, dockerfiles, maxConcurrency, quietBuild, sfOpts...)
+	return failed, err
+}
+
+// buildServicesParallelWithContent builds each service using the same
+// OCI-layout/chunk preparation path as Compose and returns the uncompressed
+// layer identities reported by successful preparations. --chunking=off keeps
+// the registry-only path; because it cannot currently report a device-
+// verifiable identity, its content result is deliberately empty and subsequent
+// skip checks fail closed.
+func buildServicesParallelWithContent(
+	ctx context.Context,
+	conn *grpcclient.AgentConnection,
+	regPort int,
+	agentOS string,
+	cwd, appID string,
+	services map[string]*appconfig.ServiceConfig,
+	platform string,
+	buildArgs map[string]string,
+	builder, chunking string,
+	skip map[string]bool,
+	dockerfiles map[string]string,
+	maxConcurrency int,
+	quietBuild bool,
+	sfOpts ...stagefile.Option,
+) (map[string]error, map[string][]string, error) {
+	// Resolved once for the group: every service deploys to this one device,
+	// so they share its GPU architecture.
+	gpuArch := serviceGPUArch(ctx, cwd, services, conn)
+
+	content := map[string][]string{}
+	var contentMu sync.Mutex
+	build := func(ctx context.Context, contextDir, repo, dockerfile string, buildOut, logOut io.Writer) error {
+		buildImage := buildServiceImage
+		if chunking == chunkingOff {
+			buildImage = buildAndPushImageForAgent
+		} else if chunking == chunkingForce {
+			buildImage = buildAndPrepareComposeImageForAgentForce
+		}
+		reportingOut := &imageBuildProgressWriter{
+			Writer: buildOut,
+			reportContent: func(ids []string) {
+				contentMu.Lock()
+				content[repo] = ids
+				contentMu.Unlock()
+			},
+		}
+		return buildImage(ctx, conn, regPort, agentOS, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, reportingOut, logOut)
+	}
+
+	failed, err := buildServicesParallelCore(withComposePrepareLimiter(ctx), build, cwd, appID, services, gpuArch, skip, dockerfiles, maxConcurrency, quietBuild, sfOpts...)
+	if err != nil {
+		return failed, nil, err
+	}
+	byService := make(map[string][]string, len(content))
+	for name := range services {
+		if failed[name] != nil || skip[name] {
+			continue
+		}
+		repo := fmt.Sprintf("%s-%s", strings.ToLower(appID), strings.ToLower(name))
+		if ids := content[repo]; len(ids) > 0 {
+			byService[name] = append([]string(nil), ids...)
+		}
+	}
+	return failed, byService, nil
+}
+
+// buildServicesLocal builds every service image into the local image store
+// (no device, no registry push) — the `wendy build` flavor over
+// buildServicesParallelCore.
+func buildServicesLocal(ctx context.Context, cwd, appID string, services map[string]*appconfig.ServiceConfig,
+	platform, builder, gpuArch string, maxConcurrency int, quietBuild bool,
+	sfOpts ...stagefile.Option) (map[string]error, error) {
+	build := func(ctx context.Context, contextDir, repo, dockerfile string, buildOut, logOut io.Writer) error {
+		return buildLocalServiceImage(ctx, builder, contextDir, repo+":latest", platform, dockerfile, buildOut, logOut)
+	}
+	// skip=nil: `wendy build` builds every selected service every invocation —
+	// push-skip fingerprinting is a device-deploy optimization and does not
+	// apply here. dockerfiles=nil: the core's per-service planResolveDockerfile
+	// fallback resolves each context, the same non-interactive
+	// Stagefile>Dockerfile rules `wendy run` uses.
+	return buildServicesParallelCore(ctx, build, cwd, appID, services, gpuArch, nil, nil, maxConcurrency, quietBuild, sfOpts...)
 }
 
 // sortedServiceErrorKeys returns the service names in failed, sorted, for stable

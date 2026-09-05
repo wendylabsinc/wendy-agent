@@ -282,6 +282,22 @@ func WendyLiteFirmwareID(board string) (string, error) {
 	return "", fmt.Errorf("board %q not found in the Wendy Lite catalog", board)
 }
 
+// WendyLiteTargetForBoard returns the ESP32 target associated with a catalog
+// board. Keeping this lookup in the catalog layer ensures firmware selection
+// and the pre-flash chip-model check are derived from the same board record.
+func WendyLiteTargetForBoard(board string) (string, error) {
+	boards, err := wendyLiteCatalogBoards()
+	if err != nil {
+		return "", err
+	}
+	for _, b := range boards {
+		if b.Name == board {
+			return b.Target, nil
+		}
+	}
+	return "", fmt.Errorf("board %q not found in the Wendy Lite catalog", board)
+}
+
 // wendyLiteBoardsWithFirmware filters boards down to those with a published
 // firmware version in the main manifest's Firmware map, keyed by firmware ID.
 // nightly selects which channel must have a build, matching how Linux

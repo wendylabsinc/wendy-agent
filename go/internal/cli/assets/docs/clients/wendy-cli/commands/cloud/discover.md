@@ -106,12 +106,6 @@ wendy cloud discover --json
 wendy cloud discover | cat
 ```
 
-## How it works
+## See also
 
-1. Reads the stored mTLS auth configuration (`~/.wendy/config.json`).
-2. Constructs a `ListAssetsRequest` scoped to the authenticated organization with `IsComputeDevice = true`.
-3. Unless `--all` is passed, sets `OnlineOnly = true` on the request so the server only streams back assets with an active broker presence.
-4. Receives assets over a **server-streaming gRPC** call (`AssetService.ListAssets`) and collects them until the stream closes.
-5. In TUI mode, concurrently fetches the agent version for each device through the broker tunnel (up to 5 parallel connections) and refreshes the full list every 10 seconds.
-
-See also [`wendy cloud tunnel`](./tunnel.md) for opening a tunnel to a discovered device.
+- [`wendy cloud tunnel`](./tunnel.md) — open a tunnel to a discovered device.

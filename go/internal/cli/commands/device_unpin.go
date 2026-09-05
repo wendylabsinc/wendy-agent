@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
@@ -93,6 +94,14 @@ func newDeviceUnpinCmd() *cobra.Command {
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
+
+			// A prepared session broker may retain an authenticated transport
+			// to exactly the device whose trust was just revoked. Unpublish
+			// them all: brokers are a per-connect optimization and rebuild on
+			// the next dial, so collateral invalidation of other devices'
+			// brokers costs one handshake each, while a stale one surviving an
+			// unpin would outlive the user's trust decision.
+			_ = sessionbroker.InvalidateAll()
 
 			printClearedPins(cmd.OutOrStdout(), cleared)
 			fmt.Fprintf(cmd.OutOrStdout(), "Unpinned %q. The next connection to it will record a fresh identity.\n", target)

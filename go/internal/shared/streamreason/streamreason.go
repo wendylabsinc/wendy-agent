@@ -15,6 +15,10 @@ const (
 	CameraInUse           = "CAMERA_IN_USE"
 	IPCameraNoCredentials = "IP_CAMERA_NO_CREDENTIALS"
 	TegraFirmwareMismatch = "TEGRA_FIRMWARE_MISMATCH"
+	// RawUnavailable: StreamVideoRequest.raw was set for a camera that has no
+	// uncompressed frames to give (MJPEG or native H.264 capture, a network
+	// camera, one shared through PipeWire). The message names the cause.
+	RawUnavailable = "RAW_UNAVAILABLE"
 )
 
 // Domain scopes the reasons to us, so a client can tell ours from a third party's.
