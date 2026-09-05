@@ -4,6 +4,11 @@
 [![Docs](https://img.shields.io/badge/Docs-Available-468900?logo=discord&logoColor=white)](https://docs.wendy.dev)
 [![Blog](https://img.shields.io/badge/Blog-893366)](https://wendy.dev/blog)
 
+Wendy brings Software Infrastructure to the **physical world**.
+1. Deploy Rapidly
+2. Scale Globally
+3. Manage Remotely
+
 ### Deploy in Seconds
 
 [![Unitree G1 and Go2](https://img.shields.io/badge/Unitree-G1%20&amp;%20Go2-0076B9?logo=&logoColor=white)](https://docs.wendy.dev/latest/installation/wendy-agent-unitree-g1/)
@@ -14,8 +19,11 @@
 [![ESP32 Microcontrollers](https://img.shields.io/badge/ESP32-Microcontrollers-333333?logo=espressif&logoColor=white)](https://docs.wendy.dev/latest/installation/wendy-lite-esp32/)
 
 Deploy code in less than a second from any machine to any Robot or Edge device.
+- Supports any Linux Machine
+- ESP32 Microcontrollers
+- Headless macOS
 
-You don't need any peripherals. Just your existing laptop and your target device.
+You don't need any peripherals. Just your existing development machine and your target device.
 
 ### Any Developer Machine
 

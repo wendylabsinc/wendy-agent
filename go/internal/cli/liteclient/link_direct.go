@@ -55,28 +55,37 @@ func serialHandshake(port serialHandshakePort) error {
 		return fmt.Errorf("serial handshake: set timeout: %w", err)
 	}
 
-	// Send the sentinel immediately. Waiting for a quiet read timeout before
-	// the first send makes reconnecting after a physical reboot fail whenever
-	// boot or auto-started app logs keep the serial stream continuously
-	// readable for the entire 3-second handshake budget.
-	var randBytes [16]byte
-	if _, err := rand.Read(randBytes[:]); err != nil {
-		return fmt.Errorf("serial handshake: generate sentinel: %w", err)
-	}
-	sentinel := hex.EncodeToString(randBytes[:])
+	// Every send carries a fresh sentinel, and only the most recent one is
+	// matched below. The sentinel is a stream position marker, not a liveness
+	// probe: because the echo is FIFO, seeing the *latest* one come back proves
+	// nothing the host wrote earlier is still in flight, which is the
+	// precondition for switching to WendyCom mode. Repeating one sentinel would
+	// only prove that some send was echoed, leaving the echoes of the later
+	// sends queued for the frame parser, which rejects them as a bad magic byte.
+	var sentinel string
 	sendSentinel := func() error {
+		var randBytes [16]byte
+		if _, err := rand.Read(randBytes[:]); err != nil {
+			return fmt.Errorf("serial handshake: generate sentinel: %w", err)
+		}
+		sentinel = hex.EncodeToString(randBytes[:])
 		if _, err := port.Write([]byte(strings.Repeat(" ", 16) + sentinel)); err != nil {
 			return fmt.Errorf("serial handshake: send sentinel: %w", err)
 		}
 		return nil
 	}
+	// Send immediately. Waiting for a quiet read timeout before the first send
+	// makes reconnecting after a physical reboot fail whenever boot or
+	// auto-started app logs keep the serial stream continuously readable for
+	// the entire 3-second handshake budget.
 	if err := sendSentinel(); err != nil {
 		return err
 	}
 	// The mode switch may be applied asynchronously by the device after the
-	// escape command is consumed. Keep sending while draining output so at
-	// least one sentinel lands after that transition even if Read never times
-	// out because boot logs are continuous.
+	// escape command is consumed, and console mode swallows host input without
+	// echoing it. Keep sending while draining output so at least one sentinel
+	// lands after that transition even if Read never times out because boot
+	// logs are continuous.
 	nextSentinel := time.Now().Add(100 * time.Millisecond)
 
 	window := make([]byte, 0, 32)
@@ -94,8 +103,9 @@ func serialHandshake(port serialHandshakePort) error {
 			return fmt.Errorf("serial handshake: read: %w", err)
 		}
 		if n == 0 {
-			// The echo may have been lost while the device was switching modes;
-			// resend the same sentinel whenever the receive buffer goes quiet.
+			// The echo may have been lost while the device was switching modes,
+			// or to a dropped byte (USB Serial JTAG has no flow control);
+			// resend whenever the receive buffer goes quiet.
 			window = window[:0]
 			if err := sendSentinel(); err != nil {
 				return err
@@ -110,7 +120,7 @@ func serialHandshake(port serialHandshakePort) error {
 				copy(window, window[1:])
 				window[31] = oneByte[0]
 			}
-			if sentinel != "" && len(window) == 32 && string(window) == sentinel {
+			if len(window) == 32 && string(window) == sentinel {
 				if err := port.SetReadTimeout(serial.NoTimeout); err != nil {
 					return fmt.Errorf("serial handshake: clear timeout: %w", err)
 				}

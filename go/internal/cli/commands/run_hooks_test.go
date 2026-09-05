@@ -37,6 +37,58 @@ func (f *fakeAgentVersionClient) GetAgentVersion(_ context.Context, _ *agentpb.G
 	return f.resp, f.err
 }
 
+func TestAgentVersionForRunReusesConnectionProbe(t *testing.T) {
+	client := &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{Version: "unexpected-rpc"}}
+	conn := &grpcclient.AgentConnection{AgentService: client}
+	want := &agentpb.GetAgentVersionResponse{Version: "connect-probe", Os: "linux"}
+	conn.CacheAgentVersion(want)
+
+	got, err := agentVersionForRun(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("agentVersionForRun returned %p, want cached response %p", got, want)
+	}
+	if client.calls != 0 {
+		t.Fatalf("GetAgentVersion calls = %d, want 0", client.calls)
+	}
+}
+
+func TestAgentVersionForRunCachesFirstRPC(t *testing.T) {
+	want := &agentpb.GetAgentVersionResponse{Version: "queried", Os: "linux"}
+	client := &fakeAgentVersionClient{resp: want}
+	conn := &grpcclient.AgentConnection{AgentService: client}
+
+	for range 2 {
+		got, err := agentVersionForRun(context.Background(), conn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("agentVersionForRun returned %p, want %p", got, want)
+		}
+	}
+	if client.calls != 1 {
+		t.Fatalf("GetAgentVersion calls = %d, want 1", client.calls)
+	}
+}
+
+func TestAgentVersionForRunHonorsCanceledContextBeforeCache(t *testing.T) {
+	client := &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{Version: "unexpected-rpc"}}
+	conn := &grpcclient.AgentConnection{AgentService: client}
+	conn.CacheAgentVersion(&agentpb.GetAgentVersionResponse{Version: "cached"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := agentVersionForRun(ctx, conn); !errors.Is(err, context.Canceled) {
+		t.Fatalf("agentVersionForRun error = %v, want context.Canceled", err)
+	}
+	if client.calls != 0 {
+		t.Fatalf("GetAgentVersion calls = %d, want 0", client.calls)
+	}
+}
+
 // neverReconnect is a non-nil Reconnect stub used to mark an AgentConnection
 // as a cloud connection (conn.Reconnect != nil is the cloud detection
 // signal — see resolveHookHost). It is never actually invoked by these

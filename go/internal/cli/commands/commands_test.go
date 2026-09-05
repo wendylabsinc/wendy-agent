@@ -163,6 +163,16 @@ func TestRunResolveOptions_YesIsNonInteractive(t *testing.T) {
 	}
 }
 
+func TestRunResolveOptions_WatchDisablesCrossProcessBroker(t *testing.T) {
+	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
+	for _, o := range runResolveOptions(runOptions{watchState: &watchDeployState{}}) {
+		o(&cfg)
+	}
+	if !cfg.disableSessionBroker {
+		t.Error("watch should keep its direct long-lived connection instead of using the invocation broker")
+	}
+}
+
 // TestRunResolveOptions_NoBluetooth verifies `wendy run` never opts into BLE
 // discovery: it cannot deploy over BLE, so the picker must not scan for or list
 // BLE devices the user would only be told are unusable.
@@ -287,6 +297,12 @@ func TestNewBuildCmd(t *testing.T) {
 	}
 	if cmd.Flags().Lookup("builder") == nil {
 		t.Error("missing flag \"builder\"")
+	}
+	if cmd.Flags().Lookup("service") == nil {
+		t.Error("missing flag \"service\"")
+	}
+	if cmd.Flags().Lookup("max-concurrency") == nil {
+		t.Error("missing flag \"max-concurrency\"")
 	}
 }
 

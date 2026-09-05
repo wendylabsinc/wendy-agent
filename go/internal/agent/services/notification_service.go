@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	systempb "github.com/wendylabsinc/wendy/go/proto/gen/systempb"
 )
@@ -574,7 +575,7 @@ func (s *CloudNotificationSender) connectionFor(
 	// SECURITY: The enrollment chain is controlled by Wendy Cloud and is also
 	// used by the existing telemetry flusher. Adding it supports direct local
 	// broker deployments whose server certificate uses the Wendy development CA.
-	if chainPEM != "" && !roots.AppendCertsFromPEM([]byte(chainPEM)) {
+	if chainPEM != "" && certs.AppendChainToPool(roots, chainPEM) == 0 {
 		return nil, fmt.Errorf("parse Wendy enrollment CA chain")
 	}
 	connection, err := grpc.NewClient(

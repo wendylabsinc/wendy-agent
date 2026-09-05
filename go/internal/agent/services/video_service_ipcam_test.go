@@ -64,6 +64,15 @@ func (f *fakeLoopback) EnsureNodes(context.Context) error {
 	return f.ensureNodesErr
 }
 
+func (f *fakeLoopback) EnsureNode(_ context.Context, id uint32, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ensureNodesErr == nil {
+		f.nodePaths[id] = fmt.Sprintf("/dev/video%d", id)
+	}
+	return f.ensureNodesErr
+}
+
 func (f *fakeLoopback) NodePath(camID uint32) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

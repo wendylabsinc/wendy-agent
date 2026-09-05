@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -134,7 +136,12 @@ func (s *MeshService) meshDisabled() bool {
 // relay mirrors TunnelBrokerClient.relay (tunnel_broker_client.go:251) with
 // MeshDial framing.
 func (s *MeshService) relay(stream agentpbv2.WendyMeshService_MeshDialServer, conn net.Conn) error {
-	errCh := make(chan error, 2)
+	// true means a hard transport failure; false is a graceful half-close. A
+	// hard failure must return the handler immediately so gRPC cancels the
+	// stream context, while closing conn unblocks the opposite local copy loop.
+	// Waiting for two graceful completions is still required to avoid truncating
+	// a response after one side half-closes.
+	done := make(chan bool, 2)
 
 	// Watcher: force-unblock a parked conn.Read when the stream dies. gRPC
 	// cancels the stream context both when the client's stream/connection
@@ -163,7 +170,7 @@ func (s *MeshService) relay(stream agentpbv2.WendyMeshService_MeshDialServer, co
 				if tc, ok := conn.(*net.TCPConn); ok {
 					_ = tc.CloseWrite()
 				}
-				errCh <- nil
+				done <- !errors.Is(err, io.EOF)
 				return
 			}
 			d := msg.GetData()
@@ -172,7 +179,8 @@ func (s *MeshService) relay(stream agentpbv2.WendyMeshService_MeshDialServer, co
 			}
 			if len(d.Payload) > 0 {
 				if _, err := conn.Write(d.Payload); err != nil {
-					errCh <- nil
+					_ = conn.Close()
+					done <- true
 					return
 				}
 			}
@@ -197,19 +205,30 @@ func (s *MeshService) relay(stream agentpbv2.WendyMeshService_MeshDialServer, co
 				payload := make([]byte, n)
 				copy(payload, buf[:n])
 				if sendErr := stream.Send(&agentpbv2.MeshDialData{Payload: payload}); sendErr != nil {
-					errCh <- nil
+					_ = conn.Close()
+					done <- true
 					return
 				}
 			}
 			if err != nil {
-				_ = stream.Send(&agentpbv2.MeshDialData{HalfClose: true})
-				errCh <- nil
+				hard := !errors.Is(err, io.EOF)
+				if !hard {
+					hard = stream.Send(&agentpbv2.MeshDialData{HalfClose: true}) != nil
+				}
+				if hard {
+					_ = conn.Close()
+				}
+				done <- hard
 				return
 			}
 		}
 	}()
 
-	<-errCh
-	<-errCh
+	for completed := 0; completed < 2; completed++ {
+		if hard := <-done; hard {
+			_ = conn.Close()
+			return nil
+		}
+	}
 	return nil
 }

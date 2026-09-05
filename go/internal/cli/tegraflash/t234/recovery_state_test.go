@@ -4,8 +4,11 @@ package t234
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -243,5 +246,230 @@ func TestAdoptGadgetRepinsPortAndSession(t *testing.T) {
 	s.adoptGadget(UMSDisk{DevPath: "/dev/disk6", Vendor: FlashpkgVendor, PortPath: "1-2", Serial: "f3885343"})
 	if s.PortPath != "1-2" || s.Session != "f3885343" {
 		t.Fatalf("adopted state: port=%q session=%q", s.PortPath, s.Session)
+	}
+}
+
+func withFastReattachWait(t *testing.T) {
+	t.Helper()
+	previous := identityReattachWait
+	identityReattachWait = 5 * time.Millisecond
+	t.Cleanup(func() { identityReattachWait = previous })
+}
+
+func withFastIdentityRetry(t *testing.T) {
+	t.Helper()
+	previous := identityRetryDelay
+	identityRetryDelay = time.Millisecond
+	t.Cleanup(func() { identityRetryDelay = previous })
+}
+
+// identityExpectation matches the flashpkg-identity-1k fixture's device.json.
+var identityExpectation = IdentityExpectation{ModuleID: "3767", ModuleSKU: "0005", CarrierID: "3768", CarrierSKU: "0000"}
+
+// A macOS DiskArbitration eject (e.g. the "disk not readable" dialog's default
+// Eject button) can detach the flashpkg LUN between enumeration and the
+// identity read; the LUN then re-attaches under a new disk number (seen live
+// as ENXIO on an Orin Nano, WDY-2621). The identity read must re-resolve the
+// LUN by port/session and retry instead of aborting the flash.
+func TestVerifyDeviceIdentityRetriesAfterLUNDetach(t *testing.T) {
+	withFastUMSPoll(t)
+	withFastIdentityRetry(t)
+	fixture, err := io.ReadAll(openFixture(t, "flashpkg-identity-1k.ext4.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withUMSScan(t, func() ([]UMSDisk, error) {
+		return []UMSDisk{{DevPath: "/dev/disk9", RawPath: "/dev/rdisk9", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678"}}, nil
+	})
+	dumps := 0
+	stage := &Stage2{
+		PortPath: "1-3", ExpectedIdentity: identityExpectation, Out: io.Discard, TempDir: t.TempDir(),
+		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
+			if req.Writer.DumpTo == "" {
+				return nil
+			}
+			dumps++
+			if dumps == 1 {
+				return errors.New("reading /dev/rdisk8: read /dev/rdisk8: device not configured")
+			}
+			if req.Writer.Device != "/dev/rdisk9" {
+				t.Errorf("retry read %s, want the re-resolved /dev/rdisk9", req.Writer.Device)
+			}
+			return os.WriteFile(req.Writer.DumpTo, fixture, 0o644)
+		},
+	}
+	disk := UMSDisk{DevPath: "/dev/disk8", RawPath: "/dev/rdisk8", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678"}
+	got, err := stage.verifyDeviceIdentity(context.Background(), disk)
+	if err != nil {
+		t.Fatalf("verifyDeviceIdentity = %v", err)
+	}
+	if got.RawPath != "/dev/rdisk9" || dumps != 2 {
+		t.Fatalf("re-resolved disk = %+v after %d dumps", got, dumps)
+	}
+}
+
+func TestVerifyDeviceIdentityReportsDetachWhenLUNGone(t *testing.T) {
+	withFastUMSPoll(t)
+	withFastReattachWait(t)
+	withFastIdentityRetry(t)
+	withUMSScan(t, func() ([]UMSDisk, error) { return nil, nil })
+	stage := &Stage2{
+		PortPath: "1-3", ExpectedIdentity: identityExpectation, Out: io.Discard, TempDir: t.TempDir(),
+		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
+			return errors.New("reading /dev/rdisk8: read /dev/rdisk8: device not configured")
+		},
+	}
+	disk := UMSDisk{DevPath: "/dev/disk8", RawPath: "/dev/rdisk8", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678"}
+	_, err := stage.verifyDeviceIdentity(context.Background(), disk)
+	if err == nil || !strings.Contains(err.Error(), "device not configured") || !strings.Contains(err.Error(), "detached") {
+		t.Fatalf("detach error = %v", err)
+	}
+	// The re-scan's own verdict must survive: it distinguishes "never came
+	// back" (timed out) from a fail-closed correlation refusal.
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("detach error hides the re-scan failure: %v", err)
+	}
+}
+
+// SendFlashPackage size-checks the LUN it enumerated; a re-attached LUN must
+// pass the same check rather than slip through to a short read.
+func TestVerifyDeviceIdentityRejectsUndersizedReattachedLUN(t *testing.T) {
+	withFastUMSPoll(t)
+	withFastIdentityRetry(t)
+	withUMSScan(t, func() ([]UMSDisk, error) {
+		return []UMSDisk{{DevPath: "/dev/disk9", RawPath: "/dev/rdisk9", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678", SizeBytes: flashpkgSize / 2}}, nil
+	})
+	stage := &Stage2{
+		PortPath: "1-3", ExpectedIdentity: identityExpectation, Out: io.Discard, TempDir: t.TempDir(),
+		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
+			return errors.New("reading /dev/rdisk8: read /dev/rdisk8: device not configured")
+		},
+	}
+	disk := UMSDisk{DevPath: "/dev/disk8", RawPath: "/dev/rdisk8", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678", SizeBytes: flashpkgSize}
+	_, err := stage.verifyDeviceIdentity(context.Background(), disk)
+	if err == nil || !strings.Contains(err.Error(), "smaller") {
+		t.Fatalf("undersized re-attach error = %v", err)
+	}
+}
+
+// The identity read is the last non-destructive step, and unmounting first
+// gains nothing (the LUN carries no host-mountable filesystem): read the
+// identity before touching the disk, and only unmount ahead of the write.
+func TestSendFlashPackageVerifiesIdentityBeforeUnmount(t *testing.T) {
+	withFastUMSPoll(t)
+	fixture, err := io.ReadAll(openFixture(t, "flashpkg-identity-1k.ext4.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(t.TempDir(), "flashpkg.ext4")
+	if err := os.WriteFile(pkg, fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var ops []string
+	ejected := false
+	withUMSScan(t, func() ([]UMSDisk, error) {
+		if ejected {
+			return nil, nil
+		}
+		return []UMSDisk{{DevPath: "/dev/disk8", RawPath: "/dev/rdisk8", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678", SizeBytes: flashpkgSize}}, nil
+	})
+	stage := &Stage2{
+		FlashPackagePath: pkg, PortPath: "1-3", ExpectedIdentity: identityExpectation, Out: io.Discard, TempDir: t.TempDir(),
+		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
+			switch {
+			case req.Unmount:
+				ops = append(ops, "unmount")
+			case req.Eject:
+				ops = append(ops, "eject")
+				ejected = true
+			case req.Writer.DumpTo != "":
+				ops = append(ops, "dump")
+				return os.WriteFile(req.Writer.DumpTo, fixture, 0o644)
+			case req.Writer.Blob != "":
+				ops = append(ops, "write")
+			}
+			return nil
+		},
+	}
+	if err := stage.SendFlashPackage(context.Background()); err != nil {
+		t.Fatalf("SendFlashPackage = %v", err)
+	}
+	if want := []string{"dump", "unmount", "write", "dump", "eject"}; !slices.Equal(ops, want) {
+		t.Fatalf("helper ops = %v, want %v", ops, want)
+	}
+}
+
+// Exhausting the read attempts while the LUN stays visible must surface the
+// read error itself, after exactly identityReadAttempts dumps.
+func TestVerifyDeviceIdentityGivesUpAfterBoundedAttempts(t *testing.T) {
+	withFastUMSPoll(t)
+	withFastIdentityRetry(t)
+	disk := UMSDisk{DevPath: "/dev/disk8", RawPath: "/dev/rdisk8", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678"}
+	withUMSScan(t, func() ([]UMSDisk, error) { return []UMSDisk{disk}, nil })
+	dumps := 0
+	stage := &Stage2{
+		PortPath: "1-3", ExpectedIdentity: identityExpectation, Out: io.Discard, TempDir: t.TempDir(),
+		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
+			dumps++
+			return errors.New("input/output error")
+		},
+	}
+	_, err := stage.verifyDeviceIdentity(context.Background(), disk)
+	if err == nil || !strings.Contains(err.Error(), "input/output error") || strings.Contains(err.Error(), "detached") {
+		t.Fatalf("exhaustion error = %v", err)
+	}
+	if dumps != 3 {
+		t.Fatalf("dump attempts = %d, want 3", dumps)
+	}
+}
+
+// A same-node transient (raw reads failing while the LUN stays listed) can
+// clear within a second; back-to-back retries would exhaust every attempt
+// inside the blip. Each retry must wait identityRetryDelay before re-scanning.
+func TestVerifyDeviceIdentityPacesRetries(t *testing.T) {
+	withFastUMSPoll(t)
+	previous := identityRetryDelay
+	identityRetryDelay = 50 * time.Millisecond
+	t.Cleanup(func() { identityRetryDelay = previous })
+	fixture, err := io.ReadAll(openFixture(t, "flashpkg-identity-1k.ext4.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk := UMSDisk{DevPath: "/dev/disk8", RawPath: "/dev/rdisk8", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678", SizeBytes: flashpkgSize}
+	withUMSScan(t, func() ([]UMSDisk, error) { return []UMSDisk{disk}, nil })
+	dumps := 0
+	stage := &Stage2{
+		PortPath: "1-3", ExpectedIdentity: identityExpectation, Out: io.Discard, TempDir: t.TempDir(),
+		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
+			dumps++
+			if dumps == 1 {
+				return errors.New("reading /dev/rdisk8: read /dev/rdisk8: device not configured")
+			}
+			return os.WriteFile(req.Writer.DumpTo, fixture, 0o644)
+		},
+	}
+	start := time.Now()
+	if _, err := stage.verifyDeviceIdentity(context.Background(), disk); err != nil {
+		t.Fatalf("verifyDeviceIdentity = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+		t.Fatalf("retry after %v, want at least the %v pacing delay", elapsed, 50*time.Millisecond)
+	}
+}
+
+func TestVerifyDeviceIdentityReturnsCancellationNotDetach(t *testing.T) {
+	withFastUMSPoll(t)
+	withUMSScan(t, func() ([]UMSDisk, error) { return nil, nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	stage := &Stage2{
+		PortPath: "1-3", ExpectedIdentity: identityExpectation, Out: io.Discard, TempDir: t.TempDir(),
+		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
+			cancel()
+			return errors.New("read interrupted")
+		},
+	}
+	disk := UMSDisk{DevPath: "/dev/disk8", RawPath: "/dev/rdisk8", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678"}
+	if _, err := stage.verifyDeviceIdentity(ctx, disk); err != context.Canceled {
+		t.Fatalf("cancellation error = %v", err)
 	}
 }

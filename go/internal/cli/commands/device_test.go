@@ -137,7 +137,7 @@ func TestMaybeCheckOSUpdateSkips(t *testing.T) {
 			// backend do reconnect to re-read the version, so they're not covered
 			// here.) A nil connection is safe because the gate returns before it
 			// is used.
-			outcome, err := maybeCheckOSUpdate(context.Background(), tc.version, nil, false, false, "")
+			outcome, err := maybeCheckOSUpdate(context.Background(), tc.version, nil, false, false, "", 0)
 			if err != nil {
 				t.Fatalf("maybeCheckOSUpdate() error = %v, want nil", err)
 			}

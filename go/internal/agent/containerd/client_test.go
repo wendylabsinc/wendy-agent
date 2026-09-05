@@ -1440,10 +1440,18 @@ func TestStartContainerRejectsStartWhileAppStopping(t *testing.T) {
 		namespace:   "default",
 		appStopping: map[string]bool{"com.example.app": true},
 	}
-	_, err := c.StartContainer(context.Background(), "com.example.app", "", nil)
-	if !errors.Is(err, errAppStopping) {
-		t.Fatalf("StartContainer error = %v; want errAppStopping", err)
-	}
+	t.Run("without stdin", func(t *testing.T) {
+		_, err := c.StartContainer(context.Background(), "com.example.app", "", nil)
+		if !errors.Is(err, errAppStopping) {
+			t.Fatalf("StartContainer error = %v; want errAppStopping", err)
+		}
+	})
+	t.Run("with stdin", func(t *testing.T) {
+		_, err := c.StartContainerWithStdin(context.Background(), "com.example.app", strings.NewReader("input"), "", nil)
+		if !errors.Is(err, errAppStopping) {
+			t.Fatalf("StartContainerWithStdin error = %v; want errAppStopping", err)
+		}
+	})
 }
 
 // TestSuppressRestartsDelegatesToMonitor verifies suppressRestarts forwards
