@@ -25,7 +25,7 @@ connection.
     mTLS session.
   </Card>
   <Card icon={<Server />} title="Enroll devices">
-    Provision a device with a cloud identity so it appears in your fleet.
+    A device enrolls with the Wendy PKI and then appears in your fleet.
   </Card>
   <Card icon={<Radar />} title="Discover your fleet">
     List which devices are online, their hardware type, and the agent version
@@ -55,18 +55,16 @@ wendy cloud login
 
 ## Enrolling Devices
 
-A device joins your fleet by enrolling: the CLI mints an enrollment token from
-your session and provisions the connected device with its own mTLS certificate.
-After enrollment the device connects to the cloud broker on its own and shows up
-in `wendy cloud discover`.
+A device joins your fleet by obtaining its own certificate from **pki-core**, the
+Wendy PKI, which it talks to directly: ACME on most hardware, EST on constrained
+devices. pki-core stamps the device's identity into the certificate itself.
 
-```sh
-# Run while the new device is connected over USB-C
-wendy cloud enroll-device --name shop-floor-01
-```
+Cloud is not in that path. It never issues a device certificate — it recognises
+the identity pki-core already stamped, and authorizes what the device is allowed
+to do with it. Once the device holds its certificate it dials the cloud broker on
+its own and shows up in `wendy cloud discover`.
 
-The device's certificate is what the cloud uses to authenticate and authorize it
-— see [Security](/docs/security) for the trust model.
+See [Security](/docs/security) for the trust model.
 
 ## Discovering Your Fleet
 
@@ -127,7 +125,8 @@ for device selection and flag details.
 ## How It Works
 
 1. You authenticate once; the CLI stores an mTLS session for your organization.
-2. Each device enrolls and receives its own client certificate.
+2. Each device enrolls with pki-core over ACME or EST and receives its own
+   certificate, with its identity stamped by the PKI rather than by cloud.
 3. Devices dial out to the cloud **broker** and keep a connection open — no
    inbound ports or static IPs required.
 4. `wendy cloud` commands reach a device by name through that broker tunnel,

@@ -2,8 +2,7 @@
 > point for authenticating with Wendy Cloud. This page documents
 > `wendy auth login`, which behaves identically and is kept for backward
 > compatibility but is no longer listed in the top-level help. The advanced
-> session commands (`use`, `default`, `refresh-certs`) remain under
-> `wendy auth`.
+> session commands (`use`, `default`) remain under `wendy auth`.
 
 For the new Cloud API authentication flow, provide your email address:
 
@@ -17,9 +16,7 @@ The OAuth client is managed through the wendy-auth dashboard like any other inte
 
 Use `--auth`, `--cloud`, `--cloud-grpc`, and `--resource` to target another environment. `--pki-identity-endpoint` and `--pki-resource` override pki-core's exact public CSR endpoint and audience. `--issuer` accepts a complete realm issuer and skips email-based realm discovery.
 
-The stored operator certificate also signs privileged Cloud mutations. For each such RPC, the CLI creates a fresh JCS request descriptor, signs it with the CSR key, and sends the resulting ES256 JWS in `x-wendy-request-signature`; the private key never leaves the machine. The certificate also authorizes broker and direct-device operations. Without `--email` or `--issuer`, the command continues to use the legacy cloud-dashboard enrollment callback.
-
-The legacy dashboard callback also prints a QR code. You can scan it with the **Wendy iOS app** to authenticate on your phone instead of the local browser.
+The stored operator certificate also signs privileged Cloud mutations. For each such RPC, the CLI creates a fresh JCS request descriptor, signs it with the CSR key, and sends the resulting ES256 JWS in `x-wendy-request-signature`; the private key never leaves the machine. The certificate also authorizes broker and direct-device operations.
 
 ## Multiple auth sessions
 
