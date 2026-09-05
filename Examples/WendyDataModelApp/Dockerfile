@@ -26,18 +26,6 @@ WORKDIR /export
 # opset 12 keeps the graph loadable by every onnxruntime this app targets.
 RUN yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12
 
-# The sensor client speaks gRPC to the app-private sensor socket, so it needs
-# stubs for wendy.agent.apps.v1.SensorService. They are generated here and
-# copied in, keeping grpcio-tools out of the runtime image. proto/ holds a copy
-# of the canonical Proto/wendy/agent/apps/v1/sensor_service.proto; a Go test
-# (TestExampleSensorProtoMatchesCanonical) fails if the two ever drift.
-FROM python:3.11-slim-bookworm AS protos
-RUN pip install --no-cache-dir grpcio-tools
-WORKDIR /gen
-COPY proto ./proto
-RUN python3 -m grpc_tools.protoc -Iproto --python_out=. --grpc_python_out=. \
-        proto/wendy/agent/apps/v1/sensor_service.proto \
-    && find wendy -type d -exec touch {}/__init__.py \;
 
 FROM python:3.11-slim-bookworm
 RUN apt-get update \
@@ -55,8 +43,7 @@ RUN apt-get update \
 RUN pip install --no-cache-dir onnxruntime opencv-python-headless "numpy<3" grpcio "av==14.2.0"
 WORKDIR /app
 COPY --from=export /export/yolov8n.onnx ./yolov8n.onnx
-COPY --from=protos /gen/wendy ./wendy
-COPY app.py wendydata.py wendysensors.py ./
+COPY app.py wendydata.py wendyframes.py ./
 ENV PYTHONUNBUFFERED=1 \
     WENDY_MODEL_VERSION=8.3.63
 CMD ["python3", "app.py"]
