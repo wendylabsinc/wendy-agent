@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -58,6 +59,11 @@ const (
 type renewUnavailableError struct {
 	reason string
 	detail string
+
+	// needsFreshCert marks the refusals a renewal can never recover from — the
+	// lineage is gone, spent, or was never pki-core's — for which the remedy is
+	// a newly minted certificate rather than another renewal attempt.
+	needsFreshCert bool
 }
 
 func (e renewUnavailableError) Error() string {
@@ -70,28 +76,58 @@ func (e renewUnavailableError) Error() string {
 var (
 	// errNoRenewEndpoint is not a failure: nothing is configured to renew
 	// against, so the pre-flight has nothing to offer and stays silent.
-	errNoRenewEndpoint = errors.New("no pki-core renew endpoint configured")
-	errCertExpired     = renewUnavailableError{reason: "your certificate has expired"}
+	errNoRenewEndpoint = errors.New("no pki-core renew endpoint configured; set " + renewEndpointEnv)
+	errCertExpired     = renewUnavailableError{reason: "your certificate has expired", needsFreshCert: true}
+
+	// errCertNotPKIIssued is the pre-cloud-teardown session: a leaf minted
+	// before certificates carried a tenant principal. pki-core cannot route it
+	// to a tenant and holds no lineage record for it, so it is not renewable
+	// there by any route and only a fresh login replaces it.
+	errCertNotPKIIssued = renewUnavailableError{
+		reason:         "this certificate carries no pki-core tenant identity and cannot be renewed",
+		needsFreshCert: true,
+	}
 )
 
-// leafNotAfter returns the stored leaf's expiry. It normalises through
-// certs.LeafCertificatePEM first because pki-core leaves can carry trailing
-// ASN.1 bytes that defeat a raw x509 parse.
-func leafNotAfter(certPEM string) (time.Time, error) {
+// storedLeaf parses the leaf out of a stored certificate PEM. It normalises
+// through certs.LeafCertificatePEM first because pki-core leaves can carry
+// trailing ASN.1 bytes that defeat a raw x509 parse, and reads it back with
+// ParseCertsFromPEM — the ML-DSA-aware parser the mTLS paths use — so callers
+// see exactly the certificate the handshake can present.
+func storedLeaf(certPEM string) (*x509.Certificate, error) {
 	leafPEM, err := certs.LeafCertificatePEM(certPEM)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("extracting leaf certificate: %w", err)
+		return nil, fmt.Errorf("extracting leaf certificate: %w", err)
 	}
-	// ParseCertsFromPEM is the ML-DSA-aware parser the mTLS paths use, so the
-	// pre-flight reads exactly the certificates the handshake can present.
 	leaves, err := certs.ParseCertsFromPEM([]byte(leafPEM))
+	if err != nil {
+		return nil, err
+	}
+	if len(leaves) == 0 {
+		return nil, errors.New("no certificate in stored leaf PEM")
+	}
+	return leaves[0], nil
+}
+
+// leafNotAfter returns the stored leaf's expiry.
+func leafNotAfter(certPEM string) (time.Time, error) {
+	leaf, err := storedLeaf(certPEM)
 	if err != nil {
 		return time.Time{}, err
 	}
-	if len(leaves) == 0 {
-		return time.Time{}, errors.New("no certificate in stored leaf PEM")
+	return leaf.NotAfter, nil
+}
+
+// tenantPrincipalFor reports the tenant SPIFFE principal a stored certificate
+// carries, and whether it carries one at all. An unparseable certificate is
+// reported as carrying none: the connection attempt diagnoses that with better
+// context than a renewal can.
+func tenantPrincipalFor(certPEM string) (string, bool) {
+	leaf, err := storedLeaf(certPEM)
+	if err != nil {
+		return "", false
 	}
-	return leaves[0].NotAfter, nil
+	return certs.TenantPrincipalFromCert(leaf)
 }
 
 // certNeedsRenewal reports whether the leaf is close enough to expiry to renew.
@@ -248,13 +284,15 @@ func renewViaPKICoreImpl(ctx context.Context, endpoint string, auth *config.Auth
 		var d renewDetailBody
 		_ = json.NewDecoder(resp.Body).Decode(&d)
 		return "", "", "", renewUnavailableError{
-			reason: "this certificate is not renewable, or its renewal budget is used up",
-			detail: d.Detail,
+			reason:         "this certificate is not renewable, or its renewal budget is used up",
+			detail:         d.Detail,
+			needsFreshCert: true,
 		}
 
 	case http.StatusUnauthorized:
 		return "", "", "", renewUnavailableError{
-			reason: "the renew frontend did not accept the current certificate",
+			reason:         "the renew frontend did not accept the current certificate",
+			needsFreshCert: true,
 		}
 
 	default:

@@ -662,7 +662,10 @@ func storedCertIdentityURN(cert config.CertificateInfo) string {
 	return ""
 }
 
-// refreshCertsForAuth generates a new CSR and refreshes certificates for a single auth entry.
+// refreshCertsForAuth renews one auth entry's certificate against pki-core's
+// renew frontend. Cloud is not in this path: it neither mints the certificate
+// nor relays the request. The certificate being replaced is itself the proof of
+// possession — it is presented in the mTLS handshake that carries the CSR.
 func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 	if len(auth.Certificates) == 0 {
 		return fmt.Errorf("no existing certificates")
@@ -671,94 +674,34 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 		return refreshOIDCCertificate(ctx, auth)
 	}
 
-	existingCert := auth.Certificates[0]
+	current := auth.Certificates[0]
 
-	cn, err := certCommonName(existingCert.PemCertificate)
-	if err != nil {
-		return fmt.Errorf("reading existing cert CN: %w", err)
+	// pki-core routes a renewal by the tenant SPIFFE principal on the presented
+	// certificate, and renews only lineages it issued itself. A leaf carrying no
+	// tenant principal is not renewable there by any route, so report that here
+	// rather than spend a round trip to be told the same thing as a bare 403.
+	if _, ok := tenantPrincipalFor(current.PemCertificate); !ok {
+		return errCertNotPKIIssued
 	}
 
-	// Carry the authoritative identity URN forward so the refreshed cert keeps
-	// its "urn:wendy:org:..." SAN. The org/user/asset are taken from the stored
-	// config (the cert's own CN may be a legacy "wendy/user/<uid>" that carries
-	// no parseable org).
-	identityURN := storedCertIdentityURN(existingCert)
-
-	// Generate new key pair.
-	newKeyPEM, err := certs.GenerateKeyPair()
-	if err != nil {
-		return fmt.Errorf("generating key pair: %w", err)
+	endpoint := renewEndpoint()
+	if endpoint == "" {
+		return errNoRenewEndpoint
 	}
 
-	csrPEM, err := certs.GenerateCSR([]byte(newKeyPEM), cn, []string{identityURN})
-	if err != nil {
-		return fmt.Errorf("generating CSR: %w", err)
-	}
-
-	// Connect to cloud using existing mTLS credentials.
-	var refreshTransport grpc.DialOption
-	if strings.HasSuffix(auth.CloudGRPC, ":443") {
-		existingKeyPEM, err := existingCert.PrivateKeyPEM()
-		if err != nil {
-			return fmt.Errorf("loading existing client key: %w", err)
-		}
-		tlsCfg, err := certs.LoadTLSConfig(
-			existingCert.PemCertificate,
-			existingCert.PemCertificateChain,
-			existingKeyPEM,
-			"",
-		)
-		if err != nil {
-			return fmt.Errorf("loading existing TLS config: %w", err)
-		}
-		refreshTransport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
-	} else {
-		refreshTransport = grpc.WithTransportCredentials(insecure.NewCredentials())
-	}
-	certConn, err := grpc.NewClient(auth.CloudGRPC, refreshTransport)
-	if err != nil {
-		return fmt.Errorf("connecting to cloud: %w", err)
-	}
-	defer certConn.Close()
-
-	certClient := cloudpb.NewCertificateServiceClient(certConn)
-
-	cloudCtx, err := cloudContext(ctx, auth)
+	certPEM, chainPEM, keyPEM, err := renewViaPKICore(ctx, endpoint, auth)
 	if err != nil {
 		return err
 	}
 
-	// Use RefreshCertificate RPC.
-	refreshResp, err := certClient.RefreshCertificate(cloudCtx, &cloudpb.RefreshCertificateRequest{
-		PemCsr: csrPEM,
-	})
-	if err != nil {
-		return fmt.Errorf("refreshing certificate: %w", err)
-	}
-
-	// The cloud reports refresh failures via a structured error field on an
-	// otherwise-successful response (not a gRPC status). Surface its code/message
-	// so the caller can react — an unauthorized code means the session expired and
-	// the user should log in again — instead of the generic "no certificate" below.
-	if respErr := refreshResp.GetError(); respErr != nil {
-		return cloudCertError{code: respErr.GetCode(), message: respErr.GetMessage()}
-	}
-
-	cert := refreshResp.GetCertificate()
-	if cert == nil {
-		return fmt.Errorf("no certificate returned from refresh")
-	}
-
-	// Update the auth entry with new certificates.
-	auth.Certificates = []config.CertificateInfo{
-		{
-			PemCertificate:      cert.GetPemCertificate(),
-			PemCertificateChain: cert.GetPemCertificateChain(),
-			PemPrivateKey:       newKeyPEM,
-			OrganizationID:      existingCert.OrganizationID,
-			UserID:              existingCert.UserID,
-		},
-	}
+	// Mutate the stored entry rather than rebuild it: a renewal replaces key
+	// material and nothing else. Rebuilding dropped the asset and principal
+	// fields, which is what identifies a device session to every later command.
+	updated := current
+	updated.PemCertificate = certPEM
+	updated.PemCertificateChain = chainPEM
+	updated.PemPrivateKey = keyPEM
+	auth.Certificates[0] = updated
 
 	// This cert has a later NotBefore than the one it replaces, so the proof kept
 	// for offline use has to move with it.
