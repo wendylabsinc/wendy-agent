@@ -10,6 +10,9 @@ import (
 
 // Config represents the top-level CLI configuration.
 type Config struct {
+	// PreferredTemplateLanguage remembers the last successfully scaffolded language.
+	PreferredTemplateLanguage string `json:"preferredTemplateLanguage,omitempty"`
+
 	Auth          []AuthConfig     `json:"auth,omitempty"`
 	Analytics     *AnalyticsConfig `json:"analytics,omitempty"`
 	DefaultDevice string           `json:"defaultDevice,omitempty"`
