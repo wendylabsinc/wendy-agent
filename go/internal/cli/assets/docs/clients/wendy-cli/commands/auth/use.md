@@ -4,9 +4,9 @@ Sets the default Wendy Cloud session used when several auth sessions are stored 
 
 > **Note:** The common auth flow — [`login`](../cloud/login.md),
 > [`logout`](../cloud/logout.md), and [`status`](../cloud/status.md) — is
-> surfaced under `wendy cloud`. Advanced session management (`use`, `default`)
-> remains under `wendy auth`, which is hidden from the top-level help but fully
-> functional.
+> surfaced under `wendy cloud`. Advanced session management (`use`, `default`,
+> `refresh-certs`) remains under `wendy auth`, which is hidden from the
+> top-level help but fully functional.
 
 ## Usage
 

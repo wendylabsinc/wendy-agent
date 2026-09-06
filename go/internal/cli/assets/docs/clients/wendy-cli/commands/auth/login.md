@@ -2,7 +2,8 @@
 > point for authenticating with Wendy Cloud. This page documents
 > `wendy auth login`, which behaves identically and is kept for backward
 > compatibility but is no longer listed in the top-level help. The advanced
-> session commands (`use`, `default`) remain under `wendy auth`.
+> session commands (`use`, `default`, `refresh-certs`) remain under
+> `wendy auth`.
 
 For the new Cloud API authentication flow, provide your email address:
 
