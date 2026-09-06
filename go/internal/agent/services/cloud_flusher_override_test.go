@@ -1,6 +1,7 @@
 package services
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -34,32 +35,21 @@ func TestTelemetryDialHostPrefersOverride(t *testing.T) {
 	}
 }
 
-// TestTelemetryDialOptionsOnlyOnOverride guards the identity rule: on the
-// enrolled path Envoy injects the certificate identity, and a client-supplied
-// header is preferred over the one Envoy adds, so sending our own there would
-// let the device self-assert its identity. The header must appear only on the
-// override path, which has no Envoy in front of it.
-func TestTelemetryDialOptionsOnlyOnOverride(t *testing.T) {
-	f := &CloudFlusher{}
-	if opts := f.telemetryDialOptions(2, 408); opts != nil {
-		t.Fatalf("telemetryDialOptions() on the enrolled path = %d options, want none", len(opts))
-	}
-	f.SetTelemetryHostOverride("wendy-data-dev.example.run.app")
-	if opts := f.telemetryDialOptions(2, 408); len(opts) == 0 {
-		t.Fatal("telemetryDialOptions() with an override set returned no options, want the identity interceptors")
-	}
-}
-
-// TestCertIdentityHeaderFormat pins the identity string the cloud's certificate
-// metadata extractor parses. A silent change here would attribute every row to
-// the wrong tenant rather than fail.
-func TestCertIdentityHeaderFormat(t *testing.T) {
-	opts := certIdentityDialOptions(2, 408)
-	if len(opts) != 2 {
-		t.Fatalf("certIdentityDialOptions() = %d options, want 2 (unary and stream)", len(opts))
-	}
-	want := "URI=urn:wendy:org:2:asset:408"
-	if !strings.Contains(want, "urn:wendy:org:") {
-		t.Fatalf("identity header format changed: %q", want)
+// TestDataPathSendsNoIdentityHeader is a static guard for the rule both cloud
+// workers now follow: identity is the enrolled asset certificate presented in
+// the TLS handshake, and no request header carries it. The x-wendy-client-cert
+// header was a self-asserted identity the ingest service no longer reads; the
+// tunnel broker client is a different service and is not covered here.
+func TestDataPathSendsNoIdentityHeader(t *testing.T) {
+	for _, f := range []string{"data_transfer_worker.go", "cloud_flusher.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"x-wendy-client-cert", "urn:wendy:org:", "certIdentityDialOptions"} {
+			if strings.Contains(string(src), forbidden) {
+				t.Errorf("%s mentions %q; the data path must not carry an identity header", f, forbidden)
+			}
+		}
 	}
 }

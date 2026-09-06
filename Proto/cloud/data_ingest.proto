@@ -105,31 +105,6 @@ enum EpisodeFileRole {
 message EpisodeManifest {
   string episode_id = 1;
 
-  // 2 and 3 were org_id and asset_id, which the device asserted and the cloud
-  // only ever compared against the uploading certificate before discarding.
-  // The certificate is the sole source of both, so the wire no longer offers
-  // a place to claim otherwise. Numbers stay reserved: never reuse them.
-  //
-  // DEPLOYMENT ORDER, load-bearing: deploy the cloud BEFORE the devices.
-  // A new device omits 2 and 3. An old cloud decodes the absent fields as
-  // zero, compares zero against the certificate identity, and rejects, so
-  // every upload from a new device to an old cloud fails with
-  // PERMISSION_DENIED. The reverse pairing is safe: an old device still sends
-  // both, and a new cloud parks them in unknown fields and ignores them.
-  //
-  // The same asymmetry makes a cloud ROLLBACK a fleet-wide outage once
-  // devices have shipped. It does not degrade a subset of uploads; every
-  // upload from every migrated device returns PERMISSION_DENIED until the
-  // cloud is rolled forward again. Treat the cloud side of this change as a
-  // one-way door and stage it accordingly.
-  //
-  // With the fields gone there is also no wire signal that distinguishes an
-  // old device from a new one, so migration progress cannot be measured from
-  // the manifest. Measure it from agent version reporting instead, and do not
-  // plan a rollout that depends on counting manifests.
-  reserved 2, 3;
-  reserved "org_id", "asset_id";
-
   // Campaign name: the `name:` field of the campaign file that armed this
   // capture, a human-authored slug such as "forklift-failures". It is not an
   // identifier minted by the cloud, and it is not unique over time; the
@@ -327,10 +302,10 @@ message QueryEpisodesRequest {
   // against the caller's own credential rather than against this value, is
   // REQUIRED before this RPC is exposed to anything but a trusted internal
   // caller.
-  uint64 org_id = 1;
+  string org_id = 1;
 
   // Optional filters; zero values mean "no filter".
-  uint64 asset_id = 2;
+  string asset_id = 2;
   string campaign = 3;
   EpisodeState state = 4;
   int64 started_after_unix_nanos = 5;
@@ -362,7 +337,7 @@ message GetEpisodeRequest {
   // The fix is authorization, not schema; the field stays. A server-side
   // membership check is REQUIRED before this RPC is exposed to anything but a
   // trusted internal caller.
-  uint64 org_id = 1;
+  string org_id = 1;
   string episode_id = 2;
 }
 
@@ -374,8 +349,8 @@ message Episode {
   // was actually stored under. It stays on the response because a query with
   // no asset filter spans assets, and a reader that cannot tell the rows
   // apart would have to reach into attributes_json to do it.
-  uint64 org_id = 2;
-  uint64 asset_id = 3;
+  string org_id = 2;
+  string asset_id = 3;
   // Campaign name and its trigger, as recorded at capture time.
   string campaign = 4;
   string trigger = 5;
