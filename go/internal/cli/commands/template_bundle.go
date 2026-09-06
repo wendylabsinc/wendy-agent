@@ -125,7 +125,7 @@ func fetchTemplateIndex(ctx context.Context, branch string) (*templateBundleInde
 // Cache writes are best-effort and atomic; concurrent init processes must never
 // read half an index/archive. An unwritable cache must not prevent scaffolding.
 func cacheTemplateFile(path string, data []byte) {
-	if path == "" || os.MkdirAll(filepath.Dir(path), 0o755) != nil {
+	if path == "" || os.MkdirAll(filepath.Dir(path), 0o700) != nil {
 		return
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".template-*")
@@ -146,6 +146,9 @@ func validTemplateBundle(bundle templateBundle) bool {
 }
 
 func verifyTemplateBundle(data []byte, bundle templateBundle) bool {
+	// This detects corruption and pins bytes to an index revision. Publisher
+	// authenticity comes from HTTPS to the Wendy-controlled origin, as it does
+	// for the existing GitHub archive path; this is not a signed-index protocol.
 	digest := sha256.Sum256(data)
 	return int64(len(data)) == bundle.Size && hex.EncodeToString(digest[:]) == bundle.SHA256
 }

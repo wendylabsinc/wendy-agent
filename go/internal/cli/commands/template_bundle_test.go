@@ -1,6 +1,9 @@
 package commands
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -321,5 +324,58 @@ func TestTemplatePublishedBundles(t *testing.T) {
 				t.Fatalf("invalid generated config: %s", config)
 			}
 		})
+	}
+}
+
+func TestTemplateArchiveRejectsEscapingPathsAndLinks(t *testing.T) {
+	var data bytes.Buffer
+	gz := gzip.NewWriter(&data)
+	archive := tar.NewWriter(gz)
+	entries := []struct {
+		name, body, link string
+		kind             byte
+	}{
+		{"template.json", `{"name":"fullstack"}`, "", tar.TypeReg},
+		{"app.py", "safe", "", tar.TypeReg},
+		{"../outside.py", "escape", "", tar.TypeReg},
+		{"nested/../../outside.py", "escape", "", tar.TypeReg},
+		{"/absolute.py", "escape", "", tar.TypeReg},
+		{"symlink", "", "../../outside", tar.TypeSymlink},
+		{"hardlink", "", "../../outside", tar.TypeLink},
+	}
+	for _, entry := range entries {
+		header := &tar.Header{Name: "templates/python/fullstack/" + entry.name, Typeflag: entry.kind, Linkname: entry.link, Size: int64(len(entry.body)), Mode: 0o644}
+		if err := archive.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := archive.Write([]byte(entry.body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, _, err := extractTemplateArchive(bytes.NewReader(data.Bytes()), "python", "fullstack")
+	if err != nil || len(files) != 1 || string(files["app.py"]) != "safe" {
+		t.Fatalf("extracted unsafe entries: %v %v", files, err)
+	}
+}
+
+func TestTemplateRenderConfinesSymlinksAndRenames(t *testing.T) {
+	output, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(output, "linked")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	for _, path := range []string{"linked/escape.txt", "../escape.txt", "fullstack/escape.txt"} {
+		err := renderAndWriteTemplate(map[string][]byte{path: []byte("escape")}, output, "../outside", "fullstack", nil)
+		if err == nil {
+			t.Fatalf("accepted escaping path %q", path)
+		}
+	}
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Fatalf("wrote outside project: %v %v", entries, err)
 	}
 }

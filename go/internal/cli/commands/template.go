@@ -56,7 +56,7 @@ type repoMetaTemplate struct {
 	Category     string   `json:"category,omitempty"`
 	Requirements string   `json:"requirements,omitempty"`
 	Description  string   `json:"description"`
-	Targets      []string `json:"targets"`   // optional; empty means all targets
+	Targets      []string `json:"targets"`   // optional; empty means WendyOS
 	Languages    []string `json:"languages"` // optional; empty means discover from repo layout
 }
 
@@ -459,7 +459,7 @@ func extractTemplateArchive(r io.Reader, language, templateName string) (map[str
 
 		// Sanitize: reject path traversal.
 		cleaned := filepath.Clean(relPath)
-		if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "..") {
+		if !filepath.IsLocal(cleaned) {
 			continue
 		}
 		relPath = cleaned
@@ -690,13 +690,23 @@ func validateVariable(v templateVariable, val interface{}) error {
 // Go text/template (so {{.VAR}}, {{if}}, {{range}}, etc. all work), and writes
 // to destDir. It renames directories named after the template to the app ID.
 func renderAndWriteTemplate(files map[string][]byte, destDir, appID, templateName string, vals map[string]interface{}) error {
+	root, err := os.OpenRoot(destDir)
+	if err != nil {
+		return fmt.Errorf("opening template destination: %w", err)
+	}
+	defer root.Close()
+
 	for relPath, content := range files {
 		// Rename template-named directories to app ID.
 		relPath = renameTemplatePath(relPath, templateName, appID)
 
-		destPath := filepath.Join(destDir, relPath)
+		if !filepath.IsLocal(relPath) {
+			return fmt.Errorf("template path escapes destination: %q", relPath)
+		}
 
-		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		// Root also prevents an existing symlink in --here from escaping the
+		// project directory, including a symlink swapped during rendering.
+		if err := root.MkdirAll(filepath.Dir(relPath), 0o755); err != nil {
 			return fmt.Errorf("creating directory for %s: %w", relPath, err)
 		}
 
@@ -710,8 +720,8 @@ func renderAndWriteTemplate(files map[string][]byte, destDir, appID, templateNam
 			output = rendered
 		}
 
-		if err := os.WriteFile(destPath, output, 0o644); err != nil {
-			return fmt.Errorf("writing %s: %w", destPath, err)
+		if err := root.WriteFile(relPath, output, 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", relPath, err)
 		}
 	}
 
