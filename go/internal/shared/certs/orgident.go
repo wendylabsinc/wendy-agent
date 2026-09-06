@@ -61,6 +61,28 @@ func UserSPIFFEURI(tenantUUID, userID string) string {
 	return tenantSPIFFEPrefix + tenantUUID + "/service/user-" + userID
 }
 
+// TenantPrincipalFromCert returns the tenant SPIFFE principal a leaf carries,
+// and whether it carries exactly one.
+//
+// pki-core routes a renewal by this SAN alone — it reads the tenant out of the
+// certificate presented in the handshake rather than from the request — and
+// refuses a certificate that presents none or several. So "exactly one" is the
+// only answer that means renewable.
+func TenantPrincipalFromCert(leaf *x509.Certificate) (string, bool) {
+	var found string
+	for _, u := range leaf.URIs {
+		raw := u.String()
+		if !strings.HasPrefix(raw, tenantSPIFFEPrefix) {
+			continue
+		}
+		if found != "" {
+			return "", false
+		}
+		found = raw
+	}
+	return found, found != ""
+}
+
 // ParseIdentityURN parses a canonical Wendy identity URN —
 // "urn:wendy:org:<org>:(user|asset):<id>", the exact string IdentityKey
 // produces — back into a WendyIdentity.
