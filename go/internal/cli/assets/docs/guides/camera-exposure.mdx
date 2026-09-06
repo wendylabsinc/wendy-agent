@@ -3,7 +3,11 @@ title: Adjust Camera Exposure
 description: Inspect a camera's controls, fix an overexposed picture, save the settings, and restore the defaults
 ---
 
+import { withBasePath } from '@/lib/shared';
+
 Use the Wendy CLI to adjust a USB camera while watching its live feed. You will inspect the controls the camera supports, try a shorter exposure, save the result, and check that it survives a stream reconnect.
+
+The silent clips below show a real Logitech C920 connected to a Jetson Orin Nano, using a current Wendy CLI and device agent with camera control support. The recording demonstrates temporary changes with `--no-persist`. Saving settings and restoring defaults are covered afterward.
 
 ## Prerequisites
 
@@ -48,6 +52,19 @@ Look for `auto_exposure`, `exposure_time_absolute`, and `backlight_compensation`
 
 An exposure control may show `Mutable: no` while automatic exposure is enabled. The mode must change before the manual exposure value can take effect.
 
+<figure>
+  <video
+    width="1920" height="1080" autoPlay loop muted playsInline controls preload="metadata"
+    poster={withBasePath('/images/guides/camera-exposure-inspect.webp')}
+    aria-label="Inspect the Logitech C920's camera controls alongside its live view of a whale plushie"
+    style={{ width: '100%', height: 'auto', borderRadius: '8px' }}
+  >
+    <source src="/videos/guides/camera-exposure-inspect.mp4" type="video/mp4" />
+    Your browser does not support embedded video.
+  </video>
+  <figcaption>Inspect the C920's available controls while keeping its live view open.</figcaption>
+</figure>
+
 ## 3. Try a shorter exposure
 
 This example uses the common V4L2 controls shown below, with `auto_exposure=1` selecting manual exposure. Use it only if your camera exposes these names and accepts the values. If its exposure range or step excludes `20`, choose a supported value below the current exposure instead. If it lacks `backlight_compensation`, omit that assignment.
@@ -59,22 +76,56 @@ wendy device camera controls 0
 
 Wendy applies the mode control before the exposure control. Each assignment reports whether it was applied. An unsupported name or value produces a failure for that control; read the result before judging the picture.
 
-Compare the live view with the original scene. A shorter exposure should reduce the washed-out area, though it can also darken the surrounding objects. Try another supported value until the bright area retains useful detail:
+Compare the live view with the original scene. A shorter exposure should reduce the washed-out area, though it can also darken the surrounding objects. If the image becomes too dark, increase the exposure to another supported value:
 
 ```bash
-wendy device camera set-control 0 exposure_time_absolute=10 --no-persist
+wendy device camera set-control 0 exposure_time_absolute=100 --no-persist
 ```
 
-Here, `10` is another example, not a universal setting. Use the range and step from your camera. Keep the light and camera position fixed while comparing values.
+In the recorded C920 scene, requesting `20` makes the whale plushie too dark, and increasing the request to `100` brings its detail back. These values are examples for this camera and lighting. Use the range and step from your camera; the hardware may round a requested value, so inspect the controls afterward. Keep the light and camera position fixed while comparing values.
+
+<figure>
+  <video
+    width="1920" height="1080" autoPlay loop muted playsInline controls preload="metadata"
+    poster={withBasePath('/images/guides/camera-exposure-adjust.webp')}
+    aria-label="Set the C920 to manual exposure at 20, then increase exposure to 100 to recover detail in the whale plushie"
+    style={{ width: '100%', height: 'auto', borderRadius: '8px' }}
+  >
+    <source src="/videos/guides/camera-exposure-adjust.mp4" type="video/mp4" />
+    Your browser does not support embedded video.
+  </video>
+  <figcaption>Compare two temporary manual exposure settings against the same live scene.</figcaption>
+</figure>
 
 `--no-persist` applies a setting without adding it to Wendy's saved settings. It does not clear a setting saved during an earlier session, and it does not promise the driver will immediately restore its old value when the command ends.
 
-## 4. Save the chosen settings
-
-Repeat the complete set of assignments that produced the picture you want, this time without `--no-persist`. For example, if exposure `20` was the better result:
+To return this C920 to automatic exposure for another comparison, use:
 
 ```bash
-wendy device camera set-control 0 auto_exposure=1 exposure_time_absolute=20 backlight_compensation=0
+wendy device camera set-control 0 auto_exposure=3 --no-persist
+```
+
+The automatic mode value is camera-specific. This command changes the live mode and does not clear previously saved settings; those settings can be reapplied when the capture pipeline starts again.
+
+<figure>
+  <video
+    width="1920" height="1080" autoPlay loop muted playsInline controls preload="metadata"
+    poster={withBasePath('/images/guides/camera-exposure-automatic.webp')}
+    aria-label="Return the C920 to automatic exposure with auto_exposure set to 3 without changing saved settings"
+    style={{ width: '100%', height: 'auto', borderRadius: '8px' }}
+  >
+    <source src="/videos/guides/camera-exposure-automatic.mp4" type="video/mp4" />
+    Your browser does not support embedded video.
+  </video>
+  <figcaption>Return to automatic exposure for a live comparison using <code>--no-persist</code>.</figcaption>
+</figure>
+
+## 4. Save the chosen settings
+
+Repeat the complete set of assignments that produced the picture you want, this time without `--no-persist`. For example, to save the exposure request of `100` used in the clip:
+
+```bash
+wendy device camera set-control 0 auto_exposure=1 exposure_time_absolute=100 backlight_compensation=0
 ```
 
 Wendy saves successfully applied controls on the device and reapplies them when its capture pipeline starts again. The saved settings also survive an agent restart.
