@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -504,44 +505,40 @@ func TestDataTransferWorker_AtLeastOnceDuplicateSafe(t *testing.T) {
 	}
 }
 
-// TestIngestHostOverride verifies that SetIngestHostOverride redirects the
-// dial target (tolerating URL-shaped input) and that clearing it restores the
-// enrolled cloud host.
-func TestIngestHostOverride(t *testing.T) {
+// TestIngestEndpointNormalisation verifies that SetIngestEndpoint reduces
+// URL-shaped input to the host[:port] the dialer expects, and that empty means
+// disabled.
+func TestIngestEndpointNormalisation(t *testing.T) {
 	w := &DataTransferWorker{}
-
-	if got := w.ingestDialHost("cloud.wendy.sh"); got != "cloud.wendy.sh" {
-		t.Fatalf("no override: got %q, want cloud.wendy.sh", got)
+	if got := w.IngestEndpoint(); got != "" {
+		t.Fatalf("fresh worker: endpoint %q, want empty (uploads disabled)", got)
 	}
-
 	cases := []struct {
 		in   string
 		want string
 	}{
-		{"https://wendy-data-dev-abc-uc.a.run.app", "wendy-data-dev-abc-uc.a.run.app"},
-		{"https://wendy-data-dev-abc-uc.a.run.app/", "wendy-data-dev-abc-uc.a.run.app"},
+		{"https://ingest.data.wendy.sh", "ingest.data.wendy.sh"},
+		{"https://ingest.data.wendy.sh/", "ingest.data.wendy.sh"},
 		{"http://localhost:9800", "localhost:9800"},
 		{"ingest.example.com:50052", "ingest.example.com:50052"},
 		{"  ingest.example.com  ", "ingest.example.com"},
 	}
 	for _, c := range cases {
-		w.SetIngestHostOverride(c.in)
-		if got := w.ingestDialHost("cloud.wendy.sh"); got != c.want {
-			t.Errorf("override %q: got %q, want %q", c.in, got, c.want)
+		w.SetIngestEndpoint(c.in)
+		if got := w.IngestEndpoint(); got != c.want {
+			t.Errorf("endpoint %q: got %q, want %q", c.in, got, c.want)
 		}
 	}
-
-	w.SetIngestHostOverride("")
-	if got := w.ingestDialHost("cloud.wendy.sh"); got != "cloud.wendy.sh" {
-		t.Fatalf("cleared override: got %q, want cloud.wendy.sh", got)
+	w.SetIngestEndpoint("")
+	if got := w.IngestEndpoint(); got != "" {
+		t.Fatalf("cleared endpoint: got %q, want empty", got)
 	}
 }
 
-// runIdentityHeaderPass drives one real upload pass over bufconn with the dial
-// options an ingest host override of override produces, and returns the fake
-// server so the caller can inspect the metadata that reached it. orgID and
-// assetID stand in for what ProvisioningInfo reports on a real device.
-func runIdentityHeaderPass(t *testing.T, override string, orgID, assetID int32) *fakeIngestServer {
+// runEndpointPass drives one real upload pass over bufconn with the endpoint
+// set, dialling with exactly the options dialFactory passes (none), and returns
+// the fake server so the caller can inspect the metadata that reached it.
+func runEndpointPass(t *testing.T, endpoint string) *fakeIngestServer {
 	t.Helper()
 	mgr, root := newTestManager(t)
 	writeFixtureEpisode(t, root, "ep-identity", "", "pending", map[string][]byte{"blob.bin": []byte("payload")})
@@ -554,10 +551,8 @@ func runIdentityHeaderPass(t *testing.T, override string, orgID, assetID int32) 
 		now:         time.Now,
 		newSleeper:  contextSleeper,
 	}
-	w.SetIngestHostOverride(override)
-	// The client is dialed with exactly the options dialFactory would pass, so
-	// the production interceptors (when there are any) run for real.
-	client := startFakeIngest(t, srv, w.ingestDialOptions(orgID, assetID)...)
+	w.SetIngestEndpoint(endpoint)
+	client := startFakeIngest(t, srv)
 	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, func(), error) {
 		return client, func() {}, nil
 	}
@@ -571,42 +566,60 @@ func runIdentityHeaderPass(t *testing.T, override string, orgID, assetID int32) 
 	return srv
 }
 
-// TestIngestIdentityHeaderAbsentWithoutOverride is the security-relevant case.
-// On the normal enrolled path the broker sits behind Wendy's Envoy ingress,
-// which injects the certificate identity itself, and the cloud's extractor
-// prefers a client-supplied x-wendy-client-cert over Envoy's own
-// X-Forwarded-Client-Cert while production Envoy does not strip it. A device
-// that sent the header there would be self-asserting its identity, so it must
-// never appear on any call when no ingest host override is in effect.
-func TestIngestIdentityHeaderAbsentWithoutOverride(t *testing.T) {
-	if opts := (&DataTransferWorker{}).ingestDialOptions(91, 7532); opts != nil {
-		t.Errorf("no override: got %d dial options, want none", len(opts))
-	}
-
-	srv := runIdentityHeaderPass(t, "", 91, 7532)
+// TestIngestCallsCarryNoIdentityHeader is the security-relevant case. Identity
+// is the enrolled asset certificate presented in the TLS handshake and read by
+// the ingest service from the validated leaf. The x-wendy-client-cert header
+// this worker once attached was a self-asserted identity; the service no
+// longer reads it and the device must never send it, on any call.
+func TestIngestCallsCarryNoIdentityHeader(t *testing.T) {
+	srv := runEndpointPass(t, "https://ingest.data.wendy.sh/")
 	unary, stream := srv.headerValues("x-wendy-client-cert")
 	if len(unary) != 0 {
-		t.Errorf("unary call carried x-wendy-client-cert %q without an override; the device must not self-assert identity on the enrolled path", unary)
+		t.Errorf("unary call carried x-wendy-client-cert %q; identity is the certificate, never a header", unary)
 	}
 	if len(stream) != 0 {
-		t.Errorf("streaming call carried x-wendy-client-cert %q without an override; the device must not self-assert identity on the enrolled path", stream)
+		t.Errorf("streaming call carried x-wendy-client-cert %q; identity is the certificate, never a header", stream)
 	}
 }
 
-// TestIngestIdentityHeaderWithOverride pins the exact header value sent on the
-// override path: the URI form of the enrolled asset identity, built from the
-// org and asset that ProvisioningInfo reports, on both unary and streaming
-// calls.
-func TestIngestIdentityHeaderWithOverride(t *testing.T) {
-	srv := runIdentityHeaderPass(t, "https://ingest.example.com/", 91, 7532)
-	const want = "URI=urn:wendy:org:91:asset:7532"
+// TestRunWithoutEndpointDoesNotDial pins the no-fallback rule: with no ingest
+// endpoint configured the worker logs once and stops. It never asks the factory
+// for a client, so it cannot dial the enrolled cloud host, which does not serve
+// DataIngestService and used to answer every pass with Unimplemented.
+func TestRunWithoutEndpointDoesNotDial(t *testing.T) {
+	mgr, root := newTestManager(t)
+	writeFixtureEpisode(t, root, "ep-queued", "", "pending", map[string][]byte{"blob.bin": []byte("payload")})
 
-	unary, stream := srv.headerValues("x-wendy-client-cert")
-	if len(unary) != 1 || unary[0] != want {
-		t.Errorf("unary call: x-wendy-client-cert = %q, want exactly [%q]", unary, want)
+	var dials int32
+	w := &DataTransferWorker{
+		logger:      zap.NewNop(),
+		manager:     mgr,
+		maxAttempts: transferMaxAttempts,
+		now:         time.Now,
+		newSleeper:  contextSleeper,
 	}
-	if len(stream) != 1 || stream[0] != want {
-		t.Errorf("streaming call: x-wendy-client-cert = %q, want exactly [%q]", stream, want)
+	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, func(), error) {
+		atomic.AddInt32(&dials, 1)
+		return nil, nil, errors.New("must not be called")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("Run did not return without an endpoint; it must stop rather than retry against nothing")
+	}
+	if n := atomic.LoadInt32(&dials); n != 0 {
+		t.Fatalf("factory called %d times without an endpoint, want 0", n)
+	}
+	if got := uploadState(t, mgr, "ep-queued").State; got != uploadStatePending {
+		t.Fatalf("queued episode state = %q, want %q (nothing may be marked failed)", got, uploadStatePending)
 	}
 }
 
