@@ -1,6 +1,9 @@
 # `wendy device enroll`
 
-Enrolls the connected device with Wendy Cloud (or a local [pki-core](../../../../pki/)) and provisions it with mTLS certificates.
+Obtains a single-use enrollment credential for the connected device and stages
+it on the device, which then enrols itself directly against
+[pki-core](../../../../pki/) over **ACME** — or **EST** on constrained hardware
+that cannot run an ACME client.
 
 > **Note:** `wendy device enroll` is an advanced command and is not listed in
 > `wendy device --help`. It remains fully functional. For most setups, use
@@ -9,22 +12,38 @@ Enrolls the connected device with Wendy Cloud (or a local [pki-core](../../../..
 ## Usage
 
 ```sh
-wendy device enroll [--name <name>] [--cloud-grpc <endpoint>] [flags]
+wendy device enroll [--name <name>] [--org <id>] [--cloud-grpc <endpoint>]
 ```
 
 ## Description
 
-`wendy device enroll` creates an enrollment token using your stored auth session, then has the connected agent fetch its certificate. Run [`wendy cloud login`](../cloud/login.md) first.
+Run [`wendy cloud login`](../cloud/login.md) first — the request for the
+credential is signed with your operator certificate, and an authenticated
+operator is the root of trust at first touch. Wendy ships no factory birth key.
 
-› **Certificate identity:** The CSR submitted during provisioning always
-› includes the device's authoritative Wendy identity as a URI Subject
-› Alternative Name (`urn:wendy:org:‹org›:asset:‹assetID›`). When the
-› enrollment token carries a `tenant_uuid` claim, a second URI SAN
-› (`spiffe://wendy.sh/tenant/‹uuid›/service/asset-‹assetID›`) is added
-› alongside it — cloud requires that SPIFFE principal to sign a relay grant.
-› Organizations with no pki tenant get no `tenant_uuid` claim and receive only
-› the urn:wendy SAN, exactly as before. The cloud certificate service
-› validates these SANs against the enrollment token at issuance time.
+1. The CLI asks for an enrollment credential for the connected device. Cloud
+   relays the signed request to pki-core, which mints a credential bound to
+   that device and to your tenant, single-use and short-lived. Cloud can
+   withhold the request; it cannot issue a certificate.
+2. The CLI stages the credential on the connected agent and registers the
+   device under a human-readable **name** (see below).
+3. The agent generates its own key pair — the private key never leaves the
+   device — and redeems the credential against pki-core: an ACME account bound
+   by the external-account-binding (EAB) credential, then an order whose only
+   identifier is a `permanent-identifier` carrying the device's DeviceID. On
+   EST hardware it is a simple enrolment with the same credential.
+4. pki-core stamps the device identity
+   (`spiffe://wendy.sh/tenant/‹uuid›/device/‹DeviceID›`) into the issued leaf.
+   The device asserts no identity of its own: any CN or URI SAN in its CSR is
+   replaced server-side, and only the CSR public key is honoured.
+
+No certificate and no private key ever travels through this command.
+
+> **The credential is single-use.** The agent persists its ACME account key
+> before spending the credential, so a re-run after a crash re-registers the
+> same account instead of burning a second one. A credential that has already
+> been redeemed cannot be reused — run `wendy device enroll` again for a fresh
+> one.
 
 The enrolled device is registered in Wendy Cloud under a human-readable **name**. The name can be changed later with `wendy device rename`, so the command resolves it as follows:
 
@@ -50,7 +69,8 @@ The enrolled device is registered in Wendy Cloud under a human-readable **name**
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--name` | hostname (`.local` stripped) | Human-readable device name. Defaults to the device hostname when omitted; required when the device is reachable only by a bare IP address in a non-interactive environment. |
-| `--cloud-grpc` | `""` | Cloud / pki-core gRPC endpoint to use. Overrides session selection; when omitted, the persisted default (set with `wendy auth use`) is used if available, otherwise an interactive picker appears. |
+| `--org` | interactive picker | Organization to enrol the device into. Required in non-interactive or `--json` runs when you belong to more than one org. |
+| `--cloud-grpc` | `""` | Cloud gRPC endpoint that relays the credential request. Overrides session selection; when omitted, the persisted default (set with `wendy auth use`) is used if available, otherwise an interactive picker appears. |
 
 ## Examples
 
@@ -66,9 +86,17 @@ Enroll with an explicit name:
 wendy device enroll --device 192.168.1.11 --name lab-pi-01
 ```
 
+## Renewal
+
+Device certificates renew unattended over the same ACME or EST path, with no
+operator in the loop. Renewal needs a currently-valid certificate to present:
+once a device leaf has expired there is no roll-forward, and the device has to
+enroll again.
+
 ## Related
 
 - [`wendy install` → Linux Desktop](../install.md) — mint a short-lived enrollment token and embed it in the `agent.sh` one-liner so the device self-enrolls on first startup, without needing a USB connection or a running agent.
 - [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.
 - `wendy cloud enroll-device` — alias for this command, reachable through the cloud tunnel.
 - `wendy device unenroll` — reverse enrollment and delete the device from Wendy Cloud.
+- [PKI](../../../../pki/) — the three authorized certificate paths.

@@ -1,12 +1,22 @@
 # PKI
 
-Wendy uses mutual TLS (mTLS) to authenticate both devices and CLI clients against the agent's gRPC server. Certificates are issued by a CA managed by either Wendy Cloud or a self-hosted **pki-core** instance.
+Wendy uses mutual TLS (mTLS) to authenticate both devices and CLI clients against the agent's gRPC server. Every certificate is issued by **pki-core**, the Wendy PKI — either the hosted instance or one you run yourself. Cloud does not issue certificates.
+
+## How a certificate is obtained
+
+There are exactly three paths, and each of them ends at pki-core:
+
+| Certificate | Path |
+|-------------|------|
+| **Device** | The device speaks **ACME** to pki-core directly — **EST** on constrained hardware that cannot run an ACME client. pki-core stamps the device's identity into the leaf; the device does not assert it. |
+| **Operator** | The CLI calls pki-core's operator identity frontend directly with a wendy-auth token, a CSR, and a proof of possession of the CSR key. See [`wendy auth login`](../clients/wendy-cli/commands/auth/login.md). Cloud is not in this path. |
+| **Entitlement-bearing or over-duration** | Relayed through cloud, which acts purely as an authorization barrier: it can withhold a grant, and it can never forge a certificate. |
 
 ## Certificate roles
 
 | Certificate | Issued to | Used for |
 |-------------|-----------|----------|
-| Device cert | `wendy-agent` during provisioning | mTLS server identity; stored in `/etc/wendy-agent/provisioning.json` |
+| Device cert | `wendy-agent` at enrollment | mTLS server identity; stored in `/etc/wendy-agent/provisioning.json` |
 | CLI cert | Developer machine via `wendy auth login` | mTLS client auth when connecting to provisioned devices |
 
 The device's mTLS CA pool is built from the `chainPem` field in `provisioning.json`. CLI clients must present a certificate whose chain terminates at that same CA. If `chainPem` is absent or empty, the agent refuses to build a TLS configuration and returns an error indicating that the device may need to be re-provisioned.
@@ -31,8 +41,10 @@ Legacy tokens that carry no `org_id` claim (user enrollment only) produce a
 CSR with a CommonName only — no URI SAN — so existing enrollments continue to
 work without re-authentication.
 
-The cloud certificate service validates the URI SAN against the
-enrollment-token or mTLS identity at issuance time.
+pki-core is what binds identity to a certificate: on the ACME and EST paths it
+stamps the identity server-side, and on the operator path it validates the CSR
+against the wendy-auth token presented with it. Cloud validates nothing at
+issuance time, because it does not issue.
 
 When the enrollment token carries a `tenant_uuid` claim, a second URI SAN is
 added *alongside* the urn:wendy SAN:
@@ -160,71 +172,82 @@ When connecting to a device, the CLI automatically checks for clock skew. If the
 
 ## Local development with pki-core
 
-[pki-core](https://github.com/wendylabsinc/pki-core) is the self-hosted Wendy PKI engine. Run it locally to provision real devices without a cloud deployment.
+[pki-core](https://github.com/wendylabsinc/pki-core) is the Wendy PKI engine. Run
+it locally to issue real certificates without a cloud deployment.
 
-### Prerequisites
+### Start the engine and its frontends
 
-1. **Start the engine and admin API:**
-   ```sh
-   pkicore serve all --dev
-   ```
-2. **Create a CA and configure the Wendy frontend** (`frontend.wendy.device_ca_id` in `config.yaml`).
+```sh
+pkicore serve all --dev
+```
 
-3. **Start the Wendy gRPC frontend:**
-   ```sh
-   pkicore serve wendy --config config.yaml
-   ```
-   This exposes `wendycloud.v1.CertificateService` on the configured listen address (default `:50051`).
+`--dev` starts an embedded PostgreSQL, persists a software master key under
+`~/.pkicore/dev/`, and auto-bootstraps the platform CA tree, so this is the whole
+setup. It brings up the device and operator frontends on plain HTTP:
+
+| Frontend | Default port | Serves |
+|----------|--------------|--------|
+| EST | `:8443` | `/.well-known/est/‹tenant-uuid›/{cacerts,csrattrs,simpleenroll,simplereenroll}` |
+| ACME | `:8444` | `/‹tenant-uuid›/acme/directory` and the endpoints it advertises |
+| Renew | `:8451` | certificate renewal |
+| CRL / OCSP | `:8446` | revocation |
+
+The operator identity frontend is opt-in: set `frontend.identity.listen` (with
+`audience`, `issuer_prefix` and `endpoint_url`) in your config and it serves
+`POST /v1/identity/certificate`, by default on `:8449`.
+
+Reset the whole local instance by deleting `~/.pkicore/dev/`.
+
+### Enroll a device (ACME)
+
+A device orders its certificate from pki-core itself. The order carries a single
+`permanent-identifier` identifier whose value is the device id bound to the
+device's External Account Binding (EAB) credential — pki-core rejects any other
+identifier type. On success it stamps the identity into the leaf:
+
+```
+spiffe://wendy.sh/tenant/‹tenant-uuid›/device/‹device-id›
+```
+
+That URI is minted server-side and **replaces** whatever URI SAN the CSR carried,
+so a device cannot name itself.
+
+› **The EAB HMAC key is hex.** pki-core returns it hex-encoded, but it
+› authenticates the binding over the *raw* key bytes, and every standard ACME
+› client (`acme.sh`, certbot, lego) base64url-decodes the value you hand it.
+› Decode the hex and re-encode it as base64url before passing it to such a
+› client, or the binding fails with an opaque error.
+
+Constrained devices that cannot run an ACME client use **EST** instead, against
+the `simpleenroll` endpoint above; `simplereenroll` is the mTLS-authenticated
+renewal for a device that already holds a certificate.
+
+› **Minting the EAB credential needs the fabric service, which does not run
+› laptop-only.** Creating a tenant and issuing an EAB credential are gRPC calls
+› on pki-core's private fabric surface, and its transport authenticator has no
+› local no-auth mode in the shipped binary. `serve all --dev` gets you the
+› frontends; obtaining a tenant UUID and an EAB credential to enroll against them
+› is an operator step outside this walkthrough.
 
 ### Authenticate the CLI
 
-Do this first: `wendy device enroll` mints its enrollment token from your stored
-auth session, so the CLI has to be logged in to the same pki-core before it can
-enroll anything. `--api-key` selects the local pki-core flow.
+The CLI gets its operator certificate from pki-core's identity frontend
+directly — cloud is not involved. Point it at your local instance:
 
 ```sh
-wendy auth login \
-  --api-key <key-from-config.yaml> \
-  --cloud-grpc <your-lan-ip>:50051
+wendy cloud login \
+  --email you@example.com \
+  --pki-identity-endpoint http://localhost:8449/v1/identity/certificate \
+  --pki-resource <the audience configured on frontend.identity>
 ```
 
-The same step issues the CLI its own client certificate, which is what lets
-`wendy device version`, `wendy run`, and the other device commands connect over
-mTLS afterwards.
+The CLI completes an OAuth authorization code + PKCE flow, binds a CSR to the
+token key with a DPoP proof, and sends it to that endpoint. See
+[`wendy auth login`](../clients/wendy-cli/commands/auth/login.md) for the full
+flag set. That certificate is what lets `wendy device version`, `wendy run` and
+the other device commands connect over mTLS.
 
-### Enroll a device
-
-Find your machine's LAN IP (the address the device can reach):
-
-```sh
-ifconfig | grep "inet " | grep -v 127.0.0.1
-```
-
-Then enroll the target device:
-
-```sh
-wendy device enroll \
-  --cloud-grpc <your-lan-ip>:50051 \
-  --name my-device
-```
-
-› **Plaintext dial (local pki-core only):** the agent's enrollment dial is TLS
-› by default for every address, and a cloud host given without a port resolves
-› to `:443` (it used to resolve to the plaintext `:50051`, which is what sent
-› enrollment tokens in cleartext — WDY-2799). A local pki-core serving
-› plaintext gRPC therefore needs two things: its port named explicitly, as
-› above, and `WENDY_CLOUD_INSECURE=1` set **in the agent's environment on the
-› device** — the agent performs this dial, so setting the variable in your own
-› shell has no effect. The agent logs a warning naming the target address
-› whenever the variable is active, because the enrollment token is a bearer
-› credential. Never set it on a real device.
-
-After this, `wendy device version`, `wendy run`, and other device commands automatically use the mTLS port (plaintext port + 1) when the device's Avahi advertisement includes `tls=true`.
-
-> **Note:** The end-to-end test helper `go run ./cmd/local-pki-test` passes
-> `nil` for identity URIs, so the CSR it generates has no URI SAN. This is
-> intentional — the tool is for CA wiring tests only, not for producing
-> production-equivalent certificates.
+After enrollment, `wendy device version`, `wendy run`, and other device commands automatically use the mTLS port (plaintext port + 1) when the device's Avahi advertisement includes `tls=true`.
 
 ## Avahi advertisement
 

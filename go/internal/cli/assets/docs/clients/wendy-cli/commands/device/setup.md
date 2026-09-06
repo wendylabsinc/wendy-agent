@@ -3,4 +3,4 @@
 
 Interactive wizard that provisions the device, configures WiFi, and optionally updates the agent. Connects the device to [Wendy Cloud](../../../../cloud/) using the CLI's stored mTLS certificates.
 
-To enroll against a self-hosted [pki-core](../../../../pki/) instead, use [`wendy device enroll`](./enroll.md) with `--cloud-grpc` pointing at it.
+A device obtains its own certificate from [pki-core](../../../../pki/) directly, over ACME (or EST on constrained hardware) — not from cloud. To enroll a device on its own, without the rest of the wizard, use [`wendy device enroll`](./enroll.md).

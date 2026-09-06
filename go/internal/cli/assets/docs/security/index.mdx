@@ -48,7 +48,7 @@ explicit entitlements; and cloud connectivity requires a certificate issued by W
 
 **Provisioning and mTLS transition.** Unprovisioned devices accept a plaintext channel by
 design — provisioning is the mitigation. The provisioning window is time-bounded and warned to
-operators; pre-enrollment at imaging time eliminates it entirely. Once provisioned, all
+operators. Once provisioned, all
 communication moves to mTLS on port 50052, and the plaintext port is shut down.
 
 **Container isolation.** Apps run as non-root (`appuser`, UID 1000) inside containerd with a
@@ -96,7 +96,6 @@ the risk. See [Managing drivers](/docs/device/managing-drivers).
 |---------|--------|--------|
 | CLI↔agent mTLS (port 50052) | ✅ Shipped | — |
 | Post-quantum data-in-transit | ✅ Shipped | — |
-| Zero-trust cloud enrollment (PKI) | ✅ Shipped | — |
 | CLI device/org pinning on set-default | ✅ Shipped | — |
 | Container seccomp baseline | ✅ Shipped | — |
 | CAP_NET_ADMIN gated behind explicit host-admin entitlement | ✅ Shipped | — |
@@ -112,10 +111,12 @@ the risk. See [Managing drivers](/docs/device/managing-drivers).
 | Cloud CA pinning in firmware | 🛠 In progress | Q3 2026 |
 | Certificate revocation (OCSP/CRL) | 🛠 In progress | Q3 2026 |
 | Operator-scoped permissions in developer certificates | 🛠 In progress | Q3 2026 |
+| Device enrollment direct to pki-core (ACME; EST on constrained devices) | 🛠 In progress | — |
+| Operator certificates issued by pki-core's identity frontend (cloud not in the path) | 🛠 In progress | — |
 | Hardware-backed key protection / root of trust (HSM/TPM) | 🛠 In progress | — |
 | Container user namespaces (UID remap) | 📋 Planned | — |
 | Audit logging (tamper-evident, remote sink) | 📋 Planned | — |
-| Enrollment token ECDH protection | 📋 Planned | — |
+| Hardware-attested device enrollment (TPM / OP-TEE / eFuse tiers) | 📋 Planned | — |
 | Default network mode bridge/CNI | 📋 Planned | — |
 | Secure-boot lockdown via fuse burning (supported platforms) | 📋 Planned | — |
 

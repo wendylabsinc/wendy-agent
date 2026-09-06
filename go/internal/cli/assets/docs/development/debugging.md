@@ -94,7 +94,7 @@ After provisioning, all gRPC traffic uses mutual TLS backed by ML-DSA (post-quan
 
 If you see TLS handshake failures:
 - Confirm the CLI has valid certificates: `wendy auth status`
-- Re-fetch certificates: `wendy auth refresh-certs`
+- Renew the CLI certificate against pki-core: `wendy auth refresh-certs` (once it has expired, log in again with `wendy cloud login`)
 - Check that `WENDY_CONFIG_PATH` on the agent contains `cert.pem`, `chain.pem`, and `key.pem`
 
 ## gRPC Tracing
@@ -195,7 +195,7 @@ The CLI itself performs an mDNS browse on Linux hosts (shipped binaries are CGO_
 
 ### mTLS handshake fails after re-provisioning
 
-Old mTLS state may be cached. Refresh certificates on the CLI side:
+Old mTLS state may be cached. Renew the CLI's certificate against pki-core:
 
 ```sh
 wendy auth refresh-certs
