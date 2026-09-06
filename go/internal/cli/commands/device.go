@@ -88,6 +88,8 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),
 		newDeviceRenameCmd(),
+		newDevicePairCmd(),
+		newDeviceUnpairCmd(),
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
 		newDeviceCacheCmd(),
