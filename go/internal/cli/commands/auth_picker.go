@@ -19,6 +19,9 @@ func authSessionLabel(a *config.AuthConfig) string {
 	if len(a.Certificates) > 0 {
 		return fmt.Sprintf("org %d — %s", a.Certificates[0].OrganizationID, a.CloudGRPC)
 	}
+	if a.OAuthIssuer != "" {
+		return fmt.Sprintf("%s — %s", issuerRealm(a.OAuthIssuer), a.CloudGRPC)
+	}
 	return a.CloudGRPC
 }
 
@@ -28,6 +31,9 @@ func authSessionLabel(a *config.AuthConfig) string {
 func authSessionKey(a *config.AuthConfig) string {
 	if len(a.Certificates) > 0 {
 		return fmt.Sprintf("%s::%d", a.CloudGRPC, a.Certificates[0].OrganizationID)
+	}
+	if a.OAuthIssuer != "" {
+		return fmt.Sprintf("%s::%s", a.CloudGRPC, a.OAuthIssuer)
 	}
 	return a.CloudGRPC
 }
@@ -101,6 +107,8 @@ func authPickerItems(cfg *config.Config, orgNames map[int32]string) []tui.Picker
 			} else {
 				name = fmt.Sprintf("org %d", orgID)
 			}
+		} else if a.OAuthIssuer != "" {
+			name = issuerRealm(a.OAuthIssuer)
 		}
 
 		env := a.CloudDashboard
@@ -208,8 +216,8 @@ func pickAuthSession(cfg *config.Config) (*config.AuthConfig, error) {
 	selectedKey := pm.Selected().Value.(string)
 	for i := range cfg.Auth {
 		if authSessionKey(&cfg.Auth[i]) == selectedKey {
-			if len(cfg.Auth[i].Certificates) == 0 {
-				return nil, fmt.Errorf("auth session has no certificates; re-run 'wendy auth login'")
+			if len(cfg.Auth[i].Certificates) == 0 && !cfg.Auth[i].HasAPIKey() {
+				return nil, fmt.Errorf("auth session has no certificates or API token; re-run 'wendy auth login'")
 			}
 			return &cfg.Auth[i], nil
 		}

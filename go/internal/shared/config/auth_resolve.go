@@ -41,7 +41,7 @@ func (c *Config) DefaultAuth() (*AuthConfig, bool) {
 //  5. pick != nil             -> interactive picker
 //  6. otherwise               -> ErrMultipleSessions
 //
-// The returned session is guaranteed to hold certificate material.
+// The returned session is guaranteed to hold certificate material or an API token.
 func ResolveAuth(cfg *Config, cloudGRPC string, pick SessionPicker) (*AuthConfig, error) {
 	if cfg == nil || len(cfg.Auth) == 0 {
 		return nil, ErrNotLoggedIn
@@ -97,8 +97,8 @@ func ResolveAuth(cfg *Config, cloudGRPC string, pick SessionPicker) (*AuthConfig
 
 // authWithCerts rejects sessions with no certificate material.
 func authWithCerts(a *AuthConfig) (*AuthConfig, error) {
-	if len(a.Certificates) == 0 {
-		return nil, fmt.Errorf("auth session %s has no certificates; re-run 'wendy auth login'", a.CloudGRPC)
+	if len(a.Certificates) == 0 && !a.HasAPIKey() {
+		return nil, fmt.Errorf("auth session %s has no certificates or API token; re-run 'wendy auth login'", a.CloudGRPC)
 	}
 	return a, nil
 }

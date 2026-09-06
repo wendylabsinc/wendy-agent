@@ -34,6 +34,33 @@ work without re-authentication.
 The cloud certificate service validates the URI SAN against the
 enrollment-token or mTLS identity at issuance time.
 
+When the enrollment token carries a `tenant_uuid` claim, a second URI SAN is
+added *alongside* the urn:wendy SAN:
+
+| Entity | Tenant SPIFFE URI SAN format |
+|--------|------------------------------|
+| Device / agent | `spiffe://wendy.sh/tenant/‹uuid›/service/asset-‹assetID›` |
+| User (CLI) | `spiffe://wendy.sh/tenant/‹uuid›/service/user-‹userID›` |
+
+Cloud refuses to sign a relay grant unless the CSR carries exactly this SPIFFE
+principal. The principal kind is always `service`, never `device`: cloud relays
+every client leaf through pki-core's `service-identity` profile, which would
+refuse a profile-kind mismatch. That profile is also the one that consults the
+tenant domain allow-list, so these CSRs stay URI-SAN-only — any dNSName fails
+the mint.
+
+The urn:wendy SAN is retained rather than replaced. It is what the agent's
+org-equality gate reads out of a peer certificate, and a SPIFFE principal names
+a tenant UUID rather than the int32 org that gate compares, so dropping the urn
+would silently disarm org enforcement across the fleet.
+
+Organizations with no pki tenant receive no `tenant_uuid` claim and enroll
+exactly as before — the absence of the claim is never an error.
+
+› **Certificate refresh:** the refresh path derives identity from the
+› already-stored certificate rather than an enrollment token, so it has no
+› `tenant_uuid` to read and adds no SPIFFE SAN. Only initial enrollment does.
+
 ## Server certificate verification
 
 The CLI verifies device server certificates on all mTLS connections (BLE, LAN gRPC, and cloud tunnel). Verification includes:
@@ -149,7 +176,23 @@ When connecting to a device, the CLI automatically checks for clock skew. If the
    ```
    This exposes `wendycloud.v1.CertificateService` on the configured listen address (default `:50051`).
 
-### Provision a device
+### Authenticate the CLI
+
+Do this first: `wendy device enroll` mints its enrollment token from your stored
+auth session, so the CLI has to be logged in to the same pki-core before it can
+enroll anything. `--api-key` selects the local pki-core flow.
+
+```sh
+wendy auth login \
+  --api-key <key-from-config.yaml> \
+  --cloud-grpc <your-lan-ip>:50051
+```
+
+The same step issues the CLI its own client certificate, which is what lets
+`wendy device version`, `wendy run`, and the other device commands connect over
+mTLS afterwards.
+
+### Enroll a device
 
 Find your machine's LAN IP (the address the device can reach):
 
@@ -157,29 +200,29 @@ Find your machine's LAN IP (the address the device can reach):
 ifconfig | grep "inet " | grep -v 127.0.0.1
 ```
 
-Then provision the target device:
+Then enroll the target device:
 
 ```sh
-wendy device provision \
-  --cloud <your-lan-ip>:50051 \
-  --api-key <key-from-config.yaml> \
+wendy device enroll \
+  --cloud-grpc <your-lan-ip>:50051 \
   --name my-device
 ```
 
-### Authenticate the CLI
-
-Issue a client certificate from the same pki-core so the CLI can connect over mTLS:
-
-```sh
-wendy auth login-local \
-  --cloud <your-lan-ip>:50051 \
-  --api-key <key-from-config.yaml>
-```
+› **Plaintext dial (local pki-core only):** the agent's enrollment dial is TLS
+› by default for every address, and a cloud host given without a port resolves
+› to `:443` (it used to resolve to the plaintext `:50051`, which is what sent
+› enrollment tokens in cleartext — WDY-2799). A local pki-core serving
+› plaintext gRPC therefore needs two things: its port named explicitly, as
+› above, and `WENDY_CLOUD_INSECURE=1` set **in the agent's environment on the
+› device** — the agent performs this dial, so setting the variable in your own
+› shell has no effect. The agent logs a warning naming the target address
+› whenever the variable is active, because the enrollment token is a bearer
+› credential. Never set it on a real device.
 
 After this, `wendy device version`, `wendy run`, and other device commands automatically use the mTLS port (plaintext port + 1) when the device's Avahi advertisement includes `tls=true`.
 
-> **Note:** The end-to-end test helper `go run ./cmd/local-pki-test` passes an
-> empty identity URN, so the CSR it generates has no URI SAN. This is
+> **Note:** The end-to-end test helper `go run ./cmd/local-pki-test` passes
+> `nil` for identity URIs, so the CSR it generates has no URI SAN. This is
 > intentional — the tool is for CA wiring tests only, not for producing
 > production-equivalent certificates.
 
