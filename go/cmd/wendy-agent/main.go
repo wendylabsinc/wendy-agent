@@ -1020,12 +1020,14 @@ func main() {
 
 	cloudFlusher := services.NewCloudFlusherWithProvisioning(logger, telemetryBuf, provisioningSvc)
 	// WENDY_DATA_TELEMETRY_URL redirects OpenTelemetry Protocol (OTLP) exports
-	// to a different collector endpoint, the mirror of WENDY_DATA_INGEST_URL
-	// below. The broker's OTLP handler has sinks for Loki, Prometheus and Tempo
-	// but none for the data platform's store, so telemetry sent there is
-	// acknowledged and discarded; pointing the flusher at the wendy-data ingest
-	// service lands the same frames in ClickHouse. Enrollment is untouched:
-	// identity still comes from the enrolled asset certificate.
+	// to a different collector endpoint. The broker's OTLP handler has sinks for
+	// Loki, Prometheus and Tempo but none for the data platform's store, so
+	// telemetry sent there does not reach ClickHouse; pointing the flusher at
+	// the wendy-data ingest service lands the same frames in
+	// telemetry_metrics, telemetry_logs and telemetry_traces. Unlike
+	// WENDY_DATA_INGEST_URL below this keeps its fallback to the enrolled cloud
+	// host, which does serve these routes. Identity is the enrolled asset
+	// certificate presented in the TLS handshake; no request header carries it.
 	if v := os.Getenv("WENDY_DATA_TELEMETRY_URL"); v != "" {
 		cloudFlusher.SetTelemetryHostOverride(v)
 		logger.Info("cloud flusher: telemetry endpoint override set",
@@ -1048,14 +1050,17 @@ func main() {
 	// and gating on it would silently leave every sealed episode unuploaded
 	// until the quota evicted it.
 	dataTransferWorker := services.NewDataTransferWorker(logger, dataManager, provisioningSvc)
-	// WENDY_DATA_INGEST_URL redirects episode uploads to a different
-	// DataIngestService endpoint (for example a dev cloud deployment) without
-	// touching the device's enrollment; identity still comes from the enrolled
-	// asset certificate.
+	// WENDY_DATA_INGEST_URL names the DataIngestService endpoint episode uploads
+	// dial (ingest.data.wendy.sh in dev). There is no fallback: the enrolled
+	// cloud host does not serve DataIngestService. Unset disables uploads, the
+	// worker says so once, and sealed episodes stay queued on the device.
+	// Identity is the enrolled asset certificate presented in the TLS
+	// handshake; no request header carries it.
 	if v := os.Getenv("WENDY_DATA_INGEST_URL"); v != "" {
-		dataTransferWorker.SetIngestHostOverride(v)
-		logger.Info("data transfer worker: ingest endpoint override set",
-			zap.String("url", v))
+		dataTransferWorker.SetIngestEndpoint(v)
+		logger.Info("data transfer worker: ingest endpoint", zap.String("url", v))
+	} else {
+		logger.Error("data transfer worker: WENDY_DATA_INGEST_URL is not set; episode uploads are disabled")
 	}
 	wg.Add(1)
 	go func() {

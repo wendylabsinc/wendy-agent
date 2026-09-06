@@ -123,10 +123,7 @@ Enrollment stays untouched; only the episode transfer worker is redirected. The
 agent's systemd unit reads `/etc/default/wendy-agent` (`EnvironmentFile=`), so:
 
 ```sh
-# If the service runs on Cloud Run, look the URL up rather than typing it:
-INGEST_URL=$(gcloud run services describe <ingest-service-name> \
-      --region <region> --project <your-gcp-project> \
-      --format='value(status.url)')
+INGEST_URL=ingest.data.wendy.sh
 
 ssh root@<device-hostname> "cat >> /etc/default/wendy-agent <<EOF
 WENDY_DATA_INGEST_URL=$INGEST_URL
@@ -135,14 +132,13 @@ EOF
 mkdir -p /data/wendy-agent/episodes && systemctl restart wendyos-agent"
 ```
 
-- `WENDY_DATA_INGEST_URL` redirects the transfer worker's dial target. Where
-  the endpoint has no Wendy Envoy ingress in front of it to terminate mutual
-  Transport Layer Security (mTLS) and re-inject the certificate identity, the
-  worker also attaches
-  `x-wendy-client-cert: URI=urn:wendy:org:<org-id>:asset:<asset-id>` (the
-  header `EnvoyCertMetadataExtractor` reads) carrying the identity the enrolled
-  asset certificate asserts. That header is attached only when this override is
-  in effect.
+- `WENDY_DATA_INGEST_URL` is the DataIngestService endpoint the transfer worker
+  dials, `ingest.data.wendy.sh` for the dev platform. It is required: the
+  enrolled cloud host does not serve this service, so there is no fallback, and
+  an agent without it logs once that uploads are disabled and keeps sealed
+  episodes queued. Identity is the enrolled asset certificate, presented in the
+  mutual Transport Layer Security (mTLS) handshake and read by the service from
+  the validated certificate; the worker attaches no identity header.
 - `WENDY_DATA_DIR` moves the episode store off the root partition (default
   `/var/lib/wendy-agent/data/episodes`) onto the larger data partition. Worth
   doing on any device whose root partition is a few gigabytes.

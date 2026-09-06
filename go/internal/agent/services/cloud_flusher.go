@@ -89,12 +89,11 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 	}
 
 	var cloudHost string
-	var orgID, assetID int32
 
 	// Poll until provisioned.
 	for {
 		var enrolled bool
-		cloudHost, orgID, assetID, enrolled = f.provisioningSvc.ProvisioningInfo()
+		cloudHost, _, _, enrolled = f.provisioningSvc.ProvisioningInfo()
 		if enrolled {
 			break
 		}
@@ -118,11 +117,10 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 		}
 
 		certPEM, chainPEM, keyData := f.provisioningSvc.ProvisioningCerts()
-		// The identity sent, when one is sent at all, is the one the enrolled
-		// asset certificate asserts: it comes from ProvisioningInfo above,
-		// never from the environment or from anything an app can influence.
-		conn, err := f.dial(ctx, f.telemetryDialHost(cloudHost), certPEM, chainPEM, keyData,
-			f.telemetryDialOptions(orgID, assetID)...)
+		// Identity is the enrolled asset certificate, presented in the TLS
+		// handshake and read by the server from the validated leaf. No header
+		// carries it on either path.
+		conn, err := f.dial(ctx, f.telemetryDialHost(cloudHost), certPEM, chainPEM, keyData)
 		if err != nil {
 			f.logger.Warn("cloud flusher: dial failed", zap.Error(err))
 			f.sleep(ctx, attempt)
@@ -168,17 +166,19 @@ func (f *CloudFlusher) sleep(ctx context.Context, attempt int) {
 
 // dial establishes a TLS 1.3 gRPC connection. keyData is zeroed on return as
 // best-effort protection; crypto/tls may retain additional internal copies.
-func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string, keyData []byte, extraOpts ...grpc.DialOption) (*grpc.ClientConn, error) {
+func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string, keyData []byte) (*grpc.ClientConn, error) {
 	defer zeroBytes(keyData)
-	return dialCloudMTLS(host, certPEM, chainPEM, keyData, extraOpts...)
+	return dialCloudMTLS(host, certPEM, chainPEM, keyData)
 }
 
 // SetTelemetryHostOverride points OTLP exports at host instead of the
 // provisioning cloud host. host may be a bare host, host:port, or an
 // http(s):// URL; the scheme and any path are stripped and the default port
-// is applied by the dialer. An empty host clears the override.
+// is applied by the dialer. An empty host clears the override. Unlike episode
+// uploads, telemetry keeps its fallback to the enrolled cloud host: the broker
+// does serve the OTLP export routes, into Loki, Prometheus and Tempo.
 func (f *CloudFlusher) SetTelemetryHostOverride(host string) {
-	f.telemetryHostOverride = normalizeIngestOverride(host)
+	f.telemetryHostOverride = normalizeEndpoint(host)
 }
 
 // telemetryDialHost resolves the host this pass should dial: the override when
@@ -188,17 +188,6 @@ func (f *CloudFlusher) telemetryDialHost(cloudHost string) string {
 		return f.telemetryHostOverride
 	}
 	return cloudHost
-}
-
-// telemetryDialOptions returns the extra dial options for this pass: nil on the
-// normal enrolled path, where Envoy terminates mutual Transport Layer Security
-// and injects the identity itself, and the certificate identity header on the
-// override path, which does not go through Envoy at all.
-func (f *CloudFlusher) telemetryDialOptions(orgID, assetID int32) []grpc.DialOption {
-	if f.telemetryHostOverride == "" {
-		return nil
-	}
-	return certIdentityDialOptions(orgID, assetID)
 }
 
 // zeroBytes overwrites b in place as best-effort key-material hygiene.
@@ -214,7 +203,7 @@ func zeroBytes(b []byte) {
 // identity over the same trust configuration. Callers own keyData and are
 // responsible for zeroing it; this function does not retain it beyond the
 // X509KeyPair parse.
-func dialCloudMTLS(host, certPEM, chainPEM string, keyData []byte, extraOpts ...grpc.DialOption) (*grpc.ClientConn, error) {
+func dialCloudMTLS(host, certPEM, chainPEM string, keyData []byte) (*grpc.ClientConn, error) {
 	host = normalizeCloudHost(host)
 	// Build client cert PEM bundle: leaf cert + intermediate chain so that
 	// servers can verify the full chain without trusting the leaf directly.
@@ -240,7 +229,7 @@ func dialCloudMTLS(host, certPEM, chainPEM string, keyData []byte, extraOpts ...
 		RootCAs:      caPool,
 	}
 
-	opts := append([]grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))}, extraOpts...)
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))}
 	conn, err := grpc.NewClient(host, opts...)
 	if err != nil {
 		return nil, err

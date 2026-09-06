@@ -13,22 +13,26 @@ package services
 // It is skipped unless the stack is up and pointed at via env, so it never runs
 // in ordinary unit-test CI:
 //
-//	WENDY_DATA_E2E_ADDR=localhost:50061 \
+//	WENDY_DATA_E2E_ADDR=localhost:9443 \
+//	WENDY_DATA_E2E_CLIENT_CERT=/path/device.pem \
+//	WENDY_DATA_E2E_CLIENT_KEY=/path/device.key \
+//	WENDY_DATA_E2E_SERVER_CA=/path/server-ca.pem \
 //	WENDY_DATA_E2E_READ_TOKEN=e2e-read-token \
 //	CC=/usr/bin/clang go test ./internal/agent/services/ -run E2EDataPlatform -v
 //
-// Device identity: the production worker carries org/asset in an mTLS client
-// certificate that Envoy terminates and re-injects as the x-wendy-client-cert
-// header the Swift service parses. There is no Envoy locally and the service
-// listens plaintext, so this harness stands in for Envoy by attaching that same
-// header via a client interceptor. The worker code is unchanged; the only local
-// substitution is the transport (plaintext) and who sets the identity header.
+// Device identity: the ingest service terminates mutual TLS itself and reads
+// the device identity from the validated client certificate's URI SAN. No
+// header carries identity any more, so this harness presents a client
+// certificate whose SAN is urn:wendy:org:7:asset:42 (the service must run with
+// WENDY_DATA_ACCEPT_LEGACY_URN_SAN=1 and a trust root that signed it). The
+// worker code is unchanged; the only local substitution is where the client
+// certificate comes from (files named by env rather than provisioning).
 import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -39,7 +43,6 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
@@ -47,22 +50,41 @@ import (
 )
 
 const (
-	// Must match the identity injected into both the manifest (via the worker
-	// factory) and the x-wendy-client-cert header, or the server rejects the
-	// write with PERMISSION_DENIED (manifest org/asset != cert org/asset).
-	e2eOrgID   uint64 = 7
-	e2eAssetID uint64 = 42
+	// The identity the server reads from the harness's client certificate SAN
+	// (urn:wendy:org:7:asset:42). The read-side check compares against these, so
+	// a certificate naming another device fails the test rather than passing
+	// under the wrong owner.
+	e2eOrgID   = "7"
+	e2eAssetID = "42"
 )
 
-// e2eTransportCreds selects the harness transport. The local stack listens
-// plaintext; a deployed Cloud Run service terminates TLS on 443, selected by
-// WENDY_DATA_E2E_TLS=1. The worker and service code are unchanged either way;
-// the transport is a harness seam exactly like the identity header.
-func e2eTransportCreds() grpc.DialOption {
-	if os.Getenv("WENDY_DATA_E2E_TLS") == "1" {
-		return grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
+// e2eTransportCreds builds the mutual TLS transport from the certificate files
+// named by env: the client certificate and key the harness presents, and the CA
+// the server's certificate chains to (the system roots when unset, which is
+// what a deployed endpoint with a Let's Encrypt certificate needs).
+func e2eTransportCreds(t *testing.T) grpc.DialOption {
+	t.Helper()
+	certPath, keyPath := os.Getenv("WENDY_DATA_E2E_CLIENT_CERT"), os.Getenv("WENDY_DATA_E2E_CLIENT_KEY")
+	if certPath == "" || keyPath == "" {
+		t.Skip("WENDY_DATA_E2E_CLIENT_CERT / WENDY_DATA_E2E_CLIENT_KEY not set; the ingest service requires a device certificate")
 	}
-	return grpc.WithTransportCredentials(insecure.NewCredentials())
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load client certificate: %v", err)
+	}
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}}
+	if caPath := os.Getenv("WENDY_DATA_E2E_SERVER_CA"); caPath != "" {
+		pem, err := os.ReadFile(caPath)
+		if err != nil {
+			t.Fatalf("read server CA: %v", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			t.Fatalf("server CA %s holds no certificate", caPath)
+		}
+		cfg.RootCAs = pool
+	}
+	return grpc.WithTransportCredentials(credentials.NewTLS(cfg))
 }
 
 func e2eAddr(t *testing.T) string {
@@ -74,28 +96,11 @@ func e2eAddr(t *testing.T) string {
 	return addr
 }
 
-// identityUnaryInterceptor / identityStreamInterceptor attach the device
-// identity header that Envoy would inject in production.
-func identityHeader() (string, string) {
-	return "x-wendy-client-cert", fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", e2eOrgID, e2eAssetID)
-}
-
+// dialWorkerClient dials the ingest service the way the worker does: mutual TLS
+// and nothing else. No interceptor attaches any identity.
 func dialWorkerClient(t *testing.T, addr string) (*grpc.ClientConn, cloudpb.DataIngestServiceClient) {
 	t.Helper()
-	key, val := identityHeader()
-	unary := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		ctx = metadata.AppendToOutgoingContext(ctx, key, val)
-		return invoker(ctx, method, req, reply, cc, opts...)
-	}
-	stream := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-		ctx = metadata.AppendToOutgoingContext(ctx, key, val)
-		return streamer(ctx, desc, cc, method, opts...)
-	}
-	conn, err := grpc.NewClient(addr,
-		e2eTransportCreds(),
-		grpc.WithUnaryInterceptor(unary),
-		grpc.WithStreamInterceptor(stream),
-	)
+	conn, err := grpc.NewClient(addr, e2eTransportCreds(t))
 	if err != nil {
 		t.Fatalf("dial worker client: %v", err)
 	}
@@ -110,7 +115,7 @@ func dialReadClient(t *testing.T, addr, token string) cloudpb.DataIngestServiceC
 		return invoker(ctx, method, req, reply, cc, opts...)
 	}
 	conn, err := grpc.NewClient(addr,
-		e2eTransportCreds(),
+		e2eTransportCreds(t),
 		grpc.WithUnaryInterceptor(unary),
 	)
 	if err != nil {
@@ -247,9 +252,9 @@ func TestE2EDataPlatformHappyPath(t *testing.T) {
 		t.Fatalf("episode state = %s, want COMPLETE", ep.GetState())
 	}
 	if ep.GetOrgId() != e2eOrgID || ep.GetAssetId() != e2eAssetID {
-		t.Fatalf("episode identity = org %d asset %d, want %d/%d", ep.GetOrgId(), ep.GetAssetId(), e2eOrgID, e2eAssetID)
+		t.Fatalf("episode identity = org %s asset %s, want %s/%s", ep.GetOrgId(), ep.GetAssetId(), e2eOrgID, e2eAssetID)
 	}
-	t.Logf("GetEpisode: state=%s org=%d asset=%d size=%d files=%d",
+	t.Logf("GetEpisode: state=%s org=%s asset=%s size=%d files=%d",
 		ep.GetState(), ep.GetOrgId(), ep.GetAssetId(), ep.GetSizeBytes(), len(ep.GetFiles()))
 
 	// Cross-check every manifest file appears in the catalog with a matching sha.
