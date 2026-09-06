@@ -65,6 +65,7 @@ func newFleetRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.noRestart, "no-restart", false, "Do not restart on exit")
 	cmd.Flags().StringVar(&opts.prefix, "prefix", "", "Project directory to deploy from instead of the current working directory")
 	cmd.Flags().StringVar(&opts.chunking, "chunking", chunkingAuto, "Deploy path: auto, force (chunk-diff only), or off (registry push only)")
+	addReadinessFlags(cmd, &opts)
 
 	return cmd
 }
@@ -77,6 +78,11 @@ type fleetRunResult struct {
 }
 
 func runFleetRun(ctx context.Context, opts runOptions, group, cloudGRPC, brokerURL string, lan bool, central string, timeout time.Duration) error {
+	if err := validateReadinessOptions(opts); err != nil {
+		return err
+	}
+	// This command owns one final JSON array across all devices.
+	opts.suppressDeploymentJSON = true
 	if _, err := normalizeImageBuilder(opts.builder); err != nil {
 		return err
 	}

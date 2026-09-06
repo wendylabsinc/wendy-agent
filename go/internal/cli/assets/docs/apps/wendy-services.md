@@ -87,13 +87,23 @@ Any service in the `services` map may declare its own `readiness` probe and `hoo
 }
 ```
 
-Only a service that declares `readiness`, `hooks`, or a service-level `http` entitlement runs the readiness→postStart sequence; `db`, `cache`, and `api` above are unaffected.
+On supported agents, each isolated service is deployed and verified before the
+next service in dependency order. The service's TCP, HTTP GET, or exec probe
+controls its readiness result; an `http` entitlement supplies an implicit TCP
+probe when none is explicit. A service without a probe reports `RUNNING`, not
+`READY`. `--wait-ready` requires a probe for every selected service, including
+its dependencies. See the [probe configuration reference](./wendy.json.md#readiness).
+
+If activation or readiness fails, the agent restores that container's previous
+revision when available and the command fails. Services that already deployed
+successfully are not rolled back as a group. Shared-namespace groups retain
+legacy deployment with an unverified notice; `--wait-ready` rejects them.
 
 ### Scoping
 
-- `readiness` gates only the declaring service's own `postStart` hook — it never delays other services' startup order (`dependsOn` ordering is a separate mechanism).
+- Service-level `readiness` controls that service's verified deployment and its own `postStart` hook. Verified isolated services are processed in dependency order, waiting for each deployment result before continuing.
 - A service-level `http` entitlement waits, announces, and opens only for that service. A top-level `http` entitlement remains in every container's create configuration but runs as an app-level action once, after every service starts. If both scopes declare HTTP, both actions run at their respective scopes.
-- An explicit `readiness.tcpSocket.port` remains the probe target even when the same scope declares HTTP. The displayed/opened URL prefers an explicit hostname-templated `openURL`, then the HTTP port, then the readiness port; probing `9000` while opening `8080` is supported.
+- An explicit TCP, HTTP GET, or exec readiness probe takes precedence over the implicit HTTP-entitlement TCP probe. The displayed/opened URL prefers an explicit hostname-templated `openURL`, then the HTTP port, then a TCP readiness port; probing `9000` while opening `8080` is supported.
 - `hooks.postStart.agent` runs directly on the device host and is delivered only with the declaring service's own container start call; starting another service does not trigger it.
 - Hook commands may reference `${WENDY_HOSTNAME}` (the device host), `${WENDY_APP_ID}`, and `${WENDY_SERVICE_NAME}` — the declaring service's name, empty for single-container apps and for the app-level fallback below. Windows-style `%VAR%` forms are accepted too.
 
@@ -104,9 +114,29 @@ A top-level `readiness`/`hooks` or `http` entitlement in `wendy.json` acts as an
 - A top-level `hooks.postStart.agent` is ignored for multi-service apps — there is no single app-level container start to trigger it. `wendy run` warns about this when it loads `wendy.json`; declare it under `services.<name>.hooks` instead.
 - The fallback is skipped when `wendy run --service` selects a subset of services, since "every service has started" can't be guaranteed on a partial run.
 
+This app-level fallback is a host-side lifecycle check, not proof of any
+individual container's agent-verified readiness. Configure service-level
+probes when using `--wait-ready`.
+
 ### Attached vs. detached
 
-In attached mode, each service's readiness→postStart sequence fires asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service. Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. If the run ends on its own — every service's log stream closes — while a hook (per-service or the app-level fallback) is still waiting on readiness, that hook is suppressed rather than fired, so `wendy run` never opens a browser onto a stack that has already exited. In detached mode none of this runs: no readiness wait, no `App reachable` line, and no host-side `postStart` action. Only the agent-side `postStart.agent` hooks, carried on each start RPC, still run on the device. With `wendy run --watch`, each service's `openURL` and `cli` actions run once per session after its first successful readiness check; later saves do not repeat them, while a failed or canceled check may retry after a later deploy. `--watch --detach` skips these actions. A non-cancellation readiness timeout in attached mode warns but does not fail the command: explicitly configured multi-service `postStart` hooks still run, while `App reachable` and any HTTP-entitlement-synthesized browser open are suppressed. Cancellation suppresses the warning, announcement, and hook.
+Both attached and detached runs wait for each agent-owned deployment result on
+supported runtimes. Detached runs skip `App reachable` announcements,
+`openURL`, and `cli` hooks; `postStart.agent` still runs on the device when its
+container starts. Attached runs launch host-side actions after successful
+deployment and any applicable lifecycle readiness check.
+
+With `wendy run --watch`, each service's `openURL` and `cli` actions run once
+per session after its first successful readiness check. Later saves do not
+repeat them, while a failed or canceled check may retry after a later deploy.
+`--watch --detach` skips these actions. Ctrl-C stops host-side waits and hook
+processes; an agent that has begun cutover still completes bounded verification
+or recovery.
+
+Older agents and shared-namespace groups use the legacy path with an
+unverified notice unless `--wait-ready` requires rejection. Legacy detached
+runs skip readiness waits; legacy attached readiness checks gate host actions
+and do not provide transactional recovery.
 
 ## How `wendy run` handles multi-service projects
 

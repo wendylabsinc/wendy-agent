@@ -20,7 +20,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -502,18 +501,27 @@ type runOptions struct {
 	buildHost string
 	// Devices beyond the primary --device that this build is also delivered to.
 	// Empty for every ordinary run.
-	fleetDevices         []string
-	debug                bool
-	deploy               bool
-	detach               bool
-	yes                  bool
-	restartUnlessStopped bool
-	restartOnFailure     bool
-	noRestart            bool
-	prefix               string
-	product              string
-	service              string
-	keepGoing            bool
+	fleetDevices              []string
+	debug                     bool
+	deploy                    bool
+	detach                    bool
+	waitReady                 bool
+	readinessTimeout          time.Duration
+	verifiedDeployment        bool
+	serviceDeployment         bool
+	deploymentOutcomeReported bool
+	suppressDeploymentJSON    bool
+	verifiedLifecycleConfig   *appconfig.AppConfig
+	deploymentStdout          *serviceLogWriter
+	deploymentStderr          *serviceLogWriter
+	yes                       bool
+	restartUnlessStopped      bool
+	restartOnFailure          bool
+	noRestart                 bool
+	prefix                    string
+	product                   string
+	service                   string
+	keepGoing                 bool
 	// maxConcurrency bounds simultaneous service build-and-push jobs for both
 	// standalone multi-service manifests and Compose projects.
 	maxConcurrency int
@@ -615,7 +623,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark); the built image is pushed straight to the target device")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
-	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
+	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Deploy and return without streaming logs or opening the app URL; supported agents verify configured readiness")
+	addReadinessFlags(cmd, &opts)
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Automatically accept all interactive prompts")
 	cmd.Flags().BoolVar(&opts.restartUnlessStopped, "restart-unless-stopped", false, "Restart unless manually stopped")
 	cmd.Flags().BoolVar(&opts.restartOnFailure, "restart-on-failure", false, "Restart on failure")
@@ -818,6 +827,9 @@ func debugRequiresDebugpy(cwd string, appCfg *appconfig.AppConfig) error {
 }
 
 func runCommand(ctx context.Context, opts runOptions) error {
+	if err := validateReadinessOptions(opts); err != nil {
+		return err
+	}
 	mark := phaseTimer()
 	// Step 1: Load and validate wendy.json.
 	cwd, err := resolveRunWorkingDir(opts)
@@ -1016,6 +1028,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// Provider-based run path.
 	if target.External != nil && target.Provider != nil {
+		if opts.waitReady || opts.readinessTimeout != 0 {
+			return fmt.Errorf("verified readiness requires a WendyOS agent target")
+		}
 		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "provider targets"); err != nil {
 			return err
 		}
@@ -1580,6 +1595,9 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 
 // runWithProvider builds and runs via an external device provider.
 func runWithProvider(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, product string, entitlements []appconfig.Entitlement, opts runOptions) error {
+	if opts.waitReady || opts.readinessTimeout != 0 {
+		return fmt.Errorf("verified readiness requires a WendyOS agent target")
+	}
 	if opts.builder != "" {
 		return fmt.Errorf("--builder is only used when --device selects a WendyOS device; use --device docker or --device apple-container for local provider runs")
 	}
@@ -1918,6 +1936,13 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
+	// Compose derives readiness from its resolved service configs, including
+	// x-wendy declarations. Its companion app need not have a top-level probe.
+	if projectType != "compose" {
+		if err := configureVerifiedDeployment(versionResp, appCfg, &opts); err != nil {
+			return err
+		}
+	}
 	printRunDiskUsageWarning(versionResp)
 	mark("agent version metadata (in runWithAgent)")
 	agentOS := versionResp.GetOs()
@@ -2056,7 +2081,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if hashErr == nil {
 		desiredHash, hashErr = computeDeployDesiredHash(inputHash, appCfg, opts.userArgs, deployEnv, resolveRestartPolicy(opts))
 	}
-	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
+	if !isDarwinAgent && opts.detach && !opts.deploy && !opts.verifiedDeployment && hashErr == nil {
 		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
 			mark("fast-path (skipped build)")
 			return nil
@@ -2107,6 +2132,8 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: desiredHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
 			}
 			return nil
+		} else if isSubmittedDeploymentError(err) {
+			return err
 		} else if isChunkDeployCancellation(ctx, err) {
 			// The deploy was cancelled — either the context (e.g. `wendy watch`
 			// superseded it with a newer change) or the user backing out of the
@@ -2353,6 +2380,15 @@ func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 // shared between runSwiftWithAgent and runWithAgent. It creates the container,
 // optionally starts it, streams output, and manages readiness + postStart hooks.
 func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, createReq *agentpb.CreateContainerRequest, opts runOptions) error {
+	if opts.verifiedDeployment && !opts.deploy {
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		stream, err := openVerifiedDeployment(runCtx, conn, appCfg, layerRequestFromCreate(createReq), opts)
+		if err != nil {
+			return err
+		}
+		return streamRunContainer(runCtx, conn, stream, appCfg, opts)
+	}
 	if opts.deploy {
 		_, err := conn.ContainerService.CreateContainer(ctx, createReq)
 		if err != nil {
@@ -2731,7 +2767,10 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 		return nil
 	}
 
-	err := waitForReadiness(ctx, readiness, hookHost)
+	var err error
+	if !opts.verifiedDeployment {
+		err = waitForReadiness(ctx, readiness, hookHost)
+	}
 	rp("  ↳ runcontainer: readiness wait")
 	if err != nil {
 		if ctx.Err() == nil {
@@ -2799,6 +2838,9 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 	shell, flags := shellCommand()
 	cmd := execCommandContext(ctx, shell, append(flags, expanded)...)
 	cmd.Stdout = os.Stdout
+	if jsonOutput {
+		cmd.Stdout = os.Stderr
+	}
 	cmd.Stderr = os.Stderr
 	finalizeProcessGroup := configurePostStartProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
@@ -2868,7 +2910,7 @@ func resolveRestartPolicy(opts runOptions) *agentpb.RestartPolicy {
 // behaviour of startAndStreamContainer for those flags). In attached mode the
 // Started message triggers readiness + the host-side postStart hook (again
 // mirroring startAndStreamContainer), then log streaming continues.
-func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions) error {
+func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, stream containerOutputStream, appCfg *appconfig.AppConfig, opts runOptions) error {
 	// The attached-mode postStart hook is tied to hookCtx so it is terminated
 	// when the stream ends (matching startAndStreamContainer's runCtx handling).
 	// Cleanup runs in a defer so the hook is killed and reaped on every exit
@@ -2886,26 +2928,59 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			_ = postStartCmd.Wait()
 		}
 	}()
+	lifecycleCfg := appCfg
+	if opts.verifiedLifecycleConfig != nil {
+		lifecycleCfg = opts.verifiedLifecycleConfig
+	}
 	hookFired := false
+	deploymentCompleted := false
+	defer func() {
+		// Attached single-app runs retain Ctrl+C-to-stop behavior after a
+		// successful transaction. Canceling a transaction before its outcome
+		// must leave agent-owned rollback alone.
+		if opts.verifiedDeployment && !opts.serviceDeployment && !opts.detach && !opts.isWatch() && deploymentCompleted && ctx.Err() != nil && conn != nil {
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer stopCancel()
+			_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{AppName: appCfg.ContainerName()})
+		}
+	}()
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
+			if opts.verifiedDeployment && !deploymentCompleted {
+				return &submittedDeploymentError{fmt.Errorf("deployment stream ended without an outcome")}
+			}
 			break
 		}
 		if err != nil {
+			if opts.verifiedDeployment {
+				return &submittedDeploymentError{fmt.Errorf("receiving deployment output: %w", err)}
+			}
 			return fmt.Errorf("receiving container output: %w", err)
 		}
-		if resp.GetStarted() != nil {
+		completed := resp.GetStarted() != nil
+		if opts.verifiedDeployment {
+			completed = false
+			if outcome := resp.GetDeployment(); outcome != nil {
+				if !opts.deploymentOutcomeReported {
+					emitDeploymentOutcome(outcome, opts)
+				}
+				if err := deploymentOutcomeError(outcome, opts.waitReady || deploymentReadiness(appCfg, opts).HasProbe()); err != nil {
+					return &submittedDeploymentError{err}
+				}
+				deploymentCompleted, completed = true, true
+			}
+		}
+		if completed {
 			rc("  ↳ runcontainer: device create+start")
 			if opts.deploy {
 				cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 				return nil
 			}
 			if opts.detach {
-				// Mirror startAndStreamContainer's detach branch: the container
-				// is started, so return without tailing logs or waiting on
-				// readiness (see runPostStartIfReady's doc comment). The container keeps
-				// running independently of this (now-abandoned) output stream.
+				// Verified deployment has already checked readiness. Legacy runs
+				// only acknowledge startup. Both leave the task running when this
+				// log stream is closed.
 				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
 				return nil
 			}
@@ -2915,19 +2990,23 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			if !hookFired {
 				hookFired = true
 				if opts.isWatch() {
-					cmd := runPostStartIfReady(ctx, opts.watchState.hookContext(ctx), conn, appCfg, opts)
+					cmd := runPostStartIfReady(ctx, opts.watchState.hookContext(ctx), conn, lifecycleCfg, opts)
 					opts.watchState.reapCommand(cmd)
 					return nil
 				}
-				postStartCmd = runPostStartIfReady(ctx, hookCtx, conn, appCfg, runOptions{})
+				postStartCmd = runPostStartIfReady(ctx, hookCtx, conn, lifecycleCfg, opts)
 			}
 			continue
 		}
-		if out := resp.GetStdoutOutput(); out != nil {
-			_, _ = os.Stdout.Write(out.GetData())
-		}
-		if out := resp.GetStderrOutput(); out != nil {
-			_, _ = os.Stderr.Write(out.GetData())
+		if opts.verifiedDeployment {
+			writeDeploymentOutput(resp, opts)
+		} else {
+			if out := resp.GetStdoutOutput(); out != nil {
+				_, _ = os.Stdout.Write(out.GetData())
+			}
+			if out := resp.GetStderrOutput(); out != nil {
+				_, _ = os.Stderr.Write(out.GetData())
+			}
 		}
 	}
 	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
@@ -3278,11 +3357,11 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	// live reconnected connection (WDY-2433). Watch owns one session-wide
 	// subscription, so it must not also open this per-deploy subscription.
 	var logSub *runLogSubscription
-	if runCycleOwnsLogSubscription(opts) {
+	if !opts.verifiedDeployment && runCycleOwnsLogSubscription(opts) {
 		logSub = startRunLogSubscription(ctx, pushConn, appCfg.AppID, os.Stdout, runLogStreamWarning)
 		defer logSub.stop()
 	}
-	stream, err := pushConn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
+	deploymentRequest := &agentpb.RunContainerLayersRequest{
 		ImageName:      imageName,
 		AppName:        appCfg.AppID,
 		Layers:         headers,
@@ -3292,7 +3371,13 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		UserArgs:       opts.userArgs,
 		ImageSignature: imageSignature,
 		Env:            deployEnv,
-	})
+	}
+	var stream containerOutputStream
+	if opts.verifiedDeployment {
+		stream, err = openVerifiedDeployment(runCtx, pushConn, appCfg, deploymentRequest, opts)
+	} else {
+		stream, err = pushConn.ContainerService.RunContainer(runCtx, deploymentRequest)
+	}
 	if err != nil {
 		return nil, hint, err
 	}
