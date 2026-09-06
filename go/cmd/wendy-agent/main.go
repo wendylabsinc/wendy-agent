@@ -389,6 +389,17 @@ func main() {
 
 	var wg sync.WaitGroup
 
+	// Resolve any interrupted app cutover before the restart monitor or RPC
+	// handlers can start a candidate whose readiness was never committed.
+	if recovery, ok := containerdClient.(interface{ RecoverDeployments(context.Context) error }); ok {
+		recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 2*time.Minute)
+		recoveryErr := recovery.RecoverDeployments(recoveryCtx)
+		recoveryCancel()
+		if recoveryErr != nil {
+			logger.Error("Interrupted application deployment recovery failed", zap.Error(recoveryErr))
+		}
+	}
+
 	if monitor != nil {
 		wg.Add(1)
 		go func() {

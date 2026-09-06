@@ -30,7 +30,7 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 	releaseLease := true
 	defer func() {
 		if releaseLease {
-			if err := doneLease(cleanupCtx); err != nil {
+			if err := c.cleanupRuntimeOperation(doneLease); err != nil {
 				c.logger.Warn("Failed to release image preparation lease; relying on expiration backstop",
 					zap.Duration("expiration", unpackLeaseExpiration),
 					zap.Error(err),
@@ -109,8 +109,10 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 		c.storePreparedSnapshot(normalizeImageName(imageName), &preparedSnapshot{
 			key:     preparedKey,
 			parent:  parentChainID,
-			release: func() { _ = doneLease(cleanupCtx) },
-			remove:  func() { _ = sn.Remove(cleanupCtx, preparedKey) },
+			release: func() { _ = c.cleanupRuntimeOperation(doneLease) },
+			remove: func() {
+				_ = c.cleanupRuntimeOperation(func(ctx context.Context) error { return sn.Remove(ctx, preparedKey) })
+			},
 		})
 		// The stored snapshot owns this lease until CreateContainer consumes or
 		// replaces it. The 30-minute expiration remains a crash/disconnect
