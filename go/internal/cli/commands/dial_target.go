@@ -180,10 +180,15 @@ func governingPin(pinKey string) (config.DevicePin, string, bool) {
 // so two of them collide on one key. But every alternative was worse -- an
 // empty key reads as "unpinned" and disarms the guard against reaching a
 // previously-authenticated host over plaintext, and a port-qualified key
-// orphans the pins existing users already hold under the bare host. A VM is
-// exempted where the CLI knows it is talking to one (see connectToAgent),
-// which leaves this shared derivation identical to what every release ships.
+// orphans the pins existing users already hold under the bare host. Known VM
+// aliases instead use their own vm:<name> key (see connectSimulatorAgent),
+// leaving typed IP addresses governed by their existing pins.
 func pinKeyForAddr(addr string) string {
+	// SplitHostPort accepts non-numeric service names, so vm:dev would
+	// otherwise become just "vm" when set-default/unpin derives its key.
+	if name, matched, err := simulatorName(addr); err == nil && matched {
+		return vmDeviceIDPrefix + name
+	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return strings.TrimSpace(addr)

@@ -78,10 +78,12 @@ func probeLocalVMDevices(ctx context.Context) []models.LANDevice {
 			if !anyAgentPortAnswers(pctx, hostAddrFor) {
 				return
 			}
-			isMTLS, resp, err := getAgentVersionAtAddress(pctx, hostAddrFor(defaultAgentPort))
+			conn, resp, err := probeSimulatorAgent(pctx, c.name, hostAddrFor(defaultAgentPort))
 			if err != nil || resp == nil {
 				return
 			}
+			defer conn.Close()
+			isMTLS := conn.IsMTLS
 			advertisedPort := c.port
 			if isMTLS {
 				advertisedPort += agentMTLSPortOffset

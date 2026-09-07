@@ -11,6 +11,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // errSimulatorUnavailable marks a failure to bring up the selected simulator.
@@ -124,37 +125,72 @@ func ensureSimulatorRunning(ctx context.Context, name string) (addr string, star
 // Readiness is a completed GetAgentVersion, not a dial: gRPC connects lazily,
 // so dialling a still-booting guest succeeds and fails only on the first call.
 func waitForSimulatorAgent(ctx context.Context, name, addr string, budget time.Duration) (*grpcclient.AgentConnection, error) {
-	if err := waitForSimulatorReady(ctx, name, addr, budget); err != nil {
-		return nil, err
-	}
-	return connectWithAutoTLS(ctx, addr)
-}
-
-// waitForSimulatorReady blocks until a GetAgentVersion completes or the budget
-// expires.
-func waitForSimulatorReady(ctx context.Context, name, addr string, budget time.Duration) error {
 	deadline := time.Now().Add(budget)
+	waitCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
-		if _, resp, err := getAgentVersionAtAddress(ctx, addr); err == nil && resp != nil {
-			return nil
+		conn, _, err := connectSimulatorAgent(waitCtx, name, addr)
+		if err == nil {
+			return conn, nil
+		}
+		if blocksUnauthenticatedFallback(err) {
+			return nil, err
 		}
 		// Under emulation the budget is five minutes. Without this, a guest that
 		// died on its first instruction is waited out in full.
 		if !simulatorStillRunning(name) {
-			return fmt.Errorf("VM %q stopped while waiting for its agent", name)
+			return nil, fmt.Errorf("VM %q stopped while waiting for its agent", name)
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("the simulator did not answer on %s within %s", addr, budget)
+			return nil, fmt.Errorf("the simulator did not answer on %s within %s: %w", addr, budget, err)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// VM aliases carry identity separately from their current loopback port. Never
+// consult a localhost pin or session cached for an unrelated VM/container.
+func connectSimulatorAgent(ctx context.Context, name, addr string) (*grpcclient.AgentConnection, *agentpb.GetAgentVersionResponse, error) {
+	conn, resp, err := probeSimulatorAgent(ctx, name, addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := enforceDevicePin(vmDeviceIDPrefix+name, conn); err != nil {
+		conn.Close()
+		return nil, nil, err
+	}
+	return conn, resp, nil
+}
+
+// Discovery honors existing pins through the ladder, but does not enroll a
+// merely-listed VM into the user's device-pin config as a side effect of scan.
+func probeSimulatorAgent(ctx context.Context, name, addr string) (*grpcclient.AgentConnection, *agentpb.GetAgentVersionResponse, error) {
+	key := vmDeviceIDPrefix + name
+	conn, _, err := dialAgentLadderFn(ctx, newDialTarget(key, addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		conn.Close()
+		return nil, nil, err
+	}
+	return conn, resp, nil
+}
+
+func waitForSimulatorReady(ctx context.Context, name, addr string, budget time.Duration) error {
+	conn, err := waitForSimulatorAgent(ctx, name, addr, budget)
+	if err == nil {
+		conn.Close()
+	}
+	return err
 }
 
 // simulatorStillRunning reports whether name is up. A store it cannot read
@@ -179,6 +215,8 @@ func simulatorStillRunning(name string) bool {
 //
 // Runs AFTER the picker's tea.Program exits: creating a VM shows downloadImage's
 // own progress program, and two Bubble Tea programs cannot share a terminal.
+var connectSimulatorChoiceFn = connectSimulatorChoice
+
 func connectSimulatorChoice(ctx context.Context, choice *simulatorChoice, suppressUpdateCheck bool) (*SelectedDevice, error) {
 	if choice == nil {
 		return nil, fmt.Errorf("no simulator selected")
@@ -205,10 +243,7 @@ func connectSimulatorChoice(ctx context.Context, choice *simulatorChoice, suppre
 		return nil, err
 	}
 
-	// PinKey stays empty: every VM answers on 127.0.0.1, so pinning by address
-	// would file them all under one key and make one VM fail another's pin. The
-	// cloud path leaves it empty for the same reason.
-	picked := &SelectedDevice{Agent: conn}
+	picked := &SelectedDevice{Agent: conn, PinKey: vmDeviceIDPrefix + choice.Name}
 	if !suppressUpdateCheck {
 		picked.Agent, err = checkAndOfferUpdateFn(ctx, picked.Agent)
 		if err != nil {
@@ -307,6 +342,21 @@ var simulatorAliases = map[string]bool{"sim": true, "simulator": true}
 // address that VM's agent is forwarded to, starting it if it is not running.
 // matched is false for anything that does not name a VM, which is left alone.
 func resolveVMAlias(ctx context.Context, device string) (addr string, matched bool, err error) {
+	name, matched, err := simulatorName(device)
+	if err != nil || !matched {
+		return "", matched, err
+	}
+	addr, started, err := ensureSimulatorRunning(ctx, name)
+	if err != nil {
+		return "", false, markSimulatorUnavailable(err)
+	}
+	if err := awaitSimulatorReady(ctx, name, addr, started); err != nil {
+		return "", false, err
+	}
+	return addr, true, nil
+}
+
+func simulatorName(device string) (string, bool, error) {
 	name := ""
 	switch {
 	case simulatorAliases[device]:
@@ -321,15 +371,5 @@ func resolveVMAlias(ctx context.Context, device string) (addr string, matched bo
 		// name by deploying to a cloud device instead.
 		return "", false, fmt.Errorf("%w: %w", errSimulatorUnavailable, err)
 	}
-	addr, started, err := ensureSimulatorRunning(ctx, name)
-	if err != nil {
-		return "", false, markSimulatorUnavailable(err)
-	}
-	// Wait here rather than letting the caller dial a guest that is still
-	// booting: the ordinary ladder would report the VM unreachable seconds
-	// after we deliberately started it.
-	if err := awaitSimulatorReady(ctx, name, addr, started); err != nil {
-		return "", false, err
-	}
-	return addr, true, nil
+	return name, true, nil
 }

@@ -1115,30 +1115,25 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		return conn, nil
 	}
 
-	// Rewrite a simulator alias before resolveDeviceAddress reads the flag: this
-	// path dials straight from it and never passes through resolveTargetInner's
-	// hook, so without this `--device sim` reaches only the commands that go via
-	// resolveTarget. After the socket and cloud branches, so neither is
-	// pre-empted by starting a VM.
-	aliasedVM := false
-	if deviceFlag != "" {
-		aliasAddr, matched, aliasErr := resolveVMAlias(ctx, deviceFlag)
-		if aliasErr != nil {
-			return nil, aliasErr
+	// Keep the alias intact, including when it comes from the saved default.
+	device := deviceFlag
+	if device == "" {
+		loaded, err := config.Load()
+		if err != nil {
+			return nil, err
 		}
-		if matched {
-			deviceFlag, aliasedVM = aliasAddr, true
-		}
+		device = loaded.DefaultDevice
 	}
-
+	if name, matched, err := simulatorName(device); err != nil {
+		return nil, err
+	} else if matched {
+		picked, err := connectSimulatorChoiceFn(ctx, &simulatorChoice{Name: name}, cfg.suppressUpdateCheck)
+		if err != nil {
+			return nil, err
+		}
+		return picked.Agent, nil
+	}
 	addr, pinKey, isDefault, err := resolveDeviceAddress()
-	if aliasedVM {
-		// A VM is identified by its name, not by the loopback address it was
-		// just resolved to -- which every other VM shares. Unpinned, like the
-		// cloud path. Only addresses the CLI itself derived from a VM alias are
-		// exempt; one the user typed is pinned as it has always been.
-		pinKey = ""
-	}
 	if err == nil {
 		// The name the user asked for, used both to talk about this device and
 		// to decide which device is acceptable — see resolveDeviceAddress.
@@ -1367,6 +1362,12 @@ func pinKeyForLANDevice(d *models.LANDevice) string {
 // pin first) or `wendy device unpin <host>` is the way back — a re-pin has to be
 // an act aimed at a specific device, not a row in a list mDNS filled in.
 func connectPickedLANDevice(ctx context.Context, d *models.DiscoveredDevice, addr string, suppressUpdateCheck bool) (*SelectedDevice, error) {
+	if name, matched, err := simulatorName(d.LAN.ID); err != nil {
+		return nil, err
+	} else if matched {
+		// Re-resolve the live record; discovery may predate a port change.
+		return connectSimulatorChoiceFn(ctx, &simulatorChoice{Name: name}, suppressUpdateCheck)
+	}
 	mtls := d.LAN.IsMTLS
 	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls })
 	if err != nil {
@@ -3161,17 +3162,10 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 
 	rt := phaseTimer()
 
-	// Rewrite a simulator alias to the address its agent is forwarded to,
-	// starting the VM if needed. Before the provider sweep, so no other target
-	// pays for it.
-	if device != "" {
-		addr, matched, err := resolveVMAlias(ctx, device)
-		if err != nil {
-			return nil, err
-		}
-		if matched {
-			device = addr
-		}
+	if name, matched, err := simulatorName(device); err != nil {
+		return nil, err
+	} else if matched {
+		return connectSimulatorChoiceFn(ctx, &simulatorChoice{Name: name}, cfg.suppressUpdateCheck)
 	}
 
 	// Check if the device flag matches a known provider key.
@@ -3935,7 +3929,7 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 		}
 		return &SelectedDevice{Agent: conn}, nil
 	case devicePickerSimulatorTab:
-		return connectSimulatorChoice(ctx, choice.Simulator, suppressUpdateCheck)
+		return connectSimulatorChoiceFn(ctx, choice.Simulator, suppressUpdateCheck)
 	default:
 		return connectLocalPickerChoice(ctx, choice.Local, suppressUpdateCheck)
 	}
