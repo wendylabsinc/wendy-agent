@@ -218,10 +218,15 @@ func (s *Store) Status(name string) (Status, error) {
 		return Status{}, err
 	}
 	if !held {
-		if err := s.reapStaleState(name); err != nil {
+		reaped, err := s.reapStaleState(name)
+		if err != nil {
 			return Status{}, err
 		}
-		return st, nil
+		if reaped {
+			return st, nil
+		}
+		// A start or cleanup won the lock after our probe. Do not report a
+		// stopped VM while another owner is still modifying its run record.
 	}
 	st.Running = true
 	if run, err := s.ReadState(name); err == nil {
@@ -237,33 +242,33 @@ func (s *Store) Status(name string) (Status, error) {
 // deleting that would leave a live VM reading as "starting" forever, which
 // every command refuses to act on. Failing to take the lock means exactly that
 // happened, so there is nothing stale left to reap.
-func (s *Store) reapStaleState(name string) error {
+func (s *Store) reapStaleState(name string) (bool, error) {
 	// Nothing recorded, nothing to reap -- and checking first keeps a status
 	// read of a never-started VM from creating its lock file below.
 	if _, err := os.Stat(s.StatePath(name)); err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return true, nil
 		}
-		return err
+		return false, err
 	}
 	// O_CREATE, not a missing-file shortcut: a start racing us creates this
 	// same file, so taking the lock through it is what orders us against it.
 	f, err := os.OpenFile(s.LockPath(name), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = f.Close() }()
 
 	locked, err := tryLockFile(f)
 	if err != nil || !locked {
-		return err
+		return false, err
 	}
 	defer func() { _ = unlockFile(f) }()
 
 	if err := os.Remove(s.StatePath(name)); err != nil && !os.IsNotExist(err) {
-		return err
+		return false, err
 	}
-	return nil
+	return true, nil
 }
 
 // Statuses reports every VM in the store, sorted by name.

@@ -133,6 +133,23 @@ func (s *Store) StartDetached(spec Spec) (State, error) {
 // process reaps its child, and deleting that would report the live VM as
 // merely "starting", with no address.
 func (s *Store) clearStateForPID(name string, pid int) {
+	// A PID comparison alone races a new start between ReadState and Remove.
+	// Serialize both operations against writers using the same run lock.
+	f, err := os.OpenFile(s.LockPath(name), os.O_RDWR, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	locked, err := tryLockFile(f)
+	if err != nil || !locked {
+		return
+	}
+	defer unlockFile(f)
+	s.clearStateForPIDLocked(name, pid)
+}
+
+// The caller owns the exclusive run lock, including through Remove.
+func (s *Store) clearStateForPIDLocked(name string, pid int) {
 	if cur, err := s.ReadState(name); err != nil || cur.PID != pid {
 		return
 	}
@@ -250,7 +267,8 @@ func (s *Store) RunForeground(ctx context.Context, spec Spec, stdin io.Reader, s
 	// Captured after Start; until then the record has pid 0 and clearing it is
 	// still correct, because nothing else can have taken the lock.
 	startedPID := 0
-	defer func() { s.clearStateForPID(spec.Name, startedPID) }()
+	// This foreground launcher still owns lock until its earlier Close defer.
+	defer func() { s.clearStateForPIDLocked(spec.Name, startedPID) }()
 
 	qemu := vmCommandContext(ctx, spec.Binary(), args...)
 	qemu.Stdin, qemu.Stdout, qemu.Stderr = stdin, stdout, stderr
