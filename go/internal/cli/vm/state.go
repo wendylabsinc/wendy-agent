@@ -146,6 +146,17 @@ func (s *Store) ReadState(name string) (State, error) {
 // description, which fork+exec inherits and the kernel frees when the last
 // descriptor closes, so a recycled pid can never fake liveness.
 func (s *Store) acquireRunLock(name string) (*os.File, error) {
+	lifecycle, err := s.acquireLifecycleLock(name)
+	if err != nil {
+		return nil, err
+	}
+	defer lifecycle.Close()
+	return s.acquireRunLockUnderLifecycle(name)
+}
+
+// Caller owns the lifecycle lock, so the directory cannot be replaced while
+// the run lock is acquired. Once held, the run lock itself excludes Remove.
+func (s *Store) acquireRunLockUnderLifecycle(name string) (*os.File, error) {
 	f, err := os.OpenFile(s.LockPath(name), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening run lock: %w", err)

@@ -85,6 +85,13 @@ func (s *Store) CreateFrom(name string, image io.Reader, imageSize, diskBytes in
 		return fmt.Errorf("allocating VM MAC: %w", err)
 	}
 	meta.MAC = mac
+	lifecycle, err := s.acquireLifecycleLock(name)
+	if err != nil {
+		return err
+	}
+	// Registered before rollback and file closes: ownership lasts until all
+	// cleanup has finished, including cleanup after a close/writeback error.
+	defer lifecycle.Close()
 
 	dir := s.Dir(name)
 	if err := os.MkdirAll(s.Root, 0o700); err != nil {
@@ -202,13 +209,18 @@ func (s *Store) Remove(name string) error {
 	if err := ValidName(name); err != nil {
 		return err
 	}
+	lifecycle, err := s.acquireLifecycleLock(name)
+	if err != nil {
+		return err
+	}
+	defer lifecycle.Close()
 	if _, err := os.Stat(s.Dir(name)); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("no VM named %q", name)
 		}
 		return err
 	}
-	lock, err := s.acquireRunLock(name)
+	lock, err := s.acquireRunLockUnderLifecycle(name)
 	if err != nil {
 		return err
 	}

@@ -32,7 +32,7 @@ func TestConcurrentCreatesHaveExactlyOneOwner(t *testing.T) {
 		for err := range results {
 			if err == nil {
 				winners++
-			} else if !strings.Contains(err.Error(), "already exists") {
+			} else if !errors.Is(err, ErrLifecycleBusy) && !strings.Contains(err.Error(), "already exists") {
 				t.Fatal(err)
 			}
 		}
