@@ -75,9 +75,12 @@ func PickHostPort(preferred, tries int) (int, error) {
 type NetMode string
 
 const (
-	// NetUser forwards the agent port over SLIRP. Needs no privileges, but
-	// SLIRP carries no multicast, so mDNS never reaches the host and the VM is
-	// reachable only by address.
+	// NetUser forwards the agent port over SLIRP. Needs no privileges, and
+	// the VM is reachable only by the forwarded address: nothing on the
+	// network can route to the guest. Its mDNS announcement does escape,
+	// though -- SLIRP passes guest multicast out through a host socket, one
+	// way -- so the host and its LAN hear a service whose address (10.0.2.15)
+	// they cannot dial. The CLI recognises and hides that sighting.
 	NetUser NetMode = "user"
 
 	// NetShared puts the guest on a vmnet segment the host also has an

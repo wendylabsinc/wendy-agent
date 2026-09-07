@@ -600,7 +600,7 @@ var getAgentVersionAtAddress = func(ctx context.Context, address string) (bool, 
 }
 
 var discoverLANDevices = func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error) {
-	return discovery.CollectLAN(ctx, cliLANStreamOptions(), timeout)
+	return discovery.CollectLAN(ctx, cliLANStreamOptions(ctx), timeout)
 }
 
 var isInteractiveTerminalFn = func() bool {
@@ -803,13 +803,15 @@ func lanRowState(ev discovery.LANEvent) (probe tui.ProbeState, insecure bool) {
 
 // cliLANStreamOptions is the CLI's single definition of how a LAN scan should
 // run: read/write the on-disk cache (so a device seen in a prior run appears
-// instantly) and confirm every candidate with lanProber (an agent probe),
-// never a bare mDNS sighting. Every CLI surface that collects LAN devices —
-// one-shot/JSON discover, MCP's device_list, fleet commands, and the batch
-// helpers below — shares this so they all get the same cache+probe
-// acceleration.
-func cliLANStreamOptions() discovery.StreamOptions {
-	return discovery.StreamOptions{UseCache: true, Prober: lanProber}
+// instantly), confirm every candidate with lanProber (an agent probe), never a
+// bare mDNS sighting, and keep this machine's own VMs out of the list (see
+// simulatorFilter). Every CLI surface that collects LAN devices — the discover
+// TUI, the run picker, one-shot/JSON discover, MCP's device_list, fleet
+// commands, and the batch helpers below — shares this so they all get the
+// same cache+probe acceleration and the same idea of what a device is. ctx
+// bounds the filter's background learning; pass the session's.
+func cliLANStreamOptions(ctx context.Context) discovery.StreamOptions {
+	return discovery.StreamOptions{UseCache: true, Prober: lanProber, Exclude: newSimulatorFilter(ctx)}
 }
 
 // SelectedDevice represents either a gRPC agent, BLE device, or an external provider device.
@@ -3770,49 +3772,24 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 	p := tea.NewProgram(newDevicePickerModel(discoverCtx, picker, cloudAuth, defaultOrgID))
 
 	sendLANItem := func(dev models.LANDevice, insecure bool, probe tui.ProbeState) {
-		devCopy := dev
-		// While the probe is still in flight the Agent/OS columns show a
-		// spinner, so suppress the no-access hint until we actually know the
-		// probe failed.
-		hint := ""
-		if probe != tui.ProbePending {
-			hint = lanNoAccessHint(&devCopy, dev.AgentVersion)
-		}
-		p.Send(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: []tui.PickerItem{{
-			Name:          dev.DisplayName,
-			Type:          "LAN",
-			USB:           dev.USB,
-			Address:       preferredLANAddress(dev),
-			AgentVersion:  dev.AgentVersion,
-			AgentOutdated: agentBehindCLI(version.Version, dev.AgentVersion),
-			OS:            dev.OS,
-			OSVersion:     dev.OSVersion,
-			Provisioned:   lanProvisionedDisplay(&devCopy),
-			Hint:          hint,
-			Probe:         probe,
-			DedupKey:      deviceDedupKey(dev.HostKey(), dev.DisplayName),
-			SortKey:       deviceSortKey(dev.DisplayName, dev.USB),
-			Insecure:      insecure,
-			Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
-				DisplayName:     dev.DisplayName,
-				AgentVersion:    dev.AgentVersion,
-				OS:              dev.OS,
-				OSVersion:       dev.OSVersion,
-				CPUArchitecture: dev.CPUArchitecture,
-				LAN:             &devCopy,
-			}},
-		}}}})
+		p.Send(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: []tui.PickerItem{lanPickerItem(dev, insecure, probe)}}})
 	}
 	// Streaming LAN discovery — cached rows appear instantly, live sightings
 	// and probe outcomes follow, and the engine itself handles offline
 	// detection and retry (see discovery.StreamLAN). Prober must be set: with
 	// a nil Prober a cached row can never be confirmed offline.
-	events := lanStreamFn(discoverCtx, discovery.StreamOptions{UseCache: true, Prober: lanProber})
+	events := lanStreamFn(discoverCtx, cliLANStreamOptions(discoverCtx))
 	go func() {
 		// ev.Supersedes needs no handling here: picker rows dedup by hostname
 		// (deviceDedupKey/HostKey), so a superseded connect-minted row and the
 		// TXT-id row that replaces it are already the same row.
 		for ev := range events {
+			if ev.Kind == discovery.LANRetracted {
+				// Listed, then found to be one of this machine's VMs: it
+				// belongs on the Simulator tab, not here.
+				p.Send(devicePickerLocalMsg{msg: lanPickerRemoveMsg(ev.Device)})
+				continue
+			}
 			probe, insecure := lanRowState(ev)
 			sendLANItem(ev.Device, insecure, probe)
 		}
@@ -3927,6 +3904,48 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 	default:
 		return connectLocalPickerChoice(ctx, choice.Local, suppressUpdateCheck)
 	}
+}
+
+// lanPickerItem is the run picker's row for a LAN device.
+func lanPickerItem(dev models.LANDevice, insecure bool, probe tui.ProbeState) tui.PickerItem {
+	devCopy := dev
+	// While the probe is still in flight the Agent/OS columns show a
+	// spinner, so suppress the no-access hint until we actually know the
+	// probe failed.
+	hint := ""
+	if probe != tui.ProbePending {
+		hint = lanNoAccessHint(&devCopy, dev.AgentVersion)
+	}
+	return tui.PickerItem{
+		Name:          dev.DisplayName,
+		Type:          "LAN",
+		USB:           dev.USB,
+		Address:       preferredLANAddress(dev),
+		AgentVersion:  dev.AgentVersion,
+		AgentOutdated: agentBehindCLI(version.Version, dev.AgentVersion),
+		OS:            dev.OS,
+		OSVersion:     dev.OSVersion,
+		Provisioned:   lanProvisionedDisplay(&devCopy),
+		Hint:          hint,
+		Probe:         probe,
+		DedupKey:      deviceDedupKey(dev.HostKey(), dev.DisplayName),
+		SortKey:       deviceSortKey(dev.DisplayName, dev.USB),
+		Insecure:      insecure,
+		Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
+			DisplayName:     dev.DisplayName,
+			AgentVersion:    dev.AgentVersion,
+			OS:              dev.OS,
+			OSVersion:       dev.OSVersion,
+			CPUArchitecture: dev.CPUArchitecture,
+			LAN:             &devCopy,
+		}},
+	}
+}
+
+// lanPickerRemoveMsg takes back the row lanPickerItem built for dev, under the
+// same key it was added with.
+func lanPickerRemoveMsg(dev models.LANDevice) tui.PickerRemoveMsg {
+	return tui.PickerRemoveMsg{Key: deviceDedupKey(dev.HostKey(), dev.DisplayName)}
 }
 
 // connectLocalPickerChoice turns a Local-tab selection into a connection. Lifted

@@ -355,9 +355,9 @@ func vmPrintReachability(out io.Writer, net vm.NetConfig, hostPort int) {
 		return
 	}
 	fmt.Fprintf(out, "Once it boots, reach it with 'wendy --device 127.0.0.1:%d device info', "+
-		"or pick it out of 'wendy discover'.\n", hostPort)
-	fmt.Fprintln(out, "It is not on your network, though: user-mode networking carries no mDNS, "+
-		"so no other machine can see it. Use --net shared for that.")
+		"or pick it from the Simulator tab of 'wendy discover'.\n", hostPort)
+	fmt.Fprintln(out, "It is not on your network, though: nothing else can reach a user-mode VM. "+
+		"Use --net shared for that.")
 }
 
 // ensureQEMUFn resolves the emulator, prompting to install it where that is

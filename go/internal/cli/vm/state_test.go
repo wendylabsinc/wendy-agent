@@ -343,3 +343,62 @@ func TestReapOnANeverStartedVMCreatesNoLockFile(t *testing.T) {
 		t.Errorf("a status read created %s; reads must not", s.LockPath("dev"))
 	}
 }
+
+// The hostname a VM's guest reports is how a leaked mDNS sighting of it is
+// recognised. It is learned on first contact and kept beside the provenance,
+// which must survive the write.
+func TestRecordHostnameSurvivesAlongsideProvenance(t *testing.T) {
+	s := newTestStore(t)
+	createTestVM(t, s, "dev", Meta{ImageVersion: "0.19.0", ImageSource: "pr/249"})
+
+	if err := s.RecordHostname("dev", "wendyos-gentle-forest"); err != nil {
+		t.Fatalf("RecordHostname() = %v", err)
+	}
+	got, ok := s.ReadMeta("dev")
+	if !ok {
+		t.Fatal("ReadMeta() reported the record unreadable")
+	}
+	if got.Hostname != "wendyos-gentle-forest" {
+		t.Errorf("Hostname = %q, want wendyos-gentle-forest", got.Hostname)
+	}
+	if got.ImageVersion != "0.19.0" || got.ImageSource != "pr/249" {
+		t.Errorf("provenance clobbered: %+v", got)
+	}
+}
+
+// A record that cannot be read must not be replaced by a hostname-only one:
+// that would silently lose where the image came from.
+func TestRecordHostnameRefusesToClobberAnUnreadableRecord(t *testing.T) {
+	s := newTestStore(t)
+	createTestVM(t, s, "dev", Meta{ImageVersion: "0.19.0"})
+	const garbage = "{not json"
+	if err := os.WriteFile(s.MetaPath("dev"), []byte(garbage), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RecordHostname("dev", "wendyos-gentle-forest"); err == nil {
+		t.Fatal("RecordHostname() = nil, want an error for an unreadable record")
+	}
+	data, err := os.ReadFile(s.MetaPath("dev"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != garbage {
+		t.Errorf("unreadable record was overwritten:\n%s", data)
+	}
+}
+
+// An empty hostname says nothing; recording it must not erase what is known.
+func TestRecordHostnameIgnoresEmpty(t *testing.T) {
+	s := newTestStore(t)
+	createTestVM(t, s, "dev", Meta{})
+	if err := s.RecordHostname("dev", "wendyos-gentle-forest"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordHostname("dev", ""); err != nil {
+		t.Fatalf("RecordHostname(\"\") = %v, want nil", err)
+	}
+	if got, _ := s.ReadMeta("dev"); got.Hostname != "wendyos-gentle-forest" {
+		t.Errorf("Hostname = %q after recording empty, want the earlier value kept", got.Hostname)
+	}
+}

@@ -165,17 +165,22 @@ machine; the difference is whether anything *else* can reach the VM.
 
 | `--net` | Setup needed | Listed by `wendy discover` | On your network |
 | --- | --- | --- | --- |
-| `user` (default) | none | Yes — as a local VM | No |
-| `shared` | one-time `socket_vmnet` install, **macOS only** | Yes — over mDNS, like a device | Yes |
+| `user` (default) | none | Yes — Simulator tab | No |
+| `shared` | one-time `socket_vmnet` install, **macOS only** | Yes — Local tab via mDNS | Host-shared segment |
 
 The default forwards the agent's port to your machine and needs no privileges.
-It carries no multicast, so the VM answers no mDNS and no other machine can see
-it — but `wendy discover` still lists it, because the CLI knows about VMs on
-this machine directly and probes the forwarded port. It appears as `vm:<name>`,
-and the **Simulator** tab shows stopped ones too.
+Nothing on your network can reach the guest. Its mDNS announcement does leak
+out (QEMU passes the guest's multicast through one way), advertising an address
+nobody can dial — `wendy discover` recognises that sighting as your VM and
+keeps it off the **Local** tab. A user-mode VM is listed only on the
+**Simulator** tab, which shows stopped ones too; in JSON output it is under
+`simulators` as `vm:<name>`.
 
-Choose `shared` when you need the VM to behave like a real device on the wire —
-to test mDNS itself, or to reach it from another machine:
+Choose `shared` to test mDNS or reach the guest directly by IP on the host's
+vmnet segment. Its reachable entry stays on **Local** (and in JSON's
+`lanDevices`); the **Simulator** tab still lists its local lifecycle state.
+This is not a bridge onto the physical LAN; reachability from another machine
+depends on routing and the helper's configuration:
 
 ```sh
 wendy vm start dev --net shared

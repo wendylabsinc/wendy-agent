@@ -30,6 +30,11 @@ type Meta struct {
 	// AgentPort is the host port this VM last bound successfully. Sticky, so a
 	// VM forced off the default port keeps the address the user wrote down.
 	AgentPort int `json:"agentPort,omitempty"`
+
+	// Hostname is what the guest calls itself, learned the first time the CLI
+	// reaches its agent. It is how a stray mDNS announcement of this VM is
+	// recognised as such, and it is stable across reboots.
+	Hostname string `json:"hostname,omitempty"`
 }
 
 // State describes one run of a VM. Its absence means the VM is not running.
@@ -100,7 +105,8 @@ func writeJSON(path string, v any) error {
 	return os.Rename(tmp, path)
 }
 
-// WriteMeta records a VM's durable provenance.
+// WriteMeta records a complete metadata snapshot. Production callers must
+// hold the lifecycle lock; field updates should use updateMeta instead.
 func (s *Store) WriteMeta(m Meta) error { return writeJSON(s.MetaPath(m.Name), m) }
 
 // ReadMeta returns a VM's durable record and whether it was actually read; a
@@ -118,6 +124,56 @@ func (s *Store) ReadMeta(name string) (m Meta, ok bool) {
 	}
 	m.Name = name
 	return m, true
+}
+
+// RecordHostname stores the hostname the guest reports. An empty hostname says
+// nothing and is ignored. An unreadable record is left alone rather than
+// replaced by a hostname-only one, which would lose the VM's provenance.
+func (s *Store) RecordHostname(name, hostname string) error {
+	if hostname == "" {
+		return nil
+	}
+	return s.updateMeta(name, func(m *Meta) bool {
+		if m.Hostname == hostname {
+			return false
+		}
+		m.Hostname = hostname
+		return true
+	})
+}
+
+// RecordAgentPort updates the sticky port without replacing a concurrently
+// learned hostname or another field from an old metadata snapshot.
+func (s *Store) RecordAgentPort(name string, port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid agent port %d", port)
+	}
+	return s.updateMeta(name, func(m *Meta) bool {
+		if m.AgentPort == port {
+			return false
+		}
+		m.AgentPort = port
+		return true
+	})
+}
+
+// updateMeta serializes the entire read/modify/replace operation with other
+// metadata writers, creation, startup, and removal. Busy updates are best-effort
+// at CLI call sites: skip them rather than publishing an obsolete snapshot.
+func (s *Store) updateMeta(name string, update func(*Meta) bool) error {
+	lock, err := s.acquireLifecycleLock(name)
+	if err != nil {
+		return err
+	}
+	defer lock.Close() // Lock-only handle; no file data is written through it.
+	m, ok := s.ReadMeta(name)
+	if !ok {
+		return fmt.Errorf("VM %q has no readable record at %s", name, s.MetaPath(name))
+	}
+	if !update(&m) {
+		return nil
+	}
+	return s.WriteMeta(m)
 }
 
 // WriteState records the current run.
