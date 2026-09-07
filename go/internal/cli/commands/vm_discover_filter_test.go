@@ -101,7 +101,7 @@ func TestSimulatorFilterSeedsBeforeStartingLearners(t *testing.T) {
 	f := newSimulatorFilter(ctx)
 	awaitChanged(t, f)
 	for _, host := range []string{"known-0", "known-49999", "learned"} {
-		if !f.Exclude(models.LANDevice{Hostname: host}) {
+		if !f.Exclude(models.LANDevice{Hostname: host, IPAddress: "10.0.2.15"}) {
 			t.Fatalf("hostname %s was lost", host)
 		}
 	}
@@ -137,12 +137,31 @@ func TestSimulatorFilterPreservesReachableNetworkVMs(t *testing.T) {
 	}
 }
 
+func TestSimulatorFilterDoesNotTreatRememberedNamesAsDeviceIdentity(t *testing.T) {
+	stubVMStatuses(t, vm.Status{Name: "stopped", Exists: true, Meta: vm.Meta{Hostname: "lab-device"}})
+	f := newSimulatorFilter(context.Background())
+	for _, dev := range []models.LANDevice{
+		{Hostname: "lab-device.local", IPAddress: "192.168.1.20", DeviceType: "rpi5"},
+		{Hostname: "lab-device.local", IPAddress: "10.0.2.15", DeviceType: "rpi5"},
+		{Hostname: "lab-device.local", IPAddress: "192.168.64.2"},
+		{Hostname: "lab-device.local", IPAddress: "fd00::2"},
+		{Hostname: "lab-device.local"},
+	} {
+		if f.Exclude(dev) {
+			t.Fatalf("hostname collision hid a device: %+v", dev)
+		}
+	}
+	if !f.Exclude(models.LANDevice{Hostname: "lab-device.local", IPAddress: "10.0.2.15"}) {
+		t.Fatal("legacy leaked announcement must still be filtered")
+	}
+}
+
 // The hostname a VM once reported identifies its sightings from then on --
 // a stopped VM's too, whose stale cache row has to go the same way.
 func TestSimulatorFilterExcludesKnownVMHostnames(t *testing.T) {
 	stubVMStatuses(t, vm.Status{Name: "sim", Exists: true, Meta: vm.Meta{Hostname: "wendyos-gentle-forest"}})
 	f := newSimulatorFilter(context.Background())
-	if !f.Exclude(models.LANDevice{Hostname: "WendyOS-Gentle-Forest.local."}) {
+	if !f.Exclude(models.LANDevice{Hostname: "WendyOS-Gentle-Forest.local.", IPAddress: "10.0.2.15"}) {
 		t.Error("the VM's own hostname was not excluded; case and the .local suffix must not matter")
 	}
 	if f.Exclude(models.LANDevice{Hostname: "wendyos-brave-dolphin.local"}) {
@@ -171,7 +190,7 @@ func TestSimulatorFilterLearnsARunningVMsHostname(t *testing.T) {
 
 	f := newSimulatorFilter(ctx)
 	awaitChanged(t, f)
-	if !f.Exclude(models.LANDevice{Hostname: "wendyos-gentle-forest.local"}) {
+	if !f.Exclude(models.LANDevice{Hostname: "wendyos-gentle-forest.local", IPAddress: "10.0.2.15"}) {
 		t.Error("the learned hostname is not excluded")
 	}
 	if got := recorded(); got["sim"] != "wendyos-gentle-forest" {
@@ -204,7 +223,7 @@ func TestSimulatorFilterKeepsAskingWhileTheGuestBoots(t *testing.T) {
 	if n := attempts.Load(); n < 3 {
 		t.Errorf("attempts = %d, want the learner to have retried", n)
 	}
-	if !f.Exclude(models.LANDevice{Hostname: "wendyos-gentle-forest.local"}) {
+	if !f.Exclude(models.LANDevice{Hostname: "wendyos-gentle-forest.local", IPAddress: "10.0.2.15"}) {
 		t.Error("the learned hostname is not excluded")
 	}
 }
@@ -232,7 +251,7 @@ func TestSimulatorFilterAsksOnlyVMsItCanReachAndDoesNotKnow(t *testing.T) {
 	if n := asked.Load(); n != 0 {
 		t.Errorf("agent asked %d times, want 0", n)
 	}
-	if !f.Exclude(models.LANDevice{Hostname: "wendyos-gentle-forest.local"}) {
+	if !f.Exclude(models.LANDevice{Hostname: "wendyos-gentle-forest.local", IPAddress: "10.0.2.15"}) {
 		t.Error("the hostname already on record is not excluded")
 	}
 }
@@ -244,7 +263,7 @@ func TestCLIStreamOptionsExcludeSimulators(t *testing.T) {
 	if opts.Exclude == nil {
 		t.Fatal("no simulator filter installed on the CLI's LAN stream options")
 	}
-	if !opts.Exclude.Exclude(models.LANDevice{Hostname: "wendyos-gentle-forest.local"}) {
+	if !opts.Exclude.Exclude(models.LANDevice{Hostname: "wendyos-gentle-forest.local", IPAddress: "10.0.2.15"}) {
 		t.Error("the installed filter does not exclude a known VM hostname")
 	}
 }

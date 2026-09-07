@@ -196,13 +196,11 @@ var (
 	simulatorHostnameAskBudget = 3 * time.Second
 )
 
-// simulatorFilter is the CLI's discovery.LANFilter: it keeps the VMs this
-// machine runs out of every LAN device list, so they appear only under the
-// Simulator tab. Two positive signals, either of which is enough and neither
-// of which a real device trips:
+// simulatorFilter suppresses leaked user-network announcements, not all VMs.
+// At the default SLIRP address, it uses either of two signals:
 //   - the device type is a VM board, whether from the devicetype TXT record
 //     (classified on the sighting itself) or from an agent probe;
-//   - the hostname is one a VM in the local store has reported. This is what
+//   - with no board advertised, the hostname is one a local VM reported. This
 //     catches a user-mode VM's leaked announcement, which advertises an
 //     address (10.0.2.15) no probe can reach, on images whose agent predates
 //     the TXT record.
@@ -253,6 +251,13 @@ func (f *simulatorFilter) Exclude(dev models.LANDevice) bool {
 		// Preserve directly reachable shared/network VMs. The launcher uses
 		// QEMU's default user-network guest address for leaked announcements.
 		return dev.IPAddress == "10.0.2.15"
+	}
+	// A hostname is a reusable label, not a durable device identity. Never
+	// hide a physical board or a normally addressed device just because a VM
+	// (including a stopped one) once used its name. Legacy images without a
+	// board TXT record get the fallback only at the leaked SLIRP address.
+	if dev.DeviceType != "" || dev.IPAddress != "10.0.2.15" {
+		return false
 	}
 	host := dev.HostKey()
 	if host == "" {
