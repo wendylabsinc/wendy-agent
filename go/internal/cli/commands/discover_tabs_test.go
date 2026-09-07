@@ -170,6 +170,41 @@ func TestDiscoverOpensOnTheRequestedTab(t *testing.T) {
 	if !m.simStarted {
 		t.Error("opening on the Simulator tab did not start its polling")
 	}
+	stubVMStatuses(t, stoppedVM("created", "test"))
+	// Execute the actual initial simulator commands, not just the flag which
+	// previously claimed polling had started without scheduling anything.
+	batch, ok := m.Init()().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatal("Init must schedule local and simulator initialization")
+	}
+	var found bool
+	var walk func(tea.Cmd)
+	walk = func(cmd tea.Cmd) {
+		if cmd == nil {
+			return
+		}
+		switch msg := cmd().(type) {
+		case tea.BatchMsg:
+			for _, child := range msg {
+				walk(child)
+			}
+		case discoverTabsSimulatorMsg:
+			if rows, ok := msg.msg.(simulatorVMsMsg); ok {
+				found = true
+				if len(rows.vms) != 1 || rows.vms[0].Name != "created" {
+					t.Fatalf("wrong initial rows: %+v", rows)
+				}
+				updated, next := m.Update(msg)
+				if next == nil || !strings.Contains(updated.View(), "created") {
+					t.Fatal("initial rows did not render/schedule refresh")
+				}
+			}
+		}
+	}
+	walk(batch[1])
+	if !found {
+		t.Fatal("Init did not poll simulator store")
+	}
 }
 
 func TestDiscoverStillDefaultsToLocal(t *testing.T) {

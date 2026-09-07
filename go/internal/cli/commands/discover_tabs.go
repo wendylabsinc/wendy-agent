@@ -81,7 +81,10 @@ func tagDiscoverTabsCmd(cmd tea.Cmd, tab devicePickerTab) tea.Cmd {
 }
 
 func (m discoverTabsModel) Init() tea.Cmd {
-	// Simulator polling starts on first entry; see devicePickerModel.Init.
+	if m.simStarted {
+		return tea.Batch(tagDiscoverTabsCmd(m.local.Init(), devicePickerLocalTab), m.startSimulatorCmd())
+	}
+	// Otherwise simulator polling starts on first entry.
 	return tagDiscoverTabsCmd(m.local.Init(), devicePickerLocalTab)
 }
 
