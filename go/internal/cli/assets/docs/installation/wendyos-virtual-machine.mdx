@@ -357,9 +357,11 @@ usually running fine; check with `wendy vm logs <name>`.
 
 **`Decompressor is not installed for grpc-encoding "gzip"`, then a registry
 push that fails.** The agent in the VM's image is older than your CLI and cannot
-accept compressed layers. The push it falls back to needs port 5000 forwarded,
-which VMs created before that forward existed do not have — recreate the VM, or
-restart it so the new forward is applied.
+accept compressed layers. The CLI falls back to a registry push and resolves
+the selected VM's registry forward automatically, allocating another loopback
+port if host port 5000 is busy. If the error reports an unavailable control
+socket, restart the VM with the current CLI to enable forwarding. There is no
+need to recreate its disk.
 
 **It boots slowly.** On a Mac without Apple Silicon, or on an x86 PC, the guest
 is emulated rather than accelerated, because the guest is ARM64 and the host is
