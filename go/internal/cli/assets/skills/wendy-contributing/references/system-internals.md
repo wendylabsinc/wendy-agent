@@ -91,42 +91,29 @@ ctr -n default images ls
 ctr -n default containers ls
 ```
 
-## Lima VM Development (macOS)
+## Running WendyOS in a VM (macOS and Linux)
 
-For Apple Silicon developers, use Lima with bridged networking:
+`wendy vm` runs the `vm-arm64-wendyos` `.wic` locally:
 
 ```bash
-./scripts/setup-dev-vm.sh create   # Create VM
-./scripts/setup-dev-vm.sh shell    # Enter VM
-./scripts/setup-dev-vm.sh delete   # Remove VM
+wendy vm create dev --image wendyos-image-vm-arm64-wendyos.rootfs.wic --disk 16
+wendy vm start dev                 # Ctrl-A then X to power off
+wendy --device 127.0.0.1:50051 device info
 ```
 
-**Bridged networking** requires socket_vmnet:
-```bash
-brew install socket_vmnet
-```
+The image is UEFI-bootable on its own (ESP + GRUB `bootaa64.efi`), so it needs
+no external kernel and no `-append`.
 
-Lima config must use:
-```yaml
-networks:
-  - lima: bridged
-    interface: en0
-```
+**Tested**: QEMU directly, on macOS and Linux.
+**Untested**: Apple Virtualization.framework, and therefore Parallels and UTM in
+virtualize mode. The image is now UEFI-bootable, which removes one obstacle, but
+`vm-grub.cfg` hardcodes `console=ttyAMA0` — a PL011 that Virtualization.framework
+does not expose (it offers a virtio console, `hvc0`) — so a VZ guest would very
+likely boot mute. UTM in *emulate* mode runs QEMU and should behave like QEMU.
 
-Without bridged networking, mDNS won't work from LAN.
-
-## Running Built Images
-
-The Yocto-built image is for QEMU, NOT Apple Virtualization.framework.
-
-**Works**: Lima, UTM (emulation mode), QEMU directly
-**Doesn't work**: Parallels, UTM (virtualization mode)
-
-For UTM:
-1. Use **Emulate** (not Virtualize)
-2. Select ARM64 architecture
-3. Add Serial device for console
-4. Import qcow2 as VirtIO drive
+`--net user` (the default) forwards the agent port but carries no multicast, so
+`wendy discover` cannot see the VM; `--net shared` uses `socket_vmnet` and can.
+See the *WendyOS in a Virtual Machine* installation guide for the full flow.
 
 ## Offline Container Image Bundling
 

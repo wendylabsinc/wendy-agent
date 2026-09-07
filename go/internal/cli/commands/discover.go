@@ -129,7 +129,7 @@ func shouldIncludeExternal(opts discovery.DiscoveryOptions) bool {
 }
 
 func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
-	collection, err := discoverWithUSBDirect(ctx, opts)
+	collection, err := discoverLocalTargets(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("discovery failed: %w", err)
 	}
@@ -158,7 +158,7 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions, includeL
 	includeExternal := shouldIncludeExternal(opts)
 
 	work := func() tea.Msg {
-		collection, err := discoverWithUSBDirect(ctx, opts)
+		collection, err := discoverLocalTargets(ctx, opts)
 		if err == nil {
 			annotateLANUSBFromEthernet(collection)
 			sortLANDevicesForDiscover(collection.LANDevices)
@@ -222,8 +222,13 @@ func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, in
 		cfg = nil
 	}
 	cloudAuth := devicePickerInitialAuth(cfg)
+	var createReq *errCreateSimulator
+	// Which tab to open on. Only a create changes it, so the user lands back
+	// where they pressed the key rather than on Local.
+	openOn := devicePickerLocalTab
 	for {
-		err := discoverContinuousWithCloudAuth(ctx, opts, includeLocal, cloudAuth, defaultOrgForCloudAuth(cfg, cloudAuth))
+		err := discoverContinuousWithCloudAuth(ctx, opts, includeLocal, cloudAuth, defaultOrgForCloudAuth(cfg, cloudAuth), openOn)
+		openOn = devicePickerLocalTab
 		switch {
 		case errors.Is(err, errDevicePickerLogin):
 			if err := performLogin(ctx, defaultCloudDashboard, defaultCloudGRPC); err != nil {
@@ -234,6 +239,20 @@ func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, in
 				return fmt.Errorf("loading config after login: %w", err)
 			}
 			cloudAuth = devicePickerInitialAuth(cfg)
+		case errors.As(err, &createReq):
+			// The TUI is gone by now, so the prompt and the download's own
+			// progress program have the terminal to themselves. Same helper the
+			// run picker uses, so "c" does the same thing in both views.
+			name := createReq.name
+			createReq = nil
+			if createErr := createSimulator(name); createErr != nil {
+				if errors.Is(createErr, ErrUserCancelled) {
+					openOn = devicePickerSimulatorTab
+					continue
+				}
+				return createErr
+			}
+			openOn = devicePickerSimulatorTab
 		case errors.Is(err, errDevicePickerSwitchOrg):
 			cfg, err = config.Load()
 			if err != nil {
@@ -267,13 +286,13 @@ func defaultOrgForCloudAuth(cfg *config.Config, auth *config.AuthConfig) int32 {
 	return 0
 }
 
-func discoverContinuousWithCloudAuth(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool, cloudAuth *config.AuthConfig, defaultOrg int32) error {
+func discoverContinuousWithCloudAuth(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool, cloudAuth *config.AuthConfig, defaultOrg int32, openOn devicePickerTab) error {
 	opts.Timeout = 3 * time.Second // per-scan timeout
 	discoverCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	local := newDiscoverModel(discoverCtx, opts, includeLocal)
-	m := newDiscoverTabsModel(discoverCtx, local, cloudAuth, defaultOrg)
+	m := newDiscoverTabsModel(discoverCtx, local, cloudAuth, defaultOrg, openOn)
 	// Alt screen: the table grows to fill the window, and the alternate
 	// buffer restores the user's terminal content when the TUI exits.
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -290,6 +309,8 @@ func discoverContinuousWithCloudAuth(ctx context.Context, opts discovery.Discove
 		return errDevicePickerLogin
 	case devicePickerSwitchOrg:
 		return errDevicePickerSwitchOrg
+	case devicePickerCreateVM:
+		return &errCreateSimulator{name: dm.createVMName}
 	}
 	return nil
 }
@@ -951,6 +972,8 @@ var deviceTypeNames = map[string]string{
 	"jetson-orin-nano": "Jetson Orin Nano",
 	"jetson-agx-thor":  "Jetson AGX Thor",
 	"x86_64":           "x86-64",
+	"vm-arm64":         "ARM64 VM",
+	"vm-x86-64":        "x86-64 VM",
 }
 
 func humanReadableDeviceType(dt string) string {
@@ -1506,3 +1529,10 @@ func copyToClipboard(text string) error {
 	}
 	return fmt.Errorf("no clipboard tool found; install one of: %s", strings.Join(names, ", "))
 }
+
+// errCreateSimulator asks the discover loop to create a VM and come back. Not a
+// sentinel: the name travels with it, and the TUI has to be gone before the
+// download starts so its progress program can own the terminal.
+type errCreateSimulator struct{ name string }
+
+func (e *errCreateSimulator) Error() string { return "create simulator " + e.name }
