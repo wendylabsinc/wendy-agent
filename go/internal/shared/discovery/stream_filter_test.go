@@ -244,3 +244,34 @@ func TestCollectLANDropsRetractedRows(t *testing.T) {
 		t.Fatalf("CollectLAN = %+v, want only the real device", got)
 	}
 }
+
+func TestCollectLANRetractionOfOnlyResultCancelsSettle(t *testing.T) {
+	backend := func(ctx context.Context, _ string, emit func(MDNSService)) error {
+		emit(wendyService("vm", "Guest", "guest.local", "10.0.2.15", 50051))
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return nil
+		}
+		classified := wendyService("vm", "Guest", "guest.local", "10.0.2.15", 50051)
+		classified.TXTRecords["devicetype"] = "vm-arm64"
+		emit(classified)
+		// Beyond the first sighting's settle window, within the scan budget.
+		select {
+		case <-time.After(700 * time.Millisecond):
+		case <-ctx.Done():
+			return nil
+		}
+		emit(wendyService("physical", "Pi", "pi.local", "192.168.1.20", 50051))
+		<-ctx.Done()
+		return nil
+	}
+	useStreamSeams(t, backend, nil)
+	got, err := CollectLAN(context.Background(), StreamOptions{Exclude: &testFilter{exclude: excludeVMBoards}}, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "physical" {
+		t.Fatalf("scan lost the later physical device: %+v", got)
+	}
+}

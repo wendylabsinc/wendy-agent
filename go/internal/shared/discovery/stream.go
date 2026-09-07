@@ -217,6 +217,13 @@ func CollectLAN(ctx context.Context, opts StreamOptions, timeout time.Duration) 
 			switch ev.Kind {
 			case LANRetracted:
 				delete(devices, key)
+				// A rejected sighting cannot justify ending an empty scan.
+				// Wait for a real result (or the overall timeout) as we would
+				// on a cold cache that had never confirmed anything.
+				if len(devices) == 0 && settleTimer != nil {
+					settleTimer.Stop()
+					settleC = nil
+				}
 			case LANFound, LANUpdated:
 				devices[key] = ev.Device
 				if probesDoneClosed {
