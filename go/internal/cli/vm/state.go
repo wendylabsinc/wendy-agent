@@ -24,6 +24,8 @@ type Meta struct {
 	ImageVersion string    `json:"imageVersion,omitempty"`
 	ImageSource  string    `json:"imageSource,omitempty"`
 	DiskBytes    int64     `json:"diskBytes,omitempty"`
+	// MAC is allocated once per newly-created VM, not derived from its name.
+	MAC string `json:"mac,omitempty"`
 
 	// AgentPort is the host port this VM last bound successfully. Sticky, so a
 	// VM forced off the default port keeps the address the user wrote down.

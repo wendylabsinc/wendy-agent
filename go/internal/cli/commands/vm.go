@@ -177,7 +177,11 @@ func resolveVMSpec(name string, o vmStartOptions) (vm.Spec, *vm.Store, error) {
 		return vm.Spec{}, nil, err
 	}
 
-	net := vm.NetConfig{Mode: netMode, MAC: vm.MACFor(name)}
+	mac, err := store.MACAddress(name)
+	if err != nil {
+		return vm.Spec{}, nil, err
+	}
+	net := vm.NetConfig{Mode: netMode, MAC: mac}
 	if net.Mode == vm.NetShared {
 		socket, err := ensureSocketVMNet(context.Background(), runtime.GOOS, brew)
 		if err != nil {

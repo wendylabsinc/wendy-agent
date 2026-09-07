@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -125,13 +126,37 @@ type NetConfig struct {
 // `wendy discover`.
 func (n NetConfig) SupportsDiscovery() bool { return n.Mode == NetShared }
 
-// MACFor derives a NIC address for a VM name: deterministic so a VM keeps its
-// lease across restarts, distinct per name so two VMs never contend for one.
-// 0x52 is unicast and locally administered, so it cannot collide with a vendor
-// assignment.
+// MACFor preserves the legacy name-derived identity for existing VMs without
+// a stored MAC. New VMs use a random, persisted address instead: the same name
+// is common on different hosts sharing one LAN.
 func MACFor(name string) string {
 	sum := sha256.Sum256([]byte("wendy-vm:" + name))
 	return fmt.Sprintf("52:%02x:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3], sum[4])
+}
+
+func newMAC() (string, error) {
+	mac := make(net.HardwareAddr, 6)
+	if _, err := rand.Read(mac); err != nil {
+		return "", err
+	}
+	mac[0] = (mac[0] & 0xfc) | 0x02 // locally administered, unicast
+	return mac.String(), nil
+}
+
+// MACAddress never changes an existing VM's network identity on upgrade.
+func (s *Store) MACAddress(name string) (string, error) {
+	meta, ok := s.ReadMeta(name)
+	if !ok {
+		return "", fmt.Errorf("cannot read VM %q metadata to resolve its MAC address", name)
+	}
+	if meta.MAC == "" {
+		return MACFor(name), nil
+	}
+	mac, err := net.ParseMAC(meta.MAC)
+	if err != nil || len(mac) != 6 || mac[0]&3 != 2 {
+		return "", fmt.Errorf("VM %q has an invalid locally-administered unicast MAC in metadata", name)
+	}
+	return mac.String(), nil
 }
 
 // Args returns the QEMU netdev and device arguments for this configuration.

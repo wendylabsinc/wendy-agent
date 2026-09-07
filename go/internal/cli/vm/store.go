@@ -78,6 +78,13 @@ func (s *Store) CreateFrom(name string, image io.Reader, imageSize, diskBytes in
 	if diskBytes < imageSize {
 		return fmt.Errorf("disk size %d is smaller than the image (%d bytes)", diskBytes, imageSize)
 	}
+	// Each creation gets a fresh identity, even when its name matches a VM on
+	// another host. Persist it with the disk so restarts preserve DHCP leases.
+	mac, err := newMAC()
+	if err != nil {
+		return fmt.Errorf("allocating VM MAC: %w", err)
+	}
+	meta.MAC = mac
 
 	dir := s.Dir(name)
 	if _, err := os.Stat(dir); err == nil {

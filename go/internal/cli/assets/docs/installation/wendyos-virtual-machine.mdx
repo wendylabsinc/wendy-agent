@@ -307,6 +307,13 @@ a PR under the same label cannot silently reuse the old image. If no checksum
 is published, each create downloads afresh and removes that temporary download
 after provisioning. Existing VM disks are never refreshed implicitly.
 
+New VMs receive a random locally-administered MAC stored in `meta.json`, stable
+across restarts and distinct even when another host creates a VM with the same
+name. Older VMs without a stored MAC retain their legacy name-derived address
+to avoid changing their network identity on upgrade. If two such legacy VMs
+share a name, do not place both on the same shared network; recreate one to
+allocate a fresh address. Copying an entire VM directory also copies its MAC.
+
 <Callout type="info">
 A freshly created VM's agent is unauthenticated until the device is provisioned,
 and it is reachable on `127.0.0.1`. On a machine you share with other people,
