@@ -24,6 +24,16 @@ func TestVMAppPortsIncludesEveryHTTPAndReadinessPort(t *testing.T) {
 	}
 }
 
+func TestVMAppPortsIncludesPublishedNetworkPortsWithoutReadiness(t *testing.T) {
+	web := &appconfig.AppConfig{Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork,
+		Ports: []appconfig.PortMapping{{Host: 18082, Container: 80}, {Host: 18443, Container: 443}}}}}
+	other := &appconfig.AppConfig{Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork,
+		Ports: []appconfig.PortMapping{{Host: 18083, Container: 80}, {Host: 18082, Container: 80}}}}}
+	if got := vmAppPorts(web, nil, other); !reflect.DeepEqual(got, []int{18082, 18083, 18443}) {
+		t.Fatalf("published ports = %v", got)
+	}
+}
+
 func TestVMAppPortsMatchFullEndpointAndCorrectURL(t *testing.T) {
 	oldStatuses, oldForward := vmStatusesFn, forwardVMPorts
 	t.Cleanup(func() { vmStatusesFn = oldStatuses; forwardVMPorts = oldForward })

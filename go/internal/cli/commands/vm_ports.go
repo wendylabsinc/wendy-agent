@@ -69,6 +69,16 @@ func vmAppPorts(configs ...*appconfig.AppConfig) []int {
 			continue
 		}
 		for _, entitlement := range cfg.Entitlements {
+			if entitlement.Type == appconfig.EntitlementNetwork {
+				for _, mapping := range entitlement.Ports {
+					// The container runtime publishes Container on the guest's
+					// Host port. QEMU must forward that published port, not the
+					// private port inside the container.
+					if mapping.Host != 0 {
+						seen[int(mapping.Host)] = true
+					}
+				}
+			}
 			if entitlement.Type == "http" && entitlement.Port != 0 {
 				seen[entitlement.Port] = true
 			}
