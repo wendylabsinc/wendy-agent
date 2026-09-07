@@ -92,9 +92,11 @@ func createVM(out io.Writer, name, image, version string, diskGiB int, nightly b
 	}
 	path, resolvedVersion := image, ""
 	if path == "" {
-		if path, resolvedVersion, err = fetchPublishedVMImage(version, nightly, pr); err != nil {
+		var cleanup func()
+		if path, resolvedVersion, cleanup, err = fetchPublishedVMImage(version, nightly, pr); err != nil {
 			return err
 		}
+		defer cleanup()
 	}
 
 	// Published images and cached copies are compressed; sniff rather than trust
@@ -618,21 +620,21 @@ const (
 // cache does not already hold it. It returns the local path and the version tag
 // it resolved to, which the caller records so a stopped VM still knows what it
 // is running.
-func fetchPublishedVMImage(version string, nightly bool, pr int) (string, string, error) {
+func fetchPublishedVMImage(version string, nightly bool, pr int) (string, string, func(), error) {
 	fetchMain := fetchMainManifest
 	if pr > 0 {
 		fetchMain = func() (*mainManifest, error) { return fetchPRMainManifest(pr) }
 	}
 	mm, err := fetchMain()
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	dev, ok := mm.Devices[vmDeviceKey]
 	if !ok {
 		if pr > 0 {
-			return "", "", fmt.Errorf("PR %d published no %s image; check the build finished for that device", pr, vmDeviceKey)
+			return "", "", nil, fmt.Errorf("PR %d published no %s image; check the build finished for that device", pr, vmDeviceKey)
 		}
-		return "", "", fmt.Errorf("no published %s image yet; build one and pass --image", vmDeviceKey)
+		return "", "", nil, fmt.Errorf("no published %s image yet; build one and pass --image", vmDeviceKey)
 	}
 
 	// PR entries are always published as nightlies, so their tag lives in
@@ -647,26 +649,20 @@ func fetchPublishedVMImage(version string, nightly bool, pr int) (string, string
 		}
 	}
 	if ver == "" {
-		return "", "", fmt.Errorf("no %s release published yet; retry with --nightly, or build one and pass --image", vmDeviceKey)
+		return "", "", nil, fmt.Errorf("no %s release published yet; retry with --nightly, or build one and pass --image", vmDeviceKey)
 	}
 
 	dm, err := fetchDeviceManifest(dev.ManifestPath)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	info, err := getImageInfo(dm, ver, vmStorageKey)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
-	// Prefer the seekable artifact: far smaller over the wire, and
-	// resolveSeekableZst already caches it.
-	if info.ZstURL != "" {
-		path, err := resolveSeekableZst(vmDeviceKey, ver, vmStorageKey, info.ZstURL)
-		return path, ver, err
-	}
-	path, err := resolveOSImage(vmDeviceKey, info)
-	return path, ver, err
+	path, cleanup, err := resolveVMImage(info)
+	return path, ver, cleanup, err
 }
 
 // vmImageSource names where a VM's image came from, for the record kept beside

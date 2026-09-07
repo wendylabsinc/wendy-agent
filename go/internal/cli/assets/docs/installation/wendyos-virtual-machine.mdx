@@ -301,6 +301,12 @@ VMs live in `~/.wendy/vms/<name>/`. Removing one deletes its disk, which cannot
 be undone — but the image you created it from is untouched, so you can always
 make a fresh one.
 
+Published VM images are cached by their manifest SHA-256, not by the version
+label. Cached and newly downloaded bytes are verified before use, so rebuilding
+a PR under the same label cannot silently reuse the old image. If no checksum
+is published, each create downloads afresh and removes that temporary download
+after provisioning. Existing VM disks are never refreshed implicitly.
+
 <Callout type="info">
 A freshly created VM's agent is unauthenticated until the device is provisioned,
 and it is reachable on `127.0.0.1`. On a machine you share with other people,
