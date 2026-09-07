@@ -7,8 +7,53 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+func TestConcurrentCreatesHaveExactlyOneOwner(t *testing.T) {
+	for range 25 {
+		s := newTestStore(t)
+		start := make(chan struct{})
+		results := make(chan error, 16)
+		var wg sync.WaitGroup
+		for range 16 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				results <- s.CreateFrom("dev", strings.NewReader("image"), 5, 1<<20, Meta{})
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(results)
+		winners := 0
+		for err := range results {
+			if err == nil {
+				winners++
+			} else if !strings.Contains(err.Error(), "already exists") {
+				t.Fatal(err)
+			}
+		}
+		if winners != 1 {
+			t.Fatalf("got %d successful creators, want exactly one", winners)
+		}
+		f, err := os.Open(s.DiskPath("dev"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var prefix [5]byte
+		_, err = io.ReadFull(f, prefix[:])
+		f.Close()
+		if err != nil || string(prefix[:]) != "image" {
+			t.Fatalf("winner's disk damaged: %q %v", prefix, err)
+		}
+		if _, ok := s.ReadMeta("dev"); !ok {
+			t.Fatal("winner's metadata removed")
+		}
+	}
+}
 
 func TestValidName(t *testing.T) {
 	for _, ok := range []string{"wendy-vm", "vm1", "a-b-c", "dev"} {

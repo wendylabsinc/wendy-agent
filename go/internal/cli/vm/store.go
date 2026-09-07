@@ -87,10 +87,16 @@ func (s *Store) CreateFrom(name string, image io.Reader, imageSize, diskBytes in
 	meta.MAC = mac
 
 	dir := s.Dir(name)
-	if _, err := os.Stat(dir); err == nil {
-		return fmt.Errorf("VM %q already exists; remove it with 'wendy vm rm %s'", name, name)
+	if err := os.MkdirAll(s.Root, 0o700); err != nil {
+		return fmt.Errorf("creating VM store: %w", err)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// Mkdir, not MkdirAll: only the process that exclusively creates this
+	// directory owns its rollback. A losing concurrent create must never
+	// remove the winning creator's disk after its O_EXCL open fails.
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("VM %q already exists; remove it with 'wendy vm rm %s'", name, name)
+		}
 		return fmt.Errorf("creating %s: %w", dir, err)
 	}
 
@@ -109,8 +115,7 @@ func (s *Store) CreateFrom(name string, image io.Reader, imageSize, diskBytes in
 		}
 	}()
 
-	// O_EXCL is the real existence check: a VM's disk is the one file whose loss
-	// cannot be undone, so never open it for truncation.
+	// Defense in depth: never open a VM disk for truncation.
 	disk, err := os.OpenFile(s.DiskPath(name), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("creating disk: %w", err)
