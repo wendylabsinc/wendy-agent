@@ -110,6 +110,25 @@ func TestArgsPutTheConsoleOnStdio(t *testing.T) {
 	}
 }
 
+func TestArgsExposeQMPOnlyOnUnixSocket(t *testing.T) {
+	for _, log := range []string{"", "/vms/dev/console.log"} {
+		s := testSpec()
+		s.ConsoleLog = log
+		s.QMPPath = "/vms/with,comma/dev/qmp.sock"
+		args, err := s.Args()
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "-qmp unix:/vms/with,,comma/dev/qmp.sock,server=on,wait=off") {
+			t.Fatalf("missing Unix control socket: %s", joined)
+		}
+		if strings.Contains(joined, "-qmp tcp:") {
+			t.Fatalf("unexpected TCP control listener: %s", joined)
+		}
+	}
+}
+
 func TestArgsUseTCGSettingsOnAnUnacceleratedHost(t *testing.T) {
 	s := testSpec()
 	s.Accel = AccelTCG

@@ -52,6 +52,12 @@ func (s *Store) StartDetached(spec Spec) (State, error) {
 	// spec, and rotating the log first would discard the previous boot's
 	// output over a launch that never happens.
 	spec.ConsoleLog = s.LogPath(spec.Name)
+	if DetachSupported() {
+		spec.QMPPath, err = s.prepareQMP(spec.Name)
+		if err != nil {
+			return State{}, err
+		}
+	}
 	args, err := spec.Args()
 	if err != nil {
 		return State{}, err
@@ -155,9 +161,8 @@ func (s *Store) openConsoleLog(name string) (*os.File, error) {
 //
 // SIGTERM makes QEMU exit, which is a power cut from the guest's point of view
 // -- it never sees an ACPI power-button event, so its filesystems are not
-// flushed. A graceful guest shutdown would need a QMP monitor, which the
-// detached spec deliberately does not open. Power the guest off from inside
-// when that matters.
+// flushed. The launcher now exposes QMP, but Stop does not yet use it for a
+// graceful guest shutdown. Power the guest off from inside when that matters.
 func (s *Store) Stop(name string, force bool, grace time.Duration) error {
 	st, err := s.Status(name)
 	if err != nil {
@@ -220,6 +225,12 @@ func (s *Store) RunForeground(ctx context.Context, spec Spec, stdin io.Reader, s
 
 	// No ConsoleLog: the console is this terminal, which is the whole point of
 	// a foreground start.
+	if DetachSupported() {
+		spec.QMPPath, err = s.prepareQMP(spec.Name)
+		if err != nil {
+			return err
+		}
+	}
 	args, err := spec.Args()
 	if err != nil {
 		return err

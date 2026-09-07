@@ -208,18 +208,22 @@ forwards three:
 | `50052` | the agent again, once the device is provisioned and on mTLS |
 | `5000` | the device's container registry, which `wendy run` pushes to |
 
-An app's own port is **not** among them, so `wendy run` can deploy an app to a
-VM and still leave it unreachable — and its readiness probe times out for the
-same reason. Add the forward from QEMU's monitor without restarting: press
-**Ctrl-A** then **C** on the VM's console and
+On macOS and Linux, `wendy run` also forwards each declared `http` entitlement
+and TCP readiness port to the same port on `127.0.0.1`. The app URL uses that
+loopback address, and readiness checks use it too. This works with background
+VMs and detached applications; forwards last until the VM stops and are
+recreated on the next run.
 
-```
-hostfwd_add net0 tcp:127.0.0.1:3001-:3001
-```
+If another application or VM owns the host port, deployment reports a forwarding
+error. Free that port or choose a different application port. Other ports are
+not automatically exposed. VMs started with an older launcher must be restarted
+once to enable this feature. On `--net shared` the guest is on your network
+directly and none of this applies.
 
-using your app's port. **Ctrl-A** then **C** returns you to the console, and
-`http://127.0.0.1:3001` then works. On `--net shared` the guest is on your
-network directly and none of this applies.
+The launcher manages these forwards through a Unix control socket in the VM's
+directory, whose permissions are enforced as `0700` on each launch. There is no
+TCP control listener. Other user accounts cannot traverse the directory, but
+processes running as your user (and root) can connect and have full QEMU control.
 
 ### If port 50051 is taken
 

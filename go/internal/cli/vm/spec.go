@@ -29,6 +29,8 @@ type Spec struct {
 	// to this file instead of the terminal. A detached VM has no terminal to
 	// attach to, and the log is the only record of a boot that failed.
 	ConsoleLog string
+	// QMPPath is a private control socket in the VM's owner-only directory.
+	QMPPath string
 }
 
 // Binary names the emulator. Always the aarch64 system emulator: the guest is
@@ -81,6 +83,9 @@ func (s Spec) Args() ([]string, error) {
 		"-device", "virtio-blk-pci,drive=hd0",
 	}
 	args = append(args, s.consoleArgs()...)
+	if s.QMPPath != "" {
+		args = append(args, "-qmp", "unix:"+escapeQEMUValue(s.QMPPath)+",server=on,wait=off")
+	}
 
 	netArgs, err := s.Net.Args()
 	if err != nil {
