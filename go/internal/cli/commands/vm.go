@@ -491,7 +491,7 @@ func runVMStop(cmd *cobra.Command, name string, force bool) error {
 	}
 	// Store.Stop makes the "still starting" refusal itself, so that `vm rm
 	// --force` gets it too rather than only this command.
-	if err := store.Stop(name, force, vmStopGrace); err != nil {
+	if err := store.StopContext(cmd.Context(), name, force, vmStopGrace); err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Stopped VM %q.\n", name)

@@ -220,9 +220,11 @@ type PickerModel struct {
 	// If nil, 'c' is ignored.
 	OnCreateItem func() (flash string, quit bool)
 
-	// OnStopItem is called when the user presses 's' on the highlighted item.
+	// OnStopItem runs asynchronously when the user presses 's'. It must not
+	// mutate the model, and should honor its owner's cancellation context.
 	// Returns (flash message, isError). If nil, 's' is ignored.
-	OnStopItem func(item PickerItem) (string, bool)
+	OnStopItem   func(item PickerItem) (string, bool)
+	stoppingName string
 
 	// RemoveHint is the wording for 'r' in the header, for a picker whose rows
 	// are not cloud credentials. Empty keeps the default.
@@ -335,8 +337,18 @@ func (m PickerModel) anyProbePending() bool {
 	return false
 }
 
+type pickerStopResultMsg struct {
+	flash   string
+	isError bool
+}
+
 func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case pickerStopResultMsg:
+		m.stoppingName = ""
+		m.flashMessage, m.flashIsError = msg.flash, msg.isError
+		m.refreshTable()
+		return m, nil
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -403,11 +415,16 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case key == "s" && !m.Filterable:
-			if m.OnStopItem != nil {
+			if m.OnStopItem != nil && m.stoppingName == "" {
 				visible := m.visibleItems()
 				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
-					m.flashMessage, m.flashIsError = m.OnStopItem(visible[idx])
-					m.refreshTable()
+					item, stop := visible[idx], m.OnStopItem
+					m.stoppingName = item.Name
+					m.flashMessage = ""
+					return m, func() tea.Msg {
+						flash, isError := stop(item)
+						return pickerStopResultMsg{flash: flash, isError: isError}
+					}
 				}
 			}
 			return m, nil
@@ -646,6 +663,9 @@ func (m PickerModel) View() string {
 
 	sb.WriteString(colorizeSectionHeaders(ColorizeProbeGlyphs(m.tableView()), m.sectionLabels()) + "\n")
 
+	if m.stoppingName != "" {
+		sb.WriteString(m.viewLine("  Stopping "+m.stoppingName+"… (waiting for guest shutdown)") + "\n")
+	}
 	if m.flashMessage != "" {
 		style := lipgloss.NewStyle().Foreground(ColorPrimary)
 		if m.flashIsError {

@@ -180,6 +180,15 @@ func (s *Store) openConsoleLog(name string) (*os.File, error) {
 // missing monitor or an unresponsive guest is an error, never permission to
 // cut power. Only an explicit force request may kill the emulator.
 func (s *Store) Stop(name string, force bool, grace time.Duration) error {
+	return s.StopContext(context.Background(), name, force, grace)
+}
+
+// StopContext lets callers abandon the wait without cutting the VM's power.
+// A shutdown already requested from the guest continues after cancellation.
+func (s *Store) StopContext(ctx context.Context, name string, force bool, grace time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	st, err := s.Status(name)
 	if err != nil {
 		return err
@@ -200,7 +209,10 @@ func (s *Store) Stop(name string, force bool, grace time.Duration) error {
 			return fmt.Errorf("signalling VM %q: %w", name, err)
 		}
 		grace = time.Second
-	} else if err := s.requestPowerdown(context.Background(), name); err != nil {
+	} else if err := s.requestPowerdown(ctx, name); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("requesting VM %q shutdown: %w; shut down inside the guest or use 'wendy vm stop %s --force' to cut power", name, err, name)
 	}
 
@@ -214,7 +226,11 @@ func (s *Store) Stop(name string, force bool, grace time.Duration) error {
 			_, err := s.Status(name) // reaps state.json
 			return err
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 	if force {
 		return fmt.Errorf("VM %q did not exit after SIGKILL", name)

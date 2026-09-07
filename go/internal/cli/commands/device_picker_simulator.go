@@ -45,12 +45,12 @@ type simulatorPickerModel struct {
 	vms    *[]vm.Status
 }
 
-func newSimulatorPickerModel(context.Context) simulatorPickerModel {
+func newSimulatorPickerModel(ctx context.Context) simulatorPickerModel {
 	m := simulatorPickerModel{
 		picker: tui.NewPickerWithTitleAndColumns("Select a simulator", simulatorPickerColumns()),
 	}
 	m.picker.RemoveHint = "remove"
-	m.picker.OnStopItem = stopSimulatorRow
+	m.picker.OnStopItem = func(item tui.PickerItem) (string, bool) { return stopSimulatorRow(ctx, item) }
 	m.picker.OnRemoveItem = removeSimulatorRow
 	// Quits the picker: creating downloads an image behind its own progress
 	// program, and two Bubble Tea programs cannot share a terminal. The caller
@@ -78,7 +78,7 @@ var vmStatusFn = func(name string) (vm.Status, error) {
 // stopSimulatorRow powers 's'. Stop only: a mis-press on the wrong row can then
 // never boot something, and starting already has a home (enter, or
 // `wendy vm start`).
-func stopSimulatorRow(item tui.PickerItem) (string, bool) {
+func stopSimulatorRow(ctx context.Context, item tui.PickerItem) (string, bool) {
 	choice, _ := item.Value.(*simulatorChoice)
 	if choice == nil || choice.Create {
 		return "", false
@@ -94,7 +94,7 @@ func stopSimulatorRow(item tui.PickerItem) (string, bool) {
 	if err != nil {
 		return err.Error(), true
 	}
-	if err := store.Stop(choice.Name, false, vmStopGrace); err != nil {
+	if err := store.StopContext(ctx, choice.Name, false, vmStopGrace); err != nil {
 		return err.Error(), true
 	}
 	return fmt.Sprintf("Stopped %s.", choice.Name), false

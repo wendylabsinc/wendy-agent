@@ -285,7 +285,7 @@ func TestStopOnAStoppedVMIsANoOpNotAnError(t *testing.T) {
 	vmStatusFn = func(string) (vm.Status, error) { return vm.Status{Exists: true}, nil }
 	t.Cleanup(func() { vmStatusFn = saved })
 
-	flash, isErr := stopSimulatorRow(tui.PickerItem{Name: "dev", Value: &simulatorChoice{Name: "dev"}})
+	flash, isErr := stopSimulatorRow(context.Background(), tui.PickerItem{Name: "dev", Value: &simulatorChoice{Name: "dev"}})
 	if isErr {
 		t.Errorf("stopping an already-stopped VM reported an error: %q", flash)
 	}

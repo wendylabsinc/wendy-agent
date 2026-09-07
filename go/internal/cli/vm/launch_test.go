@@ -213,7 +213,7 @@ func TestStopIsANoOpOnAStoppedVM(t *testing.T) {
 }
 
 func TestGracefulStopNeverSilentlyCutsPower(t *testing.T) {
-	for _, mode := range []string{"missing", "refused", "timeout", "shutdown"} {
+	for _, mode := range []string{"missing", "refused", "timeout", "shutdown", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			stubEmulator(t)
 			s := shortQMPStore(t)
@@ -222,6 +222,8 @@ func TestGracefulStopNeverSilentlyCutsPower(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = s.Stop("dev", true, time.Second) })
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			if mode != "missing" {
 				ln, err := net.Listen("unix", s.QMPPath("dev"))
 				if err != nil {
@@ -255,15 +257,21 @@ func TestGracefulStopNeverSilentlyCutsPower(t *testing.T) {
 					if mode == "shutdown" {
 						_ = killProcess(st.PID, true)
 					} // emulate guest exit
+					if mode == "cancelled" {
+						cancel()
+					}
 				}()
 			}
-			err = s.Stop("dev", false, 200*time.Millisecond)
+			err = s.StopContext(ctx, "dev", false, 200*time.Millisecond)
 			if mode == "shutdown" {
 				if err != nil {
 					t.Fatal(err)
 				}
 			} else {
-				if err == nil || !strings.Contains(err.Error(), "--force") {
+				if mode == "cancelled" && !errors.Is(err, context.Canceled) {
+					t.Fatalf("want cancellation, got %v", err)
+				}
+				if mode != "cancelled" && (err == nil || !strings.Contains(err.Error(), "--force")) {
 					t.Fatalf("want explicit-force guidance, got %v", err)
 				}
 				status, err := s.Status("dev")
