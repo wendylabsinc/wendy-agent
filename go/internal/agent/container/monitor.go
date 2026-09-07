@@ -22,6 +22,18 @@ const (
 	// dependency (network, camera, USB peripheral) comes back — so it keeps
 	// retrying at this interval indefinitely.
 	restartBackoffCap = 5 * time.Minute
+	// gpuMinRestartDelay floors the delay before restarting a container that
+	// holds a gpu entitlement, including its first restart after a crash.
+	//
+	// A GPU app that dies hard — a segfault, an OOM kill, anything that skips
+	// its CUDA teardown — leaves the driver holding the context it was using.
+	// Restarting instantly asks the driver for a fresh context before it has
+	// reaped the dead one, and a driver that refuses returns "no device": the
+	// app crashes again, on a tighter loop, for a reason that has nothing to do
+	// with the app. A few seconds of patience costs a GPU app very little (they
+	// take longer than this to load their weights) and takes the retry out of
+	// the window where the driver is still cleaning up.
+	gpuMinRestartDelay = 10 * time.Second
 	// restartStabilityWindow is how long a container must be observed RUNNING
 	// continuously before its backoff resets. It is deliberately much longer
 	// than the tick interval: a container that starts, is seen running once,
@@ -39,7 +51,8 @@ const (
 //
 // Level 0 (the first restart after a crash) is immediate and level 1 is 10s,
 // preserving the pre-backoff timing for the first two attempts so a transient
-// crash still recovers promptly.
+// crash still recovers promptly. GPU containers are the exception — see
+// gpuMinRestartDelay.
 func restartDelay(level int) time.Duration {
 	if level <= 0 {
 		return 0
@@ -124,6 +137,15 @@ type containerState struct {
 	// last restart, or zero while it is not running. Once it has been running
 	// for restartStabilityWindow the backoff resets.
 	RunningSince time.Time
+	// DownSince is when the container was first observed not running since it
+	// was last up, or zero while it is running.
+	//
+	// Distinct from LastRestart, which the backoff ladder measures from: an app
+	// that ran happily for hours and then crashed has a LastRestart hours in
+	// the past, so every level-based delay is already satisfied and the restart
+	// is immediate no matter what the ladder says. Only a clock that starts at
+	// the death can hold a restart back for a fixed interval after it.
+	DownSince time.Time
 }
 
 // ContainerMonitor monitors container health and implements restart policies.
@@ -144,8 +166,13 @@ type ContainerMonitor struct {
 	// the same service) don't have the first resume() re-enable restarts while
 	// the second is still tearing the task down. Guarded by mu.
 	suppressed map[string]int
-	mu         sync.Mutex
-	interval   time.Duration
+	// gpuEntitled caches, per container name, whether it holds a gpu
+	// entitlement. Entitlements are fixed for a container's lifetime (they are
+	// baked into its labels at create time), so this is resolved once per name
+	// rather than on every tick. Guarded by mu.
+	gpuEntitled map[string]bool
+	mu          sync.Mutex
+	interval    time.Duration
 	// now is the monitor's clock, defaulting to time.Now. Restart backoff is
 	// measured in minutes, so tests override this to drive the curve
 	// deterministically instead of sleeping.
@@ -163,6 +190,7 @@ func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, l
 		states:          make(map[string]*containerState),
 		groupRestarting: make(map[string]bool),
 		suppressed:      make(map[string]int),
+		gpuEntitled:     make(map[string]bool),
 		interval:        interval,
 		now:             time.Now,
 	}
@@ -188,6 +216,9 @@ func (m *ContainerMonitor) Unregister(appName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.states, appName)
+	// A redeploy can change an app's entitlements, and the name is reused, so
+	// the cached answer must not outlive the registration it was resolved for.
+	delete(m.gpuEntitled, appName)
 }
 
 // MarkExplicitStop marks a container as explicitly stopped, preventing restart.
@@ -375,6 +406,8 @@ func (m *ContainerMonitor) checkContainers(ctx context.Context) {
 		m.logger.Error("Failed to list containers for health check", zap.Error(err))
 		return
 	}
+
+	m.resolveGPUEntitlements(ctx)
 
 	toRestart := m.planRestarts(containers)
 
@@ -607,6 +640,7 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 			// resetting on the first RUNNING sighting would hand a free reset
 			// to a container that starts, is seen once, and dies; its backoff
 			// would stay pinned at the base forever.
+			state.DownSince = time.Time{}
 			if state.RunningSince.IsZero() {
 				state.RunningSince = now
 			} else if now.Sub(state.RunningSince) >= restartStabilityWindow {
@@ -619,6 +653,9 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 		}
 		// Down: any partial stability streak is void.
 		state.RunningSince = time.Time{}
+		if state.DownSince.IsZero() {
+			state.DownSince = now
+		}
 		if m.suppressed[appName] > 0 {
 			// A replace/stop operation is mid-teardown of this container; see
 			// Suppress. Skip it this tick — the caller will resume suppression
@@ -629,6 +666,13 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 		if !m.shouldRestart(state) {
 			continue
 		}
+		// Hold a GPU container back for a fixed interval after its death,
+		// however long it had been up (see gpuMinRestartDelay). This gate is
+		// measured from DownSince rather than LastRestart precisely because the
+		// ladder below cannot see the death of a long-lived container.
+		if m.gpuEntitled[appName] && now.Sub(state.DownSince) < gpuMinRestartDelay {
+			continue
+		}
 		delay := restartDelay(state.BackoffLevel)
 		if now.Sub(state.LastRestart) < delay {
 			continue
@@ -637,6 +681,7 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 			zap.String("app_name", appName),
 			zap.Int("failure_count", state.FailureCount),
 			zap.Duration("backoff", delay),
+			zap.Duration("down_for", now.Sub(state.DownSince)),
 		)
 		state.FailureCount++
 		state.LastRestart = now
@@ -649,6 +694,40 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 		toRestart = append(toRestart, appName)
 	}
 	return toRestart
+}
+
+// resolveGPUEntitlements fills the gpuEntitled cache for any registered
+// container it has not answered for yet.
+//
+// It runs before planRestarts rather than inside it because the lookup reaches
+// containerd, and planRestarts holds mu for its whole pass — the same reason
+// planRestartActions does its group lookups outside the lock.
+func (m *ContainerMonitor) resolveGPUEntitlements(ctx context.Context) {
+	reporter, ok := m.containerd.(services.GPUDeviceReporter)
+	if !ok {
+		return
+	}
+
+	m.mu.Lock()
+	var unresolved []string
+	for name := range m.states {
+		if _, known := m.gpuEntitled[name]; !known {
+			unresolved = append(unresolved, name)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, name := range unresolved {
+		hasGPU := reporter.HasGPUEntitlement(ctx, name)
+		m.mu.Lock()
+		// Only record an answer for a container that is still registered: an
+		// Unregister between the snapshot above and this line means the entry
+		// it belonged to is gone, and re-adding it here would leak.
+		if _, stillRegistered := m.states[name]; stillRegistered {
+			m.gpuEntitled[name] = hasGPU
+		}
+		m.mu.Unlock()
+	}
 }
 
 // shouldRestart determines whether a container should be restarted based on its policy.
