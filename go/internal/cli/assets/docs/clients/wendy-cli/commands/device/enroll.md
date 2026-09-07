@@ -25,6 +25,10 @@ another's is what once sent enrollment tokens to the wrong place in cleartext.
 With it unset the command stops before requesting a credential rather than
 minting one the device could not redeem.
 
+For Wendy's own environments the frontend is `https://acme.dev.pki.wendy.sh` on
+dev, and the same host without the `dev.` label on production once that
+environment is online.
+
 ## Description
 
 Run [`wendy cloud login`](../cloud/login.md) first — the request for the
@@ -51,12 +55,12 @@ No certificate and no private key ever travels through this command.
 
 > **The device's name and its identity are not the same thing.** The **name**
 > is cosmetic and can be changed later with `wendy device rename`. The
-> **DeviceID** is derived from the name at enrollment, is fixed at mint, and is
-> carried by every certificate the device is ever issued — it cannot be changed
-> afterwards. The derivation lower-cases the name and replaces anything outside
-> `A-Za-z0-9._-` with `-`, keeping any `/` as a path separator, so `Lab Pi 01`
-> becomes `lab-pi-01` and `fleet-a/box-01` is kept as it is. The command prints
-> the DeviceID it derived before enrolling.
+> **DeviceID** is a UUID minted at enrollment, is fixed at mint, and is carried
+> by every certificate the device is ever issued — it cannot be changed
+> afterwards. It is deliberately not derived from the name: a permanent
+> identity must not be tied to a renameable label. The command prints the
+> DeviceID before enrolling, and it is the only time you see it alongside the
+> name you chose.
 
 > **Class B only, today.** The command requests a class B credential: an EAB
 > with no attestation challenge. Class A (hardware attestation) and class C

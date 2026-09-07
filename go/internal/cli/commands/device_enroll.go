@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -28,59 +28,6 @@ import (
 // cloud endpoint. Guessing one service's host from another's is what sent
 // enrollment tokens to the wrong place in cleartext (WDY-2799).
 const acmeEndpointEnv = "WENDY_PKI_ACME_ENDPOINT"
-
-// deviceIDSegment is one segment of a device id: pki-core stamps the whole
-// path into spiffe://wendy.sh/tenant/<tenant>/device/<device_id>, and cloud
-// refuses anything no presented certificate could ever match.
-var deviceIDSegment = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-
-// deviceIDFromName derives the device's permanent identity from its display
-// name. The two are not the same thing and deliberately do not stay in step:
-// the name is cosmetic and can be changed later, while the device id is fixed
-// at mint and is carried by every certificate the device is ever issued.
-//
-// Deriving rather than asking keeps the command's flags as they are. The
-// caller prints the result, because an operator who typed "Lab Pi 01" needs to
-// see that "lab-pi-01" is what the fleet will call this device forever.
-func deviceIDFromName(name string) (string, error) {
-	segments := strings.Split(strings.TrimSpace(name), "/")
-	out := make([]string, 0, len(segments))
-	for _, segment := range segments {
-		var b strings.Builder
-		for _, r := range strings.ToLower(segment) {
-			switch {
-			case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
-				b.WriteRune(r)
-			default:
-				b.WriteRune('-')
-			}
-		}
-		// Collapse runs and trim, so "Lab  Pi" is "lab-pi" rather than
-		// "lab--pi", and a trailing separator does not become a "-" segment.
-		cleaned := strings.Trim(collapseDashes(b.String()), "-")
-		if cleaned == "" || cleaned == "." || cleaned == ".." {
-			continue
-		}
-		if len(cleaned) > 64 {
-			cleaned = cleaned[:64]
-		}
-		if !deviceIDSegment.MatchString(cleaned) {
-			return "", fmt.Errorf("cannot derive a device identity from name %q", name)
-		}
-		out = append(out, cleaned)
-	}
-	if len(out) == 0 {
-		return "", fmt.Errorf("cannot derive a device identity from name %q: pass --name with at least one letter or digit", name)
-	}
-	return strings.Join(out, "/"), nil
-}
-
-func collapseDashes(s string) string {
-	for strings.Contains(s, "--") {
-		s = strings.ReplaceAll(s, "--", "-")
-	}
-	return s
-}
 
 // acmeDirectoryURL builds the tenant's ACME directory from the configured
 // frontend origin. The tenant is a canonical lower-case UUID and rides inside
@@ -119,10 +66,11 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 	if err != nil {
 		return err
 	}
-	deviceID, err := deviceIDFromName(name)
-	if err != nil {
-		return err
-	}
+	// The device id is a v4 UUID, and is deliberately unrelated to the name.
+	// The name is cosmetic and can be changed later with `wendy device rename`;
+	// this id is fixed at mint and is carried by every certificate the device
+	// is ever issued, so tying it to a renameable label would be a mistake.
+	deviceID := uuid.NewString()
 
 	signer, err := cloudrequest.NewEnrollmentSigner(auth)
 	if err != nil {

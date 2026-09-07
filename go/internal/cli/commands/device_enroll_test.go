@@ -1,54 +1,27 @@
 package commands
 
 import (
-	"strings"
+	"regexp"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
-func TestDeviceIDFromName(t *testing.T) {
-	tests := []struct {
-		name string
-		want string
-	}{
-		{"playful-reed", "playful-reed"},
-		{"Lab Pi 01", "lab-pi-01"},
-		{"fleet-a/box-01", "fleet-a/box-01"},
-		// Runs collapse and edges trim, so a name does not turn into a
-		// segment pki-core would refuse.
-		{"Lab  Pi", "lab-pi"},
-		{" -edge- ", "edge"},
-		{"a//b", "a/b"},
-		{"box.01_v2", "box.01_v2"},
-		// "." and ".." are the only dot segments the contract bans; "..." is
-		// legal and is left alone rather than invented away.
-		{"...", "..."},
-		// Segments longer than 64 characters are truncated, not rejected.
-		{strings.Repeat("x", 80), strings.Repeat("x", 64)},
-	}
-	for _, tt := range tests {
-		got, err := deviceIDFromName(tt.name)
-		if err != nil {
-			t.Errorf("deviceIDFromName(%q): %v", tt.name, err)
-			continue
-		}
-		if got != tt.want {
-			t.Errorf("deviceIDFromName(%q) = %q, want %q", tt.name, got, tt.want)
-		}
-		for _, segment := range strings.Split(got, "/") {
-			if !deviceIDSegment.MatchString(segment) {
-				t.Errorf("deviceIDFromName(%q) = %q: segment %q is not a legal device id segment", tt.name, got, segment)
-			}
-		}
-	}
-}
+// The device id is a v4 UUID (sem, WDY-2943). Cloud refuses any device id
+// whose segments do not match ^[A-Za-z0-9._-]{1,64}$, and the id is irreversible
+// once minted, so the shape is pinned here rather than assumed.
+func TestDeviceIDIsALegalUUID(t *testing.T) {
+	legalSegment := regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
-func TestDeviceIDFromNameRefusesNamesWithNothingToKeep(t *testing.T) {
-	// The device id is irreversible, so a name that carries no usable
-	// character is refused rather than turned into something invented.
-	for _, name := range []string{"", "   ", "///", "-", "/./", "/../"} {
-		if got, err := deviceIDFromName(name); err == nil {
-			t.Errorf("deviceIDFromName(%q) = %q, want an error", name, got)
-		}
+	first := uuid.NewString()
+	if !legalSegment.MatchString(first) {
+		t.Errorf("device id %q is not a legal device id segment", first)
+	}
+	if _, err := uuid.Parse(first); err != nil {
+		t.Errorf("device id %q does not parse as a UUID: %v", first, err)
+	}
+	if second := uuid.NewString(); second == first {
+		t.Errorf("two enrollments minted the same device id %q", first)
 	}
 }
 
