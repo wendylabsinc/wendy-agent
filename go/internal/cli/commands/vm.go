@@ -463,9 +463,9 @@ func newVMStopCmd() *cobra.Command {
 	return cmd
 }
 
-// vmStopGrace is how long a VM gets to shut down cleanly before being killed.
-// The guest flushes its filesystems in that window, so it is worth waiting.
-const vmStopGrace = 20 * time.Second
+// Allow systemd's normal service-stop timeout and filesystem flushing. Timing
+// out leaves the guest running; power cuts require an explicit --force.
+const vmStopGrace = 120 * time.Second
 
 func runVMStop(cmd *cobra.Command, name string, force bool) error {
 	store, err := vm.NewStore()

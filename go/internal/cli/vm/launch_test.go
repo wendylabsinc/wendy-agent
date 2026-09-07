@@ -4,8 +4,10 @@ package vm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,6 +209,69 @@ func TestStopIsANoOpOnAStoppedVM(t *testing.T) {
 	createTestVM(t, s, "dev", Meta{})
 	if err := s.Stop("dev", false, time.Second); err != nil {
 		t.Errorf("Stop() on a stopped VM = %v, want nil", err)
+	}
+}
+
+func TestGracefulStopNeverSilentlyCutsPower(t *testing.T) {
+	for _, mode := range []string{"missing", "refused", "timeout", "shutdown"} {
+		t.Run(mode, func(t *testing.T) {
+			stubEmulator(t)
+			s := shortQMPStore(t)
+			st, err := s.StartDetached(detachableSpec(t, s, "dev"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Stop("dev", true, time.Second) })
+			if mode != "missing" {
+				ln, err := net.Listen("unix", s.QMPPath("dev"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ln.Close()
+				go func() {
+					c, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					defer c.Close()
+					_ = c.SetDeadline(time.Now().Add(time.Second))
+					e, d := json.NewEncoder(c), json.NewDecoder(c)
+					_ = e.Encode(map[string]any{"QMP": map[string]any{}})
+					for _, want := range []string{"qmp_capabilities", "system_powerdown"} {
+						var req struct{ Execute string }
+						if err := d.Decode(&req); err != nil {
+							return
+						}
+						if req.Execute != want {
+							t.Errorf("command = %s, want %s", req.Execute, want)
+							return
+						}
+						if want == "system_powerdown" && mode == "refused" {
+							_ = e.Encode(map[string]any{"error": map[string]string{"desc": "denied"}})
+							return
+						}
+						_ = e.Encode(map[string]any{"return": map[string]any{}})
+					}
+					if mode == "shutdown" {
+						_ = killProcess(st.PID, true)
+					} // emulate guest exit
+				}()
+			}
+			err = s.Stop("dev", false, 200*time.Millisecond)
+			if mode == "shutdown" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), "--force") {
+					t.Fatalf("want explicit-force guidance, got %v", err)
+				}
+				status, err := s.Status("dev")
+				if err != nil || !status.Running {
+					t.Fatalf("guest was killed: %+v, %v", status, err)
+				}
+			}
+		})
 	}
 }
 

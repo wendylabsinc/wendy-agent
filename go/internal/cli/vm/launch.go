@@ -159,10 +159,9 @@ func (s *Store) openConsoleLog(name string) (*os.File, error) {
 // emulator's last descriptor closes, so this reports the process is really
 // gone rather than that a signal was delivered.
 //
-// SIGTERM makes QEMU exit, which is a power cut from the guest's point of view
-// -- it never sees an ACPI power-button event, so its filesystems are not
-// flushed. The launcher now exposes QMP, but Stop does not yet use it for a
-// graceful guest shutdown. Power the guest off from inside when that matters.
+// Without force, request the guest's power-button handler through QMP. A
+// missing monitor or an unresponsive guest is an error, never permission to
+// cut power. Only an explicit force request may kill the emulator.
 func (s *Store) Stop(name string, force bool, grace time.Duration) error {
 	st, err := s.Status(name)
 	if err != nil {
@@ -179,14 +178,13 @@ func (s *Store) Stop(name string, force bool, grace time.Duration) error {
 		return fmt.Errorf("VM %q is starting; retry in a moment", name)
 	}
 
-	// Checked running above, so at worst this signals a pid recycled in the
-	// microseconds since. Nothing to do about that beyond keeping the window
-	// this small.
-	if err := killProcess(st.State.PID, force); err != nil {
-		return fmt.Errorf("signalling VM %q: %w", name, err)
-	}
 	if force {
+		if err := killProcess(st.State.PID, true); err != nil {
+			return fmt.Errorf("signalling VM %q: %w", name, err)
+		}
 		grace = time.Second
+	} else if err := s.requestPowerdown(context.Background(), name); err != nil {
+		return fmt.Errorf("requesting VM %q shutdown: %w; shut down inside the guest or use 'wendy vm stop %s --force' to cut power", name, err, name)
 	}
 
 	deadline := time.Now().Add(grace)
@@ -204,7 +202,7 @@ func (s *Store) Stop(name string, force bool, grace time.Duration) error {
 	if force {
 		return fmt.Errorf("VM %q did not exit after SIGKILL", name)
 	}
-	return s.Stop(name, true, grace)
+	return fmt.Errorf("VM %q has not shut down after %s; it was not killed: wait longer or use 'wendy vm stop %s --force' to cut power", name, grace, name)
 }
 
 // RunForeground runs a VM attached to the given streams and blocks until it

@@ -91,6 +91,16 @@ func (s *Store) EnsureTCPPorts(ctx context.Context, name string, ports []int) er
 	if !DetachSupported() {
 		return fmt.Errorf("automatic VM port forwarding currently requires macOS or Linux")
 	}
+	return s.withQMP(ctx, name, func(q *qmpClient) error { return q.ensureTCPPorts(name, ports) })
+}
+
+func (s *Store) requestPowerdown(ctx context.Context, name string) error {
+	return s.withQMP(ctx, name, func(q *qmpClient) error {
+		return q.execute("system_powerdown", map[string]any{}, nil)
+	})
+}
+
+func (s *Store) withQMP(ctx context.Context, name string, fn func(*qmpClient) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	c, err := (&net.Dialer{}).DialContext(ctx, "unix", s.QMPPath(name))
@@ -114,6 +124,10 @@ func (s *Store) EnsureTCPPorts(ctx context.Context, name string, ports []int) er
 	if err := q.execute("qmp_capabilities", map[string]any{}, nil); err != nil {
 		return err
 	}
+	return fn(&q)
+}
+
+func (q *qmpClient) ensureTCPPorts(name string, ports []int) error {
 	for _, port := range ports {
 		info, err := q.monitor("info usernet")
 		if err != nil {

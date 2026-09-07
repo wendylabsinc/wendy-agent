@@ -277,9 +277,14 @@ still available for when you need to look under the hood.
 wendy vm list          # every VM, with its state, address and version
 wendy vm start dev -d  # run it in the background instead of taking the terminal
 wendy vm logs dev -f   # the console of a backgrounded VM
-wendy vm stop dev      # power it off
+wendy vm stop dev      # request graceful guest shutdown
 wendy vm rm dev        # delete a VM and its disk
 ```
+
+`vm stop` waits up to two minutes for the guest to shut down and flush its
+filesystems. If QMP is unavailable or the guest does not finish, it reports an
+error without killing the VM. Shut down inside an older guest without QMP, or
+use `wendy vm stop dev --force` only when an immediate power cut is intended.
 
 A backgrounded VM outlives the command that started it, so closing the terminal
 or pressing Ctrl-C does not power it off. `wendy vm rm` refuses to delete a
