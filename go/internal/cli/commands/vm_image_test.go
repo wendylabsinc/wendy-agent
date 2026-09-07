@@ -1,11 +1,72 @@
 package commands
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"testing"
 )
+
+func TestVMZIPImageSurvivesDownloadAndDigestCacheNames(t *testing.T) {
+	var archive bytes.Buffer
+	w := zip.NewWriter(&archive)
+	entry, err := w.Create("wendy.wic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk := []byte("raw bootable disk bytes, not the ZIP container")
+	if _, err := entry.Write(disk); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	old := downloadVMImage
+	t.Cleanup(func() { downloadVMImage = old })
+	downloads := 0
+	downloadVMImage = func(*imageInfo) (string, error) {
+		downloads++
+		f, err := os.CreateTemp(dir, "download-*.img")
+		if err != nil {
+			return "", err
+		}
+		_, err = f.Write(archive.Bytes())
+		closeErr := f.Close()
+		if err == nil {
+			err = closeErr
+		}
+		return f.Name(), err
+	}
+	info := &imageInfo{DownloadURL: "https://example.test/wendy.zip", Checksum: fmt.Sprintf("%x", sha256.Sum256(archive.Bytes()))}
+	// First download, cache hit, then checksum-free temporary download.
+	for i := range 3 {
+		if i == 2 {
+			info.Checksum = ""
+		}
+		path, done, err := resolveVMImageIn(dir, info)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream, err := openLocalImageStream(path)
+		if err != nil {
+			done()
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(stream)
+		stream.Close()
+		done()
+		if err != nil || !bytes.Equal(got, disk) {
+			t.Fatalf("disk bytes = %q: %v", got, err)
+		}
+	}
+	if downloads != 2 {
+		t.Fatalf("downloads = %d, want 2", downloads)
+	}
+}
 
 func TestVMImageCacheTracksBytesNotMutableVersion(t *testing.T) {
 	dir := t.TempDir()
