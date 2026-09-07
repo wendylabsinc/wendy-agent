@@ -54,8 +54,8 @@ func vmHostAddr(hostPort, guestPort int) string {
 // its stray mDNS announcement is recognised from then on.
 //
 // Shared-mode VMs are skipped: they are on a real segment where mDNS finds
-// them, and the simulator filter files that sighting under the Simulator tab
-// by the board the agent reports. User-mode VMs are reachable only through
+// them. Those reachable sightings stay on Local; only leaked user-network
+// sightings are filtered. User-mode VMs are reachable only through
 // the forward, so this probe is the only way to list them with an address.
 func probeLocalVMDevices(ctx context.Context) []models.LANDevice {
 	statuses, err := vmStatusesFn()
@@ -249,7 +249,10 @@ func vmHostKey(hostname string) string {
 
 func (f *simulatorFilter) Exclude(dev models.LANDevice) bool {
 	if isSimulatorBoard(dev.DeviceType) {
-		return true
+		// A board id identifies a VM, not its owner or networking mode.
+		// Preserve directly reachable shared/network VMs. The launcher uses
+		// QEMU's default user-network guest address for leaked announcements.
+		return dev.IPAddress == "10.0.2.15"
 	}
 	host := dev.HostKey()
 	if host == "" {

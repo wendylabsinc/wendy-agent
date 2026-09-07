@@ -113,10 +113,10 @@ likely boot mute. UTM in *emulate* mode runs QEMU and should behave like QEMU.
 
 `--net user` (the default) forwards the agent port; nothing else can reach the
 guest, but its mDNS announcement still leaks out through SLIRP one way, with an
-undialable 10.0.2.15 address. `wendy discover` files a VM under the Simulator
-tab either way (by the agent's `devicetype` TXT record or the hostname the VM
-reported), never among Local devices; `--net shared` uses `socket_vmnet` and
-puts the VM on the real network.
+undialable 10.0.2.15 address. `wendy discover` files user-mode VMs under the
+Simulator tab and filters leaked announcements using the agent's `devicetype`
+TXT record or a learned hostname. `--net shared` uses `socket_vmnet` to put the
+VM on a host-shared segment; its reachable mDNS entry stays on Local.
 See the *WendyOS in a Virtual Machine* installation guide for the full flow.
 
 ## Offline Container Image Bundling

@@ -112,13 +112,27 @@ func TestSimulatorFilterExcludesVMBoards(t *testing.T) {
 	stubVMStatuses(t)
 	f := newSimulatorFilter(context.Background())
 	for _, dt := range []string{"vm-arm64", "vm-x86-64"} {
-		if !f.Exclude(models.LANDevice{DeviceType: dt, Hostname: "wendyos-gentle-forest.local"}) {
+		if !f.Exclude(models.LANDevice{DeviceType: dt, Hostname: "wendyos-gentle-forest.local", IPAddress: "10.0.2.15"}) {
 			t.Errorf("%s was not excluded", dt)
 		}
 	}
 	for _, dt := range []string{"jetson-orin-nano", "rpi5", ""} {
 		if f.Exclude(models.LANDevice{DeviceType: dt, Hostname: "orin.local"}) {
 			t.Errorf("%q was excluded", dt)
+		}
+	}
+}
+
+func TestSimulatorFilterPreservesReachableNetworkVMs(t *testing.T) {
+	shared := runningVM("shared", vm.NetShared, 0)
+	shared.Meta.Hostname = "shared"
+	stubVMStatuses(t, shared)
+	f := newSimulatorFilter(context.Background())
+	for _, host := range []string{"shared.local", "another-hosts-vm.local"} {
+		for _, addr := range []string{"192.168.64.2", "192.168.1.20", "fd00::2"} {
+			if f.Exclude(models.LANDevice{Hostname: host, IPAddress: addr, DeviceType: "vm-arm64"}) {
+				t.Fatalf("reachable VM %s at %s was hidden", host, addr)
+			}
 		}
 	}
 }
