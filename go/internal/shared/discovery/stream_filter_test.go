@@ -275,3 +275,29 @@ func TestCollectLANRetractionOfOnlyResultCancelsSettle(t *testing.T) {
 		t.Fatalf("scan lost the later physical device: %+v", got)
 	}
 }
+
+func TestExcludedSightingRetractsHostnameAliasAndCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	seedCache(t, path,
+		discoverycache.Entry{ID: "guest", DisplayName: "guest", Hostname: "guest.local", IP: "10.0.2.15"},
+		discoverycache.Entry{ID: "physical", DisplayName: "Pi", Hostname: "pi.local", IP: "192.168.1.20"})
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+	events, stop := startStream(t, StreamOptions{UseCache: true, Exclude: &testFilter{exclude: excludeVMBoards}})
+	collectEvents(t, events, 2, time.Second)
+	leak := wendyService("real-id", "Guest", "GUEST.local.", "10.0.2.15", 50051)
+	leak.TXTRecords["devicetype"] = "vm-arm64"
+	fb.emit(t, leak)
+	got := collectEvents(t, events, 1, time.Second)
+	if got[0].Kind != LANRetracted || got[0].Device.ID != "guest" {
+		t.Fatalf("alias not retracted: %+v", got)
+	}
+	expectQuiet(t, events, 100*time.Millisecond)
+	stop()
+	if cacheHas(t, path, "guest") || cacheHas(t, path, "real-id") {
+		t.Fatal("excluded VM remains cached")
+	}
+	if !cacheHas(t, path, "physical") {
+		t.Fatal("unrelated physical device was removed")
+	}
+}

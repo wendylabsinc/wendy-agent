@@ -527,6 +527,16 @@ func (s *lanStream) handleSighting(svc MDNSService) {
 		// listed earlier (the filter has learned something since), that row
 		// goes too.
 		s.retract(key)
+		// A prior connect or no-ID advertisement may have listed this same
+		// host under a hostname-derived key. Retire that row too, without
+		// migrating it onto the excluded identity or probing it again.
+		if host := dev.HostKey(); host != "" && !hostDerivedIdentity(dev) {
+			for oldKey, st := range s.states {
+				if hostDerivedIdentity(st.dev) && st.dev.HostKey() == host {
+					s.retract(oldKey)
+				}
+			}
+		}
 		return
 	}
 	s.annotate(&dev)
