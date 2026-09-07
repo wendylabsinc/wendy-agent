@@ -67,3 +67,56 @@ func TestVMRegistryRoutesEveryBuilderToSelectedVM(t *testing.T) {
 		t.Fatal("fell back to another VM's registry")
 	}
 }
+
+func TestNamedVMRegistryFailsClosedWhenTargetChanges(t *testing.T) {
+	for _, scenario := range []string{"missing", "stopped", "moved", "reused", "shared", "invalid"} {
+		t.Run(scenario, func(t *testing.T) {
+			statuses := []vm.Status{runningVM("one", vm.NetUser, 50051)}
+			conn := &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: "127.0.0.1:50053", SimulatorName: "two"}
+			switch scenario {
+			case "stopped":
+				statuses = append(statuses, vm.Status{Name: "two", Exists: true})
+			case "moved":
+				statuses = append(statuses, runningVM("two", vm.NetUser, 50100))
+			case "reused":
+				statuses = append(statuses, runningVM("replacement", vm.NetUser, 50053))
+			case "shared":
+				statuses = append(statuses, runningVM("two", vm.NetShared, 0))
+			case "invalid":
+				conn.Addr = "localhost:bad"
+			}
+			stubVMStatuses(t, statuses...)
+			old := vmRegistryPort
+			t.Cleanup(func() { vmRegistryPort = old })
+			vmRegistryPort = func(context.Context, string) (int, error) {
+				t.Fatal("attempted registry forwarding for a lost or replaced VM")
+				return 0, nil
+			}
+			if _, _, _, _, err := resolveRegistryForSwiftAgent(context.Background(), conn, 5000); err == nil {
+				t.Fatal("Swift fell back to localhost")
+			}
+			if _, _, _, err := resolveRegistryForAgent(context.Background(), conn, 5000); err == nil {
+				t.Fatal("Docker fell back to localhost")
+			}
+			if _, _, _, _, err := resolveRegistryForAppleContainer(context.Background(), conn, 5000); err == nil {
+				t.Fatal("Apple Container fell back to localhost")
+			}
+		})
+	}
+}
+
+func TestNamedVMEndpointMatchRetainsIdentityForPlaintextAndTLS(t *testing.T) {
+	stubVMStatuses(t, runningVM("one", vm.NetUser, 50051), runningVM("two", vm.NetUser, 50053))
+	for _, port := range []int{50053, 50054} {
+		conn := &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: fmt.Sprintf("127.0.0.1:%d", port), SimulatorName: "two"}
+		name, err := userVMForConnection(conn)
+		if err != nil || name != "two" {
+			t.Fatalf("named endpoint %d = %q: %v", port, name, err)
+		}
+	}
+	// Native loopback agents still use the ordinary registry path.
+	conn := &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: "127.0.0.1:50100"}
+	if port, err := registryHostPortForAgent(context.Background(), conn, 5000); err != nil || port != 5000 {
+		t.Fatalf("native registry = %d: %v", port, err)
+	}
+}

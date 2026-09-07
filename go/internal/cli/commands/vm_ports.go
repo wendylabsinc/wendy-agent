@@ -15,15 +15,28 @@ import (
 // Match the full agent endpoint, including its port, to the live VM record.
 // A loopback connection alone could be a native agent or another tunnel.
 func userVMForConnection(conn *grpcclient.AgentConnection) (string, error) {
-	if conn == nil || conn.Reconnect != nil {
+	if conn == nil {
+		return "", nil
+	}
+	// A named VM never becomes an ordinary localhost device just because it
+	// stopped during a build. Also refuse a reused endpoint owned by another
+	// VM, instead of redirecting a push or port forward to that new owner.
+	named := conn.SimulatorName
+	if named == "" && conn.Reconnect != nil {
 		return "", nil
 	}
 	host, portString, err := net.SplitHostPort(conn.Addr)
 	if err != nil || host != "127.0.0.1" {
+		if named != "" {
+			return "", fmt.Errorf("VM %q has an invalid agent endpoint %q", named, conn.Addr)
+		}
 		return "", nil
 	}
 	port, err := strconv.Atoi(portString)
 	if err != nil {
+		if named != "" {
+			return "", fmt.Errorf("VM %q has an invalid agent endpoint %q", named, conn.Addr)
+		}
 		return "", nil
 	}
 	statuses, err := vmStatusesFn()
@@ -31,10 +44,16 @@ func userVMForConnection(conn *grpcclient.AgentConnection) (string, error) {
 		return "", err
 	}
 	for _, st := range statuses {
+		if named != "" && st.Name != named {
+			continue
+		}
 		if st.Running && st.State.NetMode == vm.NetUser && st.State.AgentPort != 0 &&
 			(port == st.State.AgentPort || port == st.State.AgentPort+1) {
 			return st.Name, nil
 		}
+	}
+	if named != "" {
+		return "", fmt.Errorf("VM %q is no longer running at %s; reconnect to vm:%s before deploying", named, conn.Addr, named)
 	}
 	return "", nil
 }
