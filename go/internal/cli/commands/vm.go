@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
 
@@ -119,11 +120,15 @@ func newVMStartCmd() *cobra.Command {
 	var o vmStartOptions
 
 	cmd := &cobra.Command{
-		Use:   "start <name>",
+		Use:   "start [name]",
 		Short: "Start a VM and attach to its console",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runVMStart(cmd, args[0], o)
+			name, err := resolveVMName(args, "start")
+			if err != nil {
+				return err
+			}
+			return runVMStart(cmd, name, o)
 		},
 	}
 	cmd.Flags().StringVar(&o.netMode, "net", string(vm.NetUser),
@@ -458,11 +463,15 @@ func vmListJSON(statuses []vm.Status) []vmListEntry {
 func newVMStopCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
-		Use:   "stop <name>",
+		Use:   "stop [name]",
 		Short: "Stop a VM running in the background",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runVMStop(cmd, args[0], force)
+			name, err := resolveVMName(args, "stop")
+			if err != nil {
+				return err
+			}
+			return runVMStop(cmd, name, force)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "Kill the VM instead of asking it to power off")
@@ -501,18 +510,22 @@ func runVMStop(cmd *cobra.Command, name string, force bool) error {
 func newVMLogsCmd() *cobra.Command {
 	var follow bool
 	cmd := &cobra.Command{
-		Use:   "logs <name>",
+		Use:   "logs [name]",
 		Short: "Show a backgrounded VM's console output",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			name, err := resolveVMName(args, "show logs for")
+			if err != nil {
+				return err
+			}
 			store, err := vm.NewStore()
 			if err != nil {
 				return err
 			}
-			if err := vm.ValidName(args[0]); err != nil {
+			if err := vm.ValidName(name); err != nil {
 				return err
 			}
-			return streamFile(cmd.Context(), cmd.OutOrStdout(), store.LogPath(args[0]), follow)
+			return streamFile(cmd.Context(), cmd.OutOrStdout(), store.LogPath(name), follow)
 		},
 	}
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "Keep printing as the guest writes")
@@ -574,12 +587,15 @@ func reopenIfReplaced(f *os.File, path string) (*os.File, error) {
 func newVMRemoveCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
-		Use:     "rm <name>",
+		Use:     "rm [name]",
 		Short:   "Delete a VM and its disk",
-		Args:    cobra.ExactArgs(1),
+		Args:    cobra.MaximumNArgs(1),
 		Aliases: []string{"remove"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
+			name, err := resolveVMName(args, "remove")
+			if err != nil {
+				return err
+			}
 			store, err := vm.NewStore()
 			if err != nil {
 				return err
@@ -610,6 +626,45 @@ func newVMRemoveCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "Stop the VM first if it is running")
 	return cmd
+}
+
+// resolveVMName keeps explicitly named invocations scriptable and opens the
+// picker only when a person omitted the name in an interactive terminal.
+func resolveVMName(args []string, action string) (string, error) {
+	if len(args) == 1 {
+		return args[0], nil
+	}
+	if jsonOutput || !isInteractiveTerminalFn() {
+		return "", fmt.Errorf("no VM name specified; run in an interactive terminal or pass the VM name as an argument")
+	}
+	return pickVMNameFn(action)
+}
+
+// pickVMNameFn is a seam for command tests: a real picker owns the process TTY
+// and cannot be driven through cobra's in-memory input and output buffers.
+var pickVMNameFn = pickVMName
+
+func pickVMName(action string) (string, error) {
+	statuses, err := vmStatusesFn()
+	if err != nil {
+		return "", err
+	}
+	if len(statuses) == 0 {
+		return "", fmt.Errorf("no VMs found; create one with 'wendy vm create <name>'")
+	}
+
+	items := make([]tui.PickerItem, 0, len(statuses))
+	for _, st := range statuses {
+		items = append(items, tui.PickerItem{
+			Name:      st.Name,
+			Type:      vmStateLabel(st),
+			Address:   vmAddress(st),
+			OSVersion: st.Meta.ImageVersion,
+			Value:     st.Name,
+		})
+	}
+
+	return pickFromItemsWithColumns("Select a VM to "+action, items, simulatorPickerColumns())
 }
 
 // The VM's manifest key is its WENDYOS_BOARD_ID, the same string the image

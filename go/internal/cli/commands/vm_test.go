@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -66,19 +67,92 @@ func TestVMCreateRejectsALocalImageCombinedWithAVersion(t *testing.T) {
 	}
 }
 
-func TestVMSubcommandsRejectTheWrongNumberOfNames(t *testing.T) {
-	// Args != nil is not enough: ArbitraryArgs would satisfy it and let a
-	// missing VM name through to be dropped silently.
-	for _, name := range []string{"create", "start", "stop", "logs", "rm"} {
+func TestVMInteractiveSubcommandsAcceptAnOptionalName(t *testing.T) {
+	for _, name := range []string{"start", "stop", "logs", "rm"} {
 		c := vmSubcommand(t, name)
-		for _, args := range [][]string{{}, {"one", "two"}} {
-			if err := c.Args(c, args); err == nil {
-				t.Errorf("%q accepted %d names, want exactly 1", name, len(args))
-			}
+		if err := c.Args(c, nil); err != nil {
+			t.Errorf("%q rejected an omitted name: %v", name, err)
 		}
 		if err := c.Args(c, []string{"dev"}); err != nil {
 			t.Errorf("%q rejected a single name: %v", name, err)
 		}
+		if err := c.Args(c, []string{"one", "two"}); err == nil {
+			t.Errorf("%q accepted two names", name)
+		}
+	}
+
+	create := vmSubcommand(t, "create")
+	if err := create.Args(create, nil); err == nil {
+		t.Error("create accepted an omitted name; it is not an interactive lifecycle command")
+	}
+}
+
+func TestResolveVMNameUsesTheExplicitNameWithoutAPicker(t *testing.T) {
+	originalPicker := pickVMNameFn
+	pickVMNameFn = func(string) (string, error) {
+		t.Fatal("explicit VM name unexpectedly opened the picker")
+		return "", nil
+	}
+	t.Cleanup(func() { pickVMNameFn = originalPicker })
+
+	got, err := resolveVMName([]string{"dev"}, "stop")
+	if err != nil || got != "dev" {
+		t.Fatalf("resolveVMName(explicit) = %q, %v; want dev, nil", got, err)
+	}
+}
+
+func TestResolveVMNamePicksWhenInteractive(t *testing.T) {
+	originalInteractive, originalPicker := isInteractiveTerminalFn, pickVMNameFn
+	isInteractiveTerminalFn = func() bool { return true }
+	pickVMNameFn = func(action string) (string, error) {
+		if action != "stop" {
+			t.Errorf("picker action = %q, want stop", action)
+		}
+		return "dev", nil
+	}
+	t.Cleanup(func() {
+		isInteractiveTerminalFn = originalInteractive
+		pickVMNameFn = originalPicker
+	})
+
+	got, err := resolveVMName(nil, "stop")
+	if err != nil || got != "dev" {
+		t.Fatalf("resolveVMName(interactive) = %q, %v; want dev, nil", got, err)
+	}
+}
+
+func TestResolveVMNameRequiresANameWhenNonInteractive(t *testing.T) {
+	originalInteractive := isInteractiveTerminalFn
+	isInteractiveTerminalFn = func() bool { return false }
+	t.Cleanup(func() { isInteractiveTerminalFn = originalInteractive })
+
+	_, err := resolveVMName(nil, "stop")
+	if err == nil || !strings.Contains(err.Error(), "pass the VM name") {
+		t.Fatalf("resolveVMName(non-interactive) error = %v, want argument guidance", err)
+	}
+}
+
+func TestResolveVMNamePropagatesPickerCancellation(t *testing.T) {
+	originalInteractive, originalPicker := isInteractiveTerminalFn, pickVMNameFn
+	isInteractiveTerminalFn = func() bool { return true }
+	pickVMNameFn = func(string) (string, error) { return "", ErrUserCancelled }
+	t.Cleanup(func() {
+		isInteractiveTerminalFn = originalInteractive
+		pickVMNameFn = originalPicker
+	})
+
+	_, err := resolveVMName(nil, "remove")
+	if !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("resolveVMName(cancelled) = %v, want ErrUserCancelled", err)
+	}
+}
+
+func TestPickVMNameExplainsAnEmptyStore(t *testing.T) {
+	stubVMStatuses(t)
+
+	_, err := pickVMName("stop")
+	if err == nil || !strings.Contains(err.Error(), "wendy vm create") {
+		t.Fatalf("pickVMName(empty) error = %v, want create guidance", err)
 	}
 }
 
