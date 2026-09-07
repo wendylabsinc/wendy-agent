@@ -196,9 +196,9 @@ func resolveVMSpec(name string, o vmStartOptions) (vm.Spec, *vm.Store, error) {
 			return vm.Spec{}, nil, err
 		}
 		net.AgentPort = o.hostPort
-		// Best effort: `wendy run` addresses the device registry as
-		// host:5000, so the forward only works on that exact port. A host
-		// already using it loses the registry fallback, not the VM.
+		// Keep the conventional port when available. Deployment resolves the
+		// VM's actual registry forward through QMP and allocates another port
+		// when 5000 belongs to another VM or host process.
 		if err := vm.CheckHostPort(vm.DeviceRegistryPort); err == nil {
 			net.RegistryPort = vm.DeviceRegistryPort
 		}

@@ -100,6 +100,65 @@ func (s *Store) requestPowerdown(ctx context.Context, name string) error {
 	})
 }
 
+// RegistryPort resolves the registry through this VM's own monitor. Never
+// assume the host's port 5000 belongs to the VM selected by its agent port.
+func (s *Store) RegistryPort(ctx context.Context, name string) (int, error) {
+	if err := ValidName(name); err != nil {
+		return 0, err
+	}
+	var port int
+	err := s.withQMP(ctx, name, func(q *qmpClient) error {
+		for range 4 {
+			info, err := q.monitor("info usernet")
+			if err != nil {
+				return err
+			}
+			if port = tcpForwardHostPort(info, DeviceRegistryPort); port != 0 {
+				return nil
+			}
+			// Reserve a candidate briefly; QEMU must own the actual listener.
+			// Retry if another host process wins the gap before hostfwd_add.
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				return err
+			}
+			candidate := ln.Addr().(*net.TCPAddr).Port
+			if err := ln.Close(); err != nil {
+				return err
+			}
+			if _, err := q.monitor(fmt.Sprintf("hostfwd_add net0 tcp:127.0.0.1:%d-:%d", candidate, DeviceRegistryPort)); err != nil {
+				return err
+			}
+			info, err = q.monitor("info usernet")
+			if err != nil {
+				return err
+			}
+			if port = tcpForwardHostPort(info, DeviceRegistryPort); port != 0 {
+				return nil
+			}
+		}
+		return fmt.Errorf("could not allocate a loopback registry forward for VM %q", name)
+	})
+	return port, err
+}
+
+func tcpForwardHostPort(info string, guestPort int) int {
+	inNet0 := false
+	for _, line := range strings.Split(info, "\n") {
+		if strings.HasPrefix(line, "Hub ") {
+			inNet0 = strings.HasSuffix(strings.TrimSpace(line), "(net0):")
+			continue
+		}
+		f := strings.Fields(line)
+		if inNet0 && len(f) >= 6 && f[0] == "TCP[HOST_FORWARD]" && f[2] == "127.0.0.1" && f[4] == "10.0.2.15" && f[5] == strconv.Itoa(guestPort) {
+			if port, err := strconv.Atoi(f[3]); err == nil && port > 0 && port <= 65535 {
+				return port
+			}
+		}
+	}
+	return 0
+}
+
 func (s *Store) withQMP(ctx context.Context, name string, fn func(*qmpClient) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
