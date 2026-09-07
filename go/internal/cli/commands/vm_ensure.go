@@ -112,10 +112,7 @@ func ensureSimulatorRunning(ctx context.Context, name string) (addr string, star
 	// Sticky, so a VM pushed off the default port keeps the address next time.
 	// Skipped when the record could not be read: writing it back would persist
 	// an empty one and lose the VM's provenance.
-	if meta, ok := store.ReadMeta(name); ok && meta.AgentPort != port {
-		meta.AgentPort = port
-		_ = store.WriteMeta(meta)
-	}
+	_ = store.RecordAgentPort(name, port)
 	return fmt.Sprintf("127.0.0.1:%d", port), true, nil
 }
 
