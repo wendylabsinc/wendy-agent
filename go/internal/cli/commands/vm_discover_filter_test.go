@@ -83,6 +83,30 @@ func awaitChanged(t *testing.T, f *simulatorFilter) {
 	}
 }
 
+func TestSimulatorFilterSeedsBeforeStartingLearners(t *testing.T) {
+	port := listenLoopback(t)
+	statuses := []vm.Status{runningVM("new", vm.NetUser, port)}
+	// A large seed set makes the constructor/learner overlap observable under
+	// -race in the old implementation, without timing sleeps.
+	for i := 0; i < 50000; i++ {
+		statuses = append(statuses, vm.Status{Meta: vm.Meta{Hostname: fmt.Sprintf("known-%d", i)}})
+	}
+	stubVMStatuses(t, statuses...)
+	stubAgentVersion(t, func(string) (*agentpb.GetAgentVersionResponse, error) {
+		return &agentpb.GetAgentVersionResponse{Hostname: "learned"}, nil
+	})
+	recordedHostnames(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := newSimulatorFilter(ctx)
+	awaitChanged(t, f)
+	for _, host := range []string{"known-0", "known-49999", "learned"} {
+		if !f.Exclude(models.LANDevice{Hostname: host}) {
+			t.Fatalf("hostname %s was lost", host)
+		}
+	}
+}
+
 // A VM board is a positive signal: no real board reports vm-*.
 func TestSimulatorFilterExcludesVMBoards(t *testing.T) {
 	stubVMStatuses(t)

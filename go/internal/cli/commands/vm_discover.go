@@ -221,6 +221,8 @@ func newSimulatorFilter(ctx context.Context) *simulatorFilter {
 	if err != nil {
 		return f // an unreadable store leaves the board signal, which needs no store
 	}
+	// Finish seeding before publishing the map to any learner goroutine.
+	var learners []vm.Status
 	for _, st := range statuses {
 		if st.Meta.Hostname != "" {
 			// Stopped VMs count too: a stale sighting or cache row of one has
@@ -229,8 +231,11 @@ func newSimulatorFilter(ctx context.Context) *simulatorFilter {
 			continue
 		}
 		if st.Running && st.State.NetMode == vm.NetUser && st.State.AgentPort != 0 {
-			go f.learn(ctx, st.Name, st.State.AgentPort)
+			learners = append(learners, st)
 		}
+	}
+	for _, st := range learners {
+		go f.learn(ctx, st.Name, st.State.AgentPort)
 	}
 	return f
 }
