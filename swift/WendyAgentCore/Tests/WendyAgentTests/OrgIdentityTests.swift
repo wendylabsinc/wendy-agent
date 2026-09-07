@@ -108,7 +108,10 @@ struct OrgEnforcementModeParseTests {
     @Test("scopes match only in a shared vocabulary")
     func scopeMatching() {
         let tenantA = OrgIdentity.Scope(tenantUUID: Self.tenant, orgID: nil)
-        let tenantB = OrgIdentity.Scope(tenantUUID: "00000000-0000-4000-8000-000000000000", orgID: nil)
+        let tenantB = OrgIdentity.Scope(
+            tenantUUID: "00000000-0000-4000-8000-000000000000",
+            orgID: nil
+        )
         let org7 = OrgIdentity.Scope(tenantUUID: nil, orgID: 7)
         let both = OrgIdentity.Scope(tenantUUID: Self.tenant, orgID: 7)
 

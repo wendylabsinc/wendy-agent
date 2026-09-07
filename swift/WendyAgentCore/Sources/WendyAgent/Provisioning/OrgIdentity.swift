@@ -52,9 +52,9 @@ enum OrgIdentity {
 
         var description: String {
             switch (tenantUUID, orgID) {
-            case let (.some(tenant), .some(org)): return "tenant \(tenant) (org \(org))"
-            case let (.some(tenant), .none): return "tenant \(tenant)"
-            case let (.none, .some(org)): return "org \(org)"
+            case (.some(let tenant), .some(let org)): return "tenant \(tenant) (org \(org))"
+            case (.some(let tenant), .none): return "tenant \(tenant)"
+            case (.none, .some(let org)): return "org \(org)"
             case (.none, .none): return "no scope"
             }
         }
@@ -248,7 +248,12 @@ enum OrgIdentity {
         }
         guard !parts[5].isEmpty else { throw OrgIdentityError.invalidURN(uri) }
         return WendyIdentity(
-            orgID: org, entityType: entityType, entityID: parts[5], tenantUUID: nil, principal: nil)
+            orgID: org,
+            entityType: entityType,
+            entityID: parts[5],
+            tenantUUID: nil,
+            principal: nil
+        )
     }
 
     /// Parses `sh/wendy/<org>/<asset>`. Caller verifies the `sh/wendy/` prefix.
@@ -259,6 +264,11 @@ enum OrgIdentity {
         guard org > 0 else { throw OrgIdentityError.nonPositiveOrg(org) }
         guard !parts[3].isEmpty else { throw OrgIdentityError.invalidCommonName(cn) }
         return WendyIdentity(
-            orgID: org, entityType: "asset", entityID: parts[3], tenantUUID: nil, principal: nil)
+            orgID: org,
+            entityType: "asset",
+            entityID: parts[3],
+            tenantUUID: nil,
+            principal: nil
+        )
     }
 }
