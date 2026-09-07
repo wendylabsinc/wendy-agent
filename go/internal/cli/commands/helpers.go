@@ -2761,12 +2761,6 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 
 	arch := resp.GetCpuArchitecture()
 	osName := resp.GetOs()
-	// conn.Addr, not conn.Host: the host alone loses the port, and a VM reached
-	// on a forwarded 50053 would come back on 50051 -- a different VM.
-	addr := conn.Addr
-	if addr == "" {
-		addr = hostPort(conn.Host, defaultAgentPort)
-	}
 
 	if err := performAgentUpdate(ctx, conn, osName, arch, false); err != nil {
 		fmt.Fprintf(os.Stderr, "Update failed: %v\nContinuing with existing connection.\n", err)
@@ -2776,7 +2770,7 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	conn.Close()
 
 	fmt.Fprintf(os.Stderr, "Waiting for agent to restart...")
-	newConn, err := waitForAgentRestart(ctx, addr)
+	newConn, err := reconnectAgentAfterRestart(ctx, conn)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, " failed.\n")
 		return nil, fmt.Errorf("agent did not come back after update: %w", err)

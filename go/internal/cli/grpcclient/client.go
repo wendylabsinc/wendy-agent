@@ -63,7 +63,9 @@ type AgentConnection struct {
 	// Addr is the full host:port this connection dialed — the endpoint that
 	// actually answered, mTLS port included. Empty for unix-socket and
 	// pre-built (NewFromConn) connections.
-	Addr           string
+	Addr string
+	// SimulatorName retains the VM pin identity independently of its loopback endpoint.
+	SimulatorName  string
 	IsMTLS         bool                    // true when connected via mutual TLS
 	IsSessionProxy bool                    // true when Conn reaches a local session broker retaining the mTLS transport
 	CertInfo       *config.CertificateInfo // cert used to establish mTLS; nil for plaintext

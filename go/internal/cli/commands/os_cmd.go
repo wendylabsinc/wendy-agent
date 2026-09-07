@@ -1322,19 +1322,13 @@ func ensureAgentUpToDate(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 
 	fmt.Printf("Updating agent: %s → %s\n", agentVer, latestVer)
-	// conn.Addr, not conn.Host: the host alone loses the port, and a VM reached
-	// on a forwarded 50053 would be reconnected to 50051 -- another VM.
-	addr := conn.Addr
-	if addr == "" {
-		addr = hostPort(conn.Host, defaultAgentPort)
-	}
 	if err := performAgentUpdate(ctx, conn, osName, arch, nightly); err != nil {
 		return nil, fmt.Errorf("agent update failed: %w", err)
 	}
 	conn.Close()
 
 	fmt.Print("Waiting for agent to restart...")
-	newConn, err := waitForAgentRestart(ctx, addr)
+	newConn, err := reconnectAgentAfterRestart(ctx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("agent did not come back after update: %w", err)
 	}

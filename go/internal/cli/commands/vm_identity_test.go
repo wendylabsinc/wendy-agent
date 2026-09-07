@@ -50,6 +50,58 @@ func TestVMIdentityUsesNameNotLoopbackOrPort(t *testing.T) {
 	}
 }
 
+func TestVMReconnectPreservesAliasAndFullEndpoint(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.SetDevicePin("127.0.0.1", 1, "cloud", "unrelated-container")
+	oldLoad, oldDial := loadConfigForPinFn, dialAgentLadderFn
+	t.Cleanup(func() { loadConfigForPinFn, dialAgentLadderFn = oldLoad, oldDial })
+	loadConfigForPinFn = func() (*config.Config, error) { return cfg, nil }
+	calls := 0
+	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		calls++
+		if target.PinKey != "vm:second" || target.Addr != "127.0.0.1:50103" || target.pinned() {
+			t.Fatalf("reconnect lost VM identity: %+v", target)
+		}
+		return &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: target.Addr,
+			AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}}}, nil, nil
+	}
+	conn, _, err := connectSimulatorAgent(context.Background(), "second", "127.0.0.1:50103")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reconnect := range []func(context.Context) (*grpcclient.AgentConnection, error){
+		func(ctx context.Context) (*grpcclient.AgentConnection, error) {
+			return reconnectAgentAfterRestart(ctx, conn)
+		},
+		updatedAgentReconnectFunc(context.Background(), conn),
+	} {
+		next, err := reconnect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next.SimulatorName != "second" || next.Addr != conn.Addr {
+			t.Fatalf("identity not retained: %+v", next)
+		}
+		next.Close()
+	}
+	conn.Close()
+	if calls != 3 {
+		t.Fatalf("got %d named dials, want 3", calls)
+	}
+	// An identity change after an update must fail immediately, not retry via
+	// generic localhost discovery or an unauthenticated connection.
+	cfg.SetDevicePin("vm:second", 1, "cloud", "second")
+	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		if target.Expected == nil || target.Expected.EntityID != "second" {
+			t.Fatalf("lost expected identity: %+v", target)
+		}
+		return nil, nil, &deviceIdentityRefusalError{msg: "changed identity"}
+	}
+	if _, err := reconnectAgentAfterRestart(context.Background(), conn); !blocksUnauthenticatedFallback(err) {
+		t.Fatalf("did not retain identity refusal: %v", err)
+	}
+}
+
 func TestVMSelectionKeepsAliasAcrossEveryFrontDoor(t *testing.T) {
 	original, err := config.Load()
 	if err != nil {

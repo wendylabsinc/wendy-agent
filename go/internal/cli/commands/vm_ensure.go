@@ -166,6 +166,7 @@ func connectSimulatorAgent(ctx context.Context, name, addr string) (*grpcclient.
 		conn.Close()
 		return nil, nil, err
 	}
+	conn.SimulatorName = name
 	return conn, resp, nil
 }
 
