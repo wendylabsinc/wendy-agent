@@ -105,7 +105,7 @@ func (m *Manager) listenMulticast(ctx context.Context) {
 			m.logger.Info("timesync: received verified multicast time proof",
 				zap.Time("midpoint", t), zap.String("source", source.String()))
 		}
-		m.applyTime(t)
+		m.ApplyVerified(t)
 	}
 }
 

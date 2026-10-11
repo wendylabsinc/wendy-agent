@@ -27,11 +27,12 @@ type TimeSyncService struct {
 }
 
 // NewTimeSyncService builds the service. mgr supplies the real clock-advance
-// path; it may be nil in tests that override the apply seam.
+// path, which also persists the verified time as the clock floor; it may be nil
+// in tests that override the apply seam.
 func NewTimeSyncService(logger *zap.Logger, mgr *timesync.Manager) *TimeSyncService {
 	apply := func(time.Time) {}
 	if mgr != nil {
-		apply = mgr.Apply
+		apply = mgr.ApplyVerified
 	}
 	return &TimeSyncService{
 		logger:  logger,

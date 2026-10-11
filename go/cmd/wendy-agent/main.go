@@ -162,7 +162,7 @@ func main() {
 	// device on the sighting alone. A no-op once the record is in place.
 	services.EnsureDeviceTypeAdvertisement(logger)
 
-	// Time sync: apply config-partition floor immediately, then start
+	// Time sync: apply the persisted clock floors immediately, then start
 	// background Roughtime + multicast sync.
 	timesyncMgr := timesync.NewManager(logger, configPath)
 	timesyncMgr.ApplyFloor()
@@ -170,6 +170,17 @@ func main() {
 	// Run the OS-update gate after the time floor is applied so the marker
 	// staleness check and the persisted result timestamps use a sane clock.
 	services.RunOSUpdateGate(logger)
+
+	// The device certificate's NotBefore is a lower bound on real time that the
+	// cloud vouched for. Advance the clock to it before anything checks a
+	// certificate, so a device that lost power and network does not come up
+	// weeks in the past and reject every client (WDY-3204). It runs after the
+	// OS-update gate on purpose: the gate ages its pending marker against the
+	// clock, and a jump between the marker's stamp and the gate could make a
+	// fresh update look stale and skip its health check.
+	provisioningSvc := services.NewProvisioningService(logger, configPath)
+	deviceCertPEM, _, _ := provisioningSvc.ProvisioningCerts()
+	timesyncMgr.ApplyCertificateFloor(certNotBeforeFloor(deviceCertPEM))
 
 	services.CleanupOldBackups(logger)
 	cdi.EnsureNVIDIACDISpec(logger)
@@ -288,7 +299,6 @@ func main() {
 	shellSvc := services.NewShellService(logger, hostexec.New())
 	audioSvc := services.NewAudioService(logger)
 
-	provisioningSvc := services.NewProvisioningService(logger, configPath)
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
@@ -377,6 +387,7 @@ func main() {
 
 	go timesyncMgr.RunDirect(ctx)
 	go timesyncMgr.RunMulticast(ctx)
+	go timesyncMgr.RunFloorRefresh(ctx)
 
 	startROS2BatteryMonitor(ctx, logger, configPath, discoveryPool)
 

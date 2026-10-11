@@ -96,9 +96,12 @@ func (m *Manager) RunDirect(ctx context.Context) {
 				zap.String("confidence", result.Confidence),
 				zap.Duration("uncertainty", time.Duration((result.UpperOffsetNanos-result.LowerOffsetNanos)/2)))
 		}
-		boot, _ := bootTimeNanos()
+		boot, _ := m.bootNanos()
 		mid := result.LowerOffsetNanos + (result.UpperOffsetNanos-result.LowerOffsetNanos)/2
 		m.applyTime(time.Unix(0, boot+mid))
+		// Persist the interval's lower bound rather than the midpoint, so the
+		// floor is never ahead of real time.
+		m.noteDirectConsensus(result.LowerOffsetNanos, result.UpperOffsetNanos)
 
 		if !m.wait(ctx, resyncInterval) {
 			return
