@@ -259,22 +259,44 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 // stream. The supplied Cloud connection and metadata retain their normal auth.
 // This method owns cc on every path, including invalid local credentials.
 func (c *WendyLiteClient) ConnectViaRelay(ctx context.Context, cc *grpc.ClientConn, assetID string,
-	cert tls.Certificate, chain, deviceID string) error {
+	cert tls.Certificate, chain, deviceID string, options RelayOptions) error {
 	cfg, err := deviceTLSConfig(cert, chain, deviceID)
 	if err != nil {
 		cc.Close()
 		return err
 	}
-	raw, err := openRelayConn(ctx, cc, assetID)
+	raw, err := openRelayConn(ctx, cc, assetID, options)
 	if err != nil {
 		return err
 	}
 	conn := tls.Client(raw, cfg)
-	handshakeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	handshakeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := conn.HandshakeContext(handshakeCtx); err != nil {
 		raw.Close()
 		return fmt.Errorf("device mTLS over relay: %w", err)
+	}
+	deadline, _ := handshakeCtx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		raw.Close()
+		return err
+	}
+	if _, err := conn.Write(raw.grant); err != nil {
+		raw.Close()
+		return fmt.Errorf("forward Lite grant: %w", err)
+	}
+	var ack [4]byte
+	if _, err := io.ReadFull(conn, ack[:]); err != nil || string(ack[:]) != "WLA1" {
+		raw.Close()
+		return fmt.Errorf("device refused Lite session grant")
+	}
+	if err := raw.established(); err != nil {
+		raw.Close()
+		return err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		raw.Close()
+		return err
 	}
 	// Close the raw pipe first so TLS shutdown cannot block behind a stalled
 	// broker write. No application message is sent until mTLS succeeds.

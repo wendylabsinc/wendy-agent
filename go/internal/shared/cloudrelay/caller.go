@@ -124,31 +124,13 @@ func OpenTCP(ctx, authCtx context.Context, cloudConn *grpc.ClientConn, verifier 
 	if service != "wendy-agent" && service != "ssh" {
 		return nil, fmt.Errorf("Cloud has no supported tunnel service %q", service)
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	requestID := make([]byte, 16)
-	if _, err = rand.Read(requestID); err != nil {
-		return nil, err
-	}
-	body := &pb.TunnelPrincipalRequestBody{TargetAssetId: assetID, Service: service, CallerSigningPublicKeySpkiDer: publicDER(key), RequestId: requestID}
-	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now().Unix()
-	descriptor, err := canonicalJSON(map[string]any{"aud": "pki-core/tunnel-attestation", "body_sha256": binding(raw), "expiry": now + 60, "iat": now, "nonce": uuid.NewString(), "operation": "create_tunnel", "target": map[string]any{"asset_id": assetID, "service": service}})
-	if err != nil {
-		return nil, err
-	}
-	signed, err := signRequest(descriptor)
+	request, key, descriptor, err := PrincipalRequest(assetID, service, signRequest)
 	if err != nil {
 		return nil, err
 	}
 	requestCtx, cancel := context.WithTimeout(authCtx, 30*time.Second)
 	defer cancel()
-	response, err := pb.NewTunnelAuthorizationServiceClient(cloudConn).RequestTunnel(requestCtx, &pb.RequestTunnelRequest{RequestBody: body, PrincipalRequest: &authpb.SignedArtifact{Kind: "tunnel-principal-request+jws", Value: signed}})
+	response, err := pb.NewTunnelAuthorizationServiceClient(cloudConn).RequestTunnel(requestCtx, request)
 	if err != nil {
 		return nil, fmt.Errorf("authorizing Cloud tunnel (%s): %w", pb.TunnelAuthorizationService_RequestTunnel_FullMethodName, err)
 	}
@@ -167,4 +149,34 @@ func OpenTCP(ctx, authCtx context.Context, cloudConn *grpc.ClientConn, verifier 
 		return nil, err
 	}
 	return s.Conn(), nil
+}
+
+// PrincipalRequest uses the shared tunnel-v2 signing profile for both transports.
+func PrincipalRequest(assetID, service string, signRequest func([]byte) ([]byte, error)) (*pb.RequestTunnelRequest, *ecdsa.PrivateKey, []byte, error) {
+	if signRequest == nil {
+		return nil, nil, nil, fmt.Errorf("operator request signer is required")
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	requestID := make([]byte, 16)
+	if _, err = rand.Read(requestID); err != nil {
+		return nil, nil, nil, err
+	}
+	body := &pb.TunnelPrincipalRequestBody{TargetAssetId: assetID, Service: service, CallerSigningPublicKeySpkiDer: publicDER(key), RequestId: requestID}
+	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(body)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	now := time.Now().Unix()
+	descriptor, err := canonicalJSON(map[string]any{"aud": "pki-core/tunnel-attestation", "body_sha256": binding(raw), "expiry": now + 60, "iat": now, "nonce": uuid.NewString(), "operation": "create_tunnel", "target": map[string]any{"asset_id": assetID, "service": service}})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	signed, err := signRequest(descriptor)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return &pb.RequestTunnelRequest{RequestBody: body, PrincipalRequest: &authpb.SignedArtifact{Kind: "tunnel-principal-request+jws", Value: signed}}, key, descriptor, nil
 }

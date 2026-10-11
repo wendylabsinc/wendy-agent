@@ -918,7 +918,7 @@ func (p *MicroWendyProvider) ConnectEnrollment(device models.ExternalDevice) (*l
 // relay runs over, already set up with the user's Cloud credentials, and the
 // context whose call metadata carries them. The commands package owns Cloud
 // sessions and sets it; this package cannot import commands.
-var CloudRelayDialer func(ctx context.Context, device models.ExternalDevice) (*grpc.ClientConn, context.Context, error)
+var CloudRelayDialer func(ctx context.Context, device models.ExternalDevice) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error)
 
 // connectClient opens a WendyLiteClient connection to the device over serial,
 // LAN or BLE (with mTLS when the device advertises it), or through the Wendy
@@ -993,7 +993,7 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		if CloudRelayDialer == nil {
 			return nil, fmt.Errorf("wendy-lite provider: Wendy Cloud connections are not available")
 		}
-		cc, ctx, err := CloudRelayDialer(context.Background(), device)
+		cc, ctx, options, err := CloudRelayDialer(context.Background(), device)
 		if err != nil {
 			return nil, fmt.Errorf("connect to device via Wendy Cloud: %w", err)
 		}
@@ -1020,7 +1020,7 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 				return fmt.Errorf("device relay authentication failed")
 			}
 			used = true
-			return client.ConnectViaRelay(ctx, cc, assetID, cert, chain, device.ConnectionInfo["deviceId"])
+			return client.ConnectViaRelay(ctx, cc, assetID, cert, chain, device.ConnectionInfo["deviceId"], options)
 		})
 		if err != nil {
 			cc.Close()

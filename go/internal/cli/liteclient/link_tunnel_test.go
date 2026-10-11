@@ -1,12 +1,14 @@
 package liteclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -46,9 +48,19 @@ func (r *fakeRelay) WendyComRelay(stream wcomrelaypb.WendyComRelayService_WendyC
 		return err
 	}
 	md, _ := metadata.FromIncomingContext(stream.Context())
-	r.opens <- relayOpen{assetID: first.GetOpen().GetAssetId(), authorization: md.Get("authorization")}
+	r.opens <- relayOpen{assetID: first.GetOpen().GetRequestBody().GetTargetAssetId(), authorization: md.Get("authorization")}
 	if r.refuse != nil {
 		return r.refuse
+	}
+	if first.GetOpen().GetPrincipalRequest().GetKind() != "tunnel-principal-request+jws" {
+		return status.Error(codes.PermissionDenied, "missing principal proof")
+	}
+	grant, err := os.ReadFile("../../../../Proto/conformance/lite-relay/grant.bin")
+	if err != nil {
+		return err
+	}
+	if err = stream.Send(&wcomrelaypb.WendyComRelayMessage{Msg: &wcomrelaypb.WendyComRelayMessage_Grant{Grant: &wcomrelaypb.WendyComRelayGrant{Record: grant}}}); err != nil {
+		return err
 	}
 	proxy, device := net.Pipe()
 	defer proxy.Close()
@@ -61,6 +73,9 @@ func (r *fakeRelay) WendyComRelay(stream wcomrelaypb.WendyComRelayService_WendyC
 			if err != nil {
 				done <- err
 				return
+			}
+			if msg.GetEstablished() != nil {
+				continue
 			}
 			if _, err = proxy.Write(msg.GetPayload().GetBytes()); err != nil {
 				done <- err
@@ -150,6 +165,17 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 				if err != nil {
 					return
 				}
+				grant, readErr := os.ReadFile("../../../../Proto/conformance/lite-relay/grant.bin")
+				if readErr != nil {
+					return
+				}
+				got := make([]byte, len(grant))
+				if _, readErr = io.ReadFull(conn, got); readErr != nil || !bytes.Equal(got, grant) {
+					return
+				}
+				if _, readErr = conn.Write([]byte("WLA1")); readErr != nil {
+					return
+				}
 				link := newDirectLink(conn)
 				msg, err := link.recv(5 * time.Second)
 				if err != nil {
@@ -167,7 +193,7 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 			ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer session"), 10*time.Second)
 			defer cancel()
 			c := NewWendyLiteClient()
-			err := c.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8")
+			err := c.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions())
 			if tc.accept {
 				if err != nil {
 					t.Fatal(err)
@@ -205,7 +231,7 @@ func TestConnectViaRelayReportsRefusalAndClosesConn(t *testing.T) {
 	relay := newFakeRelay()
 	relay.refuse = status.Error(codes.PermissionDenied, "permission denied")
 	cc := dialFakeRelay(t, relay)
-	err := NewWendyLiteClient().ConnectViaRelay(context.Background(), cc, relayTestAssetID, cert, chain, "441bf6804ff8")
+	err := NewWendyLiteClient().ConnectViaRelay(context.Background(), cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions())
 	if err == nil || !strings.Contains(err.Error(), "PermissionDenied") {
 		t.Fatalf("lost broker refusal: %v", err)
 	}
@@ -219,7 +245,7 @@ func TestRelayCancelWhileUnread(t *testing.T) {
 	relay.device = func(conn net.Conn) { defer conn.Close(); conn.Write(make([]byte, 65536)) }
 	cc := dialFakeRelay(t, relay)
 	ctx, cancel := context.WithCancel(context.Background())
-	conn, err := openRelayConn(ctx, cc, relayTestAssetID)
+	conn, err := openRelayConn(ctx, cc, relayTestAssetID, testRelayOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +266,7 @@ func TestRelayReadDeadline(t *testing.T) {
 	relay := newFakeRelay()
 	relay.device = func(conn net.Conn) { defer conn.Close(); io.Copy(io.Discard, conn) }
 	cc := dialFakeRelay(t, relay)
-	conn, err := openRelayConn(context.Background(), cc, relayTestAssetID)
+	conn, err := openRelayConn(context.Background(), cc, relayTestAssetID, testRelayOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,4 +276,8 @@ func TestRelayReadDeadline(t *testing.T) {
 	if e, ok := err.(net.Error); !ok || !e.Timeout() {
 		t.Fatalf("deadline ignored: %v", err)
 	}
+}
+
+func testRelayOptions() RelayOptions {
+	return RelayOptions{SignRequest: func(p []byte) ([]byte, error) { return p, nil }}
 }

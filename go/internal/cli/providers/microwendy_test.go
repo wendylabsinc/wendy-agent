@@ -471,7 +471,14 @@ func TestConnectClientRejectsBLEWithoutAddress(t *testing.T) {
 func setCloudRelayDialer(t *testing.T, dial func(context.Context, models.ExternalDevice) (*grpc.ClientConn, context.Context, error)) {
 	t.Helper()
 	old := CloudRelayDialer
-	CloudRelayDialer = dial
+	if dial == nil {
+		CloudRelayDialer = nil
+	} else {
+		CloudRelayDialer = func(ctx context.Context, device models.ExternalDevice) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
+			conn, callCtx, err := dial(ctx, device)
+			return conn, callCtx, liteclient.RelayOptions{}, err
+		}
+	}
 	t.Cleanup(func() { CloudRelayDialer = old })
 }
 

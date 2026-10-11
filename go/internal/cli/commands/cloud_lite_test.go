@@ -1,9 +1,11 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -14,6 +16,8 @@ import (
 	"math/big"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -126,6 +130,8 @@ func TestAgentOnlyPathsRefuseACloudLiteDevice(t *testing.T) {
 // liteRelayStub forwards bytes to an mTLS device fixture.
 type liteRelayStub struct {
 	wcomrelaypb.UnimplementedWendyComRelayServiceServer
+	wcomrelaypb.UnimplementedWendyComRelayDiscoveryServiceServer
+	endpoint  string
 	opened    chan relayStubOpen
 	tlsConfig *tls.Config
 }
@@ -141,7 +147,14 @@ func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_We
 		return err
 	}
 	md, _ := metadata.FromIncomingContext(stream.Context())
-	r.opened <- relayStubOpen{assetID: first.GetOpen().GetAssetId(), authorization: md.Get("authorization")}
+	r.opened <- relayStubOpen{assetID: first.GetOpen().GetRequestBody().GetTargetAssetId(), authorization: md.Get("authorization")}
+	grant, err := os.ReadFile("../../../../Proto/conformance/lite-relay/grant.bin")
+	if err != nil {
+		return err
+	}
+	if err := stream.Send(&wcomrelaypb.WendyComRelayMessage{Msg: &wcomrelaypb.WendyComRelayMessage_Grant{Grant: &wcomrelaypb.WendyComRelayGrant{Record: grant}}}); err != nil {
+		return err
+	}
 	proxy, device := net.Pipe()
 	defer proxy.Close()
 	defer device.Close()
@@ -151,6 +164,9 @@ func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_We
 			msg, err := stream.Recv()
 			if err != nil {
 				return
+			}
+			if msg.GetEstablished() != nil {
+				continue
 			}
 			if _, err = proxy.Write(msg.GetPayload().GetBytes()); err != nil {
 				return
@@ -175,6 +191,16 @@ func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_We
 	conn := tls.Server(device, r.tlsConfig)
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := conn.Handshake(); err != nil {
+		return err
+	}
+	received := make([]byte, len(grant))
+	if _, err := io.ReadFull(conn, received); err != nil {
+		return err
+	}
+	if !bytes.Equal(received, grant) {
+		return errors.New("grant was not first TLS plaintext")
+	}
+	if _, err := conn.Write([]byte("WLA1")); err != nil {
 		return err
 	}
 	for {
@@ -224,9 +250,10 @@ func TestCloudLiteDeviceInfoGoesThroughTheRelayWithTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	relay := &liteRelayStub{opened: make(chan relayStubOpen, 1)}
+	relay := &liteRelayStub{opened: make(chan relayStubOpen, 1), endpoint: "http://" + lis.Addr().String()}
 	srv := grpc.NewServer()
 	wcomrelaypb.RegisterWendyComRelayServiceServer(srv, relay)
+	wcomrelaypb.RegisterWendyComRelayDiscoveryServiceServer(srv, relay)
 	go srv.Serve(lis)
 	t.Cleanup(srv.Stop)
 
@@ -234,6 +261,7 @@ func TestCloudLiteDeviceInfoGoesThroughTheRelayWithTheSession(t *testing.T) {
 	auth := liteTestAuth(lis.Addr().String())
 	auth.APIKey = "api-key-123"
 	auth.Certificates, relay.tlsConfig = liteRelayTestPKI(t)
+	liteRelaySigningIdentity(t, auth.Certificates[0].PrincipalURI)
 	t.Setenv("WENDY_SECRET_STORE", "file")
 	setTempConfig(t, &config.Config{Auth: []config.AuthConfig{*auth}})
 
@@ -320,4 +348,39 @@ func liteRelayTestPKI(t *testing.T) ([]config.CertificateInfo, *tls.Config) {
 	pool := x509.NewCertPool()
 	pool.AddCert(root)
 	return []config.CertificateInfo{{PrincipalURI: principal, PemCertificate: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operator.Raw})), PemCertificateChain: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Raw})), PemPrivateKey: string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: key}))}}, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{device.Raw}, PrivateKey: dk}}, ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert}
+}
+
+func (r *liteRelayStub) Resolve(ctx context.Context, req *wcomrelaypb.ResolveRequest) (*wcomrelaypb.WendyComRelayRoute, error) {
+	return &wcomrelaypb.WendyComRelayRoute{Endpoint: r.endpoint}, nil
+}
+
+func liteRelaySigningIdentity(t *testing.T, principal string) {
+	t.Helper()
+	key, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, err := url.Parse(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(4), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), URIs: []*url.URL{uri}, KeyUsage: x509.KeyUsageDigitalSignature}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certPath, keyPath := filepath.Join(dir, "signer.pem"), filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: secret}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WENDY_TUNNEL_SIGNING_CERT", certPath)
+	t.Setenv("WENDY_TUNNEL_SIGNING_KEY", keyPath)
 }

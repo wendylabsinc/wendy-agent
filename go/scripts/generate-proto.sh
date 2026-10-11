@@ -256,24 +256,6 @@ protoc \
     wendy_com_msg.proto \
     wendy_conf.proto
 
-# The relay protos import each other by bare filename so they can be moved
-# to another project as-is; proto_path points inside wendy/lite accordingly.
-echo "Generating Wendy Lite relay protos..."
-WCOMRELAY_PKG="$MODULE/go/proto/gen/wcomrelaypb"
-mkdir -p "$GEN_DIR/wcomrelaypb"
-protoc \
-    --proto_path="$PROTO_DIR/wendy/lite" \
-    --go_out="$GEN_DIR/wcomrelaypb" \
-    --go_opt=module="$WCOMRELAY_PKG" \
-    --go_opt=Mwendy_com_relay_msg.proto="$WCOMRELAY_PKG" \
-    --go_opt=Mwendy_com_relay_service.proto="$WCOMRELAY_PKG" \
-    --go-grpc_out="$GEN_DIR/wcomrelaypb" \
-    --go-grpc_opt=module="$WCOMRELAY_PKG" \
-    --go-grpc_opt=Mwendy_com_relay_msg.proto="$WCOMRELAY_PKG" \
-    --go-grpc_opt=Mwendy_com_relay_service.proto="$WCOMRELAY_PKG" \
-    wendy_com_relay_msg.proto \
-    wendy_com_relay_service.proto
-
 echo "Generating Wendy Lite sensorlink protos..."
 SENSORLINK_PKG="$MODULE/go/proto/gen/sensorlinkpb"
 mkdir -p "$GEN_DIR/sensorlinkpb"
@@ -298,6 +280,19 @@ protoc --proto_path="$PROTO_DIR" \
     --go-grpc_opt=Mwendycloud/tunnel/v2/tunnel.proto="$RELAY_PKG" \
     --go-grpc_opt=Mwendyauth/v1/envelope.proto="$AUTH_PKG" \
     wendycloud/tunnel/v2/tunnel.proto wendyauth/v1/envelope.proto
+
+# Packaged Lite relay contract from service-protos.
+WCOMRELAY_PKG="$MODULE/go/proto/gen/wcomrelaypb"
+protoc --proto_path="$PROTO_DIR" \
+    --go_out="$GO_DIR" --go_opt=module="$MODULE/go" \
+    --go_opt=Mwendycloud/tunnel/lite/v1/relay.proto="$WCOMRELAY_PKG" \
+    --go_opt=Mwendycloud/tunnel/v2/tunnel.proto="$RELAY_PKG" \
+    --go_opt=Mwendyauth/v1/envelope.proto="$AUTH_PKG" \
+    --go-grpc_out="$GO_DIR" --go-grpc_opt=module="$MODULE/go" \
+    --go-grpc_opt=Mwendycloud/tunnel/lite/v1/relay.proto="$WCOMRELAY_PKG" \
+    --go-grpc_opt=Mwendycloud/tunnel/v2/tunnel.proto="$RELAY_PKG" \
+    --go-grpc_opt=Mwendyauth/v1/envelope.proto="$AUTH_PKG" \
+    wendycloud/tunnel/lite/v1/relay.proto
 
 # App recording envelopes (no generated SDK is needed for lightweight streams).
 protoc --proto_path="$PROTO_DIR" --go_out="$GO_DIR" --go_opt=module="$MODULE/go" \
