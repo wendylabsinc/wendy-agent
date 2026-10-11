@@ -19,6 +19,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -1045,6 +1046,11 @@ func connectWithCLIIdentities(connect func(cert tls.Certificate, rootCAs x509.Ce
 	}
 	var connectErrs []error
 	for _, certInfo := range certInfos {
+		certInfo, err = cloudrelay.LiteOperatorIdentity(certInfo)
+		if err != nil {
+			connectErrs = append(connectErrs, err)
+			continue
+		}
 		keyPEM, err := certInfo.PrivateKeyPEM()
 		if err != nil {
 			return fmt.Errorf("wendy-lite provider: loading client key: %w", err)

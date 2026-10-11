@@ -78,7 +78,7 @@ func openRelayConn(ctx context.Context, cc *grpc.ClientConn, assetID string, opt
 		}
 		if err == nil {
 			grant = first.GetGrant().GetRecord()
-			if len(grant) < 3459 || len(grant) > 3586 || string(grant[:4]) != "WLG1" || len(grant) != 3458+int(grant[4]) {
+			if len(grant) < 214 || len(grant) > 341 || string(grant[:4]) != "WLG2" || len(grant) != 213+int(grant[4]) {
 				err = fmt.Errorf("broker returned no valid compact Lite grant")
 			}
 		}

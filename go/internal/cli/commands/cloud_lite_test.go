@@ -202,7 +202,7 @@ func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_We
 	if !bytes.Equal(received, grant) {
 		return errors.New("grant was not first TLS plaintext")
 	}
-	if _, err := conn.Write([]byte("WLA1")); err != nil {
+	if _, err := conn.Write([]byte("WLA2")); err != nil {
 		return err
 	}
 	for {

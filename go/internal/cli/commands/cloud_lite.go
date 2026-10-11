@@ -105,7 +105,7 @@ func dialLiteCloudRelay(ctx context.Context, device models.ExternalDevice) (*grp
 	if err != nil {
 		return nil, nil, options, err
 	}
-	options.SignRequest, err = tunnelPrincipalSigner(auth)
+	options.SignRequest, err = litePrincipalSigner(auth)
 	if err != nil {
 		return nil, nil, options, err
 	}

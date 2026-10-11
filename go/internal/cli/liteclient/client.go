@@ -286,7 +286,7 @@ func (c *WendyLiteClient) ConnectViaRelay(ctx context.Context, cc *grpc.ClientCo
 		return fmt.Errorf("forward Lite grant: %w", err)
 	}
 	var ack [4]byte
-	if _, err := io.ReadFull(conn, ack[:]); err != nil || string(ack[:]) != "WLA1" {
+	if _, err := io.ReadFull(conn, ack[:]); err != nil || string(ack[:]) != "WLA2" {
 		raw.Close()
 		return fmt.Errorf("device refused Lite session grant")
 	}
@@ -1093,7 +1093,7 @@ func (c *WendyLiteClient) EnrollmentChallenge(statusOnly bool) (*wendypb.WendyCo
 	return challenge, nil
 }
 
-// deviceTLSConfig verifies ML-DSA certificate chains and sends
+// deviceTLSConfig verifies certificate chains and sends
 // the operator intermediates needed by a device trusting only tenant roots.
 func deviceTLSConfig(cert tls.Certificate, chain, deviceID string) (*tls.Config, error) {
 	if len(cert.Certificate) == 0 {
@@ -1132,7 +1132,7 @@ func deviceTLSConfig(cert tls.Certificate, chain, deviceID string) (*tls.Config,
 	for _, ca := range caCerts {
 		cert.Certificate = append(cert.Certificate, ca.Raw)
 	}
-	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert},
+	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert},
 		InsecureSkipVerify: true, // Verification and device identity checks are performed below.
 		VerifyConnection:   verify,
 	}, nil

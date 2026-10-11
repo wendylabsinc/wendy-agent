@@ -175,7 +175,7 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 				if _, readErr = io.ReadFull(conn, got); readErr != nil || !bytes.Equal(got, grant) {
 					return
 				}
-				if _, readErr = conn.Write([]byte("WLA1")); readErr != nil {
+				if _, readErr = conn.Write([]byte("WLA2")); readErr != nil {
 					return
 				}
 				link := newDirectLink(conn)

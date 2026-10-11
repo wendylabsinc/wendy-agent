@@ -6,6 +6,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/pem"
@@ -111,6 +113,57 @@ func PrincipalSigner(certPEM string, keyPEM []byte) (func([]byte) ([]byte, error
 			return nil, fmt.Errorf("operator signing key does not match certificate")
 		}
 		return []byte(string(input) + "." + b64.EncodeToString(sig)), nil
+	}, nil
+}
+
+// LitePrincipalSigner uses the explicit P-256 profile for constrained devices.
+// Other tunnel profiles retain their existing signing policy.
+func LitePrincipalSigner(certPEM string, keyPEM []byte) (func([]byte) ([]byte, error), error) {
+	leaves, err := certs.ParseCertsFromPEM([]byte(certPEM))
+	if err != nil || len(leaves) != 1 {
+		return nil, fmt.Errorf("expected one Lite operator signing certificate")
+	}
+	pub, err := x509.ParsePKIXPublicKey(leaves[0].RawSubjectPublicKeyInfo)
+	if err != nil {
+		return nil, err
+	}
+	ec, ok := pub.(*ecdsa.PublicKey)
+	if !ok || ec.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("Lite requires a P-256 operator certificate")
+	}
+	block, rest := pem.Decode(keyPEM)
+	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
+		return nil, fmt.Errorf("invalid Lite signing key PEM")
+	}
+	var key *ecdsa.PrivateKey
+	switch block.Type {
+	case "PRIVATE KEY":
+		parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		key, _ = parsed.(*ecdsa.PrivateKey)
+	case "EC PRIVATE KEY":
+		key, err = x509.ParseECPrivateKey(block.Bytes)
+	default:
+		return nil, fmt.Errorf("unsupported Lite signing key encoding")
+	}
+	if err != nil || key == nil || key.Curve != elliptic.P256() || !key.PublicKey.Equal(ec) {
+		return nil, fmt.Errorf("Lite signing key does not match its P-256 certificate")
+	}
+	header, err := canonicalJSON(map[string]any{"alg": "ES256", "typ": "tunnel-principal-request+jws", "x5c": [][]byte{leaves[0].Raw}})
+	if err != nil {
+		return nil, err
+	}
+	return func(payload []byte) ([]byte, error) {
+		input := []byte(b64.EncodeToString(header) + "." + b64.EncodeToString(payload))
+		digest := sha256.Sum256(input)
+		r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+		if err != nil {
+			return nil, err
+		}
+		signature := append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...)
+		return []byte(string(input) + "." + b64.EncodeToString(signature)), nil
 	}, nil
 }
 

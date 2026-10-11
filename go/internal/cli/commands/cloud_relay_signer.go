@@ -14,6 +14,23 @@ import (
 // Until login can obtain both profiles, an explicitly supplied signing pair
 // must belong to exactly the same operator principal as the active session.
 func tunnelPrincipalSigner(auth *config.AuthConfig) (func([]byte) ([]byte, error), error) {
+	return configuredTunnelSigner(auth, cloudrelay.PrincipalSigner)
+}
+func litePrincipalSigner(auth *config.AuthConfig) (func([]byte) ([]byte, error), error) {
+	if auth == nil || len(auth.Certificates) == 0 {
+		return nil, fmt.Errorf("no operator certificate")
+	}
+	cert, err := cloudrelay.LiteOperatorIdentity(auth.Certificates[0])
+	if err != nil {
+		return nil, err
+	}
+	key, err := cert.PrivateKeyPEM()
+	if err != nil {
+		return nil, err
+	}
+	return cloudrelay.LitePrincipalSigner(cert.PemCertificate, []byte(key))
+}
+func configuredTunnelSigner(auth *config.AuthConfig, signer func(string, []byte) (func([]byte) ([]byte, error), error)) (func([]byte) ([]byte, error), error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("no operator certificate")
 	}
@@ -24,7 +41,7 @@ func tunnelPrincipalSigner(auth *config.AuthConfig) (func([]byte) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
-		return cloudrelay.PrincipalSigner(cert.PemCertificate, []byte(key))
+		return signer(cert.PemCertificate, []byte(key))
 	}
 	if certPath == "" || keyPath == "" {
 		return nil, fmt.Errorf("set both WENDY_TUNNEL_SIGNING_CERT and WENDY_TUNNEL_SIGNING_KEY")
@@ -50,5 +67,5 @@ func tunnelPrincipalSigner(auth *config.AuthConfig) (func([]byte) ([]byte, error
 		return nil, fmt.Errorf("reading tunnel signing key: %w", err)
 	}
 	defer clear(key)
-	return cloudrelay.PrincipalSigner(leafPEM, key)
+	return signer(leafPEM, key)
 }

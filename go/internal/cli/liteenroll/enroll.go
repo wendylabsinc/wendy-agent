@@ -60,7 +60,10 @@ func Config(auth *config.AuthConfig, deviceID, csrURL, timeURL, brokerHost strin
 		csrURL = "https://" + host + "/v1/" + tenant
 	}
 	if timeURL == "" {
-		timeURL = "roughtime"
+		return nil, fmt.Errorf("P-256 Lite enrollment requires --time-url for an RFC 3161 TSA and its trusted P-256 certificate chain")
+	}
+	if timeURL == "roughtime" {
+		return nil, fmt.Errorf("mbedTLS Lite firmware uses signed RFC 3161 time; pass --time-url")
 	}
 	endpoints := []string{csrURL}
 	if timeURL != "roughtime" {

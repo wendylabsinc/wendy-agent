@@ -85,7 +85,7 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if challenge.Enrolled {
 		return fmt.Errorf("this board already has an issued identity; use its existing enrollment or operator recovery")
 	}
-	if !cfg.ProvisionTrust {
+	if !cfg.ProvisionTrust && !challenge.GetBuiltinRootsReady() {
 		if !challenge.GetUsbTrustSupported() {
 			return fmt.Errorf("firmware does not support USB trust provisioning; update the board first")
 		}

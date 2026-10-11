@@ -1,7 +1,7 @@
 # Lite Cloud relay
 
 WDY-3512 uses `wendycloud.tunnel.lite.v1` from service-protos commit
-`2b727bd` ([PR #110](https://github.com/wendylabsinc/service-protos/pull/110)).
+`a5edcce` ([PR #110](https://github.com/wendylabsinc/service-protos/pull/110)).
 The vendored contract is `Proto/wendycloud/tunnel/lite/v1/relay.proto`;
 `go/scripts/generate-proto.sh` generates its Go client. Cloud PR #753 and
 firmware PR #56 must be deployed together with this client.
@@ -13,19 +13,20 @@ authorized ownership redirects.
 Resolved organization policy must grant `tunnel:connect`. DPoP continues to bind
 Cloud authentication where the access token requires it.
 
-The existing tunnel principal signer requires ML-DSA-65. If login only supplies
-an ECDSA TLS certificate, supply `WENDY_TUNNEL_SIGNING_CERT` and
-`WENDY_TUNNEL_SIGNING_KEY` for an ML-DSA signing identity belonging to the same
-operator principal. Both paths must be configured together. The CLI refuses a
-mismatched principal or unsupported algorithm. These signing variables apply to
-the principal request. Discovery uses the authenticated Cloud session and DPoP
-when required.
+Lite uses ES256 operator proofs and TLS 1.3 with P-256 identities. For a session
+whose administration identity is ML-DSA, set `WENDY_LITE_OPERATOR_CERT` to a PEM
+file containing the P-256 leaf and compatible CA chain, and
+`WENDY_LITE_OPERATOR_KEY` to its private key. Both must be set together. The CLI
+requires the same operator SPIFFE principal as the selected session and uses this
+identity for both Lite proof signing and device TLS. PKI must issue these
+credentials under compatible full chains. Ordinary Cloud administration and
+other tunnel profiles retain their existing signing policies.
 
-The broker returns a compact signed grant after pki-core verifies the operator
+The broker returns a compact P-256 WLG2 grant after pki-core verifies the operator
 request. The CLI then completes inner mTLS with the intended device, sends the
-grant as its first application data, and waits for WLA1 before WendyCom. The
+grant as its first application data, and waits for WLA2 before WendyCom. The
 device verifies the signature, identities, session, expiry and upgrade hash.
-After WLA1, the CLI sends `WendyComRelayEstablished` on the gRPC stream to mark
+After WLA2, the CLI sends `WendyComRelayEstablished` on the gRPC stream to mark
 the inner handshake and grant admission complete.
 Grant verification keys come from the authenticated outer device/broker
 connection, never from the CLI.
