@@ -10,6 +10,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -148,7 +150,7 @@ func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_We
 	}
 	md, _ := metadata.FromIncomingContext(stream.Context())
 	r.opened <- relayStubOpen{assetID: first.GetOpen().GetRequestBody().GetTargetAssetId(), authorization: md.Get("authorization")}
-	grant, err := os.ReadFile("../../../../Proto/conformance/lite-relay/grant.bin")
+	grant, err := relayGrantFixture()
 	if err != nil {
 		return err
 	}
@@ -383,4 +385,19 @@ func liteRelaySigningIdentity(t *testing.T, principal string) {
 	}
 	t.Setenv("WENDY_TUNNEL_SIGNING_CERT", certPath)
 	t.Setenv("WENDY_TUNNEL_SIGNING_KEY", keyPath)
+}
+
+// Use the shared, text-reviewable vector without embedding opaque binary patches.
+func relayGrantFixture() ([]byte, error) {
+	data, err := os.ReadFile("../../../../Proto/conformance/lite-relay/vector.json")
+	if err != nil {
+		return nil, err
+	}
+	var vector struct {
+		Record string `json:"record_hex"`
+	}
+	if err := json.Unmarshal(data, &vector); err != nil {
+		return nil, err
+	}
+	return hex.DecodeString(vector.Record)
 }

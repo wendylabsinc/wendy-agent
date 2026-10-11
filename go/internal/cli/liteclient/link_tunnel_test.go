@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"net"
@@ -55,7 +57,7 @@ func (r *fakeRelay) WendyComRelay(stream wcomrelaypb.WendyComRelayService_WendyC
 	if first.GetOpen().GetPrincipalRequest().GetKind() != "tunnel-principal-request+jws" {
 		return status.Error(codes.PermissionDenied, "missing principal proof")
 	}
-	grant, err := os.ReadFile("../../../../Proto/conformance/lite-relay/grant.bin")
+	grant, err := relayGrantFixture()
 	if err != nil {
 		return err
 	}
@@ -165,7 +167,7 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 				if err != nil {
 					return
 				}
-				grant, readErr := os.ReadFile("../../../../Proto/conformance/lite-relay/grant.bin")
+				grant, readErr := relayGrantFixture()
 				if readErr != nil {
 					return
 				}
@@ -280,4 +282,19 @@ func TestRelayReadDeadline(t *testing.T) {
 
 func testRelayOptions() RelayOptions {
 	return RelayOptions{SignRequest: func(p []byte) ([]byte, error) { return p, nil }}
+}
+
+// Use the shared, text-reviewable vector without embedding opaque binary patches.
+func relayGrantFixture() ([]byte, error) {
+	data, err := os.ReadFile("../../../../Proto/conformance/lite-relay/vector.json")
+	if err != nil {
+		return nil, err
+	}
+	var vector struct {
+		Record string `json:"record_hex"`
+	}
+	if err := json.Unmarshal(data, &vector); err != nil {
+		return nil, err
+	}
+	return hex.DecodeString(vector.Record)
 }
