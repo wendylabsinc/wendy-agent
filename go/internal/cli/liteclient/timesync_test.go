@@ -13,7 +13,7 @@ import (
 func TestRelayRoughtimeRequiresDeviceAcknowledgement(t *testing.T) {
 	for _, mode := range []string{"success", "no-quorum", "reject", "missing-result", "offline"} {
 		t.Run(mode, func(t *testing.T) {
-			seen := map[uint32]bool{}
+			seen := map[string]bool{}
 			query := func(_ context.Context, s roughtime.Server, n []byte) (roughtime.Result, error) {
 				if len(n) != 32 || n[0] != 0x12 {
 					t.Error("did not use device nonce")
@@ -25,11 +25,17 @@ func TestRelayRoughtimeRequiresDeviceAcknowledgement(t *testing.T) {
 			}
 			send := func(req *pb.WendyComCommand) (*pb.WendyComResponse, error) {
 				p := req.GetSyncTime()
-				if p == nil || int(p.ServerIndex) >= len(roughtime.Servers) || seen[p.ServerIndex] {
+				if p == nil || seen[p.Server] {
 					t.Fatal("bad server mapping")
 				}
-				seen[p.ServerIndex] = true
-				if string(p.Response) != roughtime.Servers[p.ServerIndex].Name {
+				seen[p.Server] = true
+				var name string
+				for _, server := range roughtime.Servers {
+					if server.Address == p.Server {
+						name = server.Name
+					}
+				}
+				if name == "" || string(p.Response) != name {
 					t.Fatal("proof changed")
 				}
 				if mode == "reject" {

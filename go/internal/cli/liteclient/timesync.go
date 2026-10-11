@@ -63,7 +63,7 @@ func relayRoughtime(ctx context.Context, nonceHex string,
 				continue
 			}
 			reply, err := send(&pb.WendyComCommand{
-				Params: &pb.WendyComCommand_SyncTime{SyncTime: &pb.WendyComSyncTimeParams{ServerIndex: uint32(a.index), Response: a.result.RawResponse}},
+				Params: &pb.WendyComCommand_SyncTime{SyncTime: &pb.WendyComSyncTimeParams{Server: roughtime.Servers[a.index].Address, Response: a.result.RawResponse}},
 			})
 			if err != nil {
 				return time.Time{}, err
