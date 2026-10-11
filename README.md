@@ -60,7 +60,6 @@ Package-specific options are available via
 wendy install # Install WendyOS on a device
 wendy init # Create new project
 wendy run # Build & Run an app
-wendy run --watch # Watch for changes & Redeploy
 wendy device top # Resource Stats
 wendy device wifi # Manage wifi (connect/forget)
 wendy device bluetooth # Game controllers, audio, etc..
