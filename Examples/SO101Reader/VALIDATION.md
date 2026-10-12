@@ -1,8 +1,8 @@
 # Validation evidence — 2026-10-12
 
-Scope: only `Examples/SO101Reader`. No changes to CLI, Agent core, simulator,
+Initial validation scope: only `Examples/SO101Reader`. No changes to CLI, Agent core, simulator,
 viewer, `demos/wendy-arms`, or the other SO-101 examples. No physical motor port
-was opened, and no torque/configuration/goal writes were performed.
+was opened during that initial validation, and no torque/configuration/goal writes were performed.
 
 ## Passed
 
@@ -89,3 +89,26 @@ schema version, `source`, `synthetic`, `hardware_ready`, per-joint `fresh` and
 errors. Preserve raw words/ticks and provenance. A separately verified mapping
 from motor coordinates to calibrated SO-101 model angles remains outstanding;
 there are deliberately no assumed 2048 centers or derived angle fields here.
+
+## Subsequent physical macOS acceptance
+
+- Read-only native execution on the explicitly selected SO-101 USB callout port
+  returned complete, fresh, fault-free readings from all six STS3215 motors over
+  advancing scan sequences. The reader stopped and released its serial claim.
+  No torque, goal, homing, calibration or configuration writes were sent.
+- The original whole-IOService metadata query timed out on this Mac. Scoping
+  I/O Registry to USB-host-device subtrees returned the selected adapter's serial,
+  vendor and product metadata. The updated reader then reported those fields
+  alongside all six physical readings and the supplied calibration file digest.
+  A locally selected test binding was supplied explicitly; this did not exercise
+  CLI pairing, and adapter metadata is still not robot identity verification.
+- The host's `lsof` scan sometimes exceeded the original two-second deadline.
+  Numeric-only lookup and a five-second bound avoid unnecessary name resolution
+  and accommodate the observed latency. Unknown or busy ownership still refuses
+  the port. Cancellation after each owner check prevents continuing to open or
+  configure the port after a stop request.
+- All **35** local unit/integration tests passed after these fixes, including
+  USB-subtree identity inheritance, missing ports, metadata timeout, ownership
+  timeout preventing serial open, and cancellation during ownership checking.
+- Model-angle mapping, physical unplug/replug recovery, fault injection, Darwin
+  Agent deployment and physical Linux laptop acceptance remain outstanding.

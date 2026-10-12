@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import plistlib
 import signal
 import socket
 import struct
@@ -23,6 +24,7 @@ import urllib.request
 from protocol import ReaderError, position, request, response
 from reader import Config, Monitor, calibration_metadata, server_for
 from transport import MockTransport, SerialTransport, check_port_owners, io_error
+from identity import adapter_metadata
 
 
 def frame(motor_id, data, bits=0):
@@ -108,6 +110,36 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(meta["physically_verified"])
             self.assertFalse(meta["applied_to_readings"])
             self.assertEqual(len(meta["sha256"]), 64)
+
+
+class IdentityTests(unittest.TestCase):
+    def test_macos_usb_subtrees_match_selected_port_and_inherit_identity(self):
+        port = "/dev/cu.fixture-target"
+        tree = [
+            {"USB Serial Number": "other", "IORegistryEntryChildren": [
+                {"IOCalloutDevice": "/dev/cu.fixture-other"}]},
+            {"USB Serial Number": "fixture-serial", "idVendor": 6790,
+             "idProduct": 21971, "IORegistryEntryChildren": [
+                 {"IORegistryEntryChildren": [{"IOCalloutDevice": port,
+                                                "IODialinDevice": "/dev/tty.fixture-target"}]}]},
+        ]
+        reply = subprocess.CompletedProcess([], 0, stdout=plistlib.dumps(tree))
+        with patch("identity.sys.platform", "darwin"), patch("identity.subprocess.run", return_value=reply) as run:
+            found = adapter_metadata(port)
+            self.assertEqual(found, {"source": "macos_ioreg", "robot_identity_proven": False,
+                                     "serial_number": "fixture-serial", "vendor_id": 6790,
+                                     "product_id": 21971})
+            self.assertEqual(adapter_metadata("/dev/tty.fixture-target"), found)
+            self.assertEqual(adapter_metadata("/dev/cu.missing")["source"], "unavailable")
+            self.assertEqual(run.call_args.args[0],
+                             ["/usr/sbin/ioreg", "-a", "-l", "-r", "-c", "IOUSBHostDevice"])
+            self.assertEqual(run.call_args.kwargs["timeout"], 2)
+
+    def test_macos_usb_lookup_timeout_stays_unverified(self):
+        with patch("identity.sys.platform", "darwin"), patch("identity.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired("ioreg", 2)):
+            self.assertEqual(adapter_metadata("/dev/cu.fixture"),
+                             {"source": "unavailable", "robot_identity_proven": False})
 
 
 class MonitorTests(unittest.TestCase):
@@ -359,6 +391,30 @@ class OwnershipTests(unittest.TestCase):
         for value, code in [(errno.EACCES, "permission_denied"), (errno.EBUSY, "busy"),
                             (errno.ENOENT, "disconnected"), (errno.EIO, "disconnected")]:
             self.assertEqual(io_error(OSError(value, "fixture")).code, code)
+
+    def test_owner_timeout_blocks_open(self):
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        with patch("transport.subprocess.run", side_effect=subprocess.TimeoutExpired("lsof", 2)), \
+                patch("transport.os.open") as opened:
+            with self.assertRaises(ReaderError) as caught:
+                SerialTransport(os.ttyname(slave), 1000000, .1, threading.Event())
+            self.assertEqual(caught.exception.code, "ownership_unknown")
+            self.assertIn("timed out", str(caught.exception))
+            opened.assert_not_called()
+
+    def test_cancellation_during_owner_check_blocks_open(self):
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        stop = threading.Event()
+        with patch("transport.check_port_owners", side_effect=lambda _: stop.set()), \
+                patch("transport.os.open") as opened:
+            with self.assertRaises(ReaderError) as caught:
+                SerialTransport(os.ttyname(slave), 1000000, .1, stop)
+            self.assertEqual(caught.exception.code, "stopping")
+            opened.assert_not_called()
 
 
 class APITests(unittest.TestCase):

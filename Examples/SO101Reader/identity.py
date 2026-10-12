@@ -22,7 +22,9 @@ def adapter_metadata(port):
                 break
     elif sys.platform == "darwin":
         try:
-            raw = subprocess.run(["/usr/sbin/ioreg", "-a", "-l", "-p", "IOService"],
+            # USB device subtrees retain the serial client's ancestors without
+            # serializing unrelated (and potentially very large) GPU services.
+            raw = subprocess.run(["/usr/sbin/ioreg", "-a", "-l", "-r", "-c", "IOUSBHostDevice"],
                                  capture_output=True, check=True, timeout=2).stdout
             if len(raw) > 16_777_216:
                 return result

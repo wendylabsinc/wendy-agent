@@ -29,8 +29,10 @@ def check_port_owners(port):
         if leaf.startswith(("cu.", "tty.")):
             paths.append("/dev/" + ("tty." if leaf.startswith("cu.") else "cu.") + leaf.split(".", 1)[1])
     try:
-        result = subprocess.run(["lsof", "-F", "p", "--", *paths], capture_output=True, timeout=2, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        result = subprocess.run(["lsof", "-nP", "-F", "p", "--", *paths], capture_output=True, timeout=5, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise ReaderError("ownership_unknown", "Port-owner check timed out; ownership is unknown, retry when the host is responsive") from exc
+    except OSError as exc:
         raise ReaderError("ownership_unknown", "Cannot check port owners; install lsof and retry") from exc
     if result.returncode not in {0, 1}:
         raise ReaderError("ownership_unknown", "lsof could not check port owners")
@@ -62,11 +64,15 @@ class SerialTransport:
             if not stat.S_ISCHR(os.stat(port).st_mode):
                 raise ReaderError("invalid_port", "Serial port must be a character device")
             check_port_owners(port)
+            if stop.is_set():
+                raise ReaderError("stopping", "Reader stopped before claiming serial port")
             self.fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
             fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.ioctl(self.fd, termios.TIOCEXCL)
             self.claimed = True
             check_port_owners(port)
+            if stop.is_set():
+                raise ReaderError("stopping", "Reader stopped before configuring serial port")
             self.original = termios.tcgetattr(self.fd)
             settings = termios.tcgetattr(self.fd)
             settings[0] = settings[1] = settings[3] = 0

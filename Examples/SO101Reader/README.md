@@ -82,8 +82,10 @@ keeps the API running. Config is loaded at startup; restart the app to change a 
 
 Polling is sequential, not simultaneous. With six unresponsive motors and the
 default timeout, a scan takes up to about 1.2 seconds plus overhead. Stop checks
-occur every 20 ms during exchanges. Owner checks and best-effort adapter metadata
-lookups each have a two-second subprocess deadline. A retained port is reopened
+occur every 20 ms during exchanges. Owner checks have a five-second subprocess
+deadline; best-effort adapter metadata lookups have a two-second deadline.
+Cancellation is checked after each owner check, before continuing to open or
+configure the port. A retained port is reopened
 after fatal I/O failures or a fully silent scan; there is no baud sweep or scan
 of other ports.
 
