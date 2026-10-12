@@ -25,7 +25,13 @@ other tunnel profiles retain their existing signing policies.
 The broker returns a compact P-256 WLG2 grant after pki-core verifies the operator
 request. The CLI then completes inner mTLS with the intended device, sends the
 grant as its first application data, and waits for WLA2 before WendyCom. The
-device verifies the signature, identities, session, expiry and upgrade hash.
+device verifies the signature, identities, authenticated operator key, session
+and upgrade hash. The current WLG2 record has `309 + key-ID length` bytes and
+includes the grant ID, correlation ID, asset ID, operator public-key hash,
+request hash and attestation hash. Older, shorter WLG2 records are rejected.
+The grant must be presented within its signed window of at most 60 seconds.
+That window is separate from the session's 1800-second limit, which is also
+bounded by both endpoint certificates' expiry.
 After WLA2, the CLI sends `WendyComRelayEstablished` on the gRPC stream to mark
 the inner handshake and grant admission complete.
 Grant verification keys come from the authenticated outer device/broker

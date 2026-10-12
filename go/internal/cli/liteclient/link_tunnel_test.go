@@ -35,6 +35,7 @@ type relayOpen struct {
 type fakeRelay struct {
 	wcomrelaypb.UnimplementedWendyComRelayServiceServer
 	refuse error
+	grant  []byte
 	opens  chan relayOpen
 	ended  chan struct{}
 	device func(net.Conn)
@@ -57,9 +58,12 @@ func (r *fakeRelay) WendyComRelay(stream wcomrelaypb.WendyComRelayService_WendyC
 	if first.GetOpen().GetPrincipalRequest().GetKind() != "tunnel-principal-request+jws" {
 		return status.Error(codes.PermissionDenied, "missing principal proof")
 	}
-	grant, err := relayGrantFixture()
-	if err != nil {
-		return err
+	grant := r.grant
+	if grant == nil {
+		grant, err = relayGrantFixture()
+		if err != nil {
+			return err
+		}
 	}
 	if err = stream.Send(&wcomrelaypb.WendyComRelayMessage{Msg: &wcomrelaypb.WendyComRelayMessage_Grant{Grant: &wcomrelaypb.WendyComRelayGrant{Record: grant}}}); err != nil {
 		return err
@@ -240,6 +244,89 @@ func TestConnectViaRelayReportsRefusalAndClosesConn(t *testing.T) {
 	if cc.GetState() != connectivity.Shutdown {
 		t.Fatal("connection leaked")
 	}
+}
+
+func TestRelayRejectsMalformedGrantBeforeTLS(t *testing.T) {
+	cert, chain, _ := relayPKI(t, devicePrincipal, true)
+	current, err := relayGrantFixture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyHex, err := os.ReadFile("testdata/lite-grant-legacy.hex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := hex.DecodeString(strings.TrimSpace(string(legacyHex)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		record func([]byte) []byte
+	}{
+		{"legacy grant missing current bindings", func([]byte) []byte { return legacy }},
+		{"empty", func([]byte) []byte { return []byte{} }},
+		{"truncated header", func(b []byte) []byte { return b[:4] }},
+		{"wrong magic", func(b []byte) []byte { b[3] = '1'; return b }},
+		{"truncated signature", func(b []byte) []byte { return b[:len(b)-1] }},
+		{"trailing byte", func(b []byte) []byte { return append(b, 0) }},
+		{"wrong key ID length", func(b []byte) []byte { b[4]++; return b }},
+		{"empty key ID", func(b []byte) []byte { return relayGrantWithKeyID(b, "") }},
+		{"oversized key ID", func(b []byte) []byte { return relayGrantWithKeyID(b, strings.Repeat("a", 129)) }},
+		{"invalid key ID", func(b []byte) []byte { b[5] = '/'; return b }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			relay := newFakeRelay()
+			relay.grant = tc.record(bytes.Clone(current))
+			relay.device = func(conn net.Conn) {
+				defer conn.Close()
+				var b [1]byte
+				if n, _ := conn.Read(b[:]); n != 0 {
+					t.Error("sent TLS data after an invalid grant")
+				}
+			}
+			cc := dialFakeRelay(t, relay)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			client := NewWendyLiteClient()
+			err := client.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions())
+			if err == nil {
+				client.Close()
+				t.Fatal("accepted invalid grant")
+			}
+			if !strings.Contains(err.Error(), "no valid compact Lite grant") {
+				t.Fatalf("unexpected rejection: %v", err)
+			}
+			select {
+			case <-relay.ended:
+			case <-time.After(time.Second):
+				t.Fatal("invalid grant leaked stream")
+			}
+			if cc.GetState() != connectivity.Shutdown {
+				t.Fatal("invalid grant leaked connection")
+			}
+		})
+	}
+}
+
+func TestLiteGrantFramingKeyIDBounds(t *testing.T) {
+	grant, err := relayGrantFixture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kid := range []string{"a", strings.Repeat("a", 123) + "-_.Z9"} {
+		// Changing the key ID invalidates the signature. The CLI checks framing;
+		// only the device has the trusted key set and can authorize the grant.
+		if !validLiteGrantRecord(relayGrantWithKeyID(grant, kid)) {
+			t.Errorf("rejected supported %d-byte key ID", len(kid))
+		}
+	}
+}
+
+func relayGrantWithKeyID(grant []byte, kid string) []byte {
+	record := append(bytes.Clone(grant[:4]), byte(len(kid)))
+	record = append(record, kid...)
+	return append(record, grant[5+int(grant[4]):]...)
 }
 
 func TestRelayCancelWhileUnread(t *testing.T) {

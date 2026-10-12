@@ -28,8 +28,8 @@ import (
 	"google.golang.org/grpc"
 )
 
-// Config resolves PKI endpoints and the agent's device hostname from the selected
-// session. WendyCom uses its own port on that hostname.
+// Config resolves PKI endpoints and the Lite relay hostname from the selected
+// session. The dev Lite relay has separate TCP ingress from the WendyOS listener.
 func Config(auth *config.AuthConfig, deviceID, csrURL, timeURL, brokerHost string, brokerPort uint32) (*litepb.WendyConfEnrollment, error) {
 	if auth == nil || len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("enrollment requires a PKI operator session; run 'wendy cloud login'")
@@ -42,6 +42,9 @@ func Config(auth *config.AuthConfig, deviceID, csrURL, timeURL, brokerHost strin
 		brokerHost, _, err = net.SplitHostPort(endpoint)
 		if err != nil {
 			return nil, fmt.Errorf("derive WendyCom broker hostname; pass --broker-host: %w", err)
+		}
+		if brokerHost == "devices.dev.wendy.sh" || brokerHost == "api.dev.wendy.dev" {
+			brokerHost = "tunnel.dev.wendy.dev"
 		}
 	}
 	principal, err := certs.ParsePrincipal(auth.Certificates[0].PrincipalURI)

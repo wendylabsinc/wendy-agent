@@ -78,7 +78,7 @@ func openRelayConn(ctx context.Context, cc *grpc.ClientConn, assetID string, opt
 		}
 		if err == nil {
 			grant = first.GetGrant().GetRecord()
-			if len(grant) < 214 || len(grant) > 341 || string(grant[:4]) != "WLG2" || len(grant) != 213+int(grant[4]) {
+			if !validLiteGrantRecord(grant) {
 				err = fmt.Errorf("broker returned no valid compact Lite grant")
 			}
 		}
@@ -137,6 +137,26 @@ func openRelayConn(ctx context.Context, cc *grpc.ClientConn, assetID string, opt
 		}
 	}()
 	return conn, nil
+}
+
+// The current Cloud WLG2 record carries timestamps, four UUIDs, five SHA-256
+// hashes and a raw P-256 signature after its key ID. This checks framing only;
+// the device verifies the signature and bindings before acknowledging WLA2.
+func validLiteGrantRecord(grant []byte) bool {
+	const fixedSize = 4 + 1 + 2*8 + 4*16 + 5*32 + 64
+	if len(grant) < fixedSize+1 || len(grant) > fixedSize+128 || string(grant[:4]) != "WLG2" {
+		return false
+	}
+	kidLen := int(grant[4])
+	if kidLen < 1 || kidLen > 128 || len(grant) != fixedSize+kidLen {
+		return false
+	}
+	for _, b := range grant[5 : 5+kidLen] {
+		if !(b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '.' || b == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *relayConn) established() error {

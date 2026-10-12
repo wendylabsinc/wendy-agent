@@ -61,13 +61,17 @@ func TestConfigUsesSelectedPKI(t *testing.T) {
 		t.Fatalf("self-hosted config: %v %v", cfg, err)
 	}
 }
-func TestConfigDefaultsBrokerToAgentHostname(t *testing.T) {
+func TestConfigDefaultsLiteBrokerForSelectedCloud(t *testing.T) {
 	auth := authFixture(t)
 	for _, tc := range []struct{ cloud, override, want string }{
-		{"api.dev.wendy.sh:443", "", "devices.dev.wendy.sh"},
+		{"api.dev.wendy.sh:443", "", "tunnel.dev.wendy.dev"},
+		{"https://api.dev.wendy.sh", "", "tunnel.dev.wendy.dev"},
+		{"api.dev.wendy.dev:443", "", "tunnel.dev.wendy.dev"},
 		{"https://api.wendy.sh", "", "devices.wendy.sh"},
 		{"api.wendy.dev:443", "", "devices.wendy.dev"},
 		{"https://cloud.example:9443", "", "cloud.example"},
+		{"api.dev.wendy.sh:443", "broker.example", "broker.example"},
+		{"api.dev.wendy.sh:443", "devices.dev.wendy.sh", "devices.dev.wendy.sh"},
 		{"", "broker.example", "broker.example"},
 	} {
 		t.Run(tc.cloud+"/"+tc.override, func(t *testing.T) {
