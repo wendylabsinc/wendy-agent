@@ -87,4 +87,4 @@ wendy device enroll --device 192.168.1.11 --name lab-pi-01
 - [`wendy install` → Linux Desktop](../install.md) — mint a short-lived enrollment token and embed it in the `agent.sh` one-liner so the device self-enrolls on first startup, without needing a USB connection or a running agent.
 - [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.
 - `wendy cloud enroll-device` — alias for this command, reachable through the cloud tunnel.
-- `wendy device unenroll` — reverse enrollment and delete the device from Wendy Cloud.
+- [`wendy device unenroll`](./unenroll.md) reverses enrollment and deletes the device from Wendy Cloud, including offline devices through cloud mode.

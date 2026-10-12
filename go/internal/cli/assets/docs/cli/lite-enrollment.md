@@ -75,6 +75,54 @@ still needs broker-authorized forwarding and end-to-end CLI/device mTLS. The
 existing insecure tinycloud client is not used here. See
 [cloud#638](https://github.com/wendylabsinc/cloud/pull/638) for broker presence.
 
+## Remove an old enrollment
+
+A Lite board's PKI device ID is `lite-` followed by its hardware ID, such as
+`lite-441bf6804824`. Renaming the board does not release that ID from an existing
+cloud asset. Remove the old enrollment before enrolling the same board again.
+
+Use cloud unenrollment when the board is offline or its firmware is corrupt:
+
+```sh
+wendy cloud discover --all --json
+wendy cloud device unenroll --device <asset-uuid-or-name>
+```
+
+The selector also accepts the PKI device ID reported by an enrollment conflict:
+
+```sh
+wendy cloud device unenroll --device lite-441bf6804824
+```
+
+The equivalent device command is:
+
+```sh
+wendy device unenroll --cloud-only --device <asset-uuid-or-name>
+```
+
+These commands use your cloud session without connecting to the board. They
+revoke its certificates and bootstrap credentials, delete the cloud asset, and
+release its device ID. Add `--yes` when running non-interactively. Use
+`--cloud-grpc` to select another cloud endpoint/session.
+
+For a reachable board, the normal device command reads its hardware ID through
+the selected USB, LAN, or Bluetooth connection and removes the matching cloud
+enrollment:
+
+```sh
+wendy device unenroll --device wendy-lite:/dev/cu.usbmodemXXXX
+```
+
+Current Lite firmware has no command to erase its local enrollment identity.
+Unenrollment preserves the board's configuration and leaves its local credentials
+in the dedicated `wendy_pki` identity partition. If the board already received a
+certificate, use the firmware's operator recovery procedure to erase or reset
+that identity partition before enrolling again. Replacing only the configuration
+or rebooting the board does not clear that identity. A cloud reservation left by
+an enrollment that never issued a certificate can be removed before retrying
+enrollment.
+
+
 Read the firmware console with:
 
 ```sh
