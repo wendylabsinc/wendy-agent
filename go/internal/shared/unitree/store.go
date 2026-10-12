@@ -23,12 +23,35 @@ type Pairing struct {
 // Store saves robot keys in a private file. Account passwords and cloud tokens
 // never enter the store. Use one Store per agent to serialize modifications.
 type Store struct {
-	path string
-	mu   sync.Mutex
+	path  string
+	owner string // authenticated enrollment scope, or "local" before enrollment
+	mu    sync.Mutex
 }
 
-// NewStore sets the agent-owned pairing file path.
-func NewStore(path string) *Store { return &Store{path: path} }
+// NewStore binds the private pairing file to this agent's enrollment scope.
+// An unscoped or differently owned file must never be adopted automatically.
+func NewStore(path, owner string) *Store { return &Store{path: path, owner: owner} }
+
+// BindOwner changes the scope checked on every load, including after a failed
+// clear. The service must close old sessions before changing ownership.
+func (s *Store) BindOwner(owner string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.owner = owner
+}
+
+// Clear removes this feature's credential file without reading or following it.
+func (s *Store) Clear() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !filepath.IsAbs(s.path) {
+		return errors.New("Unitree pairing store path must be absolute")
+	}
+	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+		return errors.New("removing Unitree pairing store failed")
+	}
+	return nil
+}
 
 type storedPairing struct {
 	Serial        string    `json:"serial"`
@@ -41,6 +64,7 @@ type storedPairing struct {
 
 type storedPairings struct {
 	Version int             `json:"version"`
+	Owner   string          `json:"owner"`
 	Devices []storedPairing `json:"devices"`
 }
 
@@ -97,6 +121,9 @@ func (s *Store) load() ([]Pairing, error) {
 	if !filepath.IsAbs(s.path) {
 		return nil, errors.New("Unitree pairing store path must be absolute")
 	}
+	if s.owner == "" {
+		return nil, errors.New("Unitree pairing store ownership is unavailable")
+	}
 	info, err := os.Lstat(s.path)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -114,6 +141,9 @@ func (s *Store) load() ([]Pairing, error) {
 	var stored storedPairings
 	if json.Unmarshal(raw, &stored) != nil || stored.Version != 1 || len(stored.Devices) > 256 {
 		return nil, errors.New("invalid Unitree pairing store")
+	}
+	if stored.Owner == "" || stored.Owner != s.owner {
+		return nil, errors.New("Unitree pairings belong to a different or unknown enrollment")
 	}
 	list := make([]Pairing, 0, len(stored.Devices))
 	seen := make(map[string]bool)
@@ -137,7 +167,7 @@ func (s *Store) write(list []Pairing) error {
 		return errors.New("at most 256 Unitree robots can be paired")
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Device.Serial < list[j].Device.Serial })
-	stored := storedPairings{Version: 1, Devices: make([]storedPairing, 0, len(list))}
+	stored := storedPairings{Version: 1, Owner: s.owner, Devices: make([]storedPairing, 0, len(list))}
 	for _, pair := range list {
 		stored.Devices = append(stored.Devices, storedPairing{
 			Serial: pair.Device.Serial, Name: pair.Device.Name, Address: pair.Device.Address,

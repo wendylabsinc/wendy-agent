@@ -449,7 +449,8 @@ func main() {
 		return orgID
 	}
 	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentOrgID, sensorRunner.Start, sensorRunner.Stop, sensorSup.IsConnected)
-	unitreeSvc := services.NewUnitreeService(ctx, filepath.Join(configPath, "unitree-pairings.json"))
+	_, _, _, unitreeEnrolled := provisioningSvc.ProvisioningInfo()
+	unitreeSvc := services.NewUnitreeService(ctx, filepath.Join(configPath, "unitree-pairings.json"), unitreePairingOwner(deviceScope(provisioningSvc), unitreeEnrolled))
 	defer unitreeSvc.Close()
 	if err := unitreeSvc.Restore(); err != nil {
 		logger.Warn("loading Unitree pairings failed", zap.Error(err))
@@ -1005,6 +1006,11 @@ func main() {
 	// Set up the provisioning callback to start the mTLS server, shut down
 	// the plaintext server, and switch the registry to HTTPS.
 	provisioningSvc.OnProvisioned = func(certPEM, chainPEM string, keyData []byte) {
+		// Bind to the callback's authenticated leaf before exposing a new tenant.
+		unitreeScope, _ := certs.ScopeFromCertPEM(certPEM)
+		if err := unitreeSvc.Rebind(unitreePairingOwner(unitreeScope, true)); err != nil {
+			logger.Error("Clearing previous enrollment's Unitree pairings failed", zap.Error(err))
+		}
 		defer func() {
 			for i := range keyData {
 				keyData[i] = 0
@@ -1053,6 +1059,9 @@ func main() {
 	// mode. A clean restart is simpler and more reliable than tearing down the
 	// mTLS server, tunnel broker, BLE peripheral, and HTTPS registry in place.
 	provisioningSvc.OnUnprovisioned = func() {
+		if err := unitreeSvc.Rebind(""); err != nil {
+			logger.Error("Clearing Unitree pairings during unprovisioning failed", zap.Error(err))
+		}
 		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
 		logger.Info("Device unprovisioned — restarting agent into unprovisioned mode")
 		os.Exit(0)
@@ -1257,6 +1266,21 @@ func deviceScope(provisioningSvc *services.ProvisioningService) certs.Scope {
 	// "unidentified" — the same grace the mTLS interceptor applies.
 	_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
 	return certs.Scope{OrgID: orgID}
+}
+
+// unitreePairingOwner keeps locally created pairings separate from enrolled
+// tenants. Unknown enrolled identities fail closed rather than adopt local keys.
+func unitreePairingOwner(scope certs.Scope, enrolled bool) string {
+	if scope.TenantUUID != "" {
+		return "tenant:" + strings.ToLower(scope.TenantUUID)
+	}
+	if scope.OrgID > 0 {
+		return fmt.Sprintf("org:%d", scope.OrgID)
+	}
+	if !enrolled {
+		return "local"
+	}
+	return ""
 }
 
 // ensureCNIBinDir (re)creates agentcontainerd.CNIBinDir with "bridge" and

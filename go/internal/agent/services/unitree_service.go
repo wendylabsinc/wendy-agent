@@ -22,6 +22,8 @@ type unitreePairingStore interface {
 	List() ([]unitree.Pairing, error)
 	Save(unitree.Pairing) error
 	Remove(string) error
+	Clear() error
+	BindOwner(string)
 }
 
 type unitreeLink interface {
@@ -50,18 +52,44 @@ type UnitreeService struct {
 	wg       sync.WaitGroup
 	sessions map[string]*unitreeSession
 	retry    time.Duration
+	owner    string // guarded by opMu
 }
 
-func NewUnitreeService(ctx context.Context, path string) *UnitreeService {
+func NewUnitreeService(ctx context.Context, path, owner string) *UnitreeService {
 	ctx, cancel := context.WithCancel(ctx)
 	return &UnitreeService{
-		ctx: ctx, cancel: cancel, store: unitree.NewStore(path),
+		ctx: ctx, cancel: cancel, store: unitree.NewStore(path, owner), owner: owner,
 		discover: unitree.Discover,
 		dial: func(ctx context.Context, address, token, key string) (unitreeLink, error) {
 			return unitree.Connect(ctx, address, token, key)
 		},
 		sessions: make(map[string]*unitreeSession), retry: 10 * time.Second,
 	}
+}
+
+// Rebind closes retained sessions and clears this feature's credentials when
+// enrollment ownership changes. Empty owner disables persistence until restart
+// or a subsequent authenticated enrollment. A failed clear still binds loads
+// to the new owner so old credentials cannot cross the ownership boundary.
+func (s *UnitreeService) Rebind(owner string) error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if owner == s.owner {
+		return nil
+	}
+	s.mu.RLock()
+	serials := make([]string, 0, len(s.sessions))
+	for serial := range s.sessions {
+		serials = append(serials, serial)
+	}
+	s.mu.RUnlock()
+	for _, serial := range serials {
+		s.stopSession(serial)
+	}
+	err := s.store.Clear()
+	s.store.BindOwner(owner)
+	s.owner = owner
+	return err
 }
 
 // Restore resumes saved pairings at agent startup without delaying startup on
@@ -135,6 +163,8 @@ func (s *UnitreeService) ListUnitreePairings(ctx context.Context, _ *agentpbv2.L
 	if err := requireUnitreeTransport(ctx); err != nil {
 		return nil, err
 	}
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	pairings, err := s.store.List()
 	if err != nil {
 		return nil, status.Error(codes.Internal, "loading Unitree pairings failed")

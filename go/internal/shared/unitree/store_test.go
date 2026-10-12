@@ -19,7 +19,7 @@ func testPairing() Pairing {
 
 func TestPairingStoreSaveReconnectAndForget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "unitree", "pairings.json")
-	store := NewStore(path)
+	store := NewStore(path, "tenant-a")
 	list, err := store.List()
 	if err != nil || len(list) != 0 {
 		t.Fatalf("new store not empty: %v", err)
@@ -35,7 +35,7 @@ func TestPairingStoreSaveReconnectAndForget(t *testing.T) {
 	if info.Mode().Perm() != 0600 {
 		t.Fatalf("pairing key file permissions %o, want 600", info.Mode().Perm())
 	}
-	list, err = NewStore(path).List()
+	list, err = NewStore(path, "tenant-a").List()
 	if err != nil || len(list) != 1 {
 		t.Fatalf("cannot reload pairing: %v", err)
 	}
@@ -70,6 +70,38 @@ func TestPairingStoreSaveReconnectAndForget(t *testing.T) {
 	}
 }
 
+func TestPairingStoreEnrollmentOwnership(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pairings.json")
+	original := NewStore(path, "tenant-a")
+	if err := original.Save(testPairing()); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range []string{"tenant-b", "local", ""} {
+		foreign := NewStore(path, owner)
+		if list, err := foreign.List(); err == nil || len(list) != 0 {
+			t.Fatalf("owner %q could load old credentials: %v", owner, err)
+		}
+		if err := foreign.Save(testPairing()); err == nil {
+			t.Fatalf("owner %q could overwrite another enrollment", owner)
+		}
+	}
+	if err := os.WriteFile(path, []byte(`{"version":1,"devices":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := original.List(); err == nil {
+		t.Fatal("automatically adopted an unscoped pre-enrollment store")
+	}
+	if err := original.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("cleared credential file remains on disk")
+	}
+	if err := original.Clear(); err != nil {
+		t.Fatal("clearing missing store is not idempotent", err)
+	}
+}
+
 func TestPairingStoreRejectsUnsafeFiles(t *testing.T) {
 	for _, name := range []string{"public", "symlink", "directory", "corrupt", "version"} {
 		t.Run(name, func(t *testing.T) {
@@ -100,7 +132,7 @@ func TestPairingStoreRejectsUnsafeFiles(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			store := NewStore(path)
+			store := NewStore(path, "tenant-a")
 			if _, err := store.List(); err == nil || strings.Contains(err.Error(), "SECRET") {
 				t.Fatalf("unsafe file accepted or content leaked: %v", err)
 			}
@@ -126,7 +158,7 @@ func TestPairingStoreRequiresVerifiedIdentity(t *testing.T) {
 				pair.PairedAt = time.Time{}
 			}
 			path := filepath.Join(t.TempDir(), "pairings.json")
-			if err := NewStore(path).Save(pair); err == nil {
+			if err := NewStore(path, "tenant-a").Save(pair); err == nil {
 				t.Fatal("accepted an incomplete pairing")
 			}
 			if _, err := os.Stat(path); !os.IsNotExist(err) {

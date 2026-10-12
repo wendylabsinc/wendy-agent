@@ -48,7 +48,7 @@ func unitreeTestContext() context.Context {
 
 func testUnitreeService(t *testing.T) *UnitreeService {
 	t.Helper()
-	s := NewUnitreeService(context.Background(), filepath.Join(t.TempDir(), "pairings.json"))
+	s := NewUnitreeService(context.Background(), filepath.Join(t.TempDir(), "pairings.json"), "tenant-a")
 	s.retry = time.Hour
 	t.Cleanup(s.Close)
 	return s
@@ -165,6 +165,64 @@ func TestUnitreeFailedPairDoesNotSaveOrExposeSecrets(t *testing.T) {
 		t.Fatal("failed pairing was saved")
 	}
 }
+
+func TestUnitreeEnrollmentChangeClearsCredentialsAndClosesSessions(t *testing.T) {
+	s := testUnitreeService(t)
+	link := newTestUnitreeLink()
+	s.dial = func(context.Context, string, string, string) (unitreeLink, error) { return link, nil }
+	if _, err := s.PairUnitree(unitreeTestContext(), unitreeTestRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Rebind("tenant-a"); err != nil || !link.Connected() {
+		t.Fatal("same-owner renewal dropped a pairing", err)
+	}
+	if err := s.Rebind(""); err != nil {
+		t.Fatal(err)
+	}
+	if link.Connected() {
+		t.Fatal("ownership reset retained a robot session")
+	}
+	if _, err := s.ListUnitreePairings(unitreeTestContext(), &agentpbv2.ListUnitreePairingsRequest{}); status.Code(err) != codes.Internal {
+		t.Fatalf("disabled ownership allowed pairing access: %v", err)
+	}
+	if err := s.Rebind("tenant-b"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.store.List()
+	if err != nil || len(list) != 0 {
+		t.Fatal("new tenant inherited saved keys", err)
+	}
+}
+
+func TestUnitreeEnrollmentChangeFailsClosedWhenClearFails(t *testing.T) {
+	s := testUnitreeService(t)
+	link := newTestUnitreeLink()
+	s.dial = func(context.Context, string, string, string) (unitreeLink, error) { return link, nil }
+	if _, err := s.PairUnitree(unitreeTestContext(), unitreeTestRequest()); err != nil {
+		t.Fatal(err)
+	}
+	s.store = clearFailingUnitreeStore{s.store}
+	if err := s.Rebind("tenant-b"); err == nil {
+		t.Fatal("failed clearing was not reported")
+	}
+	if link.Connected() {
+		t.Fatal("failed clear left an old robot session active")
+	}
+	if list, err := s.store.List(); err == nil || len(list) != 0 {
+		t.Fatal("new tenant could read old keys after failed clearing")
+	}
+	s.dial = func(context.Context, string, string, string) (unitreeLink, error) {
+		t.Error("restore dialed another tenant's robot")
+		return nil, errors.New("must not dial")
+	}
+	if err := s.Restore(); err == nil {
+		t.Fatal("restore accepted another tenant's credentials")
+	}
+}
+
+type clearFailingUnitreeStore struct{ unitreePairingStore }
+
+func (s clearFailingUnitreeStore) Clear() error { return errors.New("fixture clear failure") }
 
 type failingUnitreeStore struct{ unitreePairingStore }
 
