@@ -56,6 +56,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -1059,7 +1060,7 @@ func main() {
 	// mode. A clean restart is simpler and more reliable than tearing down the
 	// mTLS server, tunnel broker, BLE peripheral, and HTTPS registry in place.
 	provisioningSvc.OnUnprovisioned = func() {
-		if err := unitreeSvc.Rebind(""); err != nil {
+		if err := unitreeSvc.Rebind(unitree.PairingOwner{}); err != nil {
 			logger.Error("Clearing Unitree pairings during unprovisioning failed", zap.Error(err))
 		}
 		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
@@ -1270,17 +1271,11 @@ func deviceScope(provisioningSvc *services.ProvisioningService) certs.Scope {
 
 // unitreePairingOwner keeps locally created pairings separate from enrolled
 // tenants. Unknown enrolled identities fail closed rather than adopt local keys.
-func unitreePairingOwner(scope certs.Scope, enrolled bool) string {
-	if scope.TenantUUID != "" {
-		return "tenant:" + strings.ToLower(scope.TenantUUID)
+func unitreePairingOwner(scope certs.Scope, enrolled bool) unitree.PairingOwner {
+	if scope.Known() {
+		return unitree.PairingOwner{TenantUUID: scope.TenantUUID, OrgID: scope.OrgID}
 	}
-	if scope.OrgID > 0 {
-		return fmt.Sprintf("org:%d", scope.OrgID)
-	}
-	if !enrolled {
-		return "local"
-	}
-	return ""
+	return unitree.PairingOwner{Local: !enrolled}
 }
 
 // ensureCNIBinDir (re)creates agentcontainerd.CNIBinDir with "bridge" and

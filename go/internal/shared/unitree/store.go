@@ -23,18 +23,21 @@ type Pairing struct {
 // Store saves robot keys in a private file. Account passwords and cloud tokens
 // never enter the store. Use one Store per agent to serialize modifications.
 type Store struct {
-	path  string
-	owner string // authenticated enrollment scope, or "local" before enrollment
-	mu    sync.Mutex
+	path           string
+	owner          PairingOwner // current authenticated scope, checked on every load
+	persistedOwner PairingOwner // retains vocabulary proven by an earlier dual scope
+	mu             sync.Mutex
 }
 
 // NewStore binds the private pairing file to this agent's enrollment scope.
 // An unscoped or differently owned file must never be adopted automatically.
-func NewStore(path, owner string) *Store { return &Store{path: path, owner: owner} }
+func NewStore(path string, owner PairingOwner) *Store {
+	return &Store{path: path, owner: owner, persistedOwner: owner}
+}
 
 // BindOwner changes the scope checked on every load, including after a failed
 // clear. The service must close old sessions before changing ownership.
-func (s *Store) BindOwner(owner string) {
+func (s *Store) BindOwner(owner PairingOwner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.owner = owner
@@ -50,6 +53,7 @@ func (s *Store) Clear() error {
 	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
 		return errors.New("removing Unitree pairing store failed")
 	}
+	s.persistedOwner = PairingOwner{}
 	return nil
 }
 
@@ -64,7 +68,7 @@ type storedPairing struct {
 
 type storedPairings struct {
 	Version int             `json:"version"`
-	Owner   string          `json:"owner"`
+	Owner   PairingOwner    `json:"owner"`
 	Devices []storedPairing `json:"devices"`
 }
 
@@ -121,11 +125,15 @@ func (s *Store) load() ([]Pairing, error) {
 	if !filepath.IsAbs(s.path) {
 		return nil, errors.New("Unitree pairing store path must be absolute")
 	}
-	if s.owner == "" {
+	if !s.owner.valid() {
 		return nil, errors.New("Unitree pairing store ownership is unavailable")
+	}
+	if s.persistedOwner.valid() && !s.owner.Matches(s.persistedOwner) {
+		return nil, errors.New("Unitree pairing ownership conflicts with the proven tenant")
 	}
 	info, err := os.Lstat(s.path)
 	if os.IsNotExist(err) {
+		s.persistedOwner = s.owner.enrich(s.persistedOwner)
 		return nil, nil
 	}
 	if err != nil {
@@ -139,10 +147,10 @@ func (s *Store) load() ([]Pairing, error) {
 		return nil, fmt.Errorf("reading Unitree pairing store: %w", err)
 	}
 	var stored storedPairings
-	if json.Unmarshal(raw, &stored) != nil || stored.Version != 1 || len(stored.Devices) > 256 {
+	if json.Unmarshal(raw, &stored) != nil || stored.Version != 2 || len(stored.Devices) > 256 {
 		return nil, errors.New("invalid Unitree pairing store")
 	}
-	if stored.Owner == "" || stored.Owner != s.owner {
+	if !s.owner.Matches(stored.Owner) {
 		return nil, errors.New("Unitree pairings belong to a different or unknown enrollment")
 	}
 	list := make([]Pairing, 0, len(stored.Devices))
@@ -159,6 +167,15 @@ func (s *Store) load() ([]Pairing, error) {
 		seen[record.Serial] = true
 		list = append(list, pairing)
 	}
+	// Learn a UUID only from a matching authenticated dual scope, then retain
+	// it in the file before later UUID-only renewal drops the legacy org SAN.
+	// Remote authorization still uses the current scope, never this union.
+	s.persistedOwner = s.owner.enrich(stored.Owner).enrich(s.persistedOwner)
+	if s.persistedOwner != stored.Owner {
+		if err := s.write(list); err != nil {
+			return nil, errors.New("updating Unitree pairing ownership failed")
+		}
+	}
 	return list, nil
 }
 
@@ -167,7 +184,7 @@ func (s *Store) write(list []Pairing) error {
 		return errors.New("at most 256 Unitree robots can be paired")
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Device.Serial < list[j].Device.Serial })
-	stored := storedPairings{Version: 1, Owner: s.owner, Devices: make([]storedPairing, 0, len(list))}
+	stored := storedPairings{Version: 2, Owner: s.persistedOwner, Devices: make([]storedPairing, 0, len(list))}
 	for _, pair := range list {
 		stored.Devices = append(stored.Devices, storedPairing{
 			Serial: pair.Device.Serial, Name: pair.Device.Name, Address: pair.Device.Address,

@@ -77,8 +77,12 @@ they are not encrypted at rest. Account passwords and tokens are not persisted
 or returned by pairing RPCs. Pairings are bound to the agent's enrolled tenant
 (or local ownership before enrollment), not automatically transferred to a new
 tenant. Unprovisioning closes sessions and removes the Unitree credential file;
-within-tenant certificate renewal preserves pairings. Unscoped stores from
-pre-release builds are rejected rather than automatically adopted.
+within-tenant certificate renewal preserves pairings when the current signed
+certificate scope proves the relationship. The version-2 store keeps both
+legacy-org and tenant-UUID identity during dual-SAN renewal; UUID wins over a
+conflicting legacy org. Stored old identity never widens the current RPC scope.
+Unscoped/version-1 stores from pre-release builds are rejected rather than
+automatically adopted.
 
 Legacy firmware's public protocol validation is not a cryptographic proof of
 the robot's identity: use a trusted robot LAN.

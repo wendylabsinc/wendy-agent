@@ -54,7 +54,7 @@ func unitreeTestContext() context.Context {
 
 func testUnitreeService(t *testing.T) *UnitreeService {
 	t.Helper()
-	s := NewUnitreeService(context.Background(), filepath.Join(t.TempDir(), "pairings.json"), "tenant-a")
+	s := NewUnitreeService(context.Background(), filepath.Join(t.TempDir(), "pairings.json"), unitree.PairingOwner{OrgID: 42})
 	s.retry = time.Hour
 	t.Cleanup(s.Close)
 	return s
@@ -135,7 +135,7 @@ func TestUnitreeRPCsRequireOwnerScopeEvenWhenListenerAllowsCaller(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testUnitreeService(t)
-			if err := s.Rebind("org:42"); err != nil {
+			if err := s.Rebind(unitree.PairingOwner{OrgID: 42}); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.store.Save(unitree.Pairing{Device: unitreeTestDevice(), PairedAt: time.Now()}); err != nil {
@@ -176,19 +176,23 @@ func unitreeTestDevice() unitree.Device {
 func TestUnitreeTLSOwnerScope(t *testing.T) {
 	const tenant = "3fd28c47-700a-4ef6-9f43-19be3d13418e"
 	for _, tc := range []struct {
-		name, owner string
-		identities  []string
-		allowed     bool
+		name       string
+		owner      unitree.PairingOwner
+		identities []string
+		allowed    bool
 	}{
-		{"legacy match", "org:42", []string{"urn:wendy:org:42:user:fixture"}, true},
-		{"SPIFFE match", "tenant:" + tenant, []string{certs.UserSPIFFEURI(tenant, "fixture")}, true},
-		{"SPIFFE mismatch", "tenant:" + tenant, []string{certs.UserSPIFFEURI("72900574-08b3-446c-a5d8-59b35264069e", "fixture")}, false},
-		{"legacy mismatch", "org:42", []string{"urn:wendy:org:43:user:fixture"}, false},
-		{"malformed identity", "org:42", []string{"urn:wendy:org:0:user:fixture"}, false},
-		{"ambiguous identity", "org:42", []string{"urn:wendy:org:42:user:fixture", "urn:wendy:org:43:user:fixture"}, false},
-		{"local owner", "local", []string{"urn:wendy:org:42:user:fixture"}, false},
-		{"unknown owner", "", []string{"urn:wendy:org:42:user:fixture"}, false},
-		{"authoritative UUID", "tenant:" + tenant, []string{certs.UserSPIFFEURI("72900574-08b3-446c-a5d8-59b35264069e", "fixture"), "urn:wendy:org:42:user:fixture"}, false},
+		{"legacy match", unitree.PairingOwner{OrgID: 42}, []string{"urn:wendy:org:42:user:fixture"}, true},
+		{"SPIFFE match", unitree.PairingOwner{TenantUUID: tenant}, []string{certs.UserSPIFFEURI(tenant, "fixture")}, true},
+		{"SPIFFE mismatch", unitree.PairingOwner{TenantUUID: tenant}, []string{certs.UserSPIFFEURI("72900574-08b3-446c-a5d8-59b35264069e", "fixture")}, false},
+		{"legacy mismatch", unitree.PairingOwner{OrgID: 42}, []string{"urn:wendy:org:43:user:fixture"}, false},
+		{"malformed identity", unitree.PairingOwner{OrgID: 42}, []string{"urn:wendy:org:0:user:fixture"}, false},
+		{"ambiguous identity", unitree.PairingOwner{OrgID: 42}, []string{"urn:wendy:org:42:user:fixture", "urn:wendy:org:43:user:fixture"}, false},
+		{"local owner", unitree.PairingOwner{Local: true}, []string{"urn:wendy:org:42:user:fixture"}, false},
+		{"unknown owner", unitree.PairingOwner{}, []string{"urn:wendy:org:42:user:fixture"}, false},
+		{"dual accepts same legacy org", unitree.PairingOwner{TenantUUID: tenant, OrgID: 42}, []string{"urn:wendy:org:42:user:fixture"}, true},
+		{"dual accepts same UUID", unitree.PairingOwner{TenantUUID: tenant, OrgID: 42}, []string{certs.UserSPIFFEURI(tenant, "fixture")}, true},
+		{"authoritative UUID", unitree.PairingOwner{TenantUUID: tenant, OrgID: 42}, []string{certs.UserSPIFFEURI("72900574-08b3-446c-a5d8-59b35264069e", "fixture"), "urn:wendy:org:42:user:fixture"}, false},
+		{"UUID-only denies unmapped legacy", unitree.PairingOwner{TenantUUID: tenant}, []string{"urn:wendy:org:42:user:fixture"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testUnitreeService(t)
@@ -275,10 +279,10 @@ func TestUnitreeEnrollmentChangeClearsCredentialsAndClosesSessions(t *testing.T)
 	if _, err := s.PairUnitree(unitreeTestContext(), unitreeTestRequest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Rebind("tenant-a"); err != nil || !link.Connected() {
+	if err := s.Rebind(unitree.PairingOwner{OrgID: 42}); err != nil || !link.Connected() {
 		t.Fatal("same-owner renewal dropped a pairing", err)
 	}
-	if err := s.Rebind(""); err != nil {
+	if err := s.Rebind(unitree.PairingOwner{}); err != nil {
 		t.Fatal(err)
 	}
 	if link.Connected() {
@@ -287,12 +291,80 @@ func TestUnitreeEnrollmentChangeClearsCredentialsAndClosesSessions(t *testing.T)
 	if _, err := s.ListUnitreePairings(unitreeTestContext(), &agentpbv2.ListUnitreePairingsRequest{}); status.Code(err) != codes.Internal {
 		t.Fatalf("disabled ownership allowed pairing access: %v", err)
 	}
-	if err := s.Rebind("tenant-b"); err != nil {
+	if err := s.Rebind(unitree.PairingOwner{OrgID: 43}); err != nil {
 		t.Fatal(err)
 	}
 	list, err := s.store.List()
 	if err != nil || len(list) != 0 {
 		t.Fatal("new tenant inherited saved keys", err)
+	}
+}
+
+func TestUnitreeDualScopeRenewalPreservesKeysAndCurrentAuthorization(t *testing.T) {
+	const tenant = "3fd28c47-700a-4ef6-9f43-19be3d13418e"
+	s := testUnitreeService(t)
+	link := newTestUnitreeLink()
+	s.dial = func(context.Context, string, string, string) (unitreeLink, error) { return link, nil }
+	if _, err := s.PairUnitree(unitreeTestContext(), unitreeTestRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Rebind(unitree.PairingOwner{OrgID: 42, TenantUUID: tenant}); err != nil {
+		t.Fatal(err)
+	}
+	if !link.Connected() {
+		t.Fatal("dual-SAN renewal dropped a same-tenant session")
+	}
+	legacyCtx := unitreeTLSContext(t, "urn:wendy:org:42:user:fixture")
+	if list, err := s.ListUnitreePairings(legacyCtx, nil); err != nil || len(list.GetRobots()) != 1 {
+		t.Fatal("current dual scope refused a same-org legacy caller", err)
+	}
+	if err := s.Rebind(unitree.PairingOwner{TenantUUID: tenant}); err != nil {
+		t.Fatal(err)
+	}
+	if !link.Connected() {
+		t.Fatal("UUID-only renewal dropped the retained session")
+	}
+	// Persisting proven old vocabulary must not widen CURRENT RPC authority.
+	if _, err := s.ListUnitreePairings(legacyCtx, nil); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("stored legacy org overrode the current UUID-only scope: %v", err)
+	}
+	if list, err := s.ListUnitreePairings(unitreeTLSContext(t, certs.UserSPIFFEURI(tenant, "fixture")), nil); err != nil || len(list.GetRobots()) != 1 {
+		t.Fatal("UUID-only renewal lost current-tenant pairing access", err)
+	}
+	if err := s.Rebind(unitree.PairingOwner{TenantUUID: "72900574-08b3-446c-a5d8-59b35264069e", OrgID: 42}); err != nil {
+		t.Fatal(err)
+	}
+	if link.Connected() {
+		t.Fatal("different UUID retained another tenant's session")
+	}
+	if saved, err := s.store.List(); err != nil || len(saved) != 0 {
+		t.Fatal("different UUID inherited a key despite its matching legacy org", err)
+	}
+}
+
+func TestUnitreeOrgOnlyRenewalCannotEraseKnownSessionOwnership(t *testing.T) {
+	s := testUnitreeService(t)
+	link := newTestUnitreeLink()
+	s.dial = func(context.Context, string, string, string) (unitreeLink, error) { return link, nil }
+	if _, err := s.PairUnitree(unitreeTestContext(), unitreeTestRequest()); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range []unitree.PairingOwner{
+		{OrgID: 42, TenantUUID: "3fd28c47-700a-4ef6-9f43-19be3d13418e"},
+		{OrgID: 42},
+	} {
+		if err := s.Rebind(owner); err != nil || !link.Connected() {
+			t.Fatal("proven same-tenant renewal lost the session", err)
+		}
+	}
+	if err := s.Rebind(unitree.PairingOwner{OrgID: 42, TenantUUID: "72900574-08b3-446c-a5d8-59b35264069e"}); err == nil {
+		t.Fatal("known UUID conflict was hidden behind the legacy org")
+	}
+	if link.Connected() {
+		t.Fatal("ownership uncertainty retained old robot credentials in a session")
+	}
+	if _, err := s.store.List(); err == nil {
+		t.Fatal("new UUID could read the previous tenant's keys")
 	}
 }
 
@@ -304,7 +376,7 @@ func TestUnitreeEnrollmentChangeFailsClosedWhenClearFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.store = clearFailingUnitreeStore{s.store}
-	if err := s.Rebind("tenant-b"); err == nil {
+	if err := s.Rebind(unitree.PairingOwner{OrgID: 43}); err == nil {
 		t.Fatal("failed clearing was not reported")
 	}
 	if link.Connected() {

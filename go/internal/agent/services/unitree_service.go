@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"math/rand/v2"
 	"net"
 	"strings"
@@ -28,7 +27,7 @@ type unitreePairingStore interface {
 	Save(unitree.Pairing) error
 	Remove(string) error
 	Clear() error
-	BindOwner(string)
+	BindOwner(unitree.PairingOwner)
 }
 
 type unitreeLink interface {
@@ -57,11 +56,11 @@ type UnitreeService struct {
 	wg        sync.WaitGroup
 	sessions  map[string]*unitreeSession
 	retry     time.Duration
-	owner     string // guarded by opMu
+	owner     unitree.PairingOwner // current certificate scope; guarded by opMu
 	dialSlots chan struct{}
 }
 
-func NewUnitreeService(ctx context.Context, path, owner string) *UnitreeService {
+func NewUnitreeService(ctx context.Context, path string, owner unitree.PairingOwner) *UnitreeService {
 	ctx, cancel := context.WithCancel(ctx)
 	return &UnitreeService{
 		ctx: ctx, cancel: cancel, store: unitree.NewStore(path, owner), owner: owner,
@@ -75,24 +74,27 @@ func NewUnitreeService(ctx context.Context, path, owner string) *UnitreeService 
 }
 
 // Rebind closes retained sessions and clears this feature's credentials when
-// enrollment ownership changes. Empty owner disables persistence until restart
+// enrollment ownership changes. Unknown owner disables persistence until restart
 // or a subsequent authenticated enrollment. A failed clear still binds loads
 // to the new owner so old credentials cannot cross the ownership boundary.
-func (s *UnitreeService) Rebind(owner string) error {
+func (s *UnitreeService) Rebind(owner unitree.PairingOwner) error {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
-	if owner == s.owner {
-		return nil
+	if s.owner.Matches(owner) {
+		// A dual-SAN renewal proves the bridge without changing ownership.
+		// Keep the full CURRENT scope for RPCs and persist proven vocabulary
+		// for the next boot before an eventual UUID-only renewal.
+		s.store.BindOwner(owner)
+		s.owner = owner
+		_, err := s.store.List()
+		if err != nil {
+			// File/provenance failure must not leave old in-memory credentials
+			// active under a newly asserted scope, even after org-only renewal.
+			s.stopSessions()
+		}
+		return err
 	}
-	s.mu.RLock()
-	serials := make([]string, 0, len(s.sessions))
-	for serial := range s.sessions {
-		serials = append(serials, serial)
-	}
-	s.mu.RUnlock()
-	for _, serial := range serials {
-		s.stopSession(serial)
-	}
+	s.stopSessions()
 	err := s.store.Clear()
 	s.store.BindOwner(owner)
 	s.owner = owner
@@ -172,13 +174,8 @@ func (s *UnitreeService) authorize(ctx context.Context) error {
 	}
 	info := p.AuthInfo.(credentials.TLSInfo)
 	scope, known, err := certs.ScopeFromCert(info.State.PeerCertificates[0])
-	if err == nil && known {
-		if tenant, ok := strings.CutPrefix(s.owner, "tenant:"); ok && tenant != "" && scope.TenantUUID == tenant {
-			return nil
-		}
-		if s.owner == fmt.Sprintf("org:%d", scope.OrgID) && scope.OrgID > 0 {
-			return nil
-		}
+	if err == nil && known && !s.owner.Local && s.owner.Scope().Matches(scope) {
+		return nil
 	}
 	return status.Error(codes.PermissionDenied, "Unitree pairing owner scope is required")
 }
@@ -347,6 +344,19 @@ func (s *UnitreeService) ForgetUnitree(ctx context.Context, req *agentpbv2.Forge
 	}
 	s.stopSession(serial)
 	return &agentpbv2.ForgetUnitreeResponse{}, nil
+}
+
+// stopSessions is called with opMu held, including on ownership uncertainty.
+func (s *UnitreeService) stopSessions() {
+	s.mu.RLock()
+	serials := make([]string, 0, len(s.sessions))
+	for serial := range s.sessions {
+		serials = append(serials, serial)
+	}
+	s.mu.RUnlock()
+	for _, serial := range serials {
+		s.stopSession(serial)
+	}
 }
 
 // stopSession is called with opMu held. Its wait includes any dial currently
