@@ -51,8 +51,10 @@ functional smoke test on a busy shared Mac, not a performance benchmark.
 
 The temporary VM and test Docker containers/image tags were stopped and
 removed. The user's `lerobot-sim` remained running at port 50161 with PID 71068;
-`go2-sim` and `g1-sim` remained stopped. No default target, Mac Agent, USB device,
-physical-arm starter, reference application or existing VM was modified.
+`g1-sim` remained stopped. `go2-sim` was observed stopped earlier and was
+absent from the final inventory; this chat issued no lifecycle or deletion
+command against it. No default target, Mac Agent, USB device, physical-arm
+starter, reference application or existing VM was modified by this work.
 
 ## Automated checks executed locally
 
@@ -73,9 +75,13 @@ physical-arm starter, reference application or existing VM was modified.
   native SO-101 CPU selection and arm-specific request allowlist were updated.
 - Native macOS CLI and cross-compiled Linux/arm64 agent builds passed.
 
-A broad Go rerun under concurrent builds hit synthetic camera decode and tunnel
-retry timeouts outside the simulator changes. Targeted simulator/gateway checks
+A broad Go rerun under concurrent builds hit synthetic camera decode timeouts and a tunnel
+resume assertion outside the simulator changes. Targeted simulator/gateway checks
 passed. The camera decode tests passed on a separate rerun after test cleanup.
+`TestPushLayersResumingTunnelDropsResumesWithSeveralStreamsOpen` still failed
+on rerun because one already-staged chunk was re-sent; the transfer code and
+test are unchanged in this branch. It is not included in the passing focused
+simulator checks.
 The unchanged Go2 `TestMaterializeIdentity` still fails on macOS when renaming a
 read-only source-cache directory; its `bundle.go` is byte-identical to the base
 revision. SO-101 follows G1's existing macOS-safe publication sequence. The

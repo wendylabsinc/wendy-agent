@@ -140,6 +140,8 @@ export default function ArmSimulatorView({
                     [
                       "ArrowLeft",
                       "ArrowRight",
+                      "ArrowUp",
+                      "ArrowDown",
                       "Home",
                       "End",
                       "PageUp",
