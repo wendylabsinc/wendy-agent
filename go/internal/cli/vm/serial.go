@@ -8,21 +8,23 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
+	"runtime"
 	"sync"
 	"time"
 )
 
 // SerialConfig fixes the physical host line at this baud, 8N1, no handshake,
 // DTR and RTS disabled. Guest termios changes do not reconfigure the host.
+// Port is a host name for the device: COM12 on Windows, a /dev path on macOS
+// and Linux. The mapping lives with the VM on one host, so only that host's
+// form is valid.
 type SerialConfig struct {
 	Port string `json:"port"`
 	Baud uint32 `json:"baud"`
 }
 
-var serialPortName = regexp.MustCompile(`^COM[1-9][0-9]*$`)
-
-var errSerialHostUnsupported = errors.New("managed VM serial passthrough requires a Windows host")
+// Windows, macOS and Linux each have an opener; other hosts return this.
+var errSerialHostUnsupported = errors.New("VM serial passthrough is not supported on " + runtime.GOOS)
 
 // The ESP32 emulator has no USB host to attach the bridge to.
 var errSerialLite = errors.New("serial passthrough is not supported for Wendy Lite VMs")
@@ -38,11 +40,11 @@ func clearSerialHint(err error, name string) error {
 }
 
 func (c SerialConfig) Validate() error {
-	if !serialPortName.MatchString(c.Port) {
-		return fmt.Errorf("invalid Windows serial port %q: use COM followed by its number", c.Port)
+	if err := validateHostSerialPort(c.Port); err != nil {
+		return err
 	}
 	if c.Baud == 0 {
-		return errors.New("serial baud must be an exact positive integer supported by the Windows driver")
+		return errors.New("serial baud must be an exact positive integer supported by the host driver")
 	}
 	return nil
 }

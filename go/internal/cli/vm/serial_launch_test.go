@@ -4,7 +4,6 @@ package vm
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net"
 	"os"
@@ -26,7 +25,7 @@ func TestSerialLaunchCleanup(t *testing.T) {
 			}
 			s := newTestStore(t)
 			spec := detachableSpec(t, s, "serial")
-			if err := s.ConfigureSerial("serial", &SerialConfig{"COM12", 1000000}); err != nil {
+			if err := s.ConfigureSerial("serial", &SerialConfig{testSerialPort(12), 1000000}); err != nil {
 				t.Fatal(err)
 			}
 			peer := fakeSerial(t)
@@ -113,11 +112,10 @@ func TestSerialLaunchCleanup(t *testing.T) {
 func TestSerialDetachedRejected(t *testing.T) {
 	s := newTestStore(t)
 	spec := detachableSpec(t, s, "serial")
-	if err := s.ConfigureSerial("serial", &SerialConfig{"COM12", 1000000}); err != nil {
+	if err := s.ConfigureSerial("serial", &SerialConfig{testSerialPort(12), 1000000}); err != nil {
 		t.Fatal(err)
 	}
-	// This host can detach, so it is not Windows and can never use the mapping.
-	if _, err := s.StartDetached(spec); !errors.Is(err, errSerialHostUnsupported) || !strings.Contains(err.Error(), "wendy vm serial serial --clear") {
+	if _, err := s.StartDetached(spec); err == nil || !strings.Contains(err.Error(), "foreground") {
 		t.Fatal(err)
 	}
 }

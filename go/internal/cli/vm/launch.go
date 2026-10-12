@@ -51,13 +51,10 @@ func (s *Store) StartDetached(spec Spec) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	// The bridge lives in the launching CLI, so it cannot outlast a detached
+	// start. Automatic starts land here too; say how to start it by hand.
 	if serial != nil {
-		// Only Windows uses a mapping, and Windows cannot detach. A host that
-		// can detach has a mapping copied from elsewhere that it can never use.
-		if DetachSupported() {
-			return State{}, clearSerialHint(errSerialHostUnsupported, spec.Name)
-		}
-		return State{}, fmt.Errorf("managed serial passthrough requires Windows foreground mode; use 'wendy vm start %s' without --detach", spec.Name)
+		return State{}, fmt.Errorf("VM %q has serial passthrough to %s, which runs only in the foreground: start it with 'wendy vm start %s' (no --detach) and keep that terminal open", spec.Name, serial.Port, spec.Name)
 	}
 
 	// Args before openConsoleLog: it is the last thing that can reject the

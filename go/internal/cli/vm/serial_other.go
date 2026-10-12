@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin && !linux
 
 package vm
 
@@ -7,6 +7,10 @@ import (
 	"os"
 	"strings"
 )
+
+func validateHostSerialPort(string) error { return errSerialHostUnsupported }
+
+func NormalizeSerialPort(port string) string { return strings.TrimSpace(port) }
 
 // RunForeground adds the VM name and the --clear fix to this error.
 func openHostSerial(SerialConfig) (io.ReadWriteCloser, error) {
