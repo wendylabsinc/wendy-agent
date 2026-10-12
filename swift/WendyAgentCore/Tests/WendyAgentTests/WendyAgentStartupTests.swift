@@ -4,34 +4,47 @@ import Testing
 
 @testable import WendyAgentCore
 
-@Suite("WendyAgent startup")
+@Suite("WendyAgent startup", .serialized)
 struct WendyAgentStartupTests {
-    @Test("startup reports a port-in-use error when the gRPC port is occupied")
-    func reportsPortConflict() async throws {
+    @Test("startup listens and advertises on the preferred port when it is available")
+    func usesPreferredPort() async throws {
+        let availablePort = try OccupiedIPv6TCPPort()
+        let preferredPort = availablePort.port
+        availablePort.close()
+
+        let agent = WendyAgent(
+            configuration: .init(port: preferredPort, otelPort: 0),
+            probesLinuxContainerRuntime: false
+        )
+
+        try await agent.start()
+        #expect(await agent.listeningPort == preferredPort)
+        #expect(await agent.advertisedPort == preferredPort)
+        await agent.stop()
+    }
+
+    @Test("startup selects and advertises a free port when the preferred port is occupied")
+    func recoversFromPortConflict() async throws {
         let occupiedPort = try OccupiedIPv6TCPPort()
         defer { occupiedPort.close() }
 
-        let agent = await WendyAgent(
-            configuration: .init(port: occupiedPort.port, otelPort: 0)
+        let agent = WendyAgent(
+            configuration: .init(port: occupiedPort.port, otelPort: 0),
+            probesLinuxContainerRuntime: false
         )
 
+        try await agent.start()
         do {
-            try await agent.start()
-            Issue.record("Expected WendyAgent startup to fail on an occupied gRPC port")
-            await agent.stop()
+            let listeningPort = try #require(await agent.listeningPort)
+            let advertisedPort = try #require(await agent.advertisedPort)
+
+            #expect(listeningPort != occupiedPort.port)
+            #expect(advertisedPort == listeningPort)
         } catch {
-            guard case WendyAgentError.portInUse(let serviceName, let port) = error else {
-                Issue.record("Expected portInUse error, got: \(error)")
-                return
-            }
-
-            #expect(serviceName == "Wendy Agent gRPC")
-            #expect(port == occupiedPort.port)
-
-            let description = String(describing: error)
-            #expect(description.contains("TCP port \(occupiedPort.port) is already in use"))
-            #expect(!description.contains("There is no listening address bound"))
+            await agent.stop()
+            throw error
         }
+        await agent.stop()
     }
 }
 
