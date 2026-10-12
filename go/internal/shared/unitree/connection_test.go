@@ -355,7 +355,7 @@ func TestConnectWebRTCValidationAndHeartbeat(t *testing.T) {
 			}
 		})
 	})
-	conn, err := connectWithSignaling(ctx, "test-access-token", func(ctx context.Context, offer []byte) ([]byte, error) {
+	conn, err := connectWithSignaling(ctx, func(ctx context.Context, offer []byte) ([]byte, error) {
 		return answerOffer(t, ctx, robot, offer)
 	})
 	if err != nil {
@@ -399,7 +399,7 @@ func answerOffer(t *testing.T, ctx context.Context, robot *webrtc.PeerConnection
 	if err := json.Unmarshal(offer, &payload); err != nil {
 		return nil, err
 	}
-	if payload.ID != "STA_localNetwork" || payload.Type != "offer" || payload.Token != "test-access-token" {
+	if payload.ID != "STA_localNetwork" || payload.Type != "offer" || payload.Token != "" {
 		t.Error("incorrect local signaling payload")
 	}
 	if err := robot.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: payload.SDP}); err != nil {
@@ -438,7 +438,7 @@ func TestConnectRejectsUnvalidatedChannel(t *testing.T) {
 			cancelSetup()
 		})
 	})
-	conn, err := connectWithSignaling(setupCtx, "test-access-token", func(ctx context.Context, offer []byte) ([]byte, error) {
+	conn, err := connectWithSignaling(setupCtx, func(ctx context.Context, offer []byte) ([]byte, error) {
 		return answerOffer(t, ctx, robot, offer)
 	})
 	if conn != nil || !errors.Is(err, context.Canceled) {
@@ -454,7 +454,7 @@ func TestConnectRejectsUnvalidatedChannel(t *testing.T) {
 func TestConnectRejectsBusyAndMalformedAnswers(t *testing.T) {
 	for _, answer := range []string{`{"type":"answer","sdp":"reject"}`, `{"type":"offer","sdp":"test"}`, `{"type":"answer","sdp":""}`, `not json`} {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		conn, err := connectWithSignaling(ctx, "", func(context.Context, []byte) ([]byte, error) { return []byte(answer), nil })
+		conn, err := connectWithSignaling(ctx, func(context.Context, []byte) ([]byte, error) { return []byte(answer), nil })
 		cancel()
 		if conn != nil || err == nil {
 			t.Fatalf("answer %q accepted", answer)

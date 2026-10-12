@@ -82,10 +82,12 @@ func (c *Connection) Close() error {
 }
 
 // Connect establishes and validates a Go2 connection at a numeric IP address.
-// token is the Unitree account access token; it may be empty for reconnecting
-// with a saved encryptionKey. The context bounds setup, not the returned
-// connection's lifetime. The owner must call Close when the session ends.
-func Connect(ctx context.Context, address, token, encryptionKey string) (*Connection, error) {
+// The token argument is retained for caller compatibility but never sent to
+// the LAN peer. Unitree's LocalSTA protocol accepts an empty token; account
+// login is needed to fetch the modern firmware's encryptionKey, not to expose
+// an account-wide bearer credential to a robot. The context bounds setup, not
+// the returned connection's lifetime. The owner must call Close when it ends.
+func Connect(ctx context.Context, address, _ string, encryptionKey string) (*Connection, error) {
 	ip, err := netip.ParseAddr(strings.TrimSpace(address))
 	if err != nil || ip.IsUnspecified() || ip.IsMulticast() {
 		return nil, errors.New("Unitree address must be a unicast IP address")
@@ -108,12 +110,12 @@ func Connect(ctx context.Context, address, token, encryptionKey string) (*Connec
 			return errors.New("Unitree signaling redirects are not allowed")
 		},
 	}
-	return connectWithSignaling(setupCtx, token, func(ctx context.Context, offer []byte) ([]byte, error) {
+	return connectWithSignaling(setupCtx, func(ctx context.Context, offer []byte) ([]byte, error) {
 		return exchangeLocalSDP(ctx, client, ip.String(), encryptionKey, offer)
 	})
 }
 
-func connectWithSignaling(ctx context.Context, token string, exchange func(context.Context, []byte) ([]byte, error)) (*Connection, error) {
+func connectWithSignaling(ctx context.Context, exchange func(context.Context, []byte) ([]byte, error)) (*Connection, error) {
 	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		return nil, fmt.Errorf("create Unitree WebRTC peer: %w", err)
@@ -204,7 +206,7 @@ func connectWithSignaling(ctx context.Context, token string, exchange func(conte
 		SDP   string `json:"sdp"`
 		Type  string `json:"type"`
 		Token string `json:"token"`
-	}{"STA_localNetwork", peer.LocalDescription().SDP, "offer", token})
+	}{"STA_localNetwork", peer.LocalDescription().SDP, "offer", ""})
 	if err != nil {
 		return nil, err
 	}
