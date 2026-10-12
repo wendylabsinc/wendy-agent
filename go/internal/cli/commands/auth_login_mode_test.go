@@ -17,16 +17,6 @@ func TestAuthLoginModeSelection(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "production temporarily requires an OIDC realm",
-			args:    []string{"--production"},
-			wantErr: "production Cloud login currently requires --email <address>",
-		},
-		{
-			name:    "development temporarily requires an OIDC realm",
-			args:    []string{"--development"},
-			wantErr: "development Cloud login currently requires --email <address>",
-		},
-		{
 			name:    "target flags are mutually exclusive",
 			args:    []string{"--production", "--development"},
 			wantErr: "mutually exclusive",
@@ -78,15 +68,38 @@ func TestAuthLoginModeSelection(t *testing.T) {
 	}
 }
 
-func TestAuthLoginMissingRealmError(t *testing.T) {
+func TestAuthLoginTargetsStartRealmLess(t *testing.T) {
 	t.Setenv(serviceAccountKeyEnv, "")
-	cmd := newAuthLoginCmd()
-	cmd.SilenceUsage, cmd.SilenceErrors = true, true
-	cmd.SetArgs([]string{"--production"})
-	err := cmd.Execute()
-	want := "production Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly"
-	if err == nil || err.Error() != want {
-		t.Fatalf("error = %q, want %q", err, want)
+	original := performOIDCLoginFn
+	t.Cleanup(func() { performOIDCLoginFn = original })
+	var got oidcLoginOptions
+	performOIDCLoginFn = func(_ context.Context, opts oidcLoginOptions) error {
+		got = opts
+		return nil
+	}
+
+	for _, tc := range []struct {
+		flag   string
+		target cloudLoginTarget
+	}{
+		{"--production", productionCloudLoginTarget},
+		{"--development", developmentCloudLoginTarget},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			got = oidcLoginOptions{}
+			cmd := newAuthLoginCmd()
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			cmd.SetArgs([]string{tc.flag})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if got.Issuer != "" || got.AuthorizationBase != tc.target.authBase {
+				t.Fatalf("realm-less routing = issuer %q, base %q", got.Issuer, got.AuthorizationBase)
+			}
+			if got.CloudResource != tc.target.cloudResource || got.IdentityEndpoint != tc.target.identityEndpoint {
+				t.Fatalf("target presets not reused: %+v", got)
+			}
+		})
 	}
 }
 
@@ -135,13 +148,14 @@ func TestAuthLoginCloudTargetDefaults(t *testing.T) {
 				t.Errorf("auth base = %q, want %q", gotAuthBase, tc.target.authBase)
 			}
 			want := oidcLoginOptions{
-				Issuer:           tc.target.authBase + "/realms/acme",
-				ClientID:         "wendy-cli",
-				CloudResource:    tc.target.cloudResource,
-				IdentityResource: defaultPKIIdentityResource,
-				IdentityEndpoint: tc.target.identityEndpoint,
-				CloudURL:         tc.target.cloudDashboard,
-				CloudGRPC:        tc.target.cloudGRPC,
+				Issuer:            tc.target.authBase + "/realms/acme",
+				AuthorizationBase: tc.target.authBase,
+				ClientID:          "wendy-cli",
+				CloudResource:     tc.target.cloudResource,
+				IdentityResource:  defaultPKIIdentityResource,
+				IdentityEndpoint:  tc.target.identityEndpoint,
+				CloudURL:          tc.target.cloudDashboard,
+				CloudGRPC:         tc.target.cloudGRPC,
 			}
 			if gotOptions != want {
 				t.Fatalf("OIDC options = %+v, want %+v", gotOptions, want)

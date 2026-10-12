@@ -161,7 +161,7 @@ func TestRequestPKIIdentityCertificateUsesBoundCSRFlow(t *testing.T) {
 
 	got, err := requestPKIIdentityCertificate(
 		context.Background(), server.Client(), endpoint, privateKeyPEM, key,
-		"identity-access-token", testOperatorTenant, testOperatorSubject,
+		"identity-access-token", "", testOperatorSubject,
 	)
 	if err != nil {
 		t.Fatalf("requestPKIIdentityCertificate: %v", err)
@@ -174,6 +174,9 @@ func TestRequestPKIIdentityCertificateUsesBoundCSRFlow(t *testing.T) {
 	}
 	if got.PrincipalURI != "spiffe://wendy.sh/tenant/"+testOperatorTenant+"/operator/"+testOperatorSubject {
 		t.Fatalf("principal URI = %q", got.PrincipalURI)
+	}
+	if got.TenantUUID() != testOperatorTenant {
+		t.Fatalf("certificate tenant = %q", got.TenantUUID())
 	}
 }
 

@@ -11,7 +11,7 @@ Signing in to Wendy Cloud temporarily uses the dashboard flow by default:
 wendy cloud login
 ```
 
-The current OIDC flow remains available by providing your email address to discover your realm:
+The explicit OIDC flow remains available by providing your email address to discover your realm:
 
 ```bash
 wendy cloud login --email you@example.com
@@ -19,7 +19,7 @@ wendy cloud login --email you@example.com
 
 Explicit `--email` or `--issuer` selects OIDC; `--service-account` selects headless service-account login, and `--api-key` selects local authentication.
 
-The CLI asks `auth.dev.wendy.sh` for the email's home realm, opens that realm's authorization page, and completes authorization code + PKCE through a loopback callback. It first requests the `https://pki.wendy.sh/identity` audience, creates a PKCS#10 CSR with the same key bound to the token and DPoP proof, and sends it directly to `https://identity.dev.pki.wendy.sh/v1/identity/certificate`. It then rotates the refresh-token family to the `https://cloud.dev.wendy.sh/api` audience and stores the resulting mTLS certificate alongside the Cloud access token, rotating refresh token, and DPoP key using the platform credential store. Cloud is not involved in certificate issuance.
+The CLI asks `auth.dev.wendy.sh` for the email's home realm, opens that realm's authorization page, and completes authorization code + PKCE through a loopback callback. It validates the signed ID token, nonce, access token, issuer, audience, and DPoP binding before requesting the `https://pki.wendy.sh/identity` audience. It creates a PKCS#10 CSR with the same key bound to the token and DPoP proof and sends it directly to `https://identity.dev.pki.wendy.sh/v1/identity/certificate`. The certificate's tenant SPIFFE identity is authoritative for the saved context. The CLI then rotates the refresh-token family to the `https://cloud.dev.wendy.sh/api` audience and stores the resulting mTLS certificate alongside the Cloud access token, rotating refresh token, and DPoP key using the platform credential store. Cloud is not involved in certificate issuance.
 
 The OAuth client is managed through the wendy-auth dashboard like any other interactive client; the auth service has no CLI-specific client configuration. Register a public, DPoP-bound client (the default client ID is `wendy-cli`) and allow the CLI's loopback redirect URIs. Use `--client-id` when the registered client has another ID.
 
@@ -68,7 +68,7 @@ see all contexts (and which is current) with `wendy auth status`.
 
 When your account belongs to more than one organization, the browser sign-in
 prompts you to pick one; the CLI stores whichever organization issued the login
-as the context (its identity comes from the issued token, not from a flag). Sign
+as the context (its tenant identity comes from the issued certificate, not from a flag). Sign
 in again and pick a different organization to add a second context — your current
 context is left unchanged.
 

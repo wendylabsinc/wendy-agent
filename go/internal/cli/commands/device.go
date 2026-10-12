@@ -852,7 +852,9 @@ func newDeviceEnrollCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			promptWifiIfNeeded(ctx, conn)
+			if err := promptWifiIfNeeded(ctx, conn); err != nil {
+				return err
+			}
 
 			return runEnrollDevice(ctx, conn, auth, name, orgID, acmeDirectoryURL)
 		},
@@ -865,55 +867,76 @@ func newDeviceEnrollCmd() *cobra.Command {
 	return cmd
 }
 
-// promptWifiIfNeeded checks whether the device is connected to WiFi, and if
-// not, offers an interactive flow to connect before enrollment. Errors from the
-// status check are silently ignored so the function degrades gracefully on
-// devices that don't support WiFi (e.g. local, docker).
-func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) {
+var confirmEnrollmentWifiFn = func() (bool, error) {
+	return tui.ConfirmDefaultYes("Set up WiFi before enrolling?")
+}
+
+var pickEnrollmentWifiFn = pickWifiNetwork
+
+// promptWifiIfNeeded offers WiFi setup when an adapter is disconnected.
+// Status failures are optional; cancelling setup aborts enrollment.
+func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !isInteractiveTerminal() {
-		return
+		return nil
 	}
 
 	statusResp, err := conn.AgentService.GetWiFiStatus(ctx, &agentpb.GetWiFiStatusRequest{})
-	if err != nil || statusResp.GetConnected() {
-		return
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil || statusResp == nil || statusResp.GetErrorMessage() != "" || statusResp.GetConnected() {
+		return nil
 	}
 
 	fmt.Println("No WiFi connection detected on the device.")
-	if !confirmFn("Set up WiFi before enrolling?") {
-		return
+	accepted, err := confirmEnrollmentWifiFn()
+	if err != nil {
+		return enrollmentWifiError(err)
+	}
+	if !accepted {
+		return nil
 	}
 
 	target := &SelectedDevice{Agent: conn}
-	ssid, pickErr := pickWifiNetwork(ctx, target)
-	if pickErr != nil {
-		if !errors.Is(pickErr, ErrUserCancelled) {
-			fmt.Printf("WiFi setup failed: %v\n", pickErr)
-		}
-		return
+	ssid, err := pickEnrollmentWifiFn(ctx, target)
+	if err != nil {
+		return enrollmentWifiError(err)
 	}
 
-	fmt.Print("Password (leave empty for open networks): ")
-	passwordBytes, readErr := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Println()
-	if readErr != nil {
-		fmt.Printf("Failed to read password: %v\n", readErr)
-		return
+	password, err := promptWifiPassword(ssid)
+	if err != nil {
+		return enrollmentWifiError(err)
 	}
-	password := strings.TrimSpace(string(passwordBytes))
 
 	fmt.Printf("Connecting to %s...\n", ssid)
-	wifiResp, connectErr := conn.AgentService.ConnectToWiFi(ctx, &agentpb.ConnectToWiFiRequest{
-		Ssid:     ssid,
-		Password: password,
+	wifiResp, err := conn.AgentService.ConnectToWiFi(ctx, &agentpb.ConnectToWiFiRequest{
+		Ssid: ssid, Password: password,
 	})
-	if connectErr != nil {
-		fmt.Printf("WiFi connection failed: %v\n", connectErr)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		return enrollmentWifiError(err)
 	} else if !wifiResp.GetSuccess() {
 		fmt.Printf("WiFi connection failed: %s\n", wifiResp.GetErrorMessage())
 	} else {
 		fmt.Printf("Connected to %s.\n", ssid)
 	}
+	return nil
+}
+
+func enrollmentWifiError(err error) error {
+	if errors.Is(err, ErrUserCancelled) || errors.Is(err, tui.ErrCancelled) {
+		return ErrUserCancelled
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	fmt.Printf("WiFi setup failed: %v\n", err)
+	return nil
 }
 
 // defaultEnrollmentName derives a device name from the connected host,
@@ -2393,13 +2416,16 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		otaURL = u
 	}
 
-	if err := streamOSUpdate(ctx, conn, otaURL, ""); err != nil {
-		return osUpdateOutcome{}, err
-	}
-
 	if _, isCloud := cloudDeviceConfigFromContext(ctx); isCloud {
+		if err := streamOSUpdate(ctx, conn, otaURL, ""); err != nil {
+			return osUpdateOutcome{}, err
+		}
 		fmt.Println("OS update applied; the device is rebooting. Reconnect once it is back online.")
 		return osUpdateOutcome{applied: true}, nil
+	}
+	recordCleared, err := applyOSUpdate(ctx, conn, otaURL)
+	if err != nil {
+		return osUpdateOutcome{}, err
 	}
 	fmt.Println("WendyOS update applied. Device is rebooting...")
 	if err := waitForDeviceOnline(ctx, priorConn.Host); err != nil {
@@ -2410,7 +2436,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	// also reboots and reconnects. Query the recorded outcome and surface a
 	// rollback as an error so `wendy device update` exits non-zero instead of
 	// silently reporting success (mirrors `wendy os update`).
-	if err := reportOSUpdateOutcome(ctx, priorConn.Host, preUpdateOSVersion); err != nil {
+	if err := reportOSUpdateOutcome(ctx, priorConn.Host, preUpdateOSVersion, recordCleared); err != nil {
 		return osUpdateOutcome{applied: true, online: true}, err
 	}
 	return osUpdateOutcome{applied: true, online: true}, nil

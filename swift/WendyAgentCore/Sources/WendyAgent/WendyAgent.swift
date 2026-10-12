@@ -28,13 +28,27 @@ public actor WendyAgent {
     public private(set) var status: WendyAgentStatus = .idle
     public private(set) var apps: [WendyAppInfo] = []
 
+    /// The port held by the current main gRPC listener. Internal so focused
+    /// startup tests can verify collision recovery without probing mDNS.
+    private(set) var listeningPort: Int?
+
     /// Snapshotted before any RPC service starts so post-update verification
     /// describes the executable this process actually mapped.
     private let runningExecutableSHA256: String
+    private let probesLinuxContainerRuntime: Bool
 
     public init(configuration: WendyAgentConfiguration = .init()) {
         self.configuration = configuration
         self.runningExecutableSHA256 = AgentExecutableDigest.sha256(at: Bundle.main.executableURL)
+        self.probesLinuxContainerRuntime = true
+    }
+
+    /// Test-only seam for listener fixtures that must not start a local
+    /// container runtime or its registry listeners.
+    init(configuration: WendyAgentConfiguration, probesLinuxContainerRuntime: Bool) {
+        self.configuration = configuration
+        self.runningExecutableSHA256 = AgentExecutableDigest.sha256(at: Bundle.main.executableURL)
+        self.probesLinuxContainerRuntime = probesLinuxContainerRuntime
     }
 
     public func start() async throws {
@@ -88,7 +102,7 @@ public actor WendyAgent {
             self.logger.info(
                 "Wendy Agent is running",
                 metadata: [
-                    "grpc_port": "\(self.configuration.port)",
+                    "grpc_port": "\(self.listeningPort ?? self.configuration.port)",
                     "otel_port": "\(self.configuration.otelPort)",
                 ]
             )
@@ -237,6 +251,9 @@ public actor WendyAgent {
     private var bonjourRegistration: BonjourRegistration?
     private var bonjourTask: Task<Void, any Error>?
 
+    /// The port handed to DNS-SD for the current registration.
+    var advertisedPort: Int? { self.bonjourRegistration?.port }
+
     private var monitorTask: Task<Void, Never>?
     /// Restart supervision for deployed apps: one reconcile pass that brings
     /// apps back after an agent restart, then a periodic tick that restarts
@@ -261,6 +278,8 @@ public actor WendyAgent {
     /// `container` over Docker, and returns the concrete backend to use (or
     /// `nil` if neither is installed/running).
     private func makeLinuxBackend() async -> (any LinuxContainerBackend)? {
+        guard self.probesLinuxContainerRuntime else { return nil }
+
         let containerAvailable = await ContainerCLI().checkAvailable()
         let dockerAvailable = await DockerCLI().checkAvailable()
         switch LinuxRuntimeSelector.choose(
@@ -356,45 +375,78 @@ public actor WendyAgent {
             TelemetryService(broadcaster: broadcaster),
             FileSyncService(appsBase: appsBase),
         ]
-        if certs != nil {
+        let videoService = certs == nil ? nil : VideoService()
+        if let videoService {
             // SECURITY: camera enumeration and live video are registered only on
             // the mTLS server, whose ClientCertAuthorizer validates the caller's
             // certificate chain and organization before dispatching any RPC.
-            services.append(VideoService())
+            services.append(videoService)
         }
 
-        let (server, isMTLS) = try self.makeMainServer(services: services, certs: certs)
-        self.mainServerIsMTLS = isMTLS
-        let boundPort = isMTLS ? self.configuration.port + 1 : self.configuration.port
+        let isMTLS = certs != nil
+        let preferredPort = isMTLS ? self.configuration.port + 1 : self.configuration.port
+        let runtime: (server: PosixGRPCServer, task: Task<Void, any Error>, port: Int)
 
+        do {
+            runtime = try await self.startMainServerTransport(
+                services: services,
+                certs: certs,
+                port: preferredPort
+            )
+        } catch let error as WendyAgentError {
+            guard case .portInUse = error else { throw error }
+
+            self.logger.warning(
+                "Preferred Wendy Agent gRPC port is occupied; selecting a free port",
+                metadata: ["preferred_port": "\(preferredPort)", "mtls": "\(isMTLS)"]
+            )
+            runtime = try await self.startMainServerTransport(
+                services: services,
+                certs: certs,
+                port: 0
+            )
+        }
+
+        self.mainServerIsMTLS = isMTLS
+        self.listeningPort = runtime.port
+        self.mainServer = runtime.server
+        self.mainServerTask = runtime.task
+
+        // Once the mTLS server is listening, dial out to the cloud tunnel
+        // broker so the device shows online and is remotely reachable.
+        if isMTLS, let certs {
+            self.startTunnelBroker(info: info, certs: certs, port: runtime.port)
+        }
+        // Management is already listening. USB restoration must not delay
+        // bringing up the authenticated management/tunnel endpoints.
+        if let videoService { await videoService.restoreCameraControls() }
+    }
+
+    private func startMainServerTransport(
+        services: [any RegistrableRPCService],
+        certs: ProvisioningService.ProvisioningCerts?,
+        port: Int
+    ) async throws -> (server: PosixGRPCServer, task: Task<Void, any Error>, port: Int) {
+        let server = try self.makeMainServer(services: services, certs: certs, port: port)
         let task = Self.makeServeTask(server: server)
 
         do {
-            if let address = try await server.listeningAddress {
-                self.logger.info(
-                    "Main Wendy Agent gRPC server listening",
-                    metadata: ["grpc_address": "\(address)", "mtls": "\(isMTLS)"]
-                )
-            } else {
-                self.logger.info(
-                    "Main Wendy Agent gRPC server listening",
-                    metadata: ["mtls": "\(isMTLS)"]
-                )
+            guard let address = try await server.listeningAddress,
+                let boundPort = address.ipv4?.port ?? address.ipv6?.port
+            else {
+                throw WendyAgentError.stoppedDuringStartup
             }
 
-            self.mainServer = server
-            self.mainServerTask = task
-
-            // Once the mTLS server is listening, dial out to the cloud tunnel
-            // broker so the device shows online and is remotely reachable.
-            if isMTLS, let certs {
-                self.startTunnelBroker(info: info, certs: certs)
-            }
+            self.logger.info(
+                "Main Wendy Agent gRPC server listening",
+                metadata: ["grpc_address": "\(address)", "mtls": "\(certs != nil)"]
+            )
+            return (server, task, boundPort)
         } catch {
             server.beginGracefulShutdown()
             throw await Self.startupError(
                 serviceName: "Wendy Agent gRPC",
-                port: boundPort,
+                port: port,
                 listeningAddressError: error,
                 serveTask: task
             )
@@ -409,7 +461,8 @@ public actor WendyAgent {
     /// anchor (mirrors the Go agent).
     private func startTunnelBroker(
         info: ProvisioningService.ProvisioningInfo,
-        certs: ProvisioningService.ProvisioningCerts
+        certs: ProvisioningService.ProvisioningCerts,
+        port: Int
     ) {
         guard !certs.chainPEM.isEmpty else {
             self.logger.warning(
@@ -428,7 +481,7 @@ public actor WendyAgent {
             keyBacking: certs.keyBacking,
             seKey: certs.seKey,
             chainPEM: certs.chainPEM,
-            mtlsPort: self.configuration.port + 1
+            mtlsPort: port
         )
         let client = TunnelBrokerClient.live
         let logger = self.logger
@@ -447,27 +500,24 @@ public actor WendyAgent {
         _ = try? await self.mainServerTask?.value
         self.mainServer = nil
         self.mainServerTask = nil
+        self.listeningPort = nil
     }
 
-    /// Builds the main gRPC server. When `certs` is non-nil the server runs mTLS
-    /// on `port + 1`, requiring and verifying client certificates against the
-    /// device CA chain and enforcing org-equality; otherwise it runs plaintext on
-    /// `port`. Returns the server and whether it is mTLS.
+    /// Builds the main gRPC server on the requested port. Passing zero lets the
+    /// OS choose a free port after the preferred port collides.
     private func makeMainServer(
         services: [any RegistrableRPCService],
-        certs: ProvisioningService.ProvisioningCerts?
-    ) throws -> (PosixGRPCServer, Bool) {
+        certs: ProvisioningService.ProvisioningCerts?,
+        port: Int
+    ) throws -> PosixGRPCServer {
         let security: HTTP2ServerTransport.Posix.TransportSecurity
-        let port: Int
         if let certs {
             security = try self.mTLSSecurity(certs: certs)
-            port = self.configuration.port + 1
         } else {
             security = .plaintext
-            port = self.configuration.port
         }
 
-        let server = PosixGRPCServer(
+        return PosixGRPCServer(
             transport: HTTP2ServerTransport.Posix(
                 address: {
                     switch self.configuration.host {
@@ -484,7 +534,6 @@ public actor WendyAgent {
             ),
             services: services
         )
-        return (server, certs != nil)
     }
 
     /// Transport configuration shared by the plaintext and mTLS main servers.
@@ -639,10 +688,12 @@ public actor WendyAgent {
     }
 
     private func startBonjour() async throws {
+        guard let listeningPort else { throw WendyAgentError.stoppedDuringStartup }
+
         let info = await self.provisioningService?.provisioningInfo()
         let enrolled = info?.enrolled ?? false
         let advertiser = BonjourAdvertiser(
-            port: enrolled ? self.configuration.port + 1 : self.configuration.port,
+            port: listeningPort,
             displayName: ProcessInfo.processInfo.hostName,
             deviceID: ProcessInfo.processInfo.hostName,
             tls: enrolled,
@@ -954,6 +1005,7 @@ public actor WendyAgent {
     private func clearRuntimeState() {
         self.mainServer = nil
         self.mainServerTask = nil
+        self.listeningPort = nil
         self.tunnelBrokerTask = nil
         self.containerService = nil
         self.provisioningService = nil

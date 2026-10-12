@@ -191,14 +191,13 @@ func newAuthLoginCmd() *cobra.Command {
 				return performLocalLogin(cmd.Context(), cloudGRPC, apiKey, orgID)
 			}
 
-			// OIDC login requires an email address or an explicit realm issuer.
+			// A built-in Cloud target starts at wendy-auth's universal page so the
+			// browser collects the email and organization once. Explicit --email and
+			// --issuer retain their established discovery/direct-realm behavior.
 			if !cmd.Flags().Changed("auth") {
 				authBase = target.authBase
 			}
-			if issuer == "" {
-				if email == "" {
-					return fmt.Errorf("%s Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly", target.name)
-				}
+			if issuer == "" && email != "" {
 				var err error
 				issuer, err = discoverOIDCIssuerFn(cmd.Context(), authBase, email)
 				if err != nil {
@@ -221,14 +220,15 @@ func newAuthLoginCmd() *cobra.Command {
 				identityEndpoint = target.identityEndpoint
 			}
 			return performOIDCLoginFn(cmd.Context(), oidcLoginOptions{
-				Issuer:           issuer,
-				ClientID:         clientID,
-				CloudResource:    resource,
-				IdentityResource: identityResource,
-				IdentityEndpoint: identityEndpoint,
-				CloudURL:         cloudDashboard,
-				CloudGRPC:        cloudGRPC,
-				PrintClaims:      printClaims,
+				Issuer:            issuer,
+				AuthorizationBase: authBase,
+				ClientID:          clientID,
+				CloudResource:     resource,
+				IdentityResource:  identityResource,
+				IdentityEndpoint:  identityEndpoint,
+				CloudURL:          cloudDashboard,
+				CloudGRPC:         cloudGRPC,
+				PrintClaims:       printClaims,
 			})
 		},
 	}
@@ -238,7 +238,7 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "Bearer API key for local pki-core authentication")
 	cmd.Flags().Int32Var(&orgID, "org", 1, "Organization ID for --api-key local login. For Wendy Cloud, each login is stored as an auth context; switch with 'wendy auth use <context>'.")
 	cmd.Flags().StringVar(&issuer, "issuer", "", "wendy-auth realm issuer URL, e.g. https://auth.wendy.sh/realms/acme (enables OIDC login)")
-	cmd.Flags().StringVar(&email, "email", "", "Email address temporarily required to discover your organization and sign in with wendy-auth")
+	cmd.Flags().StringVar(&email, "email", "", "Email address for explicit organization discovery with wendy-auth")
 	cmd.Flags().StringVar(&authBase, "auth", defaultDevAuthBase, "wendy-auth base URL used with --email")
 	cmd.Flags().StringVar(&clientID, "client-id", "wendy-cli", "public DPoP OAuth client ID registered in wendy-auth")
 	cmd.Flags().StringVar(&resource, "resource", "", "RFC 8707 API resource indicator (used with OIDC login)")

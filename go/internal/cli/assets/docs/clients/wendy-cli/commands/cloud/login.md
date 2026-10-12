@@ -33,7 +33,7 @@ for the full flag reference and multi-session behaviour.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--email` | `""` | Email address temporarily required to discover your realm and sign in (OIDC flow). |
+| `--email` | `""` | Email address for explicit realm discovery (OIDC flow). |
 | `--issuer` | `""` | Complete realm issuer URL; skips email-based realm discovery. |
 | `--service-account` | `""` | Service-account key file for headless login; `WENDY_SERVICE_ACCOUNT_KEY` may hold its contents instead. |
 | `--cloud` | `""` | Dashboard URL of a non-default cloud instance. |

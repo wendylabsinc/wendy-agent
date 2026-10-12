@@ -33,37 +33,18 @@ struct `'wendy auth login'` {
     }
 
     /**
-     Production and development Cloud login stop before opening a browser or
-     contacting an auth service when neither the temporarily required email nor
-     an explicit issuer is present. The error names the selected environment and
-     explains both inputs accepted by the Cloud OIDC flow. The `cloud login`
-     alias shares the same command behavior.
+     Production and development Cloud targets start at the realm-less Wendy Auth
+     page. The browser collects email and organization, then returns the selected
+     realm to the CLI. This needs the protected browser/Auth fixture tracked by
+     WDY-1949; an E2E must never open a real browser or use personal credentials.
      */
-    @Test
-    func `requires an email or issuer for the selected Cloud target`() async throws {
-        try await self.scenario.run(authenticated: false) { cli, _ in
-            for command in ["wendy auth login --production", "wendy cloud login --production"] {
-                try await cli.sh(command) { result in
-                    #expect(result.status.isFailure)
-                    #expect(result.stdout == "")
-                    #expect(
-                        result.stderr.contains(
-                            "production Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly"
-                        )
-                    )
-                }
-            }
-
-            try await cli.sh("wendy cloud login --development") { result in
-                #expect(result.status.isFailure)
-                #expect(result.stdout == "")
-                #expect(
-                    result.stderr.contains(
-                        "development Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly"
-                    )
-                )
-            }
-        }
+    @Test(
+        .disabled(
+            "WDY-1949: realm-less Cloud login needs a protected browser/Auth fixture and injectable browser."
+        )
+    )
+    func `starts realm-less login for the selected Cloud target`() async throws {
+        // Unit coverage verifies target routing without network or browser access.
     }
 
     /**
