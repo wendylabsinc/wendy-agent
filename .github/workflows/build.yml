@@ -21,9 +21,11 @@ on:
         type: boolean
         default: false
 
+# Give each stable release its own group so pushes and later releases cannot
+# cancel it, even while it is queued. Non-release builds still supersede by ref.
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || !inputs.publish }}
 
 # Add permissions needed for creating releases
 permissions:
@@ -1103,7 +1105,7 @@ jobs:
 
   integration-tests:
     name: Integration Tests (macOS, stable gate)
-    if: github.event_name != 'workflow_dispatch' || !inputs.skip_integration_tests
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && !inputs.skip_integration_tests
     uses: ./.github/workflows/integration-tests.yml
     with:
       platform: macos
