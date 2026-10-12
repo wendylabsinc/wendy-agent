@@ -45,6 +45,7 @@ const (
 	v4l2PixFmtMJPEG         = 0x47504A4D // 'MJPG'
 	v4l2PixFmtUYVY          = 0x59565955 // 'UYVY'
 	v4l2PixFmtY16           = 0x20363159 // 'Y16 ' -- note the trailing space
+	v4l2PixFmtZ16           = 0x2036315A // 'Z16 ' -- RealSense raw depth, uint16 device units
 	v4l2PixFmtGrey          = 0x59455247 // 'GREY'
 	v4l2FieldNone           = 1
 
@@ -2550,7 +2551,65 @@ func (s *VideoService) errCaptureSetup(ioctl, path string, errno unix.Errno) err
 // Each captured frame is delivered via the broadcast callback; if the callback returns
 // false the loop exits cleanly (no subscribers remain).
 // Returns nativeH264NotSupported if the device rejects the H.264 pixel format.
+// v4l2CaptureConfig parameterises captureV4L2Native. The mmap loop is
+// format-agnostic; everything a pixel format implies — how a default size is
+// probed, whether the device's encoder is tuned, how "this device cannot
+// produce that" is reported — arrives through here.
+type v4l2CaptureConfig struct {
+	pixelFormat   uint32
+	width, height uint32
+	// tuneKeyframes caps the device encoder's keyframe interval — compressed
+	// formats only; a raw format has no encoder to tune.
+	tuneKeyframes bool
+	framerate     uint32
+	// formatUnsupported wraps the three "device cannot produce this format"
+	// exits (S_FMT EINVAL, a silently switched format, DQBUF dying before the
+	// first frame), so the H.264 caller keeps its typed software-encoder
+	// fallback signal and other formats get an honest refusal.
+	formatUnsupported func(msg string) error
+}
+
 func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]byte, frameTimestamp, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest) error {
+	return s.captureV4L2Native(ctx, func(data []byte, stamp frameTimestamp) bool {
+		return broadcast(data, stamp, agentpb.VideoCodec_VIDEO_CODEC_H264)
+	}, path, v4l2CaptureConfig{
+		pixelFormat:   v4l2PixFmtH264,
+		width:         req.GetWidth(),
+		height:        req.GetHeight(),
+		tuneKeyframes: true,
+		framerate:     req.GetFramerate(),
+		formatUnsupported: func(msg string) error {
+			return nativeH264NotSupported{msg: msg}
+		},
+	})
+}
+
+// captureDepthZ16 pumps raw Z16 frames from a depth node — measurements, not
+// pictures, so they never meet the encoder or GStreamer. The caller owns what
+// a Z16 frame means (units, pairing, alignment); this is only the transport.
+// Its caller arrives with the calibrated-frame service
+// (specs/2026-10-12-realsense-native-rgbd-design.md §5).
+func (s *VideoService) captureDepthZ16(ctx context.Context, emit func([]byte, frameTimestamp) bool, path string, width, height uint32) error {
+	return s.captureV4L2Native(ctx, emit, path, v4l2CaptureConfig{
+		pixelFormat: v4l2PixFmtZ16,
+		width:       width,
+		height:      height,
+		formatUnsupported: func(msg string) error {
+			return status.Errorf(codes.FailedPrecondition, "not a Z16 depth source: %s", msg)
+		},
+	})
+}
+
+// fourccName renders a V4L2 pixel format for error messages ('Z16 ', 'H264').
+func fourccName(pixfmt uint32) string {
+	return string([]byte{byte(pixfmt), byte(pixfmt >> 8), byte(pixfmt >> 16), byte(pixfmt >> 24)})
+}
+
+// captureV4L2Native owns one V4L2 capture from open to close: S_FMT, two mmap
+// buffers, STREAMON and the dequeue loop, emitting each frame until emit
+// returns false or the context ends. Extracted from the H.264-only
+// streamV4L2Native; behaviour there is unchanged.
+func (s *VideoService) captureV4L2Native(ctx context.Context, emit func([]byte, frameTimestamp) bool, path string, cfg v4l2CaptureConfig) error {
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		s.logger.Error("failed to open video device", zap.String("device", path), zap.Error(err))
@@ -2561,16 +2620,16 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 	}
 	defer unix.Close(fd) //nolint:errcheck
 
-	// Configure H.264 output format.
+	// Configure the capture format.
 	var vfmt v4l2Format
 	vfmt.Type = v4l2BufTypeVideoCapture
-	vfmt.Width = req.GetWidth()
-	vfmt.Height = req.GetHeight()
+	vfmt.Width = cfg.width
+	vfmt.Height = cfg.height
 	// "No preference" must not become "smallest mode the driver has" — see
 	// bestDefaultFrameSize. Only fills in what the caller left unset, so an
 	// explicit request is still honoured verbatim.
 	if vfmt.Width == 0 || vfmt.Height == 0 {
-		if w, h := bestDefaultFrameSize(fd, v4l2PixFmtH264); w > 0 && h > 0 {
+		if w, h := bestDefaultFrameSize(fd, cfg.pixelFormat); w > 0 && h > 0 {
 			if vfmt.Width == 0 {
 				vfmt.Width = w
 			}
@@ -2582,7 +2641,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 				zap.Uint32("height", vfmt.Height))
 		}
 	}
-	vfmt.PixelFormat = v4l2PixFmtH264
+	vfmt.PixelFormat = cfg.pixelFormat
 	vfmt.Field = v4l2FieldNone
 
 	sfmt := func() unix.Errno {
@@ -2591,7 +2650,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 	}
 	if errno := retryWhileBusy(ctx, sfmt); errno != 0 {
 		if errno == unix.EINVAL {
-			return nativeH264NotSupported{msg: fmt.Sprintf("VIDIOC_S_FMT H264 rejected: %v", errno)}
+			return cfg.formatUnsupported(fmt.Sprintf("VIDIOC_S_FMT %s rejected: %v", fourccName(cfg.pixelFormat), errno))
 		}
 		s.logger.Error("VIDIOC_S_FMT failed", zap.String("device", path), zap.Error(errno))
 		// Refuses only once the holder has allocated buffers; later sites cover the rest.
@@ -2600,13 +2659,15 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 		}
 		return status.Errorf(codes.Internal, "failed to configure video device")
 	}
-	if vfmt.PixelFormat != v4l2PixFmtH264 {
-		return nativeH264NotSupported{msg: "device switched pixel format away from H264"}
+	if vfmt.PixelFormat != cfg.pixelFormat {
+		return cfg.formatUnsupported("device switched pixel format away from " + fourccName(cfg.pixelFormat))
 	}
 
 	// Best-effort: cap the camera encoder's keyframe interval. Non-fatal — many
 	// UVC cameras reject this and keep their firmware default.
-	s.setV4L2KeyframeInterval(fd, keyframeIntervalFrames(req.GetFramerate()))
+	if cfg.tuneKeyframes {
+		s.setV4L2KeyframeInterval(fd, keyframeIntervalFrames(cfg.framerate))
+	}
 
 	// Two buffers: one dequeued/in-flight, one queued for the camera to fill.
 	// More buffers increase kernel-side lag when the broadcast lags the camera.
@@ -2700,10 +2761,11 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 			if isBusyErrno(errno) {
 				return errCameraInUse(path)
 			}
-			// Device accepted H264 format but failed before delivering any frame —
-			// signal the caller to fall back to the GStreamer software encoder.
+			// Device accepted the format but failed before delivering any frame —
+			// for H.264 this signals the caller to fall back to the GStreamer
+			// software encoder.
 			if framesSent == 0 {
-				return nativeH264NotSupported{msg: fmt.Sprintf("VIDIOC_DQBUF failed before first frame: %v", errno)}
+				return cfg.formatUnsupported(fmt.Sprintf("VIDIOC_DQBUF failed before first frame: %v", errno))
 			}
 			return s.errCaptureSetup("VIDIOC_DQBUF", path, errno)
 		}
@@ -2739,7 +2801,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 			} else {
 				stamp.nativeClock = "V4L2_TIMESTAMP_UNKNOWN"
 			}
-			if !broadcast(data, stamp, agentpb.VideoCodec_VIDEO_CODEC_H264) {
+			if !emit(data, stamp) {
 				return nil
 			}
 			framesSent++
