@@ -92,7 +92,9 @@ func (c *Client) Login(ctx context.Context, email, password string) (*unitree.Ac
 	if err := c.request(ctx, http.MethodGet, "device/bind/list", login.AccessToken, nil, &bound); err != nil {
 		return nil, err
 	}
-	account := &unitree.Account{Token: login.AccessToken}
+	// Keep the bearer token within this vendor HTTPS exchange, not in the
+	// TUI's login result or the selected agent's pairing request.
+	account := &unitree.Account{}
 	seen := make(map[string]bool)
 	for _, item := range bound {
 		if item.Series != "" && !strings.EqualFold(item.Series, "Go2") {

@@ -61,11 +61,14 @@ func TestCloudLoginFetchesBoundGo2Keys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 2 || len(account.Devices) != 3 || account.Token != "test-token" {
+	if len(requests) != 2 || len(account.Devices) != 3 {
 		t.Fatalf("unexpected login result: requests=%v devices=%d", requests, len(account.Devices))
 	}
 	if account.Devices[0].Serial != "B42TEST" || account.Devices[0].Name != "Rover" || account.Devices[0].EncryptionKey != key || account.Devices[1].EncryptionKey != key {
 		t.Error("bound device identity/key was not decoded")
+	}
+	if strings.Contains(fmt.Sprintf("%+v", account), "test-token") {
+		t.Fatal("login result retained the cloud bearer token")
 	}
 	raw, err := json.Marshal(account)
 	if err != nil {

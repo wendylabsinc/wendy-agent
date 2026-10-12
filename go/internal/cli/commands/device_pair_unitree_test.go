@@ -60,7 +60,7 @@ func TestDevicePairUnitreeLoginFormAndBackgroundResults(t *testing.T) {
 	h := &unitreePairHandler{ctx: context.Background(), client: c, region: "cn", initialIP: "192.0.2.42",
 		login: func(_ context.Context, region, email, password string) (*unitree.Account, error) {
 			loggedEmail, loggedPassword, loggedRegion = email, password, region
-			return &unitree.Account{Token: "token-secret", Devices: []unitree.Device{{Serial: "GO2-A", Name: "First", EncryptionKey: "key-a"}, {Serial: "GO2-B", Name: "Second", EncryptionKey: "key-b"}}}, nil
+			return &unitree.Account{Devices: []unitree.Device{{Serial: "GO2-A", Name: "First", EncryptionKey: "key-a"}, {Serial: "GO2-B", Name: "Second", EncryptionKey: "key-b"}}}, nil
 		},
 	}
 	m := newDevicePairModel(&pairTestBluetooth{}, pairTestHandler(&pairTestClient{}), nil, h)
@@ -102,7 +102,7 @@ func TestDevicePairUnitreeLoginFormAndBackgroundResults(t *testing.T) {
 		t.Fatal("selected account robot cannot be paired by IP")
 	}
 	m, _ = pairUpdate(m, pair())
-	if c.saved == nil || c.saved.Serial != "GO2-B" || c.saved.Address != "192.0.2.42" || c.saved.EncryptionKey != "key-b" || c.saved.Token != "token-secret" {
+	if c.saved == nil || c.saved.Serial != "GO2-B" || c.saved.Address != "192.0.2.42" || c.saved.EncryptionKey != "key-b" || c.saved.Token != "" {
 		t.Fatal("IP pairing did not use the explicitly selected account robot's key")
 	}
 	if strings.Contains(m.unitree.message, "Connected to") || !strings.Contains(m.unitree.message, "not connected") {
@@ -187,37 +187,37 @@ func TestUnitreeFailedDiscoveryDoesNotKeepStaleConnectionStatus(t *testing.T) {
 func TestUnitreeLoginRefreshesSavedRobotKey(t *testing.T) {
 	c := &unitreePairTestClient{paired: []*agentpbv2.UnitreeRobot{{Serial: "SAVED", Paired: true, Address: "192.0.2.42"}}}
 	m := newUnitreePairModel(&unitreePairHandler{ctx: context.Background(), client: c})
-	m.account = &unitree.Account{Token: "fresh-token", Devices: []unitree.Device{{Serial: "SAVED", EncryptionKey: "fresh-key"}}}
+	m.account = &unitree.Account{Devices: []unitree.Device{{Serial: "SAVED", EncryptionKey: "fresh-key"}}}
 	m, _ = unitreePairUpdate(m, m.Init()())
 	if strings.Join(c.knownSerials, ",") != "SAVED" {
 		t.Fatal("saved and account robot duplicated in discovery request")
 	}
 	m, cmd := unitreePairUpdate(m, tea.KeyMsg{Type: tea.KeyEnter})
 	m, _ = unitreePairUpdate(m, cmd())
-	if c.saved == nil || c.saved.EncryptionKey != "fresh-key" || c.saved.Token != "fresh-token" {
+	if c.saved == nil || c.saved.EncryptionKey != "fresh-key" || c.saved.Token != "" {
 		t.Fatal("explicit login did not replace the saved robot's credentials")
 	}
 }
 
-func TestUnitreeLegacyAccountRobotConnectsWithTokenWithoutKey(t *testing.T) {
+func TestUnitreeLegacyAccountRobotUsesNonSecretMarkerWithoutKey(t *testing.T) {
 	c := &unitreePairTestClient{connected: true}
 	m := newUnitreePairModel(&unitreePairHandler{ctx: context.Background(), client: c, initialIP: "192.0.2.42"})
-	m.account = &unitree.Account{Token: "legacy-token", Devices: []unitree.Device{{Serial: "LEGACY", Name: "Older Go2"}}}
+	m.account = &unitree.Account{Devices: []unitree.Device{{Serial: "LEGACY", Name: "Older Go2"}}}
 	m, _ = unitreePairUpdate(m, m.Init()())
 	m, cmd := unitreePairUpdate(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("account robot without an encryption key was blocked before the agent could select its firmware protocol")
 	}
 	m, _ = unitreePairUpdate(m, cmd())
-	if c.saved == nil || c.saved.Serial != "LEGACY" || c.saved.EncryptionKey != "" || c.saved.Token != "legacy-token" || c.saved.Address != "192.0.2.42" || !m.rows[0].Connected {
-		t.Fatal("legacy robot connection did not receive the selected account's token without a key")
+	if c.saved == nil || c.saved.Serial != "LEGACY" || c.saved.EncryptionKey != "" || c.saved.Token != unitreeAccountFlowMarker || c.saved.Address != "192.0.2.42" || !m.rows[0].Connected {
+		t.Fatal("legacy robot did not receive only a non-secret account-flow marker")
 	}
 }
 
 func TestUnitreeNeverUsesUnmatchedAccountKey(t *testing.T) {
 	c := &unitreePairTestClient{discovered: []*agentpbv2.UnitreeRobot{{Serial: "OTHER", Name: "Other", Address: "192.0.2.42"}}}
 	m := newUnitreePairModel(&unitreePairHandler{ctx: context.Background(), client: c})
-	m.account = &unitree.Account{Token: "token", Devices: []unitree.Device{{Serial: "MINE", Name: "Mine", EncryptionKey: "mine"}}}
+	m.account = &unitree.Account{Devices: []unitree.Device{{Serial: "MINE", Name: "Mine", EncryptionKey: "mine"}}}
 	m, _ = unitreePairUpdate(m, m.Init()())
 	m.table.SetCursor(1)
 	m, cmd := unitreePairUpdate(m, tea.KeyMsg{Type: tea.KeyEnter})
@@ -260,12 +260,12 @@ func TestUnitreeCredentialsRequireSecureTransportAndErrorsStayPrivate(t *testing
 	}
 	c := &unitreePairTestClient{pairErr: status.Error(codes.Internal, "secret-key secret-token")}
 	h := &unitreePairHandler{ctx: context.Background(), client: c, transportError: errors.New("secure transport required")}
-	result := h.pair(&agentpbv2.UnitreeRobot{Serial: "S", Address: "192.0.2.1"}, "secret-key", "secret-token")().(unitreePairOpMsg)
+	result := h.pair(&agentpbv2.UnitreeRobot{Serial: "S", Address: "192.0.2.1"}, "secret-key", true)().(unitreePairOpMsg)
 	if result.err == nil || c.saved != nil {
 		t.Fatal("key sent over insecure transport")
 	}
 	h.transportError = nil
-	result = h.pair(&agentpbv2.UnitreeRobot{Serial: "S", Address: "192.0.2.1"}, "secret-key", "secret-token")().(unitreePairOpMsg)
+	result = h.pair(&agentpbv2.UnitreeRobot{Serial: "S", Address: "192.0.2.1"}, "secret-key", true)().(unitreePairOpMsg)
 	if result.err == nil || strings.Contains(result.err.Error(), "secret") {
 		t.Fatal("pair error exposed credentials")
 	}

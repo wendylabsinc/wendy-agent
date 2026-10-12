@@ -68,6 +68,10 @@ reconnect without logging in again, or `i` to change its IP. Press `f` to remove
 the saved pairing and key. To refresh a saved robot's key, log in again and
 connect the matching account robot.
 
+The Unitree account token stays within the CLI's vendor-cloud exchange; it is
+not returned to the pairing UI or sent to the agent. Legacy pairing uses a
+fixed, non-secret account-flow marker instead, not proof of account ownership.
+
 Robot keys are stored in a private, permission-restricted file on the agent;
 they are not encrypted at rest. Account passwords and tokens are not persisted
 or returned by pairing RPCs. Pairings are bound to the agent's enrolled tenant

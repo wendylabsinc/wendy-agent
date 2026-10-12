@@ -12,10 +12,9 @@ type Device struct {
 	EncryptionKey string `json:"-"`
 }
 
-// Account is an ephemeral login result. Neither the password nor the cloud
-// token is saved: LAN reconnections use the stored per-device encryption key.
+// Account contains the account-bound robots, never the password or cloud
+// bearer token. The token is used only inside the CLI vendor-cloud client.
 type Account struct {
-	Token   string   `json:"-"`
 	Devices []Device `json:"devices"`
 }
 

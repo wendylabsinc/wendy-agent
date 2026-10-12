@@ -21,6 +21,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// The old RPC token field is a workflow marker, not an account credential.
+const unitreeAccountFlowMarker = "unitree-account-flow"
+
 type unitreePairHandler struct {
 	ctx            context.Context
 	client         agentpbv2.WendyUnitreeServiceClient
@@ -106,9 +109,13 @@ func (h *unitreePairHandler) signIn(email, password string) tea.Cmd {
 	}
 }
 
-func (h *unitreePairHandler) pair(robot *agentpbv2.UnitreeRobot, key, token string) tea.Cmd {
-	// Capture a request rather than the mutable table row.
-	req := &agentpbv2.PairUnitreeRequest{Serial: robot.Serial, Name: robot.Name, Address: robot.Address, EncryptionKey: key, Token: token}
+func (h *unitreePairHandler) pair(robot *agentpbv2.UnitreeRobot, key string, fromAccount bool) tea.Cmd {
+	// Capture a request rather than the mutable table row. Never send a cloud
+	// bearer token to the agent; unkeyed firmware needs only a workflow marker.
+	req := &agentpbv2.PairUnitreeRequest{Serial: robot.Serial, Name: robot.Name, Address: robot.Address, EncryptionKey: key}
+	if fromAccount && key == "" {
+		req.Token = unitreeAccountFlowMarker
+	}
 	return func() tea.Msg {
 		if h.transportError != nil {
 			return unitreePairOpMsg{serial: req.Serial, err: h.transportError}
@@ -338,10 +345,10 @@ func (m unitreePairModel) connect(d *agentpbv2.UnitreeRobot, address string) (te
 		m.message = err.Error()
 		return m, nil
 	}
-	key, token := "", ""
+	key := ""
 	accountDevice := m.accountDevice(d.Serial)
 	if accountDevice != nil {
-		key, token = accountDevice.EncryptionKey, m.account.Token
+		key = accountDevice.EncryptionKey
 	} else if !d.Paired {
 		m.message = "Select the matching robot from your Unitree account before connecting."
 		return m, nil
@@ -349,7 +356,7 @@ func (m unitreePairModel) connect(d *agentpbv2.UnitreeRobot, address string) (te
 	robot := &agentpbv2.UnitreeRobot{Serial: d.Serial, Name: d.Name, Address: ip}
 	m.form, m.busy, m.message = unitreeNoForm, true, "Connecting from the selected WendyOS device..."
 	m.address.Blur()
-	return m, m.handler.pair(robot, key, token)
+	return m, m.handler.pair(robot, key, accountDevice != nil)
 }
 
 func (m unitreePairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
