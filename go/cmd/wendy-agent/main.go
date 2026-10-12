@@ -449,6 +449,11 @@ func main() {
 		return orgID
 	}
 	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentOrgID, sensorRunner.Start, sensorRunner.Stop, sensorSup.IsConnected)
+	unitreeSvc := services.NewUnitreeService(ctx, filepath.Join(configPath, "unitree-pairings.json"))
+	defer unitreeSvc.Close()
+	if err := unitreeSvc.Restore(); err != nil {
+		logger.Warn("loading Unitree pairings failed", zap.Error(err))
+	}
 	// Boot-resume: every previously paired source reconnects on its own —
 	// addr == "" tells the runner to resolve the source's current LAN address
 	// by asset id rather than trusting a possibly-stale one from disk.
@@ -720,6 +725,7 @@ func main() {
 		agentpbv2.RegisterWendyMeshServiceServer(srv, meshSvc)
 		agentpbv2.RegisterWendyBuildServiceServer(srv, buildSvc)
 		agentpbv2.RegisterWendySensorPairingServiceServer(srv, sensorSvc)
+		agentpbv2.RegisterWendyUnitreeServiceServer(srv, unitreeSvc)
 		if ros2Svc != nil {
 			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
 		}
