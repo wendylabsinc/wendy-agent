@@ -471,7 +471,7 @@ fi
 if command -v apt-get &>/dev/null; then
   echo "APT detected. Will add the Wendy repository and install or update wendy-agent."
   confirm "Proceed?"
-  configure_network_access
+  configure_network_access /etc/wendy-agent /etc/systemd/system
 
   echo "Adding Wendy APT repository..."
   # Ensure gnupg is available for key import
@@ -489,7 +489,7 @@ if command -v apt-get &>/dev/null; then
 elif command -v dnf &>/dev/null; then
   echo "DNF detected. Will add the Wendy repository and install or update wendy-agent."
   confirm "Proceed?"
-  configure_network_access
+  configure_network_access /etc/wendy-agent /etc/systemd/system
 
   echo "Adding Wendy YUM repository..."
   $SUDO tee /etc/yum.repos.d/wendy.repo >/dev/null <<'REPO'
@@ -505,7 +505,7 @@ REPO
 elif command -v yum &>/dev/null; then
   echo "YUM detected. Will add the Wendy repository and install or update wendy-agent."
   confirm "Proceed?"
-  configure_network_access
+  configure_network_access /etc/wendy-agent /etc/systemd/system
 
   echo "Adding Wendy YUM repository..."
   $SUDO tee /etc/yum.repos.d/wendy.repo >/dev/null <<'REPO'
@@ -521,7 +521,7 @@ REPO
 elif command -v pacman &>/dev/null; then
   echo "Pacman detected. Will install wendy-agent from the AUR."
   confirm "Proceed?"
-  configure_network_access
+  configure_network_access /etc/wendy-agent /etc/systemd/system
 
   # AUR helpers and makepkg refuse to run as root. If we're root, drop
   # privileges back to the invoking user via SUDO_USER.
@@ -562,7 +562,7 @@ else
   echo "No package manager detected. Will download ${ARTIFACT}"
   echo "  and install '${BINARY_NAME}' with systemd services and dev container registry."
   confirm "Proceed?"
-  configure_network_access
+  configure_network_access /etc/wendy-agent /etc/systemd/system
 
   TMPDIR_DL=$(mktemp -d)
   trap 'rm -rf "$TMPDIR_DL"' EXIT
