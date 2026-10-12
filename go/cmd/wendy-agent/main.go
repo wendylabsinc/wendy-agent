@@ -452,7 +452,7 @@ func main() {
 	_, _, _, unitreeEnrolled := provisioningSvc.ProvisioningInfo()
 	unitreeSvc := services.NewUnitreeService(ctx, filepath.Join(configPath, "unitree-pairings.json"), unitreePairingOwner(deviceScope(provisioningSvc), unitreeEnrolled))
 	defer unitreeSvc.Close()
-	unitreeTeleopSvc := services.NewUnitreeTeleopService(unitreeSvc, os.Getenv("WENDY_UNITREE_TELEOP") == "1")
+	unitreeTeleopSvc := services.NewUnitreeTeleopService(unitreeSvc)
 	if err := unitreeSvc.Restore(); err != nil {
 		logger.Warn("loading Unitree pairings failed", zap.Error(err))
 	}

@@ -19,24 +19,21 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WendyUnitreeTeleopService_Control_FullMethodName = "/wendy.agent.services.v2.WendyUnitreeTeleopService/Control"
+	WendyUnitreeTeleopService_Command_FullMethodName = "/wendy.agent.services.v2.WendyUnitreeTeleopService/Command"
 )
 
 // WendyUnitreeTeleopServiceClient is the client API for WendyUnitreeTeleopService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Uses an existing paired Go2 connection; never logs in, changes motion mode,
-// stands the robot, or opens another robot connection. Registered only on the
-// authenticated agent transport and private admin socket.
+// Sends simple commands over an existing paired Go2 connection. Never logs in,
+// changes motion mode or opens another robot connection; the robot key stays in
+// the agent. Registered only on the authenticated agent transport and the
+// private admin socket, with the pairing-owner scope check.
 type WendyUnitreeTeleopServiceClient interface {
-	// One controller per paired serial, with the pairing-owner scope check.
-	// The first frame selects serial with zero velocity
-	// and empty challenge. Each response supplies a one-use challenge for the next
-	// frame; it must arrive within timeout_ms. Timeout, error, stream termination,
-	// session replacement or Stop invalidates control; reconnect never re-arms.
-	// Robot protocol acknowledgement is NOT physical stopping/clearance evidence.
-	Control(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[UnitreeTeleopFrame, UnitreeTeleopReady], error)
+	// A MOVE holds for 500 ms; the agent sends StopMove unless another MOVE
+	// refreshes it. Any other command cancels a pending move.
+	Command(ctx context.Context, in *UnitreeCommandRequest, opts ...grpc.CallOption) (*UnitreeCommandResponse, error)
 }
 
 type wendyUnitreeTeleopServiceClient struct {
@@ -47,34 +44,28 @@ func NewWendyUnitreeTeleopServiceClient(cc grpc.ClientConnInterface) WendyUnitre
 	return &wendyUnitreeTeleopServiceClient{cc}
 }
 
-func (c *wendyUnitreeTeleopServiceClient) Control(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[UnitreeTeleopFrame, UnitreeTeleopReady], error) {
+func (c *wendyUnitreeTeleopServiceClient) Command(ctx context.Context, in *UnitreeCommandRequest, opts ...grpc.CallOption) (*UnitreeCommandResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &WendyUnitreeTeleopService_ServiceDesc.Streams[0], WendyUnitreeTeleopService_Control_FullMethodName, cOpts...)
+	out := new(UnitreeCommandResponse)
+	err := c.cc.Invoke(ctx, WendyUnitreeTeleopService_Command_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[UnitreeTeleopFrame, UnitreeTeleopReady]{ClientStream: stream}
-	return x, nil
+	return out, nil
 }
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type WendyUnitreeTeleopService_ControlClient = grpc.BidiStreamingClient[UnitreeTeleopFrame, UnitreeTeleopReady]
 
 // WendyUnitreeTeleopServiceServer is the server API for WendyUnitreeTeleopService service.
 // All implementations must embed UnimplementedWendyUnitreeTeleopServiceServer
 // for forward compatibility.
 //
-// Uses an existing paired Go2 connection; never logs in, changes motion mode,
-// stands the robot, or opens another robot connection. Registered only on the
-// authenticated agent transport and private admin socket.
+// Sends simple commands over an existing paired Go2 connection. Never logs in,
+// changes motion mode or opens another robot connection; the robot key stays in
+// the agent. Registered only on the authenticated agent transport and the
+// private admin socket, with the pairing-owner scope check.
 type WendyUnitreeTeleopServiceServer interface {
-	// One controller per paired serial, with the pairing-owner scope check.
-	// The first frame selects serial with zero velocity
-	// and empty challenge. Each response supplies a one-use challenge for the next
-	// frame; it must arrive within timeout_ms. Timeout, error, stream termination,
-	// session replacement or Stop invalidates control; reconnect never re-arms.
-	// Robot protocol acknowledgement is NOT physical stopping/clearance evidence.
-	Control(grpc.BidiStreamingServer[UnitreeTeleopFrame, UnitreeTeleopReady]) error
+	// A MOVE holds for 500 ms; the agent sends StopMove unless another MOVE
+	// refreshes it. Any other command cancels a pending move.
+	Command(context.Context, *UnitreeCommandRequest) (*UnitreeCommandResponse, error)
 	mustEmbedUnimplementedWendyUnitreeTeleopServiceServer()
 }
 
@@ -85,8 +76,8 @@ type WendyUnitreeTeleopServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedWendyUnitreeTeleopServiceServer struct{}
 
-func (UnimplementedWendyUnitreeTeleopServiceServer) Control(grpc.BidiStreamingServer[UnitreeTeleopFrame, UnitreeTeleopReady]) error {
-	return status.Error(codes.Unimplemented, "method Control not implemented")
+func (UnimplementedWendyUnitreeTeleopServiceServer) Command(context.Context, *UnitreeCommandRequest) (*UnitreeCommandResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Command not implemented")
 }
 func (UnimplementedWendyUnitreeTeleopServiceServer) mustEmbedUnimplementedWendyUnitreeTeleopServiceServer() {
 }
@@ -110,12 +101,23 @@ func RegisterWendyUnitreeTeleopServiceServer(s grpc.ServiceRegistrar, srv WendyU
 	s.RegisterService(&WendyUnitreeTeleopService_ServiceDesc, srv)
 }
 
-func _WendyUnitreeTeleopService_Control_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(WendyUnitreeTeleopServiceServer).Control(&grpc.GenericServerStream[UnitreeTeleopFrame, UnitreeTeleopReady]{ServerStream: stream})
+func _WendyUnitreeTeleopService_Command_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnitreeCommandRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyUnitreeTeleopServiceServer).Command(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyUnitreeTeleopService_Command_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyUnitreeTeleopServiceServer).Command(ctx, req.(*UnitreeCommandRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type WendyUnitreeTeleopService_ControlServer = grpc.BidiStreamingServer[UnitreeTeleopFrame, UnitreeTeleopReady]
 
 // WendyUnitreeTeleopService_ServiceDesc is the grpc.ServiceDesc for WendyUnitreeTeleopService service.
 // It's only intended for direct use with grpc.RegisterService,
@@ -123,14 +125,12 @@ type WendyUnitreeTeleopService_ControlServer = grpc.BidiStreamingServer[UnitreeT
 var WendyUnitreeTeleopService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "wendy.agent.services.v2.WendyUnitreeTeleopService",
 	HandlerType: (*WendyUnitreeTeleopServiceServer)(nil),
-	Methods:     []grpc.MethodDesc{},
-	Streams: []grpc.StreamDesc{
+	Methods: []grpc.MethodDesc{
 		{
-			StreamName:    "Control",
-			Handler:       _WendyUnitreeTeleopService_Control_Handler,
-			ServerStreams: true,
-			ClientStreams: true,
+			MethodName: "Command",
+			Handler:    _WendyUnitreeTeleopService_Command_Handler,
 		},
 	},
+	Streams:  []grpc.StreamDesc{},
 	Metadata: "wendy/agent/services/v2/unitree_teleop_service.proto",
 }

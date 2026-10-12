@@ -2,29 +2,31 @@ syntax = "proto3";
 package wendy.agent.services.v2;
 option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2;agentpbv2";
 
-// Uses an existing paired Go2 connection; never logs in, changes motion mode,
-// stands the robot, or opens another robot connection. Registered only on the
-// authenticated agent transport and private admin socket.
+// Sends simple commands over an existing paired Go2 connection. Never logs in,
+// changes motion mode or opens another robot connection; the robot key stays in
+// the agent. Registered only on the authenticated agent transport and the
+// private admin socket, with the pairing-owner scope check.
 service WendyUnitreeTeleopService {
-  // One controller per paired serial, with the pairing-owner scope check.
-  // The first frame selects serial with zero velocity
-  // and empty challenge. Each response supplies a one-use challenge for the next
-  // frame; it must arrive within timeout_ms. Timeout, error, stream termination,
-  // session replacement or Stop invalidates control; reconnect never re-arms.
-  // Robot protocol acknowledgement is NOT physical stopping/clearance evidence.
-  rpc Control(stream UnitreeTeleopFrame) returns (stream UnitreeTeleopReady);
+  // A MOVE holds for 500 ms; the agent sends StopMove unless another MOVE
+  // refreshes it. Any other command cancels a pending move.
+  rpc Command(UnitreeCommandRequest) returns (UnitreeCommandResponse);
 }
-message UnitreeTeleopFrame {
+
+enum UnitreeCommand {
+  UNITREE_COMMAND_UNSPECIFIED = 0;
+  UNITREE_COMMAND_MOVE = 1;
+  UNITREE_COMMAND_STOP = 2;
+  UNITREE_COMMAND_STAND_UP = 3;
+  UNITREE_COMMAND_LIE_DOWN = 4;
+  UNITREE_COMMAND_HELLO = 5;
+}
+
+message UnitreeCommandRequest {
   string serial = 1;
-  string challenge = 2;
-  // Finite values only: |forward| <= 0.15 m/s, |yaw| <= 0.3 rad/s.
-  // No strafing, posture, gait, arbitrary topic or arbitrary robot API.
+  UnitreeCommand command = 2;
+  // MOVE only. Finite values: |forward| <= 0.3 m/s, |yaw| <= 0.6 rad/s.
   double forward = 3;
   double yaw = 4;
-  // Stop and relinquish this stream's control. No automatic resume.
-  bool stop = 5;
 }
-message UnitreeTeleopReady {
-  string challenge = 1;
-  uint32 timeout_ms = 2;
-}
+
+message UnitreeCommandResponse {}

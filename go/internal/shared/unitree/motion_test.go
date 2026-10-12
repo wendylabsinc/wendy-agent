@@ -11,17 +11,17 @@ import (
 )
 
 func TestTeleopVelocityLimits(t *testing.T) {
-	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), .151, -.151} {
+	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), .301, -.301} {
 		if ValidMotion(value, 0) {
 			t.Errorf("accepted forward %v", value)
 		}
 	}
-	for _, value := range []float64{math.NaN(), math.Inf(1), .301, -.301} {
+	for _, value := range []float64{math.NaN(), math.Inf(1), .601, -.601} {
 		if ValidMotion(0, value) {
 			t.Errorf("accepted yaw %v", value)
 		}
 	}
-	if !ValidMotion(-.15, .3) {
+	if !ValidMotion(-.3, .6) {
 		t.Fatal("rejected bounded velocity")
 	}
 }

@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-const MotionForwardLimit = 0.15
-const MotionYawLimit = 0.3
+const MotionForwardLimit = 0.3
+const MotionYawLimit = 0.6
 const sportTopic = "rt/api/sport/request"
 
 func ValidMotion(forward, yaw float64) bool {
@@ -33,6 +33,11 @@ func (c *Connection) Move(ctx context.Context, forward, yaw float64) error {
 	return c.sportRequest(ctx, 1008, string(parameter))
 }
 func (c *Connection) Stop(ctx context.Context) error { return c.sportRequest(ctx, 1003, "") }
+
+// StandUp uses RecoveryStand, which also works from lying down or a fall.
+func (c *Connection) StandUp(ctx context.Context) error { return c.sportRequest(ctx, 1006, "") }
+func (c *Connection) LieDown(ctx context.Context) error { return c.sportRequest(ctx, 1005, "") }
+func (c *Connection) Hello(ctx context.Context) error   { return c.sportRequest(ctx, 1016, "") }
 
 func (c *Connection) sportRequest(ctx context.Context, api uint64, parameter string) error {
 	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
