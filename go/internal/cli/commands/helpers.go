@@ -123,15 +123,12 @@ func (e tlsHandshakeRejectedError) Unwrap() error {
 }
 
 func (e tlsHandshakeRejectedError) Error() string {
-	return "TLS authentication failed. Your certificates may be outdated or incompatible with the device.\n  " + strings.Join(e.NextSteps(), "\n  ")
+	return tlsRecoveryMessage(e)
 }
 
 // NextSteps exposes the recovery steps the message ends with to JSON mode.
 func (e tlsHandshakeRejectedError) NextSteps() []string {
-	return []string{
-		"Run 'wendy auth refresh-certs', then retry this command.",
-		"If it still fails, rerun with WENDY_TLS_DEBUG=1 for details.",
-	}
+	return tlsRecoveryNextSteps(e)
 }
 
 // orgMismatchDeviceError reports that the device's server certificate belongs
@@ -302,36 +299,29 @@ func newProvisionedAgentUnauthorizedError(cause error) error {
 }
 
 func (e provisionedAgentUnauthorizedError) Error() string {
+	if e.cause == nil {
+		return provisionedAgentUnauthorizedMessage
+	}
 	if isClockSkewSuspectError(e.cause) {
 		return tlsRecoveryMessage(e.cause)
 	}
 	if isReachabilityTimeoutError(e.cause) {
-		return "The device's secure endpoint did not respond before the connection deadline. Check its network connection and retry.\n  For connection details rerun with WENDY_TLS_DEBUG=1."
+		return "The device's secure endpoint did not respond before the connection deadline.\n  " + strings.Join(e.NextSteps(), "\n  ")
 	}
 	return fmt.Sprintf("Could not connect to the device's advertised secure endpoint.\n  For connection details rerun with WENDY_TLS_DEBUG=1.\nLast mTLS error: %s", tui.StripControl(e.cause.Error()))
 }
 
-// NextSteps exposes the advice in the message to JSON mode: sign in, and
-// for a stale or too-old credential what to do about it.
+// NextSteps exposes the same evidence-based advice as the text message.
 func (e provisionedAgentUnauthorizedError) NextSteps() []string {
-	steps := []string{provisionedAgentUnauthorizedStep}
-	if advice := e.causeAdvice(); advice != "" {
-		steps = append(steps, advice)
-	}
-	return steps
-}
-
-// causeAdvice is the extra advice the mTLS failure behind e calls for.
-func (e provisionedAgentUnauthorizedError) causeAdvice() string {
 	switch {
 	case e.cause == nil:
-		return ""
-	case isCertRefreshableError(e.cause):
-		return "Your stored certificates may be outdated. Run 'wendy auth refresh-certs' to re-issue them."
+		return []string{provisionedAgentUnauthorizedStep}
+	case isClockSkewSuspectError(e.cause):
+		return tlsRecoveryNextSteps(e.cause)
 	case isReachabilityTimeoutError(e.cause):
-		return "The device is enrolled and only serves mTLS on the secure port. Your wendy CLI may be too old or its certificates stale — upgrade the CLI and run 'wendy auth refresh-certs'."
+		return []string{"Check its network connection and retry.", "For connection details rerun with WENDY_TLS_DEBUG=1."}
 	}
-	return ""
+	return []string{"For connection details rerun with WENDY_TLS_DEBUG=1."}
 }
 
 // agentNotListeningError reports that the mTLS port refused the TCP connection:

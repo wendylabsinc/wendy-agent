@@ -68,12 +68,12 @@ func TestErrorsWithAdviceExposeTheirSteps(t *testing.T) {
 
 	tlsErr := newTLSHandshakeRejectedError(errors.New("remote error: tls: bad certificate"))
 	if got, want := NextSteps(fmt.Errorf("connecting: %w", tlsErr)), []string{
-		"Run 'wendy auth refresh-certs', then retry this command.",
-		"If it still fails, rerun with WENDY_TLS_DEBUG=1 for details.",
+		"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.",
+		"For connection details rerun with WENDY_TLS_DEBUG=1.",
 	}; !reflect.DeepEqual(got, want) {
 		t.Errorf("TLS rejection steps = %q, want %q", got, want)
 	}
-	if tlsErr.Error() != "TLS authentication failed. Your certificates may be outdated or incompatible with the device.\n  Run 'wendy auth refresh-certs', then retry this command.\n  If it still fails, rerun with WENDY_TLS_DEBUG=1 for details." {
+	if tlsErr.Error() != "TLS authentication failed. A wrong device clock or incompatible credentials may be responsible.\n  If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.\n  For connection details rerun with WENDY_TLS_DEBUG=1." {
 		t.Errorf("TLS rejection text changed: %q", tlsErr.Error())
 	}
 
@@ -84,8 +84,41 @@ func TestErrorsWithAdviceExposeTheirSteps(t *testing.T) {
 	if got, want := NextSteps(unauthorized), []string{"Run 'wendy auth login' with an account that can access this provisioned wendy-agent."}; !reflect.DeepEqual(got, want) {
 		t.Errorf("unauthorized steps = %q, want %q", got, want)
 	}
-	stale := newProvisionedAgentUnauthorizedError(errors.New("tls: expired certificate"))
-	if got := NextSteps(stale); len(got) != 2 || !strings.Contains(got[1], "wendy auth refresh-certs") {
-		t.Errorf("stale-certificate unauthorized steps = %q, want login then refresh-certs", got)
+	for _, tc := range []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{
+			name: "peer claims expiry",
+			err:  newProvisionedAgentUnauthorizedError(errors.New("tls: expired certificate")),
+			want: []string{"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.", "For connection details rerun with WENDY_TLS_DEBUG=1."},
+		},
+		{
+			name: "client authentication capability missing",
+			err:  newProvisionedAgentUnauthorizedError(errors.New("certificate is not valid for client authentication")),
+			want: []string{"Run 'wendy auth refresh-certs', then retry."},
+		},
+		{
+			name: "timeout",
+			err:  newProvisionedAgentUnauthorizedError(errors.New("i/o timeout")),
+			want: []string{"Check its network connection and retry.", "For connection details rerun with WENDY_TLS_DEBUG=1."},
+		},
+		{
+			name: "other transport failure",
+			err:  newProvisionedAgentUnauthorizedError(errors.New("EOF")),
+			want: []string{"For connection details rerun with WENDY_TLS_DEBUG=1."},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NextSteps(tc.err); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("NextSteps = %q, want %q", got, tc.want)
+			}
+			for _, step := range tc.want {
+				if !strings.Contains(tc.err.Error(), "\n  "+step) {
+					t.Errorf("Error() = %q, missing step %q", tc.err.Error(), step)
+				}
+			}
+		})
 	}
 }

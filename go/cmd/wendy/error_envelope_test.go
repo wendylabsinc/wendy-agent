@@ -75,8 +75,8 @@ func TestReportFailure_JSONEnvelope(t *testing.T) {
 }
 
 // Text mode must print exactly what main printed before JSON mode existed.
-// The goldens were captured from renderError on origin/main (2c61297b7)
-// with the ASCII color profile; only the exit status is new.
+// The goldens use the ASCII color profile and include the current clock
+// recovery advice; only the exit status differs from text mode on main.
 func TestReportFailure_TextModeIsUnchanged(t *testing.T) {
 	prevProfile := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.Ascii)
@@ -92,7 +92,7 @@ func TestReportFailure_TextModeIsUnchanged(t *testing.T) {
 		{fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
 			`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`)), 1,
 			"✗ querying device version: TLS handshake rejected by device (possible clock skew or cert mismatch).\n" +
-				"  Check the device clock: ssh wendy@<host> 'timedatectl status'                                    \n" +
+				"  If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.      \n" +
 				"  For full TLS details rerun with WENDY_TLS_DEBUG=1                                                \n"},
 		{errors.Join(errors.New("api: build failed\nstep 3/7 exited 1"), errors.New("worker: build failed")), 1,
 			"✗ api: build failed \nstep 3/7 exited 1   \nworker: build failed\n"},
@@ -146,14 +146,17 @@ func TestReportFailure_StepsLeaveTheMessage(t *testing.T) {
 // diagnostic is reported without its ✗ marker or colour.
 func TestReportFailure_EnvelopeTextIsPlain(t *testing.T) {
 	var out strings.Builder
-	tlsErr := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
-		`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`))
+	tlsErr := steppedError{
+		cause: fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
+			`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`)),
+		steps: []string{"Retry with --device <host>."},
+	}
 	reportFailure(&out, tlsErr, nil, []string{"--json"})
-	if !strings.Contains(out.String(), "ssh wendy@<host> 'timedatectl status'") || strings.Contains(out.String(), "u003c") {
+	if !strings.Contains(out.String(), "Retry with --device <host>.") || strings.Contains(out.String(), "u003c") {
 		t.Errorf("advice was HTML-escaped or lost: %s", out.String())
 	}
 	got := decodeEnvelope(t, out.String())
-	if got.Message != "querying device version: TLS handshake rejected by device (possible clock skew or cert mismatch)." || len(got.NextSteps) != 2 {
+	if got.Message != "querying device version: TLS handshake rejected by device (possible clock skew or cert mismatch)." || len(got.NextSteps) != 3 {
 		t.Errorf("envelope = %+v", got)
 	}
 

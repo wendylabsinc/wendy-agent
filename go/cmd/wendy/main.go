@@ -319,7 +319,9 @@ func formatErrorParts(err error) formattedError {
 		}
 		return rewrite("Could not resolve device host "+host+".", "Check the name, or connect by IP address.")
 	case strings.Contains(msg, "code = Unavailable") && isCertRejection && !isPKICoreCall && !isCloudCall:
-		return fmt.Errorf("%sTLS handshake rejected by device (possible clock skew or cert mismatch).\n  If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.\n  For full TLS details rerun with WENDY_TLS_DEBUG=1", prefix)
+		return rewrite("TLS handshake rejected by device (possible clock skew or cert mismatch).",
+			"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.",
+			"For full TLS details rerun with WENDY_TLS_DEBUG=1")
 	case strings.Contains(msg, "code = Unavailable") && isTransportHandshakeDrop && !isPKICoreCall && !isCloudCall:
 		return rewrite("Secure connection dropped during the TLS handshake.\n  The device may be offline or unreachable. If you are connecting through Wendy Cloud, the tunnel broker or the device's link to it may be down.",
 			"For full TLS details rerun with WENDY_TLS_DEBUG=1")

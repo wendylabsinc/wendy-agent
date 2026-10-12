@@ -726,12 +726,12 @@ func TestFormatErrorParts_ReportsItsOwnSteps(t *testing.T) {
 		`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`))
 	f := formatErrorParts(err)
 	wantText := "querying device version: TLS handshake rejected by device (possible clock skew or cert mismatch).\n" +
-		"  Check the device clock: ssh wendy@<host> 'timedatectl status'\n" +
+		"  If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.\n" +
 		"  For full TLS details rerun with WENDY_TLS_DEBUG=1"
 	if f.text != wantText {
 		t.Errorf("text = %q, want %q", f.text, wantText)
 	}
-	wantSteps := []string{"Check the device clock: ssh wendy@<host> 'timedatectl status'", "For full TLS details rerun with WENDY_TLS_DEBUG=1"}
+	wantSteps := []string{"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.", "For full TLS details rerun with WENDY_TLS_DEBUG=1"}
 	if strings.Join(f.steps, "|") != strings.Join(wantSteps, "|") {
 		t.Errorf("steps = %q, want %q", f.steps, wantSteps)
 	}
