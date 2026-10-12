@@ -15,6 +15,16 @@ local unenrollment recovery. Flashing does **not** revoke certificates or delete
 the old Cloud asset. Clean up that old Cloud identity separately; do not use a
 newly provisioned device's identity as proof that the prior one was unenrolled.
 
+## Clock floor
+
+`clock_floor` contains an eight-byte big-endian Unix timestamp supplied at install
+time. At startup the Agent monotonically merges this hint into its private floor:
+a newer hint advances it, but an older flash date never replaces a newer bound
+persisted by authenticated Roughtime consensus. Invalid hints leave private state
+untouched. This unauthenticated boot hint cannot authorize local erasure; guarded
+reset obtains fresh signed time independently. Flashing an older date does not
+roll an existing private floor back.
+
 ## Accessing it from a host computer
 
 Because the partition is FAT32, your computer mounts it automatically when you plug in the storage.

@@ -110,8 +110,15 @@ local guarded erasure is not a new backend postbox implementation.
 Compatible Cloud and Agent builds are required. These source semantics do not
 claim deployed or live-reset acceptance.
 
-For direct PKI identities, `Unprovision` requires `expected_principal_uri`,
-`expected_certificate_sha256`, `revocation_proof` and `cloud_deletion`.
+### UnprovisionRequest fields (direct PKI identities)
+
+| Field | Required for UUID/PKI | Contents |
+| --- | --- | --- |
+| `expected_principal_uri` | Yes | Exact enrolled SPIFFE principal URI. |
+| `expected_certificate_sha256` | Yes | SHA-256 hex of the installed leaf certificate. |
+| `revocation_proof` | Yes | Issuer-signed revoked OCSP evidence for that installed leaf. |
+| `cloud_deletion` | Yes | Serialized `wendycloud.v2.DeletedAsset` with the exact asset, tenant and device binding. |
+
 A bare/zero-value request returns `FailedPrecondition`; numeric v1 identities
 continue accepting an empty request.
 
@@ -130,6 +137,8 @@ historical certificate to configured trust roots and verify its evidence/binding
 An Agent without a prior guarded completion has no such receipt.
 
 ## Related
+
+- [Cloud-owned unenrollment](/docs/device/unenrollment) — operator flow, recovery and rollout limits.
 
 - [`wendy install` → Linux Desktop](../install.md) — mint a short-lived enrollment token and embed it in the `agent.sh` one-liner so the device self-enrolls on first startup, without needing a USB connection or a running agent.
 - [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.

@@ -2,6 +2,17 @@
 
 Wendy uses mutual TLS (mTLS) to authenticate both devices and CLI clients against the agent's gRPC server. Certificates are issued by a CA managed by either Wendy Cloud or a self-hosted **pki-core** instance.
 
+## Device unenrollment and retired Agent RPCs
+
+For UUID/direct PKI devices, Cloud's signed `DeleteAsset` operation owns
+certificate revocation. The CLI verifies issuer-signed revocation evidence and
+exact retained deletion binding before requesting guarded local erasure.
+See [Cloud-owned unenrollment](/docs/device/unenrollment).
+
+The prerelease Agent RPCs `RevokeACMECertificate` and `CheckACMERevocation` are
+deprecated and always return `UNIMPLEMENTED` on updated Agents. They are not an
+alternate revocation path. Numeric Cloud v1 cleanup remains separate.
+
 ## Certificate roles
 
 | Certificate | Issued to | Used for |
