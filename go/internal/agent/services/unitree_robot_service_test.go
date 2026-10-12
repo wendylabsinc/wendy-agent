@@ -20,9 +20,23 @@ import (
 
 type teleopFixtureLink struct {
 	*testUnitreeLink
-	mu       sync.Mutex
-	calls    []string
-	failMove bool
+	mu         sync.Mutex
+	calls      []string
+	failMove   bool
+	messages   chan unitree.TopicMessage
+	video      chan unitree.VideoFrame
+	subscribed []string
+	cancelled  bool
+}
+
+func (l *teleopFixtureLink) Subscribe(topics []string, video bool) (<-chan unitree.TopicMessage, <-chan unitree.VideoFrame, func(), error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.subscribed = append([]string(nil), topics...)
+	if video {
+		l.subscribed = append(l.subscribed, "video")
+	}
+	return l.messages, l.video, func() { l.mu.Lock(); l.cancelled = true; l.mu.Unlock() }, nil
 }
 
 func (l *teleopFixtureLink) record(name string) {
@@ -53,31 +67,39 @@ func (l *teleopFixtureLink) log() []string {
 	return append([]string(nil), l.calls...)
 }
 
-func teleopFixture(t *testing.T, authenticated bool, lease time.Duration) (pb.WendyUnitreeTeleopServiceClient, *teleopFixtureLink, *UnitreeService) {
+func teleopFixture(t *testing.T, authenticated bool, lease time.Duration) (pb.WendyUnitreeRobotServiceClient, *teleopFixtureLink, *UnitreeService) {
 	t.Helper()
 	p := testUnitreeService(t)
-	l := &teleopFixtureLink{testUnitreeLink: newTestUnitreeLink()}
+	l := &teleopFixtureLink{testUnitreeLink: newTestUnitreeLink(),
+		messages: make(chan unitree.TopicMessage, 4), video: make(chan unitree.VideoFrame, 4)}
 	p.sessions["GO2TEST1"] = &unitreeSession{link: l, cancel: func() {}, done: make(chan struct{})}
 	listener := bufconn.Listen(1 << 20)
-	server := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
+	withPeer := func(ctx context.Context) context.Context {
 		if authenticated {
-			ctx = peer.NewContext(ctx, &peer.Peer{Addr: &net.UnixAddr{Name: "fixture", Net: "unix"}})
+			return peer.NewContext(ctx, &peer.Peer{Addr: &net.UnixAddr{Name: "fixture", Net: "unix"}})
 		}
-		return h(ctx, req)
-	}))
-	svc := NewUnitreeTeleopService(p)
+		return ctx
+	}
+	server := grpc.NewServer(
+		grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
+			return h(withPeer(ctx), req)
+		}),
+		grpc.StreamInterceptor(func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, h grpc.StreamHandler) error {
+			return h(srv, peerStream{ss, withPeer(ss.Context())})
+		}))
+	svc := NewUnitreeRobotService(p)
 	svc.lease = lease
-	pb.RegisterWendyUnitreeTeleopServiceServer(server, svc)
+	pb.RegisterWendyUnitreeRobotServiceServer(server, svc)
 	go server.Serve(listener)
 	conn, err := grpc.NewClient("passthrough:///fixture", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close(); server.Stop(); listener.Close() })
-	return pb.NewWendyUnitreeTeleopServiceClient(conn), l, p
+	return pb.NewWendyUnitreeRobotServiceClient(conn), l, p
 }
 
-func teleopSend(c pb.WendyUnitreeTeleopServiceClient, cmd pb.UnitreeCommand, f, y float64) error {
+func teleopSend(c pb.WendyUnitreeRobotServiceClient, cmd pb.UnitreeCommand, f, y float64) error {
 	_, err := c.Command(context.Background(), &pb.UnitreeCommandRequest{Serial: "GO2TEST1", Command: cmd, Forward: f, Yaw: y})
 	return err
 }
@@ -94,7 +116,7 @@ func sameCalls(a, b []string) bool {
 	return true
 }
 
-func TestUnitreeTeleopRequiresTransport(t *testing.T) {
+func TestUnitreeRobotCommandRequiresTransport(t *testing.T) {
 	c, l, _ := teleopFixture(t, false, time.Second)
 	if err := teleopSend(c, pb.UnitreeCommand_UNITREE_COMMAND_HELLO, 0, 0); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("error %v", err)
@@ -104,7 +126,7 @@ func TestUnitreeTeleopRequiresTransport(t *testing.T) {
 	}
 }
 
-func TestUnitreeTeleopCommandsMapToRobot(t *testing.T) {
+func TestUnitreeRobotCommandCommandsMapToRobot(t *testing.T) {
 	c, l, _ := teleopFixture(t, true, time.Second)
 	for _, cmd := range []pb.UnitreeCommand{
 		pb.UnitreeCommand_UNITREE_COMMAND_STAND_UP,
@@ -121,7 +143,7 @@ func TestUnitreeTeleopCommandsMapToRobot(t *testing.T) {
 	}
 }
 
-func TestUnitreeTeleopMoveExpiresUnlessRefreshed(t *testing.T) {
+func TestUnitreeRobotCommandMoveExpiresUnlessRefreshed(t *testing.T) {
 	c, l, _ := teleopFixture(t, true, 150*time.Millisecond)
 	for range 4 {
 		if err := teleopSend(c, pb.UnitreeCommand_UNITREE_COMMAND_MOVE, .2, 0); err != nil {
@@ -138,7 +160,7 @@ func TestUnitreeTeleopMoveExpiresUnlessRefreshed(t *testing.T) {
 	}
 }
 
-func TestUnitreeTeleopStopCancelsPendingExpiry(t *testing.T) {
+func TestUnitreeRobotCommandStopCancelsPendingExpiry(t *testing.T) {
 	c, l, _ := teleopFixture(t, true, 100*time.Millisecond)
 	if err := teleopSend(c, pb.UnitreeCommand_UNITREE_COMMAND_MOVE, 0, .5); err != nil {
 		t.Fatal(err)
@@ -152,7 +174,7 @@ func TestUnitreeTeleopStopCancelsPendingExpiry(t *testing.T) {
 	}
 }
 
-func TestUnitreeTeleopRejectsInvalidInput(t *testing.T) {
+func TestUnitreeRobotCommandRejectsInvalidInput(t *testing.T) {
 	c, l, _ := teleopFixture(t, true, time.Second)
 	for _, v := range [][2]float64{{.31, 0}, {0, -.61}, {math.NaN(), 0}, {math.Inf(1), 0}} {
 		if err := teleopSend(c, pb.UnitreeCommand_UNITREE_COMMAND_MOVE, v[0], v[1]); status.Code(err) != codes.InvalidArgument {
@@ -171,7 +193,7 @@ func TestUnitreeTeleopRejectsInvalidInput(t *testing.T) {
 	}
 }
 
-func TestUnitreeTeleopFailedMoveStops(t *testing.T) {
+func TestUnitreeRobotCommandFailedMoveStops(t *testing.T) {
 	c, l, _ := teleopFixture(t, true, time.Second)
 	l.failMove = true
 	if err := teleopSend(c, pb.UnitreeCommand_UNITREE_COMMAND_MOVE, .1, 0); status.Code(err) != codes.Unavailable {
@@ -182,17 +204,86 @@ func TestUnitreeTeleopFailedMoveStops(t *testing.T) {
 	}
 }
 
-func TestUnitreeTeleopRejectsForeignTLSOwner(t *testing.T) {
+func TestUnitreeRobotCommandRejectsForeignTLSOwner(t *testing.T) {
 	_, l, p := teleopFixture(t, true, time.Second)
 	p.opMu.Lock()
 	p.owner = unitree.PairingOwner{OrgID: 42}
 	p.opMu.Unlock()
 	ctx := unitreeTLSContext(t, "urn:wendy:org:43:user:fixture")
-	_, err := NewUnitreeTeleopService(p).Command(ctx, &pb.UnitreeCommandRequest{Serial: "GO2TEST1", Command: pb.UnitreeCommand_UNITREE_COMMAND_HELLO})
+	_, err := NewUnitreeRobotService(p).Command(ctx, &pb.UnitreeCommandRequest{Serial: "GO2TEST1", Command: pb.UnitreeCommand_UNITREE_COMMAND_HELLO})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("foreign TLS owner accepted: %v", err)
 	}
 	if len(l.log()) != 0 {
 		t.Fatal("foreign owner sent robot commands")
+	}
+}
+
+type peerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s peerStream) Context() context.Context { return s.ctx }
+
+func TestUnitreeRobotStreamDeliversTopicsAndVideo(t *testing.T) {
+	c, l, _ := teleopFixture(t, true, time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := c.Stream(ctx, &pb.UnitreeStreamRequest{Serial: "GO2TEST1", Topics: []string{"rt/lf/lowstate"}, Video: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.messages <- unitree.TopicMessage{Topic: "rt/lf/lowstate", Data: []byte(`{"x":1}`), Received: time.Unix(0, 42)}
+	l.video <- unitree.VideoFrame{AnnexB: []byte{0, 0, 0, 1, 0x65}, RTPTimestamp: 9}
+	var topic *pb.UnitreeTopicMessage
+	var frame *pb.UnitreeVideoFrame
+	for topic == nil || frame == nil {
+		m, err := stream.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.GetTopic() != nil {
+			topic = m.GetTopic()
+		}
+		if m.GetVideo() != nil {
+			frame = m.GetVideo()
+		}
+	}
+	if topic.Topic != "rt/lf/lowstate" || string(topic.Data) != `{"x":1}` || topic.ReceivedUnixNanos != 42 {
+		t.Fatalf("topic %v", topic)
+	}
+	if frame.RtpTimestamp != 9 || len(frame.Annexb) != 5 {
+		t.Fatalf("frame %v", frame)
+	}
+	l.testUnitreeLink.Close()
+	if _, err := stream.Recv(); status.Code(err) != codes.Unavailable {
+		t.Fatalf("robot disconnect did not end the stream: %v", err)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !sameCalls(l.subscribed, []string{"rt/lf/lowstate", "video"}) || !l.cancelled {
+		t.Fatalf("subscribed %v cancelled %v", l.subscribed, l.cancelled)
+	}
+}
+
+func TestUnitreeRobotStreamRejectsBadRequests(t *testing.T) {
+	for _, tc := range []struct {
+		auth bool
+		req  *pb.UnitreeStreamRequest
+		code codes.Code
+	}{
+		{false, &pb.UnitreeStreamRequest{Serial: "GO2TEST1", Video: true}, codes.Unauthenticated},
+		{true, &pb.UnitreeStreamRequest{Serial: "GO2TEST1", Topics: []string{"../etc"}}, codes.InvalidArgument},
+		{true, &pb.UnitreeStreamRequest{Serial: "OTHER123", Video: true}, codes.Unavailable},
+	} {
+		c, _, _ := teleopFixture(t, tc.auth, time.Second)
+		stream, err := c.Stream(context.Background(), tc.req)
+		if err == nil {
+			_, err = stream.Recv()
+		}
+		if status.Code(err) != tc.code {
+			t.Fatalf("%v: %v", tc.req, err)
+		}
 	}
 }

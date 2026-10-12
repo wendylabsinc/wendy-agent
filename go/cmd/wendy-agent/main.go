@@ -453,7 +453,7 @@ func main() {
 	_, _, _, unitreeEnrolled := provisioningSvc.ProvisioningInfo()
 	unitreeSvc := services.NewUnitreeService(ctx, filepath.Join(configPath, "unitree-pairings.json"), unitreePairingOwner(deviceScope(provisioningSvc), unitreeEnrolled))
 	defer unitreeSvc.Close()
-	unitreeTeleopSvc := services.NewUnitreeTeleopService(unitreeSvc)
+	unitreeRobotSvc := services.NewUnitreeRobotService(unitreeSvc)
 	if err := unitreeSvc.Restore(); err != nil {
 		logger.Warn("loading Unitree pairings failed", zap.Error(err))
 	}
@@ -789,7 +789,7 @@ func main() {
 		// service off the plaintext provisioning listener, even though its
 		// handlers also reject unauthenticated transports.
 		agentpbv2.RegisterWendyUnitreeServiceServer(srv, unitreeSvc)
-		agentpbv2.RegisterWendyUnitreeTeleopServiceServer(srv, unitreeTeleopSvc)
+		agentpbv2.RegisterWendyUnitreeRobotServiceServer(srv, unitreeRobotSvc)
 
 		// WendyShellService opens an interactive *host* root shell. It is
 		// deliberately registered ONLY here, on the mTLS server, so it is
@@ -982,7 +982,7 @@ func main() {
 		)
 		registerAllServices(localSocketServer)
 		agentpbv2.RegisterWendyUnitreeServiceServer(localSocketServer, unitreeSvc)
-		agentpbv2.RegisterWendyUnitreeTeleopServiceServer(localSocketServer, unitreeTeleopSvc)
+		agentpbv2.RegisterWendyUnitreeRobotServiceServer(localSocketServer, unitreeRobotSvc)
 
 		// oci.AdminAgentSocketHostPath is the single source of truth for this
 		// path: the admin entitlement bind-mounts its parent directory into

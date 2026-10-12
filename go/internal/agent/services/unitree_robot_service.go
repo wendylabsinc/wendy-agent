@@ -7,6 +7,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -23,11 +24,12 @@ type unitreeMotionLink interface {
 	Hello(context.Context) error
 }
 
-// UnitreeTeleopService never connects a robot or sees its key. It sends a
-// small fixed set of commands over the retained paired connection. A move
-// expires unless refreshed, so a crashed caller cannot leave the robot walking.
-type UnitreeTeleopService struct {
-	pb.UnimplementedWendyUnitreeTeleopServiceServer
+// UnitreeRobotService never connects a robot or sees its key. It streams robot
+// data and sends a small fixed set of commands over the retained paired
+// connection. A move expires unless refreshed, so a crashed caller cannot
+// leave the robot walking.
+type UnitreeRobotService struct {
+	pb.UnimplementedWendyUnitreeRobotServiceServer
 	pairing *UnitreeService
 	lease   time.Duration
 	mu      sync.Mutex
@@ -35,12 +37,12 @@ type UnitreeTeleopService struct {
 	timers  map[string]*time.Timer
 }
 
-func NewUnitreeTeleopService(pairing *UnitreeService) *UnitreeTeleopService {
-	return &UnitreeTeleopService{pairing: pairing, lease: teleopMoveLease,
+func NewUnitreeRobotService(pairing *UnitreeService) *UnitreeRobotService {
+	return &UnitreeRobotService{pairing: pairing, lease: teleopMoveLease,
 		gen: make(map[string]uint64), timers: make(map[string]*time.Timer)}
 }
 
-func (s *UnitreeTeleopService) Command(ctx context.Context, req *pb.UnitreeCommandRequest) (*pb.UnitreeCommandResponse, error) {
+func (s *UnitreeRobotService) Command(ctx context.Context, req *pb.UnitreeCommandRequest) (*pb.UnitreeCommandResponse, error) {
 	if err := requireUnitreeTransport(ctx); err != nil {
 		return nil, err
 	}
@@ -85,9 +87,73 @@ func (s *UnitreeTeleopService) Command(ctx context.Context, req *pb.UnitreeComma
 	return &pb.UnitreeCommandResponse{}, nil
 }
 
-// link returns the retained connection after the pairing-owner check, which
-// applies even when the common listener's scope enforcement is in grace/off mode.
-func (s *UnitreeTeleopService) link(ctx context.Context, serial string) (unitreeMotionLink, error) {
+type unitreeStreamLink interface {
+	unitreeLink
+	Subscribe(topics []string, video bool) (<-chan unitree.TopicMessage, <-chan unitree.VideoFrame, func(), error)
+}
+
+func (s *UnitreeRobotService) Stream(req *pb.UnitreeStreamRequest, stream grpc.ServerStreamingServer[pb.UnitreeStreamMessage]) error {
+	ctx := stream.Context()
+	if err := requireUnitreeTransport(ctx); err != nil {
+		return err
+	}
+	if !unitree.ValidSerial(req.GetSerial()) {
+		return status.Error(codes.InvalidArgument, "a paired Go2 serial is required")
+	}
+	for _, topic := range req.GetTopics() {
+		if !unitree.ValidTopic(topic) {
+			return status.Error(codes.InvalidArgument, "invalid Go2 topic name")
+		}
+	}
+	paired, err := s.pairedLink(ctx, req.GetSerial())
+	if err != nil {
+		return err
+	}
+	link, ok := paired.(unitreeStreamLink)
+	if !ok {
+		return status.Error(codes.Unavailable, "paired Go2 cannot stream")
+	}
+	messages, video, cancel, err := link.Subscribe(req.GetTopics(), req.GetVideo())
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	defer cancel()
+	for {
+		var out *pb.UnitreeStreamMessage
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-link.Done():
+			return status.Error(codes.Unavailable, "Go2 disconnected")
+		case m := <-messages:
+			out = &pb.UnitreeStreamMessage{Kind: &pb.UnitreeStreamMessage_Topic{Topic: &pb.UnitreeTopicMessage{
+				Topic: m.Topic, Data: m.Data, Binary: m.Binary, ReceivedUnixNanos: m.Received.UnixNano()}}}
+		case f := <-video:
+			out = &pb.UnitreeStreamMessage{Kind: &pb.UnitreeStreamMessage_Video{Video: &pb.UnitreeVideoFrame{
+				Annexb: f.AnnexB, RtpTimestamp: f.RTPTimestamp, ReceivedUnixNanos: f.Received.UnixNano()}}}
+		}
+		if err := stream.Send(out); err != nil {
+			return err
+		}
+	}
+}
+
+func (s *UnitreeRobotService) link(ctx context.Context, serial string) (unitreeMotionLink, error) {
+	paired, err := s.pairedLink(ctx, serial)
+	if err != nil {
+		return nil, err
+	}
+	link, ok := paired.(unitreeMotionLink)
+	if !ok {
+		return nil, status.Error(codes.Unavailable, "paired Go2 is not connected")
+	}
+	return link, nil
+}
+
+// pairedLink returns the retained connection after the pairing-owner check,
+// which applies even when the common listener's scope enforcement is in
+// grace/off mode.
+func (s *UnitreeRobotService) pairedLink(ctx context.Context, serial string) (unitreeLink, error) {
 	if !s.pairing.opMu.TryLock() {
 		return nil, status.Error(codes.Unavailable, "pairing is changing; try again")
 	}
@@ -97,9 +163,9 @@ func (s *UnitreeTeleopService) link(ctx context.Context, serial string) (unitree
 	}
 	s.pairing.mu.RLock()
 	defer s.pairing.mu.RUnlock()
-	var link unitreeMotionLink
+	var link unitreeLink
 	if session := s.pairing.sessions[serial]; session != nil {
-		link, _ = session.link.(unitreeMotionLink)
+		link = session.link
 	}
 	if link == nil || !link.Connected() {
 		return nil, status.Error(codes.Unavailable, "paired Go2 is not connected")
@@ -107,7 +173,7 @@ func (s *UnitreeTeleopService) link(ctx context.Context, serial string) (unitree
 	return link, nil
 }
 
-func (s *UnitreeTeleopService) cancelLease(serial string) uint64 {
+func (s *UnitreeRobotService) cancelLease(serial string) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gen[serial]++
@@ -118,7 +184,7 @@ func (s *UnitreeTeleopService) cancelLease(serial string) uint64 {
 	return s.gen[serial]
 }
 
-func (s *UnitreeTeleopService) armLease(serial string, gen uint64, link unitreeMotionLink) {
+func (s *UnitreeRobotService) armLease(serial string, gen uint64, link unitreeMotionLink) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.gen[serial] != gen {

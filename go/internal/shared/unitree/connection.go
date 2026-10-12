@@ -58,6 +58,12 @@ type Connection struct {
 	pendingAPI      uint64
 	pendingResponse chan int
 	requestID       atomic.Uint64
+	videoSSRC       atomic.Uint32
+	subMu           sync.Mutex
+	subscribers     map[*subscriber]struct{}
+	topicRefs       map[string]int
+	lidarRefs       int
+	videoRefs       int
 }
 
 // Connected reports whether the validated WebRTC peer is currently connected.
@@ -150,25 +156,48 @@ func connectWithSignaling(ctx context.Context, exchange func(context.Context, []
 		return nil, fmt.Errorf("create Unitree data channel: %w", err)
 	}
 	c.channel = channel
+	// Same media sections as the Unitree app: the robot sends camera video
+	// (and microphone audio) only after an explicit "vid"/"aud" on request.
+	for _, kind := range []webrtc.RTPCodecType{webrtc.RTPCodecTypeAudio, webrtc.RTPCodecTypeVideo} {
+		if _, err := peer.AddTransceiverFromKind(kind, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly}); err != nil {
+			return nil, fmt.Errorf("add Unitree media transceiver: %w", err)
+		}
+	}
+	peer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) { go c.onTrack(track) })
 	channel.OnClose(func() {
 		finish(errors.New("Unitree data channel closed before validation"))
 		go func() { _ = c.Close() }()
 	})
 	var challenge string // Pion serializes message callbacks for this channel.
 	channel.OnMessage(func(message webrtc.DataChannelMessage) {
-		if !message.IsString || len(message.Data) > maxSignalingResponse {
+		if !message.IsString {
+			if c.validated.Load() && len(message.Data) <= maxBinaryMessage {
+				if topic, ok := binaryTopic(message.Data); ok {
+					c.dispatchTopic(topic, message.Data, true)
+				}
+			}
+			return
+		}
+		if len(message.Data) > maxSignalingResponse {
 			return
 		}
 		var msg struct {
-			Type string          `json:"type"`
-			Data json.RawMessage `json:"data"`
-			Info string          `json:"info"`
+			Type  string          `json:"type"`
+			Topic string          `json:"topic"`
+			Data  json.RawMessage `json:"data"`
+			Info  string          `json:"info"`
 		}
 		if json.Unmarshal(message.Data, &msg) != nil {
 			return
 		}
 		if msg.Type == "res" {
 			c.motionResponse(message.Data)
+			return
+		}
+		if msg.Type == "msg" {
+			if c.validated.Load() && ValidTopic(msg.Topic) {
+				c.dispatchTopic(msg.Topic, message.Data, false)
+			}
 			return
 		}
 		switch msg.Type {
