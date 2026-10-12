@@ -40,18 +40,24 @@ const (
 
 var legacyGCMKey = []byte{232, 86, 130, 189, 22, 84, 155, 0, 142, 4, 166, 104, 43, 179, 235, 227}
 
-// Connection is a protocol-validated Go2 WebRTC connection. It sends only
-// validation and heartbeat messages, never robot movement commands. The public
+// Connection is a protocol-validated Go2 WebRTC connection. Movement is sent
+// only through explicitly invoked, bounded Move/Stop requests. The public
 // validation challenge is not a cryptographic proof of robot identity; modern
 // signaling is authenticated separately with the account's per-device key.
 type Connection struct {
-	peer      *webrtc.PeerConnection
-	channel   *webrtc.DataChannel
-	connected atomic.Bool
-	validated atomic.Bool
-	done      chan struct{}
-	closeOnce sync.Once
-	closeErr  error
+	peer            *webrtc.PeerConnection
+	channel         *webrtc.DataChannel
+	connected       atomic.Bool
+	validated       atomic.Bool
+	done            chan struct{}
+	closeOnce       sync.Once
+	closeErr        error
+	motionMu        sync.Mutex
+	responseMu      sync.Mutex
+	pendingID       uint64
+	pendingAPI      uint64
+	pendingResponse chan int
+	requestID       atomic.Uint64
 }
 
 // Connected reports whether the validated WebRTC peer is currently connected.
@@ -159,6 +165,10 @@ func connectWithSignaling(ctx context.Context, exchange func(context.Context, []
 			Info string          `json:"info"`
 		}
 		if json.Unmarshal(message.Data, &msg) != nil {
+			return
+		}
+		if msg.Type == "res" {
+			c.motionResponse(message.Data)
 			return
 		}
 		switch msg.Type {
