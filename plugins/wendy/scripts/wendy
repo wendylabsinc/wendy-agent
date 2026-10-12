@@ -17,7 +17,7 @@
 
 set -u
 
-# SECURITY: each pinned SHA-256 matches a release asset attested by .github/workflows/build.yml (build provenance for darwin-arm64, SPDX SBOM for the other four until #2135 adds provenance); pin-cli.sh now requires build.yml provenance, and the plugin release re-pins with it.
+# SECURITY: each pinned SHA-256 matches a release asset attested by .github/workflows/build.yml (build provenance for darwin-arm64, SPDX SBOM for the other four, because this release predates #2135, which attests provenance for all five); pin-cli.sh requires build.yml provenance, and the plugin release re-pins with it.
 # >>> pinned by scripts/pin-cli.sh (do not edit by hand)
 CLI_VERSION="2026.09.28-142251"
 MIN_VERSION="2026.09.28-142251"
@@ -34,6 +34,7 @@ cli_root="$wendy_root/cli"
 error_file="$cli_root/last-error.txt"
 log_file="$cli_root/install.log"
 lock_dir="$cli_root/.lock"
+# SECURITY: these overrides and WENDY_CLI trust the caller's environment no more than PATH already does; a download from WENDY_CLI_DOWNLOAD_BASE must still match the pinned SHA-256, so redirecting it can only make the install fail.
 base_url="${WENDY_CLI_DOWNLOAD_BASE:-$DOWNLOAD_BASE}"
 well_known_dirs="${WENDY_LAUNCHER_WELL_KNOWN_DIRS:-/opt/homebrew/bin:/usr/local/bin:${HOME:-}/.local/bin}"
 upgrade_hint="brew upgrade wendy, winget upgrade WendyLabs.Wendy, or curl -fsSL https://install.wendy.dev/cli.sh | bash"
@@ -245,6 +246,7 @@ install_managed() {
   esac || fail "could not unpack $asset" "restart the Wendy MCP server to download it again"
   pkg="$tmp/wendy-cli-$os-$arch"
   [ -f "$pkg/wendy$exe" ] || fail "$asset has no wendy$exe inside" "report this at https://github.com/wendylabsinc/wendy-agentic-coding/issues"
+  # SECURITY: the binary is the public release asset and holds no secrets; 755 matches a Homebrew or cli.sh install.
   chmod 755 "$pkg/wendy$exe"
   if [ ! -x "$managed" ]; then
     rm -rf "${cli_root:?}/$CLI_VERSION"

@@ -6,6 +6,7 @@ rem arguments so the CLI inherits stdin/stdout, which carry the MCP protocol,
 rem and starts with the caller's original environment (endlocal).
 rem PowerShell's stdin is NUL so it can't swallow the client's first message.
 rem The full path is used because a client may start the launcher with a trimmed PATH.
+rem SECURITY: -ExecutionPolicy Bypass applies to this one process: the client default (Restricted) blocks every script and RemoteSigned blocks a downloaded unsigned one, while anyone who can modify wendy-install.ps1 can also modify this file, which runs under any policy.
 setlocal
 set "WENDY_EXE="
 for /f "usebackq delims=" %%P in (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0wendy-install.ps1" ^<NUL`) do set "WENDY_EXE=%%P"

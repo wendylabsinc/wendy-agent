@@ -20,6 +20,7 @@ foreach ($line in Get-Content -LiteralPath (Join-Path $PSScriptRoot 'wendy')) {
 }
 $CliVersion = $pinned['CLI_VERSION']
 $MinVersion = $pinned['MIN_VERSION']
+# SECURITY: these overrides and WENDY_CLI trust the caller's environment no more than PATH already does; a download from WENDY_CLI_DOWNLOAD_BASE must still match the pinned SHA-256, so redirecting it can only make the install fail.
 $Base = if ($env:WENDY_CLI_DOWNLOAD_BASE) { $env:WENDY_CLI_DOWNLOAD_BASE } else { $pinned['DOWNLOAD_BASE'] }
 $Root = if ($env:WENDY_CONFIG_DIR) { $env:WENDY_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.wendy' }
 $CliRoot = Join-Path $Root 'cli'
@@ -158,6 +159,7 @@ if (-not (Test-Path -LiteralPath $Managed)) {
     New-Item -ItemType Directory -Force -Path $CliRoot | Out-Null
     Remove-Item -Force -LiteralPath $ErrorFile -ErrorAction SilentlyContinue
     Say "installing the Wendy CLI $CliVersion into $CliRoot (first run, about 15 MB)"
+    # SECURITY: -ExecutionPolicy Bypass applies to the worker only and re-runs this same script, which wendy.cmd already started with Bypass.
     $worker = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -WindowStyle Hidden -PassThru -ArgumentList @(
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-InstallWorker')
     $worker.WaitForExit()
