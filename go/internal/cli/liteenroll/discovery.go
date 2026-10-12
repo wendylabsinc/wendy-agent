@@ -33,12 +33,22 @@ func DiscoverTrust(ctx context.Context, cfg *litepb.WendyConfEnrollment, endpoin
 }
 
 func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyConfEnrollment, endpoint string) error {
+	for _, bundle := range []struct {
+		name string
+		data []byte
+	}{{"device", cfg.DeviceRoots}, {"HTTPS", cfg.HttpsRoots}} {
+		if len(bundle.data) != 0 {
+			if err := validateMbedTLSTrustBundle(bundle.data); err != nil {
+				return fmt.Errorf("existing %s roots: %w", bundle.name, err)
+			}
+		}
+	}
 	tsaRoots := cfg.TsaRoots
 	if cfg.TimeUrl == DefaultTimeURL && len(tsaRoots) == 0 {
 		tsaRoots = bytes.Clone(defaultTSARoots)
 	}
 	if cfg.TimeUrl != "roughtime" {
-		if err := validateTrustBundle(tsaRoots); err != nil {
+		if err := validateMbedTLSTrustBundle(tsaRoots); err != nil {
 			return fmt.Errorf("RFC 3161 enrollment requires trusted TSA roots; use the default Sigstore endpoint or supply --device-roots, --https-roots and --tsa-roots: %w", err)
 		}
 	}
@@ -128,7 +138,7 @@ func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyCo
 			resp.Body.Close()
 		}
 	}
-	if err := validateTrustBundle(httpsRoots); err != nil {
+	if err := validateMbedTLSTrustBundle(httpsRoots); err != nil {
 		return fmt.Errorf("discovered HTTPS roots: %w", err)
 	}
 	cfg.DeviceRoots, cfg.TsaRoots, cfg.HttpsRoots = deviceRoots, tsaRoots, httpsRoots
@@ -206,7 +216,7 @@ func discoveryRoots(body []byte, contentType string) ([]byte, error) {
 			roots = append(roots, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})...)
 		}
 	}
-	if err := validateTrustBundle(roots); err != nil {
+	if err := validateMbedTLSTrustBundle(roots); err != nil {
 		return nil, fmt.Errorf("discovered device roots: %w", err)
 	}
 	return roots, nil

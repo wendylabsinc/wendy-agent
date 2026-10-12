@@ -29,7 +29,7 @@ func ProvisionTrust(cfg *litepb.WendyConfEnrollment, devicePath, tsaPath, httpsP
 	bundles := make([][]byte, 3)
 	for i, path := range []string{devicePath, tsaPath, httpsPath} {
 		if i == 1 && path == "" && cfg.TimeUrl == DefaultTimeURL {
-			if err := validateTrustBundle(defaultTSARoots); err != nil {
+			if err := validateMbedTLSTrustBundle(defaultTSARoots); err != nil {
 				return nil, fmt.Errorf("bundled Sigstore TSA root: %w", err)
 			}
 			bundles[i] = bytes.Clone(defaultTSARoots)
@@ -47,7 +47,7 @@ func ProvisionTrust(cfg *litepb.WendyConfEnrollment, devicePath, tsaPath, httpsP
 		if err != nil {
 			return nil, err
 		}
-		if err := validateTrustBundle(bundles[i]); err != nil {
+		if err := validateMbedTLSTrustBundle(bundles[i]); err != nil {
 			return nil, fmt.Errorf("trust bundle %s: %w", path, err)
 		}
 	}
