@@ -1,12 +1,15 @@
 package data
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/datadoc"
+	"gopkg.in/yaml.v3"
 )
 
 // Revisions of the example campaigns on main before data documents
@@ -84,7 +87,32 @@ func TestDeployedPlanDoesNotStoreKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(stored), `"kind"`) {
+	var fields map[string]any
+	if err := json.Unmarshal(stored, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["kind"]; ok {
 		t.Fatalf("stored plan carries kind:\n%s", stored)
+	}
+}
+
+func TestParseCampaignKindDoesNotChangeValue(t *testing.T) {
+	plain, err := ParseCampaign(minimalCampaign(1, "telemetry: true", "wifi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withKind, err := ParseCampaign([]byte("kind: collection\n" + string(minimalCampaign(1, "telemetry: true", "wifi"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plain, withKind) {
+		t.Fatalf("campaigns differ:\n%+v\n%+v", plain, withKind)
+	}
+	out, err := yaml.Marshal(withKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "kind") {
+		t.Fatalf("marshalled campaign carries kind:\n%s", out)
 	}
 }

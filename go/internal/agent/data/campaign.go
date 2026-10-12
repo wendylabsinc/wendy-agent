@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
+	"github.com/wendylabsinc/wendy/go/internal/shared/datadoc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -286,6 +287,10 @@ func ParseCampaign(contents []byte) (Campaign, error) {
 	if err := campaign.validate(); err != nil {
 		return Campaign{}, err
 	}
+	// Kind is only the header's spelling; clearing it keeps a parsed campaign
+	// identical with or without "kind: collection", so re-marshalling never
+	// sends the line to an older agent.
+	campaign.Kind = ""
 	campaign.State = "armed"
 	if campaign.Models == nil {
 		campaign.Models = map[string]string{}
@@ -410,7 +415,7 @@ func (c Campaign) planDigestInput() map[string]any {
 }
 
 func (c Campaign) validate() error {
-	if c.Kind != "" && c.Kind != "collection" {
+	if c.Kind != "" && c.Kind != datadoc.DefaultKind {
 		return fmt.Errorf("kind %q is not a campaign; a campaign has kind collection or no kind", c.Kind)
 	}
 	if c.Version == 0 {

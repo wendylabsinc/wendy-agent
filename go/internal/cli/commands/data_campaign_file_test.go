@@ -70,6 +70,14 @@ func TestCampaignDeployFileMissingPathGuidance(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no campaign files") || !strings.Contains(err.Error(), "compose.yml") {
 		t.Fatalf("no-campaign guidance = %v", err)
 	}
+	writePickerFiles(t, map[string]string{"watch.yaml": "kind: watch\nversion: 1\nname: w\n"})
+	_, err = resolveCampaignDeployFile(nil, true, neverPick)
+	if err == nil || !strings.Contains(err.Error(), "watch.yaml (kind watch)") {
+		t.Fatalf("kind reason missing = %v", err)
+	}
+	if !strings.Contains(err.Error(), "compose.yml (") {
+		t.Fatalf("compose reason missing = %v", err)
+	}
 	writePickerFiles(t, map[string]string{"people.yml": fmt.Sprintf(pickerCampaign, "people")})
 	_, err = resolveCampaignDeployFile(nil, false, neverPick)
 	if err == nil || !strings.Contains(err.Error(), "non-interactive or --json") || !strings.Contains(err.Error(), "people.yml") || strings.Contains(err.Error(), "compose.yml") {

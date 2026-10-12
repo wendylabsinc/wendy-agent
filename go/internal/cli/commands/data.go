@@ -76,7 +76,7 @@ func newDataCampaignCmd() *cobra.Command {
 
 func newDataCampaignDeployCmd() *cobra.Command {
 	var skipCloudRegistration bool
-	command := &cobra.Command{Use: "deploy [campaign.yaml]", Short: "Validate, persist, and arm a campaign on the connected device", Long: "Deploy a campaign YAML file. Without a path, select a .yaml or .yml file from the current directory.\nNon-interactive and --json invocations require an explicit path.", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "deploy [campaign.yaml]", Short: "Validate, persist, and arm a campaign on the connected device", Long: "Deploy a campaign YAML file. Without a path, select a campaign file from the current directory (a YAML file whose header is a campaign's).\nNon-interactive and --json invocations require an explicit path.", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		path, err := resolveCampaignDeployFile(args, !jsonOutput && isInteractiveTerminal(), pickFromItems)
 		if err != nil {
 			return err
@@ -123,7 +123,7 @@ func newDataCampaignDeployCmd() *cobra.Command {
 // older agent: a campaign file that starts with kind: collection, which the
 // agent's strict parser does not know. The gRPC status is kept.
 func campaignDeployError(err error) error {
-	if err == nil || !strings.Contains(status.Convert(err).Message(), "field kind not found") {
+	if err == nil || !strings.Contains(status.Convert(err).Message(), "field kind not found in type data.Campaign") {
 		return err
 	}
 	return status.Errorf(status.Code(err), "%s\nThis device's agent predates the kind field: update it with `wendy device update`, or remove the kind line from the campaign file.", status.Convert(err).Message())
@@ -152,8 +152,8 @@ func resolveCampaignDeployFile(args []string, interactive bool, pick func(string
 		// Offer only files whose header is a campaign's, not every YAML file:
 		// a project folder also holds compose files, stagefiles and, with data
 		// documents, inference and watch files.
-		if !isCampaignFile(entry.Name(), info.Size()) {
-			skipped = append(skipped, entry.Name())
+		if reason := campaignFileSkipReason(entry.Name(), info.Size()); reason != "" {
+			skipped = append(skipped, fmt.Sprintf("%s (%s)", entry.Name(), reason))
 			continue
 		}
 		names = append(names, entry.Name())
@@ -175,16 +175,24 @@ func resolveCampaignDeployFile(args []string, interactive bool, pick func(string
 // few kilobytes; anything far larger is not one.
 const maxCampaignFileBytes = 1 << 20
 
-func isCampaignFile(name string, size int64) bool {
+// campaignFileSkipReason returns "" when the file is a campaign, otherwise why
+// the picker leaves it out.
+func campaignFileSkipReason(name string, size int64) string {
 	if size > maxCampaignFileBytes {
-		return false
+		return "file too large"
 	}
 	contents, err := os.ReadFile(name)
 	if err != nil {
-		return false
+		return err.Error()
 	}
 	header, err := data.DocumentHeader(contents)
-	return err == nil && header.Kind == datadoc.DefaultKind
+	if err != nil {
+		return err.Error()
+	}
+	if header.Kind != datadoc.DefaultKind {
+		return "kind " + header.Kind
+	}
+	return ""
 }
 
 func newDataCampaignListCmd() *cobra.Command {
