@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -89,14 +90,5 @@ func writeActivationState(dir string, state activationState) {
 	if err != nil {
 		return
 	}
-	f, err := os.CreateTemp(dir, ".activation-state-*") // mode 0600
-	if err != nil {
-		return
-	}
-	defer os.Remove(f.Name())
-	_, err = f.Write(data)
-	closeErr := f.Close()
-	if err == nil && closeErr == nil {
-		_ = os.Rename(f.Name(), filepath.Join(dir, activationStateFile))
-	}
+	_ = atomicfile.Write(filepath.Join(dir, activationStateFile), data, 0600)
 }

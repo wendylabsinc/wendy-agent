@@ -368,6 +368,10 @@ func (m tourWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:cyc
 
 	case tourDiscoveryTickMsg:
 		if m.phase == phaseDiscovering {
+			if m.discoveryStarted.IsZero() {
+				// The first tick arrives after USB setup and any sudo prompt.
+				m.discoveryStarted = time.Now()
+			}
 			return m, m.cmdDiscoveryCheck()
 		}
 		return m, nil
@@ -865,7 +869,7 @@ func (m tourWizardModel) handleBootInstructionsKey(key string) (tea.Model, tea.C
 	switch key {
 	case "enter", " ":
 		m.phase = phaseDiscovering
-		m.discoveryStarted = time.Now()
+		m.discoveryStarted = time.Time{}
 		return m, m.cmdHardwareDiscoveryStart()
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -1710,7 +1714,7 @@ func (m tourWizardModel) viewCloud(w int) string {
 		intro = "Your device is up and running."
 	}
 	if m.projectPath != "" {
-		sb.WriteString(wizBodyStyle.Width(w).Render("Your sample answered successfully at "+m.sampleURL()+".\n\nEdit app.py in "+m.projectPath+" and deploy again:\n  wendy run --prefix "+fmt.Sprintf("%q", m.projectPath)+" --device "+fmt.Sprintf("%q", m.foundAddr)+" --detach\n\n") + "\n")
+		sb.WriteString(wizBodyStyle.Width(w).Render("Your sample answered successfully at "+m.sampleURL()+".\n\nEdit app.py in "+m.projectPath+" and deploy again:\n  "+tourSampleRedeployCommand(runtime.GOOS, m.projectPath, m.foundAddr)+"\n\n") + "\n")
 	}
 	sb.WriteString(wizBodyStyle.Width(w).Render(
 		intro+"\n\n"+
@@ -1725,6 +1729,14 @@ func (m tourWizardModel) viewCloud(w int) string {
 			"Docs: https://docs.wendy.dev/latest") + "\n\n")
 	sb.WriteString(wizHintStyle.Render("Press any key to exit"))
 	return sb.String()
+}
+
+func tourSampleRedeployCommand(goos, projectPath, address string) string {
+	quote := shellQuoteArg
+	if goos == "windows" {
+		quote = powershellSingleQuote
+	}
+	return "wendy run --prefix " + quote(projectPath) + " --device " + quote(address) + " --detach"
 }
 
 func (m tourWizardModel) viewError(w int) string {

@@ -67,3 +67,34 @@ func TestTourDiscoveryHasDeadline(t *testing.T) {
 		t.Fatalf("did not stop discovery: %#v", msg)
 	}
 }
+
+func TestTourDiscoveryDeadlineStartsAfterUSBPreflight(t *testing.T) {
+	m := newTourWizardModel()
+	m.phase = phaseBootInstructions
+	m.discoveryStarted = time.Now().Add(-3 * time.Minute)
+	m, cmd := stepTour(t, m, key("enter"))
+	if m.phase != phaseDiscovering || cmd == nil {
+		t.Fatalf("did not begin USB preflight: phase=%v command=%v", m.phase, cmd != nil)
+	}
+	if !m.discoveryStarted.IsZero() {
+		t.Fatal("discovery timeout includes USB setup and sudo prompts")
+	}
+
+	// Finishing the terminal preflight starts the full discovery allowance.
+	before := time.Now()
+	m, cmd = stepTour(t, m, tourDiscoveryTickMsg{})
+	if m.discoveryStarted.Before(before) || m.discoveryStarted.After(time.Now()) || cmd == nil {
+		t.Fatalf("first discovery tick did not start its deadline: %v", m.discoveryStarted)
+	}
+
+	// Later ticks retain that start time, so retries still expire.
+	started := time.Now().Add(-3 * time.Minute)
+	m.discoveryStarted = started
+	m, cmd = stepTour(t, m, tourDiscoveryTickMsg{})
+	if !m.discoveryStarted.Equal(started) || cmd == nil {
+		t.Fatal("discovery retry reset its deadline")
+	}
+	if failed, ok := cmd().(tourDiscoveryErrorMsg); !ok || failed.err == nil {
+		t.Fatal("discovery retry did not honor its original deadline")
+	}
+}

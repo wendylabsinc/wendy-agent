@@ -287,7 +287,7 @@ func doctorCheckTarget(ctx context.Context, out *doctorReport, d doctorDeps, con
 		out.add("authentication", "unknown", false, "auth_not_checked", "Authentication was not checked.", "")
 		return
 	}
-	address := selected
+	var addresses []string
 	if strings.HasPrefix(selected, "vm:") {
 		name := strings.TrimPrefix(selected, "vm:")
 		if configDir == "" || vm.ValidName(name) != nil {
@@ -299,22 +299,26 @@ func doctorCheckTarget(ctx context.Context, out *doctorReport, d doctorDeps, con
 		// state never proves liveness; only the following network probes do that.
 		var state vm.State
 		err := d.readJSON(filepath.Join(configDir, "vms", name, "state.json"), &state)
-		if err != nil || state.AgentPort < 1 || state.AgentPort > 65535 {
+		if err != nil || state.AgentPort < 1 || state.AgentPort > 65535-vm.AgentPortSpan+1 {
 			out.add("device_reachable", "fail", true, "vm_not_running", "No usable running-state record was found for the selected VM.", "Start the intended VM yourself, then rerun doctor. Doctor never boots it.")
 			out.add("authentication", "unknown", false, "auth_not_checked", "Authentication was not checked for the stopped or unavailable VM.", "")
 			return
 		}
-		address = net.JoinHostPort("127.0.0.1", strconv.Itoa(state.AgentPort))
-	}
-	address, err := doctorAddress(address)
-	if err != nil {
-		out.add("device_reachable", "fail", true, "target_selector_invalid", "This target selector cannot be checked directly.", "Use a hostname, IP address, host:port, or an existing vm:NAME selector.")
-		out.add("authentication", "unknown", false, "auth_not_checked", "Authentication was not checked.", "")
-		return
+		for offset := range vm.AgentPortSpan {
+			addresses = append(addresses, net.JoinHostPort("127.0.0.1", strconv.Itoa(state.AgentPort+offset)))
+		}
+	} else {
+		var err error
+		addresses, err = doctorAddresses(selected)
+		if err != nil {
+			out.add("device_reachable", "fail", true, "target_selector_invalid", "This target selector cannot be checked directly.", "Use a hostname, IP address, host:port, or an existing vm:NAME selector.")
+			out.add("authentication", "unknown", false, "auth_not_checked", "Authentication was not checked.", "")
+			return
+		}
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, doctorProbeTimeout)
 	defer cancel()
-	evidence := d.probe(probeCtx, address)
+	evidence := doctorProbeTargets(probeCtx, d.probe, addresses)
 	if !evidence.Reachable {
 		out.add("device_reachable", "fail", true, "target_unreachable", "The selected endpoint could not be reached.", "Check target power, connection, and address. Doctor does not change networking.")
 	} else {
@@ -332,24 +336,45 @@ func doctorCheckTarget(ctx context.Context, out *doctorReport, d doctorDeps, con
 	}
 }
 
-func doctorAddress(address string) (string, error) {
+func doctorAddresses(address string) ([]string, error) {
 	if address == "" || strings.ContainsAny(address, " /\\\t\r\n,@?#") {
-		return "", errors.New("invalid target")
+		return nil, errors.New("invalid target")
 	}
 	if _, numeric := allDigitDeviceHost(address); numeric {
-		return "", errors.New("invalid target")
+		return nil, errors.New("invalid target")
 	}
 	if host, port, err := net.SplitHostPort(address); err == nil {
 		n, e := strconv.Atoi(port)
 		if host == "" || e != nil || n < 1 || n > 65535 {
-			return "", errors.New("invalid target")
+			return nil, errors.New("invalid target")
 		}
-		return address, nil
+		return []string{address}, nil
 	}
 	if strings.Contains(address, ":") && net.ParseIP(address) == nil {
-		return "", errors.New("invalid target")
+		return nil, errors.New("invalid target")
 	}
-	return net.JoinHostPort(address, "50051"), nil
+	// Provisioned agents stop listening on plaintext and move to the TLS port.
+	// Probe both defaults only when the user has not selected a specific port.
+	return []string{net.JoinHostPort(address, "50051"), net.JoinHostPort(address, "50052")}, nil
+}
+
+func doctorProbeTargets(ctx context.Context, probe func(context.Context, string) doctorTargetEvidence, addresses []string) doctorTargetEvidence {
+	// A silent endpoint must not consume the whole deadline before the other
+	// endpoint gets a chance to connect. Each probe obeys the same deadline.
+	results := make(chan doctorTargetEvidence, len(addresses))
+	for _, address := range addresses {
+		go func() { results <- probe(ctx, address) }()
+	}
+	var out doctorTargetEvidence
+	for range addresses {
+		evidence := <-results
+		out.Reachable = out.Reachable || evidence.Reachable
+		if evidence.AgentResponding {
+			out.AgentResponding = true
+			out.NotProvisioned = out.NotProvisioned || evidence.NotProvisioned
+		}
+	}
+	return out
 }
 
 func doctorReadJSON(path string, value any) error {

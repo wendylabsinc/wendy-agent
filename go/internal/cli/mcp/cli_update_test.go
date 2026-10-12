@@ -177,9 +177,13 @@ func TestCLIUpdateNoticePerSessionAndRelease(t *testing.T) {
 	releasedCLI(t)
 	analytics.Disable()
 	var offers []map[string]string
+	var commands []map[string]string
 	analytics.SetTrackHookForTesting(func(event string, props map[string]string) {
-		if event == "cli_update_offered" {
+		switch event {
+		case "cli_update_offered":
 			offers = append(offers, props)
+		case "command_executed":
+			commands = append(commands, props)
 		}
 	})
 	t.Cleanup(func() { analytics.SetTrackHookForTesting(nil) })
@@ -200,7 +204,14 @@ func TestCLIUpdateNoticePerSessionAndRelease(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, ctx := range []context.Context{a, b} {
+			offerCount, commandCount := len(offers), len(commands)
 			first := protocolUpdateCall(t, srv, ctx, "container_list")
+			if len(offers) != offerCount+1 || len(commands) != commandCount+1 {
+				t.Fatalf("notice call emitted %d offers and %d command events", len(offers)-offerCount, len(commands)-commandCount)
+			}
+			if offers[offerCount]["attempt_id"] != commands[commandCount]["attempt_id"] {
+				t.Fatalf("notice attempt %q does not match tool attempt %q", offers[offerCount]["attempt_id"], commands[commandCount]["attempt_id"])
+			}
 			if !first.IsError || len(first.Content) != 2 || structuredMap(t, first)["error_code"] != string(errCodeNotConnected) {
 				t.Fatalf("notice lost tool error: %+v", first)
 			}
@@ -219,6 +230,14 @@ func TestCLIUpdateNoticePerSessionAndRelease(t *testing.T) {
 	}
 	if len(offers) != 4 {
 		t.Fatalf("offer telemetry count = %d, want one per session and release", len(offers))
+	}
+	seenAttempts := make(map[string]bool)
+	for _, props := range commands {
+		id := props["attempt_id"]
+		if seenAttempts[id] {
+			t.Fatalf("separate tool calls reused attempt %q", id)
+		}
+		seenAttempts[id] = true
 	}
 	for _, props := range offers {
 		if _, err := uuid.Parse(props["attempt_id"]); err != nil {

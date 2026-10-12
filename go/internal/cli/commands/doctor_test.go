@@ -5,15 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
+	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
 
 func doctorTestDeps(t *testing.T) doctorDeps {
@@ -199,8 +203,11 @@ func TestDoctorOnlyUsesReadOnlyProbesAndTargetPrecedence(t *testing.T) {
 		return nil
 	}
 	var endpoints []string
+	var endpointsMu sync.Mutex
 	d.probe = func(_ context.Context, address string) doctorTargetEvidence {
+		endpointsMu.Lock()
 		endpoints = append(endpoints, address)
+		endpointsMu.Unlock()
 		return doctorTargetEvidence{Reachable: true, AgentResponding: true, NotProvisioned: true}
 	}
 	report, output, err := doctorExecute(t, d, "--device", "explicit-private.local")
@@ -210,7 +217,8 @@ func TestDoctorOnlyUsesReadOnlyProbesAndTargetPrecedence(t *testing.T) {
 	if want := [][]string{{"docker", "info"}, {"docker", "buildx", "version"}}; !reflect.DeepEqual(calls, want) {
 		t.Fatalf("only read-only Docker commands are allowed: got %v", calls)
 	}
-	if !reflect.DeepEqual(endpoints, []string{"explicit-private.local:50051"}) {
+	slices.Sort(endpoints)
+	if !reflect.DeepEqual(endpoints, []string{"explicit-private.local:50051", "explicit-private.local:50052"}) {
 		t.Fatalf("explicit device must override env/saved: %v", endpoints)
 	}
 	if strings.Contains(output, "private.local") {
@@ -221,13 +229,15 @@ func TestDoctorOnlyUsesReadOnlyProbesAndTargetPrecedence(t *testing.T) {
 	}
 	endpoints = nil
 	doctorExecute(t, d)
-	if !reflect.DeepEqual(endpoints, []string{"environment-private.local:50051"}) {
+	slices.Sort(endpoints)
+	if !reflect.DeepEqual(endpoints, []string{"environment-private.local:50051", "environment-private.local:50052"}) {
 		t.Fatalf("env target not used: %v", endpoints)
 	}
 	endpoints = nil
 	d.getenv = func(string) string { return "" }
 	doctorExecute(t, d)
-	if !reflect.DeepEqual(endpoints, []string{"saved-private.local:50051"}) {
+	slices.Sort(endpoints)
+	if !reflect.DeepEqual(endpoints, []string{"saved-private.local:50051", "saved-private.local:50052"}) {
 		t.Fatalf("saved target not used: %v", endpoints)
 	}
 }
@@ -248,20 +258,116 @@ func TestDoctorDoesNotResolveCloudOrCreateSimulator(t *testing.T) {
 	}
 }
 
-func TestDoctorAddressOnlyAcceptsDirectTargets(t *testing.T) {
-	for input, want := range map[string]string{
-		"device.local": "device.local:50051", "192.0.2.1": "192.0.2.1:50051",
-		"127.0.0.1:54321": "127.0.0.1:54321", "::1": "[::1]:50051", "[::1]:54321": "[::1]:54321",
+func TestDoctorAddressesOnlyAcceptsDirectTargets(t *testing.T) {
+	for input, want := range map[string][]string{
+		"device.local":       {"device.local:50051", "device.local:50052"},
+		"192.0.2.1":          {"192.0.2.1:50051", "192.0.2.1:50052"},
+		"::1":                {"[::1]:50051", "[::1]:50052"},
+		"127.0.0.1:54321":    {"127.0.0.1:54321"},
+		"[::1]:54321":        {"[::1]:54321"},
+		"device.local:50051": {"device.local:50051"},
+		"device.local:65535": {"device.local:65535"},
 	} {
-		got, err := doctorAddress(input)
-		if err != nil || got != want {
-			t.Errorf("doctorAddress(%q) = %q, %v; want %q", input, got, err, want)
+		got, err := doctorAddresses(input)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("doctorAddresses(%q) = %q, %v; want %q", input, got, err, want)
 		}
 	}
 	for _, input := range []string{"", "42", "42:50051", "host:0", "host:65536", "host:bad", ":50051", "https://device.local", "user@device.local", "device.local/path", "device.local\n"} {
-		if _, err := doctorAddress(input); err == nil {
+		if _, err := doctorAddresses(input); err == nil {
 			t.Errorf("accepted invalid or indirect selector %q", input)
 		}
+	}
+}
+
+func TestDoctorReachabilityIncludesProvisionedTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		selector  string
+		tls       string
+		want      []string
+		reachable bool
+	}{
+		{"hostname", "device.local", "device.local:50052", []string{"device.local:50051", "device.local:50052"}, true},
+		{"IPv6", "::1", "[::1]:50052", []string{"[::1]:50051", "[::1]:50052"}, true},
+		{"VM", "vm:provisioned", "127.0.0.1:51112", []string{"127.0.0.1:51111", "127.0.0.1:51112"}, true},
+		{"explicit plaintext", "device.local:50051", "device.local:50052", []string{"device.local:50051"}, false},
+		{"explicit TLS", "device.local:50052", "device.local:50052", []string{"device.local:50052"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := doctorTestDeps(t)
+			d.readJSON = func(_ string, value any) error {
+				if state, ok := value.(*vm.State); ok {
+					state.AgentPort = 51111
+					return nil
+				}
+				return os.ErrNotExist
+			}
+			var endpoints []string
+			var mu sync.Mutex
+			d.probe = func(_ context.Context, address string) doctorTargetEvidence {
+				mu.Lock()
+				endpoints = append(endpoints, address)
+				mu.Unlock()
+				return doctorTargetEvidence{Reachable: address == tc.tls}
+			}
+			report, _, err := doctorExecute(t, d, "--device", tc.selector)
+			slices.Sort(endpoints)
+			if !reflect.DeepEqual(endpoints, tc.want) {
+				t.Fatalf("probed %v; want %v", endpoints, tc.want)
+			}
+			if tc.reachable {
+				if err != nil || !report.OK || doctorFindCheck(t, report, "device_reachable").Status != "pass" {
+					t.Fatalf("TLS connection must prove reachability: %+v, %v", report, err)
+				}
+			} else if !errors.Is(err, errDoctorChecksFailed) || doctorFindCheck(t, report, "device_reachable").Status != "fail" {
+				t.Fatalf("explicit plaintext port must remain unreachable: %+v, %v", report, err)
+			}
+			for _, id := range []string{"wendy_agent", "authentication"} {
+				if got := doctorFindCheck(t, report, id).Status; got != "unknown" {
+					t.Errorf("TCP reachability must leave %s unknown; got %s", id, got)
+				}
+			}
+		})
+	}
+}
+
+func TestDoctorProbeTargetsShareDeadlineWithoutBlockingTLS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	plaintextStarted := make(chan struct{})
+	started := time.Now()
+	evidence := doctorProbeTargets(ctx, func(ctx context.Context, address string) doctorTargetEvidence {
+		if address == "device.local:50051" {
+			close(plaintextStarted)
+			<-ctx.Done()
+			return doctorTargetEvidence{}
+		}
+		<-plaintextStarted
+		reachable := ctx.Err() == nil
+		cancel()
+		return doctorTargetEvidence{Reachable: reachable}
+	}, []string{"device.local:50051", "device.local:50052"})
+	if !evidence.Reachable || evidence.AgentResponding || evidence.NotProvisioned {
+		t.Fatalf("silent plaintext endpoint prevented TLS reachability: %+v", evidence)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatal("probes exceeded the shared timeout")
+	}
+}
+
+func TestDoctorProbeTargetKeepsTCPReachabilityWhenRPCFails(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	// TCP accepts connections, but no unauthenticated RPC can complete.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	evidence := doctorProbeTarget(ctx, listener.Addr().String())
+	if !evidence.Reachable || evidence.AgentResponding || evidence.NotProvisioned {
+		t.Fatalf("TCP reachability must survive an RPC failure: %+v", evidence)
 	}
 }
 

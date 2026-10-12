@@ -130,7 +130,8 @@ func runRobotTour(cmd *cobra.Command, projectDir string) (runErr error) {
 		}
 		tourStage(ctx, "simulator", "project_ready", "completed", nil, "project")
 		tourStage(ctx, "simulator", "target_selected", "completed", nil, "select_target")
-		fmt.Fprintf(cmd.OutOrStdout(), "Your editable starter: %s\nResume or walk again: wendy tour --simulator --project %q\nStop the simulator: wendy vm stop %s\n", path, filepath.Dir(path), p.VMName)
+		resumeCommand := tourRobotResumeCommand(path)
+		fmt.Fprintf(cmd.OutOrStdout(), "Your editable starter: %s\nResume or walk again: %s\nStop the simulator: wendy vm stop %s\n", path, resumeCommand, p.VMName)
 		step = "provision"
 		store, err := robotVMStore()
 		if err != nil {
@@ -182,12 +183,16 @@ func runRobotTour(cmd *cobra.Command, projectDir string) (runErr error) {
 		}
 		distance, err := walkTourRobot(ctx, port, profile, p)
 		if err != nil {
-			return fmt.Errorf("robot demonstration: %w; resume with 'wendy tour --simulator --project %q'", err, filepath.Dir(path))
+			return fmt.Errorf("robot demonstration: %w; resume with:\n  %s", err, resumeCommand)
 		}
 		tourStage(ctx, "simulator", "motion_verified", "completed", nil, "readiness")
-		fmt.Fprintf(cmd.OutOrStdout(), "Your simulated Go2 moved %.2f metres from its starting point and stopped.\nThe viewer stays open. Choose Enable controls, then hold W to walk. Space stops; Release controls ends manual control.\nEdit turn_rps or duration_seconds in %s, then run:\n  wendy tour --simulator --project %q\nStop the VM when finished:\n  wendy vm stop %s\nSet up a physical device next:\n  wendy tour --hardware\n", distance, path, filepath.Dir(path), p.VMName)
+		fmt.Fprintf(cmd.OutOrStdout(), "Your simulated Go2 moved %.2f metres from its starting point and stopped.\nThe viewer stays open. Choose Enable controls, then hold W to walk. Space stops; Release controls ends manual control.\nEdit turn_rps or duration_seconds in %s, then run:\n  %s\nStop the VM when finished:\n  wendy vm stop %s\nSet up a physical device next:\n  wendy tour --hardware\n", distance, path, resumeCommand, p.VMName)
 		return nil
 	})
+}
+
+func tourRobotResumeCommand(projectPath string) string {
+	return "wendy tour --simulator --project " + shellQuoteArg(filepath.Dir(projectPath))
 }
 
 func tourOutcome(err error) string {
