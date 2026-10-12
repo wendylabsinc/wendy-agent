@@ -236,9 +236,10 @@ func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUni
 		}
 	}
 	if p.Device.EncryptionKey == "" {
-		// Legacy firmware does not expose a per-device encryption key. A new
-		// pairing must still come from the account login flow. Connect checks
-		// whether the robot's actual firmware requires a key.
+		// Legacy firmware does not expose a per-device key. Token presence is
+		// only a marker from the CLI's account flow, not proof of account
+		// ownership. It is never forwarded to the robot. Connect checks
+		// whether the firmware requires a real per-device key.
 		if previous == nil && req.Token == "" {
 			return nil, status.Error(codes.InvalidArgument, "log in to Unitree before pairing this robot")
 		}
@@ -281,7 +282,7 @@ func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUni
 	}
 	if !link.Connected() || connectCtx.Err() != nil {
 		_ = link.Close()
-		return nil, status.Error(codes.Unavailable, "Go2 did not complete authentication")
+		return nil, status.Error(codes.Unavailable, "Go2 did not complete protocol validation")
 	}
 	if err := s.store.Save(p); err != nil {
 		_ = link.Close()

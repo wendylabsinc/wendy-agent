@@ -23,6 +23,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 )
 
+// This public mobile-app constant is a vendor compatibility value, not a
+// Wendy secret or independent authentication proof. Account traffic uses HTTPS.
 const cloudSignSecret = "XyvkwK45hp5PHfA8"
 
 type cloudHTTPClient interface {
@@ -36,7 +38,9 @@ type Client struct {
 }
 
 // NewClient selects the account's registration region, "global" or "cn".
-// It matches the mobile client's TLS fingerprint, required by the cloud API.
+// It mirrors the referenced mobile-compatible TLS client. Physical account
+// acceptance (including whether a standard net/http client works) is unverified.
+// Dependencies are pinned in go.mod/go.sum; never disable certificate checks.
 func NewClient(region string) (*Client, error) {
 	var endpoint string
 	switch strings.ToLower(strings.TrimSpace(region)) {

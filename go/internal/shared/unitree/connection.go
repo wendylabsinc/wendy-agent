@@ -40,8 +40,10 @@ const (
 
 var legacyGCMKey = []byte{232, 86, 130, 189, 22, 84, 155, 0, 142, 4, 166, 104, 43, 179, 235, 227}
 
-// Connection is a validated Go2 WebRTC connection. It sends only protocol
-// validation and heartbeat messages, never robot movement commands.
+// Connection is a protocol-validated Go2 WebRTC connection. It sends only
+// validation and heartbeat messages, never robot movement commands. The public
+// validation challenge is not a cryptographic proof of robot identity; modern
+// signaling is authenticated separately with the account's per-device key.
 type Connection struct {
 	peer      *webrtc.PeerConnection
 	channel   *webrtc.DataChannel
@@ -325,7 +327,10 @@ func exchangeEncryptedSDP(ctx context.Context, client *http.Client, base, key st
 	if _, err := rand.Read(randomKey[:]); err != nil {
 		return nil, fmt.Errorf("create Unitree session key: %w", err)
 	}
-	// The protocol uses the 32 ASCII hex characters as an AES-256 key.
+	// The vendor wire protocol requires AES-ECB using 32 ASCII hex characters
+	// as an AES-256 key, with RSA PKCS#1 v1.5 wrapping. This is interoperability,
+	// not authenticated encryption. Keyed robots must first authenticate the
+	// RSA notification with their per-device GCM key; no downgrade is allowed.
 	sessionKey := []byte(hex.EncodeToString(randomKey[:]))
 	encryptedOffer, err := encryptECB(offer, sessionKey)
 	if err != nil {
