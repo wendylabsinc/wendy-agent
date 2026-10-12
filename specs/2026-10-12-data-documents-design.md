@@ -451,7 +451,7 @@ Chat is unchanged from chat-watches §7 and PR #2210, with two fixes from review
 |---|---|---|
 | 1 | New, small | From #2206: the worker survives a failing frame, counting failures over a rolling window instead of resetting on any success (Martien, #2206); journal entries carry `detections`. Useful on `main` without anything else here. |
 | 2 | This spec | Draft PR for review. |
-| 3 | Library | `datadoc`, with `collection` registered. `wendy data campaign deploy` and its picker parse through it. No agent or proto change. |
+| 3 | Library | `datadoc`, with `collection` registered. `wendy data campaign deploy` and its picker parse through it. No proto change; the only agent-side change is `ParseCampaign` accepting `kind: collection`. |
 | 4 | Agent and CLI | Inference and watch kinds, document store, runners, the four calls, `Events.watches`, and `wendy data apply/documents/remove`. Built from #2206's lease code. |
 | 5 | #2207, rebased onto 4 | The document backend, the detector list, and the #2207 review fixes. |
 | 6 | #2210, rebased onto 5 | The two fixes in §11.3. |
