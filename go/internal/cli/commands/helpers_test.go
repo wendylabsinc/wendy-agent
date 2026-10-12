@@ -146,6 +146,24 @@ func TestLANAgentAddressesPrefersIPAddress(t *testing.T) {
 	}
 }
 
+func TestLANAgentAddressesUsesAdvertisedPort(t *testing.T) {
+	dev := models.LANDevice{
+		IPAddress: "192.168.1.23",
+		Hostname:  "wendyos-otter.local",
+		Port:      54321,
+	}
+
+	got := lanAgentAddresses(dev)
+	want := []string{
+		"192.168.1.23:54321",
+		"wendyos-otter.local:54321",
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lanAgentAddresses() = %v, want %v", got, want)
+	}
+}
+
 func TestExternalProviderPickerHint(t *testing.T) {
 	tests := []struct {
 		name        string
