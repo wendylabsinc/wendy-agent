@@ -161,7 +161,7 @@ func validatePairing(pair Pairing) error {
 	if !ValidSerial(pair.Device.Serial) || !isRobotIP(net.ParseIP(pair.Device.Address)) || pair.PairedAt.IsZero() {
 		return errors.New("Unitree pairing requires a serial, unicast IP address, and verification time")
 	}
-	if pair.Device.EncryptionKey != "" && !validEncryptionKey(pair.Device.EncryptionKey) {
+	if pair.Device.EncryptionKey != "" && !ValidEncryptionKey(pair.Device.EncryptionKey) {
 		return errors.New("Unitree encryption key must contain 32 hexadecimal characters")
 	}
 	return nil

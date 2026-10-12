@@ -1,4 +1,4 @@
-package unitree
+package unitreecloud
 
 import (
 	"context"

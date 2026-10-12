@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/unitreecloud"
 	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
@@ -37,7 +38,7 @@ func unitreePairTransportError(conn *grpcclient.AgentConnection) error {
 }
 
 func unitreePairLogin(ctx context.Context, region, email, password string) (*unitree.Account, error) {
-	client, err := unitree.NewClient(region)
+	client, err := unitreecloud.NewClient(region)
 	if err != nil {
 		return nil, err
 	}

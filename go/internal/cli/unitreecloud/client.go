@@ -1,5 +1,7 @@
-// Package unitree connects to a Go2 using the Unitree mobile app protocol.
-package unitree
+// Package unitreecloud accesses Unitree accounts from the CLI only.
+// Keeping its mobile-TLS compatibility dependencies out of the LAN package
+// avoids linking them into the agent that stores keys and connects to robots.
+package unitreecloud
 
 import (
 	"context"
@@ -18,25 +20,10 @@ import (
 	tlsclient "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
 	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 )
 
 const cloudSignSecret = "XyvkwK45hp5PHfA8"
-
-// Device identifies a robot. EncryptionKey must not appear in public output.
-type Device struct {
-	Serial        string `json:"serial"`
-	Name          string `json:"name"`
-	Address       string `json:"address,omitempty"`
-	Model         string `json:"model,omitempty"`
-	EncryptionKey string `json:"-"`
-}
-
-// Account is an ephemeral login result. Neither the password nor the cloud
-// token is saved: LAN reconnections use the stored per-device encryption key.
-type Account struct {
-	Token   string   `json:"-"`
-	Devices []Device `json:"devices"`
-}
 
 type cloudHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
@@ -73,7 +60,7 @@ func NewClient(region string) (*Client, error) {
 
 // Login logs in and fetches robots already bound to this Unitree account.
 // A robot must first be bound using the official Unitree Go app.
-func (c *Client) Login(ctx context.Context, email, password string) (*Account, error) {
+func (c *Client) Login(ctx context.Context, email, password string) (*unitree.Account, error) {
 	email = strings.TrimSpace(email)
 	if email == "" || password == "" {
 		return nil, errors.New("Unitree email and password are required")
@@ -101,28 +88,28 @@ func (c *Client) Login(ctx context.Context, email, password string) (*Account, e
 	if err := c.request(ctx, http.MethodGet, "device/bind/list", login.AccessToken, nil, &bound); err != nil {
 		return nil, err
 	}
-	account := &Account{Token: login.AccessToken}
+	account := &unitree.Account{Token: login.AccessToken}
 	seen := make(map[string]bool)
 	for _, item := range bound {
 		if item.Series != "" && !strings.EqualFold(item.Series, "Go2") {
 			continue
 		}
 		serial := strings.TrimSpace(item.Serial)
-		if !ValidSerial(serial) || seen[serial] {
+		if !unitree.ValidSerial(serial) || seen[serial] {
 			continue
 		}
 		key := item.Key
 		if key == "" {
 			key = item.GCMKey
 		}
-		if key != "" && !validEncryptionKey(key) {
+		if key != "" && !unitree.ValidEncryptionKey(key) {
 			return nil, errors.New("Unitree returned an invalid device encryption key")
 		}
 		name := strings.TrimSpace(item.Alias)
 		if name == "" {
 			name = "Unitree Go2"
 		}
-		account.Devices = append(account.Devices, Device{
+		account.Devices = append(account.Devices, unitree.Device{
 			Serial: serial, Name: name, Model: item.Model, EncryptionKey: key,
 		})
 		seen[serial] = true
@@ -202,23 +189,4 @@ func (c *Client) request(ctx context.Context, method, path, token string, form u
 func md5Hex(value string) string {
 	digest := md5.Sum([]byte(value))
 	return hex.EncodeToString(digest[:])
-}
-
-func validEncryptionKey(key string) bool {
-	decoded, err := hex.DecodeString(key)
-	return err == nil && len(decoded) == 16
-}
-
-// ValidSerial accepts a nonempty, bounded printable-ASCII robot identifier.
-// Use the same constraint before discovery, connection setup and persistence.
-func ValidSerial(serial string) bool {
-	if len(serial) == 0 || len(serial) > 128 {
-		return false
-	}
-	for _, r := range serial {
-		if r < '!' || r > '~' {
-			return false
-		}
-	}
-	return true
 }
