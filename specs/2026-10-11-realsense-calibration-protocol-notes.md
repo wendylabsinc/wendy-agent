@@ -258,3 +258,17 @@ hardware. The SDK oracle (Thor helper build) is now a nice-to-have for
 byte-offset paranoia, not a gate: the CRC already proves we framed the right
 bytes, and two firmware paths agree with each other and with the camera's
 physical geometry.
+
+## Z16 capture validation — 2026-10-12, same camera
+
+The agent's generalised mmap loop sequence (S_FMT Z16, REQBUFS 2, mmap,
+STREAMON, DQBUF) ran standalone on the G1's depth node: negotiated Z16
+640x480, bytesperline 1280, full 614,400-byte frames, 93% valid-depth pixels,
+centre pixel 2.27 m, scene range 0.46–6.78 m — 90 frames in 0.97 s.
+
+- **The driver's default frame interval for Z16 640x480 is ~90 fps**, not 30.
+  A capture that does not set VIDIOC_S_PARM runs at triple the expected rate;
+  the service layer must set the interval explicitly.
+- S_FMT on a node held by another process fails EBUSY at the S_FMT stage
+  (observed against the vendor-SDK demo app holding all three functions —
+  the lockout the native design removes, live).
