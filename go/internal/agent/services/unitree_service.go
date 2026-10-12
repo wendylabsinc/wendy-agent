@@ -170,7 +170,7 @@ func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUni
 	if err := requireUnitreeTransport(ctx); err != nil {
 		return nil, err
 	}
-	if req == nil || strings.TrimSpace(req.Serial) == "" || len(req.Serial) > 128 || len(req.Name) > 256 || len(req.Token) > 8192 {
+	if req == nil || !unitree.ValidSerial(strings.TrimSpace(req.Serial)) || len(req.Name) > 256 || len(req.Token) > 8192 {
 		return nil, status.Error(codes.InvalidArgument, "a valid Unitree robot serial is required")
 	}
 	address := strings.TrimSpace(req.Address)

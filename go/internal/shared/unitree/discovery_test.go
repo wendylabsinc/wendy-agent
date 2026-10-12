@@ -63,6 +63,21 @@ func TestMDNSOnlyMatchesKnownAccountSerial(t *testing.T) {
 	}
 }
 
+func TestMDNSDiscoveryOnlyReturnsPairableIPv4(t *testing.T) {
+	for _, tc := range []struct {
+		address string
+		ok      bool
+	}{{"192.0.2.5", true}, {"169.254.1.5", true}, {"2001:db8::5", false}, {"fe80::5", false}, {"127.0.0.1", false}, {"0.0.0.0", false}, {"255.255.255.255", false}} {
+		t.Run(tc.address, func(t *testing.T) {
+			entry := discovery.MDNSService{IPAddress: tc.address, Hostname: "B42TEST.local"}
+			_, ok := deviceFromMDNS(entry, []string{"B42TEST"})
+			if ok != tc.ok {
+				t.Fatalf("address accepted=%v, want %v", ok, tc.ok)
+			}
+		})
+	}
+}
+
 func TestDiscoveryCombinesMDNSAndUnitreeMulticast(t *testing.T) {
 	udp := func(context.Context, []string) ([]Device, error) {
 		return []Device{{Serial: "B42TEST", Address: "192.168.1.5"}}, nil

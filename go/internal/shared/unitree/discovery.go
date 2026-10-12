@@ -33,7 +33,7 @@ func discover(ctx context.Context, serials []string, multicast multicastScan, br
 		return nil, errors.New("at most 256 Unitree serial numbers can be scanned at once")
 	}
 	for _, serial := range serials {
-		if !validSerial(serial) {
+		if !ValidSerial(serial) {
 			return nil, errors.New("invalid Unitree serial number")
 		}
 	}
@@ -190,7 +190,7 @@ func deviceFromDatagram(raw []byte, sender net.IP) (Device, bool) {
 		Serial string `json:"sn"`
 		IP     string `json:"ip"`
 	}
-	if json.Unmarshal(raw, &reply) != nil || !validSerial(reply.Serial) {
+	if json.Unmarshal(raw, &reply) != nil || !ValidSerial(reply.Serial) {
 		return Device{}, false
 	}
 	address := sender
@@ -210,7 +210,7 @@ func deviceFromDatagram(raw []byte, sender net.IP) (Device, bool) {
 
 func deviceFromMDNS(entry discovery.MDNSService, serials []string) (Device, bool) {
 	address := net.ParseIP(entry.IPAddress)
-	if !isRobotIP(address) {
+	if !isRobotIP(address) || address.To4() == nil {
 		return Device{}, false
 	}
 	for _, serial := range serials {

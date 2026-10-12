@@ -157,6 +157,19 @@ func TestUnitreeManualIPValidationAndSavedReconnect(t *testing.T) {
 	}
 }
 
+func TestUnitreeIPv4ValidationMatchesDiscovery(t *testing.T) {
+	for _, address := range []string{"192.0.2.42", "169.254.1.42"} {
+		if got, err := unitreePairIPv4(" " + address + " "); err != nil || got != address {
+			t.Fatalf("pairable discovery address %q: %q, %v", address, got, err)
+		}
+	}
+	for _, address := range []string{"2001:db8::42", "fe80::42", "::ffff:192.0.2.42", "127.0.0.1", "255.255.255.255", "224.0.0.1", "0.0.0.0", "robot.local", "192.0.2.42:9991"} {
+		if _, err := unitreePairIPv4(address); err == nil {
+			t.Fatalf("unpairable address %q accepted", address)
+		}
+	}
+}
+
 func TestUnitreeFailedDiscoveryDoesNotKeepStaleConnectionStatus(t *testing.T) {
 	c := &unitreePairTestClient{paired: []*agentpbv2.UnitreeRobot{{Serial: "SAVED", Paired: true, Connected: true, Address: "192.0.2.42"}},
 		discovered: []*agentpbv2.UnitreeRobot{{Serial: "SAVED", Paired: true, Connected: true, Address: "192.0.2.42"}},

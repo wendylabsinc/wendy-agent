@@ -238,6 +238,24 @@ func TestUnitreePairRejectsInvalidAddressAndMissingKey(t *testing.T) {
 	}
 }
 
+func TestUnitreePairRejectsInvalidSerialBeforeDialing(t *testing.T) {
+	s := testUnitreeService(t)
+	s.dial = func(context.Context, string, string, string) (unitreeLink, error) {
+		t.Fatal("malformed serial consumed a robot connection slot")
+		return nil, nil
+	}
+	for _, serial := range []string{"", " ", "GO2\x00TEST", "GO2\x1b[31m", "GO2☃", "GO2 TEST", strings.Repeat("A", 129)} {
+		req := unitreeTestRequest()
+		req.Serial = serial
+		if _, err := s.PairUnitree(unitreeTestContext(), req); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("serial %q: %v", serial, err)
+		}
+	}
+	if saved, err := s.store.List(); err != nil || len(saved) != 0 {
+		t.Fatalf("invalid serial changed storage: %v", err)
+	}
+}
+
 func TestUnitreeLegacyPairUsesAccountTokenWithoutDeviceKey(t *testing.T) {
 	s := testUnitreeService(t)
 	link := newTestUnitreeLink()

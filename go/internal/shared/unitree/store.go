@@ -158,7 +158,7 @@ func (s *Store) write(list []Pairing) error {
 }
 
 func validatePairing(pair Pairing) error {
-	if !validSerial(pair.Device.Serial) || !isRobotIP(net.ParseIP(pair.Device.Address)) || pair.PairedAt.IsZero() {
+	if !ValidSerial(pair.Device.Serial) || !isRobotIP(net.ParseIP(pair.Device.Address)) || pair.PairedAt.IsZero() {
 		return errors.New("Unitree pairing requires a serial, unicast IP address, and verification time")
 	}
 	if pair.Device.EncryptionKey != "" && !validEncryptionKey(pair.Device.EncryptionKey) {

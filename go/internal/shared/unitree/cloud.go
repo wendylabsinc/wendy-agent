@@ -108,7 +108,7 @@ func (c *Client) Login(ctx context.Context, email, password string) (*Account, e
 			continue
 		}
 		serial := strings.TrimSpace(item.Serial)
-		if !validSerial(serial) || seen[serial] {
+		if !ValidSerial(serial) || seen[serial] {
 			continue
 		}
 		key := item.Key
@@ -209,7 +209,9 @@ func validEncryptionKey(key string) bool {
 	return err == nil && len(decoded) == 16
 }
 
-func validSerial(serial string) bool {
+// ValidSerial accepts a nonempty, bounded printable-ASCII robot identifier.
+// Use the same constraint before discovery, connection setup and persistence.
+func ValidSerial(serial string) bool {
 	if len(serial) == 0 || len(serial) > 128 {
 		return false
 	}

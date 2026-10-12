@@ -325,7 +325,7 @@ func (m unitreePairModel) beginIP(d *agentpbv2.UnitreeRobot) (tea.Model, tea.Cmd
 
 func unitreePairIPv4(address string) (string, error) {
 	ip := net.ParseIP(strings.TrimSpace(address))
-	if ip == nil || ip.To4() == nil || strings.Contains(address, ":") || !ip.IsGlobalUnicast() || ip.IsLoopback() {
+	if ip == nil || ip.To4() == nil || strings.Contains(address, ":") || !(ip.IsGlobalUnicast() || ip.IsLinkLocalUnicast()) || ip.IsLoopback() {
 		return "", errors.New("enter a unicast IPv4 address for the robot")
 	}
 	return ip.String(), nil
