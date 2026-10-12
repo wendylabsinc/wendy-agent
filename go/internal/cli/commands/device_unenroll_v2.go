@@ -19,6 +19,7 @@ import (
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	grpcpeer "google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -179,6 +180,20 @@ func directUnenrollPeerFingerprint(conn *grpcclient.AgentConnection, verifiedPee
 	return hex.EncodeToString(digest[:]), nil
 }
 
+// Keep one flow at the affected Cloud boundary. cloudContext intentionally
+// replaces authentication metadata; only the validated correlation crosses it.
+func v2UnenrollCloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context, error) {
+	id, err := cloudrequest.CorrelationID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rpcctx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	return metadata.AppendToOutgoingContext(rpcctx, "x-correlation-id", id), nil
+}
+
 func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, prov *agentpbv2.ProvisionedResponse, verifiedPeer *grpcpeer.Peer, override, assetOverride string, yes, checkOnly bool) error {
 	if !prov.GetCloudUnenrollmentSupported() {
 		return fmt.Errorf("updated Agent with Cloud-owned reset/recovery support required; no mutation performed")
@@ -206,7 +221,7 @@ func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, 
 	if len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() != principal.TenantUUID {
 		return fmt.Errorf("cleanup operator tenant does not match the device")
 	}
-	rpcctx, err := cloudContext(ctx, auth)
+	rpcctx, err := v2UnenrollCloudContext(ctx, auth)
 	if err != nil {
 		return err
 	}
@@ -288,7 +303,7 @@ func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 		return nil
 	}
-	// AAA v0.22 (retained in v0.24), §5.1/§7(4), excludes removal-only
+	// SECURITY: AAA v0.22 (retained in v0.24), §5.1/§7(4), excludes removal-only
 	// unenrollment from step-up. This prompt confirms intent, not identity;
 	// exact device:delete authorization and signed-body checks remain required.
 	// Amendment: https://linear.app/wendylabsinc/issue/WDY-3585/clarify-approval-interactions-for-destructive-cli-actions

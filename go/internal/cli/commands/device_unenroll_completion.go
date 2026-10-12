@@ -106,7 +106,7 @@ func reconcileCompletedV2UnenrollPinned(ctx context.Context, raw []byte, overrid
 	if deleted, err := v2UnenrollLifecycle(&v2AssetState{Deleted: &retained}, &j); err != nil || !deleted {
 		return fmt.Errorf("invalid signed completion binding")
 	}
-	rpcctx, err := cloudContext(ctx, auth)
+	rpcctx, err := v2UnenrollCloudContext(ctx, auth)
 	if err != nil {
 		return err
 	}
