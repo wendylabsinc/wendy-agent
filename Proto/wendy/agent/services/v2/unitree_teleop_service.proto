@@ -1,0 +1,30 @@
+syntax = "proto3";
+package wendy.agent.services.v2;
+option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2;agentpbv2";
+
+// Uses an existing paired Go2 connection; never logs in, changes motion mode,
+// stands the robot, or opens another robot connection. Registered only on the
+// authenticated agent transport and private admin socket.
+service WendyUnitreeTeleopService {
+  // One controller per paired serial, with the pairing-owner scope check.
+  // The first frame selects serial with zero velocity
+  // and empty challenge. Each response supplies a one-use challenge for the next
+  // frame; it must arrive within timeout_ms. Timeout, error, stream termination,
+  // session replacement or Stop invalidates control; reconnect never re-arms.
+  // Robot protocol acknowledgement is NOT physical stopping/clearance evidence.
+  rpc Control(stream UnitreeTeleopFrame) returns (stream UnitreeTeleopReady);
+}
+message UnitreeTeleopFrame {
+  string serial = 1;
+  string challenge = 2;
+  // Finite values only: |forward| <= 0.15 m/s, |yaw| <= 0.3 rad/s.
+  // No strafing, posture, gait, arbitrary topic or arbitrary robot API.
+  double forward = 3;
+  double yaw = 4;
+  // Stop and relinquish this stream's control. No automatic resume.
+  bool stop = 5;
+}
+message UnitreeTeleopReady {
+  string challenge = 1;
+  uint32 timeout_ms = 2;
+}
