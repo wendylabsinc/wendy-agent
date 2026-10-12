@@ -116,4 +116,4 @@ An Agent without a prior guarded completion has no such receipt.
 - [`wendy install` → Linux Desktop](../install.md) — mint a short-lived enrollment token and embed it in the `agent.sh` one-liner so the device self-enrolls on first startup, without needing a USB connection or a running agent.
 - [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.
 - `wendy cloud enroll-device` — alias for this command, reachable through the cloud tunnel.
-- `wendy device unenroll` — reverse enrollment and delete the device from Wendy Cloud, using the identity-specific paths and compatibility requirements above.
+- [`wendy device unenroll`](./unenroll.md) reverses enrollment and deletes the device from Wendy Cloud, using the identity-specific paths and compatibility requirements above. Cloud mode also supports offline devices.

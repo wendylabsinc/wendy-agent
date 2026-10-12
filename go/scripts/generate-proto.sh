@@ -148,6 +148,7 @@ CLOUD_V2_PROTOS=(
     "wendy/options.proto"
     "wendycloud/v2/signed_request.proto"
     "wendycloud/v2/device_enrollment.proto"
+    "wendycloud/v2/pki_admin.proto"
     "wendycloud/v2/apps.proto"
     "wendycloud/v2/assets.proto"
     "wendycloud/v2/certificates.proto"
@@ -167,6 +168,25 @@ for p in "${CLOUD_V2_PROTOS[@]}"; do
     CLOUD_V2_M_OPTS="$CLOUD_V2_M_OPTS --go-grpc_opt=M${p}=${CLOUD_V2_PKG};cloudpbv2"
 done
 
+# PKIAdminService returns the PKI ledger's own response messages. These four
+# complete contracts are vendored from service-protos
+# 6ad12f11bc3359ff902d586fd601a5530792febe, the Cloud API's protocol pin.
+PKI_PKG="$MODULE/go/proto/gen/pkicorepb"
+AUTH_PKG="$MODULE/go/proto/gen/wendyauthpb"
+PKI_PROTOS=(
+    "pkicore/v1/types.proto"
+    "pkicore/v1/engine.proto"
+    "pkicore/v1/fabric_management.proto"
+    "pkicore/v1/fabric_relay.proto"
+)
+PKI_M_OPTS="--go_opt=Mwendyauth/v1/envelope.proto=${AUTH_PKG} --go-grpc_opt=Mwendyauth/v1/envelope.proto=${AUTH_PKG}"
+PKI_GO_M_OPTS="--go_opt=Mwendyauth/v1/envelope.proto=${AUTH_PKG}"
+for p in "${PKI_PROTOS[@]}"; do
+    PKI_M_OPTS="$PKI_M_OPTS --go_opt=M${p}=${PKI_PKG};pkicorepb"
+    PKI_M_OPTS="$PKI_M_OPTS --go-grpc_opt=M${p}=${PKI_PKG};pkicorepb"
+    PKI_GO_M_OPTS="$PKI_GO_M_OPTS --go_opt=M${p}=${PKI_PKG};pkicorepb"
+done
+
 # ---- Wendy System API protos ----
 SYSTEM_PKG="$MODULE/go/proto/gen/systempb"
 SYSTEM_PROTOS=(
@@ -180,7 +200,7 @@ for p in "${SYSTEM_PROTOS[@]}"; do
 done
 
 # All M opts combined for cross-package imports
-ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $CLOUD_V2_M_OPTS $SYSTEM_M_OPTS"
+ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $CLOUD_V2_M_OPTS $PKI_M_OPTS $SYSTEM_M_OPTS"
 
 echo "Generating Wendy Agent protos..."
 mkdir -p "$GEN_DIR/agentpb"
@@ -225,6 +245,17 @@ protoc \
     --go-grpc_out="$GEN_DIR/cloudpb/v2" \
     --go-grpc_opt=module="$CLOUD_V2_PKG" \
     ${CLOUD_V2_PROTOS[@]}
+
+echo "Generating PKI administration protos..."
+mkdir -p "$GEN_DIR/pkicorepb"
+# Cloud is the only client transport; PKI files supply message descriptors,
+# not direct engine or fabric clients.
+protoc \
+    --proto_path="$PROTO_DIR" \
+    --go_out="$GEN_DIR/pkicorepb" \
+    --go_opt=module="$PKI_PKG" \
+    $PKI_GO_M_OPTS \
+    "${PKI_PROTOS[@]}"
 
 echo "Generating Wendy System API protos..."
 mkdir -p "$GEN_DIR/systempb"

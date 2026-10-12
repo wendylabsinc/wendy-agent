@@ -1159,18 +1159,35 @@ func newDeviceUnenrollCmd() *cobra.Command {
 	var cloudGRPC string
 	var uuidAssetID string
 	var checkOnly bool
+	var cloudOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "unenroll",
+		Args:  cobra.NoArgs,
 		Short: "Unenroll a device and remove it from Wendy Cloud",
 		Long: "Reverses 'wendy device enroll'. For direct PKI enrollment, verifies the exact Cloud " +
 			"binding, invokes Cloud-owned revocation/deletion, then verifies PKI proof and " +
 			"resets local state. Requires an updated Agent and directly verified mTLS connection. " +
-			"Numeric legacy enrollment retains its separate cleanup path.",
+			"Numeric legacy enrollment retains its separate cleanup path. " +
+			"For Wendy Lite, removes the cloud enrollment while retaining the board's local identity. " +
+			"Use --cloud-only or 'wendy cloud device unenroll' to remove an offline device by asset ID or name without contacting it.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			runCloud := func(selector string) error {
+				if uuidAssetID != "" || checkOnly {
+					return fmt.Errorf("--asset-id and --check require a directly connected WendyOS device with v2 UUID enrollment")
+				}
+				return runCloudDeviceUnenroll(cmd, cloudGRPC, selector, "", assumeYes)
+			}
 
-			conn, err := connectToAgent(ctx, SuppressProvisioningHint(), SuppressUpdateCheck())
+			selector, cloudMode, err := cloudUnenrollTarget(cmd, cloudOnly)
+			if err != nil {
+				return err
+			}
+			if cloudMode {
+				return runCloud(selector)
+			}
+			target, err := resolveUnenrollTargetFn(ctx, SuppressProvisioningHint(), SuppressPickerEnroll(), SuppressUpdateCheck())
 			if err != nil {
 				if completionErr := recoverCompletedV2Unenroll(ctx, cloudGRPC, uuidAssetID); completionErr == nil {
 					return nil
@@ -1178,7 +1195,35 @@ func newDeviceUnenrollCmd() *cobra.Command {
 					return fmt.Errorf("%w; prior-reset reconciliation: %v", err, completionErr)
 				}
 			}
-			defer conn.Close()
+			defer target.Close()
+			if _, scoped, parseErr := parseCloudDeviceSelector(target.DefaultSelector); scoped {
+				if parseErr != nil {
+					return parseErr
+				}
+				return runCloud(target.DefaultSelector)
+			}
+			if target.External != nil && target.External.ProviderKey == "wendy-lite" {
+				if uuidAssetID != "" || checkOnly {
+					return fmt.Errorf("--asset-id and --check require a directly connected WendyOS device with v2 UUID enrollment")
+				}
+				if target.External.ConnectionType() == "Cloud" {
+					selector := target.DefaultSelector
+					if selector == "" {
+						info := target.External.ConnectionInfo
+						selector = (cloudDeviceSelector{Endpoint: info["cloud"], TenantUUID: info["tenantId"], AssetUUID: info["assetId"]}).String()
+					}
+					return runCloud(selector)
+				}
+				return runLiteDeviceUnenroll(cmd, *target.External, cloudGRPC, assumeYes)
+			}
+			conn, err := connectFromSelectedDevice(target, resolveConfig{suppressProvisioningHint: true})
+			if err != nil {
+				if completionErr := recoverCompletedV2Unenroll(ctx, cloudGRPC, uuidAssetID); completionErr == nil {
+					return nil
+				} else {
+					return fmt.Errorf("%w; prior-reset reconciliation: %v", err, completionErr)
+				}
+			}
 
 			// Determine the device's current enrollment so we know which cloud
 			// asset to clean up afterwards.
@@ -1272,9 +1317,10 @@ func newDeviceUnenrollCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Skip the confirmation prompt")
-	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint to use for cleanup (defaults to the device's enrolled cloud host)")
 	cmd.Flags().StringVar(&uuidAssetID, "asset-id", "", "Exact Cloud asset UUID for v2 cleanup (otherwise resolved from its authenticated PKI binding)")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Check binding and existing ACME account lookup only; never revoke, delete, or reset")
+	cmd.Flags().BoolVar(&cloudOnly, "cloud-only", false, "Remove the cloud enrollment without contacting or resetting the device; --device accepts an asset ID, name, or PKI device ID")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint for cleanup (cloud-only uses the selected auth session; local WendyOS uses its enrolled cloud host)")
 	return cmd
 }
 
@@ -1337,7 +1383,10 @@ func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string
 		return 0, false, err
 	}
 	defer cloudConn.Close()
+	return cloudUnenrollCleanupClient(tokenCtx, cloudConn, assetID)
+}
 
+func cloudUnenrollCleanupClient(tokenCtx context.Context, cloudConn *grpc.ClientConn, assetID int32) (certsRevoked int, assetDeleted bool, err error) {
 	// Revoke the asset's active certificates first so a stale identity cannot be
 	// reused, then delete the asset record.
 	certClient := cloudpb.NewCertificateServiceClient(cloudConn)
@@ -1357,18 +1406,26 @@ func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string
 		if c == nil || c.GetStatus() != cloudpb.CertificateStatus_CERTIFICATE_STATUS_ACTIVE {
 			continue
 		}
-		if _, revErr := certClient.RevokeCertificate(tokenCtx, &cloudpb.RevokeCertificateRequest{
+		revoked, revErr := certClient.RevokeCertificate(tokenCtx, &cloudpb.RevokeCertificateRequest{
 			CertificateId: c.GetId(),
 			Reason:        "device unprovisioned",
-		}); revErr != nil {
+		})
+		if revErr != nil {
 			return certsRevoked, false, fmt.Errorf("revoking certificate %d: %w", c.GetId(), revErr)
+		}
+		if !revoked.GetSuccess() {
+			return certsRevoked, false, fmt.Errorf("cloud did not confirm revocation of certificate %d", c.GetId())
 		}
 		certsRevoked++
 	}
 
 	assetClient := cloudpb.NewAssetServiceClient(cloudConn)
-	if _, delErr := assetClient.DeleteAsset(tokenCtx, &cloudpb.DeleteAssetRequest{Id: assetID}); delErr != nil {
+	deleted, delErr := assetClient.DeleteAsset(tokenCtx, &cloudpb.DeleteAssetRequest{Id: assetID})
+	if delErr != nil {
 		return certsRevoked, false, fmt.Errorf("deleting asset %d: %w", assetID, delErr)
+	}
+	if !deleted.GetSuccess() {
+		return certsRevoked, false, fmt.Errorf("cloud did not confirm deletion of asset %d", assetID)
 	}
 	return certsRevoked, true, nil
 }
