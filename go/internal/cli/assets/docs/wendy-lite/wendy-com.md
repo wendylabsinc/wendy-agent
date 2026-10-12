@@ -126,39 +126,46 @@ USB Serial JTAG currently has no flow control. If the host sends data faster tha
 
 ## WendyCom via Cloud
 
-Devices enrolled in Wendy Cloud can be reached through a cloud broker instead of a direct USB or TLS connection. The device dials **out** to the broker over mTLS and keeps that single connection alive, reconnecting automatically after a delay if it drops. Once established, the socket is handed to the `wendy_com` stack as a regular link — from the device's perspective a cloud connection behaves exactly like a local TLS client. There is at most one cloud link at a time.
+Devices enroll with Cloud and maintain an authenticated outer TLS connection to
+TunnelBroker. WR02 control records provision trusted Cloud grant keys and bind
+an upgrade to a session ID and grant hash. The outer TLS session shuts down;
+the same socket then carries an end-to-end TLS session between CLI and device.
+The device opens a replacement control connection after handoff.
 
-Clients (the CLI) do not connect to the device; they connect to the broker over **gRPC** and the broker relays WendyCom messages between the client and the device's socket. The WendyCom protocol itself — handshake, commands, responses, events — runs end-to-end between client and device; the broker is transparent to it.
+The CLI uses its Cloud session to call
+`wendycloud.tunnel.lite.v1.WendyComRelayDiscoveryService.Resolve`, then opens
+`WendyComRelayService.WendyComRelay` at the owning process. The first message is
+`WendyComRelayOpen` with a signed tunnel principal request. A route response can
+redirect the client, with at most three stream attempts in total. A grant response
+allows the CLI to start inner mTLS and deliver the ML-DSA-65 grant. Firmware
+verifies it before acknowledging WLA1 and accepting WendyCom.
 
-### CLI ↔ cloud: gRPC tunnel
+Relay payloads carry opaque TLS bytes. Framing, channel numbers and WendyCom
+messages stay inside inner TLS; the broker neither decodes them nor allocates
+channels. Cloud enforces one active session per device and four per user.
+See [Lite Cloud relay](../lite-cloud-relay.md) for signing credentials and limits.
+The old unsigned `asset_id` open and un-packaged RPC name are unsupported.
 
-The broker exposes a bidirectional streaming RPC:
+### Time synchronization for enrollment
 
-```proto
-service WendyComRelayService {
-    rpc WendyComRelay(stream WendyComRelayMessage) returns (stream WendyComRelayMessage);
-}
-```
-
-The client's first stream message must be `WendyComRelayOpen`, which carries the target device's asset UUID (`string asset_id`). Every subsequent message, in both directions, is a `WendyComRelayPayload` whose `bytes` field contains one protobuf-encoded `WendyComMessage` body — **without** the 8-byte header. Framing and channel numbering are owned entirely by the broker: it prepends the header (with the channel byte) on the way to the device and strips it on the way back.
-
-The lifetime of the gRPC stream is the lifetime of the tunnel: closing the stream closes the channel on the device, and vice versa.
-
-The CLI opens the stream on its signed-in Wendy Cloud connection, the same one its other Cloud calls use, so the broker sees the user's session (DPoP when the token is key-bound, a bearer token otherwise). It does so for a device Cloud lists with OS `wendy-lite`, whether picked from the Cloud tab of the device picker or named by a `cloud://host:port/tenant/<tenant>/asset/<asset>` selector. The broker verifies the device's certificate; there is no end-to-end TLS between the CLI and the device.
+`WendyComSyncTimeParams.server` is the pinned Roughtime server's `hostname:port`.
+The `response` bytes contain its signed reply to the device's current nonce.
+Firmware checks the server against its pinned keys and requires two-server
+consensus. This replaces the old numeric `server_index`; update CLI and firmware
+together.
 
 ### Channel multiplexing
 
-The `channel` byte of the message header lets several clients share the device's single cloud socket. Each gRPC tunnel stream is assigned its own channel by the broker; frames from the device are routed back to the owning stream by their channel byte.
+The `channel` byte supports multiple logical channels within a WendyCom link. The Cloud relay uses channel 0 inside end-to-end TLS.
 
 - **Channel 0 is open by default.** It is created implicitly when a link connects and can never be opened or closed explicitly. Direct connections (USB, local TLS) always use channel 0.
-- The broker assigns channels `1`–`255` to tunnel streams, one channel per stream. Released channel numbers are quarantined for a short time before reuse, so a late frame from the device cannot reach a channel's new owner.
 - The device currently supports up to 4 channels per link, including channel 0.
 
 Data received on a channel that has not been opened is reported with a `channel_state` error (see below).
 
 ### Channel open/close service messages
 
-The broker manages channels on the device using `WendyComService` messages:
+A WendyCom host can manage nonzero channels using `WendyComService` messages:
 
 ```proto
 message WendyComOpenChannel {}
@@ -193,7 +200,7 @@ message WendyComService {
 }
 ```
 
-When a new tunnel stream is opened, the broker sends `open_channel` on the allocated channel and waits for the device's confirmation before relaying any payload; when the stream ends, it sends `close_channel` and releases the channel.
+A host opening a nonzero channel sends `open_channel` and waits for confirmation before sending payload. It sends `close_channel` when finished. The Cloud broker does not perform these operations.
 
 The device answers channel management with a `WendyComChannelState` message, sent device → host on the channel concerned:
 
@@ -202,7 +209,7 @@ The device answers channel management with a `WendyComChannelState` message, sen
 - Any other (disallowed) service message → the device replies with `channel_state` `error` with reason `REJECTED`.
 - A command received on a channel that is not open → the device reports `channel_state` `error` with reason `NOT_OPEN`.
 
-`channel_state` reports are consumed by the broker — they never reach the gRPC client.
+`channel_state` reports reach the WendyCom host inside the encrypted stream.
 
 ## WendyCom Handshake
 

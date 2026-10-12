@@ -5,9 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
@@ -164,5 +166,63 @@ func TestLeaseReuseChecksKeyBinding(t *testing.T) {
 	copied.Broker.Endpoint = "http://relay.example"
 	if _, e := a.validateLease(context.Background(), copied); e == nil {
 		t.Fatal("accepted non-TLS broker")
+	}
+}
+
+func TestLitePrincipalSignerP256(t *testing.T) {
+	for _, curve := range []elliptic.Curve{elliptic.P256(), elliptic.P384()} {
+		key, err := ecdsa.GenerateKey(curve, rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+		der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		certificate := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+		signer, err := LitePrincipalSigner(certificate, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: raw}))
+		if curve != elliptic.P256() {
+			if err == nil {
+				t.Fatal("accepted P384")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		jws, err := signer([]byte("descriptor"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts := strings.Split(string(jws), ".")
+		if len(parts) != 3 {
+			t.Fatal("bad JWS")
+		}
+		signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+		if err != nil || len(signature) != 64 {
+			t.Fatal("bad signature")
+		}
+		digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+		if !ecdsa.Verify(&key.PublicKey, digest[:], new(big.Int).SetBytes(signature[:32]), new(big.Int).SetBytes(signature[32:])) {
+			t.Fatal("signature failed")
+		}
+		header, err := base64.RawURLEncoding.DecodeString(parts[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var h map[string]any
+		if err = json.Unmarshal(header, &h); err != nil || h["alg"] != "ES256" {
+			t.Fatal("wrong algorithm")
+		}
+		wrong, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		raw, _ = x509.MarshalPKCS8PrivateKey(wrong)
+		if _, err = LitePrincipalSigner(certificate, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: raw})); err == nil {
+			t.Fatal("accepted mismatched key")
+		}
 	}
 }

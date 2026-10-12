@@ -60,7 +60,10 @@ func Config(auth *config.AuthConfig, deviceID, csrURL, timeURL, brokerHost strin
 		csrURL = "https://" + host + "/v1/" + tenant
 	}
 	if timeURL == "" {
-		timeURL = "roughtime"
+		timeURL = DefaultTimeURL
+	}
+	if timeURL == "roughtime" {
+		return nil, fmt.Errorf("mbedTLS Lite firmware uses signed RFC 3161 time; omit --time-url to use Sigstore")
 	}
 	endpoints := []string{csrURL}
 	if timeURL != "roughtime" {

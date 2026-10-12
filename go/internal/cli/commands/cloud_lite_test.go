@@ -1,11 +1,28 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/mldsa"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"io"
+	"math/big"
 	"net"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
@@ -29,7 +46,7 @@ func liteTestAuth(cloud string) *config.AuthConfig {
 	}}}
 }
 
-// liteCloudAsset is a Lite board as Cloud lists it once its WendyCom link is up.
+// liteCloudAsset is a Lite board as Cloud lists it once its control connection is up.
 func liteCloudAsset() *cloudpbv2.Asset {
 	osType, osVersion, target, deviceName := "wendy-lite", "0.9.1", "esp32c6", "lite-00aa11bb"
 	return &cloudpbv2.Asset{
@@ -112,12 +129,13 @@ func TestAgentOnlyPathsRefuseACloudLiteDevice(t *testing.T) {
 	}
 }
 
-// liteRelayStub serves WendyComRelayService the way Cloud does for one Lite
-// board: it records the stream's open message and credentials, then answers
-// the handshake and device-info command as the board would.
+// liteRelayStub forwards bytes to an mTLS device fixture.
 type liteRelayStub struct {
 	wcomrelaypb.UnimplementedWendyComRelayServiceServer
-	opened chan relayStubOpen
+	wcomrelaypb.UnimplementedWendyComRelayDiscoveryServiceServer
+	endpoint  string
+	opened    chan relayStubOpen
+	tlsConfig *tls.Config
 }
 
 type relayStubOpen struct {
@@ -131,16 +149,76 @@ func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_We
 		return err
 	}
 	md, _ := metadata.FromIncomingContext(stream.Context())
-	r.opened <- relayStubOpen{assetID: first.GetOpen().GetAssetId(), authorization: md.Get("authorization")}
+	r.opened <- relayStubOpen{assetID: first.GetOpen().GetRequestBody().GetTargetAssetId(), authorization: md.Get("authorization")}
+	grant, err := relayGrantFixture()
+	if err != nil {
+		return err
+	}
+	if err := stream.Send(&wcomrelaypb.WendyComRelayMessage{Msg: &wcomrelaypb.WendyComRelayMessage_Grant{Grant: &wcomrelaypb.WendyComRelayGrant{Record: grant}}}); err != nil {
+		return err
+	}
+	proxy, device := net.Pipe()
+	defer proxy.Close()
+	defer device.Close()
+	go func() {
+		defer proxy.Close()
+		for {
+			msg, err := stream.Recv()
+			if err != nil {
+				return
+			}
+			if msg.GetEstablished() != nil {
+				continue
+			}
+			if _, err = proxy.Write(msg.GetPayload().GetBytes()); err != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		defer proxy.Close()
+		buffer := make([]byte, 4096)
+		for {
+			n, err := proxy.Read(buffer)
+			if err != nil {
+				return
+			}
+			if err = stream.Send(&wcomrelaypb.WendyComRelayMessage{Msg: &wcomrelaypb.WendyComRelayMessage_Payload{Payload: &wcomrelaypb.WendyComRelayPayload{Bytes: buffer[:n]}}}); err != nil {
+				return
+			}
+		}
+	}()
+	stop := context.AfterFunc(stream.Context(), func() { proxy.Close() })
+	defer stop()
+	conn := tls.Server(device, r.tlsConfig)
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.Handshake(); err != nil {
+		return err
+	}
+	received := make([]byte, len(grant))
+	if _, err := io.ReadFull(conn, received); err != nil {
+		return err
+	}
+	if !bytes.Equal(received, grant) {
+		return errors.New("grant was not first TLS plaintext")
+	}
+	if _, err := conn.Write([]byte("WLA2")); err != nil {
+		return err
+	}
 	for {
-		msg, err := stream.Recv()
-		if err != nil {
+		header := make([]byte, 8)
+		if _, err := io.ReadFull(conn, header); err != nil {
+			return err
+		}
+		body := make([]byte, binary.BigEndian.Uint16(header[6:8]))
+		if _, err := io.ReadFull(conn, body); err != nil {
 			return err
 		}
 		req := &wendypb.WendyComMessage{}
-		if err := proto.Unmarshal(msg.GetPayload().GetBytes(), req); err != nil {
+		if err := proto.Unmarshal(body, req); err != nil {
 			return err
 		}
+
 		var reply *wendypb.WendyComMessage
 		switch {
 		case req.GetHandshake() != nil:
@@ -155,15 +233,15 @@ func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_We
 		default:
 			continue
 		}
-		body, err := proto.Marshal(reply)
+		body, err = proto.Marshal(reply)
 		if err != nil {
 			return err
 		}
-		if err := stream.Send(&wcomrelaypb.WendyComRelayMessage{Msg: &wcomrelaypb.WendyComRelayMessage_Payload{
-			Payload: &wcomrelaypb.WendyComRelayPayload{Bytes: body},
-		}}); err != nil {
+		binary.BigEndian.PutUint16(header[6:8], uint16(len(body)))
+		if _, err = conn.Write(append(header, body...)); err != nil {
 			return err
 		}
+
 	}
 }
 
@@ -174,15 +252,18 @@ func TestCloudLiteDeviceInfoGoesThroughTheRelayWithTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	relay := &liteRelayStub{opened: make(chan relayStubOpen, 1)}
+	relay := &liteRelayStub{opened: make(chan relayStubOpen, 1), endpoint: "http://" + lis.Addr().String()}
 	srv := grpc.NewServer()
 	wcomrelaypb.RegisterWendyComRelayServiceServer(srv, relay)
+	wcomrelaypb.RegisterWendyComRelayDiscoveryServiceServer(srv, relay)
 	go srv.Serve(lis)
 	t.Cleanup(srv.Stop)
 
 	// A non-:443 cloud is dialled without TLS, like a local Cloud.
 	auth := liteTestAuth(lis.Addr().String())
 	auth.APIKey = "api-key-123"
+	auth.Certificates, relay.tlsConfig = liteRelayTestPKI(t)
+	liteRelaySigningIdentity(t, auth.Certificates[0].PrincipalURI)
 	t.Setenv("WENDY_SECRET_STORE", "file")
 	setTempConfig(t, &config.Config{Auth: []config.AuthConfig{*auth}})
 
@@ -224,4 +305,99 @@ func TestCloudTabShowsLiteFirmwareWithoutAnAgentTunnel(t *testing.T) {
 	if _, err := device.connect(context.Background(), liteTestAuth("cloud.example:443"), ""); err == nil || !strings.Contains(err.Error(), "Wendy Lite") {
 		t.Errorf("connect = %v, want a refusal before any agent tunnel", err)
 	}
+}
+
+func liteRelayTestPKI(t *testing.T) ([]config.CertificateInfo, *tls.Config) {
+	t.Helper()
+	issue := func(serial int64, principal string, parent *x509.Certificate, signer *ecdsa.PrivateKey) (*x509.Certificate, *ecdsa.PrivateKey) {
+		t.Helper()
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template := &x509.Certificate{SerialNumber: big.NewInt(serial), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}}
+		if parent == nil {
+			template.IsCA = true
+			template.KeyUsage |= x509.KeyUsageCertSign
+			parent = template
+			signer = key
+		}
+		if principal != "" {
+			u, err := url.Parse(principal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			template.URIs = []*url.URL{u}
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, parent, &key.PublicKey, signer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cert, key
+	}
+	root, rk := issue(1, "", nil, nil)
+	principal := "spiffe://wendy.sh/tenant/" + liteTestTenant + "/operator/test"
+	operator, ok := issue(2, principal, root, rk)
+	device, dk := issue(3, "spiffe://wendy.sh/tenant/"+liteTestTenant+"/device/lite-00aa11bb", root, rk)
+	key, err := x509.MarshalECPrivateKey(ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(root)
+	return []config.CertificateInfo{{PrincipalURI: principal, PemCertificate: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operator.Raw})), PemCertificateChain: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Raw})), PemPrivateKey: string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: key}))}}, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{device.Raw}, PrivateKey: dk}}, ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert}
+}
+
+func (r *liteRelayStub) Resolve(ctx context.Context, req *wcomrelaypb.ResolveRequest) (*wcomrelaypb.WendyComRelayRoute, error) {
+	return &wcomrelaypb.WendyComRelayRoute{Endpoint: r.endpoint}, nil
+}
+
+func liteRelaySigningIdentity(t *testing.T, principal string) {
+	t.Helper()
+	key, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, err := url.Parse(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(4), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), URIs: []*url.URL{uri}, KeyUsage: x509.KeyUsageDigitalSignature}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certPath, keyPath := filepath.Join(dir, "signer.pem"), filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: secret}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WENDY_TUNNEL_SIGNING_CERT", certPath)
+	t.Setenv("WENDY_TUNNEL_SIGNING_KEY", keyPath)
+}
+
+// Use the shared, text-reviewable vector without embedding opaque binary patches.
+func relayGrantFixture() ([]byte, error) {
+	data, err := os.ReadFile("../../../../Proto/conformance/lite-relay/vector.json")
+	if err != nil {
+		return nil, err
+	}
+	var vector struct {
+		Record string `json:"record_hex"`
+	}
+	if err := json.Unmarshal(data, &vector); err != nil {
+		return nil, err
+	}
+	return hex.DecodeString(vector.Record)
 }

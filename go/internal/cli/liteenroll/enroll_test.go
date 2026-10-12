@@ -49,11 +49,11 @@ func authFixture(t *testing.T) *config.AuthConfig {
 }
 func TestConfigUsesSelectedPKI(t *testing.T) {
 	auth := authFixture(t)
-	cfg, err := Config(auth, "lite-test", "", "", "broker.dev.example", 5055)
+	cfg, err := Config(auth, "lite-test", "", "https://tsa.local/time", "broker.dev.example", 5055)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.CsrUrl != "https://csr.dev.pki.wendy.sh/v1/"+tenant || cfg.TimeUrl != "roughtime" {
+	if cfg.CsrUrl != "https://csr.dev.pki.wendy.sh/v1/"+tenant || cfg.TimeUrl != "https://tsa.local/time" {
 		t.Fatalf("unexpected endpoint derivation: %v", cfg)
 	}
 	cfg, err = Config(auth, "lite-test", "https://csr.local:8443/v1/"+tenant, "https://tsa.local/time", "broker.local", 9443)
@@ -72,7 +72,7 @@ func TestConfigDefaultsBrokerToAgentHostname(t *testing.T) {
 	} {
 		t.Run(tc.cloud+"/"+tc.override, func(t *testing.T) {
 			auth.CloudGRPC = tc.cloud
-			cfg, err := Config(auth, "lite-test", "", "", tc.override, 5055)
+			cfg, err := Config(auth, "lite-test", "", "https://tsa.local/time", tc.override, 5055)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -82,7 +82,7 @@ func TestConfigDefaultsBrokerToAgentHostname(t *testing.T) {
 		})
 	}
 	auth.CloudGRPC = ""
-	if _, err := Config(auth, "lite-test", "", "", "", 5055); err == nil {
+	if _, err := Config(auth, "lite-test", "", "https://tsa.local/time", "", 5055); err == nil {
 		t.Fatal("accepted missing Cloud endpoint and broker override")
 	}
 }
@@ -90,7 +90,7 @@ func TestConfigDefaultsBrokerToAgentHostname(t *testing.T) {
 func TestConfigRejectsUnsafeEndpointsAndIdentity(t *testing.T) {
 	auth := authFixture(t)
 	for _, csr := range []string{"http://csr.local/v1/" + tenant, "https://user@csr.local/v1/" + tenant, "https://csr.local/v1/other", "https://csr.local/v1/" + tenant + "?x=y"} {
-		if _, err := Config(auth, "lite-test", csr, "", "broker", 5055); err == nil {
+		if _, err := Config(auth, "lite-test", csr, "https://tsa.local/time", "broker", 5055); err == nil {
 			t.Errorf("accepted %q", csr)
 		}
 	}
@@ -100,7 +100,7 @@ func TestConfigRejectsUnsafeEndpointsAndIdentity(t *testing.T) {
 		}
 	}
 	auth.Certificates[0].PrincipalURI = "spiffe://wendy.sh/tenant/" + tenant + "/device/other"
-	if _, err := Config(auth, "lite-test", "", "", "broker", 5055); err == nil {
+	if _, err := Config(auth, "lite-test", "", "https://tsa.local/time", "broker", 5055); err == nil {
 		t.Fatal("device identity authorized enrollment")
 	}
 }
@@ -198,7 +198,7 @@ func (f *fakeEnrollment) Invoke(_ context.Context, method string, args, reply an
 }
 func TestMintTierCCredential(t *testing.T) {
 	auth := authFixture(t)
-	cfg, err := Config(auth, "lite-test", "", "", "broker", 5055)
+	cfg, err := Config(auth, "lite-test", "", "https://tsa.local/time", "broker", 5055)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,6 +218,14 @@ func TestMintTierCCredential(t *testing.T) {
 		cfg.Token = ""
 		if asset, err := Mint(context.Background(), f, auth, cfg, "lite-test"); err == nil || cfg.Token != "" || asset != "42" {
 			t.Fatal("invalid credential accepted")
+		}
+	}
+}
+
+func TestConfigRequiresRFC3161Time(t *testing.T) {
+	for _, endpoint := range []string{"", "roughtime", "http://tsa.local/time"} {
+		if _, err := Config(authFixture(t), "lite-test", "", endpoint, "broker", 5055); err == nil {
+			t.Fatalf("accepted unsupported time endpoint %q", endpoint)
 		}
 	}
 }

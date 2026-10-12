@@ -23,11 +23,18 @@ func ProvisionTrust(cfg *litepb.WendyConfEnrollment, devicePath, tsaPath, httpsP
 	if devicePath == "" && tsaPath == "" && httpsPath == "" {
 		return http.DefaultClient, nil
 	}
-	if devicePath == "" || httpsPath == "" || (cfg.TimeUrl != "roughtime" && tsaPath == "") {
-		return nil, fmt.Errorf("USB trust provisioning requires --device-roots and --https-roots; RFC 3161 also requires --tsa-roots")
+	if devicePath == "" || httpsPath == "" || (cfg.TimeUrl != "roughtime" && cfg.TimeUrl != DefaultTimeURL && tsaPath == "") {
+		return nil, fmt.Errorf("USB trust provisioning requires --device-roots and --https-roots; a custom RFC 3161 endpoint also requires --tsa-roots")
 	}
 	bundles := make([][]byte, 3)
 	for i, path := range []string{devicePath, tsaPath, httpsPath} {
+		if i == 1 && path == "" && cfg.TimeUrl == DefaultTimeURL {
+			if err := validateTrustBundle(defaultTSARoots); err != nil {
+				return nil, fmt.Errorf("bundled Sigstore TSA root: %w", err)
+			}
+			bundles[i] = bytes.Clone(defaultTSARoots)
+			continue
+		}
 		if i == 1 && path == "" && cfg.TimeUrl == "roughtime" {
 			continue
 		}
@@ -44,14 +51,22 @@ func ProvisionTrust(cfg *litepb.WendyConfEnrollment, devicePath, tsaPath, httpsP
 			return nil, fmt.Errorf("trust bundle %s: %w", path, err)
 		}
 	}
+	client, err := trustHTTPClient(bundles[2])
+	if err != nil {
+		return nil, err
+	}
+	cfg.DeviceRoots, cfg.TsaRoots, cfg.HttpsRoots = bundles[0], bundles[1], bundles[2]
+	cfg.ProvisionTrust = true
+	return client, nil
+}
+
+func trustHTTPClient(httpsRoots []byte) (*http.Client, error) {
 	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(bundles[2]) {
+	if !roots.AppendCertsFromPEM(httpsRoots) {
 		return nil, fmt.Errorf("HTTPS trust bundle contains no supported CA certificates")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
-	cfg.DeviceRoots, cfg.TsaRoots, cfg.HttpsRoots = bundles[0], bundles[1], bundles[2]
-	cfg.ProvisionTrust = true
 	return &http.Client{Transport: transport, Timeout: 15 * time.Second}, nil
 }
 

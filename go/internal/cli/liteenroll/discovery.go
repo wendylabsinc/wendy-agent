@@ -29,14 +29,21 @@ func DiscoverTrust(ctx context.Context, cfg *litepb.WendyConfEnrollment, endpoin
 	if err := discoverTrust(ctx, client, cfg, endpoint); err != nil {
 		return nil, err
 	}
-	return client, nil
+	return trustHTTPClient(cfg.HttpsRoots)
 }
 
 func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyConfEnrollment, endpoint string) error {
-	if cfg.TimeUrl != "roughtime" {
-		return fmt.Errorf("RFC 3161 enrollment requires explicit --device-roots, --https-roots and --tsa-roots")
+	tsaRoots := cfg.TsaRoots
+	if cfg.TimeUrl == DefaultTimeURL && len(tsaRoots) == 0 {
+		tsaRoots = bytes.Clone(defaultTSARoots)
 	}
-	if endpoint == "" {
+	if cfg.TimeUrl != "roughtime" {
+		if err := validateTrustBundle(tsaRoots); err != nil {
+			return fmt.Errorf("RFC 3161 enrollment requires trusted TSA roots; use the default Sigstore endpoint or supply --device-roots, --https-roots and --tsa-roots: %w", err)
+		}
+	}
+	discoverDevice := len(cfg.DeviceRoots) == 0
+	if discoverDevice && endpoint == "" {
 		csr, err := url.Parse(cfg.CsrUrl)
 		if err != nil {
 			return err
@@ -47,17 +54,33 @@ func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyCo
 		}
 		endpoint = "https://est." + suffix + "/.well-known/est/" + cfg.TenantId + "/cacerts"
 	}
-	var deviceRoots []byte
-	httpsRoots := []byte{}
+	deviceRoots := cfg.DeviceRoots
+	httpsRoots := bytes.Clone(cfg.HttpsRoots)
 	seen := map[string]bool{}
-	for i, target := range []string{endpoint, cfg.CsrUrl} {
+	for rest := httpsRoots; len(bytes.TrimSpace(rest)) > 0; {
+		block, tail := pem.Decode(rest)
+		if block == nil {
+			return fmt.Errorf("invalid existing HTTPS roots")
+		}
+		seen[string(block.Bytes)] = true
+		rest = tail
+	}
+	var targets []string
+	if discoverDevice {
+		targets = append(targets, endpoint, cfg.CsrUrl)
+	}
+	if cfg.TimeUrl != "roughtime" {
+		targets = append(targets, cfg.TimeUrl)
+	}
+	for i, target := range targets {
 		u, err := url.Parse(target)
 		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
 			return fmt.Errorf("CA discovery requires an HTTPS URL without credentials or fragment")
 		}
-		method := http.MethodGet
-		if i == 1 {
-			method = http.MethodHead
+		fetchDeviceRoots := discoverDevice && i == 0
+		method := http.MethodHead
+		if fetchDeviceRoots {
+			method = http.MethodGet
 		}
 		req, err := http.NewRequestWithContext(ctx, method, target, nil)
 		if err != nil {
@@ -85,7 +108,7 @@ func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyCo
 				httpsRoots = append(httpsRoots, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Raw})...)
 			}
 		}
-		if i == 0 {
+		if fetchDeviceRoots {
 			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 128*1024+1))
 			resp.Body.Close()
 			if readErr != nil {
@@ -108,7 +131,7 @@ func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyCo
 	if err := validateTrustBundle(httpsRoots); err != nil {
 		return fmt.Errorf("discovered HTTPS roots: %w", err)
 	}
-	cfg.DeviceRoots, cfg.HttpsRoots = deviceRoots, httpsRoots
+	cfg.DeviceRoots, cfg.TsaRoots, cfg.HttpsRoots = deviceRoots, tsaRoots, httpsRoots
 	cfg.ProvisionTrust = true
 	return nil
 }

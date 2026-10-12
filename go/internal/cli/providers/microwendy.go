@@ -19,6 +19,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -918,7 +919,7 @@ func (p *MicroWendyProvider) ConnectEnrollment(device models.ExternalDevice) (*l
 // relay runs over, already set up with the user's Cloud credentials, and the
 // context whose call metadata carries them. The commands package owns Cloud
 // sessions and sets it; this package cannot import commands.
-var CloudRelayDialer func(ctx context.Context, device models.ExternalDevice) (*grpc.ClientConn, context.Context, error)
+var CloudRelayDialer func(ctx context.Context, device models.ExternalDevice) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error)
 
 // connectClient opens a WendyLiteClient connection to the device over serial,
 // LAN or BLE (with mTLS when the device advertises it), or through the Wendy
@@ -993,13 +994,40 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		if CloudRelayDialer == nil {
 			return nil, fmt.Errorf("wendy-lite provider: Wendy Cloud connections are not available")
 		}
-		cc, ctx, err := CloudRelayDialer(context.Background(), device)
+		cc, ctx, options, err := CloudRelayDialer(context.Background(), device)
 		if err != nil {
 			return nil, fmt.Errorf("connect to device via Wendy Cloud: %w", err)
 		}
-		if err := client.ConnectViaRelay(ctx, cc, assetID); err != nil {
+		if device.ConnectionInfo["tenantId"] == "" || device.ConnectionInfo["deviceId"] == "" {
+			cc.Close()
+			return nil, fmt.Errorf("wendy-lite provider: missing Cloud tenant or device identity")
+		}
+		used := false
+		err = connectWithCLIIdentities(func(cert tls.Certificate, rootCAs x509.CertPool, chain string) error {
+			leaf, err := x509.ParseCertificate(cert.Certificate[0])
+			if err != nil {
+				return err
+			}
+			identity, ok, err := certs.IdentityFromCert(leaf)
+			if err != nil {
+				return err
+			}
+			if !ok || identity.TenantUUID != device.ConnectionInfo["tenantId"] {
+				return fmt.Errorf("operator identity does not match selected device tenant")
+			}
+			// One dialled connection belongs to one stream. Do not retry another
+			// identity on a connection consumed by a failed handshake.
+			if used {
+				return fmt.Errorf("device relay authentication failed")
+			}
+			used = true
+			return client.ConnectViaRelay(ctx, cc, assetID, cert, chain, device.ConnectionInfo["deviceId"], options)
+		})
+		if err != nil {
+			cc.Close()
 			return nil, fmt.Errorf("connect to device via Wendy Cloud: %w", err)
 		}
+
 	default:
 		return nil, fmt.Errorf("wendy-lite provider: unsupported connection type: %s", device.ConnectionInfo["type"])
 	}
@@ -1018,6 +1046,11 @@ func connectWithCLIIdentities(connect func(cert tls.Certificate, rootCAs x509.Ce
 	}
 	var connectErrs []error
 	for _, certInfo := range certInfos {
+		certInfo, err = cloudrelay.LiteOperatorIdentity(certInfo)
+		if err != nil {
+			connectErrs = append(connectErrs, err)
+			continue
+		}
 		keyPEM, err := certInfo.PrivateKeyPEM()
 		if err != nil {
 			return fmt.Errorf("wendy-lite provider: loading client key: %w", err)

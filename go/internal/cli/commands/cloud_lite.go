@@ -2,8 +2,16 @@ package commands
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
+	"github.com/wendylabsinc/wendy/go/proto/gen/wcomrelaypb"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"net"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
@@ -13,8 +21,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-// liteCloudOSType is the os_type Cloud stamps on an asset once its board's
-// WendyCom link is up. Such a board has no WendyOS agent to tunnel to: it is
+// liteCloudOSType identifies an asset enrolled as a Lite board. Such a board has no WendyOS agent to tunnel to: it is
 // reached through Cloud's WendyCom relay instead.
 const liteCloudOSType = "wendy-lite"
 
@@ -84,27 +91,65 @@ func selectedAgent(picked *SelectedDevice) (*grpcclient.AgentConnection, error) 
 // uses the login for the device's cloud and tenant, as a cloud:// selector
 // does, and the same connection and call metadata as every other Cloud RPC,
 // so the relay sees the user's session (DPoP when the token is key-bound).
-func dialLiteCloudRelay(ctx context.Context, device models.ExternalDevice) (*grpc.ClientConn, context.Context, error) {
+func dialLiteCloudRelay(ctx context.Context, device models.ExternalDevice) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
+	options := liteclient.RelayOptions{}
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, options, err
 	}
 	selector := cloudDeviceSelector{Endpoint: device.ConnectionInfo["cloud"], TenantUUID: device.ConnectionInfo["tenantId"]}
 	if selector.Endpoint == "" || selector.TenantUUID == "" {
-		return nil, nil, fmt.Errorf("Wendy Lite cloud device has no cloud endpoint or tenant")
+		return nil, nil, options, fmt.Errorf("Wendy Lite cloud device has no cloud endpoint or tenant")
 	}
 	auth, err := selector.auth(cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, options, err
 	}
-	conn, err := dialCloudGRPC(auth)
+	options.SignRequest, err = litePrincipalSigner(auth)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, options, err
 	}
+	options.Redial = func(ctx context.Context, endpoint string) (*grpc.ClientConn, context.Context, error) {
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+			return nil, nil, fmt.Errorf("invalid Lite broker endpoint")
+		}
+		transport := grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, ServerName: u.Hostname()}))
+		if u.Scheme != "https" {
+			ip := net.ParseIP(u.Hostname())
+			if u.Scheme != "http" || !(u.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())) {
+				return nil, nil, fmt.Errorf("Lite broker endpoint must use HTTPS")
+			}
+			transport = grpc.WithTransportCredentials(insecure.NewCredentials())
+		}
+		target := u.Host
+		if u.Port() == "" {
+			target = net.JoinHostPort(u.Hostname(), "443")
+		}
+		local := *auth
+		local.CloudGRPC = target
+		callCtx, err := cloudContext(ctx, &local)
+		if err != nil {
+			return nil, nil, err
+		}
+		conn, err := grpc.NewClient(target, append([]grpc.DialOption{transport}, dpopDialOptions(&local)...)...)
+		return conn, callCtx, err
+	}
+	discovery, err := dialCloudGRPC(auth)
+	if err != nil {
+		return nil, nil, options, err
+	}
+	defer discovery.Close()
 	cloudCtx, err := cloudContext(ctx, auth)
 	if err != nil {
-		conn.Close()
-		return nil, nil, err
+		return nil, nil, options, err
 	}
-	return conn, cloudCtx, nil
+	discoveryCtx, cancel := context.WithTimeout(cloudCtx, 30*time.Second)
+	defer cancel()
+	route, err := wcomrelaypb.NewWendyComRelayDiscoveryServiceClient(discovery).Resolve(discoveryCtx, &wcomrelaypb.ResolveRequest{AssetId: device.ConnectionInfo["assetId"]})
+	if err != nil {
+		return nil, nil, options, err
+	}
+	conn, callCtx, err := options.Redial(ctx, route.Endpoint)
+	return conn, callCtx, options, err
 }

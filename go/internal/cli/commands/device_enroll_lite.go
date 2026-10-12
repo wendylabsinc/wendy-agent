@@ -85,7 +85,9 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if challenge.Enrolled {
 		return fmt.Errorf("this board already has an issued identity; use its existing enrollment or operator recovery")
 	}
-	if !cfg.ProvisionTrust {
+	// The default TSA's pinned root and verified HTTPS anchor must reach the
+	// board even when it has built-in roots for another timestamp authority.
+	if cfg.TimeUrl == liteenroll.DefaultTimeURL || (!cfg.ProvisionTrust && (!challenge.GetBuiltinRootsReady() || opts.caCertsURL != "")) {
 		if !challenge.GetUsbTrustSupported() {
 			return fmt.Errorf("firmware does not support USB trust provisioning; update the board first")
 		}
