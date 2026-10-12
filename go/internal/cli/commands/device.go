@@ -1169,7 +1169,7 @@ func newDeviceUnenrollCmd() *cobra.Command {
 			"binding, invokes Cloud-owned revocation/deletion, then verifies PKI proof and " +
 			"resets local state. Requires an updated Agent and directly verified mTLS connection. " +
 			"Numeric legacy enrollment retains its separate cleanup path. " +
-			"For Wendy Lite, removes the cloud enrollment while retaining the board's local identity. " +
+			"For Wendy Lite over USB, removes the cloud enrollment, clears the board's identity and reboots it while preserving Wi-Fi and apps. Requires firmware with enrollment reset support. " +
 			"Use --cloud-only or 'wendy cloud device unenroll' to remove an offline device by asset ID or name without contacting it.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

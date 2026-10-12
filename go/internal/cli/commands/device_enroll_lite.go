@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -20,6 +21,15 @@ type liteEnrollmentOptions struct {
 	caCertsURL                        string
 	deviceRoots, tsaRoots, httpsRoots string
 	brokerPort                        uint32
+}
+
+type liteEnrollmentDevice interface {
+	GetDeviceIdentity(time.Duration) (*liteclient.DeviceIdentity, error)
+	EnrollmentChallenge(bool) (*litepb.WendyComEnrollmentChallenge, error)
+	SyncTimeChallenge(context.Context, string) (time.Time, error)
+	PushConf(*litepb.WendyConf, liteclient.ConfPushMode, func(uint32, uint32)) error
+	ResetTargetDevice(bool, time.Duration) error
+	Close() error
 }
 
 // Enrollment uses the selected device's protocol, sharing auth and selection
@@ -45,10 +55,13 @@ func runSelectedDeviceEnrollment(cmd *cobra.Command, target *SelectedDevice, aut
 }
 
 var (
-	connectLiteEnrollmentFn = (&providers.MicroWendyProvider{}).ConnectEnrollment
-	runLiteEnrollmentFn     = runEnrollLiteDevice
-	runAgentEnrollmentFn    = runEnrollDevice
-	promptEnrollmentWifiFn  = promptWifiIfNeeded
+	errLiteAlreadyEnrolled  = errors.New("this board still holds an issued identity, even if its cloud asset was removed; connect it over USB and run 'wendy device unenroll' with that USB device selected, then enroll again; older firmware must be updated first")
+	connectLiteEnrollmentFn = func(target models.ExternalDevice) (liteEnrollmentDevice, error) {
+		return (&providers.MicroWendyProvider{}).ConnectEnrollment(target)
+	}
+	runLiteEnrollmentFn    = runEnrollLiteDevice
+	runAgentEnrollmentFn   = runEnrollDevice
+	promptEnrollmentWifiFn = promptWifiIfNeeded
 )
 
 func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth *config.AuthConfig, name string, opts liteEnrollmentOptions) error {
@@ -61,6 +74,13 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	identity, err := device.GetDeviceIdentity(5 * time.Second)
 	if err != nil {
 		return err
+	}
+	challenge, err := device.EnrollmentChallenge(true)
+	if err != nil {
+		return err
+	}
+	if challenge.Enrolled {
+		return errLiteAlreadyEnrolled
 	}
 	name, err = enrollmentName(identity.Name, name)
 	if err != nil {
@@ -78,12 +98,12 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 		return err
 	}
 	defer timeClient.CloseIdleConnections()
-	challenge, err := device.EnrollmentChallenge(false)
+	challenge, err = device.EnrollmentChallenge(false)
 	if err != nil {
 		return err
 	}
 	if challenge.Enrolled {
-		return fmt.Errorf("this board already has an issued identity; use its existing enrollment or operator recovery")
+		return errLiteAlreadyEnrolled
 	}
 	// The default TSA's pinned root and verified HTTPS anchor must reach the
 	// board even when it has built-in roots for another timestamp authority.

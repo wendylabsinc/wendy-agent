@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -1091,6 +1092,32 @@ func (c *WendyLiteClient) EnrollmentChallenge(statusOnly bool) (*wendypb.WendyCo
 		return nil, fmt.Errorf("device returned no enrollment challenge")
 	}
 	return challenge, nil
+}
+
+// ResetEnrollment clears enrollment over physical USB. Firmware validates the
+// hardware ID and its current challenge, and preserves unrelated configuration.
+// The caller must revoke Cloud credentials first and reboot after confirmation.
+func (c *WendyLiteClient) ResetEnrollment(deviceID, nonceHex string) error {
+	if strings.TrimSpace(deviceID) == "" {
+		return fmt.Errorf("missing device ID for enrollment reset")
+	}
+	nonce, err := hex.DecodeString(nonceHex)
+	if err != nil || len(nonce) != 32 {
+		return fmt.Errorf("invalid enrollment reset nonce")
+	}
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen.Add(1),
+		Params: &wendypb.WendyComCommand_EnrollmentReset{
+			EnrollmentReset: &wendypb.WendyComEnrollmentResetParams{ExpectedDeviceId: deviceID, NonceHex: nonceHex},
+		},
+	}, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("firmware rejected enrollment reset (%s): %w", resp.Result.String(), err)
+	}
+	return nil
 }
 
 // deviceTLSConfig verifies certificate chains and sends

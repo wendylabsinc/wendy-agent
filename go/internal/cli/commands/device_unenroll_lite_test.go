@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -10,13 +11,18 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	litepb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 )
 
 type fakeLiteUnenrollmentDevice struct {
-	identity *liteclient.DeviceIdentity
-	err      error
-	timeout  time.Duration
-	closed   bool
+	identity                                     *liteclient.DeviceIdentity
+	err                                          error
+	timeout                                      time.Duration
+	closed                                       bool
+	challenge                                    *litepb.WendyComEnrollmentChallenge
+	challengeErr, resetErr, verifyErr, rebootErr error
+	stillEnrolled                                bool
+	calls                                        []string
 }
 
 func (d *fakeLiteUnenrollmentDevice) GetDeviceIdentity(timeout time.Duration) (*liteclient.DeviceIdentity, error) {
@@ -29,6 +35,42 @@ func (d *fakeLiteUnenrollmentDevice) Close() error {
 	return nil
 }
 
+func (d *fakeLiteUnenrollmentDevice) EnrollmentChallenge(statusOnly bool) (*litepb.WendyComEnrollmentChallenge, error) {
+	if statusOnly && len(d.calls) > 0 {
+		d.calls = append(d.calls, "verify")
+		return &litepb.WendyComEnrollmentChallenge{Enrolled: d.stillEnrolled}, d.verifyErr
+	}
+	if statusOnly {
+		d.calls = append(d.calls, "preflight")
+	} else {
+		d.calls = append(d.calls, "challenge")
+	}
+	if d.challenge != nil || d.challengeErr != nil {
+		return d.challenge, d.challengeErr
+	}
+	return &litepb.WendyComEnrollmentChallenge{Enrolled: true, EnrollmentResetSupported: true, NonceHex: strings.Repeat("12", 32)}, nil
+}
+
+func (d *fakeLiteUnenrollmentDevice) ResetEnrollment(id, nonce string) error {
+	if id != d.identity.ID || nonce != strings.Repeat("12", 32) {
+		return errors.New("reset binding changed")
+	}
+	d.calls = append(d.calls, "reset")
+	return d.resetErr
+}
+
+func (d *fakeLiteUnenrollmentDevice) ResetTargetDevice(autoStart bool, delay time.Duration) error {
+	if !autoStart || delay != 0 {
+		return errors.New("changed app startup behavior")
+	}
+	d.calls = append(d.calls, "reboot")
+	return d.rebootErr
+}
+
+func liteUnenrollUSBTarget() models.ExternalDevice {
+	return models.ExternalDevice{ID: "wendy-lite:discovery-id", ProviderKey: "wendy-lite", ConnectionInfo: map[string]string{"type": "USB"}}
+}
+
 func preserveLiteUnenrollmentHooks(t *testing.T) {
 	t.Helper()
 	connect, unenroll := connectLiteUnenrollmentFn, unenrollLiteCloudFn
@@ -37,16 +79,11 @@ func preserveLiteUnenrollmentHooks(t *testing.T) {
 	})
 }
 
-func TestLiteUnenrollUsesIdentityWithoutEnrollmentStatus(t *testing.T) {
+func TestLiteUnenrollResetsAfterCloudCleanup(t *testing.T) {
 	preserveLiteUnenrollmentHooks(t)
-	for _, transport := range []string{"USB", "LAN", "BLE"} {
-		t.Run(transport, func(t *testing.T) {
-			target := models.ExternalDevice{
-				ID:             "wendy-lite:discovery-id",
-				DisplayName:    "new-name",
-				ProviderKey:    "wendy-lite",
-				ConnectionInfo: map[string]string{"type": transport},
-			}
+	for _, mode := range []string{"success", "cancel", "cloud failure"} {
+		t.Run(mode, func(t *testing.T) {
+			target := liteUnenrollUSBTarget()
 			device := &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824", Name: "old-name"}}
 			connectLiteUnenrollmentFn = func(got models.ExternalDevice) (liteUnenrollmentDevice, error) {
 				if !reflect.DeepEqual(got, target) {
@@ -55,21 +92,36 @@ func TestLiteUnenrollUsesIdentityWithoutEnrollmentStatus(t *testing.T) {
 				return device, nil
 			}
 			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
 			called := false
 			wantErr := errors.New("cloud unenrollment result")
-			unenrollLiteCloudFn = func(gotCmd *cobra.Command, cloudGRPC, selector, deviceID string, assumeYes bool) error {
+			unenrollLiteCloudFn = func(gotCmd *cobra.Command, cloudGRPC, deviceID string, assumeYes bool, reset func() error) error {
 				called = true
-				if !device.closed {
-					t.Fatal("device connection remained open during cloud removal")
+				if device.closed {
+					t.Fatal("device connection closed before reset")
 				}
-				if gotCmd != cmd || cloudGRPC != "cloud.example:443" || selector != "" || deviceID != "lite-441bf6804824" || !assumeYes {
-					t.Fatalf("wrong cloud unenrollment arguments: %p %q %q %q %v", gotCmd, cloudGRPC, selector, deviceID, assumeYes)
+				if gotCmd != cmd || cloudGRPC != "cloud.example:443" || deviceID != "lite-441bf6804824" || !assumeYes {
+					t.Fatal("wrong cloud unenrollment arguments")
 				}
-				return wantErr
+				device.calls = append(device.calls, "cloud")
+				if mode == "cloud failure" {
+					return wantErr
+				}
+				if mode == "cancel" {
+					return nil
+				}
+				return reset()
 			}
 			err := runLiteDeviceUnenroll(cmd, target, "cloud.example:443", true)
-			if !called || !errors.Is(err, wantErr) {
+			if !called || (mode == "cloud failure" && !errors.Is(err, wantErr)) || (mode != "cloud failure" && err != nil) {
 				t.Fatalf("cloud result lost: called=%v err=%v", called, err)
+			}
+			want := "preflight,cloud"
+			if mode == "success" {
+				want += ",challenge,reset,verify,reboot"
+			}
+			if strings.Join(device.calls, ",") != want || !device.closed {
+				t.Fatalf("reset ordering or close: %v, closed=%v", device.calls, device.closed)
 			}
 			if device.timeout != 5*time.Second {
 				t.Fatalf("unbounded or changed identity timeout: %v", device.timeout)
@@ -102,11 +154,11 @@ func TestLiteUnenrollRequiresUsableIdentity(t *testing.T) {
 				}
 				return device, nil
 			}
-			unenrollLiteCloudFn = func(*cobra.Command, string, string, string, bool) error {
+			unenrollLiteCloudFn = func(*cobra.Command, string, string, bool, func() error) error {
 				t.Fatal("attempted cloud removal without the device identity")
 				return nil
 			}
-			err := runLiteDeviceUnenroll(&cobra.Command{}, models.ExternalDevice{}, "", false)
+			err := runLiteDeviceUnenroll(&cobra.Command{}, liteUnenrollUSBTarget(), "", false)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "--cloud-only --device <asset-id-or-name>") {
 				t.Fatalf("missing error or cloud recovery instructions: %v", err)
 			}
@@ -126,14 +178,84 @@ func TestLiteUnenrollPreservesCloudConfirmation(t *testing.T) {
 		return &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824"}}, nil
 	}
 	called := false
-	unenrollLiteCloudFn = func(_ *cobra.Command, cloudGRPC, selector, deviceID string, assumeYes bool) error {
+	unenrollLiteCloudFn = func(_ *cobra.Command, cloudGRPC, deviceID string, assumeYes bool, _ func() error) error {
 		called = true
 		if assumeYes || cloudGRPC != "" {
 			t.Fatal("local Lite path bypassed confirmation or changed the selected cloud")
 		}
 		return nil
 	}
-	if err := runLiteDeviceUnenroll(&cobra.Command{}, models.ExternalDevice{}, "", false); err != nil || !called {
+	if err := runLiteDeviceUnenroll(&cobra.Command{}, liteUnenrollUSBTarget(), "", false); err != nil || !called {
 		t.Fatalf("cloud removal failed: called=%v err=%v", called, err)
+	}
+}
+
+func TestLiteUnenrollPreflightPreservesCloud(t *testing.T) {
+	for _, tc := range []struct {
+		name, transport string
+		challenge       *litepb.WendyComEnrollmentChallenge
+		challengeErr    error
+	}{
+		{name: "LAN", transport: "LAN"},
+		{name: "Bluetooth", transport: "BLE"},
+		{name: "old firmware", transport: "USB", challenge: &litepb.WendyComEnrollmentChallenge{}},
+		{name: "challenge failed", transport: "USB", challengeErr: errors.New("unsupported")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preserveLiteUnenrollmentHooks(t)
+			device := &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824"}, challenge: tc.challenge, challengeErr: tc.challengeErr}
+			connectLiteUnenrollmentFn = func(models.ExternalDevice) (liteUnenrollmentDevice, error) {
+				if tc.transport != "USB" {
+					t.Fatal("non-USB reset connected")
+				}
+				return device, nil
+			}
+			unenrollLiteCloudFn = func(*cobra.Command, string, string, bool, func() error) error {
+				t.Fatal("preflight failure removed the cloud enrollment")
+				return nil
+			}
+			target := liteUnenrollUSBTarget()
+			target.ConnectionInfo["type"] = tc.transport
+			if err := runLiteDeviceUnenroll(&cobra.Command{}, target, "", true); err == nil {
+				t.Fatal("unsupported reset succeeded")
+			}
+		})
+	}
+}
+
+func TestLiteUnenrollChecksResetAndReboot(t *testing.T) {
+	for _, mode := range []string{"bad nonce", "reset", "verification", "still enrolled", "reboot"} {
+		t.Run(mode, func(t *testing.T) {
+			preserveLiteUnenrollmentHooks(t)
+			device := &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824"}}
+			failure := errors.New("failed")
+			wantCalls := "preflight,challenge,reset"
+			switch mode {
+			case "bad nonce":
+				device.challenge = &litepb.WendyComEnrollmentChallenge{EnrollmentResetSupported: true, NonceHex: "invalid"}
+				wantCalls = "preflight,challenge"
+			case "reset":
+				device.resetErr = failure
+			case "verification":
+				device.verifyErr = failure
+				wantCalls += ",verify"
+			case "still enrolled":
+				device.stillEnrolled = true
+				wantCalls += ",verify"
+			case "reboot":
+				device.rebootErr = failure
+				wantCalls += ",verify,reboot"
+			}
+			connectLiteUnenrollmentFn = func(models.ExternalDevice) (liteUnenrollmentDevice, error) { return device, nil }
+			unenrollLiteCloudFn = func(_ *cobra.Command, _, _ string, _ bool, reset func() error) error { return reset() }
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			if err := runLiteDeviceUnenroll(cmd, liteUnenrollUSBTarget(), "", true); err == nil {
+				t.Fatal("partial reset reported success")
+			}
+			if strings.Join(device.calls, ",") != wantCalls || !device.closed {
+				t.Fatalf("continued after failure: %v", device.calls)
+			}
+		})
 	}
 }

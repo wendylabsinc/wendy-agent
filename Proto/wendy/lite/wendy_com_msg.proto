@@ -95,8 +95,16 @@ message WendyComEnrollmentChallenge {
     bool roughtime_supported = 4; // sync_time verifies device-nonce-bound replies
     bool builtin_roots_ready = 5; // device and HTTPS CA bundles configured
     bool builtin_tsa_roots_ready = 6;
+    bool enrollment_reset_supported = 7; // physical USB reset with current nonce
 }
 
+
+// Clear local enrollment after Cloud cleanup. Physical USB only; the hardware
+// ID and current challenge nonce bind approval to this board and operation.
+message WendyComEnrollmentResetParams {
+    string expected_device_id = 1;
+    string nonce_hex = 2;
+}
 
 // USB relay of one pinned server's reply to the current device challenge.
 message WendyComSyncTimeParams {
@@ -180,6 +188,7 @@ message WendyComCommand {
         wendy.lite.sensorlink.Unsubscribe       sensor_link_unsubscribe  = 18;
         WendyComEnrollmentChallengeParams enrollment_challenge = 19;
         WendyComSyncTimeParams sync_time = 20;
+        WendyComEnrollmentResetParams enrollment_reset = 21;
     }
 }
 

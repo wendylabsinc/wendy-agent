@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"reflect"
@@ -169,7 +168,7 @@ func TestLiteEnrollmentConnectsSelectedTransport(t *testing.T) {
 			target := models.ExternalDevice{ProviderKey: "wendy-lite", ConnectionInfo: map[string]string{"type": transport, "ip": "192.0.2.1", "port": "5055", "serialPort": "/dev/ttyUSB0", "address": "board-address"}}
 			wantErr := errors.New("connection failed")
 			called := false
-			connectLiteEnrollmentFn = func(got models.ExternalDevice) (*liteclient.WendyLiteClient, error) {
+			connectLiteEnrollmentFn = func(got models.ExternalDevice) (liteEnrollmentDevice, error) {
 				called = true
 				if !reflect.DeepEqual(got, target) {
 					t.Fatalf("connected to %v, want %v", got, target)

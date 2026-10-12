@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"strings"
@@ -15,7 +16,10 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
+	"github.com/wendylabsinc/wendy/go/proto/gen/pkicorepb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -134,7 +138,7 @@ func TestUnenrollCommandDispatchesSelectedLite(t *testing.T) {
 		return &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824"}}, nil
 	}
 	called := false
-	unenrollLiteCloudFn = func(_ *cobra.Command, _, _, deviceID string, assumeYes bool) error {
+	unenrollLiteCloudFn = func(_ *cobra.Command, _, deviceID string, assumeYes bool, reset func() error) error {
 		called = true
 		if deviceID != "lite-441bf6804824" || !assumeYes {
 			t.Fatalf("Lite dispatch lost identity or confirmation: %q %v", deviceID, assumeYes)
@@ -249,11 +253,21 @@ func TestCloudUnenrollAuthKeepsScopedOrganization(t *testing.T) {
 
 type unenrollConfirmationServer struct {
 	cloudpbv2.UnimplementedAssetServiceServer
-	asset   *cloudpbv2.Asset
-	lists   atomic.Int32
-	gets    atomic.Int32
-	deletes atomic.Int32
-	online  atomic.Bool
+	cloudpbv2.UnimplementedPKIAdminServiceServer
+	asset         *cloudpbv2.Asset
+	extraAssets   []*cloudpbv2.Asset
+	pageSize      int
+	emptyLastPage bool
+	lastPageErr   error
+	listErr       error
+	revokeErr     error
+	deleteErr     error
+	lists         atomic.Int32
+	gets          atomic.Int32
+	revokes       atomic.Int32
+	deletes       atomic.Int32
+	online        atomic.Bool
+	computeFilter atomic.Bool
 }
 
 func (s *unenrollConfirmationServer) GetAsset(_ context.Context, req *cloudpbv2.GetAssetRequest) (*cloudpbv2.Asset, error) {
@@ -264,12 +278,50 @@ func (s *unenrollConfirmationServer) GetAsset(_ context.Context, req *cloudpbv2.
 func (s *unenrollConfirmationServer) ListAssets(req *cloudpbv2.ListAssetsRequest, stream grpc.ServerStreamingServer[cloudpbv2.ListAssetsResponse]) error {
 	s.lists.Add(1)
 	s.online.Store(req.GetOnlineOnly())
-	return stream.Send(&cloudpbv2.ListAssetsResponse{Asset: s.asset, Total: 1})
+	s.computeFilter.Store(req.IsComputeDevice != nil)
+	if s.listErr != nil {
+		return s.listErr
+	}
+	if req.GetOffset() > 0 && s.lastPageErr != nil {
+		return s.lastPageErr
+	}
+	assets := append([]*cloudpbv2.Asset(nil), s.extraAssets...)
+	if s.asset != nil {
+		assets = append(assets, s.asset)
+	}
+	page := assets
+	if s.pageSize > 0 {
+		start := int(req.GetOffset())
+		end := min(start+s.pageSize, len(assets))
+		page = assets[start:end]
+		if s.emptyLastPage && start > 0 {
+			page = nil
+		}
+	}
+	for _, asset := range page {
+		if err := stream.Send(&cloudpbv2.ListAssetsResponse{Asset: asset, Total: int32(len(assets))}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *unenrollConfirmationServer) DeleteAsset(context.Context, *cloudpbv2.SignedRequest) (*cloudpbv2.DeleteAssetResponse, error) {
 	s.deletes.Add(1)
-	return &cloudpbv2.DeleteAssetResponse{}, nil
+	return &cloudpbv2.DeleteAssetResponse{Success: true}, s.deleteErr
+}
+
+func (s *unenrollConfirmationServer) ListEnrollmentTokens(context.Context, *cloudpbv2.ListEnrollmentTokensRequest) (*pkicorepb.ListEnrollmentTokensResponse, error) {
+	return &pkicorepb.ListEnrollmentTokensResponse{}, nil
+}
+
+func (s *unenrollConfirmationServer) ListEABKeys(context.Context, *cloudpbv2.ListEABKeysRequest) (*pkicorepb.ListEABKeysResponse, error) {
+	return &pkicorepb.ListEABKeysResponse{}, nil
+}
+
+func (s *unenrollConfirmationServer) RevokePrincipalCertificates(context.Context, *cloudpbv2.SignedRequest) (*pkicorepb.RevokeByPrincipalResponse, error) {
+	s.revokes.Add(1)
+	return &pkicorepb.RevokeByPrincipalResponse{RevokedCount: 2}, s.revokeErr
 }
 
 func TestCloudUnenrollConfirmsBeforeMutation(t *testing.T) {
@@ -317,5 +369,222 @@ func TestCloudUnenrollConfirmsBeforeMutation(t *testing.T) {
 	}
 	if server.lists.Load() != 2 || server.gets.Load() != 1 || server.online.Load() {
 		t.Fatalf("wrong offline asset lookup: lists=%d gets=%d online=%v", server.lists.Load(), server.gets.Load(), server.online.Load())
+	}
+}
+
+func startUnenrollResetServer(t *testing.T, service *unenrollConfirmationServer) *config.AuthConfig {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	cloudpbv2.RegisterAssetServiceServer(server, service)
+	cloudpbv2.RegisterPKIAdminServiceServer(server, service)
+	go server.Serve(listener)
+	t.Cleanup(server.Stop)
+	auth := oidcEnrollmentAuth(t)
+	auth.CloudGRPC = listener.Addr().String()
+	ensureFreshCertificateFn = func(context.Context, *config.AuthConfig) error { return nil }
+	resolveCloudUnenrollAuthFn = func(_ string, selector string) (*config.AuthConfig, string, error) { return auth, selector, nil }
+	return auth
+}
+
+func TestCloudUnenrollWithResetConfirmsBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		absent      bool
+		interactive bool
+	}{
+		{name: "declined existing", interactive: true},
+		{name: "declined recovery", absent: true, interactive: true},
+		{name: "noninteractive existing"},
+		{name: "noninteractive recovery", absent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preserveCloudUnenrollmentHooks(t)
+			service := &unenrollConfirmationServer{}
+			if !tc.absent {
+				service.asset = unenrollTestCloudDevice(liteTestAssetID, "desk", "lite-441bf6804824").v2
+			}
+			startUnenrollResetServer(t, service)
+			isInteractiveTerminalFn = func() bool { return tc.interactive }
+			confirmDefaultNoFn = func(string) bool { return false }
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			err := runCloudDeviceUnenrollWithReset(cmd, "", "lite-441bf6804824", false, func() error {
+				t.Fatal("board reset without confirmation")
+				return nil
+			})
+			if tc.interactive {
+				if err != nil || !strings.Contains(output.String(), "Aborted.") || !strings.Contains(output.String(), "WiFi settings and apps will be preserved") || strings.Contains(output.String(), "will not be contacted") {
+					t.Fatalf("inaccurate local confirmation: err=%v output=%q", err, output.String())
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "--yes") {
+				t.Fatalf("missing confirmation requirement: %v", err)
+			}
+			if service.revokes.Load() != 0 || service.deletes.Load() != 0 {
+				t.Fatal("cloud enrollment changed without confirmation")
+			}
+		})
+	}
+}
+
+func TestCloudUnenrollWithResetOrdersCleanupAndReportsRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		absent       bool
+		resetFailure bool
+		asJSON       bool
+	}{
+		{name: "complete removal"},
+		{name: "complete removal JSON", asJSON: true},
+		{name: "previous cloud-only removal", absent: true},
+		{name: "previous cloud-only removal JSON", absent: true, asJSON: true},
+		{name: "reset failure", resetFailure: true},
+		{name: "reset failure JSON", resetFailure: true, asJSON: true},
+		{name: "recovery reset failure", absent: true, resetFailure: true},
+		{name: "recovery reset failure JSON", absent: true, resetFailure: true, asJSON: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preserveCloudUnenrollmentHooks(t)
+			// A different board with the same name must not become the target
+			// when this board's hardware identity is absent.
+			service := &unenrollConfirmationServer{pageSize: 1, extraAssets: []*cloudpbv2.Asset{
+				unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "desk", "lite-other").v2,
+			}}
+			if !tc.absent {
+				service.asset = unenrollTestCloudDevice(liteTestAssetID, "desk", "lite-441bf6804824").v2
+			}
+			startUnenrollResetServer(t, service)
+			jsonOutput = tc.asJSON
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			resets := 0
+			resetErr := errors.New("USB disconnected")
+			err := runCloudDeviceUnenrollWithReset(cmd, "", "lite-441bf6804824", true, func() error {
+				resets++
+				if tc.absent {
+					if service.revokes.Load() != 0 || service.deletes.Load() != 0 {
+						t.Fatal("recovery changed a different cloud enrollment")
+					}
+				} else if service.revokes.Load() != 1 || service.deletes.Load() != 1 {
+					t.Fatal("board reset before cloud revocation and deletion")
+				}
+				if tc.resetFailure {
+					return resetErr
+				}
+				return nil
+			})
+			if resets != 1 || service.online.Load() || service.computeFilter.Load() {
+				t.Fatalf("reset=%d online=%v computeFilter=%v", resets, service.online.Load(), service.computeFilter.Load())
+			}
+			if tc.resetFailure {
+				if !errors.Is(err, resetErr) || !strings.Contains(err.Error(), "retry 'wendy device unenroll'") || !strings.Contains(err.Error(), "selected organization") {
+					t.Fatalf("reset failure did not report partial completion and recovery: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if tc.asJSON {
+				var result struct {
+					DeviceReset        bool   `json:"deviceReset"`
+					AssetDeleted       bool   `json:"assetDeleted"`
+					AssetAlreadyAbsent bool   `json:"assetAlreadyAbsent"`
+					ResetError         string `json:"resetError"`
+					CloudError         string `json:"cloudError"`
+				}
+				if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+					t.Fatal(err)
+				}
+				if result.DeviceReset == tc.resetFailure || result.AssetDeleted == tc.absent || result.AssetAlreadyAbsent != tc.absent || (result.ResetError != "") != tc.resetFailure || result.CloudError != "" {
+					t.Fatalf("inaccurate JSON completion: %+v", result)
+				}
+			} else {
+				if strings.Contains(output.String(), "Cleared the board's enrollment identity") == tc.resetFailure {
+					t.Fatalf("inaccurate reset success output: %q", output.String())
+				}
+				if tc.absent && !strings.Contains(output.String(), "selected organization") {
+					t.Fatalf("recovery did not scope absence: %q", output.String())
+				}
+			}
+		})
+	}
+}
+
+func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
+	for _, failure := range []string{"auth", "list", "incomplete list", "later page failure", "revoke", "delete", "ambiguous", "wrong organization"} {
+		t.Run(failure, func(t *testing.T) {
+			preserveCloudUnenrollmentHooks(t)
+			service := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "desk", "lite-441bf6804824").v2}
+			startUnenrollResetServer(t, service)
+			cloudErr := status.Error(codes.Unavailable, "injected cloud failure")
+			switch failure {
+			case "auth":
+				resolveCloudUnenrollAuthFn = func(string, string) (*config.AuthConfig, string, error) { return nil, "", cloudErr }
+			case "list":
+				service.listErr = cloudErr
+			case "incomplete list", "later page failure":
+				service.pageSize = 1
+				service.emptyLastPage = failure == "incomplete list"
+				if failure == "later page failure" {
+					service.lastPageErr = cloudErr
+				}
+				service.extraAssets = []*cloudpbv2.Asset{unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "another", "lite-other").v2}
+			case "revoke":
+				service.revokeErr = cloudErr
+			case "delete":
+				service.deleteErr = cloudErr
+			case "ambiguous":
+				service.extraAssets = []*cloudpbv2.Asset{unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "another", "lite-441bf6804824").v2}
+			case "wrong organization":
+				service.asset.OrganizationId = "another-organization"
+			}
+			jsonOutput = true
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			err := runCloudDeviceUnenrollWithReset(cmd, "", "lite-441bf6804824", true, func() error {
+				t.Fatal("board reset after cloud failure")
+				return nil
+			})
+			if err == nil {
+				t.Fatal("cloud failure accepted")
+			}
+			if failure == "revoke" || failure == "delete" {
+				var result struct {
+					DeviceReset  bool   `json:"deviceReset"`
+					AssetDeleted bool   `json:"assetDeleted"`
+					CloudError   string `json:"cloudError"`
+				}
+				if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+					t.Fatal(err)
+				}
+				if result.DeviceReset || result.AssetDeleted || result.CloudError == "" {
+					t.Fatalf("cloud failure reported success: %+v", result)
+				}
+			}
+		})
+	}
+}
+
+func TestCloudOnlyLiteUnenrollExplainsUSBRecovery(t *testing.T) {
+	preserveCloudUnenrollmentHooks(t)
+	service := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "desk", "lite-441bf6804824").v2}
+	startUnenrollResetServer(t, service)
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	if err := runCloudDeviceUnenroll(cmd, "", liteTestAssetID, "", true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Connect this Lite board over USB and run 'wendy device unenroll'") {
+		t.Fatalf("missing Lite recovery instructions: %q", output.String())
 	}
 }

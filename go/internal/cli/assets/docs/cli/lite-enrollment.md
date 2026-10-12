@@ -54,8 +54,8 @@ The firmware stores bundles with enrollment configuration and uses them after
 reboot. Each bundle supports at most eight CA certificates and 16 KiB. Bundles
 plus the signed-time response must fit within 64 KiB. Normal Wi-Fi configuration
 updates preserve enrollment. Replacing or erasing the entire configuration removes
-its bundles; changing an enrolled board's trust through the CLI requires operator
-recovery. This does not introduce remote trust rotation.
+its bundles. To change an enrolled board's trust, unenroll it over USB and then
+enroll again. This does not introduce remote trust rotation.
 
 The CLI obtains the board's nonce and a signed RFC 3161 timestamp. The board
 verifies the TSA chain, signature, nonce, imprint and persisted rollback floor. The CLI then asks
@@ -137,22 +137,30 @@ revoke its certificates and bootstrap credentials, delete the cloud asset, and
 release its device ID. Add `--yes` when running non-interactively. Use
 `--cloud-grpc` to select another cloud endpoint/session.
 
-For a reachable board, the normal device command reads its hardware ID through
-the selected USB, LAN, or Bluetooth connection and removes the matching cloud
-enrollment:
+For a USB-connected board, the normal device command checks firmware reset
+support, reads its hardware ID and removes the matching cloud enrollment. It then
+clears the local enrollment and reboots the board:
 
 ```sh
 wendy device unenroll --device wendy-lite:/dev/cu.usbmodemXXXX
 ```
 
-Current Lite firmware has no command to erase its local enrollment identity.
-Unenrollment preserves the board's configuration and leaves its local credentials
-in the dedicated `wendy_pki` identity partition. If the board already received a
-certificate, use the firmware's operator recovery procedure to erase or reset
-that identity partition before enrolling again. Replacing only the configuration
-or rebooting the board does not clear that identity. A cloud reservation left by
-an enrollment that never issued a certificate can be removed before retrying
-enrollment.
+This requires firmware that advertises enrollment reset support. Older firmware
+is rejected before any cloud credentials are revoked. Update that firmware over
+USB first, or explicitly use `--cloud-only` to remove only the cloud enrollment.
+LAN, Bluetooth and Cloud connections cannot clear a Lite board's identity.
+
+The reset removes the device key, certificate, pending issuance and enrollment
+configuration while preserving Wi-Fi and app configuration. The firmware checks
+the hardware ID and a fresh device challenge before accepting the USB reset.
+The CLI verifies that the identity was cleared before requesting a reboot.
+
+If cloud cleanup succeeded but local reset failed, rerun the same USB unenroll
+command. It also handles a cloud asset previously removed with `--cloud-only`,
+after checking the selected organization's cloud inventory. Authentication or
+cloud lookup failures stop the reset. Once unenrollment completes, run
+`wendy device enroll` with the same USB device selected. Rebooting alone or
+replacing configuration does not clear an issued identity.
 
 
 Read the firmware console with:

@@ -45,13 +45,19 @@ resetting local state. This path requires compatible Cloud and Agent versions
 and a directly verified mTLS connection. See the
 [unenrollment compatibility requirements](./enroll.md#unenrollment-compatibility).
 
-For Wendy Lite, this reads the hardware ID over the selected USB, LAN, or
-Bluetooth connection and removes the matching cloud enrollment. The firmware
-does not support erasing local identity through WendyCom, so the command leaves
-the board's configuration and credentials in place. If a certificate was already
-issued, operator recovery must erase or reset the dedicated `wendy_pki` identity
-partition before the board can enroll again. Rebooting or replacing its
-configuration does not clear that identity.
+For Wendy Lite, select the board's USB connection. The command checks firmware
+reset support before changing Cloud, revokes and deletes the matching cloud
+enrollment, then clears the local enrollment identity and reboots the board.
+Wi-Fi and app configuration are preserved. Firmware without reset support is
+rejected before cloud deletion and must be updated first. LAN and Bluetooth
+cannot perform this reset; use `--cloud-only` for cloud cleanup alone.
+
+If the cloud asset was already deleted, including by an earlier `--cloud-only`
+command, rerun normal unenrollment over USB. It checks the selected cloud
+organization's inventory before clearing the remaining local identity. Cloud
+authentication and lookup failures stop the reset. If local reset fails after
+cloud cleanup, the error reports that partial result and the same command can
+be retried. After successful reset, the board can enroll again.
 
 A `cloud://` selector supplied through `--device` or the saved default uses cloud
 removal directly, without opening a device connection.
