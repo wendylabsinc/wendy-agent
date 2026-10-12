@@ -65,6 +65,8 @@ type unitreePairOpMsg struct {
 	err    error
 }
 
+const unitreeAgentTooOld = "Unitree pairing requires a newer WendyOS agent"
+
 func (h *unitreePairHandler) scan(serials []string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(h.ctx, 20*time.Second)
@@ -127,7 +129,7 @@ func (h *unitreePairHandler) pair(robot *agentpbv2.UnitreeRobot, key string, fro
 			// The request contains secrets. Do not echo arbitrary remote text.
 			message := "Unitree connection failed; check the robot's IP, account, and network"
 			if status.Code(err) == codes.Unimplemented {
-				message = "Unitree pairing requires a newer WendyOS agent"
+				message = unitreeAgentTooOld
 			}
 			return unitreePairOpMsg{serial: req.Serial, err: errors.New(message)}
 		}
@@ -384,6 +386,9 @@ func (m unitreePairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.discovered = msg.discovered
 		}
 		m.scanError = strings.Join(errs, "; ")
+		if status.Code(msg.listErr) == codes.Unimplemented || status.Code(msg.discoveryErr) == codes.Unimplemented {
+			m.scanError = unitreeAgentTooOld
+		}
 		m.refreshRows(selected)
 		return m, nil
 	case unitreePairLoginMsg:

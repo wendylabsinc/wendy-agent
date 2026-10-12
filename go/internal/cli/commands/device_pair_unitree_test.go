@@ -184,6 +184,16 @@ func TestUnitreeFailedDiscoveryDoesNotKeepStaleConnectionStatus(t *testing.T) {
 	}
 }
 
+func TestUnitreeOldAgentScanShowsUpgradeGuidance(t *testing.T) {
+	unknown := status.Error(codes.Unimplemented, "unknown service wendy.agent.services.v2.WendyUnitreeService")
+	c := &unitreePairTestClient{listErr: unknown, discoveryErr: unknown}
+	m := newUnitreePairModel(&unitreePairHandler{ctx: context.Background(), client: c})
+	m, _ = unitreePairUpdate(m, m.Init()())
+	if m.scanError != unitreeAgentTooOld {
+		t.Fatalf("old agent scan error = %q, want upgrade guidance", m.scanError)
+	}
+}
+
 func TestUnitreeDiscoveryKeepsAccountAlias(t *testing.T) {
 	c := &unitreePairTestClient{connected: true, discovered: []*agentpbv2.UnitreeRobot{{Serial: "MINE", Name: "Unitree Go2", Address: "192.0.2.42"}}}
 	m := newUnitreePairModel(&unitreePairHandler{ctx: context.Background(), client: c})
