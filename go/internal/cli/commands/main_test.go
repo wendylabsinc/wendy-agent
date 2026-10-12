@@ -1,8 +1,11 @@
 package commands
 
 import (
+	"context"
 	"os"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 )
 
 // TestMain sandboxes HOME/USERPROFILE to a throwaway directory for the whole
@@ -17,6 +20,17 @@ import (
 // (defaultPostStartBrowserAllowed, tested directly) would otherwise suppress
 // every hook those tests observe.
 func TestMain(m *testing.M) {
+	// UI initialization starts LAN discovery immediately, even if its returned
+	// tea.Cmd is never run. Default to a closed, empty stream so UI tests cannot
+	// leave live probes racing with another test's global stubs (or use the
+	// developer's LAN). Stream-specific tests install their own event fixtures;
+	// the discovery package tests the real engine with controlled backends.
+	lanStreamFn = func(context.Context, discovery.StreamOptions) <-chan discovery.LANEvent {
+		events := make(chan discovery.LANEvent)
+		close(events)
+		return events
+	}
+
 	postStartBrowserAllowed = func() bool { return true }
 	// A developer who exported WENDY_DEVICE (as the docs suggest) must not
 	// have it copied into deviceFlag by every test that executes the root
