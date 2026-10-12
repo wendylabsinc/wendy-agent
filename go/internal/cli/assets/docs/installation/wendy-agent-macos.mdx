@@ -56,9 +56,10 @@ Wendy Agent appears in the macOS menu bar. Open the menu to confirm the agent is
 ## Network access
 
 On first launch, Wendy Agent asks **Who should be able to connect to Wendy Agent?**
-Choose **Only This Mac** (the default) or **Allow Other Devices**. The agent waits
-for your choice before starting and remembers it for future launches. Upgrades
-without an existing preference also ask once.
+Choose **Only This Mac** (the default) or **Allow Other Devices**. The agent starts
+locally before asking, so an unattended launch is not blocked. It remembers your
+choice for future launches. Upgrades with existing agent state but no saved choice
+preserve network access without a prompt.
 
 In **Only this Mac** mode, the management API and image
 registry listen only on localhost. The agent does not advertise through Bonjour

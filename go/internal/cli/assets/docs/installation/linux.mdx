@@ -36,6 +36,9 @@ The installer asks who should be able to connect:
 - **Other devices**: enables network discovery and remote access. Before enrollment,
   reachable computers may deploy and run apps, so use this on a trusted network.
 
+Existing agent installations without a saved choice preserve network access during
+updates. An explicit `--network-access` flag overrides that migration default.
+
 The answer is saved in `/etc/wendy-agent/network-access`. Updates preserve the
 saved answer. With `-y` or no interactive terminal, a fresh install uses local
 access. Choose network access explicitly for an unattended edge installation:

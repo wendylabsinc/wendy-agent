@@ -263,6 +263,14 @@ confirm() {
 }
 
 # --- Choose and persist Linux agent access before packages start the service ---
+agent_already_installed() {
+  command -v "$BINARY_NAME" &>/dev/null \
+    || [[ -x "${INSTALL_DIR}/${BINARY_NAME}" ]] \
+    || [[ -f /etc/systemd/system/wendy-agent.service ]] \
+    || [[ -f /usr/lib/systemd/system/wendy-agent.service ]] \
+    || [[ -f /lib/systemd/system/wendy-agent.service ]]
+}
+
 choose_network_access() {
   local choice_file="${1:-/etc/wendy-agent/network-access}" answer
   if [[ -n "$NETWORK_ACCESS" ]]; then return 0; fi
@@ -274,6 +282,11 @@ choose_network_access() {
         return 0 ;;
       *) echo "Error: invalid saved network access choice; use --network-access local or network." >&2; exit 1 ;;
     esac
+  fi
+  if agent_already_installed; then
+    NETWORK_ACCESS=network
+    echo "Keeping network access for the existing agent installation."
+    return 0
   fi
   NETWORK_ACCESS=local
   if [[ "$YES" == true ]] || ! have_tty; then

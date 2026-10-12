@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Test the installer's access choice without installing packages or services.
+# Variables and overrides are consumed by the dynamically extracted installer.
+# shellcheck disable=SC1091,SC2034,SC2329
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 AGENT="${REPO_ROOT}/go/internal/cli/assets/docs/agent.sh"
@@ -19,6 +21,28 @@ check() {
   echo "ok $1"
 }
 
+# Exercise detection using a real executable fixture, without installing it.
+INSTALL_DIR="$TEST_DIR/bin"
+BINARY_NAME="pr2240-fixture-agent"
+mkdir -p "$INSTALL_DIR"
+printf '#!/bin/sh\n' > "$INSTALL_DIR/$BINARY_NAME"
+chmod +x "$INSTALL_DIR/$BINARY_NAME"
+agent_already_installed || { echo "FAIL existing binary not detected"; exit 1; }
+NETWORK_ACCESS=""
+YES=true
+choose_network_access "$TEST_DIR/missing"
+check "legacy unattended update preserves networking" network "$NETWORK_ACCESS"
+NETWORK_ACCESS=""
+YES=false
+have_tty() { echo "FAIL legacy update must not prompt" >&2; exit 1; }
+choose_network_access "$TEST_DIR/missing"
+check "legacy interactive update preserves networking without prompting" network "$NETWORK_ACCESS"
+NETWORK_ACCESS=local
+choose_network_access "$TEST_DIR/missing"
+check "explicit revocation overrides migration" local "$NETWORK_ACCESS"
+rm "$INSTALL_DIR/$BINARY_NAME"
+# Isolate fresh-install cases from any service installed on the test runner.
+agent_already_installed() { return 1; }
 have_tty() { return 1; }
 YES=false
 NETWORK_ACCESS=""
@@ -66,6 +90,7 @@ helpers="$1"
 choice_file="$2"
 set --
 source "$helpers"
+agent_already_installed() { return 1; }
 YES=false
 NETWORK_ACCESS=""
 choose_network_access "$choice_file"

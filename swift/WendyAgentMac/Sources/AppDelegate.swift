@@ -45,7 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var isQuitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        self.chooseInitialNetworkAccess()
+        let shouldAskForNetworkAccess =
+            !self.networkAccessIsManaged
+            && self.networkAccessPreferences.prepareForStartup(
+                existingInstallation: NetworkAccessPreferences.existingInstallation
+            )
         self.welcomeAndPermissions.configureLaunchAtLoginOnStartup()
 
         Task {
@@ -84,6 +88,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
             do {
                 try await self.wendyAgent.start()
+                if shouldAskForNetworkAccess {
+                    self.chooseInitialNetworkAccess()
+                }
             } catch {
                 self.logger.error(
                     "Failed to start WendyAgent: \(String(describing: error), privacy: .public)"
@@ -97,9 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     private func chooseInitialNetworkAccess() {
-        guard !self.networkAccessIsManaged,
-            !self.networkAccessPreferences.hasChosenNetworkAccess
-        else { return }
+        guard !self.networkAccessIsManaged else { return }
 
         let alert = NSAlert()
         alert.messageText = "Who should be able to connect to Wendy Agent?"
@@ -113,8 +118,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         alert.buttons.first?.keyEquivalent = "\r"
         alert.buttons.last?.keyEquivalent = ""
         NSApplication.shared.activate(ignoringOtherApps: true)
-        self.networkAccessPreferences.allowsNetworkAccess =
-            alert.runModal() == .alertSecondButtonReturn
+        if alert.runModal() == .alertSecondButtonReturn,
+            let controller = self.statusMenuController
+        {
+            self.statusMenuController(controller, didSetNetworkAccessAllowed: true)
+        }
     }
 
     func statusMenuControllerDidSelectAbout(_ controller: StatusMenuController) {

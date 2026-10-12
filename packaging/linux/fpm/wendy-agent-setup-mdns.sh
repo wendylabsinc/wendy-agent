@@ -12,9 +12,10 @@ if [ -f /etc/wendy-agent/network-access ] \
   if [ -f "$SERVICE_FILE" ]; then
     mv -f "$SERVICE_FILE" "${SERVICE_FILE}.local-only"
   fi
-  exit 0
+  SERVICE_FILE="${SERVICE_FILE}.local-only"
 fi
 
+# Populate hidden advertisements too, so a later opt-in restores real identity.
 if [ ! -f "$SERVICE_FILE" ]; then
   exit 0
 fi
