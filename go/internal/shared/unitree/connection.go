@@ -224,7 +224,7 @@ func connectWithSignaling(ctx context.Context, exchange func(context.Context, []
 		return nil, errors.New("Unitree returned an invalid SDP answer")
 	}
 	if answer.SDP == "reject" {
-		return nil, errors.New("Unitree is busy; close another connected client, such as the Unitree mobile app, and retry")
+		return nil, errors.New("Unitree is busy; arrange an explicit handoff with the current robot operator before retrying")
 	}
 	if answer.Type != "answer" {
 		return nil, errors.New("Unitree returned an unexpected SDP message type")
