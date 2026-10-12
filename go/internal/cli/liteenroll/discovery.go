@@ -23,22 +23,32 @@ import (
 // Only authenticated CA-discovery content and verified TLS trust anchors are
 // provisioned; unverified peer certificates never become roots.
 func DiscoverTrust(ctx context.Context, cfg *litepb.WendyConfEnrollment, endpoint string) (*http.Client, error) {
+	return DiscoverTrustForProfile(ctx, cfg, endpoint, TrustProfile{})
+}
+
+// DiscoverTrustForProfile additionally checks the discovered CA algorithms
+// against the selected board's advertised verifier.
+func DiscoverTrustForProfile(ctx context.Context, cfg *litepb.WendyConfEnrollment, endpoint string, profile TrustProfile) (*http.Client, error) {
 	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return fmt.Errorf("CA discovery redirects are not allowed")
 	}}
-	if err := discoverTrust(ctx, client, cfg, endpoint); err != nil {
+	if err := discoverTrustForProfile(ctx, client, cfg, endpoint, profile); err != nil {
 		return nil, err
 	}
 	return trustHTTPClient(cfg.HttpsRoots)
 }
 
 func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyConfEnrollment, endpoint string) error {
+	return discoverTrustForProfile(ctx, client, cfg, endpoint, TrustProfile{})
+}
+
+func discoverTrustForProfile(ctx context.Context, client *http.Client, cfg *litepb.WendyConfEnrollment, endpoint string, profile TrustProfile) error {
 	for _, bundle := range []struct {
 		name string
 		data []byte
 	}{{"device", cfg.DeviceRoots}, {"HTTPS", cfg.HttpsRoots}} {
 		if len(bundle.data) != 0 {
-			if err := validateMbedTLSTrustBundle(bundle.data); err != nil {
+			if err := validateTrustBundleForProfile(bundle.data, profile); err != nil {
 				return fmt.Errorf("existing %s roots: %w", bundle.name, err)
 			}
 		}
@@ -48,7 +58,7 @@ func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyCo
 		tsaRoots = bytes.Clone(defaultTSARoots)
 	}
 	if cfg.TimeUrl != "roughtime" {
-		if err := validateMbedTLSTrustBundle(tsaRoots); err != nil {
+		if err := validateTrustBundleForProfile(tsaRoots, profile); err != nil {
 			return fmt.Errorf("RFC 3161 enrollment requires trusted TSA roots; use the default Sigstore endpoint or supply --device-roots, --https-roots and --tsa-roots: %w", err)
 		}
 	}
@@ -130,7 +140,7 @@ func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyCo
 			if len(body) > 128*1024 {
 				return fmt.Errorf("CA discovery response too large")
 			}
-			deviceRoots, err = discoveryRoots(body, resp.Header.Get("Content-Type"))
+			deviceRoots, err = discoveryRootsForProfile(body, resp.Header.Get("Content-Type"), profile)
 			if err != nil {
 				return err
 			}
@@ -138,7 +148,7 @@ func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyCo
 			resp.Body.Close()
 		}
 	}
-	if err := validateMbedTLSTrustBundle(httpsRoots); err != nil {
+	if err := validateTrustBundleForProfile(httpsRoots, profile); err != nil {
 		return fmt.Errorf("discovered HTTPS roots: %w", err)
 	}
 	cfg.DeviceRoots, cfg.TsaRoots, cfg.HttpsRoots = deviceRoots, tsaRoots, httpsRoots
@@ -149,6 +159,10 @@ func discoverTrust(ctx context.Context, client *http.Client, cfg *litepb.WendyCo
 // EST responses contain untrusted intermediates as well as roots. Install only
 // self-issued CAs from the authenticated discovery response.
 func discoveryRoots(body []byte, contentType string) ([]byte, error) {
+	return discoveryRootsForProfile(body, contentType, TrustProfile{})
+}
+
+func discoveryRootsForProfile(body []byte, contentType string, profile TrustProfile) ([]byte, error) {
 	var certs []*x509.Certificate
 	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("-----BEGIN CERTIFICATE-----")) {
 		if err := validateTrustBundle(body); err != nil {
@@ -216,7 +230,7 @@ func discoveryRoots(body []byte, contentType string) ([]byte, error) {
 			roots = append(roots, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})...)
 		}
 	}
-	if err := validateMbedTLSTrustBundle(roots); err != nil {
+	if err := validateTrustBundleForProfile(roots, profile); err != nil {
 		return nil, fmt.Errorf("discovered device roots: %w", err)
 	}
 	return roots, nil

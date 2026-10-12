@@ -82,6 +82,7 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if challenge.Enrolled {
 		return errLiteAlreadyEnrolled
 	}
+	trustProfile := liteenroll.TrustProfileFromChallenge(challenge)
 	// Older firmware does not report this capability. Reject only firmware that
 	// explicitly reports its certificate-issuance task is unavailable.
 	if challenge.CloudEnrollmentSupported != nil && !challenge.GetCloudEnrollmentSupported() {
@@ -98,7 +99,7 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if opts.caCertsURL != "" && (opts.deviceRoots != "" || opts.tsaRoots != "" || opts.httpsRoots != "") {
 		return fmt.Errorf("use either --ca-certs-url or explicit root bundle files")
 	}
-	timeClient, err := liteenroll.ProvisionTrust(cfg, opts.deviceRoots, opts.tsaRoots, opts.httpsRoots)
+	timeClient, err := liteenroll.ProvisionTrustForProfile(cfg, opts.deviceRoots, opts.tsaRoots, opts.httpsRoots, trustProfile)
 	if err != nil {
 		return err
 	}
@@ -116,7 +117,7 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 		if !challenge.GetUsbTrustSupported() {
 			return fmt.Errorf("firmware does not support trust bundle provisioning; update the board first")
 		}
-		timeClient, err = liteenroll.DiscoverTrust(ctx, cfg, opts.caCertsURL)
+		timeClient, err = liteenroll.DiscoverTrustForProfile(ctx, cfg, opts.caCertsURL, trustProfile)
 		if err != nil {
 			return err
 		}

@@ -50,8 +50,11 @@ RFC 3161 service, pass `--time-url https://time.example/v1/time` and provide
 bundles from the PKI administrator. Firmware with all three custom bundles pinned
 at build time can omit the file flags.
 
-Device/operator and TSA chains must be compatible with mbedTLS throughout;
-a P-256 leaf beneath an ML-DSA issuer is insufficient. The TSA must sign with
+Firmware uses mbedTLS by default. To enroll against a PKI with ML-DSA CA
+certificates, build the firmware with `CONFIG_WENDY_PKI_WOLFSSL=y`. The flag is
+disabled by default. Updated firmware advertises its ML-DSA support, and the CLI
+checks this before reserving an asset. A P-256 leaf beneath an ML-DSA issuer also
+requires the wolfSSL profile. Both profiles support a TSA signing with
 ECDSA P-256 or P-384 and SHA-256. The HTTPS bundle must cover the broker too.
 
 The firmware stores bundles with enrollment configuration and uses them after
@@ -88,8 +91,10 @@ The CLI opens a broker-authorized relay using the selected Cloud session, then
 uses its same-tenant operator certificate to authenticate directly to the device.
 It verifies the device certificate against the enrolled PKI device name and tenant
 before sending WendyCom. Operator credentials must already be installed locally. Keep the ML-DSA login
-identity for Cloud administration and enrollment authorization. For Lite TLS and
-ES256 request signing, provision a P-256 identity with the same operator SPIFFE URI:
+identity for Cloud administration and enrollment authorization. The wolfSSL
+profile accepts ML-DSA operator certificates for TLS, but the Cloud relay still
+requires ES256 request signing. Provision a P-256 identity with the same operator SPIFFE URI
+for that relay:
 
 ```sh
 export WENDY_LITE_OPERATOR_CERT=/path/to/operator-leaf-and-chain.pem

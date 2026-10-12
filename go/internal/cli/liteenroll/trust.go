@@ -20,6 +20,12 @@ const maxTrustBundle = 16384
 // configuration. No certificates received from an endpoint become trust roots.
 // Omitting all paths preserves compatibility with build-pinned firmware.
 func ProvisionTrust(cfg *litepb.WendyConfEnrollment, devicePath, tsaPath, httpsPath string) (*http.Client, error) {
+	return ProvisionTrustForProfile(cfg, devicePath, tsaPath, httpsPath, TrustProfile{})
+}
+
+// ProvisionTrustForProfile validates explicit bundles against the selected
+// board's advertised verifier before changing its enrollment configuration.
+func ProvisionTrustForProfile(cfg *litepb.WendyConfEnrollment, devicePath, tsaPath, httpsPath string, profile TrustProfile) (*http.Client, error) {
 	if devicePath == "" && tsaPath == "" && httpsPath == "" {
 		return http.DefaultClient, nil
 	}
@@ -29,7 +35,7 @@ func ProvisionTrust(cfg *litepb.WendyConfEnrollment, devicePath, tsaPath, httpsP
 	bundles := make([][]byte, 3)
 	for i, path := range []string{devicePath, tsaPath, httpsPath} {
 		if i == 1 && path == "" && cfg.TimeUrl == DefaultTimeURL {
-			if err := validateMbedTLSTrustBundle(defaultTSARoots); err != nil {
+			if err := validateTrustBundleForProfile(defaultTSARoots, profile); err != nil {
 				return nil, fmt.Errorf("bundled Sigstore TSA root: %w", err)
 			}
 			bundles[i] = bytes.Clone(defaultTSARoots)
@@ -47,7 +53,7 @@ func ProvisionTrust(cfg *litepb.WendyConfEnrollment, devicePath, tsaPath, httpsP
 		if err != nil {
 			return nil, err
 		}
-		if err := validateMbedTLSTrustBundle(bundles[i]); err != nil {
+		if err := validateTrustBundleForProfile(bundles[i], profile); err != nil {
 			return nil, fmt.Errorf("trust bundle %s: %w", path, err)
 		}
 	}
@@ -119,6 +125,22 @@ func CheckTrustSupport(cfg *litepb.WendyConfEnrollment, challenge *litepb.WendyC
 	}
 	if cfg.ProvisionTrust && !challenge.GetUsbTrustSupported() {
 		return fmt.Errorf("firmware does not support trust bundle provisioning; update the board first")
+	}
+	if cfg.ProvisionTrust {
+		// Recheck the fresh challenge before minting, in case a reconnect or a
+		// firmware change no longer advertises the initially selected verifier.
+		profile := TrustProfileFromChallenge(challenge)
+		for _, bundle := range []struct {
+			name string
+			data []byte
+		}{{"device", cfg.DeviceRoots}, {"TSA", cfg.TsaRoots}, {"HTTPS", cfg.HttpsRoots}} {
+			if bundle.name == "TSA" && cfg.TimeUrl == "roughtime" && len(bundle.data) == 0 {
+				continue
+			}
+			if err := validateTrustBundleForProfile(bundle.data, profile); err != nil {
+				return fmt.Errorf("%s roots: %w", bundle.name, err)
+			}
+		}
 	}
 	return nil
 }
