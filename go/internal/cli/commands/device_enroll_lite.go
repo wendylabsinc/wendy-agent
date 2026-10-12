@@ -82,6 +82,11 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if challenge.Enrolled {
 		return errLiteAlreadyEnrolled
 	}
+	// Older firmware does not report this capability. Reject only firmware that
+	// explicitly reports its certificate-issuance task is unavailable.
+	if challenge.CloudEnrollmentSupported != nil && !challenge.GetCloudEnrollmentSupported() {
+		return fmt.Errorf("this Wendy Lite firmware was built without cloud enrollment support; rebuild it with PKI, cloud and Wi-Fi support enabled before enrolling")
+	}
 	name, err = enrollmentName(identity.Name, name)
 	if err != nil {
 		return err

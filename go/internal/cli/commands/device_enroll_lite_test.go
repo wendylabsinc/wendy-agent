@@ -11,6 +11,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	litepb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
+	"google.golang.org/protobuf/proto"
 )
 
 type alreadyEnrolledLiteDevice struct {
@@ -43,5 +44,63 @@ func TestLiteEnrollmentReportsRemainingIdentityBeforeNameOrTrustSetup(t *testing
 	}
 	if !device.closed {
 		t.Fatal("enrollment connection leaked")
+	}
+}
+
+type unsupportedLiteEnrollmentDevice struct {
+	alreadyEnrolledLiteDevice
+	supported *bool
+}
+
+func (d *unsupportedLiteEnrollmentDevice) EnrollmentChallenge(statusOnly bool) (*litepb.WendyComEnrollmentChallenge, error) {
+	if !statusOnly {
+		panic("unsupported firmware must not start an enrollment challenge")
+	}
+	return &litepb.WendyComEnrollmentChallenge{EnrollmentResetSupported: true, CloudEnrollmentSupported: d.supported}, nil
+}
+
+func TestLiteEnrollmentRejectsUnsupportedFirmwareBeforeSetup(t *testing.T) {
+	old := connectLiteEnrollmentFn
+	t.Cleanup(func() { connectLiteEnrollmentFn = old })
+	device := &unsupportedLiteEnrollmentDevice{supported: proto.Bool(false)}
+	connectLiteEnrollmentFn = func(models.ExternalDevice) (liteEnrollmentDevice, error) { return device, nil }
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	// Reset support alone does not mean the firmware can request a certificate.
+	// Reject it before prompting for a name, accessing trust or reserving an asset.
+	err := runEnrollLiteDevice(cmd, liteUnenrollUSBTarget(), &config.AuthConfig{}, "\x1b[A", liteEnrollmentOptions{deviceRoots: "/missing.pem"})
+	if err == nil || !strings.Contains(err.Error(), "was built without cloud enrollment support") {
+		t.Fatalf("expected firmware capability error before enrollment setup, got %v", err)
+	}
+	if !device.closed {
+		t.Fatal("enrollment connection leaked")
+	}
+}
+
+func TestLiteEnrollmentAllowsLegacyAndSupportedFirmware(t *testing.T) {
+	old := connectLiteEnrollmentFn
+	t.Cleanup(func() { connectLiteEnrollmentFn = old })
+	for _, tc := range []struct {
+		name      string
+		supported *bool
+	}{
+		{name: "legacy"},
+		{name: "supported", supported: proto.Bool(true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			device := &unsupportedLiteEnrollmentDevice{supported: tc.supported}
+			connectLiteEnrollmentFn = func(models.ExternalDevice) (liteEnrollmentDevice, error) { return device, nil }
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			// Reaching name validation proves older firmware can still enroll;
+			// the invalid name keeps this test from contacting Cloud.
+			err := runEnrollLiteDevice(cmd, liteUnenrollUSBTarget(), &config.AuthConfig{}, "\x1b[A", liteEnrollmentOptions{})
+			if err == nil || !strings.Contains(err.Error(), "name may only contain") {
+				t.Fatalf("firmware was rejected before name validation: %v", err)
+			}
+			if !device.closed {
+				t.Fatal("enrollment connection leaked")
+			}
+		})
 	}
 }

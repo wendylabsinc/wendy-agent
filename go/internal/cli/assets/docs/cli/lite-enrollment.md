@@ -18,11 +18,15 @@ device determines the protocol: agent gRPC for WendyOS, or WendyCom over the sel
 Lite. Omit `--device` to use the normal picker, or use a device ID shown by
 `wendy discover`. The hidden `wendy device enroll` alias uses the same dispatch.
 
-The board needs Wi-Fi and the PKI-enabled firmware from
-[wendy-lite#49](https://github.com/wendylabsinc/wendy-lite/pull/49) and its dedicated
+The board needs Wi-Fi and the enrollment-capable firmware from
+[wendy-lite#57](https://github.com/wendylabsinc/wendy-lite/pull/57) and its dedicated
 identity partition. Trust bundles can be provisioned during enrollment, so
 the firmware does not need deployment-specific roots. The CLI checks firmware
-support before minting a token. Firmware must support enrollment on the selected
+support before minting a token. Current firmware reports whether PKI, the cloud
+connection task and Wi-Fi are enabled. The CLI stops before reserving an asset
+if firmware explicitly reports that enrollment is disabled. Older firmware that
+does not report this capability remains supported.
+Firmware must support enrollment on the selected
 transport; older firmware may accept bootstrap commands only over USB. After
 reboot, completion checks reuse the selected transport and its authentication.
 Cloud enrollment does not replace the firmware's LAN or Bluetooth credentials.

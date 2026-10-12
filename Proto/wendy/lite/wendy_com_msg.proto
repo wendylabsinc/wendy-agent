@@ -96,6 +96,7 @@ message WendyComEnrollmentChallenge {
     bool builtin_roots_ready = 5; // device and HTTPS CA bundles configured
     bool builtin_tsa_roots_ready = 6;
     bool enrollment_reset_supported = 7; // physical USB reset with current nonce
+    optional bool cloud_enrollment_supported = 8; // absent on older firmware
 }
 
 

@@ -1021,7 +1021,8 @@ type WendyComEnrollmentChallenge struct {
 	RoughtimeSupported       bool                   `protobuf:"varint,4,opt,name=roughtime_supported,json=roughtimeSupported,proto3" json:"roughtime_supported,omitempty"` // sync_time verifies device-nonce-bound replies
 	BuiltinRootsReady        bool                   `protobuf:"varint,5,opt,name=builtin_roots_ready,json=builtinRootsReady,proto3" json:"builtin_roots_ready,omitempty"`  // device and HTTPS CA bundles configured
 	BuiltinTsaRootsReady     bool                   `protobuf:"varint,6,opt,name=builtin_tsa_roots_ready,json=builtinTsaRootsReady,proto3" json:"builtin_tsa_roots_ready,omitempty"`
-	EnrollmentResetSupported bool                   `protobuf:"varint,7,opt,name=enrollment_reset_supported,json=enrollmentResetSupported,proto3" json:"enrollment_reset_supported,omitempty"` // physical USB reset with current nonce
+	EnrollmentResetSupported bool                   `protobuf:"varint,7,opt,name=enrollment_reset_supported,json=enrollmentResetSupported,proto3" json:"enrollment_reset_supported,omitempty"`       // physical USB reset with current nonce
+	CloudEnrollmentSupported *bool                  `protobuf:"varint,8,opt,name=cloud_enrollment_supported,json=cloudEnrollmentSupported,proto3,oneof" json:"cloud_enrollment_supported,omitempty"` // absent on older firmware
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -1101,6 +1102,13 @@ func (x *WendyComEnrollmentChallenge) GetBuiltinTsaRootsReady() bool {
 func (x *WendyComEnrollmentChallenge) GetEnrollmentResetSupported() bool {
 	if x != nil {
 		return x.EnrollmentResetSupported
+	}
+	return false
+}
+
+func (x *WendyComEnrollmentChallenge) GetCloudEnrollmentSupported() bool {
+	if x != nil && x.CloudEnrollmentSupported != nil {
+		return *x.CloudEnrollmentSupported
 	}
 	return false
 }
@@ -2818,7 +2826,7 @@ const file_wendy_com_msg_proto_rawDesc = "" +
 	"\x1bWendyComGetDeviceInfoParams\"D\n" +
 	"!WendyComEnrollmentChallengeParams\x12\x1f\n" +
 	"\vstatus_only\x18\x01 \x01(\bR\n" +
-	"statusOnly\"\xdc\x02\n" +
+	"statusOnly\"\xbe\x03\n" +
 	"\x1bWendyComEnrollmentChallenge\x12\x1b\n" +
 	"\tnonce_hex\x18\x01 \x01(\tR\bnonceHex\x12\x1a\n" +
 	"\benrolled\x18\x02 \x01(\bR\benrolled\x12.\n" +
@@ -2826,7 +2834,9 @@ const file_wendy_com_msg_proto_rawDesc = "" +
 	"\x13roughtime_supported\x18\x04 \x01(\bR\x12roughtimeSupported\x12.\n" +
 	"\x13builtin_roots_ready\x18\x05 \x01(\bR\x11builtinRootsReady\x125\n" +
 	"\x17builtin_tsa_roots_ready\x18\x06 \x01(\bR\x14builtinTsaRootsReady\x12<\n" +
-	"\x1aenrollment_reset_supported\x18\a \x01(\bR\x18enrollmentResetSupported\"j\n" +
+	"\x1aenrollment_reset_supported\x18\a \x01(\bR\x18enrollmentResetSupported\x12A\n" +
+	"\x1acloud_enrollment_supported\x18\b \x01(\bH\x00R\x18cloudEnrollmentSupported\x88\x01\x01B\x1d\n" +
+	"\x1b_cloud_enrollment_supported\"j\n" +
 	"\x1dWendyComEnrollmentResetParams\x12,\n" +
 	"\x12expected_device_id\x18\x01 \x01(\tR\x10expectedDeviceId\x12\x1b\n" +
 	"\tnonce_hex\x18\x02 \x01(\tR\bnonceHex\"L\n" +
@@ -3072,6 +3082,7 @@ func file_wendy_com_msg_proto_init() {
 		return
 	}
 	file_wendy_com_msg_proto_msgTypes[3].OneofWrappers = []any{}
+	file_wendy_com_msg_proto_msgTypes[16].OneofWrappers = []any{}
 	file_wendy_com_msg_proto_msgTypes[26].OneofWrappers = []any{
 		(*WendyComCommand_Ping)(nil),
 		(*WendyComCommand_Reboot)(nil),
