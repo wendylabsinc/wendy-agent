@@ -57,6 +57,7 @@ type UnitreeService struct {
 	sessions  map[string]*unitreeSession
 	retry     time.Duration
 	owner     unitree.PairingOwner // current certificate scope; guarded by opMu
+	stale     bool                 // a previous owner's store still needs clearing; guarded by opMu
 	dialSlots chan struct{}
 }
 
@@ -76,7 +77,8 @@ func NewUnitreeService(ctx context.Context, path string, owner unitree.PairingOw
 // Rebind closes retained sessions and clears this feature's credentials when
 // enrollment ownership changes. Unknown owner disables persistence until restart
 // or a subsequent authenticated enrollment. A failed clear still binds loads
-// to the new owner so old credentials cannot cross the ownership boundary.
+// to the new owner so old credentials cannot cross the ownership boundary, and
+// is retried on the next rebind.
 func (s *UnitreeService) Rebind(owner unitree.PairingOwner) error {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -86,6 +88,11 @@ func (s *UnitreeService) Rebind(owner unitree.PairingOwner) error {
 		// for the next boot before an eventual UUID-only renewal.
 		s.store.BindOwner(owner)
 		s.owner = owner
+		if s.stale {
+			// Retry clearing the previous owner's keys; otherwise every load
+			// under this owner keeps failing until ownership changes again.
+			return s.clearStale()
+		}
 		_, err := s.store.List()
 		if err != nil {
 			// File/provenance failure must not leave old in-memory credentials
@@ -95,9 +102,15 @@ func (s *UnitreeService) Rebind(owner unitree.PairingOwner) error {
 		return err
 	}
 	s.stopSessions()
-	err := s.store.Clear()
 	s.store.BindOwner(owner)
 	s.owner = owner
+	return s.clearStale()
+}
+
+// clearStale is called with opMu held after ownership has changed.
+func (s *UnitreeService) clearStale() error {
+	err := s.store.Clear()
+	s.stale = err != nil
 	return err
 }
 
@@ -110,6 +123,14 @@ func (s *UnitreeService) Restore() error {
 		return err
 	}
 	pairings, err := s.store.List()
+	if errors.Is(err, unitree.ErrForeignOwner) && s.owner.Local {
+		// An unenrolled agent never owns enrolled pairings: they are left over
+		// from unprovisioning whose clear failed. Remove them now.
+		if err := s.clearStale(); err != nil {
+			return errors.New("clearing a previous enrollment's Unitree pairings failed")
+		}
+		return nil
+	}
 	if err != nil {
 		return errors.New("loading Unitree pairings failed")
 	}
@@ -445,6 +466,11 @@ func (s *UnitreeService) maintain(ctx context.Context, p unitree.Pairing, sessio
 			s.mu.Lock()
 			session.link = nil
 			s.mu.Unlock()
+			// A robot that validates and then drops the channel must not
+			// cause an unbounded reconnect loop.
+			if !s.waitRetry(ctx) {
+				return
+			}
 		}
 		if ctx.Err() != nil {
 			return
@@ -461,12 +487,19 @@ func (s *UnitreeService) maintain(ctx context.Context, p unitree.Pairing, sessio
 			s.mu.Unlock()
 			continue
 		}
-		timer := time.NewTimer(unitreeRetryDelay(s.retry))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if !s.waitRetry(ctx) {
 			return
-		case <-timer.C:
 		}
+	}
+}
+
+func (s *UnitreeService) waitRetry(ctx context.Context) bool {
+	timer := time.NewTimer(unitreeRetryDelay(s.retry))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }

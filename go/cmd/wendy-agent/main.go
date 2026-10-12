@@ -1059,10 +1059,14 @@ func main() {
 	// plaintext port and exit so systemd restarts the agent into unprovisioned
 	// mode. A clean restart is simpler and more reliable than tearing down the
 	// mTLS server, tunnel broker, BLE peripheral, and HTTPS registry in place.
-	provisioningSvc.OnUnprovisioned = func() {
+	// Revoke Unitree sessions and keys before Unprovision reports success.
+	// A failed clear is retried when the agent restarts unenrolled.
+	provisioningSvc.BeforeUnprovisioned = func() {
 		if err := unitreeSvc.Rebind(unitree.PairingOwner{}); err != nil {
 			logger.Error("Clearing Unitree pairings during unprovisioning failed", zap.Error(err))
 		}
+	}
+	provisioningSvc.OnUnprovisioned = func() {
 		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
 		logger.Info("Device unprovisioned — restarting agent into unprovisioned mode")
 		os.Exit(0)

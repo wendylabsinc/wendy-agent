@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -391,6 +392,108 @@ func TestUnitreeEnrollmentChangeFailsClosedWhenClearFails(t *testing.T) {
 	}
 	if err := s.Restore(); err == nil {
 		t.Fatal("restore accepted another tenant's credentials")
+	}
+}
+
+func TestUnitreeFailedClearIsRetriedOnSameOwnerRebind(t *testing.T) {
+	s := testUnitreeService(t)
+	s.dial = func(context.Context, string, string, string) (unitreeLink, error) { return newTestUnitreeLink(), nil }
+	if _, err := s.PairUnitree(unitreeTestContext(), unitreeTestRequest()); err != nil {
+		t.Fatal(err)
+	}
+	failing := &flakyClearUnitreeStore{unitreePairingStore: s.store, failures: 1}
+	s.store = failing
+	if err := s.Rebind(unitree.PairingOwner{OrgID: 43}); err == nil {
+		t.Fatal("failed clearing was not reported")
+	}
+	if err := s.Rebind(unitree.PairingOwner{OrgID: 43}); err != nil {
+		t.Fatal("same-owner renewal did not retry clearing the previous owner's keys", err)
+	}
+	if failing.calls != 2 {
+		t.Fatalf("clear attempts = %d, want 2", failing.calls)
+	}
+	if list, err := s.store.List(); err != nil || len(list) != 0 {
+		t.Fatal("new owner cannot use pairing after retried clear", err)
+	}
+	if err := s.Rebind(unitree.PairingOwner{OrgID: 43}); err != nil || failing.calls != 2 {
+		t.Fatal("healthy same-owner renewal cleared pairings again", err)
+	}
+}
+
+type flakyClearUnitreeStore struct {
+	unitreePairingStore
+	failures, calls int
+}
+
+func (s *flakyClearUnitreeStore) Clear() error {
+	s.calls++
+	if s.calls <= s.failures {
+		return errors.New("fixture clear failure")
+	}
+	return s.unitreePairingStore.Clear()
+}
+
+func TestUnitreeUnenrolledRestoreClearsPreviousEnrollmentKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pairings.json")
+	saved := unitree.Pairing{Device: unitree.Device{Serial: "GO2TEST1", Address: "192.0.2.20", EncryptionKey: unitreeTestKey}, PairedAt: time.Now()}
+	if err := unitree.NewStore(path, unitree.PairingOwner{OrgID: 42}).Save(saved); err != nil {
+		t.Fatal(err)
+	}
+	noDial := func(context.Context, string, string, string) (unitreeLink, error) {
+		t.Error("restore dialed a previous enrollment's robot")
+		return nil, errors.New("must not dial")
+	}
+
+	// Another enrolled tenant fails closed without deleting: ownership
+	// differences at boot are not proof the file is abandoned.
+	other := NewUnitreeService(context.Background(), path, unitree.PairingOwner{OrgID: 43})
+	other.dial = noDial
+	if err := other.Restore(); err == nil {
+		t.Fatal("restore accepted another tenant's credentials")
+	}
+	other.Close()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("enrolled restore removed a differently owned store", err)
+	}
+
+	local := NewUnitreeService(context.Background(), path, unitree.PairingOwner{Local: true})
+	local.dial = noDial
+	t.Cleanup(local.Close)
+	if err := local.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("unenrolled restore retained a previous enrollment's keys", err)
+	}
+	if list, err := local.store.List(); err != nil || len(list) != 0 {
+		t.Fatal("local pairing unusable after clearing", err)
+	}
+}
+
+func TestUnitreeRetainedLinkDropWaitsBeforeRedial(t *testing.T) {
+	s := testUnitreeService(t)
+	first := newTestUnitreeLink()
+	var dials atomic.Int32
+	s.dial = func(context.Context, string, string, string) (unitreeLink, error) {
+		if dials.Add(1) == 1 {
+			return first, nil
+		}
+		return newTestUnitreeLink(), nil
+	}
+	if _, err := s.PairUnitree(unitreeTestContext(), unitreeTestRequest()); err != nil {
+		t.Fatal(err)
+	}
+	_ = first.Close()
+	time.Sleep(100 * time.Millisecond)
+	if n := dials.Load(); n != 1 {
+		t.Fatalf("dropped link redialed immediately: %d dials", n)
+	}
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("retry wait after a dropped link was not cancellable")
 	}
 }
 

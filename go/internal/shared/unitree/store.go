@@ -20,6 +20,9 @@ type Pairing struct {
 	PairedAt time.Time `json:"paired_at"`
 }
 
+// ErrForeignOwner reports a store owned by a different or unknown enrollment.
+var ErrForeignOwner = errors.New("Unitree pairings belong to a different or unknown enrollment")
+
 // Store saves robot keys in a private file. Account passwords and cloud tokens
 // never enter the store. Use one Store per agent to serialize modifications.
 type Store struct {
@@ -151,7 +154,7 @@ func (s *Store) load() ([]Pairing, error) {
 		return nil, errors.New("invalid Unitree pairing store")
 	}
 	if !s.owner.Matches(stored.Owner) {
-		return nil, errors.New("Unitree pairings belong to a different or unknown enrollment")
+		return nil, ErrForeignOwner
 	}
 	list := make([]Pairing, 0, len(stored.Devices))
 	seen := make(map[string]bool)
