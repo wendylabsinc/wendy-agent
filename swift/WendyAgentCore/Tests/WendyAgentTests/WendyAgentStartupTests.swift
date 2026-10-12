@@ -4,15 +4,52 @@ import Testing
 
 @testable import WendyAgentCore
 
-@Suite("WendyAgent startup")
+@Suite("WendyAgent startup", .serialized)
 struct WendyAgentStartupTests {
+    @Test("startup is local-only and access changes rebind the running server")
+    func localOnlyStartup() async throws {
+        let reservation = try OccupiedIPv6TCPPort()
+        let port = reservation.port
+        reservation.close()
+        let agent = WendyAgent(
+            configuration: .init(port: port, otelPort: 0),
+            reportedVersion: { "test" }
+        )
+        do {
+            try await agent.start()
+            // A deliberately absent Bonjour task must not disable monitoring
+            // or be mistaken for a failed runtime subsystem.
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(await agent.status == .running)
+
+            let listeners = try listenerNames(port: port)
+            #expect(listeners.contains("n127.0.0.1:\(port)"))
+            #expect(!listeners.contains("n*:\(port)"))
+
+            try await agent.setNetworkAccess(allowed: true)
+            #expect(await agent.configuration.allowsNetworkAccess)
+            #expect(try listenerNames(port: port).contains("n*:\(port)"))
+
+            try await agent.setNetworkAccess(allowed: false)
+            #expect(!(await agent.configuration.allowsNetworkAccess))
+            let localListeners = try listenerNames(port: port)
+            #expect(localListeners.contains("n127.0.0.1:\(port)"))
+            #expect(!localListeners.contains("n*:\(port)"))
+            #expect(await agent.status == .running)
+            await agent.stop()
+        } catch {
+            await agent.stop()
+            throw error
+        }
+    }
+
     @Test("startup reports a port-in-use error when the gRPC port is occupied")
     func reportsPortConflict() async throws {
         let occupiedPort = try OccupiedIPv6TCPPort()
         defer { occupiedPort.close() }
 
         let agent = await WendyAgent(
-            configuration: .init(port: occupiedPort.port, otelPort: 0)
+            configuration: .init(host: "::", port: occupiedPort.port, otelPort: 0)
         )
 
         do {
@@ -33,6 +70,22 @@ struct WendyAgentStartupTests {
             #expect(!description.contains("There is no listening address bound"))
         }
     }
+}
+
+private func listenerNames(port: Int) throws -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+    process.arguments = [
+        "-nP", "-a", "-p", String(ProcessInfo.processInfo.processIdentifier), "-iTCP:\(port)",
+        "-sTCP:LISTEN", "-F", "n",
+    ]
+    let output = Pipe()
+    process.standardOutput = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    #expect(process.terminationStatus == 0)
+    return String(decoding: data, as: UTF8.self)
 }
 
 private final class OccupiedIPv6TCPPort: @unchecked Sendable {
