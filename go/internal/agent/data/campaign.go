@@ -240,6 +240,10 @@ func (n *CampaignNotify) UnmarshalYAML(node *yaml.Node) error {
 // triggers; it does not require the configured sensors or network destination
 // to be online at deployment time.
 type Campaign struct {
+	// Kind is the data document header's kind. A campaign is a collection;
+	// the field exists so ParseCampaign's strict decoding accepts
+	// "kind: collection", and it is never stored or hashed.
+	Kind              string             `json:"-" yaml:"kind,omitempty"`
 	Inference         *CampaignInference `json:"inference,omitempty" yaml:"inference,omitempty"`
 	InferenceStatus   *InferenceStatus   `json:"inference_status,omitempty" yaml:"-"`
 	Version           int                `json:"version" yaml:"version"`
@@ -406,6 +410,9 @@ func (c Campaign) planDigestInput() map[string]any {
 }
 
 func (c Campaign) validate() error {
+	if c.Kind != "" && c.Kind != "collection" {
+		return fmt.Errorf("kind %q is not a campaign; a campaign has kind collection or no kind", c.Kind)
+	}
 	if c.Version == 0 {
 		return fmt.Errorf("version is required; this agent supports campaign version %d", CampaignVersion)
 	}
