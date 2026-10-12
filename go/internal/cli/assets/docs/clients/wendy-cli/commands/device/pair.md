@@ -44,6 +44,11 @@ before pairing it.
 
 ## USB robot arms (native Mac and Linux Agents)
 
+Linux uses the Go Agent's `robotarm.DiscoverLinux` sysfs inventory. Native
+macOS uses the separate Swift Agent implementation (`USBSerialInventory` and
+`RobotArmService`) backed by IOKit. Running the Go Agent on macOS does not
+provide USB arm discovery; select an updated native Mac Agent instead.
+
 The **USB Arms** tab lists USB-backed serial endpoints attached to the selected
 Agent's host, alongside saved arm bindings. A CLI on laptop A targeting laptop B
 shows B's devices and saves records on B. It does not scan A's local serial ports.
@@ -73,6 +78,7 @@ Bluetooth serial endpoints are excluded.
   power, serial access, port availability, joint telemetry or control readiness.
 - **Disconnected:** a saved binding has no matching current endpoint. Its current
   path is empty and it remains available to forget.
+  New binding is rejected; reconnect the device and refresh first.
 - **Ambiguous:** several endpoints share the same identity. They are shown with
   their current paths, but `connected` is false and binding is blocked until the
   ambiguity is resolved. The Agent never chooses one automatically.
@@ -103,12 +109,18 @@ Without `--usb-arms`, existing `--list`, `--name` and `--sensors` retain their
 SensorLink meaning. USB operations cannot be combined with SensorLink flags.
 Older Agents return an explicit update/unsupported message; there is no fallback
 to discovery on the CLI's machine.
+`--arm-name` accepts at most 128 UTF-8 bytes. Binding requires a currently
+connected, unambiguous endpoint; metadata discovery alone cannot authorize it.
 
 The Linux Agent stores bindings in `/var/lib/wendy/robot-arm-bindings.json`.
 The Mac Agent stores them in `robot-arm-bindings.json` inside its existing
 Application Support state directory (the running app's bundle identifier, or
 process name when unbundled). Records survive Agent restarts. Forgetting deletes
 only the saved configuration; it does not disconnect a USB device or change motors.
+If the binding file is corrupt, list, bind and forget fail without overwriting
+it. Inspect and back up the file on that Agent's host before repairing its JSON
+or deliberately resetting saved configuration. Disconnecting the USB device
+does not repair a corrupt file.
 
 Discovery, save and forget only read OS metadata or update that JSON file. They
 never open a serial port, send torque writes, home/calibrate motors, access a
