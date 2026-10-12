@@ -141,6 +141,10 @@ class Bridge(Node):
                         self.on_video(message.video)
             except grpc.RpcError as e:
                 log.warning("robot stream ended: %s", e.details() if hasattr(e, "details") else e)
+            except RCLError:
+                if not rclpy.ok():
+                    return  # shutting down
+                raise
             time.sleep(2)
 
     def stamp(self, received_unix_nanos):
