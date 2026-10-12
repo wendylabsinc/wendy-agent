@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package wendy.sdk.v1;
+
+option go_package = "github.com/wendylabsinc/townhall/gen/wendy/sdk/v1;sdkv1";
+
+// Device describes the smallest representative SDK object surface. These
+// operations exist to exercise unary and streaming binding patterns; they are
+// not yet a complete Wendy device API.
+service Device {
+  // Returns the current identity and display information for a connected device.
+  // C bridge: WendyDeviceGetInfo.
+  // Binding pattern: async-unary.
+  rpc GetInfo(GetDeviceInfoRequest) returns (DeviceInfo);
+
+  // Watches state snapshots until the caller cancels or the device closes.
+  // C bridge: WendyDeviceWatchState.
+  // Binding pattern: demand-driven-stream.
+  rpc WatchState(WatchDeviceStateRequest) returns (stream DeviceState);
+}
+
+// GetDeviceInfoRequest requests the current information for the receiving
+// device. The receiver carries device identity, so the request is empty.
+message GetDeviceInfoRequest {}
+
+// DeviceInfo is an immutable snapshot returned by Device.GetInfo.
+message DeviceInfo {
+  // Stable SDK identity for the device.
+  string id = 1;
+
+  // Human-readable device name, when one is available.
+  optional string name = 2;
+}
+
+// WatchDeviceStateRequest starts observing the receiving device.
+message WatchDeviceStateRequest {}
+
+// DeviceState is a complete state snapshot, not a delta to fold locally.
+message DeviceState {
+  // Availability describes whether the SDK currently considers the device reachable.
+  enum Availability {
+    // The availability is not yet known.
+    AVAILABILITY_UNSPECIFIED = 0;
+
+    // The device is currently reachable.
+    AVAILABILITY_ONLINE = 1;
+
+    // The device is known but currently unreachable.
+    AVAILABILITY_OFFLINE = 2;
+  }
+
+  // Current reachability state.
+  Availability availability = 1;
+}

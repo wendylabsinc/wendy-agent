@@ -1,0 +1,394 @@
+{
+  "schemaVersion": 1,
+  "version": "0.1.0-draft",
+  "contract": {
+    "ownership": "Documentation/CContract/Ownership.md",
+    "concurrency": "Documentation/CContract/Concurrency.md",
+    "streaming": "Documentation/CContract/Streaming.md",
+    "errors": "Documentation/CContract/Errors.md",
+    "buffers": "Documentation/CContract/Buffers.md",
+    "patterns": "Documentation/BindingPatterns"
+  },
+  "c": {
+    "functions": [
+      {
+        "name": "WendyABIVersionMajor",
+        "signature": "uint32_t (void)",
+        "comment": "Returns the bridge ABI major version."
+      },
+      {
+        "name": "WendyABIVersionMinor",
+        "signature": "uint32_t (void)",
+        "comment": "Returns the bridge ABI minor version."
+      },
+      {
+        "name": "WendyDataGetView",
+        "signature": "WendyDataView (const WendyData *)",
+        "parameters": [
+          {
+            "name": "data",
+            "type": "const WendyData *"
+          }
+        ],
+        "comment": "Returns a borrowed view valid while `data` remains alive."
+      },
+      {
+        "name": "WendyDataRelease",
+        "signature": "void (const WendyData *)",
+        "parameters": [
+          {
+            "name": "data",
+            "type": "const WendyData *"
+          }
+        ],
+        "comment": "Releases one ownership reference. Passing NULL has no effect."
+      },
+      {
+        "name": "WendyDataRetain",
+        "signature": "WendyData *(const WendyData *)",
+        "parameters": [
+          {
+            "name": "data",
+            "type": "const WendyData *"
+          }
+        ],
+        "comment": "Adds one ownership reference and returns the same data object."
+      },
+      {
+        "name": "WendyDeviceGetInfo",
+        "signature": "WendyOperation *(const WendyDevice *, WendyDataView, WendyCompletion, void *)",
+        "parameters": [
+          {
+            "name": "device",
+            "type": "const WendyDevice *"
+          },
+          {
+            "name": "request",
+            "type": "WendyDataView"
+          },
+          {
+            "name": "completion",
+            "type": "WendyCompletion"
+          },
+          {
+            "name": "context",
+            "type": "void *"
+          }
+        ],
+        "pattern": "async-unary",
+        "ownership": "inputs are borrowed; the operation and callback result are owned",
+        "threading": "safe for concurrent calls; completion runs on a Wendy worker thread",
+        "cancellation": "completes exactly once with `WendyErrorCancelled`",
+        "availability": "0.1.0-draft",
+        "comment": "Requests current information from a connected device. The request bytes encode `wendy.sdk.v1.GetDeviceInfoRequest`. Successful completion bytes encode `wendy.sdk.v1.DeviceInfo`. Binding pattern: async-unary. Ownership: inputs are borrowed; the operation and callback result are owned. Threading: safe for concurrent calls; completion runs on a Wendy worker thread. Cancellation: completes exactly once with `WendyErrorCancelled`. Availability: 0.1.0-draft."
+      },
+      {
+        "name": "WendyDeviceRelease",
+        "signature": "void (const WendyDevice *)",
+        "parameters": [
+          {
+            "name": "device",
+            "type": "const WendyDevice *"
+          }
+        ],
+        "comment": "Releases one ownership reference. Passing NULL has no effect."
+      },
+      {
+        "name": "WendyDeviceRetain",
+        "signature": "WendyDevice *(const WendyDevice *)",
+        "parameters": [
+          {
+            "name": "device",
+            "type": "const WendyDevice *"
+          }
+        ],
+        "comment": "Adds one ownership reference and returns the same device."
+      },
+      {
+        "name": "WendyDeviceWatchState",
+        "signature": "WendyStream *(const WendyDevice *, WendyDataView, const WendyStreamCallbacks *, void *)",
+        "parameters": [
+          {
+            "name": "device",
+            "type": "const WendyDevice *"
+          },
+          {
+            "name": "request",
+            "type": "WendyDataView"
+          },
+          {
+            "name": "callbacks",
+            "type": "const WendyStreamCallbacks *"
+          },
+          {
+            "name": "context",
+            "type": "void *"
+          }
+        ],
+        "pattern": "demand-driven-stream",
+        "ownership": "inputs are borrowed; the stream and callback items are owned",
+        "threading": "item callbacks are serialized on a Wendy worker thread",
+        "cancellation": "completes exactly once with `WendyErrorCancelled`",
+        "availability": "0.1.0-draft",
+        "comment": "Watches complete state snapshots for a connected device. Request bytes encode `wendy.sdk.v1.WatchDeviceStateRequest`; every item encodes `wendy.sdk.v1.DeviceState`. Item callbacks are serialized and consume one unit of demand. `onComplete` runs exactly once; its error is NULL after normal completion. Binding pattern: demand-driven-stream. Ownership: inputs are borrowed; the stream and callback items are owned. Threading: item callbacks are serialized on a Wendy worker thread. Cancellation: completes exactly once with `WendyErrorCancelled`. Availability: 0.1.0-draft."
+      },
+      {
+        "name": "WendyErrorGetCode",
+        "signature": "WendyErrorCode (const WendyError *)",
+        "parameters": [
+          {
+            "name": "error",
+            "type": "const WendyError *"
+          }
+        ],
+        "comment": "Returns the stable category for `error`."
+      },
+      {
+        "name": "WendyErrorGetMessage",
+        "signature": "WendyDataView (const WendyError *)",
+        "parameters": [
+          {
+            "name": "error",
+            "type": "const WendyError *"
+          }
+        ],
+        "comment": "Returns the human-readable UTF-8 message as a borrowed view."
+      },
+      {
+        "name": "WendyErrorRelease",
+        "signature": "void (const WendyError *)",
+        "parameters": [
+          {
+            "name": "error",
+            "type": "const WendyError *"
+          }
+        ],
+        "comment": "Releases one ownership reference. Passing NULL has no effect."
+      },
+      {
+        "name": "WendyErrorRetain",
+        "signature": "WendyError *(const WendyError *)",
+        "parameters": [
+          {
+            "name": "error",
+            "type": "const WendyError *"
+          }
+        ],
+        "comment": "Adds one ownership reference and returns the same error object."
+      },
+      {
+        "name": "WendyOperationCancel",
+        "signature": "void (const WendyOperation *)",
+        "parameters": [
+          {
+            "name": "operation",
+            "type": "const WendyOperation *"
+          }
+        ],
+        "comment": "Requests cancellation. Cancellation is idempotent."
+      },
+      {
+        "name": "WendyOperationRelease",
+        "signature": "void (const WendyOperation *)",
+        "parameters": [
+          {
+            "name": "operation",
+            "type": "const WendyOperation *"
+          }
+        ],
+        "comment": "Releases one ownership reference without implicitly cancelling."
+      },
+      {
+        "name": "WendyOperationRetain",
+        "signature": "WendyOperation *(const WendyOperation *)",
+        "parameters": [
+          {
+            "name": "operation",
+            "type": "const WendyOperation *"
+          }
+        ],
+        "comment": "Adds one ownership reference and returns the same operation."
+      },
+      {
+        "name": "WendyRuntimeCreate",
+        "signature": "WendyRuntime *(const WendyRuntimeOptions *, WendyError **)",
+        "parameters": [
+          {
+            "name": "options",
+            "type": "const WendyRuntimeOptions *"
+          },
+          {
+            "name": "error",
+            "type": "WendyError **"
+          }
+        ],
+        "pattern": "owned-object",
+        "availability": "0.1.0-draft",
+        "comment": "Creates an isolated Wendy SDK runtime. `options` is borrowed and copied before this function returns. On failure, `error` receives an owned error when non-NULL. The returned runtime is owned by the caller. Binding pattern: owned-object. Availability: 0.1.0-draft."
+      },
+      {
+        "name": "WendyRuntimeRelease",
+        "signature": "void (const WendyRuntime *)",
+        "parameters": [
+          {
+            "name": "runtime",
+            "type": "const WendyRuntime *"
+          }
+        ],
+        "comment": "Releases one ownership reference. Passing NULL has no effect."
+      },
+      {
+        "name": "WendyRuntimeRetain",
+        "signature": "WendyRuntime *(const WendyRuntime *)",
+        "parameters": [
+          {
+            "name": "runtime",
+            "type": "const WendyRuntime *"
+          }
+        ],
+        "comment": "Adds one ownership reference and returns the same runtime."
+      },
+      {
+        "name": "WendyStreamCancel",
+        "signature": "void (const WendyStream *)",
+        "parameters": [
+          {
+            "name": "stream",
+            "type": "const WendyStream *"
+          }
+        ],
+        "comment": "Requests stream cancellation. Cancellation is idempotent."
+      },
+      {
+        "name": "WendyStreamRelease",
+        "signature": "void (const WendyStream *)",
+        "parameters": [
+          {
+            "name": "stream",
+            "type": "const WendyStream *"
+          }
+        ],
+        "comment": "Releases one ownership reference without implicitly cancelling."
+      },
+      {
+        "name": "WendyStreamRequest",
+        "signature": "void (const WendyStream *, uint64_t)",
+        "parameters": [
+          {
+            "name": "stream",
+            "type": "const WendyStream *"
+          },
+          {
+            "name": "demand",
+            "type": "uint64_t"
+          }
+        ],
+        "comment": "Adds demand to a stream. Items are never delivered without demand."
+      },
+      {
+        "name": "WendyStreamRetain",
+        "signature": "WendyStream *(const WendyStream *)",
+        "parameters": [
+          {
+            "name": "stream",
+            "type": "const WendyStream *"
+          }
+        ],
+        "comment": "Adds one ownership reference and returns the same stream."
+      }
+    ]
+  },
+  "protobuf": {
+    "messages": [
+      {
+        "name": "wendy.sdk.v1.DeviceInfo",
+        "comment": "DeviceInfo is an immutable snapshot returned by Device.GetInfo.",
+        "fields": [
+          {
+            "number": 1,
+            "name": "id",
+            "type": "string",
+            "comment": "Stable SDK identity for the device."
+          },
+          {
+            "number": 2,
+            "name": "name",
+            "type": "string",
+            "optional": true,
+            "comment": "Human-readable device name, when one is available."
+          }
+        ]
+      },
+      {
+        "name": "wendy.sdk.v1.DeviceState",
+        "comment": "DeviceState is a complete state snapshot, not a delta to fold locally.",
+        "fields": [
+          {
+            "number": 1,
+            "name": "availability",
+            "type": "wendy.sdk.v1.DeviceState.Availability",
+            "comment": "Current reachability state."
+          }
+        ]
+      },
+      {
+        "name": "wendy.sdk.v1.GetDeviceInfoRequest",
+        "comment": "GetDeviceInfoRequest requests the current information for the receiving device. The receiver carries device identity, so the request is empty.",
+        "fields": []
+      },
+      {
+        "name": "wendy.sdk.v1.WatchDeviceStateRequest",
+        "comment": "WatchDeviceStateRequest starts observing the receiving device.",
+        "fields": []
+      }
+    ],
+    "enums": [
+      {
+        "name": "wendy.sdk.v1.DeviceState.Availability",
+        "comment": "Availability describes whether the SDK currently considers the device reachable.",
+        "values": [
+          {
+            "number": 0,
+            "name": "AVAILABILITY_UNSPECIFIED",
+            "comment": "The availability is not yet known."
+          },
+          {
+            "number": 1,
+            "name": "AVAILABILITY_ONLINE",
+            "comment": "The device is currently reachable."
+          },
+          {
+            "number": 2,
+            "name": "AVAILABILITY_OFFLINE",
+            "comment": "The device is known but currently unreachable."
+          }
+        ]
+      }
+    ],
+    "services": [
+      {
+        "name": "wendy.sdk.v1.Device",
+        "comment": "Device describes the smallest representative SDK object surface. These operations exist to exercise unary and streaming binding patterns; they are not yet a complete Wendy device API.",
+        "methods": [
+          {
+            "name": "GetInfo",
+            "input": "wendy.sdk.v1.GetDeviceInfoRequest",
+            "output": "wendy.sdk.v1.DeviceInfo",
+            "cFunction": "WendyDeviceGetInfo",
+            "pattern": "async-unary",
+            "comment": "Returns the current identity and display information for a connected device. C bridge: WendyDeviceGetInfo. Binding pattern: async-unary."
+          },
+          {
+            "name": "WatchState",
+            "input": "wendy.sdk.v1.WatchDeviceStateRequest",
+            "output": "wendy.sdk.v1.DeviceState",
+            "cFunction": "WendyDeviceWatchState",
+            "pattern": "demand-driven-stream",
+            "serverStreaming": true,
+            "comment": "Watches state snapshots until the caller cancels or the device closes. C bridge: WendyDeviceWatchState. Binding pattern: demand-driven-stream."
+          }
+        ]
+      }
+    ]
+  }
+}
