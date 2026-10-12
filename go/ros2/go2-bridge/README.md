@@ -45,7 +45,7 @@ With one paired robot nothing else is needed; with several set
 | `/go2/raw/<topic>` | `std_msgs/String` or `UInt8MultiArray` | every robot message unchanged, only while subscribed |
 | `/api/sport/response` | `unitree_api/Response` | replies to `/api/sport/request` |
 
-Commands: `/cmd_vel` (`linear.x`, `angular.z`) and `/api/sport/request` with
+Commands: `/cmd_vel` (`linear.x`, `linear.y`, `angular.z`) and `/api/sport/request` with
 Move (1008), StopMove (1003), RecoveryStand (1006), StandDown (1005) and Hello
 (1016). Other APIs get status 3203. Speeds are capped like the simulator's:
 0.8 m/s forward, 0.5 m/s sideways (`linear.y` / Move `y`), 1.0 rad/s turning.
