@@ -18,6 +18,10 @@ type Account struct {
 	Devices []Device `json:"devices"`
 }
 
+// AccountFlowMarker is the only non-empty value for PairUnitreeRequest.token.
+// It marks initial keyless pairing after account login; it is not a credential.
+const AccountFlowMarker = "unitree-account-flow"
+
 // ValidEncryptionKey accepts the vendor's 16-byte hexadecimal robot key.
 func ValidEncryptionKey(key string) bool {
 	decoded, err := hex.DecodeString(key)

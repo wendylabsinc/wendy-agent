@@ -22,7 +22,7 @@ import (
 )
 
 // The old RPC token field is a workflow marker, not an account credential.
-const unitreeAccountFlowMarker = "unitree-account-flow"
+const unitreeAccountFlowMarker = unitree.AccountFlowMarker
 
 type unitreePairHandler struct {
 	ctx            context.Context

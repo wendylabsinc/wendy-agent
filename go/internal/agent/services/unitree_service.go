@@ -259,8 +259,16 @@ func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUni
 	if err := s.authorize(ctx); err != nil {
 		return nil, err
 	}
-	if req == nil || !unitree.ValidSerial(strings.TrimSpace(req.Serial)) || len(req.Name) > 256 || len(req.Token) > 8192 {
+	if req == nil || !unitree.ValidSerial(strings.TrimSpace(req.Serial)) {
 		return nil, status.Error(codes.InvalidArgument, "a valid Unitree robot serial is required")
+	}
+	if len(req.Name) > 256 {
+		return nil, status.Error(codes.InvalidArgument, "Unitree robot name must be at most 256 bytes")
+	}
+	// Refuse anything but the fixed marker so a client bug cannot hand the
+	// agent an account-wide token. Do not echo the rejected value.
+	if req.Token != "" && req.Token != unitree.AccountFlowMarker {
+		return nil, status.Error(codes.InvalidArgument, "token must be empty or the account-flow marker, never a Unitree account token")
 	}
 	address := strings.TrimSpace(req.Address)
 	ip := net.ParseIP(address)
@@ -330,7 +338,7 @@ func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUni
 	stop := context.AfterFunc(s.ctx, cancel)
 	defer stop()
 	defer cancel()
-	link, err := s.connect(connectCtx, p.Device.Address, req.Token, p.Device.EncryptionKey)
+	link, err := s.connect(connectCtx, p.Device.Address, "", p.Device.EncryptionKey)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, status.FromContextError(ctx.Err()).Err()
