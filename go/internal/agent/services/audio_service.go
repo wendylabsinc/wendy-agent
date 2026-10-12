@@ -43,8 +43,9 @@ type AudioService struct {
 	// sensorLinkMounts and pairingName, when set, let the ALSA fallback name a
 	// snd-aloop Loopback capture subdevice after the remote sensor-link source
 	// it carries. Both nil on a device with no sensor pairings wired.
-	sensorLinkMounts func() []audioloop.Mount
-	pairingName      func(sourceAssetID int32) (string, bool)
+	sensorLinkMounts     func() []audioloop.Mount
+	pairingName          func(sourceAssetID int32) (string, bool)
+	pairingPrincipalName func(string) (string, bool)
 }
 
 // NewAudioService creates a new AudioService.
@@ -59,6 +60,10 @@ func NewAudioService(logger *zap.Logger) *AudioService {
 func (s *AudioService) SetSensorLinkNaming(mounts func() []audioloop.Mount, pairingName func(int32) (string, bool)) {
 	s.sensorLinkMounts = mounts
 	s.pairingName = pairingName
+}
+
+func (s *AudioService) SetSensorLinkPrincipalNaming(name func(string) (string, bool)) {
+	s.pairingPrincipalName = name
 }
 
 // pipewireUnavailable reports whether this call must use the ALSA fallback, and
@@ -157,7 +162,14 @@ func (s *AudioService) nameSensorLinkMounts(nodes []audio.Node) []audio.Node {
 		}
 		for _, m := range mounts {
 			label := fmt.Sprintf("asset-%d", m.SourceAssetID)
-			if s.pairingName != nil {
+			if m.SourcePrincipalURI != "" {
+				label = m.SourcePrincipalURI
+				if s.pairingPrincipalName != nil {
+					if name, ok := s.pairingPrincipalName(m.SourcePrincipalURI); ok {
+						label = name
+					}
+				}
+			} else if s.pairingName != nil {
 				if name, ok := s.pairingName(m.SourceAssetID); ok {
 					label = name
 				}

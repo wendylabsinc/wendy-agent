@@ -1,6 +1,7 @@
 package liteclient
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -82,6 +83,84 @@ func TestPKILANTrustAndDeviceIdentity(t *testing.T) {
 				}
 			} else if err == nil || !strings.HasPrefix(err.Error(), "connect (mTLS):") {
 				t.Fatalf("untrusted peer accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestSensorSourceTLSRequiresExactSameTenantDevice(t *testing.T) {
+	const tenant = "11111111-2222-4333-8444-555555555555"
+	base := "spiffe://wendy.sh/tenant/" + tenant + "/"
+	root, rootKey := issueRelayCertificate(t, 100, "root", "", true, nil, nil)
+	ca, caKey := issueRelayCertificate(t, 101, "device authority", "", true, root, rootKey)
+	consumer, key := issueRelayCertificate(t, 102, "consumer", base+"device/consumer", false, ca, caKey)
+	client := tls.Certificate{Certificate: [][]byte{consumer.Raw, ca.Raw}, PrivateKey: key}
+	chain := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Raw}))
+	for _, role := range []string{"operator/user", "service/user"} {
+		leaf, k := issueRelayCertificate(t, 103, "not device", base+role, false, ca, caKey)
+		err := NewWendyLiteClient().ConnectSensorSource(context.Background(), "invalid:0", tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: k}, chain, base+"device/source")
+		if err == nil || !strings.Contains(err.Error(), "consumer device identity") {
+			t.Fatalf("accepted %s: %v", role, err)
+		}
+	}
+	for _, tc := range []struct {
+		name, principal    string
+		untrusted, expired bool
+		wantTLS            bool
+	}{
+		{"matching", base + "device/source", false, false, true},
+		{"other device", base + "device/other", false, false, false},
+		{"other tenant", "spiffe://wendy.sh/tenant/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/device/source", false, false, false},
+		{"untrusted", base + "device/source", true, false, false},
+		{"expired", base + "device/source", false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issuer, issuerKey := root, rootKey
+			if tc.untrusted {
+				issuer, issuerKey = issueRelayCertificate(t, 104, "other root", "", true, nil, nil)
+			}
+			server, serverKey := issueRelayCertificate(t, 105, "source", tc.principal, false, issuer, issuerKey)
+			if tc.expired {
+				template := *server
+				template.NotBefore = time.Now().Add(-2 * time.Hour)
+				template.NotAfter = time.Now().Add(-time.Hour)
+				der, err := x509.CreateCertificate(rand.Reader, &template, issuer, &serverKey.PublicKey, issuerKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				server, err = x509.ParseCertificate(der)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			pool := x509.NewCertPool()
+			pool.AddCert(root)
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			completed := make(chan error, 1)
+			go func() {
+				raw, err := listener.Accept()
+				if err != nil {
+					completed <- err
+					return
+				}
+				defer raw.Close()
+				raw.SetDeadline(time.Now().Add(5 * time.Second))
+				conn := tls.Server(raw, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{{Certificate: [][]byte{server.Raw}, PrivateKey: serverKey}}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool})
+				completed <- conn.Handshake()
+			}()
+			c := NewWendyLiteClient()
+			err = c.ConnectSensorSource(context.Background(), listener.Addr().String(), client, chain, base+"device/source")
+			serverErr := <-completed
+			if tc.wantTLS {
+				if serverErr != nil || err == nil || !strings.HasPrefix(err.Error(), "SensorLink handshake:") {
+					t.Fatalf("TLS=%v WendyCom=%v", serverErr, err)
+				}
+			} else if err == nil || !strings.HasPrefix(err.Error(), "connect SensorLink (mTLS):") {
+				t.Fatalf("wrong peer accepted: %v", err)
 			}
 		})
 	}

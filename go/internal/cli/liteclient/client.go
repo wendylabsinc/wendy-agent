@@ -1184,3 +1184,47 @@ func (c *WendyLiteClient) ConnectWithPKIAuthentication(address string, cert tls.
 	c.startReadLoop()
 	return nil
 }
+
+// ConnectSensorSource authenticates a pinned SensorLink source using this
+// consumer's device identity. The source limits device callers to SensorLink.
+func (c *WendyLiteClient) ConnectSensorSource(ctx context.Context, address string, cert tls.Certificate, chain, principal string) error {
+	if len(cert.Certificate) == 0 {
+		return fmt.Errorf("missing consumer certificate")
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return err
+	}
+	own, ok, err := certs.IdentityFromCert(leaf)
+	if err != nil || !ok || own.EntityType != certs.EntityAsset || own.TenantUUID == "" {
+		return fmt.Errorf("SensorLink requires a tenant-scoped consumer device identity")
+	}
+	expected, err := certs.ParseDevicePrincipal(principal)
+	if err != nil || principal != certs.DeviceSPIFFEURI(expected.TenantUUID, expected.EntityID) || !expected.Scope().Matches(own.Scope()) {
+		return fmt.Errorf("SensorLink source must be a device in the consumer's tenant")
+	}
+	verify, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{ChainPEM: chain, ExpectedIdentity: &expected})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert},
+		InsecureSkipVerify: true, // VerifyConnection authenticates the full chain and exact device principal.
+		VerifyConnection:   verify}
+	conn, err := (&tls.Dialer{Config: cfg}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		return fmt.Errorf("connect SensorLink (mTLS): %w", err)
+	}
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	c.link = newDirectLink(conn)
+	if err := c.handshake(); err != nil {
+		c.link.close()
+		c.link = nil
+		return fmt.Errorf("SensorLink handshake: %w", err)
+	}
+	c.peerCert = conn.(*tls.Conn).ConnectionState().PeerCertificates[0]
+	c.startReadLoop()
+	return nil
+}

@@ -11,30 +11,34 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 type sensorPairScanMsg struct {
-	devices      []models.DiscoveredDevice
-	pairings     []*agentpbv2.SensorPairing
-	discoveryErr error
-	pairingsErr  error
+	devices          []models.DiscoveredDevice
+	pairings         []*agentpbv2.SensorPairing
+	discoveryErr     error
+	pairingsErr      error
+	principalPairing bool
 }
 
 type sensorPairOpMsg struct {
-	assetID int32
-	pairing *agentpbv2.SensorPairing // nil after forgetting
-	err     error
+	assetID   int32
+	principal string
+	pairing   *agentpbv2.SensorPairing // nil after forgetting
+	err       error
 }
 
 type sensorPairHandler struct {
-	ctx      context.Context
-	client   agentpbv2.WendySensorPairingServiceClient
-	discover func(context.Context) ([]models.DiscoveredDevice, error)
-	orgIDs   func() (map[int32]bool, error)
-	name     string
-	sensors  []string
+	ctx       context.Context
+	client    agentpbv2.WendySensorPairingServiceClient
+	discover  func(context.Context) ([]models.DiscoveredDevice, error)
+	orgIDs    func() (map[int32]bool, error)
+	tenantIDs func() (map[string]bool, error)
+	name      string
+	sensors   []string
 }
 
 func (h *sensorPairHandler) scan() tea.Cmd {
@@ -47,6 +51,7 @@ func (h *sensorPairHandler) scan() tea.Cmd {
 			msg.pairingsErr = cleanRPCError(err)
 		} else {
 			msg.pairings = resp.GetPairings()
+			msg.principalPairing = resp.GetSupportsPrincipalPairing()
 		}
 		msg.devices, msg.discoveryErr = h.discover(ctx)
 		if msg.discoveryErr == nil {
@@ -58,10 +63,24 @@ func (h *sensorPairHandler) scan() tea.Cmd {
 
 func (h *sensorPairHandler) pair(source models.DiscoveredDevice) tea.Cmd {
 	return func() tea.Msg {
-		msg := sensorPairOpMsg{assetID: source.AssetID}
-		orgs, err := h.orgIDs()
-		if err == nil {
-			err = orgAllowed(orgs, source.OrgID)
+		msg := sensorPairOpMsg{assetID: source.AssetID, principal: sensorSourcePrincipal(source)}
+		var err error
+		if msg.principal != "" {
+			if h.tenantIDs == nil {
+				err = fmt.Errorf("sign in to the sensor's organization before pairing")
+			} else {
+				var tenants map[string]bool
+				tenants, err = h.tenantIDs()
+				if err == nil && !tenants[source.TenantUUID] {
+					err = fmt.Errorf("sign in to the sensor's organization before pairing")
+				}
+			}
+		} else {
+			var orgs map[int32]bool
+			orgs, err = h.orgIDs()
+			if err == nil {
+				err = orgAllowed(orgs, source.OrgID)
+			}
 		}
 		if err != nil {
 			msg.err = err
@@ -72,7 +91,7 @@ func (h *sensorPairHandler) pair(source models.DiscoveredDevice) tea.Cmd {
 		// The consumer resolves the stable asset ID on its own network. The
 		// CLI's discovered IP may be unreachable from that device.
 		resp, err := h.client.AddSensorPairing(ctx, &agentpbv2.AddSensorPairingRequest{
-			SourceAssetId: source.AssetID, Name: pairingName(h.name, &source),
+			SourceAssetId: source.AssetID, SourcePrincipalUri: msg.principal, Name: pairingName(h.name, &source),
 			SensorAllowlist: h.sensors, Transport: transportForDevice(source),
 		})
 		if err != nil {
@@ -81,7 +100,7 @@ func (h *sensorPairHandler) pair(source models.DiscoveredDevice) tea.Cmd {
 			msg.pairing = resp.GetPairing()
 			if msg.pairing == nil {
 				msg.pairing = &agentpbv2.SensorPairing{
-					SourceAssetId: source.AssetID, OrgId: source.OrgID,
+					SourceAssetId: source.AssetID, SourcePrincipalUri: msg.principal, OrgId: source.OrgID,
 					Name: pairingName(h.name, &source), SensorAllowlist: h.sensors,
 					Transport: transportForDevice(source),
 				}
@@ -91,50 +110,53 @@ func (h *sensorPairHandler) pair(source models.DiscoveredDevice) tea.Cmd {
 	}
 }
 
-func (h *sensorPairHandler) forget(assetID int32) tea.Cmd {
+func (h *sensorPairHandler) forget(row sensorPairRow) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(h.ctx, 30*time.Second)
 		defer cancel()
-		_, err := h.client.RemoveSensorPairing(ctx, &agentpbv2.RemoveSensorPairingRequest{SourceAssetId: assetID})
+		_, err := h.client.RemoveSensorPairing(ctx, &agentpbv2.RemoveSensorPairingRequest{SourceAssetId: row.assetID, SourcePrincipalUri: row.principal})
 		if err != nil {
 			err = cleanRPCError(err)
 		}
-		return sensorPairOpMsg{assetID: assetID, err: err}
+		return sensorPairOpMsg{assetID: row.assetID, principal: row.principal, err: err}
 	}
 }
 
 type sensorPairRow struct {
-	assetID int32
-	name    string
-	source  *models.DiscoveredDevice
-	pairing *agentpbv2.SensorPairing
+	assetID   int32
+	principal string
+	name      string
+	source    *models.DiscoveredDevice
+	pairing   *agentpbv2.SensorPairing
 }
 
 // Merge by asset identity, retaining saved pairings even when their sources
 // are offline. Those rows must remain available to the forget action.
 func sensorPairRows(devices []models.DiscoveredDevice, pairings []*agentpbv2.SensorPairing) []sensorPairRow {
-	byID := make(map[int32]sensorPairRow)
+	byID := make(map[string]sensorPairRow)
 	for i := range devices {
 		d := &devices[i]
-		if d.Sensorlink && d.AssetID > 0 {
-			byID[d.AssetID] = sensorPairRow{assetID: d.AssetID, name: d.DisplayName, source: d}
+		if d.Sensorlink && (d.AssetID > 0 || (d.IsMTLS && sensorSourcePrincipal(*d) != "")) {
+			principal := sensorSourcePrincipal(*d)
+			byID[sensorPairKey(d.AssetID, principal)] = sensorPairRow{assetID: d.AssetID, principal: principal, name: d.DisplayName, source: d}
 		}
 	}
 	for _, p := range pairings {
 		if p == nil {
 			continue
 		}
-		row := byID[p.SourceAssetId]
-		row.assetID, row.pairing = p.SourceAssetId, p
+		key := sensorPairKey(p.SourceAssetId, p.SourcePrincipalUri)
+		row := byID[key]
+		row.assetID, row.principal, row.pairing = p.SourceAssetId, p.SourcePrincipalUri, p
 		if p.Name != "" {
 			row.name = p.Name
 		}
-		byID[row.assetID] = row
+		byID[key] = row
 	}
 	rows := make([]sensorPairRow, 0, len(byID))
 	for _, row := range byID {
 		if row.name == "" {
-			row.name = fmt.Sprintf("Asset %d", row.assetID)
+			row.name = sensorPairLabel(row.assetID, row.principal)
 		}
 		rows = append(rows, row)
 	}
@@ -145,29 +167,30 @@ func sensorPairRows(devices []models.DiscoveredDevice, pairings []*agentpbv2.Sen
 		if rows[i].name != rows[j].name {
 			return rows[i].name < rows[j].name
 		}
-		return rows[i].assetID < rows[j].assetID
+		return sensorPairKey(rows[i].assetID, rows[i].principal) < sensorPairKey(rows[j].assetID, rows[j].principal)
 	})
 	return rows
 }
 
 type sensorPairModel struct {
-	handler       *sensorPairHandler
-	table         tui.BubbleTable
-	devices       []models.DiscoveredDevice
-	pairings      []*agentpbv2.SensorPairing
-	rows          []sensorPairRow
-	scanning      bool
-	busy          bool
-	pairingsKnown bool
-	message       string
-	width, height int
+	handler          *sensorPairHandler
+	table            tui.BubbleTable
+	devices          []models.DiscoveredDevice
+	pairings         []*agentpbv2.SensorPairing
+	rows             []sensorPairRow
+	scanning         bool
+	busy             bool
+	pairingsKnown    bool
+	principalPairing bool
+	message          string
+	width, height    int
 }
 
 func newSensorPairModel(h *sensorPairHandler) sensorPairModel {
 	return sensorPairModel{
 		handler: h, scanning: true,
 		table: tui.NewBubbleTable(true, []bubbleTable.Column{
-			{Title: "Name", Width: 28}, {Title: "Asset", Width: 10},
+			{Title: "Name", Width: 28}, {Title: "Device", Width: 18},
 			{Title: "Address", Width: 20}, {Title: "Paired", Width: 8},
 			{Title: "Connected", Width: 10},
 		}),
@@ -177,9 +200,9 @@ func newSensorPairModel(h *sensorPairHandler) sensorPairModel {
 func (m sensorPairModel) Init() tea.Cmd { return m.handler.scan() }
 
 func (m *sensorPairModel) refreshRows() {
-	selectedID := int32(0)
+	selectedID := ""
 	if row, ok := m.selected(); ok {
-		selectedID = row.assetID
+		selectedID = sensorPairKey(row.assetID, row.principal)
 	}
 	m.rows = sensorPairRows(m.devices, m.pairings)
 	rows := make([]bubbleTable.Row, 0, len(m.rows))
@@ -195,8 +218,8 @@ func (m *sensorPairModel) refreshRows() {
 				connected = "yes"
 			}
 		}
-		rows = append(rows, bubbleTable.Row{tui.StripControl(row.name), fmt.Sprint(row.assetID), tui.StripControl(address), paired, connected})
-		if row.assetID == selectedID {
+		rows = append(rows, bubbleTable.Row{tui.StripControl(row.name), tui.StripControl(sensorPairLabel(row.assetID, row.principal)), tui.StripControl(address), paired, connected})
+		if sensorPairKey(row.assetID, row.principal) == selectedID {
 			cursor = i
 		}
 	}
@@ -233,6 +256,7 @@ func (m sensorPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			errors = append(errors, "Discovery failed: "+msg.discoveryErr.Error())
 		}
 		m.pairingsKnown = msg.pairingsErr == nil
+		m.principalPairing = msg.principalPairing
 		if m.pairingsKnown {
 			m.pairings = msg.pairings
 		} else {
@@ -249,11 +273,11 @@ func (m sensorPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		pairings := make([]*agentpbv2.SensorPairing, 0, len(m.pairings)+1)
 		for _, p := range m.pairings {
-			if p.SourceAssetId != msg.assetID {
+			if sensorPairKey(p.SourceAssetId, p.SourcePrincipalUri) != sensorPairKey(msg.assetID, msg.principal) {
 				pairings = append(pairings, p)
 			}
 		}
-		m.message = fmt.Sprintf("Forgot asset %d.", msg.assetID)
+		m.message = fmt.Sprintf("Forgot %s.", sensorPairLabel(msg.assetID, msg.principal))
 		if msg.pairing != nil {
 			pairings = append(pairings, msg.pairing)
 			m.message = fmt.Sprintf("Paired %s. Its sensors will appear on this device.", msg.pairing.Name)
@@ -283,7 +307,7 @@ func (m sensorPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.busy, m.message = true, "Forgetting "+row.name+"..."
-				return m, m.handler.forget(row.assetID)
+				return m, m.handler.forget(row)
 			}
 			if row.pairing != nil {
 				m.message = "Already paired with " + row.name + "."
@@ -291,6 +315,10 @@ func (m sensorPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if !m.pairingsKnown {
 				m.message = "Rescan to load current pairings before pairing a device."
+				return m, nil
+			}
+			if row.principal != "" && !m.principalPairing {
+				m.message = "Update the target Wendy Agent to pair PKI-enrolled sensors."
 				return m, nil
 			}
 			if row.source == nil {
@@ -310,9 +338,9 @@ func (m sensorPairModel) View() string {
 	if m.scanning {
 		title += "  Scanning..."
 	}
-	var unenrolled []string
+	var unenrolled, enrolledUnsupported []string
 	for _, source := range m.devices {
-		if !source.Sensorlink || source.AssetID > 0 {
+		if !source.Sensorlink || source.AssetID > 0 || (source.IsMTLS && sensorSourcePrincipal(source) != "") {
 			continue
 		}
 		label := source.DisplayName
@@ -323,11 +351,16 @@ func (m sensorPairModel) View() string {
 				label += " (" + address + ")"
 			}
 		}
-		unenrolled = append(unenrolled, tui.StripControl(label))
+		if source.WendyLite && source.IsMTLS && source.TenantUUID != "" {
+			enrolledUnsupported = append(enrolledUnsupported, tui.StripControl(label))
+		} else {
+			unenrolled = append(unenrolled, tui.StripControl(label))
+		}
 	}
 	sort.Strings(unenrolled)
+	sort.Strings(enrolledUnsupported)
 	body := title + "\n\n"
-	if len(m.rows) == 0 && len(unenrolled) == 0 && !m.scanning {
+	if len(m.rows) == 0 && len(unenrolled) == 0 && len(enrolledUnsupported) == 0 && !m.scanning {
 		body += "No SensorLink devices found. Press r to rescan.\n"
 	} else if len(m.rows) > 0 || m.scanning {
 		body += m.table.View() + "\n"
@@ -338,6 +371,13 @@ func (m sensorPairModel) View() string {
 			body += "  " + label + "\n"
 		}
 		body += "Enroll these sources in the same organization as the target device, then press r to rescan.\n"
+	}
+	if len(enrolledUnsupported) > 0 {
+		body += "Enrolled sensors:\n"
+		for _, label := range enrolledUnsupported {
+			body += "  " + label + "\n"
+		}
+		body += "This version does not support pairing these devices yet.\n"
 	}
 	if m.message != "" {
 		body += tui.StripControl(m.message) + "\n"
@@ -351,4 +391,26 @@ func (m sensorPairModel) View() string {
 		body = tui.CropANSIView(body, 0, m.width)
 	}
 	return body
+}
+
+func sensorSourcePrincipal(d models.DiscoveredDevice) string {
+	if d.AssetID > 0 {
+		return ""
+	}
+	return d.PrincipalURI
+}
+func sensorPairKey(assetID int32, principal string) string {
+	if principal != "" {
+		return principal
+	}
+	return fmt.Sprintf("asset:%d", assetID)
+}
+func sensorPairLabel(assetID int32, principal string) string {
+	if principal != "" {
+		if id, err := certs.ParsePrincipal(principal); err == nil {
+			return id.EntityID
+		}
+		return principal
+	}
+	return fmt.Sprintf("Asset %d", assetID)
 }
