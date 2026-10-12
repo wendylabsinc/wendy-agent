@@ -41,13 +41,32 @@ jobs:
       EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       CLAUDE_MODEL: claude-opus-4-8
     steps:
-      - name: Check out trusted base review automation
+      - name: Resolve current trusted main automation
+        id: trusted-automation
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            // SECURITY: PR base.sha can retain an old target snapshot. Select
+            // only this repository's current main, never PR-controlled source.
+            const {data} = await github.rest.git.getRef({
+              owner: context.repo.owner, repo: context.repo.repo, ref: "heads/main"
+            });
+            const sha = data.object?.sha;
+            if (data.object?.type !== "commit" || typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
+              throw new Error("Could not resolve an immutable trusted main commit");
+            }
+            core.info(`Trusted API automation commit: ${sha}`);
+            core.setOutput("sha", sha);
+
+      - name: Check out pinned trusted main review automation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ steps.trusted-automation.outputs.sha }}
           fetch-depth: 0
           path: review-automation
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            .github/workflows/api-review.yml
           persist-credentials: false
 
       - name: Bootstrap batched review automation when absent from base
@@ -92,6 +111,10 @@ jobs:
           python3 review-automation/.github/scripts/api_review_test.py
           python3 review-automation/.github/scripts/api_review_comment_test.py
           python3 review-automation/.github/scripts/review_diff_test.py
+          workflow_test="review-automation/.github/scripts/api_review_workflow_test.py"
+          if [[ -f "$workflow_test" ]]; then
+            python3 "$workflow_test"
+          fi
 
       - name: Fetch complete PR metadata and diff
         env:
@@ -148,7 +171,7 @@ jobs:
           set -euo pipefail
           run_test="review-automation/.github/scripts/api_review_run_test.py"
           if [[ -f "$run_test" ]]; then
-            # SECURITY: This file comes only from the immutable base-SHA
+            # SECURITY: This file comes only from the resolved immutable main
             # checkout above, never the PR-head bootstrap file list. Forks are
             # rejected at job entry; this step receives no GH_TOKEN/model key.
             # Offline SDK transport and GitHub fixtures; no keys or model calls.
@@ -183,7 +206,7 @@ jobs:
 
       - name: Preserve complete API review result
         if: always() && (steps.review.outcome == 'success' || steps.review.outcome == 'failure')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: api-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/api-review-result.json
@@ -238,6 +261,7 @@ jobs:
           python3 .github/scripts/api_review_comment_test.py
           python3 .github/scripts/review_diff_test.py
           python3 .github/scripts/api_review_run_test.py
+          python3 .github/scripts/api_review_workflow_test.py
 
   validate-candidate:
     name: Validate candidate API review without publication
@@ -256,7 +280,7 @@ jobs:
     steps:
       # SECURITY: Manual dispatch is an explicit writer-authorized candidate
       # validation. Pin execution to the dispatched immutable commit; automatic
-      # PR reviews above continue to execute only their trusted base revision.
+      # PR reviews above continue to execute only pinned trusted main code.
       - name: Check out dispatched candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -327,7 +351,7 @@ jobs:
 
       - name: Preserve candidate result
         if: always() && (steps.candidate.outcome == 'success' || steps.candidate.outcome == 'failure')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: api-review-validation-${{ github.run_id }}
           path: ${{ runner.temp }}/api-review-result.json

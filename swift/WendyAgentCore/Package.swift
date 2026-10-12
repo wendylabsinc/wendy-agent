@@ -47,6 +47,10 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
     ],
     targets: [
+        .target(
+            name: "CUVCControl",
+            linkerSettings: [.linkedFramework("IOKit"), .linkedFramework("CoreFoundation")]
+        ),
         .testTarget(
             name: "WendyAgentCoreTests",
             dependencies: [
@@ -79,6 +83,7 @@ let package = Package(
                 .product(name: "HummingbirdTLS", package: "hummingbird"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "WendyCloudGRPC"),
+                .target(name: "CUVCControl"),
             ],
             path: "Sources/WendyAgent",
             swiftSettings: swiftSettings
