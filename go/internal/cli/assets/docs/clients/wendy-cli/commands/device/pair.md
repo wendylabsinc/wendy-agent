@@ -54,8 +54,10 @@ The default is `global`. Inside the login form, `Tab` switches fields, `Enter`
 advances or submits, and `Esc` cancels.
 
 The selected WendyOS device stores the robot's key and connects to its local
-WebRTC service. Pairing requires an authenticated WendyOS connection or the
-device's local agent socket. Newer Go2 firmware requires an encryption key from
+WebRTC service. Pairing requires an authenticated WendyOS connection belonging
+to the agent's pairing-owner tenant, or the device's private local agent socket.
+The owner check applies even if the shared mTLS listener uses `grace` or `off`
+tenant enforcement for other services. Newer Go2 firmware requires a key from
 the account. Older firmware can use its legacy local connection protocol when
 the account has no encryption key. Wendy selects the protocol supported by the
 robot. LAN offers never include the Unitree account token. If the account
@@ -74,16 +76,17 @@ tenant. Unprovisioning closes sessions and removes the Unitree credential file;
 within-tenant certificate renewal preserves pairings. Unscoped stores from
 pre-release builds are rejected rather than automatically adopted.
 
-Legacy firmware's public protocol validation is
-not a cryptographic proof of the robot's identity: use a trusted robot LAN.
+Legacy firmware's public protocol validation is not a cryptographic proof of
+the robot's identity: use a trusted robot LAN.
 
 Pairing sends validation and heartbeat messages, not movement commands. It
 still occupies a robot WebRTC client slot and remains active after the CLI
 exits. `connected` means the data channel passed protocol validation, not that
 camera streaming, movement, or a physical safety check has been tested.
 
-The agent reconnects saved robots after a restart. If the robot's DHCP address
-changes, refresh discovery or enter its new IP. Before pairing, agree with the
+The agent reconnects saved robots after a restart, with at most four concurrent
+connection setups and staggered retries. If the robot's DHCP address changes,
+refresh discovery or enter its new IP. Before pairing, agree with the
 robot's current operator who owns the connection. Do not interrupt an active
 mobile-app or other robot session; if the robot is busy, arrange an explicit
 handoff before retrying.
