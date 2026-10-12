@@ -10,11 +10,7 @@ go build -o ./wendy ./cmd/wendy
 ./wendy cloud enroll-device \
   --device wendy-lite:/dev/cu.usbmodemXXXX \
   --name lite-desk \
-  --broker-port 5055 \
-  --time-url https://YOUR_TSA_ENDPOINT/v1/time \
-  --device-roots device-ca-bundle.pem \
-  --tsa-roots tsa-ca-bundle.pem \
-  --https-roots server-ca-bundle.pem
+  --broker-port 5055
 ```
 
 This is the same `cloud enroll-device` command used for WendyOS. The selected
@@ -31,16 +27,28 @@ transport; older firmware may accept bootstrap commands only over USB. After
 reboot, completion checks reuse the selected transport and its authentication.
 Cloud enrollment does not replace the firmware's LAN or Bluetooth credentials.
 
-For the mbedTLS firmware, supply `--time-url` with the deployment's RFC 3161
-HTTPS endpoint and `--device-roots device-ca-bundle.pem`,
-`--tsa-roots tsa-ca-bundle.pem`, and `--https-roots server-ca-bundle.pem` together.
-Obtain these bundles from the PKI administrator. Firmware with all three bundles
-pinned at build time can omit the file flags. Automatic EST discovery does not
-provide the TSA trust required by this profile.
+Signed time defaults to [Sigstore's public RFC 3161 service](https://docs.sigstore.dev/cosign/verifying/timestamps/)
+at `https://timestamp.sigstore.dev/api/v1/timestamp`. The CLI bundles Sigstore's
+TSA root, discovers device roots from the selected PKI's EST endpoint, and obtains
+HTTPS roots from connections verified by the enrolling computer. No time or root
+flags are needed with a deployment that supports EST discovery.
+
+Update older Lite firmware before using this default. The verifier must support
+Sigstore's P-384 timestamp signer and RFC 3161 signing-certificate issuer details.
+Cloudflare's Roughtime service uses a different protocol and is not supported by
+this firmware.
+
+For custom device trust, supply `--device-roots device-ca-bundle.pem` and
+`--https-roots server-ca-bundle.pem` together. The default TSA root is still
+included, and the CLI adds the verified HTTPS root for Sigstore. To use a custom
+RFC 3161 service, pass `--time-url https://time.example/v1/time` and provide
+`--tsa-roots tsa-ca-bundle.pem` with the device and HTTPS bundles. Obtain custom
+bundles from the PKI administrator. Firmware with all three custom bundles pinned
+at build time can omit the file flags.
 
 Device/operator and TSA chains must be compatible with mbedTLS throughout;
 a P-256 leaf beneath an ML-DSA issuer is insufficient. The TSA must sign with
-ECDSA P-256 and SHA-256. The HTTPS bundle must cover the broker too.
+ECDSA P-256 or P-384 and SHA-256. The HTTPS bundle must cover the broker too.
 
 The firmware stores bundles with enrollment configuration and uses them after
 reboot. Each bundle supports at most eight CA certificates and 16 KiB. Bundles
@@ -57,8 +65,8 @@ Cloud reserves the tenant/device asset in PostgreSQL. The single-use token and
 public setup data go to the board over the selected connection; its private key is generated
 on-device. The CLI reboots the board and waits for certificate installation.
 
-The CSR URL derives from the selected session's `PKIEndpoint`. Pass `--time-url`
-explicitly; Roughtime is unsupported by the mbedTLS firmware.
+The CSR URL derives from the selected session's `PKIEndpoint`. The default time
+service is independent of that deployment.
 Self-hosted deployments can pass `--csr-url https://csr.example/v1/TENANT_UUID`
 and `--time-url https://time.example/v1/time`. The broker hostname defaults
 to the same devices hostname used by wendy-agent for the selected Cloud session.

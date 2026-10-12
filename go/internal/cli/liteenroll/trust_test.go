@@ -5,9 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/http"
 	"os"
@@ -118,5 +120,67 @@ func TestTrustPreflightRequiresConfirmedRoots(t *testing.T) {
 				t.Fatalf("unexpected result: %v", err)
 			}
 		})
+	}
+}
+
+func TestProvisionTrustUsesPinnedDefaultTSA(t *testing.T) {
+	dir := t.TempDir()
+	device := testTrustPEM(t, true, time.Now().Add(time.Hour))
+	https := testTrustPEM(t, true, time.Now().Add(time.Hour))
+	override := testTrustPEM(t, true, time.Now().Add(time.Hour))
+	paths := make([]string, 3)
+	for i, data := range [][]byte{device, https, override} {
+		paths[i] = filepath.Join(dir, fmt.Sprintf("root-%d.pem", i))
+		if err := os.WriteFile(paths[i], data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name, endpoint, tsaPath string
+		wantTSA                 []byte
+	}{
+		{"default", DefaultTimeURL, "", defaultTSARoots},
+		{"explicit TSA override", DefaultTimeURL, paths[2], override},
+		{"custom TSA", "https://tsa.example/time", paths[2], override},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &litepb.WendyConfEnrollment{TimeUrl: tc.endpoint}
+			client, err := ProvisionTrust(cfg, paths[0], tc.tsaPath, paths[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.CloseIdleConnections()
+			if !cfg.ProvisionTrust || !bytes.Equal(cfg.DeviceRoots, device) ||
+				!bytes.Equal(cfg.HttpsRoots, https) || !bytes.Equal(cfg.TsaRoots, tc.wantTSA) {
+				t.Fatal("provisioning changed an explicit bundle or omitted the TSA root")
+			}
+			if tc.tsaPath == "" {
+				cfg.TsaRoots[0] ^= 1
+				if bytes.Equal(cfg.TsaRoots, defaultTSARoots) {
+					t.Fatal("provisioned TSA root aliases the embedded trust anchor")
+				}
+			}
+		})
+	}
+	cfg := &litepb.WendyConfEnrollment{TimeUrl: "https://tsa.example/time"}
+	if _, err := ProvisionTrust(cfg, paths[0], "", paths[1]); err == nil {
+		t.Fatal("custom TSA accepted without an explicit TSA root")
+	}
+	if cfg.ProvisionTrust || len(cfg.DeviceRoots)+len(cfg.HttpsRoots)+len(cfg.TsaRoots) != 0 {
+		t.Fatal("failed provisioning modified trust")
+	}
+}
+
+func TestDefaultTSARootMatchesPublishedAnchor(t *testing.T) {
+	if err := validateTrustBundle(defaultTSARoots); err != nil {
+		t.Fatal(err)
+	}
+	block, rest := pem.Decode(defaultTSARoots)
+	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
+		t.Fatal("expected exactly one bundled TSA root")
+	}
+	const fingerprint = "2aca8fea5d3ce48b01cc77076293c280e6c23ffe44034757ee7833ca9f45d633"
+	if got := fmt.Sprintf("%x", sha256.Sum256(block.Bytes)); got != fingerprint {
+		t.Fatalf("TSA root fingerprint = %s, want published anchor %s", got, fingerprint)
 	}
 }

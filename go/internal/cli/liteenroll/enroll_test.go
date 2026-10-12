@@ -223,9 +223,28 @@ func TestMintTierCCredential(t *testing.T) {
 }
 
 func TestConfigRequiresRFC3161Time(t *testing.T) {
-	for _, endpoint := range []string{"", "roughtime", "http://tsa.local/time"} {
+	for _, endpoint := range []string{"roughtime", "http://tsa.local/time"} {
 		if _, err := Config(authFixture(t), "lite-test", "", endpoint, "broker", 5055); err == nil {
 			t.Fatalf("accepted unsupported time endpoint %q", endpoint)
 		}
+	}
+}
+
+func TestConfigDefaultsSignedTimeAndPreservesOverride(t *testing.T) {
+	auth := authFixture(t)
+	for _, tc := range []struct{ name, endpoint, want string }{
+		{"default", "", DefaultTimeURL},
+		{"explicit default", DefaultTimeURL, DefaultTimeURL},
+		{"custom", "https://tsa.example:8443/time", "https://tsa.example:8443/time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Config(auth, "lite-test", "", tc.endpoint, "broker", 5055)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.TimeUrl != tc.want {
+				t.Fatalf("time endpoint = %q, want %q", cfg.TimeUrl, tc.want)
+			}
+		})
 	}
 }
