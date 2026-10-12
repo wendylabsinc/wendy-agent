@@ -303,6 +303,7 @@ func NewRootCmd() *cobra.Command {
 
 	root.SetHelpCommandGroupID("settings")
 	root.SetCompletionCommandGroupID("settings")
+	root.SetHelpTemplate(root.HelpTemplate() + "{{if not .HasParent}}\nGet support in our Discord community: https://discord.gg/wendylabsinc\n{{end}}")
 
 	addUSBDriverCommand(root)
 	rejectStrayArguments(root)
