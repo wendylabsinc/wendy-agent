@@ -100,7 +100,7 @@ owner: watch/chat-3fa91c0e-1      # optional
 | Field | Rules |
 |---|---|
 | `kind` | One of the registered kinds. Absent means `collection`. |
-| `version` | Required. Each kind checks its own supported versions, with today's campaign wording: "version is required; this agent supports watch version 1". |
+| `version` | Required, a whole number, and one of the kind's supported versions: "version is required (watch documents support version 1)", "watch version 2 is not supported (supported: 1)". The parser runs in the CLI as well as the agent, so the messages do not say "this agent". |
 | `name` | Required. Letters, numbers, `.`, `-` and `_`, at most 128 bytes: today's campaign name rule. Unique per kind on a device, so a watch and an inference may share a name. |
 | `owner` | Optional. `<kind>/<name>` of an inference or watch document. That document must exist when this one is deployed, and must have no owner of its own. A redeploy may not change `owner`, add one or drop one. Collections can neither own nor be owned in v1, because they cannot be removed. |
 
@@ -236,8 +236,9 @@ A watch's journal entry extends today's `CampaignNotification`:
 
 `DataEventsRequest` gains `repeated string watches = 6`.
 
-- An entry from a **leased** watch is returned only to a request that names that watch in `watches`. Unfiltered reads, such as the robot gateway's, skip it.
-- Entries from watches without a lease, and from campaigns, are returned as today.
+- A request that sets `watches` gets only those watches' entries, which keeps a watch client's reads small.
+- An entry from a **leased** watch is returned only to a request that names that watch. Unfiltered reads, such as the robot gateway's, skip it.
+- Without `watches`, entries from watches without a lease, and from campaigns, are returned as today.
 - `gap` stays journal-wide. The journal keeps one sequence for every writer, so when entries are evicted before a reader catches up, the device cannot tell whose they were. A reader that names its watches may therefore see a gap caused by another writer's burst. A false "may have missed detections" is preferable to a silent miss.
 
 The device cannot tell chat sessions apart; one operator certificate covers them all. Isolation between sessions is therefore two layers: the device keeps leased entries out of unfiltered reads, and the MCP server names only watches its own session created. The first closes the leak Martien found in the gateway's read on #2207. Neither makes the device a security boundary between sessions of the same operator.
@@ -284,7 +285,7 @@ An inference runs while it is deployed and `enabled`. An owned inference is remo
 ### 7.3 Events and records
 
 - **Event names are device-wide**, like application event names today. An inference document publishes each arrival to the device's record observer under its `event` name, so a collection with `capture.triggers: - event: front-door` starts an episode on it, with no change to the collection format. A campaign's inline inference keeps bypassing the observer, as today.
-- **Records (D11).** For each scored frame, the inference writes a `prediction` record whose `inputs` name the frame (`source_id`, `sample_id`), and for each arrival an `event` record. Both go only into open episodes of collections whose triggers name its event. Today every open episode receives every campaign's predictions; that leak was plugged for leased campaigns in #2206 and is not repeated here. Writing predictions, not only events, puts the frame link into the episode's model-input ledger, which pairs only `prediction` records; that answers Martien's note on #2063.
+- **Records (D11).** For each scored frame, the inference writes a `prediction` record, and for each arrival an `event` record. Both go only into episodes of collections whose triggers name its event, open ones and, through the pre-roll ring, ones that start later. Today every open episode receives every campaign's predictions; that leak was plugged for leased campaigns in #2206 and is not repeated here. An inference that no collection triggers on writes no prediction records at all. Writing predictions, not only events, is what lets the episode's model-input ledger, which pairs only `prediction` records, link a detection to its frame; that answers Martien's note on #2063. The CPU worker cannot make that link yet: it decodes the agent's encoded stream and does not carry sample ids through (`input_reference_status: encoded_stream_decode_does_not_preserve_sample_ids`, as campaign inference records today). A backend that keeps sample ids, such as `model_host`, writes `inputs` naming the frame (`source_id`, `sample_id`).
 - **Notifications do not wait on storage.** A watch is notified whether or not an episode was open or a record write succeeded. Live alerting and storage are separate paths; the episode is authoritative for what was kept. This makes explicit the ordering Martien questioned on #2063.
 - The device-event record written for each detection notification today is written for each inference arrival.
 
@@ -347,9 +348,9 @@ message DataDocument {
   string state_detail = 7;
   int64 deployed_unix_nanos = 8;
   int64 expires_unix_nanos = 9;       // leased documents only
-  string document_json = 10;          // the stored document
+  bytes document_json = 10;           // the stored document, like DataCampaign.plan_json
   repeated string warnings = 11;
-  string status_json = 12;            // kind-specific status, e.g. an inference's per-source states
+  bytes status_json = 12;             // kind-specific status, e.g. an inference's per-source states
 }
 ```
 
@@ -420,7 +421,7 @@ Chat is unchanged from chat-watches §7 and PR #2210, with two fixes from review
 ## 12. Security and privacy
 
 - Chat watches store nothing and send nothing off the device beyond the chat itself. Storage needs a collection, and only a person deploys one (D14).
-- A person-deployed watch with `cloud` or `webhook` sends what campaign notifications send today, plus `detections` (labels and scores, no images).
+- A person-deployed watch with `cloud` or `webhook` sends what campaign notifications send today. A webhook body also carries `detections` (labels and scores, no images); Wendy Cloud metadata carries the watch and inference names but not `detections`, as for campaigns today (§15).
 - The device keeps leased watch entries out of unfiltered journal reads; the MCP server names only its own session's watches (§6.5).
 - Model validation is unchanged: a pinned commit, safetensors only, no remote code.
 - The new calls are served only where `DataService` is today.
@@ -466,6 +467,7 @@ Existing PRs:
 ## 15. Risks and open items
 
 - **Cloud registration of `watch:<name>`.** Cloud registers `campaign:<name>` today. It needs to accept the new prefix, or watches register as something it already accepts. To confirm with Joannis before PR 4.
+- **Detections in Wendy Cloud notifications.** Cloud metadata does not carry `detections` for campaigns (PR 1) or watches. Whether Cloud accepts a list-valued metadata key is unverified, and Cloud reports a rejected request as permanent, so adding it unverified could drop every Cloud notification. To decide with Joannis.
 - **Event name collisions.** Event names are device-wide, so a person's inference named like an application event triggers the same collections. That is today's behaviour for application events; docs say so.
 - **One journal for every writer.** A burst from one writer can evict another's entries before they are read; readers see a gap (§6.5). Unchanged from today.
 - **CPU budget.** Two chat watches run two detectors, as before. Sharing an inference between owners would halve that and is the first follow-up if the budget is tight.
