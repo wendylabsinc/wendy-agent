@@ -288,10 +288,10 @@ func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 		return nil
 	}
-	// WORKAROUND(WDY-3585): Konstantin explicitly approved temporarily using
-	// intent confirmation without fresh-factor approval, including merge,
-	// while destructive CLI step-up interactions are discussed. This is NOT FIDO2.
-	// https://linear.app/wendylabsinc/issue/WDY-3585/clarify-approval-interactions-for-destructive-cli-actions
+	// AAA v0.22 (retained in v0.24), §5.1/§7(4), excludes removal-only
+	// unenrollment from step-up. This prompt confirms intent, not identity;
+	// exact device:delete authorization and signed-body checks remain required.
+	// Amendment: https://linear.app/wendylabsinc/issue/WDY-3585/clarify-approval-interactions-for-destructive-cli-actions
 	if !yes {
 		if !isInteractiveTerminal() {
 			return fmt.Errorf("unenroll is destructive; pass --yes to confirm")

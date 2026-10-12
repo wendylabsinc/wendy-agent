@@ -2,7 +2,11 @@
 
 Implements [WDY-3313 — Cloud v2 device enrollment leaves Jetson unprovisioned after reserving an asset](https://linear.app/wendylabsinc/issue/WDY-3313/cloud-v2-device-enrollment-leaves-jetson-unprovisioned-after-reserving) and [WDY-3534 — Preserve deleted Cloud asset bindings for stateless unenrollment recovery](https://linear.app/wendylabsinc/issue/WDY-3534/preserve-deleted-cloud-asset-bindings-for-stateless-unenrollment).
 
-> **Development status:** This describes the current guarded-reset candidate, not a completed contract-conforming rollout. The agreed normal flow still needs fresh FIDO2 approval bound to the exact signed reset instruction and verified, durable device preparation through the signed command queue before revocation. Those integrations are not implemented here; direct cleanup is not an implicit exemption. No deployment or live-reset readiness is claimed.
+> **Contract scope:** AAA v0.22 (retained in v0.24), §5.1/§7(4), explicitly excludes removal-only unenrollment—asset deletion, device-certificate revocation and device reset—from step-up. No fresh FIDO2/passkey interaction is required. Intent confirmation is not authentication: exact `device:delete`, an exact-body operator-signed request, retained deletion evidence, audit and SSF remain required. This is the WDY-3585 amendment, not a temporary security workaround.
+>
+> **Applicability:** AAA governs Cloud/Auth/PKI and their request validation. The CLI implements the affected Cloud interface: exact binding, authorization and operator-signed requests. Local guarded erasure and recovery do not inherit backend postbox duties; this operation does not introduce a queued device-command path.
+>
+> **Rollout status:** This describes source behavior, not deployed acceptance. Compatible Cloud and Agent builds are required; no deployment or live-reset readiness is claimed.
 
 ## One business operation
 

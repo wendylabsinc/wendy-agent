@@ -97,13 +97,31 @@ the Agent obtains fresh signed time, persists its anti-rollback floor and checks
 operator validity and revocation evidence across the authenticated interval.
 Failure retains local credentials, even if Cloud unenrollment already finished.
 
-> **Development status:** Fresh FIDO2 approval for the exact reset instruction and
-> device preparation through the signed command queue before revocation remain
-> integration requirements. The current guarded direct-reset candidate is not a
-> completed normal-flow rollout or a security-contract exemption.
+AAA v0.22 (retained in v0.24), §5.1/§7(4), excludes removal-only unenrollment
+from step-up. No browser/passkey confirmation is required for asset deletion,
+device-certificate revocation or device reset. Yes/No or `--yes` confirms intent,
+not identity; `device:delete`, the exact-body operator signature, retained deletion
+record, audit and SSF protections still apply.
 
-The prerelease Agent RPCs `RevokeACMECertificate` and `CheckACMERevocation` always
-return `UNIMPLEMENTED`: Cloud owns revocation; those RPCs are not an alternate path.
+AAA applies at the Cloud/Auth/PKI interface, not as a wholesale migration of
+local CLI or Agent behavior. This command signs and authorizes Cloud deletion;
+local guarded erasure is not a new backend postbox implementation.
+
+Compatible Cloud and Agent builds are required. These source semantics do not
+claim deployed or live-reset acceptance.
+
+For direct PKI identities, `Unprovision` requires `expected_principal_uri`,
+`expected_certificate_sha256`, `revocation_proof` and `cloud_deletion`.
+A bare/zero-value request returns `FailedPrecondition`; numeric v1 identities
+continue accepting an empty request.
+
+The Agent RPCs `RevokeACMECertificate` and `CheckACMERevocation` are deprecated and
+unconditionally return `UNIMPLEMENTED` on Agents that include these changes.
+Cloud owns revocation through `DeleteAsset`; these RPCs are not an alternate path.
+
+The v2 command has a three-minute bound covering all phases. `--check` is
+read-only: it reads the Cloud binding and Agent capability but does not revoke,
+spend EAB credentials, reset, import proof or write a CLI journal.
 
 After durable guarded erasure, `NotProvisionedResponse.unenrollment_completion`
 contains a public device-signed receipt for the **prior** principal's operation,
