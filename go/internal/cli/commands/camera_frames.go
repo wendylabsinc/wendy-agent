@@ -115,7 +115,7 @@ func newCameraFramesCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&source, "source", "",
-		"Calibrated source to stream, as `camera frames --list` reports it (empty: the only one that can serve this request)")
+		"Calibrated source to stream, as 'camera frames --list' reports it (empty: the only one that can serve this request)")
 	cmd.Flags().StringSliceVar(&require, "require", nil,
 		"Properties this consumer cannot work without; repeat or comma-separate. One of: "+
 			framesource.Slugs(framesource.Requirements))

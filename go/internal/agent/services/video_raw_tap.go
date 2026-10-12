@@ -144,6 +144,13 @@ type rawPixelFormat struct {
 	// is not one number, and describing it as one would be a lie a subscriber
 	// would then decode against.
 	bytesPerLine func(width uint32) uint32
+	// sampleBits is how many bits of real per-pixel measurement the format
+	// carries, which is NOT the same as its bytes per pixel: YUYV and UYVY both
+	// occupy two bytes per pixel but hold only 8 bits of luma, the chroma being
+	// shared between neighbours. Y16 occupies the same two bytes and uses all
+	// sixteen. A raw subscriber asked for the sensor's measurements, so this is
+	// what ranks the formats for it.
+	sampleBits int
 }
 
 func twoBytesPerPixel(w uint32) uint32   { return w * 2 }
@@ -159,17 +166,19 @@ func threeBytesPerPixel(w uint32) uint32 { return w * 3 }
 // video/x-bayer rather than video/x-raw -- a different caps type, not just a
 // different name. Both are refusals with a reason, not silent omissions.
 var rawPixelFormats = []rawPixelFormat{
-	{fourcc: "YUYV", v4l2: v4l2PixFmtYUYV, gstFormat: "YUY2", bytesPerLine: twoBytesPerPixel},
-	{fourcc: "UYVY", v4l2: v4l2PixFmtUYVY, gstFormat: "UYVY", bytesPerLine: twoBytesPerPixel},
+	{fourcc: "YUYV", v4l2: v4l2PixFmtYUYV, gstFormat: "YUY2", bytesPerLine: twoBytesPerPixel, sampleBits: 8},
+	{fourcc: "UYVY", v4l2: v4l2PixFmtUYVY, gstFormat: "UYVY", bytesPerLine: twoBytesPerPixel, sampleBits: 8},
 	// Y16 is the one that matters for thermal: plenty of cores expose 16-bit
 	// per-pixel data directly rather than stacking it onto a picture.
-	{fourcc: "Y16 ", v4l2: v4l2PixFmtY16, gstFormat: "GRAY16_LE", bytesPerLine: twoBytesPerPixel},
-	{fourcc: "GREY", v4l2: v4l2PixFmtGrey, gstFormat: "GRAY8", bytesPerLine: oneBytePerPixel},
+	{fourcc: "Y16 ", v4l2: v4l2PixFmtY16, gstFormat: "GRAY16_LE", bytesPerLine: twoBytesPerPixel, sampleBits: 16},
+	{fourcc: "GREY", v4l2: v4l2PixFmtGrey, gstFormat: "GRAY8", bytesPerLine: oneBytePerPixel, sampleBits: 8},
 	// BGR3 is what the RealSense bridge node carries: the calibrated capture
 	// helper streams colour as packed 24-bit BGR, and the loopback node that
 	// re-exposes it to StreamVideo advertises the same format (see
-	// specs/2026-10-10-realsense-single-owner-design.md).
-	{fourcc: "BGR3", v4l2: v4l2PixFmtBGR24, gstFormat: "BGR", bytesPerLine: threeBytesPerPixel},
+	// specs/2026-10-10-realsense-single-owner-design.md). A picture format:
+	// eight bits of measurement per pixel, however many bytes it occupies, so
+	// it ranks with YUYV rather than above Y16.
+	{fourcc: "BGR3", v4l2: v4l2PixFmtBGR24, gstFormat: "BGR", bytesPerLine: threeBytesPerPixel, sampleBits: 8},
 }
 
 // Z16 -- 16-bit depth, what a RealSense reports on its depth node -- is
@@ -258,13 +267,41 @@ func rawWhyNoFormat(devicePath string, width, height uint32) string {
 // none of them at that size, which is a refusal with a reason rather than a
 // silent fallback to a format the pipeline is not actually producing.
 func rawFormatFor(devicePath string, width, height uint32) *rawPixelFormat {
+	// A raw subscriber asked for the sensor's measurements, so when the camera
+	// offers a format carrying more bits per pixel, that is the one it wants.
+	// List order still breaks ties, keeping YUYV ahead of UYVY as before.
+	//
+	// Thermal modules advertise BOTH an 8-bit preview and their real data: a FLIR
+	// Lepton behind a PureThermal offers UYVY, Y16 and GREY at 160x120. Taking
+	// the first entry in list order handed back UYVY — a picture — and the
+	// temperatures were then unreachable, because nothing in the API lets a
+	// caller name a format and the hub refuses a second producer with different
+	// parameters. Measured on enmax01: the tap served UYVY whose luma read
+	// 18..230 with no physical meaning, while the same camera's Y16 carries
+	// kelvin per pixel.
+	//
+	// Preferring the deeper format only ever changes cameras that advertise both,
+	// which in practice means thermal cores. A webcam offering YUYV and nothing
+	// deeper is unaffected, and so is a TC001, which advertises YUYV alone.
+	// YUYV still wins outright when offered, so the guarantee that widening the
+	// table changed nothing for existing cameras still holds (see
+	// TestPlan_PrefersYUYVWhenACameraOffersSeveral). Whether a raw subscriber
+	// should prefer Y16 even over YUYV is a real question, but it is a change in
+	// a documented decision and belongs to whoever owns this file, not here.
+	var best *rawPixelFormat
 	for i := range rawPixelFormats {
 		f := &rawPixelFormats[i]
-		if deviceSupportsRawSize(devicePath, f.v4l2, width, height) {
+		if !deviceSupportsRawSize(devicePath, f.v4l2, width, height) {
+			continue
+		}
+		if f.v4l2 == v4l2PixFmtYUYV {
 			return f
 		}
+		if best == nil || f.sampleBits > best.sampleBits {
+			best = f
+		}
 	}
-	return nil
+	return best
 }
 
 // rawFormatNames lists what the tap can offer, for the refusal message: telling
