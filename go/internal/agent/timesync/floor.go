@@ -40,10 +40,26 @@ func readFloor(configPath string) (floor, refused time.Time) {
 	return t, time.Time{}
 }
 
+// MergeBootFloor imports a plausible install-time hint without lowering an
+// existing floor. Call only during startup, before the manager begins syncing.
+// The hint is not authenticated consensus and cannot authorize a reset.
+func MergeBootFloor(configPath string, data []byte) error {
+	if len(data) != 8 {
+		return fmt.Errorf("timesync: boot clock floor must be an eight-byte timestamp")
+	}
+	t := time.Unix(int64(binary.BigEndian.Uint64(data)), 0) //nolint:gosec — range-checked by mergeClockFloor
+	return mergeClockFloor(configPath, t)
+}
+
 // advanceVerifiedFloor persists an authenticated lower bound. The caller must
 // serialize updates and obtain t from verified evidence, never from time.Now.
-// Unlike install-time WriteFloor, ordinary sync cannot replace a newer floor.
 func advanceVerifiedFloor(configPath string, t time.Time) error {
+	return mergeClockFloor(configPath, t)
+}
+
+// mergeClockFloor is the shared durable, monotonic storage operation. Only its
+// caller establishes provenance; disk timestamps themselves are not authority.
+func mergeClockFloor(configPath string, t time.Time) error {
 	if configPath == "" || t.Before(floorMin) || t.After(floorMax) {
 		return fmt.Errorf("timesync: invalid verified clock floor")
 	}
@@ -77,7 +93,7 @@ func advanceVerifiedFloor(configPath string, t time.Time) error {
 	}
 	defer os.Remove(f.Name()) //nolint:errcheck — also harmless after rename
 	defer f.Close()           //nolint:errcheck — explicitly closed before rename
-	if err := f.Chmod(0o644); err != nil {
+	if err := f.Chmod(0o600); err != nil {
 		return err
 	}
 	if _, err := f.Write(FloorBytes(t)); err != nil {

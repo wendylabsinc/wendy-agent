@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/sysextfs"
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/network"
@@ -755,10 +756,10 @@ func Apply(logger *zap.Logger, configPath string) {
 	applyExtensions(logger, configDir)
 }
 
-// applyClockFloor copies clock_floor from cfgDir (the FAT32 config partition,
-// written by the CLI at flash time) into configPath (the agent's private config
-// directory, e.g. /etc/wendy-agent), so the agent can read it as a startup time
-// floor.
+// applyClockFloor merges the install-time hint from the config partition into
+// the private floor before time sync starts. Repeated boots must never copy an
+// older flash date over a newer authenticated lower bound. This hint alone is
+// not trusted-time evidence for destructive authorization.
 func applyClockFloor(logger *zap.Logger, cfgDir, configPath string) {
 	src := filepath.Join(cfgDir, "clock_floor")
 	data, err := os.ReadFile(src)
@@ -774,10 +775,9 @@ func applyClockFloor(logger *zap.Logger, cfgDir, configPath string) {
 		}
 		return
 	}
-	dst := filepath.Join(configPath, "clock_floor")
-	if err := os.WriteFile(dst, data, 0o600); err != nil {
+	if err := timesync.MergeBootFloor(configPath, data); err != nil {
 		if logger != nil {
-			logger.Error("configpartition: failed to write clock_floor", zap.Error(err))
+			logger.Error("configpartition: failed to merge clock_floor; existing floor retained", zap.Error(err))
 		}
 	}
 }
