@@ -5,11 +5,8 @@ They must be paired with the compiled geom pose, with no extra mesh transform.
 The wire format uses metres, Z-up, and xyzw quaternions throughout.
 """
 
-import gzip
 import hashlib
 import json
-import threading
-import time
 
 import mujoco
 import numpy as np

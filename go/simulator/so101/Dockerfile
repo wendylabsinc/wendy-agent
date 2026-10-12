@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libosmesa6 libg
 WORKDIR /opt/wendy-so101
 COPY requirements.txt ./
 RUN python -m pip install --no-cache-dir -r requirements.txt
-COPY assets.lock.json ./
+COPY assets.lock.json viewer-assets.lock.json ./
 COPY tools/fetch_assets.py ./tools/
 RUN python tools/fetch_assets.py && python tools/fetch_assets.py --check
 COPY model/scene.xml ./model/

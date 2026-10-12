@@ -24,8 +24,7 @@ import (
 // ship downloaded meshes, Python environments, or generated ROS build output.
 //
 //go:embed so101_sim/*.py so101_sim/index.html so101_sim/viewer.js so101_sim/lidar-view.js
-//go:embed so101_sim/vendor/three.module.js so101_sim/vendor/three.core.js so101_sim/vendor/OrbitControls.js
-//go:embed model/scene.xml assets.lock.json tools/fetch_assets.py requirements.txt
+//go:embed model/scene.xml assets.lock.json viewer-assets.lock.json tools/fetch_assets.py requirements.txt
 //go:embed licenses/*.LICENSE UPSTREAM.md Dockerfile .dockerignore wendy.json
 var sources embed.FS
 
@@ -273,11 +272,11 @@ func lockCache(root string) (func(), error) {
 	for {
 		locked, err := flock.TryLock(f)
 		if err != nil || time.Now().After(deadline) {
-			f.Close()
+			closeErr := f.Close()
 			if err != nil {
-				return nil, fmt.Errorf("locking SO-101 source cache: %w", err)
+				return nil, fmt.Errorf("locking SO-101 source cache: %w", errors.Join(err, closeErr))
 			}
-			return nil, errors.New("timed out waiting for SO-101 source cache lock")
+			return nil, errors.Join(errors.New("timed out waiting for SO-101 source cache lock"), closeErr)
 		}
 		if locked {
 			return func() { _ = flock.Unlock(f); _ = f.Close() }, nil

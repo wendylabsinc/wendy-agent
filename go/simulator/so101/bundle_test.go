@@ -21,13 +21,16 @@ func TestMaterializePinnedSourceAndDetectCorruption(t *testing.T) {
 	if err != nil || first != second {
 		t.Fatalf("unstable materialization: %s %v", second, err)
 	}
-	for _, name := range []string{"model/scene.xml", "assets.lock.json", "licenses/SO-ARM100.LICENSE", "so101_sim/viewer.js", "so101_sim/vendor/OrbitControls.js", "wendy.json", "Dockerfile"} {
+	for _, name := range []string{"model/scene.xml", "assets.lock.json", "viewer-assets.lock.json", "licenses/SO-ARM100.LICENSE", "so101_sim/viewer.js", "wendy.json", "Dockerfile"} {
 		if _, err := os.Stat(filepath.Join(first, filepath.FromSlash(name))); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(first, "model", "assets")); !os.IsNotExist(err) {
 		t.Fatal("downloaded models entered embedded source")
+	}
+	if _, err := os.Stat(filepath.Join(first, "so101_sim", "vendor")); !os.IsNotExist(err) {
+		t.Fatal("downloaded viewer dependencies entered embedded source")
 	}
 	file := filepath.Join(first, "so101_sim", "server.py")
 	if err := os.Chmod(file, 0600); err != nil {

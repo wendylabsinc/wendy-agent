@@ -29,6 +29,33 @@ def fetch(check=False):
         if not check and not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
+    fetch_viewer(check)
+
+
+def fetch_viewer(check=False):
+    lock = json.loads((ROOT / 'viewer-assets.lock.json').read_text())
+    base = f"https://raw.githubusercontent.com/mrdoob/three.js/{lock['revision']}/"
+    for name, entry in lock['files'].items():
+        if name not in {'three.module.js', 'three.core.js', 'OrbitControls.js'}:
+            raise ValueError('unexpected viewer module')
+        target = ROOT / 'so101_sim' / 'vendor' / name
+        if target.exists():
+            data = target.read_bytes()
+            # The only local adaptation is the browser-relative import.
+            if name == 'OrbitControls.js':
+                data = data.replace(b"from './three.module.js';", b"from 'three';")
+        elif check:
+            raise ValueError(f'missing viewer module: {name}')
+        else:
+            with urlopen(base + entry['path'], timeout=60) as response:
+                data = response.read(4 * 1024 * 1024 + 1)
+        if hashlib.sha256(data).hexdigest() != entry['sha256']:
+            raise ValueError(f'viewer digest mismatch: {name}')
+        if not check and not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if name == 'OrbitControls.js':
+                data = data.replace(b"from 'three';", b"from './three.module.js';")
+            target.write_bytes(data)
 
 
 if __name__ == '__main__':

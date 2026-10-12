@@ -102,3 +102,19 @@ backend (KVM where available on ARM64 Linux; TCG otherwise), but live Linux
 host validation remains outstanding. Linux/amd64 runtime execution is also
 pending that CI run. The pinned Python base image index was inspected and
 contains both linux/amd64 and linux/arm64 manifests.
+
+## PR follow-up validation
+
+The first GitHub Linux jobs failed compiling the CLI's USB dependency with
+`CGO_ENABLED=0`; the workflow now installs the existing CLI's ALSA/libusb
+development dependencies and uses native CGO. Viewer CI passed. The separate
+vet failure was a Go module proxy HTTP/2 download error, not a vet diagnostic.
+
+Large vendored Three.js modules prevented complete automated API/security review.
+They now download at container-build time from a pinned upstream commit with
+SHA-256 verification, retaining local browser serving and the shipped MIT
+license. Their bytes match the previously vendored files (with the same local
+OrbitControls import adaptation). The rebuilt Linux/arm64 image passed all five
+real runtime/OSMesa tests, including downloaded viewer hash and HTTP checks.
+Source-cache, VM and app-configuration checks passed locally. New GitHub Linux
+runs and physical Linux-host VM acceptance remain to be checked.

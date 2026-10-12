@@ -12,6 +12,11 @@ Apache-2.0 license. `licenses/SO-ARM100.LICENSE` is also shipped with the source
 rendering and bounded joint commands derive from that app; the source cache,
 scene wire format and browser renderer follow the built-in Go2/G1 runtimes.
 Three.js and OrbitControls are MIT licensed; see `licenses/three.LICENSE`.
+`viewer-assets.lock.json` pins Three.js 0.180.0 to upstream commit
+`0af9729d0c143a86a1d725d6e2c3ad83301f3f34` and hashes each downloaded module.
+The build fetches and verifies these modules alongside the model assets, then
+rewrites OrbitControls' bare import to the local Three.js module. The browser
+serves these bundled files locally and does not fetch a CDN at runtime.
 
 Python 3.12, MuJoCo 3.3.7 and CPU OSMesa rendering are used in the Linux
 container on arm64 and amd64. No serial, USB, camera device or physical motor

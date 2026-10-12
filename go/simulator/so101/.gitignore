@@ -5,3 +5,4 @@ model/UPSTREAM_README.md
 **/__pycache__/
 .pytest_cache/
 .venv/
+so101_sim/vendor/

@@ -34,6 +34,14 @@ def test_pinned_model_and_visual_scene(client):
     assert lock['revision'] == 'a758567c3978dfeefe282ede0500085a48fe8f78'
     for name, digest in lock['sha256'].items():
         assert hashlib.sha256((root / 'model' / name).read_bytes()).hexdigest() == digest
+    viewer_lock = json.loads((root / 'viewer-assets.lock.json').read_text())
+    for name, entry in viewer_lock['files'].items():
+        data = (root / 'so101_sim' / 'vendor' / name).read_bytes()
+        if name == 'OrbitControls.js':
+            assert b"from './three.module.js';" in data
+            data = data.replace(b"from './three.module.js';", b"from 'three';")
+        assert hashlib.sha256(data).hexdigest() == entry['sha256']
+        assert client.get('/vendor/' + name).status_code == 200
     status = client.get('/api/status').json()
     assert status['healthy'] and status['ready'] and status['simulation']
     assert status['robot_kind'] == 'so101' and status['vm_name'] == 'test-arm'
