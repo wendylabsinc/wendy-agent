@@ -9,7 +9,7 @@ import (
 )
 
 // outcomeCases lists every class errorClass and commands.ErrorClass can
-// return, plus the pendingClasses. TestErrorOutcomesMatchTheClassifiers
+// return. TestErrorOutcomesMatchTheClassifiers
 // fails until a new class has a row here.
 var outcomeCases = []struct {
 	class     string
@@ -99,11 +99,6 @@ func TestOutcomeForClass(t *testing.T) {
 	}
 }
 
-// pendingClasses are returned by classifiers that have not landed yet:
-// "app_crashed" and "terminated" arrive with the wendy run outcome work.
-// Remove an entry once its classifier returns it.
-var pendingClasses = map[string]bool{"app_crashed": true, "terminated": true}
-
 // classifierClasses returns every class string the classifiers can return,
 // read from the string literals in their return statements: errorClass in
 // main.go and commands.ErrorClass.
@@ -159,7 +154,7 @@ func TestErrorOutcomesMatchTheClassifiers(t *testing.T) {
 	rows := make(map[string]bool, len(outcomeCases))
 	for _, tc := range outcomeCases {
 		rows[tc.class] = true
-		if !known[tc.class] && !pendingClasses[tc.class] {
+		if !known[tc.class] {
 			t.Errorf("outcomeCases has %q, which no classifier returns", tc.class)
 		}
 	}
@@ -169,13 +164,8 @@ func TestErrorOutcomesMatchTheClassifiers(t *testing.T) {
 		}
 	}
 	for class := range errorOutcomes {
-		if !known[class] && !pendingClasses[class] {
+		if !known[class] {
 			t.Errorf("errorOutcomes has %q, which no classifier returns; typo?", class)
-		}
-	}
-	for class := range pendingClasses {
-		if known[class] {
-			t.Errorf("%q is returned by a classifier now; remove it from pendingClasses", class)
 		}
 	}
 }

@@ -24,9 +24,8 @@ const (
 )
 
 // errorOutcomes maps an errorClass value to its outcome. It is keyed by the
-// class string rather than by sentinel error, so a class defined elsewhere
-// ("app_crashed" and "terminated" arrive with the wendy run outcome work)
-// takes effect here as soon as commands.ErrorClass starts returning it.
+// class string rather than by sentinel error, including the classes returned
+// by commands.ErrorClass.
 // A class missing from the table exits exitFailure and is not retryable.
 var errorOutcomes = map[string]errorOutcome{
 	"cli_usage": {exit: exitUsage},
