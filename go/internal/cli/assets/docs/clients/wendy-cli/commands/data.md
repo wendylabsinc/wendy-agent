@@ -340,8 +340,11 @@ validation and protocol errors stop retries; transient failures get at most
 three attempts, each with a 10-second timeout and the same event UUID.
 
 A `detection` notification carries `detections`: up to five `{label, score}`
-pairs that passed the label and threshold filter, highest score first. It never
-carries boxes or images. Readers that predate the field ignore it.
+pairs that passed the label and threshold filter, highest score first; `count`
+stays the total. They appear in the device's notification journal and in
+webhook bodies; Wendy Cloud notifications do not carry them yet. A
+`notify.on: event` rule naming the inference's own event carries them too. It
+never carries boxes or images. Readers that predate the field ignore it.
 
 Unknown keys inside `notify` are rejected for `event` and `detection`.
 For `episode_committed`, they warn at deployment and are ignored.

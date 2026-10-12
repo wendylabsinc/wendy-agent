@@ -20,7 +20,7 @@ import (
 )
 
 func TestCampaignWebhookSendsDetectionMetadata(t *testing.T) {
-	notification := DetectionNotification{ID: "event-id", Event: "person_detected", Campaign: "people", SourceID: "v4l2:/dev/video0", Model: "facebook/detr-resnet-50", Revision: "revision", Count: 2}
+	notification := DetectionNotification{ID: "event-id", Event: "person_detected", Campaign: "people", SourceID: "v4l2:/dev/video0", Model: "facebook/detr-resnet-50", Revision: "revision", Count: 2, Detections: []data.NotificationDetection{{Label: "person", Score: 0.9}}}
 	received := make(chan DetectionNotification, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" || r.Header.Get("Idempotency-Key") != notification.ID {

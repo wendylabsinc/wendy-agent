@@ -13,9 +13,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 )
 
-// CampaignNotification is an emitted Wendy Data notification, not a raw
-// prediction or a claim that an external notification receiver accepted it.
-// The occurrence UUID and time survive delivery retries and gateway restarts.
 // NotificationDetection summarizes one detection for a notification: its label
 // and score, never a box or an image.
 type NotificationDetection struct {
@@ -23,6 +20,9 @@ type NotificationDetection struct {
 	Score float64 `json:"score"`
 }
 
+// CampaignNotification is an emitted Wendy Data notification, not a raw
+// prediction or a claim that an external notification receiver accepted it.
+// The occurrence UUID and time survive delivery retries and gateway restarts.
 type CampaignNotification struct {
 	ID         string `json:"id"`
 	Event      string `json:"event"`
@@ -72,8 +72,10 @@ func (m *Manager) RecordNotification(notification CampaignNotification) error {
 	}
 	raw, err := json.Marshal(notification)
 	// Detections are a summary: drop the lowest-scored ones, not the
-	// notification, when long labels push an entry past the limit. Cloud and
-	// webhook delivery send the request as it was built.
+	// notification, when long labels push an entry past the limit. The loop
+	// drops from the end, so it requires Detections sorted highest score first.
+	// Webhook bodies carry the request as it was built; Cloud metadata does not
+	// include detections.
 	for err == nil && len(raw) > 4096 && len(notification.Detections) > 0 {
 		notification.Detections = notification.Detections[:len(notification.Detections)-1]
 		raw, err = json.Marshal(notification)

@@ -114,6 +114,9 @@ func TestNotificationDropsDetectionsToFitLimit(t *testing.T) {
 	if len(got) == 0 || len(got) >= 5 {
 		t.Fatalf("detections were not trimmed to fit: kept %d", len(got))
 	}
+	if len(got) != 4 {
+		t.Fatalf("expected 4 detections kept, got %d", len(got))
+	}
 	if got[0].Score != 0.9 {
 		t.Fatal("trimming dropped the highest-scored detection")
 	}
