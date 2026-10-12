@@ -20,6 +20,10 @@ Every event is an anonymous JSON object. The fields sent are:
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `schema_version` | integer | `2` for the lifecycle-aware event contract |
+| `event_id` | string | Random event UUID, allowing the receiver to discard duplicate delivery |
+| `occurred_at` | string | UTC event time recorded by the CLI, independent of delivery time |
+| `attempt_id` | string | Random UUID shared by one invocation or tour and its child operations |
 | `anonymous_id` | string | Stable random UUID stored in `~/.wendy/` — never tied to a real identity |
 | `event` | string | Event name, e.g. `"command_executed"` |
 | `command_name` | string | Canonical command path, e.g. `"wendy device wifi connect"` |
@@ -31,9 +35,23 @@ Every event is an anonymous JSON object. The fields sent are:
 | `os` | string | Operating system (`GOOS`) |
 | `arch` | string | CPU architecture (`GOARCH`) |
 | `is_dev_build` | boolean | `true` when `cli_version` is `"dev"` or has a `-dev` suffix |
-| `properties` | object | Event-specific string values, sent only by events that define them (see [Deploy events](#deploy-events)). At most 32 entries, each truncated to 64 bytes |
+| `properties` | object | Event-specific string values, sent only by events that define them (see [Deploy events](#deploy-events)). At most 32 allowlisted entries of up to 64 bytes, or 128 bytes for canned remediation; invalid values are discarded |
 
-> **Privacy note:** Flag values, positional arguments, file paths, hostnames, image and app names, and error message text are never included in telemetry payloads. Only the fields in this table are sent, and `properties` holds only the values documented in [Deploy events](#deploy-events).
+> **Privacy note:** Flag values, positional arguments, file paths, hostnames, image and app names, and error message text are never included in telemetry payloads. Only the fields in this table are sent, and `properties` holds only the bounded values documented below.
+
+## Activation events
+
+The installer emits `install_started`, `install_progress`, and `install_finished`. The outcome is `completed`, `failed`, or `cancelled`; declining an erase confirmation counts as cancellation. `image_written` records the completed media write, before optional provisioning. `device_boot_verified` requires the first-boot verifier to contact the expected agent and pass its requested version, board, identity and enrollment checks. The verifier does not check application readiness.
+
+Runs emit `run_started`, `run_progress`, and `run_finished`. `app_started` is emitted immediately when the agent acknowledges container start, before attached logs end. `app_ready` is emitted only after the attached run's configured readiness check succeeds. A failed check emits `app_readiness_failed` with a canned diagnostic even when the attached command continues streaming logs. Detached runs do not claim readiness. Multi-service, Compose, fleet and provider paths do not yet all report these application milestones; command success must not substitute for a missing acknowledgement.
+
+Lifecycle properties include the current `stage` and `step`, `outcome`, `entrypoint` (`cli`, `mcp`, or `tour`), interactive-terminal status, duration and a subprocess exit code when available. Run diagnostics retain `unknown` for checks not actually observed, including authentication and build prerequisites. Recognized project and selected/reachable target checks become true only after their corresponding operations succeed. Tour events may include the selected route (`physical`, `simulator`, or `existing_device`). Failures include a stable `error_code` and an `error_detail` selected from fixed remediation sentences. Unknown failures use `step_failed` and a diagnostic-report instruction; they do not assert a root cause. No arbitrary error text is sent.
+
+MCP tools use an attempt ID per call. The run subprocess inherits that ID. Durable installation jobs preserve their attempt ID across worker processes and first-boot verification. IDs do not identify people or join browser sessions to CLI installations. Installation method is currently `unknown`; acquisition source and OS version are unavailable and are not inferred from shell environment variables.
+
+Delivery remains best-effort, with no persistent offline queue. A start without a terminal event has an unknown outcome; it is not proof of abandonment. Analytics remain disabled by the same opt-out and CI settings for every event.
+
+Legacy `first_run` means the first completed CLI invocation, and `install_completed` describes the Homebrew postinstall hook. These are not device setup or first deployment events. Version 2 marks delivered milestones as successful and emits `first_deploy_success` after an agent start acknowledgement, rather than after the whole run command exits. Historical events keep their original semantics.
 
 ## Deploy events
 
@@ -106,6 +124,8 @@ first matching category in its fixed priority order, not a majority vote.
 These categories apply to events sent by updated clients. Historical events that
 only stored `other` or `grpc_other` cannot be reclassified without additional
 failure data.
+
+The CLI stores a private, timestamp-only `activation-state.json` beside `analytics_id` after a successful install operation. A later `run_started` clears the waiting window. On a subsequent CLI launch, it emits `next_launch_no_run_24h` and `next_launch_no_run_7d` once when each threshold has elapsed. These are observations of returning installations; they do not classify absent users as abandoned. The check follows analytics opt-out and creates no state when disabled. Delivery remains best-effort, and concurrent CLI processes can duplicate a threshold observation.
 
 ## Opting out
 

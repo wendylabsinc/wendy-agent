@@ -563,8 +563,11 @@ fi
 # --- Offer tour ---
 # The tour runs the binary this run installed, not whichever is first on PATH.
 WENDY_CMD="${INSTALLED_BIN:-$BINARY_NAME}"
+echo ""
+echo "Next: run '${WENDY_CMD} tour' to walk a simulated robot or set up your first device."
+echo "For a repeatable local demo: ${WENDY_CMD} tour --simulator"
 if [[ "$YES" != true ]] && command -v "$WENDY_CMD" &>/dev/null && [[ -t 1 ]] && have_tty; then
-  printf "\nWould you like a quick guided tour of the Wendy CLI? [Y/n] "
+  printf "\nStart the robot and device setup tour now? [Y/n] "
   read -r tour_answer </dev/tty
   case "$tour_answer" in
     # The installer may be run as `curl ... | bash`, which leaves the script's
@@ -572,8 +575,4 @@ if [[ "$YES" != true ]] && command -v "$WENDY_CMD" &>/dev/null && [[ -t 1 ]] && 
     # terminal so Bubble Tea sees an interactive stdin and stdout.
     ""|[yY]|[yY][eE][sS]) "$WENDY_CMD" tour </dev/tty >/dev/tty ;;
   esac
-elif have_tty; then
-  # Only suggest the tour where it can run: it needs an interactive terminal.
-  echo ""
-  echo "Run '${WENDY_CMD} tour' at any time for a guided walkthrough."
 fi

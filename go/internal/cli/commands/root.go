@@ -63,6 +63,7 @@ func NewRootCmd() *cobra.Command {
 			premark("  prerun: config.Load")
 
 			firstRun = analytics.Init(cfg)
+			analytics.TrackStage(cmd.Context(), "cli_seen", cmd.CommandPath(), "completed", "", nil)
 			premark("  prerun: analytics.Init")
 			if firstRun {
 				showFirstRunNotice(cmd, cfg)
@@ -168,6 +169,8 @@ func NewRootCmd() *cobra.Command {
 	analyticsCmd.GroupID = "settings"
 	cacheCmd := newCacheCmd()
 	cacheCmd.GroupID = "settings"
+	doctorCmd := newDoctorCmd()
+	doctorCmd.GroupID = "settings"
 	docsCmd := newDocsCmd()
 	docsCmd.GroupID = "settings"
 	tourCmd := newTourCmd()
@@ -277,6 +280,7 @@ func NewRootCmd() *cobra.Command {
 		analyticsCmd,
 		cacheCmd,
 		docsCmd,
+		doctorCmd,
 		tourCmd,
 		// Hidden
 		agentCmd,

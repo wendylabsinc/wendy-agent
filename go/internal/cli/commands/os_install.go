@@ -27,6 +27,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -127,7 +128,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 			}
 
 			if len(args) == 2 {
-				return runOSInstallDirect(args[0], args[1], force, yesOverwriteInternal)
+				return runOSInstallDirect(cmd.Context(), args[0], args[1], force, yesOverwriteInternal)
 			}
 			mode := preEnrollAuto
 			if cmd.Flags().Changed("pre-enroll") {
@@ -164,7 +165,9 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	return cmd
 }
 
-func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwriteInternal bool) error {
+func runOSInstallDirect(ctx context.Context, imagePath string, driveID string, force bool, yesOverwriteInternal bool) (retErr error) {
+	ctx, finish := startActivationOperation(ctx, "install", "wendy install")
+	defer func() { finish(retErr) }()
 	// Verify the image file exists.
 	if _, err := os.Stat(imagePath); err != nil {
 		return fmt.Errorf("image file: %w", err)
@@ -173,6 +176,7 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 	// Authenticate elevation before any disk-listing or write work. On
 	// Windows this offers a UAC re-launch when the current process isn't
 	// elevated; on Unix it pre-caches the sudo timestamp.
+	activationStep(ctx, "permission", nil)
 	if err := preAuthElevation(); err != nil {
 		return err
 	}
@@ -205,7 +209,7 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 		}
 		if !confirmed {
 			fmt.Println("Cancelled.")
-			return nil
+			return ErrUserCancelled
 		}
 	}
 
@@ -227,6 +231,7 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 		return err
 	}
 
+	activationStep(ctx, "flash", map[string]string{"target_selected": "true"})
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	fmt.Println(elevationHint())
 	if err := unmountBeforeWrite(*targetDrive); err != nil {
@@ -237,6 +242,7 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 	}
 	markFATVolumes(*targetDrive)
 
+	analytics.TrackStage(ctx, "image_written", "wendy install", "completed", "", nil)
 	fmt.Printf("\nSuccessfully installed image on %s.\n", targetDrive.Name)
 	return nil
 }
@@ -349,7 +355,9 @@ func pickWendyLiteBoard(target string, nightly bool) (string, error) {
 	return pickFromItems("Select your board model", items)
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) (retErr error) {
+	ctx, finish := startActivationOperation(ctx, "install", "wendy install")
+	defer func() { finish(retErr) }()
 	// --device-type is only supported for Linux devices, not ESP32/Wendy Lite.
 	// Rejected before any manifest fetch: the answer never depends on it.
 	switch flagDeviceType {
@@ -790,6 +798,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	// image download just to discover the user can't write to a raw disk. On
 	// Windows this offers a UAC re-launch when not elevated; on Unix it
 	// pre-caches the sudo timestamp.
+	activationStep(ctx, "permission", nil)
 	if err := preAuthElevation(); err != nil {
 		return err
 	}
@@ -810,6 +819,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		selectedVersion = flagVersion
 	}
 
+	activationStep(ctx, "select_target", nil)
 	// Step 2: Resolve target drive — use flag or interactive picker.
 	var targetDrive drive
 	if flagDrive != "" {
@@ -849,7 +859,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 		if !confirmed {
 			fmt.Println("Cancelled.")
-			return nil
+			return ErrUserCancelled
 		}
 	}
 
@@ -920,6 +930,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		return err
 	}
 
+	activationStep(ctx, "download", map[string]string{"target_selected": "true"})
 	// Step 5a: Prefer the seekable-zstd fast path. When the manifest advertises a
 	// .zst for this storage plus a usable bmap (and --no-bmap wasn't passed), we
 	// download only the .zst + bmap and write mapped ranges, skipping holes —
@@ -998,6 +1009,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		return err
 	}
 
+	activationStep(ctx, "flash", nil)
 	// Step 6: Write image to drive with progress bar.
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	writeProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
@@ -1134,6 +1146,8 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 	}
 
+	analytics.TrackStage(ctx, "image_written", "wendy install", "completed", "", nil)
+	activationStep(ctx, "provision", nil)
 	hasProvisioningData := provisioningRequired(provCreds, provDeviceName, provisioningJSON)
 	var provisionErr error
 

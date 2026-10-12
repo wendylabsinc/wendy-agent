@@ -198,7 +198,8 @@ check "notty.brew.exit" "0" "$rc"
 contains "notty.brew.autoyes" "$(cat "$OUT")" "continuing as if -y was passed"
 contains "notty.brew.installed" "$(cat "$BREW_LOG")" "install wendylabsinc/tap/wendy"
 absent "notty.brew.no_tty_error" "$(cat "$OUT")" "/dev/tty"
-absent "notty.brew.no_tour_hint" "$(cat "$OUT")" "tour"
+contains "notty.brew.next_step" "$(cat "$OUT")" "tour --simulator"
+absent "notty.brew.no_tour_prompt" "$(cat "$OUT")" "Start the robot and device setup tour now?"
 
 # Root ignores directory permissions, so the read-only-dir cases need a normal user.
 if [ "$(/usr/bin/id -u)" -ne 0 ]; then

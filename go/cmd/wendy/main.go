@@ -50,22 +50,39 @@ func main() {
 	if err == nil {
 		executed, err = cmd.ExecuteContextC(ctx)
 	}
-	trackCommand(executed, err, time.Since(start))
-	analytics.Close()
-	// After Close, whose delivered events can still record milestones: a sudo
-	// run gives what it created in ~/.wendy and the cache back to the user.
-	commands.HandBackSudoFiles()
+	if executed == nil || executed.CommandPath() != "wendy doctor" {
+		trackCommand(executed, err, time.Since(start))
+		analytics.Close()
+		// After Close, whose delivered events can still record milestones: a sudo
+		// run gives what it created in ~/.wendy and the cache back to the user.
+		commands.HandBackSudoFiles()
+	}
 
-	exitCode := 0
+	exitCode := exitCodeFor(err, os.Getenv("WENDY_TELEMETRY_ENTRYPOINT") == "tour")
 	if err != nil && !errors.Is(err, commands.ErrUserCancelled) && !errors.Is(err, commands.ErrDefaultCleared) {
 		fmt.Fprintln(os.Stderr, renderError(err))
-		exitCode = 1
 	}
 	// Windows: when this process owns its console window (UAC-relaunched or
 	// double-clicked), exiting would close the window and destroy the output
 	// above — hold it open until the user has read it.
 	commands.PauseBeforeExitIfSoleConsole()
 	os.Exit(exitCode)
+}
+
+// Tour subprocesses need a distinct cancellation outcome so declining an erase
+// cannot look like a completed install to the parent. Interactive CLI behavior
+// remains unchanged.
+func exitCodeFor(err error, isTourChild bool) int {
+	if errors.Is(err, commands.ErrUserCancelled) {
+		if isTourChild {
+			return 130
+		}
+		return 0
+	}
+	if err == nil || errors.Is(err, commands.ErrDefaultCleared) {
+		return 0
+	}
+	return 1
 }
 
 // trackCommand emits a single analytics event describing the invocation.
@@ -86,7 +103,7 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		return
 	}
 	path := executed.CommandPath()
-	if path == "wendy __session-broker" {
+	if path == "wendy __session-broker" || path == "wendy doctor" {
 		return
 	}
 	// Homebrew exports HOMEBREW_PREFIX/HOMEBREW_CELLAR/HOMEBREW_REPOSITORY into
@@ -99,6 +116,7 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 	event := eventNameFor(path, homebrewPostInstall)
 	props := map[string]string{
 		"command_name": path,
+		"attempt_id":   analytics.AttemptID(executed.Context()),
 		"command_root": commandRoot(executed),
 		"duration_ms":  strconv.FormatInt(dur.Milliseconds(), 10),
 		"success":      strconv.FormatBool(err == nil),
@@ -186,8 +204,6 @@ func milestoneFor(commandPath string, success bool) string {
 		return "discover_success"
 	case "wendy init":
 		return "init_success"
-	case "wendy run":
-		return "first_deploy_success"
 	case "wendy cloud login", "wendy auth login":
 		return "auth_success"
 	}

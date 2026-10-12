@@ -54,6 +54,28 @@ type capturedEvent struct {
 	props map[string]string
 }
 
+func TestExitCodeForTourCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		tour bool
+		want int
+	}{
+		{"completed", nil, true, 0},
+		{"interactive cancellation", commands.ErrUserCancelled, false, 0},
+		{"tour cancellation", commands.ErrUserCancelled, true, 130},
+		{"wrapped tour cancellation", fmt.Errorf("install: %w", commands.ErrUserCancelled), true, 130},
+		{"failure", errors.New("failed"), true, 1},
+		{"default cleared", commands.ErrDefaultCleared, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := exitCodeFor(tc.err, tc.tour); got != tc.want {
+				t.Fatalf("exit code = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func captureAnalytics(t *testing.T) *[]capturedEvent {
 	t.Helper()
 	var events []capturedEvent
@@ -150,6 +172,19 @@ func TestTrackCommand_TopLevelSubcommand(t *testing.T) {
 	}
 	if _, present := got.props["error_class"]; present {
 		t.Errorf("error_class must be absent on success, got %q", got.props["error_class"])
+	}
+}
+
+func TestTrackCommand_DoctorNeverUploads(t *testing.T) {
+	clearCIEnv(t)
+	events := captureAnalytics(t)
+	root := newTestRoot()
+	doctor := &cobra.Command{Use: "doctor"}
+	root.AddCommand(doctor)
+	trackCommand(doctor, nil, time.Millisecond)
+	trackCommand(doctor, errors.New("local check failed"), time.Millisecond)
+	if len(*events) != 0 {
+		t.Fatalf("doctor emitted analytics: %+v", *events)
 	}
 }
 
@@ -641,7 +676,7 @@ func TestMilestoneFor(t *testing.T) {
 	}{
 		{"wendy discover", true, "discover_success"},
 		{"wendy init", true, "init_success"},
-		{"wendy run", true, "first_deploy_success"},
+		{"wendy run", true, ""},
 		{"wendy cloud login", true, "auth_success"},
 		{"wendy auth login", true, "auth_success"},
 		{"wendy run", false, ""},

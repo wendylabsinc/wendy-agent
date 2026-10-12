@@ -15,6 +15,7 @@
     "build",
     "completion",
     "discover",
+    "doctor",
     "json",
     "os",
     "tour",

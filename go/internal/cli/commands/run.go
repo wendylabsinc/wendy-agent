@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
@@ -922,9 +923,15 @@ func debugRequiresDebugpy(cwd string, appCfg *appconfig.AppConfig) error {
 	return commandErrorf(errConfigInvalid, `--debug requires debugpy in the image: add "debugpy" to requirements.txt, or run without --debug`)
 }
 
-func runCommand(ctx context.Context, opts runOptions) error {
+func runCommand(ctx context.Context, opts runOptions) (retErr error) {
+	if !opts.managedRobot {
+		var finish func(error)
+		ctx, finish = startActivationOperation(ctx, "run", "wendy run")
+		defer func() { finish(retErr) }()
+	}
 	ctx = withDevicePickerPurpose(ctx, mainDevicePicker)
 	mark := phaseTimer()
+	activationStep(ctx, "project", nil)
 	// Step 1: Load and validate wendy.json.
 	cwd, err := resolveRunWorkingDir(opts)
 	if err != nil {
@@ -1006,6 +1013,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return classifyCommandError(errConfigInvalid, err)
 	}
 	if projectType == "compose" {
+		activationStep(ctx, "connect", map[string]string{"project_recognized": "true"})
 		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "Compose projects"); err != nil {
 			return err
 		}
@@ -1075,6 +1083,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	if err := appCfg.Validate(); err != nil {
 		return commandErrorf(errConfigInvalid, "invalid wendy.json: %w", err)
 	}
+	activationStep(ctx, "connect", map[string]string{"project_recognized": "true"})
 	if err := warnAppConfigFile(cfgPath); err != nil {
 		return fmt.Errorf("reading wendy.json warnings: %w", err)
 	}
@@ -1113,6 +1122,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 			return err
 		}
 	}
+	activationStep(ctx, "build", map[string]string{"target_selected": "true"})
 	mark("resolve + connect device")
 
 	// Build-file selection happens before wendy.json is loaded so device
@@ -1431,9 +1441,11 @@ func macOSNativeCreateContainerError(err error, appCfg *appconfig.AppConfig) err
 // starts the container on the agent.
 func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	// Verify auth certs are available if the device's registry requires mTLS.
+	activationStep(ctx, "auth", nil)
 	if err := requireRegistryAuth(ctx, conn); err != nil {
 		return err
 	}
+	activationStep(ctx, "build", nil)
 
 	// Query the device OS and architecture.
 	versionResp, err := agentVersionForRun(ctx, conn)
@@ -2064,6 +2076,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		return err
 	}
 	metrics := newDeployMetrics(opts)
+	metrics.ctx = ctx
 	err := runWithAgentRecorded(ctx, conn, cwd, appCfg, opts, metrics)
 	metrics.emit(err)
 	return err
@@ -2109,12 +2122,14 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 
 	// Resolve the target platform. Query the agent for its OS and architecture,
 	// then determine the effective platform from wendy.json or defaults.
+	activationStep(ctx, "connect", nil)
 	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
 	printRunDiskUsageWarning(versionResp)
 	mark("agent version metadata (in runWithAgent)")
+	activationStep(ctx, "build", map[string]string{"device_reachable": "true"})
 	metrics.deviceType = versionResp.GetDeviceType()
 	agentOS := versionResp.GetOs()
 	architecture := versionResp.GetCpuArchitecture()
@@ -2623,6 +2638,7 @@ func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 // shared between runSwiftWithAgent and runWithAgent. It creates the container,
 // optionally starts it, streams output, and manages readiness + postStart hooks.
 func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, createReq *agentpb.CreateContainerRequest, opts runOptions) error {
+	activationStep(ctx, "deploy", nil)
 	if opts.deploy {
 		_, err := conn.ContainerService.CreateContainer(ctx, createReq)
 		if err != nil {
@@ -3120,9 +3136,19 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 		return nil
 	}
 
+	if readiness != nil && readiness.TCPSocket != nil {
+		activationStep(ctx, "readiness", nil)
+	}
 	err := waitForAttachedReadiness(ctx, conn, appCfg, hookHost)
 	rp("  ↳ runcontainer: readiness wait")
 	if err != nil {
+		if readiness != nil && readiness.TCPSocket != nil && !opts.managedRobot {
+			class, outcome := ExecutionErrorClass(err), "failed"
+			if class == "user_cancelled" || class == "context_canceled" {
+				outcome = "cancelled"
+			}
+			analytics.TrackStage(ctx, "app_readiness_failed", "wendy run", outcome, class, map[string]string{"stage": "run", "step": "readiness"})
+		}
 		if ctx.Err() == nil {
 			warnReadiness(ctx, conn, appCfg.AppID, err)
 			if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil &&
@@ -3134,6 +3160,9 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 	}
 	if ctx.Err() != nil {
 		return nil
+	}
+	if readiness != nil && readiness.TCPSocket != nil && !opts.managedRobot {
+		analytics.TrackStage(ctx, "app_ready", "wendy run", "completed", "", map[string]string{"step": "readiness"})
 	}
 	effectiveCfg := appCfg
 	if hooks != appCfg.Hooks {
@@ -3655,6 +3684,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		fillStats()
 	}
 	mark("read+decompress layers")
+	activationStep(ctx, "deploy", nil)
 
 	sizeClause := ""
 	if compressedTotal := totalCompressedLayerBytes(layers); compressedTotal > 0 {
