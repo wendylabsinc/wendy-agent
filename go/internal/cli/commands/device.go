@@ -836,7 +836,7 @@ func newDeviceEnrollCmd() *cobra.Command {
 		Use:         "enroll",
 		Annotations: map[string]string{"wendy.local-enrollment": "true"},
 		Short:       "Enroll this device with Wendy Cloud or a local pki-core",
-		Long:        "Enrolls the selected device using your stored auth session. WendyOS uses agent gRPC provisioning; Wendy Lite uses Class C enrollment over the selected connection and reboots to obtain its certificate from pki-core. Run 'wendy auth login' first.",
+		Long:        "Enrolls the selected device using your stored auth session. WendyOS uses agent gRPC provisioning; Wendy Lite requires USB for Class C enrollment and reboots to obtain its certificate from pki-core. Run 'wendy auth login' first.",
 		Hidden:      true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -869,9 +869,9 @@ func newDeviceEnrollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&liteOptions.csrURL, "csr-url", "", "CSR enrollment base URL override for Wendy Lite on self-hosted PKI")
 	cmd.Flags().StringVar(&liteOptions.timeURL, "time-url", "", "RFC 3161 signed-time endpoint for Wendy Lite (defaults to Sigstore)")
 	cmd.Flags().StringVar(&liteOptions.caCertsURL, "ca-certs-url", "", "HTTPS CA-discovery URL for Wendy Lite (defaults to the selected PKI instance's EST endpoint)")
-	cmd.Flags().StringVar(&liteOptions.deviceRoots, "device-roots", "", "Provision this device identity PEM CA bundle over the selected connection (also requires --https-roots)")
+	cmd.Flags().StringVar(&liteOptions.deviceRoots, "device-roots", "", "Provision this device identity PEM CA bundle over USB (also requires --https-roots)")
 	cmd.Flags().StringVar(&liteOptions.tsaRoots, "tsa-roots", "", "Signed-time PEM CA bundle (Sigstore's TSA root is bundled for the default endpoint)")
-	cmd.Flags().StringVar(&liteOptions.httpsRoots, "https-roots", "", "Provision this HTTPS/broker PEM CA bundle over the selected connection")
+	cmd.Flags().StringVar(&liteOptions.httpsRoots, "https-roots", "", "Provision this HTTPS/broker PEM CA bundle over USB")
 	return cmd
 }
 
@@ -1165,9 +1165,8 @@ func newDeviceUnenrollCmd() *cobra.Command {
 		Use:   "unenroll",
 		Args:  cobra.NoArgs,
 		Short: "Unenroll a device and remove it from Wendy Cloud",
-		Long: "Reverses 'wendy device enroll'. For direct PKI enrollment, verifies the exact Cloud " +
-			"binding, invokes Cloud-owned revocation/deletion, then verifies PKI proof and " +
-			"resets local state. Requires an updated Agent and directly verified mTLS connection. " +
+		Long: "Reverses 'wendy device enroll'. UUID/direct PKI local unenrollment is disabled " +
+			"pending Cloud-authenticated reset authorization and durable device preparation. " +
 			"Numeric legacy enrollment retains its separate cleanup path. " +
 			"For Wendy Lite over USB, removes the cloud enrollment, clears the board's identity and reboots it while preserving Wi-Fi and apps. Requires firmware with enrollment reset support. " +
 			"Use --cloud-only or 'wendy cloud device unenroll' to remove an offline device by asset ID or name without contacting it.",
@@ -1317,8 +1316,8 @@ func newDeviceUnenrollCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Skip the confirmation prompt")
-	cmd.Flags().StringVar(&uuidAssetID, "asset-id", "", "Exact Cloud asset UUID for v2 cleanup (otherwise resolved from its authenticated PKI binding)")
-	cmd.Flags().BoolVar(&checkOnly, "check", false, "Check binding and existing ACME account lookup only; never revoke, delete, or reset")
+	cmd.Flags().StringVar(&uuidAssetID, "asset-id", "", "Exact Cloud asset UUID for prior-reset reconciliation; new v2 local unenrollment is disabled")
+	cmd.Flags().BoolVar(&checkOnly, "check", false, "Reserved for v2 local unenrollment, which is currently disabled")
 	cmd.Flags().BoolVar(&cloudOnly, "cloud-only", false, "Remove the cloud enrollment without contacting or resetting the device; --device accepts an asset ID, name, or PKI device ID")
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint for cleanup (cloud-only uses the selected auth session; local WendyOS uses its enrolled cloud host)")
 	return cmd

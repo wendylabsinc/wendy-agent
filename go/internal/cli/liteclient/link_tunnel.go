@@ -10,14 +10,18 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/wcomrelaypb"
 	"google.golang.org/grpc"
 )
 
 // RelayOptions supplies the operator signer and authenticated broker routing.
 type RelayOptions struct {
-	SignRequest func([]byte) ([]byte, error)
-	Redial      func(context.Context, string) (*grpc.ClientConn, context.Context, error)
+	// OperatorIdentity is the exact certificate and resolved private key used
+	// by SignRequest. The provider must use this identity for inner mTLS.
+	OperatorIdentity config.CertificateInfo
+	SignRequest      func([]byte) ([]byte, error)
+	Redial           func(context.Context, string) (*grpc.ClientConn, context.Context, error)
 }
 
 type relayConn struct {

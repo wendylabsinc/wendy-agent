@@ -133,14 +133,16 @@ func TestAgentOnlyPathsRefuseACloudLiteDevice(t *testing.T) {
 type liteRelayStub struct {
 	wcomrelaypb.UnimplementedWendyComRelayServiceServer
 	wcomrelaypb.UnimplementedWendyComRelayDiscoveryServiceServer
-	endpoint  string
-	opened    chan relayStubOpen
-	tlsConfig *tls.Config
+	endpoint    string
+	opened      chan relayStubOpen
+	tlsConfig   *tls.Config
+	resolveHook func() error
 }
 
 type relayStubOpen struct {
-	assetID       string
-	authorization []string
+	assetID          string
+	authorization    []string
+	principalRequest []byte
 }
 
 func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_WendyComRelayServer) error {
@@ -149,7 +151,7 @@ func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_We
 		return err
 	}
 	md, _ := metadata.FromIncomingContext(stream.Context())
-	r.opened <- relayStubOpen{assetID: first.GetOpen().GetRequestBody().GetTargetAssetId(), authorization: md.Get("authorization")}
+	r.opened <- relayStubOpen{assetID: first.GetOpen().GetRequestBody().GetTargetAssetId(), authorization: md.Get("authorization"), principalRequest: first.GetOpen().GetPrincipalRequest().GetValue()}
 	grant, err := relayGrantFixture()
 	if err != nil {
 		return err
@@ -309,6 +311,11 @@ func TestCloudTabShowsLiteFirmwareWithoutAnAgentTunnel(t *testing.T) {
 
 func liteRelayTestPKI(t *testing.T) ([]config.CertificateInfo, *tls.Config) {
 	t.Helper()
+	return liteRelayTestPKIForPrincipal(t, "spiffe://wendy.sh/tenant/"+liteTestTenant+"/operator/test")
+}
+
+func liteRelayTestPKIForPrincipal(t *testing.T, principal string) ([]config.CertificateInfo, *tls.Config) {
+	t.Helper()
 	issue := func(serial int64, principal string, parent *x509.Certificate, signer *ecdsa.PrivateKey) (*x509.Certificate, *ecdsa.PrivateKey) {
 		t.Helper()
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -340,7 +347,6 @@ func liteRelayTestPKI(t *testing.T) ([]config.CertificateInfo, *tls.Config) {
 		return cert, key
 	}
 	root, rk := issue(1, "", nil, nil)
-	principal := "spiffe://wendy.sh/tenant/" + liteTestTenant + "/operator/test"
 	operator, ok := issue(2, principal, root, rk)
 	device, dk := issue(3, "spiffe://wendy.sh/tenant/"+liteTestTenant+"/device/lite-00aa11bb", root, rk)
 	key, err := x509.MarshalECPrivateKey(ok)
@@ -353,6 +359,11 @@ func liteRelayTestPKI(t *testing.T) ([]config.CertificateInfo, *tls.Config) {
 }
 
 func (r *liteRelayStub) Resolve(ctx context.Context, req *wcomrelaypb.ResolveRequest) (*wcomrelaypb.WendyComRelayRoute, error) {
+	if r.resolveHook != nil {
+		if err := r.resolveHook(); err != nil {
+			return nil, err
+		}
+	}
 	return &wcomrelaypb.WendyComRelayRoute{Endpoint: r.endpoint}, nil
 }
 

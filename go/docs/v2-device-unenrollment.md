@@ -2,7 +2,9 @@
 
 Implements [WDY-3313 — Cloud v2 device enrollment leaves Jetson unprovisioned after reserving an asset](https://linear.app/wendylabsinc/issue/WDY-3313/cloud-v2-device-enrollment-leaves-jetson-unprovisioned-after-reserving) and [WDY-3534 — Preserve deleted Cloud asset bindings for stateless unenrollment recovery](https://linear.app/wendylabsinc/issue/WDY-3534/preserve-deleted-cloud-asset-bindings-for-stateless-unenrollment).
 
-> **Development status:** This describes the current guarded-reset candidate, not a completed contract-conforming rollout. The agreed normal flow still needs fresh FIDO2 approval bound to the exact signed reset instruction and verified, durable device preparation through the signed command queue before revocation. Those integrations are not implemented here; direct cleanup is not an implicit exemption. No deployment or live-reset readiness is claimed.
+> **Development status:** New UUID/direct PKI local resets are disabled. The Agent advertises `CloudUnenrollmentSupported=false` and rejects direct PKI `Unprovision` without changing credentials. The CLI rejects this workflow before Cloud access, including `--yes` and `--check`, even when an older Agent advertises support. Enablement requires fresh FIDO2 approval bound to the exact signed reset instruction, verified durable device preparation through the signed command queue before revocation, and Cloud-authenticated deletion evidence. These integrations are not implemented. No deployment or live-reset readiness is claimed.
+
+A serialized `DeletedAsset` supplied by an operator is not authenticated Cloud evidence. Matching its tenant, device, asset and timestamp fields cannot prove Cloud deletion or authorize credential erasure. Same-tenant operator mTLS and a valid issuer-signed OCSP response do not supply that missing authority. The unsafe new-authorization handler has been removed. Cloud-only unenrollment and numeric/Lite flows retain their existing behavior.
 
 ## One business operation
 
@@ -10,33 +12,39 @@ Cloud owns unenrollment for CLI and console callers. Its signed DeleteAsset path
 
 The CLI signs the Cloud request and its exact tenant/device revoke_principal management authority with the same operator leaf. Existing kid/x5c behavior is retained, with a fresh PKI replay identity on each retry. Numeric Cloud v1 follows its original reset-first best-effort path; this does not add a numeric fallback for PKI identities.
 
-## Preconditions and phases
+## Requirements before enabling new resets
 
-1. Read Agent provisioning through direct verified LAN mTLS. Require CloudUnenrollmentSupported before mutation, exact tenant/operator scope and installed peer principal/fingerprint; reject proxy/plaintext for an active device. Match the enrolled Cloud endpoint.
-2. Read GetAsset using organization_id + device_id and **empty asset UUID**. Older UUID-only servers reject before mutation. Validate any --asset-id locally against the authoritative binding. Active returns Asset; authorized deleted returns NotFound plus one typed DeletedAsset. Plain NotFound, status/message text, wrong status, duplicate details, malformed UUID/time or changed binding are never completion proof.
-3. If active, invoke Cloud DeleteAsset with expected_device_id and the management request. Re-read retained typed deletion evidence after success. Lost responses mean unconfirmed progress, not rollback.
-4. Retrieve issuer-signed OCSP revocation evidence for the exact installed leaf. Fetches dial only checked public IP addresses, do not follow redirects or use environment proxies, and retain standard HTTP/HTTPS OCSP with issuer signatures as authority. This is verification, not revocation. Reject good/unknown, stale/future, forged or mismatched issuer/serial evidence; preserve keys on failure. Issuer signatures support native ML-DSA as well as existing certificate algorithms; no signature verification is skipped.
-5. Send existing Agent Unprovision with principal/fingerprint, PKI revocation evidence and exact serialized Cloud deletion binding. The Agent checks same-tenant operator mTLS, current installed certificate, fresh authenticated time, signed revocation and exact Cloud binding before authorizing erasure. Unknown time or a failed durable floor update retains credentials.
+The new reset workflow must authenticate the installed device and exact Cloud binding before any mutation. It must obtain fresh approval for the exact reset instruction and deliver that instruction through an authenticated signed command queue. The device must durably prepare for reset before Cloud revokes its credentials.
 
-`--check` reads Cloud binding and Agent capability only. It does not revoke, spend EAB, reset, import proof or write a CLI journal. All v2 phases have a three-minute command bound. A false progress flag means unconfirmed, not reversal of a remote mutation.
+The Agent must verify Cloud-authenticated deletion evidence bound to the tenant, principal, asset UUID, installed certificate fingerprint and reset operation. Plain caller-supplied protobuf fields cannot satisfy this check. Issuer-signed OCSP evidence can establish certificate revocation, but cannot establish Cloud authorization or deletion. Fresh authenticated time and a durable anti-rollback floor must bound evidence and operator-certificate validity.
 
-## Re-entry without CLI workflow state
+`--check` currently returns the disabled-workflow error. It must not claim that reset support is ready based on the old capability flag. Neither `--yes` nor an older Agent advertising `CloudUnenrollmentSupported=true` can bypass the CLI refusal.
 
-There is no CLI journal, saved phase, reusable enrollment credential or one-use response token. Historical unenroll/unenroll-v2 journals remain untouched and are not authority.
+## Historical reset records
 
-- Active asset: retry the same Cloud operation; already-revoked principal credentials are a no-op.
-- Cloud tombstone with device still provisioned: retrieve fresh PKI evidence and retry guarded erasure.
-- Erasure interrupted: before deleting any key, Agent atomically saves and syncs a public, device-signed pending reset authorization in the existing `provisioning.json` under `unenrollment` (`status: pending`, `receipt`). That file survives credential cleanup. Startup verifies the receipt and exact saved enrollment binding and resumes bounded cleanup before loading or serving enrollment. Incomplete recovery fails closed and blocks new enrollment.
-- Reset completed but reply lost: after key removal and directory sync, Agent atomically replaces `provisioning.json` with minimal unprovisioned state containing only `unenrollment` (`status: completed`, `receipt`), then syncs the file and directory. No additional persistent recovery files are created. Agent publishes the signed completion receipt only from completed state. Its existing IsProvisioned response carries that public receipt. A fresh CLI validates the old certificate's signature and configured trust roots, PKI evidence at authorization time, and the exact current authorized Cloud tombstone. It reports completion of that **prior principal's operation**, not a newly authenticated current device identity. Plaintext transport/mDNS are not identity proof and carry no mutation authority.
+New requests cannot create pending reset records. A development-version pending
+receipt proves only that the device signed the caller's deletion fields. It does
+not prove Cloud authorization or fresh-factor approval. Startup therefore blocks
+pending recovery without deleting any remaining credentials or changing the
+record. New enrollment stays blocked until explicit local recovery. The Agent
+cannot complete an old pending reset through either version of `Unprovision`.
 
-`ReadCompletion` verifies the receipt's signatures and internal binding; it is not a trust-root or current-peer verifier. The CLI separately anchors the historical certificate to its configured roots before trusting remote public evidence. Agent recovery reads only its root-owned 0600 state, originally written after installed-leaf/operator verification; pending evidence is re-bound to that stored identity. New reset authorization obtains a fresh independently signed Roughtime consensus using the running Agent time manager, not cached confidence, a boot floor or raw wall-clock time. The existing five-second query deadline and independent-quorum policy apply. A verified lower bound is atomically persisted to the existing `clock_floor` without rollback; corrupt state, unavailable consensus, cancellation or failed durability stop reset and retain keys. Operator-certificate validity and issuer-signed OCSP freshness must hold at both ends of the authenticated uncertainty interval. Authorization records its upper bound and rejects deletion timestamps more than one second ahead. A pending receipt from a previous version is not retroactively proof that this fresh-time check ran; protected historical restart recovery retains its existing semantics.
+A previously completed receipt remains available through
+`NotProvisionedResponse.unenrollment_completion`. This read-only report describes
+the prior principal's operation, not a newly authenticated device identity. The
+CLI must still anchor the historical certificate to configured roots, verify its
+PKI evidence, and confirm the exact current authorized Cloud tombstone before
+reporting completion. Plaintext transport and mDNS provide no mutation authority.
 
-The receipt contains only public certificate/chain, principal, Cloud endpoint, asset UUID, installed fingerprint, authorization time, PKI-signed status, typed deletion binding and signature. No private key, ACME account key, EAB secret, bearer token or operator key is written to it. Historical development proof files are ignored and preserved. Normal enrollment replaces the existing provisioning state, dropping its prior completion receipt. Historical development files remain ignored and untouched; there is no importer for separate pending/completion files. Downgrading to an Agent that ignores pending recovery is unsafe until the authorized reset has completed.
+There is no CLI journal, saved phase, reusable enrollment credential or one-use
+response token. Historical development journals and proof files remain untouched
+and supply no reset authority. Normal enrollment replaces an existing completed
+record. No importer accepts separate pending or completion files.
 
 ## Rollout and limits
 
-Flashing is an explicit local reset, not an unenrollment transaction. Valid first-boot provisioning may replace previous pending/completed recovery state. An ordinary restart still verifies and resumes pending reset recovery. Flashing does not implicitly revoke certificates or delete Cloud records; the operator must clean up the old Cloud identity separately. No automatic Cloud-cleanup prompt or workflow is introduced here.
+Flashing is an explicit local reset, not an unenrollment transaction. Valid first-boot provisioning may replace previous pending/completed recovery state. An ordinary restart blocks pending reset recovery and preserves remaining credentials. Flashing does not implicitly revoke certificates or delete Cloud records; the operator must clean up the old Cloud identity separately. No automatic Cloud-cleanup prompt or workflow is introduced here.
 
-Land [service-protos #96 — Typed deletion evidence through GetAsset](https://github.com/wendylabsinc/service-protos/pull/96), compatible [Cloud #754 — Lifecycle tombstones for safe unenrollment](https://github.com/wendylabsinc/cloud/pull/754) (including Sem's fixes), and an updated Agent before using this consumer. Unreleased development servers/agents are not a compatibility promise. Migration numbers and cumulative landing order must be reconciled before main deployment; source maximum is not a live migration cursor.
+Land [service-protos #96 — Typed deletion evidence through GetAsset](https://github.com/wendylabsinc/service-protos/pull/96), compatible [Cloud #754 — Lifecycle tombstones for safe unenrollment](https://github.com/wendylabsinc/cloud/pull/754) (including Sem's fixes), and the reset authorization/preparation protocol before enabling this consumer. Compatible schema versions alone do not enable reset. Unreleased development servers/agents are not a compatibility promise. Migration numbers and cumulative landing order must be reconciled before main deployment; source maximum is not a live migration cursor.
 
 Cloud-only unenrollment can finish without a reachable device, but cannot erase an offline device's local credentials. Missing/purged Cloud evidence is unknown and fails closed. Missing/unavailable OCSP evidence preserves local keys even after Cloud completes. A receipt proves the earlier operation, not current physical-device identity or reachability. No live acceptance, installation or deployment is implied by source tests; the earlier production user-run acceptance used a different build.

@@ -14,8 +14,8 @@ go build -o ./wendy ./cmd/wendy
 ```
 
 This is the same `cloud enroll-device` command used for WendyOS. The selected
-device determines the protocol: agent gRPC for WendyOS, or WendyCom over the selected USB, LAN, or Bluetooth connection for
-Lite. Omit `--device` to use the normal picker, or use a device ID shown by
+device determines the protocol: agent gRPC for WendyOS, or WendyCom over USB for
+Lite. Omit `--device` to use the normal picker, or use a USB device ID shown by
 `wendy discover`. The hidden `wendy device enroll` alias uses the same dispatch.
 
 The board needs Wi-Fi and the enrollment-capable firmware from
@@ -26,10 +26,9 @@ support before minting a token. Current firmware reports whether PKI, the cloud
 connection task and Wi-Fi are enabled. The CLI stops before reserving an asset
 if firmware explicitly reports that enrollment is disabled. Older firmware that
 does not report this capability remains supported.
-Firmware must support enrollment on the selected
-transport; older firmware may accept bootstrap commands only over USB. After
-reboot, completion checks reuse the selected transport and its authentication.
-Cloud enrollment does not replace the firmware's LAN or Bluetooth credentials.
+Lite enrollment requires a physical USB connection. The CLI rejects LAN,
+Bluetooth and Cloud targets before opening a connection or minting a credential.
+After reboot, completion checks reuse the selected USB connection.
 
 Signed time defaults to [Sigstore's public RFC 3161 service](https://docs.sigstore.dev/cosign/verifying/timestamps/)
 at `https://timestamp.sigstore.dev/api/v1/timestamp`. The CLI bundles Sigstore's
@@ -69,7 +68,7 @@ verifies the TSA chain, signature, nonce, imprint and persisted rollback floor. 
 Cloud's `DeviceEnrollmentService.EnrollDevice` for a Class C credential. Both the Cloud
 RPC and PKI enrollment artifact are signed with the operator's existing identity.
 Cloud reserves the tenant/device asset in PostgreSQL. The single-use token and
-public setup data go to the board over the selected connection; its private key is generated
+public setup data go to the board over USB; its private key is generated
 on-device. The CLI reboots the board and waits for certificate installation.
 
 The CSR URL derives from the selected session's `PKIEndpoint`. The default time
@@ -89,7 +88,8 @@ presence once the board completes mTLS and the broker's presence checks.
 
 After enrollment, select the online Lite asset through `wendy cloud discover`.
 The CLI opens a broker-authorized relay using the selected Cloud session, then
-uses its same-tenant operator certificate to authenticate directly to the device.
+uses the exact operator certificate that signed the relay request to authenticate
+directly to the device.
 It verifies the device certificate against the enrolled PKI device name and tenant
 before sending WendyCom. Operator credentials must already be installed locally. Keep the ML-DSA login
 identity for Cloud administration and enrollment authorization. The wolfSSL

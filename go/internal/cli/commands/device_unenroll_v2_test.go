@@ -3,10 +3,12 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -197,5 +199,32 @@ func TestV2UnenrollRechecksBindingAndDeletionEvidence(t *testing.T) {
 				t.Fatal("reset without authoritative proof")
 			}
 		})
+	}
+}
+
+func TestV2UnenrollDisabledBeforeCloudAccess(t *testing.T) {
+	for _, advertised := range []bool{false, true} {
+		for _, flags := range []struct {
+			name           string
+			yes, checkOnly bool
+		}{
+			{name: "interactive"},
+			{name: "yes", yes: true},
+			{name: "check", checkOnly: true},
+		} {
+			t.Run(fmt.Sprintf("capability=%t/%s", advertised, flags.name), func(t *testing.T) {
+				prov := &agentpbv2.ProvisionedResponse{
+					CloudHost:                  testUnenrollProgress().Cloud,
+					PrincipalUri:               testUnenrollProgress().Principal,
+					CloudUnenrollmentSupported: advertised,
+				}
+				// Missing connection/auth configuration would fail if the disabled
+				// path attempted to start the old Cloud workflow.
+				err := runV2DeviceUnenroll(context.Background(), nil, prov, nil, "", "", flags.yes, flags.checkOnly)
+				if err == nil || !strings.Contains(err.Error(), "direct PKI unenrollment is disabled") || !strings.Contains(err.Error(), "no mutation performed") {
+					t.Fatalf("unsafe workflow was not rejected before preflight: %v", err)
+				}
+			})
+		}
 	}
 }

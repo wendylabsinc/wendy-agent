@@ -24,7 +24,7 @@ func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.
 	s.v1.mu.Lock()
 	defer s.v1.mu.Unlock()
 	if s.v1.resetRecoveryErr != nil {
-		return nil, status.Error(codes.Unavailable, "authorized reset recovery incomplete")
+		return nil, status.Error(codes.Unavailable, "reset recovery blocked; explicit local recovery required")
 	}
 	if !s.v1.enrolled {
 		completion, err := s.v1.cloudCompletion()
@@ -41,11 +41,13 @@ func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.
 	return &agentpbv2.IsProvisionedResponse{
 		ResponseType: &agentpbv2.IsProvisionedResponse_Provisioned{
 			Provisioned: &agentpbv2.ProvisionedResponse{
-				CloudHost:                  s.v1.cloudHost,
-				OrganizationId:             s.v1.orgID,
-				AssetId:                    s.v1.assetID,
-				PrincipalUri:               s.v1.principalURI,
-				CloudUnenrollmentSupported: true,
+				CloudHost:      s.v1.cloudHost,
+				OrganizationId: s.v1.orgID,
+				AssetId:        s.v1.assetID,
+				PrincipalUri:   s.v1.principalURI,
+				// Direct PKI reset stays disabled until Cloud authorization and
+				// durable device preparation are implemented.
+				CloudUnenrollmentSupported: false,
 			},
 		},
 	}, nil

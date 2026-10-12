@@ -908,10 +908,14 @@ func (p *MicroWendyProvider) ConnectSensorLink(device models.ExternalDevice) (*l
 	return p.connectClient(device)
 }
 
-// ConnectEnrollment opens the selected connection for enrollment and status
-// checks. Firmware controls whether enrollment is allowed on this transport.
+// ConnectEnrollment opens a physical USB serial connection for enrollment and
+// status checks. Enrollment credentials and trust bundles must stay off network
+// transports, even if a peer claims to support enrollment.
 // The caller must close the client.
 func (p *MicroWendyProvider) ConnectEnrollment(device models.ExternalDevice) (*liteclient.WendyLiteClient, error) {
+	if device.ConnectionType() != "USB" {
+		return nil, fmt.Errorf("Wendy Lite enrollment requires a USB connection; select the board's USB device")
+	}
 	return p.connectClient(device)
 }
 
@@ -1002,8 +1006,21 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 			cc.Close()
 			return nil, fmt.Errorf("wendy-lite provider: missing Cloud tenant or device identity")
 		}
-		used := false
-		err = connectWithCLIIdentities(func(cert tls.Certificate, rootCAs x509.CertPool, chain string) error {
+		err = func() error {
+			// The one-shot relay grant binds both the operator principal and
+			// its key. Use the signer's identity, never another stored login.
+			selected := options.OperatorIdentity
+			if selected.PrincipalURI == "" {
+				return fmt.Errorf("missing selected Cloud operator identity")
+			}
+			key, err := selected.PrivateKeyPEM()
+			if err != nil {
+				return err
+			}
+			cert, err := certs.TLSKeyPair(selected.PemCertificate, selected.PemCertificateChain, key)
+			if err != nil {
+				return err
+			}
 			leaf, err := x509.ParseCertificate(cert.Certificate[0])
 			if err != nil {
 				return err
@@ -1015,14 +1032,11 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 			if !ok || identity.TenantUUID != device.ConnectionInfo["tenantId"] {
 				return fmt.Errorf("operator identity does not match selected device tenant")
 			}
-			// One dialled connection belongs to one stream. Do not retry another
-			// identity on a connection consumed by a failed handshake.
-			if used {
-				return fmt.Errorf("device relay authentication failed")
+			if identity.Principal != selected.PrincipalURI {
+				return fmt.Errorf("operator certificate does not match selected Cloud principal")
 			}
-			used = true
-			return client.ConnectViaRelay(ctx, cc, assetID, cert, chain, device.ConnectionInfo["deviceId"], options)
-		})
+			return client.ConnectViaRelay(ctx, cc, assetID, cert, selected.PemCertificateChain, device.ConnectionInfo["deviceId"], options)
+		}()
 		if err != nil {
 			cc.Close()
 			return nil, fmt.Errorf("connect to device via Wendy Cloud: %w", err)

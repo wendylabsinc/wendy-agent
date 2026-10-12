@@ -1,27 +1,20 @@
 package commands
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
-	"github.com/wendylabsinc/wendy/go/internal/shared/config"
-	"github.com/wendylabsinc/wendy/go/internal/shared/unenrollproof"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	grpcpeer "google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 )
 
 // Output only: durable recovery evidence belongs to Cloud and Agent, not CLI.
@@ -179,141 +172,9 @@ func directUnenrollPeerFingerprint(conn *grpcclient.AgentConnection, verifiedPee
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, prov *agentpbv2.ProvisionedResponse, verifiedPeer *grpcpeer.Peer, override, assetOverride string, yes, checkOnly bool) error {
-	if !prov.GetCloudUnenrollmentSupported() {
-		return fmt.Errorf("updated Agent with Cloud-owned reset/recovery support required; no mutation performed")
-	}
-	principal, err := certs.ParsePrincipal(prov.GetPrincipalUri())
-	if err != nil || principal.EntityType != certs.EntityAsset {
-		return fmt.Errorf("invalid direct PKI device identity")
-	}
-	fingerprint, err := directUnenrollPeerFingerprint(conn, verifiedPeer, principal)
-	if err != nil {
-		return err
-	}
-	cloud := prov.GetCloudHost()
-	if cloud == "" || (override != "" && override != cloud) {
-		return fmt.Errorf("cleanup endpoint must match the device's enrolled Cloud host")
-	}
-	auth, err := pickAuthEntry(cloud)
-	if err != nil {
-		return err
-	}
-	auth, err = prepareEnrollmentAuth(ctx, auth)
-	if err != nil {
-		return err
-	}
-	if len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() != principal.TenantUUID {
-		return fmt.Errorf("cleanup operator tenant does not match the device")
-	}
-	rpcctx, err := cloudContext(ctx, auth)
-	if err != nil {
-		return err
-	}
-	cloudConn, err := dialCloudGRPC(auth)
-	if err != nil {
-		return err
-	}
-	defer cloudConn.Close()
-	assets := cloudpbv2.NewAssetServiceClient(cloudConn)
-	j := v2UnenrollProgress{Cloud: cloud, Principal: principal.Principal, AssetID: assetOverride, Fingerprint: fingerprint}
-	if assetOverride != "" {
-		id, err := uuid.Parse(assetOverride)
-		if err != nil || id.String() != assetOverride {
-			return fmt.Errorf("--asset-id requires a canonical UUID")
-		}
-	}
-	tlsInfo := verifiedPeer.AuthInfo.(credentials.TLSInfo)
-	leaf := tlsInfo.State.PeerCertificates[0]
-	issuers := append([]*x509.Certificate{}, tlsInfo.State.PeerCertificates[1:]...)
-	storedChain, _ := certs.ParseCertsFromPEM([]byte(auth.Certificates[0].PemCertificateChain))
-	issuers = append(issuers, storedChain...)
-	issuer, err := unenrollproof.Issuer(leaf, issuers)
-	if err != nil {
-		return err
-	}
-	j.Serial = leaf.SerialNumber.Text(16)
-	svc := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn)
-	ops := v2UnenrollOps{
-		lookup: func(ctx context.Context, id string) (*v2AssetState, error) {
-			tenant, device := principal.TenantUUID, principal.EntityID
-			// Always use the binding selector: older UUID-only GetAsset servers
-			// reject empty id before any revocation/deletion, even with --asset-id.
-			// The selected UUID is still enforced by v2UnenrollLifecycle.
-			asset, err := assets.GetAsset(rpcctx, &cloudpbv2.GetAssetRequest{OrganizationId: &tenant, DeviceId: &device})
-			return v2AssetLookupResult(asset, err)
-		},
-		proof: func(ctx context.Context) ([]byte, error) { return unenrollproof.FetchRevocation(ctx, leaf, issuer) },
-		delete: func(ctx context.Context, id string) error {
-			reply := &cloudpbv2.DeleteAssetResponse{}
-			expected := principal.EntityID
-			err := cloudrequest.Invoke(rpcctx, cloudConn, auth, cloudpbv2.AssetService_DeleteAsset_FullMethodName, &cloudpbv2.DeleteAssetRequest{Id: id, ExpectedDeviceId: &expected}, reply)
-			if err == nil && !reply.GetSuccess() {
-				return fmt.Errorf("Cloud deletion was not acknowledged")
-			}
-			return err
-		},
-		reset: func(ctx context.Context, p, fp string, evidence []byte, deleted *cloudpbv2.DeletedAsset) error {
-			binding, err := proto.Marshal(deleted)
-			if err != nil {
-				return err
-			}
-			response, err := svc.Unprovision(ctx, &agentpbv2.UnprovisionRequest{ExpectedPrincipalUri: p, ExpectedCertificateSha256: fp, RevocationProof: evidence, CloudDeletion: binding})
-			if err != nil {
-				return err
-			}
-			receipt, _, err := unenrollproof.ReadCompletion(response.GetUnenrollmentCompletion())
-			if err != nil {
-				return err
-			}
-			if receipt.Principal != p || receipt.Fingerprint != fp || receipt.AssetID != j.AssetID || receipt.Cloud != cloud || !bytes.Equal(receipt.CloudDeletion, binding) {
-				return fmt.Errorf("local completion evidence mismatch")
-			}
-			return nil
-		},
-	}
-	reply, err := ops.lookup(ctx, j.AssetID)
-	if err != nil {
-		return fmt.Errorf("reading Cloud lifecycle (updated Cloud required): %w", err)
-	}
-	if _, err := v2UnenrollLifecycle(reply, &j); err != nil {
-		return err
-	}
-	if checkOnly {
-		if jsonOutput {
-			out, _ := json.Marshal(map[string]any{"principal": j.Principal, "cloudBindingVerified": true, "revocationAttempted": false, "assetDeleted": false, "deviceReset": false})
-			fmt.Println(string(out))
-		} else {
-			fmt.Println("Cloud binding and guarded Agent capability verified. No revocation, deletion or reset attempted.")
-		}
-		return nil
-	}
-	// WORKAROUND(WDY-3585): Konstantin explicitly approved temporarily using
-	// intent confirmation without fresh-factor approval, including merge,
-	// while destructive CLI step-up interactions are discussed. This is NOT FIDO2.
-	// https://linear.app/wendylabsinc/issue/WDY-3585/clarify-approval-interactions-for-destructive-cli-actions
-	if !yes {
-		if !isInteractiveTerminal() {
-			return fmt.Errorf("unenroll is destructive; pass --yes to confirm")
-		}
-		fmt.Printf("Unenroll %s through Cloud asset %s at %s (PKI revocation and deletion), then reset this device.\n", j.Principal, j.AssetID, j.Cloud)
-		if !confirmDefaultNoFn("Continue?") {
-			return nil
-		}
-	}
-	err = performV2Unenroll(ctx, &j, ops)
-	if jsonOutput {
-		out, _ := json.MarshalIndent(j, "", "  ")
-		fmt.Println(string(out))
-	}
-	if err != nil {
-		return err
-	}
-	if err := config.Update(func(cfg *config.Config) (bool, error) { clearPinsForIdentity(cfg, principal); return true, nil }); err != nil {
-		return fmt.Errorf("unenrolled; local identity pin cleanup failed: %w", err)
-	}
-	if !jsonOutput {
-		fmt.Printf("Cloud unenrolled asset %s; authenticated local reset completed.\n", j.AssetID)
-	}
-	return nil
+// A previous development Agent advertised reset support without the required
+// authorization protocol. Do not trust that capability to start irreversible
+// Cloud revocation/deletion, including when --yes or --check is supplied.
+func runV2DeviceUnenroll(context.Context, *grpcclient.AgentConnection, *agentpbv2.ProvisionedResponse, *grpcpeer.Peer, string, string, bool, bool) error {
+	return fmt.Errorf("direct PKI unenrollment is disabled pending Cloud-authenticated reset authorization and durable device preparation; no mutation performed")
 }

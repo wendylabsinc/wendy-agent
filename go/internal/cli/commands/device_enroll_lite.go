@@ -66,6 +66,9 @@ var (
 )
 
 func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth *config.AuthConfig, name string, opts liteEnrollmentOptions) error {
+	if target.ConnectionType() != "USB" {
+		return fmt.Errorf("Wendy Lite enrollment requires a USB connection; connect the board over USB and select its USB device with --device")
+	}
 	ctx := cmd.Context()
 	device, err := connectLiteEnrollmentFn(target)
 	if err != nil {

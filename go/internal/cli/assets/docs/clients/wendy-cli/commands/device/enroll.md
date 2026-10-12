@@ -84,23 +84,24 @@ wendy device enroll --device 192.168.1.11 --name lab-pi-01
 
 ## Unenrollment compatibility
 
-`wendy device unenroll` has separate paths. Numeric Cloud v1 identities retain the
-original local-reset-first, best-effort Cloud cleanup. UUID/direct PKI identities
-use Cloud-owned revocation and retained deletion evidence before guarded local
-credential erasure; they never fall back to numeric cleanup.
+`wendy device unenroll` retains the numeric Cloud v1 local-reset-first,
+best-effort Cloud cleanup path. UUID/direct PKI local unenrollment is disabled.
+The Agent advertises `ProvisionedResponse.cloud_unenrollment_supported=false`
+and rejects direct PKI `Unprovision` requests without changing credentials.
+The CLI also refuses this workflow, including `--yes` and `--check`, before any
+Cloud revocation or deletion even if an older Agent advertises reset support.
+UUID/direct PKI identities never fall back to numeric cleanup.
 
-The UUID candidate requires compatible Cloud and Agent versions. The Agent's
-`ProvisionedResponse.cloud_unenrollment_supported` capability must be `true`;
-absent or `false` on an older Agent means no guarded reset is attempted. It is
-not proof that authenticated time is currently available. Before new erasure,
-the Agent obtains fresh signed time, persists its anti-rollback floor and checks
-operator validity and revocation evidence across the authenticated interval.
-Failure retains local credentials, even if Cloud unenrollment already finished.
+Enabling this flow requires fresh FIDO2 approval bound to the exact reset
+instruction, signed-command delivery with durable device preparation before
+revocation, and Cloud-authenticated deletion evidence. A caller-serialized
+`DeletedAsset`, operator mTLS, and OCSP revocation evidence do not establish that
+authorized Cloud deletion occurred.
 
-> **Development status:** Fresh FIDO2 approval for the exact reset instruction and
-> device preparation through the signed command queue before revocation remain
-> integration requirements. The current guarded direct-reset candidate is not a
-> completed normal-flow rollout or a security-contract exemption.
+Cloud-only unenrollment remains available and leaves local device credentials
+intact. Historical pending reset receipts block startup recovery and require explicit
+local recovery; the Agent preserves any remaining credentials. Completed receipts
+remain readable and do not enable new reset requests.
 
 The prerelease Agent RPCs `RevokeACMECertificate` and `CheckACMERevocation` always
 return `UNIMPLEMENTED`: Cloud owns revocation; those RPCs are not an alternate path.

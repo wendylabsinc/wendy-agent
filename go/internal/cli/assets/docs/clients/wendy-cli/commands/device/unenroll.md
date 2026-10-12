@@ -39,10 +39,11 @@ wendy device unenroll --device <device-selector>
 
 For a WendyOS agent with numeric Cloud v1 enrollment, this clears the device's
 enrollment and provisioning state, restarts the agent, and removes its cloud
-enrollment. UUID/direct PKI enrollment first verifies the Cloud binding and
-completes Cloud-owned revocation and deletion, then verifies the evidence before
-resetting local state. This path requires compatible Cloud and Agent versions
-and a directly verified mTLS connection. See the
+enrollment. UUID/direct PKI local unenrollment is disabled until the reset
+approval and Cloud authorization protocol is implemented. The CLI rejects this
+path, including `--yes` and `--check`, before Cloud revocation or deletion. Use
+`--cloud-only` when you intend to remove only the Cloud enrollment; this leaves
+local device credentials intact. See the
 [unenrollment compatibility requirements](./enroll.md#unenrollment-compatibility).
 
 For Wendy Lite, select the board's USB connection. The command checks firmware
@@ -69,8 +70,8 @@ removal directly, without opening a device connection.
 | `--device` | Device selector. In cloud mode, accepts a cloud asset ID, name, or PKI device ID. |
 | `--cloud-only` | Remove the cloud enrollment without connecting to the device. Available on `wendy device unenroll`. |
 | `--cloud-grpc` | Cloud gRPC endpoint for the stored session used to remove the enrollment. |
-| `--asset-id` | Exact Cloud asset UUID for a directly connected WendyOS v2 enrollment. Otherwise resolved from its authenticated PKI binding. Unavailable for cloud mode and Wendy Lite. |
-| `--check` | Check the binding and existing ACME account lookup for a directly connected WendyOS v2 enrollment without revoking, deleting, or resetting. Unavailable for cloud mode and Wendy Lite. |
+| `--asset-id` | Reserved for direct WendyOS v2 unenrollment, which is currently disabled. Unavailable for cloud mode and Wendy Lite. |
+| `--check` | Reserved for direct WendyOS v2 unenrollment, which is currently disabled. Unavailable for cloud mode and Wendy Lite. |
 | `--yes` | Skip confirmation. Required when running non-interactively. |
 
 ## Related

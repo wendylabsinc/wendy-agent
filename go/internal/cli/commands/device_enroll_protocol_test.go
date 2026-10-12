@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
-	"reflect"
 )
 
 func TestEnrollmentUsesExistingCommands(t *testing.T) {
@@ -102,13 +102,6 @@ func TestEnrollmentDispatchesSelectedProtocol(t *testing.T) {
 			}
 		})
 	}
-	for _, transport := range []string{"LAN", "BLE"} {
-		target := &SelectedDevice{External: &models.ExternalDevice{ProviderKey: "wendy-lite", ConnectionInfo: map[string]string{"type": transport}}}
-		if err := runSelectedDeviceEnrollment(cmd, target, auth, "desk", 0, "", opts); !errors.Is(err, wantErr) {
-			t.Fatalf("%s enrollment: %v", transport, err)
-		}
-	}
-
 	opts.brokerHost = ""
 	if err := runSelectedDeviceEnrollment(cmd, usb, auth, "desk", 0, "", opts); !errors.Is(err, wantErr) {
 		t.Fatalf("Lite enrollment without a broker override: %v", err)
@@ -160,27 +153,23 @@ func TestEnrollmentStopsWhenWifiIsCancelled(t *testing.T) {
 	}
 }
 
-func TestLiteEnrollmentConnectsSelectedTransport(t *testing.T) {
+func TestLiteEnrollmentConnectsSelectedUSBDevice(t *testing.T) {
 	old := connectLiteEnrollmentFn
 	t.Cleanup(func() { connectLiteEnrollmentFn = old })
-	for _, transport := range []string{"USB", "LAN", "BLE"} {
-		t.Run(transport, func(t *testing.T) {
-			target := models.ExternalDevice{ProviderKey: "wendy-lite", ConnectionInfo: map[string]string{"type": transport, "ip": "192.0.2.1", "port": "5055", "serialPort": "/dev/ttyUSB0", "address": "board-address"}}
-			wantErr := errors.New("connection failed")
-			called := false
-			connectLiteEnrollmentFn = func(got models.ExternalDevice) (liteEnrollmentDevice, error) {
-				called = true
-				if !reflect.DeepEqual(got, target) {
-					t.Fatalf("connected to %v, want %v", got, target)
-				}
-				return nil, wantErr
-			}
-			cmd := newDeviceEnrollCmd()
-			cmd.SetContext(context.Background())
-			err := runEnrollLiteDevice(cmd, target, &config.AuthConfig{}, "desk", liteEnrollmentOptions{})
-			if !called || !errors.Is(err, wantErr) {
-				t.Fatalf("connection was not attempted or error lost: %v", err)
-			}
-		})
+	target := models.ExternalDevice{ProviderKey: "wendy-lite", ConnectionInfo: map[string]string{"type": "USB", "serialPort": "/dev/ttyUSB0"}}
+	wantErr := errors.New("connection failed")
+	called := false
+	connectLiteEnrollmentFn = func(got models.ExternalDevice) (liteEnrollmentDevice, error) {
+		called = true
+		if !reflect.DeepEqual(got, target) {
+			t.Fatalf("connected to %v, want %v", got, target)
+		}
+		return nil, wantErr
+	}
+	cmd := newDeviceEnrollCmd()
+	cmd.SetContext(context.Background())
+	err := runEnrollLiteDevice(cmd, target, &config.AuthConfig{}, "desk", liteEnrollmentOptions{})
+	if !called || !errors.Is(err, wantErr) {
+		t.Fatalf("connection was not attempted or error lost: %v", err)
 	}
 }

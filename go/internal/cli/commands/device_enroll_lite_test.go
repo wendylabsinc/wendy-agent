@@ -19,6 +19,33 @@ type alreadyEnrolledLiteDevice struct {
 	closed               bool
 }
 
+func TestLiteEnrollmentRejectsNetworkTransportsBeforeConnecting(t *testing.T) {
+	old := connectLiteEnrollmentFn
+	t.Cleanup(func() { connectLiteEnrollmentFn = old })
+	connectLiteEnrollmentFn = func(models.ExternalDevice) (liteEnrollmentDevice, error) {
+		t.Fatal("enrollment must reject network transports before opening a client")
+		return nil, nil
+	}
+	for _, transport := range []string{"LAN", "BLE", "Cloud", "", "usb", "UART"} {
+		t.Run(transport, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			target := models.ExternalDevice{
+				ProviderKey: "wendy-lite",
+				ConnectionInfo: map[string]string{
+					"type": transport,
+					// A serial path must not override the selected transport.
+					"serialPort": "/dev/cu.usbmodem-test",
+				},
+			}
+			err := runEnrollLiteDevice(cmd, target, nil, "", liteEnrollmentOptions{})
+			if err == nil || !strings.Contains(err.Error(), "requires a USB connection") {
+				t.Fatalf("expected USB requirement, got %v", err)
+			}
+		})
+	}
+}
+
 func (*alreadyEnrolledLiteDevice) GetDeviceIdentity(time.Duration) (*liteclient.DeviceIdentity, error) {
 	return &liteclient.DeviceIdentity{ID: "441bf6804824", Name: "joannis-home"}, nil
 }

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +15,10 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
-const espEmulatorInstallerURL = "https://raw.githubusercontent.com/espressif/esp-emulator/main/install.sh"
+// Pin both the source commit and the installer contents. Update these together
+// after reviewing the installer when changing the emulator release.
+const espEmulatorInstallerURL = "https://raw.githubusercontent.com/espressif/esp-emulator/0933dd1fe1398f4e0094fb53481699e4b9e10f31/install.sh"
+const espEmulatorInstallerSHA256 = "7d116867e9a54b8ab90b12fffec93eb5782b3b01f74191078be5278fa6fd5688"
 const espEmulatorVersion = "0.48.0"
 
 var espEmulatorLookPath = exec.LookPath
@@ -46,7 +50,7 @@ func ensureESPEmulatorForHost(ctx context.Context, hostOS, arch string) (string,
 		}
 		return "", fmt.Errorf("ESP32 Emulator has no prebuilt release for %s/%s; use Apple Silicon macOS or x86_64/ARM64 Linux (https://github.com/espressif/esp-emulator)", hostOS, arch)
 	}
-	manual := fmt.Errorf("ESP32 Emulator is required; run interactively to install it, or install manually:\n  curl -fsSL %s | sh -s -- --version %s\nThen add $HOME/.local/bin to PATH and retry", espEmulatorInstallerURL, espEmulatorVersion)
+	manual := fmt.Errorf("ESP32 Emulator is required; rerun the VM command interactively or with --yes, without --json, to download and verify Espressif's installer")
 	if jsonOutput || (!isInteractiveTerminalFn() && !vmAssumeYes) {
 		return "", manual
 	}
@@ -92,6 +96,9 @@ func installESPEmulator(ctx context.Context, dir string) error {
 	}
 	if len(script) > 1<<20 {
 		return fmt.Errorf("Espressif installer exceeds 1 MiB")
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(script)); got != espEmulatorInstallerSHA256 {
+		return fmt.Errorf("Espressif installer SHA-256 mismatch: expected %s, got %s", espEmulatorInstallerSHA256, got)
 	}
 	f, err := os.CreateTemp("", "wendy-esp-install-*.sh")
 	if err != nil {

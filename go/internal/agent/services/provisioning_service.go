@@ -136,7 +136,8 @@ type ProvisioningService struct {
 }
 
 // NewProvisioningService reuses the running Agent's time manager when provided.
-// Cloud reset fails closed without it; legacy numeric provisioning is unchanged.
+// New Cloud resets and historical pending reset recovery are disabled; legacy
+// numeric provisioning is unchanged.
 func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*timesync.Manager) *ProvisioningService {
 	svc := &ProvisioningService{
 		logger:      logger,
@@ -186,7 +187,7 @@ func (s *ProvisioningService) IsProvisioned(_ context.Context, _ *agentpb.IsProv
 	defer s.mu.Unlock()
 
 	if s.resetRecoveryErr != nil {
-		return nil, status.Error(codes.Unavailable, "authorized reset recovery incomplete")
+		return nil, status.Error(codes.Unavailable, "reset recovery blocked; explicit local recovery required")
 	}
 	if s.enrolled {
 		return &agentpb.IsProvisionedResponse{
@@ -218,7 +219,7 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 	}()
 
 	if s.resetRecoveryErr != nil {
-		return nil, status.Error(codes.FailedPrecondition, "authorized reset recovery must finish before enrollment")
+		return nil, status.Error(codes.FailedPrecondition, "explicit local recovery required before enrollment")
 	}
 	if s.enrolled {
 		return nil, status.Error(codes.FailedPrecondition, "agent is already provisioned")
@@ -386,13 +387,8 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 		return nil, status.Error(codes.FailedPrecondition, "agent is not provisioned")
 	}
 
-	if s.principalURI != "" {
-		if expectedPrincipal == "" || expectedPrincipal != s.principalURI {
-			return nil, status.Error(codes.FailedPrecondition, "direct PKI reset requires the exact expected principal through v2")
-		}
-		if expectedFingerprint == "" || expectedFingerprint != s.certificateFingerprintLocked() || !s.cloudResetAuthorizedLocked() {
-			return nil, status.Error(codes.FailedPrecondition, "verify Cloud unenrollment and installed-leaf PKI revocation before clearing enrollment keys")
-		}
+	if s.resetRecoveryErr != nil || s.principalURI != "" {
+		return nil, status.Error(codes.FailedPrecondition, "direct PKI reset is disabled pending Cloud-authenticated authorization; keys retained")
 	}
 
 	s.logger.Info("Unprovisioning device",
@@ -400,13 +396,7 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 		zap.Int32("asset_id", s.assetID),
 	)
 
-	var cleanupErr error
-	if s.principalURI != "" {
-		cleanupErr = s.finishCloudReset()
-	} else {
-		cleanupErr = s.clearStateFiles()
-	}
-	if err := cleanupErr; err != nil {
+	if err := s.clearStateFiles(); err != nil {
 		s.logger.Error("Failed to delete provisioning state files", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to delete provisioning state: %v", err)
 	}

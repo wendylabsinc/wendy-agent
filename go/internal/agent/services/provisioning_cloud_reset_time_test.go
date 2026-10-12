@@ -2,141 +2,88 @@ package services
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
-	"github.com/wendylabsinc/wendy/go/internal/shared/unenrollproof"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
-func TestCloudResetRetainsKeysWithoutFreshAuthenticatedTime(t *testing.T) {
-	for _, name := range []string{"missing", "unavailable", "zero", "inverted", "canceled"} {
+func TestCloudResetDisabledBeforeAuthorizationOrMutation(t *testing.T) {
+	for _, name := range []string{"valid revoked leaf and caller deletion", "fabricated asset", "missing operator", "nil request"} {
 		t.Run(name, func(t *testing.T) {
 			svc, req, ctx := cloudResetFixture(t)
-			original, err := os.ReadFile(filepath.Join(svc.configPath, "provisioning.json"))
-			if err != nil {
-				t.Fatal(err)
+			files := map[string][]byte{}
+			for _, name := range []string{"provisioning.json", "device-key.pem", "acme-account-key.pem"} {
+				data, err := os.ReadFile(filepath.Join(svc.configPath, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				files[name] = data
 			}
-			window, _ := svc.trustedTime(ctx)
+			svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
+				t.Fatal("disabled reset acquired time for authorization")
+				return timesync.TimeWindow{}, nil
+			}
 			switch name {
-			case "missing":
-				svc.trustedTime = nil
-			case "unavailable":
-				svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
-					return timesync.TimeWindow{}, errors.New("no authenticated consensus")
+			case "fabricated asset":
+				var deleted cloudpbv2.DeletedAsset
+				if err := proto.Unmarshal(req.CloudDeletion, &deleted); err != nil {
+					t.Fatal(err)
 				}
-			case "zero":
-				svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) { return timesync.TimeWindow{}, nil }
-			case "inverted":
-				svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
-					return timesync.TimeWindow{Earliest: window.Latest.Add(time.Second), Latest: window.Earliest}, nil
+				deleted.Id = "44444444-4444-4444-8444-444444444444"
+				var err error
+				req.CloudDeletion, err = proto.Marshal(&deleted)
+				if err != nil {
+					t.Fatal(err)
 				}
-			case "canceled":
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithCancel(ctx)
-				defer cancel()
-				svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
-					cancel()
-					return window, nil
-				}
+			case "missing operator":
+				ctx = context.Background()
+			case "nil request":
+				req = nil
 			}
-			if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); status.Code(err) != codes.FailedPrecondition {
+			v2 := NewProvisioningServiceV2(svc)
+			state, err := v2.IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{})
+			if err != nil || state.GetProvisioned() == nil || state.GetProvisioned().GetCloudUnenrollmentSupported() {
+				t.Fatalf("unsafe reset capability advertised: %v, %v", state, err)
+			}
+			if _, err := v2.Unprovision(ctx, req); status.Code(err) != codes.FailedPrecondition {
 				t.Fatalf("reset = %v, want failed precondition", err)
 			}
-			got, err := os.ReadFile(filepath.Join(svc.configPath, "provisioning.json"))
-			if err != nil || string(got) != string(original) {
-				t.Fatalf("authorization failure changed provisioning state: %v", err)
-			}
-			for _, name := range []string{"device-key.pem", "acme-account-key.pem"} {
-				if _, err := os.Stat(filepath.Join(svc.configPath, name)); err != nil {
-					t.Fatalf("time failure removed %s: %v", name, err)
+			for name, original := range files {
+				got, err := os.ReadFile(filepath.Join(svc.configPath, name))
+				if err != nil || string(got) != string(original) {
+					t.Fatalf("disabled reset changed %s: %v", name, err)
 				}
 			}
-		})
-	}
-}
-
-func TestCloudResetChecksBothAuthenticatedTimeBounds(t *testing.T) {
-	for _, bound := range []string{"earliest", "latest"} {
-		t.Run(bound, func(t *testing.T) {
-			svc, req, ctx := cloudResetFixture(t)
-			window, _ := svc.trustedTime(ctx)
-			// Keep operator validity broad so failure specifically exercises the
-			// revocation proof's window rather than the actor's certificate.
-			p, _ := peer.FromContext(ctx)
-			actor := p.AuthInfo.(credentials.TLSInfo).State.PeerCertificates[0]
-			actor.NotBefore = window.Earliest.Add(-4 * time.Hour)
-			actor.NotAfter = window.Latest.Add(4 * time.Hour)
-			if bound == "earliest" {
-				window.Earliest = window.Earliest.Add(-2 * time.Hour)
-			} else {
-				window.Latest = window.Latest.Add(2 * time.Hour)
-			}
-			svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) { return window, nil }
-			if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); status.Code(err) != codes.FailedPrecondition {
-				t.Fatalf("accepted revocation evidence invalid at %s bound: %v", bound, err)
-			}
-			if _, err := os.Stat(filepath.Join(svc.configPath, "device-key.pem")); err != nil {
-				t.Fatalf("uncertain time removed key: %v", err)
+			if !svc.enrolled {
+				t.Fatal("disabled reset changed enrollment")
 			}
 		})
 	}
 }
 
-func TestCloudResetRechecksIdentityAfterTimeQuery(t *testing.T) {
-	svc, req, ctx := cloudResetFixture(t)
-	window, _ := svc.trustedTime(ctx)
-	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
-		// This also proves network acquisition runs without the state lock.
-		svc.mu.Lock()
-		svc.principalURI = "spiffe://wendy.sh/tenant/" + resetTenant + "/device/replacement"
-		svc.mu.Unlock()
-		return window, nil
-	}
-	if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("accepted changed identity: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(svc.configPath, "device-key.pem")); err != nil {
-		t.Fatalf("replacement identity key removed: %v", err)
-	}
-}
-
-func TestCloudResetChecksOperatorValidityAtAuthenticatedTime(t *testing.T) {
-	svc, req, ctx := cloudResetFixture(t)
-	window, _ := svc.trustedTime(ctx)
-	p, _ := peer.FromContext(ctx)
-	actor := p.AuthInfo.(credentials.TLSInfo).State.PeerCertificates[0]
-	actor.NotAfter = window.Earliest.Add(-time.Second)
-	if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("accepted expired operator: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(svc.configPath, "device-key.pem")); err != nil {
-		t.Fatalf("expired operator removed key: %v", err)
-	}
-}
-
-func TestCloudResetRecordsAuthenticatedAuthorizationTime(t *testing.T) {
-	svc, req, ctx := cloudResetFixture(t)
-	window, _ := svc.trustedTime(ctx)
-	window.Earliest = window.Earliest.Add(30 * time.Second)
-	window.Latest = window.Earliest.Add(time.Second)
-	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) { return window, nil }
-	response, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req)
-	if err != nil {
+func TestCloudResetDisabledPreservesNumericV2Unprovision(t *testing.T) {
+	svc, dir := newTestProvisioningService(t)
+	defer os.RemoveAll(dir)
+	ctx := context.Background()
+	if _, err := svc.StartProvisioning(ctx, &agentpb.StartProvisioningRequest{
+		OrganizationId: 7, CloudHost: "unprov.wendy.io", AssetId: 70,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	completion, _, err := unenrollproof.ReadCompletion(response.GetUnenrollmentCompletion())
-	if err != nil {
-		t.Fatal(err)
+	v2 := NewProvisioningServiceV2(svc)
+	if _, err := v2.Unprovision(ctx, &agentpbv2.UnprovisionRequest{}); err != nil {
+		t.Fatalf("numeric v2 reset failed: %v", err)
 	}
-	if completion.AuthorizedAt != window.Latest.Unix() {
-		t.Fatalf("authorization time = %d, want authenticated bound %d", completion.AuthorizedAt, window.Latest.Unix())
+	state, err := v2.IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{})
+	if err != nil || state.GetNotProvisioned() == nil {
+		t.Fatalf("numeric device remains enrolled: %v, %v", state, err)
 	}
 }
