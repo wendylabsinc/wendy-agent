@@ -109,7 +109,7 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	// board even when it has built-in roots for another timestamp authority.
 	if cfg.TimeUrl == liteenroll.DefaultTimeURL || (!cfg.ProvisionTrust && (!challenge.GetBuiltinRootsReady() || opts.caCertsURL != "")) {
 		if !challenge.GetUsbTrustSupported() {
-			return fmt.Errorf("firmware does not support USB trust provisioning; update the board first")
+			return fmt.Errorf("firmware does not support trust bundle provisioning; update the board first")
 		}
 		timeClient, err = liteenroll.DiscoverTrust(ctx, cfg, opts.caCertsURL)
 		if err != nil {
