@@ -272,7 +272,9 @@ func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUni
 	}
 	address := strings.TrimSpace(req.Address)
 	ip := net.ParseIP(address)
-	if ip == nil || ip.To4() == nil || ip.IsLoopback() || !(ip.IsGlobalUnicast() || ip.IsLinkLocalUnicast()) {
+	// The contract requires an IPv4 literal; reject IPv4-mapped IPv6 spellings
+	// exactly as the CLI does.
+	if ip == nil || ip.To4() == nil || strings.Contains(address, ":") || ip.IsLoopback() || !(ip.IsGlobalUnicast() || ip.IsLinkLocalUnicast()) {
 		return nil, status.Error(codes.InvalidArgument, "enter the Go2's LAN IPv4 address without a port")
 	}
 	if err := ctx.Err(); err != nil {
