@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"math/big"
 	"net"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,8 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
@@ -96,6 +101,102 @@ func TestUnitreeTransportRequiresCompletedMutualTLS(t *testing.T) {
 			err := requireUnitreeTransport(ctx)
 			if (err == nil) != tc.ok {
 				t.Fatalf("transport authorization: %v", err)
+			}
+		})
+	}
+}
+
+func unitreeTLSContext(t *testing.T, identities ...string) context.Context {
+	t.Helper()
+	leaf := &x509.Certificate{SerialNumber: big.NewInt(1), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	for _, identity := range identities {
+		u, err := url.Parse(identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaf.URIs = append(leaf.URIs, u)
+	}
+	return peer.NewContext(context.Background(), &peer.Peer{
+		Addr:     &net.TCPAddr{IP: net.IPv4(192, 0, 2, 1)},
+		AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{leaf}}},
+	})
+}
+
+func TestUnitreeRPCsRequireOwnerScopeEvenWhenListenerAllowsCaller(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     interceptor.OrgMode
+		identity string
+	}{
+		{"foreign tenant with off", interceptor.OrgModeOff, "urn:wendy:org:43:user:fixture"},
+		{"identityless with grace", interceptor.OrgModeGrace, ""},
+		{"non-comparable with grace", interceptor.OrgModeGrace, certs.UserSPIFFEURI("3fd28c47-700a-4ef6-9f43-19be3d13418e", "fixture")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testUnitreeService(t)
+			if err := s.Rebind("org:42"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.store.Save(unitree.Pairing{Device: unitreeTestDevice(), PairedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			ctx := unitreeTLSContext(t, tc.identity)
+			if err := interceptor.CheckMTLS(ctx, zap.NewNop(), certs.Scope{OrgID: 42}, tc.mode); err != nil {
+				t.Fatal("fixture did not demonstrate listener bypass", err)
+			}
+			s.dial = func(context.Context, string, string, string) (unitreeLink, error) {
+				t.Error("foreign owner reached robot dialing")
+				return nil, errors.New("must not dial")
+			}
+			s.discover = func(context.Context, ...string) ([]unitree.Device, error) {
+				t.Error("foreign owner reached discovery")
+				return nil, nil
+			}
+			_, listErr := s.ListUnitreePairings(ctx, nil)
+			_, pairErr := s.PairUnitree(ctx, unitreeTestRequest())
+			_, discoveryErr := s.DiscoverUnitreeRobots(ctx, nil)
+			_, forgetErr := s.ForgetUnitree(ctx, &agentpbv2.ForgetUnitreeRequest{Serial: "GO2TEST1"})
+			for _, err := range []error{listErr, pairErr, discoveryErr, forgetErr} {
+				if status.Code(err) != codes.PermissionDenied {
+					t.Errorf("owner scope was not enforced: %v", err)
+				}
+			}
+			if saved, err := s.store.List(); err != nil || len(saved) != 1 {
+				t.Fatal("foreign caller changed saved credentials", err)
+			}
+		})
+	}
+}
+
+func unitreeTestDevice() unitree.Device {
+	return unitree.Device{Serial: "GO2TEST1", Address: "192.0.2.20", EncryptionKey: unitreeTestKey}
+}
+
+func TestUnitreeTLSOwnerScope(t *testing.T) {
+	const tenant = "3fd28c47-700a-4ef6-9f43-19be3d13418e"
+	for _, tc := range []struct {
+		name, owner string
+		identities  []string
+		allowed     bool
+	}{
+		{"legacy match", "org:42", []string{"urn:wendy:org:42:user:fixture"}, true},
+		{"SPIFFE match", "tenant:" + tenant, []string{certs.UserSPIFFEURI(tenant, "fixture")}, true},
+		{"SPIFFE mismatch", "tenant:" + tenant, []string{certs.UserSPIFFEURI("72900574-08b3-446c-a5d8-59b35264069e", "fixture")}, false},
+		{"legacy mismatch", "org:42", []string{"urn:wendy:org:43:user:fixture"}, false},
+		{"malformed identity", "org:42", []string{"urn:wendy:org:0:user:fixture"}, false},
+		{"ambiguous identity", "org:42", []string{"urn:wendy:org:42:user:fixture", "urn:wendy:org:43:user:fixture"}, false},
+		{"local owner", "local", []string{"urn:wendy:org:42:user:fixture"}, false},
+		{"unknown owner", "", []string{"urn:wendy:org:42:user:fixture"}, false},
+		{"authoritative UUID", "tenant:" + tenant, []string{certs.UserSPIFFEURI("72900574-08b3-446c-a5d8-59b35264069e", "fixture"), "urn:wendy:org:42:user:fixture"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testUnitreeService(t)
+			if err := s.Rebind(tc.owner); err != nil {
+				t.Fatal(err)
+			}
+			_, err := s.ListUnitreePairings(unitreeTLSContext(t, tc.identities...), nil)
+			if tc.allowed && err != nil || !tc.allowed && status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("scope authorization: %v", err)
 			}
 		})
 	}

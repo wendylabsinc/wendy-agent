@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
@@ -130,9 +132,10 @@ func (s *UnitreeService) Close() {
 	s.wg.Wait()
 }
 
-// The mTLS listener also enforces the caller's tenant. The local control socket
-// is protected by the agent's socket permissions. Never expose keys or pairing
-// operations on the plaintext pre-provisioning listener.
+// The mTLS listener authenticates the certificate. Unitree RPCs additionally
+// require the pairing owner's scope, even if the shared listener allows grace
+// or off enforcement for other services. The local socket remains protected by
+// the agent's socket permissions. Never expose this on the plaintext listener.
 func requireUnitreeTransport(ctx context.Context) error {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
@@ -148,7 +151,31 @@ func requireUnitreeTransport(ctx context.Context) error {
 }
 
 func unitreeMutualTLS(state tls.ConnectionState) bool {
-	return state.HandshakeComplete && len(state.PeerCertificates) > 0
+	return state.HandshakeComplete && len(state.PeerCertificates) > 0 && state.PeerCertificates[0] != nil
+}
+
+// authorize is called with opMu held, so a rebind cannot change the credential
+// owner between this check and the operation. Reuse the existing Wendy scope
+// parser; do not infer tenant identity from TLS completion or an arbitrary CN.
+func (s *UnitreeService) authorize(ctx context.Context) error {
+	if err := requireUnitreeTransport(ctx); err != nil {
+		return err
+	}
+	p, _ := peer.FromContext(ctx)
+	if p.Addr != nil && p.Addr.Network() == "unix" {
+		return nil
+	}
+	info := p.AuthInfo.(credentials.TLSInfo)
+	scope, known, err := certs.ScopeFromCert(info.State.PeerCertificates[0])
+	if err == nil && known {
+		if tenant, ok := strings.CutPrefix(s.owner, "tenant:"); ok && tenant != "" && scope.TenantUUID == tenant {
+			return nil
+		}
+		if s.owner == fmt.Sprintf("org:%d", scope.OrgID) && scope.OrgID > 0 {
+			return nil
+		}
+	}
+	return status.Error(codes.PermissionDenied, "Unitree pairing owner scope is required")
 }
 
 func (s *UnitreeService) robot(d unitree.Device, paired bool) *agentpbv2.UnitreeRobot {
@@ -160,11 +187,11 @@ func (s *UnitreeService) robot(d unitree.Device, paired bool) *agentpbv2.Unitree
 }
 
 func (s *UnitreeService) ListUnitreePairings(ctx context.Context, _ *agentpbv2.ListUnitreePairingsRequest) (*agentpbv2.ListUnitreePairingsResponse, error) {
-	if err := requireUnitreeTransport(ctx); err != nil {
-		return nil, err
-	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	if err := s.authorize(ctx); err != nil {
+		return nil, err
+	}
 	pairings, err := s.store.List()
 	if err != nil {
 		return nil, status.Error(codes.Internal, "loading Unitree pairings failed")
@@ -177,7 +204,9 @@ func (s *UnitreeService) ListUnitreePairings(ctx context.Context, _ *agentpbv2.L
 }
 
 func (s *UnitreeService) DiscoverUnitreeRobots(ctx context.Context, req *agentpbv2.DiscoverUnitreeRobotsRequest) (*agentpbv2.DiscoverUnitreeRobotsResponse, error) {
-	if err := requireUnitreeTransport(ctx); err != nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if err := s.authorize(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.GetKnownSerials()) > 256 {
@@ -197,7 +226,9 @@ func (s *UnitreeService) DiscoverUnitreeRobots(ctx context.Context, req *agentpb
 }
 
 func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUnitreeRequest) (*agentpbv2.PairUnitreeResponse, error) {
-	if err := requireUnitreeTransport(ctx); err != nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if err := s.authorize(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil || !unitree.ValidSerial(strings.TrimSpace(req.Serial)) || len(req.Name) > 256 || len(req.Token) > 8192 {
@@ -208,8 +239,6 @@ func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUni
 	if ip == nil || ip.To4() == nil || ip.IsLoopback() || !(ip.IsGlobalUnicast() || ip.IsLinkLocalUnicast()) {
 		return nil, status.Error(codes.InvalidArgument, "enter the Go2's LAN IPv4 address without a port")
 	}
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
@@ -294,15 +323,15 @@ func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUni
 }
 
 func (s *UnitreeService) ForgetUnitree(ctx context.Context, req *agentpbv2.ForgetUnitreeRequest) (*agentpbv2.ForgetUnitreeResponse, error) {
-	if err := requireUnitreeTransport(ctx); err != nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if err := s.authorize(ctx); err != nil {
 		return nil, err
 	}
 	serial := strings.TrimSpace(req.GetSerial())
 	if serial == "" {
 		return nil, status.Error(codes.InvalidArgument, "a Unitree robot serial is required")
 	}
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
 	if err := s.store.Remove(serial); err != nil {
 		return nil, status.Error(codes.Internal, "forgetting Unitree pairing failed")
 	}
