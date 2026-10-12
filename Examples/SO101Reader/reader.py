@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 
 from protocol import MODELS, ReaderError, position
 from identity import adapter_metadata
@@ -303,6 +304,14 @@ class Monitor:
                 "calibration": self.calibration, "joints": joints}
 
 
+class ReaderHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # Config accepts numeric IPv4 only. HTTPServer's reverse DNS lookup is
+        # unnecessary and can delay offline/macOS startup before health is served.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
+
+
 def server_for(config, monitor):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -330,7 +339,7 @@ def server_for(config, monitor):
         def log_message(self, fmt, *args):
             LOG.debug(fmt, *args)
 
-    server = ThreadingHTTPServer((config.host, config.http_port), Handler)
+    server = ReaderHTTPServer((config.host, config.http_port), Handler)
     server.timeout = 0.2
     server.daemon_threads = True
     return server

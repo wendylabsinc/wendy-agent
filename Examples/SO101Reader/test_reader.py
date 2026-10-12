@@ -362,6 +362,18 @@ class OwnershipTests(unittest.TestCase):
 
 
 class APITests(unittest.TestCase):
+    def test_numeric_listener_does_not_require_reverse_dns(self):
+        config = Config(mode="mock", http_port=0)
+        monitor = Monitor(config)
+        with patch("socket.getfqdn", side_effect=AssertionError("Unexpected reverse DNS")):
+            server = server_for(config, monitor)
+        try:
+            self.assertEqual(server.server_name, "127.0.0.1")
+            self.assertGreater(server.server_port, 0)
+            self.assertFalse(monitor.thread.is_alive())
+        finally:
+            server.server_close()
+
     def test_worker_failure_fails_health(self):
         def factory():
             raise RuntimeError("unexpected worker error fixture")
@@ -430,7 +442,12 @@ class APITests(unittest.TestCase):
                         return json.load(reply)["healthy"]
                 except (OSError, urllib.error.URLError):
                     return False
-            wait_until(ready, timeout=10)
+            try:
+                wait_until(ready, timeout=10)
+            except AssertionError:
+                proc.kill()
+                _, stderr = proc.communicate(timeout=3)
+                self.fail("Child did not serve health within 10s: " + stderr.decode())
             proc.send_signal(signal.SIGTERM)
             _, stderr = proc.communicate(timeout=3)
             self.assertEqual(proc.returncode, 0, stderr.decode())
