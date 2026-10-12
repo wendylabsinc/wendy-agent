@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -184,7 +185,7 @@ func TestUnitreeTeleopFailedMoveStops(t *testing.T) {
 func TestUnitreeTeleopRejectsForeignTLSOwner(t *testing.T) {
 	_, l, p := teleopFixture(t, true, time.Second)
 	p.opMu.Lock()
-	p.owner = "org:42"
+	p.owner = unitree.PairingOwner{OrgID: 42}
 	p.opMu.Unlock()
 	ctx := unitreeTLSContext(t, "urn:wendy:org:43:user:fixture")
 	_, err := NewUnitreeTeleopService(p).Command(ctx, &pb.UnitreeCommandRequest{Serial: "GO2TEST1", Command: pb.UnitreeCommand_UNITREE_COMMAND_HELLO})
