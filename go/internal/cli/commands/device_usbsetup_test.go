@@ -48,9 +48,9 @@ func TestPendingUSBSetupNotice(t *testing.T) {
 	}
 }
 
-// USB-C setup is implicit: `wendy discover` offers it. AGENTS.md and the docs
-// once sent people to a `wendy device usb-setup` command that didn't exist;
-// none of them may name a usb-setup command again.
+// USB-C setup is implicit: `wendy discover` offers it. AGENTS.md, the docs and
+// the agent skills once sent people to a `wendy device usb-setup` command that
+// didn't exist; none of them may name a usb-setup command again.
 func TestDocsNameNoUSBSetupCommand(t *testing.T) {
 	re := regexp.MustCompile("`(?:sudo )?wendy [^`]*usb-setup[^`]*`")
 	check := func(name string, data []byte) {
@@ -58,40 +58,46 @@ func TestDocsNameNoUSBSetupCommand(t *testing.T) {
 			t.Errorf("%s: %s names a usb-setup command; point at `wendy discover`'s USB-C setup prompt instead", name, m)
 		}
 	}
-	agents, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "AGENTS.md"))
+	repoRoot := filepath.Join("..", "..", "..", "..")
+	agents, err := os.ReadFile(filepath.Join(repoRoot, "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	check("AGENTS.md", agents)
-	docs := filepath.Join("..", "assets", "docs")
-	scanned := 0
-	err = filepath.WalkDir(docs, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			// Skip untracked local content: installed packages, build output
-			// and gitignored working notes.
-			if n := d.Name(); path != docs && (n == "node_modules" || n == "superpowers" || strings.HasPrefix(n, ".")) {
-				return filepath.SkipDir
+	for _, root := range []string{
+		filepath.Join("..", "assets", "docs"),
+		filepath.Join("..", "assets", "skills"),
+		filepath.Join(repoRoot, "plugins"),
+	} {
+		scanned := 0
+		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
 			}
+			if d.IsDir() {
+				// Skip untracked local content: installed packages, build output
+				// and gitignored working notes.
+				if n := d.Name(); path != root && (n == "node_modules" || n == "superpowers" || strings.HasPrefix(n, ".")) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if ext := filepath.Ext(path); ext != ".md" && ext != ".mdx" {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			scanned++
+			check(path, data)
 			return nil
-		}
-		if ext := filepath.Ext(path); ext != ".md" && ext != ".mdx" {
-			return nil
-		}
-		data, err := os.ReadFile(path)
+		})
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
-		scanned++
-		check(path, data)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if scanned == 0 {
-		t.Fatal("scanned no docs; the walk is broken")
+		if scanned == 0 {
+			t.Fatalf("scanned no markdown under %s; the walk is broken", root)
+		}
 	}
 }

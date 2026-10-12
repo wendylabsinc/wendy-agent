@@ -30,9 +30,8 @@ var (
 
 // ipv4Configured reports whether any address is an IPv4 address. A USB gadget
 // link that still needs setup carries only an IPv6 link-local address (fe80::)
-// and no IPv4; once configured it has either a routable 10.42.0.x lease
-// (shared/DHCP) or a 169.254.x.x link-local address, so any IPv4 means the host
-// link is already up.
+// and no IPv4; once configured it has a 169.254.x.x link-local address (or a
+// hand-configured one), so any IPv4 means the host link is already up.
 func ipv4Configured(addrs []net.Addr) bool {
 	for _, a := range addrs {
 		var ip net.IP
@@ -66,7 +65,7 @@ func detectUnconfiguredUSBGadget() string {
 		return ""
 	}
 	// Don't re-prompt if we already created the profile and it's mid-bring-up.
-	if usbSetupProfileExists() {
+	if usbSetupProfileExists(name) {
 		return ""
 	}
 	return name
@@ -76,11 +75,16 @@ func detectUnconfiguredUSBGadget() string {
 // any OS can stand in for the interface probe.
 var pendingUSBSetupIface = detectUnconfiguredUSBGadget
 
-// usbSetupProfileExists reports whether the NetworkManager profile this flow
-// manages already exists, so discovery doesn't re-offer setup while the link is
-// still coming up. Absence (or no NetworkManager) is treated as "not set up".
-// It's a var so tests can stub the nmcli probe.
-var usbSetupProfileExists = func() bool {
+// usbSetupProfileExists reports whether this flow already created the profile
+// for the gadget on iface, so discovery doesn't re-offer setup while the link
+// is still coming up. Absence (or no NetworkManager) is treated as "not set
+// up". It's a var so tests can stub the nmcli probe.
+var usbSetupProfileExists = func(iface string) bool {
+	mac, err := usbIfaceMAC(iface)
+	if err != nil {
+		return false
+	}
+	conn := usbSetupConnName(mac)
 	nmcliPath, err := exec.LookPath("nmcli")
 	if err != nil {
 		return false
@@ -90,7 +94,7 @@ var usbSetupProfileExists = func() bool {
 		return false
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.TrimSpace(line) == usbSetupNMConnName {
+		if strings.TrimSpace(line) == conn {
 			return true
 		}
 	}

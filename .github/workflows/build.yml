@@ -148,7 +148,7 @@ jobs:
           subject-path: ${{ env.archive }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.archive }}
           path: ${{ env.archive }}
@@ -257,8 +257,13 @@ jobs:
           tar -czvf "$ARCHIVE" "${ARTIFACT}/"
           echo "archive=$ARCHIVE" >> "$GITHUB_ENV"
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ env.archive }}
+
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.archive }}
           path: ${{ env.archive }}
@@ -332,7 +337,7 @@ jobs:
           subject-path: ${{ env.archive }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.archive }}
           path: ${{ env.archive }}
@@ -353,8 +358,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build runtime guest
         shell: bash
@@ -375,7 +380,7 @@ jobs:
           subject-path: ${{ env.archive }}
 
       - name: Upload runtime guest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wendy-macos-runtime-guest-arm64-${{ needs.determine-version.outputs.version }}
           path: ${{ env.archive }}
@@ -413,6 +418,8 @@ jobs:
         env:
           DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
           DEVELOPER_ID_KEY: ${{ secrets.DEVELOPER_ID_KEY }}
+          WENDY_AGENT_MAC_PROVISIONING_PROFILE: ${{ secrets.WENDY_AGENT_MAC_PROVISIONING_PROFILE }}
+          WENDY_AGENT_MAC_NET_PROXY_PROVISIONING_PROFILE: ${{ secrets.WENDY_AGENT_MAC_NET_PROXY_PROVISIONING_PROFILE }}
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
@@ -430,11 +437,13 @@ jobs:
           KEYCHAIN_PATH: ${{ steps.signing.outputs.keychain_path }}
           SIGNING_IDENTITY: ${{ steps.signing.outputs.signing_identity }}
           NOTARY_PROFILE: ${{ steps.signing.outputs.notary_profile }}
+          APP_PROVISIONING_PROFILE_PATH: ${{ steps.signing.outputs.app_provisioning_profile_path }}
+          NET_PROXY_PROVISIONING_PROFILE_PATH: ${{ steps.signing.outputs.net_proxy_provisioning_profile_path }}
         shell: bash
         run: bash ./Scripts/Build.sh
 
       - name: Upload notarized app bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wendy-agent-macos-app-${{ needs.determine-version.outputs.version }}
           path: ${{ steps.build_wendy_agent_mac_app.outputs.app_path }}
@@ -442,7 +451,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload release zip
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ steps.build_wendy_agent_mac_app.outputs.artifact_name }}
           path: ${{ steps.build_wendy_agent_mac_app.outputs.artifact_path }}
@@ -454,8 +463,18 @@ jobs:
         shell: bash
         env:
           KEYCHAIN_PATH: ${{ steps.signing.outputs.keychain_path }}
+          APP_PROVISIONING_PROFILE_PATH: ${{ steps.signing.outputs.app_provisioning_profile_path }}
+          NET_PROXY_PROVISIONING_PROFILE_PATH: ${{ steps.signing.outputs.net_proxy_provisioning_profile_path }}
         run: |
           set -euo pipefail
+          for profile_path in \
+            "${APP_PROVISIONING_PROFILE_PATH:-}" \
+            "${NET_PROXY_PROVISIONING_PROFILE_PATH:-}"
+          do
+            if [ -n "$profile_path" ]; then
+              rm -f "$profile_path"
+            fi
+          done
           if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
@@ -468,7 +487,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           syft-version: v1.18.1
       - name: Generate source + swift SBOMs
@@ -482,7 +501,7 @@ jobs:
           scripts/generate-sbom.sh source "sboms/wendy-source-${VERSION}.spdx.json" --repo-root "$PWD"
 
       - name: Upload swift SBOM
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sbom-swift-${{ needs.determine-version.outputs.version }}
           path: sboms/wendy-swift-${{ needs.determine-version.outputs.version }}.spdx.json
@@ -490,7 +509,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload source SBOM
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sbom-source-${{ needs.determine-version.outputs.version }}
           path: sboms/wendy-source-${{ needs.determine-version.outputs.version }}.spdx.json
@@ -525,7 +544,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           syft-version: v1.18.1
 
@@ -565,7 +584,7 @@ jobs:
           sbom-path: ${{ steps.sbom.outputs.sbom }}
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sbom-${{ matrix.artifact-name }}-${{ needs.determine-version.outputs.version }}
           path: ${{ steps.sbom.outputs.sbom }}
@@ -795,14 +814,14 @@ jobs:
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/etc/avahi/services/wendy-agent.service" > /dev/null
 
       - name: Upload .deb packages
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: linux-packages-deb-${{ matrix.arch }}
           path: "*.deb"
           retention-days: 14
 
       - name: Upload .rpm packages
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: linux-packages-rpm-${{ matrix.arch }}
           path: "*.rpm"
@@ -816,6 +835,9 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      # Re-signing changes the zip, so the build job's attestation no longer
+      # matches the released asset; attest the signed zip here.
+      attestations: write
     strategy:
       matrix:
         include:
@@ -868,8 +890,13 @@ jobs:
           Remove-Item $ARCHIVE
           Compress-Archive -Path "wendy-cli-windows-${{ matrix.goarch }}" -DestinationPath $ARCHIVE
 
+      - name: Attest build provenance (signed zip)
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.zip
+
       - name: Upload signed zip
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.zip
           path: wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.zip
@@ -909,7 +936,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Upload MSI
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.msi
           path: "wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.msi"

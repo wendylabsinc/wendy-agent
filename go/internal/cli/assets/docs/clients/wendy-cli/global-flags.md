@@ -10,6 +10,13 @@ Outputs command results as JSON instead of the default interactive TUI or table 
 wendy device list --json
 ```
 
+For ordinary single-device deployments to a Wendy agent,
+`wendy --json run --detach` emits one result on stdout, with progress and
+pre-start logs on stderr.
+See [`wendy run` — Detached output](./commands/run.md#detached-output) for the
+result shape and supported modes. Attached run and build commands still emit
+progress/log output.
+
 When stdout is not a TTY (for example, when piping output, running in CI, or executing from a script), `--json` is automatically enabled. An explicit `--json` or `--json=false` always takes precedence over the automatic detection.
 
 ```sh

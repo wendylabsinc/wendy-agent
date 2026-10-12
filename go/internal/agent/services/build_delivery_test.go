@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -46,8 +47,8 @@ type fakeTargetAgent struct {
 	noPrepare  bool  // PrepareImage answers Unimplemented: an agent that cannot register by name
 	prepareErr error // PrepareImage fails with this immediately
 	noLayers   bool  // QueryLayers answers Unimplemented: an agent that cannot say which layers it holds
-	// dropAfter, when > 0, fails the WriteChunks stream that receives the Nth
-	// chunk overall with Unavailable, once — a link dying mid-transfer.
+	// dropAfter, when > 0, drops the connection that receives the Nth chunk
+	// overall with Unavailable, once — a link dying mid-transfer.
 	dropAfter int
 	dropped   bool
 }
@@ -89,6 +90,7 @@ func (f *fakeTargetAgent) QueryLayers(_ context.Context, req *agentpb.QueryLayer
 }
 
 func (f *fakeTargetAgent) WriteChunks(stream grpc.ClientStreamingServer[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]) error {
+	connection := stream.Context().Value(fakeTargetConnectionKey{}).(*fakeTargetConnection)
 	f.mu.Lock()
 	f.streams++
 	f.mu.Unlock()
@@ -106,12 +108,17 @@ func (f *fakeTargetAgent) WriteChunks(stream grpc.ClientStreamingServer[agentpb.
 			return status.Error(codes.InvalidArgument, "staged chunk hash mismatch")
 		}
 		f.mu.Lock()
+		if connection.dropped {
+			f.mu.Unlock()
+			return status.Error(codes.Unavailable, "error reading from server: EOF")
+		}
 		f.chunks[h] = msg.GetData()
 		f.written++
 		f.writtenBytes += int64(len(msg.GetData()))
 		drop := f.dropAfter > 0 && !f.dropped && f.written >= f.dropAfter
 		if drop {
 			f.dropped = true
+			connection.dropped = true
 		}
 		f.mu.Unlock()
 		if drop {
@@ -180,6 +187,27 @@ func (f *fakeTargetAgent) snapshot() (written, streams int, prepared []*agentpb.
 	return f.written, f.streams, append([]*agentpb.RunContainerLayersRequest(nil), f.prepared...)
 }
 
+type fakeTargetConnectionKey struct{}
+
+type fakeTargetConnection struct {
+	// Protected by fakeTargetAgent.mu. Every stream on a dropped connection
+	// must stop staging, even if gRPC has buffered messages for a sibling.
+	dropped bool
+}
+
+type fakeTargetConnectionStats struct{}
+
+func (fakeTargetConnectionStats) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context {
+	return context.WithValue(ctx, fakeTargetConnectionKey{}, &fakeTargetConnection{})
+}
+
+func (fakeTargetConnectionStats) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context {
+	return ctx
+}
+
+func (fakeTargetConnectionStats) HandleConn(context.Context, stats.ConnStats) {}
+func (fakeTargetConnectionStats) HandleRPC(context.Context, stats.RPCStats)   {}
+
 // serveFakeTargets runs one gRPC server per asset id over bufconn and returns a
 // targetDialer that routes by the push target's asset id, the way the mesh
 // dialer would.
@@ -188,7 +216,7 @@ func serveFakeTargets(t *testing.T, fakes map[int32]*fakeTargetAgent) targetDial
 	listeners := make(map[int32]*bufconn.Listener, len(fakes))
 	for assetID, fake := range fakes {
 		lis := bufconn.Listen(1 << 20)
-		srv := grpc.NewServer()
+		srv := grpc.NewServer(grpc.StatsHandler(fakeTargetConnectionStats{}))
 		agentpb.RegisterWendyContainerServiceServer(srv, fake)
 		go func() { _ = srv.Serve(lis) }()
 		t.Cleanup(func() { srv.Stop(); _ = lis.Close() })
@@ -569,6 +597,7 @@ func TestRetryableDeliveryError(t *testing.T) {
 		{"wrapped cancelled", fmt.Errorf("querying: %w", context.Canceled), false},
 		{"deadline", context.DeadlineExceeded, false},
 		{"unsupported agent", errChunkDeliveryUnsupported, false},
+		{"oversized inventory", fmt.Errorf("device 1: %w", errChunkInventoryTooLarge), false},
 		{"device refusal", fmt.Errorf("device 1: %w", status.Error(codes.FailedPrecondition, "unsigned")), false},
 		{"too large", status.Error(codes.ResourceExhausted, "chunk too large"), false},
 		{"plain error", errors.New("boom"), false},
@@ -754,6 +783,89 @@ func TestBuildImage_FallsBackToRegistryPushForAgentWithoutChunks(t *testing.T) {
 	}
 	if lines := progressLines(stream); !containsLine(lines, "predates chunked delivery") {
 		t.Fatalf("the developer must be told why delivery took the slow path; got %q", lines)
+	}
+}
+
+// The inventory check keys on the real marshaled size, against the real
+// limit: a handful of hashes fits, ~140k hashes (a PrepareImage over 4 MiB)
+// does not, and one layer's own chunk list is checked the same way (WDY-3121).
+func TestCheckChunkInventoryFits(t *testing.T) {
+	small := &agentpb.RunContainerLayerHeader{DiffId: "sha256:aa", ChunkHashes: [][]byte{make([]byte, 32)}}
+	if err := checkChunkInventoryFits(214, &agentpb.RunContainerLayersRequest{ImageName: "x", Layers: []*agentpb.RunContainerLayerHeader{small}}, nil); err != nil {
+		t.Fatalf("a small inventory must fit: %v", err)
+	}
+	hashes := make([][]byte, 140_000)
+	for i := range hashes {
+		hashes[i] = make([]byte, 32)
+	}
+	big := &agentpb.RunContainerLayerHeader{DiffId: "sha256:bb", ChunkHashes: hashes}
+	err := checkChunkInventoryFits(214, &agentpb.RunContainerLayersRequest{ImageName: "x", Layers: []*agentpb.RunContainerLayerHeader{big}}, nil)
+	if !errors.Is(err, errChunkInventoryTooLarge) || !strings.Contains(err.Error(), "device 214") {
+		t.Fatalf("an oversized PrepareImage must be refused before sending, naming the device: %v", err)
+	}
+	err = checkChunkInventoryFits(214, &agentpb.RunContainerLayersRequest{ImageName: "x"}, []*deliveryLayer{{header: big}})
+	if !errors.Is(err, errChunkInventoryTooLarge) || !strings.Contains(err.Error(), "sha256:bb") {
+		t.Fatalf("an oversized per-layer QueryChunks must be refused before sending, naming the layer: %v", err)
+	}
+}
+
+// An image whose chunk inventory exceeds the target agent's message limit is
+// still delivered, through the registry push, and the developer is told why —
+// instead of the device rejecting the PrepareImage and the deploy dying
+// (WDY-3121). The device never sees a request it would refuse.
+func TestBuildImage_FallsBackToRegistryPushWhenInventoryTooLarge(t *testing.T) {
+	invocations := stubBuildctlExport(t)
+	fake := newFakeTargetAgent()
+	svc := chunkDeliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
+	old := maxChunkMessageBytes
+	maxChunkMessageBytes = 1
+	t.Cleanup(func() { maxChunkMessageBytes = old })
+
+	stream := &stubBuildStream{spec: &agentpbv2.BuildSpec{
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"},
+		Context:    &agentpbv2.ChunkManifest{ChunkHashes: [][]byte{make([]byte, 32)}},
+		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
+		},
+	}}
+	if err := svc.BuildImage(stream); err != nil {
+		t.Fatalf("BuildImage: %v", err)
+	}
+	if len(*invocations) != 2 {
+		t.Fatalf("buildctl ran %d times, want 2: the export, then the push pass for the oversized inventory", len(*invocations))
+	}
+	if lines := progressLines(stream); !containsLine(lines, "inventory") {
+		t.Fatalf("the developer must be told why delivery took the slow path; got %q", lines)
+	}
+}
+
+// --chunking=force keeps meaning what it says: an inventory the device's
+// message limit cannot carry is surfaced, not masked by a registry push.
+func TestBuildImage_ForceRefusesOversizedInventory(t *testing.T) {
+	invocations := stubBuildctlExport(t)
+	fake := newFakeTargetAgent()
+	svc := chunkDeliveryService(t, serveFakeTargets(t, map[int32]*fakeTargetAgent{214: fake}))
+	old := maxChunkMessageBytes
+	maxChunkMessageBytes = 1
+	t.Cleanup(func() { maxChunkMessageBytes = old })
+
+	err := svc.BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		Chunking:   agentpbv2.ChunkingMode_CHUNKING_MODE_FORCE,
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "myapp:latest"},
+		Context:    &agentpbv2.ChunkManifest{ChunkHashes: [][]byte{make([]byte, 32)}},
+		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
+		},
+	}})
+	if status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "--chunking=force") {
+		t.Fatalf("force must refuse an oversized inventory, naming the flag: %v", err)
+	}
+	if len(*invocations) != 1 {
+		t.Fatalf("buildctl ran %d times, want 1: no registry push pass under force", len(*invocations))
 	}
 }
 

@@ -60,7 +60,6 @@ Package-specific options are available via
 wendy install # Install WendyOS on a device
 wendy init # Create new project
 wendy run # Build & Run an app
-wendy run --watch # Watch for changes & Redeploy
 wendy device top # Resource Stats
 wendy device wifi # Manage wifi (connect/forget)
 wendy device bluetooth # Game controllers, audio, etc..
@@ -113,6 +112,12 @@ wendy device ros2 # Interface with ROS2
 All `wendy` commands can be run across the globe with [Wendy Cloud](https://cloud.wendy.dev). Manage your fleet in seconds with OTA, remote debugging, health checks and more.
 
 With `wendy mcp setup` - you can develop apps, manage fleet deployments and more through your favorite LLM provider.
+
+For ChatGPT Desktop, run `wendy mcp setup chatgpt`, quit and reopen ChatGPT,
+then install **Wendy** from **Plugins → Personal**. The local plugin includes
+the MCP gateway, device workspace, and bundled skills. Follow the
+[ChatGPT setup guide](docs/guides/chatgpt.mdx) to enable devices, simulators,
+and project access.
 
 ```sh
 wendy cloud run # Run apps from anywhere
