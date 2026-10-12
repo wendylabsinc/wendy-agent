@@ -232,7 +232,9 @@ func (m *unitreePairModel) refreshRows(selectedSerial string) {
 			prior = &agentpbv2.UnitreeRobot{Serial: d.Serial}
 			byID[id] = prior
 		}
-		if d.Name != "" {
+		// Rows are added account, saved, then discovered. Keep the first name:
+		// discovery only reports a generic model name, never the user's alias.
+		if prior.Name == "" {
 			prior.Name = d.Name
 		}
 		if d.Address != "" {

@@ -184,6 +184,21 @@ func TestUnitreeFailedDiscoveryDoesNotKeepStaleConnectionStatus(t *testing.T) {
 	}
 }
 
+func TestUnitreeDiscoveryKeepsAccountAlias(t *testing.T) {
+	c := &unitreePairTestClient{connected: true, discovered: []*agentpbv2.UnitreeRobot{{Serial: "MINE", Name: "Unitree Go2", Address: "192.0.2.42"}}}
+	m := newUnitreePairModel(&unitreePairHandler{ctx: context.Background(), client: c})
+	m.account = &unitree.Account{Devices: []unitree.Device{{Serial: "MINE", Name: "Rex", EncryptionKey: "mine"}}}
+	m, _ = unitreePairUpdate(m, m.Init()())
+	if len(m.rows) != 1 || m.rows[0].Name != "Rex" || m.rows[0].Address != "192.0.2.42" {
+		t.Fatalf("discovery overwrote the account alias: %+v", m.rows)
+	}
+	m, cmd := unitreePairUpdate(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = unitreePairUpdate(m, cmd())
+	if c.saved == nil || c.saved.Name != "Rex" {
+		t.Fatal("pairing persisted the generic discovery name instead of the alias")
+	}
+}
+
 func TestUnitreeLoginRefreshesSavedRobotKey(t *testing.T) {
 	c := &unitreePairTestClient{paired: []*agentpbv2.UnitreeRobot{{Serial: "SAVED", Paired: true, Address: "192.0.2.42"}}}
 	m := newUnitreePairModel(&unitreePairHandler{ctx: context.Background(), client: c})
