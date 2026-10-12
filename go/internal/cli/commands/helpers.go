@@ -92,7 +92,9 @@ func lanAddressProbeBudget(numCerts int) time.Duration {
 
 const provisionedAgentMetadataDiscoveryTimeout = 500 * time.Millisecond
 
-const provisionedAgentUnauthorizedMessage = "Unauthorized. Run 'wendy auth login' with an account that can access this provisioned wendy-agent."
+const provisionedAgentUnauthorizedStep = "Run 'wendy auth login' with an account that can access this provisioned wendy-agent."
+
+const provisionedAgentUnauthorizedMessage = "Unauthorized. " + provisionedAgentUnauthorizedStep
 
 var errProvisionedAgentUnauthorized = errors.New(provisionedAgentUnauthorizedMessage)
 
@@ -122,6 +124,11 @@ func (e tlsHandshakeRejectedError) Unwrap() error {
 
 func (e tlsHandshakeRejectedError) Error() string {
 	return tlsRecoveryMessage(e)
+}
+
+// NextSteps exposes the recovery steps the message ends with to JSON mode.
+func (e tlsHandshakeRejectedError) NextSteps() []string {
+	return tlsRecoveryNextSteps(e)
 }
 
 // orgMismatchDeviceError reports that the device's server certificate belongs
@@ -284,21 +291,37 @@ type provisionedAgentUnauthorizedError struct {
 	cause error
 }
 
+// newProvisionedAgentUnauthorizedError reports a provisioned agent that did
+// not accept the CLI's credentials. It matches errProvisionedAgentUnauthorized
+// with errors.Is; without a cause its message is exactly that sentinel's.
 func newProvisionedAgentUnauthorizedError(cause error) error {
-	if cause == nil {
-		return errProvisionedAgentUnauthorized
-	}
 	return provisionedAgentUnauthorizedError{cause: cause}
 }
 
 func (e provisionedAgentUnauthorizedError) Error() string {
+	if e.cause == nil {
+		return provisionedAgentUnauthorizedMessage
+	}
 	if isClockSkewSuspectError(e.cause) {
 		return tlsRecoveryMessage(e.cause)
 	}
 	if isReachabilityTimeoutError(e.cause) {
-		return "The device's secure endpoint did not respond before the connection deadline. Check its network connection and retry.\n  For connection details rerun with WENDY_TLS_DEBUG=1."
+		return "The device's secure endpoint did not respond before the connection deadline.\n  " + strings.Join(e.NextSteps(), "\n  ")
 	}
 	return fmt.Sprintf("Could not connect to the device's advertised secure endpoint.\n  For connection details rerun with WENDY_TLS_DEBUG=1.\nLast mTLS error: %s", tui.StripControl(e.cause.Error()))
+}
+
+// NextSteps exposes the same evidence-based advice as the text message.
+func (e provisionedAgentUnauthorizedError) NextSteps() []string {
+	switch {
+	case e.cause == nil:
+		return []string{provisionedAgentUnauthorizedStep}
+	case isClockSkewSuspectError(e.cause):
+		return tlsRecoveryNextSteps(e.cause)
+	case isReachabilityTimeoutError(e.cause):
+		return []string{"Check its network connection and retry.", "For connection details rerun with WENDY_TLS_DEBUG=1."}
+	}
+	return []string{"For connection details rerun with WENDY_TLS_DEBUG=1."}
 }
 
 // agentNotListeningError reports that the mTLS port refused the TCP connection:
@@ -1132,7 +1155,7 @@ func connectResolvedAgentKeyed(ctx context.Context, hostname, addr, pinKey strin
 		})
 		if err != nil {
 			// The unreachable-default paths report the hostname themselves.
-			return nil, err
+			return nil, newDeviceDialError(addr, err)
 		}
 		// The spinner above clears once it succeeds, so without this the choice
 		// of device leaves no trace.
@@ -1140,10 +1163,13 @@ func connectResolvedAgentKeyed(ctx context.Context, hostname, addr, pinKey strin
 		return conn, nil
 	}
 	conn, err := connectAgentAtAddressKeyed(ctx, addr, pinKey, provisionedMTLS)
-	if err == nil && isDefault {
+	if err != nil {
+		return nil, newDeviceDialError(addr, err)
+	}
+	if isDefault {
 		noteImplicitDevice(hostname, implicitDefaultDevice)
 	}
-	return conn, err
+	return conn, nil
 }
 
 // connectToAgent establishes a gRPC connection to the target device.
@@ -2043,10 +2069,16 @@ func mdnsLocalHint(host string) string {
 // device so the message makes clear the default IS persisted but could not be
 // reached — rather than letting the failure read as if set-default never took
 // effect (issue #1155).
+//
+// The recovery advice is attached as next steps, not formatted into the
+// message: the CLI's rewrite of the gRPC error in the middle of the message
+// used to drop everything after it, and JSON mode lists steps separately.
 func defaultDeviceUnreachableError(hostname string, err error) error {
-	return fmt.Errorf("default device %q is set but could not be reached: %w\n"+
-		"  Confirm it with 'wendy device get-default'; change it with 'wendy device set-default' or clear it with 'wendy device unset-default'.%s",
-		hostname, err, mdnsLocalHint(hostname))
+	steps := []string{"Confirm it with 'wendy device get-default'; change it with 'wendy device set-default' or clear it with 'wendy device unset-default'."}
+	if hint := strings.TrimPrefix(mdnsLocalHint(hostname), "\n  "); hint != "" {
+		steps = append(steps, hint)
+	}
+	return withNextSteps(fmt.Errorf("default device %q is set but could not be reached: %w", hostname, err), steps...)
 }
 
 // connectWithAutoTLSDiagnostics resolves plaintextAddr and runs the mTLS/

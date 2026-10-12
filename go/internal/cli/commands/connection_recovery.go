@@ -67,10 +67,21 @@ func certificateRefreshReason(err error) string {
 func isCertRefreshableError(err error) bool { return certificateRefreshReason(err) != "" }
 
 func tlsRecoveryMessage(err error) string {
+	message := "TLS authentication failed. A wrong device clock or incompatible credentials may be responsible."
 	if reason := certificateRefreshReason(err); reason != "" {
-		return "TLS authentication failed. " + reason + "\n  Run 'wendy auth refresh-certs', then retry."
+		message = "TLS authentication failed. " + reason
 	}
-	return "TLS authentication failed. A wrong device clock or incompatible credentials may be responsible.\n  If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.\n  For connection details rerun with WENDY_TLS_DEBUG=1."
+	return message + "\n  " + strings.Join(tlsRecoveryNextSteps(err), "\n  ")
+}
+
+func tlsRecoveryNextSteps(err error) []string {
+	if certificateRefreshReason(err) != "" {
+		return []string{"Run 'wendy auth refresh-certs', then retry."}
+	}
+	return []string{
+		"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.",
+		"For connection details rerun with WENDY_TLS_DEBUG=1.",
+	}
 }
 
 func stopConnectionRecovery(err error) bool {
