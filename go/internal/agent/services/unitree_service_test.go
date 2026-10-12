@@ -276,7 +276,7 @@ func TestUnitreePairRejectsInvalidAddressAndMissingKey(t *testing.T) {
 		t.Fatal("invalid input reached network")
 		return nil, nil
 	}
-	for _, address := range []string{"", "go2.local", "127.0.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "192.0.2.2:9991", "http://192.0.2.2", "::1"} {
+	for _, address := range []string{"", "go2.local", "127.0.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "::ffff:255.255.255.255", "::ffff:127.0.0.1", "192.0.2.2:9991", "http://192.0.2.2", "::1"} {
 		req := unitreeTestRequest()
 		req.Address = address
 		if _, err := s.PairUnitree(unitreeTestContext(), req); status.Code(err) != codes.InvalidArgument {

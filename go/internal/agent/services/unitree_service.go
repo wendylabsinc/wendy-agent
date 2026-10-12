@@ -205,7 +205,7 @@ func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUni
 	}
 	address := strings.TrimSpace(req.Address)
 	ip := net.ParseIP(address)
-	if ip == nil || ip.To4() == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLoopback() || address == "255.255.255.255" {
+	if ip == nil || ip.To4() == nil || ip.IsLoopback() || !(ip.IsGlobalUnicast() || ip.IsLinkLocalUnicast()) {
 		return nil, status.Error(codes.InvalidArgument, "enter the Go2's LAN IPv4 address without a port")
 	}
 	s.opMu.Lock()
