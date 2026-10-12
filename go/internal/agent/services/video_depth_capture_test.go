@@ -32,7 +32,7 @@ func TestCaptureDepthZ16RefusesAMissingDevice(t *testing.T) {
 	err := s.captureDepthZ16(context.Background(), func([]byte, frameTimestamp) bool {
 		t.Fatal("no frame can exist")
 		return false
-	}, filepath.Join(t.TempDir(), "video99"), 640, 480)
+	}, filepath.Join(t.TempDir(), "video99"), 640, 480, 30)
 	if err == nil {
 		t.Fatal("capture from a nonexistent node succeeded")
 	}
@@ -50,7 +50,7 @@ func TestCaptureRefusesANonDeviceWithoutEmitting(t *testing.T) {
 	err := s.captureDepthZ16(context.Background(), func([]byte, frameTimestamp) bool {
 		t.Fatal("emitted a frame from a regular file")
 		return false
-	}, path, 640, 480)
+	}, path, 640, 480, 30)
 	if err == nil {
 		t.Fatal("capture from a regular file succeeded")
 	}
