@@ -690,7 +690,7 @@ func TestMilestoneFor(t *testing.T) {
 }
 
 func TestIsSetupCommand(t *testing.T) {
-	setup := []string{"wendy completion install", "wendy __complete", "wendy help", "wendy analytics disable"}
+	setup := []string{"wendy completion install", "wendy __complete", "wendy help", "wendy analytics disable", "wendy update"}
 	real := []string{"wendy run", "wendy discover", "wendy device info"}
 	for _, p := range setup {
 		if !isSetupCommand(p) {
@@ -724,5 +724,27 @@ func TestFormatError_CloudTunnelVerdictIsShown(t *testing.T) {
 		if strings.Contains(msg, noise) {
 			t.Errorf("message %q still carries %q", msg, noise)
 		}
+	}
+}
+
+func TestUpdateCheckNeverUploadsOrRunsOwnershipCleanup(t *testing.T) {
+	events := captureAnalytics(t)
+	root := &cobra.Command{Use: "wendy"}
+	update := &cobra.Command{Use: "update"}
+	update.Flags().Bool("check", false, "")
+	root.AddCommand(update)
+	if isReadOnlyInvocation(update) {
+		t.Fatal("actual updater classified as read-only")
+	}
+	if err := update.Flags().Set("check", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if !isReadOnlyInvocation(update) {
+		t.Fatal("check would run ownership cleanup")
+	}
+	trackCommand(update, nil, time.Millisecond)
+	trackCommand(update, errors.New("offline"), time.Millisecond)
+	if len(*events) != 0 {
+		t.Fatal("read-only check emitted telemetry")
 	}
 }

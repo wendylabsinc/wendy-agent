@@ -116,7 +116,7 @@ func allowedProperty(key, value string) bool {
 	var values string
 	switch key {
 	case "error_code":
-		values = "dependency_missing permission_denied config_invalid device_unreachable readiness_timeout auth_required build_failed disk_full cancelled deadline_exceeded step_failed connection_failed"
+		values = "dependency_missing permission_denied config_invalid device_unreachable readiness_timeout auth_required build_failed disk_full cancelled deadline_exceeded step_failed connection_failed update_method_unsupported update_process_failed update_verification_failed update_version_unchanged update_failed"
 	case "deploy_build_ms", "deploy_push_ms", "deploy_upload_ms", "deploy_device_prepare_ms", "deploy_start_ms", "deploy_bytes_sent", "deploy_chunks_sent", "deploy_chunks_total", "deploy_layers_total", "deploy_layers_reused", "deploy_build_push_ms", "deploy_chunk_attempt_ms", "deploy_image_bytes", "retry_number":
 		n, err := strconv.ParseInt(value, 10, 64)
 		return err == nil && n >= 0
@@ -142,7 +142,7 @@ func allowedProperty(key, value string) bool {
 	case "route":
 		values = "physical simulator existing_device"
 	case "stage":
-		values = "install os_install run tour"
+		values = "install os_install run tour cli_update"
 	case "step":
 		values = "prepare download verify_image permission dependency_check auth build connect deploy flash provision first_boot readiness select_target project"
 	case "install_method":
@@ -163,6 +163,8 @@ func allowedProperty(key, value string) bool {
 // where the operation stopped.
 func Diagnostic(class string) (code, detail string) {
 	switch class {
+	case "update_method_unsupported", "update_process_failed", "update_verification_failed", "update_version_unchanged", "update_failed":
+		return class, "Run wendy update for installation-specific guidance, then restart your Wendy MCP server."
 	case "tool_not_found":
 		return "dependency_missing", "A required tool is missing. Run wendy doctor --report to check prerequisites."
 	case "permission_denied":
@@ -191,7 +193,7 @@ func Diagnostic(class string) (code, detail string) {
 }
 
 func allowedDiagnosticDetail(value string) bool {
-	for _, class := range []string{"tool_not_found", "permission_denied", "config_invalid", "device_unreachable", "readiness_timeout", "auth_required", "build_failed", "disk_full", "user_cancelled", "context_deadline", "grpc_unavailable", "other"} {
+	for _, class := range []string{"tool_not_found", "permission_denied", "config_invalid", "device_unreachable", "readiness_timeout", "auth_required", "build_failed", "disk_full", "user_cancelled", "context_deadline", "grpc_unavailable", "other", "update_failed"} {
 		_, detail := Diagnostic(class)
 		if detail == value {
 			return true

@@ -50,7 +50,10 @@ func main() {
 	if err == nil {
 		executed, err = cmd.ExecuteContextC(ctx)
 	}
-	if executed == nil || executed.CommandPath() != "wendy doctor" {
+	if err != nil {
+		commands.NotifyCLIUpdateAfterFailure(executed)
+	}
+	if !isReadOnlyInvocation(executed) {
 		trackCommand(executed, err, time.Since(start))
 		analytics.Close()
 		// After Close, whose delivered events can still record milestones: a sudo
@@ -67,6 +70,22 @@ func main() {
 	// above — hold it open until the user has read it.
 	commands.PauseBeforeExitIfSoleConsole()
 	os.Exit(exitCode)
+}
+
+// Diagnostics and explicit update checks must not initialize telemetry or touch
+// configuration, including sudo ownership cleanup after command completion.
+func isReadOnlyInvocation(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	switch cmd.CommandPath() {
+	case "wendy doctor":
+		return true
+	case "wendy update":
+		check, _ := cmd.Flags().GetBool("check")
+		return check
+	}
+	return false
 }
 
 // Tour subprocesses need a distinct cancellation outcome so declining an erase
@@ -103,7 +122,7 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		return
 	}
 	path := executed.CommandPath()
-	if path == "wendy __session-broker" || path == "wendy doctor" {
+	if path == "wendy __session-broker" || isReadOnlyInvocation(executed) {
 		return
 	}
 	// Homebrew exports HOMEBREW_PREFIX/HOMEBREW_CELLAR/HOMEBREW_REPOSITORY into
@@ -186,7 +205,7 @@ func isSetupCommand(path string) bool {
 		"wendy completion bash", "wendy completion zsh",
 		"wendy completion fish", "wendy completion powershell",
 		"wendy __complete", "wendy __completeNoDesc",
-		"wendy __ble-check", "wendy help":
+		"wendy __ble-check", "wendy help", "wendy update":
 		return true
 	}
 	return strings.HasPrefix(path, "wendy analytics") ||

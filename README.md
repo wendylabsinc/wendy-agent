@@ -42,6 +42,10 @@ the [local Docker robot demo](https://wendy.dev/quickstart?target=simulator).
 
 [Other installation methods](INSTALL.md) include Homebrew, .deb, .rpm, and AUR.
 
+Already installed? Run `wendy update --check` to check your version and see the
+right update method. Run `wendy update` to apply a supported update. Restart your
+AI app or Wendy MCP server afterward so it uses the new CLI.
+
 ### 2. Take the tour
 
 ```sh
