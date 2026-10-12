@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,6 +100,61 @@ func TestDiscoveryCombinesMDNSAndUnitreeMulticast(t *testing.T) {
 	}
 	if len(devices) != 2 || devices[0].Serial != "B42TEST" || devices[0].Address != "192.168.1.5" || devices[1].Address != "192.168.1.7" {
 		t.Fatalf("discovery did not merge and prefer Unitree UDP: %+v", devices)
+	}
+}
+
+func TestDiscoverySerializesFixedPortScans(t *testing.T) {
+	var active, completed atomic.Int32
+	scan := func(context.Context, []string) ([]Device, error) {
+		if active.Add(1) != 1 {
+			t.Error("concurrent scans would contend for the fixed UDP port")
+		}
+		defer active.Add(-1)
+		time.Sleep(time.Millisecond)
+		completed.Add(1)
+		return []Device{{Serial: "B42TEST", Address: "192.0.2.5"}}, nil
+	}
+	var callers sync.WaitGroup
+	for range 8 {
+		callers.Go(func() {
+			devices, err := discoverSerialized(context.Background(), nil, scan, nil)
+			if err != nil || len(devices) != 1 {
+				t.Errorf("queued discovery failed: %v", err)
+			}
+		})
+	}
+	callers.Wait()
+	if completed.Load() != 8 {
+		t.Fatal("not all queued scans completed")
+	}
+}
+
+func TestDiscoveryWaitingCallerCanCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := discoverSerialized(ctx, nil, func(ctx context.Context, _ []string) ([]Device, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}, nil)
+		done <- err
+	}()
+	<-started
+	waitingCtx, cancelWaiting := context.WithCancel(context.Background())
+	cancelWaiting()
+	_, err := discoverSerialized(waitingCtx, nil, func(context.Context, []string) ([]Device, error) {
+		t.Error("cancelled queued caller started a scan")
+		return nil, nil
+	}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("queued cancellation error: %v", err)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Errorf("active scan cancellation error: %v", err)
 	}
 }
 

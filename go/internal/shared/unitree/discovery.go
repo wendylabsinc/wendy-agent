@@ -17,12 +17,26 @@ import (
 
 const discoveryTimeout = 3 * time.Second
 
+// Stock firmware sends discovery replies to one fixed UDP port. Only one
+// in-process scan may own that port; waiting callers remain cancellable.
+var discoverySlot = make(chan struct{}, 1)
+
 // Discover scans the machine's LAN. Stock Go2 firmware answers Unitree UDP
 // multicast, not DNS-SD. We also browse common mDNS services, accepting them
 // only when their advertised identity matches a known account serial number.
 // Results are candidates; Connect must verify them before saving a pairing.
 func Discover(ctx context.Context, knownSerials ...string) ([]Device, error) {
-	return discover(ctx, knownSerials, discoverMulticast, discovery.BrowseMDNSServices)
+	return discoverSerialized(ctx, knownSerials, discoverMulticast, discovery.BrowseMDNSServices)
+}
+
+func discoverSerialized(ctx context.Context, serials []string, multicast multicastScan, browse mdnsBrowse) ([]Device, error) {
+	select {
+	case discoverySlot <- struct{}{}:
+		defer func() { <-discoverySlot }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return discover(ctx, serials, multicast, browse)
 }
 
 type multicastScan func(context.Context, []string) ([]Device, error)
