@@ -259,11 +259,42 @@ plus the Swift E2E help/flag coverage the bot asked for.
   `capture_realsense.go` and its cgo/`-tags realsense` build shape.
 - `go/internal/agent/framesource/helper.go`, `wire.go`, `realsense.go`'s
   helper client — the spawn/supervise/length-prefixed-pipe plumbing. The
-  `FrameSource` seam itself stays: it is the right boundary for a future
-  Orbbec/other-vendor source (explicit non-goal here).
+  `FrameSource` seam itself stays: it is the boundary the second vendor
+  (§9a) plugs into.
 - #2228's bridge: ownership registry, loopback pump, handoff signalling,
   the `BGR3` row in `rawPixelFormats`.
 - The WDY-3595 distribution question in its entirety.
+
+## 9a. Orbbec — the second drawer
+
+Decision 2026-10-12: Orbbec is in scope as the second vendor, as its own
+package (`go/internal/agent/orbbec/`) behind the same `FrameSource` seam —
+the RealSense drawer's twin, never Intel code growing vendor branches.
+
+Orbbec's line splits into two generations with very different costs:
+
+- **UVC generation** (Gemini 330 series and later): standard UVC devices,
+  supported by the open-source OrbbecSDK v2 (open since v2.0.0, Oct 2024,
+  UVC-compliant devices only). Same shape of work as this design: a vendor
+  extension unit for calibration, Y16/Z16 depth over the shared V4L2
+  machinery of §5, alignment via §6 unchanged. The port is "read their open
+  SDK, write the drawer" — a repeat of the RealSense exercise.
+- **OpenNI generation** (Astra, Astra Pro/Pro Plus — what Yahboom kits
+  ship): depth does NOT travel over UVC at all; it speaks Orbbec's legacy
+  OpenNI protocol on a vendor USB endpoint (their SDK v2 explicitly dropped
+  these; the v1/OpenNI stack is the only support). A native Go port means
+  reimplementing that USB protocol — an order of magnitude more than the
+  UVC generation. Colour on these devices IS plain UVC and already works
+  through the generic stack.
+
+Scope is therefore pinned by hardware, not by brand: **which generation the
+fleet's rosmasters actually carry decides the Orbbec plan**, and that is one
+`lsusb` on a rosmaster when one comes online (VID 2bc5; the PID separates
+Astra from Gemini). UVC generation → full drawer, same contract. OpenNI
+generation only → the drawer ships enumeration + an honest refusal ("this
+Orbbec speaks the legacy OpenNI protocol; depth needs the containerised SDK"
+— the existing app-bundles-SDK pattern keeps working), and a native OpenNI
+port is costed as its own decision rather than smuggled in here.
 
 Fate of the open PRs (recommendation, not a constraint — the decision was
 explicitly released): **supersede both.** #2041's proto, CLI command,
