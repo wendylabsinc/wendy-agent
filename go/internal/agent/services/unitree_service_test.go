@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/url"
@@ -368,6 +369,118 @@ func TestUnitreeRestoreUsesRobotKeyWithoutCloudToken(t *testing.T) {
 	s.Close()
 	if link.Connected() {
 		t.Fatal("shutdown did not close robot connection")
+	}
+}
+
+func TestUnitreeDiscoveryStopsDuringShutdown(t *testing.T) {
+	s := testUnitreeService(t)
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	s.discover = func(ctx context.Context, _ ...string) ([]unitree.Device, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	go func() {
+		_, err := s.DiscoverUnitreeRobots(unitreeTestContext(), nil)
+		done <- err
+	}()
+	<-started
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown waited for discovery's full request timeout")
+	}
+	if err := <-done; status.Code(err) != codes.Unavailable {
+		t.Fatalf("cancelled discovery: %v", err)
+	}
+	if _, err := s.DiscoverUnitreeRobots(unitreeTestContext(), nil); status.Code(err) != codes.Unavailable {
+		t.Fatalf("discovery after shutdown: %v", err)
+	}
+}
+
+func TestUnitreeRestoreBoundsConcurrentDials(t *testing.T) {
+	s := testUnitreeService(t)
+	const count = unitreeMaxParallelDials * 2
+	for i := range count {
+		d := unitreeTestDevice()
+		d.Serial = fmt.Sprintf("GO2TEST%d", i)
+		if err := s.store.Save(unitree.Pairing{Device: d, PairedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := make(chan struct{}, count)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	var active atomic.Int32
+	s.dial = func(ctx context.Context, _, _, _ string) (unitreeLink, error) {
+		if active.Add(1) > unitreeMaxParallelDials {
+			t.Error("restore exceeded the expensive setup concurrency bound")
+		}
+		defer active.Add(-1)
+		started <- struct{}{}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-release:
+			return newTestUnitreeLink(), nil
+		}
+	}
+	if err := s.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	for range unitreeMaxParallelDials {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("initial bounded restoration did not start")
+		}
+	}
+	releaseOnce.Do(func() { close(release) })
+	for range count - unitreeMaxParallelDials {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("queued restoration did not progress")
+		}
+	}
+	s.Close()
+}
+
+func TestUnitreeCancelledDialDoesNotReachRobot(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		t.Run(fmt.Sprint(full), func(t *testing.T) {
+			s := testUnitreeService(t)
+			if full {
+				for range cap(s.dialSlots) {
+					s.dialSlots <- struct{}{}
+				}
+			}
+			s.dial = func(context.Context, string, string, string) (unitreeLink, error) {
+				t.Error("cancelled setup reached robot dialing")
+				return nil, nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if _, err := s.connect(ctx, "192.0.2.20", "", unitreeTestKey); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled queued setup: %v", err)
+			}
+		})
+	}
+}
+
+func TestUnitreeRetryJitterIsBounded(t *testing.T) {
+	for _, base := range []time.Duration{0, time.Millisecond, 10 * time.Second, time.Hour} {
+		for range 100 {
+			delay := unitreeRetryDelay(base)
+			minimum := max(base, time.Millisecond)
+			if delay < minimum || delay > minimum+minimum/2 {
+				t.Fatalf("retry delay %v outside bounds for %v", delay, base)
+			}
+		}
 	}
 }
 

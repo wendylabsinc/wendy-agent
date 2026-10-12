@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"strings"
 	"sync"
@@ -19,6 +20,8 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
+
+const unitreeMaxParallelDials = 4
 
 type unitreePairingStore interface {
 	List() ([]unitree.Pairing, error)
@@ -44,17 +47,18 @@ type unitreeSession struct {
 // Only the robot key is persisted; account passwords and cloud tokens are not.
 type UnitreeService struct {
 	agentpbv2.UnimplementedWendyUnitreeServiceServer
-	ctx      context.Context
-	cancel   context.CancelFunc
-	store    unitreePairingStore
-	discover func(context.Context, ...string) ([]unitree.Device, error)
-	dial     func(context.Context, string, string, string) (unitreeLink, error)
-	opMu     sync.Mutex
-	mu       sync.RWMutex
-	wg       sync.WaitGroup
-	sessions map[string]*unitreeSession
-	retry    time.Duration
-	owner    string // guarded by opMu
+	ctx       context.Context
+	cancel    context.CancelFunc
+	store     unitreePairingStore
+	discover  func(context.Context, ...string) ([]unitree.Device, error)
+	dial      func(context.Context, string, string, string) (unitreeLink, error)
+	opMu      sync.Mutex
+	mu        sync.RWMutex
+	wg        sync.WaitGroup
+	sessions  map[string]*unitreeSession
+	retry     time.Duration
+	owner     string // guarded by opMu
+	dialSlots chan struct{}
 }
 
 func NewUnitreeService(ctx context.Context, path, owner string) *UnitreeService {
@@ -66,6 +70,7 @@ func NewUnitreeService(ctx context.Context, path, owner string) *UnitreeService 
 			return unitree.Connect(ctx, address, token, key)
 		},
 		sessions: make(map[string]*unitreeSession), retry: 10 * time.Second,
+		dialSlots: make(chan struct{}, unitreeMaxParallelDials),
 	}
 }
 
@@ -209,10 +214,15 @@ func (s *UnitreeService) DiscoverUnitreeRobots(ctx context.Context, req *agentpb
 	if err := s.authorize(ctx); err != nil {
 		return nil, err
 	}
+	if s.ctx.Err() != nil {
+		return nil, status.Error(codes.Unavailable, "agent is shutting down")
+	}
 	if len(req.GetKnownSerials()) > 256 {
 		return nil, status.Error(codes.InvalidArgument, "too many Unitree serial numbers")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	stop := context.AfterFunc(s.ctx, cancel)
+	defer stop()
 	defer cancel()
 	devices, err := s.discover(ctx, req.GetKnownSerials()...)
 	if err != nil {
@@ -302,7 +312,7 @@ func (s *UnitreeService) PairUnitree(ctx context.Context, req *agentpbv2.PairUni
 	stop := context.AfterFunc(s.ctx, cancel)
 	defer stop()
 	defer cancel()
-	link, err := s.dial(connectCtx, p.Device.Address, req.Token, p.Device.EncryptionKey)
+	link, err := s.connect(connectCtx, p.Device.Address, req.Token, p.Device.EncryptionKey)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, status.FromContextError(ctx.Err()).Err()
@@ -370,6 +380,26 @@ func (s *UnitreeService) replaceSession(p unitree.Pairing, link unitreeLink) {
 	go s.maintain(ctx, p, session, link)
 }
 
+// connect bounds expensive signaling/Pion setup across manual and restored
+// sessions. Queued cancellation must never consume a robot connection slot.
+func (s *UnitreeService) connect(ctx context.Context, address, token, key string) (unitreeLink, error) {
+	select {
+	case s.dialSlots <- struct{}{}:
+		defer func() { <-s.dialSlots }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.dial(ctx, address, token, key)
+}
+
+func unitreeRetryDelay(base time.Duration) time.Duration {
+	base = max(base, time.Millisecond)
+	return base + time.Duration(rand.Int64N(int64(base/2)+1))
+}
+
 func (s *UnitreeService) maintain(ctx context.Context, p unitree.Pairing, session *unitreeSession, link unitreeLink) {
 	defer s.wg.Done()
 	defer close(session.done)
@@ -383,6 +413,16 @@ func (s *UnitreeService) maintain(ctx context.Context, p unitree.Pairing, sessio
 		}
 		s.mu.Unlock()
 	}()
+	if link == nil {
+		// Spread boot restoration without imposing a delay on explicit pairing.
+		timer := time.NewTimer(time.Duration(rand.Int64N(int64(250 * time.Millisecond))))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 	for {
 		if link != nil {
 			select {
@@ -402,7 +442,7 @@ func (s *UnitreeService) maintain(ctx context.Context, p unitree.Pairing, sessio
 		connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		// Local reconnection uses only the saved robot key, never a saved
 		// Unitree account token. Connect validates the data channel again.
-		next, err := s.dial(connectCtx, p.Device.Address, "", p.Device.EncryptionKey)
+		next, err := s.connect(connectCtx, p.Device.Address, "", p.Device.EncryptionKey)
 		cancel()
 		if err == nil {
 			link = next
@@ -411,7 +451,7 @@ func (s *UnitreeService) maintain(ctx context.Context, p unitree.Pairing, sessio
 			s.mu.Unlock()
 			continue
 		}
-		timer := time.NewTimer(s.retry)
+		timer := time.NewTimer(unitreeRetryDelay(s.retry))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
