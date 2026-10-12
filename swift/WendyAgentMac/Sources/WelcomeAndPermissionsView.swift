@@ -40,11 +40,6 @@ struct WelcomeAndPermissionsView: View {
         ) { _ in
             self.welcomeAndPermissions.refresh()
         }
-        .onChange(of: self.welcomeAndPermissions.locationStatus) { previousStatus, status in
-            if previousStatus == .pending && status != .pending {
-                self.onPermissionRequestCompleted()
-            }
-        }
     }
 
     private var header: some View {
@@ -125,9 +120,16 @@ struct WelcomeAndPermissionsView: View {
             Spacer()
 
             if self.welcomeAndPermissions.requestingPermission == permission {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(minWidth: 72, alignment: .trailing)
+                VStack(alignment: .trailing, spacing: 4) {
+                    ProgressView()
+                        .controlSize(.small)
+                    if permission == .location {
+                        Text("Waiting for a macOS Location decision…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(minWidth: 72, alignment: .trailing)
             } else {
                 self.permissionAction(status: status, permission: permission)
             }
@@ -141,23 +143,29 @@ struct WelcomeAndPermissionsView: View {
     ) -> some View {
         switch status {
         case .pending:
-            if permission == .location && self.welcomeAndPermissions.locationRequestAttempted {
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text("Location still needs a macOS decision.")
+            VStack(alignment: .trailing, spacing: 4) {
+                if permission == .location,
+                    let message = self.welcomeAndPermissions.locationRequestMessage
+                {
+                    Text(message)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-
-                    Button("Open System Settings…") {
-                        self.welcomeAndPermissions.openSystemSettings(for: permission)
-                    }
-                    .disabled(self.welcomeAndPermissions.isWorking)
+                        .multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            } else {
-                Button("Allow") {
-                    Task {
-                        await self.welcomeAndPermissions.requestPermission(permission)
-                        if permission != .location {
+
+                HStack {
+                    Button("Allow") {
+                        Task {
+                            await self.welcomeAndPermissions.requestPermission(permission)
                             self.onPermissionRequestCompleted()
+                        }
+                    }
+                    if permission == .location,
+                        self.welcomeAndPermissions.locationRequestMessage != nil
+                    {
+                        Button("Open System Settings…") {
+                            self.welcomeAndPermissions.openSystemSettings(for: permission)
                         }
                     }
                 }
@@ -168,10 +176,17 @@ struct WelcomeAndPermissionsView: View {
                 .foregroundStyle(.green)
                 .font(.subheadline)
         case .denied:
-            Button("Open System Settings…") {
-                self.welcomeAndPermissions.openSystemSettings(for: permission)
+            VStack(alignment: .trailing, spacing: 4) {
+                if permission == .location {
+                    Label("Not Allowed", systemImage: "xmark.circle")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Open System Settings…") {
+                    self.welcomeAndPermissions.openSystemSettings(for: permission)
+                }
+                .disabled(self.welcomeAndPermissions.isWorking)
             }
-            .disabled(self.welcomeAndPermissions.isWorking)
         case .restricted:
             Label("Restricted", systemImage: "xmark.circle.fill")
                 .foregroundStyle(.red)
