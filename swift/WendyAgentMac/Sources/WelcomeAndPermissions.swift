@@ -63,7 +63,7 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocatio
     }
 
     private static let launchAtLoginEnabledKey = "launchAtLoginEnabled"
-    private static let locationRequestTimeout = Duration.seconds(60)
+    private static let locationRequestAttemptedKey = "locationRequestAttempted"
 
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "sh.wendy.WendyAgentMac",
@@ -71,6 +71,7 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocatio
     )
 
     var launchAtLoginEnabled: Bool
+    var locationRequestAttempted: Bool
     var bluetoothStatus: PermissionStatus = .pending
     var cameraStatus: PermissionStatus = .pending
     var microphoneStatus: PermissionStatus = .pending
@@ -80,11 +81,12 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocatio
     private var bluetoothManager: CBCentralManager?
     private var bluetoothContinuation: CheckedContinuation<PermissionStatus, Never>?
     private var locationManager: CLLocationManager?
-    private var locationContinuation: CheckedContinuation<PermissionStatus, Never>?
-    private var locationRequestTimeoutTask: Task<Void, Never>?
 
     override init() {
         self.launchAtLoginEnabled = Self.currentLaunchAtLoginEnabled()
+        self.locationRequestAttempted = UserDefaults.standard.bool(
+            forKey: Self.locationRequestAttemptedKey
+        )
 
         super.init()
         self.refreshPermissionStatuses()
@@ -94,7 +96,7 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocatio
         self.currentBluetoothStatus() == .pending
             || self.currentCameraStatus() == .pending
             || self.currentMicrophoneStatus() == .pending
-            || self.currentLocationStatus() == .pending
+            || (self.currentLocationStatus() == .pending && !self.locationRequestAttempted)
     }
 
     var canFinish: Bool {
@@ -145,7 +147,7 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocatio
         case .microphone:
             self.microphoneStatus = await self.requestMicrophoneAccess()
         case .location:
-            self.locationStatus = await self.requestLocationAccess()
+            self.locationStatus = self.requestLocationAccess()
         }
     }
 
@@ -190,8 +192,13 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocatio
         Task { @MainActor [weak self] in
             guard let self else { return }
 
+            self.logger.info(
+                "Location authorization changed to native status: \(String(describing: authorizationStatus), privacy: .public)"
+            )
             self.locationStatus = self.locationStatus(for: authorizationStatus)
-            self.finishLocationRequestIfResolved()
+            if self.locationStatus != .pending {
+                self.locationManager = nil
+            }
         }
     }
 
@@ -200,21 +207,9 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocatio
         self.cameraStatus = self.currentCameraStatus()
         self.microphoneStatus = self.currentMicrophoneStatus()
         self.locationStatus = self.currentLocationStatus()
-        self.finishLocationRequestIfResolved()
-    }
-
-    private func finishLocationRequestIfResolved(allowPending: Bool = false) {
-        guard allowPending || self.locationStatus != .pending,
-            let locationContinuation = self.locationContinuation
-        else {
-            return
+        if self.locationStatus != .pending {
+            self.locationManager = nil
         }
-
-        self.locationContinuation = nil
-        self.locationManager = nil
-        self.locationRequestTimeoutTask?.cancel()
-        self.locationRequestTimeoutTask = nil
-        locationContinuation.resume(returning: self.locationStatus)
     }
 
     private func systemSettingsURL(for permission: Permission) -> URL? {
@@ -391,29 +386,54 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocatio
         }
     }
 
-    private func requestLocationAccess() async -> PermissionStatus {
+    private func requestLocationAccess() -> PermissionStatus {
         let current = self.currentLocationStatus()
         guard current == .pending else { return current }
 
-        return await withCheckedContinuation { continuation in
-            self.locationContinuation = continuation
-            let manager = CLLocationManager()
-            manager.delegate = self
-            self.locationManager = manager
-            manager.requestWhenInUseAuthorization()
+        self.locationRequestAttempted = true
+        UserDefaults.standard.set(true, forKey: Self.locationRequestAttemptedKey)
 
-            self.locationRequestTimeoutTask = Task { [weak self] in
-                do {
-                    try await Task.sleep(for: Self.locationRequestTimeout)
-                } catch {
-                    return
-                }
+        let usageDescription =
+            Bundle.main.object(
+                forInfoDictionaryKey: "NSLocationWhenInUseUsageDescription"
+            ) as? String
+        let hasUsageDescription = usageDescription?.isEmpty == false
+        let locationServicesEnabled = CLLocationManager.locationServicesEnabled()
+        let applicationIsActive = NSApplication.shared.isActive
 
-                guard let self else { return }
-                self.locationStatus = self.currentLocationStatus()
-                self.finishLocationRequestIfResolved(allowPending: true)
-            }
+        self.logger.info(
+            "Requesting Location permission; current status: \(String(describing: current), privacy: .public), usage description present: \(hasUsageDescription, privacy: .public), Location Services enabled: \(locationServicesEnabled, privacy: .public), application active: \(applicationIsActive, privacy: .public)"
+        )
+
+        guard hasUsageDescription else {
+            self.logger.error(
+                "Location permission request cannot open because NSLocationWhenInUseUsageDescription is missing"
+            )
+            return .pending
         }
+
+        guard locationServicesEnabled else {
+            self.logger.notice(
+                "Location permission request cannot open because Location Services are disabled"
+            )
+            return .pending
+        }
+
+        let manager = CLLocationManager()
+        manager.delegate = self
+        self.locationManager = manager
+        manager.requestWhenInUseAuthorization()
+
+        // Core Location's request API has no completion callback and may return
+        // without presenting a prompt. Keep the delegate alive for a later
+        // authorization change, but do not block the rest of onboarding while
+        // macOS still reports an unresolved status.
+        let authorizationStatus = manager.authorizationStatus
+        let requestedStatus = self.locationStatus(for: authorizationStatus)
+        self.logger.info(
+            "Location permission request returned with native status: \(String(describing: authorizationStatus), privacy: .public)"
+        )
+        return requestedStatus
     }
 
     private func requestCameraAccess() async -> PermissionStatus {

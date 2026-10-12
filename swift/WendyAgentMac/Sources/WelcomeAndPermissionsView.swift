@@ -40,6 +40,11 @@ struct WelcomeAndPermissionsView: View {
         ) { _ in
             self.welcomeAndPermissions.refresh()
         }
+        .onChange(of: self.welcomeAndPermissions.locationStatus) { previousStatus, status in
+            if previousStatus == .pending && status != .pending {
+                self.onPermissionRequestCompleted()
+            }
+        }
     }
 
     private var header: some View {
@@ -136,13 +141,28 @@ struct WelcomeAndPermissionsView: View {
     ) -> some View {
         switch status {
         case .pending:
-            Button("Allow") {
-                Task {
-                    await self.welcomeAndPermissions.requestPermission(permission)
-                    self.onPermissionRequestCompleted()
+            if permission == .location && self.welcomeAndPermissions.locationRequestAttempted {
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("Location still needs a macOS decision.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button("Open System Settings…") {
+                        self.welcomeAndPermissions.openSystemSettings(for: permission)
+                    }
+                    .disabled(self.welcomeAndPermissions.isWorking)
                 }
+            } else {
+                Button("Allow") {
+                    Task {
+                        await self.welcomeAndPermissions.requestPermission(permission)
+                        if permission != .location {
+                            self.onPermissionRequestCompleted()
+                        }
+                    }
+                }
+                .disabled(self.welcomeAndPermissions.isWorking)
             }
-            .disabled(self.welcomeAndPermissions.isWorking)
         case .allowed:
             Label("Allowed", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
