@@ -44,7 +44,7 @@ async function copySource(kind) {
   const target = join(resources, kind);
   // The same source families embedded by the CLI. Exclude downloaded assets,
   // local Python environments and integration artifacts from the desktop bundle.
-  const files = [
+  const files = kind === "so101" ? ["Dockerfile", "requirements.txt", "assets.lock.json", "UPSTREAM.md", "so101_sim", "tools", "licenses", "model/scene.xml"] : [
     "Dockerfile",
     "entrypoint.sh",
     "cyclonedds.xml",
@@ -102,6 +102,7 @@ async function prepare() {
   if (stopping) return;
   await copySource("go2");
   await copySource("g1");
+  await copySource("so101");
   const electronVersion = JSON.parse(
     await readFile(join(site, "node_modules/electron/package.json"), "utf8"),
   ).version;
