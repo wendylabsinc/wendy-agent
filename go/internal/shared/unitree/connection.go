@@ -32,7 +32,11 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const maxSignalingResponse = 1 << 20
+const (
+	maxSignalingResponse = 1 << 20
+	// Bound unauthenticated RSA work before wrapping a credential-bearing offer.
+	maxSignalingRSAKeyBits = 4096
+)
 
 var legacyGCMKey = []byte{232, 86, 130, 189, 22, 84, 155, 0, 142, 4, 166, 104, 43, 179, 235, 227}
 
@@ -275,15 +279,27 @@ func (c *Connection) heartbeat() {
 }
 
 func exchangeLocalSDP(ctx context.Context, client *http.Client, address, key string, offer []byte) ([]byte, error) {
-	for _, port := range []string{"9991", "8081"} {
-		conn, err := (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext(ctx, "tcp", net.JoinHostPort(address, port))
+	return exchangeLocalSDPWithProbe(ctx, client, address, key, offer, func(ctx context.Context, endpoint string) error {
+		conn, err := (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext(ctx, "tcp", endpoint)
 		if err != nil {
+			return err
+		}
+		return conn.Close()
+	})
+}
+
+func exchangeLocalSDPWithProbe(ctx context.Context, client *http.Client, address, key string, offer []byte, probe func(context.Context, string) error) ([]byte, error) {
+	for _, port := range []string{"9991", "8081"} {
+		// The existence of a legacy listener does not authorize a downgrade.
+		if port == "8081" && key != "" {
+			return nil, errors.New("keyed Unitree robots require authenticated encrypted signaling; legacy fallback is refused")
+		}
+		if err := probe(ctx, net.JoinHostPort(address, port)); err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
 			continue
 		}
-		_ = conn.Close()
 		base := (&url.URL{Scheme: "http", Host: net.JoinHostPort(address, port)}).String()
 		if port == "8081" {
 			return signalingPOST(ctx, client, base+"/offer", "application/json", offer)
@@ -384,6 +400,12 @@ func decodeNotify(response []byte, deviceKey string) (*rsa.PublicKey, string, er
 	if json.Unmarshal(decoded, &notification) != nil {
 		return nil, "", errors.New("Unitree returned an invalid connection notification")
 	}
+	// A supplied device key is the account's firmware-specific trust anchor.
+	// The public validation challenge cannot authenticate the signaling peer:
+	// never let a LAN impostor substitute a public/legacy RSA notification.
+	if deviceKey != "" && notification.Data2 != 3 {
+		return nil, "", errors.New("keyed Unitree robots require device-key-authenticated signaling")
+	}
 	data := notification.Data1
 	switch notification.Data2 {
 	case 0, 1:
@@ -447,7 +469,7 @@ func decodeNotify(response []byte, deviceKey string) (*rsa.PublicKey, string, er
 	} else {
 		publicKey, _ = x509.ParsePKCS1PublicKey(der)
 	}
-	if publicKey == nil || publicKey.N.BitLen() < 1024 {
+	if publicKey == nil || publicKey.N.BitLen() < 1024 || publicKey.N.BitLen() > maxSignalingRSAKeyBits {
 		return nil, "", errors.New("Unitree returned an invalid RSA public key")
 	}
 	return publicKey, string(path), nil

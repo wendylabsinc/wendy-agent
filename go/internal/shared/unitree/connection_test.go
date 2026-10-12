@@ -12,7 +12,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,7 +63,11 @@ func TestDecodeNotifyEncryptionVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, version := range []int{0, 1, 2, 3} {
-		pub, path, err := decodeNotify(notificationFixture(t, &key.PublicKey, version, "aAbBcCdDeJ"), testDeviceKey)
+		deviceKey := ""
+		if version == 3 {
+			deviceKey = testDeviceKey
+		}
+		pub, path, err := decodeNotify(notificationFixture(t, &key.PublicKey, version, "aAbBcCdDeJ"), deviceKey)
 		if err != nil {
 			t.Fatalf("version %d: %v", version, err)
 		}
@@ -79,7 +85,10 @@ func TestDecodeNotifyEncryptionVersions(t *testing.T) {
 		{"wrong key", 3, "ffffffffffffffffffffffffffffffff", "aAbBcCdDeJ"},
 		{"malformed key", 3, "not-a-key", "aAbBcCdDeJ"},
 		{"unknown version", 4, testDeviceKey, "aAbBcCdDeJ"},
-		{"invalid path", 1, testDeviceKey, "aAbBcCdDex"},
+		{"invalid path", 1, "", "aAbBcCdDex"},
+		{"keyed plaintext downgrade", 0, testDeviceKey, "aAbBcCdDeJ"},
+		{"keyed public RSA downgrade", 1, testDeviceKey, "aAbBcCdDeJ"},
+		{"keyed shared key downgrade", 2, testDeviceKey, "aAbBcCdDeJ"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := decodeNotify(notificationFixture(t, &key.PublicKey, tc.version, tc.suffix), tc.key)
@@ -88,6 +97,66 @@ func TestDecodeNotifyEncryptionVersions(t *testing.T) {
 			}
 			if tc.key != "" && strings.Contains(err.Error(), tc.key) {
 				t.Fatal("error disclosed encryption key")
+			}
+		})
+	}
+}
+
+func TestDecodeNotifyBoundsRSAKeySize(t *testing.T) {
+	for _, tc := range []struct {
+		bits int
+		ok   bool
+	}{{1023, false}, {1024, true}, {2048, true}, {4096, true}, {4097, false}, {65536, false}} {
+		t.Run(fmt.Sprint(tc.bits), func(t *testing.T) {
+			// Encoding a public key is sufficient: never generate huge private keys.
+			modulus := new(big.Int).Lsh(big.NewInt(1), uint(tc.bits-1))
+			modulus.Add(modulus, big.NewInt(1))
+			public := &rsa.PublicKey{N: modulus, E: 65537}
+			_, _, err := decodeNotify(notificationFixture(t, public, 1, "aAbBcCdDeJ"), "")
+			if (err == nil) != tc.ok {
+				t.Fatalf("RSA size %d accepted=%v, want %v", tc.bits, err == nil, tc.ok)
+			}
+		})
+	}
+}
+
+type signalingHTTPFunc func(*http.Request) (*http.Response, error)
+
+func (f signalingHTTPFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestKeyedSignalingRefusesLegacyPortBeforeSendingCredentials(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: signalingHTTPFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return nil, errors.New("unexpected signaling request")
+	})}
+	var probes []string
+	probe := func(_ context.Context, endpoint string) error {
+		probes = append(probes, endpoint)
+		return errors.New("modern port unavailable")
+	}
+	_, err := exchangeLocalSDPWithProbe(context.Background(), client, "192.0.2.1", testDeviceKey, []byte(`{"token":"secret"}`), probe)
+	if err == nil || requests != 0 || len(probes) != 1 || probes[0] != "192.0.2.1:9991" {
+		t.Fatalf("downgrade: err=%v, requests=%d, probes=%v", err, requests, probes)
+	}
+}
+
+func TestKeyedSignalingRefusesNotificationDowngradeBeforeSendingOffer(t *testing.T) {
+	public := &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), 2047), E: 65537}
+	for _, version := range []int{0, 1, 2} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if r.URL.Path != "/con_notify" {
+					t.Error("credential-bearing offer reached an unauthenticated peer")
+				}
+				_, _ = w.Write(notificationFixture(t, public, version, "aAbBcCdDeJ"))
+			}))
+			defer server.Close()
+			_, err := exchangeEncryptedSDP(context.Background(), server.Client(), server.URL, testDeviceKey, []byte(`{"token":"secret"}`))
+			if err == nil || requests != 1 {
+				t.Fatalf("downgrade: err=%v, requests=%d", err, requests)
 			}
 		})
 	}
