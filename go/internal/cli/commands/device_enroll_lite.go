@@ -12,6 +12,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	litepb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"google.golang.org/protobuf/proto"
 )
@@ -153,7 +154,14 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 		return err
 	}
 	mintCtx, cancel := context.WithTimeout(cloudCtx, 30*time.Second)
-	asset, err := liteenroll.Mint(mintCtx, cloud, auth, cfg, name)
+	hardware := &cloudpb.DeviceHardware{}
+	if target.OSVersion != "" {
+		hardware.OsVersion = proto.String(target.OSVersion)
+	}
+	if target.CPUArchitecture != "" {
+		hardware.Architecture = proto.String(target.CPUArchitecture)
+	}
+	asset, err := liteenroll.Mint(mintCtx, cloud, auth, cfg, name, hardware)
 	cancel()
 	if err != nil {
 		if asset != "" {

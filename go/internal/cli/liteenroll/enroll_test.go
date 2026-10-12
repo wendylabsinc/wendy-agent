@@ -207,7 +207,7 @@ func TestMintTierCCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &fakeEnrollment{reply: &cloudpb.EnrollDeviceResponse{CredentialKind: "enrollment_token", TokenValue: "single-use-test", AssetId: "42", ExpiresAt: time.Now().Add(4 * time.Minute).Format(time.RFC3339)}}
-	asset, err := Mint(context.Background(), f, auth, cfg, "lite-test")
+	asset, err := Mint(context.Background(), f, auth, cfg, "lite-test", nil)
 	if err != nil || asset != "42" || cfg.Token != "single-use-test" {
 		t.Fatalf("mint: %s %v", asset, err)
 	}
@@ -220,9 +220,40 @@ func TestMintTierCCredential(t *testing.T) {
 	}, func() { f.reply.ExpiresAt = time.Now().Add(time.Minute).Format(time.RFC3339); f.reply.TokenValue = "" }} {
 		mutate()
 		cfg.Token = ""
-		if asset, err := Mint(context.Background(), f, auth, cfg, "lite-test"); err == nil || cfg.Token != "" || asset != "42" {
+		if asset, err := Mint(context.Background(), f, auth, cfg, "lite-test", nil); err == nil || cfg.Token != "" || asset != "42" {
 			t.Fatal("invalid credential accepted")
 		}
+	}
+}
+
+func TestMintIncludesLiteHardwareInSignedRequest(t *testing.T) {
+	auth := authFixture(t)
+	for _, tc := range []struct {
+		name     string
+		hardware *cloudpb.DeviceHardware
+		want     *cloudpb.DeviceHardware
+	}{
+		{"unknown metadata", nil, &cloudpb.DeviceHardware{Os: proto.String("wendy-lite")}},
+		{"reported metadata", &cloudpb.DeviceHardware{OsVersion: proto.String("1.2.3"), Architecture: proto.String("xtensa")}, &cloudpb.DeviceHardware{Os: proto.String("wendy-lite"), OsVersion: proto.String("1.2.3"), Architecture: proto.String("xtensa")}},
+		{"canonical Lite type", &cloudpb.DeviceHardware{Os: proto.String("other")}, &cloudpb.DeviceHardware{Os: proto.String("wendy-lite")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Config(auth, "lite-test", "", "https://tsa.local/time", "broker", 5055)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := proto.Clone(tc.hardware)
+			f := &fakeEnrollment{reply: &cloudpb.EnrollDeviceResponse{CredentialKind: "enrollment_token", TokenValue: "single-use-test", AssetId: "42", ExpiresAt: time.Now().Add(4 * time.Minute).Format(time.RFC3339)}}
+			if _, err := Mint(context.Background(), f, auth, cfg, "lite-test", tc.hardware); err != nil {
+				t.Fatal(err)
+			}
+			if !proto.Equal(f.request.GetHardware(), tc.want) {
+				t.Fatalf("signed hardware = %v, want %v", f.request.GetHardware(), tc.want)
+			}
+			if !proto.Equal(tc.hardware, before) {
+				t.Fatal("mint mutated the supplied hardware metadata")
+			}
+		})
 	}
 }
 

@@ -26,6 +26,7 @@ import (
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	litepb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 )
 
 // Config resolves PKI endpoints and the Lite relay hostname from the selected
@@ -89,13 +90,21 @@ func Config(auth *config.AuthConfig, deviceID, csrURL, timeURL, brokerHost strin
 }
 
 // Mint obtains the single-use credential after Cloud reserves the device asset.
-func Mint(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, cfg *litepb.WendyConfEnrollment, name string) (string, error) {
+func Mint(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, cfg *litepb.WendyConfEnrollment, name string, hardware *cloudpb.DeviceHardware) (string, error) {
 	artifact, err := cloudrequest.EnrollmentRequestForClass(auth, cfg.DeviceId, "C")
 	if err != nil {
 		return "", err
 	}
+	if hardware == nil {
+		hardware = &cloudpb.DeviceHardware{}
+	} else {
+		hardware = proto.Clone(hardware).(*cloudpb.DeviceHardware)
+	}
+	// Cloud requires this exact type before accepting Lite broker presence.
+	// Class C controls credential issuance but does not set the asset's OS type.
+	hardware.Os = proto.String("wendy-lite")
 	reply := new(cloudpb.EnrollDeviceResponse)
-	err = cloudrequest.Invoke(ctx, conn, auth, cloudpb.DeviceEnrollmentService_EnrollDevice_FullMethodName, &cloudpb.EnrollDeviceRequest{DeviceId: cfg.DeviceId, DeviceClass: cloudpb.DeviceClass_DEVICE_CLASS_C, EnrollmentRequestJws: artifact, Name: name}, reply)
+	err = cloudrequest.Invoke(ctx, conn, auth, cloudpb.DeviceEnrollmentService_EnrollDevice_FullMethodName, &cloudpb.EnrollDeviceRequest{DeviceId: cfg.DeviceId, DeviceClass: cloudpb.DeviceClass_DEVICE_CLASS_C, EnrollmentRequestJws: artifact, Name: name, Hardware: hardware}, reply)
 	if err != nil {
 		return "", fmt.Errorf("creating Tier C enrollment: %w", err)
 	}

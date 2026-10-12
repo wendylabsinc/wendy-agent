@@ -135,8 +135,9 @@ done
 # rewriting -- DeviceEnrollmentService included, Cloud-owned though it is.
 #
 # Pin (WDY-3458 round): wendycloud/v2/*.proto and wendy/options.proto are
-# service-protos master 09097e83 (merged #91); device_enrollment.proto is cloud #741 head
-# 2c0ca481 (cloud-proto/device_enrollment.proto). assets.proto is service-protos
+# service-protos master 09097e83 (merged #91); device_enrollment.proto is cloud #757 head
+# 5e3003e4 (cloud-proto/device_enrollment.proto), including enrollment hardware.
+# assets.proto is service-protos
 # c5220f7 (merged #96): GetAsset deletion details/expected_device_id guard
 # plus upstream asset hardware fields.
 # Re-pin: copy those files from
