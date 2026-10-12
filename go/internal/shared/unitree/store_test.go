@@ -19,7 +19,7 @@ func testPairing() Pairing {
 
 func TestPairingStoreSaveReconnectAndForget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "unitree", "pairings.json")
-	store := NewStore(path, "tenant-a")
+	store := NewStore(path, PairingOwner{OrgID: 42})
 	list, err := store.List()
 	if err != nil || len(list) != 0 {
 		t.Fatalf("new store not empty: %v", err)
@@ -35,7 +35,7 @@ func TestPairingStoreSaveReconnectAndForget(t *testing.T) {
 	if info.Mode().Perm() != 0600 {
 		t.Fatalf("pairing key file permissions %o, want 600", info.Mode().Perm())
 	}
-	list, err = NewStore(path, "tenant-a").List()
+	list, err = NewStore(path, PairingOwner{OrgID: 42}).List()
 	if err != nil || len(list) != 1 {
 		t.Fatalf("cannot reload pairing: %v", err)
 	}
@@ -72,20 +72,20 @@ func TestPairingStoreSaveReconnectAndForget(t *testing.T) {
 
 func TestPairingStoreEnrollmentOwnership(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pairings.json")
-	original := NewStore(path, "tenant-a")
+	original := NewStore(path, PairingOwner{OrgID: 42})
 	if err := original.Save(testPairing()); err != nil {
 		t.Fatal(err)
 	}
-	for _, owner := range []string{"tenant-b", "local", ""} {
+	for _, owner := range []PairingOwner{{OrgID: 43}, {Local: true}, {}} {
 		foreign := NewStore(path, owner)
 		if list, err := foreign.List(); err == nil || len(list) != 0 {
-			t.Fatalf("owner %q could load old credentials: %v", owner, err)
+			t.Fatalf("owner %v could load old credentials: %v", owner, err)
 		}
 		if err := foreign.Save(testPairing()); err == nil {
-			t.Fatalf("owner %q could overwrite another enrollment", owner)
+			t.Fatalf("owner %v could overwrite another enrollment", owner)
 		}
 	}
-	if err := os.WriteFile(path, []byte(`{"version":1,"devices":[]}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":2,"devices":[]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := original.List(); err == nil {
@@ -99,6 +99,61 @@ func TestPairingStoreEnrollmentOwnership(t *testing.T) {
 	}
 	if err := original.Clear(); err != nil {
 		t.Fatal("clearing missing store is not idempotent", err)
+	}
+}
+
+func TestPairingStorePreservesProvenTransitionalScope(t *testing.T) {
+	const tenant = "3fd28c47-700a-4ef6-9f43-19be3d13418e"
+	path := filepath.Join(t.TempDir(), "pairings.json")
+	legacy := NewStore(path, PairingOwner{OrgID: 42})
+	pairing := testPairing()
+	if err := legacy.Save(pairing); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range []PairingOwner{
+		{OrgID: 42, TenantUUID: tenant}, // signed dual scope proves the bridge
+		{TenantUUID: tenant},            // normal renewal drops the old org SAN
+		{OrgID: 42},                     // cannot erase a previously proven UUID
+	} {
+		store := NewStore(path, owner)
+		list, err := store.List()
+		if err != nil || len(list) != 1 || list[0] != pairing {
+			t.Fatalf("same-tenant scope transition lost a key: %v", err)
+		}
+		if err := store.Save(pairing); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored storedPairings
+	if err := json.Unmarshal(raw, &stored); err != nil || stored.Owner.TenantUUID != tenant || stored.Owner.OrgID != 42 || stored.Version != 2 {
+		t.Fatal("trusted migration did not preserve both scope components", err)
+	}
+	foreign := NewStore(path, PairingOwner{TenantUUID: "72900574-08b3-446c-a5d8-59b35264069e", OrgID: 42})
+	if list, err := foreign.List(); err == nil || len(list) != 0 {
+		t.Fatal("shared legacy org overrode a different known tenant UUID")
+	}
+}
+
+func TestPairingStoreDoesNotForgetProvenUUIDWhenFileDisappears(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pairings.json")
+	store := NewStore(path, PairingOwner{TenantUUID: "3fd28c47-700a-4ef6-9f43-19be3d13418e", OrgID: 42})
+	if err := store.Save(testPairing()); err != nil {
+		t.Fatal(err)
+	}
+	store.BindOwner(PairingOwner{OrgID: 42})
+	if _, err := store.List(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	store.BindOwner(PairingOwner{TenantUUID: "72900574-08b3-446c-a5d8-59b35264069e", OrgID: 42})
+	if _, err := store.List(); err == nil {
+		t.Fatal("missing file erased a known conflicting tenant UUID")
 	}
 }
 
@@ -132,7 +187,7 @@ func TestPairingStoreRejectsUnsafeFiles(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			store := NewStore(path, "tenant-a")
+			store := NewStore(path, PairingOwner{OrgID: 42})
 			if _, err := store.List(); err == nil || strings.Contains(err.Error(), "SECRET") {
 				t.Fatalf("unsafe file accepted or content leaked: %v", err)
 			}
@@ -158,7 +213,7 @@ func TestPairingStoreRequiresVerifiedIdentity(t *testing.T) {
 				pair.PairedAt = time.Time{}
 			}
 			path := filepath.Join(t.TempDir(), "pairings.json")
-			if err := NewStore(path, "tenant-a").Save(pair); err == nil {
+			if err := NewStore(path, PairingOwner{OrgID: 42}).Save(pair); err == nil {
 				t.Fatal("accepted an incomplete pairing")
 			}
 			if _, err := os.Stat(path); !os.IsNotExist(err) {

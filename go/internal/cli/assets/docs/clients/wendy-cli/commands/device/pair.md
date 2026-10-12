@@ -76,9 +76,14 @@ Robot keys are stored in a private, permission-restricted file on the agent;
 they are not encrypted at rest. Account passwords and tokens are not persisted
 or returned by pairing RPCs. Pairings are bound to the agent's enrolled tenant
 (or local ownership before enrollment), not automatically transferred to a new
-tenant. Unprovisioning closes sessions and removes the Unitree credential file;
-within-tenant certificate renewal preserves pairings. Unscoped stores from
-pre-release builds are rejected rather than automatically adopted.
+tenant. Unprovisioning closes sessions and removes the Unitree credential file
+before it reports success; if removal fails, the agent retries when it restarts
+unenrolled. Within-tenant certificate renewal preserves pairings when the current signed
+certificate scope proves the relationship. The version-2 store keeps both
+legacy-org and tenant-UUID identity during dual-SAN renewal; UUID wins over a
+conflicting legacy org. Stored old identity never widens the current RPC scope.
+Unscoped/version-1 stores from pre-release builds are rejected rather than
+automatically adopted.
 
 Legacy firmware's public protocol validation is not a cryptographic proof of
 the robot's identity: use a trusted robot LAN.
@@ -89,7 +94,7 @@ exits. `connected` means the data channel passed protocol validation, not that
 camera streaming, movement, or a physical safety check has been tested.
 
 The agent reconnects saved robots after a restart, with at most four concurrent
-connection setups and staggered retries. If the robot's DHCP address changes,
+connection setups and staggered retries, including after a connection drops. If the robot's DHCP address changes,
 refresh discovery or enter its new IP. Before pairing, agree with the
 robot's current operator who owns the connection. Do not interrupt an active
 mobile-app or other robot session; if the robot is busy, arrange an explicit

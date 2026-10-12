@@ -336,8 +336,13 @@ func TestConnectWebRTCValidationAndHeartbeat(t *testing.T) {
 					t.Errorf("incorrect challenge response: %s", response)
 					return
 				}
-				_ = channel.SendText(`{"type":"validation","data":"Validation Ok."}`)
+				// Publish the verified challenge before the acknowledgement can
+				// reach Connect on another goroutine. Publishing afterwards races
+				// the caller despite a correctly validated data channel.
 				validated <- struct{}{}
+				if err := channel.SendText(`{"type":"validation","data":"Validation Ok."}`); err != nil {
+					t.Error(err)
+				}
 			case "heartbeat":
 				var data struct {
 					TimeInNum int64  `json:"timeInNum"`
