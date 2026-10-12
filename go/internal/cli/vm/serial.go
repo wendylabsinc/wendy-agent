@@ -225,7 +225,7 @@ func (b *serialBridge) report(c SerialConfig, err error) {
 		b.done <- fmt.Errorf("QEMU closed its VM serial connection to %s: %w", c.Port, err)
 		return
 	}
-	b.done <- fmt.Errorf("VM serial %s at %d baud disconnected or forwarding failed: %w; check the cable and Windows driver, then restart the VM", c.Port, c.Baud, err)
+	b.done <- fmt.Errorf("VM serial %s at %d baud disconnected or forwarding failed: %w; check the cable and the host driver, then restart the VM", c.Port, c.Baud, err)
 }
 func (b *serialBridge) shutdown() {
 	b.once.Do(func() {
