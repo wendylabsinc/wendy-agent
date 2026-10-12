@@ -39,7 +39,8 @@ func TestTeleopAcknowledgementMatchesIDAPIAndStatus(t *testing.T) {
 		default:
 		}
 	}
-	c.motionResponse([]byte(`{"type":"res","topic":"rt/api/sport/request","data":{"header":{"identity":{"id":12,"api_id":1008},"status":{"code":0}}}}`))
+	// Reply topic is not assumed to echo the request topic; identity/API are.
+	c.motionResponse([]byte(`{"type":"res","topic":"rt/api/sport/response","data":{"header":{"identity":{"id":12,"api_id":1008},"status":{"code":0}}}}`))
 	select {
 	case <-c.pendingResponse:
 	default:

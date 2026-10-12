@@ -100,7 +100,9 @@ func (c *Connection) motionResponse(raw []byte) {
 			} `json:"header"`
 		} `json:"data"`
 	}
-	if json.Unmarshal(raw, &reply) != nil || reply.Type != "res" || reply.Topic != sportTopic || reply.Data.Header.Status.Code == nil {
+	// The reference future_resolver routes API replies by identity, not by
+	// the request topic. Do not assume firmware echoes that topic on replies.
+	if json.Unmarshal(raw, &reply) != nil || reply.Type != "res" || reply.Data.Header.Status.Code == nil {
 		return
 	}
 	c.responseMu.Lock()
