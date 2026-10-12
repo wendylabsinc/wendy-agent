@@ -41,6 +41,15 @@ var (
 	routedSourceFn = routedSource
 )
 
+// dialers holds the dial seams, read once by the caller because dial
+// goroutines may outlive it.
+type dialers struct {
+	onLink func(context.Context, link, string) (net.Conn, error)
+	plain  func(context.Context, string) (net.Conn, error)
+}
+
+func currentDialers() dialers { return dialers{linkDialFn, plainDialFn} }
+
 // Dial connects to addr over TCP. An IPv4 link-local literal is dialed over
 // every link-local link at once, plus the routing table's own path when that
 // leaves through another interface, keeping the first to reach the device. It
@@ -54,30 +63,43 @@ func Dial(ctx context.Context, addr string) (net.Conn, error) {
 	if links == nil {
 		return plainDialFn(ctx, addr)
 	}
-	conn, _, err := dialLinks(ctx, addr, links, routed)
+	conn, _, err := currentDialers().dialLinks(ctx, addr, links, routed)
 	return conn, err
 }
 
-// SourceIP returns this host's address on the link where host answers on the
-// first of ports, connecting or refusing. ok is false when the routing table's
-// own path is the right one, or nothing reaches host.
+// SourceIP returns this host's address on the link where host answers on any
+// of ports, connecting or refusing. ok is false when the routing table's own
+// path is the right one, or nothing reaches host.
 func SourceIP(ctx context.Context, host string, ports ...int) (ip string, ok bool) {
 	links, routed := linksFor(host)
 	if links == nil {
 		return "", false
 	}
+	// Probe every port at once: one that drops packets must not hold up the rest.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type answer struct {
+		on      *link
+		reached bool
+	}
+	answers := make(chan answer, len(ports))
+	d := currentDialers()
 	for _, port := range ports {
-		conn, on, err := dialLinks(ctx, net.JoinHostPort(host, strconv.Itoa(port)), links, routed)
-		if conn != nil {
-			conn.Close()
-		}
-		if on != nil {
-			return on.ip.String(), true
-		}
-		// The routing table's own path answered, or no path reaches host at
-		// all, which no other port can change.
-		if reached(err) || !informative(err) {
-			return "", false
+		go func() {
+			conn, on, err := d.dialLinks(ctx, net.JoinHostPort(host, strconv.Itoa(port)), links, routed)
+			if conn != nil {
+				conn.Close()
+			}
+			answers <- answer{on, reached(err)}
+		}()
+	}
+	for range ports {
+		// on is nil when it was the routing table's own path that answered.
+		if a := <-answers; a.reached {
+			if a.on == nil {
+				return "", false
+			}
+			return a.on.ip.String(), true
 		}
 	}
 	return "", false
@@ -87,7 +109,7 @@ func SourceIP(ctx context.Context, host string, ports ...int) (ip string, ok boo
 // path when routed is nil because it leaves through another interface. The
 // first to reach the device wins; on is nil when that was the routing table's
 // path or nothing did.
-func dialLinks(ctx context.Context, addr string, links []link, routed *link) (conn net.Conn, on *link, err error) {
+func (d dialers) dialLinks(ctx context.Context, addr string, links []link, routed *link) (conn net.Conn, on *link, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type result struct {
@@ -100,16 +122,15 @@ func dialLinks(ctx context.Context, addr string, links []link, routed *link) (co
 		paths++ // the routing table's own path
 	}
 	results := make(chan result, paths)
-	dialOn, dialPlain := linkDialFn, plainDialFn // read once: dials may outlive dialLinks
 	for _, l := range links {
 		go func() {
-			conn, err := dialOn(ctx, l, addr)
+			conn, err := d.onLink(ctx, l, addr)
 			results <- result{&l, conn, err}
 		}()
 	}
 	if routed == nil {
 		go func() {
-			conn, err := dialPlain(ctx, addr)
+			conn, err := d.plain(ctx, addr)
 			results <- result{nil, conn, err}
 		}()
 	}
@@ -133,7 +154,7 @@ func dialLinks(ctx context.Context, addr string, links []link, routed *link) (co
 	}
 	// The routing table has not tried its own link if that could not be pinned.
 	if routedUnpinned {
-		conn, err := dialPlain(ctx, addr)
+		conn, err := d.plain(ctx, addr)
 		return conn, nil, err
 	}
 	return nil, nil, dialFailure(errs)

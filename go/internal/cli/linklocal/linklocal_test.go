@@ -396,22 +396,48 @@ func TestSourceIPUsesTheLinkThatReachesTheDevice(t *testing.T) {
 	}
 }
 
-// An enrolled agent refuses its plaintext port, which already names the link.
+// A port whose packets are dropped must not hold up the others: its dial only
+// gives up when the whole probe does.
+func TestSourceIPDoesNotWaitForAPortThatDropsPackets(t *testing.T) {
+	stubSeams(t, []link{linkA, linkB}, failPlain(t),
+		func(ctx context.Context, l link, addr string) (net.Conn, error) {
+			if addr == "169.254.198.132:50051" || l.ifi.Name != linkB.ifi.Name {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return pipeConn(t), nil
+		})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	ip, ok := SourceIP(ctx, "169.254.198.132", 50051, 50052)
+	if !ok || ip != linkB.ip.String() || time.Since(start) > time.Second {
+		t.Fatalf("SourceIP = %q, %v after %v; want %s at once", ip, ok, time.Since(start), linkB.ip)
+	}
+}
+
+// An enrolled agent refuses its plaintext port, which already names the link,
+// even while another port is still waiting.
 func TestSourceIPIdentifiesTheLinkFromARefusal(t *testing.T) {
 	stubSeams(t, []link{linkA, linkB}, failPlain(t),
-		func(_ context.Context, l link, addr string) (net.Conn, error) {
-			if addr != "169.254.198.132:50051" {
-				t.Errorf("dialed %s; want only the first port", addr)
-			}
-			if l.ifi.Name != linkB.ifi.Name {
+		func(ctx context.Context, l link, addr string) (net.Conn, error) {
+			switch {
+			case addr != "169.254.198.132:50051":
+				<-ctx.Done()
+				return nil, ctx.Err()
+			case l.ifi.Name != linkB.ifi.Name:
 				return nil, dialErr(syscall.EHOSTUNREACH)
 			}
 			return nil, dialErr(syscall.ECONNREFUSED)
 		})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	ip, ok := SourceIP(context.Background(), "169.254.198.132", 50051, 50052)
-	if !ok || ip != linkB.ip.String() {
-		t.Fatalf("SourceIP = %q, %v; want %s", ip, ok, linkB.ip)
+	start := time.Now()
+	ip, ok := SourceIP(ctx, "169.254.198.132", 50051, 50052)
+	if !ok || ip != linkB.ip.String() || time.Since(start) > time.Second {
+		t.Fatalf("SourceIP = %q, %v after %v; want %s at once", ip, ok, time.Since(start), linkB.ip)
 	}
 }
 
@@ -434,15 +460,9 @@ func TestSourceIPLeavesTheRoutingTableAloneWhenItIsRight(t *testing.T) {
 	}
 }
 
-// A failed ARP does not depend on the port, so a second port cannot help.
-func TestSourceIPStopsWhenNoPathReachesTheHost(t *testing.T) {
+func TestSourceIPGivesUpWhenNoPathReachesTheHost(t *testing.T) {
 	stubSeams(t, []link{linkA, linkB}, failPlain(t),
-		func(_ context.Context, _ link, addr string) (net.Conn, error) {
-			if addr != "169.254.198.132:50051" {
-				t.Errorf("dialed %s; want only the first port", addr)
-			}
-			return nil, dialErr(syscall.EHOSTUNREACH)
-		})
+		func(context.Context, link, string) (net.Conn, error) { return nil, dialErr(syscall.EHOSTUNREACH) })
 
 	if ip, ok := SourceIP(context.Background(), "169.254.198.132", 50051, 50052); ok {
 		t.Fatalf("SourceIP = %q, true; want false", ip)
@@ -450,15 +470,10 @@ func TestSourceIPStopsWhenNoPathReachesTheHost(t *testing.T) {
 }
 
 // Once the routing table's own path answers, its source address is the right
-// one and probing further ports would only repeat the race.
+// one.
 func TestSourceIPDefersToTheRoutingTableWhenItsPathAnswers(t *testing.T) {
 	stubSeams(t, []link{linkB},
-		func(_ context.Context, addr string) (net.Conn, error) {
-			if addr != "169.254.198.132:50051" {
-				t.Errorf("plain dial to %s; want only the first port", addr)
-			}
-			return nil, dialErr(syscall.ECONNREFUSED)
-		},
+		func(context.Context, string) (net.Conn, error) { return nil, dialErr(syscall.ECONNREFUSED) },
 		func(context.Context, link, string) (net.Conn, error) { return nil, dialErr(syscall.EHOSTUNREACH) })
 	routedSourceFn = func(string) net.IP { return net.ParseIP("192.168.2.10") }
 
