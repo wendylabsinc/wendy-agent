@@ -44,8 +44,8 @@ func (l *teleopFixtureLink) record(name string) {
 	l.calls = append(l.calls, name)
 	l.mu.Unlock()
 }
-func (l *teleopFixtureLink) Move(ctx context.Context, f, y float64) error {
-	if f == 0 && y == 0 {
+func (l *teleopFixtureLink) Move(ctx context.Context, f, s, y float64) error {
+	if f == 0 && s == 0 && y == 0 {
 		return l.Stop(ctx)
 	}
 	l.record("move")
@@ -176,8 +176,9 @@ func TestUnitreeRobotCommandStopCancelsPendingExpiry(t *testing.T) {
 
 func TestUnitreeRobotCommandRejectsInvalidInput(t *testing.T) {
 	c, l, _ := teleopFixture(t, true, time.Second)
-	for _, v := range [][2]float64{{.31, 0}, {0, -.61}, {math.NaN(), 0}, {math.Inf(1), 0}} {
-		if err := teleopSend(c, pb.UnitreeCommand_UNITREE_COMMAND_MOVE, v[0], v[1]); status.Code(err) != codes.InvalidArgument {
+	for _, v := range [][3]float64{{.81, 0, 0}, {0, .51, 0}, {0, 0, -1.01}, {math.NaN(), 0, 0}, {0, math.Inf(1), 0}} {
+		_, err := c.Command(context.Background(), &pb.UnitreeCommandRequest{Serial: "GO2TEST1", Command: pb.UnitreeCommand_UNITREE_COMMAND_MOVE, Forward: v[0], Lateral: v[1], Yaw: v[2]})
+		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("velocity %v accepted: %v", v, err)
 		}
 	}

@@ -61,8 +61,8 @@ def test_joy_axes_and_key_bits():
 
 
 def test_sport_request_allowlist():
-    assert convert.sport_request(1008, '{"x":0.2,"y":0.1,"z":-0.3}') == ("move", 0.2, -0.3)
-    assert convert.sport_request(1003, "") == ("stop", 0.0, 0.0)
+    assert convert.sport_request(1008, '{"x":0.2,"y":0.1,"z":-0.3}') == ("move", 0.2, 0.1, -0.3)
+    assert convert.sport_request(1003, "") == ("stop", 0.0, 0.0, 0.0)
     assert convert.sport_request(1006, "")[0] == "stand_up"
     assert convert.sport_request(1005, "")[0] == "lie_down"
     assert convert.sport_request(1016, "")[0] == "hello"
@@ -74,3 +74,10 @@ def test_clamp_and_raw_topic_name():
     assert convert.clamp(5, 0.3) == 0.3 and convert.clamp(-5, 0.6) == -0.6
     assert convert.clamp(float("nan"), 0.3) == 0.0
     assert convert.raw_topic_name("rt/lf/lowstate") == "/go2/raw/lf/lowstate"
+
+
+def test_points_to_body_undoes_robot_pose():
+    half = math.sqrt(0.5)
+    # Robot at (1, 2, 0.3) facing +y (yaw 90 degrees); a point 1 m ahead of it.
+    body = convert.points_to_body(np.array([[1.0, 3.0, 0.3]]), (1.0, 2.0, 0.3), (0.0, 0.0, half, half))
+    np.testing.assert_allclose(body, [[1.0, 0.0, 0.0]], atol=1e-6)

@@ -68,6 +68,17 @@ def yaw_of(wxyz):
     return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
 
 
+def points_to_body(points, position, quaternion_xyzw):
+    """Express odom-frame points in base_link, given the robot pose in odom."""
+    x, y, z, w = quaternion_xyzw
+    rotation = np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    # Row vectors: (p - t) @ R equals R^T (p - t).
+    return ((points.astype(np.float64) - np.asarray(position, dtype=np.float64)) @ rotation).astype(np.float32)
+
+
 def world_to_body(vx, vy, yaw):
     c, s = math.cos(yaw), math.sin(yaw)
     return c * vx + s * vy, -s * vx + c * vy
@@ -94,15 +105,15 @@ def joy(controller: dict):
 
 
 def sport_request(api_id: int, parameter: str):
-    """Map a unitree_api Request to (command, forward, yaw), or None if not allowed."""
+    """Map a unitree_api Request to (command, forward, lateral, yaw), or None if not allowed."""
     if api_id == SPORT_MOVE:
         p = json.loads(parameter or "{}")
-        return "move", float(p.get("x", 0.0)), float(p.get("z", 0.0))
+        return "move", float(p.get("x", 0.0)), float(p.get("y", 0.0)), float(p.get("z", 0.0))
     return {
-        SPORT_STOP_MOVE: ("stop", 0.0, 0.0),
-        SPORT_RECOVERY_STAND: ("stand_up", 0.0, 0.0),
-        SPORT_STAND_DOWN: ("lie_down", 0.0, 0.0),
-        SPORT_HELLO: ("hello", 0.0, 0.0),
+        SPORT_STOP_MOVE: ("stop", 0.0, 0.0, 0.0),
+        SPORT_RECOVERY_STAND: ("stand_up", 0.0, 0.0, 0.0),
+        SPORT_STAND_DOWN: ("lie_down", 0.0, 0.0, 0.0),
+        SPORT_HELLO: ("hello", 0.0, 0.0, 0.0),
     }.get(api_id)
 
 

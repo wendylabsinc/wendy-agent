@@ -83,9 +83,11 @@ type UnitreeCommandRequest struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Serial  string                 `protobuf:"bytes,1,opt,name=serial,proto3" json:"serial,omitempty"`
 	Command UnitreeCommand         `protobuf:"varint,2,opt,name=command,proto3,enum=wendy.agent.services.v2.UnitreeCommand" json:"command,omitempty"`
-	// MOVE only. Finite values: |forward| <= 0.3 m/s, |yaw| <= 0.6 rad/s.
+	// MOVE only. Finite values, the Go2 simulator's limits: |forward| <= 0.8 m/s,
+	// |lateral| <= 0.5 m/s (positive is left), |yaw| <= 1.0 rad/s.
 	Forward       float64 `protobuf:"fixed64,3,opt,name=forward,proto3" json:"forward,omitempty"`
 	Yaw           float64 `protobuf:"fixed64,4,opt,name=yaw,proto3" json:"yaw,omitempty"`
+	Lateral       float64 `protobuf:"fixed64,5,opt,name=lateral,proto3" json:"lateral,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -144,6 +146,13 @@ func (x *UnitreeCommandRequest) GetForward() float64 {
 func (x *UnitreeCommandRequest) GetYaw() float64 {
 	if x != nil {
 		return x.Yaw
+	}
+	return 0
+}
+
+func (x *UnitreeCommandRequest) GetLateral() float64 {
+	if x != nil {
+		return x.Lateral
 	}
 	return 0
 }
@@ -464,12 +473,13 @@ var File_wendy_agent_services_v2_unitree_robot_service_proto protoreflect.FileDe
 
 const file_wendy_agent_services_v2_unitree_robot_service_proto_rawDesc = "" +
 	"\n" +
-	"3wendy/agent/services/v2/unitree_robot_service.proto\x12\x17wendy.agent.services.v2\"\x9e\x01\n" +
+	"3wendy/agent/services/v2/unitree_robot_service.proto\x12\x17wendy.agent.services.v2\"\xb8\x01\n" +
 	"\x15UnitreeCommandRequest\x12\x16\n" +
 	"\x06serial\x18\x01 \x01(\tR\x06serial\x12A\n" +
 	"\acommand\x18\x02 \x01(\x0e2'.wendy.agent.services.v2.UnitreeCommandR\acommand\x12\x18\n" +
 	"\aforward\x18\x03 \x01(\x01R\aforward\x12\x10\n" +
-	"\x03yaw\x18\x04 \x01(\x01R\x03yaw\"\x18\n" +
+	"\x03yaw\x18\x04 \x01(\x01R\x03yaw\x12\x18\n" +
+	"\alateral\x18\x05 \x01(\x01R\alateral\"\x18\n" +
 	"\x16UnitreeCommandResponse\"\\\n" +
 	"\x14UnitreeStreamRequest\x12\x16\n" +
 	"\x06serial\x18\x01 \x01(\tR\x06serial\x12\x16\n" +

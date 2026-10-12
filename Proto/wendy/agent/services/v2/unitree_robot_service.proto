@@ -30,9 +30,11 @@ enum UnitreeCommand {
 message UnitreeCommandRequest {
   string serial = 1;
   UnitreeCommand command = 2;
-  // MOVE only. Finite values: |forward| <= 0.3 m/s, |yaw| <= 0.6 rad/s.
+  // MOVE only. Finite values, the Go2 simulator's limits: |forward| <= 0.8 m/s,
+  // |lateral| <= 0.5 m/s (positive is left), |yaw| <= 1.0 rad/s.
   double forward = 3;
   double yaw = 4;
+  double lateral = 5;
 }
 
 message UnitreeCommandResponse {}

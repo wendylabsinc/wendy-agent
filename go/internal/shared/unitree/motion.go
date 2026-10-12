@@ -11,25 +11,28 @@ import (
 	"time"
 )
 
-const MotionForwardLimit = 0.3
-const MotionYawLimit = 0.6
+// Same limits as the Go2 simulator and its example apps. The physical Go2
+// ignores forward requests below about 0.5 m/s, so lower caps stop it walking.
+const MotionForwardLimit = 0.8
+const MotionLateralLimit = 0.5
+const MotionYawLimit = 1.0
 const sportTopic = "rt/api/sport/request"
 
-func ValidMotion(forward, yaw float64) bool {
-	return !math.IsNaN(forward) && !math.IsInf(forward, 0) && math.Abs(forward) <= MotionForwardLimit &&
-		!math.IsNaN(yaw) && !math.IsInf(yaw, 0) && math.Abs(yaw) <= MotionYawLimit
+func ValidMotion(forward, lateral, yaw float64) bool {
+	within := func(v, limit float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && math.Abs(v) <= limit }
+	return within(forward, MotionForwardLimit) && within(lateral, MotionLateralLimit) && within(yaw, MotionYawLimit)
 }
 
 // Move accepts only bounded planar velocity, never posture or mode changes.
 // Zero velocity uses StopMove. An acknowledgement is not physical acceptance.
-func (c *Connection) Move(ctx context.Context, forward, yaw float64) error {
-	if !ValidMotion(forward, yaw) {
-		return errors.New("Go2 velocity outside teleop limits")
+func (c *Connection) Move(ctx context.Context, forward, lateral, yaw float64) error {
+	if !ValidMotion(forward, lateral, yaw) {
+		return errors.New("Go2 velocity outside limits")
 	}
-	if forward == 0 && yaw == 0 {
+	if forward == 0 && lateral == 0 && yaw == 0 {
 		return c.Stop(ctx)
 	}
-	parameter, _ := json.Marshal(map[string]float64{"x": forward, "y": 0, "z": yaw})
+	parameter, _ := json.Marshal(map[string]float64{"x": forward, "y": lateral, "z": yaw})
 	return c.sportRequest(ctx, 1008, string(parameter))
 }
 func (c *Connection) Stop(ctx context.Context) error { return c.sportRequest(ctx, 1003, "") }

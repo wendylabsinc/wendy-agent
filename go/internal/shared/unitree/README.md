@@ -6,13 +6,14 @@ waits for a reply with a matching request ID, API ID and status code:
 
 | Method | Sport API |
 | --- | --- |
-| `Move(forward, yaw)` | Move (1008); zero velocity sends StopMove |
+| `Move(forward, lateral, yaw)` | Move (1008); zero velocity sends StopMove |
 | `Stop` | StopMove (1003) |
 | `StandUp` | RecoveryStand (1006) |
 | `LieDown` | StandDown (1005) |
 | `Hello` | Hello (1016) |
 
-`Move` accepts only finite velocities: forward within ±0.3 m/s and yaw within ±0.6 rad/s.
+`Move` accepts only finite velocities within the Go2 simulator's limits: forward ±0.8 m/s,
+lateral ±0.5 m/s and yaw ±1.0 rad/s. The physical Go2 ignores forward requests below about 0.5 m/s.
 Requests are limited to that list: no mode, gait or arbitrary request APIs. The wire format follows
 `legion1581/unitree_webrtc_connect` at `e0abc5780761539eff89a382a79319e5cf6ad1f4`.
 

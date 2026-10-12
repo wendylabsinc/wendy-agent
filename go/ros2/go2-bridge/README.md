@@ -33,11 +33,12 @@ With one paired robot nothing else is needed; with several set
 | --- | --- | --- |
 | `/lowstate`, `/lf/lowstate` | `unitree_go/LowState` | `rt/lf/lowstate` (IMU, motors, battery, foot force) |
 | `/sportmodestate`, `/lf/sportmodestate` | `unitree_go/SportModeState` | `rt/sportmodestate`, `rt/lf/sportmodestate` |
-| `/imu/data` | `sensor_msgs/Imu` (`imu_link`) | lowstate IMU |
+| `/imu/data`, `/utlidar/imu` | `sensor_msgs/Imu` (`imu_link`, `utlidar_imu`) | lowstate IMU |
 | `/joint_states` | `sensor_msgs/JointState` | lowstate motors, SDK order `FR/FL/RR/RL × hip/thigh/calf` |
-| `/odom`, `/tf` `odom→base_link` | `nav_msgs/Odometry` | sport state position, IMU orientation, velocity |
+| `/odom`, `/utlidar/robot_odom`, `/tf` `odom→base_link` | `nav_msgs/Odometry` | sport state position, IMU orientation, velocity |
 | `/tf_static` | mounts | same values as the simulator |
-| `/utlidar/cloud` | `sensor_msgs/PointCloud2` (`odom`) | LiDAR voxel map, one point per occupied voxel |
+| `/utlidar/cloud_base`, `/utlidar/cloud` | `sensor_msgs/PointCloud2` (`base_link`, `utlidar_lidar`) | LiDAR voxel map, one point per occupied voxel, moved into the robot frame with the latest pose (stamped with that pose) |
+| `/go2/voxel_map` | `sensor_msgs/PointCloud2` (`odom`) | the same voxel map as the robot sends it |
 | `/camera/color/image_raw` | `sensor_msgs/Image` `rgb8` | front camera, decoded only while subscribed |
 | `/camera/color/h264` | `foxglove_msgs/CompressedVideo` | front camera H.264, unchanged |
 | `/joy` | `sensor_msgs/Joy` | Unitree remote: axes `lx ly rx ry`, 16 key bits |
@@ -46,13 +47,16 @@ With one paired robot nothing else is needed; with several set
 
 Commands: `/cmd_vel` (`linear.x`, `angular.z`) and `/api/sport/request` with
 Move (1008), StopMove (1003), RecoveryStand (1006), StandDown (1005) and Hello
-(1016). Other APIs get status 3203. Speeds are capped at 0.3 m/s and 0.6 rad/s.
-The agent stops a move after 500 ms, so publish at least ~3 Hz while moving.
+(1016). Other APIs get status 3203. Speeds are capped like the simulator's:
+0.8 m/s forward, 0.5 m/s sideways (`linear.y` / Move `y`), 1.0 rad/s turning.
+The physical Go2 ignores forward requests below about 0.5 m/s. The agent stops a
+move after 500 ms, so publish at least ~3 Hz while moving.
 
 ## Differences from the simulator
 
-- LiDAR is the robot's ~5 cm voxel map in the `odom` frame, not per-scan
-  points in `utlidar_lidar`. No `/scan`, `/utlidar/cloud_base` or `/utlidar/imu`.
+- LiDAR is the robot's ~5 cm accumulated voxel map, not per-scan points, so
+  clouds show what the robot has mapped around it, not only the latest sweep.
+  No `/scan`.
 - Rates are what the robot sends over Wi-Fi (state about 50 Hz), not 500 Hz.
 - No `camera_info` (the Air's camera is not calibrated here); the image is the
   robot's native resolution.
@@ -63,6 +67,17 @@ The agent stops a move after 500 ms, so publish at least ~3 Hz while moving.
   Wendy's ROS tools, so DDS participants on the same LAN and domain can see the
   robot topics and publish commands.
 
+## Simulator examples
+
+The Go2 simulator's example apps (`go/simulator/go2/examples`: Sensors, Teleop,
+Patrol, Roam, Hallway) run unchanged against this bridge, with their default
+strict capture-age and scan-coverage checks. `tests/simulator_examples_test.py`
+checks that against a fake robot in a walled room that walks according to the
+commands it receives: every example becomes ready and drives at 0.55 m/s; Patrol
+completes its square and Roam stops before the wall. Not yet verified on the
+physical robot (real LiDAR rate and coverage decide whether the strict checks
+pass there).
+
 ## Tests
 
 ```sh
@@ -70,6 +85,9 @@ python -m pytest tests/test_convert.py            # conversions, no ROS needed
 docker build -t go2-bridge . && docker run --rm -v "$PWD/tests:/opt/go2-bridge/tests:ro" \
   -e PYTHONPATH=/opt/go2-bridge go2-bridge /bin/bash -c \
   'source ros_ws/install/setup.bash && python3 tests/integration_test.py'   # fake agent, real ROS 2
+docker run --rm -v "$PWD/tests:/opt/go2-bridge/tests:ro" -v "$PWD/../../simulator/go2/examples:/examples:ro" \
+  -e PYTHONPATH=/opt/go2-bridge go2-bridge /bin/bash -c \
+  'source ros_ws/install/setup.bash && python3 tests/simulator_examples_test.py'   # the simulator's examples
 ```
 
 The LiDAR decoder is adapted from

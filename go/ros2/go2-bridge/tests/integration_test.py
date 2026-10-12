@@ -83,7 +83,8 @@ class FakeAgent(pb_grpc.WendyUnitreeRobotServiceServicer, pairing_grpc.WendyUnit
         return pairing_pb.ListUnitreePairingsResponse(robots=[pairing_pb.UnitreeRobot(serial=SERIAL, paired=True, connected=True)])
 
     def Command(self, request, context):
-        self.commands.append((pb.UnitreeCommand.Name(request.command).removeprefix("UNITREE_COMMAND_"), round(request.forward, 3), round(request.yaw, 3)))
+        self.commands.append((pb.UnitreeCommand.Name(request.command).removeprefix("UNITREE_COMMAND_"),
+                              round(request.forward, 3), round(request.lateral, 3), round(request.yaw, 3)))
         return pb.UnitreeCommandResponse()
 
     def Stream(self, request, context):
@@ -121,6 +122,8 @@ def main():
     for name, kind, topic in (("lowstate", LowState, "/lowstate"), ("sport", SportModeState, "/lf/sportmodestate"),
                               ("imu", Imu, "/imu/data"), ("joints", JointState, "/joint_states"),
                               ("odom", Odometry, "/odom"), ("cloud", PointCloud2, "/utlidar/cloud"),
+                              ("robot_odom", Odometry, "/utlidar/robot_odom"), ("lidar_imu", Imu, "/utlidar/imu"),
+                              ("cloud_base", PointCloud2, "/utlidar/cloud_base"), ("voxel_map", PointCloud2, "/go2/voxel_map"),
                               ("joy", Joy, "/joy"), ("image", Image, "/camera/color/image_raw"),
                               ("h264", CompressedVideo, "/camera/color/h264"),
                               ("raw", String, "/go2/raw/lf/lowstate"),
@@ -131,13 +134,14 @@ def main():
     sport = node.create_publisher(Request, "/api/sport/request", 10)
 
     deadline = time.time() + 60
-    wanted = {"lowstate", "sport", "imu", "joints", "odom", "cloud", "joy", "image", "h264", "raw", "raw_lidar"}
+    wanted = {"lowstate", "sport", "imu", "joints", "odom", "cloud", "joy", "image", "h264", "raw", "raw_lidar",
+              "robot_odom", "lidar_imu", "cloud_base", "voxel_map"}
     while time.time() < deadline and not wanted <= received.keys():
         rclpy.spin_once(node, timeout_sec=0.1)
     missing = wanted - received.keys()
 
     twist = Twist()
-    twist.linear.x, twist.angular.z = 5.0, -0.2  # forward is clamped to 0.3
+    twist.linear.x, twist.linear.y, twist.angular.z = 5.0, 0.1, -0.2  # forward is clamped to 0.8
     request = Request()
     request.header.identity.id, request.header.identity.api_id = 7, 1016
     sit = Request()
@@ -161,17 +165,22 @@ def main():
             failures.append("LowState fields not copied")
         if (odom.pose.pose.position.x, odom.pose.pose.position.y) != (1.0, 2.0) or odom.child_frame_id != "base_link":
             failures.append("odometry wrong")
-        if cloud.width != 2 or cloud.header.frame_id != "odom":
-            failures.append(f"cloud has {cloud.width} points in {cloud.header.frame_id}")
+        frames = {k: received[k].header.frame_id for k in ("cloud", "cloud_base", "voxel_map")}
+        if cloud.width != 2 or frames != {"cloud": "utlidar_lidar", "cloud_base": "base_link", "voxel_map": "odom"}:
+            failures.append(f"cloud has {cloud.width} points; frames {frames}")
+        base = np.frombuffer(bytes(received["cloud_base"].data), dtype=np.float32).reshape(-1, 3)
+        # Voxels at odom (0.5, 0, 0) and (0.55, 0, 0); robot at (1, 2, 0.3) with identity orientation.
+        if not np.allclose(base[0], [-0.5, -2.0, -0.3], atol=1e-5):
+            failures.append(f"cloud_base point {base[0]}")
         if (image.width, image.height, image.encoding) != (64, 48, "rgb8"):
             failures.append(f"image {image.width}x{image.height} {image.encoding}")
         if joints.name[0] != "FR_hip_joint" or abs(joints.position[1] - 0.1) > 1e-6:
             failures.append("joint states wrong")
         if received["joy"].axes[0] != 0.5 or received["joy"].buttons[0] != 1:
             failures.append("joy wrong")
-    if ("MOVE", 0.3, -0.2) not in agent.commands or ("HELLO", 0.0, 0.0) not in agent.commands:
+    if ("MOVE", 0.8, 0.1, -0.2) not in agent.commands or ("HELLO", 0.0, 0.0, 0.0) not in agent.commands:
         failures.append(f"commands {agent.commands[:5]}")
-    if any(name not in ("MOVE", "HELLO", "STOP") for name, _, _ in agent.commands):
+    if any(c[0] not in ("MOVE", "HELLO", "STOP") for c in agent.commands):
         failures.append(f"unexpected command {agent.commands}")
     if failures:
         print("FAIL:", *failures, sep="\n  ")

@@ -11,17 +11,17 @@ import (
 )
 
 func TestTeleopVelocityLimits(t *testing.T) {
-	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), .301, -.301} {
-		if ValidMotion(value, 0) {
+	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), .801, -.801} {
+		if ValidMotion(value, 0, 0) {
 			t.Errorf("accepted forward %v", value)
 		}
 	}
-	for _, value := range []float64{math.NaN(), math.Inf(1), .601, -.601} {
-		if ValidMotion(0, value) {
+	for _, value := range []float64{math.NaN(), math.Inf(1), 1.001, -1.001} {
+		if ValidMotion(0, 0, value) {
 			t.Errorf("accepted yaw %v", value)
 		}
 	}
-	if !ValidMotion(-.3, .6) {
+	if ValidMotion(0, .501, 0) || !ValidMotion(-.8, .5, 1) {
 		t.Fatal("rejected bounded velocity")
 	}
 }
@@ -87,7 +87,7 @@ func TestTeleopWireCommandsWithFixturePeer(t *testing.T) {
 			if msg.Topic != sportTopic {
 				t.Error("wrong topic")
 			}
-			if d.Header.Identity.API == 1008 && d.Parameter != `{"x":0.1,"y":0,"z":0.2}` {
+			if d.Header.Identity.API == 1008 && d.Parameter != `{"x":0.1,"y":-0.05,"z":0.2}` {
 				t.Errorf("unexpected parameter %s", d.Parameter)
 			}
 			commands <- d.Header.Identity.API
@@ -101,10 +101,10 @@ func TestTeleopWireCommandsWithFixturePeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if err = c.Move(ctx, .1, .2); err != nil {
+	if err = c.Move(ctx, .1, -.05, .2); err != nil {
 		t.Fatal(err)
 	}
-	if err = c.Move(ctx, 0, 0); err != nil {
+	if err = c.Move(ctx, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []uint64{1008, 1003} {
@@ -117,7 +117,7 @@ func TestTeleopWireCommandsWithFixturePeer(t *testing.T) {
 			t.Fatal("no wire command")
 		}
 	}
-	if err = c.Move(ctx, math.NaN(), 0); err == nil {
+	if err = c.Move(ctx, math.NaN(), 0, 0); err == nil {
 		t.Fatal("accepted nonfinite Move")
 	}
 	select {

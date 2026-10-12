@@ -45,7 +45,7 @@ ROBOT_TOPICS = [
     "rt/multiplestate",
     "rt/uslam/frontend/cloud_world_ds",
 ]
-MAX_FORWARD, MAX_YAW = 0.3, 0.6  # the agent's limits
+MAX_FORWARD, MAX_LATERAL, MAX_YAW = 0.8, 0.5, 1.0  # the agent's limits, same as the simulator's
 # Response codes used by the Go2 simulator (go2_sim/native_commands.py).
 UNSUPPORTED, DENIED = 3203, 3205
 
@@ -111,9 +111,13 @@ class Bridge(Node):
             "sportmodestate": pub(SportModeState, "/sportmodestate", qos),
             "lf_sportmodestate": pub(SportModeState, "/lf/sportmodestate", qos),
             "imu": pub(Imu, "/imu/data", qos),
+            "lidar_imu": pub(Imu, "/utlidar/imu", qos),
             "joints": pub(JointState, "/joint_states", qos),
             "odom": pub(Odometry, "/odom", qos),
+            "robot_odom": pub(Odometry, "/utlidar/robot_odom", qos),
             "cloud": pub(PointCloud2, "/utlidar/cloud", qos),
+            "cloud_base": pub(PointCloud2, "/utlidar/cloud_base", qos),
+            "voxel_map": pub(PointCloud2, "/go2/voxel_map", qos),
             "joy": pub(Joy, "/joy", qos),
             "image": pub(Image, "/camera/color/image_raw", qos),
             "h264": pub(CompressedVideo, "/camera/color/h264", qos),
@@ -124,6 +128,7 @@ class Bridge(Node):
         self.static_tf = StaticTransformBroadcaster(self)
         self.publish_mounts()
         self.decoder = None
+        self.pose = None  # (stamp, position, quaternion_xyzw) from the latest odometry
         self.create_subscription(Twist, "/cmd_vel", self.on_cmd_vel, qos)
         self.create_subscription(Request, "/api/sport/request", self.on_sport_request, 10)
 
@@ -202,6 +207,8 @@ class Bridge(Node):
             imu.angular_velocity.x, imu.angular_velocity.y, imu.angular_velocity.z = map(float, g)
             imu.linear_acceleration.x, imu.linear_acceleration.y, imu.linear_acceleration.z = map(float, a)
             self.pubs["imu"].publish(imu)
+            imu.header.frame_id = "utlidar_imu"
+            self.pubs["lidar_imu"].publish(imu)
         joints = convert.joint_state(data or {})
         if joints:
             msg = JointState()
@@ -230,6 +237,8 @@ class Bridge(Node):
         odom.twist.twist.linear.x, odom.twist.twist.linear.y = vx, vy
         odom.twist.twist.angular.z = float(data.get("yaw_speed", 0.0))
         self.pubs["odom"].publish(odom)
+        self.pubs["robot_odom"].publish(odom)
+        self.pose = (stamp, (p.x, p.y, p.z), (q.x, q.y, q.z, q.w))
         tf = TransformStamped()
         tf.header = odom.header
         tf.child_frame_id = "base_link"
@@ -238,23 +247,27 @@ class Bridge(Node):
         self.tf.sendTransform(tf)
 
     def on_voxels(self, meta, payload, stamp):
-        if self.pubs["cloud"].get_subscription_count() == 0:
+        """The robot sends an accumulated voxel map in odom. Publish it as is
+        (/go2/voxel_map) and, using the latest pose, in base_link
+        (/utlidar/cloud_base) and in the LiDAR's frame (/utlidar/cloud), like
+        the simulator. The body-frame clouds carry the pose's timestamp so
+        apps can pair them with odometry."""
+        names = ("voxel_map", "cloud_base", "cloud")
+        if not any(self.pubs[n].get_subscription_count() for n in names):
             return
         try:
             points = convert.decode_voxels(payload, meta)
         except Exception as e:  # malformed frame
             log.warning("voxel decode failed: %s", e)
             return
-        msg = PointCloud2()
-        msg.header.stamp = stamp
-        msg.header.frame_id = str(meta.get("frame_id") or "odom")
-        msg.height, msg.width = 1, len(points)
-        msg.fields = [PointField(name=n, offset=4 * i, datatype=PointField.FLOAT32, count=1)
-                      for i, n in enumerate("xyz")]
-        msg.is_bigendian, msg.point_step, msg.is_dense = False, 12, True
-        msg.row_step = 12 * len(points)
-        msg.data = points.tobytes()
-        self.pubs["cloud"].publish(msg)
+        self.pubs["voxel_map"].publish(cloud_message(points, stamp, str(meta.get("frame_id") or "odom")))
+        if self.pose is None:
+            return
+        pose_stamp, position, quaternion = self.pose
+        body = convert.points_to_body(points, position, quaternion)
+        self.pubs["cloud_base"].publish(cloud_message(body, pose_stamp, "base_link"))
+        self.pubs["cloud"].publish(cloud_message(body - np.asarray(MOUNTS["utlidar_lidar"], dtype=np.float32),
+                                                 pose_stamp, "utlidar_lidar"))
 
     def on_video(self, frame):
         stamp = self.stamp(frame.received_unix_nanos)
@@ -279,6 +292,8 @@ class Bridge(Node):
     def decode(self, annexb):
         import av  # imported lazily: only needed once video arrives
         if self.decoder is None:
+            # A new viewer starts mid-stream; FFmpeg complains until the next keyframe.
+            av.logging.set_level(av.logging.FATAL)
             self.decoder = av.CodecContext.create("h264", "r")
         try:
             frames = self.decoder.decode(av.Packet(bytes(annexb)))
@@ -304,21 +319,22 @@ class Bridge(Node):
 
     # --- ROS -> robot ---------------------------------------------------
 
-    def command(self, name, forward=0.0, yaw=0.0):
+    def command(self, name, forward=0.0, lateral=0.0, yaw=0.0):
         try:
             self.robot.Command(robot_pb.UnitreeCommandRequest(
                 serial=self.serial, command=COMMANDS[name],
-                forward=convert.clamp(forward, MAX_FORWARD), yaw=convert.clamp(yaw, MAX_YAW)), timeout=1)
+                forward=convert.clamp(forward, MAX_FORWARD), lateral=convert.clamp(lateral, MAX_LATERAL),
+                yaw=convert.clamp(yaw, MAX_YAW)), timeout=1)
             return True
         except grpc.RpcError as e:
             log.warning("command %s failed: %s", name, e.details())
             return False
 
     def on_cmd_vel(self, twist):
-        if twist.linear.x == 0 and twist.angular.z == 0:
+        if twist.linear.x == 0 and twist.linear.y == 0 and twist.angular.z == 0:
             self.command("stop")
         else:
-            self.command("move", twist.linear.x, twist.angular.z)
+            self.command("move", twist.linear.x, twist.linear.y, twist.angular.z)
 
     def on_sport_request(self, request):
         identity = request.header.identity
@@ -329,9 +345,20 @@ class Bridge(Node):
             log.warning("sport API %d is not supported by the Go2 bridge", identity.api_id)
             response.header.status.code = UNSUPPORTED
         else:
-            name, forward, yaw = mapped
-            response.header.status.code = 0 if self.command(name, forward, yaw) else DENIED
+            response.header.status.code = 0 if self.command(*mapped) else DENIED
         self.pubs["response"].publish(response)
+
+
+def cloud_message(points, stamp, frame_id):
+    msg = PointCloud2()
+    msg.header.stamp, msg.header.frame_id = stamp, frame_id
+    msg.height, msg.width = 1, len(points)
+    msg.fields = [PointField(name=n, offset=4 * i, datatype=PointField.FLOAT32, count=1)
+                  for i, n in enumerate("xyz")]
+    msg.is_bigendian, msg.point_step, msg.is_dense = False, 12, True
+    msg.row_step = 12 * len(points)
+    msg.data = np.ascontiguousarray(points, dtype=np.float32).tobytes()
+    return msg
 
 
 def find_serial(channel):

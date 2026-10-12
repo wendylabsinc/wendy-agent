@@ -17,7 +17,7 @@ const teleopMoveLease = 500 * time.Millisecond
 
 type unitreeMotionLink interface {
 	unitreeLink
-	Move(context.Context, float64, float64) error
+	Move(context.Context, float64, float64, float64) error
 	Stop(context.Context) error
 	StandUp(context.Context) error
 	LieDown(context.Context) error
@@ -49,7 +49,7 @@ func (s *UnitreeRobotService) Command(ctx context.Context, req *pb.UnitreeComman
 	if !unitree.ValidSerial(req.GetSerial()) {
 		return nil, status.Error(codes.InvalidArgument, "a paired Go2 serial is required")
 	}
-	if req.GetCommand() == pb.UnitreeCommand_UNITREE_COMMAND_MOVE && !unitree.ValidMotion(req.GetForward(), req.GetYaw()) {
+	if req.GetCommand() == pb.UnitreeCommand_UNITREE_COMMAND_MOVE && !unitree.ValidMotion(req.GetForward(), req.GetLateral(), req.GetYaw()) {
 		return nil, status.Error(codes.InvalidArgument, "Go2 velocity outside limits")
 	}
 	link, err := s.link(ctx, req.GetSerial())
@@ -63,8 +63,8 @@ func (s *UnitreeRobotService) Command(ctx context.Context, req *pb.UnitreeComman
 	defer cancel()
 	switch req.GetCommand() {
 	case pb.UnitreeCommand_UNITREE_COMMAND_MOVE:
-		err = link.Move(commandCtx, req.GetForward(), req.GetYaw())
-		if err == nil && (req.GetForward() != 0 || req.GetYaw() != 0) {
+		err = link.Move(commandCtx, req.GetForward(), req.GetLateral(), req.GetYaw())
+		if err == nil && (req.GetForward() != 0 || req.GetLateral() != 0 || req.GetYaw() != 0) {
 			s.armLease(req.GetSerial(), gen, link)
 		}
 	case pb.UnitreeCommand_UNITREE_COMMAND_STOP:
