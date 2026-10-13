@@ -1,6 +1,6 @@
 ---
 name: wendy
-description: 'Guidance on building and deploying apps to robots and edge devices using WendyOS, including NVIDIA Jetson, Raspberry Pi, Qualcomm Dragonwing, and MuJoCo simulation.'
+description: 'Build and deploy apps to WendyOS robots and edge devices, including NVIDIA Jetson, Raspberry Pi, Qualcomm Dragonwing, and MuJoCo simulation. Configure Wendy Data campaigns, record sensors and application data, and retrieve episodes.'
 ---
 
 # WendyOS
@@ -37,6 +37,8 @@ device or start a local simulator while waiting for hardware.
 - Install WendyOS on an external drive: `wendy os install`
 - Set a device as default using `wendy device set-default`
 - Check the default device with `wendy device get-default`
+- Record sensor data or application events: use `wendy-data` for campaigns,
+  episodes, model results, notifications, and durable recording streams.
 
 ### Create and deploy an app
 
@@ -134,6 +136,10 @@ the ports and prerequisites — the debugger wiring lives in that extension, not
 in this CLI.
 
 ## Observability
+
+For synchronized sensor capture, event-triggered recordings, model input/output
+records, or custom measurements, use `wendy-data`. Its campaign and episode
+workflow is separate from the OpenTelemetry collector described below.
 
 WendyOS runs a local OpenTelemetry collector on each device. Apps should report telemetry (logs, metrics, traces) to this local collector.
 
