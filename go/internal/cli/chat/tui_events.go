@@ -251,14 +251,15 @@ func jsonQuote(s string) string {
 // noteWatchStart records what watch_start returned, from its tool result, so
 // a later READY or ERROR is judged against it. The model has that result, so
 // the statuses queued while watch_start ran that it covers are dropped: the
-// first arrival is then usually reported on its own.
+// first arrival is then usually reported on its own. Only the first JSON value
+// is read: the server may append an update notice after it.
 func (m *chatModel) noteWatchStart(text string) {
 	var result struct {
 		WatchID string `json:"watch_id"`
 		Label   string `json:"label"`
 		State   string `json:"state"`
 	}
-	if json.Unmarshal([]byte(strings.TrimSpace(text)), &result) != nil || result.WatchID == "" {
+	if json.NewDecoder(strings.NewReader(text)).Decode(&result) != nil || result.WatchID == "" {
 		return
 	}
 	d := m.watches[result.WatchID]

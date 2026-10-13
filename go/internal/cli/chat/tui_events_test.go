@@ -827,3 +827,15 @@ func TestUIEventTurnRefusesAppProvidedToolsEvenWhenReadOnly(t *testing.T) {
 		t.Fatalf("the user's turn ran %d tools, want both", executor.executed.Load()-1)
 	}
 }
+
+// When an update is available the MCP server appends a one-time notice to the
+// next tool result. If that result is watch_start's, the start is still read
+// from its leading JSON value.
+func TestNoteWatchStartIgnoresATrailingUpdateNotice(t *testing.T) {
+	m, _, _ := uiWatchModel(t, nil, &uiExecutor{})
+	m.noteWatchStart(`{"watch_id":"w1","label":"front door","state":"PREPARING"}` + "\n\nA new Wendy CLI is available: run `wendy update`, then restart the MCP server.")
+	d := m.watches["w1"]
+	if d == nil || d.startState != "PREPARING" || d.label != "front door" {
+		t.Fatalf("start not recorded: %+v", d)
+	}
+}
