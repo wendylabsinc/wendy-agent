@@ -177,3 +177,25 @@ func TestDocumentsReportsStatus(t *testing.T) {
 	}
 	_ = data.KindWatch
 }
+
+func TestInferenceDocumentStatus(t *testing.T) {
+	service, factory, sender := newDocumentTestService(t)
+	startDocumentTestService(t, service, factory, sender)
+	applied := mustApply(t, service, testInferenceDocumentYAML)
+	if applied.GetState() != "pending" && applied.GetState() != "loading" && applied.GetState() != "running" {
+		t.Fatalf("new enabled inference state = %q", applied.GetState())
+	}
+	mustApply(t, service, strings.Replace(testInferenceDocumentYAML, "name: front-door", "name: off", 1)+"enabled: false\n")
+	response, err := service.Documents(context.Background(), &agentpbv2.DataDocumentsRequest{Kind: "inference", Name: "off"})
+	if err != nil || response.GetDocuments()[0].GetState() != "disabled" {
+		t.Fatalf("disabled inference = %v, %v", response, err)
+	}
+	service.inference = nil
+	stored, err := service.manager.Document(data.KindInference, "front-door")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message := service.documentMessage(stored); message.GetState() != "error" || !strings.Contains(message.GetStateDetail(), "unavailable") {
+		t.Fatalf("no runtime = %+v", message)
+	}
+}

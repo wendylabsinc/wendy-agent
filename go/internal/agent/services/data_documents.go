@@ -216,7 +216,7 @@ func (s *DataService) documentMessage(stored data.StoredDocument) *agentpbv2.Dat
 		DeployedUnixNanos: stored.DeployedUnixNanos, DocumentJson: stored.Body, Warnings: stored.Warnings}
 	switch stored.Kind {
 	case data.KindInference:
-		snapshot := s.inferenceSnapshot(stored.Name, stored.Revision)
+		snapshot := s.inferenceStatus(stored)
 		message.State, message.StateDetail = snapshot.State, snapshot.Error
 		message.StatusJson, _ = json.Marshal(snapshot)
 	case data.KindWatch:
@@ -241,11 +241,25 @@ func (s *DataService) documentMessage(stored data.StoredDocument) *agentpbv2.Dat
 	return message
 }
 
-func (s *DataService) inferenceSnapshot(name, revision string) *data.InferenceStatus {
-	if s.inference == nil {
-		return &data.InferenceStatus{State: "stopped"}
+// inferenceStatus is an inference document's status: disabled when it is not
+// enabled, error when the runtime is missing, otherwise its job's status, with
+// a job that does not exist yet reported as pending.
+func (s *DataService) inferenceStatus(stored data.StoredDocument) data.InferenceStatus {
+	document, err := stored.Inference()
+	if err != nil {
+		return data.InferenceStatus{State: "error", Error: err.Error()}
 	}
-	return s.inference.snapshot(inferenceJobKey(name), revision)
+	if !document.IsEnabled() {
+		return data.InferenceStatus{State: "disabled"}
+	}
+	if s.inference == nil {
+		return data.InferenceStatus{State: "error", Error: "agent inference runtime is unavailable"}
+	}
+	snapshot := *s.inference.snapshot(inferenceJobKey(stored.Name), stored.Revision)
+	if snapshot.State == "stopped" {
+		snapshot.State = "pending"
+	}
+	return snapshot
 }
 
 // watchState maps a watch's inference to waiting, active or error, and
@@ -256,14 +270,10 @@ func (s *DataService) watchState(watch data.Watch) (state, detail string, infere
 	if err != nil {
 		return "waiting", "inference " + watch.On.Inference + " is not deployed", data.InferenceStatus{}
 	}
-	document, err := stored.Inference()
-	if err != nil {
-		return "error", err.Error(), data.InferenceStatus{}
+	snapshot := s.inferenceStatus(stored)
+	if snapshot.State == "disabled" {
+		return "waiting", "inference " + watch.On.Inference + " is disabled", snapshot
 	}
-	if !document.IsEnabled() {
-		return "waiting", "inference " + watch.On.Inference + " is disabled", data.InferenceStatus{State: "disabled"}
-	}
-	snapshot := *s.inferenceSnapshot(stored.Name, stored.Revision)
 	switch snapshot.State {
 	case "running":
 		return "active", "", snapshot
