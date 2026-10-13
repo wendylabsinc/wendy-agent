@@ -12,6 +12,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
@@ -569,5 +570,23 @@ func TestDocumentWatchRenewsRightAfterItStarts(t *testing.T) {
 			t.Fatal("no renewal after Start returned")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// A waiting watch whose inference is gone or disabled (for example after
+// `wendy data remove inference/chat-...`) says why the device is waiting.
+func TestWatchStateFromDocumentSaysWhyAWaitingWatchWaits(t *testing.T) {
+	const detail = "waiting for inference/chat-a-1"
+	for _, inferenceState := range []string{"", "disabled"} {
+		document := &agentpbv2.DataDocument{Kind: data.KindWatch, State: "waiting", StateDetail: detail}
+		document.StatusJson = []byte(`{"inference_state":"` + inferenceState + `"}`)
+		if state, reason := watchStateFromDocument(document); state != watchPreparing || reason != detail {
+			t.Errorf("inference %q -> %s %q; want PREPARING with the device's detail", inferenceState, state, reason)
+		}
+	}
+	// An inference state that maps on its own keeps its own reason.
+	loading := &agentpbv2.DataDocument{Kind: data.KindWatch, State: "waiting", StateDetail: detail, StatusJson: []byte(`{"inference_state":"loading"}`)}
+	if _, reason := watchStateFromDocument(loading); !strings.Contains(reason, "loading the detector") {
+		t.Errorf("loading reason = %q", reason)
 	}
 }

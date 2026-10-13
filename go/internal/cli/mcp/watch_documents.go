@@ -482,6 +482,11 @@ func watchStateFromDocument(document *agentpbv2.DataDocument) (watchState, strin
 		Error string `json:"inference_error"`
 	}
 	_ = json.Unmarshal(document.GetStatusJson(), &inference)
+	if inference.State == "" || inference.State == "disabled" {
+		// No inference state explains the wait (its document may have been
+		// removed), so the device's own detail does.
+		return watchPreparing, document.GetStateDetail()
+	}
 	return watchStateFromInference(data.InferenceStatus{State: inference.State, Error: inference.Error})
 }
 
