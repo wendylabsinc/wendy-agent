@@ -66,7 +66,7 @@ func runConfiguredMeshCarriers(ctx context.Context, configDir string, id localme
 			return
 		}
 		observe(node.Snapshot)
-		if err := catalog.Activate(runCtx, node.Credentials, node.Snapshot, vips); err != nil {
+		if err := catalog.Activate(runCtx, node.Credentials, node.Snapshot, vips, cfg.Ethernet, cfg.InfrastructureWiFi); err != nil {
 			logger.Error("mesh service catalog unavailable", zap.Error(err))
 		}
 		sharing.Activate(runCtx, node)

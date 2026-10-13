@@ -8,38 +8,58 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 // MDNSBridge serves one isolated app bridge. The container lifecycle supplies
 // the app identity, bridge index, container IP and declared port mapping.
 // emit should be Runtime.Broadcast; it receives only signed, admitted changes.
 type MDNSBridge struct {
-	scope     AppScope
-	collector *Collector
-	catalog   *Catalog
-	vips      *mesh.VIPTable
-	policy    BrowsePolicy
-	emit      func(SignedRecord)
-	projected map[string]dns.RR
-	seenTypes map[string]time.Time
+	vips             *mesh.VIPTable
+	scope            AppScope
+	collector        *Collector
+	catalog          *Catalog
+	policy           BrowsePolicy
+	snapshot         func() localmesh.NodeSnapshot
+	remoteReady      func(meshid.Device) bool
+	remoteInvalidate func(meshid.Device)
+	lanSource        func(time.Time) []LANService
+	lanAccess        *LANProjector
+	emit             func(SignedRecord)
+	projected        map[string]dns.RR
+	seenTypes        map[string]time.Time
 	// App-owned mDNS names take precedence on this app's bridge. Claims are
 	// learned only from its container IP/interface and expire with their TTL.
 	appClaims          map[string]map[uint16]time.Time
 	claimsOverflowTill time.Time
 }
 
-func NewMDNSBridge(scope AppScope, catalog *Catalog, vips *mesh.VIPTable, policy BrowsePolicy, emit func(SignedRecord)) (*MDNSBridge, error) {
-	if policy == nil || emit == nil || vips == nil {
+func NewMDNSBridge(scope AppScope, catalog *Catalog, vips *mesh.VIPTable, policy BrowsePolicy, emit func(SignedRecord), snapshot func() localmesh.NodeSnapshot) (*MDNSBridge, error) {
+	if policy == nil || emit == nil || vips == nil || snapshot == nil {
 		return nil, errors.New("missing scoped mDNS policy or relay")
 	}
 	collector, err := NewCollector(scope, catalog)
 	if err != nil {
 		return nil, err
 	}
-	return &MDNSBridge{scope: collector.scope, collector: collector, catalog: catalog, vips: vips,
+	return &MDNSBridge{scope: collector.scope, collector: collector, catalog: catalog, vips: vips, snapshot: snapshot,
 		policy: policy, emit: emit, projected: map[string]dns.RR{}, seenTypes: map[string]time.Time{},
 		appClaims: map[string]map[uint16]time.Time{}}, nil
+}
+
+// SetLANProjection adds unsigned, directly reachable physical-LAN services
+// to this app's multicast bridge. They never enter Catalog or Runtime.
+func (b *MDNSBridge) SetLANProjection(source func(time.Time) []LANService, access *LANProjector) {
+	b.lanSource, b.lanAccess = source, access
+}
+
+// SetRemoteSync makes a remote signed service visible only after the origin
+// has reconciled its catalog on the current route. Directly observed LAN
+// services use their separate lease and do not depend on this gate.
+func (b *MDNSBridge) SetRemoteSync(ready func(meshid.Device) bool, invalidate func(meshid.Device)) {
+	b.remoteReady, b.remoteInvalidate = ready, invalidate
 }
 
 const maxDiscoveredTypes = 32
@@ -71,7 +91,11 @@ func (b *MDNSBridge) observeAppClaims(msg *dns.Msg, source net.IP, ifindex int, 
 			name = rr.Header().Name
 		case *dns.PTR:
 			// A PTR also claims its target instance before some publishers
-			// transmit the corresponding SRV and TXT records.
+			// transmit the corresponding SRV and TXT records. Service
+			// enumeration targets are shared types, not owned instances.
+			if strings.EqualFold(record.Hdr.Name, "_services._dns-sd._udp.local.") {
+				continue
+			}
 			name = record.Ptr
 		default:
 			continue
@@ -232,10 +256,68 @@ func (b *MDNSBridge) withdraw(now time.Time) error {
 
 func (b *MDNSBridge) projection(now time.Time) ([]dns.RR, error) {
 	b.pruneAppClaims(now)
-	return ProjectDNS(b.catalog.Snapshot(now), b.scope.AppID, func(appID string, r Record) bool {
+	// A catalog record can outlive its origin's route. Keep its signed lease
+	// and high-water receipt, but withdraw its DNS projection until the
+	// origin's signed manifest and exact host route are both live again.
+	view := b.snapshot()
+	reachable := make(map[meshid.Device]bool)
+	signed, err := ProjectDNS(b.catalog.Snapshot(now), b.scope.AppID, func(appID string, r Record) bool {
+		device, err := meshid.DeviceFromPrincipal(r.Key.Device)
+		if err != nil {
+			return false
+		}
+		if device != b.catalog.device {
+			ok, checked := reachable[device]
+			if !checked {
+				ok = eligibleSnapshot(view, device, now)
+				if !ok && b.remoteInvalidate != nil {
+					b.remoteInvalidate(device)
+				}
+				if ok && b.remoteReady != nil {
+					ok = b.remoteReady(device)
+				}
+				reachable[device] = ok
+			}
+			if !ok {
+				return false
+			}
+		}
 		return b.policy(appID, r) && !b.claimsOverflowTill.After(now) &&
 			!b.appClaimsName(projectedInstanceName(r)) && !b.appClaimsName(projectedHostName(r))
 	}, b.vips, now)
+	if err != nil || b.lanSource == nil || b.lanAccess == nil {
+		return signed, err
+	}
+	// Native app publishers and signed mesh projections take precedence over
+	// an unsigned LAN name. Suppressed names never receive LAN egress grants.
+	owned := make(map[string]bool, len(signed))
+	for _, rr := range signed {
+		if rr.Header().Rrtype != dns.TypePTR {
+			owned[strings.ToLower(rr.Header().Name)] = true
+		}
+	}
+	services := b.lanSource(now)
+	allowed := make([]LANService, 0, len(services))
+	for _, service := range services {
+		conflict := false
+		for _, rr := range service.Records {
+			name := rr.Header().Name
+			if ptr, ok := rr.(*dns.PTR); ok {
+				// The PTR owner is a shared service type. Only its target
+				// instance can conflict with a native publisher or a signed
+				// mesh projection on this app bridge.
+				name = ptr.Ptr
+			}
+			if b.appClaimsName(name) || owned[strings.ToLower(name)] {
+				conflict = true
+				break
+			}
+		}
+		if !conflict {
+			allowed = append(allowed, service)
+		}
+	}
+	return append(signed, b.lanAccess.Sync(allowed)...), nil
 }
 
 func projectionKey(rr dns.RR) string {

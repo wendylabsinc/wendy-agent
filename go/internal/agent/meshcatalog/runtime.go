@@ -41,6 +41,9 @@ type Runtime struct {
 type catalogPeer struct {
 	conn net.Conn
 	out  chan SignedRecord
+	// ready means an initial, ordered snapshot from this authenticated peer
+	// has been received and all missing origin identities were repaired.
+	ready bool
 }
 
 func NewRuntime(catalog *Catalog, snapshot func() localmesh.NodeSnapshot) (*Runtime, error) {
@@ -205,7 +208,7 @@ func (r *Runtime) inbound(ctx context.Context, raw net.Conn) {
 		return
 	}
 	state := conn.ConnectionState()
-	if state.NegotiatedProtocol != syncALPN || len(state.PeerCertificates) == 0 {
+	if !catalogALPN(state.NegotiatedProtocol) || len(state.PeerCertificates) == 0 {
 		return
 	}
 	chain := make([][]byte, 0, len(state.PeerCertificates))
@@ -277,6 +280,37 @@ func (r *Runtime) eligible(device meshid.Device, now time.Time) bool {
 	return eligibleSnapshot(r.snapshot(), device, now)
 }
 
+func catalogALPN(protocol string) bool { return protocol == syncALPN }
+
+// ProjectionReady is true only after a current route and a fresh, complete
+// anti-entropy snapshot from the service origin. Cached records alone can be
+// stale when the origin withdrew a service during a partition.
+func (r *Runtime) ProjectionReady(device meshid.Device) bool {
+	if !r.eligible(device, time.Now()) {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	peer := r.peers[device]
+	return peer != nil && peer.ready
+}
+
+// InvalidateProjection forces a new snapshot after the origin's route was
+// observed down. Closing the old session also handles a brief cut shorter than
+// Runtime's periodic route scan, for which a previously completed snapshot
+// would otherwise still look current on heal.
+func (r *Runtime) InvalidateProjection(device meshid.Device) {
+	r.mu.Lock()
+	peer := r.peers[device]
+	if peer != nil {
+		peer.ready = false
+	}
+	r.mu.Unlock()
+	if peer != nil {
+		_ = peer.conn.Close()
+	}
+}
+
 func (r *Runtime) outbound(ctx context.Context, device meshid.Device) {
 	defer func() { r.mu.Lock(); delete(r.dialing, device); r.mu.Unlock() }()
 	self := r.catalog.device.MeshAddress()
@@ -285,6 +319,8 @@ func (r *Runtime) outbound(ctx context.Context, device meshid.Device) {
 	if err != nil {
 		return
 	}
+	// All unshipped peers use snapshot completion on the existing ALPN.
+	conf.NextProtos = []string{syncALPN}
 	dialCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IP(self.AsSlice())}}
@@ -372,6 +408,7 @@ func (r *Runtime) session(ctx context.Context, device meshid.Device, conn net.Co
 	initial := r.catalog.Records(time.Now())
 	initialQueued := false
 	var queue legacyQueue
+	snapshotComplete := false
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -387,6 +424,9 @@ func (r *Runtime) session(ctx context.Context, device meshid.Device, conn net.Co
 			if len(initial) == 0 {
 				initial = nil
 				initialQueued = true
+				if queue.add(Message{Kind: "snapshot-done"}) != nil {
+					return
+				}
 			}
 		}
 		var next chan Message
@@ -421,6 +461,16 @@ func (r *Runtime) session(ctx context.Context, device meshid.Device, conn net.Co
 			replies, changed, err := syncer.Receive(m, time.Now())
 			if err != nil {
 				return
+			}
+			if m.Kind == "snapshot-done" {
+				snapshotComplete = true
+			}
+			if snapshotComplete && !syncer.PendingIdentity() {
+				r.mu.Lock()
+				if r.peers[device] == peer {
+					peer.ready = true
+				}
+				r.mu.Unlock()
 			}
 			if queue.add(replies...) != nil {
 				return
