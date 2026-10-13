@@ -24,7 +24,7 @@ func fastDocumentBackend() *documentWatchBackend {
 }
 
 func testWatchSpec(name string) watchSpec {
-	return watchSpec{Name: name, CameraID: "v4l2:/dev/video0", CameraName: "Brio 101", Classes: []string{"person"}, MinConfidence: 0.5, Label: "door", Detector: defaultWatchDetector}
+	return watchSpec{Name: name, CameraID: "v4l2:/dev/video0", CameraName: "Brio 101", Classes: []string{"person"}, MinConfidence: 0.5, Label: "door", Detector: watchDetectors[0]}
 }
 
 func startDocumentTestWatch(t *testing.T, b *documentWatchBackend, f *watchDataClient, name string) watchHandle {

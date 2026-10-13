@@ -23,12 +23,12 @@ func (s *mcpServer) registerWatchTools(srv *server.MCPServer) {
 		srv.AddTool(mcpgo.NewTool(name, opts...), handler)
 	}
 	add("watch_sources", s.handleWatchSources, append([]mcpgo.ToolOption{
-		mcpgo.WithDescription("List what a camera watch can use: healthy cameras on the connected device (id, name), the detector watches run (id, model, class labels), and free watch slots. Call before watch_start."),
+		mcpgo.WithDescription("List what a camera watch can use: healthy cameras on the connected device (id, name), the detectors watches can run (id, model, class labels), and free watch slots. Call before watch_start."),
 	}, readOnly()...)...)
 	add("watch_start", s.handleWatchStart, append([]mcpgo.ToolOption{
 		mcpgo.WithDescription("Watch a camera on the connected device for some classes of object, for example a person at the door. A detector runs on the device and this session is notified when a watched class appears; nothing is recorded or uploaded. At most two watches run per session, and they end when the session ends. Returns when the watch is READY, ERROR or ENDED, or after 30 s while it is still PREPARING: a first watch on a device installs the detector, which takes minutes. ENDED means the device connection changed during the start."),
 		mcpgo.WithString("camera", mcpgo.Description("Camera id from watch_sources"), mcpgo.Required()),
-		mcpgo.WithArray("classes", mcpgo.Description(`1-10 class labels from the detector's labels in watch_sources, for example ["person"]`), mcpgo.Required(), mcpgo.WithStringItems(), mcpgo.MinItems(1), mcpgo.MaxItems(10)),
+		mcpgo.WithArray("classes", mcpgo.Description(`1-10 class labels from one detector's labels in watch_sources, for example ["person"]`), mcpgo.Required(), mcpgo.WithStringItems(), mcpgo.MinItems(1), mcpgo.MaxItems(10)),
 		mcpgo.WithNumber("min_confidence", mcpgo.Description("Minimum detection score, 0.3 to 0.95; default 0.5"), mcpgo.Min(0.3), mcpgo.Max(0.95)),
 		mcpgo.WithString("label", mcpgo.Description(`Short name shown to the user, for example "front door"; default the camera's name`), mcpgo.MaxLength(64)),
 	}, mutating()...)...)
@@ -121,8 +121,11 @@ func (s *mcpServer) handleWatchSources(ctx context.Context, _ mcpgo.CallToolRequ
 	if err != nil {
 		return watchErrorResult(err), nil
 	}
-	d := defaultWatchDetector
-	return okResult(map[string]any{"cameras": cameras, "detector": map[string]any{"id": d.ID, "model": d.Model, "labels": d.Labels}, "free_slots": m.freeSlots()}), nil
+	detectors := make([]map[string]any, 0, len(watchDetectors))
+	for _, d := range watchDetectors {
+		detectors = append(detectors, map[string]any{"id": d.ID, "model": d.Model, "labels": d.Labels})
+	}
+	return okResult(map[string]any{"cameras": cameras, "detector": detectors[0], "detectors": detectors, "free_slots": m.freeSlots()}), nil
 }
 
 func (s *mcpServer) handleWatchStart(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -142,11 +145,17 @@ func (s *mcpServer) handleWatchStart(ctx context.Context, req mcpgo.CallToolRequ
 	if len(classes) < 1 || len(classes) > 10 {
 		return errResult(errCodeInvalidArgument, "classes must list 1 to 10 of the detector's labels"), nil
 	}
+	detector, ok := detectorFor(classes)
+	if !ok {
+		for _, class := range classes {
+			if _, covered := detectorFor([]string{class}); !covered {
+				return errResultf(errCodeInvalidArgument, "%q is not one of the detectors' labels; call watch_sources for them", class), nil
+			}
+		}
+		return errResult(errCodeInvalidArgument, "no single detector covers all of these classes; start one watch per detector"), nil
+	}
 	seen := map[string]bool{}
 	for _, class := range classes {
-		if !defaultWatchDetector.hasLabel(class) {
-			return errResultf(errCodeInvalidArgument, "%q is not one of the detector's labels; call watch_sources for them", class), nil
-		}
 		if seen[class] {
 			return errResultf(errCodeInvalidArgument, "%q is listed more than once", class), nil
 		}
@@ -178,7 +187,7 @@ func (s *mcpServer) handleWatchStart(ctx context.Context, req mcpgo.CallToolRequ
 	if label == "" {
 		label = chosen.Name
 	}
-	view, err := m.start(ctx, conn, revision, watchSpec{CameraID: chosen.ID, CameraName: chosen.Name, Classes: classes, MinConfidence: confidence, Label: label, Detector: defaultWatchDetector})
+	view, err := m.start(ctx, conn, revision, watchSpec{CameraID: chosen.ID, CameraName: chosen.Name, Classes: classes, MinConfidence: confidence, Label: label, Detector: detector})
 	if err != nil {
 		return watchErrorResult(err), nil
 	}

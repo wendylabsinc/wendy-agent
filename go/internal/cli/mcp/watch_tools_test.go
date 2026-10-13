@@ -181,6 +181,9 @@ func TestWatchToolsEndToEnd(t *testing.T) {
 	if detector := sources["detector"].(map[string]any); detector["id"] != "dfine-nano-coco" || len(detector["labels"].([]any)) != 80 {
 		t.Fatalf("detector %v", detector)
 	}
+	if detectors, _ := sources["detectors"].([]any); len(detectors) != 1 || detectors[0].(map[string]any)["id"] != "dfine-nano-coco" || detectors[0].(map[string]any)["labels"] == nil {
+		t.Fatalf("detectors %v", sources["detectors"])
+	}
 	started, isErr := callWatchTool(t, s, "watch_start", map[string]any{"camera": "v4l2:/dev/video0", "classes": []any{"person"}, "min_confidence": 0.6})
 	if isErr || started["watch_id"] != "w1" || started["label"] != "Brio 101" || started["state"] != "READY" || started["next_step"] == "" {
 		t.Fatalf("start %v", started)
@@ -361,5 +364,16 @@ func TestWatchToolsReportAnAgentWithoutTheDataService(t *testing.T) {
 	}
 	if names := client.documentRefs(); len(names) != 0 {
 		t.Fatalf("deployed %v", names)
+	}
+}
+
+func TestWatchStartRefusesClassesNoDetectorHas(t *testing.T) {
+	s, client, _ := watchToolServer(t)
+	out, isErr := callWatchTool(t, s, "watch_start", map[string]any{"camera": "v4l2:/dev/video0", "classes": []any{"person", "forklift"}})
+	if !isErr || out["error_code"] != "INVALID_ARGUMENT" || !strings.Contains(out["message"].(string), `"forklift"`) || !strings.Contains(out["message"].(string), "watch_sources") {
+		t.Fatalf("got %v %v", isErr, out)
+	}
+	if refs := client.documentRefs(); len(refs) != 0 {
+		t.Fatalf("refused classes reached the device: %v", refs)
 	}
 }
