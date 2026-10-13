@@ -10,6 +10,7 @@ import (
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // displayAddress strips a trailing numeric port from an address for display in
@@ -711,50 +712,13 @@ func (m PickerModel) View() string {
 
 	var sb strings.Builder
 
-	scrollHint := ""
-	if m.canScrollTable() {
-		scrollHint = ", ←/→ scroll"
+	// The keys get their own lines under the title: sharing the title's line,
+	// a picker with every action cut off at "c create, s" at 100 columns.
+	sb.WriteString(m.viewLine(pickerTitle.Render(m.Title)) + "\n")
+	for _, line := range pickerKeyHintLines(m.keyHints(), m.width) {
+		sb.WriteString(m.viewLine(pickerHint.Render(line)) + "\n")
 	}
-	enterAction := "enter select"
-	if m.OnCopyItem != nil {
-		enterAction = "enter copy"
-	}
-	hint := " (↑/↓ navigate" + scrollHint + ", " + enterAction + ", q quit)"
-	if m.Filterable {
-		hint = " (type to filter, ↑/↓ navigate" + scrollHint + ", " + enterAction + ", esc quit)"
-	}
-	if m.OnSetDefault != nil || m.OnRemoveItem != nil || m.OnCreateItem != nil ||
-		m.OnStartItem != nil || m.OnStopItem != nil || (m.OnEnrollItem != nil && !m.Filterable) {
-		extras := ""
-		if m.OnSetDefault != nil {
-			if m.OnUnsetDefault != nil {
-				extras += ", d toggle default"
-			} else {
-				extras += ", d set default"
-			}
-		}
-		if m.OnEnrollItem != nil && !m.Filterable {
-			extras += ", e enroll"
-		}
-		if m.OnCreateItem != nil {
-			extras += ", c create"
-		}
-		if m.OnStartItem != nil {
-			extras += ", s start"
-		}
-		if m.OnStopItem != nil {
-			extras += ", x stop"
-		}
-		if m.OnRemoveItem != nil {
-			label := m.RemoveHint
-			if label == "" {
-				label = "remove creds"
-			}
-			extras += ", r " + label
-		}
-		hint = " (↑/↓ navigate" + scrollHint + ", " + enterAction + extras + ", q quit)"
-	}
-	sb.WriteString(m.viewLine(pickerTitle.Render(m.Title)+pickerHint.Render(hint)) + "\n\n")
+	sb.WriteString("\n")
 
 	if m.Filterable && m.filter != "" {
 		// The query is sanitized as it is typed; strip again here so this
@@ -817,6 +781,84 @@ func (m PickerModel) View() string {
 	}
 
 	return sb.String()
+}
+
+// keyHints lists the keys this picker answers to, one entry per key, in the
+// order `wendy device apps` uses where the two overlap. Letter keys are filter
+// text in a filterable picker, so they are only offered when they work.
+func (m PickerModel) keyHints() []string {
+	var keys []string
+	if m.Filterable {
+		keys = append(keys, "type to filter")
+	}
+	keys = append(keys, "↑/↓ navigate")
+	if m.canScrollTable() {
+		keys = append(keys, "←/→ scroll")
+	}
+	if m.OnCopyItem != nil {
+		keys = append(keys, "enter copy")
+	} else {
+		keys = append(keys, "enter select")
+	}
+	if !m.Filterable {
+		if m.OnSetDefault != nil {
+			if m.OnUnsetDefault != nil {
+				keys = append(keys, "d toggle default")
+			} else {
+				keys = append(keys, "d set default")
+			}
+		}
+		if m.OnEnrollItem != nil {
+			keys = append(keys, "e enroll")
+		}
+		if m.OnCreateItem != nil {
+			keys = append(keys, "c create")
+		}
+		if m.OnStartItem != nil {
+			keys = append(keys, "s start")
+		}
+		if m.OnStopItem != nil {
+			keys = append(keys, "x stop")
+		}
+		if m.OnRemoveItem != nil {
+			label := m.RemoveHint
+			if label == "" {
+				label = "remove creds"
+			}
+			keys = append(keys, "r "+label)
+		}
+	}
+	if m.Filterable {
+		return append(keys, "esc quit")
+	}
+	return append(keys, "q quit")
+}
+
+// pickerKeyHintIndent lines the key hints up with the table's first column.
+const pickerKeyHintIndent = "  "
+
+// pickerKeyHintLines wraps keys to width, breaking only between entries so a
+// key never lands on a different line from its action. width <= 0 (no window
+// size yet) keeps them on one line.
+func pickerKeyHintLines(keys []string, width int) []string {
+	var lines []string
+	line := pickerKeyHintIndent
+	for i, key := range keys {
+		entry := key
+		if i < len(keys)-1 {
+			entry += ","
+		}
+		if line != pickerKeyHintIndent {
+			if width > 0 && ansi.StringWidth(line+" "+entry) > width {
+				lines = append(lines, line)
+				line = pickerKeyHintIndent
+			} else {
+				line += " "
+			}
+		}
+		line += entry
+	}
+	return append(lines, line)
 }
 
 func (m PickerModel) selectedHint() string {
@@ -1182,6 +1224,11 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 
 	m.table.SetWidth(PickerTableWidth(m.table.Columns()))
 	height := m.height
+	if height > 0 {
+		// The key hints sit on lines of their own under the title, and wrap
+		// on a narrow window: the table gives up that many rows.
+		height = max(1, height-len(pickerKeyHintLines(m.keyHints(), m.width)))
+	}
 	if hintHeight := PickerHintHeight(visible, m.width, "  "); height > 0 && hintHeight > 0 {
 		height = max(1, height-hintHeight-2)
 	}

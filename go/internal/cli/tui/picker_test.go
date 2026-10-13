@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -191,6 +192,83 @@ func TestPickerRemoveAsksFirstAndDefaultsToNo(t *testing.T) {
 	m = press(press(m, tea.KeyMsg{Type: tea.KeyDown}), r)
 	if strings.Join(*removed, ",") != "nothing-to-lose" {
 		t.Fatalf("an empty question still asked: removed=%v", *removed)
+	}
+}
+
+func TestPickerKeyHintsWrapUnderTheTitleWithoutLosingAKey(t *testing.T) {
+	// The hints shared the title's line and were cropped to the window, so a
+	// picker with every action showed "... c create, s" at 100 columns.
+	newFull := func(width int) PickerModel {
+		m := NewPickerWithTitle("Select a simulator")
+		m.RemoveHint = "remove"
+		m.OnCopyItem = func(PickerItem) string { return "" }
+		m.OnSetDefault = func(PickerItem) (string, error) { return "", nil }
+		m.OnUnsetDefault = func() (string, error) { return "", nil }
+		m.OnCreateItem = func() (string, bool) { return "", false }
+		m.OnStartItem = func(PickerItem) (string, bool) { return "", false }
+		m.OnStopItem = func(PickerItem) (string, bool) { return "", false }
+		m.OnRemoveItem = func(PickerItem) (string, bool, *PickerItem) { return "", false, nil }
+		u, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+		u, _ = u.(PickerModel).Update(PickerAddMsg{Items: []PickerItem{{Name: "sim", Type: "stopped"}}})
+		return u.(PickerModel)
+	}
+	keys := []string{"↑/↓ navigate", "enter copy", "d toggle default", "c create", "s start", "x stop", "r remove", "q quit"}
+
+	for _, width := range []int{100, 80, 40} {
+		view := ansi.Strip(newFull(width).View())
+		lines := strings.Split(view, "\n")
+		if lines[0] != "Select a simulator" {
+			t.Errorf("width %d: title line = %q, want the title alone", width, lines[0])
+		}
+		for _, line := range lines {
+			if w := ansi.StringWidth(line); w > width {
+				t.Errorf("width %d: line is %d wide: %q", width, w, line)
+			}
+		}
+		for _, key := range keys {
+			if !strings.Contains(view, key) {
+				t.Errorf("width %d: key %q is missing from %q", width, key, view)
+			}
+		}
+	}
+
+	// At 100 columns the whole set fits on one line under the title.
+	if lines := strings.Split(ansi.Strip(newFull(100).View()), "\n"); !strings.HasPrefix(lines[1], "  ↑/↓ navigate") || !strings.HasSuffix(lines[1], "q quit") {
+		t.Errorf("hint line at 100 columns = %q, want every key on it", lines[1])
+	}
+}
+
+func TestPickerKeyHintLinesBreakOnlyBetweenEntries(t *testing.T) {
+	keys := []string{"↑/↓ navigate", "enter copy", "d toggle default", "q quit"}
+	if got := pickerKeyHintLines(keys, 0); len(got) != 1 || got[0] != "  ↑/↓ navigate, enter copy, d toggle default, q quit" {
+		t.Errorf("unbounded = %q", got)
+	}
+	got := pickerKeyHintLines(keys, 30)
+	want := []string{"  ↑/↓ navigate, enter copy,", "  d toggle default, q quit"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("wrapped = %q, want %q", got, want)
+	}
+}
+
+func TestPickerKeyHintsGiveUpTableRows(t *testing.T) {
+	// Every hint line is a line the table cannot use; without counting them a
+	// full table pushed the title off the top of an alt-screen view.
+	m := NewPickerWithTitle("Select")
+	m.OnSetDefault = func(PickerItem) (string, error) { return "", nil }
+	m.OnUnsetDefault = func() (string, error) { return "", nil }
+	m.OnStartItem = func(PickerItem) (string, bool) { return "", false }
+	m.OnStopItem = func(PickerItem) (string, bool) { return "", false }
+	items := make([]PickerItem, 40)
+	for i := range items {
+		items[i] = PickerItem{Name: fmt.Sprintf("vm-%02d", i)}
+	}
+	for _, width := range []int{120, 30} {
+		u, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+		u, _ = u.(PickerModel).Update(PickerAddMsg{Items: items})
+		pm := u.(PickerModel)
+		if got := strings.Count(pm.View(), "\n"); got > 20 {
+			t.Errorf("width %d: view is %d lines in a 20-line window", width, got)
+		}
 	}
 }
 
