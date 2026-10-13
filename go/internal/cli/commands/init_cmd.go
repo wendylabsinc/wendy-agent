@@ -394,6 +394,12 @@ func runInitWizard(args []string, opts initOptions) error {
 		cfg.Python = &appconfig.PythonConfig{}
 	}
 
+	// Interactive choices must satisfy the same cross-field rules as flags and
+	// hand-written manifests (for example, peripherals requires CycloneDDS).
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("validating generated wendy.json: %w", err)
+	}
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)

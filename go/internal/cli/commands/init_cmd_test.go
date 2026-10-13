@@ -788,6 +788,49 @@ func TestInitCommand_NoExtraEntitlementsFalseStillPrompts(t *testing.T) {
 	}
 }
 
+func TestInitCommand_ValidatesInteractiveROS2Choices(t *testing.T) {
+	tempDir := t.TempDir()
+	prevWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prevWD) })
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	origAskEntitlements := askEntitlementQuestions
+	askEntitlementQuestions = func(target, language string) ([]appconfig.Entitlement, error) {
+		return []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}, nil
+	}
+	t.Cleanup(func() { askEntitlementQuestions = origAskEntitlements })
+
+	origAskFrameworks := askFrameworkQuestions
+	askFrameworkQuestions = func() (*appconfig.FrameworksConfig, error) {
+		return &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{
+			RMW:   "fastrtps",
+			Scope: appconfig.ROS2ScopePeripherals,
+		}}, nil
+	}
+	t.Cleanup(func() { askFrameworkQuestions = origAskFrameworks })
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{
+		"--app-id", "robot-app",
+		"--target", "wendyos",
+		"--language", "swift",
+		"--assistant", "skip",
+	})
+
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "requires rmw") {
+		t.Fatalf("Execute() error = %v, want the invalid interactive scope/RMW combination rejected", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(tempDir, "wendy.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("wendy.json should not be written after validation failure; stat error = %v", statErr)
+	}
+}
+
 func TestBuildInitEntitlementsFromFlags_Input(t *testing.T) {
 	entitlements, err := buildInitEntitlementsFromFlags(targetWendyOS, initOptions{
 		entitlementsSet: true,
