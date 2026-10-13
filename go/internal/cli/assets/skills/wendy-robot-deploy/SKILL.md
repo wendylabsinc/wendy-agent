@@ -23,15 +23,16 @@ Identify message types, domain, RMW, QoS, frames, timestamp clock and sensor rat
 Topic discovery alone does not prove messages decode or samples are fresh.
 
 For an app that joins the robot's system graph, retain `frameworks.ros2` and set
-`discoveryScope: "host"`, an explicit `domainId` matching the robot, and the
-host-network entitlement. Do not remove the framework block to bypass isolation.
+`scope: "peripherals"` (robot on its own cable or bridged on the device) or
+`scope: "network"` (robot reached over the device's regular network), an
+explicit `domainId` matching the robot, and the host-network entitlement. Do not remove the framework block to bypass isolation.
 Bundle custom message packages such as pinned Unitree interfaces in the image.
 Inspect an existing template before writing the Dockerfile and message adapters.
 
 ```json
 {
   "frameworks": {
-    "ros2": { "distro": "humble", "rmw": "rmw_cyclonedds_cpp", "domainId": 0, "discoveryScope": "host" }
+    "ros2": { "distro": "humble", "rmw": "rmw_cyclonedds_cpp", "domainId": 0, "scope": "peripherals" }
   },
   "entitlements": [{ "type": "network", "mode": "host" }]
 }

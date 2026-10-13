@@ -33,11 +33,15 @@ discovery, and pinned `unitree_go` and `unitree_api` message types. The device d
 later commands. It uses domain 0 by default; pass `--domain` to select another
 domain.
 
-ROS 2 app discovery is app-local by default: Wendy injects `ROS_LOCALHOST_ONLY=1`
-so unrelated apps and robots do not discover each other. A bridge or inspection
-tool that intentionally needs the device's wider ROS 2 graph can opt in with
-`"discoveryScope": "host"` in `frameworks.ros2`; pair it with a host-network
-entitlement so DDS can reach the device interfaces.
+ROS 2 discovery stays on the device by default: Wendy injects
+`ROS_LOCALHOST_ONLY=1`, and without an explicit `domainId` each app gets its own
+domain, so unrelated apps and robots do not discover each other. `scope` in
+`frameworks.ros2` widens or narrows that: `"peripherals"` for an app that talks
+to a robot or sensor attached to the device, `"network"` for a bridge or tool
+that needs the device's wider ROS 2 graph, `"app"` for an app that must stay to
+itself. `device`, `peripherals` and `network` apps that share a bus set the
+same `domainId`; `device` and `peripherals` need the host network. See
+[`frameworks.ros2`](/docs/apps/wendy.json#frameworksros2).
 
 <Callout type="info">
 No SSH, no `source /opt/ros/<distro>/setup.bash`, and no extra ports. If a device
