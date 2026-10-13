@@ -106,7 +106,8 @@ type watchManager struct {
 }
 
 func newWatchManager(backend watchBackend, notify func(method string, params map[string]any) error, revision func() uint64) *watchManager {
-	var id [4]byte
+	// 8 random bytes, so two servers on one device do not pick the same name (#2207 review).
+	var id [8]byte
 	_, _ = rand.Read(id[:])
 	return &watchManager{backend: backend, notify: notify, revision: revision, serverID: hex.EncodeToString(id[:]), startWait: watchStartWait, stopTimeout: watchStopTimeout, watches: map[string]*watchRecord{}}
 }

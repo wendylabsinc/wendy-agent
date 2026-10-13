@@ -164,7 +164,7 @@ func TestWatchManagerAssignsIdentitiesAndCapsActiveWatches(t *testing.T) {
 	if first.WatchID != "w1" || second.WatchID != "w2" {
 		t.Fatalf("ids %q %q", first.WatchID, second.WatchID)
 	}
-	if !regexp.MustCompile(`^chat-[0-9a-f]{8}-1$`).MatchString(backend.specs[0].Name) || !strings.HasSuffix(backend.specs[1].Name, "-2") {
+	if !regexp.MustCompile(`^chat-[0-9a-f]{16}-1$`).MatchString(backend.specs[0].Name) || !strings.HasSuffix(backend.specs[1].Name, "-2") {
 		t.Fatalf("campaign names %q %q", backend.specs[0].Name, backend.specs[1].Name)
 	}
 	if first.State != string(watchPreparing) || m.freeSlots() != 0 {
@@ -644,5 +644,19 @@ func TestWatchManagerRetainsTheMostRecentlyEndedWatches(t *testing.T) {
 	}
 	if _, _, _, err := m.events(context.Background(), "w1", 0, 0); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWatchManagerServerIDsAreSixteenHexDigits(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		m := newWatchManager(newDocumentWatchBackend(), func(string, map[string]any) error { return nil }, func() uint64 { return 0 })
+		if len(m.serverID) != 16 || strings.Trim(m.serverID, "0123456789abcdef") != "" {
+			t.Fatalf("server id %q", m.serverID)
+		}
+		if seen[m.serverID] {
+			t.Fatalf("server id %q repeated", m.serverID)
+		}
+		seen[m.serverID] = true
 	}
 }
