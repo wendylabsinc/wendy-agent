@@ -3,9 +3,14 @@
 package commands
 
 import (
+	"context"
 	"errors"
+	"io"
+	"net/http"
 	"slices"
+	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -96,5 +101,57 @@ func TestTourDiscoveryDeadlineStartsAfterUSBPreflight(t *testing.T) {
 	}
 	if failed, ok := cmd().(tourDiscoveryErrorMsg); !ok || failed.err == nil {
 		t.Fatal("discovery retry did not honor its original deadline")
+	}
+}
+
+func TestTourSampleReadinessRequiresGeneratedStarterResponse(t *testing.T) {
+	_, response, ok := strings.Cut(tourAppPy, "f\"\"\"")
+	if !ok {
+		t.Fatal("starter HTTP response template not found")
+	}
+	response, _, ok = strings.Cut(response, "\"\"\".encode()")
+	if !ok {
+		t.Fatal("starter HTTP response template end not found")
+	}
+	response = strings.NewReplacer("{hostname}", "test-edge", "{{", "{", "}}", "}").Replace(response)
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   io.Reader
+		want   bool
+	}{
+		{name: "generated starter", status: http.StatusOK, body: strings.NewReader(response), want: true},
+		{name: "unrelated HTTP 200", status: http.StatusOK, body: strings.NewReader("<html><body>Another service is running</body></html>")},
+		{name: "error response", status: http.StatusServiceUnavailable, body: strings.NewReader(response)},
+		{name: "truncated response", status: http.StatusOK, body: io.MultiReader(strings.NewReader(response), iotest.ErrReader(io.ErrUnexpectedEOF))},
+		{name: "oversized response", status: http.StatusOK, body: strings.NewReader(response + strings.Repeat("x", tourSampleResponseLimit))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tourSampleResponseReady(tc.status, tc.body); got != tc.want {
+				t.Fatalf("ready=%t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTourSampleReadinessBoundsResponseRead(t *testing.T) {
+	body := strings.NewReader(strings.Repeat("x", 2*tourSampleResponseLimit))
+	if tourSampleResponseReady(http.StatusOK, body) {
+		t.Fatal("unrelated body satisfied readiness")
+	}
+	if got := body.Len(); got != tourSampleResponseLimit-1 {
+		t.Fatalf("unread bytes=%d, want %d", got, tourSampleResponseLimit-1)
+	}
+}
+
+func TestTourSampleReadinessRetainsCancellation(t *testing.T) {
+	m := newTourWizardModel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m.ctx = ctx
+	m.foundAddr = "127.0.0.1"
+	result, ok := m.cmdSampleReadiness()().(tourSampleReadyMsg)
+	if !ok || !errors.Is(result.err, ErrUserCancelled) {
+		t.Fatalf("result=%#v, want cancellation", result)
 	}
 }
