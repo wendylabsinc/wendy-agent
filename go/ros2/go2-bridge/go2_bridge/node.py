@@ -6,6 +6,7 @@ commands go back through WendyUnitreeRobotService.Command, which also stops a
 move after 500 ms unless it is refreshed.
 """
 
+import array
 import collections
 import logging
 import os
@@ -224,7 +225,7 @@ class Bridge(Node):
             return
         if binary:
             msg = UInt8MultiArray()
-            msg.data = bytes(data)
+            msg.data = byte_array(data)
         else:
             msg = String()
             msg.data = data.decode("utf-8", "replace")
@@ -318,7 +319,7 @@ class Bridge(Node):
         if self.pubs["h264"].get_subscription_count():
             msg = CompressedVideo()
             msg.timestamp, msg.frame_id, msg.format = stamp, CAMERA_FRAME, "h264"
-            msg.data = bytes(frame.annexb)
+            msg.data = byte_array(frame.annexb)
             self.pubs["h264"].publish(msg)
         # Decode only while someone watches, on its own thread so robot state and
         # LiDAR never wait for video. None resets the decoder.
@@ -349,7 +350,7 @@ class Bridge(Node):
             msg.header.stamp, msg.header.frame_id = item[1], CAMERA_FRAME
             msg.height, msg.width = image.shape[:2]
             msg.encoding, msg.step = "rgb8", image.shape[1] * 3
-            msg.data = image.tobytes()
+            msg.data = byte_array(image.tobytes())
             try:
                 self.pubs["image"].publish(msg)
             except RCLError:
@@ -421,6 +422,12 @@ class Bridge(Node):
         self.pubs["response"].publish(response)
 
 
+def byte_array(data):
+    """Humble's generated setters check every element of a bytes value in Python
+    (about 0.1 s for one camera image); an array.array('B') skips that."""
+    return array.array("B", data)
+
+
 def cloud_message(points, stamp, frame_id):
     msg = PointCloud2()
     msg.header.stamp, msg.header.frame_id = stamp, frame_id
@@ -429,7 +436,7 @@ def cloud_message(points, stamp, frame_id):
                   for i, n in enumerate("xyz")]
     msg.is_bigendian, msg.point_step, msg.is_dense = False, 12, True
     msg.row_step = 12 * len(points)
-    msg.data = np.ascontiguousarray(points, dtype=np.float32).tobytes()
+    msg.data = byte_array(np.ascontiguousarray(points, dtype=np.float32).tobytes())
     return msg
 
 
