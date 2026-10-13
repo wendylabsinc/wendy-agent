@@ -203,7 +203,7 @@ func (m *chatModel) watchEventPrompt(items []WatchNotice, omitted int) string {
 }
 
 // watchPromptHeader names the watch that reported n, leaving out its classes
-// or camera when they are not known: Your watch "front door" (person, camera
+// or camera when they are not known: Your watch "front door" ("person", camera
 // "Brio 101") reported:
 func (m *chatModel) watchPromptHeader(n WatchNotice) string {
 	d := m.watches[n.WatchID]
@@ -216,7 +216,13 @@ func (m *chatModel) watchPromptHeader(n WatchNotice) string {
 	}
 	var about []string
 	if len(d.classes) > 0 {
-		about = append(about, strings.Join(d.classes, ", "))
+		// Classes come from the device and the model like the label: quoted,
+		// so none can end the header and pose as instructions (#2210 review).
+		quoted := make([]string, len(d.classes))
+		for i, class := range d.classes {
+			quoted[i] = jsonQuote(class)
+		}
+		about = append(about, strings.Join(quoted, ", "))
 	}
 	if d.camera != "" {
 		about = append(about, "camera "+jsonQuote(d.camera))
