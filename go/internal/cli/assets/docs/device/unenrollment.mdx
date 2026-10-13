@@ -21,8 +21,11 @@ evidence before guarded local credential erasure; they never fall back to v1.
    the SSF credential-change signal.
 3. Verify the exact typed Cloud deletion evidence and issuer-signed revoked OCSP
    evidence for the installed device leaf. Plain `NotFound` is not deletion proof.
-4. Request guarded erasure. The Agent verifies binding, operator mTLS and fresh
-   signed time before persisting public reset authorization and removing keys.
+4. Request guarded erasure. The Agent verifies binding and operator mTLS, and
+   checks certificate validity and revocation-evidence freshness against its
+   system clock before persisting public reset authorization and removing keys.
+   It relies on the existing time services without a separate time-server query.
+   A wrong clock can cause valid evidence to be rejected; correct it before retrying.
 
 The UUID command has a three-minute total bound. `--check` is read-only: it checks
 Cloud binding and Agent capability, without revocation, deletion, reset, proof
@@ -58,7 +61,7 @@ or perform local erasure while it is offline.
 - [CLI enrollment and required reset fields](/docs/clients/wendy-cli/commands/device/enroll)
 - [Cloud asset lifecycle interface](/docs/cloud/assets-api)
 - [PKI and retired revocation RPCs](/docs/pki)
-- [Config partition and clock floor](/docs/wendyos/config-partition)
+- [Config partition](/docs/wendyos/config-partition)
 - [Internal protocol reference](https://github.com/wendylabsinc/WendyOS/blob/kb.v2-device-unenroll/go/docs/v2-device-unenrollment.md)
 
 These are source semantics, not a claim that compatible builds are deployed or

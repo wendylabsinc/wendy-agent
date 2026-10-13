@@ -92,10 +92,11 @@ credential erasure; they never fall back to numeric cleanup.
 The UUID candidate requires compatible Cloud and Agent versions. The Agent's
 `ProvisionedResponse.cloud_unenrollment_supported` capability must be `true`;
 absent or `false` on an older Agent means no guarded reset is attempted. It is
-not proof that authenticated time is currently available. Before new erasure,
-the Agent obtains fresh signed time, persists its anti-rollback floor and checks
-operator validity and revocation evidence across the authenticated interval.
-Failure retains local credentials, even if Cloud unenrollment already finished.
+not a guarantee that the system clock is correct. Before new erasure, the Agent
+checks operator validity and revocation-evidence freshness against one reading of
+the system clock. It relies on the existing time services without a separate time
+query or clock-floor write. Failed checks retain local credentials, even if Cloud
+unenrollment already finished; correct a wrong clock before retrying.
 
 AAA v0.22 (retained in v0.24), §5.1/§7(4), excludes removal-only unenrollment
 from step-up. No browser/passkey confirmation is required for asset deletion,

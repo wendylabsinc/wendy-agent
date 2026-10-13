@@ -54,8 +54,9 @@ This operation alone is not proof that the device erased its local credentials.
 `ProvisionedResponse.cloud_unenrollment_supported` is `true` on Agents that
 implement Cloud-owned guarded reset and protected recovery; absent/`false` on
 older Agents means the CLI must not attempt guarded erasure. It does not promise
-that authenticated time is available: the Agent separately obtains fresh signed
-time and durably advances its anti-rollback floor before new authorization.
+that the system clock is correct. Before new authorization, the Agent checks
+operator-certificate validity and revocation-evidence freshness against the system
+clock, without a separate time-server query or clock-floor write.
 
 After durable local credential erasure, the Agent's `IsProvisioned` response
 contains `NotProvisionedResponse.unenrollment_completion`: public device-signed

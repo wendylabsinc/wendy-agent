@@ -180,34 +180,21 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 	svc.unenrollmentMu.Lock() // serialization only; no ACME calls
 	defer svc.unenrollmentMu.Unlock()
 	svc.mu.Lock()
-	if err := svc.requirePKIOperator(ctx); err != nil {
+	if err := ctx.Err(); err != nil {
+		svc.mu.Unlock()
+		return nil, status.FromContextError(err).Err()
+	}
+	// Use one system-clock reading for operator validity, revocation evidence
+	// and the authorization receipt. Clock synchronization and persistence
+	// belong to the existing time services, not the unenrollment transaction.
+	now := time.Now()
+	if err := svc.requirePKIOperator(ctx, now); err != nil {
 		svc.mu.Unlock()
 		return nil, err
 	}
 	if !svc.enrolled || req.GetExpectedPrincipalUri() != svc.principalURI || req.GetExpectedCertificateSha256() != svc.certificateFingerprintLocked() {
 		svc.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "exact installed identity required; keys retained")
-	}
-	if svc.trustedTime == nil {
-		svc.mu.Unlock()
-		return nil, status.Error(codes.FailedPrecondition, "fresh authenticated time with durable floor required; keys retained")
-	}
-	// A fresh network query must not hold the provisioning state lock. Recheck
-	// both the caller and installed identity before using the resulting bounds.
-	svc.mu.Unlock()
-	window, timeErr := svc.trustedTime(ctx)
-	svc.mu.Lock()
-	if timeErr != nil || ctx.Err() != nil || window.Earliest.IsZero() || window.Latest.Before(window.Earliest) {
-		svc.mu.Unlock()
-		return nil, status.Error(codes.FailedPrecondition, "fresh authenticated time with durable floor required; keys retained")
-	}
-	if err := svc.requirePKIOperator(ctx, window); err != nil {
-		svc.mu.Unlock()
-		return nil, err
-	}
-	if !svc.enrolled || req.GetExpectedPrincipalUri() != svc.principalURI || req.GetExpectedCertificateSha256() != svc.certificateFingerprintLocked() {
-		svc.mu.Unlock()
-		return nil, status.Error(codes.FailedPrecondition, "installed identity changed during time verification; keys retained")
 	}
 	leaves, _ := certs.ParseCertsFromPEM([]byte(svc.certPEM))
 	chain, _ := certs.ParseCertsFromPEM([]byte(svc.chainPEM))
@@ -217,10 +204,7 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 	}
 	issuer, err := unenrollproof.Issuer(leaves[0], chain)
 	if err == nil {
-		err = unenrollproof.VerifyRevocation(req.GetRevocationProof(), leaves[0], issuer, window.Earliest)
-		if err == nil {
-			err = unenrollproof.VerifyRevocation(req.GetRevocationProof(), leaves[0], issuer, window.Latest)
-		}
+		err = unenrollproof.VerifyRevocation(req.GetRevocationProof(), leaves[0], issuer, now)
 	}
 	if err != nil {
 		svc.mu.Unlock()
@@ -231,7 +215,7 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 		svc.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "typed Cloud deletion evidence required")
 	}
-	record := unenrollproof.Completion{Principal: svc.principalURI, Cloud: svc.cloudHost, AssetID: deleted.GetId(), Fingerprint: req.GetExpectedCertificateSha256(), AuthorizedAt: window.Latest.Unix(), Certificate: leaves[0].Raw, Chain: svc.chainPEM, Revocation: req.GetRevocationProof(), CloudDeletion: req.GetCloudDeletion()}
+	record := unenrollproof.Completion{Principal: svc.principalURI, Cloud: svc.cloudHost, AssetID: deleted.GetId(), Fingerprint: req.GetExpectedCertificateSha256(), AuthorizedAt: now.Unix(), Certificate: leaves[0].Raw, Chain: svc.chainPEM, Revocation: req.GetRevocationProof(), CloudDeletion: req.GetCloudDeletion()}
 	if err := validateResetBinding(&record); err != nil {
 		svc.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "exact Cloud deletion binding required; keys retained")
