@@ -908,6 +908,13 @@ func main() {
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
 
+	// Advertise the device's Ethernet addresses so hosts can prefer the cable.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		services.RunWiredAdvertisement(ctx, logger)
+	}()
+
 	// Start the embedded dev container registry (Linux only, best-effort).
 	// If already provisioned, start immediately with HTTPS; otherwise HTTP until provisioned.
 	if runtime.GOOS == "linux" && ctrdErr == nil {
