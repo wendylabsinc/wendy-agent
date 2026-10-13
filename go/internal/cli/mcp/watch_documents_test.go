@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -205,18 +206,32 @@ func TestDocumentWatchMapsTheWatchState(t *testing.T) {
 	}
 }
 
+// The agent retries a failed detector by loading it again every 5 s. The
+// retry belongs to ERROR: a watch must not flap between ERROR and PREPARING.
 func TestDocumentWatchStaysInErrorWhileTheAgentRetries(t *testing.T) {
 	f := newWatchDataClient()
-	f.setInference("chat-a-1", data.InferenceStatus{State: "error", Error: "boom"})
+	failed := data.InferenceStatus{State: "error", Error: "model download failed"}
+	f.setInference("chat-a-1", failed)
 	h := startDocumentTestWatch(t, fastDocumentBackend(), f, "chat-a-1")
-	if s := nextStatus(t, h); s.State != watchError {
-		t.Fatalf("first = %+v", s)
+	got := []watchStatusUpdate{nextStatus(t, h)}
+	for range 4 {
+		f.setInferenceSeen(t, "chat-a-1", data.InferenceStatus{State: "loading"})
+		f.setInferenceSeen(t, "chat-a-1", failed)
+		f.setInferenceSeen(t, "chat-a-1", data.InferenceStatus{State: "pending"})
 	}
-	f.setInferenceSeen(t, "chat-a-1", data.InferenceStatus{State: "loading"})
+	f.setInferenceSeen(t, "chat-a-1", data.InferenceStatus{State: "error", Error: "out of memory"})
 	f.setInferenceSeen(t, "chat-a-1", data.InferenceStatus{State: "loading"})
 	f.setInference("chat-a-1", data.InferenceStatus{State: "running"})
-	if s := nextStatus(t, h); s.State != watchReady {
-		t.Fatalf("after retry = %+v; loading between errors must not show as PREPARING", s)
+	for {
+		s := nextStatus(t, h)
+		got = append(got, s)
+		if s.State == watchReady {
+			break
+		}
+	}
+	want := []watchStatusUpdate{{State: watchError, Reason: "model download failed"}, {State: watchError, Reason: "out of memory"}, {State: watchReady}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("statuses %+v, want %+v", got, want)
 	}
 }
 
@@ -301,6 +316,11 @@ func TestDocumentPollerCapsAResponse(t *testing.T) {
 	f := newWatchDataClient()
 	b := fastDocumentBackend()
 	h := startDocumentTestWatch(t, b, f, "chat-a-1")
+	// These entries sit before the oversized response's cursor, so the poller
+	// must have moved past them: they are never delivered afterwards.
+	for range 3 {
+		f.publish("chat-a-1", data.NotificationDetection{Label: "stale", Score: 0.9})
+	}
 	f.mu.Lock()
 	f.oversize = []byte(`[` + strings.Repeat(`{"watch":"chat-a-1"},`, 220_000) + `{}]`)
 	f.mu.Unlock()
@@ -308,8 +328,81 @@ func TestDocumentPollerCapsAResponse(t *testing.T) {
 		t.Fatalf("update = %+v; an oversized response must become a gap", u)
 	}
 	f.publish("chat-a-1", data.NotificationDetection{Label: "person", Score: 0.9})
-	if u := nextEvent(t, h); u.Event == nil {
-		t.Fatalf("update = %+v; the poller must move on after the cap", u)
+	u := nextEvent(t, h)
+	if u.Event == nil || u.Event.Classes[0].Label != "person" {
+		t.Fatalf("update = %+v; the poller must move on after the cap, past the entries it skipped", u)
+	}
+}
+
+func TestDocumentPollerKeepsTheLast512Entries(t *testing.T) {
+	f := newWatchDataClient()
+	h := startDocumentTestWatch(t, fastDocumentBackend(), f, "chat-a-1")
+	f.mu.Lock()
+	for i := 1; i <= 513; i++ {
+		sequence := uint64(i)
+		f.journal = append(f.journal, data.CampaignNotification{
+			ID: strconv.Itoa(i), Watch: "chat-a-1", Leased: true, Count: 1, Sequence: sequence,
+			Detections: []data.NotificationDetection{{Label: "n" + strconv.Itoa(i), Score: 0.9}},
+			OccurredAt: time.Now().UTC().Format(time.RFC3339Nano),
+		})
+	}
+	f.mu.Unlock()
+	if u := nextEvent(t, h); u.Gap == "" {
+		t.Fatalf("update = %+v; 513 entries must report a gap first", u)
+	}
+	var labels []string
+	for len(labels) < 512 {
+		u := nextUpdate(t, h)
+		if u.Event != nil {
+			labels = append(labels, u.Event.Classes[0].Label)
+		}
+	}
+	if labels[0] != "n2" || labels[511] != "n513" {
+		t.Fatalf("kept %s..%s; want the last 512 (n2..n513)", labels[0], labels[511])
+	}
+	select {
+	case u := <-h.Updates():
+		if u.Event != nil {
+			t.Fatalf("extra event %+v after the last 512", u.Event)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// Stopping the last running watch must not stop the poller while another
+// start is still applying its documents.
+func TestDocumentPollerKeepsRunningForAStartInFlight(t *testing.T) {
+	f := newWatchDataClient()
+	b := fastDocumentBackend()
+	conn := &grpcclient.AgentConnection{DataService: f}
+	a, err := b.Start(context.Background(), conn, testWatchSpec("chat-a-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.applyWait = 150 * time.Millisecond
+	f.mu.Unlock()
+	type result struct {
+		h   watchHandle
+		err error
+	}
+	started := make(chan result, 1)
+	go func() {
+		h, err := b.Start(context.Background(), conn, testWatchSpec("chat-a-2"))
+		started <- result{h, err}
+	}()
+	time.Sleep(30 * time.Millisecond) // the second start is inside its apply
+	if err := a.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r := <-started
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	t.Cleanup(func() { _ = r.h.Stop(context.Background()) })
+	f.publish("chat-a-2", data.NotificationDetection{Label: "dog", Score: 0.8})
+	if u := nextEvent(t, r.h); u.Event == nil || u.Event.Classes[0].Label != "dog" {
+		t.Fatalf("got %+v", u)
 	}
 }
 
