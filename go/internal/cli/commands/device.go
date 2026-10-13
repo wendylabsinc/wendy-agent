@@ -1128,6 +1128,7 @@ func resolveAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 // connection error carries better context than a guess made here.
 func reportStaleCertificate(err error) {
 	if jsonOutput {
+		plainNotice("warning: %s. Sign in again to get a new one: wendy auth login", err.Error())
 		return
 	}
 	fmt.Fprintln(os.Stderr, tui.WarningMessage(capitalizeFirst(err.Error())+"."))
@@ -2446,13 +2447,16 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		otaURL = u
 	}
 
-	if err := streamOSUpdate(ctx, conn, otaURL, ""); err != nil {
-		return osUpdateOutcome{}, err
-	}
-
 	if _, isCloud := cloudDeviceConfigFromContext(ctx); isCloud {
+		if err := streamOSUpdate(ctx, conn, otaURL, ""); err != nil {
+			return osUpdateOutcome{}, err
+		}
 		fmt.Println("OS update applied; the device is rebooting. Reconnect once it is back online.")
 		return osUpdateOutcome{applied: true}, nil
+	}
+	recordCleared, err := applyOSUpdate(ctx, conn, otaURL)
+	if err != nil {
+		return osUpdateOutcome{}, err
 	}
 	fmt.Println("WendyOS update applied. Device is rebooting...")
 	if err := waitForDeviceOnline(ctx, priorConn.Host); err != nil {
@@ -2463,7 +2467,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	// also reboots and reconnects. Query the recorded outcome and surface a
 	// rollback as an error so `wendy device update` exits non-zero instead of
 	// silently reporting success (mirrors `wendy os update`).
-	if err := reportOSUpdateOutcome(ctx, priorConn.Host, preUpdateOSVersion); err != nil {
+	if err := reportOSUpdateOutcome(ctx, priorConn.Host, preUpdateOSVersion, recordCleared); err != nil {
 		return osUpdateOutcome{applied: true, online: true}, err
 	}
 	return osUpdateOutcome{applied: true, online: true}, nil
