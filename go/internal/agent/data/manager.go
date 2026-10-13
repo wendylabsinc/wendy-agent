@@ -85,6 +85,8 @@ type Manager struct {
 	// behind (or block) recording, and because DeployCampaign resolves audio
 	// sources through Sources, which takes mu itself.
 	campaignMu sync.Mutex
+	// documentMu serializes inference and watch document writes and removals.
+	documentMu sync.Mutex
 	root       string
 	active     map[string]*activeEpisode
 	// sealing holds episodes that have stopped capturing and are inside their
