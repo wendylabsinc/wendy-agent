@@ -520,3 +520,35 @@ func TestDocumentWatchApplyFailuresSayWhetherTheyMayLand(t *testing.T) {
 		})
 	}
 }
+
+// Two watches share one poller; an entry reaches only the watch it names.
+func TestDocumentPollerRoutesAnEntryToItsOwnWatch(t *testing.T) {
+	f := newWatchDataClient()
+	b := fastDocumentBackend()
+	front := startDocumentTestWatch(t, b, f, "chat-a-1")
+	back := startDocumentTestWatch(t, b, f, "chat-a-2")
+	expectNothing := func(h watchHandle, label string) {
+		t.Helper()
+		deadline := time.After(150 * time.Millisecond)
+		for {
+			select {
+			case u := <-h.Updates():
+				if u.Event != nil || u.Gap != "" {
+					t.Fatalf("%s: got %+v for another watch's entry", label, u)
+				}
+			case <-deadline:
+				return
+			}
+		}
+	}
+	for _, tc := range []struct {
+		target, other watchHandle
+		name, label   string
+	}{{back, front, "chat-a-2", "dog"}, {front, back, "chat-a-1", "person"}} {
+		f.publish(tc.name, data.NotificationDetection{Label: tc.label, Score: 0.9})
+		if u := nextEvent(t, tc.target); u.Event == nil || u.Event.Classes[0].Label != tc.label {
+			t.Fatalf("%s: event = %+v", tc.name, u)
+		}
+		expectNothing(tc.other, "the other watch after "+tc.name)
+	}
+}
