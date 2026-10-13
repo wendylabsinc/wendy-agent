@@ -237,6 +237,21 @@ func (f *watchDataClient) publish(watch string, detections ...data.NotificationD
 	})
 }
 
+// publishThenOversize appends entries and arms an oversized response under one
+// hold of the lock, so no poll can land between them.
+func (f *watchDataClient) publishThenOversize(watch string, entries int, detection data.NotificationDetection, oversize []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for range entries {
+		sequence := uint64(len(f.journal) + 1)
+		f.journal = append(f.journal, data.CampaignNotification{
+			ID: strconv.FormatUint(sequence, 10), Event: watch, Watch: watch, Inference: watch, Leased: true, Count: 1,
+			Detections: []data.NotificationDetection{detection}, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano), Sequence: sequence,
+		})
+	}
+	f.oversize = oversize
+}
+
 func (f *watchDataClient) setInference(name string, state data.InferenceStatus) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

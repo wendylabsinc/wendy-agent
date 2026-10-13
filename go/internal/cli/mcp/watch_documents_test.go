@@ -318,12 +318,8 @@ func TestDocumentPollerCapsAResponse(t *testing.T) {
 	h := startDocumentTestWatch(t, b, f, "chat-a-1")
 	// These entries sit before the oversized response's cursor, so the poller
 	// must have moved past them: they are never delivered afterwards.
-	for range 3 {
-		f.publish("chat-a-1", data.NotificationDetection{Label: "stale", Score: 0.9})
-	}
-	f.mu.Lock()
-	f.oversize = []byte(`[` + strings.Repeat(`{"watch":"chat-a-1"},`, 220_000) + `{}]`)
-	f.mu.Unlock()
+	f.publishThenOversize("chat-a-1", 3, data.NotificationDetection{Label: "stale", Score: 0.9},
+		[]byte(`[`+strings.Repeat(`{"watch":"chat-a-1"},`, 220_000)+`{}]`))
 	if u := nextEvent(t, h); u.Gap == "" {
 		t.Fatalf("update = %+v; an oversized response must become a gap", u)
 	}
