@@ -63,6 +63,12 @@ func (s *mcpServer) filterTools(_ context.Context, tools []mcpgo.Tool) []mcpgo.T
 	all := slices.Contains(groups, "all")
 	visible := make([]mcpgo.Tool, 0, len(tools))
 	for _, tool := range tools {
+		if s.relay {
+			if inManifest(tool.Name) {
+				visible = append(visible, tool)
+			}
+			continue
+		}
 		// The old name misleadingly suggests passive observation. Keep its
 		// handler for old callers but never advertise it, even in all mode.
 		if tool.Name == "container_attach" {

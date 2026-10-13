@@ -35,7 +35,8 @@ func (s *mcpServer) registerProvisioningTools(srv *server.MCPServer) {
 			mcpgo.Description("Asset ID to assign to this device (optional)"),
 		),
 	}
-	startOpts = append(startOpts, mutating()...)
+	// Destructive: enrolling replaces the device's existing cloud identity.
+	startOpts = append(startOpts, destructive()...)
 	startOpts = append(startOpts, openWorld()...)
 	startOpts = append(startOpts, idempotent()...)
 	srv.AddTool(mcpgo.NewTool("provisioning_start", startOpts...), s.handleProvisioningStart)

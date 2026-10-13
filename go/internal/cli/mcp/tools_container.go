@@ -43,7 +43,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("container_start", startOpts...), s.handleContainerStart)
 
 	stopOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Stop a running container"),
+		mcpgo.WithDescription("Stop a running container. Interrupts whatever task it is running."),
 		mcpgo.WithString("app_name",
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to stop"),

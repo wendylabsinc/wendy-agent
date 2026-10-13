@@ -19,7 +19,7 @@ func (s *mcpServer) registerWiFiTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("wifi_list", listOpts...), s.handleWiFiList)
 
 	connectOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Connect the device to a WiFi network"),
+		mcpgo.WithDescription("Connect the device to a WiFi network. Drops its current network, so the device may become unreachable."),
 		mcpgo.WithString("ssid",
 			mcpgo.Required(),
 			mcpgo.Description("WiFi network SSID"),

@@ -62,6 +62,7 @@ type mcpServer struct {
 	loginMu              sync.Mutex   // guards login and loginStarter
 	login                LoginSession // the latest auth_login session, pending or ended
 	loginStarter         LoginStarter
+	relay                bool // serving a hosted chat through the relay: the published manifest only
 }
 
 // SetStartupConnect configures the optional device connection attempted after
@@ -267,7 +268,7 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 		server.WithInstructions(serverInstructions),
 		server.WithToolFilter(s.filterTools),
 	)
-	srv.Use(s.cliUpdateMiddleware())
+	srv.Use(s.relayManifestMiddleware, s.cliUpdateMiddleware())
 	if err := registerSkills(srv); err != nil {
 		return nil, err
 	}
