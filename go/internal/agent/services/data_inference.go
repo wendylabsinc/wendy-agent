@@ -56,8 +56,11 @@ type campaignInferenceJob struct {
 	owner *campaignInferenceManager
 	// key is the job's key in jobs; document marks an inference document's job:
 	// no campaign capture, no campaign notifications.
-	key            string
-	document       bool
+	key      string
+	document bool
+	// audience is a document job's current record audience, replaced (never
+	// mutated) under mu by run and read by the stream goroutines.
+	audience       map[string]bool
 	campaign       data.Campaign
 	cancel         context.CancelFunc
 	done           chan struct{}
@@ -304,6 +307,9 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 	reconcile := func() {
 		if j.document {
 			audience = j.owner.service.collectionsTriggeredBy(j.campaign.Inference.Event)
+			j.mu.Lock()
+			j.audience = audience
+			j.mu.Unlock()
 		}
 		ids, _, _, resolveErr := j.owner.service.manager.ResolveCampaignSources(j.campaign)
 		selected := map[string]bool{}
@@ -400,7 +406,7 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 			attributes := map[string]any{"campaign": j.campaign.Name, "source_id": result.SourceID, "model_version": j.campaign.Inference.Revision, "detections": detections,
 				"input_reference_status": "encoded_stream_decode_does_not_preserve_sample_ids", "runtime_results_dropped": result.DroppedResults}
 			record := data.ApplicationRecord{Version: 1, Type: "prediction", Model: j.campaign.Inference.Model, Attributes: attributes}
-			if _, err := j.owner.service.manager.RecordCampaignApplication(campaignAppPrefix+j.campaign.Name, record); err != nil {
+			if _, err := j.owner.service.manager.RecordCampaignApplication(j.appID(), record); err != nil {
 				j.owner.service.manager.Warnf("recording campaign prediction: %v", err)
 			}
 			state := presence[result.SourceID]
@@ -449,7 +455,7 @@ func (j *campaignInferenceJob) stream(ctx context.Context, session inference.Ses
 				if err != nil {
 					break
 				}
-				if err := j.owner.service.manager.RecordModelInput(data.ModelInput{AppID: campaignAppPrefix + j.campaign.Name, Model: j.campaign.Inference.Model, SourceID: sourceID, SampleID: sample.SampleID, BootNanos: sample.BootNanos, UncertaintyNanos: sample.UncertaintyNanos, PayloadBytes: len(sample.Payload), Encoding: sample.Encoding, SelfContained: sample.SelfContained, DroppedBefore: sample.DroppedBefore}); err != nil {
+				if err := j.owner.service.manager.RecordModelInputFor(data.ModelInput{AppID: j.appID(), Model: j.campaign.Inference.Model, SourceID: sourceID, SampleID: sample.SampleID, BootNanos: sample.BootNanos, UncertaintyNanos: sample.UncertaintyNanos, PayloadBytes: len(sample.Payload), Encoding: sample.Encoding, SelfContained: sample.SelfContained, DroppedBefore: sample.DroppedBefore}, j.modelInputAudience()); err != nil {
 					j.owner.service.manager.Warnf("recording campaign model input: %v", err)
 				}
 			}
@@ -541,26 +547,51 @@ func inferenceNotification(campaign data.Campaign, source string, detections []i
 // documentResult handles one scored frame of an inference document (spec
 // §7.3). An arrival reaches watches first; the records go only to the
 // collections that trigger on its event, and storing them never holds up a
-// notification.
+// notification: watches are told before anything is written.
 func (j *campaignInferenceJob) documentResult(state *inferencePresence, sourceID string, detections []inference.Detection, dropped uint64, audience map[string]bool) {
 	service := j.owner.service
-	appID := inferenceAppPrefix + j.campaign.Name
+	appID := j.appID()
 	attributes := map[string]any{"inference": j.campaign.Name, "source_id": sourceID, "model_version": j.campaign.Inference.Revision, "detections": detections,
 		"input_reference_status": "encoded_stream_decode_does_not_preserve_sample_ids", "runtime_results_dropped": dropped}
 	record := data.ApplicationRecord{Version: 1, Type: "prediction", Model: j.campaign.Inference.Model, Attributes: attributes}
+	arrival := state != nil && state.observe(len(detections) > 0, time.Now(), j.campaign.Inference)
+	// Watches are told first: the record writes below take the manager lock,
+	// which can queue behind a seal.
+	if arrival && service.watches != nil {
+		service.watches.deliver(j.campaign.Name, inferenceNotification(j.campaign, sourceID, detections))
+	}
 	if _, err := service.manager.RecordApplicationFor(appID, record, audience, false); err != nil {
 		service.manager.Warnf("inference %q prediction: %v", j.campaign.Name, err)
 	}
-	if state == nil || !state.observe(len(detections) > 0, time.Now(), j.campaign.Inference) {
+	if !arrival {
 		return
-	}
-	if service.watches != nil {
-		service.watches.deliver(j.campaign.Name, inferenceNotification(j.campaign, sourceID, detections))
 	}
 	record.Type, record.Name = "event", j.campaign.Inference.Event
 	if _, err := service.manager.RecordApplicationFor(appID, record, audience, true); err != nil {
 		service.manager.Warnf("inference %q event: %v", j.campaign.Name, err)
 	}
+}
+
+// appID is the application id every record of this job carries.
+func (j *campaignInferenceJob) appID() string {
+	if j.document {
+		return inferenceAppPrefix + j.campaign.Name
+	}
+	return campaignAppPrefix + j.campaign.Name
+}
+
+// modelInputAudience is the episodes this job's model inputs may reach: all of
+// them for a campaign (nil), the document's collections for a document.
+func (j *campaignInferenceJob) modelInputAudience() map[string]bool {
+	if !j.document {
+		return nil
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.audience == nil {
+		return map[string]bool{}
+	}
+	return j.audience
 }
 
 // collectionsTriggeredBy names the armed collections whose capture triggers

@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -171,5 +173,42 @@ func TestRemovedInferenceDocumentStopsOnReconcileNow(t *testing.T) {
 	case <-session.closed:
 	default:
 		t.Fatal("reconcileNow returned before the job stopped")
+	}
+}
+
+func TestInferenceDocumentModelInputsUseItsAppIDAndAudience(t *testing.T) {
+	service, factory, sender := newDocumentTestService(t)
+	startDocumentTestService(t, service, factory, sender)
+	for _, yaml := range []string{testClipsCollection, strings.ReplaceAll(strings.Replace(testClipsCollection, "name: clips", "name: other", 1), "event: front-door", "event: something-else")} {
+		if _, err := service.CampaignDeploy(context.Background(), &agentpbv2.DataCampaignDeployRequest{CampaignYaml: []byte(yaml)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The test camera yields one sample, so both episodes are open before the
+	// document starts: one in the document's audience, one unrelated.
+	for _, name := range []string{"clips", "other"} {
+		if _, err := service.manager.Start(data.StartOptions{Sources: []string{"applications"}, Trigger: data.EpisodeTrigger{Reason: "manual", CampaignName: name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saveDocument(t, service, testInferenceDocumentYAML)
+	session := receiveInference(t, factory.sessions)
+	receiveInference(t, session.inputs)
+	ledgers := func(key string) string {
+		session, ok := service.manager.ActiveSession(key)
+		if !ok {
+			return ""
+		}
+		b, _ := os.ReadFile(filepath.Join(session.Directory, data.ModelInputLedgerFile))
+		return string(b)
+	}
+	eventually(t, "a model input in the clips ledger", func() bool {
+		return strings.Contains(ledgers("clips"), `"app_id":"sh.wendy.inference.front-door"`)
+	})
+	if strings.Contains(ledgers("clips"), "sh.wendy.campaign.") {
+		t.Fatal("a document's model input carried a campaign app id")
+	}
+	if ledgers("other") != "" {
+		t.Fatalf("an unrelated episode received model inputs: %s", ledgers("other"))
 	}
 }
