@@ -14,20 +14,22 @@ The agent keeps the robot connection and key. The bridge needs the `admin`
 entitlement for now, to reach the agent socket. Later the agent is meant to run
 this bridge itself.
 
-The robot bus stays on the device. The bridge uses discovery scope `app`
-(loopback only) on domain 0, so apps that use the robot declare the same:
+The robot bus stays on the device. The bridge uses ROS 2 scope `device`
+(loopback only) on domain 0. Apps that use the robot declare scope
+`peripherals`, like the simulator examples, on domain 0 with host networking:
 
 ```json
 "frameworks": { "ros2": { "distro": "humble", "rmw": "rmw_cyclonedds_cpp",
-                          "domainId": 0, "discoveryScope": "app" } },
+                          "domainId": 0, "scope": "peripherals" } },
 "entitlements": [ { "type": "network", "mode": "host" } ]
 ```
 
-Host networking puts all such apps on the device's loopback; the explicit
-domain 0 puts them on one bus (without it each app gets its own domain).
+On a device without a robot cable, `peripherals` is loopback only, which is
+where the bridge is; the same manifest reaches a Go2 EDU on its own cable.
 Nothing on the LAN sees the robot topics or can publish commands. Wendy's ROS
 tools (`wendy device ros2 …`, Foxglove) join an app's network and discovery
-settings, so they keep working.
+settings, so they keep working. Agents without ROS 2 `scope` support ignore the
+field and use loopback discovery, which reaches the bridge as well.
 
 ## Run
 
@@ -79,8 +81,6 @@ move after 500 ms, so publish at least ~3 Hz while moving.
 - `/odom` twist assumes the sport state velocity is in the world frame; to be
   verified on hardware.
 - No control handoff between apps: the latest command wins.
-- The simulator examples declare discovery scope `host`; against this bridge
-  they need `app` (one line in their `wendy.json`).
 
 ## Simulator examples
 
