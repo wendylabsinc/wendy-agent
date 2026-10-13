@@ -2,47 +2,24 @@ package rtps
 
 import (
 	"bufio"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
 
-// PeripheralsConfigFile overrides automatic peripheral interface detection. It
-// lives in the agent's config directory (/etc/wendy-agent by default, or
-// $WENDY_CONFIG_PATH), next to ros2-battery.json, e.g.
-//
-//	{"interfaces": ["eth1"]}
-//
-// An empty list means the device has no peripheral interfaces.
-const PeripheralsConfigFile = "ros2-peripherals.json"
-
 // Kernel interface names: at most 15 bytes. The names end up in CycloneDDS XML,
-// so anything else is rejected rather than escaped.
+// so anything else is skipped rather than escaped.
 var interfaceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,15}$`)
 
-// AgentConfigDir is the agent's config directory.
-func AgentConfigDir() string {
-	if dir := os.Getenv("WENDY_CONFIG_PATH"); dir != "" {
-		return dir
-	}
-	return "/etc/wendy-agent"
-}
-
 // PeripheralInterfaces returns the interfaces that lead to hardware attached to
-// the device rather than to the network: the override in configDir when
-// present, otherwise every eligible wired interface (see HostInterfaces) that
-// does not carry a default route. A robot or sensor on its own cable has no
-// default route; the device's uplink does. When the routes cannot be read, no
-// interface qualifies, so peripheral discovery never widens to an uplink.
-func PeripheralInterfaces(configDir string) ([]string, error) {
-	if names, ok, err := peripheralOverride(configDir); ok || err != nil {
-		return names, err
-	}
+// the device rather than to a network: eligible wired interfaces (see
+// HostInterfaces) that are backed by a physical network device and do not carry
+// a default route. A robot or sensor on its own cable qualifies; the device's
+// uplink, VPNs, bridges and container interfaces do not. When the routes cannot
+// be read, no interface qualifies, so peripheral discovery never widens to an
+// uplink.
+func PeripheralInterfaces() ([]string, error) {
 	wired, err := HostInterfaces()
 	if err != nil {
 		return nil, err
@@ -51,38 +28,23 @@ func PeripheralInterfaces(configDir string) ([]string, error) {
 	if err != nil {
 		return nil, nil
 	}
-	var names []string
-	for _, name := range wired {
-		if !uplinks[name] && interfaceNamePattern.MatchString(name) {
-			names = append(names, name)
-		}
-	}
-	return names, nil
+	return peripheralInterfaces(wired, uplinks, "/sys/class/net"), nil
 }
 
-func peripheralOverride(configDir string) ([]string, bool, error) {
-	data, err := os.ReadFile(filepath.Join(configDir, PeripheralsConfigFile))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, true, fmt.Errorf("reading %s: %w", PeripheralsConfigFile, err)
-	}
-	var file struct {
-		Interfaces *[]string `json:"interfaces"`
-	}
-	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, true, fmt.Errorf("parsing %s: %w", PeripheralsConfigFile, err)
-	}
-	if file.Interfaces == nil {
-		return nil, true, fmt.Errorf("%s: missing \"interfaces\"", PeripheralsConfigFile)
-	}
-	for _, name := range *file.Interfaces {
-		if !interfaceNamePattern.MatchString(name) {
-			return nil, true, fmt.Errorf("%s: invalid interface name %q", PeripheralsConfigFile, name)
+func peripheralInterfaces(wired []string, uplinks map[string]bool, sysClassNet string) []string {
+	var names []string
+	for _, name := range wired {
+		if uplinks[name] || !interfaceNamePattern.MatchString(name) {
+			continue
 		}
+		// Physical network devices have a "device" link in sysfs; virtual
+		// interfaces (VPNs, bridges, veth, dummy) do not.
+		if _, err := os.Stat(filepath.Join(sysClassNet, name, "device")); err != nil {
+			continue
+		}
+		names = append(names, name)
 	}
-	return *file.Interfaces, true, nil
+	return names
 }
 
 // defaultRouteInterfaces reads the IPv4 and IPv6 routing tables and returns the

@@ -120,8 +120,10 @@ Every field is optional — `"frameworks": { "ros2": {} }` is a valid way to say
 |---------|---------------------|-----|
 | `app` | Only this app (all its services) | Loopback discovery on the app's own domain, derived from `appId`. Do not set `domainId`. |
 | `device` | Every app on the device that uses the same domain | Loopback discovery (`ROS_LOCALHOST_ONLY=1`). |
-| `peripherals` | The device's apps and hardware attached to it, such as a robot or sensor on its own cable | Loopback plus the device's peripheral interfaces: wired interfaces other than the uplink that carries the default route. CycloneDDS only. Override the interfaces per device in `/etc/wendy-agent/ros2-peripherals.json`, e.g. `{"interfaces": ["eth1"]}`. On a device with nothing attached it behaves as `device`. |
+| `peripherals` | The device's apps and hardware attached to it, such as a robot or sensor on its own cable | Loopback plus the device's peripheral interfaces: physical wired interfaces other than the uplink that carries the default route. CycloneDDS only. On a device with nothing attached it behaves as `device`. |
 | `network` | Anything on the device's networks | Subnet discovery on every interface. |
+
+Peripheral interfaces are detected, not configured: a robot on its own cable is found, but a robot on the same switch as the device's uplink, or one reached over Wi-Fi, is not; use `network` for those. A second ordinary network port without a default route counts as a peripheral interface.
 
 `device` and `peripherals` connect apps through the device's loopback, so they need the host network: no `network` entitlement or `{ "type": "network", "mode": "host" }`. Apps that share a bus through `device`, `peripherals` or `network` set the same `domainId`; without one each app gets its own domain.
 

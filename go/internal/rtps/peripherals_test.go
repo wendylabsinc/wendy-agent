@@ -36,28 +36,18 @@ func TestDefaultRouteInterfaces(t *testing.T) {
 	}
 }
 
-func TestPeripheralOverride(t *testing.T) {
-	dir := t.TempDir()
-	if _, ok, err := peripheralOverride(dir); ok || err != nil {
-		t.Fatalf("no file: ok=%v err=%v, want no override", ok, err)
+func TestPeripheralInterfaces(t *testing.T) {
+	sys := t.TempDir()
+	// eth1 and enx0 are physical; zt0 (a VPN) and br0 are not.
+	for _, name := range []string{"eth0", "eth1", "enx0"} {
+		must(t, os.MkdirAll(filepath.Join(sys, name, "device"), 0o755))
 	}
-	write := func(body string) {
-		must(t, os.WriteFile(filepath.Join(dir, PeripheralsConfigFile), []byte(body), 0o600))
+	for _, name := range []string{"zt0", "br0"} {
+		must(t, os.MkdirAll(filepath.Join(sys, name), 0o755))
 	}
-
-	write(`{"interfaces": ["eth1", "enP8p1s0"]}`)
-	if got, err := PeripheralInterfaces(dir); err != nil || !reflect.DeepEqual(got, []string{"eth1", "enP8p1s0"}) {
-		t.Errorf("override = %v, %v", got, err)
-	}
-	write(`{"interfaces": []}`)
-	if got, _, err := peripheralOverride(dir); err != nil || len(got) != 0 {
-		t.Errorf("empty override = %v, %v; want none", got, err)
-	}
-	for _, bad := range []string{`{"interfaces": ["eth0\"/><x"]}`, `{}`, `not json`} {
-		write(bad)
-		if _, ok, err := peripheralOverride(dir); !ok || err == nil {
-			t.Errorf("override %s: want an error", bad)
-		}
+	got := peripheralInterfaces([]string{"eth0", "eth1", "enx0", "zt0", "br0", "bad\"/>"}, map[string]bool{"eth0": true}, sys)
+	if want := []string{"eth1", "enx0"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("peripheral interfaces = %v, want %v", got, want)
 	}
 }
 

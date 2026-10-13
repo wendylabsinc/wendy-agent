@@ -48,7 +48,7 @@ type candidateIface = rtps.InterfaceCandidate
 // battery is on DDS is attached hardware, so the monitor does not look for one
 // on the device's uplink network (see rtps.PeripheralInterfaces).
 func candidateInterfaces() []string {
-	ifaces, _ := rtps.PeripheralInterfaces(rtps.AgentConfigDir())
+	ifaces, _ := rtps.PeripheralInterfaces()
 	return ifaces
 }
 func eligibleInterfaces(ifaces []candidateIface) []string {
@@ -80,8 +80,8 @@ type Config struct {
 	Enabled bool
 	// Interfaces pins discovery to named network interfaces, tried in order
 	// until one yields a battery topic. Empty means the device's peripheral
-	// interfaces: wired, not virtual, and not the uplink carrying the default
-	// route (or ros2-peripherals.json). Naming one here bypasses that filter and
+	// interfaces: physical, wired, and not the uplink carrying the default
+	// route. Naming one here bypasses that filter and
 	// is how a host whose robot link is WiFi opts back in.
 	Interfaces []string
 	// DomainID is the DDS domain. Zero is the ROS 2 default.

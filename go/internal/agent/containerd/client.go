@@ -2928,7 +2928,7 @@ func cycloneDDSPeripheralsConfig(interfaces []string) string {
 // ros2PeripheralInterfaces finds the device's peripheral interfaces; tests
 // replace it.
 var ros2PeripheralInterfaces = func() ([]string, error) {
-	return rtps.PeripheralInterfaces(rtps.AgentConfigDir())
+	return rtps.PeripheralInterfaces()
 }
 
 // buildROS2Env returns ROS2 environment variables for the container resolved
