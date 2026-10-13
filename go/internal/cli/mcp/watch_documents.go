@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	// A 60 s lease renewed every 20 s survives two missed renewals.
+	// A 60 s lease renewed every 20 s, and once as a watch starts, survives
+	// two missed renewals.
 	watchLease         = "60s"
 	watchRenewEvery    = 20 * time.Second
 	watchStatusEvery   = 5 * time.Second
@@ -396,7 +397,9 @@ func (w *documentWatch) run() {
 	defer renew.Stop()
 	inspect := time.NewTicker(w.backend.statusEvery)
 	defer inspect.Stop()
-	if !w.refreshStatus() {
+	// The lease started when the agent applied the watch, possibly long
+	// before now; renew at once rather than a full interval later.
+	if !w.renew() || !w.refreshStatus() {
 		return
 	}
 	for {

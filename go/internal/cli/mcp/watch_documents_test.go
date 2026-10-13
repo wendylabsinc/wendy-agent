@@ -552,3 +552,26 @@ func TestDocumentPollerRoutesAnEntryToItsOwnWatch(t *testing.T) {
 		expectNothing(tc.other, "the other watch after "+tc.name)
 	}
 }
+
+// The lease starts when the agent applies the watch, which may be long before
+// Start returns on a busy device, so the first renewal cannot wait a full
+// interval.
+func TestDocumentWatchRenewsRightAfterItStarts(t *testing.T) {
+	f := newWatchDataClient()
+	b := fastDocumentBackend()
+	b.renewEvery = time.Hour
+	startDocumentTestWatch(t, b, f, "chat-a-1")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f.mu.Lock()
+		renews := f.renews["chat-a-1"]
+		f.mu.Unlock()
+		if renews >= 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no renewal after Start returned")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
