@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -245,11 +246,43 @@ func (s *Signer) signRequest(method string, req proto.Message, byKID bool, corre
 	if err != nil {
 		return nil, fmt.Errorf("signing Cloud request %s: %w", method, err)
 	}
-	return &cloudpbv2.SignedRequest{
+	signed := &cloudpbv2.SignedRequest{
 		Payload:     payload,
 		PayloadType: string(req.ProtoReflect().Descriptor().FullName()),
 		Signature:   []byte(jws),
-	}, nil
+	}
+	markChannel(signed)
+	return signed, nil
+}
+
+// The MCP channel marker of this process and of the CLI children its tools
+// start, set by SetChannel and read by markChannel.
+const (
+	channelEnv        = "WENDY_MCP_CHANNEL"
+	mcpClientIDEnv    = "WENDY_MCP_CLIENT_ID"
+	relaySessionIDEnv = "WENDY_MCP_RELAY_SESSION_ID"
+)
+
+// SetChannel marks every later signed Cloud call of this process, and of the
+// CLI children it starts, as made through an MCP channel (Relay MCP contract,
+// docs/relay-mcp.md): MCP_LOCAL for `wendy mcp serve`, HOSTED_MCP with the web
+// client's OAuth client_id and the relay session for `wendy cloud mcp`. The
+// marker is outside the signature; a modified client can omit it.
+func SetChannel(channel cloudpbv2.RequestChannel, mcpClientID, relaySessionID string) error {
+	for _, kv := range [][2]string{{mcpClientIDEnv, mcpClientID}, {relaySessionIDEnv, relaySessionID}, {channelEnv, channel.String()}} {
+		if err := os.Setenv(kv[0], kv[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func markChannel(signed *cloudpbv2.SignedRequest) {
+	signed.Channel = cloudpbv2.RequestChannel(cloudpbv2.RequestChannel_value[os.Getenv(channelEnv)])
+	if signed.Channel == cloudpbv2.RequestChannel_REQUEST_CHANNEL_HOSTED_MCP {
+		signed.McpClientId = os.Getenv(mcpClientIDEnv)
+		signed.RelaySessionId = os.Getenv(relaySessionIDEnv)
+	}
 }
 
 // signedResources maps each operator-signed method the CLI calls to its
@@ -263,6 +296,11 @@ var signedResources = map[string]func(tenant string, req proto.Message) (string,
 	cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
 		in, ok := req.(*cloudpbv2.EnrollDeviceRequest)
 		return "org/" + tenant + "/device/" + in.GetDeviceId(), ok
+	},
+	// Ruled 2026-10-13 (WDY-3660); cloud's RequestSigning.md row follows.
+	cloudpbv2.RelayMcpService_OpenRelaySession_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.OpenRelaySessionRequest)
+		return "org/" + in.GetOrganizationId() + "/relay-session", ok
 	},
 }
 

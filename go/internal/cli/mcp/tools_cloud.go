@@ -528,6 +528,13 @@ func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error)
 	if errors.Is(err, config.ErrMultipleSessions) {
 		return nil, &cloudResolveErr{code: errCodeMultipleSessions, msg: "multiple auth sessions exist; pass cloud_grpc to select one, or set a default with 'wendy auth use'"}
 	}
+	if err == nil {
+		// Per call too: the startup check saw one session, and a refreshed
+		// token may carry a changed realm setting.
+		if err := RealmAllowsMCP(auth); err != nil {
+			return nil, &cloudResolveErr{code: errCodeDenied, msg: err.Error()}
+		}
+	}
 	return auth, err
 }
 

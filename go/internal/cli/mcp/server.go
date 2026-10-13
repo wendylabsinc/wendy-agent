@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/url"
@@ -62,7 +63,12 @@ type mcpServer struct {
 	loginMu              sync.Mutex   // guards login and loginStarter
 	login                LoginSession // the latest auth_login session, pending or ended
 	loginStarter         LoginStarter
+	binding              *BindingPolicy // set by wendy cloud mcp; nil for the local stdio server
 }
+
+// Server is the wendy MCP server, named for callers that configure it before
+// choosing a transport.
+type Server = mcpServer
 
 // SetStartupConnect configures the optional device connection attempted after
 // the MCP stdio server starts accepting requests. Keeping this work off the
@@ -267,7 +273,7 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 		server.WithInstructions(serverInstructions),
 		server.WithToolFilter(s.filterTools),
 	)
-	srv.Use(s.cliUpdateMiddleware())
+	srv.Use(s.bindingMiddleware(srv), s.cliUpdateMiddleware())
 	if err := registerSkills(srv); err != nil {
 		return nil, err
 	}
@@ -299,6 +305,23 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 
 // Start registers tools and serves MCP over stdio until the client disconnects.
 func (s *mcpServer) Start(ctx context.Context) error {
+	return s.run(ctx, serveStdio)
+}
+
+// Serve is Start over in and out instead of this process's stdio, limited by
+// policy: the transport of `wendy cloud mcp`, where a relay binding carries
+// the frames. It returns when ctx ends or in reaches EOF.
+func (s *mcpServer) Serve(ctx context.Context, policy *BindingPolicy, in io.Reader, out io.Writer) error {
+	if policy == nil {
+		return fmt.Errorf("serving MCP for a web client needs a binding policy")
+	}
+	s.setBindingPolicy(policy)
+	return s.run(ctx, func(srv *server.MCPServer) error {
+		return serveStdioStreams(ctx, srv, in, out)
+	})
+}
+
+func (s *mcpServer) run(ctx context.Context, serve func(*server.MCPServer) error) error {
 	defer s.closeCloudTunnels()
 	srv, err := s.newProtocolServer()
 	if err != nil {
@@ -311,7 +334,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	go s.runStartupConnect(startupCtx)
 	go s.runCLIUpdateChecks(startupCtx, time.Hour)
 
-	return serveStdio(srv)
+	return serve(srv)
 }
 
 // serveStdio is replaceable in tests so startup ordering can be verified
