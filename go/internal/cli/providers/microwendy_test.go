@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestEspIdfBinaryPath(t *testing.T) {
@@ -474,7 +477,7 @@ func setCloudRelayDialer(t *testing.T, dial func(context.Context, models.Externa
 	if dial == nil {
 		CloudRelayDialer = nil
 	} else {
-		CloudRelayDialer = func(ctx context.Context, device models.ExternalDevice) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
+		CloudRelayDialer = func(ctx context.Context, device models.ExternalDevice, _ bool) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
 			conn, callCtx, err := dial(ctx, device)
 			return conn, callCtx, liteclient.RelayOptions{}, err
 		}
@@ -524,5 +527,22 @@ func TestConnectClientReportsCloudDialError(t *testing.T) {
 	}
 	if dialled.ConnectionInfo["assetId"] != device.ConnectionInfo["assetId"] {
 		t.Errorf("dialer got %+v, want the selected device", dialled)
+	}
+}
+
+func TestConnectClientRenewsLiteLeafOnceWhenCloudRefusesIt(t *testing.T) {
+	var renews []bool
+	old := CloudRelayDialer
+	t.Cleanup(func() { CloudRelayDialer = old })
+	CloudRelayDialer = func(_ context.Context, _ models.ExternalDevice, renew bool) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
+		renews = append(renews, renew)
+		return nil, nil, liteclient.RelayOptions{}, status.Error(codes.PermissionDenied, "invalid Lite principal request")
+	}
+	p := &MicroWendyProvider{}
+	_, err := p.connectClient(context.Background(), models.ExternalDevice{
+		ConnectionInfo: map[string]string{"type": "Cloud", "assetId": "0b6f7a52-5d1e-4c3b-9a8e-2f4d6c8b1a3e"},
+	})
+	if status.Code(err) != codes.PermissionDenied || !slices.Equal(renews, []bool{false, true}) {
+		t.Fatalf("renews = %v, err = %v; want one renewal then the refusal", renews, err)
 	}
 }

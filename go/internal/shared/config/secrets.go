@@ -173,7 +173,7 @@ func (a AuthConfig) OAuthDPoPKey() (string, error) {
 func (a AuthConfig) InvalidateCachedSecrets() {
 	secretMu.Lock()
 	defer secretMu.Unlock()
-	for _, ref := range []string{a.APIKey, a.RefreshToken, a.DPoPPrivateKey} {
+	for _, ref := range []string{a.APIKey, a.RefreshToken, a.DPoPPrivateKey, a.LitePrivateKey} {
 		delete(secretCache, ref)
 	}
 	for _, cert := range a.Certificates {
@@ -232,6 +232,7 @@ func dehydrate(cfg *Config) {
 		for value, kind := range map[string]string{
 			a.RefreshToken:   "refresh",
 			a.DPoPPrivateKey: "dpop-key",
+			a.LitePrivateKey: "lite-key",
 		} {
 			if value == "" || isRef(value) {
 				continue
@@ -239,10 +240,13 @@ func dehydrate(cfg *Config) {
 			acct := oauthSecretAccount(kind, *a)
 			if store.Put(acct, []byte(value)) == nil {
 				cacheSecret(refPrefixV1+acct, value)
-				if kind == "refresh" {
+				switch kind {
+				case "refresh":
 					a.RefreshToken = refPrefixV1 + acct
-				} else {
+				case "dpop-key":
 					a.DPoPPrivateKey = refPrefixV1 + acct
+				default:
+					a.LitePrivateKey = refPrefixV1 + acct
 				}
 			}
 		}
@@ -278,6 +282,11 @@ func inlineSecrets(cfg *Config) {
 		if isRef(a.DPoPPrivateKey) {
 			if v, err := resolveSecret(a.DPoPPrivateKey); err == nil {
 				a.DPoPPrivateKey = v
+			}
+		}
+		if isRef(a.LitePrivateKey) {
+			if v, err := resolveSecret(a.LitePrivateKey); err == nil {
+				a.LitePrivateKey = v
 			}
 		}
 		for j := range a.Certificates {
@@ -341,6 +350,9 @@ func countInlineSecrets(cfg *Config) int {
 		if a.DPoPPrivateKey != "" && !isRef(a.DPoPPrivateKey) {
 			n++
 		}
+		if a.LitePrivateKey != "" && !isRef(a.LitePrivateKey) {
+			n++
+		}
 		for _, c := range a.Certificates {
 			if c.PemPrivateKey != "" && !isRef(c.PemPrivateKey) {
 				n++
@@ -360,6 +372,9 @@ func countSecretRefs(cfg *Config) int {
 			n++
 		}
 		if isRef(a.DPoPPrivateKey) {
+			n++
+		}
+		if isRef(a.LitePrivateKey) {
 			n++
 		}
 		for _, c := range a.Certificates {
@@ -398,6 +413,9 @@ func DeleteStoredSecrets(cfg *Config) {
 		}
 		if isRef(a.DPoPPrivateKey) {
 			deleteRef(a.DPoPPrivateKey)
+		}
+		if isRef(a.LitePrivateKey) {
+			deleteRef(a.LitePrivateKey)
 		}
 		for _, c := range a.Certificates {
 			if isRef(c.PemPrivateKey) {

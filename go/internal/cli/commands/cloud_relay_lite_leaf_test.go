@@ -1,0 +1,221 @@
+package commands
+
+import (
+	"bytes"
+	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/asn1"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"io"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+)
+
+// liteLeafPEM self-signs an operator leaf for key; marked adds pki-core's Lite EKU.
+func liteLeafPEM(t *testing.T, key crypto.Signer, principal string, notAfter time.Time, marked bool) string {
+	t.Helper()
+	u, err := url.Parse(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(7),
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		URIs:         []*url.URL{u},
+	}
+	if marked {
+		template.UnknownExtKeyUsage = []asn1.ObjectIdentifier{oidLiteOperator}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+func newP256KeyPEM(t *testing.T) (string, *ecdsa.PrivateKey) {
+	t.Helper()
+	keyPEM, err := certs.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keyPEM, key.(*ecdsa.PrivateKey)
+}
+
+func jwsHeader(t *testing.T, jws []byte) map[string]any {
+	t.Helper()
+	part, _, _ := strings.Cut(string(jws), ".")
+	raw, err := base64.RawURLEncoding.DecodeString(part)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header map[string]any
+	if err := json.Unmarshal(raw, &header); err != nil {
+		t.Fatal(err)
+	}
+	return header
+}
+
+func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
+	t.Setenv("WENDY_LITE_OPERATOR_CERT", "")
+	t.Setenv("WENDY_LITE_OPERATOR_KEY", "")
+	auth := liteTestAuth("cloud.example:443")
+	auth.Certificates, _ = liteRelayTestPKI(t)
+	lite, _ := liteRelayTestPKI(t)
+	auth.LiteCertificate = lite[0].PemCertificate + lite[0].PemCertificateChain
+	auth.LitePrivateKey = lite[0].PemPrivateKey
+
+	options, err := liteRelayOptions(context.Background(), auth, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.OperatorIdentity.PemCertificate != lite[0].PemCertificate || options.OperatorIdentity.PemCertificateChain != lite[0].PemCertificateChain {
+		t.Fatal("Lite lane did not select the session's Lite leaf and chain")
+	}
+	proof, err := options.SignRequest([]byte("request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := pem.Decode([]byte(lite[0].PemCertificate))
+	if got := relayRequestCertificate(t, proof); !bytes.Equal(got, leaf.Bytes) {
+		t.Fatal("Lite request x5c is not the Lite leaf")
+	}
+	if alg := jwsHeader(t, proof)["alg"]; alg != "ES256" {
+		t.Fatalf("Lite request alg = %v, want ES256", alg)
+	}
+}
+
+// Without a usable Lite leaf the CLI requests one; it never presents the
+// primary. A non-OIDC session cannot request, so the request path errors.
+func TestLiteRelayOptionsRequestInsteadOfFallingBack(t *testing.T) {
+	t.Setenv("WENDY_LITE_OPERATOR_CERT", "")
+	t.Setenv("WENDY_LITE_OPERATOR_KEY", "")
+	principal := "spiffe://wendy.sh/tenant/" + liteTestTenant + "/operator/test"
+	keyPEM, key := newP256KeyPEM(t)
+	for _, tc := range []struct {
+		name  string
+		leaf  string
+		renew bool
+	}{
+		{name: "no Lite leaf"},
+		{name: "Lite leaf expires within a session", leaf: liteLeafPEM(t, key, principal, time.Now().Add(10*time.Minute), true)},
+		{name: "Lite leaf of another operator", leaf: liteLeafPEM(t, key, principal+"-other", time.Now().Add(time.Hour), true)},
+		{name: "Cloud refused the stored leaf", leaf: liteLeafPEM(t, key, principal, time.Now().Add(time.Hour), true), renew: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := liteTestAuth("cloud.example:443")
+			auth.Certificates, _ = liteRelayTestPKI(t)
+			if tc.leaf != "" {
+				auth.LiteCertificate, auth.LitePrivateKey = tc.leaf, keyPEM
+			}
+			_, err := liteRelayOptions(context.Background(), auth, tc.renew)
+			if err == nil || !strings.Contains(err.Error(), "needs a Lite operator certificate") {
+				t.Fatalf("expected a Lite leaf request, got %v", err)
+			}
+		})
+	}
+}
+
+func TestTunnelV2SignerKeepsTheMLDSAPrimary(t *testing.T) {
+	t.Setenv("WENDY_TUNNEL_SIGNING_CERT", "")
+	t.Setenv("WENDY_TUNNEL_SIGNING_KEY", "")
+	primaryKeyPEM, err := certs.GenerateMLDSAKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryKey, err := certs.ParseSigningPrivateKeyPEM([]byte(primaryKeyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := "spiffe://wendy.sh/tenant/" + testOperatorTenant + "/operator/" + testOperatorSubject
+	primaryPEM := testLeafPEM(t, primaryKey)
+	liteKeyPEM, liteKey := newP256KeyPEM(t)
+	auth := &config.AuthConfig{
+		Certificates:    []config.CertificateInfo{{PemCertificate: primaryPEM, PemPrivateKey: primaryKeyPEM, PrincipalURI: principal}},
+		LiteCertificate: liteLeafPEM(t, liteKey, principal, time.Now().Add(time.Hour), true),
+		LitePrivateKey:  liteKeyPEM,
+	}
+	sign, err := tunnelPrincipalSigner(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := sign([]byte("request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := pem.Decode([]byte(primaryPEM))
+	if got := relayRequestCertificate(t, proof); !bytes.Equal(got, leaf.Bytes) {
+		t.Fatal("tunnel v2 request is not signed by the ML-DSA primary")
+	}
+	if alg := jwsHeader(t, proof)["alg"]; alg != "ML-DSA-65" {
+		t.Fatalf("tunnel v2 alg = %v, want ML-DSA-65", alg)
+	}
+}
+
+// The Lite leaf is requested with a P-256 CSR, proved by the ML-DSA DPoP key.
+func TestRequestLiteLeafUsesP256CSROverMLDSASession(t *testing.T) {
+	sessionKeyPEM, err := certs.GenerateMLDSAKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionKey, err := certs.ParseSigningPrivateKeyPEM([]byte(sessionKeyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	liteKeyPEM, liteKey := newP256KeyPEM(t)
+	principal := "spiffe://wendy.sh/tenant/" + testOperatorTenant + "/operator/" + testOperatorSubject
+	for _, marked := range []bool{true, false} {
+		leafPEM := liteLeafPEM(t, liteKey, principal, time.Now().Add(time.Hour), marked)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			block, _ := pem.Decode(body)
+			csr, err := x509.ParseCertificateRequest(block.Bytes)
+			if err != nil || csr.CheckSignature() != nil {
+				t.Fatalf("invalid CSR: %v", err)
+			}
+			if key, ok := csr.PublicKey.(*ecdsa.PublicKey); !ok || key.Curve != elliptic.P256() || !key.Equal(liteKey.Public()) {
+				t.Error("CSR does not carry the Lite P-256 key")
+			}
+			var header struct {
+				Alg string `json:"alg"`
+			}
+			decodeProofPart(t, r.Header.Get("DPoP"), 0, &header)
+			if header.Alg != "ML-DSA-65" {
+				t.Errorf("DPoP alg = %q, want the ML-DSA session key", header.Alg)
+			}
+			_, _ = io.WriteString(w, leafPEM)
+		}))
+		got, err := requestPKIIdentityCertificate(
+			context.Background(), server.Client(), server.URL+"/v1/identity/certificate", liteKeyPEM, sessionKey,
+			"identity-access-token", testOperatorTenant, testOperatorSubject,
+		)
+		server.Close()
+		if err != nil {
+			t.Fatalf("requestPKIIdentityCertificate: %v", err)
+		}
+		if err := checkLiteOperatorLeaf(got.PemCertificate); (err == nil) != marked {
+			t.Fatalf("marked=%v: checkLiteOperatorLeaf = %v", marked, err)
+		}
+	}
+}

@@ -91,7 +91,7 @@ func selectedAgent(picked *SelectedDevice) (*grpcclient.AgentConnection, error) 
 // uses the login for the device's cloud and tenant, as a cloud:// selector
 // does, and the same connection and call metadata as every other Cloud RPC,
 // so the relay sees the user's session (DPoP when the token is key-bound).
-func dialLiteCloudRelay(ctx context.Context, device models.ExternalDevice) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
+func dialLiteCloudRelay(ctx context.Context, device models.ExternalDevice, renew bool) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
 	options := liteclient.RelayOptions{}
 	cfg, err := config.Load()
 	if err != nil {
@@ -105,7 +105,7 @@ func dialLiteCloudRelay(ctx context.Context, device models.ExternalDevice) (*grp
 	if err != nil {
 		return nil, nil, options, err
 	}
-	options, err = liteRelayOptions(auth)
+	options, err = liteRelayOptions(ctx, auth, renew)
 	if err != nil {
 		return nil, nil, options, err
 	}

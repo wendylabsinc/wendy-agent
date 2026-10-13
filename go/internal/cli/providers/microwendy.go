@@ -25,6 +25,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -923,7 +925,8 @@ func (p *MicroWendyProvider) ConnectEnrollment(device models.ExternalDevice) (*l
 // relay runs over, already set up with the user's Cloud credentials, and the
 // context whose call metadata carries them. The commands package owns Cloud
 // sessions and sets it; this package cannot import commands.
-var CloudRelayDialer func(ctx context.Context, device models.ExternalDevice) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error)
+// renew asks for a fresh Lite operator leaf instead of the stored one.
+var CloudRelayDialer func(ctx context.Context, device models.ExternalDevice, renew bool) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error)
 
 // connectClient opens a WendyLiteClient connection to the device over serial,
 // LAN or BLE (with mTLS when the device advertises it), or through the Wendy
@@ -1001,15 +1004,19 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 		if CloudRelayDialer == nil {
 			return nil, fmt.Errorf("wendy-lite provider: Wendy Cloud connections are not available")
 		}
-		cc, ctx, options, err := CloudRelayDialer(ctx, device)
-		if err != nil {
-			return nil, fmt.Errorf("connect to device via Wendy Cloud: %w", err)
-		}
-		if device.ConnectionInfo["tenantId"] == "" || device.ConnectionInfo["deviceId"] == "" {
-			cc.Close()
-			return nil, fmt.Errorf("wendy-lite provider: missing Cloud tenant or device identity")
-		}
-		err = func() error {
+		connect := func(renew bool) (err error) {
+			cc, ctx, options, err := CloudRelayDialer(ctx, device, renew)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if err != nil {
+					cc.Close()
+				}
+			}()
+			if device.ConnectionInfo["tenantId"] == "" || device.ConnectionInfo["deviceId"] == "" {
+				return fmt.Errorf("wendy-lite provider: missing Cloud tenant or device identity")
+			}
 			// The one-shot relay grant binds both the operator principal and
 			// its key. Use the signer's identity, never another stored login.
 			selected := options.OperatorIdentity
@@ -1039,9 +1046,14 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 				return fmt.Errorf("operator certificate does not match selected Cloud principal")
 			}
 			return client.ConnectViaRelay(ctx, cc, assetID, cert, selected.PemCertificateChain, device.ConnectionInfo["deviceId"], options)
-		}()
+		}
+		err := connect(false)
+		// Cloud refuses a Lite leaf it no longer accepts (revoked, or not
+		// pki-core's Lite profile) before attestation: request a fresh one once.
+		if status.Code(err) == codes.PermissionDenied {
+			err = connect(true)
+		}
 		if err != nil {
-			cc.Close()
 			return nil, fmt.Errorf("connect to device via Wendy Cloud: %w", err)
 		}
 
