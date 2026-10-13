@@ -19,7 +19,7 @@ const (
 	watchEndedRetained   = 10
 	watchStartWait       = 30 * time.Second
 	// watch_stop and a watch the device ended wait this long for the removal;
-	// the lease removes a campaign the device never hears about.
+	// the lease removes the watch and its inference document if the device never hears.
 	watchStopTimeout = 5 * time.Second
 	// The MCP client gives the server 2 s after closing stdin before SIGTERM.
 	watchShutdownTimeout = 1500 * time.Millisecond
@@ -147,7 +147,7 @@ func (m *watchManager) start(ctx context.Context, conn *grpcclient.AgentConnecti
 	}
 	m.next++
 	spec.Name = fmt.Sprintf("chat-%s-%d", m.serverID, m.next)
-	// The record holds the slot while the campaign deploys.
+	// The record holds the slot while the watch deploys.
 	rec := &watchRecord{id: fmt.Sprintf("w%d", m.next), spec: spec, revision: revision, state: watchPreparing, startedAt: time.Now(), changed: make(chan struct{}), settled: make(chan struct{})}
 	m.watches[rec.id] = rec
 	m.order = append(m.order, rec.id)
@@ -291,9 +291,9 @@ func (m *watchManager) stopHandle(handle watchHandle, timeout time.Duration) err
 // stop ends a watch and removes it from the device. The record is ended and
 // ENDED sent first, so no event arrives after watch_stop returns and a device
 // that stopped answering cannot delay ENDED. The removal gets stopTimeout; the
-// lease removes a campaign the device never hears about. A watch still
-// deploying is removed by start once the deploy returns, and stop waits for
-// that within the same bound.
+// lease removes the watch and its inference document if the device never
+// hears. A watch still deploying is removed by start once the deploy returns,
+// and stop waits for that within the same bound.
 func (m *watchManager) stop(ctx context.Context, id, reason string) (watchView, error) {
 	m.mu.Lock()
 	rec := m.watches[id]
@@ -324,7 +324,7 @@ func (m *watchManager) stop(ctx context.Context, id, reason string) (watchView, 
 }
 
 // endStale ends every watch started on an earlier connection. That connection
-// is already closed, so nothing reaches the old device: its campaigns lapse
+// is already closed, so nothing reaches the old device: its watch and inference document lapse
 // within lease + 5 s (design §6.1). A late call for an older revision leaves
 // watches started on newer connections alone.
 func (m *watchManager) endStale(revision uint64) {

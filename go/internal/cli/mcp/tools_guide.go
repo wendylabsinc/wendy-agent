@@ -93,7 +93,7 @@ watch_events with wait_seconds, passing the previous result's next_sequence as
 after_sequence; without it, every call returns the same events at once. ERROR
 is not final: the device retries. Watches end with watch_stop, when the session
 ends, or when the device connection changes; a watch whose device restarted
-ends with that reason. An agent without leased campaigns reports UNSUPPORTED:
+ends with that reason. An agent without leased watch documents reports UNSUPPORTED:
 update it with ` + "`wendy device update`" + `.
 
 

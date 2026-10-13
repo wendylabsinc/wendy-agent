@@ -84,8 +84,9 @@ end when the MCP session ends or the device connection changes.
 At most two watches run per session. The server sends events and status changes
 as `notifications/wendy/watch_event` and `notifications/wendy/watch_status`.
 Clients that do not show custom notifications, such as Claude Code and Cursor,
-use `watch_events`. Watches need an agent with leased campaigns; an older agent
-reports `UNSUPPORTED` with the update command.
+use `watch_events`. Each watch is a leased watch document and an inference document it owns;
+stopping the watch or ending the session removes both. An agent without watch
+document support reports `UNSUPPORTED` with the update command.
 
 ## Sign in
 

@@ -165,7 +165,7 @@ func TestWatchManagerAssignsIdentitiesAndCapsActiveWatches(t *testing.T) {
 		t.Fatalf("ids %q %q", first.WatchID, second.WatchID)
 	}
 	if !regexp.MustCompile(`^chat-[0-9a-f]{16}-1$`).MatchString(backend.specs[0].Name) || !strings.HasSuffix(backend.specs[1].Name, "-2") {
-		t.Fatalf("campaign names %q %q", backend.specs[0].Name, backend.specs[1].Name)
+		t.Fatalf("watch names %q %q", backend.specs[0].Name, backend.specs[1].Name)
 	}
 	if first.State != string(watchPreparing) || m.freeSlots() != 0 {
 		t.Fatalf("view %+v, free %d", first, m.freeSlots())
@@ -321,9 +321,9 @@ func TestWatchManagerEndsWatchesWhenTheBackendEndsThem(t *testing.T) {
 	}
 }
 
-// A device that dropped off the network can hang CampaignRemove for minutes.
+// A device that dropped off the network can hang the watch removal for minutes.
 // watch_stop sends ENDED first and gives the removal a bounded time; the lease
-// removes the campaign if the device never hears.
+// removes the watch and its inference document if the device never hears.
 func TestWatchManagerStopIsBoundedAndSendsEndedFirst(t *testing.T) {
 	backend := &fakeWatchBackend{stopWait: 5 * time.Second}
 	m, log, _ := newTestWatchManager(backend)
