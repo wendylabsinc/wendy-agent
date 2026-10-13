@@ -2,6 +2,8 @@ package localmesh
 
 import (
 	"crypto/rand"
+	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"sort"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/wendylabsinc/WendyOS/go/babel"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
+	"github.com/google/uuid"
 )
 
 // Interface names this package owns. Declared here, rather than in the Linux
@@ -30,6 +33,33 @@ func ownedInterface(name string) bool {
 // does not authenticate the claimed origin of an otherwise valid device route.
 func admittedPrefix(p netip.Prefix) bool {
 	return p.Bits() == 128 && meshid.InMesh(p.Addr())
+}
+// TransportIPv4 derives this host's IPv4 address inside sharingPool from the
+// last two bytes of its device UUID. Both ends of a link derive the same value
+// from the same principal, so nothing has to be negotiated. It is transport
+// addressing only: it is masqueraded beyond this host, never advertised, and
+// never used to identify a device. The pool's network and broadcast addresses
+// are refused rather than aliased.
+//
+// Two devices collide only when they share a link, because the address is
+// link-local plumbing and is never routed. CheckPeerTransport refuses that
+// collision from the two principals alone, so a clash is a startup error
+// instead of one device's address silently overwriting another's. Within one
+// link the pool offers 65534 slots, so a site would need hundreds of devices
+// on a single gateway before a collision became likely - and when it does, the
+// pair is named in the error and one device needs a new identity.
+func TransportIPv4(d meshid.Device) (netip.Addr, error) {
+	if d.UUID() == uuid.Nil {
+		return netip.Addr{}, errors.New("local-mesh policy requires a device identity")
+	}
+	id := d.UUID()
+	if id[14] == 0 && id[15] == 0 {
+		return netip.Addr{}, fmt.Errorf("%s cannot derive an IPv4 transport address: 10.88.0.0 is the pool's network address", d.Principal())
+	}
+	if id[14] == 255 && id[15] == 255 {
+		return netip.Addr{}, fmt.Errorf("%s cannot derive an IPv4 transport address: 10.88.255.255 is the pool's broadcast address", d.Principal())
+	}
+	return netip.AddrFrom4([4]byte{10, 88, id[14], id[15]}), nil
 }
 
 // instanceRouterID derives this instance's Babel router ID with the profile's

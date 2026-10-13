@@ -216,6 +216,9 @@ func main() {
 	var meshDNS *mesh.DNSServer
 	meshIngress := meshingress.NewRegistry()
 	meshCatalog := newMeshCatalogManager(configPath, meshIngress, logger)
+	// One sharing manager per catalog: the Linux carrier runner drives it,
+	// and the admin service reports its live status on every platform.
+	meshSharing := newMeshSharingManager(configPath, meshCatalog, logger)
 	containerdAddr := os.Getenv("WENDY_CONTAINERD_ADDR")
 	if containerdAddr == "" {
 		containerdAddr = agentcontainerd.DefaultAddress
@@ -731,6 +734,13 @@ func main() {
 		// refuses admission when this agent has no enrolled tenant.
 		meshSvc := services.NewMeshService(logger, configPath, deviceScope(provisioningSvc))
 		meshSvc.SetIngressAuthorizer(meshIngress)
+		// Local mesh administration is authorized against this device's own
+		// tenant, so the identity is re-read per call: enrollment can replace
+		// it while the agent runs.
+		localMeshAdmin := services.NewLocalMeshAdminService(logger, configPath, func() (meshid.Tenant, meshid.Device) {
+			return deviceIdentity(provisioningSvc)
+		})
+		localMeshAdmin.SetRuntimeStatusSource(meshSharing.Status)
 		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{
 			ConfigPath:   configPath,
 			Chunks:       buildChunkSource,
@@ -789,6 +799,7 @@ func main() {
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
 		agentpbv2.RegisterDataServiceServer(srv, dataSvc)
 		agentpbv2.RegisterWendyMeshServiceServer(srv, meshSvc)
+		agentpbv2.RegisterWendyLocalMeshAdminServiceServer(srv, localMeshAdmin)
 		agentpbv2.RegisterWendyBuildServiceServer(srv, buildSvc)
 		agentpbv2.RegisterWendySensorPairingServiceServer(srv, sensorSvc)
 		agentpbv2.RegisterWendyCalibratedFrameServiceServer(srv, calibratedFrameSvc)
@@ -1008,7 +1019,7 @@ func main() {
 					err := runConfiguredNetCarriers(ctx, configPath, localmesh.TCPIdentity{
 						Name: name, AgentPort: uint16(mtlsPortNum),
 						Certificate: certPEM, Chain: chainPEM, Key: keyPEM,
-					}, logger, meshCatalog, meshVIPs, func(snapshot func() localmesh.NodeSnapshot) {
+					}, logger, meshCatalog, meshVIPs, meshSharing, func(snapshot func() localmesh.NodeSnapshot) {
 						localMeshMu.Lock()
 						localMeshSnapshot = snapshot
 						localMeshMu.Unlock()
@@ -1571,24 +1582,6 @@ func deviceIdentity(provisioningSvc *services.ProvisioningService) (meshid.Tenan
 		return meshid.Tenant{}, meshid.Device{}
 	}
 	return device.Tenant(), device
-}
-
-// advertiseProvisionedMeshIdentity republishes the avahi advertisement with
-// this device's full SPIFFE principal, read from its current leaf. The
-// principal is what mesh peers dial and pin, so a sighting of this device
-// cannot be spoofed by re-advertising someone else's id.
-//
-// A provisioned device whose leaf carries no tenant principal is a broken
-// identity, not a naming detail: advertising a zero or numeric id would put a
-// fake claim at the center of the mesh, so the advertisement is left alone
-// and the failure is logged.
-func advertiseProvisionedMeshIdentity(logger *zap.Logger, mtlsPort int, provisioningSvc *services.ProvisioningService) {
-	_, device := deviceIdentity(provisioningSvc)
-	if device == (meshid.Device{}) {
-		logger.Warn("Provisioned certificate carries no tenant SPIFFE principal; wendy net advertisement not updated")
-		return
-	}
-	configpartition.UpdateAvahiForProvisioning(logger, mtlsPort, device.Principal())
 }
 
 // ensureCNIBinDir (re)creates agentcontainerd.CNIBinDir with "bridge" and

@@ -219,8 +219,8 @@ func (c *Catalog) acceptInventory(data []byte, q FreshRequest, now time.Time) er
 		if old.Generation == v.Generation && old.Hash != v.Hash {
 			return errors.New("conflicting origin inventory generation")
 		}
-		// Retain the replay fence for the complete ordinary service lease.
-		next[v.Key] = Receipt{v.Key, v.Generation, v.Hash, now.Add(MaxLease + 10*time.Second)}
+		// Gateway offers have longer leases than ordinary services.
+		next[v.Key] = Receipt{v.Key, v.Generation, v.Hash, now.Add(GatewayOfferLease + 10*time.Second)}
 	}
 	if len(next) > c.limit {
 		return errors.New("inventory receipt capacity reached")

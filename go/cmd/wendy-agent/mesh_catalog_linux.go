@@ -177,6 +177,38 @@ func (m *meshCatalogManager) Deactivate() {
 	}
 }
 
+// GatewayOffers returns the verified signed gateway offers this mesh sees,
+// and SetGatewayOffer publishes or withdraws this host's own offer. The
+// sharing controller drives both through the node adapter.
+func (m *meshCatalogManager) GatewayOffers() []meshcatalog.Record {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active == nil {
+		return nil
+	}
+	return m.active.catalog.GatewayOffers(time.Now())
+}
+
+func (m *meshCatalogManager) SetGatewayOffer(enable bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active == nil {
+		return errors.New("mesh catalog is not active")
+	}
+	if enable {
+		w, err := m.active.catalog.PublishGatewayOffer(time.Now())
+		if err == nil {
+			m.active.runtime.Broadcast(w)
+		}
+		return err
+	}
+	w, err := m.active.catalog.WithdrawGatewayOffer(time.Now())
+	if err == nil && len(w.Body) != 0 {
+		m.active.runtime.Broadcast(w)
+	}
+	return err
+}
+
 func (m *meshCatalogManager) StartMeshApp(containerName, appID, ip, bridge string, ports []appconfig.PortMapping) error {
 	address := net.ParseIP(ip)
 	if containerName == "" || appID == "" || address == nil || address.To4() == nil || bridge == "" {
