@@ -41,7 +41,7 @@ func TestFirstWatchDetectorLabelsMatchCheckpoint(t *testing.T) {
 func TestEveryDetectorMeetsTheEntryRules(t *testing.T) {
 	revision := regexp.MustCompile(`^[0-9a-f]{40}$`)
 	for _, d := range watchDetectors {
-		if d.ID == "" || !strings.Contains(d.Model, "/") || !revision.MatchString(d.Revision) || len(d.Labels) == 0 || d.License == "" || d.Benchmark == "" {
+		if d.ID == "" || !strings.Contains(d.Model, "/") || !revision.MatchString(d.Revision) || len(d.Labels) == 0 || d.License == "" || d.Weights == "" || d.Benchmark == "" {
 			t.Errorf("detector %+v lacks an entry rule (spec §11.2)", d)
 		}
 	}

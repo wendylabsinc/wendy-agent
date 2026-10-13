@@ -17,6 +17,7 @@ type watchDetector struct {
 	Model     string
 	Revision  string
 	License   string
+	Weights   string // the safetensors/Transformers/no-remote-code check
 	Benchmark string
 	Labels    []string
 }
@@ -29,6 +30,7 @@ var watchDetectors = []watchDetector{{
 	Model:     "ustc-community/dfine-nano-coco",
 	Revision:  "066438d3d8f0da137a37b38fdf3368fd4afceced",
 	License:   "Apache-2.0",
+	Weights:   "safetensors; transformers backend; trust_remote_code off",
 	Benchmark: "Orin Nano CPU, 2 threads: 1.90 fps alone, 1.65-1.74 fps each with two watches (2026-10-07)",
 	Labels: []string{
 		"person", "bicycle", "car", "motorbike", "aeroplane", "bus", "train", "truck", "boat",
