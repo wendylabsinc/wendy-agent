@@ -15,8 +15,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	"github.com/wendylabsinc/wendy/go/internal/agent/inference"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type inferenceVideo interface {
@@ -76,6 +74,9 @@ type campaignInferenceJob struct {
 // camera subscriptions to exit before the video service is shut down.
 func (s *DataService) StartCampaignInference(ctx context.Context, factory inference.Factory, sender CampaignNotificationSender) func() {
 	ctx, cancel := context.WithCancel(ctx)
+	// Leased documents of a previous run go before the first inference job
+	// can open a camera for them.
+	watchesDone := s.startWatches(ctx, sender)
 	manager := &campaignInferenceManager{service: s, factory: factory, sender: sender, wake: make(chan struct{}, 1), ctx: ctx, jobs: map[string]*campaignInferenceJob{}}
 	s.inference = manager // Configured once, before registering the RPC server.
 	done := make(chan struct{})
@@ -94,7 +95,7 @@ func (s *DataService) StartCampaignInference(ctx context.Context, factory infere
 			}
 		}
 	}()
-	return func() { cancel(); <-done }
+	return func() { cancel(); <-done; <-watchesDone }
 }
 
 func (m *campaignInferenceManager) stopAll() {
@@ -659,36 +660,9 @@ func (j *campaignInferenceJob) notifications(ctx context.Context, queue <-chan D
 		case <-ctx.Done():
 			return
 		case request := <-queue:
-			var err error
-		notificationAttempts:
-			for attempt := 0; attempt < 3 && ctx.Err() == nil; attempt++ {
-				if j.owner.sender == nil {
-					err = errors.New("campaign notification delivery is unavailable")
-					break
-				}
-				forward, cancel := context.WithTimeout(ctx, 10*time.Second)
-				err = j.owner.sender.Send(forward, j.campaign.Notify.Webhook, request)
-				cancel()
-				if err == nil {
-					break
-				}
-				// Cloud rejects unauthorized identities and duplicate UUIDs permanently.
-				// Retrying those responses cannot deliver this notification.
-				if j.campaign.Notify.Webhook == "" {
-					switch status.Code(err) {
-					case codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied,
-						codes.FailedPrecondition, codes.AlreadyExists, codes.Unimplemented, codes.DataLoss:
-						break notificationAttempts
-					}
-				}
-
-				if attempt < 2 {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(time.Duration(1<<attempt) * time.Second):
-					}
-				}
+			err := deliverNotification(ctx, j.owner.sender, j.campaign.Notify.Webhook, request)
+			if ctx.Err() != nil {
+				return
 			}
 			j.notificationError(err)
 		}
@@ -747,8 +721,3 @@ func (m *campaignInferenceManager) notifyEvent(campaign data.Campaign, record da
 	request := DetectionNotification{ID: uuid.NewString(), Event: record.Name, Campaign: campaign.Name, Model: record.Model, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	job.enqueueNotification(request)
 }
-
-// watchRunner is completed in data_watch.go.
-type watchRunner struct{}
-
-func (*watchRunner) deliver(string, DetectionNotification) {}
