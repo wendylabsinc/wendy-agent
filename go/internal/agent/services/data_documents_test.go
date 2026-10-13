@@ -199,3 +199,27 @@ func TestInferenceDocumentStatus(t *testing.T) {
 		t.Fatalf("no runtime = %+v", message)
 	}
 }
+
+func TestWatchReturnsToWaitingAfterItsInferenceIsRemoved(t *testing.T) {
+	service, factory, sender := newDocumentTestService(t)
+	startDocumentTestService(t, service, factory, sender)
+	mustApply(t, service, watchYAML("porch", "front-door", ""))
+	mustApply(t, service, testInferenceDocumentYAML)
+	session := receiveInference(t, factory.sessions)
+	receiveInference(t, session.inputs)
+	watch := func() *agentpbv2.DataDocument {
+		t.Helper()
+		response, err := service.Documents(context.Background(), &agentpbv2.DataDocumentsRequest{Kind: "watch", Name: "porch"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.GetDocuments()[0]
+	}
+	eventually(t, "the watch to become active", func() bool { return watch().GetState() == "active" })
+	if _, err := service.DocumentRemove(context.Background(), &agentpbv2.DataDocumentRemoveRequest{Kind: "inference", Name: "front-door"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := watch(); got.GetState() != "waiting" || !strings.Contains(got.GetStateDetail(), "front-door") {
+		t.Fatalf("watch after its inference was removed = %s (%s)", got.GetState(), got.GetStateDetail())
+	}
+}
