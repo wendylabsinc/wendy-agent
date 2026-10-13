@@ -15,11 +15,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
 
@@ -78,7 +79,10 @@ func loadTourRobotProject(dir string) (tourRobotProject, string, error) {
 		if err != nil {
 			return p, path, fmt.Errorf("read %s: %w", path, err)
 		}
-		return p, path, p.validate()
+		if err := p.validate(); err != nil {
+			return p, path, fmt.Errorf("check %s: %w", path, err)
+		}
+		return p, path, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return p, path, err
@@ -106,93 +110,143 @@ func loadTourRobotProject(dir string) (tourRobotProject, string, error) {
 
 func runRobotTour(cmd *cobra.Command, projectDir string) (runErr error) {
 	ctx := analytics.WithEntrypoint(analytics.WithAttempt(cmd.Context()), "tour")
+	ctx = context.WithValue(ctx, tourPresentationKey{}, true)
 	step := "dependency_check"
 	tourStage(ctx, "simulator", "journey_started", "started", nil, "prepare")
 	defer func() { tourStage(ctx, "simulator", "journey_completed", tourOutcome(runErr), runErr, step) }()
 	if !vm.DetachSupported() {
 		return errors.New("the robot tour needs macOS or Linux for its background VM; use 'wendy tour --hardware' on this host")
 	}
-	return runWithInterruptContext(ctx, func(ctx context.Context) error {
-		fmt.Fprintln(cmd.OutOrStdout(), "Set up a simulated Go2, watch it walk an arc, then edit and run again.\nThe first run downloads WendyOS and builds the robot runtime. Allow several minutes and disk space for the VM and container images.\nRequires QEMU with ARM64 firmware and a running Docker builder. No robot, cloud account, or host Python is needed.")
-		if err := ensureQEMUFn(ctx); err != nil {
+	return runWithInterruptContext(ctx, func(ctx context.Context) (tourErr error) {
+		out := cmd.OutOrStdout()
+		fmt.Fprintln(out, tui.Header("Preparing your robot"))
+		fmt.Fprintln(out, "The first run can take a few minutes.")
+		if err := runTourStep(ctx, out, "Setting up QEMU", func() error {
+			return ensureQEMUFn(ctx)
+		}); err != nil {
 			return err
 		}
-		if _, err := vm.FindFirmware(runtime.GOOS, vm.BrewPrefix()); err != nil {
+		if err := runTourStep(ctx, out, "Setting up ARM64 firmware", func() error {
+			_, err := ensureQEMUFirmwareFn(ctx)
 			return err
-		}
-		if err := ensureDockerDaemon(ctx); err != nil {
+		}); err != nil {
 			return err
 		}
 		step = "project"
-		p, path, err := loadTourRobotProject(projectDir)
-		if err != nil {
+		var p tourRobotProject
+		var path string
+		if err := runTourStep(ctx, out, "Preparing your starter", func() error {
+			var err error
+			p, path, err = loadTourRobotProject(projectDir)
+			return err
+		}); err != nil {
 			return err
 		}
 		tourStage(ctx, "simulator", "project_ready", "completed", nil, "project")
 		tourStage(ctx, "simulator", "target_selected", "completed", nil, "select_target")
-		resumeCommand := tourRobotResumeCommand(path)
-		fmt.Fprintf(cmd.OutOrStdout(), "Your editable starter: %s\nResume or walk again: %s\nStop the simulator: wendy vm stop %s\n", path, resumeCommand, p.VMName)
+		prepared := false
+		defer func() {
+			if tourErr != nil {
+				fmt.Fprintf(out, "\n%s %s\n", tui.Header("Resume:"), tui.Command(tourRobotResumeCommand(path)))
+				if prepared {
+					fmt.Fprintf(out, "%s %s\n", tui.Header("Stop simulator:"), tui.Command("wendy vm stop "+p.VMName))
+				}
+			}
+		}()
 		step = "provision"
-		store, err := robotVMStore()
-		if err != nil {
+		if err := runTourStep(ctx, out, "Preparing your simulator", func() error {
+			return ensureTourVM(ctx, out, p.VMName)
+		}); err != nil {
 			return err
 		}
-		if _, exists := store.ReadMeta(p.VMName); !exists {
-			if err := createVM(cmd.OutOrStdout(), p.VMName, "", "", defaultSimulatorDiskGiB, false, 0); err != nil {
+		prepared = true
+		var profile vm.RobotProfile
+		var port int
+		if err := runTourStep(ctx, out, "Starting your simulated robot", func() error {
+			step = "deploy"
+			// Connecting reuses a healthy runtime. Its build path offers Docker
+			// setup only when a build is needed.
+			picked, err := connectSimulatorChoice(ctx, &simulatorChoice{Name: p.VMName}, true)
+			if err != nil {
 				return err
 			}
-		}
-		profile, exists, err := store.ReadRobotProfile(p.VMName)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			if err := attachSimulatorProfile(p.VMName, vm.RobotKindGo2); err != nil {
+			defer picked.Agent.Close()
+			tourStage(ctx, "simulator", "device_boot_verified", "completed", nil, "first_boot")
+			_, profile, port, err = robotEndpoint(ctx, p.VMName)
+			if err != nil {
 				return err
 			}
-		} else if profile.Kind != vm.RobotKindGo2 {
-			return errors.New("this starter's VM has a different robot profile; choose a new --project directory")
-		}
-		// This operation connects the VM and provisions its robot runtime.
-		// Child operations provide narrower steps; the tour records the deploy phase.
-		step = "deploy"
-		picked, err := connectSimulatorChoice(ctx, &simulatorChoice{Name: p.VMName}, true)
-		if err != nil {
-			return err
-		}
-		defer picked.Agent.Close()
-		tourStage(ctx, "simulator", "device_boot_verified", "completed", nil, "first_boot")
-		_, profile, port, err := robotEndpoint(ctx, p.VMName)
-		if err != nil {
-			return err
-		}
-		step = "readiness"
-		if err := waitForRobot(ctx, p.VMName, port, profile); err != nil {
+			step = "readiness"
+			return waitForRobot(ctx, p.VMName, port, profile)
+		}); err != nil {
 			return err
 		}
 		tourStage(ctx, "simulator", "app_ready", "completed", nil, "readiness")
 		if err := browserOpen(robotURL(port)); err != nil {
 			fmt.Fprintf(cmd.OutOrStdout(), "Open the viewer: %s\n", robotURL(port))
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Viewer: %s\nWatch the robot walk for %.0f seconds. Ctrl-C stops the demonstration.\n", robotURL(port), p.DurationSeconds)
+		fmt.Fprintf(out, "\n%s\n", tui.Header(fmt.Sprintf("Watch your robot walk for %.0f seconds", p.DurationSeconds)))
+		fmt.Fprintln(out, "Ctrl-C stops the walk.")
 		// Give the browser time to load before this finite demonstration starts.
 		select {
 		case <-ctx.Done():
 			return ErrUserCancelled
 		case <-time.After(2 * time.Second):
 		}
-		distance, err := walkTourRobot(ctx, port, profile, p)
-		if err != nil {
-			return fmt.Errorf("robot demonstration: %w; resume with:\n  %s", err, resumeCommand)
+		var distance float64
+		if err := runTourStep(ctx, out, "Walking your simulated robot", func() error {
+			var err error
+			distance, err = walkTourRobot(ctx, port, profile, p)
+			return err
+		}); err != nil {
+			return err
 		}
 		tourStage(ctx, "simulator", "motion_verified", "completed", nil, "readiness")
-		fmt.Fprintf(cmd.OutOrStdout(), "Your simulated Go2 moved %.2f metres from its starting point and stopped.\nThe viewer stays open. Choose Enable controls, then hold W to walk. Space stops; Release controls ends manual control.\nEdit turn_rps or duration_seconds in %s, then run:\n  %s\nStop the VM when finished:\n  wendy vm stop %s\nSet up a physical device next:\n  wendy tour --hardware\n", distance, path, resumeCommand, p.VMName)
-		return nil
+		fmt.Fprintln(out, tui.SuccessMessage(fmt.Sprintf("Your robot moved %.2f metres and stopped.", distance)))
+		step = "explore"
+		return runTourGuide(ctx, cmd, p, path, port, profile)
 	})
 }
 
-func tourRobotResumeCommand(projectPath string) string {
-	return "wendy tour --simulator --project " + shellQuoteArg(filepath.Dir(projectPath))
+var confirmTourRetry = func(ctx context.Context, out io.Writer) (bool, error) {
+	return mapConfirmCancel(tui.ConfirmDefaultYes("Try this step again?", tea.WithContext(ctx), tea.WithOutput(out)))
+}
+
+// Keep interactive failures at the current step so users can repair a missing
+// dependency, wait for a service, or fix their starter without restarting.
+// Cancellation and non-interactive failures always return to the caller.
+func runTourStep(ctx context.Context, out io.Writer, label string, run func() error) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := run()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, ErrUserCancelled) || errors.Is(err, context.Canceled) || errors.Is(err, tui.ErrCancelled) {
+			return ErrUserCancelled
+		}
+		if !isInteractiveTerminalFn() {
+			return err
+		}
+		fmt.Fprintf(out, "\n%s needs attention: %v\nResolve the issue, then retry this step to continue the tour.\n", label, err)
+		retry, promptErr := confirmTourRetry(ctx, out)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if promptErr != nil {
+			_, promptErr = mapConfirmCancel(false, promptErr)
+			return promptErr
+		}
+		if !retry {
+			fmt.Fprintln(out, "You can resume the tour later with the same command.")
+			return ErrUserCancelled
+		}
+	}
 }
 
 func tourOutcome(err error) string {

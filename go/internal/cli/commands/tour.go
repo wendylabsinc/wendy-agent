@@ -2153,9 +2153,11 @@ func newTourCmd() *cobra.Command {
 	var project string
 	cmd := &cobra.Command{
 		Use:   "tour",
-		Short: "Walk a simulated robot or set up your first physical device",
-		Long:  "Choose a managed Go2 simulator with a visible, verified walking demonstration, or the physical-device setup wizard. The simulator downloads and builds its runtime on first use; subsequent runs reuse it.",
+		Short: "Walk and program a simulated robot or set up your first physical device",
+		Long:  "Watch a simulated Go2 walk, then follow an interactive guide to edit, deploy, and try your own robot app. You can also choose the physical-device setup wizard. The simulator downloads and builds its runtime on first use; subsequent runs reuse it.",
 		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
+			restoreHints := suppressTourProgressHints()
+			defer restoreHints()
 			if simulator && hardware {
 				return errors.New("choose either --simulator or --hardware")
 			}
@@ -2167,8 +2169,8 @@ func newTourCmd() *cobra.Command {
 					return errors.New("choose 'wendy tour --simulator' or run 'wendy tour --hardware' in an interactive terminal")
 				}
 				route, err := pickFromItems("What would you like to do?", []tui.PickerItem{
-					{Name: "Walk a simulated robot (recommended)", Description: "A real Go2 simulation in your browser; no hardware or cloud account", Value: "simulator"},
-					{Name: "Set up a physical device", Description: "Install WendyOS or connect an existing device", Value: "hardware"},
+					{Name: "Walk a simulated robot (recommended)", Description: "A real Go2 simulation in your browser; no hardware or cloud account", Value: "simulator", SortKey: "0"},
+					{Name: "Set up a physical device", Description: "Install WendyOS or connect an existing device", Value: "hardware", SortKey: "1"},
 				})
 				if err != nil {
 					return err

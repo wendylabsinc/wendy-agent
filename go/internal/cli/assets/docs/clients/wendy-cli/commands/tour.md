@@ -8,8 +8,8 @@ Watch a simulated Go2 walk in your browser, or set up your first physical Wendy 
 wendy tour
 ```
 
-In an interactive terminal, choose **Walk a simulated robot** for the recommended
-first experience. Choose **Set up a physical device** when you have hardware ready.
+In an interactive terminal, **Walk a simulated robot** appears first and is
+selected by default. Choose **Set up a physical device** when you have hardware ready.
 
 You can select either route directly:
 
@@ -21,11 +21,17 @@ wendy tour --hardware
 ## Simulated robot
 
 The managed Go2 virtual device requires macOS or Linux, QEMU with ARM64 firmware,
-and a running Docker builder with Buildx. It uses four virtual CPUs and 4 GiB
-of memory. Apple Silicon uses hardware acceleration; x86 hosts use slower
-emulation. The first run downloads the OS and robot assets and builds the runtime.
+and a Docker builder with Buildx for the initial build or runtime updates. It uses
+four virtual CPUs and 4 GiB of memory. Apple Silicon uses hardware acceleration;
+x86 hosts use slower emulation. The first run downloads the OS and robot assets
+and builds the runtime.
 Allow several minutes and disk space for the images. No physical robot, cloud
 account, or host Python installation is required.
+
+On macOS with Homebrew, the tour offers to install QEMU and repair missing
+firmware. It also offers to install or start a Docker runtime when a build needs
+one. These prompts default to Yes. A healthy existing simulation can run again
+without starting Docker.
 
 See the [quickstart](/docs/#try-the-robot-tour) for prerequisite checks and
 installation commands. Windows users can use the physical-device route or the
@@ -33,13 +39,40 @@ separate [local Docker robot demo](https://wendy.dev/quickstart?target=simulator
 
 The tour creates a dedicated Go2 VM and opens its browser viewer. The robot walks
 a short arc. Success requires a measured change in its position and confirmation
-that the movement stopped. The VM and browser viewer remain available afterward.
-The terminal prints the viewer URL and the exact `wendy vm stop` command for that VM.
+that the movement stopped. An interactive guide then helps you program the robot,
+change its walk, or drive it in the browser.
+
+### Program your robot
+
+Choose **Build a robot app** after the first walk. Pick an idea:
+
+| App | What you can build |
+| --- | --- |
+| Patrol | Follow a square or your own waypoints. |
+| Roam | React to lidar readings and avoid obstacles. |
+| Teleop | Build a browser remote control. |
+| Sensors | Display the camera, lidar, and robot state. |
+
+The guide creates an editable Python project under your tour's `apps` directory,
+shows you a first change to make, and offers to open the code in your editor.
+Choose **Deploy** to run it on this tour's virtual Go2, then edit and deploy again
+without leaving the guide. Returning to a project preserves your edits.
+
+These apps use ROS 2 to read sensors and send movement commands. The simulator
+handles balance and walking. Driving apps have explicit controls; deploying
+Patrol alone does not start its route. The next menu selects **Start** or **Open
+your app** for you. Returning to the main guide stops movement apps and releases
+their robot controls, so you can try another idea or drive in the viewer. Your code
+stays saved for the next deployment.
+
+Choose **Finish for now** when done. The guide offers to stop the simulator or
+leave it running, and shows how to resume later. Ctrl+C exits the current tour.
 
 ### Change the movement and repeat
 
-The tour stores its settings in `~/Documents/wendy-robot-tour/tour.json`. Change
-`turn_rps` to `0` for a straight walk, then rerun:
+Choose **Change the walk** to try a straight line or turn the other way immediately.
+The tour saves your choice in `~/Documents/wendy-robot-tour/tour.json`. You can also
+edit `turn_rps` to `0` for a straight walk, then rerun:
 
 ```sh
 wendy tour --simulator
@@ -56,8 +89,11 @@ To keep a separate starter and VM:
 wendy tour --simulator --project ./my-robot-tour
 ```
 
-If setup fails, fix the reported prerequisite or connection error and repeat the
-same command to resume. If another controller owns the simulated robot, release
+If a step fails in an interactive terminal, the tour explains the error and offers
+to retry that step. Fix the issue and press Enter to continue, or decline and
+resume later with the same command. Existing VMs are reused. If VM creation was
+interrupted, the tour preserves the incomplete files and restarts creation under
+the saved VM name. If another controller owns the simulated robot, release
 its controls in the viewer before retrying. Ctrl+C interrupts the demonstration;
 use the printed VM stop command when you also want to shut down its virtual device.
 

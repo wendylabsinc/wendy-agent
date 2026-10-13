@@ -2758,7 +2758,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
 		return err
 	}
-	cliLogln("Container %s created.", containerDisplayName(appCfg))
+	if !isRobotTour(ctx) {
+		cliLogln("Container %s created.", containerDisplayName(appCfg))
+	}
 
 	return startExistingContainer(ctx, conn, appCfg, opts)
 }
@@ -2777,7 +2779,9 @@ func startExistingContainer(ctx context.Context, conn *grpcclient.AgentConnectio
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		opts.reportDeployStarted()
-		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
+		if !isRobotTour(ctx) {
+			cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
+		}
 		if opts.waitReady {
 			drainDetachedStartOutput(stream)
 			return waitReadyAfterDetachedStart(ctx, conn, appCfg, opts, startedAppBaseline(appCfg))
@@ -2999,7 +3003,11 @@ func waitForReadinessWithin(ctx context.Context, cfg *appconfig.ReadinessConfig,
 		httpPort != 0 && httpPort == cfg.TCPSocket.Port,
 	)
 	defer closeProbe()
-	cliLogln("Waiting for %s to be ready...", tui.Value(addr))
+	if isRobotTour(ctx) {
+		cliLogln("Waiting for your app...")
+	} else {
+		cliLogln("Waiting for %s to be ready...", tui.Value(addr))
+	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -3008,7 +3016,9 @@ func waitForReadinessWithin(ctx context.Context, cfg *appconfig.ReadinessConfig,
 
 	for {
 		if err := probe(probeCtx); err == nil {
-			cliLogln("Ready.")
+			if !isRobotTour(ctx) {
+				cliLogln("Ready.")
+			}
 			return nil
 		}
 
@@ -3587,7 +3597,9 @@ func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentCo
 				// --wait-ready asks for it. The container keeps running
 				// independently of this output stream, which is abandoned
 				// here (drained while --wait-ready waits).
-				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
+				if !isRobotTour(ctx) {
+					cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
+				}
 				if opts.waitReady {
 					drainDetachedStartOutput(stream)
 					return waitReadyAfterDetachedStart(ctx, conn, appCfg, opts, startedAppBaseline(appCfg))
@@ -3990,7 +4002,9 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if compressedTotal := totalCompressedLayerBytes(layers); compressedTotal > 0 {
 		sizeClause = fmt.Sprintf(" (%s compressed)", tui.Value(tui.ByteProgress{Current: compressedTotal}.String()))
 	}
-	cliLogln("Diffing %s layer(s)%s against device...", tui.Value(fmt.Sprintf("%d", len(layers))), sizeClause)
+	if !isRobotTour(ctx) {
+		cliLogln("Diffing %s layer(s)%s against device...", tui.Value(fmt.Sprintf("%d", len(layers))), sizeClause)
+	}
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {
 		return nil, hint, err
