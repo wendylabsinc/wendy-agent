@@ -143,8 +143,9 @@ Use `upload: {when: manual}` to keep episodes local without automatic uploads.
 `on: detection` remains available for all appearances from the campaign's model.
 
 The agent POSTs JSON containing `id`, `event`, `campaign`, `source_id`, `model`,
-`model_revision`, and `count`. Configure an endpoint that accepts this format and
-delivers your notification, returning a 2xx response. The URL is stored in the
+`model_revision`, `count`, `occurred_at`, and (for detection notifications)
+`detections`. Receivers should ignore fields they do not know. Configure an endpoint that
+accepts this format and delivers your notification, returning a 2xx response. The URL is stored in the
 campaign plan; credentials in userinfo and URL fragments are rejected. Redirects
 are not followed. The model worker never receives the webhook URL.
 
