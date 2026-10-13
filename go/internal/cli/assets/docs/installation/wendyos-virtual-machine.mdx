@@ -281,8 +281,11 @@ before connecting to the replacement. It clears only the VM's own pin, never
 the shared `127.0.0.1` pin that other loopback addresses use. That pin is
 cleared by `wendy device unpin 127.0.0.1`.
 
-The agent's port is often already in use on a development machine. Move the
-host side of the forward:
+The agent's port is often already in use on a development machine. `wendy vm
+start` and `--device vm:<name>` then move the host side of the forward to the
+next free port on their own, and the VM keeps that port for later starts. To
+choose it yourself, pass `--port`; a port given that way that is in use is an
+error rather than a hint to move:
 
 ```sh
 wendy vm start dev --port 50151
