@@ -42,7 +42,12 @@ func (n *WatchNotify) UnmarshalYAML(node *yaml.Node) error {
 		n.Cloud = true
 		return nil
 	case node.Kind == yaml.MappingNode && len(node.Content) == 2 && node.Content[0].Value == "webhook":
-		return node.Content[1].Decode(&n.Webhook)
+		if err := node.Content[1].Decode(&n.Webhook); err != nil {
+			return err
+		}
+		if n.Webhook != "" {
+			return nil
+		}
 	}
 	return fmt.Errorf("line %d: a notify entry is `cloud` or `webhook: <url>`", node.Line)
 }
@@ -63,6 +68,17 @@ func decodeWatch(_ datadoc.Header, contents []byte) (any, string, []string, erro
 	var watch Watch
 	if err := decodeDocumentStrict(contents, &watch); err != nil {
 		return nil, "", nil, err
+	}
+	// The Go zero value cannot tell `lease:` from no lease, which would
+	// silently make the watch unleased.
+	var root yaml.Node
+	if err := yaml.Unmarshal(contents, &root); err == nil && len(root.Content) == 1 && root.Content[0].Kind == yaml.MappingNode {
+		fields := root.Content[0].Content
+		for i := 0; i+1 < len(fields); i += 2 {
+			if fields[i].Value == "lease" && watch.Lease == "" {
+				return nil, "", nil, errors.New("lease must be a duration from 15s to 10m")
+			}
+		}
 	}
 	if err := watch.validate(); err != nil {
 		return nil, "", nil, err
