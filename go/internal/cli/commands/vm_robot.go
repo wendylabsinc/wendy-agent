@@ -982,7 +982,7 @@ func readSimulatorRobots(ctx context.Context, statuses []vm.Status) map[string]s
 			result[status.Name] = simulatorRobotInfo{Kind: "Invalid", State: "profile error", Hint: err.Error()}
 			continue
 		}
-		info := simulatorRobotInfo{Kind: runtime.name, State: "stopped", Hint: "Connect to start the robot and open its sandbox with 'wendy vm robot open " + status.Name + "'."}
+		info := simulatorRobotInfo{Kind: runtime.name, State: "stopped", Hint: "Press s to start " + status.Name + " and its robot; then 'wendy vm robot open " + status.Name + "' opens the sandbox."}
 		if !status.Running {
 			result[status.Name] = info
 			continue

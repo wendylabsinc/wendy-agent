@@ -4132,7 +4132,8 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 		}
 	}
 
-	// Allow 'd' to set default and 'x' to unset default from the picker.
+	// 'd' sets the highlighted device as the default, or clears it when it
+	// already is.
 	picker.OnSetDefault = setPickerDefault
 	picker.OnUnsetDefault = unsetPickerDefault
 
