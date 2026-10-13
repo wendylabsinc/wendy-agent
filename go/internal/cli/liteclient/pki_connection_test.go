@@ -47,7 +47,7 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 	root, rootKey := issue(1, "root", "", true, nil, nil)
 	intermediate, intermediateKey := issue(2, "operator authority", "", true, root, rootKey)
 	operator, operatorKey := issue(3, "operator", "spiffe://wendy.sh/tenant/"+tenant+"/operator/22222222-2222-4222-8222-222222222222", false, intermediate, intermediateKey)
-	client := tls.Certificate{Certificate: [][]byte{operator.Raw}, PrivateKey: operatorKey}
+	client := tls.Certificate{Certificate: [][]byte{operator.Raw, intermediate.Raw}, PrivateKey: operatorKey}
 	// Wendy-issued chains may contain trailing ASN.1 bytes. Both transports
 	// must use the shared parser rather than the standard x509-only verifier.
 	chain := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: append(append([]byte(nil), intermediate.Raw...), 0, 0)})) + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Raw}))

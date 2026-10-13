@@ -51,6 +51,13 @@ func liteRelayOptions(ctx context.Context, auth *config.AuthConfig, renew bool) 
 	if !ok || principal != auth.Certificates[0].PrincipalURI {
 		return options, fmt.Errorf("Lite operator certificate does not belong to the selected operator")
 	}
+	// The Lite authority is separate from the tenant's device PKI. Keep its
+	// client presentation chain separate from the selected session's trust
+	// bundle, including when pki-core issues only a Lite leaf.
+	options.DeviceTrustChainPEM = auth.Certificates[0].PemCertificateChain
+	if options.DeviceTrustChainPEM == "" {
+		return options, fmt.Errorf("selected Cloud session has no device CA chain; run 'wendy auth login'")
+	}
 	key, err := cert.PrivateKeyPEM()
 	if err != nil {
 		return options, err
@@ -155,6 +162,8 @@ func liteOperatorCertificate(ctx context.Context, auth *config.AuthConfig, renew
 // sessionLiteCertificate returns the stored Lite leaf when it belongs to the
 // session's operator and stays valid for at least margin, or already reaches
 // the primary's notAfter (pki-core caps it there, so a new one is no longer).
+// A leaf-only response is valid: the Lite authority is provisioned on the
+// device, while the primary session carries our trust for device certificates.
 func sessionLiteCertificate(auth *config.AuthConfig, margin time.Duration) (config.CertificateInfo, bool) {
 	if auth.LiteCertificate == "" || auth.LitePrivateKey == "" || len(auth.Certificates) == 0 {
 		return config.CertificateInfo{}, false

@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/wcomrelaypb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -143,7 +145,7 @@ func relayPKI(t *testing.T, principal string, trusted bool) (tls.Certificate, st
 		root, key = issueRelayCertificate(t, 4, "untrusted", "", true, nil, nil)
 	}
 	device, dk := issueRelayCertificate(t, 5, "device", principal, false, root, key)
-	return tls.Certificate{Certificate: [][]byte{operator.Raw}, PrivateKey: ok}, chain, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{device.Raw}, PrivateKey: dk}}, ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert}
+	return tls.Certificate{Certificate: [][]byte{operator.Raw, intermediate.Raw}, PrivateKey: ok}, chain, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{device.Raw}, PrivateKey: dk}}, ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert}
 }
 
 const devicePrincipal = "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/lite-441bf6804ff8"
@@ -199,7 +201,7 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 			ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer session"), 10*time.Second)
 			defer cancel()
 			c := NewWendyLiteClient()
-			err := c.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions())
+			err := c.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions(t, cert))
 			if tc.accept {
 				if err != nil {
 					t.Fatal(err)
@@ -237,7 +239,7 @@ func TestConnectViaRelayReportsRefusalAndClosesConn(t *testing.T) {
 	relay := newFakeRelay()
 	relay.refuse = status.Error(codes.PermissionDenied, "permission denied")
 	cc := dialFakeRelay(t, relay)
-	err := NewWendyLiteClient().ConnectViaRelay(context.Background(), cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions())
+	err := NewWendyLiteClient().ConnectViaRelay(context.Background(), cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions(t, cert))
 	if err == nil || !strings.Contains(err.Error(), "PermissionDenied") {
 		t.Fatalf("lost broker refusal: %v", err)
 	}
@@ -289,7 +291,7 @@ func TestRelayRejectsMalformedGrantBeforeTLS(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			client := NewWendyLiteClient()
-			err := client.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions())
+			err := client.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions(t, cert))
 			if err == nil {
 				client.Close()
 				t.Fatal("accepted invalid grant")
@@ -330,11 +332,12 @@ func relayGrantWithKeyID(grant []byte, kid string) []byte {
 }
 
 func TestRelayCancelWhileUnread(t *testing.T) {
+	cert, _, _ := relayPKI(t, devicePrincipal, true)
 	relay := newFakeRelay()
 	relay.device = func(conn net.Conn) { defer conn.Close(); conn.Write(make([]byte, 65536)) }
 	cc := dialFakeRelay(t, relay)
 	ctx, cancel := context.WithCancel(context.Background())
-	conn, err := openRelayConn(ctx, cc, relayTestAssetID, testRelayOptions())
+	conn, err := openRelayConn(ctx, cc, relayTestAssetID, testRelayOptions(t, cert))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,10 +355,11 @@ func TestRelayCancelWhileUnread(t *testing.T) {
 }
 
 func TestRelayReadDeadline(t *testing.T) {
+	cert, _, _ := relayPKI(t, devicePrincipal, true)
 	relay := newFakeRelay()
 	relay.device = func(conn net.Conn) { defer conn.Close(); io.Copy(io.Discard, conn) }
 	cc := dialFakeRelay(t, relay)
-	conn, err := openRelayConn(context.Background(), cc, relayTestAssetID, testRelayOptions())
+	conn, err := openRelayConn(context.Background(), cc, relayTestAssetID, testRelayOptions(t, cert))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,8 +371,21 @@ func TestRelayReadDeadline(t *testing.T) {
 	}
 }
 
-func testRelayOptions() RelayOptions {
-	return RelayOptions{SignRequest: func(p []byte) ([]byte, error) { return p, nil }}
+func testRelayOptions(t *testing.T, cert tls.Certificate) RelayOptions {
+	t.Helper()
+	key, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := config.CertificateInfo{
+		PemCertificate: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})),
+		PemPrivateKey:  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key})),
+	}
+	sign, err := cloudrelay.LitePrincipalSigner(identity.PemCertificate, []byte(identity.PemPrivateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return RelayOptions{OperatorIdentity: identity, SignRequest: sign}
 }
 
 // Use the shared, text-reviewable vector without embedding opaque binary patches.

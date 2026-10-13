@@ -93,6 +93,9 @@ func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
 	if options.OperatorIdentity.PemCertificate != lite[0].PemCertificate || options.OperatorIdentity.PemCertificateChain != lite[0].PemCertificateChain {
 		t.Fatal("Lite lane did not select the session's Lite leaf and chain")
 	}
+	if options.DeviceTrustChainPEM != auth.Certificates[0].PemCertificateChain {
+		t.Fatal("Lite relay did not use the primary session's device trust chain")
+	}
 	proof, err := options.SignRequest([]byte("request"))
 	if err != nil {
 		t.Fatal(err)

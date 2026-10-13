@@ -47,7 +47,9 @@ func TestCloudLiteRelayUsesSelectedOperatorIdentity(t *testing.T) {
 			auth.LitePrivateKey = selectedIdentity.PemPrivateKey
 			if tc.provisioned {
 				var provisioned []config.CertificateInfo
-				provisioned, relay.tlsConfig = liteRelayTestPKI(t)
+				var provisionedTLS *tls.Config
+				provisioned, provisionedTLS = liteRelayTestPKI(t)
+				relay.tlsConfig.ClientCAs = provisionedTLS.ClientCAs
 				selectedIdentity = provisioned[0]
 				certPath, keyPath := provisionLiteRelayIdentity(t, selectedIdentity)
 				// The signer has resolved the override before discovery. Replacing
@@ -109,6 +111,9 @@ func TestLiteRelayOptionsPreserveProvisionedIdentity(t *testing.T) {
 	}
 	if options.OperatorIdentity.PemCertificate != identity.PemCertificate || options.OperatorIdentity.PemCertificateChain != identity.PemCertificateChain || options.OperatorIdentity.PemPrivateKey != identity.PemPrivateKey {
 		t.Fatal("relay options did not retain the provisioned certificate, chain and key")
+	}
+	if options.DeviceTrustChainPEM != auth.Certificates[0].PemCertificateChain {
+		t.Fatal("relay options did not retain the selected Cloud session's device trust chain")
 	}
 	proof, err := options.SignRequest([]byte("request"))
 	if err != nil {
