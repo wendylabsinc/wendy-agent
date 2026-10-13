@@ -62,7 +62,9 @@ func TestEligibleSnapshotRequiresSignedPresenceAndDeviceRoute(t *testing.T) {
 		{"expired", func(v *localmesh.NodeSnapshot) { v.Devices[0].Expires = now.Add(-time.Second).UnixMilli() }},
 		{"withdrawn", func(v *localmesh.NodeSnapshot) { v.Devices[0].Withdraw = true }},
 		{"no route", func(v *localmesh.NodeSnapshot) { v.Routes = nil }},
-		{"covering route", func(v *localmesh.NodeSnapshot) { v.Routes[0].Prefix = netip.PrefixFrom(device.MeshAddress().WithZone(""), 64) }},
+		{"covering route", func(v *localmesh.NodeSnapshot) {
+			v.Routes[0].Prefix = netip.PrefixFrom(device.MeshAddress().WithZone(""), 64)
+		}},
 		{"other device route", func(v *localmesh.NodeSnapshot) {
 			v.Routes[0].Prefix = netip.PrefixFrom(deviceForIndex(999).MeshAddress(), 128)
 		}},

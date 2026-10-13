@@ -79,7 +79,7 @@ func TestLocalMeshAdminAuthorizationAndPartialUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
-	for _, update := range []*pb.ConfigureLocalMeshRequest{{Roam: proto.Bool(true)}, {ShareUplink: proto.Bool(true)}, {Ble: proto.Bool(true)}} {
+	for _, update := range []*pb.ConfigureLocalMeshRequest{{Roam: proto.Bool(true)}, {ShareUplink: proto.Bool(true)}, {Ble: proto.Bool(true)}, {Ethernet: proto.Bool(true)}, {InfrastructureWifi: proto.Bool(true)}} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -91,7 +91,8 @@ func TestLocalMeshAdminAuthorizationAndPartialUpdates(t *testing.T) {
 	wg.Wait()
 	got, err := svc.GetLocalMeshStatus(ctx, &pb.GetLocalMeshStatusRequest{})
 	if err != nil || !got.GetConfigured().GetParticipate() || !got.GetConfigured().GetRoam() ||
-		!got.GetConfigured().GetShareUplink() || !got.GetConfigured().GetNan() || !got.GetConfigured().GetBle() {
+		!got.GetConfigured().GetShareUplink() || !got.GetConfigured().GetNan() || !got.GetConfigured().GetBle() ||
+		!got.GetConfigured().GetEthernet() || !got.GetConfigured().GetInfrastructureWifi() {
 		t.Fatalf("partial settings lost: %+v %v", got, err)
 	}
 	if _, err = svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Participate: proto.Bool(false)}); status.Code(err) != codes.InvalidArgument {
@@ -101,7 +102,8 @@ func TestLocalMeshAdminAuthorizationAndPartialUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err = svc.GetLocalMeshStatus(ctx, &pb.GetLocalMeshStatusRequest{})
-	if err != nil || got.GetConfigured().GetNan() || !got.GetConfigured().GetBle() {
+	if err != nil || got.GetConfigured().GetNan() || !got.GetConfigured().GetBle() ||
+		!got.GetConfigured().GetEthernet() || !got.GetConfigured().GetInfrastructureWifi() {
 		t.Fatalf("BLE inferred from NAN toggle: %+v %v", got, err)
 	}
 	svc.SetRuntimeStatusSource(func() LocalMeshRuntimeStatus {
@@ -133,7 +135,7 @@ func TestLocalMeshAdminCarrierUpdatePreservesConfiguredTCP(t *testing.T) {
 	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(true), Ble: proto.Bool(true)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(false), Ble: proto.Bool(false)}); err != nil {
+	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(false), Ble: proto.Bool(false), Ethernet: proto.Bool(false), InfrastructureWifi: proto.Bool(false)}); err != nil {
 		t.Fatal(err)
 	}
 	after, err := localmesh.LoadTCPConfig(path, device)
@@ -142,7 +144,7 @@ func TestLocalMeshAdminCarrierUpdatePreservesConfiguredTCP(t *testing.T) {
 	}
 }
 
-func TestLocalMeshAdminCanDisableLastRadioWithoutTCPConfig(t *testing.T) {
+func TestLocalMeshAdminCanDisableLastCarrierWithoutTCPConfig(t *testing.T) {
 	dir := t.TempDir()
 	tenant, device := adminTenant(t), adminDevice(t)
 	svc := NewLocalMeshAdminService(nil, dir, func() (meshid.Tenant, meshid.Device) { return tenant, device })
@@ -150,11 +152,14 @@ func TestLocalMeshAdminCanDisableLastRadioWithoutTCPConfig(t *testing.T) {
 	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(true)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(false)}); err != nil {
+	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Ethernet: proto.Bool(true), InfrastructureWifi: proto.Bool(true)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(false), Ethernet: proto.Bool(false)}); err != nil {
 		t.Fatal(err)
 	}
 	carriers, err := localmesh.LoadTCPConfig(filepath.Join(dir, "local-mesh.json"), device)
 	if err != nil || carriers != nil {
-		t.Fatalf("radio-only disabled state should remove opt-in file: %+v %v", carriers, err)
+		t.Fatalf("carrier-only disabled state should remove opt-in file: %+v %v", carriers, err)
 	}
 }

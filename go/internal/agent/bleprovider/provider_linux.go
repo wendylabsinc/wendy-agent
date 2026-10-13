@@ -42,6 +42,9 @@ type cheaperLinkChecker interface {
 }
 
 func (r *runtime) hasCheaperLink(device meshid.Device) bool {
+	if r.cfg.Selection != nil {
+		return !r.cfg.Selection.AllowRadio(device, localmesh.RadioBLE)
+	}
 	checker, ok := r.cfg.Node.(cheaperLinkChecker)
 	return ok && checker.HasCheaperLink(device, LinkCost)
 }
@@ -230,7 +233,7 @@ func (r *runtime) makeServerTLS() *tls.Config {
 			return nil
 		},
 	}
-	localmesh.NewTicketStore().Configure(config)
+	r.cfg.Credentials.ServerTicketStore(ALPN, "ble-tls").Configure(config)
 	return config
 }
 
@@ -259,6 +262,9 @@ func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 		r.cfg.Logger.Warn("BLE inbound TLS rejected", zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Error(err))
 		_ = secure.Close()
 		return
+	}
+	if r.cfg.Selection != nil {
+		r.cfg.Selection.Connected(peer, localmesh.RadioBLE)
 	}
 	r.cfg.Logger.Info("BLE inbound TLS established", zap.Stringer("peer", peer.UUID()), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Bool("resumed", state.DidResume))
 	if r.hasCheaperLink(peer) {
@@ -355,6 +361,17 @@ func (r *runtime) discoveredCandidates(objects managedObjects, at time.Time) []c
 	peers, newlySeen := r.freshness.candidates(objects, at)
 	if len(newlySeen) > 0 {
 		r.discovery.observed(at)
+	}
+	if r.cfg.Selection != nil {
+		for _, path := range newlySeen {
+			for _, peer := range peers {
+				if peer.path == path {
+					if device, ok := r.knownCandidate(peer); ok {
+						r.cfg.Selection.Seen(device, localmesh.RadioBLE)
+					}
+				}
+			}
+		}
 	}
 	return peers
 }
@@ -496,6 +513,9 @@ func (r *runtime) dialLink(ctx context.Context, peer candidate) {
 	if err != nil || secure.ConnectionState().NegotiatedProtocol != ALPN {
 		r.cfg.Logger.Warn("BLE outbound TLS rejected", zap.Stringer("peer", peer.device.UUID()), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Error(err))
 		return
+	}
+	if r.cfg.Selection != nil {
+		r.cfg.Selection.Connected(peer.device, localmesh.RadioBLE)
 	}
 	r.cfg.Logger.Info("BLE outbound TLS established", zap.Stringer("peer", peer.device.UUID()), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Bool("resumed", secure.ConnectionState().DidResume))
 	if r.hasCheaperLink(peer.device) {

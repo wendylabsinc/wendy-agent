@@ -49,7 +49,7 @@ func NewRuntime(catalog *Catalog, snapshot func() localmesh.NodeSnapshot) (*Runt
 	}
 	return &Runtime{catalog: catalog, snapshot: snapshot, peers: map[meshid.Device]*catalogPeer{},
 		bundleHints: map[meshid.Device]map[string]time.Time{}, dialing: map[meshid.Device]bool{},
-		tickets: localmesh.NewTicketStore()}, nil
+		tickets: catalog.creds.ServerTicketStore("catalog", "catalog-tls")}, nil
 }
 
 func (r *Runtime) knownBundles(device meshid.Device, now time.Time) []string {
