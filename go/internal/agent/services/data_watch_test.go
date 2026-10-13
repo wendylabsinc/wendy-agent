@@ -231,3 +231,65 @@ func TestDeliveryErrorKeepsTheCloudFailureAfterAWebhookSuccess(t *testing.T) {
 	}
 	t.Fatalf("deliveryError = %q; want the Cloud failure", service.watches.deliveryError("porch"))
 }
+
+// blockingWebhookSender holds every webhook delivery until release closes or
+// the delivery's context ends; Cloud deliveries go through.
+type blockingWebhookSender struct {
+	release chan struct{}
+	sent    chan sentNotification
+}
+
+func (s *blockingWebhookSender) Send(ctx context.Context, endpoint string, n DetectionNotification) error {
+	if endpoint != "" {
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return nil
+	}
+	s.sent <- sentNotification{endpoint, n}
+	return nil
+}
+
+func TestSlowWebhookDoesNotDelayAnotherWatchsCloudDelivery(t *testing.T) {
+	service, factory, _ := newDocumentTestService(t)
+	sender := &blockingWebhookSender{release: make(chan struct{}), sent: make(chan sentNotification, 8)}
+	t.Cleanup(func() { close(sender.release) })
+	startDocumentTestService(t, service, factory, sender)
+	saveDocument(t, service, watchYAML("slow", "front-door", "notify:\n  - webhook: https://example.com/hook\n"))
+	saveDocument(t, service, watchYAML("fast", "front-door", "notify:\n  - cloud\n"))
+	base := DetectionNotification{Event: "front-door", Inference: "front-door", SourceID: "v4l2:/dev/video0", Count: 1, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	// More arrivals than one queue holds, so the slow watch's queue fills.
+	for i := 0; i < watchQueueSize+4; i++ {
+		service.watches.deliver("front-door", base)
+	}
+	for i := 0; i < watchQueueSize+4; i++ {
+		if got := receiveInference(t, sender.sent); got.notification.Watch != "fast" {
+			t.Fatalf("delivered for %q", got.notification.Watch)
+		}
+	}
+	if got := service.watches.deliveryError("slow"); !strings.Contains(got, "queue full") {
+		t.Fatalf("slow watch's error = %q; want its own queue-full error", got)
+	}
+	if got := service.watches.deliveryError("fast"); got != "" {
+		t.Fatalf("fast watch's error = %q", got)
+	}
+}
+
+func TestRemovedWatchForgetsItsDeliveryError(t *testing.T) {
+	service, factory, _ := newDocumentTestService(t)
+	startDocumentTestService(t, service, factory, cloudFailsSender{})
+	const document = "notify:\n  - cloud\n"
+	saveDocument(t, service, watchYAML("porch", "front-door", document))
+	base := DetectionNotification{Event: "front-door", Inference: "front-door", SourceID: "v4l2:/dev/video0", Count: 1, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	service.watches.deliver("front-door", base)
+	eventually(t, "the Cloud failure", func() bool { return service.watches.deliveryError("porch") != "" })
+	if _, err := service.removeDocumentTree(data.KindWatch, "porch"); err != nil {
+		t.Fatal(err)
+	}
+	saveDocument(t, service, watchYAML("porch", "front-door", document))
+	if got := service.watches.deliveryError("porch"); got != "" {
+		t.Fatalf("re-applied watch reports %q", got)
+	}
+}

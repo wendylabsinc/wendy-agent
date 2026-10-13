@@ -86,40 +86,57 @@ type watchDelivery struct {
 	notification DetectionNotification
 }
 
+// watchWorker delivers one watch's notifications, so a slow or failing
+// destination delays and drops only its own watch's deliveries.
+type watchWorker struct {
+	queue  chan watchDelivery
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// watchQueueSize matches a campaign job's notification queue.
+const watchQueueSize = 16
+
 // watchRunner turns inference arrivals into watch notifications (spec §6).
 type watchRunner struct {
 	service *DataService
 	sender  CampaignNotificationSender
-	queue   chan watchDelivery
+	ctx     context.Context
 	mu      sync.Mutex
+	// workers is guarded by mu, as are stopped and errors. Workers are only
+	// added while stopped is false, which the supervisor sets before it waits.
+	workers map[string]*watchWorker
+	stopped bool
+	wg      sync.WaitGroup
 	errors  map[string]map[string]string // watch -> destination -> last error
 }
 
 // startWatches removes what a previous agent run leased, then runs the watch
 // runner until ctx ends: deliveries, and lease expiry every 5 s. It returns a
-// channel closed once both loops have stopped.
+// channel closed once the expiry loop and every delivery worker have stopped.
 func (s *DataService) startWatches(ctx context.Context, sender CampaignNotificationSender) <-chan struct{} {
 	s.sweepLeasedDocuments()
-	runner := &watchRunner{service: s, sender: sender, queue: make(chan watchDelivery, 64), errors: map[string]map[string]string{}}
+	runner := &watchRunner{service: s, sender: sender, ctx: ctx, workers: map[string]*watchWorker{}, errors: map[string]map[string]string{}}
 	s.watches = runner
-	var loops sync.WaitGroup
-	loops.Add(2)
-	go func() { defer loops.Done(); runner.deliveries(ctx) }()
+	done := make(chan struct{})
 	go func() {
-		defer loops.Done()
+		defer close(done)
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
+	loop:
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				break loop
 			case <-ticker.C:
 				s.expireLeases()
 			}
 		}
+		runner.mu.Lock()
+		runner.stopped = true
+		runner.mu.Unlock()
+		runner.wg.Wait()
 	}()
-	done := make(chan struct{})
-	go func() { loops.Wait(); close(done) }()
 	return done
 }
 
@@ -160,30 +177,63 @@ func (r *watchRunner) deliver(inference string, base DetectionNotification) {
 	}
 }
 
+// enqueue hands a delivery to its watch's worker, starting the worker on the
+// watch's first delivery. It never blocks.
 func (r *watchRunner) enqueue(delivery watchDelivery) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return
+	}
+	worker := r.workers[delivery.watch]
+	if worker == nil {
+		ctx, cancel := context.WithCancel(r.ctx)
+		worker = &watchWorker{queue: make(chan watchDelivery, watchQueueSize), ctx: ctx, cancel: cancel}
+		r.workers[delivery.watch] = worker
+		r.wg.Add(1)
+		go func() { defer r.wg.Done(); r.work(worker) }()
+	}
 	select {
-	case r.queue <- delivery:
+	case worker.queue <- delivery:
 	default:
-		r.setError(delivery, errors.New("external notification queue full; notification retained in Wendy Data"))
+		r.setErrorLocked(delivery, errors.New("external notification queue full; notification retained in Wendy Data"))
 	}
 }
 
-func (r *watchRunner) deliveries(ctx context.Context) {
+func (r *watchRunner) work(worker *watchWorker) {
 	for {
 		select {
-		case <-ctx.Done():
+		case <-worker.ctx.Done():
 			return
-		case delivery := <-r.queue:
-			err := deliverNotification(ctx, r.sender, delivery.endpoint, delivery.notification)
-			if ctx.Err() != nil {
+		case delivery := <-worker.queue:
+			err := deliverNotification(worker.ctx, r.sender, delivery.endpoint, delivery.notification)
+			if worker.ctx.Err() != nil {
 				return
 			}
-			r.setError(delivery, err)
+			r.mu.Lock()
+			// A retired watch's worker records nothing.
+			if worker.ctx.Err() == nil {
+				r.setErrorLocked(delivery, err)
+			}
+			r.mu.Unlock()
 			if err != nil {
 				r.service.manager.Warnf("watch %q notification: %v", delivery.watch, err)
 			}
 		}
 	}
+}
+
+// forget stops a removed watch's worker, dropping its pending deliveries, and
+// clears its delivery errors so a watch re-applied under the same name starts
+// clean.
+func (r *watchRunner) forget(watch string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if worker := r.workers[watch]; worker != nil {
+		worker.cancel()
+		delete(r.workers, watch)
+	}
+	delete(r.errors, watch)
 }
 
 func destination(delivery watchDelivery) string {
@@ -193,11 +243,9 @@ func destination(delivery watchDelivery) string {
 	return "webhook"
 }
 
-// setError records a delivery's outcome for its own destination: a success
+// setErrorLocked records a delivery's outcome for its own destination: a success
 // clears only that destination's error.
-func (r *watchRunner) setError(delivery watchDelivery, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *watchRunner) setErrorLocked(delivery watchDelivery, err error) {
 	dest := destination(delivery)
 	if err == nil {
 		delete(r.errors[delivery.watch], dest)
@@ -254,7 +302,7 @@ func (s *DataService) removeDocumentTreeLocked(kind, name string) ([]string, err
 				return removed, err
 			}
 			if document.Kind == data.KindWatch {
-				s.leases.forget(document.Name)
+				s.forgetWatch(document.Name)
 			}
 			removed = append(removed, document.Ref())
 		}
@@ -263,9 +311,17 @@ func (s *DataService) removeDocumentTreeLocked(kind, name string) ([]string, err
 		return removed, err
 	}
 	if kind == data.KindWatch {
-		s.leases.forget(name)
+		s.forgetWatch(name)
 	}
 	return append(removed, ref), nil
+}
+
+// forgetWatch drops a removed watch's lease and delivery state.
+func (s *DataService) forgetWatch(name string) {
+	s.leases.forget(name)
+	if s.watches != nil {
+		s.watches.forget(name)
+	}
 }
 
 // expireLeases removes every leased watch whose lease lapsed, with what it
