@@ -73,7 +73,7 @@ func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmes
 			return
 		}
 		observe(node.Snapshot)
-		if err := catalog.Activate(runCtx, node.Credentials, node.Snapshot, vips, node.ControlHub()); err != nil {
+		if err := catalog.Activate(runCtx, node.Credentials, node.Snapshot, vips, cfg.Ethernet, cfg.InfrastructureWiFi, node.ControlHub()); err != nil {
 			logger.Error("net service catalog unavailable", zap.Error(err))
 		}
 		sharing.Activate(runCtx, node)

@@ -24,6 +24,10 @@ const forwardingComment = "wendy-scoped-forwarding-v1"
 
 func forwardingRules() [][]string {
 	return [][]string{
+		// LAN's per-app reply guard also covers public Internet replies on
+		// that uplink. Let exact Internet grants inspect them first; their
+		// private/service exclusions still fall through to scoped LAN grants.
+		{"-m", "comment", "--comment", forwardingComment, "-j", BridgeInternetChain},
 		{"-m", "comment", "--comment", forwardingComment, "-j", LANChainName},
 		{"-m", "comment", "--comment", forwardingComment, "-j", "DROP"},
 	}
@@ -75,6 +79,9 @@ func AcquireForwarding(key string) error {
 	}
 	if owned {
 		if err := InitLANServiceChain(); err != nil {
+			return err
+		}
+		if err := InitBridgeInternetChain(); err != nil {
 			return err
 		}
 		rules := forwardingRules()
