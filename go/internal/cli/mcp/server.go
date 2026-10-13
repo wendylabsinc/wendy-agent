@@ -293,6 +293,7 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 	s.registerDeviceMaintenanceTools(srv)
 	s.registerProjectTools(srv)
 	s.registerCloudTools(srv)
+	applyToolTitles(srv)
 	registerToolAnalytics(srv)
 	return srv, nil
 }

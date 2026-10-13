@@ -14,7 +14,7 @@ func (s *mcpServer) registerProvisioningTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("Check whether the connected device is provisioned with Wendy Cloud"),
 	}
 	statusOpts = append(statusOpts, readOnly()...)
-	statusOpts = append(statusOpts, localOnly()...)
+	statusOpts = append(statusOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("provisioning_status", statusOpts...), s.handleProvisioningStatus)
 
 	startOpts := []mcpgo.ToolOption{

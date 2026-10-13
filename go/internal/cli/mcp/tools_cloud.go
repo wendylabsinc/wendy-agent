@@ -186,7 +186,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithInteger("timeout_seconds", mcpgo.Min(1), mcpgo.Max(3600), mcpgo.DefaultNumber(300), mcpgo.Description("Command timeout")),
 		mcpgo.WithInteger("max_bytes", mcpgo.Min(1), mcpgo.Max(1000000), mcpgo.DefaultNumber(16384), mcpgo.Description("Build-log tail byte limit")),
 	}
-	runOpts = append(runOpts, mutating()...)
+	runOpts = append(runOpts, destructive()...)
 	runOpts = append(runOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("run", runOpts...), s.handleRun)
 }

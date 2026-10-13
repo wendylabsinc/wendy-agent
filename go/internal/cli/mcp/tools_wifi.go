@@ -28,7 +28,7 @@ func (s *mcpServer) registerWiFiTools(srv *server.MCPServer) {
 			mcpgo.Description("WiFi password (leave empty for open networks)"),
 		),
 	}
-	connectOpts = append(connectOpts, mutating()...)
+	connectOpts = append(connectOpts, destructive()...)
 	connectOpts = append(connectOpts, openWorld()...)
 	connectOpts = append(connectOpts, idempotent()...)
 	srv.AddTool(mcpgo.NewTool("wifi_connect", connectOpts...), s.handleWiFiConnect)
@@ -37,7 +37,7 @@ func (s *mcpServer) registerWiFiTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("Get the current WiFi connection status of the connected device"),
 	}
 	statusOpts = append(statusOpts, readOnly()...)
-	statusOpts = append(statusOpts, localOnly()...)
+	statusOpts = append(statusOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("wifi_status", statusOpts...), s.handleWiFiStatus)
 
 	disconnectOpts := []mcpgo.ToolOption{
@@ -52,7 +52,7 @@ func (s *mcpServer) registerWiFiTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("List WiFi networks with saved profiles on the connected device"),
 	}
 	knownOpts = append(knownOpts, readOnly()...)
-	knownOpts = append(knownOpts, localOnly()...)
+	knownOpts = append(knownOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("wifi_known_networks", knownOpts...), s.handleWiFiKnownNetworks)
 }
 

@@ -42,7 +42,7 @@ func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 
 	infoOpts := []mcpgo.ToolOption{mcpgo.WithDescription("Get device versions, hardware, storage, and battery percentage/charge state. Missing battery fields mean unavailable readings or estimates. No ROS app required.")}
 	infoOpts = append(infoOpts, readOnly()...)
-	infoOpts = append(infoOpts, localOnly()...)
+	infoOpts = append(infoOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("device_info", infoOpts...), s.handleDeviceInfo)
 
 	setDefaultOpts := []mcpgo.ToolOption{

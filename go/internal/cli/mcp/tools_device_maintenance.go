@@ -24,7 +24,7 @@ func (s *mcpServer) registerDeviceMaintenanceTools(srv *server.MCPServer) {
 		mcpgo.WithInteger("timeout_seconds", mcpgo.Min(1), mcpgo.Max(30), mcpgo.DefaultNumber(10)),
 	}
 	logs = append(logs, readOnly()...)
-	logs = append(logs, localOnly()...)
+	logs = append(logs, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("device_os_logs", logs...), s.handleDeviceOSLogs)
 	update := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Update only the connected device's agent, then verify its running version or hash and reconnect. May interrupt the agent connection. OS updates are separate."),

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -23,7 +24,29 @@ func newMCPCmd() *cobra.Command {
 	cmd.AddCommand(newMCPSetupCmd())
 	cmd.AddCommand(newMCPGatewayCmd())
 	cmd.AddCommand(newMCPExportRobotToolCmd())
+	cmd.AddCommand(newMCPManifestCmd())
 	return cmd
+}
+
+// newMCPManifestCmd prints the tool manifest published to service-protos
+// (docs/relay-mcp-tools.json) for the hosted relay.
+func newMCPManifestCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "manifest",
+		Short:  "Print the MCP tool manifest JSON published for the hosted relay",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			m, err := wendymcp.Manifest()
+			if err != nil {
+				return err
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetEscapeHTML(false)
+			enc.SetIndent("", "  ")
+			return enc.Encode(m)
+		},
+	}
 }
 
 func newMCPServeCmd() *cobra.Command {
