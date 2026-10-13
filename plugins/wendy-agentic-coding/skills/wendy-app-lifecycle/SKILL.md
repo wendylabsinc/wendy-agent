@@ -7,6 +7,9 @@ description: Use when a developer wants to build, deploy, run, detach, stream lo
 
 Use this for normal operator/developer workflows around Wendy apps, not only debugging. Prefer explicit, reproducible CLI commands that work in agent/non-interactive contexts.
 
+For sensor episodes, event-triggered campaigns, or durable application recording
+streams, use `wendy-data`. Deploying an app does not deploy its campaign YAML.
+
 ## ChatGPT plugin development loop
 
 When using the ChatGPT gateway, work through its tools without assuming a local

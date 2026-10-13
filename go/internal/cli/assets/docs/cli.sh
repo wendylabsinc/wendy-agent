@@ -19,6 +19,7 @@ BINARY_NAME="wendy"
 HOMEBREW_TAP="wendylabsinc/tap"
 HOMEBREW_FORMULA="wendylabsinc/tap/wendy"
 YES=false
+MCP_SETUP=true
 INSTALL_DIR_EXPLICIT=false
 INSTALLED_BIN=""  # the binary this run installed, when known (see Verify)
 INSTALLED_BY_PKG=false # true when a package manager installed it
@@ -31,6 +32,7 @@ Usage: install-cli.sh [OPTIONS]
 
 Options:
   -y            Skip confirmation prompt (assumed when no terminal is attached)
+  --no-mcp-setup Skip automatic MCP integration setup
   -d DIR        Install directory. Default: /usr/local/bin, or ~/.local/bin
                 when that isn't writable and sudo can't be used (not installed,
                 or no terminal to type its password into). An explicit -d DIR
@@ -39,6 +41,10 @@ Options:
 
 Environment:
   WENDY_VERSION   Install a specific version (e.g. v0.2.0) instead of latest
+  NO_COLOR        Disable colored output
+
+After installation, configures MCP integration with detected AI tools and
+starts the tour whenever a controlling terminal is available, including with -y.
 EOF
   exit 0
 }
@@ -46,11 +52,28 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -y) YES=true; shift ;;
+    --no-mcp-setup) MCP_SETUP=false; shift ;;
     -d) INSTALL_DIR="$2"; INSTALL_DIR_EXPLICIT=true; shift 2 ;;
     -h|--help) usage ;;
     *) echo "Unknown option: $1"; usage ;;
   esac
 done
+
+# Style terminal output while keeping redirected output and CI logs readable.
+BOLD=""; BOLD_CYAN=""; RESET=""
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+  BOLD=$'\033[1m'; BOLD_CYAN=$'\033[1;36m'; RESET=$'\033[0m'
+fi
+
+heading() {
+  printf '\n%s%s%s\n' "$BOLD" "$1" "$RESET"
+}
+
+print_command() {
+  local command_text
+  printf -v command_text '%q ' "$@"
+  printf '  %s%s%s\n' "$BOLD_CYAN" "${command_text% }" "$RESET"
+}
 
 # --- Detect OS ---
 detect_os() {
@@ -199,12 +222,25 @@ confirm() {
     YES=true
     return 0
   fi
-  printf "%s [y/N] " "$1"
-  read -r answer </dev/tty
-  case "$answer" in
-    [yY]|[yY][eE][sS]) return 0 ;;
-    *) echo "Aborted."; exit 1 ;;
-  esac
+  local answer terminal_sequence=$'\033''\[[0-?]*[ -/]*[@-~]'
+  while true; do
+    printf "%s [y/N] " "$1"
+    if ! read -r answer </dev/tty || [[ -z "$answer" ]]; then
+      echo "Aborted."
+      exit 1
+    fi
+    # Ignore terminal replies and navigation keys (e.g. ESC[24;1R or ESC[Z)
+    # that can arrive alongside an answer, plus other control characters.
+    while [[ "$answer" =~ $terminal_sequence ]]; do
+      answer="${answer/"${BASH_REMATCH[0]}"/}"
+    done
+    answer="${answer//[[:cntrl:]]/}"
+    case "$answer" in
+      [yY]|[yY][eE][sS]) return 0 ;;
+      [nN]|[nN][oO]) echo "Aborted."; exit 1 ;;
+      *) echo "Please answer y or n." ;;
+    esac
+  done
 }
 
 # can_elevate reports whether root-level steps can run without failing on a
@@ -509,12 +545,7 @@ elif [[ "$OS" == "windows" ]]; then
   unzip -o "${TMPDIR_DL}/${ARTIFACT}" -d "$TMPDIR_DL"
   cp "${TMPDIR_DL}/wendy-cli-windows-${ARCH}/${BINARY_NAME}.exe" "${INSTALL_DIR}/${BINARY_NAME}.exe"
 
-  echo ""
-  echo "Installed to ${INSTALL_DIR}/${BINARY_NAME}.exe"
-  if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
-    echo "NOTE: Add ${INSTALL_DIR} to your PATH to use '${BINARY_NAME}' from anywhere."
-  fi
-  exit 0
+  INSTALLED_BIN="${INSTALL_DIR}/${BINARY_NAME}.exe"
 fi
 
 # --- Verify ---
@@ -560,19 +591,57 @@ else
   echo "Add it to your PATH: export PATH=\"${INSTALL_DIR}:\$PATH\""
 fi
 
-# --- Offer tour ---
-# The tour runs the binary this run installed, not whichever is first on PATH.
-WENDY_CMD="${INSTALLED_BIN:-$BINARY_NAME}"
-echo ""
-echo "Next: run '${WENDY_CMD} tour' to walk a simulated robot or set up your first device."
-echo "For a repeatable local demo: ${WENDY_CMD} tour --simulator"
-if [[ "$YES" != true ]] && command -v "$WENDY_CMD" &>/dev/null && [[ -t 1 ]] && have_tty; then
-  printf "\nStart the robot and device setup tour now? [Y/n] "
-  read -r tour_answer </dev/tty
-  case "$tour_answer" in
-    # The installer may be run as `curl ... | bash`, which leaves the script's
-    # stdin attached to the download pipe. Reattach the tour to the controlling
-    # terminal so Bubble Tea sees an interactive stdin and stdout.
-    ""|[yY]|[yY][eE][sS]) "$WENDY_CMD" tour </dev/tty >/dev/tty ;;
-  esac
-fi
+# --- Set up AI tools and start the tour ---
+tour_next_steps() {
+  heading "Next: walk a simulated robot or set up your first device"
+  print_command "$1" tour
+  echo "For a repeatable local demo:"
+  print_command "$1" tour --simulator
+}
+
+onboard() {
+  # Use the binary just installed, even if an older one shadows it on PATH.
+  local wendy_cmd="${INSTALLED_BIN:-$BINARY_NAME}" setup_status=0
+  if ! command -v "$wendy_cmd" &>/dev/null; then
+    tour_next_steps "$wendy_cmd"
+    return 0
+  fi
+
+  # Installation may need sudo, but user configuration must belong to the user.
+  if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
+    echo "Run these commands as ${SUDO_USER}, without sudo, to finish setup:"
+    [[ "$MCP_SETUP" != true ]] || print_command "$wendy_cmd" mcp setup
+    tour_next_steps "$wendy_cmd"
+    return 0
+  fi
+
+  if [[ "$MCP_SETUP" == true ]]; then
+    heading "Setting up MCP integration with your AI tools"
+    print_command "$wendy_cmd" mcp setup
+    # Under `curl ... | bash`, stdin contains the rest of this installer.
+    "$wendy_cmd" mcp setup </dev/null || setup_status=$?
+    if [[ "$setup_status" -ne 0 ]]; then
+      echo "Warning: MCP setup did not complete. Wendy is installed; retry with:"
+      print_command "$wendy_cmd" mcp setup
+      # An interrupted setup should not immediately start another program.
+      if [[ "$setup_status" -eq 130 || "$setup_status" -eq 143 ]]; then
+        tour_next_steps "$wendy_cmd"
+        return 0
+      fi
+    fi
+  fi
+
+  if have_tty; then
+    heading "Starting the Wendy tour"
+    print_command "$wendy_cmd" tour
+    # Reattach stdin as well as stdout for interactive `curl ... | bash` installs.
+    if ! "$wendy_cmd" tour </dev/tty >/dev/tty; then
+      echo "The tour ended before completing. Wendy is installed; restart it with:"
+      print_command "$wendy_cmd" tour
+    fi
+  else
+    tour_next_steps "$wendy_cmd"
+  fi
+}
+
+onboard

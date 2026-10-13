@@ -19,7 +19,7 @@ func TestEndUserSkillsInstallDiscoverableDirectoriesAndReferences(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"wendy", "wendy-device-install", "wendy-robot-deploy", "wendy-template-app", "wendy-mcp-setup"} {
+	for _, name := range []string{"wendy", "wendy-data", "wendy-device-install", "wendy-robot-deploy", "wendy-template-app", "wendy-mcp-setup"} {
 		data, err := os.ReadFile(filepath.Join(target, name, "SKILL.md"))
 		if err != nil {
 			t.Fatal(err)
@@ -63,7 +63,7 @@ func TestHostInstallersUseSameEndUserGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantNames := []string{
-		"wendy", "wendy-app-lifecycle", "wendy-device-debug", "wendy-device-install",
+		"wendy", "wendy-app-lifecycle", "wendy-data", "wendy-device-debug", "wendy-device-install",
 		"wendy-device-ops", "wendy-entitlements", "wendy-install", "wendy-mcp-setup",
 		"wendy-onboarding",
 		"wendy-project-setup", "wendy-robot-deploy", "wendy-template-app",
