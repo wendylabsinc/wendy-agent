@@ -828,8 +828,9 @@ func runVMRobot(cmd *cobra.Command, action, name string) error {
 
 // Resolve a declared ROS app onto the selected robot's bus in memory. The
 // source manifest remains unchanged. Every scope except app is mapped to the
-// isolated guest bus (scope device); scope app keeps the app to itself; explicit conflicting domain, middleware or environment choices fail
-// before any image build or deployment.
+// isolated guest bus (scope device); scope app keeps the app to itself.
+// Explicit conflicting domain, middleware, or environment choices fail before
+// any image build or deployment.
 func prepareRobotAppConfig(conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, overrides []string) (*appconfig.AppConfig, error) {
 	if conn == nil || conn.SimulatorName == "" {
 		return cfg, nil

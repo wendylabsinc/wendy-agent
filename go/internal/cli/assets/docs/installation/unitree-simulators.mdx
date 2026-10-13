@@ -105,7 +105,7 @@ WendyOS VM
 
 Managed robot applications use ROS 2 Humble, CycloneDDS, and domain 0. Their ROS bus stays on guest loopback, isolated from your physical robot and other VMs. Select the named target, such as `--device vm:go2-sim`, so Wendy can apply the managed profile's settings.
 
-Your app can declare host discovery for hardware. Managed VM deployment normalizes that declaration to guest loopback without rewriting the source `wendy.json`. Do not bridge the VM's DDS network onto the robot network to transfer an app; deploy to the physical target instead.
+Your app can declare scope `peripherals` or `network` for hardware. Managed VM deployment maps either one (and scope `device`) to guest loopback without rewriting the source `wendy.json`; scope `app` is rejected because it cannot join the robot bus. Do not bridge the VM's DDS network onto the robot network to transfer an app; deploy to the physical target instead.
 
 Both profiles use wall-clock capture timestamps and do not publish `/clock`. Keep `use_sim_time=false`. Pausing physics stops fresh observations.
 
@@ -133,7 +133,7 @@ Use a `wendy.json` like this beside your application's Dockerfile:
 
 The image must contain your ROS application and its message dependencies. Declaring the framework configures deployment; it does not install `rclpy` or Unitree message packages into an arbitrary image. The [Go2 examples](https://github.com/wendylabsinc/WendyOS/tree/main/go/simulator/go2/examples) include complete Dockerfiles and manifests.
 
-Run `wendy run --device vm:go2-sim` or `wendy run --device vm:g1-sim` from that project directory. Wendy rejects a conflicting domain, ROS distribution, middleware, or explicit discovery override instead of silently placing the app on a different robot bus.
+Run `wendy run --device vm:go2-sim` or `wendy run --device vm:g1-sim` from that project directory. Wendy rejects a conflicting domain, ROS distribution, middleware, scope, or discovery override instead of silently placing the app on a different robot bus.
 
 ## Control and reset behavior
 

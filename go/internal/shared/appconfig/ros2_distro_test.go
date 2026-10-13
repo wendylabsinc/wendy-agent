@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// validateROS2Config checked domainId, rmw and discoveryScope but never distro —
+// validateROS2Config checked domainId, rmw and scope but never distro —
 // even though distro is the field that gets interpolated into an image reference
 // (docker.io/library/ros:<distro>) and into a shell command inside the sidecar
 // (source /opt/ros/<distro>/setup.bash). A typo therefore passed `wendy run` and

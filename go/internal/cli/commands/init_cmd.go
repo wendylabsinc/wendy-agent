@@ -144,7 +144,7 @@ func newInitCmd() *cobra.Command {
 			"scaffold into the current directory instead (with no app ID, --here infers one from the current " +
 			"directory's name).\n\n" +
 			"wendy.json also supports a separate, top-level \"frameworks\" key for framework-level config " +
-			"(currently ROS 2: domain ID, RMW middleware, discovery scope). Enable it with --framework " +
+			"(currently ROS 2: domain ID, RMW middleware, and scope). Enable it with --framework " +
 			"(see the ROS 2 example below), through the interactive prompt on a WendyOS target, or by hand-editing " +
 			"\"frameworks\" in wendy.json afterwards.",
 		Example: `  # Interactive wizard
@@ -222,14 +222,14 @@ func newInitCmd() *cobra.Command {
     --assistant claude \
     --install-claude-skills
 
-  # ROS 2 app: enable the "frameworks" key with the ros2 framework
+  # ROS 2 app that talks to hardware attached to the device
   wendy init \
-    --app-id go2-network-bridge \
+    --app-id go2-robot-app \
     --target wendyos \
     --language swift \
     --framework ros2 \
     --ros2-rmw cyclonedds \
-    --ros2-discovery-scope host \
+    --ros2-scope peripherals \
     --assistant skip`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -406,7 +406,7 @@ func runInitWizard(args []string, opts initOptions) error {
 
 	cliSuccess("\nCreated wendy.json for %s", appID)
 	if frameworks != nil && frameworks.ROS2 != nil {
-		cliLogln("  Framework: ros2 (edit the \"frameworks\" key in wendy.json to change domain ID, RMW, or discovery scope)")
+		cliLogln("  Framework: ros2 (edit the \"frameworks\" key in wendy.json to change domain ID, RMW, or scope)")
 	}
 
 	// Step 5: Scaffold project files.
@@ -1367,7 +1367,7 @@ var ros2RMWPickerItems = []tui.PickerItem{
 // askFrameworkQuestions interactively offers ROS 2 support for a WendyOS
 // app (WDY frameworks discoverability: `wendy init` gave no hint that a
 // separate top-level "frameworks" key exists in wendy.json). Domain ID and
-// discovery scope are surfaced; the distro is left at its default and can be
+// scope are surfaced; the distro is left at its default and can be
 // changed by hand afterwards.
 var askFrameworkQuestions = func() (*appconfig.FrameworksConfig, error) {
 	wantROS2, err := tui.Confirm("Does your app use ROS 2 (Robot Operating System)?")

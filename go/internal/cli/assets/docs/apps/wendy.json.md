@@ -125,7 +125,7 @@ Every field is optional — `"frameworks": { "ros2": {} }` is a valid way to say
 
 Peripheral interfaces are detected, not configured: a robot on its own cable is found, but a robot on the same switch as the device's uplink, or one reached over Wi-Fi, is not; use `network` for those. A second ordinary network port without a default route counts as a peripheral interface.
 
-`device` and `peripherals` connect apps through the device's loopback, so they need the host network: no `network` entitlement or `{ "type": "network", "mode": "host" }`. Apps that share a bus through `device`, `peripherals` or `network` set the same `domainId`; without one each app gets its own domain.
+`device` and `peripherals` connect apps through the device's loopback, so they require host networking. The current runtime provides it when the app has no `network` entitlement, or when that entitlement uses mode `host` or `host-admin`; isolated modes such as `bridge` are rejected. Apps that share a bus through `device`, `peripherals` or `network` set the same `domainId`; without one each app gets its own domain.
 
 An out-of-range `domainId`, an unsupported `rmw`, a malformed `distro`, or an unknown `scope` is rejected when the config is parsed, rather than silently starting a container with no domain or middleware isolation.
 

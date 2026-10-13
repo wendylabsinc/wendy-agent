@@ -61,15 +61,15 @@ wendy init \
   --language swift \
   --framework ros2 \
   --ros2-rmw cyclonedds \
-  --ros2-discovery-scope host \
+  --ros2-scope network \
   --assistant skip
 ```
 
 Any `--ros2-*` flag on its own implies `--framework ros2`, and values are
 validated up front, so a mistyped RMW or distro fails at `init` rather than at
 deploy time. Run `wendy init` interactively on a WendyOS target and it asks
-whether the app uses ROS 2, then walks through middleware, discovery scope, and
-domain ID.
+whether the app uses ROS 2, then walks through middleware, scope, and domain ID
+(unless scope is `app`, which uses the app's own domain).
 
 Existing projects need no scaffolding — add the `frameworks.ros2` key to
 `wendy.json` by hand and `wendy run` picks it up on the next deploy. See
@@ -185,9 +185,10 @@ graph in domain 0, pass these arguments to `ros2_lidar_summary`:
 }
 ```
 
-Keep the scope and domain consistent with discovery. The default `scope: "app"`
-preserves the app's ROS 2 environment; host inspection requires an explicit
-`domain_id`. Topic names are examples: a robot may publish a different cloud or
+The inspection tool's `scope` parameter is separate from
+`frameworks.ros2.scope`: its default `"app"` preserves the running app's ROS 2
+environment, while `"host"` inspects the device's host DDS graph and requires an
+explicit `domain_id`. Topic names are examples: a robot may publish a different cloud or
 a laser scan. For a discovered scan topic, set `message_type` to
 `sensor_msgs/msg/LaserScan`.
 
