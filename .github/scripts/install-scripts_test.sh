@@ -106,8 +106,11 @@ cat > "$STUB/brew" <<'EOF'
 exit 0
 EOF
 chmod +x "$STUB/uname" "$STUB/brew"
+# Automatic onboarding must never find a developer's real Wendy on PATH.
+printf '#!/bin/sh\nexit 0\n' > "$STUB/wendy"; chmod +x "$STUB/wendy"
+FAKE_HOME="$(mktemp -d)"
 : > "$REQ_LOG"
-PATH="$STUB:$BIN:$PATH" bash "$CLI" -y >/dev/null 2>&1 || true
+PATH="$STUB:$BIN:$PATH" HOME="$FAKE_HOME" bash "$CLI" -y >/dev/null 2>&1 || true
 absent "defer.no_github"   "$(cat "$REQ_LOG")" "api.github.com"
 absent "defer.no_manifest" "$(cat "$REQ_LOG")" "install.wendy.dev/manifest.json"
 
@@ -569,5 +572,139 @@ rc=0; no_tty env PATH="$DEST:$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" bash -s --
 check "version_stdin.exit" "0" "$rc"
 contains "version_stdin.version" "$(cat "$OUT")" "wendy version 2026.07.19-143000"
 absent "version_stdin.no_script_read" "$(cat "$OUT")" "stdin had"
+
+# --- Onboarding: actual installer runs with an observable, harmless CLI ---
+onboarding_fixture() {
+  make_stubs Darwin arm64
+  D="$(mktemp -d)"; setup_net "$D"
+  FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; DEST="$(mktemp -d)"
+  : > "$FAKE_HOME/onboarding.log"
+  # shellcheck disable=SC2016 # Expanded by the installed stub, not this shell.
+  serve_cli_binary "$D" darwin arm64 'printf "%s|%s\n" "$0" "$*" >> "$HOME/onboarding.log"
+case "$*" in
+  --version) echo "wendy version test";;
+  "mcp setup")
+    if IFS= read -r line; then echo "MCP_READ_INPUT: $line"; fi
+    echo "MCP setup output"
+    exit "${MCP_STATUS:-0}";;
+  tour)
+    if [ -t 0 ] && [ -t 1 ]; then echo "TOUR_HAS_TERMINAL"; else echo "TOUR_NO_TERMINAL"; fi
+    exit "${TOUR_STATUS:-0}";;
+  *) exit 1;;
+esac'
+}
+
+# A piped, headless installation configures the newly installed binary even
+# when an older one shadows it. Setup must not consume the script's next line.
+onboarding_fixture
+printf '#!/bin/sh\necho "OLD_CLI_EXECUTED"\n' > "$STUB/wendy"; chmod +x "$STUB/wendy"
+PIPE_SCRIPT="$(mktemp)"
+cat "$CLI" > "$PIPE_SCRIPT"
+printf '\nprintf "PIPELINE_END\\n"\n' >> "$PIPE_SCRIPT"
+rc=0
+cat "$PIPE_SCRIPT" | no_tty env PATH="$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" CI= \
+  bash -s -- -d "$DEST" >"$OUT" 2>&1 || rc=$?
+check "onboard.piped.exit" "0" "$rc"
+check "onboard.piped.exact_binary" "$(printf '%s|--version\n%s|mcp setup' "$DEST/wendy" "$DEST/wendy")" "$(cat "$FAKE_HOME/onboarding.log")"
+contains "onboard.piped.visible_setup" "$(cat "$OUT")" "MCP setup output"
+contains "onboard.piped.script_finished" "$(cat "$OUT")" "PIPELINE_END"
+absent "onboard.piped.no_input_read" "$(cat "$OUT")" "MCP_READ_INPUT"
+absent "onboard.piped.no_old_cli" "$(cat "$OUT")" "OLD_CLI_EXECUTED"
+absent "onboard.piped.no_color" "$(cat "$OUT")" $'\033['
+contains "onboard.piped.simulator_next_step" "$(cat "$OUT")" "$DEST/wendy tour --simulator"
+
+# Optional setup failure must not turn a completed installation into failure.
+onboarding_fixture
+rc=0; MCP_STATUS=7 run_no_tty "$OUT" "$CLI" -y -d "$DEST" || rc=$?
+check "onboard.setup_failure.exit" "0" "$rc"
+contains "onboard.setup_failure.output" "$(cat "$OUT")" "MCP setup output"
+contains "onboard.setup_failure.warns" "$(cat "$OUT")" "Warning:"
+check "onboard.setup_failure.binary" "yes" "$([ -x "$DEST/wendy" ] && echo yes || echo no)"
+
+# Git Bash's .exe installation also reaches setup through the shared finish.
+onboarding_fixture
+make_stubs MINGW64_NT-10.0 x86_64
+PKG="$(mktemp -d)"
+tar -xzf "$D/wendy-cli-darwin-arm64-2026.07.19-143000.tar.gz" -C "$PKG"
+mkdir "$PKG/wendy-cli-windows-amd64"
+cp "$PKG/wendy-cli-darwin-arm64/wendy" "$PKG/wendy-cli-windows-amd64/wendy.exe"
+(cd "$PKG" && zip -qr "$D/wendy-cli-windows-amd64-2026.07.19-143000.zip" wendy-cli-windows-amd64)
+rc=0; run_no_tty "$OUT" "$CLI" -y -d "$DEST" || rc=$?
+check "onboard.windows.exit" "0" "$rc"
+check "onboard.windows.commands" "$(printf '%s|--version\n%s|mcp setup' "$DEST/wendy.exe" "$DEST/wendy.exe")" "$(cat "$FAKE_HOME/onboarding.log")"
+
+# A real controlling terminal plus piped script input exercises the curl | bash
+# path. Only the installation confirmation is answered; tour needs no second
+# answer. Keep stdin open until the short-lived stub tour has exited.
+for mode in automatic contaminated_answer invalid_answer yes ci redirected no_setup setup_failure interrupted tour_failure sudo no_color dumb; do
+  onboarding_fixture
+  args=(-d "$DEST"); ci_value=""; mcp_status=0; tour_status=0; sudo_user=""
+  answers='y\n'; term_value=xterm; no_color=""
+  case "$mode" in
+    contaminated_answer) answers='\007\033[24;1Ry\n';;
+    invalid_answer) answers='perhaps\n\007\033[24;1R\ny\n';;
+    yes) args+=(-y);;
+    ci) ci_value=true;;
+    no_setup) args+=(--no-mcp-setup);;
+    setup_failure) mcp_status=7;;
+    interrupted) mcp_status=130;;
+    tour_failure) tour_status=9;;
+    no_color) no_color=1;;
+    dumb) term_value=dumb;;
+    sudo)
+      sudo_user=installer-user
+      printf '#!/bin/sh\necho 0\n' > "$STUB/id";;
+  esac
+  rc=0
+  if [[ "$mode" == redirected ]]; then
+    # shellcheck disable=SC2016 # Arguments belong to the inner shell.
+    out="$({ printf 'y\n'; sleep 2; } | with_pty env PATH="$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" CI= TERM=xterm NO_COLOR= \
+      bash -c 'cat "$1" | bash -s -- -d "$2" >"$3"' bash "$CLI" "$DEST" "$OUT" 2>&1)" || rc=$?
+    out="$out$(cat "$OUT")"
+  else
+    # shellcheck disable=SC2016 # Arguments belong to the inner shell.
+    out="$({ printf '%b' "$answers"; sleep 2; } | with_pty env PATH="$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" CI="$ci_value" TERM="$term_value" NO_COLOR="$no_color" \
+      MCP_STATUS="$mcp_status" TOUR_STATUS="$tour_status" SUDO_USER="$sudo_user" \
+      bash -c 'cat "$1" | bash -s -- "${@:2}"' bash "$CLI" "${args[@]}" 2>&1)" || rc=$?
+  fi
+  check "onboard.${mode}.exit" "0" "$rc"
+  expected="$(printf '%s|--version' "$DEST/wendy")"
+  case "$mode" in
+    no_setup|sudo) ;;
+    *) expected="$(printf '%s\n%s|mcp setup' "$expected" "$DEST/wendy")";;
+  esac
+  case "$mode" in
+    interrupted|sudo) ;;
+    *)
+      expected="$(printf '%s\n%s|tour' "$expected" "$DEST/wendy")"
+      contains "onboard.${mode}.tour_terminal" "$out" "TOUR_HAS_TERMINAL";;
+  esac
+  check "onboard.${mode}.commands" "$expected" "$(cat "$FAKE_HOME/onboarding.log")"
+  absent "onboard.${mode}.no_setup_input" "$out" "MCP_READ_INPUT"
+  case "$mode" in
+    setup_failure|interrupted) contains "onboard.${mode}.warns" "$out" "Warning:";;
+    tour_failure) contains "onboard.tour_failure.retry" "$out" "Wendy is installed; restart it with:";;
+    automatic) contains "onboard.automatic.color" "$out" $'\033[';;
+    contaminated_answer|invalid_answer)
+      prompt_count="$(printf '%s' "$out" | grep -oF 'Proceed? [y/N]' | wc -l | tr -d ' ' || true)"
+      if [[ "$mode" == contaminated_answer ]]; then expected_prompts=1; else expected_prompts=3; fi
+      check "onboard.${mode}.prompts" "$expected_prompts" "$prompt_count";;
+    redirected|no_color|dumb) absent "onboard.${mode}.no_color" "$out" $'\033[';;
+  esac
+  case "$mode" in
+    interrupted|sudo) contains "onboard.${mode}.simulator_next_step" "$out" "$DEST/wendy tour --simulator";;
+  esac
+done
+
+# A declined or closed confirmation must still stop before installation.
+for answer in no blank eof; do
+  onboarding_fixture
+  case "$answer" in no) keys='n\n';; blank) keys='\n';; eof) keys='\004';; esac
+  out="$({ printf '%b' "$keys"; sleep 2; } | with_pty env PATH="$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" CI= \
+    bash "$CLI" -d "$DEST" 2>&1 || true)"
+  contains "confirm.${answer}.aborted" "$out" "Aborted."
+  check "confirm.${answer}.no_install" "no" "$([ -e "$DEST/wendy" ] && echo yes || echo no)"
+  check "confirm.${answer}.no_onboarding" "" "$(cat "$FAKE_HOME/onboarding.log")"
+done
 
 exit $fail

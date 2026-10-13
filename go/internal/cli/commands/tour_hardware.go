@@ -3,6 +3,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -90,6 +91,20 @@ func (m tourWizardModel) sampleURL() string {
 	return "http://" + net.JoinHostPort(host, "8000")
 }
 
+const tourSampleResponseLimit = 64 << 10
+
+// This HTML marker is emitted by the built-in tourAppPy starter. A different
+// service already listening on port 8000 must not satisfy the tour's readiness.
+const tourSampleResponseMarker = "<p>Your Wendy edge device is running.</p>"
+
+func tourSampleResponseReady(statusCode int, body io.Reader) bool {
+	if statusCode != http.StatusOK {
+		return false
+	}
+	data, err := io.ReadAll(io.LimitReader(body, tourSampleResponseLimit+1))
+	return err == nil && len(data) <= tourSampleResponseLimit && bytes.Contains(data, []byte(tourSampleResponseMarker))
+}
+
 func (m tourWizardModel) cmdSampleReadiness() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, 45*time.Second)
@@ -104,9 +119,9 @@ func (m tourWizardModel) cmdSampleReadiness() tea.Cmd {
 			}
 			resp, err := client.Do(req)
 			if err == nil {
-				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+				ready := tourSampleResponseReady(resp.StatusCode, resp.Body)
 				resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
+				if ready {
 					tourStage(ctx, "physical", "app_ready", "completed", nil, "readiness")
 					_ = browserOpen(url)
 					return tourSampleReadyMsg{}
@@ -117,7 +132,7 @@ func (m tourWizardModel) cmdSampleReadiness() tea.Cmd {
 				if errors.Is(ctx.Err(), context.Canceled) {
 					return tourSampleReadyMsg{err: ErrUserCancelled}
 				}
-				return tourSampleReadyMsg{err: fmt.Errorf("the app was deployed, but %s did not answer successfully before the readiness deadline; inspect 'wendy device logs --device %s' and rerun from %s: %w", url, m.foundAddr, m.projectPath, ctx.Err())}
+				return tourSampleReadyMsg{err: fmt.Errorf("the app was deployed, but %s did not return the tour starter response before the readiness deadline; inspect 'wendy device logs --device %s' and rerun from %s: %w", url, m.foundAddr, m.projectPath, ctx.Err())}
 			case <-time.After(time.Second):
 			}
 		}

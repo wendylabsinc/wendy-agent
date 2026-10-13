@@ -16,6 +16,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
+const DiscordSupportPrompt = "Get support in our Discord community: https://discord.gg/wendylabsinc"
+
 var (
 	jsonOutput bool
 	deviceFlag string
@@ -319,6 +321,7 @@ func NewRootCmd() *cobra.Command {
 
 	root.SetHelpCommandGroupID("settings")
 	root.SetCompletionCommandGroupID("settings")
+	root.SetHelpTemplate(root.HelpTemplate() + "{{if not .HasParent}}\n" + DiscordSupportPrompt + "\n{{end}}")
 
 	addUSBDriverCommand(root)
 	rejectStrayArguments(root)
