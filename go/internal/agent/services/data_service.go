@@ -58,7 +58,8 @@ type DataService struct {
 	video        inferenceVideo
 	deploymentMu sync.Mutex
 	// leases holds leased watches' deadlines. Apply, expiry and removal change
-	// them under deploymentMu with the documents they belong to; renew and the
+	// them under deploymentMu with the documents they belong to, and expiry
+	// decides under deploymentMu too, after re-reading the watch; renew and the
 	// check before each notification take only the table's own lock.
 	leases documentLeases
 	// watches is the watch runner, set by StartCampaignInference.

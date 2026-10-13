@@ -92,7 +92,7 @@ type watchRunner struct {
 	sender  CampaignNotificationSender
 	queue   chan watchDelivery
 	mu      sync.Mutex
-	errors  map[string]string
+	errors  map[string]map[string]string // watch -> destination -> last error
 }
 
 // startWatches removes what a previous agent run leased, then runs the watch
@@ -100,7 +100,7 @@ type watchRunner struct {
 // channel closed once both loops have stopped.
 func (s *DataService) startWatches(ctx context.Context, sender CampaignNotificationSender) <-chan struct{} {
 	s.sweepLeasedDocuments()
-	runner := &watchRunner{service: s, sender: sender, queue: make(chan watchDelivery, 64), errors: map[string]string{}}
+	runner := &watchRunner{service: s, sender: sender, queue: make(chan watchDelivery, 64), errors: map[string]map[string]string{}}
 	s.watches = runner
 	var loops sync.WaitGroup
 	loops.Add(2)
@@ -164,7 +164,7 @@ func (r *watchRunner) enqueue(delivery watchDelivery) {
 	select {
 	case r.queue <- delivery:
 	default:
-		r.setError(delivery.watch, errors.New("external notification queue full; notification retained in Wendy Data"))
+		r.setError(delivery, errors.New("external notification queue full; notification retained in Wendy Data"))
 	}
 }
 
@@ -178,7 +178,7 @@ func (r *watchRunner) deliveries(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			r.setError(delivery.watch, err)
+			r.setError(delivery, err)
 			if err != nil {
 				r.service.manager.Warnf("watch %q notification: %v", delivery.watch, err)
 			}
@@ -186,21 +186,44 @@ func (r *watchRunner) deliveries(ctx context.Context) {
 	}
 }
 
-func (r *watchRunner) setError(watch string, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err == nil {
-		delete(r.errors, watch)
-		return
+func destination(delivery watchDelivery) string {
+	if delivery.endpoint == "" {
+		return "cloud"
 	}
-	r.errors[watch] = err.Error()
+	return "webhook"
 }
 
-// deliveryError is the watch's last Cloud or webhook failure, or empty.
+// setError records a delivery's outcome for its own destination: a success
+// clears only that destination's error.
+func (r *watchRunner) setError(delivery watchDelivery, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dest := destination(delivery)
+	if err == nil {
+		delete(r.errors[delivery.watch], dest)
+		if len(r.errors[delivery.watch]) == 0 {
+			delete(r.errors, delivery.watch)
+		}
+		return
+	}
+	if r.errors[delivery.watch] == nil {
+		r.errors[delivery.watch] = map[string]string{}
+	}
+	r.errors[delivery.watch][dest] = err.Error()
+}
+
+// deliveryError is the watch's last Cloud and webhook failures ("cloud: ...;
+// webhook: ..."), or empty.
 func (r *watchRunner) deliveryError(watch string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.errors[watch]
+	var parts []string
+	for _, dest := range []string{"cloud", "webhook"} {
+		if message := r.errors[watch][dest]; message != "" {
+			parts = append(parts, dest+": "+message)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // removeDocumentTree deletes a document and everything it owns, owned
@@ -260,7 +283,7 @@ func (s *DataService) expireLeases() {
 		if err != nil || !watch.Leased() || !s.leases.expired(watch.Name) {
 			continue
 		}
-		removed, err := s.removeDocumentTree(data.KindWatch, watch.Name)
+		removed, err := s.removeExpiredWatch(watch.Name)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			s.manager.Warnf("removing watch %q after its lease lapsed: %v", watch.Name, err)
 			continue
@@ -312,4 +335,21 @@ func (s *DataService) sweepLeasedDocuments() {
 			}
 		}
 	}
+}
+
+// removeExpiredWatch decides expiry under deploymentMu, so an apply or redeploy
+// that renewed the lease first wins. It returns nothing if the watch no longer
+// qualifies.
+func (s *DataService) removeExpiredWatch(name string) ([]string, error) {
+	s.deploymentMu.Lock()
+	defer s.deploymentMu.Unlock()
+	stored, err := s.manager.Document(data.KindWatch, name)
+	if err != nil {
+		return nil, err
+	}
+	watch, err := stored.Watch()
+	if err != nil || !watch.Leased() || !s.leases.expired(name) {
+		return nil, nil
+	}
+	return s.removeDocumentTreeLocked(data.KindWatch, name)
 }

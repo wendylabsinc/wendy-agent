@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"errors"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"os"
 	"strings"
 	"sync"
@@ -123,7 +125,7 @@ func TestLapsedLeaseWritesNothingBeforeRemoval(t *testing.T) {
 	saveDocument(t, service, watchYAML("chat-1", "front-door", "lease: 15s\n"))
 	service.leases.extend("chat-1", 15*time.Second)
 	clock.Add(16 * time.Second)
-	base := DetectionNotification{Event: "front-door", Inference: "front-door", SourceID: "v4l2:/dev/video0", Count: 1}
+	base := DetectionNotification{Event: "front-door", Inference: "front-door", SourceID: "v4l2:/dev/video0", Count: 1, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	base.OccurredAt = time.Now().UTC().Format(time.RFC3339Nano)
 	service.watches.deliver("front-door", base)
 	if entries := journal(t, service, "chat-1"); len(entries) != 0 {
@@ -177,4 +179,55 @@ func TestBootSweepRemovesLeasedWatchesWhatTheyOwnAndOrphans(t *testing.T) {
 		t.Fatal("an inference started for a swept document")
 	case <-time.After(300 * time.Millisecond):
 	}
+}
+
+func TestExpireLeasesSkipsAWatchRenewedWhileWaitingForTheLock(t *testing.T) {
+	service, factory, sender := newDocumentTestService(t)
+	clock := newFakeClock()
+	service.leases.now = clock.Now
+	startDocumentTestService(t, service, factory, sender)
+	saveDocument(t, service, watchYAML("chat-1", "chat-1", "lease: 15s\n"))
+	service.leases.extend("chat-1", 15*time.Second)
+	clock.Add(16 * time.Second)
+	service.deploymentMu.Lock()
+	done := make(chan struct{})
+	go func() { service.expireLeases(); close(done) }()
+	time.Sleep(100 * time.Millisecond)
+	service.leases.extend("chat-1", 15*time.Second)
+	service.deploymentMu.Unlock()
+	receiveInference(t, done)
+	if _, err := service.manager.Document(data.KindWatch, "chat-1"); err != nil {
+		t.Fatalf("a renewed watch was removed: %v", err)
+	}
+	if _, ok := service.leases.deadline("chat-1"); !ok {
+		t.Fatal("the renewed deadline was forgotten")
+	}
+}
+
+type cloudFailsSender struct{}
+
+func (cloudFailsSender) Send(_ context.Context, endpoint string, _ DetectionNotification) error {
+	if endpoint == "" {
+		return status.Error(codes.PermissionDenied, "watch not registered")
+	}
+	return nil
+}
+
+func TestDeliveryErrorKeepsTheCloudFailureAfterAWebhookSuccess(t *testing.T) {
+	service, factory, _ := newDocumentTestService(t)
+	startDocumentTestService(t, service, factory, cloudFailsSender{})
+	saveDocument(t, service, watchYAML("porch", "front-door", "notify:\n  - cloud\n  - webhook: https://example.com/hook\n"))
+	base := DetectionNotification{Event: "front-door", Inference: "front-door", SourceID: "v4l2:/dev/video0", Count: 1, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	service.watches.deliver("front-door", base)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := service.watches.deliveryError("porch"); strings.Contains(got, "cloud: ") {
+			if strings.Contains(got, "webhook") {
+				t.Fatalf("webhook succeeded but is reported: %q", got)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("deliveryError = %q; want the Cloud failure", service.watches.deliveryError("porch"))
 }
