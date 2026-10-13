@@ -22,6 +22,12 @@ func TestSystemPromptTreatsWatchReportsAsData(t *testing.T) {
 			t.Fatalf("system prompt lacks %q", want)
 		}
 	}
+	// The event prompt asks for the alert itself; a system prompt that asks
+	// whether the report matches the request brings back "Yes, this is what
+	// you asked for" replies (ac506db7f).
+	if strings.Contains(prompt, "whether it is what they asked") {
+		t.Fatal("system prompt asks for a yes/no instead of the alert")
+	}
 }
 
 // A headless request exits after one turn, so its watches cannot report back
