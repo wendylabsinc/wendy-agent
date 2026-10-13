@@ -78,9 +78,15 @@ type OpenRelaySessionResponse struct {
 	PairingCode string `protobuf:"bytes,2,opt,name=pairing_code,json=pairingCode,proto3" json:"pairing_code,omitempty"`
 	// Attach the stream before this (60 s after open) or the session ends.
 	// Once attached the 8 h idle rule applies instead.
-	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	// The `version` of the tool manifest the relay serves to unpaired chats
+	// (docs/relay-mcp-tools.json): "<CLI version>+<tool set hash>". The CLI
+	// compares the hash part with its own tool set and, on a mismatch, warns
+	// and accepts no pairing, since the chat would have been shown tools the
+	// CLI does not serve. Empty (a relay without a manifest) is a mismatch.
+	ManifestVersion string `protobuf:"bytes,4,opt,name=manifest_version,json=manifestVersion,proto3" json:"manifest_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *OpenRelaySessionResponse) Reset() {
@@ -132,6 +138,13 @@ func (x *OpenRelaySessionResponse) GetExpiresAt() *timestamppb.Timestamp {
 		return x.ExpiresAt
 	}
 	return nil
+}
+
+func (x *OpenRelaySessionResponse) GetManifestVersion() string {
+	if x != nil {
+		return x.ManifestVersion
+	}
+	return ""
 }
 
 type RelaySessionRequest struct {
@@ -521,13 +534,14 @@ const file_wendycloud_v2_relay_mcp_proto_rawDesc = "" +
 	"\n" +
 	"\x1dwendycloud/v2/relay_mcp.proto\x12\rwendycloud.v2\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x13wendy/options.proto\x1a\"wendycloud/v2/signed_request.proto\"B\n" +
 	"\x17OpenRelaySessionRequest\x12'\n" +
-	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\"\x97\x01\n" +
+	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\"\xc2\x01\n" +
 	"\x18OpenRelaySessionResponse\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12!\n" +
 	"\fpairing_code\x18\x02 \x01(\tR\vpairingCode\x129\n" +
 	"\n" +
-	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"\xbb\x01\n" +
+	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12)\n" +
+	"\x10manifest_version\x18\x04 \x01(\tR\x0fmanifestVersion\"\xbb\x01\n" +
 	"\x13RelaySessionRequest\x12\x1f\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tH\x00R\tsessionId\x12K\n" +

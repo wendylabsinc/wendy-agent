@@ -56,6 +56,12 @@ message OpenRelaySessionResponse {
   // Attach the stream before this (60 s after open) or the session ends.
   // Once attached the 8 h idle rule applies instead.
   google.protobuf.Timestamp expires_at = 3;
+  // The `version` of the tool manifest the relay serves to unpaired chats
+  // (docs/relay-mcp-tools.json): "<CLI version>+<tool set hash>". The CLI
+  // compares the hash part with its own tool set and, on a mismatch, warns
+  // and accepts no pairing, since the chat would have been shown tools the
+  // CLI does not serve. Empty (a relay without a manifest) is a mismatch.
+  string manifest_version = 4;
 }
 
 message RelaySessionRequest {

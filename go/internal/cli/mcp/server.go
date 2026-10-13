@@ -267,11 +267,15 @@ func (s *mcpServer) ConnectToOnStartup(ctx context.Context, address string) erro
 }
 
 func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
+	instructions := serverInstructions
+	if s.relay {
+		instructions = relayInstructions
+	}
 	srv := server.NewMCPServer("wendy", version.Version,
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, false),
 		server.WithPromptCapabilities(false),
-		server.WithInstructions(serverInstructions),
+		server.WithInstructions(instructions),
 		server.WithToolFilter(s.filterTools),
 	)
 	srv.Use(s.relayManifestMiddleware, s.bindingMiddleware(srv), s.cliUpdateMiddleware())
@@ -318,6 +322,7 @@ func (s *mcpServer) Serve(ctx context.Context, policy *BindingPolicy, in io.Read
 		return fmt.Errorf("serving MCP for a web client needs a binding policy")
 	}
 	s.setBindingPolicy(policy)
+	s.relay = true
 	return s.run(ctx, func(srv *server.MCPServer) error {
 		return serveStdioStreams(ctx, srv, in, out)
 	})

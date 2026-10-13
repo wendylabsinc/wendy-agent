@@ -35,11 +35,22 @@ func (f *fakeRelay) RelaySession(stream cloudpbv2.RelayMcpService_RelaySessionSe
 	return f.script(stream)
 }
 
-var testOpened = &cloudpbv2.OpenRelaySessionResponse{SessionId: "sess-1", PairingCode: "ABCD-2345"}
+// testOpened is a session whose relay publishes this CLI's tool manifest.
+func testOpened(t *testing.T, manifestVersion string) *cloudpbv2.OpenRelaySessionResponse {
+	t.Helper()
+	if manifestVersion == "" {
+		m, err := wendymcp.Manifest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifestVersion = m.Version
+	}
+	return &cloudpbv2.OpenRelaySessionResponse{SessionId: "sess-1", PairingCode: "ABCD-2345", ManifestVersion: manifestVersion}
+}
 
 // runRelaySession serves one relay session against script. The user's
 // answers go to answers; they count as typed after the question.
-func runRelaySession(t *testing.T, policy wendymcp.BindingPolicy, answers <-chan string, script func(cloudpbv2.RelayMcpService_RelaySessionServer) error) (<-chan error, *lockedBuffer) {
+func runRelaySession(t *testing.T, opened *cloudpbv2.OpenRelaySessionResponse, policy wendymcp.BindingPolicy, answers <-chan string, script func(cloudpbv2.RelayMcpService_RelaySessionServer) error) (<-chan error, *lockedBuffer) {
 	t.Helper()
 	for _, env := range []string{"WENDY_MCP_CHANNEL", "WENDY_MCP_CLIENT_ID", "WENDY_MCP_RELAY_SESSION_ID"} {
 		t.Setenv(env, "")
@@ -74,7 +85,7 @@ func runRelaySession(t *testing.T, policy wendymcp.BindingPolicy, answers <-chan
 	}()
 	done := make(chan error, 1)
 	go func() {
-		done <- serveCloudMCP(ctx, stream, testOpened, term, wendymcp.New(&config.Config{}, nil), policy)
+		done <- serveCloudMCP(ctx, stream, opened, term, wendymcp.New(&config.Config{}, nil), policy)
 	}()
 	return done, out
 }
@@ -95,7 +106,7 @@ func TestCloudMCPDeniedPairingBindsNothing(t *testing.T) {
 	answers := make(chan string, 1)
 	answers <- "n"
 	var decisions []*cloudpbv2.PairingDecision
-	done, out := runRelaySession(t, wendymcp.BindingPolicy{}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
+	done, out := runRelaySession(t, testOpened(t, ""), wendymcp.BindingPolicy{}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
 		// A wrong code is denied without asking the user.
 		for _, p := range []*cloudpbv2.RelaySessionResponse{pairing("b0", "WRONG-0000"), pairing("b1", "ABCD-2345")} {
 			if err := stream.Send(p); err != nil {
@@ -121,13 +132,36 @@ func TestCloudMCPDeniedPairingBindsNothing(t *testing.T) {
 	}
 }
 
+// A relay that showed the chat another tool set (or none) gets no pairing,
+// and the user is never asked.
+func TestCloudMCPManifestMismatchDeniesPairing(t *testing.T) {
+	var decision *cloudpbv2.PairingDecision
+	done, out := runRelaySession(t, testOpened(t, "0.0.0+0000000000000000"), wendymcp.BindingPolicy{AllowAll: true}, nil, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
+		if err := stream.Send(pairing("b1", "ABCD-2345")); err != nil {
+			return err
+		}
+		got, err := stream.Recv()
+		decision = got.GetPairingDecision()
+		return err
+	})
+	if err := <-done; err != nil {
+		t.Fatalf("serveCloudMCP = %v", err)
+	}
+	if decision == nil || decision.GetAccept() || decision.GetBindingId() != "b1" {
+		t.Fatalf("decision %v, want b1 denied", decision)
+	}
+	if log := out.String(); !strings.Contains(log, "Warning:") || strings.Contains(log, "Allow?") {
+		t.Fatalf("want a warning and no question:\n%s", log)
+	}
+}
+
 func TestCloudMCPAcceptedClientNeedsConfirmationToMutate(t *testing.T) {
 	answers := make(chan string, 2)
 	answers <- "y" // accept the pairing
 	answers <- "n" // refuse the call
 	var accepted *cloudpbv2.PairingDecision
 	var replies []*cloudpbv2.McpFrame
-	done, out := runRelaySession(t, wendymcp.BindingPolicy{AllowAll: true}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
+	done, out := runRelaySession(t, testOpened(t, ""), wendymcp.BindingPolicy{AllowAll: true}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
 		if err := stream.Send(pairing("b1", "ABCD-2345")); err != nil {
 			return err
 		}
@@ -184,7 +218,7 @@ func TestCloudMCPAcceptedClientNeedsConfirmationToMutate(t *testing.T) {
 }
 
 func TestCloudMCPEndsOnFrameSequenceGap(t *testing.T) {
-	done, _ := runRelaySession(t, wendymcp.BindingPolicy{}, nil, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
+	done, _ := runRelaySession(t, testOpened(t, ""), wendymcp.BindingPolicy{}, nil, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
 		if err := stream.Send(frame(2, "b1", `{}`)); err != nil {
 			return err
 		}

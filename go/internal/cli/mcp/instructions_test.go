@@ -155,3 +155,29 @@ func TestServerInstructionsSendAuthRequiredToAuthLogin(t *testing.T) {
 		t.Fatal("guide must mention auth_login")
 	}
 }
+
+// The relay channel answers initialize with relayInstructions: no shell,
+// tool-group or CLI update text for a hosted chat.
+func TestServeUsesRelayInstructions(t *testing.T) {
+	var out strings.Builder
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}` + "\n")
+	if err := New(&config.Config{}, nil).Serve(context.Background(), &BindingPolicy{}, in, &out); err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Result struct {
+			Instructions string `json:"instructions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &decoded); err != nil {
+		t.Fatalf("%v: %q", err, out.String())
+	}
+	if decoded.Result.Instructions != relayInstructions {
+		t.Fatalf("relay initialize instructions = %q, want relayInstructions", decoded.Result.Instructions)
+	}
+	for _, banned := range []string{"wendy_tools", "shell", "update"} {
+		if strings.Contains(relayInstructions, banned) {
+			t.Errorf("relayInstructions mention %q", banned)
+		}
+	}
+}

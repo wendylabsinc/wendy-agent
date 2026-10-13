@@ -140,6 +140,12 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 		term.printf("Session closed.\n")
 	}()
 
+	// A relay that showed the chat a different tool set than this CLI
+	// serves, or none (no manifest_version), gets no pairing: fail closed.
+	manifestErr := wendymcp.CheckRelayManifest(opened.GetManifestVersion())
+	if manifestErr != nil {
+		term.printf("Warning: %v. Every pairing request will be denied; update the CLI or wait for the relay to publish this tool set.\n", manifestErr)
+	}
 	term.printf("Pairing code: %s\nGive this code to the Wendy connector in your web chat. Press Ctrl-C to end the session.\n", opened.GetPairingCode())
 	var client string
 	for {
@@ -157,6 +163,8 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 		case p := <-pairings:
 			name, id, code := printable(p.GetClientName()), printable(p.GetClientId()), printable(p.GetCode())
 			switch {
+			case manifestErr != nil:
+				term.printf("Denied %q: the relay's tool manifest does not match this CLI.\n", name)
 			case served != nil:
 				term.printf("Denied %q: this session already serves %q.\n", name, client)
 			case p.GetCode() != opened.GetPairingCode():
