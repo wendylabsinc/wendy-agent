@@ -265,6 +265,8 @@ func TestCloudLiteDeviceInfoGoesThroughTheRelayWithTheSession(t *testing.T) {
 	auth := liteTestAuth(lis.Addr().String())
 	auth.APIKey = "api-key-123"
 	auth.Certificates, relay.tlsConfig = liteRelayTestPKI(t)
+	auth.LiteCertificate = auth.Certificates[0].PemCertificate + auth.Certificates[0].PemCertificateChain
+	auth.LitePrivateKey = auth.Certificates[0].PemPrivateKey
 	liteRelaySigningIdentity(t, auth.Certificates[0].PrincipalURI)
 	t.Setenv("WENDY_SECRET_STORE", "file")
 	setTempConfig(t, &config.Config{Auth: []config.AuthConfig{*auth}})

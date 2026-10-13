@@ -13,7 +13,7 @@ import (
 func TestConnectEnrollmentRejectsNetworkTransports(t *testing.T) {
 	oldDialer := CloudRelayDialer
 	t.Cleanup(func() { CloudRelayDialer = oldDialer })
-	CloudRelayDialer = func(context.Context, models.ExternalDevice) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
+	CloudRelayDialer = func(context.Context, models.ExternalDevice, bool) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
 		t.Fatal("enrollment must not open a Cloud relay")
 		return nil, nil, liteclient.RelayOptions{}, nil
 	}

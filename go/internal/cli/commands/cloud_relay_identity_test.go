@@ -42,6 +42,9 @@ func TestCloudLiteRelayUsesSelectedOperatorIdentity(t *testing.T) {
 			auth.APIKey = "selected-session"
 			auth.Certificates, relay.tlsConfig = liteRelayTestPKI(t)
 			selectedIdentity := auth.Certificates[0]
+			// The session's Lite leaf, never the primary, goes on the Lite lane.
+			auth.LiteCertificate = selectedIdentity.PemCertificate + selectedIdentity.PemCertificateChain
+			auth.LitePrivateKey = selectedIdentity.PemPrivateKey
 			if tc.provisioned {
 				var provisioned []config.CertificateInfo
 				provisioned, relay.tlsConfig = liteRelayTestPKI(t)
@@ -96,7 +99,7 @@ func TestLiteRelayOptionsPreserveProvisionedIdentity(t *testing.T) {
 	provisioned, _ := liteRelayTestPKI(t)
 	identity := provisioned[0]
 	_, keyPath := provisionLiteRelayIdentity(t, identity)
-	options, err := liteRelayOptions(auth)
+	options, err := liteRelayOptions(context.Background(), auth, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,12 +136,11 @@ func provisionLiteRelayIdentity(t *testing.T, identity config.CertificateInfo) (
 }
 
 func TestLiteRelayOptionsRejectMismatchedSelectedPrincipal(t *testing.T) {
-	t.Setenv("WENDY_LITE_OPERATOR_CERT", "")
-	t.Setenv("WENDY_LITE_OPERATOR_KEY", "")
 	auth := liteTestAuth("cloud.example:443")
 	auth.Certificates, _ = liteRelayTestPKI(t)
 	auth.Certificates[0].PrincipalURI += "-other"
-	if _, err := liteRelayOptions(auth); err == nil || !strings.Contains(err.Error(), "selected operator") {
+	provisionLiteRelayIdentity(t, auth.Certificates[0])
+	if _, err := liteRelayOptions(context.Background(), auth, false); err == nil || !strings.Contains(err.Error(), "selected operator") {
 		t.Fatalf("expected an exact-principal rejection, got %v", err)
 	}
 }

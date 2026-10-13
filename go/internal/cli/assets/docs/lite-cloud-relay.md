@@ -13,14 +13,17 @@ authorized ownership redirects.
 Resolved organization policy must grant `tunnel:connect`. DPoP continues to bind
 Cloud authentication where the access token requires it.
 
-Lite uses ES256 operator proofs and TLS 1.3 with P-256 identities. For a session
-whose administration identity is ML-DSA, set `WENDY_LITE_OPERATOR_CERT` to a PEM
-file containing the P-256 leaf and compatible CA chain, and
-`WENDY_LITE_OPERATOR_KEY` to its private key. Both must be set together. The CLI
-requires the same operator SPIFFE principal as the selected session and uses this
-identity for both Lite proof signing and device TLS. PKI must issue these
-credentials under compatible full chains. Ordinary Cloud administration and
-other tunnel profiles retain their existing signing policies.
+Lite uses ES256 operator proofs and TLS 1.3 with P-256 identities. An operator
+login holds two certificates for one SPIFFE principal: the ML-DSA primary, used
+for every other Cloud call, and a P-256 Lite leaf, used only on this lane for
+Lite proof signing and device TLS. The CLI never presents the primary here. When
+the session has no Lite leaf, or it expires within 30 minutes, the CLI requests
+one from pki-core's identity endpoint with a fresh P-256 key, proved by the
+ML-DSA session. pki-core marks the leaf with EKU `1.3.6.1.4.1.65441.1.9` and caps
+its lifetime at the primary's. If Cloud refuses the Lite leaf, the CLI requests a
+new one once and retries. Service-account sessions cannot use this lane.
+`WENDY_LITE_OPERATOR_CERT` and `WENDY_LITE_OPERATOR_KEY` still override the Lite
+leaf with a PEM leaf plus chain and its key, for the same principal.
 
 The broker returns a compact P-256 WLG2 grant after pki-core verifies the operator
 request. The CLI then completes inner mTLS with the intended device, sends the
