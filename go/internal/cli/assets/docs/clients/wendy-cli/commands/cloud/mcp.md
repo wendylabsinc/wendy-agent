@@ -14,8 +14,9 @@ wendy cloud mcp [flags]
 
 Once allowed, the chat gets the same tools as [`wendy mcp serve`](/docs/integrations/mcp). Every call runs on your machine and is signed with your operator key; the relay holds no Wendy credential. Each call is shown as one log line with the client name, tool and outcome.
 
-- **Read-only tools** run without asking.
-- **Other tools** are refused unless you allow them with `--allow-tool` or `--allow-all`, and even then each call waits for you to confirm it in the terminal, showing the tool and its arguments.
+- **Read-only tools** run without asking, except those that reach your machine or local network (local paths and drives, simulators, LAN scans, explicit addresses such as `os_install_verify`, `project_validate`, `device_list`).
+- **Other tools** are refused unless you allow them with `--allow-tool` or `--allow-all`, and even then each call waits for you to confirm it in the terminal, showing the tool and its arguments. An unknown name in `--allow-tool` stops the command and lists the valid ones.
+- The chat uses only the session the command started with; a call that names another Cloud endpoint or organization is refused.
 - One web chat per session; later pairing requests are denied.
 
 The chat can do nothing once the command exits. Press Ctrl+C to end the session.

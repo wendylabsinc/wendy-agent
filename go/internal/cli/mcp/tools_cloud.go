@@ -521,7 +521,15 @@ func cloudErrResult(err error) *mcpgo.CallToolResult {
 func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 	// MCP is non-interactive: pass a nil picker so resolution stops at the
 	// persisted default (or errors when several sessions remain ambiguous).
-	auth, err := config.ResolveAuth(s.currentConfig(), cloudGRPC, nil)
+	var auth *config.AuthConfig
+	var err error
+	if p := s.bindingPolicy(); p != nil {
+		// A relay-fed run uses the session it started with; the binding
+		// middleware has refused any cloud_grpc naming another.
+		auth, err = p.session(s.currentConfig())
+	} else {
+		auth, err = config.ResolveAuth(s.currentConfig(), cloudGRPC, nil)
+	}
 	if errors.Is(err, config.ErrNotLoggedIn) {
 		return nil, &cloudResolveErr{code: errCodeAuthRequired, msg: "not signed in to Wendy Cloud; call auth_login and show the user the link (or run 'wendy auth login' in a terminal)"}
 	}

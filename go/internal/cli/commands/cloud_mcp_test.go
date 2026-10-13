@@ -232,6 +232,17 @@ func TestMCPServeRefusesWhenRealmDisallowsMCP(t *testing.T) {
 	}
 }
 
+func TestCloudMCPRefusesUnknownAllowTool(t *testing.T) {
+	cmd := newCloudMCPCmd()
+	cmd.SetArgs([]string{"--allow-tool", "device_disconnect,os_instal_verify"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), `"os_instal_verify"`) || !strings.Contains(err.Error(), "os_install_verify") {
+		t.Fatalf("Execute = %v, want the unknown name refused with the valid ones listed", err)
+	}
+}
+
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  strings.Builder

@@ -37,6 +37,9 @@ func newCloudMCPCmd() *cobra.Command {
 			"Every call runs here and is signed with your operator key; the chat can do nothing once this command exits.\n" +
 			"The chat may call read-only tools; widen that with --allow-tool or --allow-all. Every call that changes state waits for your confirmation here.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := wendymcp.CheckToolNames(allowTools); err != nil {
+				return fmt.Errorf("--allow-tool: %w", err)
+			}
 			if !isatty.IsTerminal(os.Stdin.Fd()) {
 				return fmt.Errorf("wendy cloud mcp asks you before each call that changes state, so it needs a terminal on stdin")
 			}
@@ -63,7 +66,7 @@ func newCloudMCPCmd() *cobra.Command {
 			}
 			defer closeConn()
 			term := newPromptTerminal(os.Stdin, cmd.ErrOrStderr())
-			return serveCloudMCP(ctx, stream, opened, term, srv, wendymcp.BindingPolicy{AllowAll: allowAll, Tools: allowTools})
+			return serveCloudMCP(ctx, stream, opened, term, srv, wendymcp.BindingPolicy{AllowAll: allowAll, Tools: allowTools, Session: auth})
 		},
 	}
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the session to use")

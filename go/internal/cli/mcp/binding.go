@@ -21,6 +21,9 @@ import (
 type BindingPolicy struct {
 	AllowAll bool     // every tool; otherwise the read-only built-ins plus Tools
 	Tools    []string // further tools allowed by name
+	// Session is the auth session the run started with. Cloud calls use it
+	// alone; an argument naming another session or organization is refused.
+	Session *config.AuthConfig
 	// Confirm asks the user about one call that is not read-only. nil refuses
 	// every such call.
 	Confirm func(ctx context.Context, tool string, args map[string]any) bool
@@ -50,15 +53,75 @@ func (p *BindingPolicy) log(tool, outcome string) {
 	}
 }
 
-// readOnlyTool reports whether tool is a built-in annotated read-only. Tools
-// proxied from app containers describe themselves, so they never count.
+// hostTools reach this host or past the connected device: local paths and
+// drives, simulators, LAN scans, explicit addresses and broker URLs. The relay
+// can forge any call, so a bound client gets them only by --allow-tool, and
+// each call is confirmed even when it only reads.
+var hostTools = append([]string{"project_validate", "app_inspect", "device_list", "cloud_ping"}, gatewayHostTools...)
+
+// readOnlyTool reports whether a bound client may call tool unasked: a
+// built-in annotated read-only that stays off the host. Tools proxied from
+// app containers describe themselves, so they never count.
 func readOnlyTool(tool mcpgo.Tool) bool {
 	builtin := false
 	for _, names := range toolGroups {
 		builtin = builtin || slices.Contains(names, tool.Name)
 	}
 	hint := tool.Annotations.ReadOnlyHint
-	return builtin && hint != nil && *hint
+	return builtin && !slices.Contains(hostTools, tool.Name) && hint != nil && *hint
+}
+
+// CheckToolNames refuses a name that is not a built-in tool, listing the valid
+// ones, so a typo in --allow-tool fails at start instead of allowing nothing.
+func CheckToolNames(names []string) error {
+	var valid []string
+	for _, group := range toolGroups {
+		valid = append(valid, group...)
+	}
+	slices.Sort(valid)
+	for _, name := range names {
+		if !slices.Contains(valid, name) {
+			return fmt.Errorf("unknown tool %q; valid tools: %s", name, strings.Join(valid, ", "))
+		}
+	}
+	return nil
+}
+
+// otherSession returns the argument naming a cloud session other than the
+// pinned one: a cloud_grpc endpoint, or a cloud:// device selector for
+// another endpoint or organization.
+func (p *BindingPolicy) otherSession(args map[string]any) (string, bool) {
+	var own []string
+	if p.Session != nil && len(p.Session.Certificates) > 0 {
+		cert := p.Session.Certificates[0]
+		own = append(own, strings.ToLower(fmt.Sprintf("cloud://%s/tenant/%s/", p.Session.CloudGRPC, cert.TenantUUID())))
+		if cert.OrganizationID > 0 {
+			own = append(own, strings.ToLower(fmt.Sprintf("cloud://%s/org/%d/", p.Session.CloudGRPC, cert.OrganizationID)))
+		}
+	}
+	for key, value := range args {
+		v, _ := value.(string)
+		lower := strings.ToLower(v)
+		switch {
+		case key == "cloud_grpc" && v != "" && (p.Session == nil || v != p.Session.CloudGRPC):
+			return key, true
+		case strings.HasPrefix(lower, "cloud:") && !slices.ContainsFunc(own, func(prefix string) bool { return strings.HasPrefix(lower, prefix) }):
+			return key, true
+		}
+	}
+	return "", false
+}
+
+// session is the pinned session as config.json holds it now (tokens refresh
+// on disk), while it still names the same endpoint and organization.
+func (p *BindingPolicy) session(cfg *config.Config) (*config.AuthConfig, error) {
+	if p.Session != nil && cfg != nil {
+		cfg.EnsureContexts()
+		if auth, ok := cfg.ContextByName(p.Session.Name); ok && auth.CloudGRPC == p.Session.CloudGRPC && auth.OrganizationKey() == p.Session.OrganizationKey() {
+			return auth, nil
+		}
+	}
+	return nil, &cloudResolveErr{code: errCodeDenied, msg: "the auth session this relay session started with is gone or changed organization; restart 'wendy cloud mcp'"}
 }
 
 // bindingMiddleware enforces the binding policy on every tool call.
@@ -74,6 +137,14 @@ func (s *mcpServer) bindingMiddleware(srv *server.MCPServer) server.ToolHandlerM
 			if registered == nil || !p.allows(registered.Tool) {
 				p.log(name, "refused: not allowed for this client")
 				return errResultf(errCodeDenied, "%s is not allowed for this client; the user can allow it with 'wendy cloud mcp --allow-tool %s'", name, name), nil
+			}
+			// ponytail: top-level arguments only, which is where every built-in
+			// takes cloud_grpc and device selectors. The wendy run child still
+			// resolves a bare device_name from config.json; pin it with a
+			// --context flag when the CLI grows one.
+			if key, other := p.otherSession(req.GetArguments()); other {
+				p.log(name, "refused: "+key+" names another session")
+				return errResultf(errCodeDenied, "%s names another Wendy Cloud session or organization; this client may use only the one 'wendy cloud mcp' started with", key), nil
 			}
 			if !readOnlyTool(registered.Tool) {
 				if p.Confirm == nil || !p.Confirm(ctx, name, req.GetArguments()) {
