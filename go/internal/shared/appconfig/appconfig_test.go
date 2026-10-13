@@ -1322,9 +1322,19 @@ func TestValidateJSON_UnknownROS2Keys(t *testing.T) {
 }
 
 func TestValidateJSON_CleanROS2_NoWarnings(t *testing.T) {
-	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble","discoveryScope":"host"}}}`)
+	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble","scope":"network"}}}`)
 	if got := ValidateJSON(data); len(got) != 0 {
 		t.Errorf("clean ros2 config: got %d warnings, want 0: %v", len(got), got)
+	}
+}
+
+func TestValidateJSON_DiscoveryScopeIsDeprecated(t *testing.T) {
+	for scope, want := range map[string]string{"host": `use "scope": "network"`, "app": `use "scope": "device"`} {
+		data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"discoveryScope":"` + scope + `"}}}`)
+		got := ValidateJSON(data)
+		if len(got) != 1 || !strings.Contains(got[0], "discoveryScope is deprecated") || !strings.Contains(got[0], want) {
+			t.Errorf("discoveryScope %q: got %v, want one deprecation warning suggesting %s", scope, got, want)
+		}
 	}
 }
 

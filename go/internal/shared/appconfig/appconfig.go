@@ -178,9 +178,12 @@ type ROS2Config struct {
 	// "jazzy"). The agent uses it to pick the matching CLI sidecar image.
 	// Defaults to "humble".
 	Distro string `json:"distro,omitempty"`
-	// DiscoveryScope controls whether ROS 2 discovery is restricted to the
-	// app group's network namespace ("app", the default) or may use the
-	// device's host network ("host").
+	// Scope says who can see the app's ROS 2 topics: only the app ("app"),
+	// every app on the device ("device", the default), the device plus its
+	// directly attached hardware ("peripherals"), or the network ("network").
+	Scope string `json:"scope,omitempty"`
+	// DiscoveryScope is the deprecated predecessor of Scope: "app" behaves as
+	// scope "device" and "host" as scope "network". Setting both is an error.
 	DiscoveryScope string `json:"discoveryScope,omitempty"`
 }
 
@@ -804,7 +807,7 @@ func (c *AppConfig) Validate() error {
 	}
 
 	if c.Frameworks != nil {
-		if err := validateROS2Config("frameworks.ros2", c.Frameworks.ROS2); err != nil {
+		if err := validateROS2Config("frameworks.ros2", c.Frameworks.ROS2, c.Entitlements); err != nil {
 			return err
 		}
 	}
@@ -844,7 +847,7 @@ func (c *AppConfig) Validate() error {
 			return err
 		}
 		if svc.Frameworks != nil {
-			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), svc.Frameworks.ROS2); err != nil {
+			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), svc.Frameworks.ROS2, svc.Entitlements); err != nil {
 				return err
 			}
 		}
@@ -1274,7 +1277,16 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 	if err := json.Unmarshal(ros2Raw, &ros2); err != nil {
 		return warnings
 	}
-	allowed := map[string]bool{"domainId": true, "rmw": true, "distro": true, "discoveryScope": true}
+	if _, ok := ros2["discoveryScope"]; ok {
+		var scope string
+		_ = json.Unmarshal(ros2["discoveryScope"], &scope)
+		if replacement := ros2DiscoveryScopeReplacement(scope); replacement != "" {
+			warnings = append(warnings, fmt.Sprintf("%s.%s.discoveryScope is deprecated; use \"scope\": %q, which behaves the same", prefix, FrameworkROS2, replacement))
+		} else {
+			warnings = append(warnings, fmt.Sprintf("%s.%s.discoveryScope is deprecated; use \"scope\"", prefix, FrameworkROS2))
+		}
+	}
+	allowed := map[string]bool{"domainId": true, "rmw": true, "distro": true, "scope": true, "discoveryScope": true}
 	var unknown []string
 	for k := range ros2 {
 		if !allowed[k] {
@@ -1285,7 +1297,7 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 		return warnings
 	}
 	sort.Strings(unknown)
-	warnings = append(warnings, fmt.Sprintf("Unknown key(s) in %s.%s: %s. Allowed keys are: discoveryScope, distro, domainId, rmw", prefix, FrameworkROS2, strings.Join(unknown, ", ")))
+	warnings = append(warnings, fmt.Sprintf("Unknown key(s) in %s.%s: %s. Allowed keys are: distro, domainId, rmw, scope", prefix, FrameworkROS2, strings.Join(unknown, ", ")))
 	return warnings
 }
 

@@ -257,3 +257,64 @@ func TestValidateJSON_ServiceFrameworksUnknownKey(t *testing.T) {
 		t.Errorf("ValidateJSON() warnings = %v; want one flagging services[\"camera\"].frameworks unknown key", warnings)
 	}
 }
+
+func TestROS2Config_ResolvedScope(t *testing.T) {
+	for _, tc := range []struct {
+		cfg  ROS2Config
+		want string
+	}{
+		{ROS2Config{}, ROS2ScopeDevice},
+		{ROS2Config{Scope: "app"}, ROS2ScopeApp},
+		{ROS2Config{Scope: "Device"}, ROS2ScopeDevice},
+		{ROS2Config{Scope: "peripherals"}, ROS2ScopePeripherals},
+		{ROS2Config{Scope: "network"}, ROS2ScopeNetwork},
+		{ROS2Config{Scope: "host"}, ""},
+		// The deprecated field keeps its behavior: "app" was always loopback
+		// discovery shared through a common domain, so it is "device".
+		{ROS2Config{DiscoveryScope: "app"}, ROS2ScopeDevice},
+		{ROS2Config{DiscoveryScope: "host"}, ROS2ScopeNetwork},
+		{ROS2Config{DiscoveryScope: "bogus"}, ""},
+	} {
+		if got := tc.cfg.ResolvedScope(); got != tc.want {
+			t.Errorf("ResolvedScope(%+v) = %q, want %q", tc.cfg, got, tc.want)
+		}
+	}
+}
+
+func TestValidateROS2Config_Scope(t *testing.T) {
+	zero := 0
+	bridge := []Entitlement{{Type: EntitlementNetwork, Mode: "bridge"}}
+	host := []Entitlement{{Type: EntitlementNetwork, Mode: "host"}}
+	for _, tc := range []struct {
+		name         string
+		cfg          ROS2Config
+		entitlements []Entitlement
+		wantErr      string
+	}{
+		{"each scope", ROS2Config{Scope: "network"}, nil, ""},
+		{"unknown scope", ROS2Config{Scope: "host"}, nil, "must be one of app, device, peripherals, network"},
+		{"both fields", ROS2Config{Scope: "device", DiscoveryScope: "app"}, nil, "both scope and the deprecated discoveryScope"},
+		{"app with a domain", ROS2Config{Scope: "app", DomainID: &zero}, nil, "remove domainId"},
+		{"app without a domain", ROS2Config{Scope: "app"}, bridge, ""},
+		{"peripherals on FastDDS", ROS2Config{Scope: "peripherals", RMW: "fastdds"}, nil, "requires rmw"},
+		{"device off the host network", ROS2Config{Scope: "device"}, bridge, "needs the host network"},
+		{"peripherals on the host network", ROS2Config{Scope: "peripherals"}, host, ""},
+		{"deprecated field off the host network", ROS2Config{DiscoveryScope: "app"}, bridge, ""},
+	} {
+		err := validateROS2Config("frameworks.ros2", &tc.cfg, tc.entitlements)
+		if tc.wantErr == "" && err != nil {
+			t.Errorf("%s: unexpected error %v", tc.name, err)
+		}
+		if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+			t.Errorf("%s: error %v, want it to mention %q", tc.name, err, tc.wantErr)
+		}
+	}
+}
+
+func TestROS2Config_AppScopeGetsItsOwnDomain(t *testing.T) {
+	zero := 0
+	cfg := ROS2Config{Scope: "app", DomainID: &zero}
+	if got := cfg.ResolvedDomainID("com.example.app"); got != ROS2AutoDomainID("com.example.app") {
+		t.Errorf("scope app domain = %d, want the app's own %d", got, ROS2AutoDomainID("com.example.app"))
+	}
+}
