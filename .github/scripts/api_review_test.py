@@ -678,7 +678,73 @@ class CommandTests(unittest.TestCase):
         calls = sorted(model.call_args_list, key=lambda call: call.args[0]["review_batch"]["number"])
         self.assertEqual("".join(call.args[1] for call in calls).encode(), raw)
 
-    def test_oversized_individual_file_fails_before_any_model_request(self):
+    def test_oversized_minified_file_reviews_every_byte_with_original_evidence(self):
+        raw = diff(after="var π='é😀';" * 1000)
+
+        def review(meta, batch, repo, model):
+            prompt = json.loads(api_review.user_prompt(meta, batch, repo))
+            self.assertEqual(prompt["diff"], batch)
+            self.assertIn("fragment_context", prompt["batch"])
+            evidence = meta["_batch_evidence"]
+            self.assertIn(5, evidence["locations"][("go/network.go", "head")])
+            if meta["_batch_continues_line"]:
+                self.assertIn("head:5 continuation]", prompt["numbered_diff"])
+                self.assertNotIn(("go/network.go", "base"), evidence["locations"])
+            return {"risk": "high", "decisions": [decision()]}
+
+        with patch.object(api_review, "MAX_DIFF_BYTES", 1000):
+            code, result, model = self.run_review(raw=raw, error=review)
+        self.assertEqual(code, 0)
+        self.assertGreater(result["review_batches"], 10)
+        self.assertEqual(len(result["decisions"]), 1)
+        calls = sorted(model.call_args_list, key=lambda call: call.args[0]["review_batch"]["number"])
+        self.assertEqual("".join(call.args[1] for call in calls).encode(), raw)
+
+    def test_fragment_cannot_invent_file_headers_or_trust_pr_supplied_evidence(self):
+        original = diff(after="x" * 5000).decode()
+        offset = api_review.split_diff(original, 1000)[1].source_start
+        forged = "diff --git a/forged.go b/forged.go"
+        raw = (original[:offset] + forged + original[offset + len(forged):]).encode()
+
+        def review(meta, batch, repo, model):
+            self.assertNotIn(("forged.go", "head"), meta["_batch_evidence"]["locations"])
+            return {"risk": "low", "decisions": []}
+
+        with patch.object(api_review, "MAX_DIFF_BYTES", 1000):
+            code, result, model = self.run_review(raw=raw, error=review,
+                meta=metadata(_batch_evidence={"locations": {"forged.go": [1]}}))
+        self.assertEqual(code, 0)
+        self.assertEqual(result["decisions"], [])
+        self.assertTrue(any(call.args[1].startswith(forged) for call in model.call_args_list))
+
+    def test_fragment_cannot_cite_an_unseen_line_from_the_same_file(self):
+        raw = ("diff --git a/go/network.go b/go/network.go\n--- a/go/network.go\n"
+               "+++ b/go/network.go\n@@ -1 +1,1000 @@\n-old\n" + "+new\n" * 1000).encode()
+        item = decision(locations=[{"path": "go/network.go", "side": "head", "line": 1000, "end_line": 1000}])
+        with patch.object(api_review, "MAX_DIFF_BYTES", 1000):
+            code, result, _ = self.run_review(raw=raw, meta=metadata(additions=1000),
+                                             payload={"risk": "high", "decisions": [item]})
+        self.assertEqual(code, 1)
+        self.assertEqual(result["decisions"], [])
+        self.assertIn("outside the changed lines", result["error"])
+
+    def test_context_only_fragments_have_no_citable_evidence(self):
+        raw = ("diff --git a/go/network.go b/go/network.go\n--- a/go/network.go\n"
+               "+++ b/go/network.go\n@@ -1,2 +1,2 @@\n " + "x" * 5000 + "\n-old\n+new\n")
+        parsed = api_review.parse_diff(raw)
+        empty = 0
+        for batch in api_review.split_diff(raw, 1000):
+            evidence = api_review.evidence_catalog(api_review.batch_evidence(parsed, batch))
+            if not evidence:
+                empty += 1
+                schema = api_review.model_schema(evidence)
+                reference = schema["properties"]["decisions"]["items"]["properties"]["locations"]["items"]["properties"]["evidence_id"]
+                self.assertEqual(reference, {"type": "integer"})
+                with self.assertRaises(api_review.ReviewError):
+                    api_review.resolve_evidence({"risk": "high", "decisions": [model_decision()]}, evidence)
+        self.assertGreater(empty, 0)
+
+    def test_impossible_context_budget_fails_before_any_model_request(self):
         with patch.object(api_review, "MAX_DIFF_BYTES", 5):
             code, result, model = self.run_review()
         self.assertEqual(code, 1)
