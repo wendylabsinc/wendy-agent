@@ -9,6 +9,7 @@ move after 500 ms unless it is refreshed.
 import collections
 import logging
 import os
+import queue
 import threading
 import time
 
@@ -137,7 +138,12 @@ class Bridge(Node):
         self.counts = collections.Counter()
         self.voxel_times = []  # arrival, monotonic seconds
         self.cloud_seconds = []  # decode and publish time per voxel map turned into clouds
+        self.cloud_summary = None
+        self.video_stats = collections.Counter()
         self.create_timer(RATE_LOG_SECONDS, self.log_rates)
+        self.video_queue = queue.Queue()
+        self.decoding = False
+        threading.Thread(target=self.run_decoder, daemon=True).start()
         self.pose = None  # (stamp, position, quaternion_xyzw) from the latest odometry
         self.create_subscription(Twist, "/cmd_vel", self.on_cmd_vel, qos)
         self.create_subscription(Request, "/api/sport/request", self.on_sport_request, 10)
@@ -197,11 +203,17 @@ class Bridge(Node):
             counts, self.counts = self.counts, collections.Counter()
             voxels, self.voxel_times = self.voxel_times, []
             clouds, self.cloud_seconds = self.cloud_seconds, []
+            video, self.video_stats = self.video_stats, collections.Counter()
         rates = ", ".join(f"{t} {n / RATE_LOG_SECONDS:.1f}" for t, n in sorted(counts.items()))
         log.info("robot messages per second: %s", rates or "none")
         if len(voxels) > 1:
             log.info("voxel maps: %d arrived, arrival gaps %s s; %d turned into clouds, decode and publish %s s",
                      len(voxels), spread([b - a for a, b in zip(voxels, voxels[1:])]), len(clouds), spread(clouds))
+        if self.cloud_summary:
+            log.info("latest cloud: %s", self.cloud_summary)
+        if video["decoded"]:
+            log.info("video: %d frames decoded, %d images published, %.1f s busy, %d waiting",
+                     video["decoded"], video["published"], video["seconds"], self.video_queue.qsize())
 
     def publish_raw(self, topic, data, binary):
         pub = self.raw_pubs.get(topic)
@@ -223,18 +235,6 @@ class Bridge(Node):
         fill(low, data)
         self.pubs["lowstate"].publish(low)
         self.pubs["lf_lowstate"].publish(low)
-        imu_state = (data or {}).get("imu_state") or {}
-        if "quaternion" in imu_state:
-            imu = Imu()
-            imu.header.stamp, imu.header.frame_id = stamp, "imu_link"
-            q = imu.orientation
-            q.x, q.y, q.z, q.w = convert.quaternion_xyzw(imu_state["quaternion"])
-            g, a = imu_state.get("gyroscope", [0, 0, 0]), imu_state.get("accelerometer", [0, 0, 0])
-            imu.angular_velocity.x, imu.angular_velocity.y, imu.angular_velocity.z = map(float, g)
-            imu.linear_acceleration.x, imu.linear_acceleration.y, imu.linear_acceleration.z = map(float, a)
-            self.pubs["imu"].publish(imu)
-            imu.header.frame_id = "utlidar_imu"
-            self.pubs["lidar_imu"].publish(imu)
         joints = convert.joint_state(data or {})
         if joints:
             msg = JointState()
@@ -251,6 +251,8 @@ class Bridge(Node):
         position = data.get("position")
         if not quaternion or not position:
             return
+        # Over Wi-Fi only the sport state carries the full IMU; lowstate has just rpy.
+        self.publish_imu(data["imu_state"], stamp)
         odom = Odometry()
         odom.header.stamp, odom.header.frame_id, odom.child_frame_id = stamp, "odom", "base_link"
         p = odom.pose.pose.position
@@ -272,6 +274,18 @@ class Bridge(Node):
         tf.transform.rotation = q
         self.tf.sendTransform(tf)
 
+    def publish_imu(self, imu_state, stamp):
+        imu = Imu()
+        imu.header.stamp, imu.header.frame_id = stamp, "imu_link"
+        q = imu.orientation
+        q.x, q.y, q.z, q.w = convert.quaternion_xyzw(imu_state["quaternion"])
+        g, a = imu_state.get("gyroscope", [0, 0, 0]), imu_state.get("accelerometer", [0, 0, 0])
+        imu.angular_velocity.x, imu.angular_velocity.y, imu.angular_velocity.z = map(float, g)
+        imu.linear_acceleration.x, imu.linear_acceleration.y, imu.linear_acceleration.z = map(float, a)
+        self.pubs["imu"].publish(imu)
+        imu.header.frame_id = "utlidar_imu"
+        self.pubs["lidar_imu"].publish(imu)
+
     def on_voxels(self, meta, payload, stamp):
         """The robot sends an accumulated voxel map in odom. Publish it as is
         (/go2/voxel_map) and, using the latest pose, in base_link
@@ -292,6 +306,7 @@ class Bridge(Node):
             return
         pose_stamp, position, quaternion = self.pose
         body = convert.points_to_body(points, position, quaternion)
+        self.cloud_summary = cloud_summary(body, position)
         self.pubs["cloud_base"].publish(cloud_message(body, pose_stamp, "base_link"))
         self.pubs["cloud"].publish(cloud_message(body - np.asarray(MOUNTS["utlidar_lidar"], dtype=np.float32),
                                                  pose_stamp, "utlidar_lidar"))
@@ -305,18 +320,46 @@ class Bridge(Node):
             msg.timestamp, msg.frame_id, msg.format = stamp, CAMERA_FRAME, "h264"
             msg.data = bytes(frame.annexb)
             self.pubs["h264"].publish(msg)
-        # Decode only while someone watches; a new viewer waits for the next keyframe.
-        if self.pubs["image"].get_subscription_count() == 0:
-            self.decoder = None
-            return
-        image = self.decode(frame.annexb)
-        if image is not None:
+        # Decode only while someone watches, on its own thread so robot state and
+        # LiDAR never wait for video. None resets the decoder.
+        if self.pubs["image"].get_subscription_count():
+            self.video_queue.put((bytes(frame.annexb), stamp))
+            self.decoding = True
+        elif self.decoding:
+            self.video_queue.put(None)
+            self.decoding = False
+
+    def run_decoder(self):
+        """Decode every frame (H.264 needs them all) but convert and publish only
+        the newest one, so a slow consumer costs frames, not latency."""
+        while True:
+            item = self.video_queue.get()
+            if item is None:
+                self.decoder = None
+                continue
+            started = time.monotonic()
+            frame = self.decode(item[0])
+            if frame is None or not self.video_queue.empty():
+                with self.stats_lock:
+                    self.video_stats["decoded"] += 1
+                    self.video_stats["seconds"] += time.monotonic() - started
+                continue
+            image = frame.to_ndarray(format="rgb24")
             msg = Image()
-            msg.header.stamp, msg.header.frame_id = stamp, CAMERA_FRAME
+            msg.header.stamp, msg.header.frame_id = item[1], CAMERA_FRAME
             msg.height, msg.width = image.shape[:2]
             msg.encoding, msg.step = "rgb8", image.shape[1] * 3
             msg.data = image.tobytes()
-            self.pubs["image"].publish(msg)
+            try:
+                self.pubs["image"].publish(msg)
+            except RCLError:
+                if not rclpy.ok():
+                    return
+                raise
+            with self.stats_lock:
+                self.video_stats["decoded"] += 1
+                self.video_stats["published"] += 1
+                self.video_stats["seconds"] += time.monotonic() - started
 
     def decode(self, annexb):
         import av  # imported lazily: only needed once video arrives
@@ -328,7 +371,7 @@ class Bridge(Node):
             frames = self.decoder.decode(av.Packet(bytes(annexb)))
         except av.AVError:
             return None
-        return frames[-1].to_ndarray(format="rgb24") if frames else None
+        return frames[-1] if frames else None
 
     def publish_mounts(self):
         transforms = []
@@ -388,6 +431,18 @@ def cloud_message(points, stamp, frame_id):
     msg.row_step = 12 * len(points)
     msg.data = np.ascontiguousarray(points, dtype=np.float32).tobytes()
     return msg
+
+
+def cloud_summary(body, position):
+    """Where the body-frame points are, to check the map lines up with the robot."""
+    if len(body) == 0:
+        return "no points"
+    radius = np.hypot(body[:, 0], body[:, 1])
+    band = (body[:, 2] >= -0.2) & (body[:, 2] <= 0.4) & (radius <= 12)
+    nearest = f"{radius[band].min():.2f} m" if band.any() else "-"
+    return (f"{len(body)} points, body z {body[:, 2].min():.2f}..{body[:, 2].max():.2f} m, "
+            f"{int(band.sum())} between -0.2 and 0.4 m (nearest {nearest}), robot at "
+            + ", ".join(f"{v:.2f}" for v in position))
 
 
 def spread(values):

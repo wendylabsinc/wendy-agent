@@ -60,15 +60,16 @@ def h264_frames(count=30):
     return frames + [bytes(p) for p in encoder.encode(None)]
 
 
+# Over Wi-Fi lowstate carries only rpy; the sport state has the full IMU.
 LOWSTATE = {
-    "imu_state": {"quaternion": [1, 0, 0, 0], "gyroscope": [0, 0, 0.1], "accelerometer": [0, 0, 9.8], "rpy": [0, 0, 0]},
+    "imu_state": {"rpy": [0, 0, 0]},
     "motor_state": [{"q": 0.1 * i, "dq": 0.0, "temperature": 30} for i in range(20)],
     "bms_state": {"soc": 77, "current": -1200},
     "foot_force": [10, 20, 30, 40],
     "power_v": 28.5,
 }
 SPORTSTATE = {
-    "imu_state": {"quaternion": [1, 0, 0, 0]},
+    "imu_state": {"quaternion": [1, 0, 0, 0], "gyroscope": [0, 0, 0.1], "accelerometer": [0, 0, 9.8], "rpy": [0, 0, 0]},
     "mode": 1, "position": [1.0, 2.0, 0.3], "body_height": 0.3,
     "velocity": [0.2, 0.0, 0.0], "yaw_speed": 0.1,
 }

@@ -102,9 +102,9 @@ class FakeGo2(pb_grpc.WendyUnitreeRobotServiceServicer, pairing_grpc.WendyUnitre
             last = now
             q = [math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]
             ns = time.time_ns()
-            low = {"imu_state": {"quaternion": q, "gyroscope": [0, 0, wz], "accelerometer": [0, 0, 9.81], "rpy": [0, 0, yaw]},
+            low = {"imu_state": {"rpy": [0, 0, yaw]},
                    "motor_state": [{"q": 0.0, "dq": 0.0} for _ in range(20)], "bms_state": {"soc": 80}}
-            sport = {"imu_state": {"quaternion": q}, "mode": 1, "position": [x, y, BODY_HEIGHT],
+            sport = {"imu_state": {"quaternion": q, "gyroscope": [0, 0, wz], "accelerometer": [0, 0, 9.81], "rpy": [0, 0, yaw]}, "mode": 1, "position": [x, y, BODY_HEIGHT],
                      "velocity": [vx, vy, 0.0], "yaw_speed": wz, "body_height": BODY_HEIGHT}
             for topic, data in (("rt/lf/lowstate", low), ("rt/lf/sportmodestate", sport)):
                 yield pb.UnitreeStreamMessage(topic=pb.UnitreeTopicMessage(topic=topic, data=envelope(topic, data), received_unix_nanos=ns))
