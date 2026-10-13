@@ -846,8 +846,19 @@ func (c *AppConfig) Validate() error {
 		if err := ValidateEnv(fmt.Sprintf("services[%q].env", name), svc.Env); err != nil {
 			return err
 		}
-		if svc.Frameworks != nil {
-			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), svc.Frameworks.ROS2, svc.Entitlements); err != nil {
+		ros2 := c.GetROS2Config()
+		if svc.Frameworks != nil && svc.Frameworks.ROS2 != nil {
+			ros2 = svc.Frameworks.ROS2
+		}
+		if ros2 != nil {
+			// Multi-service containers receive both app-level and service-level
+			// entitlements, so validate the effective network mode rather than the
+			// service slice alone. This also catches a service that isolates an
+			// inherited device/peripherals scope from the host network.
+			entitlements := make([]Entitlement, 0, len(c.Entitlements)+len(svc.Entitlements))
+			entitlements = append(entitlements, c.Entitlements...)
+			entitlements = append(entitlements, svc.Entitlements...)
+			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), ros2, entitlements); err != nil {
 				return err
 			}
 		}

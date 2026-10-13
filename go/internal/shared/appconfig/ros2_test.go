@@ -311,6 +311,34 @@ func TestValidateROS2Config_Scope(t *testing.T) {
 	}
 }
 
+func TestValidateROS2Config_ServiceUsesEffectiveEntitlements(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		frameworks *FrameworksConfig
+	}{
+		{"inherited scope", nil},
+		{"service scope", &FrameworksConfig{ROS2: &ROS2Config{Scope: ROS2ScopeDevice}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{{Type: EntitlementNetwork, Mode: "host"}},
+				Frameworks:   &FrameworksConfig{ROS2: &ROS2Config{Scope: ROS2ScopeDevice}},
+				Services: map[string]*ServiceConfig{
+					"worker": {
+						Context:      ".",
+						Entitlements: []Entitlement{{Type: EntitlementNetwork, Mode: "bridge"}},
+						Frameworks:   tc.frameworks,
+					},
+				},
+			}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), `services["worker"].frameworks.ros2`) || !strings.Contains(err.Error(), "needs the host network") {
+				t.Fatalf("Validate() error = %v, want the service's effective bridge network rejected", err)
+			}
+		})
+	}
+}
+
 func TestROS2Config_AppScopeGetsItsOwnDomain(t *testing.T) {
 	zero := 0
 	cfg := ROS2Config{Scope: "app", DomainID: &zero}
