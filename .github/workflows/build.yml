@@ -1,4 +1,5 @@
 name: Build products and release
+run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && format('Stable release · {0}', github.ref_name) || format('Build · {0}', github.ref_name) }}
 
 on:
   push:

@@ -11,6 +11,7 @@ on:
       - 'go.sum'
       - '.github/workflows/**'
       - '.github/actions/setup-go-ci/**'
+      - '.github/actions/release-priority/**'
       - '.github/scripts/**'
       - 'plugins/**'
       - 'scripts/sync-agent-skills.py'
@@ -22,6 +23,7 @@ on:
       - 'go.sum'
       - '.github/workflows/**'
       - '.github/actions/setup-go-ci/**'
+      - '.github/actions/release-priority/**'
       - '.github/scripts/**'
       - 'plugins/**'
       - 'scripts/sync-agent-skills.py'
@@ -176,3 +178,5 @@ jobs:
         run: bash .github/scripts/install-manifest-merge_test.sh
       - name: integration device selection tests
         run: python3 .github/scripts/integration-discover_test.py
+      - name: release priority tests
+        run: node --test .github/scripts/release-priority.test.cjs
