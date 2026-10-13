@@ -645,7 +645,8 @@ func (s *DriverService) reapply(ctx context.Context) {
 // CLI Ctrl-C/disconnect must not SIGKILL it mid-merge and leave /usr half-applied.
 // A 2-minute timeout still bounds a hung script.
 // subject names the add-on this apply is for, so the script scopes its exit
-// status to it. Empty when restoring the whole set, where any failure is ours.
+// status to it. Empty when removing a package or restoring the whole set, where
+// any failure is ours.
 func (s *DriverService) apply(ctx context.Context, subject string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
@@ -698,7 +699,9 @@ func (s *DriverService) RemoveDriver(req *agentpbv2.RemoveDriverRequest, stream 
 	}
 
 	sendDriverProgress(stream, "applying", 70)
-	if err := s.apply(stream.Context(), name); err != nil {
+	// The snapshot removed every enabled copy of name. A named apply requires
+	// that package to exist, so removal must refresh the remaining set instead.
+	if err := s.apply(stream.Context(), ""); err != nil {
 		snap.restore()
 		s.reapply(stream.Context())
 		return sendDriverFailure(stream, fmt.Sprintf("apply failed: %v", err))

@@ -442,7 +442,16 @@ func TestRemoveDriver_ApplyFailureRestoresInstall(t *testing.T) {
 		t.Fatalf("seeding the install: %v", err)
 	}
 
-	svc.applyScript = testExecutable(t, "false")
+	// Fail while the package is absent, then verify rollback reapplies the
+	// restored set without asking for an individual activation subject.
+	reapplied := filepath.Join(t.TempDir(), "reapplied")
+	script := filepath.Join(t.TempDir(), "apply.sh")
+	body := fmt.Sprintf("#!/bin/sh\nset -eu\ntest \"$#\" -eq 0\ntest -f %q\ntest -f %q\ntouch %q\n",
+		svc.rawPath(testKernel, "wendyos-hello"), svc.confPath(testKernel, "wendyos-hello"), reapplied)
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc.applyScript = script
 	stream := &fakeRemoveStream{}
 	if err := svc.RemoveDriver(&agentpbv2.RemoveDriverRequest{Name: "wendyos-hello"}, stream); err != nil {
 		t.Fatalf("RemoveDriver returned a transport error: %v", err)
@@ -460,6 +469,9 @@ func TestRemoveDriver_ApplyFailureRestoresInstall(t *testing.T) {
 	}
 	if _, err := os.Stat(svc.confPath(testKernel, "wendyos-hello")); err != nil {
 		t.Errorf("modules-load conf was not restored: %v", err)
+	}
+	if _, err := os.Stat(reapplied); err != nil {
+		t.Errorf("restored driver set was not reapplied: %v", err)
 	}
 }
 
@@ -808,6 +820,58 @@ func TestRemoveDriver_NoRebootWhenNothingIsLoaded(t *testing.T) {
 	}
 	if stream.rebootRequired {
 		t.Error("rebootRequired = true, want false: the module was never loaded")
+	}
+}
+
+// A removed package cannot be an activation subject: the runtime rejects names
+// absent from the enabled set. Read private metadata before the unmerge removes
+// it, so a still-resident module produces an honest reboot recommendation.
+func TestRemoveDriver_PrivatePayloadRefresh(t *testing.T) {
+	for _, resident := range []bool{false, true} {
+		t.Run(fmt.Sprintf("resident=%v", resident), func(t *testing.T) {
+			svc := newTestDriverService(t, nil)
+			name := "wendyos-hello"
+			write := func(path string, data []byte) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			payload := privateDriverFixture(t)
+			write(svc.rawPath(testKernel, name), payload)
+			write(svc.rawPath("old-kernel", name), payload)
+			other := svc.rawPath(testKernel, "other-driver")
+			write(other, payload)
+			metadata := filepath.Join(svc.privatePayloadDir, name, "modules-load.conf")
+			write(metadata, []byte("wendyos_hello\n"))
+			if resident {
+				svc.loadedModules = func() []string { return []string{"wendyos_hello"} }
+			}
+			script := filepath.Join(t.TempDir(), "apply.sh")
+			body := fmt.Sprintf("#!/bin/sh\nset -eu\ntest \"$#\" -eq 0\ntest ! -e %q\ntest ! -e %q\ntest -f %q\nrm %q\n",
+				svc.rawPath(testKernel, name), svc.rawPath("old-kernel", name), other, metadata)
+			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			svc.applyScript = script
+			stream := &fakeRemoveStream{}
+			if err := svc.RemoveDriver(&agentpbv2.RemoveDriverRequest{Name: name}, stream); err != nil {
+				t.Fatal(err)
+			}
+			if !stream.completed || stream.failed || stream.rebootRequired != resident {
+				t.Fatalf("completed=%v failed=%v reboot=%v; want success with reboot=%v",
+					stream.completed, stream.failed, stream.rebootRequired, resident)
+			}
+			if installed, err := svc.anyCopyInstalled(name); err != nil || installed {
+				t.Fatalf("removed package still installed=%v err=%v", installed, err)
+			}
+			if got, err := os.ReadFile(other); err != nil || !bytes.Equal(got, payload) {
+				t.Fatalf("unrelated package changed: %v", err)
+			}
+		})
 	}
 }
 
@@ -1220,6 +1284,9 @@ func TestPrivatePayloadStatusAndOverrides(t *testing.T) {
 	check(false, "wendyos_hello") // An inert/colliding package cannot borrow another driver's modules.
 	write(filepath.Join(svc.activeStateDir, name, "files"), "/usr/lib/modules/test/updates/wendyos/wendyos-hello/wendyos_hello.ko\n")
 	check(true, "wendyos_hello")
+	svc.loadedModules = func() []string { return []string{"override_mod"} }
+	check(false, "wendyos_hello") // Exposure alone does not mean the module loaded.
+	svc.loadedModules = func() []string { return []string{"wendyos_hello", "override_mod"} }
 	write(svc.confPath(testKernel, name), "override_mod\n")
 	check(true, "override_mod")
 	write(svc.confPath(testKernel, name), "")
