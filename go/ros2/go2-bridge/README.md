@@ -11,9 +11,23 @@ Go2 ──WebRTC──▶ Wendy agent ──Stream/Command (agent socket)──�
 ```
 
 The agent keeps the robot connection and key. The bridge needs the `admin`
-entitlement for now, to reach the agent socket. Apps that use the robot need
-only `frameworks.ros2` and host networking. Later the agent is meant to run this
-bridge itself.
+entitlement for now, to reach the agent socket. Later the agent is meant to run
+this bridge itself.
+
+The robot bus stays on the device. The bridge uses discovery scope `app`
+(loopback only) on domain 0, so apps that use the robot declare the same:
+
+```json
+"frameworks": { "ros2": { "distro": "humble", "rmw": "rmw_cyclonedds_cpp",
+                          "domainId": 0, "discoveryScope": "app" } },
+"entitlements": [ { "type": "network", "mode": "host" } ]
+```
+
+Host networking puts all such apps on the device's loopback; the explicit
+domain 0 puts them on one bus (without it each app gets its own domain).
+Nothing on the LAN sees the robot topics or can publish commands. Wendy's ROS
+tools (`wendy device ros2 …`, Foxglove) join an app's network and discovery
+settings, so they keep working.
 
 ## Run
 
@@ -65,14 +79,13 @@ move after 500 ms, so publish at least ~3 Hz while moving.
 - `/odom` twist assumes the sport state velocity is in the world frame; to be
   verified on hardware.
 - No control handoff between apps: the latest command wins.
-- The robot bus uses Wendy's `host` discovery scope like the simulator apps and
-  Wendy's ROS tools, so DDS participants on the same LAN and domain can see the
-  robot topics and publish commands.
+- The simulator examples declare discovery scope `host`; against this bridge
+  they need `app` (one line in their `wendy.json`).
 
 ## Simulator examples
 
 The Go2 simulator's example apps (`go/simulator/go2/examples`: Sensors, Teleop,
-Patrol, Roam, Hallway) run unchanged against this bridge, with their default
+Patrol, Roam, Hallway) run against this bridge with no code changes, with their default
 strict capture-age and scan-coverage checks. `tests/simulator_examples_test.py`
 checks that against a fake robot in a walled room that walks according to the
 commands it receives: every example becomes ready and drives at 0.55 m/s; Patrol
