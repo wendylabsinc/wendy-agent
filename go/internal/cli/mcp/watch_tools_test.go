@@ -377,3 +377,42 @@ func TestWatchStartRefusesClassesNoDetectorHas(t *testing.T) {
 		t.Fatalf("refused classes reached the device: %v", refs)
 	}
 }
+
+// A removal that ended without the device's answer may have landed, so
+// watch_stop says the device did not confirm it rather than that it failed.
+func TestWatchStopReportsAnUnconfirmedRemovalAsUnconfirmed(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(f *watchDataClient, m *watchManager)
+	}{
+		{"client deadline", func(f *watchDataClient, m *watchManager) {
+			m.stopTimeout = 50 * time.Millisecond
+			f.removeWait = 5 * time.Second
+		}},
+		{"agent deadline", func(f *watchDataClient, _ *watchManager) {
+			f.removeErr = status.Error(codes.DeadlineExceeded, "the documents are removed; their inference is still stopping")
+		}},
+		{"unreachable", func(f *watchDataClient, _ *watchManager) {
+			f.removeErr = status.Error(codes.Unavailable, "connection reset")
+		}},
+		{"cancelled", func(f *watchDataClient, _ *watchManager) {
+			f.removeErr = status.Error(codes.Canceled, "context canceled")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, client, _ := watchToolServer(t)
+			if _, isErr := callWatchTool(t, s, "watch_start", map[string]any{"camera": "v4l2:/dev/video0", "classes": []any{"person"}}); isErr {
+				t.Fatal("start failed")
+			}
+			client.mu.Lock()
+			tc.setup(client, s.watchManager())
+			client.mu.Unlock()
+			stopped, isErr := callWatchTool(t, s, "watch_stop", map[string]any{"watch_id": "w1"})
+			message, _ := stopped["message"].(string)
+			if isErr || stopped["state"] != "ENDED" || stopped["removed"] != false || !strings.Contains(message, "did not confirm") || strings.Contains(message, "failed") {
+				t.Fatalf("stop %v", stopped)
+			}
+		})
+	}
+}

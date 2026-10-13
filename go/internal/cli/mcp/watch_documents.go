@@ -514,6 +514,11 @@ func (w *documentWatch) Stop(ctx context.Context) error {
 		return nil
 	case codes.Unimplemented:
 		return errWatchAgentTooOld
+	case codes.DeadlineExceeded, codes.Unavailable, codes.Canceled:
+		// The call ended without the device's confirmation. The agent waits up
+		// to 10 s for the inference to stop, longer than the client's bound,
+		// and still removes the watch; the lease removes it if not.
+		return watchUnconfirmedError{err}
 	}
 	return err
 }
