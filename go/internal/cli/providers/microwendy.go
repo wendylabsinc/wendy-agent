@@ -686,7 +686,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		return fmt.Errorf("wendy-lite provider: invalid build context")
 	}
 
-	client, err := p.connectClient(app.Device)
+	client, err := p.connectClient(ctx, app.Device)
 	if err != nil {
 		return err
 	}
@@ -753,7 +753,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 
 		deadline := time.Now().Add(60 * time.Second)
 		for {
-			newClient, err := p.connectClient(app.Device)
+			newClient, err := p.connectClient(ctx, app.Device)
 			if err == nil {
 				client = newClient
 				break
@@ -845,7 +845,7 @@ func (p *MicroWendyProvider) GetDeviceInfo(ctx context.Context, device models.Ex
 	if device.ConnectionInfo["needsInstall"] == "true" {
 		return nil, &AppRequirementsUnsupportedError{Device: device, Missing: "Wendy Lite firmware (none installed)"}
 	}
-	client, err := p.connectClient(device)
+	client, err := p.connectClient(ctx, device)
 	if err != nil {
 		return nil, err
 	}
@@ -867,21 +867,21 @@ func (p *MicroWendyProvider) GetDeviceInfo(ctx context.Context, device models.Ex
 	}, nil
 }
 
-func (p *MicroWendyProvider) WifiConnect(_ context.Context, device models.ExternalDevice, ssid, password string) error {
-	return p.pushWifiConf(device, &litepb.WendyConfWifi{
+func (p *MicroWendyProvider) WifiConnect(ctx context.Context, device models.ExternalDevice, ssid, password string) error {
+	return p.pushWifiConf(ctx, device, &litepb.WendyConfWifi{
 		Networks: []*litepb.WendyConfWifiNetwork{{Ssid: ssid, Password: password}},
 	})
 }
 
-func (p *MicroWendyProvider) WifiDisconnect(_ context.Context, device models.ExternalDevice) error {
-	return p.pushWifiConf(device, &litepb.WendyConfWifi{})
+func (p *MicroWendyProvider) WifiDisconnect(ctx context.Context, device models.ExternalDevice) error {
+	return p.pushWifiConf(ctx, device, &litepb.WendyConfWifi{})
 }
 
 // pushWifiConf stops the app, pushes a conf updating only the wifi root field,
 // and reboots the device so the new configuration takes effect.
-func (p *MicroWendyProvider) pushWifiConf(device models.ExternalDevice, wifi *litepb.WendyConfWifi) error {
+func (p *MicroWendyProvider) pushWifiConf(ctx context.Context, device models.ExternalDevice, wifi *litepb.WendyConfWifi) error {
 	fmt.Println("Connecting to the device...")
-	client, err := p.connectClient(device)
+	client, err := p.connectClient(ctx, device)
 	if err != nil {
 		return err
 	}
@@ -905,7 +905,7 @@ func (p *MicroWendyProvider) pushWifiConf(device models.ExternalDevice, wifi *li
 // ConnectSensorLink opens the provider's normal authenticated connection for
 // SensorLink commands. The caller must close the client.
 func (p *MicroWendyProvider) ConnectSensorLink(device models.ExternalDevice) (*liteclient.WendyLiteClient, error) {
-	return p.connectClient(device)
+	return p.connectClient(context.Background(), device)
 }
 
 // ConnectEnrollment opens a physical USB serial connection for enrollment and
@@ -916,7 +916,7 @@ func (p *MicroWendyProvider) ConnectEnrollment(device models.ExternalDevice) (*l
 	if device.ConnectionType() != "USB" {
 		return nil, fmt.Errorf("Wendy Lite enrollment requires a USB connection; select the board's USB device")
 	}
-	return p.connectClient(device)
+	return p.connectClient(context.Background(), device)
 }
 
 // CloudRelayDialer opens the Wendy Cloud connection that a "Cloud" device's
@@ -928,7 +928,10 @@ var CloudRelayDialer func(ctx context.Context, device models.ExternalDevice) (*g
 // connectClient opens a WendyLiteClient connection to the device over serial,
 // LAN or BLE (with mTLS when the device advertises it), or through the Wendy
 // Cloud relay. The caller must Close the client.
-func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*liteclient.WendyLiteClient, error) {
+func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.ExternalDevice) (*liteclient.WendyLiteClient, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	client := liteclient.NewWendyLiteClient()
 	switch device.ConnectionInfo["type"] {
 	case "USB":
@@ -936,7 +939,7 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		if serialPort == "" {
 			return nil, fmt.Errorf("wendy-lite provider: missing serial port in connection info")
 		}
-		if err := connectSerialWithRetry(client, serialPort); err != nil {
+		if err := connectSerialWithRetry(ctx, client, serialPort); err != nil {
 			return nil, fmt.Errorf("connect to device via serial: %w", err)
 		}
 	case "LAN":
@@ -947,7 +950,7 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		}
 		addr := net.JoinHostPort(ip, port)
 		if device.ConnectionInfo["mtls"] == "true" {
-			if err := connectWithCLIIdentities(func(cert tls.Certificate, rootCAs x509.CertPool, chain string) error {
+			if err := connectWithCLIIdentities(ctx, func(cert tls.Certificate, chain string) error {
 				if tenant := device.ConnectionInfo["tenantId"]; tenant != "" {
 					leaf, err := x509.ParseCertificate(cert.Certificate[0])
 					if err != nil {
@@ -961,12 +964,12 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 						return fmt.Errorf("client identity does not match advertised PKI tenant; sign in to the board's organization with wendy auth login --email <email>")
 					}
 				}
-				return client.ConnectWithPKIAuthentication(addr, cert, chain, device.ConnectionInfo["deviceId"])
+				return client.ConnectWithPKIAuthenticationContext(ctx, addr, cert, chain, device.ConnectionInfo["deviceId"])
 			}); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := client.ConnectInsecure(addr); err != nil {
+			if err := client.ConnectInsecureContext(ctx, addr); err != nil {
 				return nil, fmt.Errorf("connect to device: %w", err)
 			}
 		}
@@ -980,13 +983,13 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		psm64, _ := strconv.ParseUint(device.ConnectionInfo["psm"], 10, 16)
 		psm := uint16(psm64)
 		if device.ConnectionInfo["mtls"] == "true" {
-			if err := connectWithCLIIdentities(func(cert tls.Certificate, rootCAs x509.CertPool, chain string) error {
-				return client.ConnectViaBLEWithMutualAuthentication(address, psm, cert, rootCAs)
+			if err := connectWithCLIIdentities(ctx, func(cert tls.Certificate, chain string) error {
+				return client.ConnectViaBLEWithPKIAuthenticationContext(ctx, address, psm, cert, chain, device.ConnectionInfo["deviceId"])
 			}); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := client.ConnectViaBLEInsecure(address, psm); err != nil {
+			if err := client.ConnectViaBLEContext(ctx, address, psm, nil); err != nil {
 				return nil, fmt.Errorf("connect to device over BLE: %w", err)
 			}
 		}
@@ -998,7 +1001,7 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		if CloudRelayDialer == nil {
 			return nil, fmt.Errorf("wendy-lite provider: Wendy Cloud connections are not available")
 		}
-		cc, ctx, options, err := CloudRelayDialer(context.Background(), device)
+		cc, ctx, options, err := CloudRelayDialer(ctx, device)
 		if err != nil {
 			return nil, fmt.Errorf("connect to device via Wendy Cloud: %w", err)
 		}
@@ -1053,13 +1056,16 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 // the device's issuer. It reports the failures of every identity it tried:
 // with one certificate per organization, "which one was this device enrolled
 // with" is exactly what the reader needs to see.
-func connectWithCLIIdentities(connect func(cert tls.Certificate, rootCAs x509.CertPool, chain string) error) error {
+func connectWithCLIIdentities(ctx context.Context, connect func(cert tls.Certificate, chain string) error) error {
 	certInfos, err := loadAllCLICerts()
 	if err != nil {
 		return fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
 	}
 	var connectErrs []error
 	for _, certInfo := range certInfos {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		certInfo, err = cloudrelay.LiteOperatorIdentity(certInfo)
 		if err != nil {
 			connectErrs = append(connectErrs, err)
@@ -1073,9 +1079,10 @@ func connectWithCLIIdentities(connect func(cert tls.Certificate, rootCAs x509.Ce
 		if err != nil {
 			return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
 		}
-		rootCAs := x509.NewCertPool()
-		certs.AppendChainToPool(rootCAs, certInfo.PemCertificateChain)
-		if err := connect(cert, *rootCAs, certInfo.PemCertificateChain); err != nil {
+		if err := connect(cert, certInfo.PemCertificateChain); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			connectErrs = append(connectErrs, err)
 			continue
 		}
@@ -1108,8 +1115,8 @@ var serialConnectRetryDelay = 400 * time.Millisecond
 
 // connectSerialFn performs a single ConnectToSerial attempt. Indirected so
 // tests can simulate transient and permanent failures without real hardware.
-var connectSerialFn = func(client *liteclient.WendyLiteClient, port string) error {
-	return client.ConnectToSerial(port)
+var connectSerialFn = func(ctx context.Context, client *liteclient.WendyLiteClient, port string) error {
+	return client.ConnectToSerialContext(ctx, port)
 }
 
 // connectSerialWithRetry opens a Wendy Lite serial connection, retrying on
@@ -1118,15 +1125,22 @@ var connectSerialFn = func(client *liteclient.WendyLiteClient, port string) erro
 // lock released, link cleared), so it's safe to call again on the same
 // client. Prints a short notice to stderr once a retry is actually needed, so
 // a transient hiccup doesn't read as a silent hang.
-func connectSerialWithRetry(client *liteclient.WendyLiteClient, serialPort string) error {
+func connectSerialWithRetry(ctx context.Context, client *liteclient.WendyLiteClient, serialPort string) error {
 	var lastErr error
 	for attempt := 1; attempt <= serialConnectMaxAttempts; attempt++ {
-		if lastErr = connectSerialFn(client, serialPort); lastErr == nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if lastErr = connectSerialFn(ctx, client, serialPort); lastErr == nil {
 			return nil
 		}
 		if attempt < serialConnectMaxAttempts {
 			fmt.Fprintf(os.Stderr, "connecting to %s failed (%v), retrying (%d/%d)...\n", serialPort, lastErr, attempt+1, serialConnectMaxAttempts)
-			time.Sleep(serialConnectRetryDelay * time.Duration(attempt))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(serialConnectRetryDelay * time.Duration(attempt)):
+			}
 		}
 	}
 	return fmt.Errorf(

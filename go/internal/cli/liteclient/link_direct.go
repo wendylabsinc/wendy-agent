@@ -90,7 +90,9 @@ type directLink struct {
 	// closed is set when close begins. Writers check it only while holding
 	// writeMu, and close takes writeMu before tearing down, so no write can
 	// reach the wire after close's own final one.
-	closed atomic.Bool
+	closed    atomic.Bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // newDirectLink frames WendyCom over an established byte stream: TCP-TLS, or
@@ -120,7 +122,7 @@ func (l *directLink) linkHandshake() error {
 	if !l.isSerial {
 		return nil
 	}
-	if err := serialHandshake(l.conn.(serial.Port)); err != nil {
+	if err := serialHandshake(serialHandshakeLink{serialHandshakePort: l.conn.(serial.Port), link: l}); err != nil {
 		return err
 	}
 	return l.startKeepAlive()
@@ -199,6 +201,31 @@ type serialHandshakePort interface {
 	Read([]byte) (int, error)
 	Write([]byte) (int, error)
 	SetReadTimeout(time.Duration) error
+}
+
+// Serial handshake writes must obey the same close barrier as framed writes.
+// The serial driver can otherwise write through a reused fd after cancellation.
+type serialHandshakeLink struct {
+	serialHandshakePort
+	link *directLink
+}
+
+func (p serialHandshakeLink) Write(data []byte) (int, error) {
+	p.link.writeMu.Lock()
+	defer p.link.writeMu.Unlock()
+	if p.link.closed.Load() {
+		return 0, errLinkClosed
+	}
+	return p.serialHandshakePort.Write(data)
+}
+
+func (p serialHandshakeLink) SetReadTimeout(timeout time.Duration) error {
+	p.link.writeMu.Lock()
+	defer p.link.writeMu.Unlock()
+	if p.link.closed.Load() {
+		return errLinkClosed
+	}
+	return p.serialHandshakePort.SetReadTimeout(timeout)
 }
 
 // The gap after each sentinel widens by one step, holding at
@@ -390,6 +417,11 @@ func (l *directLink) preferredChunkSize() int {
 // On Windows the close watchdog works around it by purging output; on unix
 // such a write still blocks close.
 func (l *directLink) close() error {
+	l.closeOnce.Do(func() { l.closeErr = l.closeTransport() })
+	return l.closeErr
+}
+
+func (l *directLink) closeTransport() error {
 	l.closed.Store(true)
 	if !l.isSerial {
 		// tls.Conn.Close closes the transport under an in-flight Write, then
@@ -508,7 +540,7 @@ func (l *directLink) readFull(buf []byte, timeout time.Duration) error {
 		_, err := io.ReadFull(l.conn, buf)
 		return err
 	}
-	sp := l.conn.(serial.Port)
+	sp := serialHandshakeLink{serialHandshakePort: l.conn.(serial.Port), link: l}
 	defer sp.SetReadTimeout(serial.NoTimeout) //nolint:errcheck
 	for len(buf) > 0 {
 		perRead := serial.NoTimeout
@@ -519,7 +551,9 @@ func (l *directLink) readFull(buf []byte, timeout time.Duration) error {
 			}
 			perRead = remaining
 		}
-		_ = sp.SetReadTimeout(perRead)
+		if err := sp.SetReadTimeout(perRead); err != nil {
+			return err
+		}
 		n, err := sp.Read(buf)
 		if err != nil {
 			return err

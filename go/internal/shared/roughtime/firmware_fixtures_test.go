@@ -40,7 +40,7 @@ func TestFirmwareFixtures(t *testing.T) {
 	if _, err := VerifyResponse(fixtures["valid.bin"], nonce, Server{Name: "fixture", PublicKey: pub}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"bad-signature", "bad-delegation", "bad-path", "bad-index", "bad-radius", "bad-midpoint", "bad-offset", "bad-version", "bad-nonce"} {
+	for _, name := range []string{"bad-signature", "bad-delegation", "bad-path", "bad-index", "bad-index-size", "bad-radius", "bad-midpoint", "bad-offset", "bad-version", "bad-nonce"} {
 		m := build(1800000000, 1)
 		switch name {
 		case "bad-signature":
@@ -51,6 +51,8 @@ func TestFirmwareFixtures(t *testing.T) {
 			m[TagPATH] = make([]byte, 4)
 		case "bad-index":
 			m[TagINDX] = word(1)
+		case "bad-index-size":
+			m[TagINDX] = nil
 		case "bad-radius":
 			m = build(1800000000, 4295) // catches uint32 seconds-to-microseconds overflow
 		case "bad-midpoint":
@@ -65,6 +67,11 @@ func TestFirmwareFixtures(t *testing.T) {
 			binary.LittleEndian.PutUint32(b[16:20], 0xffffffff)
 		}
 		fixtures[name+".bin"] = b
+		t.Run(name, func(t *testing.T) {
+			if _, err := VerifyResponse(b, nonce, Server{Name: "fixture", PublicKey: pub}); err == nil {
+				t.Fatal("accepted malformed firmware fixture")
+			}
+		})
 	}
 	dir := os.Getenv("WENDY_RT_FIXTURES")
 	if dir == "" {

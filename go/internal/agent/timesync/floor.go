@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 )
 
 const clockFloorFile = "clock_floor"
@@ -71,33 +73,10 @@ func advanceVerifiedFloor(configPath string, t time.Time) error {
 			return nil
 		}
 	}
-	f, err := os.CreateTemp(configPath, ".clock_floor-*")
-	if err != nil {
-		return fmt.Errorf("timesync: creating floor update: %w", err)
+	if err := atomicfile.Write(path, FloorBytes(t), 0o644); err != nil {
+		return fmt.Errorf("timesync: writing floor update: %w", err)
 	}
-	defer os.Remove(f.Name()) //nolint:errcheck — also harmless after rename
-	defer f.Close()           //nolint:errcheck — explicitly closed before rename
-	if err := f.Chmod(0o644); err != nil {
-		return err
-	}
-	if _, err := f.Write(FloorBytes(t)); err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(f.Name(), path); err != nil {
-		return err
-	}
-	dir, err := os.Open(configPath)
-	if err != nil {
-		return err
-	}
-	defer dir.Close() //nolint:errcheck — Sync reports durability errors
-	return dir.Sync()
+	return nil
 }
 
 // FloorBytes encodes t as the 8-byte big-endian clock_floor payload.
