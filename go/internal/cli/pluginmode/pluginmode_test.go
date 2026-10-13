@@ -82,3 +82,18 @@ func TestManagedInstall_SymlinkedConfigDir(t *testing.T) {
 		t.Error("exe reached through the symlink must match the real config dir")
 	}
 }
+
+func TestManagedCLI(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("WENDY_CONFIG_DIR", root)
+	exe, _ := managedInstall(t, root, false)
+
+	fakeProcess(t, exe, "")
+	if !ManagedCLI() {
+		t.Errorf("%s under WENDY_CONFIG_DIR is not plugin-managed", exe)
+	}
+	fakeProcess(t, filepath.Join(t.TempDir(), "homebrew", "bin", "wendy"), "")
+	if ManagedCLI() {
+		t.Error("a CLI outside the config directory is plugin-managed")
+	}
+}

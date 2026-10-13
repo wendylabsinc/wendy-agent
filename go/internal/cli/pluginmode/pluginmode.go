@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 // EnvVar is set by the Wendy plugin's MCP entries (.mcp.json and
@@ -41,6 +43,17 @@ func ManagedInstall(exePath, configDir string) bool {
 		}
 	}
 	return false
+}
+
+// ManagedCLI reports whether the running binary is one the Wendy plugin's
+// launcher installed under the wendy config directory (see ManagedInstall).
+func ManagedCLI() bool {
+	exe, err := executable()
+	if err != nil {
+		return false
+	}
+	dir, err := config.ConfigDir()
+	return err == nil && ManagedInstall(exe, dir)
 }
 
 // resolvePath returns p with symlinks evaluated, or cleaned when it cannot

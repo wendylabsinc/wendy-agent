@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/pluginmode"
+	"github.com/wendylabsinc/wendy/go/internal/shared/cliupdate"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
@@ -152,13 +153,14 @@ func TestNotifyCLIUpdate_PluginManagedCLI(t *testing.T) {
 	}
 
 	out := runUpdateNotice(t, managed)
-	if !strings.Contains(out, "managed by the Wendy plugin; update the plugin to get 2026.02.01-000000") {
-		t.Errorf("notice does not point at the plugin:\n%s", out)
+	// The plugin pins its CLI version, which can trail the latest release, and
+	// its launcher runs an installed wendy ahead of its own copy: the notice
+	// names both ways to update and promises no version from the plugin.
+	if !strings.Contains(out, cliupdate.PluginAdvice(runtime.GOOS)) {
+		t.Errorf("notice lacks the plugin advice:\n%s", out)
 	}
-	for _, installer := range []string{"brew", "winget", "cli.sh"} {
-		if strings.Contains(out, installer) {
-			t.Errorf("notice for a plugin-managed CLI suggests %s:\n%s", installer, out)
-		}
+	if strings.Contains(out, "to get 2026.02.01-000000") {
+		t.Errorf("notice promises the plugin brings the new version:\n%s", out)
 	}
 
 	// Like the non-interactive notice, it shows once per release.
@@ -176,7 +178,7 @@ func TestNotifyCLIUpdate_HomebrewCLIUnderPluginKeepsInstallerAdvice(t *testing.T
 	brew := filepath.Join(home, "homebrew", "bin", "wendy")
 
 	out := runUpdateNotice(t, brew)
-	if strings.Contains(out, "managed by the Wendy plugin") {
+	if strings.Contains(out, "came with the Wendy plugin") {
 		t.Errorf("a Homebrew CLI was reported as plugin-managed:\n%s", out)
 	}
 	if !strings.Contains(out, "Update with:") {

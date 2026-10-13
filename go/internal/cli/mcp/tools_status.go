@@ -81,7 +81,10 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 // Wendy plugin started this server: the client it runs in and, when that
 // client also has a user-level wendy server, the file configuring it and how
 // to remove it. In Claude the duplicate lists every Wendy tool twice; in Codex
-// the user-level entry shadows the plugin's same-name server.
+// the user-level entry shadows the plugin's same-name server. Because of that
+// shadowing, a Codex session whose entry existed at startup runs the
+// user-level server, not this one, so the Codex hint shows only when the
+// entry was added after the session started.
 func addPluginStatus(out map[string]any) {
 	client := pluginmode.Client()
 	if client == "" {

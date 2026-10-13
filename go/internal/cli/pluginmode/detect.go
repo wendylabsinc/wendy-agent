@@ -93,8 +93,7 @@ func providesWendyServer(path string) bool {
 // Hidden bucket entries (.staging, .marketplaces.json, ...) are skipped. The
 // files appear only after a Claude Code session has started once since the
 // directory install, so setup run before that keeps the user-level server. No
-// per-plugin disable flag was observed. See the S3 section of
-// docs/superpowers/specs/2026-09-29-wendy-plugin-spike-findings.md.
+// per-plugin disable flag was observed.
 func claudeSyncedPluginPresent(home string) bool {
 	synced := filepath.Join(home, ".claude", "plugins", "synced")
 	buckets, err := os.ReadDir(synced)
