@@ -13,7 +13,7 @@ import re
 import sys
 from typing import Any
 
-from review_diff import DiffBatch, DiffBatchError, split_diff
+from review_diff import DiffBatch, DiffBatchError, diff_lines, split_diff
 
 # Each batch includes every source byte and any repeated fragment context.
 MAX_DIFF_BYTES = 200_000
@@ -145,7 +145,7 @@ def parse_diff(diff: str) -> dict[str, Any]:
         if remaining_base or remaining_head:
             raise ReviewError("The PR diff has an incomplete or malformed hunk")
 
-    for patch_line, line in enumerate(diff.splitlines()):
+    for patch_line, line in enumerate(diff_lines(diff)):
         if line.startswith("diff --git "):
             finish_hunk()
             old, new = _header_paths(line[len("diff --git "):])
@@ -334,7 +334,7 @@ def numbered_diff(diff: str, parsed: dict[str, Any] | None = None, *, continues_
     ids = {(location["path"], location["side"], location["line"]): index
            for index, location in evidence.items()}
     output: list[str] = []
-    for index, raw in enumerate(diff.splitlines(keepends=True)):
+    for index, raw in enumerate(diff_lines(diff, keepends=True)):
         location = parsed["line_evidence"].get(index)
         if location:
             side, line = location["side"], location["line"]
@@ -371,7 +371,7 @@ def illustrative_excerpt(diff: str, decision: dict[str, Any]) -> dict[str, str] 
     if anchor is None or anchor_location is None:
         return None
 
-    lines = diff.splitlines()
+    lines = diff_lines(diff)
     hunk_start = anchor
     while hunk_start >= 0 and not lines[hunk_start].startswith("@@ "):
         hunk_start -= 1
@@ -585,7 +585,7 @@ def review_model(metadata: dict[str, Any], diff: str, repo: str, model: str) -> 
 
 def batch_evidence(parsed: dict[str, Any], batch: DiffBatch) -> dict[str, Any]:
     """Restrict validated original evidence to bytes present in this fragment."""
-    count = len(batch.text.splitlines())
+    count = len(diff_lines(batch.text))
     evidence = {index - batch.start_line: location
                 for index, location in parsed["line_evidence"].items()
                 if batch.start_line <= index < batch.start_line + count}

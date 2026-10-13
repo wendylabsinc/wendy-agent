@@ -9,7 +9,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from review_diff import DiffBatchError, split_diff
+from review_diff import DiffBatchError, diff_lines, split_diff
 
 
 def patch(path: str, content: str = "new") -> str:
@@ -17,6 +17,14 @@ def patch(path: str, content: str = "new") -> str:
 
 
 class SplitDiffTests(unittest.TestCase):
+    def test_diff_records_use_only_lf_separators(self):
+        for text in ("", "\n", "a\n\n", "a\nb", "a\r\n", "a\r\v\f\x1c\x1d\x1e\x85\u2028\u2029b"):
+            with self.subTest(text=text):
+                records = diff_lines(text, keepends=True)
+                self.assertEqual("".join(records), text)
+                self.assertEqual(len(records), text.count("\n") + bool(text and not text.endswith("\n")))
+                self.assertEqual(diff_lines(text), [line.removesuffix("\n") for line in records])
+
     def test_small_diff_is_unchanged(self):
         raw = patch("one.go") + patch("two.go")
         self.assertEqual([b.text for b in split_diff(raw, len(raw.encode()))], [raw])
@@ -97,6 +105,20 @@ class SplitDiffTests(unittest.TestCase):
         for limit in range(500, 520):
             with self.subTest(limit=limit):
                 self.assert_complete(raw, limit)
+
+    def test_source_separators_do_not_change_fragment_line_metadata(self):
+        for separator in ("\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=separator):
+                raw = patch("separators.js", ("before" + separator + "+after") * 1000)
+                batches = self.assert_complete(raw, 1000)
+                self.assertGreater(len(batches), 2)
+                for batch in batches[1:]:
+                    details = json.loads(batch.context.split(": ", 1)[1])
+                    self.assertEqual(batch.start_line, 5)
+                    self.assertEqual(details["head_line"], 1)
+                    self.assertEqual(details["line_prefix"], "+")
+                    self.assertEqual(details["hunk_header"], "@@ -1 +1 @@")
+                    self.assertGreater(batch.start_column, 0)
 
     def test_context_that_cannot_fit_fails_before_returning_batches(self):
         raw = patch("before.go") + patch("large.go", "x" * 1000)

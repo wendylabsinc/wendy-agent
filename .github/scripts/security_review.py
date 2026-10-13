@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from review_diff import split_diff
+from review_diff import diff_lines, split_diff
 
 COMMENT_MARKER = "<!-- ai-security-review:v1 -->"
 BLOCKING_MARKER = "<!-- ai-security-review:has-blocking=true -->"
@@ -605,7 +605,7 @@ def collect_security_comments(diff_text: str) -> list[dict[str, Any]]:
     comments: list[dict[str, Any]] = []
     path = ""
     new_line: int | None = None
-    for line in diff_text.splitlines():
+    for line in diff_lines(diff_text):
         if line.startswith("+++ b/"):
             path = line.removeprefix("+++ b/")
             continue

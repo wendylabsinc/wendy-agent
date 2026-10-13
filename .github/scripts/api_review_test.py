@@ -221,6 +221,28 @@ class PromptTests(unittest.TestCase):
 
 
 class EvidenceRenderingTests(unittest.TestCase):
+    def test_non_lf_source_separators_preserve_exact_evidence_and_excerpts(self):
+        for separator in ("\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=separator):
+                content = ("before" + separator + "+after") * 1000
+                raw = diff(after=content).decode()
+                parsed = api_review.parse_diff(raw)
+                self.assertEqual(parsed["additions"], 1)
+                self.assertEqual(parsed["locations"][("go/network.go", "head")], {5})
+                self.assertIn("+ [evidence:2 head:5] " + content + "\n", api_review.numbered_diff(raw))
+                self.assertIn("+" + content, api_review.illustrative_excerpt(raw, decision())["text"])
+                batches = api_review.split_diff(raw, 1000)
+                for batch in batches:
+                    local = api_review.batch_evidence(parsed, batch)
+                    self.assertEqual(local["locations"][("go/network.go", "head")], {5})
+                    numbered = api_review.numbered_diff(batch.text, local, continues_line=bool(batch.start_column))
+                    restored = re.sub(r"^([+-]) \[evidence:\d+ (?:head|base):\d+\] ", r"\1", numbered, flags=re.MULTILINE)
+                    restored = re.sub(r"^\[evidence:\d+ (?:head|base):\d+ continuation\] ", "", restored)
+                    self.assertEqual(restored, batch.text)
+                    if batch.start_column:
+                        self.assertIn("head:5 continuation]", numbered)
+                        self.assertNotIn(("go/network.go", "base"), local["locations"])
+
     def test_numbered_evidence_tracks_both_sides_across_hunks_and_files(self):
         raw = (
             "diff --git a/go/one.go b/go/one.go\n"

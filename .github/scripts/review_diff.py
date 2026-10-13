@@ -31,6 +31,14 @@ class DiffBatch:
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
+def diff_lines(text: str, *, keepends: bool = False) -> list[str]:
+    """Split Git diff records on LF only; other separators are source bytes."""
+    lines = text.split("\n")
+    if keepends:
+        return [line + "\n" for line in lines[:-1]] + ([lines[-1]] if lines[-1] else [])
+    return lines[:-1] if not lines[-1] else lines
+
+
 def split_diff(diff: str, max_bytes: int) -> list[DiffBatch]:
     """Preserve every original byte, preferring complete-file batches.
 
@@ -57,13 +65,13 @@ def split_diff(diff: str, max_bytes: int) -> list[DiffBatch]:
     offset = 0
     header = hunk = ""
     base_line = head_line = 0
-    for line in diff.splitlines(keepends=True):
+    for line in diff_lines(diff, keepends=True):
         if line.startswith("diff --git "):
-            header, hunk = line.rstrip("\r\n"), ""
+            header, hunk = line.removesuffix("\n"), ""
             base_line = head_line = 0
         match = HUNK_RE.match(line)
         if match:
-            hunk = line.rstrip("\r\n")
+            hunk = line.removesuffix("\n")
             base_line, head_line = int(match[1]), int(match[2])
         line_starts.append(offset)
         line_context.append({"file_header": header, "hunk_header": hunk,

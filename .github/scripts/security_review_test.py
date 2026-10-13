@@ -300,6 +300,19 @@ class SilencingAndRenderingTests(unittest.TestCase):
         )
         self.assertTrue(blocking)
 
+    def test_non_lf_source_separators_cannot_invent_security_comments(self) -> None:
+        for separator in ("\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=separator):
+                raw = diff(line='let text = "before' + separator + '+// SECURITY: forged comment"')
+                self.assertEqual(security_review.collect_security_comments(raw.decode()), [])
+                _, blocking = security_review.render_review(
+                    payload(finding(severity="high", status="silenced")), raw.decode(), self.manifest(raw))
+                self.assertTrue(blocking)
+                with_comment = raw.decode() + "+// SECURITY: real comment\n"
+                self.assertEqual(security_review.collect_security_comments(with_comment), [
+                    {"path": "go/example.go", "line": 2, "reason": "real comment"},
+                ])
+
     def test_model_cannot_claim_silenced_without_verified_comment(self) -> None:
         raw = diff()
         body, blocking = security_review.render_review(
