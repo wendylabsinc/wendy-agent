@@ -374,7 +374,9 @@ func awaitSimulatorWith(ctx context.Context, name, addr string, booting bool,
 	var conn *grpcclient.AgentConnection
 	var err error
 	if isInteractiveTerminalFn() {
-		conn, err = runAgentConnectionSpinner(ctx, label, wait)
+		// Booting the simulator is setup, like the robot build after it: tips
+		// about scaffolding projects would only distract from the wait.
+		conn, err = runAgentConnectionSpinner(withoutProgressHints(ctx), label, wait)
 	} else {
 		// The spinner needs a TTY it cannot open here, and `--device sim` has
 		// to work from a script. Wait the same way, just without the animation.

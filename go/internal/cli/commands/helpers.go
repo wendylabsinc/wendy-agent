@@ -574,7 +574,11 @@ var runAgentConnectionSpinner = func(ctx context.Context, label string, fn func(
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	prog := tui.NewProgressProgram(tui.NewSpinner(label))
+	spin := tui.NewSpinner(label)
+	if progressHintsOff(ctx) {
+		spin = spin.WithoutHints()
+	}
+	prog := tui.NewProgressProgram(spin)
 
 	var (
 		conn   *grpcclient.AgentConnection
