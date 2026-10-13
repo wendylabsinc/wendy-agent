@@ -176,7 +176,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("cloud_ping", pingOpts...), s.handleCloudPing)
 
 	runOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Build and deploy a local project to device or the connected target. Returns status and build-log tail. Check container_list and telemetry_logs for application readiness."),
+		mcpgo.WithDescription("Build and deploy a local project to device or the connected target, replacing a running app of the same name. Returns status and build-log tail. Check container_list and telemetry_logs for application readiness."),
 		mcpgo.WithString("project_path", mcpgo.Required(), mcpgo.Description("Project directory to build and deploy")),
 		mcpgo.WithString("device", mcpgo.Description("device selector from device_list (host:port, vm:NAME, or a cloud:// selector); omit to reuse the connection")),
 		mcpgo.WithString("build_type", mcpgo.Enum("docker", "compose", "swift", "python"), mcpgo.Description("Build system; omit for automatic detection")),
@@ -186,7 +186,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithInteger("timeout_seconds", mcpgo.Min(1), mcpgo.Max(3600), mcpgo.DefaultNumber(300), mcpgo.Description("Command timeout")),
 		mcpgo.WithInteger("max_bytes", mcpgo.Min(1), mcpgo.Max(1000000), mcpgo.DefaultNumber(16384), mcpgo.Description("Build-log tail byte limit")),
 	}
-	runOpts = append(runOpts, mutating()...)
+	runOpts = append(runOpts, destructive()...)
 	runOpts = append(runOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("run", runOpts...), s.handleRun)
 }
@@ -202,6 +202,7 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
+	s.minimizeCloudRows(out)
 	return okListBounded("devices", out, intParam(req, "max_bytes", 100000)), nil
 }
 
@@ -234,6 +235,19 @@ func discoverCloudDevices(ctx context.Context, auth *config.AuthConfig, filter s
 		}
 	}
 	return out, nil
+}
+
+// minimizeCloudRows drops ids a hosted chat does not need: the device
+// selector already carries them (store policy: response minimization).
+func (s *mcpServer) minimizeCloudRows(rows []map[string]any) {
+	if !s.relay {
+		return
+	}
+	for _, row := range rows {
+		for _, k := range []string{"id", "device_id", "organization_id", "created_at_unix_ns"} {
+			delete(row, k)
+		}
+	}
 }
 
 func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

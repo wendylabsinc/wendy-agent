@@ -64,6 +64,7 @@ type mcpServer struct {
 	login                LoginSession // the latest auth_login session, pending or ended
 	loginStarter         LoginStarter
 	binding              *BindingPolicy // set by wendy cloud mcp; nil for the local stdio server
+	relay                bool           // serving a hosted chat through the relay: the published manifest only
 }
 
 // Server is the wendy MCP server, named for callers that configure it before
@@ -273,7 +274,7 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 		server.WithInstructions(serverInstructions),
 		server.WithToolFilter(s.filterTools),
 	)
-	srv.Use(s.bindingMiddleware(srv), s.cliUpdateMiddleware())
+	srv.Use(s.relayManifestMiddleware, s.bindingMiddleware(srv), s.cliUpdateMiddleware())
 	if err := registerSkills(srv); err != nil {
 		return nil, err
 	}
@@ -299,6 +300,7 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 	s.registerDeviceMaintenanceTools(srv)
 	s.registerProjectTools(srv)
 	s.registerCloudTools(srv)
+	applyToolTitles(srv)
 	registerToolAnalytics(srv)
 	return srv, nil
 }

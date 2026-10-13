@@ -26,7 +26,7 @@ func (s *mcpServer) registerOSTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("Report the outcome of the device's most recent OS update: committed after post-reboot healthchecks, or rolled back with the services that failed"),
 	}
 	statusOpts = append(statusOpts, readOnly()...)
-	statusOpts = append(statusOpts, localOnly()...)
+	statusOpts = append(statusOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("os_update_status", statusOpts...), s.handleOSUpdateStatus)
 }
 

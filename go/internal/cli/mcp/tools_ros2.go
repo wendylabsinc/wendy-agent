@@ -53,7 +53,7 @@ func (s *mcpServer) registerROS2Tools(srv *server.MCPServer) {
 			opts = append(opts, mcpgo.WithInteger("count", mcpgo.Min(1), mcpgo.Max(20), mcpgo.DefaultNumber(3), mcpgo.Description("Maximum samples or rate reports")))
 		}
 		opts = append(opts, readOnly()...)
-		opts = append(opts, localOnly()...)
+		opts = append(opts, openWorld()...)
 		srv.AddTool(mcpgo.NewTool(tool.name, opts...), tool.handler)
 	}
 }

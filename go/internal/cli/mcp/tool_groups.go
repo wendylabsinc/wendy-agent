@@ -67,6 +67,12 @@ func (s *mcpServer) filterTools(_ context.Context, tools []mcpgo.Tool) []mcpgo.T
 		if binding != nil && !binding.allows(tool) {
 			continue
 		}
+		if s.relay {
+			if inManifest(tool.Name) {
+				visible = append(visible, tool)
+			}
+			continue
+		}
 		// The old name misleadingly suggests passive observation. Keep its
 		// handler for old callers but never advertise it, even in all mode.
 		if tool.Name == "container_attach" {
