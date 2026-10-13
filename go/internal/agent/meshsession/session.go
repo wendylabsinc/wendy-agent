@@ -37,7 +37,7 @@ func quicConfig() *quic.Config {
 	// Initial and TLS flight. Keep handshake idle bounded, but allow the
 	// carrier to drain competing mesh-app setup packets.
 	return &quic.Config{HandshakeIdleTimeout: 30 * time.Second, MaxIdleTimeout: 45 * time.Second,
-		MaxIncomingStreams: 8, MaxIncomingUniStreams: -1, Allow0RTT: false,
+		MaxIncomingStreams: 8, MaxIncomingUniStreams: -1, EnableDatagrams: true, Allow0RTT: false,
 		// The routed TUN carries at most 1280 bytes end to end. quic-go's
 		// default 1280-byte UDP payload exceeds that once IPv6/UDP headers
 		// are added; the kernel drops the Initial before it reaches the TUN.
@@ -282,10 +282,17 @@ func (s *Server) serveStream(parent context.Context, conn *quic.Conn, stream *qu
 	defer stream.Close()
 	_ = stream.SetDeadline(time.Now().Add(appSessionSetupTimeout))
 	var hello [6]byte
-	if _, err := io.ReadFull(stream, hello[:]); err != nil || string(hello[:4]) != "WAS1" {
+	if _, err := io.ReadFull(stream, hello[:]); err != nil {
 		return
 	}
 	port := binary.BigEndian.Uint16(hello[4:])
+	if string(hello[:4]) == "WAU1" {
+		s.serveDatagrams(parent, conn, port, stream)
+		return
+	}
+	if string(hello[:4]) != "WAS1" {
+		return
+	}
 	local, err := s.authorizer.DialAuthorized(port, func() (net.Conn, error) {
 		return net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), 5*time.Second)
 	})
