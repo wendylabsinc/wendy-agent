@@ -37,7 +37,7 @@ func TestConnectEnrollmentUsesUSBSerialTransport(t *testing.T) {
 	oldConnect := connectSerialFn
 	t.Cleanup(func() { connectSerialFn = oldConnect })
 	var connected bool
-	connectSerialFn = func(_ *liteclient.WendyLiteClient, port string) error {
+	connectSerialFn = func(_ context.Context, _ *liteclient.WendyLiteClient, port string) error {
 		if port != "/dev/cu.usbmodem-test" {
 			t.Fatalf("unexpected enrollment serial port %q", port)
 		}

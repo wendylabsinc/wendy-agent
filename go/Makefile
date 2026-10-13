@@ -39,8 +39,22 @@ build: build-cli build-agent
 
 # Generate the embedded MCP UI from locked frontend dependencies.
 .PHONY: mcp-app test-race
-mcp-app:
+MCP_APP := ../web-client/mcp-app
+MCP_APP_DEPS := $(MCP_APP)/node_modules/.wendy-dependencies
+# Include directories so adding or removing an asset also invalidates the HTML.
+mcp_app_sources = $(foreach path,$(wildcard $(1)*),$(path) $(call mcp_app_sources,$(path)/))
+MCP_APP_SOURCES := $(MCP_APP)/src $(call mcp_app_sources,$(MCP_APP)/src/) \
+                  simulator/go2/go2_sim simulator/go2/go2_sim/vendor simulator/rosmaster_r2/r2_sim \
+                  $(wildcard simulator/go2/go2_sim/*.js simulator/go2/go2_sim/vendor/*.js \
+                             simulator/rosmaster_r2/r2_sim/*.js)
+
+mcp-app: internal/cli/mcp/desktop_app.html
+
+$(MCP_APP_DEPS): $(MCP_APP)/package.json $(MCP_APP)/package-lock.json
 	npm --prefix ../web-client/mcp-app ci --no-audit --no-fund
+	node -e "require('node:fs').writeFileSync(process.argv[1], '')" "$@"
+
+internal/cli/mcp/desktop_app.html: $(MCP_APP_DEPS) $(MCP_APP_SOURCES) $(MCP_APP)/build.mjs $(MCP_APP)/tsconfig.json Makefile
 	npm --prefix ../web-client/mcp-app run build
 
 # Build the wendy CLI

@@ -18,6 +18,27 @@ import (
 )
 
 func TestPKILANTrustAndDeviceIdentity(t *testing.T) {
+	testPKITrustAndDeviceIdentity(t, func(c *WendyLiteClient, address string, cert tls.Certificate, chain, deviceID string) error {
+		return c.ConnectWithPKIAuthentication(address, cert, chain, deviceID)
+	})
+}
+
+func TestPKIBLETrustAndDeviceIdentity(t *testing.T) {
+	previous := openBLEStreamFn
+	t.Cleanup(func() { openBLEStreamFn = previous })
+	openBLEStreamFn = func(ctx context.Context, address string, psm uint16) (net.Conn, error) {
+		if psm != DefaultL2CAPPSM {
+			t.Errorf("PSM = %d, want %d", psm, DefaultL2CAPPSM)
+		}
+		return (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	}
+	testPKITrustAndDeviceIdentity(t, func(c *WendyLiteClient, address string, cert tls.Certificate, chain, deviceID string) error {
+		return c.ConnectViaBLEWithPKIAuthentication(address, DefaultL2CAPPSM, cert, chain, deviceID)
+	})
+}
+
+func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, string, tls.Certificate, string, string) error) {
+	t.Helper()
 	const tenant = "11111111-1111-4111-8111-111111111111"
 	issue := func(serial int64, name, uri string, ca bool, parent *x509.Certificate, signer *ecdsa.PrivateKey) (*x509.Certificate, *ecdsa.PrivateKey) {
 		return issueRelayCertificate(t, serial, name, uri, ca, parent, signer)
@@ -27,11 +48,16 @@ func TestPKILANTrustAndDeviceIdentity(t *testing.T) {
 	intermediate, intermediateKey := issue(2, "operator authority", "", true, root, rootKey)
 	operator, operatorKey := issue(3, "operator", "spiffe://wendy.sh/tenant/"+tenant+"/operator/22222222-2222-4222-8222-222222222222", false, intermediate, intermediateKey)
 	client := tls.Certificate{Certificate: [][]byte{operator.Raw}, PrivateKey: operatorKey}
-	chain := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: intermediate.Raw})) + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Raw}))
+	// Wendy-issued chains may contain trailing ASN.1 bytes. Both transports
+	// must use the shared parser rather than the standard x509-only verifier.
+	chain := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: append(append([]byte(nil), intermediate.Raw...), 0, 0)})) + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Raw}))
+	if err := connect(NewWendyLiteClient(), "invalid:0", client, chain, ""); err == nil || !strings.Contains(err.Error(), "missing Wendy Lite device identity") {
+		t.Fatalf("missing selected device identity must be rejected before dialing: %v", err)
+	}
 	for _, uri := range []string{"", "urn:wendy:org:2:user:42", "spiffe://wendy.sh/tenant/" + tenant + "/device/other"} {
 		leaf, key := issue(6, "unscoped", uri, false, root, rootKey)
 		c := NewWendyLiteClient()
-		err := c.ConnectWithPKIAuthentication("invalid:0", tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: key}, chain, "441bf6804ff8")
+		err := connect(c, "invalid:0", tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: key}, chain, "441bf6804ff8")
 		if err == nil || !strings.Contains(err.Error(), "tenant-scoped operator") {
 			t.Fatalf("identity %q must be rejected before dialing: %v", uri, err)
 		}
@@ -73,7 +99,7 @@ func TestPKILANTrustAndDeviceIdentity(t *testing.T) {
 				completed <- conn.Handshake()
 			}()
 			c := NewWendyLiteClient()
-			err = c.ConnectWithPKIAuthentication(listener.Addr().String(), client, chain, tc.deviceID)
+			err = connect(c, listener.Addr().String(), client, chain, tc.deviceID)
 			serverErr := <-completed
 			if tc.wantHandshake {
 				// TLS succeeded with only the root on the server, proving the CLI sent
@@ -81,7 +107,7 @@ func TestPKILANTrustAndDeviceIdentity(t *testing.T) {
 				if serverErr != nil || err == nil || !strings.HasPrefix(err.Error(), "handshake:") {
 					t.Fatalf("TLS=%v WendyCom=%v", serverErr, err)
 				}
-			} else if err == nil || !strings.HasPrefix(err.Error(), "connect (mTLS):") {
+			} else if err == nil || (!strings.HasPrefix(err.Error(), "connect (mTLS):") && !strings.HasPrefix(err.Error(), "BLE TLS handshake:")) {
 				t.Fatalf("untrusted peer accepted: %v", err)
 			}
 		})

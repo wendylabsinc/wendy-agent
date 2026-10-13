@@ -19,10 +19,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const maxLiteFirmwareBytes = 16 << 20
+
 // prepareLiteFlash modifies only a private copy. Published firmware and local
 // input images remain unchanged, including any physical device credentials.
 func prepareLiteFlash(name string, data []byte) ([]byte, error) {
-	if len(data) < espPartTableOffset+espPartEntrySize || len(data) > 16<<20 {
+	if len(data) < espPartTableOffset+espPartEntrySize || len(data) > maxLiteFirmwareBytes {
 		return nil, fmt.Errorf("expected a merged ESP32-C6 flash image of at most 16 MiB")
 	}
 	if data[0] != 0xe9 || binary.LittleEndian.Uint16(data[12:14]) != 13 {
@@ -33,7 +35,7 @@ func prepareLiteFlash(name string, data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if part.Size < 8 || uint64(part.Offset)+uint64(part.Size) > 16<<20 || part.Offset < espPartTableOffset+espPartTableMaxLen {
+	if part.Size < 8 || uint64(part.Offset)+uint64(part.Size) > maxLiteFirmwareBytes || part.Offset < espPartTableOffset+espPartTableMaxLen {
 		return nil, fmt.Errorf("invalid Wendy Lite configuration partition")
 	}
 	conf := &litepb.WendyConf{DeviceName: proto.String(name), Wifi: &litepb.WendyConfWifi{
@@ -97,7 +99,7 @@ func createLiteSimulator(ctx context.Context, store *vm.Store, opts wendymcp.Sim
 			return nil, err
 		}
 		defer os.RemoveAll(dir)
-		path, err = downloadMCPSimulatorImage(ctx, dir, info.DownloadURL)
+		path, err = downloadLiteSimulatorImage(ctx, dir, info)
 		if err != nil {
 			return nil, err
 		}
@@ -118,7 +120,7 @@ func createLiteSimulator(ctx context.Context, store *vm.Store, opts wendymcp.Sim
 	if !stat.Mode().IsRegular() {
 		return nil, fmt.Errorf("firmware must be a regular file")
 	}
-	data, err := io.ReadAll(io.LimitReader(simulatorContextReader{ctx: ctx, reader: f}, (16<<20)+1))
+	data, err := io.ReadAll(io.LimitReader(simulatorContextReader{ctx: ctx, reader: f}, maxLiteFirmwareBytes+1))
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +143,17 @@ func createLiteSimulator(ctx context.Context, store *vm.Store, opts wendymcp.Sim
 		return nil, err
 	}
 	return readMCPSimulator(store, opts.Name)
+}
+
+func downloadLiteSimulatorImage(ctx context.Context, dir string, info *imageInfo) (string, error) {
+	if info.ImageSize < 0 || info.ImageSize > maxLiteFirmwareBytes {
+		return "", fmt.Errorf("Lite firmware manifest size must be at most 16 MiB")
+	}
+	limit := int64(maxLiteFirmwareBytes)
+	if info.ImageSize > 0 {
+		limit = info.ImageSize
+	}
+	return downloadMCPSimulatorImageWithLimit(ctx, dir, info.DownloadURL, limit)
 }
 
 func isLiteSimulator(name string) bool {

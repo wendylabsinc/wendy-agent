@@ -160,7 +160,7 @@ func TestConnectSerialWithRetrySucceedsAfterTransientFailures(t *testing.T) {
 	serialConnectRetryDelay = time.Millisecond
 
 	var attempts int
-	connectSerialFn = func(_ *liteclient.WendyLiteClient, _ string) error {
+	connectSerialFn = func(_ context.Context, _ *liteclient.WendyLiteClient, _ string) error {
 		attempts++
 		if attempts < serialConnectMaxAttempts {
 			return errors.New("reading header: read timeout")
@@ -168,7 +168,7 @@ func TestConnectSerialWithRetrySucceedsAfterTransientFailures(t *testing.T) {
 		return nil
 	}
 
-	if err := connectSerialWithRetry(nil, "/dev/cu.usbmodem2101"); err != nil {
+	if err := connectSerialWithRetry(context.Background(), nil, "/dev/cu.usbmodem2101"); err != nil {
 		t.Fatalf("connectSerialWithRetry() error = %v, want nil after eventual success", err)
 	}
 	if attempts != serialConnectMaxAttempts {
@@ -183,12 +183,12 @@ func TestConnectSerialWithRetryGivesUpAfterMaxAttempts(t *testing.T) {
 
 	wantErr := errors.New("reading header: read timeout")
 	var attempts int
-	connectSerialFn = func(_ *liteclient.WendyLiteClient, _ string) error {
+	connectSerialFn = func(_ context.Context, _ *liteclient.WendyLiteClient, _ string) error {
 		attempts++
 		return wantErr
 	}
 
-	err := connectSerialWithRetry(nil, "/dev/cu.usbmodem2101")
+	err := connectSerialWithRetry(context.Background(), nil, "/dev/cu.usbmodem2101")
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("connectSerialWithRetry() error = %v, want it to wrap %v", err, wantErr)
 	}
@@ -459,7 +459,7 @@ func TestStreamDevicesDeduplicatesRepeatedMDNSService(t *testing.T) {
 
 func TestConnectClientRejectsBLEWithoutAddress(t *testing.T) {
 	p := &MicroWendyProvider{}
-	_, err := p.connectClient(models.ExternalDevice{
+	_, err := p.connectClient(context.Background(), models.ExternalDevice{
 		ConnectionInfo: map[string]string{"type": "BLE"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "missing BLE address") {
@@ -488,7 +488,7 @@ func TestConnectClientRejectsCloudWithoutAssetID(t *testing.T) {
 		return nil, nil, errors.New("unreachable")
 	})
 	p := &MicroWendyProvider{}
-	_, err := p.connectClient(models.ExternalDevice{
+	_, err := p.connectClient(context.Background(), models.ExternalDevice{
 		ConnectionInfo: map[string]string{"type": "Cloud"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "missing Cloud asset ID") {
@@ -499,7 +499,7 @@ func TestConnectClientRejectsCloudWithoutAssetID(t *testing.T) {
 func TestConnectClientRejectsCloudWithoutDialer(t *testing.T) {
 	setCloudRelayDialer(t, nil)
 	p := &MicroWendyProvider{}
-	_, err := p.connectClient(models.ExternalDevice{
+	_, err := p.connectClient(context.Background(), models.ExternalDevice{
 		ConnectionInfo: map[string]string{"type": "Cloud", "assetId": "0b6f7a52-5d1e-4c3b-9a8e-2f4d6c8b1a3e"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "not available") {
@@ -518,7 +518,7 @@ func TestConnectClientReportsCloudDialError(t *testing.T) {
 	device := models.ExternalDevice{
 		ConnectionInfo: map[string]string{"type": "Cloud", "assetId": "0b6f7a52-5d1e-4c3b-9a8e-2f4d6c8b1a3e"},
 	}
-	_, err := p.connectClient(device)
+	_, err := p.connectClient(context.Background(), device)
 	if !errors.Is(err, failure) {
 		t.Fatalf("expected the dial error, got %v", err)
 	}

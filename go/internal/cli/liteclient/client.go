@@ -228,6 +228,14 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 }
 
 func (c *WendyLiteClient) ConnectToSerial(device string) error {
+	return c.ConnectToSerialContext(context.Background(), device)
+}
+
+// ConnectToSerialContext allows cancellation of the serial WendyCom handshake.
+func (c *WendyLiteClient) ConnectToSerialContext(ctx context.Context, device string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	lock, err := seriallock.Acquire(device)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrSerialPortUnavailable, err)
@@ -243,10 +251,11 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 		lock.Release()
 		return fmt.Errorf("%w: open serial: %w", ErrSerialPortUnavailable, err)
 	}
-	c.link = newSerialLink(port)
+	link := newSerialLink(port)
+	c.link = link
 	c.serialLock = lock
-	if err := c.handshake(); err != nil {
-		c.link.close() // also stops the keep-alive loop linkHandshake may have started
+	if err := c.handshakeSerialContext(ctx, link); err != nil {
+		link.close() // also stops the keep-alive loop linkHandshake may have started
 		lock.Release()
 		c.link = nil
 		c.serialLock = nil
@@ -254,6 +263,20 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 	}
 	c.startReadLoop()
 	return nil
+}
+
+func (c *WendyLiteClient) handshakeSerialContext(ctx context.Context, link *directLink) error {
+	stopCancel := context.AfterFunc(ctx, func() { link.close() })
+	err := c.handshake()
+	if !stopCancel() {
+		// close is idempotent and joins the cancellation callback's teardown.
+		// Never return a live client while cancellation still closes its port.
+		link.close()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 // ConnectViaRelay authenticates directly to the device over an opaque broker
@@ -1166,21 +1189,30 @@ func deviceTLSConfig(cert tls.Certificate, chain, deviceID string) (*tls.Config,
 }
 
 func (c *WendyLiteClient) ConnectWithPKIAuthentication(address string, cert tls.Certificate, chain, deviceID string) error {
+	return c.ConnectWithPKIAuthenticationContext(context.Background(), address, cert, chain, deviceID)
+}
+
+// ConnectWithPKIAuthenticationContext bounds connection establishment and both
+// the TLS and WendyCom handshakes by ctx.
+func (c *WendyLiteClient) ConnectWithPKIAuthenticationContext(ctx context.Context, address string, cert tls.Certificate, chain, deviceID string) error {
 	cfg, err := deviceTLSConfig(cert, chain, deviceID)
 	if err != nil {
 		return err
 	}
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 15 * time.Second}, "tcp", address, cfg)
+	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 15 * time.Second}, Config: cfg}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
 		return fmt.Errorf("connect (mTLS): %w", err)
 	}
+	stopCancel := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stopCancel()
 	c.link = newDirectLink(conn)
 	if err := c.handshake(); err != nil {
 		c.link.close()
 		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
-	c.peerCert = conn.ConnectionState().PeerCertificates[0]
+	c.peerCert = conn.(*tls.Conn).ConnectionState().PeerCertificates[0]
 	c.startReadLoop()
 	return nil
 }

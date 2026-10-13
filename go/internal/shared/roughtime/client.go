@@ -180,9 +180,12 @@ func VerifyResponse(rawResp, nonce []byte, srv Server) (Result, error) {
 	}
 
 	// Verify the client's nonce is in the Merkle tree.
-	indxB := outer[TagINDX] // may be absent for index 0
-	path := outer[TagPATH]  // may be absent for a single-client batch
+	indxB, hasIndex := outer[TagINDX] // may be absent for index 0
+	path := outer[TagPATH]            // may be absent for a single-client batch
 	index := uint32(0)
+	if hasIndex && len(indxB) != 4 {
+		return Result{}, fmt.Errorf("%s: malformed INDX", srv.Name)
+	}
 	if len(indxB) == 4 {
 		index = binary.LittleEndian.Uint32(indxB)
 	}
@@ -191,7 +194,7 @@ func VerifyResponse(rawResp, nonce []byte, srv Server) (Result, error) {
 	}
 
 	midpMicros := binary.LittleEndian.Uint64(midpB)
-	radiMicros := binary.LittleEndian.Uint32(radiB)
+	radiMicros := uint64(binary.LittleEndian.Uint32(radiB))
 	if maxTime > 0 && (midpMicros < minTime || midpMicros > maxTime) {
 		return Result{}, fmt.Errorf("%s: midpoint outside delegation validity", srv.Name)
 	}
@@ -349,7 +352,7 @@ func ExtractNonceFromResponse(rawResp []byte) ([]byte, error) {
 // Leaf hash: SHA-512("\x00" || nonce), truncated to the root size.
 // Node hash: SHA-512("\x01" || left || right), truncated to the root size.
 func verifyMerkle(nonce, root, path []byte, index uint32) bool {
-	if len(root) != 32 {
+	if len(root) != 32 || len(path)%32 != 0 {
 		return false
 	}
 	h := sha512.Sum512(append([]byte{0x00}, nonce...))
@@ -367,7 +370,7 @@ func verifyMerkle(nonce, root, path []byte, index uint32) bool {
 		current = h[:len(root)]
 		index >>= 1
 	}
-	return constEqual(current, root)
+	return index == 0 && constEqual(current, root)
 }
 
 // constEqual is a constant-time byte comparison.

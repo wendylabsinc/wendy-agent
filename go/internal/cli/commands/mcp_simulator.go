@@ -246,6 +246,11 @@ func fetchMCPSimulatorImage(ctx context.Context, version string) (string, string
 }
 
 func downloadMCPSimulatorImage(ctx context.Context, dir, url string) (path string, retErr error) {
+	return downloadMCPSimulatorImageWithLimit(ctx, dir, url, 0)
+}
+
+// A positive maxBytes bounds both the declared response size and streamed data.
+func downloadMCPSimulatorImageWithLimit(ctx context.Context, dir, url string, maxBytes int64) (path string, retErr error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -258,6 +263,9 @@ func downloadMCPSimulatorImage(ctx context.Context, dir, url string) (path strin
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("simulator image download returned HTTP %d", resp.StatusCode)
+	}
+	if maxBytes > 0 && resp.ContentLength > maxBytes {
+		return "", fmt.Errorf("simulator image Content-Length %d exceeds download limit of %d bytes", resp.ContentLength, maxBytes)
 	}
 	f, err := os.CreateTemp(dir, "simulator-*.image")
 	if err != nil {
@@ -273,7 +281,20 @@ func downloadMCPSimulatorImage(ctx context.Context, dir, url string) (path strin
 			path = ""
 		}
 	}()
-	_, err = io.Copy(f, simulatorContextReader{ctx: ctx, reader: resp.Body})
+	reader := simulatorContextReader{ctx: ctx, reader: resp.Body}
+	if maxBytes > 0 {
+		if _, err := io.Copy(f, io.LimitReader(reader, maxBytes)); err != nil {
+			return path, err
+		}
+		// Probe without writing another byte, including for chunked responses.
+		if n, err := io.CopyN(io.Discard, reader, 1); n != 0 {
+			return path, fmt.Errorf("simulator image exceeds download limit of %d bytes", maxBytes)
+		} else if err != io.EOF {
+			return path, err
+		}
+		return path, nil
+	}
+	_, err = io.Copy(f, reader)
 	return path, err
 }
 

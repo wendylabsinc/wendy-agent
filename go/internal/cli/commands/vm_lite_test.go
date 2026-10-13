@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -17,6 +19,71 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestLiteSimulatorDownloadBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name                        string
+		manifestSize, contentLength int64
+		bodySize, wantRead          int64
+		wantError                   string
+		wantRequest                 bool
+	}{
+		{name: "known size", manifestSize: 1024, contentLength: 1024, bodySize: 1024, wantRead: 1024, wantRequest: true},
+		{name: "unknown size", contentLength: -1, bodySize: 1024, wantRead: 1024, wantRequest: true},
+		{name: "negative manifest", manifestSize: -1, wantError: "manifest size"},
+		{name: "oversized manifest", manifestSize: maxLiteFirmwareBytes + 1, wantError: "manifest size"},
+		{name: "oversized declared size", contentLength: maxLiteFirmwareBytes + 1, wantRequest: true, wantError: "Content-Length"},
+		{name: "declared size exceeds manifest", manifestSize: 1024, contentLength: 1025, wantRequest: true, wantError: "Content-Length"},
+		{name: "stream exceeds manifest", manifestSize: 1024, contentLength: -1, bodySize: 2048, wantRead: 1025, wantRequest: true, wantError: "download limit"},
+		{name: "stream exceeds absolute limit", contentLength: -1, bodySize: maxLiteFirmwareBytes + 1024, wantRead: maxLiteFirmwareBytes + 1, wantRequest: true, wantError: "download limit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			previous := http.DefaultTransport
+			t.Cleanup(func() { http.DefaultTransport = previous })
+			body := &liteDownloadBody{}
+			requested := false
+			http.DefaultTransport = cliUpdateTransport(func(req *http.Request) (*http.Response, error) {
+				requested = true
+				return &http.Response{
+					StatusCode: http.StatusOK, ContentLength: tc.contentLength,
+					Body: io.NopCloser(io.LimitReader(body, tc.bodySize)), Header: make(http.Header),
+				}, nil
+			})
+			path, err := downloadLiteSimulatorImage(context.Background(), dir, &imageInfo{
+				DownloadURL: "https://example.test/firmware.bin", ImageSize: tc.manifestSize,
+			})
+			if requested != tc.wantRequest || body.read != tc.wantRead {
+				t.Fatalf("requested=%v bytes read=%d; want requested=%v bytes read=%d", requested, body.read, tc.wantRequest, tc.wantRead)
+			}
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) || path != "" {
+					t.Fatalf("path=%q error=%v; want %q and no path", path, err, tc.wantError)
+				}
+				files, err := os.ReadDir(dir)
+				if err != nil || len(files) != 0 {
+					t.Fatalf("failed download left files: %v, %v", files, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			stat, err := os.Stat(path)
+			if err != nil || stat.Size() != tc.bodySize {
+				t.Fatalf("downloaded file: %v, %v", stat, err)
+			}
+		})
+	}
+}
+
+type liteDownloadBody struct{ read int64 }
+
+func (r *liteDownloadBody) Read(p []byte) (int, error) {
+	clear(p)
+	r.read += int64(len(p))
+	return len(p), nil
+}
 
 func liteTestImage() []byte {
 	b := bytes.Repeat([]byte{0xff}, 0x10000)
