@@ -182,9 +182,9 @@ func (m *chatModel) startEventTurn(prompt string) tea.Cmd {
 	return m.beginTurn(prompt, true)
 }
 
-// watchEventPrompt is an event turn's prompt (design §7.3). The label and the
-// camera name come from the model, the user or the device, so they are
-// JSON-quoted like the event itself. omitted counts the queued notices the cap
+// watchEventPrompt is an event turn's prompt (design §7.3). The label, the
+// classes and the camera name come from the model, the user or the device, so
+// they are JSON-quoted like the event itself. omitted counts the queued notices the cap
 // dropped.
 func (m *chatModel) watchEventPrompt(items []WatchNotice, omitted int) string {
 	ask := "\n"

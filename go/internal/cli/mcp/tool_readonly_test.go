@@ -37,7 +37,8 @@ func TestReadOnlyToolsAreAnExplicitList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, tool := range srv.ListTools() {
+	tools := srv.ListTools()
+	for name, tool := range tools {
 		hint := tool.Tool.Annotations.ReadOnlyHint
 		marked := hint != nil && *hint
 		listed := slices.Contains(readOnlyTools, name)
@@ -49,7 +50,7 @@ func TestReadOnlyToolsAreAnExplicitList(t *testing.T) {
 		}
 	}
 	for _, name := range readOnlyTools {
-		if _, ok := srv.ListTools()[name]; !ok {
+		if _, ok := tools[name]; !ok {
 			t.Errorf("readOnlyTools names %s, which is not a tool", name)
 		}
 	}
