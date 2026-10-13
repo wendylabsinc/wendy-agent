@@ -6,6 +6,7 @@ commands go back through WendyUnitreeRobotService.Command, which also stops a
 move after 500 ms unless it is refreshed.
 """
 
+import collections
 import logging
 import os
 import threading
@@ -45,6 +46,9 @@ ROBOT_TOPICS = [
     "rt/multiplestate",
     "rt/uslam/frontend/cloud_world_ds",
 ]
+# More robot topics to request, comma-separated; they appear as /go2/raw/<topic>.
+EXTRA_TOPICS = [t.strip() for t in os.environ.get("GO2_EXTRA_TOPICS", "").split(",") if t.strip()]
+RATE_LOG_SECONDS = 10
 MAX_FORWARD, MAX_LATERAL, MAX_YAW = 0.8, 0.5, 1.0  # the agent's limits, same as the simulator's
 # Response codes used by the Go2 simulator (go2_sim/native_commands.py).
 UNSUPPORTED, DENIED = 3203, 3205
@@ -128,6 +132,11 @@ class Bridge(Node):
         self.static_tf = StaticTransformBroadcaster(self)
         self.publish_mounts()
         self.decoder = None
+        # Messages per robot topic and voxel map timing, logged every RATE_LOG_SECONDS.
+        self.stats_lock = threading.Lock()
+        self.counts = collections.Counter()
+        self.voxel_times = []  # (arrival monotonic seconds, robot stamp)
+        self.create_timer(RATE_LOG_SECONDS, self.log_rates)
         self.pose = None  # (stamp, position, quaternion_xyzw) from the latest odometry
         self.create_subscription(Twist, "/cmd_vel", self.on_cmd_vel, qos)
         self.create_subscription(Request, "/api/sport/request", self.on_sport_request, 10)
@@ -138,7 +147,8 @@ class Bridge(Node):
         """Stream from the agent forever; reconnect when the robot or agent drops."""
         while rclpy.ok():
             try:
-                request = robot_pb.UnitreeStreamRequest(serial=self.serial, topics=ROBOT_TOPICS, video=True)
+                request = robot_pb.UnitreeStreamRequest(serial=self.serial, topics=ROBOT_TOPICS + EXTRA_TOPICS,
+                                                      video=True)
                 for message in self.robot.Stream(request):
                     if message.HasField("topic"):
                         self.on_topic(message.topic)
@@ -163,6 +173,10 @@ class Bridge(Node):
             topic, data, payload = convert.parse_envelope(m.data, m.binary)
         except (ValueError, KeyError, IndexError):
             return
+        with self.stats_lock:
+            self.counts[m.topic] += 1
+            if topic == "rt/utlidar/voxel_map_compressed":
+                self.voxel_times.append((time.monotonic(), (data or {}).get("stamp")))
         self.publish_raw(m.topic, m.data, m.binary)
         stamp = self.stamp(m.received_unix_nanos)
         if topic == "rt/lf/lowstate":
@@ -176,6 +190,18 @@ class Bridge(Node):
             msg.header.stamp = stamp
             msg.axes, msg.buttons = convert.joy(data or {})
             self.pubs["joy"].publish(msg)
+
+    def log_rates(self):
+        with self.stats_lock:
+            counts, self.counts = self.counts, collections.Counter()
+            voxels, self.voxel_times = self.voxel_times, []
+        rates = ", ".join(f"{t} {n / RATE_LOG_SECONDS:.1f}" for t, n in sorted(counts.items()))
+        log.info("robot messages per second: %s", rates or "none")
+        if len(voxels) > 1:
+            gaps = [b[0] - a[0] for a, b in zip(voxels, voxels[1:])]
+            stamps = [s for _, s in voxels if isinstance(s, (int, float))]
+            log.info("voxel maps: %d frames, %d distinct robot stamps, arrival gaps %s s, robot stamp gaps %s s",
+                     len(voxels), len(set(stamps)), spread(gaps), spread([b - a for a, b in zip(stamps, stamps[1:])]))
 
     def publish_raw(self, topic, data, binary):
         pub = self.raw_pubs.get(topic)
@@ -359,6 +385,12 @@ def cloud_message(points, stamp, frame_id):
     msg.row_step = 12 * len(points)
     msg.data = np.ascontiguousarray(points, dtype=np.float32).tobytes()
     return msg
+
+
+def spread(values):
+    if not values:
+        return "-"
+    return f"min {min(values):.3f} mean {sum(values) / len(values):.3f} max {max(values):.3f}"
 
 
 def find_serial(channel):

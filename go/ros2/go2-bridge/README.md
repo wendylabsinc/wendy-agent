@@ -24,7 +24,9 @@ wendy run --detach
 ```
 
 With one paired robot nothing else is needed; with several set
-`--env GO2_SERIAL=<serial>`. Check with `wendy device ros2 topics`,
+`--env GO2_SERIAL=<serial>`. `--env GO2_EXTRA_TOPICS=rt/a,rt/b` requests more
+robot topics, published as `/go2/raw/<topic>`. Every 10 s the log shows how many
+messages per second arrive per robot topic, and the voxel map timing. Check with `wendy device ros2 topics`,
 `wendy device ros2 hz /lowstate` or `wendy device foxglove serve`.
 
 ## Topics
