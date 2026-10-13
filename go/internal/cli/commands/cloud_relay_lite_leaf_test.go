@@ -219,3 +219,132 @@ func TestRequestLiteLeafUsesP256CSROverMLDSASession(t *testing.T) {
 		}
 	}
 }
+
+// liteIssuingSession is an OIDC session whose realm rotates refresh tokens and
+// whose pki-core issues a marked Lite leaf for a P-256 CSR (or refuses, 403).
+func liteIssuingSession(t *testing.T, refuse bool) (*config.AuthConfig, func() *config.Config, *int) {
+	t.Helper()
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	keyPEM, err := certs.GenerateMLDSAKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, err := operatorJWKThumbprint(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := "spiffe://wendy.sh/tenant/" + testOperatorTenant + "/operator/" + testOperatorSubject
+	issued := new(int)
+	var issuer string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			_ = json.NewEncoder(w).Encode(oidcProviderMetadata{Issuer: issuer, AuthorizationEndpoint: issuer + "/authorize", TokenEndpoint: issuer + "/token", JWKSURI: issuer + "/jwks"})
+		case "/jwks":
+			_ = json.NewEncoder(w).Encode(map[string]any{"keys": []oidcJWK{testES256JWK(authority, "authority")}})
+		case "/token":
+			_ = r.ParseForm()
+			next := map[string]string{"refresh-1": "refresh-2", "refresh-2": "refresh-3"}[r.Form.Get("refresh_token")]
+			claims := map[string]any{"iss": issuer, "aud": r.Form.Get("resource"), "sub": testOperatorSubject, "exp": time.Now().Add(time.Hour).Unix(), "cnf": map[string]string{"jkt": thumbprint}}
+			_ = json.NewEncoder(w).Encode(oidcTokenResponse{AccessToken: testES256Token(t, authority, "authority", claims), RefreshToken: next, ExpiresIn: 3600, TokenType: "DPoP"})
+		case "/v1/identity/certificate":
+			if refuse {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			body, _ := io.ReadAll(r.Body)
+			block, _ := pem.Decode(body)
+			csr, err := x509.ParseCertificateRequest(block.Bytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leafKey, ok := csr.PublicKey.(*ecdsa.PublicKey)
+			if !ok {
+				t.Fatal("Lite CSR is not P-256")
+			}
+			*issued++
+			// Self-signed by the CA stand-in, for the CSR's key.
+			tmpl := &x509.Certificate{SerialNumber: big.NewInt(9), NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, UnknownExtKeyUsage: []asn1.ObjectIdentifier{oidLiteOperator}}
+			u, _ := url.Parse(principal)
+			tmpl.URIs = []*url.URL{u}
+			der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, leafKey, authority)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = pem.Encode(w, &pem.Block{Type: "CERTIFICATE", Bytes: der})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	issuer = server.URL
+	t.Cleanup(server.Close)
+	primary := config.CertificateInfo{PemCertificate: testLeafPEM(t, key), PemPrivateKey: keyPEM, PrincipalURI: principal}
+	auth := &config.AuthConfig{
+		CloudDashboard: "https://cloud.example", CloudGRPC: "cloud.example:443",
+		OAuthIssuer: issuer, OAuthClientID: "wendy-cli", OAuthResource: "https://cloud.example/api",
+		PKIResource: "https://pki.example/identity", PKIEndpoint: issuer + "/v1/identity/certificate",
+		OAuthExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		APIKey:         "api-token", RefreshToken: "refresh-1", DPoPPrivateKey: keyPEM,
+		Certificates: []config.CertificateInfo{primary},
+	}
+	return auth, seedConfig(t, &config.Config{Auth: []config.AuthConfig{*auth}}), issued
+}
+
+func TestLiteOperatorCertificateIssuesAndPersists(t *testing.T) {
+	auth, reload, issued := liteIssuingSession(t, false)
+	primary := auth.Certificates[0]
+	cert, err := liteOperatorCertificate(context.Background(), auth, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkLiteOperatorLeaf(cert.PemCertificate); err != nil {
+		t.Fatal(err)
+	}
+	saved := reload().Auth[0]
+	if saved.LiteCertificate == "" || saved.LitePrivateKey == "" || saved.RefreshToken != "refresh-3" {
+		t.Fatalf("Lite leaf or rotated refresh token not persisted: %+v", saved)
+	}
+	if saved.Certificates[0].PemCertificate != primary.PemCertificate {
+		t.Fatal("Lite issuance replaced the primary")
+	}
+	// A fresh stored leaf is reused; renew asks pki-core again.
+	if _, err := liteOperatorCertificate(context.Background(), auth, false); err != nil || *issued != 1 {
+		t.Fatalf("stored leaf not reused: issued=%d err=%v", *issued, err)
+	}
+}
+
+func TestLiteOperatorCertificateKeepsRotatedTokenOnRefusal(t *testing.T) {
+	auth, reload, _ := liteIssuingSession(t, true)
+	if _, err := liteOperatorCertificate(context.Background(), auth, false); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("expected pki-core's refusal, got %v", err)
+	}
+	if saved := reload().Auth[0]; saved.RefreshToken != "refresh-2" || saved.LiteCertificate != "" {
+		t.Fatalf("refusal lost the rotated refresh token or stored a leaf: %+v", saved)
+	}
+}
+
+// pki-core caps the leaf at the primary's notAfter; a leaf already at that cap
+// is as long as a new one would be, so it is reused rather than re-requested.
+func TestSessionLiteCertificateReusesLeafCappedByPrimary(t *testing.T) {
+	principal := "spiffe://wendy.sh/tenant/" + liteTestTenant + "/operator/test"
+	keyPEM, key := newP256KeyPEM(t)
+	expiry := time.Now().Add(10 * time.Minute).Truncate(time.Second)
+	auth := liteTestAuth("cloud.example:443")
+	auth.Certificates[0].PemCertificate = liteLeafPEM(t, key, principal, expiry, false)
+	auth.LiteCertificate, auth.LitePrivateKey = liteLeafPEM(t, key, principal, expiry, true), keyPEM
+	if _, ok := sessionLiteCertificate(auth, liteRenewMargin); !ok {
+		t.Fatal("leaf at the primary's notAfter was treated as stale")
+	}
+	auth.Certificates[0].PemCertificate = liteLeafPEM(t, key, principal, expiry.Add(time.Hour), false)
+	if _, ok := sessionLiteCertificate(auth, liteRenewMargin); ok {
+		t.Fatal("short leaf under a longer primary was reused")
+	}
+}

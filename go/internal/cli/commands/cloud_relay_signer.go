@@ -153,14 +153,21 @@ func liteOperatorCertificate(ctx context.Context, auth *config.AuthConfig, renew
 }
 
 // sessionLiteCertificate returns the stored Lite leaf when it belongs to the
-// session's operator and stays valid for at least margin.
+// session's operator and stays valid for at least margin, or already reaches
+// the primary's notAfter (pki-core caps it there, so a new one is no longer).
 func sessionLiteCertificate(auth *config.AuthConfig, margin time.Duration) (config.CertificateInfo, bool) {
 	if auth.LiteCertificate == "" || auth.LitePrivateKey == "" || len(auth.Certificates) == 0 {
 		return config.CertificateInfo{}, false
 	}
 	leafPEM, chainPEM, leaf, err := splitCertificateChainPEM([]byte(auth.LiteCertificate))
-	if err != nil || time.Until(leaf.NotAfter) <= margin {
+	if err != nil || !time.Now().Before(leaf.NotAfter) {
 		return config.CertificateInfo{}, false
+	}
+	if time.Until(leaf.NotAfter) <= margin {
+		_, _, primary, err := splitCertificateChainPEM([]byte(auth.Certificates[0].PemCertificate))
+		if err != nil || leaf.NotAfter.Before(primary.NotAfter) {
+			return config.CertificateInfo{}, false
+		}
 	}
 	principal, ok := certs.TenantPrincipalFromCert(leaf)
 	if !ok || principal != auth.Certificates[0].PrincipalURI {

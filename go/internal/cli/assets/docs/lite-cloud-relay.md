@@ -17,7 +17,8 @@ Lite uses ES256 operator proofs and TLS 1.3 with P-256 identities. An operator
 login holds two certificates for one SPIFFE principal: the ML-DSA primary, used
 for every other Cloud call, and a P-256 Lite leaf, used only on this lane for
 Lite proof signing and device TLS. The CLI never presents the primary here. When
-the session has no Lite leaf, or it expires within 30 minutes, the CLI requests
+the session has no Lite leaf, or it expires within 30 minutes before the primary
+does, the CLI requests
 one from pki-core's identity endpoint with a fresh P-256 key, proved by the
 ML-DSA session. pki-core marks the leaf with EKU `1.3.6.1.4.1.65441.1.9` and caps
 its lifetime at the primary's. If Cloud refuses the Lite leaf, the CLI requests a

@@ -531,18 +531,23 @@ func TestConnectClientReportsCloudDialError(t *testing.T) {
 }
 
 func TestConnectClientRenewsLiteLeafOnceWhenCloudRefusesIt(t *testing.T) {
-	var renews []bool
-	old := CloudRelayDialer
-	t.Cleanup(func() { CloudRelayDialer = old })
-	CloudRelayDialer = func(_ context.Context, _ models.ExternalDevice, renew bool) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
-		renews = append(renews, renew)
-		return nil, nil, liteclient.RelayOptions{}, status.Error(codes.PermissionDenied, "invalid Lite principal request")
-	}
-	p := &MicroWendyProvider{}
-	_, err := p.connectClient(context.Background(), models.ExternalDevice{
-		ConnectionInfo: map[string]string{"type": "Cloud", "assetId": "0b6f7a52-5d1e-4c3b-9a8e-2f4d6c8b1a3e"},
-	})
-	if status.Code(err) != codes.PermissionDenied || !slices.Equal(renews, []bool{false, true}) {
-		t.Fatalf("renews = %v, err = %v; want one renewal then the refusal", renews, err)
+	for message, want := range map[string][]bool{
+		"invalid Lite principal request": {false, true},
+		"missing tunnel:connect":         {false},
+	} {
+		var renews []bool
+		old := CloudRelayDialer
+		t.Cleanup(func() { CloudRelayDialer = old })
+		CloudRelayDialer = func(_ context.Context, _ models.ExternalDevice, renew bool) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error) {
+			renews = append(renews, renew)
+			return nil, nil, liteclient.RelayOptions{}, status.Error(codes.PermissionDenied, message)
+		}
+		p := &MicroWendyProvider{}
+		_, err := p.connectClient(context.Background(), models.ExternalDevice{
+			ConnectionInfo: map[string]string{"type": "Cloud", "assetId": "0b6f7a52-5d1e-4c3b-9a8e-2f4d6c8b1a3e"},
+		})
+		if status.Code(err) != codes.PermissionDenied || !slices.Equal(renews, want) {
+			t.Errorf("%q: renews = %v, err = %v; want %v", message, renews, err, want)
+		}
 	}
 }
