@@ -216,6 +216,28 @@ func (s *realsenseSource) Open(ctx context.Context, opts framesource.Options) (f
 	}
 	st.ctx, st.cancel = context.WithCancel(context.WithoutCancel(ctx))
 
+	// Depth first: it warms up (S_FMT, buffers, STREAMON) while the colour
+	// pipeline starts, so the first colour frame usually has a partner
+	// waiting. Absence of depth support is honest, not fatal.
+	if s.cam.Model != "" && cal.DepthScaleM > 0 {
+		dw, dh := depthModeForOpts(opts)
+		if di, err := cal.DepthIntrinsicsFor(dw, dh); err == nil {
+			st.depthIntrin, st.depthEnabled = di, true
+			fps := opts.Framerate
+			if fps == 0 {
+				fps = 30
+			}
+			// One full frame interval: receipt clocks on the two paths differ
+			// by pipeline latency, and existence of a pair is what the window
+			// gates — depth arrives every interval, so this always pairs once
+			// both captures flow.
+			st.pairWindow = time.Second / time.Duration(fps)
+			st.warmupUntil = time.Now().Add(depthWarmup)
+			st.depthDone = make(chan struct{})
+			go st.runDepth(dw, dh, fps)
+		}
+	}
+
 	// Colour: join the shared hub as a raw subscriber — the same path a
 	// `camera view --raw` takes, so one open of the node serves everyone.
 	req := &agentpb.StreamVideoRequest{
@@ -251,24 +273,25 @@ func (s *realsenseSource) Open(ctx context.Context, opts framesource.Options) (f
 		return nil, fmt.Errorf("no factory colour model for %dx%d: %w", colourW, colourH, err)
 	}
 
-	// Depth, when this camera supports it and the units are known. Absence is
-	// honest: the negotiated descriptor will not promise ALIGNED_DEPTH, and
-	// the service refuses subscribers that required it.
-	if s.cam.Model != "" && cal.DepthScaleM > 0 {
-		dw, dh := depthModeFor(colourW, colourH)
-		if di, err := cal.DepthIntrinsicsFor(dw, dh); err == nil {
-			st.depthIntrin, st.depthEnabled = di, true
-			fps := opts.Framerate
-			if fps == 0 {
-				fps = 30
-			}
-			st.pairWindow = time.Second / time.Duration(2*fps)
-			st.depthDone = make(chan struct{})
-			go st.runDepth(dw, dh, fps)
-		}
-	}
 	return st, nil
 }
+
+// depthModeForOpts picks the depth mode for the colour geometry a subscriber
+// asked for, defaulting to the 16:9 default mode.
+func depthModeForOpts(opts framesource.Options) (uint32, uint32) {
+	w, h := uint32(defaultColourWidth), uint32(defaultColourHeight)
+	if opts.Width != 0 && opts.Height != 0 {
+		w, h = opts.Width, opts.Height
+	}
+	return depthModeFor(w, h)
+}
+
+// depthWarmup bounds how long the first frames wait for the depth capture to
+// produce its first partner. Within it, a colour frame with no pair is
+// SKIPPED rather than published depth-less: publishing it would end every
+// subscriber that required depth over a startup race rather than a fact
+// about the camera.
+const depthWarmup = 3 * time.Second
 
 type realsenseStream struct {
 	source *realsenseSource
@@ -287,6 +310,7 @@ type realsenseStream struct {
 	depthIntrin  realsense.Intrinsics
 	depthEnabled bool
 	pairWindow   time.Duration
+	warmupUntil  time.Time
 	depthDone    chan struct{}
 
 	pending *videoFrame // the first frame, consumed by the first Next
@@ -418,6 +442,11 @@ func (st *realsenseStream) Next(ctx context.Context) (*agentpbv2.CalibratedFrame
 		depth, err := st.pairDepth(frame.tsNs)
 		if err != nil {
 			return nil, err
+		}
+		if depth == nil && time.Now().Before(st.warmupUntil) {
+			// Startup race, not a camera fact: wait for the partner.
+			st.frameID--
+			return st.Next(ctx)
 		}
 		if depth != nil {
 			aligned, err := st.cal.AlignFrame(depth, st.depthIntrin, st.colourIntrin)
