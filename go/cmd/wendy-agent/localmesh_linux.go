@@ -77,11 +77,12 @@ func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmes
 			logger.Error("net service catalog unavailable", zap.Error(err))
 		}
 		sharing.Activate(runCtx, node)
-		if !cfg.NAN && !cfg.BLE {
+		if !cfg.NAN && !cfg.BLE && !cfg.Ethernet && !cfg.InfrastructureWiFi {
 			return
 		}
 		providerCtx, cancel := context.WithCancel(runCtx)
 		stopProviders = cancel
+		selection := localmesh.NewPeerSelection(node.Snapshot)
 		start := func(name string, run func(context.Context) error) {
 			providersDone.Add(1)
 			go func() {
@@ -99,12 +100,16 @@ func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmes
 			}()
 		}
 		if cfg.NAN {
-			provider := nanprovider.Provider{Credentials: node.Credentials, Node: node, Logger: logger}
+			provider := nanprovider.Provider{Credentials: node.Credentials, Node: node, Selection: selection, Logger: logger}
 			start("NAN", provider.Run)
 		}
 		if cfg.BLE {
-			ble := bleprovider.Config{Credentials: node.Credentials, Node: node, NetworkName: fmt.Sprintf("tenant:%s:default", node.Credentials.Device.Tenant()), Logger: logger}
+			ble := bleprovider.Config{Credentials: node.Credentials, Node: node, Selection: selection, NetworkName: fmt.Sprintf("tenant:%s:default", node.Credentials.Device.Tenant()), Logger: logger}
 			start("BLE", func(ctx context.Context) error { return bleprovider.Run(ctx, ble) })
+		}
+		if cfg.Ethernet || cfg.InfrastructureWiFi {
+			lan := localmesh.LANConfig{Credentials: node.Credentials, Node: node, Ethernet: cfg.Ethernet, InfrastructureWiFi: cfg.InfrastructureWiFi, Selection: selection, Logger: logger}
+			start("LAN", func(ctx context.Context) error { return localmesh.RunLAN(ctx, lan) })
 		}
 	})
 }

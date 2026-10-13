@@ -167,6 +167,45 @@ func TestAdvertisementFreshnessTracksLiveMeshAmongOtherAdvertisements(t *testing
 	}
 }
 
+func TestStaleBlueZCacheCannotRefreshRadioSelection(t *testing.T) {
+	uuid := ServiceUUID(testTenant)
+	adv, _ := NewAdvertisement(lowDevice, "field", DefaultPSM)
+	raw, _ := adv.MarshalBinary()
+	path := dbus.ObjectPath("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01")
+	props := meshDeviceProps(uuid, raw)
+	objects := managedObjects{path: {deviceInterface: props}}
+	selection := localmesh.NewPeerSelection(func() localmesh.NodeSnapshot {
+		return localmesh.NodeSnapshot{Links: []localmesh.PeerLink{{Device: peerFixture, Cost: 512}}}
+	})
+	r := &runtime{cfg: Config{NetworkName: "field", Credentials: &localmesh.Credentials{Device: selfFixture}, Selection: selection}, uuid: uuid, freshness: newAdvertisementFreshness("/org/bluez/hci0", uuid, "field", selfFixture)}
+	base := time.Now()
+	if got := r.discoveredCandidates(objects, base); len(got) != 0 {
+		t.Fatalf("cached peer before live advertisement: %+v", got)
+	}
+	if !r.discovery.lastMeshSignal.IsZero() {
+		t.Fatal("cached service data refreshed discovery liveness")
+	}
+	if !selection.AllowRadio(peerFixture, localmesh.RadioBLE) {
+		t.Fatal("stale cached BLE peer suppressed an otherwise useful second radio")
+	}
+	r.freshness.observe(path, map[string]dbus.Variant{"ServiceData": props["ServiceData"]}, base)
+	if got := r.discoveredCandidates(objects, base); len(got) != 1 {
+		t.Fatalf("fresh BLE peer rejected: %+v", got)
+	}
+	if !r.discovery.lastMeshSignal.Equal(base) {
+		t.Fatal("live service data did not refresh discovery liveness")
+	}
+	if !selection.AllowRadio(peerFixture, localmesh.RadioBLE) {
+		t.Fatal("unverified hint influenced identity-based radio selection")
+	}
+	if got := r.discoveredCandidates(objects, base.Add(advertisementFreshnessTTL)); len(got) != 0 {
+		t.Fatalf("expired BLE peer retained: %+v", got)
+	}
+	if !r.discovery.lastMeshSignal.Equal(base) {
+		t.Fatal("polling expired BlueZ cache refreshed discovery liveness")
+	}
+}
+
 func TestAdvertisementSignalsAndScansConcurrent(t *testing.T) {
 	serviceUUID := ServiceUUID(testTenant)
 	adv, _ := NewAdvertisement(lowDevice, "field", DefaultPSM)

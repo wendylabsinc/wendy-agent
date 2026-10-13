@@ -22,9 +22,10 @@ type Config struct {
 	Credentials *localmesh.Credentials
 	Node        StreamNode
 	NetworkName string
-	PSM         uint16 // zero selects DefaultPSM
-	TargetPeers int    // zero selects DefaultTargetPeers
-	AdapterPath string // empty selects the first advertising-capable BlueZ adapter
+	PSM         uint16                   // zero selects DefaultPSM
+	TargetPeers int                      // zero selects DefaultTargetPeers
+	AdapterPath string                   // empty selects the first advertising-capable BlueZ adapter
+	Selection   *localmesh.PeerSelection // shared authenticated LAN and radio diversity policy
 	Logger      *zap.Logger
 	// Status receives local setup readiness and discovery failures/recovery,
 	// not peer reachability. Discovery failures preserve established links.

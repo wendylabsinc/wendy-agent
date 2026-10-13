@@ -15,7 +15,7 @@ func TestLocalMeshFlagsPreservePresenceAndIndependentCarriers(t *testing.T) {
 	if _, err := localMeshRequest(cmd); err == nil {
 		t.Fatal("accepted empty partial update")
 	}
-	if err := cmd.ParseFlags([]string{"--participate=true", "--share-uplink=false", "--nan=false", "--ble=true"}); err != nil {
+	if err := cmd.ParseFlags([]string{"--participate=true", "--share-uplink=false", "--nan=false", "--ble=true", "--ethernet=false", "--infrastructure-wifi=true"}); err != nil {
 		t.Fatal(err)
 	}
 	req, err := localMeshRequest(cmd)
@@ -23,7 +23,8 @@ func TestLocalMeshFlagsPreservePresenceAndIndependentCarriers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if req.Participate == nil || !*req.Participate || req.ShareUplink == nil || *req.ShareUplink ||
-		req.Nan == nil || *req.Nan || req.Ble == nil || !*req.Ble || req.Roam != nil {
+		req.Nan == nil || *req.Nan || req.Ble == nil || !*req.Ble || req.Ethernet == nil || *req.Ethernet ||
+		req.InfrastructureWifi == nil || !*req.InfrastructureWifi || req.Roam != nil {
 		t.Fatalf("partial settings lost or carriers coupled: %+v", req)
 	}
 	device := &cobra.Command{Use: "device"}

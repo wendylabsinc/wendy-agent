@@ -52,6 +52,9 @@ type cheaperLinkChecker interface {
 }
 
 func (r *runtime) hasCheaperLink(device meshid.Device) bool {
+	if r.cfg.Selection != nil {
+		return !r.cfg.Selection.AllowRadio(device, localmesh.RadioBLE)
+	}
 	checker, ok := r.cfg.Node.(cheaperLinkChecker)
 	return ok && checker.HasCheaperLink(device, LinkCost)
 }
@@ -442,6 +445,9 @@ func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 		_ = secure.Close()
 		return
 	}
+	if r.cfg.Selection != nil {
+		r.cfg.Selection.Connected(peer, localmesh.RadioBLE)
+	}
 	r.cfg.Logger.Info("BLE inbound TLS established", zap.Stringer("peer", peer.UUID()), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Bool("resumed", state.DidResume))
 	if r.hasCheaperLink(peer) && (r.confirmCheaperLink(ctx, nil, peer) || ctx.Err() != nil) {
 		r.cfg.Logger.Debug("BLE closing inbound CoC on cheaper-link decision", zap.Stringer("peer", peer.UUID()))
@@ -627,6 +633,17 @@ func (r *runtime) discoveredCandidates(objects managedObjects, at time.Time) []c
 	if len(newlySeen) > 0 {
 		r.discovery.observed(at)
 	}
+	if r.cfg.Selection != nil {
+		for _, path := range newlySeen {
+			for _, peer := range peers {
+				if peer.path == path {
+					if device, ok := r.knownCandidate(peer); ok {
+						r.cfg.Selection.Seen(device, localmesh.RadioBLE)
+					}
+				}
+			}
+		}
+	}
 	return peers
 }
 
@@ -784,6 +801,9 @@ func (r *runtime) dialLink(ctx context.Context, peer candidate) {
 	}
 	delete(r.pending, peer.key())
 	r.mu.Unlock()
+	if r.cfg.Selection != nil {
+		r.cfg.Selection.Connected(device, localmesh.RadioBLE)
+	}
 	r.cfg.Logger.Info("BLE outbound TLS established", zap.String("radio", peer.address), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Bool("resumed", secure.ConnectionState().DidResume))
 	if r.hasCheaperLink(device) && (r.confirmCheaperLink(ctx, nil, device) || ctx.Err() != nil) {
 		r.cfg.Logger.Debug("BLE closing outbound CoC on cheaper-link decision", zap.String("radio", peer.address))
