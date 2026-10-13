@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,13 @@ func TestDefaultRouteInterfaces(t *testing.T) {
 	}
 	if got, err := defaultRouteInterfaces(ipv4, filepath.Join(dir, "missing")); err != nil || !got["wlan0"] {
 		t.Errorf("a missing IPv6 table should be ignored: %v, %v", got, err)
+	}
+	if _, err := defaultRouteInterfaces(ipv4, dir); err == nil {
+		t.Error("an unreadable IPv6 table should be an error")
+	}
+	must(t, os.WriteFile(ipv6, []byte(strings.Repeat("0", 70_000)), 0o600))
+	if _, err := defaultRouteInterfaces(ipv4, ipv6); err == nil {
+		t.Error("an unreadable IPv6 table should be an error")
 	}
 }
 

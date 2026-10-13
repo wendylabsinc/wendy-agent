@@ -68,16 +68,24 @@ func defaultRouteInterfaces(ipv4Path, ipv6Path string) (map[string]bool, error) 
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	if ipv6, err := os.Open(ipv6Path); err == nil {
-		defer ipv6.Close()
-		scanner := bufio.NewScanner(ipv6)
-		for scanner.Scan() {
-			// Destination PrefixLen Source SourcePrefixLen NextHop Metric RefCnt Use Flags Iface
-			fields := strings.Fields(scanner.Text())
-			if len(fields) >= 10 && fields[0] == strings.Repeat("0", 32) && fields[1] == "00" && fields[9] != "lo" {
-				uplinks[fields[9]] = true
-			}
+	ipv6, err := os.Open(ipv6Path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
 		}
+		return uplinks, nil
+	}
+	defer ipv6.Close()
+	scanner = bufio.NewScanner(ipv6)
+	for scanner.Scan() {
+		// Destination PrefixLen Source SourcePrefixLen NextHop Metric RefCnt Use Flags Iface
+		fields := strings.Fields(scanner.Text())
+		if len(fields) >= 10 && fields[0] == strings.Repeat("0", 32) && fields[1] == "00" && fields[9] != "lo" {
+			uplinks[fields[9]] = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 	return uplinks, nil
 }
