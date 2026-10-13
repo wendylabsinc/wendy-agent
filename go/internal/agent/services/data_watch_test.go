@@ -70,7 +70,13 @@ func TestDocumentLeases(t *testing.T) {
 	if _, ok := leases.renew("w", time.Minute); ok {
 		t.Fatal("renew revived a lapsed lease")
 	}
+	if !leases.lapsed("w") || leases.lapsed("never-leased") {
+		t.Fatal("lapsed must be true for a passed deadline and false for no deadline")
+	}
 	leases.extend("x", time.Minute)
+	if leases.lapsed("x") {
+		t.Fatal("a live lease counts as lapsed")
+	}
 	leases.forget("x")
 	if _, ok := leases.deadline("x"); ok {
 		t.Fatal("forget kept the deadline")

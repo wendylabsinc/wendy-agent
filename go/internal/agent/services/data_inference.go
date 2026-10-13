@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +35,8 @@ func inferenceJobKey(name string) string { return "inference/" + name }
 type wantedInference struct {
 	campaign data.Campaign
 	document bool
+	// ownerRef is a document's owner reference, or empty.
+	ownerRef string
 }
 
 type campaignInferenceManager struct {
@@ -56,6 +59,7 @@ type campaignInferenceJob struct {
 	// no campaign capture, no campaign notifications.
 	key      string
 	document bool
+	ownerRef string
 	// audience is a document job's current record audience, replaced (never
 	// mutated) under mu by run and read by the stream goroutines.
 	audience       map[string]bool
@@ -144,7 +148,7 @@ func (m *campaignInferenceManager) reconcile(ctx context.Context) {
 			continue
 		}
 		if document.IsEnabled() {
-			wanted[inferenceJobKey(stored.Name)] = wantedInference{campaign: document.Campaign(stored.Revision), document: true}
+			wanted[inferenceJobKey(stored.Name)] = wantedInference{campaign: document.Campaign(stored.Revision), document: true, ownerRef: document.Owner}
 		}
 	}
 	m.mu.Lock()
@@ -177,7 +181,7 @@ func (m *campaignInferenceManager) reconcile(ctx context.Context) {
 			continue
 		}
 		child, cancel := context.WithCancel(ctx)
-		job := &campaignInferenceJob{owner: m, key: key, document: want.document, campaign: want.campaign, cancel: cancel, done: make(chan struct{}), queue: make(chan DetectionNotification, 16), generations: map[string]uint64{}, status: data.InferenceStatus{State: "loading", Sources: map[string]string{}}}
+		job := &campaignInferenceJob{owner: m, key: key, document: want.document, ownerRef: want.ownerRef, campaign: want.campaign, cancel: cancel, done: make(chan struct{}), queue: make(chan DetectionNotification, 16), generations: map[string]uint64{}, status: data.InferenceStatus{State: "loading", Sources: map[string]string{}}}
 		m.jobs[key] = job
 		go job.supervise(child)
 	}
@@ -456,6 +460,9 @@ func (j *campaignInferenceJob) stream(ctx context.Context, session inference.Ses
 				if err != nil {
 					break
 				}
+				if j.ownerLapsed() {
+					continue
+				}
 				if err := j.owner.service.manager.RecordModelInputFor(data.ModelInput{AppID: j.appID(), Model: j.campaign.Inference.Model, SourceID: sourceID, SampleID: sample.SampleID, BootNanos: sample.BootNanos, UncertaintyNanos: sample.UncertaintyNanos, PayloadBytes: len(sample.Payload), Encoding: sample.Encoding, SelfContained: sample.SelfContained, DroppedBefore: sample.DroppedBefore}, j.modelInputAudience()); err != nil {
 					j.owner.service.manager.Warnf("recording campaign model input: %v", err)
 				}
@@ -550,6 +557,9 @@ func inferenceNotification(campaign data.Campaign, source string, detections []i
 // collections that trigger on its event, and storing them never holds up a
 // notification: watches are told before anything is written.
 func (j *campaignInferenceJob) documentResult(state *inferencePresence, sourceID string, detections []inference.Detection, dropped uint64, audience map[string]bool) {
+	if j.ownerLapsed() {
+		return
+	}
 	service := j.owner.service
 	appID := j.appID()
 	attributes := map[string]any{"inference": j.campaign.Name, "source_id": sourceID, "model_version": j.campaign.Inference.Revision, "detections": detections,
@@ -571,6 +581,14 @@ func (j *campaignInferenceJob) documentResult(state *inferencePresence, sourceID
 	if _, err := service.manager.RecordApplicationFor(appID, record, audience, true); err != nil {
 		service.manager.Warnf("inference %q event: %v", j.campaign.Name, err)
 	}
+}
+
+// ownerLapsed reports whether the job belongs to a watch whose lease has
+// lapsed. The watch may live a few seconds longer, until the expiry pass, but
+// its client has lost it, so the job writes nothing meanwhile (spec §6.3).
+func (j *campaignInferenceJob) ownerLapsed() bool {
+	name, ok := strings.CutPrefix(j.ownerRef, "watch/")
+	return j.document && ok && j.owner.service.leases.lapsed(name)
 }
 
 // appID is the application id every record of this job carries.

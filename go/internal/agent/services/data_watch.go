@@ -72,6 +72,15 @@ func (l *documentLeases) expired(name string) bool {
 	return !ok || !l.clock().Before(deadline)
 }
 
+// lapsed reports whether name has a deadline that has passed. Unlike expired,
+// a name without a deadline has not lapsed: an unleased owner has none.
+func (l *documentLeases) lapsed(name string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	deadline, ok := l.deadlines[name]
+	return ok && !l.clock().Before(deadline)
+}
+
 func (l *documentLeases) deadline(name string) (time.Time, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

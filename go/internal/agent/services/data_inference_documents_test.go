@@ -212,3 +212,45 @@ func TestInferenceDocumentModelInputsUseItsAppIDAndAudience(t *testing.T) {
 		t.Fatalf("an unrelated episode received model inputs: %s", ledgers("other"))
 	}
 }
+
+func TestOwnedInferenceWritesNothingOnceItsOwnersLeaseLapsed(t *testing.T) {
+	service, factory, sender := newDocumentTestService(t)
+	clock := newFakeClock()
+	service.leases.now = clock.Now
+	startDocumentTestService(t, service, factory, sender)
+	if _, err := service.CampaignDeploy(context.Background(), &agentpbv2.DataCampaignDeployRequest{CampaignYaml: []byte(testClipsCollection)}); err != nil {
+		t.Fatal(err)
+	}
+	mustApply(t, service, watchYAML("chat-1", "front-door", "lease: 15s\n"))
+	stored := mustApply(t, service, ownedInference("front-door", "watch/chat-1"))
+	session := receiveInference(t, factory.sessions)
+	input := receiveInference(t, session.inputs)
+	eventually(t, "the inference job to run", func() bool {
+		return service.inference.snapshot(inferenceJobKey("front-door"), stored.GetRevision()).State == "running"
+	})
+
+	clock.Add(16 * time.Second) // the lease lapsed; the 5 s expiry pass has not removed the watch
+	session.results <- personResult(input)
+	// The job handles results in order, so once it has handled the marker it
+	// has finished the frame before it.
+	session.results <- inference.Result{Type: "source_error", SourceID: input.SourceID, Generation: input.Generation, Error: "marker"}
+	eventually(t, "the job to pass the lapsed frame", func() bool {
+		return service.inference.snapshot(inferenceJobKey("front-door"), stored.GetRevision()).Sources[input.SourceID] == "marker"
+	})
+	if slices.Contains(service.manager.ActiveEpisodeKeys(), "clips") {
+		t.Fatal("a lapsed owner's inference wrote an event that triggered capture")
+	}
+	if entries := journal(t, service, "chat-1"); len(entries) != 0 {
+		t.Fatalf("a lapsed owner's inference notified its watch: %+v", entries)
+	}
+
+	// Control: the same frame is processed once the lease is live again.
+	service.leases.extend("chat-1", time.Minute)
+	session.results <- personResult(input)
+	eventually(t, "the live lease's event to trigger capture", func() bool {
+		return slices.Contains(service.manager.ActiveEpisodeKeys(), "clips")
+	})
+	if entries := journal(t, service, "chat-1"); len(entries) != 1 {
+		t.Fatalf("journal = %+v; want only the live frame's entry", entries)
+	}
+}
