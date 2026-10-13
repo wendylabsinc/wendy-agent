@@ -131,10 +131,9 @@ func meshPortMasqueradeArgs(containerIP string, containerPort uint16) []string {
 // "dial tcp 127.0.0.1:9090: connect: no route to host" pointing at a
 // long-gone bridge IP even though the CURRENT container's own forward had
 // just been installed correctly).
-// containerIP restricts cleanup in the shared POSTROUTING chain to the exact
-// TCP hairpin signature this code installs. Empty means the dedicated Wendy
-// ingress chain, where an exact host-port match identifies stale forwards.
-func flushStaleRulesForPort(chain string, port uint16, containerIP string) error {
+// containerIP restricts shared-chain cleanup to the complete owned hairpin
+// signature. The dedicated ingress chain matches exact port and protocol.
+func flushStaleRulesForPort(chain string, port uint16, containerIP, protocol string) error {
 	out, err := meshPortsIPTables("-t", "nat", "-S", chain)
 	if err != nil {
 		return fmt.Errorf("iptables -t nat -S %s: %w (%s)", chain, err, strings.TrimSpace(string(out)))
@@ -145,10 +144,11 @@ func flushStaleRulesForPort(chain string, port uint16, containerIP string) error
 			return fmt.Errorf("parsing iptables rule in %s: %w", chain, err)
 		}
 		if len(fields) < 2 || fields[0] != "-A" || fields[1] != chain ||
-			ingressRuleOption(fields, "--dport") != strconv.Itoa(int(port)) {
+			ingressRuleOption(fields, "--dport") != strconv.Itoa(int(port)) ||
+			ingressRuleOption(fields, "-p") != protocol {
 			continue
 		}
-		if containerIP != "" && !ownedIngressMasquerade(fields, containerIP, port) {
+		if containerIP != "" && !ownedIngressMasquerade(fields, containerIP, port, protocol) {
 			continue
 		}
 		fields[0] = "-D"
@@ -169,8 +169,8 @@ func ingressRuleOption(fields []string, flag string) string {
 	return ""
 }
 
-func ownedIngressMasquerade(fields []string, containerIP string, port uint16) bool {
-	want := map[string]string{"-s": "127.0.0.1/32", "-d": containerIP + "/32", "-p": "tcp",
+func ownedIngressMasquerade(fields []string, containerIP string, port uint16, protocol string) bool {
+	want := map[string]string{"-s": "127.0.0.1/32", "-d": containerIP + "/32", "-p": protocol,
 		"--dport": strconv.Itoa(int(port)), "-j": "MASQUERADE"}
 	seen := make(map[string]bool)
 	for i := 2; i < len(fields); i += 2 {
@@ -182,7 +182,7 @@ func ownedIngressMasquerade(fields []string, containerIP string, port uint16) bo
 			return false
 		}
 		seen[flag] = true
-		if flag == "-m" && value == "tcp" {
+		if flag == "-m" && value == protocol {
 			continue
 		}
 		expected, ok := want[flag]
@@ -198,6 +198,56 @@ func ownedIngressMasquerade(fields []string, containerIP string, port uint16) bo
 	return true
 }
 
+func iptablesOption(fields []string, option string) string {
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] == option {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+// FlushOrphanMeshPort removes a forward for the opposite protocol only when
+// the ingress registry has already proved that no live app owns that protocol
+// and host port. This handles a redeploy that changes TCP to UDP (or back)
+// after a stale task left its previous rule behind. The caller serializes the
+// registry check and this cleanup with other app ingress setup.
+func FlushOrphanMeshPort(hostPort uint16, protocol string) error {
+	if hostPort == 0 || protocol != "tcp" && protocol != "udp" {
+		return fmt.Errorf("invalid orphan mesh port cleanup")
+	}
+	out, err := meshPortsIPTables("-t", "nat", "-S", MeshPortsChainName)
+	if err != nil {
+		return fmt.Errorf("listing mesh ingress forwards: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "-A" || fields[1] != MeshPortsChainName ||
+			iptablesOption(fields, "-p") != protocol ||
+			iptablesOption(fields, "--dport") != strconv.Itoa(int(hostPort)) ||
+			iptablesOption(fields, "-d") != "127.0.0.1/32" ||
+			iptablesOption(fields, "-j") != "DNAT" {
+			continue
+		}
+		target := iptablesOption(fields, "--to-destination")
+		ip, portText, err := net.SplitHostPort(target)
+		if err != nil || net.ParseIP(ip).To4() == nil {
+			return fmt.Errorf("invalid Wendy mesh ingress target %q", target)
+		}
+		portValue, err := strconv.ParseUint(portText, 10, 16)
+		if err != nil || portValue == 0 {
+			return fmt.Errorf("invalid Wendy mesh ingress target port %q", target)
+		}
+		if delOut, err := meshPortsIPTables(append([]string{"-t", "nat", "-D", MeshPortsChainName}, fields[2:]...)...); err != nil {
+			return fmt.Errorf("removing orphan mesh ingress: %w (%s)", err, strings.TrimSpace(string(delOut)))
+		}
+		if err := flushStaleRulesForPort("POSTROUTING", uint16(portValue), "-d "+ip+"/32", protocol); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // AddIngressPortForward idempotently installs the DNAT rule that lets
 // a host-local 127.0.0.1:hostPort dial reach containerIP:containerPort
 // instead, plus the companion POSTROUTING MASQUERADE rule the hairpinned
@@ -206,13 +256,13 @@ func ownedIngressMasquerade(fields []string, containerIP string, port uint16) bo
 // flushed first (see flushStaleRulesForPort) so exactly one forward for this
 // port is ever active.
 func AddIngressPortForward(hostPort uint16, containerIP string, containerPort uint16) error {
-	if err := flushStaleRulesForPort(MeshPortsChainName, hostPort, ""); err != nil {
+	if err := flushStaleRulesForPort(MeshPortsChainName, hostPort, "", "tcp"); err != nil {
 		return fmt.Errorf("flushing stale ingress forwards for port %d: %w", hostPort, err)
 	}
 	// A different app may publish the same container port behind a different
 	// host port. Its hairpin rule must remain in place. Only clear a stale
 	// rule for this exact container IP and port.
-	if err := flushStaleRulesForPort("POSTROUTING", containerPort, containerIP); err != nil {
+	if err := flushStaleRulesForPort("POSTROUTING", containerPort, containerIP, "tcp"); err != nil {
 		return fmt.Errorf("flushing stale ingress masquerades for port %d: %w", containerPort, err)
 	}
 

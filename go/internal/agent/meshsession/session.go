@@ -41,7 +41,7 @@ func quicConfig() *quic.Config {
 	// Bound the initial burst on BLE paths with limited buffering; normal
 	// congestion control grows the window as packets are acknowledged.
 	return &quic.Config{MaxCryptoStreamSize: localmesh.MaxQUICCryptoStreamSize, InitialRTT: time.Second, InitialCongestionWindowPackets: 4, HandshakeIdleTimeout: 30 * time.Second, MaxIdleTimeout: 45 * time.Second,
-		MaxIncomingStreams: 8, MaxIncomingUniStreams: -1, Allow0RTT: false,
+		MaxIncomingStreams: 8, MaxIncomingUniStreams: -1, EnableDatagrams: true, Allow0RTT: false,
 		// The routed TUN carries at most 1320 bytes end to end. quic-go's
 		// default 1280-byte UDP payload exceeds that once IPv6/UDP headers
 		// are added; the kernel drops the Initial before it reaches the TUN.
@@ -314,10 +314,17 @@ func (s *Server) serveStream(parent context.Context, conn *quic.Conn, stream *qu
 	defer stream.Close()
 	_ = stream.SetDeadline(time.Now().Add(appSessionSetupTimeout))
 	var hello [6]byte
-	if _, err := io.ReadFull(stream, hello[:]); err != nil || string(hello[:4]) != "WAS1" {
+	if _, err := io.ReadFull(stream, hello[:]); err != nil {
 		return
 	}
 	port := binary.BigEndian.Uint16(hello[4:])
+	if string(hello[:4]) == "WAU1" {
+		s.serveDatagrams(parent, conn, port, stream)
+		return
+	}
+	if string(hello[:4]) != "WAS1" {
+		return
+	}
 	local, err := s.authorizer.DialAuthorized(port, func(address string) (net.Conn, error) {
 		return net.DialTimeout("tcp4", address, 5*time.Second)
 	})

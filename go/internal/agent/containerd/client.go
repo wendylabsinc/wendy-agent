@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -45,6 +46,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
+	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
 	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/meshingress"
@@ -2580,6 +2582,12 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 				if err := c.applyMeshIngressPorts(appName, appID, reusedNetworkSandbox.ip, ent.Ports); err != nil {
 					return nil, failStartedTask(fmt.Errorf("wendy net ingress setup failed for reused sandbox %q: %w", appName, err))
 				}
+				if err := hostnetwork.AddMeshUDPIntercept(reusedNetworkSandbox.ip, ent.ServiceCIDR, bridgeName(appID), mesh.UDPProxyPort); err != nil {
+					return nil, failStartedTask(fmt.Errorf("mesh UDP redirect setup failed for reused sandbox %q: %w", appName, err))
+				}
+				if err := c.claimMeshSource(appName, appID, reusedNetworkSandbox.ip, ent.ServiceCIDR); err != nil {
+					return nil, failStartedTask(fmt.Errorf("mesh source attribution failed for reused sandbox %q: %w", appName, err))
+				}
 			}
 		}
 		c.logger.Info("Reused CNI network sandbox",
@@ -4855,10 +4863,28 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 	ctx = c.withNamespace(ctx)
 	unlockNetwork := c.lockNetworkOperation(ctr.ID())
 	defer unlockNetwork()
-	// A retry reloads labels after its delay. Honor a stop that happened since
-	// the initial boot snapshot even if stopping the task itself failed.
+	// A delayed retry must honor a stop since the boot snapshot.
 	if labels[labelKeyStoppedByUser] == "true" {
 		return
+	}
+	scheduleRetry := func(reason string, cause error) {
+		if retries <= 0 {
+			c.logger.Error("wendy net ingress: exhausted inherited task recovery attempts",
+				zap.String("container_id", ctr.ID()), zap.String("reason", reason), zap.Error(cause))
+			return
+		}
+		c.logger.Warn("wendy net ingress: scheduling inherited task recheck",
+			zap.String("container_id", ctr.ID()), zap.String("reason", reason), zap.Error(cause), zap.Int("retries_left", retries))
+		go func() {
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-c.meshIngressStop:
+				return
+			}
+			c.retryRunningMeshIngress(ctr, retries-1)
+		}()
 	}
 	if c.meshIngress == nil || labels[labelKeyIsolation] != "isolated" {
 		return
@@ -4945,12 +4971,34 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 	if err := c.applyMeshIngressPorts(ctr.ID(), appID, ip, ent.Ports); err != nil {
 		cancelWait()
 		c.releaseMeshIngressRun(ctr.ID(), run)
-		c.logger.Warn("wendy net ingress: could not rehydrate inherited task ports",
-			zap.String("container_id", ctr.ID()), zap.Error(err))
+		scheduleRetry("port setup", err)
+		return
+	}
+	if err := hostnetwork.AddMeshUDPIntercept(ip, ent.ServiceCIDR, bridgeName(appID), mesh.UDPProxyPort); err != nil {
+		cancelWait()
+		c.releaseMeshIngressRun(ctr.ID(), run)
+		scheduleRetry("UDP interception", err)
+		return
+	}
+	bridge, bridgeErr := net.InterfaceByName(bridgeName(appID))
+	if bridgeErr != nil {
+		cancelWait()
+		c.releaseMeshIngressRun(ctr.ID(), run)
+		scheduleRetry("app bridge", bridgeErr)
+		return
+	}
+	if err := c.meshIngress.ClaimSource(ctr.ID(), appID, ip, ent.ServiceCIDR, bridge.Index); err != nil {
+		cancelWait()
+		c.releaseMeshIngressRun(ctr.ID(), run)
+		scheduleRetry("source attribution", err)
 		return
 	}
 	for _, pm := range ent.Ports {
-		if c.meshIngress.OwnedBy(ctr.ID(), pm.Host) {
+		owned := c.meshIngress.OwnedBy(ctr.ID(), pm.Host)
+		if pm.Protocol == "udp" {
+			owned = c.meshIngress.OwnedUDPBy(ctr.ID(), pm.Host)
+		}
+		if owned {
 			continue
 		}
 		// An iptables update may have lost xtables.lock to containerd or
@@ -4958,23 +5006,7 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 		// contention subsides. Each retry rechecks the live task and CNI.
 		cancelWait()
 		c.releaseMeshIngressRun(ctr.ID(), run)
-		if retries > 0 {
-			c.logger.Warn("wendy net ingress: port forward unavailable; scheduling task recheck",
-				zap.String("container_id", ctr.ID()), zap.Uint16("port", pm.Host), zap.Int("retries_left", retries))
-			go func() {
-				timer := time.NewTimer(5 * time.Second)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-				case <-c.meshIngressStop:
-					return
-				}
-				c.retryRunningMeshIngress(ctr, retries-1)
-			}()
-		} else {
-			c.logger.Error("wendy net ingress: exhausted inherited task port recovery attempts",
-				zap.String("container_id", ctr.ID()), zap.Uint16("port", pm.Host))
-		}
+		scheduleRetry(fmt.Sprintf("port %d forward", pm.Host), meshingress.ErrPortDenied)
 		return
 	}
 	status, err = task.Status(ctx)

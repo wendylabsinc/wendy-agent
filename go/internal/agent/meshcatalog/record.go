@@ -43,7 +43,7 @@ var (
 	ErrIdentityNeeded      = errors.New("wendy net service identity bundle needed")
 	errCertificateMismatch = errors.New("wendy net service certificate fingerprint mismatch")
 	labelPattern           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
-	typePattern            = regexp.MustCompile(`^_[A-Za-z0-9][A-Za-z0-9-]{0,14}\._tcp$`)
+	typePattern            = regexp.MustCompile(`^_[A-Za-z0-9][A-Za-z0-9-]{0,14}\._(tcp|udp)$`)
 )
 
 // Retain the exact verified chain that produced a lifetime failure. Another
