@@ -16,7 +16,7 @@ import (
 )
 
 func newMCPSetupCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure the Wendy MCP server in supported AI tools",
 		Long:  "Detects installed AI tools and adds the wendy MCP server to their configuration.",
@@ -42,6 +42,8 @@ func newMCPSetupCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.AddCommand(newMCPChatGPTSetupCmd())
+	return cmd
 }
 
 // recordMCPSetupVersion stores the running CLI version as the last version that
@@ -84,8 +86,9 @@ func mcpRefreshAsForeignUser(sudoUID string, euid, homeOwner int, ownerKnown boo
 	return sudoUID != "" || (ownerKnown && homeOwner != euid)
 }
 
-// mcpRefreshRunsAsForeignUser is mcpRefreshAsForeignUser for this process.
-func mcpRefreshRunsAsForeignUser() bool {
+// runsAsForeignUser is mcpRefreshAsForeignUser for this process. The root
+// command also uses it to skip its per-user housekeeping under sudo.
+func runsAsForeignUser() bool {
 	owner, known := -1, false
 	if home, err := os.UserHomeDir(); err == nil {
 		if fi, err := os.Stat(home); err == nil {
@@ -109,7 +112,7 @@ func mcpRefreshRunsAsForeignUser() bool {
 // refresh never removes a user-level entry for a client whose Wendy plugin is
 // active; explicit `wendy mcp setup` does, and reports it.
 func maybeRefreshMCPSetup(cfg *config.Config) {
-	if pluginmode.Client() != "" || mcpRefreshRunsAsForeignUser() || !shouldRefreshMCPSetup(cfg.LastMCPSetupVersion, version.Version) {
+	if pluginmode.Client() != "" || runsAsForeignUser() || !shouldRefreshMCPSetup(cfg.LastMCPSetupVersion, version.Version) {
 		return
 	}
 	configureMCPClients(false)

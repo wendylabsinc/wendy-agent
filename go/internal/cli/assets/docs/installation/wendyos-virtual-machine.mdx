@@ -231,6 +231,21 @@ loopback address, and readiness checks use it too. This works with background
 VMs and detached applications; forwards last until the VM stops and are
 recreated on the next run.
 
+For an app with a declared [`http` endpoint](../apps/wendy.json.md#http), capture
+the detached result and fetch the reported host URL:
+
+```sh
+wendy --json --device vm:dev run --yes --detach > deploy.json
+url=$(jq -er '.url' deploy.json)
+curl --fail --retry 10 --retry-connrefused --retry-delay 1 --max-time 5 "$url"
+```
+
+`vm:dev` selects the device; it is not a DNS hostname. The result's
+`readiness: "not_checked"` means start was acknowledged, so check the response
+against your app's expected behavior. If `url` is absent, inspect the declared
+HTTP endpoints, forwarding and logs. See the [detached result reference](../clients/wendy-cli/commands/run.md#detached-output)
+for fields and multi-service output.
+
 If another application or VM owns the host port, deployment reports a forwarding
 error. Free that port or choose a different application port. Other ports are
 not automatically exposed. VMs started with an older launcher must be restarted

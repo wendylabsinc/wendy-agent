@@ -295,15 +295,32 @@ func TestCameraLoginOnSwiftMacDoesNotPromptForUnsupportedOperation(t *testing.T)
 	}
 }
 
-func TestCameraControlsOnSwiftMacExplainsUnsupportedOperation(t *testing.T) {
+func TestCameraControlsOnUnenrolledSwiftMacRequiresEnrollment(t *testing.T) {
 	startUDSAgentWithFeatures(t, "darwin", []string{"native-process"})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := newCameraControlsCmd()
 	cmd.SetContext(ctx)
 	err := cmd.RunE(cmd, []string{"1"})
-	if err == nil || !strings.Contains(err.Error(), "not available on macOS") || strings.Contains(err.Error(), "wendy device enroll") {
-		t.Fatalf("camera controls error = %v, want unsupported V4L2 operation", err)
+	if err == nil || !strings.Contains(err.Error(), "wendy device enroll") {
+		t.Fatalf("camera controls error = %v, want enrollment requirement", err)
+	}
+}
+
+func TestCameraControlsEnrolledSwiftMacDefersCapabilityToAgent(t *testing.T) {
+	startUDSAgentWithFeatures(t, "darwin", []string{"native-process"})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := connectToAgent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// The fake server is UDS; only simulate the transport marker here. No
+	// production transport/authentication behavior is changed by this test.
+	conn.IsMTLS = true
+	if err := cameraServicePreflight(ctx, conn, cameraV4L2Controls); err != nil {
+		t.Fatalf("enrolled Mac preflight must let the Agent answer controls: %v", err)
 	}
 }
 

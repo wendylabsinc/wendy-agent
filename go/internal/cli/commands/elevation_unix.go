@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 // preAuthElevation pre-authenticates sudo so the password prompt appears
@@ -100,8 +102,10 @@ func thorElevationDecision(goos string, euid int, hasUdevRule, interactive bool)
 
 // thorSudoPreserveEnv keeps the elevated (sudo) re-exec pointed at the same
 // flashpack cache (HOME / XDG_CACHE_HOME feed os.UserCacheDir) and network config
-// (proxy vars) instead of re-downloading the ~3 GB flashpack under root's env.
-const thorSudoPreserveEnv = "--preserve-env=HOME,XDG_CACHE_HOME,HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy"
+// (proxy vars) instead of re-downloading the ~3 GB flashpack under root's env. It
+// also keeps the user's wendy settings: without WENDY_ANALYTICS an opted-out user
+// looks like a first run, and without WENDY_CONFIG_DIR config lands in $HOME/.wendy.
+const thorSudoPreserveEnv = "--preserve-env=HOME,XDG_CACHE_HOME,WENDY_ANALYTICS,WENDY_CONFIG_DIR,HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy"
 
 // hasDeviceTypeFlag reports whether args already carries a --device-type flag in
 // either "--device-type X" or "--device-type=X" form.
@@ -172,6 +176,16 @@ func thorElevationReason(goos string) string {
 		jetsonUdevRuleInstallHint("    ")
 }
 
+// createElevatedRunDirs creates, as the user, the cache and log directories the
+// elevated run writes into. The elevated run gives what it creates back to the
+// user when it exits (HandBackSudoFiles), but not if it's killed; created by
+// root, these directories, and on a fresh host ~/.cache itself, would then stay
+// root-owned. Best-effort: the elevated run creates any that are missing.
+func createElevatedRunDirs() {
+	_, _ = osCacheDir()
+	_, _ = config.LogDir()
+}
+
 // errThorNeedsRoot is returned when a Thor flash needs elevation but cannot obtain
 // it here (no interactive terminal to prompt on, or no sudo on PATH). It carries
 // the exact command to re-run, plus the Linux udev alternative.
@@ -218,6 +232,7 @@ func ensureThorRootAccess() error {
 	fmt.Println(thorElevationReason(runtime.GOOS))
 	fmt.Println("Re-running under sudo (you may be prompted for your password)…")
 
+	createElevatedRunDirs()
 	argv := append([]string{"sudo"}, buildSudoReexecArgs(self, os.Args[1:])...)
 	// Pin XDG_CACHE_HOME to this (unprivileged) user's cache base so the elevated
 	// run reuses the already-downloaded flashpack even if sudo rewrites HOME.

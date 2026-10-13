@@ -144,6 +144,46 @@ func TestBuildSudoReexecArgs(t *testing.T) {
 	}
 }
 
+// sudo's env_reset drops variables it isn't told to keep. Losing
+// WENDY_ANALYTICS made the elevated run treat an opted-out user as a first run:
+// it sent analytics and wrote a root-owned ~/.wendy/config.json. Losing
+// WENDY_CONFIG_DIR sent its writes to $HOME/.wendy instead.
+func TestThorSudoPreserveEnvKeepsWendySettings(t *testing.T) {
+	kept := strings.Split(strings.TrimPrefix(thorSudoPreserveEnv, "--preserve-env="), ",")
+	for _, want := range []string{"WENDY_ANALYTICS", "WENDY_CONFIG_DIR"} {
+		found := false
+		for _, k := range kept {
+			if k == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s is not preserved through sudo: %q", want, thorSudoPreserveEnv)
+		}
+	}
+}
+
+// The elevated run hands what it creates back to the user when it exits, but
+// not if it's killed. The directories it writes into are created beforehand, as
+// the user, so a killed flash can't leave ~/.cache itself root-owned.
+func TestCreateElevatedRunDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	base, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	createElevatedRunDirs()
+
+	for _, dir := range []string{filepath.Join(base, "wendy", "os-images"), filepath.Join(base, "wendy", "logs")} {
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			t.Errorf("%s was not created before elevating: %v", dir, err)
+		}
+	}
+}
+
 func TestPinCacheDirEnv(t *testing.T) {
 	base := "/home/alice/.cache"
 

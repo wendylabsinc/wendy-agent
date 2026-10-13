@@ -73,10 +73,7 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 		transportOpt = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
 
-	dialOptions, err := withCloudRequestSigning(auth, transportOpt)
-	if err != nil {
-		return nil, err
-	}
+	dialOptions := append([]grpc.DialOption{transportOpt}, dpopDialOptions(auth)...)
 	cloudConn, err := dialer(ctx, auth.CloudGRPC, dialOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
@@ -186,7 +183,7 @@ func preEnrollDeviceACME(ctx context.Context, auth *config.AuthConfig, deviceNam
 		return nil, err
 	}
 	defer cloudConn.Close()
-	cfg, _, err = cloudenroll.MintEAB(tokenCtx, cloudConn, auth, cfg, deviceName)
+	cfg, _, err = cloudenroll.MintEAB(tokenCtx, cloudConn, auth, cfg, deviceName, nil)
 	if err != nil {
 		return nil, err
 	}

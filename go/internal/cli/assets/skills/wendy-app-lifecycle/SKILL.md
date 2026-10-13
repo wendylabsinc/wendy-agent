@@ -7,6 +7,42 @@ description: Use when a developer wants to build, deploy, run, detach, stream lo
 
 Use this for normal operator/developer workflows around Wendy apps, not only debugging. Prefer explicit, reproducible CLI commands that work in agent/non-interactive contexts.
 
+## ChatGPT plugin development loop
+
+When using the ChatGPT gateway, work through its tools without assuming a local
+terminal. The gateway exposes different tools from `wendy mcp serve`.
+
+1. For a simulator, use `simulator_list`, create only if needed, then
+   `simulator_start`. Refresh `list_robots` to resolve its exact `robot_id`.
+   Use `simulator_viewer` for a robot profile and inspect camera output when
+   available. A `vm:<name>` selector is not a gateway `robot_id`.
+2. Call `list_workspaces` and choose an approved workspace whose `robot_ids`
+   includes the selected target. `can_read_files` and `can_write_files` report
+   local file permissions. Missing permissions require operator configuration;
+   do not substitute an arbitrary path or another target.
+3. Use `list_workspace_files` and `read_workspace_file` to inspect the project.
+   Author or edit code with `write_workspace_file`, using the read's SHA-256 as
+   `expected_sha256`, or `"missing"` for a new file. Re-read on a revision conflict.
+   Create app configuration and build inputs along with source. Each file must
+   be UTF-8 text of at most 256 KiB within the approved directory.
+4. Validate with `validate_device_project(workspace_id, robot_id)`. Resolve its
+   findings before building. Compatibility reported as unknown stays unknown.
+5. Call `start_device_deployment` with those exact IDs and a fresh stable
+   `request_id`. Keep the returned job ID and poll `get_deployment_job`. Reuse the
+   request ID after an uncertain response, not for a new build of edited code.
+   `cancel_deployment_job` cancels the build/deploy command; it may leave an app
+   already running on the target.
+6. Check `inspect_robot`, `read_device_logs`, and actual app or robot output.
+   `open_robot_app` opens a running app's declared HTTP UI. The gateway's
+   `completed` deployment status and `RUNNING` app state do not prove readiness.
+
+Local file tools require an approved workspace, local stdio, and `projects:read`
+or `projects:write`. Deployment independently needs `apps:deploy`. A workspace's
+`allow_simulators` opt-in permits its use on running local simulators; configured
+physical or VM targets use its explicit `robots` list and subject grants. A
+remote HTTP connection cannot edit unshared laptop files. Explain a missing
+local connection or workspace grant when the tools cannot perform the task.
+
 ## Core rule for coding agents
 
 Avoid Bubble Tea pickers and dashboards unless the user explicitly wants an interactive terminal UI. Coding agents should generally use:
@@ -221,7 +257,7 @@ Known non-interactive guidance:
 - `wendy --json device logs` prints JSON log records, but still streams.
 - `wendy device telemetry-stream` prints JSONL without `--json`.
 - `wendy build` can still use Bubble Tea spinners in a TTY and does not currently provide structured JSON output.
-- `wendy run` uses progress UI in an interactive TTY and plain progress text otherwise. It does not currently provide structured JSON output.
+- Agent-backed `wendy --json run --detach` returns one JSON result with `status`, `app`, `device`, `readiness` and `endpoints`; `url` is the first available HTTP endpoint and is omitted when no host URL can be determined. Progress goes to stderr. Attached run and local container providers still use progress/log output.
 - `wendy run --yes` avoids app-config creation prompts where possible.
 - `--json` also prevents device picker fallback; if no device/default is configured, pass `--device` or set a default first.
 - `device apps start|stop|remove` and `device volumes remove` can prompt for a name if omitted; pass the app or volume name explicitly in agent workflows.
@@ -261,3 +297,28 @@ wendy --json device logs --app <app-id> --tail 50 --no-follow --device <hostname
 wendy device apps stop <app-id> --device <hostname>
 wendy device apps remove <app-id> --force --device <hostname>
 ```
+
+### VM selectors and HTTP verification
+
+`vm:dev` is a Wendy device selector, not a DNS name. In default `--net user`
+mode the guest's `10.0.2.15` is behind QEMU NAT. Wendy forwards declared app ports
+to host loopback; the agent's forwarded gRPC port is separate from the app port.
+Use an `http` entitlement for each web port (and host networking or the appropriate
+container-to-guest port publication). For example, an app serving guest port 18880
+can have a host URL of `http://127.0.0.1:18880`.
+
+```bash
+wendy --json --device vm:dev run --yes --detach > deploy.json
+url=$(jq -er '.url' deploy.json)
+curl --fail --retry 10 --retry-connrefused --retry-delay 1 --max-time 5 "$url"
+```
+
+Check `device` and `app` in the result, then check the HTTP response against the
+requested behavior or a unique fixture marker. Detached output says
+`readiness: "not_checked"`: it reports the configured endpoint after start was
+acknowledged and does not wait for health or execute host postStart hooks. For
+multi-service apps, inspect each entry in `endpoints`. A TCP readiness probe alone
+does not establish an HTTP endpoint. If `url` is absent, inspect configuration and
+logs rather than constructing a URL from the VM selector. A host port conflict
+must be resolved by changing the app port or freeing your own listener; do not
+stop unrelated services or assume a different VM owns the same localhost port.

@@ -15,6 +15,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
+const DiscordSupportPrompt = "Get support in our Discord community: https://discord.gg/wendylabsinc"
+
 var (
 	jsonOutput bool
 	deviceFlag string
@@ -68,6 +70,14 @@ func NewRootCmd() *cobra.Command {
 				showFirstRunNotice(cmd, cfg)
 			}
 
+			// Under sudo with the user's HOME (the Thor flash's re-exec, or
+			// `sudo wendy` on macOS), leave the housekeeping below to the
+			// user's own runs: as root it would write their files, and the
+			// update check would leave them a root-owned auth refresh lock.
+			if runsAsForeignUser() {
+				return nil
+			}
+
 			// Refresh MCP config and skills if the CLI was upgraded since the
 			// user last ran `wendy mcp setup`. Runs synchronously here, before
 			// the update-check goroutine below also writes config.json.
@@ -81,7 +91,8 @@ func NewRootCmd() *cobra.Command {
 				cmd.PrintErrln("Moved wendy credentials into ~/.wendy/config.json.")
 			}
 
-			if dueCLIUpdateCheck(cfg) {
+			// mcp serve owns a cancellable periodic checker for its lifetime.
+			if cmd.CommandPath() != "wendy mcp serve" && dueCLIUpdateCheck(cfg) {
 				scheduleCLIUpdateCheck()
 			}
 			premark("  prerun: dueCLIUpdateCheck")
@@ -93,6 +104,12 @@ func NewRootCmd() *cobra.Command {
 			// successful build/run (no-op for other commands and in CI).
 			maybeShowOptimizeTip(cmd)
 			maybeShowNextStep(cmd)
+
+			// Under sudo, don't offer a CLI update or shell completions: either
+			// would install files as root.
+			if runsAsForeignUser() {
+				return nil
+			}
 
 			// Surface any pending CLI-update notice first. If it showed a prompt,
 			// don't stack the completion prompt on top of it this invocation.
@@ -110,7 +127,10 @@ func NewRootCmd() *cobra.Command {
 	// Do not name the hidden --build-host flag here: this description shows in
 	// every command's --help (persistent flag), and the E2E help specs guard
 	// that the unreleased flag never leaks into help output.
-	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname; `wendy run` accepts a comma-separated list to deploy one build to several devices (needs a remote build host and --detach). Defaults to $WENDY_DEVICE, then the saved default device")
+	//
+	// pflag shows the first `backticked` word of a usage string as the flag's
+	// placeholder ("--device host"), so quote commands here with '...'.
+	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device `host` (hostname, IP, or host:port); 'wendy run' accepts a comma-separated list to deploy one build to several devices (needs a remote build host and --detach). Defaults to $WENDY_DEVICE, then the saved default device")
 
 	// Render the top-level command groups in the deliberate order below rather
 	// than alphabetically, so e.g. "project" lists before "device".
@@ -285,9 +305,11 @@ func NewRootCmd() *cobra.Command {
 
 	root.SetHelpCommandGroupID("settings")
 	root.SetCompletionCommandGroupID("settings")
+	root.SetHelpTemplate(root.HelpTemplate() + "{{if not .HasParent}}\n" + DiscordSupportPrompt + "\n{{end}}")
 
 	addUSBDriverCommand(root)
 	rejectStrayArguments(root)
+	markUsageErrors(root)
 
 	root.Version = version.Version
 	return root
@@ -341,8 +363,11 @@ func nextStepHint(commandPath string) string {
 }
 
 // maybeShowNextStep prints a next-step hint after a successful command. cobra
-// only runs PersistentPostRunE when RunE succeeded, so this is success-only. It
-// is suppressed for JSON output, non-interactive terminals, and CI.
+// only runs PersistentPostRunE when RunE succeeded, so this is success-only.
+// The hint is onboarding advice for a person at a terminal, so it is
+// suppressed in JSON mode (stderr there carries only the error envelope,
+// progress, and notices that change what the result means), for runs without
+// a terminal, and in CI.
 func maybeShowNextStep(cmd *cobra.Command) {
 	if jsonOutput || !isInteractiveTerminal() || env.IsCI() {
 		return

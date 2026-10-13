@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/pluginmode"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/cliupdate"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
@@ -46,15 +47,7 @@ func notifyCLIUpdate(cmd *cobra.Command) (shown bool, err error) {
 		return true, nil
 	}
 
-	var updateShellCmd string
-	switch runtime.GOOS {
-	case "windows":
-		updateShellCmd = "winget upgrade WendyLabs.Wendy"
-	case "darwin":
-		updateShellCmd = "brew update && brew install wendy"
-	default:
-		updateShellCmd = "curl -fsSL https://install.wendy.dev/cli.sh | bash"
-	}
+	updateShellCmd := cliupdate.Command(runtime.GOOS)
 
 	if jsonOutput || !isInteractiveTerminal() {
 		// No prompt here, so nothing else clears AvailableCLIUpdate: remember

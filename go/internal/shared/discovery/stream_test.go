@@ -770,36 +770,6 @@ func TestStreamCacheLoadErrorTreatedAsEmpty(t *testing.T) {
 	stop() // the session-end flush must not panic without a cache
 }
 
-func TestRunLANStreamClosesProbesDone(t *testing.T) {
-	shrinkDuration(t, &offlineGrace, 50*time.Millisecond)
-
-	path := filepath.Join(t.TempDir(), "devices.json")
-	seedCache(t, path, discoverycache.Entry{ID: "dev-8", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.8", Port: 50051})
-
-	fb := newFakeBackend()
-	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	out := make(chan LANEvent, 8)
-	probesDone := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer close(out)
-		runLANStream(ctx, StreamOptions{UseCache: true, Prober: failingProber(errors.New("unreachable"))}, out, probesDone)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-
-	select {
-	case <-probesDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("probesDone must close once every cached entry's initial probe concluded")
-	}
-}
-
 func TestCollectLANSettlesEarly(t *testing.T) {
 	shrinkDuration(t, &collectSettle, 50*time.Millisecond)
 
@@ -924,8 +894,8 @@ func TestStreamHostnamelessSightingNeverEmitsEmptyIdentity(t *testing.T) {
 }
 
 // TestCollectLANWaitsForFirstAnswerOnColdCache pins the batch scan's settle
-// gate: with an empty cache every probe has concluded before the session even
-// begins, so arming settle at that point would conclude an empty scan in
+// gate: with an empty cache there is nothing to probe until mDNS answers,
+// so arming settle at session start would conclude an empty scan in
 // collectSettle — `wendy discover --json` returning nothing on a first run
 // while the answer was still in flight. Settle may only start once something
 // has actually been confirmed.
@@ -1378,5 +1348,87 @@ func TestCollectLANDoesNotReportALateBackendFailure(t *testing.T) {
 	}
 	if n := reported.Load(); n != 0 {
 		t.Fatalf("OnBackendError called %d times for a backend that listened before failing, want 0", n)
+	}
+}
+
+// Diagnostics must survive the stream, update after a different failure, and
+// disappear once a later probe succeeds.
+func TestStreamProbeFailureDiagnosticLifecycle(t *testing.T) {
+	shrinkDuration(t, &probeRetryInterval, 0)
+	path := filepath.Join(t.TempDir(), "devices.json")
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+	var calls atomic.Int32
+	prober := func(_ context.Context, dev models.LANDevice) (models.LANDevice, error) {
+		switch calls.Add(1) {
+		case 1:
+			dev.ProbeFailure = &models.ProbeFailure{Code: "connection_refused", Message: "Refused"}
+			return dev, errors.New("refused")
+		case 2:
+			dev.ProbeFailure = &models.ProbeFailure{Code: "tls_rejected", Message: "TLS rejected"}
+			return dev, errors.New("TLS rejected")
+		default:
+			dev.AgentVersion = "1.2.3"
+			return dev, nil
+		}
+	}
+	events, _ := startStream(t, StreamOptions{UseCache: true, Prober: prober})
+	svc := wendyService("board", "board", "board.local", "192.0.2.1", 50051)
+	fb.emit(t, svc)
+	got := collectEvents(t, events, 2, time.Second)
+	if failure := got[1].Device.ProbeFailure; failure == nil || failure.Code != "connection_refused" {
+		t.Fatalf("failure lost: %+v", got[1])
+	}
+	fb.emit(t, svc)
+	changed := collectEvents(t, events, 1, time.Second)[0]
+	if failure := changed.Device.ProbeFailure; failure == nil || failure.Code != "tls_rejected" {
+		t.Fatalf("changed diagnostic lost: %+v", changed)
+	}
+	fb.emit(t, svc)
+	recovered := collectEvents(t, events, 1, time.Second)[0]
+	if !recovered.Probed || recovered.Device.ProbeFailure != nil {
+		t.Fatalf("recovery: %+v", recovered)
+	}
+}
+
+func TestCollectLANIncludesProbeFailure(t *testing.T) {
+	shrinkDuration(t, &collectSettle, 20*time.Millisecond)
+	backend := func(ctx context.Context, _ string, emit func(MDNSService)) error {
+		emit(wendyService("board", "board", "board.local", "192.0.2.1", 50051))
+		<-ctx.Done()
+		return nil
+	}
+	useStreamSeams(t, backend, nil)
+	devices, err := CollectLAN(context.Background(), StreamOptions{Prober: func(_ context.Context, dev models.LANDevice) (models.LANDevice, error) {
+		dev.ProbeFailure = &models.ProbeFailure{Code: "tls_rejected", Message: "TLS rejected", NextSteps: []string{"Sync time"}}
+		return dev, errors.New("rejected")
+	}}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 || devices[0].ProbeFailure == nil || devices[0].ProbeFailure.Code != "tls_rejected" {
+		t.Fatalf("collector discarded diagnostic: %+v", devices)
+	}
+}
+
+func TestStreamProbeFailureClearsWhenAddressMoves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+	prober := func(ctx context.Context, dev models.LANDevice) (models.LANDevice, error) {
+		if dev.IPAddress == "192.0.2.1" {
+			dev.ProbeFailure = &models.ProbeFailure{Code: "connection_refused", Message: "Refused"}
+			return dev, errors.New("refused")
+		}
+		<-ctx.Done() // The new endpoint is still unverified.
+		return dev, ctx.Err()
+	}
+	events, _ := startStream(t, StreamOptions{UseCache: true, Prober: prober})
+	fb.emit(t, wendyService("board", "board", "board.local", "192.0.2.1", 50051))
+	collectEvents(t, events, 2, time.Second)
+	fb.emit(t, wendyService("board", "board", "board.local", "192.0.2.2", 50051))
+	moved := collectEvents(t, events, 1, time.Second)[0]
+	if moved.Device.IPAddress != "192.0.2.2" || moved.Device.ProbeFailure != nil || moved.Probed {
+		t.Fatalf("new endpoint inherited old diagnostic: %+v", moved)
 	}
 }
