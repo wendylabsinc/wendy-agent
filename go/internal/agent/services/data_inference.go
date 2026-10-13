@@ -25,6 +25,19 @@ type inferenceVideo interface {
 
 const campaignAppPrefix = "sh.wendy.campaign."
 
+const inferenceAppPrefix = "sh.wendy.inference."
+
+// Job keys keep a campaign's inline inference and an inference document
+// apart even when they share a name.
+func campaignJobKey(name string) string  { return "campaign/" + name }
+func inferenceJobKey(name string) string { return "inference/" + name }
+
+// wantedInference is one job a reconcile pass wants running.
+type wantedInference struct {
+	campaign data.Campaign
+	document bool
+}
+
 type campaignInferenceManager struct {
 	service *DataService
 	factory inference.Factory
@@ -32,10 +45,19 @@ type campaignInferenceManager struct {
 	wake    chan struct{}
 	mu      sync.Mutex
 	jobs    map[string]*campaignInferenceJob
+	ctx     context.Context
+	// reconcileMu runs one pass at a time: a pass that read the plans before
+	// a removal must not restart a job that a later pass, run for that
+	// removal, has just retired.
+	reconcileMu sync.Mutex
 }
 
 type campaignInferenceJob struct {
-	owner          *campaignInferenceManager
+	owner *campaignInferenceManager
+	// key is the job's key in jobs; document marks an inference document's job:
+	// no campaign capture, no campaign notifications.
+	key            string
+	document       bool
 	campaign       data.Campaign
 	cancel         context.CancelFunc
 	done           chan struct{}
@@ -51,7 +73,7 @@ type campaignInferenceJob struct {
 // camera subscriptions to exit before the video service is shut down.
 func (s *DataService) StartCampaignInference(ctx context.Context, factory inference.Factory, sender CampaignNotificationSender) func() {
 	ctx, cancel := context.WithCancel(ctx)
-	manager := &campaignInferenceManager{service: s, factory: factory, sender: sender, wake: make(chan struct{}, 1), jobs: map[string]*campaignInferenceJob{}}
+	manager := &campaignInferenceManager{service: s, factory: factory, sender: sender, wake: make(chan struct{}, 1), ctx: ctx, jobs: map[string]*campaignInferenceJob{}}
 	s.inference = manager // Configured once, before registering the RPC server.
 	done := make(chan struct{})
 	go func() {
@@ -85,30 +107,51 @@ func (m *campaignInferenceManager) stopAll() {
 	for _, job := range jobs {
 		<-job.done
 		m.mu.Lock()
-		if m.jobs[job.campaign.Name] == job {
-			delete(m.jobs, job.campaign.Name)
+		if m.jobs[job.key] == job {
+			delete(m.jobs, job.key)
 		}
 		m.mu.Unlock()
 	}
 }
 
 func (m *campaignInferenceManager) reconcile(ctx context.Context) {
+	m.reconcileMu.Lock()
+	defer m.reconcileMu.Unlock()
 	campaigns, err := m.service.manager.Campaigns()
 	if err != nil {
 		m.service.manager.Warnf("reading inference campaigns: %v", err)
 		return
 	}
-	wanted := map[string]data.Campaign{}
+	wanted := map[string]wantedInference{}
 	for _, campaign := range campaigns {
 		if campaign.State == "armed" && (campaign.Inference.IsEnabled() || campaign.Notify != nil && campaign.Notify.On == data.NotifyOnEvent) {
-			wanted[campaign.Name] = campaign
+			wanted[campaignJobKey(campaign.Name)] = wantedInference{campaign: campaign}
+		}
+	}
+	documents, err := m.service.manager.Documents(data.KindInference)
+	documentsKnown := err == nil
+	if err != nil {
+		m.service.manager.Warnf("reading inference documents: %v", err)
+	}
+	for _, stored := range documents {
+		document, err := stored.Inference()
+		if err != nil {
+			m.service.manager.Warnf("inference document %q: %v", stored.Name, err)
+			continue
+		}
+		if document.IsEnabled() {
+			wanted[inferenceJobKey(stored.Name)] = wantedInference{campaign: document.Campaign(stored.Revision), document: true}
 		}
 	}
 	m.mu.Lock()
 	var retired []*campaignInferenceJob
-	for name, job := range m.jobs {
-		campaign, ok := wanted[name]
-		if ok && campaign.Revision == job.campaign.Revision {
+	for key, job := range m.jobs {
+		want, ok := wanted[key]
+		if ok && want.campaign.Revision == job.campaign.Revision {
+			continue
+		}
+		// An unreadable document directory is not a removal.
+		if !ok && job.document && !documentsKnown {
 			continue
 		}
 		job.cancel()
@@ -118,30 +161,42 @@ func (m *campaignInferenceManager) reconcile(ctx context.Context) {
 	for _, job := range retired {
 		<-job.done
 		m.mu.Lock()
-		if m.jobs[job.campaign.Name] == job {
-			delete(m.jobs, job.campaign.Name)
+		if m.jobs[job.key] == job {
+			delete(m.jobs, job.key)
 		}
 		m.mu.Unlock()
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for name, campaign := range wanted {
-		if m.jobs[name] != nil || ctx.Err() != nil {
+	for key, want := range wanted {
+		if m.jobs[key] != nil || ctx.Err() != nil {
 			continue
 		}
 		child, cancel := context.WithCancel(ctx)
-		job := &campaignInferenceJob{owner: m, campaign: campaign, cancel: cancel, done: make(chan struct{}), queue: make(chan DetectionNotification, 16), generations: map[string]uint64{}, status: data.InferenceStatus{State: "loading", Sources: map[string]string{}}}
-		m.jobs[name] = job
+		job := &campaignInferenceJob{owner: m, key: key, document: want.document, campaign: want.campaign, cancel: cancel, done: make(chan struct{}), queue: make(chan DetectionNotification, 16), generations: map[string]uint64{}, status: data.InferenceStatus{State: "loading", Sources: map[string]string{}}}
+		m.jobs[key] = job
 		go job.supervise(child)
+	}
+}
+
+// reconcileNow runs one pass in the caller's goroutine; it returns once the
+// jobs it retired have stopped.
+func (m *campaignInferenceManager) reconcileNow() { m.reconcile(m.ctx) }
+
+// wakeNow asks the loop for a pass without waiting for it.
+func (m *campaignInferenceManager) wakeNow() {
+	select {
+	case m.wake <- struct{}{}:
+	default:
 	}
 }
 
 // Keep retired jobs visible until their process and camera subscriptions exit.
 // Persisting enabled:false only requests shutdown; it does not complete it.
-func (m *campaignInferenceManager) inferenceActive(name string) bool {
+func (m *campaignInferenceManager) inferenceActive(key string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	job := m.jobs[name]
+	job := m.jobs[key]
 	if job == nil || !job.campaign.Inference.IsEnabled() {
 		return false
 	}
@@ -153,10 +208,10 @@ func (m *campaignInferenceManager) inferenceActive(name string) bool {
 	}
 }
 
-func (m *campaignInferenceManager) snapshot(name, revision string) *data.InferenceStatus {
+func (m *campaignInferenceManager) snapshot(key, revision string) *data.InferenceStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	job := m.jobs[name]
+	job := m.jobs[key]
 	if job == nil || job.campaign.Revision != revision {
 		return &data.InferenceStatus{State: "stopped"}
 	}
@@ -203,7 +258,11 @@ func (j *campaignInferenceJob) supervise(ctx context.Context) {
 			return
 		}
 		j.setState("error", err)
-		j.owner.service.manager.Warnf("campaign %q inference: %v; retrying in 5s", j.campaign.Name, err)
+		what := "campaign"
+		if j.document {
+			what = "inference document"
+		}
+		j.owner.service.manager.Warnf("%s %q inference: %v; retrying in 5s", what, j.campaign.Name, err)
 		select {
 		case <-ctx.Done():
 			return
@@ -239,7 +298,13 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 		}
 	}()
 	presence := map[string]*inferencePresence{}
+	// The collections whose episodes an inference document's records may
+	// reach, refreshed with the cameras on every pass (spec §7.3).
+	var audience map[string]bool
 	reconcile := func() {
+		if j.document {
+			audience = j.owner.service.collectionsTriggeredBy(j.campaign.Inference.Event)
+		}
 		ids, _, _, resolveErr := j.owner.service.manager.ResolveCampaignSources(j.campaign)
 		selected := map[string]bool{}
 		if resolveErr == nil {
@@ -288,7 +353,7 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 		} else {
 			j.setState("running", nil)
 		}
-		if changed {
+		if changed && !j.document {
 			if _, active := j.owner.service.manager.ActiveSession(j.campaign.Name); !active {
 				j.owner.service.armCampaign(j.campaign)
 			}
@@ -328,6 +393,10 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 				return err
 			}
 			j.sourceState(result.SourceID, "detecting")
+			if j.document {
+				j.documentResult(presence[result.SourceID], result.SourceID, detections, result.DroppedResults, audience)
+				continue
+			}
 			attributes := map[string]any{"campaign": j.campaign.Name, "source_id": result.SourceID, "model_version": j.campaign.Inference.Revision, "detections": detections,
 				"input_reference_status": "encoded_stream_decode_does_not_preserve_sample_ids", "runtime_results_dropped": result.DroppedResults}
 			record := data.ApplicationRecord{Version: 1, Type: "prediction", Model: j.campaign.Inference.Model, Attributes: attributes}
@@ -460,6 +529,62 @@ func detectionNotification(campaign data.Campaign, source string, detections []i
 	return DetectionNotification{ID: uuid.NewString(), Event: campaign.Inference.Event, Campaign: campaign.Name, SourceID: source, Model: campaign.Inference.Model, Revision: campaign.Inference.Revision, Count: len(detections), Detections: notificationDetections(detections), OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)}
 }
 
+// inferenceNotification is an inference document's arrival as a watch
+// receives it: no campaign, the inference named instead.
+func inferenceNotification(campaign data.Campaign, source string, detections []inference.Detection) DetectionNotification {
+	notification := detectionNotification(campaign, source, detections)
+	notification.Campaign = ""
+	notification.Inference = campaign.Name
+	return notification
+}
+
+// documentResult handles one scored frame of an inference document (spec
+// §7.3). An arrival reaches watches first; the records go only to the
+// collections that trigger on its event, and storing them never holds up a
+// notification.
+func (j *campaignInferenceJob) documentResult(state *inferencePresence, sourceID string, detections []inference.Detection, dropped uint64, audience map[string]bool) {
+	service := j.owner.service
+	appID := inferenceAppPrefix + j.campaign.Name
+	attributes := map[string]any{"inference": j.campaign.Name, "source_id": sourceID, "model_version": j.campaign.Inference.Revision, "detections": detections,
+		"input_reference_status": "encoded_stream_decode_does_not_preserve_sample_ids", "runtime_results_dropped": dropped}
+	record := data.ApplicationRecord{Version: 1, Type: "prediction", Model: j.campaign.Inference.Model, Attributes: attributes}
+	if _, err := service.manager.RecordApplicationFor(appID, record, audience, false); err != nil {
+		service.manager.Warnf("inference %q prediction: %v", j.campaign.Name, err)
+	}
+	if state == nil || !state.observe(len(detections) > 0, time.Now(), j.campaign.Inference) {
+		return
+	}
+	if service.watches != nil {
+		service.watches.deliver(j.campaign.Name, inferenceNotification(j.campaign, sourceID, detections))
+	}
+	record.Type, record.Name = "event", j.campaign.Inference.Event
+	if _, err := service.manager.RecordApplicationFor(appID, record, audience, true); err != nil {
+		service.manager.Warnf("inference %q event: %v", j.campaign.Name, err)
+	}
+}
+
+// collectionsTriggeredBy names the armed collections whose capture triggers
+// include event: the only episodes an inference document's records reach.
+func (s *DataService) collectionsTriggeredBy(event string) map[string]bool {
+	audience := map[string]bool{}
+	campaigns, err := s.manager.Campaigns()
+	if err != nil {
+		s.manager.Warnf("reading campaigns for inference records: %v", err)
+		return audience
+	}
+	for _, campaign := range campaigns {
+		if campaign.State != "armed" {
+			continue
+		}
+		for _, trigger := range campaign.Capture.Triggers {
+			if trigger.Event == event {
+				audience[campaign.Name] = true
+			}
+		}
+	}
+	return audience
+}
+
 // notificationDetections keeps the five highest-scored detections, which keeps
 // a journal entry well under its 4096-byte limit.
 func notificationDetections(detections []inference.Detection) []data.NotificationDetection {
@@ -543,13 +668,13 @@ func (s *DataService) campaignMessage(campaign data.Campaign) (*agentpbv2.DataCa
 	eventNotifications := campaign.Notify != nil && campaign.Notify.On == data.NotifyOnEvent
 	if campaign.Inference != nil || eventNotifications {
 		campaign.InferenceStatus = &data.InferenceStatus{State: "disabled"}
-		if !campaign.Inference.IsEnabled() && s.inference != nil && s.inference.inferenceActive(campaign.Name) {
+		if !campaign.Inference.IsEnabled() && s.inference != nil && s.inference.inferenceActive(campaignJobKey(campaign.Name)) {
 			campaign.InferenceStatus.State = "stopping"
 		} else if campaign.Inference.IsEnabled() || eventNotifications {
 			if s.inference == nil {
 				campaign.InferenceStatus = &data.InferenceStatus{State: "error", Error: "agent campaign runtime is unavailable"}
 			} else {
-				campaign.InferenceStatus = s.inference.snapshot(campaign.Name, campaign.Revision)
+				campaign.InferenceStatus = s.inference.snapshot(campaignJobKey(campaign.Name), campaign.Revision)
 				if campaign.InferenceStatus.State == "stopped" {
 					campaign.InferenceStatus.State = "pending"
 				}
@@ -583,7 +708,7 @@ func (m *campaignInferenceManager) notifyEvent(campaign data.Campaign, record da
 		return
 	}
 	m.mu.Lock()
-	job := m.jobs[campaign.Name]
+	job := m.jobs[campaignJobKey(campaign.Name)]
 	m.mu.Unlock()
 	if job == nil || job.campaign.Revision != campaign.Revision {
 		return
@@ -591,3 +716,8 @@ func (m *campaignInferenceManager) notifyEvent(campaign data.Campaign, record da
 	request := DetectionNotification{ID: uuid.NewString(), Event: record.Name, Campaign: campaign.Name, Model: record.Model, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	job.enqueueNotification(request)
 }
+
+// watchRunner is completed in data_watch.go.
+type watchRunner struct{}
+
+func (*watchRunner) deliver(string, DetectionNotification) {}

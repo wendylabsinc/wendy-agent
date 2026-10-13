@@ -55,6 +55,7 @@ func dataStatusError(err error) error {
 
 type DataService struct {
 	inference    *campaignInferenceManager
+	watches      *watchRunner
 	video        inferenceVideo
 	deploymentMu sync.Mutex
 	agentpbv2.UnimplementedDataServiceServer
