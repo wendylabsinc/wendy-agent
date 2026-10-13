@@ -178,7 +178,7 @@ func (s *mcpServer) handleWatchStart(ctx context.Context, req mcpgo.CallToolRequ
 	if label == "" {
 		label = chosen.Name
 	}
-	view, err := m.start(ctx, conn, revision, watchSpec{CameraID: chosen.ID, CameraName: chosen.Name, Classes: classes, MinConfidence: confidence, Label: label})
+	view, err := m.start(ctx, conn, revision, watchSpec{CameraID: chosen.ID, CameraName: chosen.Name, Classes: classes, MinConfidence: confidence, Label: label, Detector: defaultWatchDetector})
 	if err != nil {
 		return watchErrorResult(err), nil
 	}
@@ -258,7 +258,7 @@ func (s *mcpServer) startWatches(srv *server.MCPServer) func() {
 	notify := func(method string, params map[string]any) error {
 		return srv.SendNotificationToSpecificClient("stdio", method, params)
 	}
-	m := newWatchManager(newCampaignWatchBackend(defaultWatchDetector), notify, func() uint64 {
+	m := newWatchManager(newDocumentWatchBackend(), notify, func() uint64 {
 		_, revision := s.connWithRevision()
 		return revision
 	})

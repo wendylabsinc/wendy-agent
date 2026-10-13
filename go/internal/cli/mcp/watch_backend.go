@@ -18,15 +18,18 @@ const (
 	watchEnded     watchState = "ENDED"
 )
 
-// watchSpec is what a watch asked for. Name is the device-side identity the
-// manager assigns (a campaign name for the campaign backend).
+// watchSpec is what a watch asked for.
 type watchSpec struct {
+	// Name is the device-side identity the manager assigns: the name of the
+	// watch document and of the inference document it owns.
 	Name          string
 	CameraID      string
 	CameraName    string
 	Classes       []string
 	MinConfidence float64
 	Label         string
+	// Detector is the vetted detector chosen for the classes (watch_detector.go).
+	Detector watchDetector
 }
 
 // watchClass is one detected class and its score.

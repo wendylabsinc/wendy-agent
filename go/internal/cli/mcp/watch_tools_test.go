@@ -27,7 +27,7 @@ func watchToolServer(t *testing.T) (*mcpServer, *watchDataClient, *notificationL
 	s := New(&config.Config{}, nil)
 	s.SetConn(&grpcclient.AgentConnection{DataService: client})
 	log := &notificationLog{}
-	m := newWatchManager(fastCampaignBackend(), log.notify, func() uint64 { _, r := s.connWithRevision(); return r })
+	m := newWatchManager(fastDocumentBackend(), log.notify, func() uint64 { _, r := s.connWithRevision(); return r })
 	m.startWait = 2 * time.Second
 	s.mu.Lock()
 	s.watches = m
@@ -160,7 +160,7 @@ func TestWatchToolsValidateIDsAndWaits(t *testing.T) {
 
 func TestWatchToolsNeedAConnection(t *testing.T) {
 	s := New(&config.Config{}, nil)
-	m := newWatchManager(fastCampaignBackend(), nil, func() uint64 { return 0 })
+	m := newWatchManager(fastDocumentBackend(), nil, func() uint64 { return 0 })
 	s.mu.Lock()
 	s.watches = m
 	s.mu.Unlock()
@@ -185,11 +185,11 @@ func TestWatchToolsEndToEnd(t *testing.T) {
 	if isErr || started["watch_id"] != "w1" || started["label"] != "Brio 101" || started["state"] != "READY" || started["next_step"] == "" {
 		t.Fatalf("start %v", started)
 	}
-	names := client.deployedNames()
-	if len(names) != 1 {
+	names := client.documentRefs()
+	if len(names) != 2 || !strings.HasPrefix(names[0], "inference/") || !strings.HasPrefix(names[1], "watch/") {
 		t.Fatalf("deployed %v", names)
 	}
-	name := names[0]
+	name := strings.TrimPrefix(names[1], "watch/")
 	client.publish(name, data.NotificationDetection{Label: "person", Score: 0.91})
 	events, _ := callWatchTool(t, s, "watch_events", map[string]any{"watch_id": "w1", "wait_seconds": 2})
 	list := events["events"].([]any)
@@ -205,8 +205,8 @@ func TestWatchToolsEndToEnd(t *testing.T) {
 	if isErr || stopped["state"] != "ENDED" || stopped["removed"] != true {
 		t.Fatalf("stop %v", stopped)
 	}
-	if _, ok := client.campaign(name); ok {
-		t.Fatal("watch_stop left the campaign on the device")
+	if refs := client.documentRefs(); len(refs) != 0 {
+		t.Fatalf("watch_stop left %v on the device", refs)
 	}
 	if out, isErr := callWatchTool(t, s, "watch_stop", map[string]any{"watch_id": "w7"}); !isErr || out["error_code"] != "NOT_FOUND" {
 		t.Fatalf("unknown watch: %v", out)
@@ -237,7 +237,7 @@ func TestWatchStopReportsADeviceThatDoesNotAnswer(t *testing.T) {
 
 func TestWatchStartOnAnOldAgent(t *testing.T) {
 	s, client, _ := watchToolServer(t)
-	client.deployErr = status.Error(codes.InvalidArgument, "parsing campaign YAML: yaml: unmarshal errors:\n  line 3: field lease not found in type data.Campaign")
+	client.applyErr[data.KindWatch] = status.Error(codes.Unimplemented, "unknown method DocumentApply")
 	out, isErr := callWatchTool(t, s, "watch_start", map[string]any{"camera": "v4l2:/dev/video0", "classes": []any{"person"}})
 	if !isErr || out["error_code"] != "UNSUPPORTED" || !strings.Contains(out["message"].(string), "wendy device update") {
 		t.Fatalf("got %v", out)
@@ -262,7 +262,7 @@ func startWatchInBackground(t *testing.T, s *mcpServer) <-chan struct{} {
 
 func TestWatchStopDuringADeployRemovesTheWatch(t *testing.T) {
 	s, client, _ := watchToolServer(t)
-	client.deployWait = 200 * time.Millisecond
+	client.applyWait = 200 * time.Millisecond
 	started := startWatchInBackground(t, s)
 	stopped, isErr := callWatchTool(t, s, "watch_stop", map[string]any{"watch_id": "w1"})
 	if isErr || stopped["state"] != "ENDED" || stopped["removed"] != true {
@@ -271,7 +271,7 @@ func TestWatchStopDuringADeployRemovesTheWatch(t *testing.T) {
 	if removed := client.callLog(); !slices.ContainsFunc(removed, func(call string) bool { return strings.HasPrefix(call, "remove:") }) {
 		t.Fatalf("watch_stop reported removed before any removal: %v", removed)
 	}
-	if names := client.deployedNames(); len(names) != 0 {
+	if names := client.documentRefs(); len(names) != 0 {
 		t.Fatalf("watch_stop left %v on the device", names)
 	}
 	<-started
@@ -280,7 +280,7 @@ func TestWatchStopDuringADeployRemovesTheWatch(t *testing.T) {
 func TestWatchStopDuringALongDeployReportsThePendingRemoval(t *testing.T) {
 	s, client, _ := watchToolServer(t)
 	s.watchManager().stopTimeout = 50 * time.Millisecond
-	client.deployWait = 300 * time.Millisecond
+	client.applyWait = 300 * time.Millisecond
 	started := startWatchInBackground(t, s)
 	stopped, isErr := callWatchTool(t, s, "watch_stop", map[string]any{"watch_id": "w1"})
 	message, _ := stopped["message"].(string)
@@ -288,15 +288,15 @@ func TestWatchStopDuringALongDeployReportsThePendingRemoval(t *testing.T) {
 		t.Fatalf("stop %v", stopped)
 	}
 	<-started
-	if names := client.deployedNames(); len(names) != 0 {
+	if names := client.documentRefs(); len(names) != 0 {
 		t.Fatalf("the late deploy was left on the device: %v", names)
 	}
 }
 
 func TestWatchStopDuringADeployTheDeviceNeverConfirmed(t *testing.T) {
 	s, client, _ := watchToolServer(t)
-	s.watchManager().backend.(*campaignWatchBackend).deployTimeout = 300 * time.Millisecond
-	client.deployWait = 5 * time.Second
+	s.watchManager().backend.(*documentWatchBackend).deployTimeout = 300 * time.Millisecond
+	client.applyWait = 5 * time.Second
 	started := startWatchInBackground(t, s)
 	stopped, isErr := callWatchTool(t, s, "watch_stop", map[string]any{"watch_id": "w1"})
 	message, _ := stopped["message"].(string)
@@ -308,8 +308,8 @@ func TestWatchStopDuringADeployTheDeviceNeverConfirmed(t *testing.T) {
 
 func TestWatchStartOnABusyDevice(t *testing.T) {
 	s, client, _ := watchToolServer(t)
-	s.watchManager().backend.(*campaignWatchBackend).deployTimeout = 50 * time.Millisecond
-	client.deployWait = 5 * time.Second
+	s.watchManager().backend.(*documentWatchBackend).deployTimeout = 50 * time.Millisecond
+	client.applyWait = 5 * time.Second
 	out, isErr := callWatchTool(t, s, "watch_start", map[string]any{"camera": "v4l2:/dev/video0", "classes": []any{"person"}})
 	message, _ := out["message"].(string)
 	if !isErr || out["error_code"] != "TIMEOUT" || !strings.Contains(message, "busy") || !strings.Contains(message, "removes itself") {
@@ -359,7 +359,7 @@ func TestWatchToolsReportAnAgentWithoutTheDataService(t *testing.T) {
 			t.Fatalf("%s: %v", name, out)
 		}
 	}
-	if names := client.deployedNames(); len(names) != 0 {
+	if names := client.documentRefs(); len(names) != 0 {
 		t.Fatalf("deployed %v", names)
 	}
 }
