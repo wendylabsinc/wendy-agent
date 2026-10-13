@@ -342,6 +342,12 @@ func awaitSimulatorWith(ctx context.Context, name, addr string, booting bool,
 	if booting {
 		label = fmt.Sprintf("Booting simulator %s (first boot under emulation takes a few minutes)...", name)
 	}
+	if isRobotTour(ctx) {
+		label = "Connecting to your robot..."
+		if booting {
+			label = "Starting your robot..."
+		}
+	}
 
 	var conn *grpcclient.AgentConnection
 	var err error

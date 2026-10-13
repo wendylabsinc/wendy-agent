@@ -28,15 +28,23 @@ var updateLockTimeout = 10 * time.Second
 // fn must not call Update: the lock is not reentrant, so it would wait out
 // updateLockTimeout and fail.
 func Update(fn func(cfg *Config) (changed bool, err error)) error {
+	return UpdateWithTimeout(updateLockTimeout, fn)
+}
+
+// UpdateWithTimeout performs the same locked load-modify-save as Update, but
+// bounds the time spent waiting for the lock. A nonpositive timeout tries the
+// lock once without waiting. The timeout does not interrupt fn or a file write
+// after the lock is acquired.
+func UpdateWithTimeout(timeout time.Duration, fn func(cfg *Config) (changed bool, err error)) error {
 	dir, err := ConfigDir()
 	if err != nil {
 		return err
 	}
 	lockPath := filepath.Join(dir, lockFileName)
-	release, err := flock.Acquire(lockPath, updateLockTimeout)
+	release, err := flock.Acquire(lockPath, timeout)
 	if err != nil {
 		if errors.Is(err, flock.ErrTimeout) {
-			return fmt.Errorf("%w: another wendy process has held %s for over %s; retry once it finishes", flock.ErrTimeout, lockPath, updateLockTimeout)
+			return fmt.Errorf("%w: another wendy process has held %s for over %s; retry once it finishes", flock.ErrTimeout, lockPath, timeout)
 		}
 		return fmt.Errorf("locking %s: %w", lockPath, err)
 	}

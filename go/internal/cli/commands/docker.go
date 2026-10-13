@@ -28,10 +28,12 @@ import (
 	"syscall"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/optimize"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/buildargs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -184,7 +186,8 @@ func normalizeImageBuilder(builder string) (string, error) {
 	case imageBuilderBuildkit:
 		return imageBuilderBuildkit, nil
 	default:
-		return "", commandErrorf(errConfigInvalid, "invalid value %q for --builder: must be one of docker, apple-container, or buildkit", builder)
+		// The value comes from the --builder flag: the command line is wrong.
+		return "", markUsage(commandErrorf(errConfigInvalid, "invalid value %q for --builder: must be one of docker, apple-container, or buildkit", builder))
 	}
 }
 
@@ -1165,7 +1168,21 @@ var (
 		installCmd.Stderr = os.Stderr
 		return installCmd.Run()
 	}
+	dockerConfirmFn = func(ctx context.Context, question string) (bool, error) {
+		return tui.ConfirmDefaultYes(question, tea.WithContext(ctx), tea.WithOutput(os.Stderr))
+	}
 )
+
+func confirmDockerRuntime(ctx context.Context, question string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	accepted, err := dockerConfirmFn(ctx, question)
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	return mapConfirmCancel(accepted, err)
+}
 
 // dockerVersionProbeTimeout bounds each `docker version` probe that
 // ensureDockerDaemon runs on the `wendy run` / `wendy build` path. The probe
@@ -1265,7 +1282,11 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 		if !cliOnPath {
 			if !hasRuntime {
 				if isInteractiveTerminalFn() {
-					if !confirmFn("Docker runtime app and docker CLI were not found. Install Docker Desktop now with 'brew install --cask docker'?") {
+					accepted, err := confirmDockerRuntime(ctx, "Docker runtime app and docker CLI were not found. Install Docker Desktop now with 'brew install --cask docker'?")
+					if err != nil {
+						return err
+					}
+					if !accepted {
 						return commandErrorf(errBuilderUnavailable, "Docker runtime app is not installed — install Docker Desktop, OrbStack, or Rancher Desktop")
 					}
 					fmt.Fprintf(os.Stderr, "[docker] Installing Docker Desktop via Homebrew...\n")
@@ -1307,11 +1328,18 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 		// Ask first when a prompt can be drawn; with output piped (e.g.
 		// `wendy run | tee`), open it without asking, as before.
 		if isInteractiveTerminalFn() {
-			if !confirmFn(fmt.Sprintf("Docker daemon is not running or is still starting for %s. Open it now?", rt.name)) {
+			accepted, err := confirmDockerRuntime(ctx, fmt.Sprintf("Docker daemon is not running or is still starting for %s. Open it now?", rt.name))
+			if err != nil {
+				return err
+			}
+			if !accepted {
 				return commandErrorf(errBuilderUnavailable, "docker daemon is not running — please start %s and try again", rt.name)
 			}
 		}
 
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		fmt.Fprintf(os.Stderr, "[docker] Opening %s...\n", rt.name)
 		if err := dockerOpenRuntimeFn(ctx, rt.app); err != nil {
 			return commandErrorf(errBuilderUnavailable, "docker daemon is not running: could not open %s: %w", rt.name, err)

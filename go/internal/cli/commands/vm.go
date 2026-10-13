@@ -137,12 +137,19 @@ var promptVMCreateNameFn = func() (string, error) {
 // runVMCreate provisions a VM from a local image when one is named, and from the
 // published image otherwise.
 func runVMCreate(cmd *cobra.Command, name, image, version string, diskGiB int, nightly bool, pr int) error {
-	return createVM(cmd.OutOrStdout(), name, image, version, diskGiB, nightly, pr)
+	return createVMContext(cmd.Context(), cmd.OutOrStdout(), name, image, version, diskGiB, nightly, pr)
 }
 
 // createVM provisions a VM, writing progress to out. Split from the cobra
 // command so the simulator picker can provision one without a *cobra.Command.
 func createVM(out io.Writer, name, image, version string, diskGiB int, nightly bool, pr int) error {
+	return createVMContext(context.Background(), out, name, image, version, diskGiB, nightly, pr)
+}
+
+func createVMContext(ctx context.Context, out io.Writer, name, image, version string, diskGiB int, nightly bool, pr int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if image != "" && (version != "" || nightly || pr > 0) {
 		return fmt.Errorf("--image cannot be combined with --version, --nightly or --pr: a local image is already a specific build")
 	}
@@ -169,10 +176,13 @@ func createVM(out io.Writer, name, image, version string, diskGiB int, nightly b
 	path, resolvedVersion := image, ""
 	if path == "" {
 		var cleanup func()
-		if path, resolvedVersion, cleanup, err = fetchPublishedVMImage(version, nightly, pr); err != nil {
+		if path, resolvedVersion, cleanup, err = fetchPublishedVMImageContext(ctx, version, nightly, pr); err != nil {
 			return err
 		}
 		defer cleanup()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// Published images and cached copies are compressed; sniff rather than trust
@@ -184,7 +194,7 @@ func createVM(out io.Writer, name, image, version string, diskGiB int, nightly b
 	defer stream.Close()
 
 	meta := vm.Meta{ImageVersion: resolvedVersion, ImageSource: vmImageSource(image, nightly, pr)}
-	if err := store.CreateFrom(name, stream, stream.uncompressedSize, int64(diskGiB)<<30, meta); err != nil {
+	if err := store.CreateFromContext(ctx, name, stream, stream.uncompressedSize, int64(diskGiB)<<30, meta); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Created VM %q. Start it with 'wendy vm start %s'.\n", name, name)
@@ -776,9 +786,13 @@ const (
 // it resolved to, which the caller records so a stopped VM still knows what it
 // is running.
 func fetchPublishedVMImage(version string, nightly bool, pr int) (string, string, func(), error) {
-	fetchMain := fetchMainManifest
+	return fetchPublishedVMImageContext(context.Background(), version, nightly, pr)
+}
+
+func fetchPublishedVMImageContext(ctx context.Context, version string, nightly bool, pr int) (string, string, func(), error) {
+	fetchMain := func() (*mainManifest, error) { return fetchMainManifestContext(ctx) }
 	if pr > 0 {
-		fetchMain = func() (*mainManifest, error) { return fetchPRMainManifest(pr) }
+		fetchMain = func() (*mainManifest, error) { return fetchPRMainManifestContext(ctx, pr) }
 	}
 	mm, err := fetchMain()
 	if err != nil {
@@ -807,7 +821,7 @@ func fetchPublishedVMImage(version string, nightly bool, pr int) (string, string
 		return "", "", nil, fmt.Errorf("no %s release published yet; retry with --nightly, or build one and pass --image", vmDeviceKey)
 	}
 
-	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	dm, err := fetchDeviceManifestContext(ctx, dev.ManifestPath)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -816,7 +830,7 @@ func fetchPublishedVMImage(version string, nightly bool, pr int) (string, string
 		return "", "", nil, err
 	}
 
-	path, cleanup, err := resolveVMImage(info)
+	path, cleanup, err := resolveVMImageContext(ctx, info)
 	return path, ver, cleanup, err
 }
 

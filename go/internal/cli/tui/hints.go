@@ -2,6 +2,7 @@ package tui
 
 import (
 	"math/rand"
+	"os"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -43,6 +44,9 @@ type hintRotator struct {
 
 // newHintRotator builds a rotator over ProgressHints with a random first hint.
 func newHintRotator() hintRotator {
+	if os.Getenv("WENDY_NO_PROGRESS_HINTS") == "1" {
+		return hintRotator{}
+	}
 	r := hintRotator{hints: ProgressHints}
 	if len(r.hints) > 0 {
 		r.current = r.hints[rand.Intn(len(r.hints))]
@@ -52,6 +56,9 @@ func newHintRotator() hintRotator {
 
 // tick returns a command that fires a hintTickMsg after hintInterval.
 func (r hintRotator) tick() tea.Cmd {
+	if len(r.hints) == 0 {
+		return nil
+	}
 	return tea.Tick(hintInterval, func(time.Time) tea.Msg {
 		return hintTickMsg{}
 	})

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
@@ -117,7 +118,11 @@ func TestToolAnalyticsProtocol(t *testing.T) {
 				if err != nil || duration < 0 {
 					t.Fatalf("invalid duration: %q", got.props["duration_ms"])
 				}
+				if _, err := uuid.Parse(got.props["attempt_id"]); err != nil {
+					t.Fatalf("invalid attempt id: %v", err)
+				}
 				want := map[string]string{
+					"attempt_id": got.props["attempt_id"], "entrypoint": "mcp",
 					"command_name": tc.command, "command_root": "mcp",
 					"success": strconv.FormatBool(tc.errorClass == ""), "duration_ms": got.props["duration_ms"],
 					"is_dev_build": strconv.FormatBool(version.IsDev(version.Version)),
@@ -171,7 +176,13 @@ func TestToolAnalyticsConcurrentCalls(t *testing.T) {
 	wg.Wait()
 	close(events)
 	total := 0
+	seenAttempts := map[string]bool{}
 	for props := range events {
+		if id := props["attempt_id"]; id == "" || seenAttempts[id] {
+			t.Fatal("concurrent MCP calls reused an attempt")
+		} else {
+			seenAttempts[id] = true
+		}
 		total++
 		wantSuccess := props["command_name"] == "wendy mcp success"
 		if props["success"] != strconv.FormatBool(wantSuccess) {

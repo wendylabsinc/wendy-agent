@@ -16,6 +16,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/onboarding"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashengine"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
@@ -182,7 +183,15 @@ func launchInstallJob(_ context.Context, j *onboarding.Job) error {
 
 func newOSInstallJobsCmd() *cobra.Command {
 	var root string
-	cmd := &cobra.Command{Use: "jobs", Short: "Start, inspect and resume durable installation jobs", PersistentPreRunE: func(*cobra.Command, []string) error { return nil }, PersistentPostRunE: func(*cobra.Command, []string) error { return nil }}
+	cmd := &cobra.Command{Use: "jobs", Short: "Start, inspect and resume durable installation jobs", PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+		// Initialize only telemetry, preserving the job path's no-migration/no-prompt behavior.
+		cfg, err := config.Load()
+		if err == nil {
+			analytics.Init(cfg)
+			analytics.TrackStage(cmd.Context(), "cli_seen", cmd.CommandPath(), "completed", "", nil)
+		}
+		return nil
+	}, PersistentPostRunE: func(*cobra.Command, []string) error { return nil }}
 	cmd.PersistentFlags().StringVar(&root, "job-root", "", "Installation job directory (normally ~/.wendy/install-jobs)")
 	var start onboarding.StartOptions
 	startCmd := &cobra.Command{Use: "start", Short: "Plan a job and return physical setup instructions without writing", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
@@ -248,7 +257,27 @@ func newOSInstallJobsCmd() *cobra.Command {
 
 // executeInstallJob calls the same image, RCM, T234 and Thor engines as the
 // terminal installer. It has no input prompts, target picker or implicit retry.
-func executeInstallJob(ctx context.Context, j *onboarding.Job, checkpoint onboarding.Checkpoint) error {
+func executeInstallJob(ctx context.Context, j *onboarding.Job, checkpoint onboarding.Checkpoint) (retErr error) {
+	ctx = analytics.WithAttemptID(ctx, j.AnalyticsAttemptID)
+	ctx, finish := startActivationOperation(ctx, "install", "wendy install jobs")
+	defer func() { finish(retErr) }()
+	originalCheckpoint := checkpoint
+	checkpoint = func(phase string, beginsWrite bool) error {
+		// Durable worker phases contain no user values, but still map them to
+		// the same bounded public step names as the terminal installer.
+		step := "prepare"
+		if strings.Contains(phase, "download") {
+			step = "download"
+		} else if strings.Contains(phase, "verify") {
+			step = "verify_image"
+		}
+		if beginsWrite {
+			step = "flash"
+		}
+		activationStep(ctx, step, nil)
+		return originalCheckpoint(phase, beginsWrite)
+	}
+	activationStep(ctx, "permission", nil)
 	if err := installJobPrivileges(ctx, j); err != nil {
 		return err
 	}
@@ -295,6 +324,7 @@ func executeMediaInstallJob(ctx context.Context, j *onboarding.Job, checkpoint o
 		return err
 	}
 	defer os.Remove(path)
+	activationStep(ctx, "verify_image", nil)
 	if err := verifySHA256(path, j.Plan.ArtifactSHA256); err != nil {
 		return err
 	}

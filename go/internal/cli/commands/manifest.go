@@ -292,9 +292,17 @@ func prBasePath(pr int) string {
 // fetchPRMainManifest fetches the per-PR master manifest written by the
 // wendyos-builder publish-pr job.
 func fetchPRMainManifest(pr int) (*mainManifest, error) {
+	return fetchPRMainManifestContext(context.Background(), pr)
+}
+
+func fetchPRMainManifestContext(ctx context.Context, pr int) (*mainManifest, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	url := gcsBaseURL + "/" + prBasePath(pr) + "manifests/master.json"
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching PR %d manifest: %w: %w", pr, ErrManifestUnreachable, err)
 	}

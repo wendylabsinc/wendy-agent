@@ -2,6 +2,7 @@
 package commands
 
 import (
+	"context"
 	"os"
 	"strings"
 
@@ -14,6 +15,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
+
+const DiscordSupportPrompt = "Get support in our Discord community: https://discord.gg/wendylabsinc"
 
 var (
 	jsonOutput bool
@@ -63,6 +66,7 @@ func NewRootCmd() *cobra.Command {
 			premark("  prerun: config.Load")
 
 			firstRun = analytics.Init(cfg)
+			analytics.TrackStage(cmd.Context(), "cli_seen", cmd.CommandPath(), "completed", "", nil)
 			premark("  prerun: analytics.Init")
 			if firstRun {
 				showFirstRunNotice(cmd, cfg)
@@ -90,8 +94,11 @@ func NewRootCmd() *cobra.Command {
 			}
 
 			// mcp serve owns a cancellable periodic checker for its lifetime.
-			if cmd.CommandPath() != "wendy mcp serve" && dueCLIUpdateCheck(cfg) {
-				scheduleCLIUpdateCheck()
+			if cmd.CommandPath() != "wendy mcp serve" && cmd.Name() != cobra.ShellCompRequestCmd && !backgroundCLIUpdatesDisabled() && !strings.HasPrefix(cmd.CommandPath(), "wendy completion") {
+				cmd.SetContext(context.WithValue(cmd.Context(), cliUpdateNoticeEligible{}, true))
+				if dueCLIUpdateCheck(cfg) {
+					scheduleCLIUpdateCheck()
+				}
 			}
 			premark("  prerun: dueCLIUpdateCheck")
 
@@ -111,9 +118,14 @@ func NewRootCmd() *cobra.Command {
 
 			// Surface any pending CLI-update notice first. If it showed a prompt,
 			// don't stack the completion prompt on top of it this invocation.
-			updateShown, err := notifyCLIUpdate(cmd)
-			if err != nil {
-				return err
+			var updateShown bool
+			if cmd.Context().Value(cliUpdateNoticeEligible{}) == true {
+				waitCLIUpdateCheck(cmd.Context())
+				var updateErr error
+				updateShown, updateErr = notifyCLIUpdate(cmd)
+				if updateErr != nil {
+					cmd.PrintErrf("CLI update did not complete: %v\nYour command completed successfully. Retry with `wendy update`.\n", updateErr)
+				}
 			}
 
 			maybePromptInstallCompletions(cmd, firstRun, updateShown)
@@ -125,7 +137,10 @@ func NewRootCmd() *cobra.Command {
 	// Do not name the hidden --build-host flag here: this description shows in
 	// every command's --help (persistent flag), and the E2E help specs guard
 	// that the unreleased flag never leaks into help output.
-	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname; `wendy run` accepts a comma-separated list to deploy one build to several devices (needs a remote build host and --detach). Defaults to $WENDY_DEVICE, then the saved default device")
+	//
+	// pflag shows the first `backticked` word of a usage string as the flag's
+	// placeholder ("--device host"), so quote commands here with '...'.
+	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device `host` (hostname, IP, or host:port); 'wendy run' accepts a comma-separated list to deploy one build to several devices (needs a remote build host and --detach). Defaults to $WENDY_DEVICE, then the saved default device")
 
 	// Render the top-level command groups in the deliberate order below rather
 	// than alphabetically, so e.g. "project" lists before "device".
@@ -168,6 +183,10 @@ func NewRootCmd() *cobra.Command {
 	analyticsCmd.GroupID = "settings"
 	cacheCmd := newCacheCmd()
 	cacheCmd.GroupID = "settings"
+	updateCmd := newCLIUpdateCmd()
+	updateCmd.GroupID = "settings"
+	doctorCmd := newDoctorCmd()
+	doctorCmd.GroupID = "settings"
 	docsCmd := newDocsCmd()
 	docsCmd.GroupID = "settings"
 	tourCmd := newTourCmd()
@@ -277,6 +296,8 @@ func NewRootCmd() *cobra.Command {
 		analyticsCmd,
 		cacheCmd,
 		docsCmd,
+		doctorCmd,
+		updateCmd,
 		tourCmd,
 		// Hidden
 		agentCmd,
@@ -300,9 +321,11 @@ func NewRootCmd() *cobra.Command {
 
 	root.SetHelpCommandGroupID("settings")
 	root.SetCompletionCommandGroupID("settings")
+	root.SetHelpTemplate(root.HelpTemplate() + "{{if not .HasParent}}\n" + DiscordSupportPrompt + "\n{{end}}")
 
 	addUSBDriverCommand(root)
 	rejectStrayArguments(root)
+	markUsageErrors(root)
 
 	root.Version = version.Version
 	return root
@@ -356,8 +379,11 @@ func nextStepHint(commandPath string) string {
 }
 
 // maybeShowNextStep prints a next-step hint after a successful command. cobra
-// only runs PersistentPostRunE when RunE succeeded, so this is success-only. It
-// is suppressed for JSON output, non-interactive terminals, and CI.
+// only runs PersistentPostRunE when RunE succeeded, so this is success-only.
+// The hint is onboarding advice for a person at a terminal, so it is
+// suppressed in JSON mode (stderr there carries only the error envelope,
+// progress, and notices that change what the result means), for runs without
+// a terminal, and in CI.
 func maybeShowNextStep(cmd *cobra.Command) {
 	if jsonOutput || !isInteractiveTerminal() || env.IsCI() {
 		return

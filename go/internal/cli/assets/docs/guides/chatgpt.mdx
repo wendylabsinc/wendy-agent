@@ -94,6 +94,25 @@ wendy mcp setup chatgpt --developer-tools
 That additional server has its own target and permissions. It does not inherit
 the workspace's restrictions. Disable it with `--developer-tools=false`.
 
+## Work with Wendy Data
+
+Wendy's data skill covers [campaigns, recordings, and app-provided data](/docs/data).
+For example, ask:
+
+> Help me record device health around a machine fault with a Wendy Data campaign.
+
+General campaign and episode management uses `wendy data` commands through a
+local terminal. The developer MCP server provides connection state and
+documentation but does not expose those operations as dedicated tools. Without
+terminal access, the assistant can prepare a campaign and operator commands.
+After deploying, inspect a completed episode to check which sources recorded.
+
+The ChatGPT gateway also offers `deploy_yolo_detector`, `inspect_yolo_detector`,
+and `stop_yolo_detector` for persistent YOLO object detection without a local
+terminal. Inspect the detector after deployment to verify model and camera
+readiness. Subscribe to `wendy.data.notification` for ChatGPT delivery; creating
+a detector and subscribing to its notifications are separate operations.
+
 ## If Wendy does not appear
 
 - Check `wendy mcp setup chatgpt --help`. If the command is missing, update to a
