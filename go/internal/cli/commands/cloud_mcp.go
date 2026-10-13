@@ -113,7 +113,7 @@ func openRelaySession(ctx context.Context, auth *config.AuthConfig) (relayStream
 	return nil, nil, nil, fmt.Errorf("opening the relay session: %w", err)
 }
 
-// serveCloudMCP runs one relay session: it shows the pairing code, asks the
+// serveCloudMCP runs one relay session: it asks the
 // user about each web client that asks to bind, and serves the first accepted
 // one until the relay ends the session or ctx ends (Ctrl-C). Every cloud call
 // made meanwhile carries channel HOSTED_MCP with the client and session ids.
@@ -146,7 +146,7 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 	if manifestErr != nil {
 		term.printf("Warning: %v. Every pairing request will be denied; update the CLI or wait for the relay to publish this tool set.\n", manifestErr)
 	}
-	term.printf("Pairing code: %s\nGive this code to the Wendy connector in your web chat. Press Ctrl-C to end the session.\n", opened.GetPairingCode())
+	term.printf("Waiting for a web chat to pair: use the Wendy connector there, then check that the code it shows matches the one asked about here. Press Ctrl-C to end the session.\n")
 	var client string
 	for {
 		select {
@@ -167,9 +167,7 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 				term.printf("Denied %q: the relay's tool manifest does not match this CLI.\n", name)
 			case served != nil:
 				term.printf("Denied %q: this session already serves %q.\n", name, client)
-			case p.GetCode() != opened.GetPairingCode():
-				term.printf("Denied %q: it presented code %q, not this session's.\n", name, code)
-			case term.ask(ctx, fmt.Sprintf("%q (%s) asks to use this session with code %s. Allow? [y/N] ", name, id, code)):
+			case term.ask(ctx, fmt.Sprintf("%q (%s) wants to pair, code %s: accept? [y/N] ", name, id, code)):
 				if err := cloudrequest.SetChannel(cloudpbv2.RequestChannel_REQUEST_CHANNEL_HOSTED_MCP, p.GetClientId(), opened.GetSessionId()); err != nil {
 					return err
 				}

@@ -45,7 +45,7 @@ func testOpened(t *testing.T, manifestVersion string) *cloudpbv2.OpenRelaySessio
 		}
 		manifestVersion = m.Version
 	}
-	return &cloudpbv2.OpenRelaySessionResponse{SessionId: "sess-1", PairingCode: "ABCD-2345", ManifestVersion: manifestVersion}
+	return &cloudpbv2.OpenRelaySessionResponse{SessionId: "sess-1", ManifestVersion: manifestVersion}
 }
 
 // runRelaySession serves one relay session against script. The user's
@@ -103,11 +103,12 @@ func frame(seq uint64, binding, msg string) *cloudpbv2.RelaySessionResponse {
 }
 
 func TestCloudMCPDeniedPairingBindsNothing(t *testing.T) {
-	answers := make(chan string, 1)
+	answers := make(chan string, 2)
+	answers <- "n"
 	answers <- "n"
 	var decisions []*cloudpbv2.PairingDecision
 	done, out := runRelaySession(t, testOpened(t, ""), wendymcp.BindingPolicy{}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
-		// A wrong code is denied without asking the user.
+		// The relay mints the code; the user checks it against the chat's.
 		for _, p := range []*cloudpbv2.RelaySessionResponse{pairing("b0", "WRONG-0000"), pairing("b1", "ABCD-2345")} {
 			if err := stream.Send(p); err != nil {
 				return err
@@ -127,8 +128,8 @@ func TestCloudMCPDeniedPairingBindsNothing(t *testing.T) {
 	if len(decisions) != 2 || decisions[0].GetAccept() || decisions[1].GetAccept() || decisions[1].GetBindingId() != "b1" {
 		t.Fatalf("decisions %v, want b0 and b1 both denied", decisions)
 	}
-	if log := out.String(); !strings.Contains(log, "ABCD-2345") || strings.Count(log, "Allow?") != 1 {
-		t.Fatalf("want the pairing code shown and exactly one question:\n%s", log)
+	if log := out.String(); strings.Count(log, "wants to pair, code ") != 2 || !strings.Contains(log, "code ABCD-2345: accept?") {
+		t.Fatalf("want each pairing asked about with its code:\n%s", log)
 	}
 }
 
@@ -150,7 +151,7 @@ func TestCloudMCPManifestMismatchDeniesPairing(t *testing.T) {
 	if decision == nil || decision.GetAccept() || decision.GetBindingId() != "b1" {
 		t.Fatalf("decision %v, want b1 denied", decision)
 	}
-	if log := out.String(); !strings.Contains(log, "Warning:") || strings.Contains(log, "Allow?") {
+	if log := out.String(); !strings.Contains(log, "Warning:") || strings.Contains(log, "accept?") {
 		t.Fatalf("want a warning and no question:\n%s", log)
 	}
 }

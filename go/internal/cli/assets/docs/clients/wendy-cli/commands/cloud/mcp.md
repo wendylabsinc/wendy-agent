@@ -10,7 +10,7 @@ wendy cloud mcp [flags]
 
 ## Description
 
-`wendy cloud mcp` opens a session with the hosted Wendy MCP relay and prints a pairing code. Add the Wendy connector in your web chat, sign in, and give it the code. The CLI then shows the client's name, client ID and code and asks you to allow it.
+`wendy cloud mcp` opens a session with the hosted Wendy MCP relay. Add the Wendy connector in your web chat and sign in. When the chat first calls a tool, the relay shows a pairing code in the chat and the CLI asks you, with the client's name, client ID and the same code, whether to accept it. Accept only if the codes match. If the relay's published tool set differs from this CLI's, the CLI warns and refuses every pairing.
 
 Once allowed, the chat gets the same tools as [`wendy mcp serve`](/docs/integrations/mcp). Every call runs on your machine and is signed with your operator key; the relay holds no Wendy credential. Each call is shown as one log line with the client name, tool and outcome.
 
