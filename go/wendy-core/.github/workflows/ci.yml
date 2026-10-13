@@ -1,0 +1,22 @@
+name: Wendy Core CI
+
+on:
+  pull_request:
+    paths-ignore: ['bindings/**', 'README.md', 'documentation/binding-patterns/**']
+  push:
+    branches: [main]
+    paths-ignore: ['bindings/**', 'README.md', 'documentation/binding-patterns/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-core.yml

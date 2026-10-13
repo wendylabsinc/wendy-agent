@@ -1,48 +1,57 @@
-GO_MODULE := github.com/wendylabsinc/townhall
+PYTHON ?= python3
 BUILD_DIR := .build/sdk
-DESCRIPTOR := $(BUILD_DIR)/wendy-sdk.pb
-MANIFEST := $(BUILD_DIR)/api.json
-PROTO := proto/wendy/sdk/v1/sdk.proto
-HEADERS := include/Wendy
+PROTO := proto/wendy/core/v1/core.proto
+VERSION := $(shell $(PYTHON) tools/build.py version)
 
-.PHONY: all generate check documentation documentation-manifest compare-clean
+.PHONY: all check generate native wasm javascript python kotlin swift documentation documentation-manifest compare-clean
 
 all: check
 
-generate:
-	@mkdir -p gen $(BUILD_DIR)/tools
-	GOBIN="$(CURDIR)/$(BUILD_DIR)/tools" go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
-	protoc \
-		-I proto \
-		--plugin=protoc-gen-go="$(CURDIR)/$(BUILD_DIR)/tools/protoc-gen-go" \
-		--go_out=. \
-		--go_opt=module=$(GO_MODULE) \
-		$(PROTO)
-
-$(DESCRIPTOR): $(PROTO)
+$(BUILD_DIR)/wendy-core.pb: $(PROTO)
 	@mkdir -p $(BUILD_DIR)
-	protoc -I proto --include_imports --include_source_info \
-		--descriptor_set_out=$@ $(PROTO)
+	protoc -I proto --include_imports --include_source_info --descriptor_set_out=$@ $(PROTO)
 
-documentation-manifest: $(DESCRIPTOR)
-	go run ./cmd/wendy-sdk-docs snapshot \
-		--headers $(HEADERS) \
-		--descriptor $(DESCRIPTOR) \
-		--version 0.1.0-draft \
-		--output $(MANIFEST) \
-		--markdown $(BUILD_DIR)/ProtobufReference.md
+documentation-manifest: $(BUILD_DIR)/wendy-core.pb
+	go run ./cmd/wendy-core-docs snapshot --headers include/WendyCore \
+		--descriptor $(BUILD_DIR)/wendy-core.pb --version $(VERSION) \
+		--output $(BUILD_DIR)/api.json --markdown $(BUILD_DIR)/protobuf-reference.md
 
-documentation: documentation-manifest
-	@command -v doxygen >/dev/null || { echo "doxygen is required to render HTML" >&2; exit 1; }
-	doxygen Doxyfile
+generate: documentation-manifest
+	$(PYTHON) tools/generate.py
+
+native:
+	$(PYTHON) tools/build.py native
+
+wasm:
+	$(PYTHON) tools/build.py wasm
+
+javascript: native wasm
+	cd distributions/javascript && npm ci
+	$(PYTHON) tools/build.py node
+	cd distributions/javascript && npx playwright install chromium && npm test && npm run test:types
+	$(PYTHON) tools/build.py test-npm
+
+python: native
+	PYTHONPATH=distributions/python $(PYTHON) -m unittest discover -s distributions/python/tests -v
+
+kotlin: native
+	$(PYTHON) tools/build.py jni
+	cd distributions/kotlin && ./gradlew test --no-daemon
+
+swift: native
+	@if [ "$$(uname -s)" = Darwin ]; then \
+		xcodebuildmcp swift-package test --package-path "$(CURDIR)/distributions/swift"; \
+	else cd distributions/swift && swift test; fi
+
+check: generate native
+	go test ./...
+	go vet ./...
+	$(PYTHON) -m unittest discover -s tools -p 'test_*.py' -v
+	clang++ -x c++ -std=c++17 -fsyntax-only -Iinclude examples/c/hello.c
 
 compare-clean: documentation-manifest
-	go run ./cmd/wendy-sdk-docs compare \
-		--from Documentation/Versions/0.1.0-draft.json \
-		--to $(MANIFEST)
+	cmp documentation/versions/$(VERSION).json $(BUILD_DIR)/api.json
 
-check: generate documentation-manifest
-	git diff --exit-code -- gen
-	go test ./...
-	clang -std=c11 -fsyntax-only -Iinclude Examples/C/header-smoke.c
-	clang++ -x c++ -std=c++17 -fsyntax-only -Iinclude Examples/C/header-smoke.c
+# Snapshot extraction does not depend on Doxygen; only HTML/XML rendering does.
+documentation: documentation-manifest
+	doxygen Doxyfile

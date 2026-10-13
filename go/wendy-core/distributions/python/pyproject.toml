@@ -1,0 +1,9 @@
+[build-system]
+requires = ["setuptools>=77", "wheel>=0.45"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wendy-core"
+version = "0.1.0"
+description = "The Python incarnation of Wendy Core, not the Wendy Python SDK"
+requires-python = ">=3.9"

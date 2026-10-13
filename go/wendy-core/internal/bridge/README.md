@@ -1,14 +1,7 @@
-# C bridge adapter
+# Core bridge mechanics
 
-This directory is reserved for the thin adapter from `include/Wendy` into the public Go SDK and shared Go core.
+`cmd/wendy-core-native` exports the canonical C function from the shared Go engine. `cmd/wendy-core-wasm` projects that same function for browser execution. `native_loader.h` is private shared packaging glue for Node, Swift and JNI.
 
-A bridge operation will:
+These adapters own no product behavior. Future operation glue resolves opaque handles, decodes protobuf inputs, derives cancellation contexts, invokes the Go engine, and transfers outputs according to the normative contract. No Go pointers may cross the C ABI.
 
-1. resolve an opaque C handle without exposing a Go pointer;
-2. decode its versioned SDK protobuf request;
-3. derive a cancellable Go context;
-4. invoke the same Go operation used by the CLI;
-5. encode the response once into an owned C buffer; and
-6. complete exactly once with a response or structured error.
-
-The adapter owns no product validation, routing, authorization, retry, or presentation behavior.
+Go shared libraries remain loaded for the process lifetime; unloading a wrapper must not tear down the Go runtime. This does not imply future operation/device resources may leak—they will have explicit lifetimes.

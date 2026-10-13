@@ -1,10 +1,10 @@
-PROJECT_NAME           = "Wendy SDK"
-PROJECT_BRIEF          = "Cross-platform Wendy SDK C contract"
+PROJECT_NAME           = "Wendy Core"
+PROJECT_BRIEF          = "Standalone cross-language Core bridge contract"
 OUTPUT_DIRECTORY       = .build/sdk/site
-INPUT                  = include Documentation .build/sdk/ProtobufReference.md
+INPUT                  = include documentation .build/sdk/protobuf-reference.md
 RECURSIVE              = YES
 FILE_PATTERNS           = *.h *.md
-USE_MDFILE_AS_MAINPAGE = Documentation/MainPage.md
+USE_MDFILE_AS_MAINPAGE = documentation/main-page.md
 
 GENERATE_HTML          = YES
 GENERATE_XML           = YES
@@ -25,4 +25,4 @@ QUIET                  = YES
 
 ENABLE_PREPROCESSING   = YES
 MACRO_EXPANSION        = YES
-PREDEFINED             = WENDY_API= WENDY_CALL=
+PREDEFINED             = WENDY_CORE_CALL=
