@@ -17,6 +17,10 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
+// appToolSeparator joins an app's name and its tool's in the name the Wendy
+// MCP server registers: <app>__<tool> (internal/cli/mcp/container_mcp.go).
+const appToolSeparator = "__"
+
 type mcpToolClient interface {
 	ListTools(context.Context, mcpgo.ListToolsRequest) (*mcpgo.ListToolsResult, error)
 	CallTool(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error)
@@ -142,6 +146,9 @@ func (t *Tools) ListTools(ctx context.Context) ([]Tool, error) {
 			tool := Tool{
 				Name: remote.Name, Description: remote.Description, Parameters: parameters,
 				RequiresApproval: remote.Annotations.ReadOnlyHint == nil || !*remote.Annotations.ReadOnlyHint,
+				// Built-in tool names never contain the separator (pinned by
+				// a test in the mcp package).
+				AppProvided: strings.Contains(remote.Name, appToolSeparator),
 			}
 			available = append(available, tool)
 			known[tool.Name] = tool

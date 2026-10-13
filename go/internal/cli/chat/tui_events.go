@@ -115,9 +115,9 @@ func (m *chatModel) queueWatchNotice(n WatchNotice) {
 // An event turn starts at most this often; later reports merge into it.
 const watchTurnSpacing = 10 * time.Second
 
-// watchTurnRefusal is the tool result for a call that needs approval in an
-// event turn. Nobody asked for the turn, so nobody is asked to approve it,
-// and --yes does not cover it (design §7.3).
+// watchTurnRefusal is the tool result for a call that needs approval, or that
+// a device app provides, in an event turn. Nobody asked for the turn, so nobody
+// is asked to approve it, and --yes does not cover it (design §7.3).
 const watchTurnRefusal = "Not run: a watch report started this turn, not the user. Tell the user what you would do; they can ask you to."
 
 // watchTriggers reports whether n starts an event turn (design §7.2). Other

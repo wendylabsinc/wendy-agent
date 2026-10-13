@@ -695,7 +695,8 @@ func (m *chatModel) startTurnAtEntry(prompt, display string, captionIndex int) t
 
 // beginTurn runs prompt through the engine. The caller shows what started it.
 // A turn a watch report started (fromEvent) skips memory and runs no tool that
-// needs approval, so it never opens a prompt over what the user is typing.
+// needs approval or that a device app provides, so it never opens a prompt over
+// what the user is typing and no app acts with nobody present.
 func (m *chatModel) beginTurn(prompt string, fromEvent bool) tea.Cmd {
 	m.delegation = nil
 	m.turnReply = ""
@@ -747,7 +748,11 @@ func (m *chatModel) beginTurn(prompt string, fromEvent bool) tea.Cmd {
 				return false, ctx.Err()
 			}
 		}
-		err := engine.TurnWithOptions(ctx, prompt, emit, approve, TurnOptions{SkipMemory: fromEvent})
+		turnOptions := TurnOptions{SkipMemory: fromEvent}
+		if fromEvent {
+			turnOptions.AppToolRefusal = watchTurnRefusal
+		}
+		err := engine.TurnWithOptions(ctx, prompt, emit, approve, turnOptions)
 		// Completion uses the session context: canceling a turn must still notify
 		// the UI that it can accept another prompt after the worker has stopped.
 		select {

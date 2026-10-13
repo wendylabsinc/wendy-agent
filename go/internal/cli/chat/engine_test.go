@@ -297,3 +297,47 @@ func TestApprovalRefusalIsTheToolResultInChildrenToo(t *testing.T) {
 		t.Fatalf("a refused tool ran: parent %d child %d", len(parent.calls), len(child.calls))
 	}
 }
+
+// A tool a device app provides is refused in a turn that asks for it, whatever
+// the app's read-only hint says, and runs in any other turn. The refusal does
+// not ask the approver.
+func TestTurnRefusesAppToolsOnlyWhenAsked(t *testing.T) {
+	const reason = "Not run: app tools are not available in this turn."
+	for _, refuse := range []bool{true, false} {
+		executor := &engineTestExecutor{tools: []Tool{{Name: "robot__move", AppProvided: true}, {Name: "camera_list"}}}
+		var results map[string]string
+		provider := engineTestProvider(func(_ context.Context, messages []Message, _ []Tool, _ func(string)) (Message, error) {
+			if messages[len(messages)-1].Role == "tool" {
+				results = map[string]string{}
+				for _, m := range messages {
+					if m.Role == "tool" {
+						results[m.ToolCallID] = m.Content
+					}
+				}
+				return Message{Content: "Done."}, nil
+			}
+			return Message{ToolCalls: []ToolCall{
+				{ID: "move", Name: "robot__move", Arguments: json.RawMessage(`{}`)},
+				{ID: "list", Name: "camera_list", Arguments: json.RawMessage(`{}`)},
+			}}, nil
+		})
+		approver := func(context.Context, ToolCall) (bool, error) {
+			t.Error("the approver was asked about a tool that needs no approval")
+			return false, nil
+		}
+		opts := TurnOptions{}
+		if refuse {
+			opts.AppToolRefusal = reason
+		}
+		if err := NewEngine(provider, executor, "x").TurnWithOptions(context.Background(), "go", nil, approver, opts); err != nil {
+			t.Fatal(err)
+		}
+		wantRan, wantMove := 1, reason
+		if !refuse {
+			wantRan, wantMove = 2, results["move"]
+		}
+		if len(executor.calls) != wantRan || results["move"] != wantMove || (!refuse && results["move"] == reason) {
+			t.Fatalf("refuse=%v: ran %d, results %q", refuse, len(executor.calls), results)
+		}
+	}
+}

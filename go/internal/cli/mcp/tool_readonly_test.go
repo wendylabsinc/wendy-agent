@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -12,6 +13,14 @@ import (
 // so a tool belongs here only if calling it changes nothing on the device, in
 // Cloud or on this computer. Adding a name is a review decision: read the
 // tool's handler before you do.
+//
+// Two listed tools have effects that are not changes to the user's things:
+// wendy_tools changes which tools this session advertises (in memory only), and
+// the ros2_* tools' host scope may pull an inspector image onto the device.
+//
+// The list covers built-in tools only. A tool a device app provides
+// (<app>__<tool>) carries the app's own hint, which nothing here vouches for,
+// so chat refuses those in turns a watch event starts.
 var readOnlyTools = []string{
 	"app_inspect", "bluetooth_scan", "camera_controls", "camera_list", "cloud_discover", "cloud_ping",
 	"cloud_tunnel_list", "container_list", "container_stats", "device_info", "device_list", "device_os_logs",
@@ -42,6 +51,23 @@ func TestReadOnlyToolsAreAnExplicitList(t *testing.T) {
 	for _, name := range readOnlyTools {
 		if _, ok := srv.ListTools()[name]; !ok {
 			t.Errorf("readOnlyTools names %s, which is not a tool", name)
+		}
+	}
+}
+
+// Chat tells a device app's tool from a built-in one by the "__" in its name
+// (<app>__<tool>, see container_mcp.go) and refuses app tools in turns a watch
+// report started, whatever read-only hint the app sets. A built-in name with
+// that separator would be refused too, so none may have one.
+func TestNoBuiltInToolNameContainsTheAppSeparator(t *testing.T) {
+	s := New(&config.Config{}, nil)
+	srv, err := s.newProtocolServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range srv.ListTools() {
+		if strings.Contains(name, "__") {
+			t.Errorf("built-in tool %q contains \"__\", the separator of app tool names", name)
 		}
 	}
 }

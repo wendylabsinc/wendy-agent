@@ -785,3 +785,45 @@ func TestUIWatchEventPromptQuotesClasses(t *testing.T) {
 		t.Fatalf("a class broke out of the header:\n%s", prompt)
 	}
 }
+
+// An app's own read-only hint does not make its tool safe to run unattended:
+// an event turn refuses it like a tool that needs approval, and the user's
+// own turn runs it as before.
+func TestUIEventTurnRefusesAppProvidedToolsEvenWhenReadOnly(t *testing.T) {
+	results := map[string]string{}
+	provider := uiProviderFunc(func(_ context.Context, messages []Message, _ []Tool, _ func(string)) (Message, error) {
+		if messages[len(messages)-1].Role == "tool" {
+			for _, message := range messages {
+				if message.Role == "tool" {
+					results[message.ToolCallID] = message.Content
+				}
+			}
+			return Message{Content: "Done."}, nil
+		}
+		return Message{ToolCalls: []ToolCall{
+			{ID: "move", Name: "pilot__move", Arguments: json.RawMessage(`{}`)},
+			{ID: "list", Name: "camera_list", Arguments: json.RawMessage(`{}`)},
+		}}, nil
+	})
+	executor := &uiExecutor{tools: []Tool{{Name: "pilot__move", AppProvided: true}, {Name: "camera_list"}}}
+	m, _, _ := uiWatchModel(t, provider, executor)
+	deliver(m, watchEntered(0.9))
+	if !m.active {
+		t.Fatal("an arrival did not start a turn")
+	}
+	for m.active {
+		m.Update(uiNextEvent(t, m))
+		if m.approval != nil {
+			t.Fatal("an event turn opened an approval prompt")
+		}
+	}
+	if results["move"] != watchTurnRefusal || results["list"] != "tool completed" || executor.executed.Load() != 1 {
+		t.Fatalf("results %q, executed %d", results, executor.executed.Load())
+	}
+
+	m.submit("move forward")
+	uiDrainTurn(t, m)
+	if executor.executed.Load() != 3 {
+		t.Fatalf("the user's turn ran %d tools, want both", executor.executed.Load()-1)
+	}
+}

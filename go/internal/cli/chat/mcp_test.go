@@ -40,6 +40,10 @@ func TestMain(m *testing.M) {
 			}
 			return mcpgo.NewToolResultText(string(encoded)), nil
 		})
+		// An app's tool, as container_mcp.go names it, marked read-only by the app.
+		srv.AddTool(mcpgo.NewTool("pilot__move", mcpgo.WithReadOnlyHintAnnotation(true)), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			return mcpgo.NewToolResultText("moved"), nil
+		})
 		srv.AddTool(mcpgo.NewTool("test_write"), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 			return mcpgo.NewToolResultError("test mutation rejected"), nil
 		})
@@ -111,6 +115,9 @@ func TestMCPSubprocessInitializeListCallAndRefresh(t *testing.T) {
 	}
 	if byName["test_status"].RequiresApproval || !byName["test_write"].RequiresApproval || !byName["workspace_exec"].RequiresApproval {
 		t.Fatalf("incorrect approval annotations: %+v", byName)
+	}
+	if !byName["pilot__move"].AppProvided || byName["test_status"].AppProvided || byName["workspace_exec"].AppProvided {
+		t.Fatalf("only the app's tool is AppProvided: %+v", byName)
 	}
 	output, err := tools.Execute(ctx, ToolCall{Name: "test_status", Arguments: json.RawMessage(`{}`)})
 	if err != nil || strings.TrimSpace(output) != tools.workspace {
