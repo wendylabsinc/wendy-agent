@@ -1050,7 +1050,7 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 		err := connect(false)
 		// Cloud refuses a Lite leaf it no longer accepts (revoked, or not
 		// pki-core's Lite profile) before attestation: request a fresh one once.
-		if status.Code(err) == codes.PermissionDenied {
+		if s := status.Convert(err); s.Code() == codes.PermissionDenied && s.Message() == "invalid Lite principal request" {
 			err = connect(true)
 		}
 		if err != nil {
