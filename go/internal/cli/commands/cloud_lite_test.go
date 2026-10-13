@@ -7,13 +7,16 @@ import (
 	"crypto/elliptic"
 	"crypto/mldsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -145,9 +148,90 @@ type relayStubOpen struct {
 	principalRequest []byte
 }
 
+// Enforce the Lite broker's request profile before granting a relay session.
+func verifyLiteRelayOpen(open *wcomrelaypb.WendyComRelayOpen) error {
+	body := open.GetRequestBody()
+	artifact := open.GetPrincipalRequest()
+	if body == nil || artifact.GetKind() != "tunnel-principal-request+jws" {
+		return errors.New("missing Lite relay request body or signed descriptor")
+	}
+	parts := strings.Split(string(artifact.GetValue()), ".")
+	if len(parts) != 3 {
+		return errors.New("invalid Lite relay request signature")
+	}
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return err
+	}
+	var header struct {
+		Algorithm    string   `json:"alg"`
+		Type         string   `json:"typ"`
+		Certificates [][]byte `json:"x5c"`
+	}
+	if err := json.Unmarshal(headerJSON, &header); err != nil {
+		return err
+	}
+	if header.Algorithm != "ES256" || header.Type != artifact.GetKind() || len(header.Certificates) != 1 {
+		return errors.New("invalid Lite relay request signing profile")
+	}
+	leaf, err := x509.ParseCertificate(header.Certificates[0])
+	if err != nil {
+		return err
+	}
+	key, ok := leaf.PublicKey.(*ecdsa.PublicKey)
+	if !ok || key.Curve != elliptic.P256() {
+		return errors.New("Lite relay request does not carry a P-256 operator key")
+	}
+	if !bytes.Equal(body.GetCallerSigningPublicKeySpkiDer(), leaf.RawSubjectPublicKeyInfo) {
+		return errors.New("Lite relay caller key does not match its operator certificate")
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(signature) != 64 {
+		return errors.New("invalid Lite relay request signature encoding")
+	}
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if !ecdsa.Verify(key, digest[:], new(big.Int).SetBytes(signature[:32]), new(big.Int).SetBytes(signature[32:])) {
+		return errors.New("invalid Lite relay operator signature")
+	}
+	descriptorJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return err
+	}
+	var descriptor struct {
+		Audience  string `json:"aud"`
+		Operation string `json:"operation"`
+		BodyHash  string `json:"body_sha256"`
+		Target    struct {
+			AssetID string `json:"asset_id"`
+			Service string `json:"service"`
+		} `json:"target"`
+	}
+	if err := json.Unmarshal(descriptorJSON, &descriptor); err != nil {
+		return err
+	}
+	if descriptor.Audience != "pki-core/tunnel-attestation" || descriptor.Operation != "create_lite_tunnel" {
+		return fmt.Errorf("invalid Lite relay descriptor audience or operation: %q %q", descriptor.Audience, descriptor.Operation)
+	}
+	if body.GetService() != "wendycom" || descriptor.Target.Service != body.GetService() || descriptor.Target.AssetID != body.GetTargetAssetId() {
+		return errors.New("Lite relay descriptor does not match its target or WendyCom service")
+	}
+	rawBody, err := proto.MarshalOptions{Deterministic: true}.Marshal(body)
+	if err != nil {
+		return err
+	}
+	bodyHash := sha256.Sum256(rawBody)
+	if descriptor.BodyHash != base64.RawURLEncoding.EncodeToString(bodyHash[:]) {
+		return errors.New("Lite relay descriptor does not bind its request body")
+	}
+	return nil
+}
+
 func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_WendyComRelayServer) error {
 	first, err := stream.Recv()
 	if err != nil {
+		return err
+	}
+	if err := verifyLiteRelayOpen(first.GetOpen()); err != nil {
 		return err
 	}
 	md, _ := metadata.FromIncomingContext(stream.Context())
@@ -250,44 +334,112 @@ func (r *liteRelayStub) WendyComRelay(stream wcomrelaypb.WendyComRelayService_We
 // The whole path a picked Cloud Lite board takes: the Lite provider dials the
 // relay through this package's Cloud session and runs WendyCom end-to-end.
 func TestCloudLiteDeviceInfoGoesThroughTheRelayWithTheSession(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	relay := &liteRelayStub{opened: make(chan relayStubOpen, 1), endpoint: "http://" + lis.Addr().String()}
-	srv := grpc.NewServer()
-	wcomrelaypb.RegisterWendyComRelayServiceServer(srv, relay)
-	wcomrelaypb.RegisterWendyComRelayDiscoveryServiceServer(srv, relay)
-	go srv.Serve(lis)
-	t.Cleanup(srv.Stop)
+	for _, tc := range []struct {
+		name               string
+		includeClientChain bool
+		wrongDeviceCA      bool
+		missingDeviceCA    bool
+	}{
+		{name: "leaf-only Lite identity"},
+		{name: "bundled Lite identity", includeClientChain: true},
+		{name: "wrong device authority", includeClientChain: true, wrongDeviceCA: true},
+		{name: "missing device authority", includeClientChain: true, missingDeviceCA: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WENDY_LITE_OPERATOR_CERT", "")
+			t.Setenv("WENDY_LITE_OPERATOR_KEY", "")
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			relay := &liteRelayStub{opened: make(chan relayStubOpen, 1), endpoint: "http://" + lis.Addr().String()}
+			srv := grpc.NewServer()
+			wcomrelaypb.RegisterWendyComRelayServiceServer(srv, relay)
+			wcomrelaypb.RegisterWendyComRelayDiscoveryServiceServer(srv, relay)
+			go srv.Serve(lis)
+			t.Cleanup(srv.Stop)
 
-	// A non-:443 cloud is dialled without TLS, like a local Cloud.
-	auth := liteTestAuth(lis.Addr().String())
-	auth.APIKey = "api-key-123"
-	auth.Certificates, relay.tlsConfig = liteRelayTestPKI(t)
-	auth.LiteCertificate = auth.Certificates[0].PemCertificate + auth.Certificates[0].PemCertificateChain
-	auth.LitePrivateKey = auth.Certificates[0].PemPrivateKey
-	liteRelaySigningIdentity(t, auth.Certificates[0].PrincipalURI)
-	t.Setenv("WENDY_SECRET_STORE", "file")
-	setTempConfig(t, &config.Config{Auth: []config.AuthConfig{*auth}})
+			// A non-:443 cloud is dialled without TLS, like a local Cloud.
+			auth := liteTestAuth(lis.Addr().String())
+			auth.APIKey = "api-key-123"
+			auth.Certificates, relay.tlsConfig = liteRelayTestPKI(t)
+			// Lite operator leaves and device leaves have separate issuing authorities.
+			// The primary session's CA chain trusts the device; the Lite authority
+			// trusts the operator and must never replace that device trust.
+			lite, liteTLS := liteRelayTestPKI(t)
+			relay.tlsConfig.ClientCAs = liteTLS.ClientCAs
+			auth.LiteCertificate = lite[0].PemCertificate
+			if tc.includeClientChain {
+				auth.LiteCertificate += lite[0].PemCertificateChain
+			}
+			auth.LitePrivateKey = lite[0].PemPrivateKey
+			if tc.wrongDeviceCA {
+				auth.Certificates[0].PemCertificateChain = lite[0].PemCertificateChain
+			}
+			if tc.missingDeviceCA {
+				auth.Certificates[0].PemCertificateChain = ""
+			}
+			liteLeaf, _ := pem.Decode([]byte(lite[0].PemCertificate))
+			relay.tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+				wantCertificates := 1
+				if tc.includeClientChain {
+					wantCertificates++
+				}
+				if len(state.PeerCertificates) != wantCertificates || !bytes.Equal(state.PeerCertificates[0].Raw, liteLeaf.Bytes) {
+					return fmt.Errorf("mTLS did not preserve the selected Lite certificate chain")
+				}
+				if tc.includeClientChain {
+					liteCA, _ := pem.Decode([]byte(lite[0].PemCertificateChain))
+					if !bytes.Equal(state.PeerCertificates[1].Raw, liteCA.Bytes) {
+						return fmt.Errorf("mTLS sent the device trust chain as the Lite operator chain")
+					}
+				}
+				return nil
+			}
+			t.Setenv("WENDY_SECRET_STORE", "file")
+			setTempConfig(t, &config.Config{Auth: []config.AuthConfig{*auth}})
 
-	selected, err := cloudLiteSelectedDevice(auth, liteCloudAsset(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, err := selected.Provider.GetDeviceInfo(context.Background(), *selected.External)
-	if err != nil {
-		t.Fatalf("GetDeviceInfo: %v", err)
-	}
-	if info.OS != "wendy-lite" || info.OSVersion != "0.9.1" || info.DeviceType != "esp32c6" {
-		t.Errorf("device info = %+v, want the board's", info)
-	}
-	open := <-relay.opened
-	if open.assetID != liteTestAssetID {
-		t.Errorf("relay opened asset %q, want %q", open.assetID, liteTestAssetID)
-	}
-	if len(open.authorization) != 1 || open.authorization[0] != "Bearer api-key-123" {
-		t.Errorf("relay saw authorization %q, want the Cloud session's", open.authorization)
+			selected, err := cloudLiteSelectedDevice(auth, liteCloudAsset(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := selected.Provider.GetDeviceInfo(context.Background(), *selected.External)
+			if tc.wrongDeviceCA || tc.missingDeviceCA {
+				if err == nil {
+					t.Fatal("connected without the device's trusted authority")
+				}
+				if tc.wrongDeviceCA && !strings.Contains(err.Error(), "unknown authority") {
+					t.Fatalf("expected device certificate verification failure, got %v", err)
+				}
+				if tc.missingDeviceCA {
+					if !strings.Contains(err.Error(), "no device CA chain") {
+						t.Fatalf("expected missing device trust error, got %v", err)
+					}
+					select {
+					case <-relay.opened:
+						t.Fatal("opened a relay without a device trust chain")
+					default:
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetDeviceInfo: %v", err)
+			}
+			if info.OS != "wendy-lite" || info.OSVersion != "0.9.1" || info.DeviceType != "esp32c6" {
+				t.Errorf("device info = %+v, want the board's", info)
+			}
+			open := <-relay.opened
+			if open.assetID != liteTestAssetID {
+				t.Errorf("relay opened asset %q, want %q", open.assetID, liteTestAssetID)
+			}
+			if len(open.authorization) != 1 || open.authorization[0] != "Bearer api-key-123" {
+				t.Errorf("relay saw authorization %q, want the Cloud session's", open.authorization)
+			}
+			if got := relayRequestCertificate(t, open.principalRequest); !bytes.Equal(got, liteLeaf.Bytes) {
+				t.Fatal("relay request did not use the selected Lite certificate")
+			}
+		})
 	}
 }
 

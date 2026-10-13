@@ -110,30 +110,10 @@ func dialLiteCloudRelay(ctx context.Context, device models.ExternalDevice, renew
 		return nil, nil, options, err
 	}
 	options.Redial = func(ctx context.Context, endpoint string) (*grpc.ClientConn, context.Context, error) {
-		u, err := url.Parse(endpoint)
-		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-			return nil, nil, fmt.Errorf("invalid Lite broker endpoint")
-		}
-		transport := grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, ServerName: u.Hostname()}))
-		if u.Scheme != "https" {
-			ip := net.ParseIP(u.Hostname())
-			if u.Scheme != "http" || !(u.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())) {
-				return nil, nil, fmt.Errorf("Lite broker endpoint must use HTTPS")
-			}
-			transport = grpc.WithTransportCredentials(insecure.NewCredentials())
-		}
-		target := u.Host
-		if u.Port() == "" {
-			target = net.JoinHostPort(u.Hostname(), "443")
-		}
-		local := *auth
-		local.CloudGRPC = target
-		callCtx, err := cloudContext(ctx, &local)
-		if err != nil {
-			return nil, nil, err
-		}
-		conn, err := grpc.NewClient(target, append([]grpc.DialOption{transport}, dpopDialOptions(&local)...)...)
-		return conn, callCtx, err
+		// Let gRPC derive TLS's server name from the target. An explicit
+		// hostname-only ServerName also replaces :authority, dropping the port
+		// that the session's DPoP proof includes in its request URI.
+		return dialLiteCloudBroker(ctx, auth, endpoint, &tls.Config{MinVersion: tls.VersionTLS12})
 	}
 	discovery, err := dialCloudGRPC(auth)
 	if err != nil {
@@ -152,4 +132,31 @@ func dialLiteCloudRelay(ctx context.Context, device models.ExternalDevice, renew
 	}
 	conn, callCtx, err := options.Redial(ctx, route.Endpoint)
 	return conn, callCtx, options, err
+}
+
+func dialLiteCloudBroker(ctx context.Context, auth *config.AuthConfig, endpoint string, tlsConfig *tls.Config) (*grpc.ClientConn, context.Context, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return nil, nil, fmt.Errorf("invalid Lite broker endpoint")
+	}
+	transport := grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig))
+	if u.Scheme != "https" {
+		ip := net.ParseIP(u.Hostname())
+		if u.Scheme != "http" || !(u.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())) {
+			return nil, nil, fmt.Errorf("Lite broker endpoint must use HTTPS")
+		}
+		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
+	}
+	target := u.Host
+	if u.Port() == "" {
+		target = net.JoinHostPort(u.Hostname(), "443")
+	}
+	local := *auth
+	local.CloudGRPC = target
+	callCtx, err := cloudContext(ctx, &local)
+	if err != nil {
+		return nil, nil, err
+	}
+	conn, err := grpc.NewClient(target, append([]grpc.DialOption{transport}, dpopDialOptions(&local)...)...)
+	return conn, callCtx, err
 }

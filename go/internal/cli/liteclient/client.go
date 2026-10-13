@@ -281,10 +281,12 @@ func (c *WendyLiteClient) handshakeSerialContext(ctx context.Context, link *dire
 
 // ConnectViaRelay authenticates directly to the device over an opaque broker
 // stream. The supplied Cloud connection and metadata retain their normal auth.
+// cert carries the operator's presentation chain; deviceTrustChain verifies
+// the device, whose issuing authority can differ from the operator's.
 // This method owns cc on every path, including invalid local credentials.
 func (c *WendyLiteClient) ConnectViaRelay(ctx context.Context, cc *grpc.ClientConn, assetID string,
-	cert tls.Certificate, chain, deviceID string, options RelayOptions) error {
-	cfg, err := deviceTLSConfig(cert, chain, deviceID)
+	cert tls.Certificate, deviceTrustChain, deviceID string, options RelayOptions) error {
+	cfg, err := deviceTLSConfig(cert, deviceTrustChain, deviceID)
 	if err != nil {
 		cc.Close()
 		return err
@@ -310,7 +312,11 @@ func (c *WendyLiteClient) ConnectViaRelay(ctx context.Context, cc *grpc.ClientCo
 		return fmt.Errorf("forward Lite grant: %w", err)
 	}
 	var ack [4]byte
-	if _, err := io.ReadFull(conn, ack[:]); err != nil || string(ack[:]) != "WLA2" {
+	if _, err := io.ReadFull(conn, ack[:]); err != nil {
+		raw.Close()
+		return fmt.Errorf("device refused Lite session grant: %w", err)
+	}
+	if string(ack[:]) != "WLA2" {
 		raw.Close()
 		return fmt.Errorf("device refused Lite session grant")
 	}
@@ -1143,8 +1149,9 @@ func (c *WendyLiteClient) ResetEnrollment(deviceID, nonceHex string) error {
 	return nil
 }
 
-// deviceTLSConfig verifies certificate chains and sends
-// the operator intermediates needed by a device trusting only tenant roots.
+// deviceTLSConfig verifies the device against chain and presents cert unchanged.
+// Callers supply the operator's own intermediates in cert; the device trust
+// bundle may belong to a different authority and must not be sent as that chain.
 func deviceTLSConfig(cert tls.Certificate, chain, deviceID string) (*tls.Config, error) {
 	if len(cert.Certificate) == 0 {
 		return nil, fmt.Errorf("missing client certificate")
@@ -1173,14 +1180,6 @@ func deviceTLSConfig(cert tls.Certificate, chain, deviceID string) (*tls.Config,
 	verify, err := certs.BuildServerVerifyConnection(opts)
 	if err != nil {
 		return nil, err
-	}
-	caCerts, err := certs.ParseCertsFromPEM([]byte(chain))
-	if err != nil {
-		return nil, err
-	}
-	cert.Certificate = [][]byte{cert.Certificate[0]}
-	for _, ca := range caCerts {
-		cert.Certificate = append(cert.Certificate, ca.Raw)
 	}
 	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert},
 		InsecureSkipVerify: true, // Verification and device identity checks are performed below.

@@ -1045,7 +1045,7 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 			if identity.Principal != selected.PrincipalURI {
 				return fmt.Errorf("operator certificate does not match selected Cloud principal")
 			}
-			return client.ConnectViaRelay(ctx, cc, assetID, cert, selected.PemCertificateChain, device.ConnectionInfo["deviceId"], options)
+			return client.ConnectViaRelay(ctx, cc, assetID, cert, options.DeviceTrustChainPEM, device.ConnectionInfo["deviceId"], options)
 		}
 		err := connect(false)
 		// Cloud refuses a Lite leaf it no longer accepts (revoked, or not
