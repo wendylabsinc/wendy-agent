@@ -74,11 +74,11 @@ type campaignInferenceJob struct {
 // camera subscriptions to exit before the video service is shut down.
 func (s *DataService) StartCampaignInference(ctx context.Context, factory inference.Factory, sender CampaignNotificationSender) func() {
 	ctx, cancel := context.WithCancel(ctx)
+	manager := &campaignInferenceManager{service: s, factory: factory, sender: sender, wake: make(chan struct{}, 1), ctx: ctx, jobs: map[string]*campaignInferenceJob{}}
+	s.inference = manager // Configured once, before registering the RPC server and before the expiry loop reads it.
 	// Leased documents of a previous run go before the first inference job
 	// can open a camera for them.
 	watchesDone := s.startWatches(ctx, sender)
-	manager := &campaignInferenceManager{service: s, factory: factory, sender: sender, wake: make(chan struct{}, 1), ctx: ctx, jobs: map[string]*campaignInferenceJob{}}
-	s.inference = manager // Configured once, before registering the RPC server.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
