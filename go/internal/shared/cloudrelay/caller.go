@@ -21,6 +21,7 @@ import (
 	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
 	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/relaypb"
 	authpb "github.com/wendylabsinc/wendy/go/proto/gen/wendyauthpb"
 	"google.golang.org/grpc"
@@ -204,7 +205,7 @@ func OpenTCP(ctx, authCtx context.Context, cloudConn *grpc.ClientConn, verifier 
 	return s.Conn(), nil
 }
 
-// PrincipalRequest uses the shared tunnel-v2 signing profile for both transports.
+// PrincipalRequest binds a tunnel-v2 request to a fresh caller key.
 func PrincipalRequest(assetID, service string, signRequest func([]byte) ([]byte, error)) (*pb.RequestTunnelRequest, *ecdsa.PrivateKey, []byte, error) {
 	if signRequest == nil {
 		return nil, nil, nil, fmt.Errorf("operator request signer is required")
@@ -213,23 +214,52 @@ func PrincipalRequest(assetID, service string, signRequest func([]byte) ([]byte,
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	requestID := make([]byte, 16)
-	if _, err = rand.Read(requestID); err != nil {
+	request, descriptor, err := principalRequest(assetID, service, "create_tunnel", publicDER(key), signRequest)
+	if err != nil {
 		return nil, nil, nil, err
 	}
-	body := &pb.TunnelPrincipalRequestBody{TargetAssetId: assetID, Service: service, CallerSigningPublicKeySpkiDer: publicDER(key), RequestId: requestID}
+	return request, key, descriptor, nil
+}
+
+// LitePrincipalRequest binds the Lite grant to the operator key presented in
+// inner mTLS. Lite uses its own operation and never an ephemeral caller key.
+func LitePrincipalRequest(assetID string, identity config.CertificateInfo, signRequest func([]byte) ([]byte, error)) (*pb.RequestTunnelRequest, error) {
+	if signRequest == nil {
+		return nil, fmt.Errorf("operator request signer is required")
+	}
+	if _, err := uuid.Parse(assetID); err != nil {
+		return nil, fmt.Errorf("invalid Cloud asset UUID")
+	}
+	leaves, err := certs.ParseCertsFromPEM([]byte(identity.PemCertificate))
+	if err != nil || len(leaves) != 1 {
+		return nil, fmt.Errorf("expected one Lite operator signing certificate")
+	}
+	key, ok := leaves[0].PublicKey.(*ecdsa.PublicKey)
+	if !ok || key.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("Lite requires a P-256 operator certificate")
+	}
+	request, _, err := principalRequest(assetID, "wendycom", "create_lite_tunnel", leaves[0].RawSubjectPublicKeyInfo, signRequest)
+	return request, err
+}
+
+func principalRequest(assetID, service, operation string, callerSPKI []byte, signRequest func([]byte) ([]byte, error)) (*pb.RequestTunnelRequest, []byte, error) {
+	requestID := make([]byte, 16)
+	if _, err := rand.Read(requestID); err != nil {
+		return nil, nil, err
+	}
+	body := &pb.TunnelPrincipalRequestBody{TargetAssetId: assetID, Service: service, CallerSigningPublicKeySpkiDer: callerSPKI, RequestId: requestID}
 	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(body)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	now := time.Now().Unix()
-	descriptor, err := canonicalJSON(map[string]any{"aud": "pki-core/tunnel-attestation", "body_sha256": binding(raw), "expiry": now + 60, "iat": now, "nonce": uuid.NewString(), "operation": "create_tunnel", "target": map[string]any{"asset_id": assetID, "service": service}})
+	descriptor, err := canonicalJSON(map[string]any{"aud": "pki-core/tunnel-attestation", "body_sha256": binding(raw), "expiry": now + 60, "iat": now, "nonce": uuid.NewString(), "operation": operation, "target": map[string]any{"asset_id": assetID, "service": service}})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	signed, err := signRequest(descriptor)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	return &pb.RequestTunnelRequest{RequestBody: body, PrincipalRequest: &authpb.SignedArtifact{Kind: "tunnel-principal-request+jws", Value: signed}}, key, descriptor, nil
+	return &pb.RequestTunnelRequest{RequestBody: body, PrincipalRequest: &authpb.SignedArtifact{Kind: "tunnel-principal-request+jws", Value: signed}}, descriptor, nil
 }

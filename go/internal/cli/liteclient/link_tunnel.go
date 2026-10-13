@@ -20,8 +20,11 @@ type RelayOptions struct {
 	// OperatorIdentity is the exact certificate and resolved private key used
 	// by SignRequest. The provider must use this identity for inner mTLS.
 	OperatorIdentity config.CertificateInfo
-	SignRequest      func([]byte) ([]byte, error)
-	Redial           func(context.Context, string) (*grpc.ClientConn, context.Context, error)
+	// DeviceTrustChainPEM comes from the selected Cloud session. Lite operator
+	// leaves use a separate authority and do not carry the device's CA chain.
+	DeviceTrustChainPEM string
+	SignRequest         func([]byte) ([]byte, error)
+	Redial              func(context.Context, string) (*grpc.ClientConn, context.Context, error)
 }
 
 type relayConn struct {
@@ -48,7 +51,7 @@ func (c *relayConn) Close() error {
 // openRelayConn owns cc on every path. The pipe provides bounded buffering and
 // real read/write deadlines to crypto/tls and the existing directLink codec.
 func openRelayConn(ctx context.Context, cc *grpc.ClientConn, assetID string, options RelayOptions) (*relayConn, error) {
-	principal, _, _, err := cloudrelay.PrincipalRequest(assetID, "wendycom", options.SignRequest)
+	principal, err := cloudrelay.LitePrincipalRequest(assetID, options.OperatorIdentity, options.SignRequest)
 	if err != nil {
 		cc.Close()
 		return nil, err
