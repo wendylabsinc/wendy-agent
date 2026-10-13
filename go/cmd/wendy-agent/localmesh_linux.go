@@ -21,7 +21,7 @@ import (
 
 // runConfiguredMeshCarriers runs one Babel node for every enabled carrier.
 // Its observer is cleared only after the radio provider has drained its links.
-func runConfiguredMeshCarriers(ctx context.Context, configDir string, id localmesh.TCPIdentity, logger *zap.Logger, catalog *meshCatalogManager, vips *mesh.VIPTable, observe func(func() localmesh.NodeSnapshot)) error {
+func runConfiguredMeshCarriers(ctx context.Context, configDir string, id localmesh.TCPIdentity, logger *zap.Logger, catalog *meshCatalogManager, vips *mesh.VIPTable, sharing *meshSharingManager, observe func(func() localmesh.NodeSnapshot)) error {
 	path := filepath.Join(configDir, "local-mesh.json")
 	initial, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -53,8 +53,10 @@ func runConfiguredMeshCarriers(ctx context.Context, configDir string, id localme
 	defer func() { cancelRun(); <-watchDone }()
 	var stopProviders context.CancelFunc
 	var providersDone sync.WaitGroup
+	defer sharing.Deactivate()
 	return localmesh.RunConfiguredWithNode(runCtx, configDir, id, func(node *localmesh.Node, cfg *localmesh.TCPConfig) {
 		if node == nil {
+			sharing.Deactivate()
 			catalog.Deactivate()
 			if stopProviders != nil {
 				stopProviders()
@@ -67,6 +69,7 @@ func runConfiguredMeshCarriers(ctx context.Context, configDir string, id localme
 		if err := catalog.Activate(runCtx, node.Credentials, node.Snapshot, vips); err != nil {
 			logger.Error("mesh service catalog unavailable", zap.Error(err))
 		}
+		sharing.Activate(runCtx, node)
 		if !cfg.NAN && !cfg.BLE {
 			return
 		}

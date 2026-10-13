@@ -10,6 +10,6 @@ import (
 	"go.uber.org/zap"
 )
 
-func runConfiguredMeshCarriers(ctx context.Context, configDir string, id localmesh.TCPIdentity, _ *zap.Logger, _ *meshCatalogManager, _ *mesh.VIPTable, observe func(func() localmesh.NodeSnapshot)) error {
+func runConfiguredMeshCarriers(ctx context.Context, configDir string, id localmesh.TCPIdentity, _ *zap.Logger, _ *meshCatalogManager, _ *mesh.VIPTable, _ *meshSharingManager, observe func(func() localmesh.NodeSnapshot)) error {
 	return localmesh.RunConfiguredTCPObserved(ctx, configDir, id, observe)
 }

@@ -207,6 +207,9 @@ func (c *Catalog) nextGeneration(key Key, now time.Time) (uint64, error) {
 func (c *Catalog) Publish(spec PublishSpec, now time.Time) (SignedRecord, error) {
 	c.mutation.Lock()
 	defer c.mutation.Unlock()
+	if spec.AppID == GatewayAppID || spec.ServiceID == GatewayServiceID {
+		return SignedRecord{}, errors.New("reserved mesh gateway identity cannot be published by an app")
+	}
 	if err := c.authorize(spec.AppID, spec.Type, spec.HostPort); err != nil {
 		return SignedRecord{}, err
 	}
@@ -234,6 +237,9 @@ func (c *Catalog) Publish(spec PublishSpec, now time.Time) (SignedRecord, error)
 func (c *Catalog) Remove(appID, serviceID string, now time.Time) (SignedRecord, error) {
 	c.mutation.Lock()
 	defer c.mutation.Unlock()
+	if appID == GatewayAppID || serviceID == GatewayServiceID {
+		return SignedRecord{}, errors.New("reserved mesh gateway identity cannot be withdrawn by an app")
+	}
 	key := Key{c.mesh, c.principal, appID, serviceID}
 	c.mu.Lock()
 	c.prune(now)
@@ -256,6 +262,73 @@ func (c *Catalog) Remove(appID, serviceID string, now time.Time) (SignedRecord, 
 		return SignedRecord{}, err
 	}
 	return w, nil
+}
+
+// PublishGatewayOffer signs the agent-owned gateway capability. It has no
+// endpoint or port; it only attests that this device currently shares an
+// independent uplink with the mesh.
+func (c *Catalog) PublishGatewayOffer(now time.Time) (SignedRecord, error) {
+	c.mutation.Lock()
+	defer c.mutation.Unlock()
+	key := Key{c.mesh, c.principal, GatewayAppID, GatewayServiceID}
+	gen, err := c.nextGeneration(key, now)
+	if err != nil {
+		return SignedRecord{}, err
+	}
+	r := Record{Version: 1, Key: key, Generation: gen,
+		Issued: now.UnixMilli(), Expires: now.Add(GatewayOfferLease).UnixMilli()}
+	w, err := Sign(r, c.creds.Certificate.Certificate, c.creds.Signer, now)
+	if err != nil {
+		return SignedRecord{}, err
+	}
+	if _, err = c.Accept(w, now); err != nil {
+		return SignedRecord{}, err
+	}
+	return w, nil
+}
+
+// WithdrawGatewayOffer signs a tombstone. An empty record means there was no
+// local gateway history to withdraw or the current entry is already withdrawn.
+func (c *Catalog) WithdrawGatewayOffer(now time.Time) (SignedRecord, error) {
+	c.mutation.Lock()
+	defer c.mutation.Unlock()
+	key := Key{c.mesh, c.principal, GatewayAppID, GatewayServiceID}
+	c.mu.Lock()
+	c.prune(now)
+	_, found := c.history[key]
+	entry, live := c.entries[key]
+	c.mu.Unlock()
+	if !found || (live && entry.record.Withdraw) {
+		return SignedRecord{}, nil
+	}
+	gen, err := c.nextGeneration(key, now)
+	if err != nil {
+		return SignedRecord{}, err
+	}
+	r := Record{Version: 1, Key: key, Generation: gen,
+		Issued: now.UnixMilli(), Expires: now.Add(GatewayOfferLease).UnixMilli(), Withdraw: true}
+	w, err := Sign(r, c.creds.Certificate.Certificate, c.creds.Signer, now)
+	if err != nil {
+		return SignedRecord{}, err
+	}
+	if _, err = c.Accept(w, now); err != nil {
+		return SignedRecord{}, err
+	}
+	return w, nil
+}
+
+// GatewayOffers returns active, signed, unexpired gateway capabilities whose
+// origin certificate remains trusted by this catalog. Route availability is
+// a separate decision for the mesh sharing policy.
+func (c *Catalog) GatewayOffers(now time.Time) []Record {
+	all := c.Snapshot(now)
+	out := make([]Record, 0)
+	for _, r := range all {
+		if IsGatewayOffer(r) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (c *Catalog) Snapshot(now time.Time) []Record {
