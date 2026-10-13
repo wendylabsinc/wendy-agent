@@ -135,7 +135,8 @@ class Bridge(Node):
         # Messages per robot topic and voxel map timing, logged every RATE_LOG_SECONDS.
         self.stats_lock = threading.Lock()
         self.counts = collections.Counter()
-        self.voxel_times = []  # (arrival monotonic seconds, robot stamp)
+        self.voxel_times = []  # arrival, monotonic seconds
+        self.cloud_seconds = []  # decode and publish time per voxel map turned into clouds
         self.create_timer(RATE_LOG_SECONDS, self.log_rates)
         self.pose = None  # (stamp, position, quaternion_xyzw) from the latest odometry
         self.create_subscription(Twist, "/cmd_vel", self.on_cmd_vel, qos)
@@ -176,7 +177,7 @@ class Bridge(Node):
         with self.stats_lock:
             self.counts[m.topic] += 1
             if topic == "rt/utlidar/voxel_map_compressed":
-                self.voxel_times.append((time.monotonic(), (data or {}).get("stamp")))
+                self.voxel_times.append(time.monotonic())
         self.publish_raw(m.topic, m.data, m.binary)
         stamp = self.stamp(m.received_unix_nanos)
         if topic == "rt/lf/lowstate":
@@ -195,13 +196,12 @@ class Bridge(Node):
         with self.stats_lock:
             counts, self.counts = self.counts, collections.Counter()
             voxels, self.voxel_times = self.voxel_times, []
+            clouds, self.cloud_seconds = self.cloud_seconds, []
         rates = ", ".join(f"{t} {n / RATE_LOG_SECONDS:.1f}" for t, n in sorted(counts.items()))
         log.info("robot messages per second: %s", rates or "none")
         if len(voxels) > 1:
-            gaps = [b[0] - a[0] for a, b in zip(voxels, voxels[1:])]
-            stamps = [s for _, s in voxels if isinstance(s, (int, float))]
-            log.info("voxel maps: %d frames, %d distinct robot stamps, arrival gaps %s s, robot stamp gaps %s s",
-                     len(voxels), len(set(stamps)), spread(gaps), spread([b - a for a, b in zip(stamps, stamps[1:])]))
+            log.info("voxel maps: %d arrived, arrival gaps %s s; %d turned into clouds, decode and publish %s s",
+                     len(voxels), spread([b - a for a, b in zip(voxels, voxels[1:])]), len(clouds), spread(clouds))
 
     def publish_raw(self, topic, data, binary):
         pub = self.raw_pubs.get(topic)
@@ -281,6 +281,7 @@ class Bridge(Node):
         names = ("voxel_map", "cloud_base", "cloud")
         if not any(self.pubs[n].get_subscription_count() for n in names):
             return
+        started = time.monotonic()
         try:
             points = convert.decode_voxels(payload, meta)
         except Exception as e:  # malformed frame
@@ -294,6 +295,8 @@ class Bridge(Node):
         self.pubs["cloud_base"].publish(cloud_message(body, pose_stamp, "base_link"))
         self.pubs["cloud"].publish(cloud_message(body - np.asarray(MOUNTS["utlidar_lidar"], dtype=np.float32),
                                                  pose_stamp, "utlidar_lidar"))
+        with self.stats_lock:
+            self.cloud_seconds.append(time.monotonic() - started)
 
     def on_video(self, frame):
         stamp = self.stamp(frame.received_unix_nanos)
