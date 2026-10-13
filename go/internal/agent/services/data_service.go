@@ -41,7 +41,9 @@ func dataStatusError(err error) error {
 		errors.Is(err, data.ErrInvalidDownloadOffset),
 		errors.Is(err, data.ErrInvalidEpisodePath),
 		errors.Is(err, data.ErrEpisodePathEscapes),
-		errors.Is(err, data.ErrInvalidCampaignName):
+		errors.Is(err, data.ErrInvalidCampaignName),
+		errors.Is(err, data.ErrInvalidDocumentName),
+		errors.Is(err, data.ErrNotStoredKind):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, os.ErrNotExist):
 		return status.Error(codes.NotFound, err.Error())
