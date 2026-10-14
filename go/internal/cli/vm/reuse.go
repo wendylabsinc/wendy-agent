@@ -19,7 +19,11 @@ func (s *Store) PrepareForReuse(name string) (ready bool, preservedAt string, er
 	if err != nil {
 		return false, "", err
 	}
-	defer lifecycle.Close()
+	defer func() {
+		if closeErr := lifecycle.Close(); err == nil {
+			err = closeErr
+		}
+	}()
 
 	dir, err := os.Lstat(s.Dir(name))
 	if os.IsNotExist(err) {
