@@ -2,18 +2,19 @@ package analytics
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
+	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
@@ -28,16 +29,20 @@ func enableTestDelivery(t *testing.T, handler http.HandlerFunc) *httptest.Server
 	t.Helper()
 	Close()
 	server := httptest.NewServer(handler)
+	stateMu.Lock()
 	previousEndpoint := telemetryEndpoint
 	telemetryEndpoint = server.URL
 	enabled = true
 	distinctID = "analytics-test-id"
 	client = server.Client()
+	stateMu.Unlock()
 	t.Cleanup(func() {
 		Close()
+		stateMu.Lock()
 		enabled = false
 		distinctID = ""
 		telemetryEndpoint = previousEndpoint
+		stateMu.Unlock()
 		server.Close()
 	})
 	return server
@@ -46,7 +51,7 @@ func enableTestDelivery(t *testing.T, handler http.HandlerFunc) *httptest.Server
 func TestDisabledViaEnvVar(t *testing.T) {
 	clearCIEnv(t)
 	t.Setenv("WENDY_ANALYTICS", "false")
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 
 	cfg := &config.Config{
 		Analytics: &config.AnalyticsConfig{Enabled: true},
@@ -61,7 +66,7 @@ func TestDisabledViaEnvVar(t *testing.T) {
 func TestDisabledViaConfig(t *testing.T) {
 	clearCIEnv(t)
 	t.Setenv("WENDY_ANALYTICS", "")
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 
 	cfg := &config.Config{
 		Analytics: &config.AnalyticsConfig{Enabled: false},
@@ -76,7 +81,8 @@ func TestDisabledViaConfig(t *testing.T) {
 func TestEnabledByDefaultWhenNil(t *testing.T) {
 	clearCIEnv(t)
 	t.Setenv("WENDY_ANALYTICS", "")
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	t.Cleanup(Disable)
 
 	cfg := &config.Config{
 		Analytics: nil,
@@ -85,6 +91,9 @@ func TestEnabledByDefaultWhenNil(t *testing.T) {
 
 	if !firstRun {
 		t.Error("expected firstRun to be true when Analytics is nil")
+	}
+	if !Enabled() {
+		t.Error("expected analytics to be enabled when Analytics is nil")
 	}
 }
 
@@ -103,7 +112,7 @@ func TestEnvOverride(t *testing.T) {
 func TestTrackNoOpWhenDisabled(t *testing.T) {
 	clearCIEnv(t)
 	t.Setenv("WENDY_ANALYTICS", "false")
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 
 	cfg := &config.Config{}
 	Init(cfg)
@@ -123,7 +132,7 @@ func TestInitDisabledInCI(t *testing.T) {
 			clearCIEnv(t)
 			t.Setenv(ciKey, "1")
 			t.Setenv("WENDY_ANALYTICS", "true")
-			t.Setenv("HOME", t.TempDir())
+			t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 
 			cfg := &config.Config{
 				Analytics: &config.AnalyticsConfig{Enabled: true},
@@ -155,7 +164,7 @@ func TestInitDisabledInCI(t *testing.T) {
 func TestTrackHookFiresEvenWhenDisabled(t *testing.T) {
 	clearCIEnv(t)
 	t.Setenv("WENDY_ANALYTICS", "false")
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 
 	Init(&config.Config{}) // disabled
 	if Enabled() {
@@ -297,42 +306,274 @@ func TestCloseWaitsForInFlightDelivery(t *testing.T) {
 	}
 }
 
-func TestTrackSendsBoundedExtraProperties(t *testing.T) {
-	bodies := make(chan map[string]any, 1)
+func TestFlushWaitsForDeliveryAndKeepsTrackingEnabled(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseResponse) })
+	bodies := make(chan eventPayload, 2)
 	enableTestDelivery(t, func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		var body eventPayload
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode event payload: %v", err)
+		}
+		bodies <- body
+		if body.Event == "command_started" {
+			close(requestStarted)
+			<-releaseResponse
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// Unblock the handler before the delivery fixture cleans up if an assertion
+	// fails while the first request is still in flight.
+	t.Cleanup(release)
+
+	Track("command_started", map[string]string{"command_name": "wendy install"})
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("start event never reached the receiver")
+	}
+
+	flushed := make(chan struct{})
+	go func() {
+		Flush()
+		close(flushed)
+	}()
+	select {
+	case <-flushed:
+		t.Fatal("Flush returned before the telemetry request completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case <-flushed:
+	case <-time.After(time.Second):
+		t.Fatal("Flush did not return after the telemetry request completed")
+	}
+
+	// Failed elevation returns to the same process. Its final event must still
+	// use the initialized client after the pre-elevation flush.
+	Track("command_executed", map[string]string{
+		"command_name": "wendy install",
+		"success":      "false",
+		"error_class":  "permission_denied",
+	})
+	Flush()
+	if len(bodies) != 2 {
+		t.Fatalf("expected start and final events across Flush, got %d", len(bodies))
+	}
+	if got := <-bodies; got.Event != "command_started" {
+		t.Fatalf("first event = %q, want command_started", got.Event)
+	}
+	if got := <-bodies; got.Event != "command_executed" || got.ErrorClass != "permission_denied" {
+		t.Fatalf("final event = %+v, want failed command_executed", got)
+	}
+}
+
+func TestCloseStopsAdmissionBeforeWaitingForDelivery(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseResponse) })
+	var requests atomic.Int64
+	enableTestDelivery(t, func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			close(requestStarted)
+		}
+		<-releaseResponse
+		w.WriteHeader(http.StatusNoContent)
+	})
+	t.Cleanup(release)
+
+	Track("command_started", map[string]string{"command_name": "wendy install"})
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("start event never reached the receiver")
+	}
+	closed := make(chan struct{})
+	go func() {
+		Close()
+		close(closed)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for trackingEnabled() {
+		if time.Now().After(deadline) {
+			t.Fatal("Close kept accepting events while waiting for delivery")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a delivery was pending")
+	default:
+	}
+
+	// Background producers can still call Track while shutdown drains existing
+	// requests. None may start a request after Close stopped admission.
+	var producers sync.WaitGroup
+	for range 32 {
+		producers.Go(func() {
+			Track("late_event", map[string]string{"command_name": "wendy install"})
+		})
+	}
+	producers.Wait()
+	release()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after delivery completed")
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("expected only the admitted request, got %d", got)
+	}
+}
+
+func TestConcurrentTrackFlushAndClose(t *testing.T) {
+	var requests atomic.Int64
+	enableTestDelivery(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	Track("command_started", map[string]string{"command_name": "wendy install"})
+
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for range 32 {
+		workers.Go(func() {
+			<-start
+			for range 4 {
+				Track("progress", map[string]string{"command_name": "wendy install"})
+				Flush()
+				_ = Enabled()
+			}
+		})
+	}
+	workers.Go(func() {
+		<-start
+		Close()
+	})
+	close(start)
+	workers.Wait()
+	Close()
+	if got := requests.Load(); got < 1 {
+		t.Fatal("the event admitted before Close was lost")
+	}
+	if pending := pendingDeliveries(false, false); len(pending) != 0 {
+		t.Fatalf("%d deliveries still pending after shutdown", len(pending))
+	}
+	if trackingEnabled() {
+		t.Fatal("tracking remained active after Close")
+	}
+}
+
+func TestDeliveryCallbackCanTrackAfterFlush(t *testing.T) {
+	var requests atomic.Int64
+	enableTestDelivery(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	track("first", nil, func() { Track("followup", nil) })
+	Flush()
+	// The callback's new event may have been admitted after Flush's snapshot.
+	Flush()
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("expected initial and callback events, got %d", got)
+	}
+}
+
+func TestLoadOrCreateIDConcurrentFirstLaunchesShareIdentity(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WENDY_CONFIG_DIR", dir)
+	const count = 32
+	ids := make(chan string, count)
+	errs := make(chan error, count)
+	start := make(chan struct{})
+	var launches sync.WaitGroup
+	for range count {
+		launches.Go(func() {
+			<-start
+			id, err := loadOrCreateID()
+			ids <- id
+			errs <- err
+		})
+	}
+	close(start)
+	launches.Wait()
+	stored, err := os.ReadFile(filepath.Join(dir, "analytics_id"))
+	if err != nil {
+		t.Fatalf("read persisted identity: %v", err)
+	}
+	if len(stored) == 0 {
+		t.Fatal("persisted identity is empty")
+	}
+	for range count {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent first launch failed: %v", err)
+		}
+		if got := <-ids; got != string(stored) {
+			t.Errorf("launch identity = %q, persisted identity = %q", got, stored)
+		}
+	}
+}
+
+func TestLoadOrCreateIDRechecksAfterWaitingForFirstWriter(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WENDY_CONFIG_DIR", dir)
+	release, err := flock.Acquire(filepath.Join(dir, "analytics_id.lock"), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	type result struct {
+		id  string
+		err error
+	}
+	loaded := make(chan result, 1)
+	go func() {
+		id, err := loadOrCreateID()
+		loaded <- result{id, err}
+	}()
+	select {
+	case got := <-loaded:
+		t.Fatalf("identity creation did not wait for the first writer: %+v", got)
+	case <-time.After(30 * time.Millisecond):
+	}
+	const want = "69eedfb8-a7d5-43c5-b61d-3083caa38f63"
+	if err := os.WriteFile(filepath.Join(dir, "analytics_id"), []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	select {
+	case got := <-loaded:
+		if got.err != nil || got.id != want {
+			t.Fatalf("identity after first writer = %+v, want %s", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("identity creation did not resume after the first writer released the lock")
+	}
+}
+
+func TestTrackSendsOnlyAllowedProperties(t *testing.T) {
+	bodies := make(chan eventPayload, 1)
+	enableTestDelivery(t, func(w http.ResponseWriter, r *http.Request) {
+		var body eventPayload
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
 		bodies <- body
 	})
-	props := map[string]string{
-		"command_name":     "wendy run",
-		"duration_ms":      "1234",
-		"success":          "true",
-		"deploy_transport": "chunk",
-		"deploy_a_long":    strings.Repeat("x", 200), // sorts before the fillers, so the count cap keeps it
-	}
-	for i := 0; i < 40; i++ {
-		props[fmt.Sprintf("deploy_extra_%02d", i)] = "1"
-	}
-	Track("deploy_completed", props)
+	Track("deploy_completed", map[string]string{"command_name": "wendy run", "duration_ms": "1234", "success": "true", "deploy_transport": "chunk", "deploy_build_ms": "123", "private_path": "/Users/alice/secret", "deploy_device_type": "alice-private-device", "deploy_push_ms": "secret", "deploy_fallback": strings.Repeat("x", 200)})
 	Close()
-
 	body := <-bodies
-	extra, ok := body["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("payload has no properties object: %v", body)
+	if len(body.Properties) != 2 || body.Properties["deploy_transport"] != "chunk" || body.Properties["deploy_build_ms"] != "123" {
+		t.Fatalf("unsafe or missing properties: %v", body.Properties)
 	}
-	if len(extra) != maxEventProperties {
-		t.Fatalf("sent %d properties, want the cap of %d", len(extra), maxEventProperties)
+	if body.SchemaVersion != 2 || body.EventID == "" || body.AttemptID == "" || body.OccurredAt.IsZero() {
+		t.Fatalf("missing v2 envelope: %+v", body)
 	}
-	if _, core := extra["duration_ms"]; core {
-		t.Fatal("core fields must stay top-level, not in properties")
-	}
-	if body["duration_ms"] != float64(1234) || body["command_name"] != "wendy run" {
-		t.Fatalf("core fields = %v / %v", body["duration_ms"], body["command_name"])
-	}
-	if v, _ := extra["deploy_a_long"].(string); len(v) != maxPropertyLen {
-		t.Fatalf("long value has %d chars, want truncation to %d", len(v), maxPropertyLen)
+	if body.DurationMS != 1234 {
+		t.Fatalf("duration = %d", body.DurationMS)
 	}
 }
 
@@ -347,50 +588,5 @@ func TestTrackOmitsPropertiesForCoreOnlyEvents(t *testing.T) {
 	Close()
 	if _, ok := (<-bodies)["properties"]; ok {
 		t.Fatal("a command event without extra properties must not send a properties object")
-	}
-}
-
-func TestTrackTruncatesUTF8SafelyAtBoundaries(t *testing.T) {
-	bodies := make(chan map[string]any, 1)
-	enableTestDelivery(t, func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		bodies <- body
-	})
-	// "€" is a 3-byte UTF-8 sequence. Repeated 27 times = 81 bytes.
-	// Truncating at 64 bytes lands mid-rune (64 = 21*3 + 1, splitting the 22nd rune).
-	euro := "€"
-	longValue := strings.Repeat(euro, 27) // 81 bytes total
-	if len(longValue) != 81 {
-		t.Fatalf("test setup: expected 81 bytes, got %d", len(longValue))
-	}
-	Track("deploy_completed", map[string]string{
-		"command_name":  "wendy run",
-		"success":       "true",
-		"multi_byte_ok": longValue,
-	})
-	Close()
-
-	body := <-bodies
-	extra, ok := body["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("payload has no properties object: %v", body)
-	}
-	truncated, ok := extra["multi_byte_ok"].(string)
-	if !ok {
-		t.Fatalf("multi_byte_ok not found in properties: %v", extra)
-	}
-
-	// Verify the truncated value is valid UTF-8.
-	if !utf8.ValidString(truncated) {
-		t.Fatalf("truncated value is not valid UTF-8: %q", truncated)
-	}
-	// Verify the truncated value is within the byte limit.
-	if len(truncated) > maxPropertyLen {
-		t.Fatalf("truncated value has %d bytes, want <= %d", len(truncated), maxPropertyLen)
-	}
-	// Verify the truncated value is a prefix of the original.
-	if !strings.HasPrefix(longValue, truncated) {
-		t.Fatalf("truncated %q is not a prefix of original %q", truncated, longValue)
 	}
 }

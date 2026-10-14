@@ -43,8 +43,9 @@ sudo apt install qemu-system-arm qemu-efi-aarch64
 On macOS you can skip this: if QEMU is missing when you start a simulator,
 `wendy` offers to run `brew install qemu` for you.
 
-That is the only prerequisite. The image is downloaded the first time you need
-one and reused for every simulator afterwards.
+QEMU and its firmware are the VM prerequisites. To build and deploy an app, you
+also need a running container builder, such as Docker with Buildx. The image is
+downloaded the first time you need one and reused for every virtual device afterward.
 
 ## The short version
 

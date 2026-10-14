@@ -1,5 +1,7 @@
 # `wendy data`
 
+For a first recording and campaign, start with the [Wendy Data guide](/docs/data).
+
 Wendy Data records synchronized, device-local Episodes and manages
 flight-recorder campaigns. An Episode uses Linux `CLOCK_BOOTTIME` as its
 canonical timeline, so wall-clock changes cannot reorder records. Its Wendy
@@ -208,7 +210,7 @@ and are ignored when `notify.on` is `episode_committed`. The immediate modes
 | `export` | yes | Annotation integration lifecycle intent. |
 | `models` | no | Map of model name to deployed version, copied into Episodes. |
 | `privacy` | no | List of declared transforms with optional revisions. |
-| `inference` | no | Agent-managed Hugging Face object detection; see below. |
+| `inference` | no | Agent-managed object detection from pinned Hugging Face models, using Transformers or YOLO ONNX; see below. |
 | `notify` | no | Episode-commit notification intent or immediate event/detection delivery; see below. |
 
 Each `sources` item selects exactly one source:
@@ -216,8 +218,9 @@ Each `sources` item selects exactly one source:
 | Source | Description |
 |---|---|
 | `camera: <selector>` | A stable source ID, `/dev/videoN` path, or unambiguous name fragment. `front` and `default` select the only healthy camera when exactly one exists. `camera: "*"` selects every healthy camera, including cameras discovered after deployment. Quote the wildcard in YAML. |
-| `ros2: <topic>` | A ROS 2 topic name such as `/lidar/points`. Selects that topic on every healthy ROS 2 graph publishing it, and the episode records that topic and nothing else. A topic no healthy graph publishes is an error. A full per-topic source ID such as `ros2:rmw_cyclonedds_cpp:domain-42:/lidar/points` selects that one source. A domain-level source ID such as `ros2:rmw_cyclonedds_cpp:domain-42`, or any other value, selects the whole DDS domain and records all of it. Requested topics are retained separately in the manifest either way. |
-| `telemetry: true` | Includes device telemetry. |
+| `audio: <selector>` | A stable audio source ID or unambiguous name fragment from `wendy data sources --kind audio`. The selector must resolve to a healthy capture source at deployment. |
+| `ros2: <topic>` | A ROS 2 topic name such as `/lidar/points`. Selects that topic on every healthy ROS 2 graph publishing it. A full per-topic source ID such as `ros2:rmw_cyclonedds_cpp:domain-42:/lidar/points` selects that one source. A domain-level source ID such as `ros2:rmw_cyclonedds_cpp:domain-42` selects all topics in that domain. Missing topics warn at deployment; a triggered episode records available sources and reports missing sources in its manifest. Requested topics remain in the manifest. |
+| `telemetry: true` | Records uptime, system load, and total/free RAM once per second on Linux. Other sensor measurements need ROS 2 or application streams. |
 
 An optional `calibration_revision` can accompany a source. Application records
 are included automatically because they carry campaign trigger evidence and
@@ -245,8 +248,16 @@ deploys, and deployment prints a warning naming each source whose requested
 mode is not implemented for its kind; those sources record continuously for
 now.
 
-`capture.buffer` must be a Go-style duration from `0s` through `5m`. On a camera
-source, a buffer and explicit stream parameters are mutually exclusive in this
+Camera snapshots and the continuous capture-rate cap require a stream that
+delivers whole encoded frames, currently local V4L2 cameras with native H.264.
+IP cameras and GStreamer-encoded streams record continuously at their stream
+rate instead; the episode's source detail reports the unapplied policy.
+Snapshot cameras do not maintain a video pre-buffer. Audio threshold capture
+uses `level_db`, for example `trigger: "level_db > -20"`, to retain WAV
+fragments during an active episode. It does not itself start a campaign.
+
+`capture.buffer` must be a Go-style duration from `0s` through `5m`. On a continuous
+camera source, a buffer and explicit stream parameters are mutually exclusive in this
 release: a buffered camera is armed into a standby subscription that asserts no
 stream parameters, so it never takes a running camera away from a viewer and
 never changes the stream parameters part way through a clip.
@@ -343,7 +354,9 @@ disk space outside the episode quota. Remote model code is disabled.
 
 | Field | Required | Description |
 |---|---|---|
-| `model` | yes | `owner/repository` or `https://huggingface.co/owner/repository`; a Transformers object-detection checkpoint. |
+| `backend` | no | `transformers` by default, or `yolo_onnx` for a compatible YOLO ONNX detection export. |
+| `model` | yes | `owner/repository` or `https://huggingface.co/owner/repository`; the repository containing the checkpoint or ONNX export. |
+| `model_file` | for `yolo_onnx` | Relative `.onnx` file path inside the pinned repository. Not accepted with `transformers`. |
 | `revision` | yes | Lowercase, 40-character Hugging Face commit SHA. Branch names are rejected. |
 | `labels` | yes | 1–32 unique, nonempty model labels, each at most 128 bytes. |
 | `threshold` | yes | Detection confidence in `(0, 1]`. |
@@ -353,8 +366,9 @@ disk space outside the episode quota. Remote model code is disabled.
 | `cooldown` | yes | Minimum interval between detection events; positive duration, at most 24h. |
 | `enabled` | no | Defaults to `true`; `false` keeps the configuration but stops inference. |
 
-Use the inference event in `capture.triggers` to record an episode. Predictions
-and events are attributed to `sh.wendy.campaign.<name>`. Campaign inspect reports
+Inference requires a camera source and a trigger matching its event in
+`capture.triggers`. Predictions and events are attributed to
+`sh.wendy.campaign.<name>`. Campaign inspect reports
 `inference_status`, including runtime state, per-camera state and notification
 errors. Temporary camera loss retains presence/cooldown state so reconnecting
 does not produce a duplicate detection.
@@ -536,14 +550,14 @@ command becomes a verb on the CLI rather than a separate binary.
 ## Pre-trigger behavior
 
 Application pre-roll is exact, device-wide, and bounded by the campaign buffer
-(with a five-minute/50 MiB global ceiling). Camera pre-roll is also honored: a
-campaign that requests a buffer arms its camera sources into a standby ring of
-keyframe-aligned encoded frames, so the episode opens BEFORE the trigger. The
-camera source's manifest entry reports the achieved offset, which is at least
-the requested buffer at steady state but may be shorter when the campaign was
-armed less than a buffer before the trigger fired. Audio and ROS 2 adapters
-still start at the trigger. Every source's manifest entry preserves both the
-requested offset and the achieved offset; campaign deployment prints a warning
+(with a five-minute/50 MiB global ceiling). Continuous camera sources also keep
+pre-roll: a campaign that requests a buffer arms them into a standby ring of
+keyframe-aligned encoded frames, so the episode can include footage before the
+trigger. The camera source's manifest entry reports the achieved offset, which
+may be shorter than requested when the campaign was recently armed or the
+ring's byte cap was reached. Snapshot cameras do not maintain this video ring.
+Audio, ROS 2, and telemetry start at the trigger. Every source's manifest entry
+preserves both the requested offset and the achieved offset; campaign deployment prints a warning
 when audio or ROS 2 pre-roll was requested. Unknown drop counts are displayed
 as unknown, never as zero.
 
@@ -582,11 +596,15 @@ by the agent from its environment file.
   logical dataset name stored with the plan; the device never receives bucket
   layouts or credentials.
 - Per-source capture modes other than `continuous` are validated and stored,
-  but the adapters record continuously; deployment warns per source.
+  with camera `snapshot` and audio `threshold` implemented. Other combinations
+  record continuously and deployment warns per source. Camera snapshot and
+  rate policies also depend on the transport, as described above.
 - `retention.local_quota` is validated and stored, but eviction currently
   applies only the device-wide quota; deployment warns when it is set.
 - `export.annotation` is stored as labeling lifecycle state, but this release
   does not create CVAT tasks.
+- `privacy` declares transform metadata; it does not apply redaction to captured
+  payloads.
 - Fleet catalog search, replay, evaluation, and model redeployment are later
   Wendy Data layers and are not performed by these commands yet.
 

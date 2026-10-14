@@ -19,6 +19,7 @@ import urllib.request
 import zlib
 
 from api_review import illustrative_excerpt, prior_state_digest, validate_prior_state
+from review_diff import diff_lines
 
 COMMENT_MARKER = "<!-- ai-api-review:v1 -->"
 PART_MARKER_RE = re.compile(r"<!-- ai-api-review:part=(\d+)/(\d+) -->")
@@ -421,7 +422,7 @@ def decision_lines(record: dict, result: dict, repo: str, diff: str = "") -> lis
             lines.append("")
         fence = markdown_fence(excerpt["text"])
         lines.append(f"  {fence}{excerpt['language']}")
-        lines.extend(f"  {line}" for line in excerpt["text"].splitlines())
+        lines.extend(f"  {line}" for line in diff_lines(excerpt["text"]))
         lines.append(f"  {fence}")
     lines.append("")
     return lines
