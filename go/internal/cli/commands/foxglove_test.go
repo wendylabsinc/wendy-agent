@@ -69,8 +69,15 @@ func TestWriteFoxgloveAppCycloneDDSInterface(t *testing.T) {
 		t.Fatal(err)
 	}
 	df, _ := os.ReadFile(filepath.Join(dir, "Dockerfile"))
-	if !strings.Contains(string(df), `NetworkInterface name=\"enP8p1s0\"`) {
-		t.Fatalf("CycloneDDS interface not templated into Dockerfile:\n%s", df)
+	for _, want := range []string{
+		`NetworkInterface name=\"lo\" multicast=\"true\"`,
+		`NetworkInterface name=\"enP8p1s0\"`,
+		`<ParticipantIndex>auto</ParticipantIndex>`,
+		`<Peer address=\"127.0.0.1\"/>`,
+	} {
+		if !strings.Contains(string(df), want) {
+			t.Fatalf("CycloneDDS interface override missing %q:\n%s", want, df)
+		}
 	}
 }
 

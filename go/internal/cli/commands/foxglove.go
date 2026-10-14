@@ -276,7 +276,10 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 	// manifest field.
 	launchCommand := fmt.Sprintf("source /opt/ros/%s/setup.bash && export ROS_LOCALHOST_ONLY=0 ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET", opts.distro)
 	if opts.iface != "" {
-		cycloneURI := fmt.Sprintf(`<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="%s"/></Interfaces></General><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`, opts.iface)
+		// This override runs inside the generated image, after the agent injects
+		// its network-scope environment. Keep loopback and localhost discovery
+		// while pinning the outward-facing side to the requested interface.
+		cycloneURI := fmt.Sprintf(`<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo" multicast="true"/><NetworkInterface name="%s"/></Interfaces></General><Discovery><ParticipantIndex>auto</ParticipantIndex><Peers><Peer address="127.0.0.1"/></Peers></Discovery><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`, opts.iface)
 		launchCommand += " && export CYCLONEDDS_URI='" + cycloneURI + "'"
 	}
 	launchCommand += fmt.Sprintf(" && exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=%d address:=%s include_hidden:=true", foxgloveBridgePort, foxgloveBridgeAddress)
