@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +23,10 @@ func TestEnsureTourVMReusesCompletedVM(t *testing.T) {
 	}
 	previous := createTourVMFn
 	t.Cleanup(func() { createTourVMFn = previous })
-	createTourVMFn = func(io.Writer, string) error { t.Fatal("attempted to recreate existing VM"); return nil }
+	createTourVMFn = func(context.Context, io.Writer, string) error {
+		t.Fatal("attempted to recreate existing VM")
+		return nil
+	}
 	var out bytes.Buffer
 	for range 2 {
 		if err := ensureTourVM(context.Background(), &out, "tour-test"); err != nil {
@@ -53,7 +57,7 @@ func TestEnsureTourVMResumesInterruptedCreation(t *testing.T) {
 	previous := createTourVMFn
 	t.Cleanup(func() { createTourVMFn = previous })
 	creates := 0
-	createTourVMFn = func(out io.Writer, name string) error {
+	createTourVMFn = func(ctx context.Context, out io.Writer, name string) error {
 		creates++
 		_, _ = io.WriteString(out, "Created VM. Start it with wendy vm start.\n")
 		return store.CreateFrom(name, strings.NewReader("complete image"), 14, 4096, vm.Meta{})
@@ -89,7 +93,7 @@ func TestEnsureTourVMRejectsAnotherRobotAndHonorsCancellation(t *testing.T) {
 	robotTestProfileForKind(t, store, "tour-test", vm.RobotKindG1)
 	previous := createTourVMFn
 	t.Cleanup(func() { createTourVMFn = previous })
-	createTourVMFn = func(io.Writer, string) error { t.Fatal("created VM after refusal"); return nil }
+	createTourVMFn = func(context.Context, io.Writer, string) error { t.Fatal("created VM after refusal"); return nil }
 	if err := ensureTourVM(context.Background(), io.Discard, "tour-test"); err == nil || !strings.Contains(err.Error(), "different robot profile") {
 		t.Fatalf("accepted G1 as tour Go2: %v", err)
 	}
@@ -113,11 +117,46 @@ func TestEnsureTourVMDoesNotStartCreationAfterPreparationIsCancelled(t *testing.
 	}
 	previous := createTourVMFn
 	t.Cleanup(func() { createTourVMFn = previous })
-	createTourVMFn = func(io.Writer, string) error {
+	createTourVMFn = func(context.Context, io.Writer, string) error {
 		t.Fatal("started creation after cancellation")
 		return nil
 	}
 	if err := ensureTourVM(ctx, io.Discard, "tour-test"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("lost cancellation during preparation: %v", err)
+	}
+}
+
+func TestEnsureTourVMPropagatesCancellationIntoCreation(t *testing.T) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	store, err := vm.NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousStore, previousTransport := robotVMStore, http.DefaultTransport
+	t.Cleanup(func() {
+		robotVMStore, http.DefaultTransport = previousStore, previousTransport
+	})
+	robotVMStore = func() (*vm.Store, error) { return store, nil }
+	type contextKey struct{}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), contextKey{}, "tour"))
+	defer cancel()
+	requests := 0
+	http.DefaultTransport = vmImageTestTransport(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.Context().Value(contextKey{}) != "tour" {
+			t.Error("VM creation dropped the tour context before fetching its manifest")
+			return nil, errors.New("missing tour context")
+		}
+		cancel()
+		return nil, req.Context().Err()
+	})
+	if err := ensureTourVM(ctx, io.Discard, "tour-test"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("creation lost in-flight cancellation: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("cancelled creation made %d requests, want 1", requests)
+	}
+	if _, err := os.Stat(store.Dir("tour-test")); !os.IsNotExist(err) {
+		t.Fatalf("cancelled creation left a VM directory: %v", err)
 	}
 }

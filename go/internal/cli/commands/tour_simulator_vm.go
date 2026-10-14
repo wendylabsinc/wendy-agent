@@ -11,8 +11,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
 
-var createTourVMFn = func(out io.Writer, name string) error {
-	return createVM(out, name, "", "", defaultSimulatorDiskGiB, false, 0)
+var createTourVMFn = func(ctx context.Context, out io.Writer, name string) error {
+	return createVMContext(ctx, out, name, "", "", defaultSimulatorDiskGiB, false, 0)
 }
 
 func ensureTourVM(ctx context.Context, out io.Writer, name string) (runErr error) {
@@ -44,7 +44,7 @@ func ensureTourVM(ctx context.Context, out io.Writer, name string) (runErr error
 				}
 			}()
 		}
-		if err := createTourVMFn(io.Discard, name); err != nil {
+		if err := createTourVMFn(ctx, io.Discard, name); err != nil {
 			return err
 		}
 	}
