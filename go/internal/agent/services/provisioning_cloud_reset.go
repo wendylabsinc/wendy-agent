@@ -34,8 +34,8 @@ func validateResetBinding(record *unenrollproof.Completion) error {
 	if err := proto.Unmarshal(record.CloudDeletion, &deleted); err != nil {
 		return err
 	}
-	// SECURITY: Agent wall-clock skew intentionally fails closed here. Correct
-	// the clock before retrying; do not relax the exact binding or proof checks.
+	// SECURITY: Authorization time was established by fresh signed evidence.
+	// Recovery uses that saved epoch, never the current wall clock as authority.
 	if deleted.GetId() == "" || deleted.GetId() != record.AssetID || deleted.GetOrganizationId() != identity.TenantUUID || deleted.GetDeviceId() != identity.EntityID || deleted.GetDeletedAt() == nil || deleted.GetDeletedAt().CheckValid() != nil || deleted.GetDeletedAt().AsTime().After(time.Unix(record.AuthorizedAt, 0).Add(time.Second)) {
 		return fmt.Errorf("invalid exact Cloud deletion binding")
 	}
@@ -184,17 +184,44 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 		svc.mu.Unlock()
 		return nil, status.FromContextError(err).Err()
 	}
-	// Use one system-clock reading for operator validity, revocation evidence
-	// and the authorization receipt. Clock synchronization and persistence
-	// belong to the existing time services, not the unenrollment transaction.
-	now := time.Now()
-	if err := svc.requirePKIOperator(ctx, now); err != nil {
+	// Check the authenticated caller before doing network work. Wall time is not
+	// reset authority; recheck validity against fresh signed bounds afterwards.
+	if err := svc.requirePKIOperator(ctx); err != nil {
 		svc.mu.Unlock()
 		return nil, err
 	}
 	if !svc.enrolled || req.GetExpectedPrincipalUri() != svc.principalURI || req.GetExpectedCertificateSha256() != svc.certificateFingerprintLocked() {
 		svc.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "exact installed identity required; keys retained")
+	}
+	if svc.trustedTime == nil {
+		svc.mu.Unlock()
+		return nil, status.Error(codes.FailedPrecondition, "fresh authenticated time required; keys retained")
+	}
+	// Do not hold provisioning state across network I/O. Revalidate the caller
+	// and exact installed identity after acquiring time; no floor file is used.
+	svc.mu.Unlock()
+	window, timeErr := svc.trustedTime(ctx)
+	acquired := time.Now() // monotonic elapsed time only, never UTC authority
+	svc.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		svc.mu.Unlock()
+		return nil, status.FromContextError(err).Err()
+	}
+	if timeErr != nil || window.Earliest.IsZero() || window.Latest.Before(window.Earliest) {
+		svc.mu.Unlock()
+		return nil, status.Error(codes.FailedPrecondition, "fresh authenticated time required; keys retained")
+	}
+	elapsed := time.Since(acquired)
+	window.Earliest = window.Earliest.Add(elapsed)
+	window.Latest = window.Latest.Add(elapsed)
+	if err := svc.requirePKIOperator(ctx, window); err != nil {
+		svc.mu.Unlock()
+		return nil, err
+	}
+	if !svc.enrolled || req.GetExpectedPrincipalUri() != svc.principalURI || req.GetExpectedCertificateSha256() != svc.certificateFingerprintLocked() {
+		svc.mu.Unlock()
+		return nil, status.Error(codes.FailedPrecondition, "installed identity changed during time verification; keys retained")
 	}
 	leaves, _ := certs.ParseCertsFromPEM([]byte(svc.certPEM))
 	chain, _ := certs.ParseCertsFromPEM([]byte(svc.chainPEM))
@@ -204,7 +231,10 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 	}
 	issuer, err := unenrollproof.Issuer(leaves[0], chain)
 	if err == nil {
-		err = unenrollproof.VerifyRevocation(req.GetRevocationProof(), leaves[0], issuer, now)
+		err = unenrollproof.VerifyRevocation(req.GetRevocationProof(), leaves[0], issuer, window.Earliest)
+		if err == nil {
+			err = unenrollproof.VerifyRevocation(req.GetRevocationProof(), leaves[0], issuer, window.Latest)
+		}
 	}
 	if err != nil {
 		svc.mu.Unlock()
@@ -215,7 +245,11 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 		svc.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "typed Cloud deletion evidence required")
 	}
-	record := unenrollproof.Completion{Principal: svc.principalURI, Cloud: svc.cloudHost, AssetID: deleted.GetId(), Fingerprint: req.GetExpectedCertificateSha256(), AuthorizedAt: now.Unix(), Certificate: leaves[0].Raw, Chain: svc.chainPEM, Revocation: req.GetRevocationProof(), CloudDeletion: req.GetCloudDeletion()}
+	if deleted.GetDeletedAt() == nil || deleted.GetDeletedAt().AsTime().After(window.Earliest) {
+		svc.mu.Unlock()
+		return nil, status.Error(codes.FailedPrecondition, "Cloud deletion must precede the authenticated time interval; keys retained")
+	}
+	record := unenrollproof.Completion{Principal: svc.principalURI, Cloud: svc.cloudHost, AssetID: deleted.GetId(), Fingerprint: req.GetExpectedCertificateSha256(), AuthorizedAt: window.Latest.Unix(), Certificate: leaves[0].Raw, Chain: svc.chainPEM, Revocation: req.GetRevocationProof(), CloudDeletion: req.GetCloudDeletion()}
 	if err := validateResetBinding(&record); err != nil {
 		svc.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "exact Cloud deletion binding required; keys retained")

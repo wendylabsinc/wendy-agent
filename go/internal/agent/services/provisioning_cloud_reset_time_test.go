@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/unenrollproof"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc/codes"
@@ -41,7 +43,7 @@ func checkResetStateUnchanged(t *testing.T, svc *ProvisioningService) func() {
 	}
 }
 
-func TestCloudResetChecksOperatorValidityAtSystemTime(t *testing.T) {
+func TestCloudResetChecksOperatorValidityAtAuthenticatedTime(t *testing.T) {
 	for _, name := range []string{"expired", "not-yet-valid"} {
 		t.Run(name, func(t *testing.T) {
 			svc, req, ctx := cloudResetFixture(t)
@@ -61,7 +63,7 @@ func TestCloudResetChecksOperatorValidityAtSystemTime(t *testing.T) {
 	}
 }
 
-func TestCloudResetChecksRevocationFreshnessAtSystemTime(t *testing.T) {
+func TestCloudResetChecksRevocationFreshnessAtAuthenticatedTime(t *testing.T) {
 	for _, offset := range []time.Duration{-2 * time.Hour, 2 * time.Hour} {
 		t.Run(offset.String(), func(t *testing.T) {
 			// The signed OCSP evidence is expired or not yet valid. Keep the
@@ -110,11 +112,13 @@ func TestCloudResetCanceledRequestRetainsKeys(t *testing.T) {
 	unchanged()
 }
 
-func TestCloudResetRecordsSystemAuthorizationTime(t *testing.T) {
+func TestCloudResetRecordsAuthenticatedAuthorizationTime(t *testing.T) {
 	svc, req, ctx := cloudResetFixture(t)
-	before := time.Now().Unix()
+	latest := time.Now().Add(10 * time.Second)
+	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
+		return timesync.TimeWindow{Earliest: latest.Add(-10 * time.Second), Latest: latest}, nil
+	}
 	response, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req)
-	after := time.Now().Unix()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,9 +128,109 @@ func TestCloudResetRecordsSystemAuthorizationTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completion.AuthorizedAt < before || completion.AuthorizedAt > after {
-		t.Fatalf("authorization time = %d, want system time in [%d, %d]", completion.AuthorizedAt, before, after)
+	if completion.AuthorizedAt != latest.Unix() {
+		t.Fatalf("authorization time = %d, want authenticated upper bound %d", completion.AuthorizedAt, latest.Unix())
 	}
+}
+
+func TestCloudResetFreshTimeFailureRetainsKeys(t *testing.T) {
+	for _, name := range []string{"missing", "unavailable", "empty", "reversed"} {
+		t.Run(name, func(t *testing.T) {
+			svc, req, ctx := cloudResetFixture(t)
+			unchanged := checkResetStateUnchanged(t, svc)
+			svc.trustedTime = nil
+			if name != "missing" {
+				svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
+					switch name {
+					case "unavailable":
+						return timesync.TimeWindow{}, errors.New("offline")
+					case "reversed":
+						return timesync.TimeWindow{Earliest: time.Now(), Latest: time.Now().Add(-time.Hour)}, nil
+					default:
+						return timesync.TimeWindow{}, nil
+					}
+				}
+			}
+			if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("reset = %v, want failed precondition", err)
+			}
+			unchanged()
+		})
+	}
+}
+
+func TestCloudResetAuthenticatedIntervalRejectsPartialValidity(t *testing.T) {
+	for _, name := range []string{"operator-start", "operator-end", "ocsp-start", "ocsp-end"} {
+		t.Run(name, func(t *testing.T) {
+			svc, req, ctx := cloudResetFixture(t)
+			unchanged := checkResetStateUnchanged(t, svc)
+			now := time.Now()
+			p, _ := peer.FromContext(ctx)
+			actor := p.AuthInfo.(credentials.TLSInfo).State.PeerCertificates[0]
+			window := timesync.TimeWindow{Earliest: now.Add(-10 * time.Second), Latest: now.Add(10 * time.Second)}
+			want := codes.PermissionDenied
+			switch name {
+			case "operator-start":
+				actor.NotBefore = now
+			case "operator-end":
+				actor.NotAfter = now
+			case "ocsp-start", "ocsp-end":
+				actor.NotBefore, actor.NotAfter = now.Add(-4*time.Hour), now.Add(4*time.Hour)
+				want = codes.FailedPrecondition
+				if name == "ocsp-start" {
+					window.Earliest = now.Add(-2 * time.Minute)
+				} else {
+					window.Latest = now.Add(2 * time.Hour)
+				}
+			}
+			svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) { return window, nil }
+			if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); status.Code(err) != want {
+				t.Fatalf("reset = %v, want %v", err, want)
+			}
+			unchanged()
+		})
+	}
+}
+
+func TestCloudResetFreshTimeDoesNotUseWallClock(t *testing.T) {
+	for _, offset := range []time.Duration{-2 * time.Hour, 2 * time.Hour} {
+		t.Run(offset.String(), func(t *testing.T) {
+			now := time.Now().Add(offset)
+			svc, req, ctx := cloudResetFixtureAt(t, now)
+			svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
+				return timesync.TimeWindow{Earliest: now, Latest: now}, nil
+			}
+			unchanged := checkResetStateUnchanged(t, svc)
+			_, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req)
+			if offset < 0 {
+				// ocsp.CreateResponse stamps ProducedAt with the actual wall time.
+				// It is future evidence relative to these signed bounds, despite
+				// the operator being valid there: do not relax that check.
+				if status.Code(err) != codes.FailedPrecondition {
+					t.Fatalf("future ProducedAt accepted against signed past time: %v", err)
+				}
+				unchanged()
+			} else if err != nil {
+				t.Fatalf("signed time must win over wall-clock skew: %v", err)
+			}
+		})
+	}
+}
+
+func TestCloudResetRechecksIdentityAfterFreshTime(t *testing.T) {
+	svc, req, ctx := cloudResetFixture(t)
+	unchanged := checkResetStateUnchanged(t, svc)
+	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
+		svc.mu.Lock() // also proves the network callback does not hold this lock
+		svc.certPEM = "rotated identity"
+		svc.mu.Unlock()
+		now := time.Now()
+		return timesync.TimeWindow{Earliest: now, Latest: now}, nil
+	}
+	if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("reset = %v, want failed precondition", err)
+	}
+	unchanged()
 }
 
 func TestCloudResetDoesNotUseOrWriteClockFloor(t *testing.T) {

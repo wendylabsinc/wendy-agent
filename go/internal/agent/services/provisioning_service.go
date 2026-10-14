@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/enrolltoken"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -121,6 +122,7 @@ type ProvisioningService struct {
 	unenrollmentMu   sync.Mutex
 	enrolled         bool
 	resetRecoveryErr error
+	trustedTime      func(context.Context) (timesync.TimeWindow, error)
 	cloudHost        string
 	orgID            int32
 	assetID          int32
@@ -133,11 +135,14 @@ type ProvisioningService struct {
 	OnUnprovisioned  OnUnprovisionedFunc
 }
 
-func NewProvisioningService(logger *zap.Logger, configPath string) *ProvisioningService {
+func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*timesync.Manager) *ProvisioningService {
 	svc := &ProvisioningService{
 		logger:      logger,
 		configPath:  configPath,
 		CloudDialer: DefaultCloudDialer,
+	}
+	if len(clock) > 0 && clock[0] != nil {
+		svc.trustedTime = clock[0].FreshTime
 	}
 	svc.resetRecoveryErr = svc.recoverCloudReset()
 	if svc.resetRecoveryErr == nil {

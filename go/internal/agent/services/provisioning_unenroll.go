@@ -3,9 +3,9 @@ package services
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/unenrollproof"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -23,7 +23,7 @@ func (s *ProvisioningServiceV2) CheckACMERevocation(context.Context, *agentpbv2.
 	return nil, status.Error(codes.Unimplemented, "use Cloud binding preflight; no Agent ACME revocation path")
 }
 
-func (s *ProvisioningService) requirePKIOperator(ctx context.Context, now time.Time) error {
+func (s *ProvisioningService) requirePKIOperator(ctx context.Context, windows ...timesync.TimeWindow) error {
 	identity, err := certs.ParsePrincipal(s.principalURI)
 	if err != nil {
 		return status.Error(codes.FailedPrecondition, "device has no direct PKI identity")
@@ -44,9 +44,12 @@ func (s *ProvisioningService) requirePKIOperator(ctx context.Context, now time.T
 	if !ok || err != nil || actor.EntityType != certs.EntityUser || actor.TenantUUID != identity.TenantUUID {
 		return status.Error(codes.PermissionDenied, "same-tenant operator certificate required")
 	}
-	leaf := tlsInfo.State.PeerCertificates[0]
-	if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
-		return status.Error(codes.PermissionDenied, "operator certificate is not valid at the current system time")
+	if len(windows) > 0 {
+		leaf := tlsInfo.State.PeerCertificates[0]
+		window := windows[0]
+		if window.Earliest.Before(leaf.NotBefore) || window.Latest.After(leaf.NotAfter) {
+			return status.Error(codes.PermissionDenied, "operator certificate is not valid throughout the authenticated time interval")
+		}
 	}
 	return nil
 }

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/unenrollproof"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -93,6 +94,10 @@ func cloudResetFixtureAt(t *testing.T, now time.Time) (*ProvisioningService, *ag
 	actor := &x509.Certificate{URIs: []*url.URL{actorURI}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, KeyUsage: x509.KeyUsageDigitalSignature}
 	ctx := peer.NewContext(context.Background(), &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{actor}, VerifiedChains: [][]*x509.Certificate{{actor}}}}})
 	svc := NewProvisioningService(zap.NewNop(), dir)
+	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
+		instant := time.Now()
+		return timesync.TimeWindow{Earliest: instant, Latest: instant}, nil
+	}
 	return svc, &agentpbv2.UnprovisionRequest{ExpectedPrincipalUri: principal, ExpectedCertificateSha256: unenrollproof.Fingerprint(leaf), RevocationProof: evidence, CloudDeletion: binding}, ctx
 }
 func TestCloudResetRetiredACMEPaths(t *testing.T) {
