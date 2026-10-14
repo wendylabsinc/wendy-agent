@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,12 +24,12 @@ func stubTourGuide(t *testing.T, actions ...string) {
 	t.Helper()
 	oldPick, oldWait, oldWalk, oldBrowser := tourGuidePick, tourGuideWait, tourGuideWalk, tourGuideBrowser
 	oldScaffold, oldDeploy, oldControl, oldURL := tourGuideScaffold, tourGuideDeploy, tourGuideControlApp, tourGuideAppURL
-	oldCleanup := tourGuidePrepareCleanup
+	oldPrepare, oldCleanup := tourGuidePrepareDeployment, tourGuideCleanup
 	oldEditor, oldStop, oldInteractive := tourGuideEditor, tourGuideStop, isInteractiveTerminalFn
 	t.Cleanup(func() {
 		tourGuidePick, tourGuideWait, tourGuideWalk, tourGuideBrowser = oldPick, oldWait, oldWalk, oldBrowser
 		tourGuideScaffold, tourGuideDeploy, tourGuideControlApp, tourGuideAppURL = oldScaffold, oldDeploy, oldControl, oldURL
-		tourGuidePrepareCleanup = oldCleanup
+		tourGuidePrepareDeployment, tourGuideCleanup = oldPrepare, oldCleanup
 		tourGuideEditor, tourGuideStop, isInteractiveTerminalFn = oldEditor, oldStop, oldInteractive
 	})
 	isInteractiveTerminalFn = func() bool { return true }
@@ -68,15 +69,16 @@ func stubTourGuide(t *testing.T, actions ...string) {
 	}
 	tourGuideBrowser = func(string) error { t.Fatal("unexpected browser launch"); return nil }
 	tourGuideScaffold = func(string, string) (string, error) { t.Fatal("unexpected scaffold"); return "", nil }
-	tourGuideDeploy = func(context.Context, string, string) error { t.Fatal("unexpected deployment"); return nil }
-	tourGuidePrepareCleanup = func(string, string, string) (func(context.Context) error, string, error) {
-		return func(context.Context) error { return nil }, "test-node", nil
+	tourGuideDeploy = func(context.Context, *tourAppDeployment) error { t.Fatal("unexpected deployment"); return nil }
+	tourGuidePrepareDeployment = func(name, kind, path string) (*tourAppDeployment, error) {
+		return &tourAppDeployment{vmName: name, kind: kind, path: path, nodeName: "test-node"}, nil
 	}
+	tourGuideCleanup = func(context.Context, *tourAppDeployment) error { return nil }
 	tourGuideControlApp = func(context.Context, string, string, string, string) (string, error) {
 		t.Fatal("unexpected app control")
 		return "", nil
 	}
-	tourGuideAppURL = func(context.Context, string, string) (string, error) {
+	tourGuideAppURL = func(context.Context, *tourAppDeployment) (string, error) {
 		t.Fatal("unexpected app URL lookup")
 		return "", nil
 	}
@@ -157,9 +159,9 @@ func TestTourGuideProgrammingDeploysOnlyExplicitlyToSameVM(t *testing.T) {
 		return true, nil
 	}
 	deploys := 0
-	tourGuideDeploy = func(_ context.Context, name, dir string) error {
-		if name != p.VMName || dir != appPath {
-			t.Fatalf("wrong deploy target %q %q", name, dir)
+	tourGuideDeploy = func(_ context.Context, app *tourAppDeployment) error {
+		if app.vmName != p.VMName || app.path != appPath {
+			t.Fatalf("wrong deploy target %q %q", app.vmName, app.path)
 		}
 		deploys++
 		return nil
@@ -187,7 +189,7 @@ func TestTourGuideStopsStartedAppOnBackOrCancellation(t *testing.T) {
 	for _, exit := range []string{"back", ":cancel"} {
 		t.Run(exit, func(t *testing.T) {
 			stubTourGuide(t, "deploy", "start", exit)
-			tourGuideDeploy = func(context.Context, string, string) error { return nil }
+			tourGuideDeploy = func(context.Context, *tourAppDeployment) error { return nil }
 			var actions []string
 			tourGuideControlApp = func(ctx context.Context, name, kind, nodeName, action string) (string, error) {
 				if ctx.Err() != nil || name != "tour-test" || kind != "patrol" || nodeName != "test-node" {
@@ -313,7 +315,7 @@ func TestTourGuideAppDefaultAdvancesWithProgress(t *testing.T) {
 				index++
 				return action, nil
 			}
-			tourGuideDeploy = func(context.Context, string, string) error { return nil }
+			tourGuideDeploy = func(context.Context, *tourAppDeployment) error { return nil }
 			tourGuideControlApp = func(context.Context, string, string, string, string) (string, error) { return "ok", nil }
 			if err := runTourEditableApp(context.Background(), io.Discard, "tour-test", kind, t.TempDir()); err != nil {
 				t.Fatal(err)
@@ -338,20 +340,21 @@ func TestTourGuideReleasesDeploymentWithoutStartingMovement(t *testing.T) {
 			defer cancel()
 			path := t.TempDir()
 			var events []string
-			tourGuidePrepareCleanup = func(name, kind, source string) (func(context.Context) error, string, error) {
+			tourGuidePrepareDeployment = func(name, kind, source string) (*tourAppDeployment, error) {
 				if name != "tour-selected" || kind != "teleop" || source != path {
 					t.Fatalf("wrong cleanup target %q %q %q", name, kind, source)
 				}
 				events = append(events, "capture")
-				return func(cleanCtx context.Context) error {
-					if cleanCtx.Err() != nil {
-						t.Fatal("cleanup reused cancelled context")
-					}
-					events = append(events, "release")
-					return nil
-				}, "test-node", nil
+				return &tourAppDeployment{vmName: name, kind: kind, path: source, nodeName: "test-node"}, nil
 			}
-			tourGuideDeploy = func(context.Context, string, string) error {
+			tourGuideCleanup = func(cleanCtx context.Context, app *tourAppDeployment) error {
+				if cleanCtx.Err() != nil || app.vmName != "tour-selected" || app.path != path {
+					t.Fatal("cleanup lost context or captured deployment")
+				}
+				events = append(events, "release")
+				return nil
+			}
+			tourGuideDeploy = func(context.Context, *tourAppDeployment) error {
 				events = append(events, "deploy")
 				if mode == "failure" {
 					return deployErr
@@ -376,11 +379,12 @@ func TestTourGuideReleasesDeploymentWithoutStartingMovement(t *testing.T) {
 func TestTourGuideReleasesBeforeRedeployAndOnExit(t *testing.T) {
 	stubTourGuide(t, "deploy", "deploy", "back")
 	var events []string
-	tourGuidePrepareCleanup = func(string, string, string) (func(context.Context) error, string, error) {
+	tourGuidePrepareDeployment = func(string, string, string) (*tourAppDeployment, error) {
 		events = append(events, "capture")
-		return func(context.Context) error { events = append(events, "release"); return nil }, "test-node", nil
+		return &tourAppDeployment{nodeName: "test-node"}, nil
 	}
-	tourGuideDeploy = func(context.Context, string, string) error { events = append(events, "deploy"); return nil }
+	tourGuideCleanup = func(context.Context, *tourAppDeployment) error { events = append(events, "release"); return nil }
+	tourGuideDeploy = func(context.Context, *tourAppDeployment) error { events = append(events, "deploy"); return nil }
 	if err := runTourEditableApp(context.Background(), io.Discard, "tour-test", "patrol", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +397,7 @@ func TestTourGuideReleaseStillRunsWhenMovementStopFails(t *testing.T) {
 	stubTourGuide(t, "deploy", "start", "back")
 	stopErr := errors.New("stop response lost")
 	var actions []string
-	tourGuideDeploy = func(context.Context, string, string) error { return nil }
+	tourGuideDeploy = func(context.Context, *tourAppDeployment) error { return nil }
 	tourGuideControlApp = func(_ context.Context, _, _, _ string, action string) (string, error) {
 		actions = append(actions, action)
 		if action == "stop" {
@@ -401,9 +405,7 @@ func TestTourGuideReleaseStillRunsWhenMovementStopFails(t *testing.T) {
 		}
 		return "ok", nil
 	}
-	tourGuidePrepareCleanup = func(string, string, string) (func(context.Context) error, string, error) {
-		return func(context.Context) error { actions = append(actions, "release"); return nil }, "test-node", nil
-	}
+	tourGuideCleanup = func(context.Context, *tourAppDeployment) error { actions = append(actions, "release"); return nil }
 	err := runTourEditableApp(context.Background(), io.Discard, "tour-test", "patrol", t.TempDir())
 	if !errors.Is(err, stopErr) || strings.Join(actions, ",") != "start,stop,release" {
 		t.Fatalf("err=%v actions=%v", err, actions)
@@ -417,14 +419,18 @@ func TestTourGuideRecapturesAppIdentityOnDeploymentRetry(t *testing.T) {
 	identity := "first-app"
 	confirmTourRetry = func(context.Context, io.Writer) (bool, error) { identity = "edited-app"; return true, nil }
 	var events []string
-	tourGuidePrepareCleanup = func(string, string, string) (func(context.Context) error, string, error) {
+	tourGuidePrepareDeployment = func(string, string, string) (*tourAppDeployment, error) {
 		captured := identity
 		events = append(events, "capture "+captured)
-		return func(context.Context) error { events = append(events, "release "+captured); return nil }, captured, nil
+		return &tourAppDeployment{nodeName: captured}, nil
 	}
-	tourGuideDeploy = func(context.Context, string, string) error {
-		events = append(events, "deploy "+identity)
-		if identity == "first-app" {
+	tourGuideCleanup = func(_ context.Context, app *tourAppDeployment) error {
+		events = append(events, "release "+app.nodeName)
+		return nil
+	}
+	tourGuideDeploy = func(_ context.Context, app *tourAppDeployment) error {
+		events = append(events, "deploy "+app.nodeName)
+		if app.nodeName == "first-app" {
 			return errors.New("fix the manifest and retry")
 		}
 		return nil
@@ -464,26 +470,40 @@ func TestTourGuideKeepsServiceIdentityUntilRedeployment(t *testing.T) {
 			firstNode := tourAppNodeName("tour-test", "patrol", "dev.student.first")
 			secondNode := tourAppNodeName("tour-test", "patrol", "dev.student.second")
 			var events []string
-			var preparedNode string
-			tourGuidePrepareCleanup = func(name, kind, source string) (func(context.Context) error, string, error) {
-				// Capture from the real manifest, but replace remote cleanup with
-				// a recorder so the test cannot contact a simulator.
-				_, nodeName, err := prepareTourAppCleanup(name, kind, source)
+			captures := 0
+			tourGuidePrepareDeployment = func(name, kind, source string) (*tourAppDeployment, error) {
+				app, err := prepareTourAppDeployment(name, kind, source)
 				if err != nil {
-					return nil, "", err
+					return nil, err
 				}
-				preparedNode = nodeName
-				events = append(events, "capture "+nodeName)
-				return func(ctx context.Context) error {
-					if ctx.Err() != nil {
-						t.Fatal("cleanup used a cancelled context")
-					}
-					events = append(events, "release "+nodeName)
-					return nil
-				}, nodeName, nil
+				events = append(events, "capture "+app.nodeName)
+				captures++
+				if captures == 1 {
+					// An editor save between preparation and deployment must not
+					// change the app that is deployed or later controlled/stopped.
+					writeManifest("dev.student.second")
+				}
+				return app, nil
 			}
-			tourGuideDeploy = func(context.Context, string, string) error {
-				events = append(events, "deploy "+preparedNode)
+			tourGuideCleanup = func(ctx context.Context, app *tourAppDeployment) error {
+				if ctx.Err() != nil {
+					t.Fatal("cleanup used a cancelled context")
+				}
+				if app.nodeName != tourAppNodeName("tour-test", "patrol", app.cfg.AppID) {
+					t.Fatal("cleanup config no longer matches its captured service identity")
+				}
+				events = append(events, "release "+app.nodeName)
+				return nil
+			}
+			tourGuideDeploy = func(_ context.Context, app *tourAppDeployment) error {
+				wantID := "dev.student.first"
+				if captures > 1 {
+					wantID = "dev.student.second"
+				}
+				if app.cfg.AppID != wantID {
+					t.Fatalf("deployed %q after editor save, want prepared %q", app.cfg.AppID, wantID)
+				}
+				events = append(events, "deploy "+app.nodeName)
 				return nil
 			}
 			edits := 0
@@ -518,5 +538,87 @@ func TestTourGuideKeepsServiceIdentityUntilRedeployment(t *testing.T) {
 				t.Fatalf("events=%v, want %v\noutput:\n%s", events, want, out.String())
 			}
 		})
+	}
+}
+
+func TestTourGuideBrowserUsesDeployedManifestUntilRedeployment(t *testing.T) {
+	stubTourGuide(t, "deploy", "open", "deploy", "open", "back")
+	path, err := scaffoldTourApp(t.TempDir(), "teleop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeManifest := func(appID string, port int) {
+		t.Helper()
+		data, err := json.Marshal(map[string]any{
+			"appId": appID, "version": "0.1.0", "platform": "linux",
+			"entitlements": []map[string]any{{"type": "http", "port": port}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "wendy.json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeManifest("dev.student.first", 8903)
+	var prepared []*tourAppDeployment
+	tourGuidePrepareDeployment = func(name, kind, source string) (*tourAppDeployment, error) {
+		app, err := prepareTourAppDeployment(name, kind, source)
+		if err != nil {
+			return nil, err
+		}
+		prepared = append(prepared, app)
+		if len(prepared) == 1 {
+			writeManifest("dev.student.second", 8904)
+		}
+		return app, nil
+	}
+	var events []string
+	tourGuideDeploy = func(_ context.Context, app *tourAppDeployment) error {
+		if app != prepared[len(prepared)-1] {
+			t.Fatal("deployment did not use the prepared snapshot")
+		}
+		events = append(events, "deploy "+app.cfg.AppID)
+		return nil
+	}
+	tourGuideAppURL = func(_ context.Context, app *tourAppDeployment) (string, error) {
+		if app != prepared[len(prepared)-1] {
+			t.Fatal("browser lookup did not use the deployed snapshot")
+		}
+		port, found := httpEntitlementPort(app.cfg.Entitlements)
+		if !found {
+			t.Fatal("snapshot lost HTTP entitlement")
+		}
+		events = append(events, "open "+app.cfg.AppID)
+		return fmt.Sprintf("http://127.0.0.1:%d", port), nil
+	}
+	tourGuideCleanup = func(_ context.Context, app *tourAppDeployment) error {
+		if app != prepared[len(prepared)-1] {
+			t.Fatal("cleanup did not use the deployed snapshot")
+		}
+		events = append(events, "release "+app.cfg.AppID)
+		return nil
+	}
+	var opened []string
+	tourGuideBrowser = func(url string) error { opened = append(opened, url); return nil }
+	tourGuideWait = func(context.Context, io.Writer, string) error { return nil }
+	var out bytes.Buffer
+	if err := runTourEditableApp(context.Background(), &out, "tour-test", "teleop", path); err != nil {
+		t.Fatalf("guide exit: %v\noutput:\n%s", err, out.String())
+	}
+	want := "deploy dev.student.first,open dev.student.first,release dev.student.first,deploy dev.student.second,open dev.student.second,release dev.student.second"
+	if strings.Join(events, ",") != want || strings.Join(opened, ",") != "http://127.0.0.1:8903,http://127.0.0.1:8904" {
+		t.Fatalf("events=%v opened=%v\noutput:\n%s", events, opened, out.String())
+	}
+}
+
+func TestTourGuideMissingBrowserInterfaceRequiresRedeployment(t *testing.T) {
+	stubTourGuide(t, "deploy", "open")
+	isInteractiveTerminalFn = func() bool { return false }
+	tourGuideDeploy = func(context.Context, *tourAppDeployment) error { return nil }
+	tourGuideAppURL = func(context.Context, *tourAppDeployment) (string, error) { return "", nil }
+	err := runTourEditableApp(context.Background(), io.Discard, "tour-test", "teleop", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "HTTP entitlement in wendy.json, then Deploy again") {
+		t.Fatalf("missing redeployment instruction: %v", err)
 	}
 }

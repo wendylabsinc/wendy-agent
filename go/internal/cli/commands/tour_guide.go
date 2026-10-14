@@ -26,17 +26,18 @@ var guideActionStyle = lipgloss.NewStyle().Bold(true).Foreground(tui.ColorInfo)
 var errTourGuideBack = errors.New("back to previous tour menu")
 
 var (
-	tourGuidePick           = pickTourGuide
-	tourGuideWait           = waitTourGuide
-	tourGuideWalk           = walkTourRobot
-	tourGuideBrowser        = browserOpen
-	tourGuideScaffold       = scaffoldTourApp
-	tourGuideDeploy         = runTourApp
-	tourGuidePrepareCleanup = prepareTourAppCleanup
-	tourGuideControlApp     = controlTourApp
-	tourGuideAppURL         = tourAppURL
-	tourGuideEditor         = openTourEditor
-	tourGuideStop           = func(ctx context.Context, name string) error {
+	tourGuidePick              = pickTourGuide
+	tourGuideWait              = waitTourGuide
+	tourGuideWalk              = walkTourRobot
+	tourGuideBrowser           = browserOpen
+	tourGuideScaffold          = scaffoldTourApp
+	tourGuidePrepareDeployment = prepareTourAppDeployment
+	tourGuideDeploy            = func(ctx context.Context, app *tourAppDeployment) error { return app.deploy(ctx) }
+	tourGuideCleanup           = func(ctx context.Context, app *tourAppDeployment) error { return app.cleanup(ctx) }
+	tourGuideControlApp        = controlTourApp
+	tourGuideAppURL            = func(ctx context.Context, app *tourAppDeployment) (string, error) { return app.url(ctx) }
+	tourGuideEditor            = openTourEditor
+	tourGuideStop              = func(ctx context.Context, name string) error {
 		store, err := robotVMStore()
 		if err != nil {
 			return err
@@ -383,15 +384,14 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 	fmt.Fprintf(out, "\n%s\n%s\n%s\n", guideHeadingStyle.Render("1. Edit your app"), sourcePath, editHint)
 	fmt.Fprintln(out, "Open this file in your editor. Save your changes, then choose Deploy here.")
 	deployed, active := false, false
-	var releaseApp func(context.Context) error
-	var appNodeName string
+	var deployment *tourAppDeployment
 	defer func() {
-		if releaseApp == nil {
+		if deployment == nil {
 			return
 		}
 		if active {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_, err := tourGuideControlApp(stopCtx, name, kind, appNodeName, "stop")
+			_, err := tourGuideControlApp(stopCtx, name, kind, deployment.nodeName, "stop")
 			cancel()
 			if err != nil {
 				runErr = errors.Join(runErr, fmt.Errorf("stopping your %s app: %w", kind, err))
@@ -401,7 +401,7 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 		// deployment returns. Stop the captured app and release only its grant.
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := releaseApp(releaseCtx); err != nil {
+		if err := tourGuideCleanup(releaseCtx, deployment); err != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("releasing your %s app's control: %w", kind, err))
 		} else if kind != "sensors" {
 			fmt.Fprintln(out, "Your app is stopped. The robot is ready for your next activity.")
@@ -467,7 +467,7 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 		case "deploy":
 			fmt.Fprintln(out, "\n"+guideHeadingStyle.Render("2. Deploy your saved code"))
 			if active {
-				if err := runTourStep(ctx, out, "Stopping your app", func() error { _, err := tourGuideControlApp(ctx, name, kind, appNodeName, "stop"); return err }); err != nil {
+				if err := runTourStep(ctx, out, "Stopping your app", func() error { _, err := tourGuideControlApp(ctx, name, kind, deployment.nodeName, "stop"); return err }); err != nil {
 					return err
 				}
 				active = false
@@ -475,21 +475,20 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 			if err := runTourStep(ctx, out, "Deploying your robot app", func() error {
 				// A retry may follow edits to wendy.json, including its app ID.
 				// Release the previous attempt before capturing the next one.
-				if releaseApp != nil {
-					if err := releaseApp(ctx); err != nil {
+				if deployment != nil {
+					if err := tourGuideCleanup(ctx, deployment); err != nil {
 						return err
 					}
-					releaseApp = nil
-					appNodeName = ""
+					deployment = nil
 				}
 				var err error
-				// Keep the service identity with its cleanup. Later manifest edits
-				// must not redirect Start or Stop away from this deployment.
-				releaseApp, appNodeName, err = tourGuidePrepareCleanup(name, kind, appPath)
+				// Deploy, control and clean up the same captured configuration.
+				// Editor saves take effect on the next deployment attempt.
+				deployment, err = tourGuidePrepareDeployment(name, kind, appPath)
 				if err != nil {
 					return err
 				}
-				return tourGuideDeploy(ctx, name, appPath)
+				return tourGuideDeploy(ctx, deployment)
 			}); err != nil {
 				return err
 			}
@@ -509,7 +508,7 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 			if action == "start" {
 				active = true
 			}
-			if err := runTourStep(ctx, out, "Controlling your robot app", func() error { _, err := tourGuideControlApp(ctx, name, kind, appNodeName, action); return err }); err != nil {
+			if err := runTourStep(ctx, out, "Controlling your robot app", func() error { _, err := tourGuideControlApp(ctx, name, kind, deployment.nodeName, action); return err }); err != nil {
 				return err
 			}
 			if action == "stop" {
@@ -527,9 +526,9 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 			var url string
 			if err := runTourStep(ctx, out, "Opening your app", func() error {
 				var err error
-				url, err = tourGuideAppURL(ctx, name, appPath)
+				url, err = tourGuideAppURL(ctx, deployment)
 				if err == nil && url == "" {
-					return errors.New("your app has no browser interface; restore its HTTP entitlement in wendy.json to open it")
+					return errors.New("your app has no browser interface; restore its HTTP entitlement in wendy.json, then Deploy again")
 				}
 				return err
 			}); err != nil {

@@ -566,3 +566,147 @@ func TestTourAppRejectsConflictingLaunchArgumentsBeforeDeploy(t *testing.T) {
 		})
 	}
 }
+
+func TestTourAppDeploymentSnapshotSurvivesManifestEdits(t *testing.T) {
+	path, err := scaffoldTourApp(t.TempDir(), "patrol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(path, "wendy.json")
+	cfg, err := appconfig.LoadFromFile(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeConfig := func() {
+		t.Helper()
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifest, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg.AppID = "dev.student.first"
+	cfg.Run = &appconfig.RunConfig{Args: []string{"--laps", "2"}}
+	cfg.Entitlements = append(cfg.Entitlements, appconfig.Entitlement{Type: appconfig.EntitlementHTTP, Port: 8905})
+	writeConfig()
+	app, err := prepareTourAppDeployment("tour-test", "patrol", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstNode := tourAppNodeName("tour-test", "patrol", "dev.student.first")
+	if app.nodeName != firstNode {
+		t.Fatalf("captured node=%s", app.nodeName)
+	}
+	// An editor saves a new identity, launch arguments and HTTP port after
+	// preparation, before the deployment pipeline receives its configuration.
+	cfg.AppID = "dev.student.next"
+	cfg.Run.Args[1] = "3"
+	cfg.Entitlements[len(cfg.Entitlements)-1].Port = 8906
+	writeConfig()
+
+	conn := stubTourAppConnection(t)
+	oldRun, oldStop, oldService, oldPort := runTourAppWithAgentFn, stopTourAppContainerFn, callTourAppServiceFn, tourAppPortFn
+	t.Cleanup(func() {
+		runTourAppWithAgentFn, stopTourAppContainerFn, callTourAppServiceFn, tourAppPortFn = oldRun, oldStop, oldService, oldPort
+	})
+	runCalls, serviceCalls, portLookups := 0, 0, 0
+	runTourAppWithAgentFn = func(_ context.Context, got *grpcclient.AgentConnection, cwd string, deployed *appconfig.AppConfig, opts runOptions) error {
+		runCalls++
+		port, found := httpEntitlementPort(deployed.Entitlements)
+		if got != conn || cwd != path || deployed.AppID != "dev.student.first" || !found || port != 8905 ||
+			!slices.Equal(deployed.Run.Args, []string{"--laps", "2"}) ||
+			!slices.Contains(opts.userArgs, "__node:="+firstNode) ||
+			!slices.Contains(opts.userArgs, "/patrol/start:=/"+firstNode+"/patrol/start") {
+			t.Fatalf("deployment reloaded or mixed the manifest: cfg=%+v opts=%+v", deployed, opts)
+		}
+		// Normalization downstream must not mutate the captured snapshot.
+		deployed.AppID = "dev.normalized.copy"
+		deployed.Run.Args[1] = "4"
+		deployed.Entitlements[len(deployed.Entitlements)-1].Port = 8907
+		opts.userArgs[1] = "5"
+		return nil
+	}
+	var armed, stopped, released atomic.Bool
+	stopTourAppContainerFn = func(_ context.Context, got *grpcclient.AgentConnection, appID string) error {
+		if got != conn || appID != "dev.student.first" {
+			t.Fatalf("cleanup retargeted to %s", appID)
+		}
+		stopped.Store(true)
+		return nil
+	}
+	callTourAppServiceFn = func(_ context.Context, got *grpcclient.AgentConnection, request *agentpbv2.CallROS2ServiceRequest) (*agentpbv2.CallROS2ServiceResponse, error) {
+		serviceCalls++
+		if got != conn || request.GetService() != "/"+firstNode+"/patrol/start" {
+			t.Fatalf("control retargeted to %s", request.GetService())
+		}
+		return &agentpbv2.CallROS2ServiceResponse{Success: true, Response: "success: true"}, nil
+	}
+	stubTourAppHTTP(t, func(w http.ResponseWriter, r *http.Request, profile vm.RobotProfile) {
+		switch r.URL.Path {
+		case "/api/status":
+			state := tourAppTestStatus(profile, firstNode)
+			state.Armed = armed.Load()
+			if state.Armed {
+				state.ROSCommands.Owner = strings.Repeat("a", 48)
+			}
+			if stopped.Load() {
+				state.ROSCommands.Sources[0].AgeMS = 500
+			}
+			_ = json.NewEncoder(w).Encode(state)
+		case "/api/arm_ros":
+			var request map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request["publisher_gid"] != strings.Repeat("a", 48) {
+				t.Errorf("incorrect grant %v err=%v", request, err)
+			}
+			armed.Store(true)
+			_ = json.NewEncoder(w).Encode(map[string]any{"publisher_gid": strings.Repeat("a", 48), "epoch": 7})
+		case "/api/disarm_ros":
+			if !stopped.Load() {
+				t.Error("released before stopping the captured app")
+			}
+			released.Store(true)
+			armed.Store(false)
+			_ = json.NewEncoder(w).Encode(map[string]bool{"released": true})
+		default:
+			t.Errorf("unexpected endpoint %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	t.Cleanup(appServer.Close)
+	serverURL, _ := url.Parse(appServer.URL)
+	forwardedPort, _ := strconv.Atoi(serverURL.Port())
+	tourAppPortFn = func(_ context.Context, vmName string, guestPort int) (int, error) {
+		portLookups++
+		if vmName != "tour-test" || guestPort != 8905 {
+			t.Fatalf("URL retargeted to %s:%d", vmName, guestPort)
+		}
+		return forwardedPort, nil
+	}
+	ctx := context.Background()
+	if err := app.deploy(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controlTourApp(ctx, app.vmName, app.kind, app.nodeName, "start"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := app.url(ctx); err != nil || got != appServer.URL {
+		t.Fatalf("URL=%s err=%v", got, err)
+	}
+	if err := app.cleanup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if runCalls != 1 || serviceCalls != 1 || portLookups != 1 || !stopped.Load() || !released.Load() {
+		t.Fatalf("run=%d services=%d ports=%d stopped=%t released=%t", runCalls, serviceCalls, portLookups, stopped.Load(), released.Load())
+	}
+	next, err := prepareTourAppDeployment("tour-test", "patrol", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextPort, _ := httpEntitlementPort(next.cfg.Entitlements)
+	if next.cfg.AppID != "dev.student.next" || next.nodeName == app.nodeName || nextPort != 8906 || next.cfg.Run.Args[1] != "3" || app.cfg.Run.Args[1] != "2" {
+		t.Fatal("the next attempt did not capture the edited manifest independently")
+	}
+}
