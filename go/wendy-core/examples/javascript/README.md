@@ -3,10 +3,10 @@
 Requires Go, a C compiler, Python 3.9+, and Node 22+. From the repository root, build both local backends and install the example's on-disk dependency:
 
 ```sh
-python3 tools/build.py native
-python3 tools/build.py wasm
+python3 scripts/build.py native
+python3 scripts/build.py wasm
 npm ci --prefix distributions/javascript
-python3 tools/build.py node
+python3 scripts/build.py node
 cd examples/javascript
 npm install --ignore-scripts
 ```

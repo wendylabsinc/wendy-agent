@@ -54,16 +54,16 @@ jobs:
         run: echo 'C:/msys64/mingw64/bin' >> "$GITHUB_PATH"
       - name: Build and test the real Go/C engine
         run: |
-          python tools/build.py version
+          python scripts/build.py version
           go test ./...
           CGO_ENABLED=0 go test ./core
           go vet ./...
-          python -m unittest discover -s tools -p 'test_*.py' -v
-          python tools/build.py native
+          python -m unittest discover -s scripts -p 'test_*.py' -v
+          python scripts/build.py native
       - name: Build and test Node interop
         run: |
           npm ci --prefix distributions/javascript
-          python tools/build.py node
+          python scripts/build.py node
           cd distributions/javascript
           node --test tests/node.test.mjs
           npm run test:types
@@ -77,7 +77,7 @@ jobs:
           node-version: '24'
       - name: Build and test Kotlin/JVM interop
         run: |
-          python tools/build.py jni
+          python scripts/build.py jni
           distributions/kotlin/gradlew -p distributions/kotlin test --no-daemon
       - if: matrix.swift && runner.os == 'Linux'
         uses: swift-actions/setup-swift@v2
@@ -114,7 +114,7 @@ jobs:
           python -m pip install .build/wheels/*.whl
           python -m unittest discover -s distributions/python/tests -v
       - name: Record version, target, and native checksums
-        run: python tools/build.py inventory
+        run: python scripts/build.py inventory
       - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.target }}
@@ -143,7 +143,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Build the actual Go engine for the browser
-        run: python tools/build.py wasm
+        run: python scripts/build.py wasm
       - uses: actions/upload-artifact@v7
         with:
           name: wasm
@@ -182,12 +182,12 @@ jobs:
         run: |
           make generate compare-clean documentation
           git diff --exit-code -- distributions/javascript/src documentation/versions
-          python tools/check_release.py
+          python scripts/check_release.py
       - uses: actions/download-artifact@v8
         with:
           path: .build/artifacts
       - name: Assemble only complete, version-matching artifacts
-        run: python tools/build.py assemble
+        run: python scripts/build.py assemble
       - name: Test the common JS contract in Node and a real browser
         run: |
           npm ci --prefix distributions/javascript
@@ -197,20 +197,20 @@ jobs:
           npm run test:types
       - name: Pack and test the installed npm artifact in both runtimes
         run: |
-          python tools/build.py pack
-          python tools/build.py test-npm
+          python scripts/build.py pack
+          python scripts/build.py test-npm
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: '6.2.1'
       - name: Consume the release SwiftPM package through a normal versioned dependency
-        run: python tools/swift_smoke.py .build/release/*-swiftpm.tar.gz
+        run: python scripts/swift_smoke.py .build/release/*-swiftpm.tar.gz
       - name: Build the all-target Maven artifact
         run: |
           distributions/kotlin/gradlew -p distributions/kotlin test jar sourcesJar javadocJar --no-daemon
           cp distributions/kotlin/build/libs/*.jar .build/release/
           cp .build/sdk/api.json .build/release/api.json
           cp -R .build/sdk/site/html .build/release/documentation
-          python tools/build.py seal
+          python scripts/build.py seal
       - uses: actions/upload-artifact@v7
         with:
           name: core-release

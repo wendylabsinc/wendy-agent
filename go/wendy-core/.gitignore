@@ -25,7 +25,7 @@ distributions/swift/Sources/CWendyCoreBridge/native_loader.h
 distributions/swift/Sources/CWendyCoreBridge/WendyCore.h
 distributions/kotlin/build/
 distributions/kotlin/src/main/resources/native/
-# Root notices are tracked; distribution copies are staged by tools/build.py.
+# Root notices are tracked; distribution copies are staged by scripts/build.py.
 distributions/javascript/LICENSE
 distributions/javascript/NOTICE
 distributions/python/LICENSE

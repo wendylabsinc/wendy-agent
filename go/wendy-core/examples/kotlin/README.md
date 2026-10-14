@@ -5,8 +5,8 @@ Requires Go, a C compiler, Python 3.9+, and JDK 21. Set `JAVA_HOME` to your JDK 
 From the repository root:
 
 ```sh
-python3 tools/build.py native
-python3 tools/build.py jni
+python3 scripts/build.py native
+python3 scripts/build.py jni
 distributions/kotlin/gradlew -p distributions/kotlin jar --no-daemon
 distributions/kotlin/gradlew -p examples/kotlin run --no-daemon
 ```

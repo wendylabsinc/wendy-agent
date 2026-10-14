@@ -30,7 +30,7 @@ platform/                Included adapter families/variants; Core-versioned
 subsystems/              Reusable infrastructure behind explicit contracts
 documentation/           Contract, projection, versioning and release guides
 examples/                HelloWorld consumers in all six languages
-tools/                   Build, generation and release mechanics
+scripts/                 Build, generation and release mechanics
 .github/workflows/       Core-only CI and gated publication
 ```
 

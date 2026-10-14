@@ -5,7 +5,7 @@ Requires Go, a C compiler, Python 3.9+, and Swift 6+. Current targets are macOS 
 From the repository root, stage the local Core package's native resources:
 
 ```sh
-python3 tools/build.py native
+python3 scripts/build.py native
 ```
 
 On macOS, install XcodeBuildMCP if needed (`npm install -g xcodebuildmcp@2.7.0`), then run:

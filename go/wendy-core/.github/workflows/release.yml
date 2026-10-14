@@ -35,9 +35,9 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "$REF_TYPE" = tag ]; then
-            python tools/build.py version --tag "$REF_NAME"
+            python scripts/build.py version --tag "$REF_NAME"
           else
-            python tools/build.py version
+            python scripts/build.py version
           fi
 
   build:
@@ -111,7 +111,7 @@ jobs:
         run: |
           cd .build/artifacts/core-release && sha256sum --check SHA256SUMS
           cd ../../..
-          python3 tools/build.py assemble
+          python3 scripts/build.py assemble
       - name: Publish Kotlin/JVM to GitHub's Maven registry
         env:
           MAVEN_PUBLISH_URL: https://maven.pkg.github.com/${{ github.repository }}
@@ -161,7 +161,7 @@ jobs:
           # Ephemeral GitHub App credentials are needed only for the atomic push.
           persist-credentials: true
       - name: Publish a normal, independently consumable SwiftPM tag
-        run: python tools/publish_swift.py release/*-swiftpm.tar.gz swiftpm-mirror
+        run: python scripts/publish_swift.py release/*-swiftpm.tar.gz swiftpm-mirror
 
   github:
     needs: [build, npm, pypi, maven, swiftpm]

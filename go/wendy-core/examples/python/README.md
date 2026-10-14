@@ -3,7 +3,7 @@
 Requires Go, a C compiler, and Python 3.9+. From the repository root:
 
 ```sh
-python3 tools/build.py native
+python3 scripts/build.py native
 cd examples/python
 python3 -m venv .venv
 .venv/bin/python -m pip install ../../distributions/python

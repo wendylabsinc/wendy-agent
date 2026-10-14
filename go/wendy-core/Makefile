@@ -1,7 +1,7 @@
 PYTHON ?= python3
 BUILD_DIR := .build/sdk
 PROTO := proto/wendy/core/v1/core.proto
-VERSION := $(shell $(PYTHON) tools/build.py version)
+VERSION := $(shell $(PYTHON) scripts/build.py version)
 
 .PHONY: all check generate native wasm javascript python kotlin swift documentation documentation-manifest compare-clean
 
@@ -17,25 +17,25 @@ documentation-manifest: $(BUILD_DIR)/wendy-core.pb
 		--output $(BUILD_DIR)/api.json --markdown $(BUILD_DIR)/protobuf-reference.md
 
 generate: documentation-manifest
-	$(PYTHON) tools/generate.py
+	$(PYTHON) scripts/generate.py
 
 native:
-	$(PYTHON) tools/build.py native
+	$(PYTHON) scripts/build.py native
 
 wasm:
-	$(PYTHON) tools/build.py wasm
+	$(PYTHON) scripts/build.py wasm
 
 javascript: native wasm
 	cd distributions/javascript && npm ci
-	$(PYTHON) tools/build.py node
+	$(PYTHON) scripts/build.py node
 	cd distributions/javascript && npx playwright install chromium && npm test && npm run test:types
-	$(PYTHON) tools/build.py test-npm
+	$(PYTHON) scripts/build.py test-npm
 
 python: native
 	PYTHONPATH=distributions/python $(PYTHON) -m unittest discover -s distributions/python/tests -v
 
 kotlin: native
-	$(PYTHON) tools/build.py jni
+	$(PYTHON) scripts/build.py jni
 	cd distributions/kotlin && ./gradlew test --no-daemon
 
 swift: native
@@ -46,7 +46,7 @@ swift: native
 check: generate native
 	go test ./...
 	go vet ./...
-	$(PYTHON) -m unittest discover -s tools -p 'test_*.py' -v
+	$(PYTHON) -m unittest discover -s scripts -p 'test_*.py' -v
 	clang++ -x c++ -std=c++17 -fsyntax-only -Iinclude examples/c/hello.c
 	printf '#include <WendyCore/WendyPlatform.h>\n' | clang -x c -std=c11 -fsyntax-only -Iinclude -
 	printf '#include <WendyCore/WendyPlatform.h>\n' | clang++ -x c++ -std=c++17 -fsyntax-only -Iinclude -

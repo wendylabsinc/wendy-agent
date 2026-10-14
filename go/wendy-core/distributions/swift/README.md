@@ -11,4 +11,4 @@ This is native-engine interop only. The operation is synchronous; throws report 
 
 The release distribution includes native libraries and a private C loader in its resources, so downstream consumers use an ordinary SwiftPM dependency with no Go toolchain. Go libraries remain loaded for the process lifetime. Go runtime notices are included alongside them.
 
-In the `wendy-core` source checkout, run `python3 tools/build.py native` before testing; generated resources and header copies are not checked into the implementation repository. The generated release/mirror includes them.
+In the `wendy-core` source checkout, run `python3 scripts/build.py native` before testing; generated resources and header copies are not checked into the implementation repository. The generated release/mirror includes them.

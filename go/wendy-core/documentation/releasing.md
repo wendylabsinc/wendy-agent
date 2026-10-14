@@ -8,7 +8,7 @@
 
 Strict compatibility includes C ABI, public Go APIs, protobuf wire values, platform SPI, language projection semantics, and documented behavior/support guarantees. Adding capability is a minor release; a compatible fix is a patch; a breaking change requires a major release, including before 1.0 under this project's explicit policy. Removing the demo operation is therefore not silently allowed in a patch/minor release. Go major versions must also follow Go's module-path rules.
 
-`tools/check_release.py` catches removed/changed C function signatures and additions against the preceding reachable release tag. It is deliberately not a complete ABI, wire, Go API or behavioral compatibility analyzer. New types and schemas require extending the checks and reviewing the actual boundary. Each release commits `documentation/versions/<VERSION>.json`; generated JS operations must match that contract.
+`scripts/check_release.py` catches removed/changed C function signatures and additions against the preceding reachable release tag. It is deliberately not a complete ABI, wire, Go API or behavioral compatibility analyzer. New types and schemas require extending the checks and reviewing the actual boundary. Each release commits `documentation/versions/<VERSION>.json`; generated JS operations must match that contract.
 
 ## Planned modular composition
 

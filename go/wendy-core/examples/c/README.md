@@ -3,7 +3,7 @@
 Requires Go, Python 3.9+, and a C compiler. From the repository root:
 
 ```sh
-python3 tools/build.py native
+python3 scripts/build.py native
 cd examples/c
 mkdir -p .build
 ```
