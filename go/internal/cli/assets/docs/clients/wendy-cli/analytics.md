@@ -6,6 +6,10 @@ When analytics are enabled, each tracked event is serialised to JSON and sent vi
 
 MCP tool calls emit `command_executed` events as each call finishes, using a command name such as `wendy mcp device_info` and `command_root` of `mcp`. The duration and success flag describe the individual call, including tool results that report an error. Calls to app-provided tools use the fixed name `wendy mcp container_tool` so app and tool names stay private. Tool arguments and result content are never sent. The same analytics opt-out and CI settings apply to MCP calls.
 
+`wendy doctor` and `wendy update --check` skip analytics entirely. These read-only
+invocations also skip update and syntax-error cache writes and routine sudo
+ownership cleanup.
+
 ## Endpoint
 
 Events are posted to:
@@ -51,7 +55,13 @@ MCP tools use an attempt ID per call. The run subprocess inherits that ID. Durab
 
 Delivery remains best-effort, with no persistent offline queue. A start without a terminal event has an unknown outcome; it is not proof of abandonment. Analytics remain disabled by the same opt-out and CI settings for every event.
 
-Legacy `first_run` means the first completed CLI invocation, and `install_completed` describes the Homebrew postinstall hook. These are not device setup or first deployment events. Version 2 marks delivered milestones as successful and emits `first_deploy_success` after an agent start acknowledgement, rather than after the whole run command exits. Historical events keep their original semantics.
+Legacy `first_run` means the first completed CLI invocation, and `install_completed` describes the Homebrew postinstall hook. These are not device setup or first deployment events. Version 2 marks delivered milestones as successful. Historical events keep their original semantics.
+
+`first_deploy_success` is emitted by
+[`deployMetrics.markStarted`](https://github.com/wendylabsinc/WendyOS/blob/main/go/internal/cli/commands/deploymetrics.go)
+after the agent acknowledges container start for an app deployment. The
+command-completion `milestoneFor` mapping no longer owns this event. Managed-robot
+provisioning does not emit it, and a successful command exit alone is insufficient.
 
 ## Deploy events
 

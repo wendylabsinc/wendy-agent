@@ -73,3 +73,14 @@ At the Wi-Fi step, the wizard tries to prefill the host computer's current SSID.
 If it cannot detect one, enter the network name yourself. Cloud enrollment and
 coding-agent setup are optional. The physical-device route does not command
 robot motion.
+
+### Cancellation and exit status
+
+Declining an installer's erase confirmation cancels that setup step. The tour
+does not treat it as a completed installation or proceed to first-boot discovery.
+
+An installer launched by the tour returns exit status `130` to its parent when
+cancelled. The tour translates that internal signal into user cancellation. A
+normally launched `wendy tour` exits with status `0` for this cancellation, as it
+does when you quit the wizard, so status `0` alone does not prove setup completed.
+Other failures use the CLI's [exit status contract](../global-flags.md#exit-status).

@@ -6,9 +6,11 @@ Keep your Wendy CLI current without guessing which installer to use.
 wendy update
 ```
 
-Wendy checks the latest stable release, identifies the running CLI's installation,
-and shows the update commands before asking for confirmation. The prompt defaults
-to Yes. To approve an update in a script or AI terminal:
+Wendy identifies the running CLI's installation and checks the latest stable
+release for stable installations. Nightly updates use their package manager
+without a stable-release lookup. Wendy shows the update commands before asking
+for confirmation. The prompt defaults to Yes. To approve an update in a script
+or AI terminal:
 
 ```sh
 wendy update --yes
@@ -24,10 +26,10 @@ wendy update --check
 wendy update --check --json
 ```
 
-`--check` makes a fresh release request. It does not install software, write the
-update cache, refresh authentication, or emit update telemetry. If the release
-service cannot be reached, the command fails rather than reporting that your CLI
-is current.
+`--check` makes a fresh stable-release request, including for nightly installations.
+It does not install software, write the update cache, refresh authentication, or
+emit update telemetry. If the release service cannot be reached, the command
+fails rather than reporting that your CLI is current.
 
 The JSON report contains `current_version`, `latest_stable_version`, `status`,
 `update_available`, and `installation`. The installation includes its method,
