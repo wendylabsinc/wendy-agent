@@ -23,6 +23,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/enrolltoken"
+	"github.com/wendylabsinc/wendy/go/internal/shared/unenrollproof"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
@@ -123,6 +124,7 @@ type ProvisioningService struct {
 	enrolled         bool
 	resetRecoveryErr error
 	trustedTime      func(context.Context) (timesync.TimeWindow, error)
+	verifyCloudReset func(context.Context, []byte, string, string, string, []byte, *x509.Certificate, time.Time, time.Time) ([]byte, error)
 	cloudHost        string
 	orgID            int32
 	assetID          int32
@@ -137,9 +139,10 @@ type ProvisioningService struct {
 
 func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*timesync.Manager) *ProvisioningService {
 	svc := &ProvisioningService{
-		logger:      logger,
-		configPath:  configPath,
-		CloudDialer: DefaultCloudDialer,
+		logger:           logger,
+		configPath:       configPath,
+		CloudDialer:      DefaultCloudDialer,
+		verifyCloudReset: unenrollproof.VerifyCloudReset,
 	}
 	if len(clock) > 0 && clock[0] != nil {
 		svc.trustedTime = clock[0].FreshTime

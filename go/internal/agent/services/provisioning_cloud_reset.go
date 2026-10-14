@@ -14,6 +14,8 @@ import (
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -36,7 +38,11 @@ func validateResetBinding(record *unenrollproof.Completion) error {
 	}
 	// SECURITY: Authorization time was established by fresh signed evidence.
 	// Recovery uses that saved epoch, never the current wall clock as authority.
-	if deleted.GetId() == "" || deleted.GetId() != record.AssetID || deleted.GetOrganizationId() != identity.TenantUUID || deleted.GetDeviceId() != identity.EntityID || deleted.GetDeletedAt() == nil || deleted.GetDeletedAt().CheckValid() != nil || deleted.GetDeletedAt().AsTime().After(time.Unix(record.AuthorizedAt, 0).Add(time.Second)) {
+	at := record.AuthorizationTime()
+	if record.Version == 1 {
+		at = at.Add(time.Second)
+	}
+	if deleted.GetId() == "" || deleted.GetId() != record.AssetID || deleted.GetOrganizationId() != identity.TenantUUID || deleted.GetDeviceId() != identity.EntityID || deleted.GetDeletedAt() == nil || deleted.GetDeletedAt().CheckValid() != nil || deleted.GetDeletedAt().AsTime().After(at) {
 		return fmt.Errorf("invalid exact Cloud deletion binding")
 	}
 	return nil
@@ -49,6 +55,13 @@ func (s *ProvisioningService) readProvisioningState() (*provisioningState, error
 	var state provisioningState
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return nil, err
+	}
+	if state.Unenrollment != nil && state.Unenrollment.Status == unenrollmentPending {
+		file, fileErr := os.Lstat(s.statePath())
+		directory, directoryErr := os.Stat(s.configPath)
+		if fileErr != nil || directoryErr != nil || !trustedResetStorage(file, directory) {
+			return nil, fmt.Errorf("pending reset state is not protected local authority; keys retained")
+		}
 	}
 	return &state, nil
 }
@@ -71,6 +84,9 @@ func validateUnenrollmentState(state *provisioningState) (*unenrollproof.Complet
 	}
 	switch state.Unenrollment.Status {
 	case unenrollmentPending:
+		if record.Version != 2 || len(record.CloudAuthorization) == 0 || len(record.CloudVerificationKey) == 0 {
+			return nil, fmt.Errorf("pending reset lacks authenticated Cloud authority; keys retained")
+		}
 		if !state.Enrolled || state.PrincipalURI != record.Principal || state.CloudHost != record.Cloud || state.KeyPEM != "" {
 			return nil, fmt.Errorf("reset authorization disagrees with enrollment state")
 		}
@@ -198,11 +214,23 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 		svc.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "fresh authenticated time required; keys retained")
 	}
+	if len(req.GetCloudResetAuthorization()) == 0 {
+		svc.mu.Unlock()
+		return nil, status.Error(codes.FailedPrecondition, "Cloud-signed reset authorization required; keys retained")
+	}
+	cloud := svc.cloudHost
+	caller, _ := peer.FromContext(ctx)
+	operator := caller.AuthInfo.(credentials.TLSInfo).State.PeerCertificates[0]
 	// Do not hold provisioning state across network I/O. Revalidate the caller
 	// and exact installed identity after acquiring time; no floor file is used.
 	svc.mu.Unlock()
 	window, timeErr := svc.trustedTime(ctx)
 	acquired := time.Now() // monotonic elapsed time only, never UTC authority
+	var cloudKey []byte
+	var authorizationErr error
+	if timeErr == nil {
+		cloudKey, authorizationErr = svc.verifyCloudReset(ctx, req.GetCloudResetAuthorization(), cloud, req.GetExpectedPrincipalUri(), req.GetExpectedCertificateSha256(), req.GetCloudDeletion(), operator, window.Earliest, window.Latest)
+	}
 	svc.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		svc.mu.Unlock()
@@ -219,9 +247,13 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 		svc.mu.Unlock()
 		return nil, err
 	}
-	if !svc.enrolled || req.GetExpectedPrincipalUri() != svc.principalURI || req.GetExpectedCertificateSha256() != svc.certificateFingerprintLocked() {
+	if !svc.enrolled || svc.cloudHost != cloud || req.GetExpectedPrincipalUri() != svc.principalURI || req.GetExpectedCertificateSha256() != svc.certificateFingerprintLocked() {
 		svc.mu.Unlock()
-		return nil, status.Error(codes.FailedPrecondition, "installed identity changed during time verification; keys retained")
+		return nil, status.Error(codes.FailedPrecondition, "installed identity changed during authorization verification; keys retained")
+	}
+	if authorizationErr != nil || unenrollproof.VerifySavedCloudReset(req.GetCloudResetAuthorization(), cloudKey, cloud, svc.principalURI, req.GetExpectedCertificateSha256(), req.GetCloudDeletion(), operator, window.Earliest, window.Latest) != nil {
+		svc.mu.Unlock()
+		return nil, status.Error(codes.FailedPrecondition, "independently verified Cloud reset authorization required; keys retained")
 	}
 	leaves, _ := certs.ParseCertsFromPEM([]byte(svc.certPEM))
 	chain, _ := certs.ParseCertsFromPEM([]byte(svc.chainPEM))
@@ -249,7 +281,7 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 		svc.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "Cloud deletion must precede the authenticated time interval; keys retained")
 	}
-	record := unenrollproof.Completion{Principal: svc.principalURI, Cloud: svc.cloudHost, AssetID: deleted.GetId(), Fingerprint: req.GetExpectedCertificateSha256(), AuthorizedAt: window.Latest.Unix(), Certificate: leaves[0].Raw, Chain: svc.chainPEM, Revocation: req.GetRevocationProof(), CloudDeletion: req.GetCloudDeletion()}
+	record := unenrollproof.Completion{Version: 2, Principal: svc.principalURI, Cloud: svc.cloudHost, AssetID: deleted.GetId(), Fingerprint: req.GetExpectedCertificateSha256(), AuthorizedAt: window.Latest.Unix(), AuthorizedAtNanos: window.Latest.UnixNano(), Certificate: leaves[0].Raw, Chain: svc.chainPEM, Revocation: req.GetRevocationProof(), CloudDeletion: req.GetCloudDeletion(), CloudAuthorization: req.GetCloudResetAuthorization(), CloudVerificationKey: cloudKey, ResetOperator: operator.Raw}
 	if err := validateResetBinding(&record); err != nil {
 		svc.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "exact Cloud deletion binding required; keys retained")

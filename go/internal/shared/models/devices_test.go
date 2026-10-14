@@ -365,6 +365,19 @@ func TestMergedDevices_Empty(t *testing.T) {
 	}
 }
 
+func TestMergedDevices_CopiesPKITenant(t *testing.T) {
+	const tenant = "11111111-2222-4333-8444-555555555555"
+	const principal = "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-board-a"
+	c := DevicesCollection{LANDevices: []LANDevice{{
+		ID: "board-a", TenantUUID: tenant, PrincipalURI: principal, IsMTLS: true, WendyLite: true, Sensorlink: true,
+	}}}
+	merged := c.MergedDevices()
+	if len(merged) != 1 || merged[0].TenantUUID != tenant || merged[0].PrincipalURI != principal || !merged[0].IsMTLS ||
+		!merged[0].WendyLite || !merged[0].Sensorlink {
+		t.Fatalf("PKI enrollment metadata lost during merge: %+v", merged)
+	}
+}
+
 func TestMergedDevices_BLEBackfill(t *testing.T) {
 	c := &DevicesCollection{
 		LANDevices: []LANDevice{

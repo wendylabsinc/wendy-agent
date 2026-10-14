@@ -197,6 +197,7 @@ func TestCloudResetFreshTimeDoesNotUseWallClock(t *testing.T) {
 		t.Run(offset.String(), func(t *testing.T) {
 			now := time.Now().Add(offset)
 			svc, req, ctx := cloudResetFixtureAt(t, now)
+			renewFixtureAuthorization(t, svc, req, ctx, now)
 			svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
 				return timesync.TimeWindow{Earliest: now, Latest: now}, nil
 			}

@@ -15,20 +15,8 @@ import (
 func TestCloudResetInvalidExistingStateBlocksRecovery(t *testing.T) {
 	for _, failure := range []string{"signature", "status", "principal", "certificate", "endpoint", "private-key", "premature-completion"} {
 		t.Run(failure, func(t *testing.T) {
-			svc, req, ctx := cloudResetFixture(t)
-			obstruction := filepath.Join(svc.configPath, ".provisioned")
-			if err := os.Remove(obstruction); err != nil && !os.IsNotExist(err) {
-				t.Fatal(err)
-			}
-			if err := os.Mkdir(obstruction, 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(obstruction, "obstruction"), []byte("x"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); err == nil {
-				t.Fatal("expected partial cleanup")
-			}
+			svc, req, _ := cloudResetFixture(t)
+			persistHistoricalCloudReset(t, svc, req)
 			state, err := svc.readProvisioningState()
 			if err != nil {
 				t.Fatal(err)
@@ -60,9 +48,6 @@ func TestCloudResetInvalidExistingStateBlocksRecovery(t *testing.T) {
 			if err := svc.saveState(state); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.RemoveAll(obstruction); err != nil {
-				t.Fatal(err)
-			}
 			recovered := NewProvisioningService(zap.NewNop(), svc.configPath)
 			if _, err := NewProvisioningServiceV2(recovered).IsProvisioned(context.Background(), &agentpbv2.IsProvisionedRequest{}); status.Code(err) != codes.Unavailable {
 				t.Fatalf("invalid recovery exposed as clean: %v", err)
@@ -78,10 +63,8 @@ func TestCloudResetInvalidExistingStateBlocksRecovery(t *testing.T) {
 }
 
 func TestCloudResetCompletionSupersededInExistingState(t *testing.T) {
-	svc, req, ctx := cloudResetFixture(t)
-	if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); err != nil {
-		t.Fatal(err)
-	}
+	svc, req, _ := cloudResetFixture(t)
+	persistHistoricalCloudCompletion(t, svc, req)
 	if receipt, err := svc.cloudCompletion(); err != nil || len(receipt) == 0 {
 		t.Fatal("completion unavailable", err)
 	}

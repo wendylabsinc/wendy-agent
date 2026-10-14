@@ -98,7 +98,7 @@ Framework-level configuration, separate from `entitlements`. Where an entitlemen
       "domainId": 42,
       "rmw": "cyclonedds",
       "distro": "humble",
-      "discoveryScope": "host"
+      "scope": "peripherals"
     }
   }
 }
@@ -113,9 +113,21 @@ Every field is optional — `"frameworks": { "ros2": {} }` is a valid way to say
 | `domainId` | integer (0–232) | derived from `appId` | `ROS_DOMAIN_ID` for the app. Omit it to get a stable value hashed from the app ID, which keeps the domain constant across restarts without colliding with unrelated apps. |
 | `rmw` | string | `cyclonedds` | RMW middleware implementation. Accepts short names (`cyclonedds`, `fastrtps`/`fastdds`, `connextdds`, `gurumdds`) or full identifiers (`rmw_cyclonedds_cpp`, `rmw_fastrtps_cpp`, `rmw_connextdds`, `rmw_gurumdds_cpp`). |
 | `distro` | string | `humble` | ROS 2 distribution the app targets, e.g. `humble`, `iron`, `jazzy`. Lowercase letters and digits, starting with a letter. Selects the matching CLI sidecar image. Only the shape is enforced, not a fixed list, so a new ROS 2 release is usable before Wendy ships explicit support for it. |
-| `discoveryScope` | string | `app` | `app` restricts DDS discovery to the app group's own network namespace (`ROS_LOCALHOST_ONLY=1`), so unrelated apps and robots do not discover each other. `host` lets discovery use the device's host network — pair it with `{ "type": "network", "mode": "host" }`. |
+| `scope` | string | `device` | Who can see the app's topics. Each scope includes the ones before it; see the table below. |
+| `discoveryScope` | string | — | **Deprecated**, use `scope`. `app` behaves as scope `device`, `host` as scope `network`. If both are set, `scope` takes precedence and `discoveryScope` is only read by older agents, so it must not be wider than `scope`: pair `network` with `host`, and the other scopes with `app`. Setting both warns. |
 
-An out-of-range `domainId`, an unsupported `rmw`, a malformed `distro`, or an unknown `discoveryScope` is rejected when the config is parsed, rather than silently starting a container with no domain or middleware isolation.
+| `scope` | Who sees the topics | How |
+|---------|---------------------|-----|
+| `app` | Only this app (all its services) | Loopback discovery on the app's own domain, derived from `appId`. Do not set `domainId`. |
+| `device` | Every app on the device that uses the same domain | Loopback discovery (`ROS_LOCALHOST_ONLY=1`). |
+| `peripherals` | The device's apps and hardware attached to it, such as a robot or sensor on its own cable | Loopback plus the device's peripheral interfaces: physical wired interfaces other than the uplink that carries the default route. CycloneDDS only. On a device with nothing attached it behaves as `device`. |
+| `network` | Anything on the device's networks | Subnet discovery on every interface. |
+
+Peripheral interfaces are detected, not configured: a robot on its own cable is found, but a robot on the same switch as the device's uplink, or one reached over Wi-Fi, is not; use `network` for those. A second ordinary network port without a default route counts as a peripheral interface.
+
+`device` and `peripherals` connect apps through the device's loopback, so they require host networking. The current runtime provides it when the app has no `network` entitlement, or when that entitlement uses mode `host` or `host-admin`; isolated modes such as `bridge` are rejected. Apps that share a bus through `device`, `peripherals` or `network` set the same `domainId`; without one each app gets its own domain.
+
+An out-of-range `domainId`, an unsupported `rmw`, a malformed `distro`, or an unknown `scope` is rejected when the config is parsed, rather than silently starting a container with no domain or middleware isolation.
 
 For multi-service apps, declare `frameworks` per service under `services.<name>.frameworks` to give a service its own ROS 2 settings. A service without its own `frameworks` inherits the top-level one, so a stack of talker/listener services shares a domain by default.
 
@@ -125,7 +137,7 @@ For multi-service apps, declare `frameworks` per service under `services.<name>.
   "frameworks": { "ros2": { "rmw": "cyclonedds" } },
   "services": {
     "talker":   { "context": "./talker" },
-    "bridge":   { "context": "./bridge", "frameworks": { "ros2": { "discoveryScope": "host" } } }
+    "bridge":   { "context": "./bridge", "frameworks": { "ros2": { "scope": "network" } } }
   }
 }
 ```
@@ -574,6 +586,33 @@ triggers match on application event names and prediction attributes, so an app
 holding it can start recordings. The socket is restored from container labels
 after agent restart; the entitlement never exposes the administrative agent
 socket, and grants no sensor read access.
+
+To record custom payloads, declare named streams inside the entitlement:
+
+```json
+{
+  "type": "episode-write",
+  "streams": {
+    "temperature": {
+      "mode": "durable",
+      "mediaType": "application/json",
+      "storage": { "maxBytes": 67108864, "retentionSeconds": 86400 }
+    }
+  }
+}
+```
+
+The agent injects `WENDY_DATA_STREAM_DIR`; each stream uses
+`<directory>/<stream>.sock`. Lightweight streams accept native payload bytes.
+Durable streams use Protobuf envelopes, acknowledge after local storage sync,
+and retain records even when no episode is active. They reject new records
+when their journal is full, so producers must buffer and retry.
+
+See [Wendy Data](/docs/data#record-data-from-your-app) for the recording workflow,
+the [stream reference](/docs/advanced/clients/wendy-cli/commands/data#application-recording-streams)
+for retention and export, and the
+[WendyRecording examples](https://github.com/wendylabsinc/WendyOS/tree/main/Examples/WendyRecording)
+for time-series schemas and senders.
 
 ### `admin`
 

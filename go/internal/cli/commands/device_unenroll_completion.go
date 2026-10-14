@@ -92,11 +92,16 @@ func reconcileCompletedV2UnenrollPinned(ctx context.Context, raw []byte, overrid
 	}
 	roots, _ := certs.ParseCertsFromPEM([]byte(auth.Certificates[0].PemCertificateChain))
 	peers, _ := certs.ParseCertsFromPEM([]byte(receipt.Chain))
-	if receipt.AuthorizedAt <= 0 || time.Unix(receipt.AuthorizedAt, 0).After(time.Now()) {
+	if receipt.AuthorizedAt <= 0 || (receipt.Version == 1 && time.Unix(receipt.AuthorizedAt, 0).After(time.Now())) {
 		return fmt.Errorf("invalid completion time")
 	}
-	if err := certs.VerifyPeerCertificateChain(leaf, peers, roots, x509.ExtKeyUsageServerAuth, time.Unix(receipt.AuthorizedAt, 0), time.Unix(receipt.AuthorizedAt, 0)); err != nil {
+	if err := certs.VerifyPeerCertificateChain(leaf, peers, roots, x509.ExtKeyUsageServerAuth, receipt.AuthorizationTime(), receipt.AuthorizationTime()); err != nil {
 		return fmt.Errorf("untrusted completion certificate: %w", err)
+	}
+	if receipt.Version == 2 {
+		if err := unenrollproof.VerifyCompletionCloud(ctx, receipt); err != nil {
+			return fmt.Errorf("independently authenticating Cloud reset authority: %w", err)
+		}
 	}
 	var retained cloudpbv2.DeletedAsset
 	if err := proto.Unmarshal(receipt.CloudDeletion, &retained); err != nil {

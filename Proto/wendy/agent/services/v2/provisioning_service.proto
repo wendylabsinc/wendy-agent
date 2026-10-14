@@ -44,6 +44,10 @@ message ProvisionedResponse {
     string principal_uri = 4;
     // Absent/false on agents without Cloud-owned guarded reset and recovery.
     bool cloud_unenrollment_supported = 5;
+    // Distinguishes verified Cloud authorization from unsafe prerelease resets
+    // that accepted caller-serialized deletion fields. Clients require this
+    // before starting the UUID reset workflow; older Agents fail closed.
+    bool cloud_authenticated_reset_supported = 6;
 }
 
 message StartProvisioningRequest {
@@ -63,6 +67,10 @@ message UnprovisionRequest {
     bytes revocation_proof = 3;
     // Serialized wendycloud.v2.DeletedAsset; exact tenant/device binding required.
     bytes cloud_deletion = 4;
+    // Purpose-specific Cloud JWS from DeleteAsset. Agent obtains the key from
+    // its enrolled Cloud's authenticated JWKS, not from this request. Must bind
+    // the exact operator, installed identity, tombstone and signed deletion.
+    bytes cloud_reset_authorization = 5;
 }
 
 message UnprovisionResponse {

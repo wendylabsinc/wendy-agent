@@ -136,7 +136,14 @@ type Asset struct {
 	// NVIDIA L4T release, e.g. "38.2.0". Absent on non-NVIDIA boards.
 	L4TVersion *string `protobuf:"bytes,39,opt,name=l4t_version,json=l4tVersion,proto3,oneof" json:"l4t_version,omitempty"`
 	// Vendor-specific GPU architecture, e.g. "sm_110".
-	GpuArch       *string                `protobuf:"bytes,40,opt,name=gpu_arch,json=gpuArch,proto3,oneof" json:"gpu_arch,omitempty"`
+	GpuArch *string `protobuf:"bytes,40,opt,name=gpu_arch,json=gpuArch,proto3,oneof" json:"gpu_arch,omitempty"`
+	// Name of the site the device belongs to, e.g. "Plant 3" (WDY-3581). A
+	// cloud with WDY-3590 always fills it; absent only from an older cloud.
+	// Descriptive grouping only: authorizes nothing.
+	// 41-44 are claimed by open PRs #101/#102.
+	Site *string `protobuf:"bytes,45,opt,name=site,proto3,oneof" json:"site,omitempty"`
+	// ID of that site (SiteService, WDY-3590); absent only from an older cloud.
+	SiteId        *string                `protobuf:"bytes,46,opt,name=site_id,json=siteId,proto3,oneof" json:"site_id,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,21,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,22,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -435,6 +442,20 @@ func (x *Asset) GetL4TVersion() string {
 func (x *Asset) GetGpuArch() string {
 	if x != nil && x.GpuArch != nil {
 		return *x.GpuArch
+	}
+	return ""
+}
+
+func (x *Asset) GetSite() string {
+	if x != nil && x.Site != nil {
+		return *x.Site
+	}
+	return ""
+}
+
+func (x *Asset) GetSiteId() string {
+	if x != nil && x.SiteId != nil {
+		return *x.SiteId
 	}
 	return ""
 }
@@ -779,6 +800,16 @@ type UpdateAssetRequest struct {
 	Heading         *float64               `protobuf:"fixed64,22,opt,name=heading,proto3,oneof" json:"heading,omitempty"`
 	// See Asset.pki_device_name.
 	PkiDeviceName *string `protobuf:"bytes,23,opt,name=pki_device_name,json=pkiDeviceName,proto3,oneof" json:"pki_device_name,omitempty"`
+	// Site NAME, see Asset.site. Absent leaves it unchanged; empty string moves
+	// the device to the organization's oldest site (a device always has one);
+	// anything else names a site of the organization, INVALID_ARGUMENT if none
+	// has that name (WDY-3581, WDY-3590).
+	Site *string `protobuf:"bytes,24,opt,name=site,proto3,oneof" json:"site,omitempty"`
+	// Set true to apply tags as given, even when empty (clears all tags).
+	// False keeps the older rule: a non-empty tags replaces them, an empty one
+	// leaves them unchanged. Same convention as
+	// SetOrgPublicRoutingRequest.update_port_denylist (WDY-3581).
+	UpdateTags    bool `protobuf:"varint,25,opt,name=update_tags,json=updateTags,proto3" json:"update_tags,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -974,13 +1005,31 @@ func (x *UpdateAssetRequest) GetPkiDeviceName() string {
 	return ""
 }
 
+func (x *UpdateAssetRequest) GetSite() string {
+	if x != nil && x.Site != nil {
+		return *x.Site
+	}
+	return ""
+}
+
+func (x *UpdateAssetRequest) GetUpdateTags() bool {
+	if x != nil {
+		return x.UpdateTags
+	}
+	return false
+}
+
 type DeleteAssetRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Optional compare-and-delete guard for device unenrollment.
 	ExpectedDeviceId *string `protobuf:"bytes,2,opt,name=expected_device_id,json=expectedDeviceId,proto3,oneof" json:"expected_device_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Opt-in: request purpose-bound Cloud reset authorization for this installed
+	// leaf after committed deletion. Requires current device:delete, exact device
+	// guard and the operator's exact-body signature; absent keeps deletion-only.
+	ResetCertificateSha256 *string `protobuf:"bytes,3,opt,name=reset_certificate_sha256,json=resetCertificateSha256,proto3,oneof" json:"reset_certificate_sha256,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *DeleteAssetRequest) Reset() {
@@ -1023,6 +1072,13 @@ func (x *DeleteAssetRequest) GetId() string {
 func (x *DeleteAssetRequest) GetExpectedDeviceId() string {
 	if x != nil && x.ExpectedDeviceId != nil {
 		return *x.ExpectedDeviceId
+	}
+	return ""
+}
+
+func (x *DeleteAssetRequest) GetResetCertificateSha256() string {
+	if x != nil && x.ResetCertificateSha256 != nil {
+		return *x.ResetCertificateSha256
 	}
 	return ""
 }
@@ -1096,10 +1152,18 @@ func (x *DeletedAsset) GetDeletedAt() *timestamppb.Timestamp {
 }
 
 type DeleteAssetResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Success bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	// Opt-in compact ML-DSA-65 JWS, typ asset-reset-authorization+jws, aud
+	// wendy-agent/unprovision. Bound to committed DeletedAsset bytes and the
+	// exact operator-signed request (including installed-leaf hash). Not a bearer
+	// credential; Agent must independently verify Cloud key trust, operator proof,
+	// installed identity, revocation and fresh time before erasure. Empty means
+	// no reset authority, even if success=true. Current-authorized replay can
+	// obtain fresh proof; it never rewrites the first tombstone actor/time.
+	ResetAuthorization []byte `protobuf:"bytes,2,opt,name=reset_authorization,json=resetAuthorization,proto3" json:"reset_authorization,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *DeleteAssetResponse) Reset() {
@@ -1139,6 +1203,13 @@ func (x *DeleteAssetResponse) GetSuccess() bool {
 	return false
 }
 
+func (x *DeleteAssetResponse) GetResetAuthorization() []byte {
+	if x != nil {
+		return x.ResetAuthorization
+	}
+	return nil
+}
+
 type ListAssetsRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	OrganizationId  string                 `protobuf:"bytes,1,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
@@ -1146,7 +1217,7 @@ type ListAssetsRequest struct {
 	// Offset/limit based pagination (offset = starting row, limit = page size)
 	Offset     *int32  `protobuf:"varint,3,opt,name=offset,proto3,oneof" json:"offset,omitempty"`
 	Limit      *int32  `protobuf:"varint,4,opt,name=limit,proto3,oneof" json:"limit,omitempty"`
-	Filter     *string `protobuf:"bytes,5,opt,name=filter,proto3,oneof" json:"filter,omitempty"`                            // Filter by name, details, asset_type, device_type, or tags
+	Filter     *string `protobuf:"bytes,5,opt,name=filter,proto3,oneof" json:"filter,omitempty"`                            // Filter by name, details, asset_type, device_type, serial_number, site name, or tags
 	OnlineOnly *bool   `protobuf:"varint,6,opt,name=online_only,json=onlineOnly,proto3,oneof" json:"online_only,omitempty"` // If true, only return assets with active broker presence
 	// Server-side ordering (applied across all matching assets, before pagination).
 	OrderBy       *string `protobuf:"bytes,7,opt,name=order_by,json=orderBy,proto3,oneof" json:"order_by,omitempty"`    // "id" | "name" | "status" | "type"; defaults to "id"
@@ -1778,7 +1849,7 @@ var File_wendycloud_v2_assets_proto protoreflect.FileDescriptor
 
 const file_wendycloud_v2_assets_proto_rawDesc = "" +
 	"\n" +
-	"\x1awendycloud/v2/assets.proto\x12\rwendycloud.v2\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x13wendy/options.proto\x1a\"wendycloud/v2/signed_request.proto\"\xec\x10\n" +
+	"\x1awendycloud/v2/assets.proto\x12\rwendycloud.v2\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x13wendy/options.proto\x1a\"wendycloud/v2/signed_request.proto\"\xb8\x11\n" +
 	"\x05Asset\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0forganization_id\x18\x02 \x01(\tR\x0eorganizationId\x12+\n" +
@@ -1826,7 +1897,9 @@ const file_wendycloud_v2_assets_proto_rawDesc = "" +
 	"\x0ekernel_version\x18& \x01(\tH\x1bR\rkernelVersion\x88\x01\x01\x12$\n" +
 	"\vl4t_version\x18' \x01(\tH\x1cR\n" +
 	"l4tVersion\x88\x01\x01\x12\x1e\n" +
-	"\bgpu_arch\x18( \x01(\tH\x1dR\agpuArch\x88\x01\x01\x129\n" +
+	"\bgpu_arch\x18( \x01(\tH\x1dR\agpuArch\x88\x01\x01\x12\x17\n" +
+	"\x04site\x18- \x01(\tH\x1eR\x04site\x88\x01\x01\x12\x1c\n" +
+	"\asite_id\x18. \x01(\tH\x1fR\x06siteId\x88\x01\x01\x129\n" +
 	"\n" +
 	"created_at\x18\x15 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
@@ -1864,7 +1937,10 @@ const file_wendycloud_v2_assets_proto_rawDesc = "" +
 	"\x0e_serial_numberB\x11\n" +
 	"\x0f_kernel_versionB\x0e\n" +
 	"\f_l4t_versionB\v\n" +
-	"\t_gpu_arch\"\xe5\t\n" +
+	"\t_gpu_archB\a\n" +
+	"\x05_siteB\n" +
+	"\n" +
+	"\b_site_id\"\xe5\t\n" +
 	"\x12CreateAssetRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\x12+\n" +
 	"\x0fparent_asset_id\x18\x02 \x01(\tH\x00R\rparentAssetId\x88\x01\x01\x12\x12\n" +
@@ -1928,7 +2004,7 @@ const file_wendycloud_v2_assets_proto_rawDesc = "" +
 	"\tdevice_id\x18\x03 \x01(\tH\x01R\bdeviceId\x88\x01\x01B\x12\n" +
 	"\x10_organization_idB\f\n" +
 	"\n" +
-	"_device_id\"\x92\t\n" +
+	"_device_id\"\xd5\t\n" +
 	"\x12UpdateAssetRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x1d\n" +
@@ -1960,7 +2036,10 @@ const file_wendycloud_v2_assets_proto_rawDesc = "" +
 	"\n" +
 	"asset_type\x18\x15 \x01(\tH\x12R\tassetType\x88\x01\x01\x12\x1d\n" +
 	"\aheading\x18\x16 \x01(\x01H\x13R\aheading\x88\x01\x01\x12+\n" +
-	"\x0fpki_device_name\x18\x17 \x01(\tH\x14R\rpkiDeviceName\x88\x01\x01B\a\n" +
+	"\x0fpki_device_name\x18\x17 \x01(\tH\x14R\rpkiDeviceName\x88\x01\x01\x12\x17\n" +
+	"\x04site\x18\x18 \x01(\tH\x15R\x04site\x88\x01\x01\x12\x1f\n" +
+	"\vupdate_tags\x18\x19 \x01(\bR\n" +
+	"updateTagsB\a\n" +
 	"\x05_nameB\n" +
 	"\n" +
 	"\b_detailsB\x13\n" +
@@ -1986,19 +2065,23 @@ const file_wendycloud_v2_assets_proto_rawDesc = "" +
 	"\v_asset_typeB\n" +
 	"\n" +
 	"\b_headingB\x12\n" +
-	"\x10_pki_device_name\"n\n" +
+	"\x10_pki_device_nameB\a\n" +
+	"\x05_site\"\xca\x01\n" +
 	"\x12DeleteAssetRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x121\n" +
-	"\x12expected_device_id\x18\x02 \x01(\tH\x00R\x10expectedDeviceId\x88\x01\x01B\x15\n" +
-	"\x13_expected_device_id\"\x9f\x01\n" +
+	"\x12expected_device_id\x18\x02 \x01(\tH\x00R\x10expectedDeviceId\x88\x01\x01\x12=\n" +
+	"\x18reset_certificate_sha256\x18\x03 \x01(\tH\x01R\x16resetCertificateSha256\x88\x01\x01B\x15\n" +
+	"\x13_expected_device_idB\x1b\n" +
+	"\x19_reset_certificate_sha256\"\x9f\x01\n" +
 	"\fDeletedAsset\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0forganization_id\x18\x02 \x01(\tR\x0eorganizationId\x12\x1b\n" +
 	"\tdevice_id\x18\x03 \x01(\tR\bdeviceId\x129\n" +
 	"\n" +
-	"deleted_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tdeletedAt\"/\n" +
+	"deleted_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tdeletedAt\"`\n" +
 	"\x13DeleteAssetResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"\x8b\x03\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12/\n" +
+	"\x13reset_authorization\x18\x02 \x01(\fR\x12resetAuthorization\"\x8b\x03\n" +
 	"\x11ListAssetsRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\x12/\n" +
 	"\x11is_compute_device\x18\x02 \x01(\bH\x00R\x0fisComputeDevice\x88\x01\x01\x12\x1b\n" +

@@ -442,13 +442,16 @@ func main() {
 	// Let `wendy device audio list` name mounted Loopback capture subdevices
 	// after the remote source they carry, instead of a generic "plughw:2,1".
 	audioSvc.SetSensorLinkNaming(audioLoop.Mounts, sensorStore.NameFor)
+	audioSvc.SetSensorLinkPrincipalNaming(sensorStore.NameForKey)
 	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, ros2camera.NewFrameWriter, audioLoop)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
-	sensorAgentOrgID := func() int32 {
-		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
-		return orgID
+	sensorAgentScope := func() certs.Scope {
+		certPEM, _, _ := mcuIdentity()
+		scope, _ := certs.ScopeFromCertPEM(certPEM)
+		_, scope.OrgID, _, _ = provisioningSvc.ProvisioningInfo()
+		return scope
 	}
-	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentOrgID, sensorRunner.Start, sensorRunner.Stop, sensorSup.IsConnected)
+	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentScope, sensorRunner.Start, sensorRunner.StopPairing, sensorSup.IsPairingConnected)
 	// Boot-resume: every previously paired source reconnects on its own —
 	// addr == "" tells the runner to resolve the source's current LAN address
 	// by asset id rather than trusting a possibly-stale one from disk.

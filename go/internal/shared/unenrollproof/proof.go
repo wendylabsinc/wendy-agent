@@ -230,24 +230,39 @@ func fetchRevocation(ctx context.Context, leaf, issuer *x509.Certificate, client
 // Completion is public, device-signed evidence, never a private key or bearer
 // credential. CloudDeletion is the exact serialized typed binding evidence.
 type Completion struct {
-	Version       int    `json:"version"`
-	Principal     string `json:"principal"`
-	Cloud         string `json:"cloud"`
-	AssetID       string `json:"assetId"`
-	Fingerprint   string `json:"certificateSHA256"`
-	AuthorizedAt  int64  `json:"authorizedAt"`
-	Certificate   []byte `json:"certificate"`
-	Chain         string `json:"chain"`
-	Revocation    []byte `json:"revocation"`
-	CloudDeletion []byte `json:"cloudDeletion"`
+	Version              int    `json:"version"`
+	Principal            string `json:"principal"`
+	Cloud                string `json:"cloud"`
+	AssetID              string `json:"assetId"`
+	Fingerprint          string `json:"certificateSHA256"`
+	AuthorizedAt         int64  `json:"authorizedAt"`
+	AuthorizedAtNanos    int64  `json:"authorizedAtNanos,omitempty"`
+	Certificate          []byte `json:"certificate"`
+	Chain                string `json:"chain"`
+	Revocation           []byte `json:"revocation"`
+	CloudDeletion        []byte `json:"cloudDeletion"`
+	CloudAuthorization   []byte `json:"cloudAuthorization,omitempty"`
+	CloudVerificationKey []byte `json:"cloudVerificationKey,omitempty"`
+	ResetOperator        []byte `json:"resetOperator,omitempty"`
 }
 type envelope struct {
 	Body      []byte `json:"body"`
 	Signature []byte `json:"signature"`
 }
 
+// AuthorizationTime preserves the exact authenticated upper bound in v2.
+func (record *Completion) AuthorizationTime() time.Time {
+	if record.Version == 2 {
+		return time.Unix(0, record.AuthorizedAtNanos)
+	}
+	return time.Unix(record.AuthorizedAt, 0)
+}
+
 func SignCompletion(record Completion, signer crypto.Signer) ([]byte, error) {
 	record.Version = 1
+	if len(record.CloudAuthorization) != 0 {
+		record.Version = 2
+	}
 	body, err := json.Marshal(record)
 	if err != nil {
 		return nil, err
@@ -292,7 +307,7 @@ func ReadCompletion(raw []byte) (*Completion, *x509.Certificate, error) {
 		return nil, nil, err
 	}
 	canonical, _ := json.Marshal(record)
-	if !bytes.Equal(canonical, signed.Body) || record.Version != 1 {
+	if !bytes.Equal(canonical, signed.Body) || (record.Version != 1 && record.Version != 2) {
 		return nil, nil, fmt.Errorf("noncanonical completion receipt")
 	}
 	leaf, err := x509.ParseCertificate(record.Certificate)
@@ -324,8 +339,21 @@ func ReadCompletion(raw []byte) (*Completion, *x509.Certificate, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := VerifyRevocation(record.Revocation, leaf, issuer, time.Unix(record.AuthorizedAt, 0)); err != nil {
+	at := record.AuthorizationTime()
+	if record.Version == 2 && (record.AuthorizedAtNanos <= 0 || at.Unix() != record.AuthorizedAt) {
+		return nil, nil, fmt.Errorf("invalid authenticated receipt time")
+	}
+	if err := VerifyRevocation(record.Revocation, leaf, issuer, at); err != nil {
 		return nil, nil, err
+	}
+	if record.Version == 2 {
+		actor, err := x509.ParseCertificate(record.ResetOperator)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := VerifySavedCloudReset(record.CloudAuthorization, record.CloudVerificationKey, record.Cloud, record.Principal, record.Fingerprint, record.CloudDeletion, actor, at, at); err != nil {
+			return nil, nil, err
+		}
 	}
 	return &record, leaf, nil
 }

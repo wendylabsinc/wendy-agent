@@ -2,8 +2,10 @@ package services
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/unenrollproof"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -91,15 +94,85 @@ func cloudResetFixtureAt(t *testing.T, now time.Time) (*ProvisioningService, *ag
 		t.Fatal(e)
 	}
 	actorURI, _ := url.Parse("spiffe://wendy.sh/tenant/" + resetTenant + "/operator/op")
-	actor := &x509.Certificate{URIs: []*url.URL{actorURI}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, KeyUsage: x509.KeyUsageDigitalSignature}
+	actorKey, e := mldsa.GenerateKey(mldsa.MLDSA65())
+	if e != nil {
+		t.Fatal(e)
+	}
+	actor := &x509.Certificate{SerialNumber: big.NewInt(99), URIs: []*url.URL{actorURI}, NotBefore: now.Add(-4 * time.Hour), NotAfter: now.Add(4 * time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, KeyUsage: x509.KeyUsageDigitalSignature}
+	actorDER, e := x509.CreateCertificate(rand.Reader, actor, ca, actorKey.Public(), key)
+	if e != nil {
+		t.Fatal(e)
+	}
+	actor, e = x509.ParseCertificate(actorDER)
+	if e != nil {
+		t.Fatal(e)
+	}
 	ctx := peer.NewContext(context.Background(), &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{actor}, VerifiedChains: [][]*x509.Certificate{{actor}}}}})
 	svc := NewProvisioningService(zap.NewNop(), dir)
 	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
 		instant := time.Now()
 		return timesync.TimeWindow{Earliest: instant, Latest: instant}, nil
 	}
-	return svc, &agentpbv2.UnprovisionRequest{ExpectedPrincipalUri: principal, ExpectedCertificateSha256: unenrollproof.Fingerprint(leaf), RevocationProof: evidence, CloudDeletion: binding}, ctx
+	ctx = context.WithValue(ctx, resetActorKey{}, actorKey)
+	req := &agentpbv2.UnprovisionRequest{ExpectedPrincipalUri: principal, ExpectedCertificateSha256: unenrollproof.Fingerprint(leaf), RevocationProof: evidence, CloudDeletion: binding}
+	renewFixtureAuthorization(t, svc, req, ctx, time.Now())
+	return svc, req, ctx
 }
+
+// Persist a development-version receipt directly to exercise historical recovery.
+// New requests cannot create these records while reset authorization is disabled.
+func persistHistoricalCloudReset(t *testing.T, svc *ProvisioningService, req *agentpbv2.UnprovisionRequest) []byte {
+	t.Helper()
+	leaves, err := certs.ParseCertsFromPEM([]byte(svc.certPEM))
+	if err != nil || len(leaves) == 0 {
+		t.Fatal("missing fixture certificate", err)
+	}
+	pair, err := certs.TLSKeyPair(svc.certPEM, svc.chainPEM, string(svc.keyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deleted cloudpbv2.DeletedAsset
+	if err := proto.Unmarshal(req.CloudDeletion, &deleted); err != nil {
+		t.Fatal(err)
+	}
+	record := unenrollproof.Completion{
+		Principal: svc.principalURI, Cloud: svc.cloudHost, AssetID: deleted.Id,
+		Fingerprint: req.ExpectedCertificateSha256, AuthorizedAt: time.Now().Unix(),
+		Certificate: leaves[0].Raw, Chain: svc.chainPEM,
+		Revocation: req.RevocationProof, CloudDeletion: req.CloudDeletion,
+	}
+	receipt, err := unenrollproof.SignCompletion(record, pair.PrivateKey.(crypto.Signer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := svc.readProvisioningState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.KeyPEM = ""
+	state.Unenrollment = &unenrollmentState{Status: unenrollmentPending, Receipt: receipt}
+	if err := svc.saveState(state); err != nil {
+		t.Fatal(err)
+	}
+	return receipt
+}
+
+func persistHistoricalCloudCompletion(t *testing.T, svc *ProvisioningService, req *agentpbv2.UnprovisionRequest) []byte {
+	t.Helper()
+	receipt := persistHistoricalCloudReset(t, svc, req)
+	// Simulate a reset that already completed in a development version. The
+	// production recovery path cannot turn a pending receipt into completion.
+	if err := svc.clearCredentialFiles(); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.saveState(&provisioningState{Unenrollment: &unenrollmentState{
+		Status: unenrollmentCompleted, Receipt: receipt,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return receipt
+}
+
 func TestCloudResetRetiredACMEPaths(t *testing.T) {
 	svc, _, ctx := cloudResetFixture(t)
 	v2 := NewProvisioningServiceV2(svc)
@@ -140,74 +213,55 @@ func TestCloudResetFailsClosed(t *testing.T) {
 		})
 	}
 }
-func TestCloudResetDurableCompletionAndCrashResume(t *testing.T) {
-	for _, crash := range []bool{false, true} {
-		t.Run(map[bool]string{false: "reply-lost", true: "erasure-interrupted"}[crash], func(t *testing.T) {
-			svc, req, ctx := cloudResetFixture(t)
-			historical := filepath.Join(svc.configPath, "acme-revocation.json")
-			os.WriteFile(historical, []byte("historical evidence"), 0600)
-			if crash {
-				if err := os.Remove(filepath.Join(svc.configPath, ".provisioned")); err != nil && !os.IsNotExist(err) {
+func TestCloudResetHistoricalPendingRequiresLocalRecovery(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		t.Run(map[bool]string{false: "before-erasure", true: "partial-erasure"}[partial], func(t *testing.T) {
+			svc, req, _ := cloudResetFixture(t)
+			persistHistoricalCloudReset(t, svc, req)
+			if partial {
+				if err := os.Remove(filepath.Join(svc.configPath, "device-key.pem")); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Mkdir(filepath.Join(svc.configPath, ".provisioned"), 0700); err != nil {
-					t.Fatal(err)
-				}
-				os.WriteFile(filepath.Join(svc.configPath, ".provisioned", "obstruction"), []byte("x"), 0600)
 			}
-			reply, e := NewProvisioningServiceV2(svc).Unprovision(ctx, req)
-			if crash {
-				if e == nil {
-					t.Fatal("expected interrupted cleanup")
-				}
-				persisted, err := svc.readProvisioningState()
-				if err != nil || persisted.Unenrollment == nil || persisted.Unenrollment.Status != unenrollmentPending {
-					t.Fatal("pending authorization lost during partial erasure", err)
-				}
-				if _, err := svc.cloudCompletion(); err == nil {
-					t.Fatal("completion published before erasure")
-				}
-				os.RemoveAll(filepath.Join(svc.configPath, ".provisioned"))
-			} else if e != nil || len(reply.GetUnenrollmentCompletion()) == 0 {
-				t.Fatal(e)
-			}
-			recovered := NewProvisioningService(zap.NewNop(), svc.configPath)
-			state, e := NewProvisioningServiceV2(recovered).IsProvisioned(context.Background(), &agentpbv2.IsProvisionedRequest{})
-			if e != nil || state.GetProvisioned() != nil {
-				t.Fatal("recovery incomplete", e)
-			}
-			receipt, _, e := unenrollproof.ReadCompletion(state.GetNotProvisioned().GetUnenrollmentCompletion())
-			if e != nil || receipt.Principal != req.ExpectedPrincipalUri {
-				t.Fatal("missing authenticated completion", e)
-			}
-			for _, name := range []string{"device-key.pem", "device.pem", "ca.pem", ".provisioned", "acme-account-key.pem"} {
-				if _, e := os.Stat(filepath.Join(svc.configPath, name)); !os.IsNotExist(e) {
-					t.Fatal("key survived", name, e)
-				}
-			}
-			persisted, err := recovered.readProvisioningState()
-			if err != nil || persisted.Unenrollment == nil || persisted.Unenrollment.Status != unenrollmentCompleted {
-				t.Fatal("completion not retained in existing provisioning state", err)
-			}
-			if _, err := validateUnenrollmentState(persisted); err != nil {
-				t.Fatal(err)
-			}
-			info, err := os.Stat(recovered.statePath())
-			if err != nil || info.Mode().Perm() != 0600 {
-				t.Fatal("unsafe state permissions", err)
-			}
+			original := map[string][]byte{}
 			entries, err := os.ReadDir(svc.configPath)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, entry := range entries {
-				if entry.Name() != "provisioning.json" && entry.Name() != "acme-revocation.json" {
-					t.Fatalf("additional persistent file: %s", entry.Name())
+				data, err := os.ReadFile(filepath.Join(svc.configPath, entry.Name()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				original[entry.Name()] = data
+			}
+			if _, err := svc.unprovision(req.ExpectedPrincipalUri, req.ExpectedCertificateSha256); status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("historical pending record authorized erasure: %v", err)
+			}
+			recovered := NewProvisioningService(zap.NewNop(), svc.configPath)
+			v2 := NewProvisioningServiceV2(recovered)
+			if _, err := v2.IsProvisioned(context.Background(), &agentpbv2.IsProvisionedRequest{}); status.Code(err) != codes.Unavailable {
+				t.Fatalf("pending reset reported complete: %v", err)
+			}
+			if _, err := v2.StartProvisioning(context.Background(), &agentpbv2.StartProvisioningRequest{}); status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("pending reset permitted new enrollment: %v", err)
+			}
+			for name, before := range original {
+				after, err := os.ReadFile(filepath.Join(svc.configPath, name))
+				if err != nil || string(after) != string(before) {
+					t.Fatalf("pending reset recovery changed %s: %v", name, err)
 				}
 			}
-			if data, e := os.ReadFile(historical); e != nil || string(data) != "historical evidence" {
-				t.Fatal("historical artifact changed")
-			}
 		})
+	}
+}
+
+func TestCloudResetHistoricalCompletionRemainsReadable(t *testing.T) {
+	svc, req, _ := cloudResetFixture(t)
+	expected := persistHistoricalCloudCompletion(t, svc, req)
+	recovered := NewProvisioningService(zap.NewNop(), svc.configPath)
+	state, err := NewProvisioningServiceV2(recovered).IsProvisioned(context.Background(), &agentpbv2.IsProvisionedRequest{})
+	if err != nil || state.GetNotProvisioned() == nil || string(state.GetNotProvisioned().GetUnenrollmentCompletion()) != string(expected) {
+		t.Fatalf("historical completion unavailable: %v, %v", state, err)
 	}
 }

@@ -195,7 +195,7 @@ func v2UnenrollCloudContext(ctx context.Context, auth *config.AuthConfig) (conte
 }
 
 func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, prov *agentpbv2.ProvisionedResponse, verifiedPeer *grpcpeer.Peer, override, assetOverride string, yes, checkOnly bool) error {
-	if !prov.GetCloudUnenrollmentSupported() {
+	if !prov.GetCloudUnenrollmentSupported() || !prov.GetCloudAuthenticatedResetSupported() {
 		return fmt.Errorf("updated Agent with Cloud-owned reset/recovery support required; no mutation performed")
 	}
 	principal, err := certs.ParsePrincipal(prov.GetPrincipalUri())
@@ -269,11 +269,22 @@ func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, 
 			return err
 		},
 		reset: func(ctx context.Context, p, fp string, evidence []byte, deleted *cloudpbv2.DeletedAsset) error {
+			// Get fresh authority after OCSP acquisition, including on tombstone replay.
+			// An empty proof or failed current ACL check never authorizes local erasure.
+			expected := principal.EntityID
+			authorized := &cloudpbv2.DeleteAssetResponse{}
+			if err := cloudrequest.Invoke(rpcctx, cloudConn, auth, cloudpbv2.AssetService_DeleteAsset_FullMethodName,
+				&cloudpbv2.DeleteAssetRequest{Id: j.AssetID, ExpectedDeviceId: &expected, ResetCertificateSha256: &fp}, authorized); err != nil {
+				return err
+			}
+			if !authorized.GetSuccess() || len(authorized.GetResetAuthorization()) == 0 {
+				return fmt.Errorf("updated Cloud with signed reset authorization required; keys retained")
+			}
 			binding, err := proto.Marshal(deleted)
 			if err != nil {
 				return err
 			}
-			response, err := svc.Unprovision(ctx, &agentpbv2.UnprovisionRequest{ExpectedPrincipalUri: p, ExpectedCertificateSha256: fp, RevocationProof: evidence, CloudDeletion: binding})
+			response, err := svc.Unprovision(ctx, &agentpbv2.UnprovisionRequest{ExpectedPrincipalUri: p, ExpectedCertificateSha256: fp, RevocationProof: evidence, CloudDeletion: binding, CloudResetAuthorization: authorized.GetResetAuthorization()})
 			if err != nil {
 				return err
 			}
