@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -293,4 +294,25 @@ func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.String()
+}
+
+// Cloud serves RelayMcpService only on the tunnel broker; the API host answers
+// Unimplemented, so the relay session must never dial auth.CloudGRPC on dev.
+func TestCloudMCPRelaySessionDialsTunnelBroker(t *testing.T) {
+	for cloudGRPC, want := range map[string]string{
+		"api.dev.wendy.sh:443":  "tunnel.dev.wendy.dev:443",
+		"api.dev.wendy.dev:443": "tunnel.dev.wendy.dev:443",
+		"cloud.example:443":     "cloud.example:443",
+		"localhost:50051":       "localhost:50051",
+	} {
+		auth := &config.AuthConfig{CloudGRPC: cloudGRPC}
+		conn, _, err := dialLiteCloudBroker(context.Background(), auth, relayBrokerEndpoint(cloudGRPC), &tls.Config{MinVersion: tls.VersionTLS12})
+		if err != nil {
+			t.Fatalf("%s: %v", cloudGRPC, err)
+		}
+		if got := conn.Target(); got != want {
+			t.Errorf("%s: relay session dials %s, want %s", cloudGRPC, got, want)
+		}
+		_ = conn.Close()
+	}
 }

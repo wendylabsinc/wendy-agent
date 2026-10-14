@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -79,16 +82,21 @@ type relayStream = cloudpbv2.RelayMcpService_RelaySessionClient
 
 // openRelaySession opens a Relay MCP session (docs/relay-mcp.md in
 // service-protos): the operator-signed OpenRelaySession, then the session's
-// one stream, attached with its session_id. The stream lives with ctx.
+// one stream, attached with its session_id. The stream lives with ctx. Both go
+// to the tunnel broker, where Cloud serves RelayMcpService, not the API host.
 func openRelaySession(ctx context.Context, auth *config.AuthConfig) (relayStream, *cloudpbv2.OpenRelaySessionResponse, func(), error) {
 	if len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() == "" {
 		return nil, nil, nil, fmt.Errorf("wendy cloud mcp needs an operator session; run 'wendy auth login'")
 	}
-	tokenCtx, err := cloudContext(ctx, auth)
-	if err != nil {
-		return nil, nil, nil, err
+	if auth.OAuthIssuer != "" {
+		// The broker dial authenticates with a copy aimed at the broker host,
+		// which cannot find its config entry to refresh: refresh this one first.
+		if err := ensureOAuthAccessToken(ctx, auth); err != nil {
+			return nil, nil, nil, err
+		}
 	}
-	conn, err := dialCloudGRPC(auth)
+	endpoint := relayBrokerEndpoint(auth.CloudGRPC)
+	conn, tokenCtx, err := dialLiteCloudBroker(ctx, auth, endpoint, &tls.Config{MinVersion: tls.VersionTLS12})
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -108,9 +116,24 @@ func openRelaySession(ctx context.Context, auth *config.AuthConfig) (relayStream
 	case codes.PermissionDenied:
 		return nil, nil, nil, fmt.Errorf("Wendy Cloud refused the relay session; your organization must allow MCP and Hosted MCP: %w", err)
 	case codes.Unimplemented:
-		return nil, nil, nil, fmt.Errorf("this Wendy Cloud does not run the MCP relay yet: %w", err)
+		return nil, nil, nil, fmt.Errorf("this Wendy Cloud does not run the MCP relay yet (%s): %w", endpoint, err)
 	}
-	return nil, nil, nil, fmt.Errorf("opening the relay session: %w", err)
+	return nil, nil, nil, fmt.Errorf("opening the relay session at %s: %w", endpoint, err)
+}
+
+// relayBrokerEndpoint is the tunnel broker's gRPC listener (tunnel.<env>:443)
+// for a Cloud gRPC host. Only dev runs a tunnel broker host today; any other
+// Cloud (prod, self-hosted, local) keeps its own gRPC host.
+func relayBrokerEndpoint(cloudGRPC string) string {
+	host, _, _ := net.SplitHostPort(cloudGRPC)
+	switch host {
+	case "api.dev.wendy.sh", "api.dev.wendy.dev":
+		return "https://tunnel.dev.wendy.dev:443"
+	}
+	if clouddefaults.UsesPublicCA(cloudGRPC) {
+		return "https://" + cloudGRPC
+	}
+	return "http://" + cloudGRPC
 }
 
 // serveCloudMCP runs one relay session: it asks the
