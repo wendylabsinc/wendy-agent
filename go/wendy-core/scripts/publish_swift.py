@@ -4,21 +4,26 @@ The checkout must be a dedicated, generated distribution repository. This
 script never creates a hosted repository or overwrites an existing release.
 """
 import argparse
+import re
 import shutil
 import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
 
-from build import check_version, digest
+from build import digest
+from versioning import STABLE
 
 
 def git(directory, *args):
     return subprocess.check_output(["git", "-C", str(directory), *args], text=True).strip()
 
 
-def publish(archive, repository, push=True):
-    value = check_version()
+def publish(archive, repository, value, push=True):
+    if not re.fullmatch(STABLE + r"(?:-(?:dev|nightly\.\d+\.\d+|pr\.[a-z0-9-]+\.\d+\.\d+))?", value):
+        raise ValueError("Invalid Core distribution version")
+    if push and value.endswith("-dev"):
+        raise ValueError("Local development versions cannot be published")
     tag = "v" + value
     existing = git(repository, "tag", "--list", tag)
     if existing:
@@ -31,7 +36,7 @@ def publish(archive, repository, push=True):
         with tarfile.open(archive) as source:
             for member in source.getmembers():
                 path = Path(member.name)
-                if path.is_absolute() or ".." in path.parts or member.issym() or member.islnk():
+                if path.is_absolute() or ".." in path.parts or not (member.isfile() or member.isdir()):
                     raise ValueError("Invalid SwiftPM archive entry")
             source.extractall(temp)
         if (Path(temp) / "VERSION").read_text().strip() != value:
@@ -55,5 +60,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path)
     parser.add_argument("repository", type=Path)
+    parser.add_argument("--version", required=True)
     arguments = parser.parse_args()
-    publish(arguments.archive, arguments.repository)
+    publish(arguments.archive, arguments.repository, arguments.version)

@@ -6,7 +6,8 @@ plugins {
 repositories { mavenCentral() }
 kotlin { jvmToolchain(21) }
 
-val coreVersion = file("../../VERSION").readText().trim()
+val coreVersion = providers.environmentVariable("WENDY_CORE_VERSION")
+    .orElse(file("../../VERSION").readText().trim() + "-dev").get()
 dependencies {
     implementation(files("../../distributions/kotlin/build/libs/wendy-core-$coreVersion.jar"))
 }

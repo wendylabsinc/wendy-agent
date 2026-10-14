@@ -4,9 +4,11 @@ This is not a complete ABI/wire/behavior checker. New ABI types and structured
 messages require extending this checker; behavioral compatibility needs review.
 """
 import json
+import re
 import subprocess
 
 from build import ROOT, check_version
+from versioning import STABLE, base_version, identity
 
 
 def require_compatible(before, after):
@@ -25,17 +27,18 @@ def require_compatible(before, after):
 
 
 def main():
-    value = check_version()
+    check_version()
+    value = base_version()
     current = json.loads((ROOT / f"documentation/versions/{value}.json").read_text())
     tags = subprocess.check_output(["git", "tag", "--merged", "HEAD"], cwd=ROOT, text=True).splitlines()
     prior = []
     for tag in tags:
-        try:
-            parts = tuple(int(x) for x in tag.removeprefix("v").split("."))
-        except ValueError:
+        if not re.fullmatch("v" + STABLE, tag):
             continue
-        if tag.startswith("v") and len(parts) == 3 and tag != "v" + value:
-            prior.append((parts, tag))
+        if identity()["channel"] == "stable" and tag == "v" + value:
+            continue
+        parts = tuple(int(x) for x in tag[1:].split("."))
+        prior.append((parts, tag))
     if not prior:
         print("Initial Core release: no previous version to compare")
         return

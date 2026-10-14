@@ -2,9 +2,20 @@ name: Build Wendy Core distributions
 
 on:
   workflow_call:
+    inputs:
+      identity:
+        type: string
+        required: true
+      source-sha:
+        type: string
+        required: true
 
 permissions:
   contents: read
+
+env:
+  CORE_BUILD_IDENTITY: ${{ inputs.identity }}
+  WENDY_CORE_VERSION: ${{ fromJSON(inputs.identity).version }}
 
 jobs:
   native:
@@ -28,6 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.source-sha }}
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
@@ -98,7 +110,7 @@ jobs:
       - name: Build a platform-specific, Python-version-independent wheel
         run: |
           python -m pip install build 'setuptools>=77' 'wheel>=0.45'
-          python -m build --wheel --outdir .build/wheels distributions/python
+          python scripts/build.py wheel
       - if: runner.os == 'Linux'
         name: Verify and repair the declared Linux compatibility tag
         env:
@@ -135,6 +147,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.source-sha }}
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
@@ -158,6 +171,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.source-sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v7
@@ -206,11 +220,14 @@ jobs:
         run: python scripts/swift_smoke.py .build/release/*-swiftpm.tar.gz
       - name: Build the all-target Maven artifact
         run: |
-          distributions/kotlin/gradlew -p distributions/kotlin test jar sourcesJar javadocJar --no-daemon
+          distributions/kotlin/gradlew -p distributions/kotlin test jar sourcesJar javadocJar generatePomFileForCorePublication --no-daemon
           cp distributions/kotlin/build/libs/*.jar .build/release/
+          cp distributions/kotlin/build/publications/core/pom-default.xml ".build/release/wendy-core-${WENDY_CORE_VERSION}.pom"
           cp .build/sdk/api.json .build/release/api.json
           cp -R .build/sdk/site/html .build/release/documentation
           python scripts/build.py seal
+      - name: Verify sealed artifacts and their embedded package versions
+        run: python scripts/publication.py verify --directory .build/release
       - uses: actions/upload-artifact@v7
         with:
           name: core-release

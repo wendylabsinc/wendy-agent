@@ -4,7 +4,8 @@ plugins {
 }
 
 group = "dev.wendy"
-version = providers.gradleProperty("coreVersion").get()
+version = providers.environmentVariable("WENDY_CORE_VERSION")
+    .orElse(providers.gradleProperty("coreVersion").map { "$it-dev" }).get()
 repositories { mavenCentral() }
 kotlin { jvmToolchain(21) }
 dependencies { testImplementation(kotlin("test")) }

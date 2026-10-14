@@ -2,59 +2,62 @@
 
 ## One version, multiple incarnations
 
-`wendy-core` is the release unit: shared runtime, selected modules, public binding/platform/subsystem contracts and included platform adapters/infrastructure implementations. They share one Core version and compatibility policy, not independent module or platform release trains. A common source repository does not imply including all domains, adapters or backends in every consumer artifact. Ergonomic language SDKs can release independently against compatible Core versions.
+`wendy-core` is the coordinated release unit: runtime, selected modules, public contracts and included adapters/backends. All Core incarnations use that release identity. Ergonomic SDKs in their future repositories own independent versions and depend on compatible Core packages; an SDK-only edit does not require a Core release.
 
-`VERSION`, npm metadata, Python metadata, and Kotlin's `coreVersion` must agree. Releases currently use stable SemVer `x.y.z` tags (`vx.y.z`). SwiftPM mirrors and Go use that same tag. Prerelease publication is intentionally not wired yet.
+`VERSION` names the **next intended stable release**, as do checked-in npm/Python/Kotlin metadata and `documentation/versions/<VERSION>.json`. Do not derive the compatibility number from a timestamp or branch. Compatible fixes require a patch bump, additions a minor bump, and breaking changes a major bump even before 1.0 under this project's strict policy. Go major releases must also follow Go module-path rules.
 
-Strict compatibility includes C ABI, public Go APIs, protobuf wire values, platform SPI, language projection semantics, and documented behavior/support guarantees. Adding capability is a minor release; a compatible fix is a patch; a breaking change requires a major release, including before 1.0 under this project's explicit policy. Removing the demo operation is therefore not silently allowed in a patch/minor release. Go major versions must also follow Go's module-path rules.
+`scripts/check_release.py` compares the base snapshot against reachable stable tags, ignoring preview tags. It catches changed/removed C operations and additions, not complete ABI, Go API, protobuf, platform SPI, behavior or support compatibility. Those remain review obligations. After stable publication, advance `VERSION` before the next nightly; preview builds cannot keep using an already-released base.
 
-`scripts/check_release.py` catches removed/changed C function signatures and additions against the preceding reachable release tag. It is deliberately not a complete ABI, wire, Go API or behavioral compatibility analyzer. New types and schemas require extending the checks and reviewing the actual boundary. Each release commits `documentation/versions/<VERSION>.json`; generated JS operations must match that contract.
+## Channels and build identity
 
-## Planned modular composition
+| Source | Effective version | Publication channel |
+|---|---|---|
+| Local build | `x.y.z-dev` | None |
+| PR head | `x.y.z-pr.<number>-<slug>.<run-id>.<attempt>` | PR preview |
+| Manual branch build | `x.y.z-pr.manual-<slug>.<run-id>.<attempt>` | Branch preview |
+| Passing main build | `x.y.z-nightly.<run-id>.<attempt>` | Nightly |
+| Pushed stable tag `vx.y.z` | `x.y.z` | Stable |
 
-Selectable modules and their dependency graph share one runtime foundation and one composed Core engine. Future modular artifacts remain on the coordinated Core version; independent SDK ergonomic release trains do not imply a separate Go runtime per module. Packaging must preserve selective native/WASM composition, not merely split wrappers around a monolithic payload. Current distribution artifacts contain the single-operation engine, not a module-selection system. See [architecture](architecture.md) for the recorded design and unresolved bundle/dependency choices.
+`scripts/versioning.py` derives the identity once per workflow. Branch slugs are sanitized and bounded; PR number is the primary PR identity. Global GitHub run IDs prevent collisions between workflows. Fresh full rebuilds get a new attempt; retries of failed jobs retain their originating identity and tested bytes. Never overwrite a published version or use a bare, repeatedly published `x.y.z-nightly`.
 
-## CI without SDK coupling
+PRs build their exact head commit, not GitHub's synthetic merge commit. Every native/WASM inventory records the same version, source SHA and originating run/attempt; assembly rejects mixed identities or changed checksums. The final `release.json` records this identity, including package-manager mappings. Generated C/JS contract snapshots describe the stable base, not each transient preview suffix.
 
-`build-core.yml` builds and tests Core incarnations, not the future language SDKs. It tests direct Go/C consumption, native Node (including workers), SwiftPM, installed Python wheels, Kotlin/JVM, and the same JS conformance suite in Chromium using actual Go/WASM. The final npm tarball is installed and tested in both runtimes too.
+Python uses PEP 440: stable stays `x.y.z`, local becomes `x.y.z.dev0`, and both PR/nightly publications become `x.y.z.dev<run-id * 1000 + attempt>`. Attempts must be below 1000. PR/branch/channel information is retained in `release.json`; PyPI does not accept arbitrary SemVer prereleases or local-version labels. The mapping is deterministic and collision-free for distinct runs/attempts.
 
-Native jobs emit target/version/checksum manifests. Assembly rejects missing targets, mixed versions, missing required files and modified native bytes. Python wheels are platform-specific with `py3-none` ABI tags; Linux wheels are verified/repaired with auditwheel rather than falsely tagged as universal. All-target npm, SwiftPM, and Maven artifacts are assembled from those tested binaries. CI does not rebuild every future SDK on every Core edit.
+npm uses `latest` only for stable, `nightly` for main, `pr-<number>` for PRs and `preview-<slug>` for manual builds. Moving pointers are conveniences; reproducible preview consumers pin exact versions. Maven previews are immutable versions, not `SNAPSHOT`s. SwiftPM and Go use matching `v<effective-version>` tags. Local builds do not create tags or update published pointers.
 
-`release.yml` runs the same builds on SemVer tags or manual dry runs. Publishing requires all of:
+Package stamping happens in staging directories, not by editing tracked metadata. Raw C and SwiftPM archives carry the effective `VERSION`; npm tarballs, Python wheels and Maven jars/POM use the appropriate effective version. Ordinary local source dependencies still read the checked-in base metadata; packaged local distributions carry the development version.
 
-1. A tag matching `VERSION` (manual runs must select the tag).
-2. Repository variable `ENABLE_CORE_PUBLISH=true`.
-3. A publishing trigger: tag push, or a manual run with `publish=true`.
-4. Approval through the configured `core-release` GitHub environment.
+## Build and publication boundaries
 
-Configure the environment with required reviewers **before** enabling publication. Workflow code alone cannot create or enforce repository environment protection. Do not enable the variable before the following destinations and credentials are configured.
+- `ci.yml`: unprivileged PR/main builds and installable, versioned artifacts.
+- `release.yml`: stable tag builds or manually dispatched branch previews. Dispatch the selected branch; stable releases start with a tag push. Retry an existing publication rather than dispatching a fresh stable rebuild.
+- `build-core.yml`: shared native/WASM builds, artifact assembly and installed consumer checks. Make delegates orchestration to `scripts/`. This tests Core incarnations, not the future ergonomic SDKs. `bindings/`-only edits do not trigger Core CI; future SDK repositories own their language-specific CI. A coordinated Core release still assembles all configured Core distributions.
+- `publish.yml`: a separate `workflow_run` publisher that always executes trusted code from `main`. It consumes the successful build's immutable artifact, rederives identity from GitHub run/source metadata and checks every sealed byte. It rejects forks, ambiguous PRs and superseded main/PR/manual builds. npm package scripts and PR Gradle code are never executed with publication credentials; Maven deploys the tested jars and POM without rebuilding.
 
-A pushed Go module tag is already discoverable independently of the registry jobs. Only create/push release tags after reviewed, passing Core CI and release authorization; the enable variable is not a gate on Go tag visibility.
+Publishing remains disabled unless `ENABLE_CORE_PUBLISH=true`, a successful recognized build passes publisher validation, destinations are configured, and the `core-release` environment permits the jobs. Configure required reviewers and environment protections **before** enabling it; workflow code cannot install those protections. Enabling this switch is publication authority for the automated stable/nightly/preview lanes, not just stable releases. This CI preparation does not enable it, create destinations, change visibility or publish anything.
 
-## Destinations and bootstrap configuration
+Stable Go tags are discoverable as soon as pushed, independently of the registry gate. Create release tags only after reviewed, passing CI and explicit release authorization. The prepared publisher creates immutable Go preview tags only after registry/mirror publication succeeds; existing tags must identify the tested source and are never moved.
 
-| Incarnation | Publication |
+## Destinations and setup
+
+| Incarnation | Destination |
 |---|---|
-| C | GitHub Release native archives with headers, schemas and Go runtime notice |
-| Go | The Core repository's ordinary SemVer tag; import `github.com/wendylabsinc/wendy-core/core` |
-| JavaScript | One public npm package, `@wendylabs/core`, including all supported Node binaries and browser WASM |
-| Python | `wendy-core` on PyPI, one wheel per supported native target |
-| Kotlin/JVM | `dev.wendy:wendy-core` in this repository's GitHub Maven registry |
-| Swift | Generated, separately consumable SwiftPM distribution repository and matching tag, plus a release source archive |
+| C | Versioned GitHub Release archives with headers, schemas and notices |
+| Go | Core repository's version tag; import `github.com/wendylabsinc/wendy-core/core` |
+| JavaScript | `@wendylabs/core` on npm; Node binaries and browser WASM together |
+| Python | `wendy-core` on PyPI; platform-specific `py3-none` wheels |
+| Kotlin/JVM | `dev.wendy:wendy-core` in GitHub Maven |
+| Swift | Generated standalone SwiftPM mirror and matching version tag |
 
-Package names above are bootstrap identities; verify registry ownership with Konstantin before first publication. Project licensing is Apache-2.0. The canonical source repository is `wendylabsinc/wendy-core`; source availability does not imply that versioned registry artifacts have been published. This setup does not create repositories, registry projects or credentials.
+Verify namespace ownership and desired public/private access with Konstantin. The source repository is currently private; package availability and source visibility are separate decisions. The npm publisher currently requests public access and provenance, whose repository-visibility requirements must be satisfied before activation. GitHub Maven consumers require credentials even for public packages. Maven Central is not configured.
 
-- **npm:** configure trusted publishing for the package, this repository and `release.yml`. Uses GitHub OIDC and provenance, not an npm token. Initial scoped-package ownership/trusted-publisher setup may require registry bootstrap outside this workflow.
-- **PyPI:** configure a pending/existing trusted publisher for `wendy-core`, `release.yml`, and environment `core-release`. Uses OIDC, not a PyPI token.
-- **Maven:** GitHub Packages uses the publishing job's short-lived `GITHUB_TOKEN` with `packages:write`. Consumers need GitHub Packages credentials, even for public packages. Maven Central publication is not configured here; it would require a separately approved namespace/publishing setup.
-- **SwiftPM:** SwiftPM URL dependencies resolve repository roots, not monorepo subdirectories. Configure a dedicated **generated distribution mirror** with an existing `main` branch. Set `SWIFTPM_REPOSITORY` (repository name in the same owner), `SWIFTPM_APP_ID`, and environment secret `SWIFTPM_APP_PRIVATE_KEY`. The GitHub App must have contents-write permission only on that mirror. Publication copies the already-tested standalone package and its native resources, commits it, and atomically pushes `main` plus the matching tag. This mirror is a delivery artifact, not a second implementation or independent version stream.
+Configure npm and PyPI trusted publishing for **`publish.yml`**, not the build workflow. Both use GitHub OIDC, not registry tokens. PyPI configuration names environment `core-release`. Pending-package/namespace setup may be required before first publication.
 
-Swift consumers then use an ordinary `.package(url: <mirror-url>, from: "0.1.0")` dependency and product `WendyCore`. Native Core resources are included, so consumers need no Go compiler or separate library installation. A source archive provides the same package for local-path dependencies. The tradeoff in this initial packaging is storing small native artifacts in the generated mirror; artifact-backed optimization can come later without changing Core's public module.
+For SwiftPM, configure a generated distribution mirror with an existing `main`, variables `SWIFTPM_REPOSITORY` and `SWIFTPM_APP_ID`, and environment secret `SWIFTPM_APP_PRIVATE_KEY`. Restrict the GitHub App's contents-write permission to that mirror. SwiftPM dependencies resolve repository roots, not monorepo subdirectories, so the mirror includes a complete package and native resources. It is a delivery artifact, not another implementation or version train. Consumers need no Go compiler or separately installed native library. Stable dependencies may use `from:`; previews should use `exact:`. Native resources are currently stored in the mirror; artifact-backed delivery can be considered later.
 
 ## Integrity and retries
 
-A protected tag builds the artifacts once. Publishing jobs verify `SHA256SUMS` and consume those artifacts. Existing versions must never be overwritten. SwiftPM publication checks an existing tag's artifact checksum and rejects different bytes.
+Build/test once per immutable version; publish those artifacts without a second build. Registries cannot be published transactionally. Rerun failed **publisher** jobs with the original build artifact, not a fresh build under the same version. npm and PyPI retry checks reject existing versions with different bytes; Maven verifies existing coordinates/assets before deployment, and SwiftPM checks its existing tag's archive checksum. The GitHub Release is finalized after language publication succeeds, does not overwrite assets, marks previews as prereleases and only marks stable as latest. Publication is not canceled midway.
 
-Different registries cannot be published transactionally. If one destination fails, rerun only failed publication jobs using the same run's artifacts; do not rebuild different bytes under the same version. The GitHub Release is finalized after the language publications succeed. No tag, hosted release, registry mutation, or remote configuration is performed by local build/test commands.
-
-Apache-2.0 `LICENSE` and `NOTICE` are included with Core distribution artifacts and the generated SwiftPM mirror. Native/WASM artifacts retain `LICENSE-Go.txt` for the Go runtime's separate BSD license. Maven metadata and npm/Python metadata declare Apache-2.0; original third-party notices remain intact.
+Apache-2.0 `LICENSE`/`NOTICE` accompany all distribution formats. Go's separate BSD notice is retained as `LICENSE-Go.txt`; original Gradle Wrapper notices remain intact. Modular packaging must still preserve selective native/WASM composition and one shared runtime rather than separate Go engines per module. No module-selection build system is introduced by these channel workflows.

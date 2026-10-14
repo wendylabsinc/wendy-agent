@@ -1,6 +1,7 @@
 """Local and CI packaging mechanics. No registry access or product behavior."""
 import argparse
 import hashlib
+import io
 import json
 import os
 import platform
@@ -10,6 +11,8 @@ import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
+
+from versioning import base_version, identity
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / ".build"
@@ -23,29 +26,30 @@ KOTLIN = ROOT / "distributions/kotlin"
 PYTHON = ROOT / "distributions/python"
 
 
-def run(*args, cwd=ROOT, env=None):
-    subprocess.run([str(x) for x in args], cwd=cwd, env=env, check=True)
+def run(*args, cwd=ROOT, env=None, input=None):
+    environment = {**(os.environ if env is None else env), "WENDY_CORE_VERSION": version()}
+    subprocess.run([str(x) for x in args], cwd=cwd, env=environment, input=input, check=True)
 
 
 def version():
-    value = (ROOT / "VERSION").read_text().strip()
-    if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value):
-        raise ValueError("VERSION must be a stable SemVer x.y.z (prereleases not yet packaged)")
-    return value
+    return identity()["version"]
 
 
 def check_version(tag=None):
-    value = version()
+    # Checked-in metadata names the next stable release. Package staging applies
+    # the effective version without leaving generated edits in the source tree.
+    value = base_version()
     package = json.loads((JS / "package.json").read_text())
     if package["version"] != value:
         raise ValueError("npm version differs from VERSION")
-    if f'version = "{value}"' not in (PYTHON / "pyproject.toml").read_text():
+    python_versions = re.findall(r'^version\s*=\s*"([^"\n]+)"\s*$', (PYTHON / "pyproject.toml").read_text(), re.MULTILINE)
+    if python_versions != [value]:
         raise ValueError("Python version differs from VERSION")
     if f"coreVersion={value}\n" != (KOTLIN / "gradle.properties").read_text():
         raise ValueError("Kotlin version differs from VERSION")
-    if tag and tag != "v" + value:
-        raise ValueError(f"Tag {tag!r} must match v{value}")
-    return value
+    if tag and (identity()["channel"] != "stable" or tag != "v" + value):
+        raise ValueError(f"Stable tag {tag!r} must match v{value}")
+    return version()
 
 
 def host_target():
@@ -178,7 +182,7 @@ def wasm():
     copy(goroot / "lib/wasm/wasm_exec.js", output / "wasm_exec.mjs")
     copy(go_license(goroot), output / "LICENSE-Go.txt")
     files = {name: digest(output / name) for name in ("wendy_core.wasm", "wasm_exec.mjs", "LICENSE-Go.txt")}
-    (output / "manifest.json").write_text(json.dumps({"version": version(), "target": "browser-wasm", "files": files}, indent=2) + "\n")
+    (output / "manifest.json").write_text(json.dumps({"version": version(), "identity": identity(), "target": "browser-wasm", "files": files}, indent=2) + "\n")
 
 
 def inventory():
@@ -194,7 +198,7 @@ def inventory():
             if minimum is None or tuple(int(x) for x in minimum.groups()) > (15, 0):
                 raise ValueError(f"{name} does not meet the declared macOS 15 minimum")
     files = {name: digest(directory / name) for name in expected}
-    (directory / "manifest.json").write_text(json.dumps({"version": check_version(), "target": target, "files": files}, indent=2) + "\n")
+    (directory / "manifest.json").write_text(json.dumps({"version": check_version(), "identity": identity(), "target": target, "files": files}, indent=2) + "\n")
 
 
 def assemble(artifacts):
@@ -203,7 +207,7 @@ def assemble(artifacts):
     for target in TARGETS:
         directory = artifacts / ("native-" + target)
         manifest = json.loads((directory / "manifest.json").read_text())
-        if manifest["target"] != target or manifest["version"] != version():
+        if manifest["target"] != target or manifest["version"] != version() or manifest.get("identity") != identity():
             raise ValueError(f"Wrong native artifact identity: {target}")
         expected = {LIBRARIES[target.split("-")[0]], JNI[target.split("-")[0]], "wendy_core.node", "LICENSE-Go.txt"}
         if set(manifest["files"]) != expected:
@@ -213,7 +217,7 @@ def assemble(artifacts):
                 raise ValueError(f"Native checksum mismatch: {target}/{name}")
     wasm_directory = artifacts / "wasm"
     wasm_manifest = json.loads((wasm_directory / "manifest.json").read_text())
-    if wasm_manifest["version"] != version() or wasm_manifest["target"] != "browser-wasm":
+    if wasm_manifest["version"] != version() or wasm_manifest["target"] != "browser-wasm" or wasm_manifest.get("identity") != identity():
         raise ValueError("Wrong WASM artifact identity")
     if set(wasm_manifest["files"]) != {"wendy_core.wasm", "wasm_exec.mjs", "LICENSE-Go.txt"}:
         raise ValueError("Incomplete WASM artifact")
@@ -228,13 +232,53 @@ def assemble(artifacts):
         copy(wasm_directory / name, JS / "assets/wasm" / name)
 
 
+def archive_version(archive):
+    content = (version() + "\n").encode()
+    entry = tarfile.TarInfo("VERSION")
+    entry.size = len(content)
+    archive.addfile(entry, io.BytesIO(content))
+
+
+def pack_npm(destination):
+    stage_licenses()
+    destination.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp)
+        package = json.loads((JS / "package.json").read_text())
+        for name in package["files"]:
+            source = JS / name
+            if source.is_dir():
+                shutil.copytree(source, directory / name)
+            else:
+                copy(source, directory / name)
+        package["version"] = version()
+        (directory / "package.json").write_text(json.dumps(package, indent=2) + "\n")
+        npm = "npm.cmd" if platform.system() == "Windows" else "npm"
+        run(npm, "pack", "--ignore-scripts", "--pack-destination", destination, cwd=directory)
+    return destination / f"wendylabs-core-{version()}.tgz"
+
+
+def wheel():
+    check_version()
+    stage_licenses()
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp) / "python"
+        shutil.copytree(PYTHON, directory, ignore=shutil.ignore_patterns("build", "*.egg-info", "__pycache__"))
+        metadata = directory / "pyproject.toml"
+        metadata.write_text(metadata.read_text().replace(f'version = "{base_version()}"', f'version = "{identity()["pythonVersion"]}"'))
+        environment = dict(os.environ)
+        if platform.system() == "Darwin":
+            environment["MACOSX_DEPLOYMENT_TARGET"] = "15.0"
+        run(os.sys.executable, "-m", "build", "--wheel", "--outdir", BUILD / "wheels", directory, env=environment)
+
+
 def swift_archive(destination):
     stage_licenses()
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(destination, "w:gz") as archive:
         for name in ("Package.swift", "Sources", "Tests", "README.md", "LICENSE", "NOTICE"):
             archive.add(SWIFT / name, arcname=name)
-        archive.add(ROOT / "VERSION", arcname="VERSION")
+        archive_version(archive)
 
 
 def pack(artifacts):
@@ -243,8 +287,7 @@ def pack(artifacts):
     release = BUILD / "release"
     shutil.rmtree(release, ignore_errors=True)
     release.mkdir(parents=True)
-    npm = "npm.cmd" if platform.system() == "Windows" else "npm"
-    run(npm, "pack", "--pack-destination", release, cwd=JS)
+    pack_npm(release)
     for target in TARGETS:
         system = target.split("-")[0]
         directory = artifacts / ("native-" + target)
@@ -253,17 +296,20 @@ def pack(artifacts):
             archive.add(directory / "LICENSE-Go.txt", arcname="LICENSE-Go.txt")
             archive.add(ROOT / "include", arcname="include")
             archive.add(ROOT / "proto", arcname="proto")
-            archive.add(ROOT / "VERSION", arcname="VERSION")
+            archive_version(archive)
             for name in ("LICENSE", "NOTICE"):
                 archive.add(ROOT / name, arcname=name)
     # Complete, standalone SwiftPM source distribution (including native assets).
     swift_archive(release / f"wendy-core-{version()}-swiftpm.tar.gz")
-    for wheel in artifacts.glob("wheel-*/*.whl"):
-        copy(wheel, release / wheel.name)
+    for target in TARGETS:
+        wheels = list((artifacts / ("wheel-" + target)).glob("*.whl"))
+        if len(wheels) != 1:
+            raise ValueError(f"Every native target must contribute exactly one Python wheel: {target}")
+        copy(wheels[0], release / wheels[0].name)
     if len(list(release.glob("*.whl"))) != len(TARGETS):
-        raise ValueError("Every native target must contribute a Python wheel")
+        raise ValueError("Python wheel filenames must identify distinct targets")
     (release / "SHA256SUMS").write_text("".join(f"{digest(path)}  {path.name}\n" for path in sorted(release.iterdir()) if path.is_file()))
-    (release / "release.json").write_text(json.dumps({"version": version(), "targets": TARGETS, "javascript": ["node", "browser"], "goModule": "github.com/wendylabsinc/wendy-core/core"}, indent=2) + "\n")
+    (release / "release.json").write_text(json.dumps({"version": version(), "identity": identity(), "targets": TARGETS, "javascript": ["node", "browser"], "goModule": "github.com/wendylabsinc/wendy-core/core"}, indent=2) + "\n")
 
 
 def seal():
@@ -280,8 +326,7 @@ def test_packed_npm():
     npm = "npm.cmd" if platform.system() == "Windows" else "npm"
     package_directory = BUILD / "npm-smoke"
     package_directory.mkdir(parents=True, exist_ok=True)
-    run(npm, "pack", "--pack-destination", package_directory, cwd=JS)
-    package = package_directory / f"wendylabs-core-{version()}.tgz"
+    package = pack_npm(package_directory)
     with tempfile.TemporaryDirectory() as temp:
         path = Path(temp)
         (path / "package.json").write_text('{"type":"module","private":true}')
@@ -295,7 +340,7 @@ def test_packed_npm():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["version", "native", "node", "jni", "wasm", "inventory", "assemble", "pack", "seal", "swift-archive", "test-npm"])
+    parser.add_argument("command", choices=["version", "native", "node", "jni", "wasm", "wheel", "inventory", "assemble", "pack", "seal", "swift-archive", "test-npm"])
     parser.add_argument("--tag")
     parser.add_argument("--artifacts", type=Path, default=BUILD / "artifacts")
     arguments = parser.parse_args()
@@ -306,7 +351,7 @@ def main():
     elif arguments.command in ("assemble", "pack"):
         globals()[arguments.command](arguments.artifacts)
     else:
-        {"native": native, "node": node_addon, "jni": jni, "wasm": wasm, "inventory": inventory, "test-npm": test_packed_npm, "seal": seal}[arguments.command]()
+        {"native": native, "node": node_addon, "jni": jni, "wasm": wasm, "wheel": wheel, "inventory": inventory, "test-npm": test_packed_npm, "seal": seal}[arguments.command]()
 
 
 if __name__ == "__main__":

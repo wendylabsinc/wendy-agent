@@ -6,7 +6,6 @@ on:
   push:
     branches: [main]
     paths-ignore: ['bindings/**', 'README.md', 'documentation/binding-patterns/**']
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,7 +15,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  identity:
+    name: Release identity
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    outputs:
+      identity: ${{ steps.plan.outputs.identity }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - id: plan
+        run: python scripts/versioning.py plan --github-output
+      - name: Validate the base version before building distributions
+        env:
+          CORE_BUILD_IDENTITY: ${{ steps.plan.outputs.identity }}
+        run: |
+          python scripts/build.py version
+          python scripts/check_release.py
+
   core:
+    needs: identity
     permissions:
       contents: read
     uses: ./.github/workflows/build-core.yml
+    with:
+      identity: ${{ needs.identity.outputs.identity }}
+      source-sha: ${{ needs.identity.outputs.source_sha }}

@@ -94,9 +94,9 @@ See [examples/README.md](examples/README.md) for small Go, C, Swift, Python, Kot
 
 ## Release boundary
 
-`VERSION` is the shared Core release version. The runtime, selected modules, binding/platform/subsystem contracts and included adapters/backends belong to that release. All incarnations ship that version, not separate implementations or independent module/platform versions. Later SDKs depend on compatible Core releases and have independent release trains.
+`VERSION` names the next intended stable Core release. CI derives immutable PR/manual-preview and nightly versions from it; packaged local builds use `-dev`. The runtime, selected modules, binding/platform/subsystem contracts and included adapters/backends belong to that release. All incarnations ship that version, not separate implementations or independent module/platform versions. Later SDKs depend on compatible Core releases and have independent release trains.
 
-See [releasing](documentation/releasing.md) for packaging, registry configuration, and publication gates. Pushing `main` runs Core CI but does not publish package releases. Registry publication remains explicitly gated; see the release guide before creating any version tag.
+See [releasing](documentation/releasing.md) for packaging, registry configuration, and publication gates. Passing PR/main builds produce versioned preview/nightly artifacts. Registry publication remains disabled until destinations, access and environment protections are configured and explicitly enabled. Stable publication starts with a matching version tag; see the release guide before creating any tag.
 
 ## License
 

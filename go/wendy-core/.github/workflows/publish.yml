@@ -1,0 +1,227 @@
+name: Publish Wendy Core
+
+on:
+  workflow_run:
+    workflows: ['Wendy Core CI', 'Release Wendy Core']
+    types: [completed]
+
+permissions:
+  contents: read
+
+# Publication is never canceled midway. Context validation rejects stale builds.
+concurrency:
+  group: core-publish-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  context:
+    if: vars.ENABLE_CORE_PUBLISH == 'true' && github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    outputs:
+      identity: ${{ steps.context.outputs.identity }}
+      version: ${{ steps.context.outputs.version }}
+      channel: ${{ steps.context.outputs.channel }}
+    steps:
+      # Always run the trusted publisher from main, never the preview checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: core-release
+          path: release
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - id: context
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: python scripts/publication.py context --run-id "$BUILD_RUN_ID"
+
+  npm:
+    needs: context
+    environment: core-release
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    runs-on: ubuntu-24.04
+    env:
+      CORE_BUILD_IDENTITY: ${{ needs.context.outputs.identity }}
+      NPM_TAG: ${{ fromJSON(needs.context.outputs.identity).npmTag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: core-release
+          path: release
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - id: registry
+        run: python3 scripts/publication.py npm-check
+      - if: steps.registry.outputs.exists != 'true'
+        name: Publish tested npm bytes without executing package scripts
+        run: npm publish release/*.tgz --tag "$NPM_TAG" --ignore-scripts --provenance --access public
+
+  pypi:
+    needs: context
+    environment: core-release
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    runs-on: ubuntu-24.04
+    env:
+      CORE_BUILD_IDENTITY: ${{ needs.context.outputs.identity }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: core-release
+          path: release
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify existing wheel bytes before permitting partial-upload retries
+        run: |
+          python3 scripts/publication.py pypi-check
+          mkdir wheels
+          cp release/*.whl wheels/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: wheels/
+          skip-existing: true
+
+  maven:
+    needs: context
+    environment: core-release
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    runs-on: ubuntu-24.04
+    env:
+      CORE_BUILD_IDENTITY: ${{ needs.context.outputs.identity }}
+      MAVEN_USERNAME: ${{ github.actor }}
+      MAVEN_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          server-id: github
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: core-release
+          path: release
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deploy the tested jars and POM without rebuilding or running Gradle
+        run: python3 scripts/publication.py maven
+
+  swiftpm:
+    needs: context
+    environment: core-release
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    env:
+      CORE_BUILD_IDENTITY: ${{ needs.context.outputs.identity }}
+      CORE_VERSION: ${{ needs.context.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: core-release
+          path: release
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - env:
+          SWIFTPM_REPOSITORY: ${{ vars.SWIFTPM_REPOSITORY }}
+        run: |
+          test -n "$SWIFTPM_REPOSITORY"
+          python scripts/publication.py verify
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          app-id: ${{ vars.SWIFTPM_APP_ID }}
+          private-key: ${{ secrets.SWIFTPM_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ vars.SWIFTPM_REPOSITORY }}
+          permission-contents: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/${{ vars.SWIFTPM_REPOSITORY }}
+          token: ${{ steps.app.outputs.token }}
+          ref: main
+          fetch-depth: 0
+          path: swiftpm-mirror
+          persist-credentials: true
+      - name: Publish the tested standalone package and immutable version tag
+        run: python scripts/publish_swift.py release/*-swiftpm.tar.gz swiftpm-mirror --version "$CORE_VERSION"
+
+  github:
+    needs: [context, npm, pypi, maven, swiftpm]
+    environment: core-release
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-24.04
+    env:
+      CORE_BUILD_IDENTITY: ${{ needs.context.outputs.identity }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: core-release
+          path: release
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify or create the matching immutable Go module tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/publication.py go-tag
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: v${{ needs.context.outputs.version }}
+          name: Wendy Core ${{ needs.context.outputs.version }}
+          target_commitish: ${{ fromJSON(needs.context.outputs.identity).sourceSha }}
+          prerelease: ${{ needs.context.outputs.channel != 'stable' }}
+          make_latest: ${{ needs.context.outputs.channel == 'stable' }}
+          files: release/*
+          fail_on_unmatched_files: true
+          overwrite_files: false
+          generate_release_notes: false
+          body: Wendy Core distributions built and tested together. See release.json for source, channel, package versions and SHA256SUMS for integrity.

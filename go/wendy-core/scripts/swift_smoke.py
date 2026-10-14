@@ -13,7 +13,7 @@ def smoke(archive, xcode_mcp=False):
         root = Path(temp)
         mirror = root / "mirror"
         run("git", "init", "-b", "main", mirror)
-        publish(archive, mirror, push=False)
+        publish(archive, mirror, value, push=False)
         consumer = root / "consumer"
         tests = consumer / "Tests/SmokeTests"
         tests.mkdir(parents=True)
@@ -22,7 +22,7 @@ import PackageDescription
 let package = Package(
     name: "CoreConsumer",
     platforms: [.macOS(.v15)],
-    dependencies: [.package(url: "%s", from: "%s")],
+    dependencies: [.package(url: "%s", exact: "%s")],
     targets: [.testTarget(name: "SmokeTests", dependencies: [.product(name: "WendyCore", package: "mirror")])]
 )
 ''' % (mirror.as_uri(), value))

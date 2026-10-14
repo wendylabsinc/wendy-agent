@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,7 @@ from unittest.mock import patch
 
 import build
 from check_release import require_compatible
+from versioning import base_version, derive
 
 
 def api(version, **functions):
@@ -14,10 +16,11 @@ def api(version, **functions):
 
 class ReleaseTests(unittest.TestCase):
     def test_versions_match_and_wrong_tags_fail(self):
-        value = build.version()
-        self.assertEqual(build.check_version("v" + value), value)
-        with self.assertRaises(ValueError):
-            build.check_version("v-not-semver")
+        info = derive(base_version(), "stable", source_sha=build.identity()["sourceSha"])
+        with patch.dict(os.environ, {"CORE_BUILD_IDENTITY": json.dumps(info)}):
+            self.assertEqual(build.check_version("v" + info["version"]), info["version"])
+            with self.assertRaises(ValueError):
+                build.check_version("v-not-semver")
 
     def test_removal_requires_major_bump_even_before_one(self):
         with self.assertRaises(ValueError):
