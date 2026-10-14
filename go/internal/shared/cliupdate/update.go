@@ -259,6 +259,9 @@ func apply(ctx context.Context, d dependencies, p Plan, current, target string, 
 			return Result{}, failure("update_method_unsupported", "empty update command")
 		}
 		if err := d.run(ctx, in, out, errout, command[0], command[1:]...); err != nil {
+			if ctx.Err() != nil {
+				return Result{}, ctx.Err()
+			}
 			return Result{}, failure("update_process_failed", "CLI update failed: %w. %s", err, p.Guidance)
 		}
 	}
@@ -268,6 +271,9 @@ func apply(ctx context.Context, d dependencies, p Plan, current, target string, 
 	}
 	output, err := d.output(ctx, path, "--version")
 	if err != nil {
+		if ctx.Err() != nil {
+			return Result{}, ctx.Err()
+		}
 		return Result{}, failure("update_verification_failed", "update finished but wendy --version failed: %w", err)
 	}
 	match := versionOutput.FindStringSubmatch(strings.TrimSpace(string(output)))

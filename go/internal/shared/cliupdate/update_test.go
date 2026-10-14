@@ -265,6 +265,44 @@ func TestApplyStopsOnUpdaterFailure(t *testing.T) {
 	}
 }
 
+func TestApplyPreservesSubprocessCancellation(t *testing.T) {
+	for _, stage := range []string{"installer", "verification"} {
+		t.Run(stage, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			d := fakeDependencies("/opt/homebrew/bin/wendy")
+			// CommandContext can return an exit error without wrapping ctx.Err().
+			processErr := errors.New("signal: killed")
+			var calls []string
+			d.run = func(context.Context, io.Reader, io.Writer, io.Writer, string, ...string) error {
+				calls = append(calls, "install")
+				if stage == "installer" {
+					cancel()
+					return processErr
+				}
+				return nil
+			}
+			d.output = func(context.Context, string, ...string) ([]byte, error) {
+				calls = append(calls, "verify")
+				cancel()
+				return nil, processErr
+			}
+			p := Plan{Supported: true, Commands: [][]string{{"brew", "update"}, {"brew", "upgrade", "wendy"}}}
+			_, err := apply(ctx, d, p, "old", "new", nil, io.Discard, io.Discard)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("subprocess cancellation became an updater failure: %v", err)
+			}
+			want := []string{"install"}
+			if stage == "verification" {
+				want = []string{"install", "install", "verify"}
+			}
+			if !reflect.DeepEqual(calls, want) {
+				t.Fatalf("calls=%v, want %v", calls, want)
+			}
+		})
+	}
+}
+
 func TestApplyUnsupportedCannotRun(t *testing.T) {
 	d := fakeDependencies("/usr/bin/wendy")
 	d.run = func(context.Context, io.Reader, io.Writer, io.Writer, string, ...string) error {
