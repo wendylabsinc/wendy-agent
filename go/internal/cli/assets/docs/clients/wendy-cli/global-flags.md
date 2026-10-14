@@ -92,15 +92,21 @@ Commands that connect to a device this way print `Using device <name> from WENDY
 
 ## Automatic update notifications
 
-The Wendy CLI checks GitHub for a newer release in the background once every 24 hours. Because the HTTP call can take several seconds, the result is **persisted** to `~/.wendy/config.json` (field `availableCLIUpdate`) and displayed at the end of the **next** CLI command you run after the check completes.
+Ordinary commands check for a newer release in the background. A successful check
+is cached for 24 hours; a failed or cancelled check can retry after one hour.
 
-- **Interactive terminal:** The CLI prompts `Update now?` (default yes). Answering yes runs the upgrade automatically. Either way, the stored tag is cleared so the prompt does not repeat until the next check finds another update.
-- **Non-interactive / `--json` mode:** The notice is printed to stderr. No prompt is shown.
-- **macOS:** The upgrade command is `brew update && brew install wendy`. If the tap is untrusted, the CLI also suggests `brew trust wendylabsinc/tap`.
-- **Windows:** `winget upgrade WendyLabs.Wendy`.
-- **Linux:** `curl -fsSL https://install.wendy.dev/cli.sh | bash`.
+In an interactive terminal, the CLI prompts `Update now?` with Yes selected.
+Declining snoozes that release's prompt for 24 hours. Non-interactive and `--json`
+invocations print notices to stderr without prompting.
 
-> **Note:** The 24-hour cooldown between update checks depends on `~/.wendy/config.json` being writable. If the file cannot be saved, the background check runs on every CLI invocation.
+Accepted updates use the installation's owning package manager. For Homebrew
+stable, the commands are `brew update` and `brew upgrade wendylabsinc/tap/wendy`.
+See [`wendy update`](./commands/update.md#installation-methods) for supported
+methods, manual instructions, and verification after an update.
+
+CI, read-only checks, and completion helpers skip background reminders. Set
+`WENDY_NO_UPDATE_CHECK=1` to disable them for other commands. Explicit
+`wendy update` and `wendy update --check` still work.
 
 ## Automatic shell-completion prompt
 

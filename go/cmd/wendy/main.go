@@ -55,18 +55,41 @@ func main() {
 		return cmd.ExecuteContextC(ctx)
 	})
 	executed = commandFor(cmd, os.Args[1:], executed, err)
-	trackCommand(executed, err, time.Since(start))
-	analytics.Close()
+	if err != nil {
+		commands.NotifyCLIUpdateAfterFailure(executed)
+	}
+	if !isReadOnlyInvocation(executed) {
+		trackCommand(executed, err, time.Since(start))
+		analytics.Close()
+	}
 	exitCode := reportCommandResult(os.Stderr, err, executed, os.Args[1:], interactiveErrorTerminal())
-	// After Close, whose delivered events can still record milestones: a sudo
-	// run gives what it created in ~/.wendy and the cache back to the user.
-	commands.HandBackSudoFiles()
+	if !isReadOnlyInvocation(executed) {
+		// After Close, whose delivered events can still record milestones: a sudo
+		// run gives what it created in ~/.wendy and the cache back to the user.
+		commands.HandBackSudoFiles()
+	}
 
 	// Windows: when this process owns its console window (UAC-relaunched or
 	// double-clicked), exiting would close the window and destroy the output
 	// above — hold it open until the user has read it.
 	commands.PauseBeforeExitIfSoleConsole()
 	os.Exit(exitCode)
+}
+
+// Diagnostics and explicit update checks must not initialize telemetry or touch
+// configuration, including sudo ownership cleanup after command completion.
+func isReadOnlyInvocation(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	switch cmd.CommandPath() {
+	case "wendy doctor":
+		return true
+	case "wendy update":
+		check, _ := cmd.Flags().GetBool("check")
+		return check
+	}
+	return false
 }
 
 // trackCommand emits a single analytics event describing the invocation.
@@ -87,7 +110,7 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		return
 	}
 	path := executed.CommandPath()
-	if path == "wendy __session-broker" {
+	if path == "wendy __session-broker" || isReadOnlyInvocation(executed) {
 		return
 	}
 	// Homebrew exports HOMEBREW_PREFIX/HOMEBREW_CELLAR/HOMEBREW_REPOSITORY into
@@ -100,6 +123,7 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 	event := eventNameFor(path, homebrewPostInstall)
 	props := map[string]string{
 		"command_name": path,
+		"attempt_id":   analytics.AttemptID(executed.Context()),
 		"command_root": commandRoot(executed),
 		"duration_ms":  strconv.FormatInt(dur.Milliseconds(), 10),
 		"success":      strconv.FormatBool(err == nil),
@@ -169,7 +193,7 @@ func isSetupCommand(path string) bool {
 		"wendy completion bash", "wendy completion zsh",
 		"wendy completion fish", "wendy completion powershell",
 		"wendy __complete", "wendy __completeNoDesc",
-		"wendy __ble-check", "wendy help":
+		"wendy __ble-check", "wendy help", "wendy update":
 		return true
 	}
 	return strings.HasPrefix(path, "wendy analytics") ||
@@ -187,8 +211,6 @@ func milestoneFor(commandPath string, success bool) string {
 		return "discover_success"
 	case "wendy init":
 		return "init_success"
-	case "wendy run":
-		return "first_deploy_success"
 	case "wendy cloud login", "wendy auth login":
 		return "auth_success"
 	}

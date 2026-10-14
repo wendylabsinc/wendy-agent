@@ -201,7 +201,8 @@ check "notty.brew.exit" "0" "$rc"
 contains "notty.brew.autoyes" "$(cat "$OUT")" "continuing as if -y was passed"
 contains "notty.brew.installed" "$(cat "$BREW_LOG")" "install wendylabsinc/tap/wendy"
 absent "notty.brew.no_tty_error" "$(cat "$OUT")" "/dev/tty"
-absent "notty.brew.no_tour_hint" "$(cat "$OUT")" "tour"
+contains "notty.brew.next_step" "$(cat "$OUT")" "tour --simulator"
+absent "notty.brew.no_tour_prompt" "$(cat "$OUT")" "Start the robot and device setup tour now?"
 
 # Root ignores directory permissions, so the read-only-dir cases need a normal user.
 if [ "$(/usr/bin/id -u)" -ne 0 ]; then
@@ -610,6 +611,7 @@ contains "onboard.piped.script_finished" "$(cat "$OUT")" "PIPELINE_END"
 absent "onboard.piped.no_input_read" "$(cat "$OUT")" "MCP_READ_INPUT"
 absent "onboard.piped.no_old_cli" "$(cat "$OUT")" "OLD_CLI_EXECUTED"
 absent "onboard.piped.no_color" "$(cat "$OUT")" $'\033['
+contains "onboard.piped.simulator_next_step" "$(cat "$OUT")" "$DEST/wendy tour --simulator"
 
 # Optional setup failure must not turn a completed installation into failure.
 onboarding_fixture
@@ -688,6 +690,9 @@ for mode in automatic contaminated_answer invalid_answer yes ci redirected no_se
       if [[ "$mode" == contaminated_answer ]]; then expected_prompts=1; else expected_prompts=3; fi
       check "onboard.${mode}.prompts" "$expected_prompts" "$prompt_count";;
     redirected|no_color|dumb) absent "onboard.${mode}.no_color" "$out" $'\033[';;
+  esac
+  case "$mode" in
+    interrupted|sudo) contains "onboard.${mode}.simulator_next_step" "$out" "$DEST/wendy tour --simulator";;
   esac
 done
 

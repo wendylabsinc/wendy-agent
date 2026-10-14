@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
@@ -31,9 +32,16 @@ type errorBody struct {
 
 // reportFailure reports err the way the invocation asked for (a JSON envelope
 // or styled text, both on stderr) and returns the process exit status.
-// Cancellations the user chose print nothing and exit 0, as before.
+// User cancellations print nothing. Tour children exit 130 so the parent
+// can distinguish declining an install from completing it.
 func reportFailure(stderr io.Writer, err error, executed *cobra.Command, args []string) int {
-	if err == nil || errors.Is(err, commands.ErrUserCancelled) || errors.Is(err, commands.ErrDefaultCleared) {
+	if errors.Is(err, commands.ErrUserCancelled) {
+		if os.Getenv("WENDY_TELEMETRY_ENTRYPOINT") == "tour" {
+			return 130
+		}
+		return 0
+	}
+	if err == nil || errors.Is(err, commands.ErrDefaultCleared) {
 		return 0
 	}
 	class := errorClass(err)

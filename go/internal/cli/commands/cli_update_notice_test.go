@@ -2,13 +2,17 @@ package commands
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/shared/cliupdate"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
@@ -17,7 +21,9 @@ import (
 // whether it reported a notice plus what it printed to stderr.
 func runNotifyCLIUpdate(t *testing.T) (bool, string) {
 	t.Helper()
+	enableCLIUpdateChecks(t)
 	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)
 	shown, err := notifyCLIUpdate(cmd)
@@ -108,5 +114,183 @@ func TestNotifyCLIUpdate_ReadOnlyConfigDirNeverFails(t *testing.T) {
 		if !shown || !strings.Contains(out, "2026.02.01-000000") {
 			t.Fatalf("run %d: shown=%v out=%q, want the notice", i+1, shown, out)
 		}
+	}
+}
+
+func setupInteractiveCLIUpdate(t *testing.T) {
+	enableCLIUpdateChecks(t)
+	t.Setenv("SUDO_UID", "")
+	t.Setenv("WENDY_ANALYTICS", "false")
+	stubInteractive(t)
+	oldJSON, oldVersion := jsonOutput, version.Version
+	jsonOutput, version.Version = false, "2026.09.29-120000"
+	oldDetect := detectCLIUpdate
+	detectCLIUpdate = func(context.Context) (cliupdate.Plan, error) {
+		return cliupdate.Plan{Method: "brew", Channel: "stable", Supported: true}, nil
+	}
+	t.Cleanup(func() { jsonOutput, version.Version, detectCLIUpdate = oldJSON, oldVersion, oldDetect })
+	setTempConfig(t, &config.Config{Analytics: &config.AnalyticsConfig{Enabled: false}, LatestCLIRelease: "2026.10.05-134249", LastCLIUpdateCheck: time.Now().UTC().Format(time.RFC3339)})
+}
+
+func TestCLIUpdateDeclineSnoozesWithoutLosingReleaseOrConfig(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	previous := confirmCLIUpdate
+	t.Cleanup(func() { confirmCLIUpdate = previous })
+	prompts := 0
+	confirmCLIUpdate = func(*cobra.Command) (bool, error) {
+		prompts++
+		err := config.Update(func(cfg *config.Config) (bool, error) {
+			cfg.DefaultDevice = "chosen-while-prompt-open"
+			return true, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return false, nil
+	}
+	if shown, _ := runNotifyCLIUpdate(t); !shown {
+		t.Fatal("first prompt missing")
+	}
+	if shown, _ := runNotifyCLIUpdate(t); shown {
+		t.Fatal("snoozed prompt repeated")
+	}
+	cfg, _ := config.Load()
+	if cfg.LatestCLIRelease != "2026.10.05-134249" || cfg.DefaultDevice != "chosen-while-prompt-open" {
+		t.Fatal("prompt lost release or concurrent config")
+	}
+	cfg.CLIUpdatePromptedAt = time.Now().Add(-25 * time.Hour).UTC().Format(time.RFC3339)
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if shown, _ := runNotifyCLIUpdate(t); !shown || prompts != 2 {
+		t.Fatal("reminder did not return after snooze")
+	}
+}
+
+func TestAcceptedCLIUpdateFailureDoesNotFailSuccessfulCommand(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	previousConfirm, previousApply := confirmCLIUpdate, applyCLIUpdate
+	t.Cleanup(func() { confirmCLIUpdate, applyCLIUpdate = previousConfirm, previousApply })
+	confirmCLIUpdate = func(*cobra.Command) (bool, error) { return true, nil }
+	applyCLIUpdate = func(*cobra.Command, string) error { return errors.New("installer unavailable") }
+	root := NewRootCmd()
+	root.AddCommand(&cobra.Command{Use: "update-test-success", RunE: func(*cobra.Command, []string) error { return nil }})
+	root.SetArgs([]string{"update-test-success"})
+	var stderr bytes.Buffer
+	root.SetErr(&stderr)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("updater replaced successful command result: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "Your command completed successfully") {
+		t.Fatalf("missing independent failure guidance: %s", stderr.String())
+	}
+}
+
+func TestFailedCommandUpdateNoticeNeverPrompts(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	previous := confirmCLIUpdate
+	t.Cleanup(func() { confirmCLIUpdate = previous })
+	confirmCLIUpdate = func(*cobra.Command) (bool, error) { t.Fatal("failed command must not prompt"); return false, nil }
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.WithValue(context.Background(), cliUpdateNoticeEligible{}, true))
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	NotifyCLIUpdateAfterFailure(cmd)
+	if !strings.Contains(stderr.String(), "wendy update") {
+		t.Fatal("failed command omitted update guidance")
+	}
+}
+
+func TestCLIUpdateCIAndOptOutStayQuiet(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	for _, key := range []string{"CI", "WENDY_NO_UPDATE_CHECK"} {
+		t.Setenv(key, "1")
+		if shown, err := notifyCLIUpdate(cmd); shown || err != nil || stderr.Len() != 0 {
+			t.Fatalf("%s was not quiet", key)
+		}
+		t.Setenv(key, "")
+	}
+}
+
+func TestCLIUpdateNightlyIsNotOfferedStable(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	detectCLIUpdate = func(context.Context) (cliupdate.Plan, error) {
+		return cliupdate.Plan{Method: "brew", Channel: "nightly", Supported: true}, nil
+	}
+	if shown, _ := runNotifyCLIUpdate(t); shown {
+		t.Fatal("offered stable target to nightly installation")
+	}
+}
+
+func TestVerifiedCLIUpdateKeepsNewerConcurrentRelease(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	cfg, _ := config.Load()
+	cfg.AvailableCLIUpdate = "2026.10.06-120000"
+	cfg.LatestCLIRelease = cfg.AvailableCLIUpdate
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordVerifiedCLIUpdate("2026.10.05-134249"); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := config.Load()
+	if saved.AvailableCLIUpdate != cfg.AvailableCLIUpdate || saved.LatestCLIRelease != cfg.LatestCLIRelease {
+		t.Fatal("verification erased a newer release")
+	}
+}
+
+func TestCLIUpdateNoticeDoesNotWaitForAuthRefresh(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	previous := confirmCLIUpdate
+	confirmCLIUpdate = func(*cobra.Command) (bool, error) { return false, nil }
+	t.Cleanup(func() { confirmCLIUpdate = previous })
+	unlock, err := acquireAuthRefreshLock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	started := time.Now()
+	shown, _ := runNotifyCLIUpdate(t)
+	if !shown || time.Since(started) > time.Second {
+		t.Fatal("update reminder blocked on authentication refresh")
+	}
+}
+
+func TestShellCompletionDoesNotCheckOrAnnounceCLIUpdates(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	previous := scheduleCLIUpdateCheck
+	calls := 0
+	scheduleCLIUpdateCheck = func() { calls++ }
+	t.Cleanup(func() { scheduleCLIUpdateCheck = previous })
+	for _, name := range []string{"__complete", "__completeNoDesc"} {
+		root := NewRootCmd()
+		root.SetArgs([]string{name, ""})
+		var out, stderr bytes.Buffer
+		root.SetOut(&out)
+		root.SetErr(&stderr)
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if calls != 0 || strings.Contains(stderr.String(), "new version") {
+			t.Fatalf("completion triggered update: %s", stderr.String())
+		}
+	}
+}
+
+func TestVerifiedCLIUpdateInformsAnOlderMCPProcess(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	if err := config.Save(&config.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordVerifiedCLIUpdate("2026.10.05-134249"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.Load()
+	if cfg.LatestCLIRelease != "2026.10.05-134249" || cfg.AvailableCLIUpdate != "" {
+		t.Fatal("verified version was not retained for an older process")
 	}
 }

@@ -592,18 +592,26 @@ else
 fi
 
 # --- Set up AI tools and start the tour ---
+tour_next_steps() {
+  heading "Next: walk a simulated robot or set up your first device"
+  print_command "$1" tour
+  echo "For a repeatable local demo:"
+  print_command "$1" tour --simulator
+}
+
 onboard() {
   # Use the binary just installed, even if an older one shadows it on PATH.
   local wendy_cmd="${INSTALLED_BIN:-$BINARY_NAME}" setup_status=0
-  command -v "$wendy_cmd" &>/dev/null || return 0
+  if ! command -v "$wendy_cmd" &>/dev/null; then
+    tour_next_steps "$wendy_cmd"
+    return 0
+  fi
 
   # Installation may need sudo, but user configuration must belong to the user.
   if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
     echo "Run these commands as ${SUDO_USER}, without sudo, to finish setup:"
     [[ "$MCP_SETUP" != true ]] || print_command "$wendy_cmd" mcp setup
-    if have_tty; then
-      print_command "$wendy_cmd" tour
-    fi
+    tour_next_steps "$wendy_cmd"
     return 0
   fi
 
@@ -617,6 +625,7 @@ onboard() {
       print_command "$wendy_cmd" mcp setup
       # An interrupted setup should not immediately start another program.
       if [[ "$setup_status" -eq 130 || "$setup_status" -eq 143 ]]; then
+        tour_next_steps "$wendy_cmd"
         return 0
       fi
     fi
@@ -630,6 +639,8 @@ onboard() {
       echo "The tour ended before completing. Wendy is installed; restart it with:"
       print_command "$wendy_cmd" tour
     fi
+  else
+    tour_next_steps "$wendy_cmd"
   fi
 }
 
