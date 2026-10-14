@@ -384,13 +384,14 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 	fmt.Fprintln(out, "Open this file in your editor. Save your changes, then choose Deploy here.")
 	deployed, active := false, false
 	var releaseApp func(context.Context) error
+	var appNodeName string
 	defer func() {
 		if releaseApp == nil {
 			return
 		}
 		if active {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_, err := tourGuideControlApp(stopCtx, name, kind, "stop")
+			_, err := tourGuideControlApp(stopCtx, name, kind, appNodeName, "stop")
 			cancel()
 			if err != nil {
 				runErr = errors.Join(runErr, fmt.Errorf("stopping your %s app: %w", kind, err))
@@ -466,7 +467,7 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 		case "deploy":
 			fmt.Fprintln(out, "\n"+guideHeadingStyle.Render("2. Deploy your saved code"))
 			if active {
-				if err := runTourStep(ctx, out, "Stopping your app", func() error { _, err := tourGuideControlApp(ctx, name, kind, "stop"); return err }); err != nil {
+				if err := runTourStep(ctx, out, "Stopping your app", func() error { _, err := tourGuideControlApp(ctx, name, kind, appNodeName, "stop"); return err }); err != nil {
 					return err
 				}
 				active = false
@@ -479,9 +480,12 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 						return err
 					}
 					releaseApp = nil
+					appNodeName = ""
 				}
 				var err error
-				releaseApp, err = tourGuidePrepareCleanup(name, kind, appPath)
+				// Keep the service identity with its cleanup. Later manifest edits
+				// must not redirect Start or Stop away from this deployment.
+				releaseApp, appNodeName, err = tourGuidePrepareCleanup(name, kind, appPath)
 				if err != nil {
 					return err
 				}
@@ -505,7 +509,7 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 			if action == "start" {
 				active = true
 			}
-			if err := runTourStep(ctx, out, "Controlling your robot app", func() error { _, err := tourGuideControlApp(ctx, name, kind, action); return err }); err != nil {
+			if err := runTourStep(ctx, out, "Controlling your robot app", func() error { _, err := tourGuideControlApp(ctx, name, kind, appNodeName, action); return err }); err != nil {
 				return err
 			}
 			if action == "stop" {

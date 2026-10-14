@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -132,6 +133,16 @@ func connectTourApp(ctx context.Context, vmName string) (*SelectedDevice, error)
 }
 
 func runTourApp(ctx context.Context, vmName, path string) error {
+	kind := ""
+	for _, candidate := range []string{"patrol", "roam", "teleop", "sensors"} {
+		if isTourExample(path, candidate) {
+			kind = candidate
+			break
+		}
+	}
+	if kind == "" {
+		return errors.New("the app has no valid tour example marker")
+	}
 	cfg, err := appconfig.LoadFromFile(filepath.Join(path, "wendy.json"))
 	if err != nil {
 		return err
@@ -139,23 +150,66 @@ func runTourApp(ctx context.Context, vmName, path string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	opts := runOptions{
+		buildType: "docker", builder: "docker", dockerfile: "Dockerfile", detach: true, noRestart: true,
+	}
+	if cfg.Run != nil {
+		opts.userArgs = append([]string(nil), cfg.Run.Args...)
+	}
+	if kind != "sensors" {
+		for _, arg := range opts.userArgs {
+			flag, _, _ := strings.Cut(arg, "=")
+			if strings.HasPrefix(flag, "--") && flag != "--" && strings.HasPrefix("--autostart", flag) {
+				return errors.New("remove --autostart from run.args to use the tour's explicit Start control")
+			}
+			if strings.Contains(arg, "__node:=") || strings.Contains(arg, "__name:=") || strings.Contains(arg, "__ns:=") {
+				return errors.New("remove ROS node and namespace remaps from run.args; the tour assigns the app's control identity")
+			}
+			if strings.Contains(arg, kind+"/start:=") || strings.Contains(arg, kind+"/stop:=") {
+				return errors.New("remove Start/Stop service remaps from run.args; the tour assigns the app's control services")
+			}
+		}
+		// These arguments reach rclpy.init through each example's entrypoint.
+		// Start/Stop services also need unique names so another copy of the
+		// example cannot acknowledge this app's control requests.
+		nodeName := tourAppNodeName(vmName, kind, cfg.AppID)
+		opts.userArgs = append(opts.userArgs, "--ros-args", "-r", "__node:="+nodeName, "-r", "__ns:=/")
+		if kind == "patrol" || kind == "roam" {
+			for _, action := range []string{"start", "stop"} {
+				opts.userArgs = append(opts.userArgs, "-r", "/"+kind+"/"+action+":=/"+nodeName+"/"+kind+"/"+action)
+			}
+		}
+	}
 	target, err := connectTourApp(ctx, vmName)
 	if err != nil {
 		return err
 	}
 	defer target.Close()
-	return runTourAppWithAgentFn(ctx, target.Agent, path, cfg, runOptions{
-		buildType: "docker", builder: "docker", dockerfile: "Dockerfile", detach: true, noRestart: true,
-	})
+	if err := runTourAppWithAgentFn(ctx, target.Agent, path, cfg, opts); err != nil {
+		return err
+	}
+	if kind == "sensors" {
+		return nil
+	}
+	return grantTourAppControl(ctx, vmName, tourAppNodeName(vmName, kind, cfg.AppID))
+}
+
+func tourAppNodeName(vmName, kind, appID string) string {
+	digest := sha256.Sum256([]byte(vmName + "\x00" + appID))
+	return fmt.Sprintf("wendy_tour_%s_%x", kind, digest[:12])
 }
 
 var tourTriggerResult = regexp.MustCompile(`(?i)\b["']?success["']?\s*[:=]\s*(true|false)\b`)
+var tourControlNodeName = regexp.MustCompile(`^wendy_tour_(patrol|roam|teleop)_[0-9a-f]{24}$`)
 
 // controlTourApp only sends motion service requests after the guide's explicit
 // Start/Stop selection. A successful RPC alone does not prove Trigger accepted.
-func controlTourApp(ctx context.Context, vmName, kind, action string) (string, error) {
+func controlTourApp(ctx context.Context, vmName, kind, nodeName, action string) (string, error) {
 	if (kind != "patrol" && kind != "roam") || (action != "start" && action != "stop") {
 		return "", errors.New("tour control requires patrol or roam and start or stop")
+	}
+	if !tourControlNodeName.MatchString(nodeName) || !strings.HasPrefix(nodeName, "wendy_tour_"+kind+"_") {
+		return "", errors.New("tour control requires the deployed app's captured node identity")
 	}
 	target, err := connectTourApp(ctx, vmName)
 	if err != nil {
@@ -166,7 +220,7 @@ func controlTourApp(ctx context.Context, vmName, kind, action string) (string, e
 	rpcCtx, cancel := ros2Ctx(ctx, ros2UnaryTimeout)
 	defer cancel()
 	response, err := callTourAppServiceFn(rpcCtx, target.Agent, &agentpbv2.CallROS2ServiceRequest{
-		DomainId: &domain, Service: "/" + kind + "/" + action, Type: "std_srvs/srv/Trigger", Request: "{}",
+		DomainId: &domain, Service: "/" + nodeName + "/" + kind + "/" + action, Type: "std_srvs/srv/Trigger", Request: "{}",
 	})
 	if err != nil {
 		return "", ros2RPCError(err)
@@ -207,45 +261,121 @@ func tourAppURL(ctx context.Context, vmName, path string) (string, error) {
 	return fmt.Sprintf("http://127.0.0.1:%d", port), nil
 }
 
+type tourAppPublisher struct {
+	GID             string  `json:"publisher_gid"`
+	Kind            string  `json:"kind"`
+	NodeName        string  `json:"node_name"`
+	NodeNamespace   string  `json:"node_namespace"`
+	AgeMS           float64 `json:"age_ms"`
+	RequiresRestart bool    `json:"requires_restart"`
+}
+
 type tourAppControlStatus struct {
 	tourRobotObservation
 	ROSCommands struct {
-		Owner   string `json:"owner"`
-		Sources []struct {
-			GID      string  `json:"publisher_gid"`
-			NodeName string  `json:"node_name"`
-			AgeMS    float64 `json:"age_ms"`
-		} `json:"sources"`
+		Owner   string             `json:"owner"`
+		Sources []tourAppPublisher `json:"sources"`
 	} `json:"ros_commands"`
+}
+
+var tourPublisherGID = regexp.MustCompile(`^[0-9a-f]{48}$`)
+
+// grantTourAppControl discovers the deployed app's idle publisher. The runtime
+// defaults to explicit grants; deployment alone cannot enable its ROS commands.
+func grantTourAppControl(ctx context.Context, vmName, nodeName string) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	_, profile, port, err := tourAppRobotEndpointFn(ctx, vmName)
+	if err != nil {
+		return err
+	}
+	readStatus := func() (tourAppControlStatus, error) {
+		var state tourAppControlStatus
+		if err := tourAppRobotRequestFn(ctx, port, "/api/status", nil, &state); err != nil {
+			return state, err
+		}
+		return state, state.matches(vmName, profile)
+	}
+	for {
+		state, err := readStatus()
+		if err != nil {
+			return fmt.Errorf("inspecting app control: %w", err)
+		}
+		var candidates []string
+		for _, source := range state.ROSCommands.Sources {
+			if source.NodeName == nodeName && source.NodeNamespace == "/" && source.Kind == "sport" &&
+				tourPublisherGID.MatchString(source.GID) && !source.RequiresRestart &&
+				source.AgeMS >= 0 && source.AgeMS < 1000 {
+				candidates = append(candidates, source.GID)
+			}
+		}
+		// A stopped predecessor can briefly remain in discovery. Wait for it
+		// to age out instead of choosing between two matching publishers.
+		if len(candidates) == 1 {
+			gid := candidates[0]
+			if state.Armed || state.ROSCommands.Owner != "" {
+				if state.Armed && state.ROSCommands.Owner == gid {
+					return nil // An unchanged running deployment already owns control.
+				}
+				return errors.New("another controller owns the robot; release its control before running this app")
+			}
+			var granted struct {
+				GID   string `json:"publisher_gid"`
+				Epoch uint64 `json:"epoch"`
+			}
+			if err := tourAppRobotRequestFn(ctx, port, "/api/arm_ros", map[string]string{"publisher_gid": gid}, &granted); err != nil {
+				return fmt.Errorf("granting app control: %w", err)
+			}
+			if granted.GID != gid || granted.Epoch != state.Epoch {
+				return errors.New("the simulator did not confirm this app's control grant")
+			}
+			current, err := readStatus()
+			if err != nil {
+				return fmt.Errorf("verifying app control: %w", err)
+			}
+			if current.Epoch != state.Epoch || !current.Armed || current.ROSCommands.Owner != gid {
+				return errors.New("the simulator did not retain this app's control grant")
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for the app's ROS publisher; restart the app if the simulator was reset: %w", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // prepareTourAppCleanup captures the deployment identity before the manifest
 // can be edited again. Stopping the container also makes an unchanged redeploy
 // create a new ROS publisher, which can receive a fresh simulator grant.
-func prepareTourAppCleanup(vmName, kind, path string) (func(context.Context) error, error) {
+func prepareTourAppCleanup(vmName, kind, path string) (func(context.Context) error, string, error) {
 	if err := vm.ValidName(vmName); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if kind == "sensors" {
-		return func(context.Context) error { return nil }, nil
+		return func(context.Context) error { return nil }, "", nil
 	}
 	if kind != "patrol" && kind != "roam" && kind != "teleop" {
-		return nil, fmt.Errorf("unknown movement app %q", kind)
+		return nil, "", fmt.Errorf("unknown movement app %q", kind)
+	}
+	if !isTourExample(path, kind) {
+		return nil, "", fmt.Errorf("the app has no valid %s tour example marker", kind)
 	}
 	cfg, err := appconfig.LoadFromFile(filepath.Join(path, "wendy.json"))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := cfg.Validate(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	appID := cfg.AppID
 	if appID == go2RuntimeAppID || appID == g1RuntimeAppID || appID == r2RuntimeAppID {
-		return nil, fmt.Errorf("%s is reserved for the managed robot", appID)
+		return nil, "", fmt.Errorf("%s is reserved for the managed robot", appID)
 	}
 	return func(ctx context.Context) error {
 		return releaseTourApp(ctx, vmName, kind, appID)
-	}, nil
+	}, tourAppNodeName(vmName, kind, appID), nil
 }
 
 func releaseTourApp(ctx context.Context, vmName, kind, appID string) error {
@@ -271,10 +401,7 @@ func releaseTourApp(ctx context.Context, vmName, kind, appID string) error {
 	}
 	before, readErr := readStatus()
 	// Stop the known container even if the viewer cannot currently answer.
-	if err := stopTourAppContainerFn(ctx, target.Agent, appID); err != nil {
-		if status.Code(err) == codes.NotFound {
-			return nil // A failed deployment may never have created this app.
-		}
+	if err := stopTourAppContainerFn(ctx, target.Agent, appID); err != nil && status.Code(err) != codes.NotFound {
 		return fmt.Errorf("stopping %s: %w", appID, err)
 	}
 	if readErr != nil {
@@ -286,7 +413,7 @@ func releaseTourApp(ctx context.Context, vmName, kind, appID string) error {
 	}
 	owned := false
 	for _, source := range before.ROSCommands.Sources {
-		if source.GID == owner && source.NodeName == "wendy_go2_"+kind {
+		if source.GID == owner && source.NodeName == tourAppNodeName(vmName, kind, appID) && source.NodeNamespace == "/" && source.Kind == "sport" {
 			owned = true
 			break
 		}

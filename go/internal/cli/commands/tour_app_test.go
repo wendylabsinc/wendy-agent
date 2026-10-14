@@ -9,9 +9,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
@@ -95,7 +98,7 @@ func stubTourAppConnection(t *testing.T) *grpcclient.AgentConnection {
 }
 
 func TestTourAppDeployUsesSelectedSimulatorAndOrdinaryAppProtections(t *testing.T) {
-	path, err := scaffoldTourApp(t.TempDir(), "patrol")
+	path, err := scaffoldTourApp(t.TempDir(), "sensors")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,10 +108,10 @@ func TestTourAppDeployUsesSelectedSimulatorAndOrdinaryAppProtections(t *testing.
 	called := false
 	runTourAppWithAgentFn = func(_ context.Context, got *grpcclient.AgentConnection, cwd string, cfg *appconfig.AppConfig, opts runOptions) error {
 		called = true
-		if got != conn || cwd != path || cfg.AppID != "sh.wendy.simulator.go2.examples.patrol" {
+		if got != conn || cwd != path || cfg.AppID != "sh.wendy.simulator.go2.examples.sensors" {
 			t.Fatal("deployment changed project or simulator")
 		}
-		if opts.managedRobot || opts.buildType != "docker" || opts.builder != "docker" || opts.dockerfile != "Dockerfile" || !opts.detach || !opts.noRestart || opts.restartUnlessStopped {
+		if opts.managedRobot || opts.buildType != "docker" || opts.builder != "docker" || opts.dockerfile != "Dockerfile" || !opts.detach || !opts.noRestart || opts.restartUnlessStopped || len(opts.userArgs) != 0 {
 			t.Fatalf("unexpected deploy options %+v", opts)
 		}
 		return nil
@@ -125,6 +128,7 @@ func TestTourAppDeployUsesSelectedSimulatorAndOrdinaryAppProtections(t *testing.
 
 func TestTourAppControlRequiresServiceAcceptance(t *testing.T) {
 	conn := stubTourAppConnection(t)
+	node := tourAppNodeName("tour-test", "patrol", "dev.student.robot")
 	previous := callTourAppServiceFn
 	t.Cleanup(func() { callTourAppServiceFn = previous })
 	for _, tc := range []struct {
@@ -140,18 +144,18 @@ func TestTourAppControlRequiresServiceAcceptance(t *testing.T) {
 	} {
 		t.Run(tc.response, func(t *testing.T) {
 			callTourAppServiceFn = func(_ context.Context, got *grpcclient.AgentConnection, req *agentpbv2.CallROS2ServiceRequest) (*agentpbv2.CallROS2ServiceResponse, error) {
-				if got != conn || req.GetService() != "/patrol/start" || req.GetType() != "std_srvs/srv/Trigger" || req.GetRequest() != "{}" || req.DomainId == nil || *req.DomainId != 0 {
+				if got != conn || req.GetService() != "/"+node+"/patrol/start" || req.GetType() != "std_srvs/srv/Trigger" || req.GetRequest() != "{}" || req.DomainId == nil || *req.DomainId != 0 {
 					t.Fatalf("unexpected service target or request %v", req)
 				}
 				return &agentpbv2.CallROS2ServiceResponse{Success: tc.rpcOK, Response: tc.response}, nil
 			}
-			response, err := controlTourApp(context.Background(), "tour-test", "patrol", "start")
+			response, err := controlTourApp(context.Background(), "tour-test", "patrol", node, "start")
 			if (err == nil) != tc.wantOK || response != tc.response {
 				t.Fatalf("response=%q err=%v", response, err)
 			}
 		})
 	}
-	if _, err := controlTourApp(context.Background(), "tour-test", "teleop", "start"); err == nil {
+	if _, err := controlTourApp(context.Background(), "tour-test", "teleop", node, "start"); err == nil {
 		t.Fatal("accepted unsupported control request")
 	}
 }
@@ -193,16 +197,20 @@ func TestTourAppURLVerifiesMappingAndHTTP(t *testing.T) {
 
 func TestTourAppCleanupStopsCapturedAppAndReleasesOnlyItsQuietGrant(t *testing.T) {
 	for _, tc := range []struct {
-		name                                   string
-		replaced, foreign, live, wrongIdentity bool
-		stopErr                                error
-		wantRelease, wantErr                   bool
+		name                                            string
+		replaced, foreign, live, wrongIdentity, noOwner bool
+		stopErr                                         error
+		wantRelease, wantErr                            bool
 	}{
 		{name: "own grant", wantRelease: true},
 		{name: "replacement grant", replaced: true},
 		{name: "different node", foreign: true},
 		{name: "copied node still publishing", live: true},
-		{name: "app never created", stopErr: status.Error(codes.NotFound, "missing")},
+		{name: "already removed app with stale grant", stopErr: status.Error(codes.NotFound, "missing"), wantRelease: true},
+		{name: "app never created", stopErr: status.Error(codes.NotFound, "missing"), noOwner: true},
+		{name: "already removed app with foreign grant", stopErr: status.Error(codes.NotFound, "missing"), foreign: true},
+		{name: "already removed app with live copied publisher", stopErr: status.Error(codes.NotFound, "missing"), live: true},
+		{name: "already removed app with wrong simulator identity", stopErr: status.Error(codes.NotFound, "missing"), wrongIdentity: true, wantErr: true},
 		{name: "stop failed", stopErr: errors.New("stop failed"), wantErr: true},
 		{name: "wrong simulator identity", wrongIdentity: true, wantErr: true},
 	} {
@@ -211,9 +219,12 @@ func TestTourAppCleanupStopsCapturedAppAndReleasesOnlyItsQuietGrant(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			cleanup, err := prepareTourAppCleanup("tour-test", "patrol", path)
+			cleanup, nodeName, err := prepareTourAppCleanup("tour-test", "patrol", path)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if nodeName != tourAppNodeName("tour-test", "patrol", "sh.wendy.simulator.go2.examples.patrol") {
+				t.Fatalf("incorrect captured node: %s", nodeName)
 			}
 			// Later edits must never retarget cleanup to the robot runtime.
 			if err := os.WriteFile(filepath.Join(path, "wendy.json"), []byte(`{"appId":"sh.wendy.simulator.go2"}`), 0o644); err != nil {
@@ -257,9 +268,12 @@ func TestTourAppCleanupStopsCapturedAppAndReleasesOnlyItsQuietGrant(t *testing.T
 					t.Fatalf("unexpected request %s", endpoint)
 				}
 				reads++
-				owner, node, age := "ours", "wendy_go2_patrol", 500.0
+				owner, node, age := "ours", tourAppNodeName("tour-test", "patrol", "sh.wendy.simulator.go2.examples.patrol"), 500.0
 				if tc.foreign {
 					node = "another_node"
+				}
+				if tc.noOwner {
+					owner = ""
 				}
 				if tc.live {
 					age = 0
@@ -274,7 +288,7 @@ func TestTourAppCleanupStopsCapturedAppAndReleasesOnlyItsQuietGrant(t *testing.T
 					robotRuntimeStatus: robotRuntimeStatus{VMName: "tour-test", Simulation: !tc.wrongIdentity, ProfileVersion: profile.Version, RobotKind: profile.Kind, SourceDigest: profile.SourceDigest, PolicyBundle: profile.PolicyBundle, World: profile.World, ClockMode: profile.ClockMode, Seed: profile.Seed, VisualDetail: profile.VisualDetail, DDSIsolation: "udp-rtps-loopback", Epoch: 1},
 					Armed:              !released, Command: []float64{0, 0, 0}, Velocity: []float64{0, 0, 0},
 				}}
-				data, _ := json.Marshal(map[string]any{"owner": owner, "sources": []any{map[string]any{"publisher_gid": owner, "node_name": node, "age_ms": age}}})
+				data, _ := json.Marshal(map[string]any{"owner": owner, "sources": []any{map[string]any{"publisher_gid": owner, "node_name": node, "node_namespace": "/", "kind": "sport", "age_ms": age}}})
 				if err := json.Unmarshal(data, &state.ROSCommands); err != nil {
 					t.Fatal(err)
 				}
@@ -301,8 +315,254 @@ func TestTourAppCleanupRejectsManagedRuntimeIDs(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(path, "wendy.json"), data, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if cleanup, err := prepareTourAppCleanup("tour-test", "patrol", path); err == nil || cleanup != nil {
+		if cleanup, node, err := prepareTourAppCleanup("tour-test", "patrol", path); err == nil || cleanup != nil || node != "" {
 			t.Fatalf("accepted cleanup for %s", appID)
 		}
+	}
+}
+
+func stubTourAppHTTP(t *testing.T, handler func(http.ResponseWriter, *http.Request, vm.RobotProfile)) {
+	t.Helper()
+	profile, err := vm.NewGo2RobotProfile("sha256:"+strings.Repeat("1", 64), go2PolicyBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler(w, r, profile) }))
+	t.Cleanup(server.Close)
+	u, _ := url.Parse(server.URL)
+	port, _ := strconv.Atoi(u.Port())
+	oldEndpoint, oldRequest := tourAppRobotEndpointFn, tourAppRobotRequestFn
+	t.Cleanup(func() { tourAppRobotEndpointFn, tourAppRobotRequestFn = oldEndpoint, oldRequest })
+	tourAppRobotRequestFn = tourRobotRequest
+	tourAppRobotEndpointFn = func(_ context.Context, name string) (*vm.Store, vm.RobotProfile, int, error) {
+		if name != "tour-test" {
+			t.Fatalf("unexpected simulator endpoint %s", name)
+		}
+		return nil, profile, port, nil
+	}
+}
+
+func tourAppTestStatus(profile vm.RobotProfile, nodeName string) tourAppControlStatus {
+	state := tourAppControlStatus{tourRobotObservation: tourRobotObservation{
+		robotRuntimeStatus: robotRuntimeStatus{
+			VMName: "tour-test", Simulation: true, ProfileVersion: profile.Version, RobotKind: profile.Kind,
+			SourceDigest: profile.SourceDigest, PolicyBundle: profile.PolicyBundle, World: profile.World,
+			ClockMode: profile.ClockMode, Seed: profile.Seed, VisualDetail: profile.VisualDetail,
+			DDSIsolation: "udp-rtps-loopback", Epoch: 7,
+		},
+		Command: []float64{0, 0, 0}, Velocity: []float64{0, 0, 0},
+	}}
+	state.ROSCommands.Sources = []tourAppPublisher{{
+		GID: strings.Repeat("a", 48), Kind: "sport", NodeName: nodeName, NodeNamespace: "/", AgeMS: 10,
+	}}
+	return state
+}
+
+func TestTourMovementAppsDeployAndAcquireOnlyTheirPublisher(t *testing.T) {
+	for _, kind := range []string{"patrol", "roam", "teleop"} {
+		t.Run(kind, func(t *testing.T) {
+			path, err := scaffoldTourApp(t.TempDir(), kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The example marker, not an editable app ID suffix, selects the app.
+			manifest := filepath.Join(path, "wendy.json")
+			data, err := os.ReadFile(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			appID := "dev.student.myrobot"
+			data = []byte(strings.ReplaceAll(string(data), "sh.wendy.simulator.go2.examples."+kind, appID))
+			savedArgs := map[string][]string{"patrol": {"--laps", "2"}, "roam": {"--allow-scan-gaps"}, "teleop": {"--port", "8903"}}[kind]
+			var document map[string]any
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatal(err)
+			}
+			document["run"] = map[string]any{"args": savedArgs}
+			data, err = json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(manifest, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			conn := stubTourAppConnection(t)
+			node := tourAppNodeName("tour-test", kind, appID)
+			var deployed, armed atomic.Bool
+			var statusReads, grants atomic.Int32
+			oldRun, oldService := runTourAppWithAgentFn, callTourAppServiceFn
+			t.Cleanup(func() { runTourAppWithAgentFn, callTourAppServiceFn = oldRun, oldService })
+			runTourAppWithAgentFn = func(_ context.Context, got *grpcclient.AgentConnection, cwd string, cfg *appconfig.AppConfig, opts runOptions) error {
+				wantArgs := append(slices.Clone(savedArgs), "--ros-args", "-r", "__node:="+node, "-r", "__ns:=/")
+				if kind == "patrol" || kind == "roam" {
+					wantArgs = append(wantArgs, "-r", "/"+kind+"/start:=/"+node+"/"+kind+"/start", "-r", "/"+kind+"/stop:=/"+node+"/"+kind+"/stop")
+				}
+				if got != conn || cwd != path || cfg.AppID != appID || !slices.Equal(opts.userArgs, wantArgs) ||
+					opts.managedRobot || !opts.detach || !opts.noRestart || opts.restartUnlessStopped {
+					t.Fatalf("unexpected deployment: app=%s opts=%+v", cfg.AppID, opts)
+				}
+				deployed.Store(true)
+				return nil
+			}
+			callTourAppServiceFn = func(context.Context, *grpcclient.AgentConnection, *agentpbv2.CallROS2ServiceRequest) (*agentpbv2.CallROS2ServiceResponse, error) {
+				t.Fatal("deployment must not start movement before the user's Start selection")
+				return nil, nil
+			}
+			stubTourAppHTTP(t, func(w http.ResponseWriter, r *http.Request, profile vm.RobotProfile) {
+				if !deployed.Load() {
+					t.Error("control requested before app deployment")
+				}
+				switch r.URL.Path {
+				case "/api/status":
+					read := statusReads.Add(1)
+					state := tourAppTestStatus(profile, node)
+					ours := state.ROSCommands.Sources[0]
+					foreign := ours
+					foreign.GID = strings.Repeat("b", 48)
+					foreign.NodeName = tourAppNodeName("tour-test", kind, "dev.someone.else")
+					state.ROSCommands.Sources = []tourAppPublisher{foreign}
+					if read > 1 {
+						state.ROSCommands.Sources = append(state.ROSCommands.Sources, ours)
+					}
+					if armed.Load() {
+						state.Armed, state.ROSCommands.Owner = true, ours.GID
+					}
+					_ = json.NewEncoder(w).Encode(state)
+				case "/api/arm_ros":
+					grants.Add(1)
+					var request map[string]string
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil || r.Method != http.MethodPost || request["publisher_gid"] != strings.Repeat("a", 48) || statusReads.Load() < 2 {
+						t.Errorf("unexpected grant request: %v err=%v", request, err)
+					}
+					armed.Store(true)
+					_ = json.NewEncoder(w).Encode(map[string]any{"publisher_gid": strings.Repeat("a", 48), "epoch": 7})
+				default:
+					t.Errorf("unexpected control endpoint %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			})
+			if err := runTourApp(context.Background(), "tour-test", path); err != nil {
+				t.Fatal(err)
+			}
+			if grants.Load() != 1 || statusReads.Load() != 3 {
+				t.Fatalf("grants=%d status reads=%d", grants.Load(), statusReads.Load())
+			}
+		})
+	}
+}
+
+func TestTourAppGrantRejectsUnsafeOrUnacknowledgedControl(t *testing.T) {
+	for _, mode := range []string{
+		"foreign owner", "browser owner", "wrong identity", "wrong namespace", "wrong kind", "invalid gid",
+		"stale", "requires restart", "ambiguous", "grant refused", "wrong ack gid", "wrong ack epoch",
+		"unarmed after grant", "owner changed", "epoch changed", "identity changed",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			node := tourAppNodeName("tour-test", "patrol", "dev.student.patrol")
+			var grants atomic.Int32
+			stubTourAppHTTP(t, func(w http.ResponseWriter, r *http.Request, profile vm.RobotProfile) {
+				if r.URL.Path == "/api/arm_ros" {
+					grants.Add(1)
+					if mode == "grant refused" {
+						http.Error(w, "another controller took over", http.StatusForbidden)
+						return
+					}
+					gid, epoch := strings.Repeat("a", 48), 7
+					if mode == "wrong ack gid" {
+						gid = strings.Repeat("b", 48)
+					}
+					if mode == "wrong ack epoch" {
+						epoch++
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"publisher_gid": gid, "epoch": epoch})
+					return
+				}
+				if r.URL.Path != "/api/status" {
+					t.Errorf("unexpected endpoint %s", r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				state := tourAppTestStatus(profile, node)
+				source := &state.ROSCommands.Sources[0]
+				switch mode {
+				case "foreign owner":
+					state.Armed, state.ROSCommands.Owner = true, strings.Repeat("b", 48)
+				case "browser owner":
+					state.Armed = true
+				case "wrong identity":
+					state.VMName = "other-vm"
+				case "wrong namespace":
+					source.NodeNamespace = "/other"
+				case "wrong kind":
+					source.Kind = "twist"
+				case "invalid gid":
+					source.GID = "unverified"
+				case "stale":
+					source.AgeMS = 1000
+				case "requires restart":
+					source.RequiresRestart = true
+				case "ambiguous":
+					copy := *source
+					copy.GID = strings.Repeat("b", 48)
+					state.ROSCommands.Sources = append(state.ROSCommands.Sources, copy)
+				}
+				if grants.Load() > 0 {
+					state.Armed, state.ROSCommands.Owner = true, strings.Repeat("a", 48)
+					switch mode {
+					case "unarmed after grant":
+						state.Armed = false
+					case "owner changed":
+						state.ROSCommands.Owner = strings.Repeat("b", 48)
+					case "epoch changed":
+						state.Epoch++
+					case "identity changed":
+						state.VMName = "other-vm"
+					}
+				}
+				_ = json.NewEncoder(w).Encode(state)
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer cancel()
+			if err := grantTourAppControl(ctx, "tour-test", node); err == nil {
+				t.Fatal("accepted unsafe or unacknowledged control")
+			}
+			wantGrants := int32(0)
+			if slices.Contains([]string{"grant refused", "wrong ack gid", "wrong ack epoch", "unarmed after grant", "owner changed", "epoch changed", "identity changed"}, mode) {
+				wantGrants = 1
+			}
+			if grants.Load() != wantGrants {
+				t.Fatalf("grants=%d want=%d", grants.Load(), wantGrants)
+			}
+		})
+	}
+}
+
+func TestTourAppRejectsConflictingLaunchArgumentsBeforeDeploy(t *testing.T) {
+	for _, args := range [][]string{
+		{"--autostart"}, {"--auto"}, {"--autostart=true"},
+		{"--ros-args", "-r", "__node:=other"}, {"--ros-args", "-r", "__name:=other"},
+		{"--ros-args", "-r", "__ns:=/other"},
+		{"--ros-args", "-r", "/patrol/start:=/other/start"}, {"--ros-args", "-r", "patrol/stop:=/other/stop"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			path, err := scaffoldTourApp(t.TempDir(), "patrol")
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest := filepath.Join(path, "wendy.json")
+			data, _ := json.Marshal(map[string]any{"appId": "dev.student.robot", "version": "0.1.0", "platform": "linux", "run": map[string]any{"args": args}})
+			if err := os.WriteFile(manifest, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			oldConnect := connectTourAppSimulatorFn
+			t.Cleanup(func() { connectTourAppSimulatorFn = oldConnect })
+			connectTourAppSimulatorFn = func(context.Context, *simulatorChoice, bool) (*SelectedDevice, error) {
+				t.Fatal("invalid launch arguments reached deployment")
+				return nil, nil
+			}
+			if err := runTourApp(context.Background(), "tour-test", path); err == nil || !strings.Contains(err.Error(), "run.args") {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }
