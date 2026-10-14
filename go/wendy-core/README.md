@@ -23,7 +23,7 @@ distributions/
 bindings/                Future language SDKs, not Core incarnations
 platform/                Independent platform families and variants
 documentation/           Contract, projection, versioning and release guides
-examples/                Direct C consumer
+examples/                HelloWorld consumers in all six languages
 tools/                   Build, generation and release mechanics
 .github/workflows/       Core-only CI and gated publication
 ```
@@ -54,6 +54,10 @@ console.log(WendyHelloWorld()); // 42; identical import/API in Node and browsers
 ```
 
 The public JavaScript boundary is ESM with shared TypeScript declarations. Conditional exports select the backend. Node uses Node-API; the browser runs a real Go/WASM build. A CJS shim remains private to Node interop. The shared JS operation surface and declarations are generated from the C manifest; no Promise/iterator SDK sugar is included.
+
+## HelloWorld examples
+
+See [examples/README.md](examples/README.md) for small Go, C, Swift, Python, Kotlin/JVM and JavaScript applications. Each has its own run instructions and uses Wendy Core from disk; JavaScript includes both Node and browser execution.
 
 ## Bootstrap target matrix
 
