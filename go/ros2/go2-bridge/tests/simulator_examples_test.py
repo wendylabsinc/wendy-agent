@@ -145,8 +145,25 @@ def walking(robot, start):
 
 
 def run_app(name, args):
-    return subprocess.Popen([sys.executable, f"{EXAMPLES}/{name}/{args[0]}", *args[1:]], cwd=f"{EXAMPLES}/{name}",
-                            stdout=open(f"/tmp/{name}.log", "w"), stderr=subprocess.STDOUT)
+    log_file = open(f"/tmp/{name}.log", "w")
+    try:
+        process = subprocess.Popen([sys.executable, f"{EXAMPLES}/{name}/{args[0]}", *args[1:]],
+                                   cwd=f"{EXAMPLES}/{name}", stdout=log_file, stderr=subprocess.STDOUT)
+    except Exception:
+        log_file.close()
+        raise
+    process.log_file = log_file
+    return process
+
+
+def stop_app(process):
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    process.log_file.close()
 
 
 def check_sensors(robot, node):
@@ -167,7 +184,7 @@ def check_sensors(robot, node):
         nearest = min(r for r in scan["ranges"] if r is not None) if scan else None
         return True, f"all topics live {sorted(states)}; nearest wall {nearest} m"
     finally:
-        app.terminate()
+        stop_app(app)
 
 
 def check_teleop(robot, node):
@@ -187,7 +204,7 @@ def check_teleop(robot, node):
             return False, f"no walking Move: {robot.moves_since(start)[:3]}"
         return True, f"{len(moves)} Moves, e.g. forward {moves[-1][2]:.2f} lateral {moves[-1][3]:.2f}"
     finally:
-        app.terminate()
+        stop_app(app)
 
 
 def _try(fn):
@@ -226,7 +243,7 @@ def check_service_app(name, args, robot, node):
             position = (round(robot.x, 2), round(robot.y, 2))
         return True, f"{len(moves)} walking Moves, max forward {max(m[2] for m in moves):.2f}; robot moved to {position}"
     finally:
-        app.terminate()
+        stop_app(app)
 
 
 CHECKS = {
@@ -248,8 +265,14 @@ def main():
     pairing_grpc.add_WendyUnitreeServiceServicer_to_server(robot, server)
     server.add_insecure_port("unix:" + socket)
     server.start()
-    bridge = subprocess.Popen([sys.executable, "-m", "go2_bridge.node"], env={**os.environ, "WENDY_AGENT_SOCKET": socket},
-                              stdout=open("/tmp/bridge.log", "w"), stderr=subprocess.STDOUT)
+    bridge_log = open("/tmp/bridge.log", "w")
+    try:
+        bridge = subprocess.Popen([sys.executable, "-m", "go2_bridge.node"],
+                                  env={**os.environ, "WENDY_AGENT_SOCKET": socket},
+                                  stdout=bridge_log, stderr=subprocess.STDOUT)
+    except Exception:
+        bridge_log.close()
+        raise
     rclpy.init()
     node = rclpy.create_node("examples_check")
     results = {}
@@ -263,6 +286,12 @@ def main():
             time.sleep(1)
     finally:
         bridge.terminate()
+        try:
+            bridge.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            bridge.kill()
+            bridge.wait()
+        bridge_log.close()
         server.stop(0)
     sys.exit(0 if all(ok for ok, _ in results.values()) else 1)
 

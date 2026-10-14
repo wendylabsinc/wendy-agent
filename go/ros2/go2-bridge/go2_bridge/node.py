@@ -438,6 +438,7 @@ class Bridge(Node):
                 try:
                     self.cmd_vel_queue.get_nowait()
                 except queue.Empty:
+                    # The worker consumed it between Full and get_nowait.
                     pass
 
     def on_sport_request(self, request):
@@ -527,9 +528,9 @@ def main():
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    except RCLError:  # a callback raced shutdown
-        pass
+        pass  # normal shutdown; the finally block stops the robot
+    except RCLError:
+        pass  # a callback raced shutdown; cleanup still runs below
     finally:
         node.command("stop")
         rclpy.try_shutdown()
