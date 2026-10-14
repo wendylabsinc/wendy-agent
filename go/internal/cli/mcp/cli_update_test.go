@@ -4,24 +4,64 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"runtime"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 func releasedCLI(t *testing.T) {
 	t.Helper()
+	for _, key := range env.CIEnvVars {
+		t.Setenv(key, "")
+	}
+	t.Setenv("WENDY_NO_UPDATE_CHECK", "")
 	old := version.Version
 	version.Version = "2026.09.29-120000"
 	t.Cleanup(func() { version.Version = old })
+}
+
+func TestCLIUpdateOptOutSuppressesCachedMCPNotice(t *testing.T) {
+	for _, test := range []struct{ key, value string }{
+		{"WENDY_NO_UPDATE_CHECK", "1"},
+		{"WENDY_NO_UPDATE_CHECK", "true"},
+		{"CI", "true"},
+		{"GITHUB_ACTIONS", "true"},
+	} {
+		t.Run(test.key+"="+test.value, func(t *testing.T) {
+			releasedCLI(t)
+			t.Setenv(test.key, test.value)
+			analytics.Disable()
+			offers := 0
+			analytics.SetTrackHookForTesting(func(event string, _ map[string]string) {
+				if event == "cli_update_offered" {
+					offers++
+				}
+			})
+			t.Cleanup(func() { analytics.SetTrackHookForTesting(nil) })
+			s := New(&config.Config{LatestCLIRelease: "2026.10.05-134249"}, nil)
+			if info := s.cliUpdateStatus(); info.Available || info.Message != "" || info.UpdateCommand != "" {
+				t.Fatalf("disabled update guidance remained visible: %+v", info)
+			}
+			next := s.cliUpdateMiddleware()(func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+				return okText("unchanged"), nil
+			})
+			result, err := next(context.Background(), mcpgo.CallToolRequest{})
+			if err != nil || len(result.Content) != 1 || offers != 0 {
+				t.Fatalf("disabled update reminder was emitted: result=%+v err=%v offers=%d", result, err, offers)
+			}
+		})
+	}
 }
 
 func TestWendyStatusCLIUpdateReloadsCache(t *testing.T) {
@@ -52,13 +92,7 @@ func TestWendyStatusCLIUpdateReloadsCache(t *testing.T) {
 		if out.Connected != connected || !out.Update.Available || out.Update.LatestVersion != cfg.AvailableCLIUpdate || out.Update.LastCheckedAt != cfg.LastCLIUpdateCheck || !out.Update.RestartRequired {
 			t.Fatalf("status: %+v", out)
 		}
-		wantCommand := "curl -fsSL https://install.wendy.dev/cli.sh | bash"
-		if runtime.GOOS == "darwin" {
-			wantCommand = "brew update && brew install wendy"
-		} else if runtime.GOOS == "windows" {
-			wantCommand = "winget upgrade WendyLabs.Wendy"
-		}
-		if out.Update.UpdateCommand != wantCommand || !strings.Contains(out.Update.Message, "restart the Wendy MCP server") {
+		if out.Update.UpdateCommand != "wendy update" || !strings.Contains(out.Update.Message, "restart the Wendy MCP server") || strings.Contains(out.Update.Message, "brew trust") {
 			t.Fatalf("update guidance: %+v", out.Update)
 		}
 		// A later successful check clears a stale release without restarting.
@@ -71,14 +105,52 @@ func TestWendyStatusCLIUpdateReloadsCache(t *testing.T) {
 	}
 }
 
+func TestCLIUpdateStatusRetainsReleaseAfterNewerCLIUpdated(t *testing.T) {
+	releasedCLI(t)
+	useConfigDir(t)
+	enableReload(t, config.Load)
+	s := New(&config.Config{}, nil)
+	// A newly installed CLI observed the latest release and no longer needs
+	// an update itself. This server still runs its old in-memory version.
+	const release = "2026.10.05-134249"
+	if err := config.Save(&config.Config{LatestCLIRelease: release, LastCLIUpdateCheck: "2026-10-06T12:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	info := s.cliUpdateStatus()
+	if !info.Available || info.LatestVersion != release || !info.RestartRequired || info.UpdateCommand != "wendy update" {
+		t.Fatalf("old MCP server lost its upgrade/restart guidance: %+v", info)
+	}
+	// Once the server restarts on the new executable, that same cache must
+	// stop producing an update notice.
+	version.Version = release
+	if info := s.cliUpdateStatus(); info.Available || info.RestartRequired {
+		t.Fatalf("current MCP server received a stale update: %+v", info)
+	}
+}
+
+func TestCLIUpdateStatusPrefersLatestReleaseOverLegacyPendingValue(t *testing.T) {
+	releasedCLI(t)
+	s := New(&config.Config{LatestCLIRelease: version.Version, AvailableCLIUpdate: "2026.10.05-134249"}, nil)
+	if info := s.cliUpdateStatus(); info.Available || info.RestartRequired {
+		t.Fatalf("stale legacy pending version overrode the latest release cache: %+v", info)
+	}
+}
+
 func TestCLIUpdateSuppressesCurrentAndDevBuilds(t *testing.T) {
 	releasedCLI(t)
 	for _, current := range []string{"2026.09.29-120000", "dev", "2026.09.29-120000-dev"} {
 		version.Version = current
-		for _, latest := range []string{"", "2026.09.28-120000", "2026.09.29-120000"} {
-			info := New(&config.Config{AvailableCLIUpdate: latest}, nil).cliUpdateStatus()
-			if info.Available || info.UpdateCommand != "" || info.RestartRequired || info.Message != "" {
-				t.Fatalf("current=%s latest=%s: %+v", current, latest, info)
+		for _, latest := range []string{"", "2026.09.28-120000", "2026.09.29-120000", "dev", "2026.10.05-134249-dev"} {
+			for _, cfg := range []*config.Config{{AvailableCLIUpdate: latest}, {LatestCLIRelease: latest}} {
+				info := New(cfg, nil).cliUpdateStatus()
+				if info.Available || info.UpdateCommand != "" || info.RestartRequired || info.Message != "" {
+					t.Fatalf("current=%s latest=%s: %+v", current, latest, info)
+				}
+			}
+		}
+		if version.IsDev(current) {
+			if info := New(&config.Config{LatestCLIRelease: "2026.10.05-134249"}, nil).cliUpdateStatus(); info.Available {
+				t.Fatalf("development server offered a released build: %+v", info)
 			}
 		}
 	}
@@ -103,6 +175,18 @@ func protocolUpdateCall(t *testing.T, srv *server.MCPServer, ctx context.Context
 
 func TestCLIUpdateNoticePerSessionAndRelease(t *testing.T) {
 	releasedCLI(t)
+	analytics.Disable()
+	var offers []map[string]string
+	var commands []map[string]string
+	analytics.SetTrackHookForTesting(func(event string, props map[string]string) {
+		switch event {
+		case "cli_update_offered":
+			offers = append(offers, props)
+		case "command_executed":
+			commands = append(commands, props)
+		}
+	})
+	t.Cleanup(func() { analytics.SetTrackHookForTesting(nil) })
 	useConfigDir(t)
 	enableReload(t, config.Load)
 	s := New(&config.Config{}, nil)
@@ -116,11 +200,18 @@ func TestCLIUpdateNoticePerSessionAndRelease(t *testing.T) {
 		t.Fatal("notice before an update was discovered")
 	}
 	for _, release := range []string{"2026.09.30-120000", "2026.10.01-120000"} {
-		if err := config.Save(&config.Config{AvailableCLIUpdate: release, CLIUpdateNoticeShown: release}); err != nil {
+		if err := config.Save(&config.Config{LatestCLIRelease: release, CLIUpdateNoticeShown: release}); err != nil {
 			t.Fatal(err)
 		}
 		for _, ctx := range []context.Context{a, b} {
+			offerCount, commandCount := len(offers), len(commands)
 			first := protocolUpdateCall(t, srv, ctx, "container_list")
+			if len(offers) != offerCount+1 || len(commands) != commandCount+1 {
+				t.Fatalf("notice call emitted %d offers and %d command events", len(offers)-offerCount, len(commands)-commandCount)
+			}
+			if offers[offerCount]["attempt_id"] != commands[commandCount]["attempt_id"] {
+				t.Fatalf("notice attempt %q does not match tool attempt %q", offers[offerCount]["attempt_id"], commands[commandCount]["attempt_id"])
+			}
 			if !first.IsError || len(first.Content) != 2 || structuredMap(t, first)["error_code"] != string(errCodeNotConnected) {
 				t.Fatalf("notice lost tool error: %+v", first)
 			}
@@ -135,6 +226,29 @@ func TestCLIUpdateNoticePerSessionAndRelease(t *testing.T) {
 			if len(status.Content) != 1 || !structuredMap(t, status)["cli_update"].(cliUpdateInfo).Available {
 				t.Fatalf("status lost cached update details: %+v", status)
 			}
+		}
+	}
+	if len(offers) != 4 {
+		t.Fatalf("offer telemetry count = %d, want one per session and release", len(offers))
+	}
+	seenAttempts := make(map[string]bool)
+	for _, props := range commands {
+		id := props["attempt_id"]
+		if seenAttempts[id] {
+			t.Fatalf("separate tool calls reused attempt %q", id)
+		}
+		seenAttempts[id] = true
+	}
+	for _, props := range offers {
+		if _, err := uuid.Parse(props["attempt_id"]); err != nil {
+			t.Fatalf("invalid attempt ID: %v", err)
+		}
+		want := map[string]string{
+			"attempt_id": props["attempt_id"], "entrypoint": "mcp", "stage": "cli_update", "install_method": "unknown",
+			"command_name": "wendy update", "command_root": "update", "outcome": "completed", "success": "true",
+		}
+		if !reflect.DeepEqual(props, want) {
+			t.Fatalf("offer leaked extra properties or lost bounded context: %#v", props)
 		}
 	}
 }

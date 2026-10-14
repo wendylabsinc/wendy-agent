@@ -181,7 +181,16 @@ Provisioning works as it does on Thor: the bundle ships no config image, so wend
 wendy install --device-type arduino-uno-q
 ```
 
-The UNO Q is flashed over EDL like the Dragonwing boards, with the same chip-id check, factory reset and provisioning. To enter EDL, unplug the board, short its two EDL pins with a jumper, and plug in the USB-C cable ([Arduino's guide](https://docs.arduino.cc/software/app-lab/configure/flash/) shows the pins); the short can come off once the board is detected. After success, unplug the board, remove the short and plug it back in.
+The UNO Q is flashed over EDL, short for Emergency Download Mode, like the Dragonwing boards, with the same chip-id check, factory reset and provisioning.
+
+Find the small **10-pin header labelled `JCTL`** near the USB-C socket. The **EDL pins are the pair at the end of JCTL farthest from USB-C**, circled in orange in [Arduino's pin-location photo](https://raw.githubusercontent.com/arduino/docs-content/main/content/software/app-lab/assets/flashing/flashing-pins.png).
+
+1. Unplug the board.
+2. Connect those two pins together using a jumper cap or a female-to-female jumper wire. This is what "shorting the pins" means.
+3. Keep them connected while plugging the USB-C cable into your computer. Wendy detects the board in EDL mode and continues.
+4. After flashing succeeds, unplug the board, remove the jumper and reconnect it to boot WendyOS.
+
+You can remove the jumper once the board is detected in EDL mode. It stays in EDL until restarted without the pins connected. See [Arduino's flashing guide](https://docs.arduino.cc/software/app-lab/configure/flash/) for the illustrated instructions.
 
 The UNO Q keeps its boot firmware on the same eMMC, so the flash also rewrites it (with Arduino's own ABL and U-Boot) and replaces the Debian image, which Arduino's flasher restores.
 

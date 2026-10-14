@@ -2,7 +2,6 @@ package mcusource
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -45,9 +44,10 @@ type wendycomClient interface {
 // both the manifest and the stream: a WendyCom handshake is costly on an
 // ESP32.
 type wendycomTransport struct {
-	logger        *zap.Logger
-	connect       func() (wendycomClient, error)
-	sourceAssetID int32 // the asset the board's certificate must name
+	logger             *zap.Logger
+	connect            func() (wendycomClient, error)
+	sourceAssetID      int32 // the asset the board's certificate must name
+	sourcePrincipalURI string
 
 	mu     sync.Mutex
 	client wendycomClient // nil until the first successful connect
@@ -68,6 +68,11 @@ type wendycomTransport struct {
 // certificate does not name p.SourceAssetID, as mtlsDialer does for the other
 // transports.
 func NewWendyComTransport(logger *zap.Logger, certPEM, chainPEM, keyPEM string, p SensorPairing, addr string) (SensorTransport, error) {
+	if p.SourcePrincipalURI != "" {
+		if err := p.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	if certPEM == "" || keyPEM == "" {
 		return nil, errors.New("mcusource: agent has no mTLS identity (not provisioned)")
 	}
@@ -75,12 +80,20 @@ func NewWendyComTransport(logger *zap.Logger, certPEM, chainPEM, keyPEM string, 
 		return nil, errors.New("mcusource: agent has no CA chain to verify a Wendy Lite board against")
 	}
 	return &wendycomTransport{
-		logger:        logger.With(zap.Int32("source", p.SourceAssetID), zap.String("addr", addr)),
-		sourceAssetID: p.SourceAssetID,
+		logger:             logger.With(zap.Int32("source", p.SourceAssetID), zap.String("addr", addr)),
+		sourceAssetID:      p.SourceAssetID,
+		sourcePrincipalURI: p.SourcePrincipalURI,
 		connect: func() (wendycomClient, error) {
-			cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+			cert, err := certs.TLSKeyPair(certPEM, chainPEM, keyPEM)
 			if err != nil {
 				return nil, fmt.Errorf("mcusource: wendycom client certificate: %w", err)
+			}
+			if p.SourcePrincipalURI != "" {
+				c := liteclient.NewWendyLiteClient()
+				if err := c.ConnectSensorSource(context.Background(), addr, cert, chainPEM, p.SourcePrincipalURI); err != nil {
+					return nil, err
+				}
+				return c, nil
 			}
 			rootCAs := x509.NewCertPool()
 			if certs.AppendChainToPool(rootCAs, chainPEM) == 0 {
@@ -115,6 +128,17 @@ func certAssetID(leaf *x509.Certificate) (int32, bool) {
 
 // checkPeer refuses a connection to any board but the paired one.
 func (t *wendycomTransport) checkPeer(c wendycomClient) error {
+	if t.sourcePrincipalURI != "" {
+		leaf := c.PeerCertificate()
+		if leaf == nil {
+			return errors.New("mcusource: source presented no verified certificate")
+		}
+		identity, ok, err := certs.IdentityFromCert(leaf)
+		if err != nil || !ok || identity.Principal != t.sourcePrincipalURI {
+			return errors.New("mcusource: source certificate does not match paired device")
+		}
+		return nil
+	}
 	id, ok := certAssetID(c.PeerCertificate())
 	if !ok {
 		return errors.New("mcusource: wendycom board presented no asset identity")

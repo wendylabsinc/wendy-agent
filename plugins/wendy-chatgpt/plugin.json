@@ -11,7 +11,7 @@
       "interface": {
         "displayName": "Wendy",
         "shortDescription": "Your devices and their apps",
-        "longDescription": "Guidance on building and deploying apps to robots and edge devices using WendyOS, including NVIDIA Jetson, Raspberry Pi, Qualcomm Dragonwing, and MuJoCo simulation. Get help setting up your first robot or edge device, or try a simulator while waiting for hardware. Local use does not require a Cloud account. Browse your fleet, inspect devices, preview cameras, open app web UIs, and control approved apps. With local permissions, create robot simulators, open their live MuJoCo scenes, edit approved project files, and build and deploy apps. Share selected device and camera context with ChatGPT.",
+        "longDescription": "Guidance on building and deploying apps to robots and edge devices using WendyOS, including NVIDIA Jetson, Raspberry Pi, Qualcomm Dragonwing, and MuJoCo simulation. Get help setting up your first robot or edge device, or try a simulator while waiting for hardware. Local use does not require a Cloud account. Browse your fleet, inspect devices, preview cameras, open app web UIs, and control approved apps. With local permissions, create robot simulators, open their live MuJoCo scenes, edit approved project files, and build and deploy apps. Bundled Wendy Data guidance covers recording campaigns, episodes, application streams, and detection notifications using the tools available on your connection. Share selected device and camera context with ChatGPT.",
         "developerName": "Wendy Labs",
         "category": "Productivity",
         "capabilities": ["Read", "Write"],

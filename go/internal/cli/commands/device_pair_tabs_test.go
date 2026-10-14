@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui/bttable"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -19,23 +20,26 @@ import (
 
 type pairTestClient struct {
 	agentpbv2.WendySensorPairingServiceClient
-	pairings []*agentpbv2.SensorPairing
-	added    *agentpbv2.AddSensorPairingRequest
-	removed  int32
-	err      error
+	pairings          []*agentpbv2.SensorPairing
+	added             *agentpbv2.AddSensorPairingRequest
+	removed           int32
+	removedPrincipal  string
+	supportsPrincipal bool
+	err               error
 }
 
 func (c *pairTestClient) ListSensorPairings(context.Context, *agentpbv2.ListSensorPairingsRequest, ...grpc.CallOption) (*agentpbv2.ListSensorPairingsResponse, error) {
-	return &agentpbv2.ListSensorPairingsResponse{Pairings: c.pairings}, c.err
+	return &agentpbv2.ListSensorPairingsResponse{Pairings: c.pairings, SupportsPrincipalPairing: c.supportsPrincipal}, c.err
 }
 
 func (c *pairTestClient) AddSensorPairing(_ context.Context, req *agentpbv2.AddSensorPairingRequest, _ ...grpc.CallOption) (*agentpbv2.AddSensorPairingResponse, error) {
 	c.added = req
-	return &agentpbv2.AddSensorPairingResponse{Pairing: &agentpbv2.SensorPairing{SourceAssetId: req.SourceAssetId, Name: req.Name}}, c.err
+	return &agentpbv2.AddSensorPairingResponse{Pairing: &agentpbv2.SensorPairing{SourceAssetId: req.SourceAssetId, SourcePrincipalUri: req.SourcePrincipalUri, Name: req.Name}}, c.err
 }
 
 func (c *pairTestClient) RemoveSensorPairing(_ context.Context, req *agentpbv2.RemoveSensorPairingRequest, _ ...grpc.CallOption) (*agentpbv2.RemoveSensorPairingResponse, error) {
 	c.removed = req.SourceAssetId
+	c.removedPrincipal = req.SourcePrincipalUri
 	return &agentpbv2.RemoveSensorPairingResponse{}, c.err
 }
 
@@ -209,6 +213,131 @@ func TestSensorPairRowsMergeByIdentity(t *testing.T) {
 		if row.assetID == 42 && (row.name != "Saved camera" || row.source == nil || row.pairing == nil) {
 			t.Fatal("discovered source did not merge with its saved pairing")
 		}
+	}
+}
+
+func TestSensorPairShowsUnenrolledWendyLite(t *testing.T) {
+	// Unenrolled firmware advertises its sensor capability but no asset ID.
+	source := discovery.LANDeviceFromWendyLiteService(discovery.MDNSService{
+		InstanceName: "wendy-4824", Hostname: "wendylt-wendy-4824.local",
+		IPAddress: "192.0.2.24", Port: 5054,
+		TXTRecords: map[string]string{"id": "441bf6804824", "caps": "sensors", "mtls": "false"},
+	})
+	collection := &models.DevicesCollection{LANDevices: []models.LANDevice{source}}
+	client := &pairTestClient{}
+	h := pairTestHandler(client)
+	h.discover = func(context.Context) ([]models.DiscoveredDevice, error) {
+		return collection.MergedDevices(), nil
+	}
+	m := newSensorPairModel(h)
+	updated, _ := m.Update(m.Init()())
+	m = updated.(sensorPairModel)
+	view := m.View()
+	for _, want := range []string{"wendy-4824", "192.0.2.24", "need enrollment", "same organization"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("unenrolled sensor missing %q: %s", want, view)
+		}
+	}
+	if strings.Contains(view, "No SensorLink devices found") {
+		t.Fatalf("discovered sensor reported as absent: %s", view)
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyRunes, Runes: []rune{'f'}}} {
+		_, cmd := m.Update(key)
+		if cmd != nil {
+			t.Fatal("unenrolled sensor must not dispatch pairing or forgetting")
+		}
+	}
+
+	// Once enrollment completes, a rescan makes the same board pairable.
+	collection.LANDevices[0].AssetID = 42
+	collection.LANDevices[0].OrgID = 7
+	collection.LANDevices[0].IsMTLS = true
+	updated, _ = m.Update(h.scan()())
+	m = updated.(sensorPairModel)
+	if strings.Contains(m.View(), "need enrollment") || len(m.rows) != 1 {
+		t.Fatalf("enrolled sensor did not become pairable: %s", m.View())
+	}
+	_, pair := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if pair == nil {
+		t.Fatal("enrolled sensor has no pairing action")
+	}
+	pair()
+	if client.added == nil || client.added.SourceAssetId != 42 || client.added.Transport != "wendycom" {
+		t.Fatalf("wrong pairing after enrollment: %+v", client.added)
+	}
+}
+
+func TestSensorPairPKIEnrollmentPairAndForget(t *testing.T) {
+	const tenant = "11111111-2222-4333-8444-555555555555"
+	principal := "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-441bf6804824"
+	source := discovery.LANDeviceFromWendyLiteService(discovery.MDNSService{
+		InstanceName: "joannis-home", IPAddress: "192.168.0.125", Port: 5054,
+		TXTRecords: map[string]string{"id": "441bf6804824", "tenant": tenant, "caps": "sensors", "mtls": "true"},
+	})
+	collection := &models.DevicesCollection{LANDevices: []models.LANDevice{source}}
+	client := &pairTestClient{}
+	h := pairTestHandler(client)
+	h.discover = func(context.Context) ([]models.DiscoveredDevice, error) { return collection.MergedDevices(), nil }
+	h.tenantIDs = func() (map[string]bool, error) { return map[string]bool{tenant: true}, nil }
+	m := newSensorPairModel(h)
+	updated, _ := m.Update(m.Init()())
+	m = updated.(sensorPairModel)
+	if len(m.rows) != 1 || !strings.Contains(m.View(), "joannis-home") || strings.Contains(m.View(), "need enrollment") {
+		t.Fatalf("wrong enrolled view: %s", m.View())
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(sensorPairModel)
+	if cmd != nil || !strings.Contains(m.message, "Update the target") || client.added != nil {
+		t.Fatal("old agent must not receive principal pairing as asset zero")
+	}
+	client.supportsPrincipal = true
+	updated, _ = m.Update(h.scan()())
+	m = updated.(sensorPairModel)
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(sensorPairModel)
+	if cmd == nil {
+		t.Fatal("PKI sensor cannot pair")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(sensorPairModel)
+	if client.added.SourceAssetId != 0 || client.added.SourcePrincipalUri != principal || client.added.SourceAddress != "" || client.added.Transport != "wendycom" {
+		t.Fatalf("wrong request: %+v", client.added)
+	}
+	if len(m.pairings) != 1 || m.pairings[0].SourcePrincipalUri != principal {
+		t.Fatal("principal pairing lost in UI")
+	}
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if cmd == nil {
+		t.Fatal("PKI sensor cannot forget")
+	}
+	cmd()
+	if client.removed != 0 || client.removedPrincipal != principal {
+		t.Fatal("forget lost principal")
+	}
+	h.tenantIDs = func() (map[string]bool, error) { return map[string]bool{}, nil }
+	if msg := h.pair(collection.MergedDevices()[0])().(sensorPairOpMsg); msg.err == nil {
+		t.Fatal("foreign tenant passed CLI gate")
+	}
+}
+
+func TestSensorPairShowsUnenrolledAlongsideSavedPairings(t *testing.T) {
+	m := newSensorPairModel(nil)
+	m.scanning = false
+	m.devices = []models.DiscoveredDevice{
+		{DisplayName: "Sensor B", Sensorlink: true},
+		{DisplayName: "Sensor A\x1b[2J\r\u202e", Sensorlink: true},
+		{DisplayName: "Not a sensor"},
+	}
+	m.pairings = []*agentpbv2.SensorPairing{{SourceAssetId: 99, Name: "Saved camera"}}
+	m.refreshRows()
+	view := ansi.Strip(m.View())
+	for _, want := range []string{"Sensor A", "Sensor B", "Saved camera"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q: %s", want, view)
+		}
+	}
+	if strings.Contains(view, "Not a sensor") || strings.Contains(m.View(), "\x1b[2J") || strings.ContainsAny(view, "\r\u202e") {
+		t.Fatalf("non-sensor or remote controls reached enrollment notice: %s", view)
 	}
 }
 

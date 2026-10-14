@@ -205,6 +205,15 @@ class RenderingTests(unittest.TestCase):
         mixed = "diff --git a/change.go b/change.go\n--- a/change.go\n+++ b/change.go\n@@ -1 +1 @@\n-old\n+new\n"
         self.assertIn("  ```diff\n  -old\n  +new\n  ```", review.render_comment(data, REPO, diff=mixed))
 
+    def test_excerpt_preserves_non_lf_source_separators(self):
+        data = result()
+        data["decisions"][0]["locations"] = [{"path": "change.go", "side": "head", "line": 1, "end_line": 1}]
+        for separator in ("\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=separator):
+                content = "before" + separator + "+after"
+                raw = "diff --git a/change.go b/change.go\n--- a/change.go\n+++ b/change.go\n@@ -1 +1 @@\n-old\n+" + content + "\n"
+                self.assertIn("  +" + content + "\n", review.render_comment(data, REPO, diff=raw))
+
     def test_failure_preserves_prior_checklist_and_recovers_without_losing_acceptance(self):
         original = result()
         checked = review.render_comment(original, REPO).replace("- [ ]", "- [x]")
