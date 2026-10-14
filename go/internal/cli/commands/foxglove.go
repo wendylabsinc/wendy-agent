@@ -279,6 +279,8 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 		// This override runs inside the generated image, after the agent injects
 		// its network-scope environment. Keep loopback and localhost discovery
 		// while pinning the outward-facing side to the requested interface.
+		// SECURITY: opts.iface matched foxgloveInterfacePattern above, so it
+		// cannot alter either the XML attribute or single-quoted shell value.
 		cycloneURI := fmt.Sprintf(`<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo" multicast="true"/><NetworkInterface name="%s"/></Interfaces></General><Discovery><ParticipantIndex>auto</ParticipantIndex><Peers><Peer address="127.0.0.1"/></Peers></Discovery><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`, opts.iface)
 		launchCommand += " && export CYCLONEDDS_URI='" + cycloneURI + "'"
 	}
