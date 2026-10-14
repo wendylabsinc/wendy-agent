@@ -37,6 +37,16 @@ Two headline hardware specs are included when the agent reports them. Both are o
 
 For **live** CPU and memory utilization, use [`wendy device top`](top.md).
 
+### Power mode output
+
+On NVIDIA Jetson devices the agent reports the current power mode (nvpmodel), shown as `Power Mode: MODE_30W (2)`. With `--json`, `powerMode` holds the numeric `id` and the `name`:
+
+```json
+{"powerMode": {"id": 2, "name": "MODE_30W"}}
+```
+
+The field is omitted on devices that are not a Jetson, when the mode cannot be read, and on agents that predate it. To see every available mode or switch, use [`wendy device power-mode`](power-mode.md).
+
 ### Storage output fields
 
 When the agent can identify the filesystem that holds `/var/lib/containerd`, it is reported alongside the mounted partitions. The field is omitted from the JSON map when inspection fails or the agent predates it.

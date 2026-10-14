@@ -94,6 +94,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),
 		newDeviceRenameCmd(),
+		newDevicePowerModeCmd(),
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
 	)
@@ -254,6 +255,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			// nil for mains-powered devices, for agents predating the field,
 			// and for the BLE/provider paths that never report one.
 			var battery *agentpb.BatteryStats
+			// nil off Jetson, on agents predating the field, and on the
+			// BLE/provider paths.
+			var powerMode *agentpb.PowerMode
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 				cliLogln("Connecting to %s via Bluetooth...", tui.Device(target.Bluetooth.DisplayName))
@@ -298,6 +302,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuCapabilities = resp.GetGpuCapabilities()
 				netInterfaces = resp.GetNetworkInterfaces()
 				battery = resp.GetBattery()
+				powerMode = resp.GetPowerMode()
 			} else if target.External != nil && target.Provider != nil {
 				info, infoErr := target.Provider.GetDeviceInfo(ctx, *target.External)
 				if infoErr != nil {
@@ -428,6 +433,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if b := batteryJSON(battery); b != nil {
 					out["battery"] = b
 				}
+				if powerMode != nil {
+					out["powerMode"] = powerModeJSON(powerMode)
+				}
 				if osUpdate := osUpdateJSON(osUpdateStatus); osUpdate != nil {
 					out["osUpdate"] = osUpdate
 				}
@@ -461,6 +469,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			if battery != nil {
 				fmt.Printf("%s %s\n", tui.Dim("Battery:"), tui.Value(formatBatterySummary(battery)))
+			}
+			if powerMode != nil {
+				fmt.Printf("%s %s\n", tui.Dim("Power Mode:"), tui.Value(powerModeLabel(powerMode)))
 			}
 			if deviceType != "" {
 				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))
