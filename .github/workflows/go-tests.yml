@@ -16,6 +16,8 @@ on:
       - '.github/scripts/**'
       - 'plugins/**'
       - 'scripts/sync-agent-skills.py'
+      - 'scripts/package-chatgpt-plugin.py'
+      - 'scripts/test-package-chatgpt-plugin.py'
   pull_request:
     paths:
       - 'go/**'
@@ -29,6 +31,8 @@ on:
       - '.github/scripts/**'
       - 'plugins/**'
       - 'scripts/sync-agent-skills.py'
+      - 'scripts/package-chatgpt-plugin.py'
+      - 'scripts/test-package-chatgpt-plugin.py'
 
 concurrency:
   group: go-tests-${{ github.event.pull_request.number || github.ref }}
@@ -63,6 +67,11 @@ jobs:
 
       - name: Check runtime skill packaging
         run: python3 scripts/sync-agent-skills.py --check
+
+      - name: Check public ChatGPT package
+        run: |
+          python3 scripts/test-package-chatgpt-plugin.py
+          python3 scripts/package-chatgpt-plugin.py --check
 
   windows:
     name: Windows CLI

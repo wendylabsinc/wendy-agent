@@ -301,6 +301,10 @@ func writeChatGPTPackage(root, binary, policy string, hosted bool, o chatGPTSetu
 		return err
 	}
 	extension := manifest["extensions"].(map[string]any)["com.openai"].(map[string]any)
+	// Personal exports can use a different local policy or registered app;
+	// public endpoint review cases and publication settings do not apply.
+	delete(extension, "review")
+	delete(extension, "publication")
 	if hosted {
 		manifest["name"] = "wendy-robots-cloud"
 		presentation := extension["interface"].(map[string]any)
@@ -313,6 +317,11 @@ func writeChatGPTPackage(root, binary, policy string, hosted bool, o chatGPTSetu
 			return err
 		}
 	} else {
+		// The embedded manifest describes the public Cloud connection. Desktop
+		// setup exports a separate local connection with its own requirements.
+		manifest["description"] = "Work with local robots, edge devices and simulators through the Wendy CLI in ChatGPT Desktop."
+		presentation := extension["interface"].(map[string]any)
+		presentation["longDescription"] = "Use the Wendy CLI on this computer to inspect approved devices, read telemetry, preview cameras and control permitted apps. Local access does not require a Wendy Cloud account. Add simulator, project and host permissions through wendy mcp setup chatgpt when needed. The local CLI process must remain available while ChatGPT uses this connection."
 		servers := map[string]any{}
 		if raw, err := os.ReadFile(filepath.Join(root, "mcp.json")); err == nil {
 			var existing struct {

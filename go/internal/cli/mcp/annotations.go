@@ -117,6 +117,7 @@ var toolTitles = map[string]string{
 	"simulator_create":      "Create Simulator",
 	"simulator_delete":      "Delete Simulator",
 	"simulator_list":        "List Simulators",
+	"simulator_start":       "Start Simulator",
 	"simulator_stop":        "Stop Simulator",
 	"telemetry_logs":        "Read Device Logs",
 	"telemetry_metrics":     "Read Device Metrics",
