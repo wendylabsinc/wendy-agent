@@ -38,8 +38,9 @@ Discovered topics appear as channels you can add to any panel.
    `sh.wendy.foxglovebridge`. Re-running the command first removes any previous
    instance, so it is always safe to run again.
 3. **Forwards the port.** The bridge's WebSocket port (8765 inside the app) is
-   forwarded to your machine with `wendy cloud tunnel`, and the CLI prints the
-   `ws://localhost:<port>` URL to connect Foxglove Studio to.
+   forwarded over the same Wendy agent connection used for deployment. This
+   works over LAN and cloud. The CLI checks the WebSocket handshake before
+   printing the `ws://localhost:<port>` URL.
 
 ```
 Foxglove Studio --ws--> localhost:8765 --tunnel--> foxglove_bridge (device) --DDS--> your ROS 2 apps
@@ -47,9 +48,8 @@ Foxglove Studio --ws--> localhost:8765 --tunnel--> foxglove_bridge (device) --DD
 
 ## Prerequisites
 
-- The device must be enrolled with Wendy Cloud and you must be signed in, because
-  the port forward runs through the Wendy Cloud tunnel broker. See
-  [Wendy Cloud](/docs/cloud).
+- A device reachable through Wendy over LAN or [Wendy Cloud](/docs/cloud), with
+  an agent that supports container exec. Forwarding reuses that connection.
 - Docker on your development machine, so the CLI can build the bridge image.
 - A ROS 2 stack producing topics on the device (your own apps, or a robot's
   native ROS 2 reachable over the host network).
@@ -64,7 +64,15 @@ Foxglove Studio --ws--> localhost:8765 --tunnel--> foxglove_bridge (device) --DD
 | `--distro` | ROS 2 distro the bridge image is built from (default `humble`). |
 | `--interface` | CycloneDDS network interface to use on a multi-interface device. |
 
-The global `--device` flag selects a device, as with every other command.
+The global `--device` flag selects a device for both deployment and forwarding.
+For example, to connect to a device on your LAN:
+
+```bash
+wendy device foxglove serve --device 192.0.2.10
+```
+
+Without `--device`, Wendy uses `WENDY_DEVICE`, the saved default, or the device
+picker. It selects the device once for the whole command.
 
 The bridge exposes every topic in the selected domain. ROS 2 domains are isolated
 graphs, so stop and restart `serve` with a different `--domain` when you want to
@@ -72,8 +80,9 @@ inspect another graph.
 
 The bridge uses the device's host network for ROS 2 discovery, but its WebSocket
 listener binds only to `127.0.0.1` on the device. Foxglove therefore reaches the
-bridge through Wendy's authenticated Cloud tunnel rather than by connecting
-directly to port `8765` on the device's management or robot LAN.
+bridge through the selected agent's container exec stream. The generated image
+includes `socat` to relay the WebSocket bytes without a terminal. Port `8765`
+is not exposed on the device's management or robot LAN.
 
 <Callout type="warning">
 **Match the bridge to your app's domain.** An app whose `frameworks.ros2` omits
