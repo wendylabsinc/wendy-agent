@@ -171,15 +171,27 @@ func TestAcceptedCLIUpdateFailureDoesNotFailSuccessfulCommand(t *testing.T) {
 	setupInteractiveCLIUpdate(t)
 	previousConfirm, previousApply := confirmCLIUpdate, applyCLIUpdate
 	t.Cleanup(func() { confirmCLIUpdate, applyCLIUpdate = previousConfirm, previousApply })
-	confirmCLIUpdate = func(*cobra.Command) (bool, error) { return true, nil }
+	prompts := 0
+	confirmCLIUpdate = func(*cobra.Command) (bool, error) {
+		prompts++
+		return true, nil
+	}
 	applyCLIUpdate = func(*cobra.Command, string) error { return errors.New("installer unavailable") }
 	root := NewRootCmd()
 	root.AddCommand(&cobra.Command{Use: "update-test-success", RunE: func(*cobra.Command, []string) error { return nil }})
 	root.SetArgs([]string{"update-test-success"})
 	var stderr bytes.Buffer
 	root.SetErr(&stderr)
-	if err := root.Execute(); err != nil {
+	cmd, err := root.ExecuteC()
+	if err != nil {
 		t.Fatalf("updater replaced successful command result: %v", err)
+	}
+	if prompts != 0 || stderr.Len() != 0 {
+		t.Fatalf("optional update ran before command outcome was recorded: prompts=%d stderr=%q", prompts, stderr.String())
+	}
+	FinishInvocation(cmd, err)
+	if prompts != 1 {
+		t.Fatalf("FinishInvocation offered %d updates, want 1", prompts)
 	}
 	if !strings.Contains(stderr.String(), "Your command completed successfully") {
 		t.Fatalf("missing independent failure guidance: %s", stderr.String())
@@ -195,9 +207,43 @@ func TestFailedCommandUpdateNoticeNeverPrompts(t *testing.T) {
 	cmd.SetContext(context.WithValue(context.Background(), cliUpdateNoticeEligible{}, true))
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)
-	NotifyCLIUpdateAfterFailure(cmd)
+	FinishInvocation(cmd, errors.New("command failed"))
 	if !strings.Contains(stderr.String(), "wendy update") {
 		t.Fatal("failed command omitted update guidance")
+	}
+}
+
+func TestFinishInvocationSkipsUnexecutedAndReportedFailures(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	previous := confirmCLIUpdate
+	t.Cleanup(func() { confirmCLIUpdate = previous })
+	confirmCLIUpdate = func(*cobra.Command) (bool, error) {
+		t.Fatal("unexecuted or already reported command must not prompt")
+		return false, nil
+	}
+	for _, tc := range []struct {
+		name string
+		cmd  *cobra.Command
+		err  error
+	}{
+		{name: "nil command"},
+		{name: "no context", cmd: &cobra.Command{}, err: errors.New("unknown subcommand")},
+		{name: "no post-run", cmd: &cobra.Command{}},
+		{name: "reported failure", cmd: &cobra.Command{}, err: &ReportedExitError{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			if tc.cmd != nil {
+				tc.cmd.SetErr(&stderr)
+				if tc.name != "no context" {
+					tc.cmd.SetContext(context.WithValue(context.Background(), cliUpdateNoticeEligible{}, true))
+				}
+			}
+			FinishInvocation(tc.cmd, tc.err)
+			if stderr.Len() != 0 {
+				t.Fatalf("unexpected guidance: %q", stderr.String())
+			}
+		})
 	}
 }
 
@@ -272,9 +318,11 @@ func TestShellCompletionDoesNotCheckOrAnnounceCLIUpdates(t *testing.T) {
 		var out, stderr bytes.Buffer
 		root.SetOut(&out)
 		root.SetErr(&stderr)
-		if err := root.Execute(); err != nil {
+		cmd, err := root.ExecuteC()
+		if err != nil {
 			t.Fatal(err)
 		}
+		FinishInvocation(cmd, err)
 		if calls != 0 || strings.Contains(stderr.String(), "new version") {
 			t.Fatalf("completion triggered update: %s", stderr.String())
 		}

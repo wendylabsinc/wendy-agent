@@ -187,8 +187,7 @@ func newOSInstallJobsCmd() *cobra.Command {
 		// Initialize only telemetry, preserving the job path's no-migration/no-prompt behavior.
 		cfg, err := config.Load()
 		if err == nil {
-			analytics.Init(cfg)
-			analytics.TrackStage(cmd.Context(), "cli_seen", cmd.CommandPath(), "completed", "", nil)
+			initializeCommandAnalytics(cmd, cfg, false)
 		}
 		return nil
 	}, PersistentPostRunE: func(*cobra.Command, []string) error { return nil }}

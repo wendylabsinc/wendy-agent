@@ -69,6 +69,10 @@ func WithEntrypoint(ctx context.Context, source string) context.Context {
 // TrackStage records a lifecycle fact at the instant it happens. Callers must
 // use product-owned event/command names. Unrecognized properties are dropped.
 func TrackStage(ctx context.Context, event, command, outcome, errorClass string, extra map[string]string) {
+	trackStage(ctx, event, command, outcome, errorClass, extra, nil)
+}
+
+func trackStage(ctx context.Context, event, command, outcome, errorClass string, extra map[string]string, onDelivered func()) {
 	props := make(map[string]string, len(extra)+7)
 	props["entrypoint"] = "cli"
 	if source := os.Getenv("WENDY_TELEMETRY_ENTRYPOINT"); source == "mcp" || source == "tour" {
@@ -100,7 +104,7 @@ func TrackStage(ctx context.Context, event, command, outcome, errorClass string,
 			props["error_detail"] = detail
 		}
 	}
-	Track(event, props)
+	track(event, props, onDelivered)
 	trackActivationFollowups(ctx, event, command, outcome)
 }
 

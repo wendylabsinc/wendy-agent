@@ -116,7 +116,7 @@ their source digest; `wendy vm robot update NAME` applies a rebuilt CLI's runtim
 
 Managed mode isolates UDP DDS to VM loopback, then drops NET_ADMIN before
 starting ROS. Declared ROS applications deployed with `wendy run --device
-vm:my-r2` use that bus. Use ROS 2 Humble, CycloneDDS, domain 0 and host discovery
+vm:my-r2` use that bus. Use ROS 2 Humble, CycloneDDS, domain 0 and scope `peripherals`
 in the application's `wendy.json`. The reserved runtime app ID is
 `sh.wendy.simulator.rosmaster-r2`. No Unitree message overlay is required.
 

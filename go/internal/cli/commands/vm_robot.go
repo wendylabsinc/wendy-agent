@@ -848,9 +848,10 @@ func runVMRobot(cmd *cobra.Command, action, name string) error {
 }
 
 // Resolve a declared ROS app onto the selected robot's bus in memory. The
-// source manifest remains unchanged. Host discovery is mapped to the isolated
-// guest bus; explicit conflicting domain, middleware or environment choices fail
-// before any image build or deployment.
+// source manifest remains unchanged. Every scope except app is mapped to the
+// isolated guest bus (scope device); scope app keeps the app to itself.
+// Explicit conflicting domain, middleware, or environment choices fail before
+// any image build or deployment.
 func prepareRobotAppConfig(conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, overrides []string) (*appconfig.AppConfig, error) {
 	if conn == nil || conn.SimulatorName == "" {
 		return cfg, nil
@@ -891,8 +892,12 @@ func normalizeRobotROSConfig(cfg *appconfig.AppConfig, overrides []string) (*app
 		if ros.ResolvedRMW() != "rmw_cyclonedds_cpp" {
 			return nil, nil, fmt.Errorf("%s: managed robot requires CycloneDDS", scope)
 		}
-		if ros.ResolvedDiscoveryScope() == "" {
-			return nil, nil, fmt.Errorf("%s: invalid ROS discovery scope", scope)
+		rosScope := ros.ResolvedScope()
+		if rosScope == "" {
+			return nil, nil, fmt.Errorf("%s: invalid ROS scope", scope)
+		}
+		if rosScope == appconfig.ROS2ScopeApp {
+			return nil, nil, fmt.Errorf("%s: ROS scope app keeps the app off the managed robot bus; use scope device or peripherals", scope)
 		}
 		for _, entry := range env {
 			key, value, _ := strings.Cut(entry, "=")
@@ -933,7 +938,7 @@ func normalizeRobotROSConfig(cfg *appconfig.AppConfig, overrides []string) (*app
 			entitlements = append(entitlements, appconfig.Entitlement{Type: appconfig.EntitlementNetwork, Mode: "host"})
 		}
 		domain := 0
-		return &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &domain, Distro: "humble", RMW: "rmw_cyclonedds_cpp", DiscoveryScope: "app"}}, entitlements, nil
+		return &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &domain, Distro: "humble", RMW: "rmw_cyclonedds_cpp", Scope: appconfig.ROS2ScopeDevice}}, entitlements, nil
 	}
 	var err error
 	if cfg.GetROS2Config() != nil {

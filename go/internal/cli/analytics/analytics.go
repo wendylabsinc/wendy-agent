@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
+	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
@@ -81,10 +83,11 @@ func extraProperties(properties map[string]string) map[string]string {
 }
 
 var (
+	stateMu    sync.Mutex
 	client     *http.Client // nil when disabled
-	wg         sync.WaitGroup
 	enabled    bool
 	distinctID string
+	inFlight   = make(map[chan struct{}]struct{})
 	// telemetryEndpoint is a variable so delivery behavior can be exercised
 	// against an httptest server without sending test events to production.
 	telemetryEndpoint = defaultTelemetryEndpoint
@@ -95,6 +98,8 @@ var (
 )
 
 func SetTrackHookForTesting(fn func(event string, properties map[string]string)) {
+	stateMu.Lock()
+	defer stateMu.Unlock()
 	trackHook = fn
 }
 
@@ -117,24 +122,24 @@ func Init(cfg *config.Config) (firstRun bool) {
 
 	if cfg.Analytics == nil {
 		firstRun = true
-		enabled = true
-	} else {
-		enabled = cfg.Analytics.Enabled
 	}
 
-	if !enabled {
+	if cfg.Analytics != nil && !cfg.Analytics.Enabled {
 		Disable()
 		return firstRun
 	}
 
-	var err error
-	distinctID, err = loadOrCreateID()
+	id, err := loadOrCreateID()
 	if err != nil {
 		Disable()
 		return firstRun
 	}
 
+	stateMu.Lock()
+	distinctID = id
+	enabled = true
 	client = &http.Client{Timeout: 5 * time.Second}
+	stateMu.Unlock()
 	return firstRun
 }
 
@@ -156,17 +161,26 @@ func Track(event string, properties map[string]string) {
 // result, but callers such as one-time milestones can defer local acknowledgement
 // until the receiver has persisted the event.
 func track(event string, properties map[string]string, onDelivered func()) {
-	if trackHook != nil {
-		trackHook(event, properties)
+	stateMu.Lock()
+	hook := trackHook
+	stateMu.Unlock()
+	if hook != nil {
+		hook(event, properties)
 	}
+	stateMu.Lock()
 	if !enabled || client == nil {
+		stateMu.Unlock()
 		return
 	}
+	c, endpoint, id := client, telemetryEndpoint, distinctID
+	done := make(chan struct{})
+	inFlight[done] = struct{}{}
+	stateMu.Unlock()
 
 	payload := eventPayload{
 		SchemaVersion: 2, EventID: uuid.NewString(), OccurredAt: time.Now().UTC(),
 		AttemptID:   validAttemptID(properties["attempt_id"]),
-		AnonymousID: distinctID,
+		AnonymousID: id,
 		Event:       event,
 		CommandName: properties["command_name"],
 		CommandRoot: properties["command_root"],
@@ -182,14 +196,13 @@ func track(event string, properties map[string]string, onDelivered func()) {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
+		finishDelivery(done)
 		return
 	}
 
-	c := client
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		resp, err := c.Post(telemetryEndpoint, "application/json", bytes.NewReader(body))
+		defer finishDelivery(done)
+		resp, err := c.Post(endpoint, "application/json", bytes.NewReader(body))
 		if err != nil {
 			return
 		}
@@ -202,6 +215,13 @@ func track(event string, properties map[string]string, onDelivered func()) {
 			onDelivered()
 		}
 	}()
+}
+
+func finishDelivery(done chan struct{}) {
+	stateMu.Lock()
+	delete(inFlight, done)
+	close(done)
+	stateMu.Unlock()
 }
 
 const milestonesFileName = "milestones"
@@ -247,7 +267,7 @@ func TrackMilestoneOnceInDir(dir, name string) {
 // installation. It is a no-op when analytics is disabled. Milestone state lives
 // alongside analytics_id in the config dir.
 func TrackMilestoneOnce(name string) {
-	if !enabled {
+	if !trackingEnabled() {
 		return
 	}
 	dir, err := config.ConfigDir()
@@ -257,20 +277,56 @@ func TrackMilestoneOnce(name string) {
 	TrackMilestoneOnceInDir(dir, name)
 }
 
-// Close waits for any in-flight events to finish sending and resets the client.
+// Flush waits for events admitted before this call without disabling later
+// tracking. Call it before replacing the process at an elevation handoff.
+func Flush() {
+	waitForDeliveries(pendingDeliveries(false, false))
+}
+
+// Close stops admitting new events and waits for in-flight events to finish.
 func Close() {
-	wg.Wait()
-	client = nil
+	waitForDeliveries(pendingDeliveries(true, false))
 }
 
 // Disable turns off analytics for the current process and flushes any pending events.
 func Disable() {
-	enabled = false
-	Close()
+	waitForDeliveries(pendingDeliveries(true, true))
+}
+
+// pendingDeliveries snapshots admission and outstanding work under one lock.
+// Waiting holds no lock, so delivery callbacks can track additional events.
+func pendingDeliveries(closeClient, disable bool) []chan struct{} {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	if closeClient {
+		client = nil
+	}
+	if disable {
+		enabled = false
+	}
+	pending := make([]chan struct{}, 0, len(inFlight))
+	for done := range inFlight {
+		pending = append(pending, done)
+	}
+	return pending
+}
+
+func waitForDeliveries(pending []chan struct{}) {
+	for _, done := range pending {
+		<-done
+	}
+}
+
+func trackingEnabled() bool {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	return enabled && client != nil
 }
 
 // Enabled reports whether analytics is currently enabled.
 func Enabled() bool {
+	stateMu.Lock()
+	defer stateMu.Unlock()
 	return enabled
 }
 
@@ -295,17 +351,35 @@ func loadOrCreateID() (string, error) {
 	}
 
 	idPath := filepath.Join(dir, "analytics_id")
-	data, err := os.ReadFile(idPath)
-	if err == nil {
-		id := strings.TrimSpace(string(data))
-		if id != "" {
-			return id, nil
-		}
+	if id, err := readAnalyticsID(idPath); err != nil || id != "" {
+		return id, err
+	}
+
+	// Concurrent first launches must share one identity. Readers of an existing
+	// ID need no writable lock file; creation rechecks after obtaining the lock.
+	release, err := flock.Acquire(filepath.Join(dir, "analytics_id.lock"), 5*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("locking analytics ID: %w", err)
+	}
+	defer release()
+	if id, err := readAnalyticsID(idPath); err != nil || id != "" {
+		return id, err
 	}
 
 	id := uuid.NewString()
-	if err := os.WriteFile(idPath, []byte(id), 0o600); err != nil {
+	if err := atomicfile.WritePreservingOwner(idPath, []byte(id), 0o600); err != nil {
 		return "", fmt.Errorf("writing analytics ID: %w", err)
 	}
 	return id, nil
+}
+
+func readAnalyticsID(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading analytics ID: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
 }

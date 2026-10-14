@@ -3,6 +3,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"time"
 
@@ -22,6 +23,43 @@ var applyCLIUpdate = performCLIUpdate
 var detectCLIUpdate = cliupdate.Detect
 
 type cliUpdateNoticeEligible struct{}
+type postCommandFirstRun struct{}
+
+// FinishInvocation offers optional guidance after the command's outcome has
+// been recorded. Call it before closing analytics so update events still flush.
+// Its prompts and updates never change the original command's result.
+func FinishInvocation(cmd *cobra.Command, err error) {
+	if cmd == nil {
+		return
+	}
+	if err != nil {
+		var reported *ReportedExitError
+		if !errors.As(err, &reported) {
+			NotifyCLIUpdateAfterFailure(cmd)
+		}
+		return
+	}
+	ctx := cmd.Context()
+	if ctx == nil || runsAsForeignUser() {
+		return
+	}
+	// Presence means the successful command ran the normal post-run hook.
+	// Help, validation failures, and commands with their own hook stay exempt.
+	firstRun, eligible := ctx.Value(postCommandFirstRun{}).(bool)
+	if !eligible {
+		return
+	}
+	var updateShown bool
+	if ctx.Value(cliUpdateNoticeEligible{}) == true {
+		waitCLIUpdateCheck(ctx)
+		var updateErr error
+		updateShown, updateErr = notifyCLIUpdate(cmd)
+		if updateErr != nil {
+			cmd.PrintErrf("CLI update did not complete: %v\nYour command completed successfully. Retry with `wendy update`.\n", updateErr)
+		}
+	}
+	maybePromptInstallCompletions(cmd, firstRun, updateShown)
+}
 
 func backgroundCLIUpdatesDisabled() bool {
 	return cliupdate.BackgroundChecksDisabled()
@@ -103,7 +141,7 @@ func showCLIUpdateNotice(cmd *cobra.Command, allowPrompt bool) (bool, error) {
 // Failed commands do not run Cobra's post-run hook. Give them the same cached
 // guidance without opening a prompt over the original error or cancellation.
 func NotifyCLIUpdateAfterFailure(cmd *cobra.Command) {
-	if cmd == nil || cmd.Context().Value(cliUpdateNoticeEligible{}) != true {
+	if cmd == nil || cmd.Context() == nil || cmd.Context().Value(cliUpdateNoticeEligible{}) != true {
 		return
 	}
 	waitCLIUpdateCheck(cmd.Context())

@@ -4,11 +4,21 @@ We track analytics for our CLI's usage through a dedicated self-hosted telemetry
 
 When analytics are enabled, each tracked event is serialised to JSON and sent via an HTTP POST request. Delivery is best-effort: a network failure, timeout, or non-2xx response never changes the command's result.
 
-MCP tool calls emit `command_executed` events as each call finishes, using a command name such as `wendy mcp device_info` and `command_root` of `mcp`. The duration and success flag describe the individual call, including tool results that report an error. Calls to app-provided tools use the fixed name `wendy mcp container_tool` so app and tool names stay private. Tool arguments and result content are never sent. The same analytics opt-out and CI settings apply to MCP calls.
+The CLI sends `cli_seen` before command execution or argument validation, including help, version, unknown commands, and invalid flags. Unknown commands use the last recognized command path; the unknown text is never sent. `command_executed` records the outcome before optional update or completion prompts. Help and version invocations do not count as successful product operations. Pending events are flushed before sudo process replacement or a Windows elevation launch.
+
+MCP tool calls emit `command_executed` events as each call finishes, using a command name such as `wendy mcp device_info` and `command_root` of `mcp`. The duration and success flag describe the individual call, including tool results that report an error and panics recovered by the MCP server. Calls to app-provided tools use the fixed name `wendy mcp container_tool` so app and tool names stay private. Tool arguments and result content are never sent. The same analytics opt-out and CI settings apply to MCP calls.
 
 `wendy doctor` and `wendy update --check` skip analytics entirely. These read-only
 invocations also skip update and syntax-error cache writes and routine sudo
 ownership cleanup.
+Installation plans and privileged internal helpers also skip analytics.
+`wendy analytics disable` does not send an event about disabling analytics.
+An unreadable or malformed config prevents telemetry initialization, so a stored
+opt-out cannot be accidentally ignored.
+
+`wendy analytics status` reports the effective state, including CI detection,
+the environment opt-out, and an analytics initialization failure. A saved enabled
+preference does not override these conditions.
 
 ## Endpoint
 
@@ -135,18 +145,18 @@ These categories apply to events sent by updated clients. Historical events that
 only stored `other` or `grpc_other` cannot be reclassified without additional
 failure data.
 
-The CLI stores a private, timestamp-only `activation-state.json` beside `analytics_id` after a successful install operation. A later `run_started` clears the waiting window. On a subsequent CLI launch, it emits `next_launch_no_run_24h` and `next_launch_no_run_7d` once when each threshold has elapsed. These are observations of returning installations; they do not classify absent users as abandoned. The check follows analytics opt-out and creates no state when disabled. Delivery remains best-effort, and concurrent CLI processes can duplicate a threshold observation.
+The CLI stores a private, timestamp-only `activation-state.json` beside `analytics_id` after a successful install operation. A later `run_started` clears the waiting window. On a subsequent CLI launch, it emits `next_launch_no_run_24h` and `next_launch_no_run_7d` when each threshold has elapsed. Each threshold is acknowledged only after successful HTTP delivery, so failed sends can retry on later launches. These are observations of returning installations; they do not classify absent users as abandoned. The check follows analytics opt-out and creates no state when disabled. Delivery remains best-effort, and concurrent CLI processes can duplicate a threshold observation.
 
 ## Opting out
 
 Analytics can be disabled in several ways:
 
-1. **Environment variable** — takes precedence over everything else:
+1. Set the environment variable to override the saved preference:
    ```sh
    WENDY_ANALYTICS=false wendy <command>
    ```
-2. **CLI command:**
+2. Save the disabled preference with:
    ```sh
    wendy analytics disable
    ```
-3. **CI environments** — analytics are hard-disabled automatically when any standard CI environment variable is detected (e.g. `CI=true`). There is no opt-in escape hatch in CI.
+3. CI detection automatically disables analytics when a standard CI environment variable has a non-empty value. Even `CI=false` disables analytics. There is no opt-in escape hatch in CI.

@@ -270,10 +270,11 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 			"rmw_fastrtps_cpp, rmw_connextdds, rmw_gurumdds_cpp", opts.rmw)
 	}
 
-	// Keep the explicit ROS_LOCALHOST_ONLY override in the launch command as a
+	// Keep the explicit discovery overrides in the launch command as a
 	// compatibility path for devices whose installed agent predates
-	// frameworks.ros2.discoveryScope. New agents also honor the manifest field.
-	launchCommand := fmt.Sprintf("source /opt/ros/%s/setup.bash && export ROS_LOCALHOST_ONLY=0", opts.distro)
+	// frameworks.ros2.scope (or discoveryScope). New agents also honor the
+	// manifest field.
+	launchCommand := fmt.Sprintf("source /opt/ros/%s/setup.bash && export ROS_LOCALHOST_ONLY=0 ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET", opts.distro)
 	if opts.iface != "" {
 		cycloneURI := fmt.Sprintf(`<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="%s"/></Interfaces></General><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`, opts.iface)
 		launchCommand += " && export CYCLONEDDS_URI='" + cycloneURI + "'"
@@ -295,7 +296,7 @@ CMD ["bash","-lc",%q]
   "platform": "linux",
   "version": "1.0.0",
   "frameworks": {
-    "ros2": { "domainId": %[1]d, "rmw": %[2]q, "distro": %[3]q, "discoveryScope": "host" }
+    "ros2": { "domainId": %[1]d, "rmw": %[2]q, "distro": %[3]q, "scope": "network" }
   },
   "entitlements": [
     { "type": "network", "mode": "host" }

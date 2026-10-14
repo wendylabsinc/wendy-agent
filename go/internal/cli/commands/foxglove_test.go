@@ -22,7 +22,7 @@ func TestWriteFoxgloveApp(t *testing.T) {
 	for _, want := range []string{
 		"FROM ros:humble",
 		"ros-humble-foxglove-bridge",
-		"export ROS_LOCALHOST_ONLY=0",
+		"export ROS_LOCALHOST_ONLY=0 ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET",
 		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=127.0.0.1 include_hidden:=true",
 	} {
 		if !strings.Contains(dfs, want) {
@@ -42,7 +42,7 @@ func TestWriteFoxgloveApp(t *testing.T) {
 		`"domainId": 3`,
 		`"rmw": "rmw_cyclonedds_cpp"`,
 		`"distro": "humble"`,
-		`"discoveryScope": "host"`,
+		`"scope": "network"`,
 		`"type": "network", "mode": "host"`,
 	} {
 		if !strings.Contains(wjs, want) {
