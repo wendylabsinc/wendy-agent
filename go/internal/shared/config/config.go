@@ -105,6 +105,11 @@ type AuthConfig struct {
 	RefreshToken   string            `json:"refreshToken,omitempty"`
 	DPoPPrivateKey string            `json:"dpopPrivateKey,omitempty"`
 	Certificates   []CertificateInfo `json:"certificates,omitempty"`
+	// LiteCertificate is the session's P-256 Lite operator leaf (leaf first,
+	// then chain), issued over the ML-DSA session and used only on the Lite
+	// lane. LitePrivateKey is its key.
+	LiteCertificate string `json:"liteCertificate,omitempty"`
+	LitePrivateKey  string `json:"litePrivateKey,omitempty"`
 	// ServiceAccount is the wendy-auth service-account sub of a headless
 	// session. Its token is re-minted from DPoPPrivateKey; there is no
 	// refresh token.

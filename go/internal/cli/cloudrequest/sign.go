@@ -20,8 +20,10 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
+	"github.com/wendylabsinc/wendy/go/proto/gen/pkicorepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -60,6 +62,36 @@ type Signer struct {
 // dropped so the next call registers again. The refusal cannot tell a stale
 // kid from a missing permission, so a second refusal is final.
 func Invoke(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, method string, req, reply proto.Message) error {
+	return invoke(ctx, conn, auth, method, req, reply, "")
+}
+
+// RevokePrincipalCertificates revokes the selected tenant's live device
+// certificates through Cloud's PKI relay. Both request signatures use the
+// same operator leaf. Each retry carries fresh PKI replay authority.
+func RevokePrincipalCertificates(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, deviceID string) (int, error) {
+	if deviceID == "" || len(deviceID) > 64 || strings.Trim(deviceID, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != "" {
+		return 0, fmt.Errorf("device ID must contain 1–64 letters, digits, dots, underscores or hyphens")
+	}
+	if auth == nil || len(auth.Certificates) == 0 {
+		return 0, fmt.Errorf("device revocation requires an operator certificate")
+	}
+	tenant, err := operatorTenant(auth.Certificates[0].PrincipalURI)
+	if err != nil {
+		return 0, err
+	}
+	reply := new(pkicorepb.RevokeByPrincipalResponse)
+	err = invoke(ctx, conn, auth, cloudpbv2.PKIAdminService_RevokePrincipalCertificates_FullMethodName,
+		&cloudpbv2.RevokePrincipalCertificatesRequest{OrganizationId: tenant}, reply, deviceID)
+	if err != nil {
+		return 0, err
+	}
+	if reply.GetRevokedCount() < 0 {
+		return 0, fmt.Errorf("Cloud returned an invalid revoked-certificate count")
+	}
+	return int(reply.GetRevokedCount()), nil
+}
+
+func invoke(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, method string, req, reply proto.Message, revokeDeviceID string) error {
 	s, err := newSigner(auth)
 	if err != nil {
 		return err
@@ -67,12 +99,39 @@ func Invoke(ctx context.Context, conn grpc.ClientConnInterface, auth *config.Aut
 	if s == nil {
 		return fmt.Errorf("%s requires an operator certificate; run 'wendy auth login'", method)
 	}
-	// One flow, one correlation_id, across registration and any retry.
-	correlationID := uuid.NewString()
+	// AAA §11.2: adopt an existing flow id unchanged. Registration and retries
+	// remain messages in that flow, not new origins. Match Cloud's existing
+	// CorrelationContext alphabet/64-byte bound; reject unsafe supplied values
+	// rather than sending a header that disagrees with the signed descriptor.
+	correlationID := ""
+	if md, ok := metadata.FromOutgoingContext(ctx); ok {
+		for _, value := range md.Get("x-correlation-id") {
+			if value != "" {
+				correlationID = value
+				break
+			}
+		}
+	}
+	if correlationID != "" {
+		if len(correlationID) > 64 || strings.IndexFunc(correlationID, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
+		}) >= 0 {
+			return fmt.Errorf("invalid supplied Cloud correlation id")
+		}
+	} else {
+		correlationID = uuid.NewString()
+	}
 	call := func(byKID bool) error {
 		signed, err := s.signRequest(method, req, byKID, correlationID)
 		if err != nil {
 			return err
+		}
+		if revokeDeviceID != "" {
+			management, err := s.principalRevocationManagementRequest(revokeDeviceID)
+			if err != nil {
+				return err
+			}
+			signed.PkiManagementRequest = management
 		}
 		return conn.Invoke(ctx, method, signed, reply)
 	}
@@ -245,11 +304,55 @@ func (s *Signer) signRequest(method string, req proto.Message, byKID bool, corre
 	if err != nil {
 		return nil, fmt.Errorf("signing Cloud request %s: %w", method, err)
 	}
-	return &cloudpbv2.SignedRequest{
+	signed := &cloudpbv2.SignedRequest{
 		Payload:     payload,
 		PayloadType: string(req.ProtoReflect().Descriptor().FullName()),
 		Signature:   []byte(jws),
-	}, nil
+	}
+	if method == cloudpbv2.AssetService_DeleteAsset_FullMethodName {
+		deletion := req.(*cloudpbv2.DeleteAssetRequest) // checked by signedResources
+		if deletion.ExpectedDeviceId != nil {
+			management, err := s.unenrollManagementRequest(deletion.GetExpectedDeviceId())
+			if err != nil {
+				return nil, err
+			}
+			signed.PkiManagementRequest = management
+		}
+	}
+	return signed, nil
+}
+
+// Cloud's shared unenrollment path relays this operator authority to PKI.
+// The same leaf signs both artifacts; this never calls PKI or revokes locally.
+func (s *Signer) unenrollManagementRequest(deviceID string) ([]byte, error) {
+	device, err := uuid.Parse(deviceID)
+	if err != nil || device.String() != deviceID {
+		return nil, fmt.Errorf("unenrollment requires a canonical device UUID")
+	}
+	return s.principalRevocationManagementRequest(deviceID)
+}
+
+// Principal revocation also supports Lite identities that are not UUIDs.
+// RevokePrincipalCertificates validates those IDs before issuing an RPC.
+func (s *Signer) principalRevocationManagementRequest(deviceID string) ([]byte, error) {
+	tenant, err := uuid.Parse(s.tenantUUID)
+	if err != nil || tenant.String() != s.tenantUUID {
+		return nil, fmt.Errorf("unenrollment requires a canonical operator tenant UUID")
+	}
+	now := s.now().Unix()
+	payload, err := canonicalJSON(map[string]any{
+		"op": "revoke_principal", "tenant": s.tenantUUID,
+		"principal": "spiffe://wendy.sh/tenant/" + s.tenantUUID + "/device/" + deviceID,
+		"iat":       now, "exp": now + int64(signatureTTL/time.Second), "jti": uuid.NewString(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encoding unenrollment authority: %w", err)
+	}
+	jws, err := s.signPayload(payload, map[string]any{"x5c": s.x5c})
+	if err != nil {
+		return nil, fmt.Errorf("signing unenrollment authority: %w", err)
+	}
+	return []byte(jws), nil
 }
 
 // signedResources maps each operator-signed method the CLI calls to its
@@ -263,6 +366,29 @@ var signedResources = map[string]func(tenant string, req proto.Message) (string,
 	cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
 		in, ok := req.(*cloudpbv2.EnrollDeviceRequest)
 		return "org/" + tenant + "/device/" + in.GetDeviceId(), ok
+	},
+	cloudpbv2.AssetService_DeleteAsset_FullMethodName: func(_ string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.DeleteAssetRequest)
+		if !ok {
+			return "", false
+		}
+		id, err := uuid.Parse(in.GetId())
+		if err != nil || id.String() != in.GetId() {
+			return "", false
+		}
+		return "asset/" + in.GetId(), true
+	},
+	cloudpbv2.PKIAdminService_RevokePrincipalCertificates_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.RevokePrincipalCertificatesRequest)
+		return "org/" + tenant + "/pki", ok && in.GetOrganizationId() == tenant
+	},
+	cloudpbv2.PKIAdminService_RevokeEnrollmentToken_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.RevokeEnrollmentTokenRequest)
+		return "org/" + tenant + "/pki", ok && in.GetOrganizationId() == tenant && in.GetTokenId() != ""
+	},
+	cloudpbv2.PKIAdminService_RevokeEABKey_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.RevokeEABKeyRequest)
+		return "org/" + tenant + "/pki", ok && in.GetOrganizationId() == tenant && in.GetKeyId() != ""
 	},
 }
 
@@ -304,6 +430,14 @@ func (s *Signer) sign(operation, resource, bodyDigest string, byKID bool, correl
 // EnrollmentRequest signs PKI's enrollment authority separately from the Cloud
 // RPC descriptor. PKI verifies this JWS against the tenant's Operator Authority.
 func EnrollmentRequest(auth *config.AuthConfig, deviceID string) ([]byte, error) {
+	return EnrollmentRequestForClass(auth, deviceID, "B")
+}
+
+// EnrollmentRequestForClass binds the operator authorization to a device tier.
+func EnrollmentRequestForClass(auth *config.AuthConfig, deviceID, deviceClass string) ([]byte, error) {
+	if deviceClass != "A" && deviceClass != "B" && deviceClass != "C" {
+		return nil, fmt.Errorf("invalid device class %q", deviceClass)
+	}
 	s, err := newSigner(auth)
 	if err != nil {
 		return nil, err
@@ -313,7 +447,7 @@ func EnrollmentRequest(auth *config.AuthConfig, deviceID string) ([]byte, error)
 	}
 	now := s.now().Unix()
 	payload, err := canonicalJSON(map[string]any{
-		"tenant": s.tenantUUID, "device_id": deviceID, "device_class": "B",
+		"tenant": s.tenantUUID, "device_id": deviceID, "device_class": deviceClass,
 		"iat": now, "exp": now + 300, "jti": uuid.NewString(),
 	})
 	if err != nil {
