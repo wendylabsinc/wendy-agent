@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
@@ -17,6 +18,27 @@ import (
 // installQEMUFn runs `brew install qemu`; indirected so tests can stub it
 // without invoking Homebrew.
 var installQEMUFn = installQEMUViaBrew
+
+var (
+	qemuConfirmFn = func(ctx context.Context, question string) (bool, error) {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		accepted, err := tui.ConfirmDefaultYes(question, tea.WithContext(ctx), tea.WithOutput(os.Stderr))
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		if errors.Is(err, tui.ErrCancelled) {
+			return false, ErrUserCancelled
+		}
+		return accepted, err
+	}
+	findQEMUFirmwareFn    = vm.FindFirmware
+	installQEMUFirmwareFn = installQEMUFirmwareViaBrew
+	ensureQEMUFirmwareFn  = func(ctx context.Context) (string, error) {
+		return ensureQEMUFirmwareForHostOS(ctx, runtime.GOOS, vm.BrewPrefix())
+	}
+)
 
 // vmAssumeYes accepts the VM prompts -- installing QEMU, and downloading the
 // simulator image. Bound to `wendy vm --yes` only: `wendy run --yes` resolves
@@ -32,6 +54,9 @@ var vmAssumeYes bool
 // Homebrew's qemu also ships the aarch64 UEFI firmware, so accepting here
 // resolves FindFirmware's separate failure at the same time.
 func ensureQEMUForHostOS(ctx context.Context, hostOS string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	binary := vm.Spec{}.Binary()
 	if _, err := qemuLookPathFn(binary); err == nil {
 		return nil
@@ -47,8 +72,18 @@ func ensureQEMUForHostOS(ctx context.Context, hostOS string) error {
 	if _, err := brewLookPathFn("brew"); err != nil {
 		return notFound
 	}
-	if !vmAssumeYes && !confirmFn("QEMU is required to run a WendyOS VM and was not found. Install it now with `brew install qemu`?") {
-		return notFound
+	if !vmAssumeYes {
+		cliLogln("QEMU runs the simulator and is not installed. Wendy can install it with `brew install qemu`.")
+		accepted, err := qemuConfirmFn(ctx, "Do you want to install QEMU?")
+		if err != nil {
+			return err
+		}
+		if !accepted {
+			return notFound
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := installQEMUFn(ctx); err != nil {
 		if errors.Is(err, ErrUserCancelled) {
@@ -67,14 +102,79 @@ func installQEMUViaBrew(ctx context.Context) error {
 	return brewInstallWithSpinner(ctx, "qemu", "Installing QEMU via Homebrew...")
 }
 
+// ensureQEMUFirmwareForHostOS also covers hosts where QEMU is already on PATH
+// but the ARM64 firmware was not installed or is unusable.
+func ensureQEMUFirmwareForHostOS(ctx context.Context, hostOS, brewPrefix string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	firmware, err := findQEMUFirmwareFn(hostOS, brewPrefix)
+	if err == nil {
+		return firmware, nil
+	}
+	if hostOS != "darwin" || !errors.Is(err, vm.ErrFirmwareNotFound) {
+		return "", err
+	}
+	if !isInteractiveTerminalFn() && !vmAssumeYes {
+		return "", err
+	}
+	if _, lookErr := brewLookPathFn("brew"); lookErr != nil {
+		return "", err
+	}
+	if !vmAssumeYes {
+		cliLogln("The simulator needs ARM64 firmware. Homebrew supplies it with QEMU; Wendy can install or reinstall that package to restore it.")
+		accepted, confirmErr := qemuConfirmFn(ctx, "Do you want to install QEMU's ARM64 firmware?")
+		if confirmErr != nil {
+			return "", confirmErr
+		}
+		if !accepted {
+			return "", err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if installErr := installQEMUFirmwareFn(ctx); installErr != nil {
+		if errors.Is(installErr, ErrUserCancelled) {
+			return "", installErr
+		}
+		return "", fmt.Errorf("installing QEMU's ARM64 firmware via Homebrew: %w", installErr)
+	}
+	firmware, err = findQEMUFirmwareFn(hostOS, brewPrefix)
+	if err != nil {
+		return "", fmt.Errorf("QEMU was installed via Homebrew but its ARM64 firmware is still unavailable: %w", err)
+	}
+	return firmware, nil
+}
+
+func installQEMUFirmwareViaBrew(ctx context.Context) error {
+	// Installing an existing formula does not restore missing package files.
+	// Reinstall only if Homebrew owns an installed QEMU package.
+	installed, err := exec.CommandContext(ctx, "brew", "list", "--versions", "qemu").Output()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err == nil && len(bytes.TrimSpace(installed)) > 0 {
+		return brewPackageWithSpinner(ctx, "reinstall", "qemu", "Restoring QEMU's ARM64 firmware via Homebrew...")
+	}
+	return installQEMUViaBrew(ctx)
+}
+
 // brewInstallWithSpinner runs `brew install <formula>` behind a spinner instead
 // of streaming Homebrew's own log; the captured output is printed only on
 // failure.
 func brewInstallWithSpinner(ctx context.Context, formula, label string) error {
+	return brewPackageWithSpinner(ctx, "install", formula, label)
+}
+
+func brewPackageWithSpinner(ctx context.Context, action, formula, label string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "brew", "install", formula)
+	cmd := exec.CommandContext(ctx, "brew", action, formula)
+	// Wendy already obtained consent. A second Homebrew prompt would have no
+	// input and its captured output would be hidden behind the spinner.
+	cmd.Env = append(os.Environ(), "HOMEBREW_NO_ASK=1")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
