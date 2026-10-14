@@ -45,9 +45,11 @@ func TestRootSkipsHousekeepingUnderSudo(t *testing.T) {
 		var stderr bytes.Buffer
 		root.SetErr(&stderr)
 		root.SetOut(io.Discard)
-		if err := root.Execute(); err != nil {
+		cmd, err := root.ExecuteC()
+		if err != nil {
 			t.Fatal(err)
 		}
+		FinishInvocation(cmd, err)
 		return stderr.String()
 	}
 

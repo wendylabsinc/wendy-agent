@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -49,6 +50,30 @@ func TestReportFailure_UserCancellationIsSilentSuccess(t *testing.T) {
 		var out strings.Builder
 		if code := reportFailure(&out, err, nil, []string{"--json"}); code != 0 || out.Len() != 0 {
 			t.Errorf("reportFailure(%v) = %d, %q; want 0 and no output", err, code, out.String())
+		}
+	}
+}
+
+func TestReportedExitIsSilentAndTrackedAsFailure(t *testing.T) {
+	clearCIEnv(t)
+	events := captureAnalytics(t)
+	root := &cobra.Command{Use: "wendy"}
+	project := &cobra.Command{Use: "project"}
+	command := &cobra.Command{Use: "optimize"}
+	root.AddCommand(project)
+	project.AddCommand(command)
+	err := fmt.Errorf("optimization report: %w", &commands.ReportedExitError{})
+
+	trackCommand(command, err, time.Millisecond)
+	if len(*events) != 1 || (*events)[0].event != "command_executed" ||
+		(*events)[0].props["command_name"] != "wendy project optimize" ||
+		(*events)[0].props["success"] != "false" || (*events)[0].props["error_class"] != "other" {
+		t.Fatalf("reported failure telemetry = %+v", *events)
+	}
+	for _, args := range [][]string{{"--json"}, {"--json=false"}} {
+		var stderr strings.Builder
+		if code := reportFailure(&stderr, err, command, args); code != 1 || stderr.Len() != 0 {
+			t.Errorf("reportFailure(%q) = %d, %q; want 1 and no stderr", args, code, stderr.String())
 		}
 	}
 }

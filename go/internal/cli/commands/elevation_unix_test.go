@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 )
 
 func TestThorElevationDecision(t *testing.T) {
@@ -150,7 +152,7 @@ func TestBuildSudoReexecArgs(t *testing.T) {
 // WENDY_CONFIG_DIR sent its writes to $HOME/.wendy instead.
 func TestThorSudoPreserveEnvKeepsWendySettings(t *testing.T) {
 	kept := strings.Split(strings.TrimPrefix(thorSudoPreserveEnv, "--preserve-env="), ",")
-	for _, want := range []string{"WENDY_ANALYTICS", "WENDY_CONFIG_DIR"} {
+	for _, want := range []string{"WENDY_ANALYTICS", "WENDY_CONFIG_DIR", "WENDY_TELEMETRY_ATTEMPT_ID", "WENDY_TELEMETRY_ENTRYPOINT"} {
 		found := false
 		for _, k := range kept {
 			if k == want {
@@ -159,6 +161,31 @@ func TestThorSudoPreserveEnvKeepsWendySettings(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("%s is not preserved through sudo: %q", want, thorSudoPreserveEnv)
+		}
+	}
+}
+
+func TestThorTelemetryEnvPreservesAttemptAcrossElevation(t *testing.T) {
+	for _, inherited := range [][]string{
+		{"HOME=/home/alice", "WENDY_TELEMETRY_ENTRYPOINT=tour"},
+		{"HOME=/home/alice", "WENDY_TELEMETRY_ENTRYPOINT=tour", "WENDY_TELEMETRY_ATTEMPT_ID=invalid"},
+		{"HOME=/home/alice", "WENDY_TELEMETRY_ENTRYPOINT=tour", "WENDY_TELEMETRY_ATTEMPT_ID=invalid", "WENDY_TELEMETRY_ATTEMPT_ID=duplicate"},
+	} {
+		got := thorTelemetryEnv(inherited)
+		if !containsEnv(got, "HOME=/home/alice") || !containsEnv(got, "WENDY_TELEMETRY_ENTRYPOINT=tour") {
+			t.Fatalf("unrelated environment was changed: %v", got)
+		}
+		attempts := 0
+		for _, entry := range got {
+			if strings.HasPrefix(entry, "WENDY_TELEMETRY_ATTEMPT_ID=") {
+				attempts++
+				if want := "WENDY_TELEMETRY_ATTEMPT_ID=" + analytics.AttemptID(nil); entry != want {
+					t.Errorf("attempt env = %q, want %q", entry, want)
+				}
+			}
+		}
+		if attempts != 1 {
+			t.Errorf("expected one attempt ID, got %d in %v", attempts, got)
 		}
 	}
 }

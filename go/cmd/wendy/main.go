@@ -44,22 +44,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Reject an unknown subcommand before cobra can quietly answer it with the
-	// parent group's help page and a zero exit code. See UnknownSubcommandError.
-	// A panic becomes an internal_error (exit 70) with an envelope in JSON
-	// mode, rather than Go's crash output and exit 2, the usage-error status.
-	executed, err := executeRecovering(func() (*cobra.Command, error) {
-		if err := commands.UnknownSubcommandError(os.Args[1:]); err != nil {
-			return nil, err
-		}
-		return cmd.ExecuteContextC(ctx)
-	})
-	executed = commandFor(cmd, os.Args[1:], executed, err)
-	if err != nil {
-		commands.NotifyCLIUpdateAfterFailure(executed)
-	}
+	executed, err := executeInvocation(ctx, cmd, os.Args[1:])
 	if !isReadOnlyInvocation(executed) {
 		trackCommand(executed, err, time.Since(start))
+		commands.FinishInvocation(executed, err)
 		analytics.Close()
 	}
 	exitCode := reportCommandResult(os.Stderr, err, executed, os.Args[1:], interactiveErrorTerminal())
@@ -76,11 +64,39 @@ func main() {
 	os.Exit(exitCode)
 }
 
+// Initialize and record the invocation before Cobra's help/validation exits or
+// a long-running command. Completion remains separate so a start never implies
+// success. Recovery also covers startup; errors retain only canonical paths in
+// telemetry, including an unknown subcommand's last recognized parent.
+func executeInvocation(ctx context.Context, root *cobra.Command, args []string) (*cobra.Command, error) {
+	if args == nil {
+		args = []string{} // Cobra treats nil as a request to read os.Args.
+	}
+	root.SetContext(ctx)
+	root.SetArgs(args)
+	var target *cobra.Command
+	executed, err := executeRecovering(func() (*cobra.Command, error) {
+		target = commands.PrepareInvocationAnalytics(root, args)
+		if err := commands.UnknownSubcommandError(args); err != nil {
+			return target, err
+		}
+		return root.ExecuteC()
+	})
+	executed = commandFor(root, args, executed, err)
+	if executed == nil {
+		executed = target
+	}
+	return executed, err
+}
+
 // Diagnostics and explicit update checks must not initialize telemetry or touch
 // configuration, including sudo ownership cleanup after command completion.
 func isReadOnlyInvocation(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return false
+	}
+	if commands.InvocationAnalyticsExcluded(cmd) && cmd.CommandPath() != "wendy analytics disable" {
+		return true
 	}
 	switch cmd.CommandPath() {
 	case "wendy doctor":
@@ -110,7 +126,7 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		return
 	}
 	path := executed.CommandPath()
-	if path == "wendy __session-broker" || isReadOnlyInvocation(executed) {
+	if path == "wendy __session-broker" || isReadOnlyInvocation(executed) || commands.InvocationAnalyticsExcluded(executed) {
 		return
 	}
 	// Homebrew exports HOMEBREW_PREFIX/HOMEBREW_CELLAR/HOMEBREW_REPOSITORY into
@@ -139,11 +155,11 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 	// Homebrew install artifact.
 	if event == "command_executed" {
 		analytics.TrackMilestoneOnce("first_run")
-		if !isSetupCommand(path) {
+		if !isSetupInvocation(executed) {
 			analytics.TrackMilestoneOnce("first_real_command")
 		}
 	}
-	if m := milestoneFor(path, err == nil); m != "" {
+	if m := milestoneFor(path, err == nil && !isSetupInvocation(executed)); m != "" {
 		analytics.TrackMilestoneOnce(m)
 	}
 }
@@ -198,6 +214,15 @@ func isSetupCommand(path string) bool {
 	}
 	return strings.HasPrefix(path, "wendy analytics") ||
 		strings.HasPrefix(path, "wendy cache")
+}
+
+func isSetupInvocation(cmd *cobra.Command) bool {
+	if !cmd.Runnable() || isSetupCommand(cmd.CommandPath()) {
+		return true
+	}
+	help, _ := cmd.Flags().GetBool("help")
+	versionOnly, _ := cmd.Flags().GetBool("version")
+	return help || versionOnly
 }
 
 // milestoneFor maps a successful command invocation to a one-time activation

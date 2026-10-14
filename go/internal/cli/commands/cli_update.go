@@ -10,7 +10,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cliupdate"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -43,9 +42,7 @@ func defaultCLIUpdaterDeps() cliUpdaterDeps {
 			if err != nil {
 				return
 			}
-			if analytics.Init(cfg) {
-				showFirstRunNotice(cmd, cfg)
-			}
+			initializeCommandAnalytics(cmd, cfg, true)
 		},
 		confirm: func(cmd *cobra.Command) (bool, error) {
 			return tui.ConfirmDefaultYes("Update now?", tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.ErrOrStderr()))
