@@ -151,6 +151,12 @@ class Bridge(Node):
         self.video_queue = queue.Queue()
         self.decoding = False
         threading.Thread(target=self.run_decoder, daemon=True).start()
+        # A stopped/restarting agent can consume the full command deadline. Keep
+        # that wait off the single-threaded ROS executor, and retain only the
+        # newest velocity while the worker is busy. The agent's 500 ms lease
+        # still stops an in-flight move if commands stop arriving.
+        self.cmd_vel_queue = queue.Queue(maxsize=1)
+        threading.Thread(target=self.run_cmd_vel, daemon=True).start()
         self.pose = None  # (stamp, position, quaternion_xyzw) from the latest odometry
         self.create_subscription(Twist, "/cmd_vel", self.on_cmd_vel, qos)
         self.create_subscription(Request, "/api/sport/request", self.on_sport_request, 10)
@@ -410,11 +416,29 @@ class Bridge(Node):
             log.warning("command %s failed: %s", name, e.details())
             return False
 
+    def run_cmd_vel(self):
+        while rclpy.ok():
+            try:
+                twist = self.cmd_vel_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if twist.linear.x == 0 and twist.linear.y == 0 and twist.angular.z == 0:
+                self.command("stop")
+            else:
+                self.command("move", twist.linear.x, twist.linear.y, twist.angular.z)
+
     def on_cmd_vel(self, twist):
-        if twist.linear.x == 0 and twist.linear.y == 0 and twist.angular.z == 0:
-            self.command("stop")
-        else:
-            self.command("move", twist.linear.x, twist.linear.y, twist.angular.z)
+        # Do not build a stale command backlog during an agent outage. Replacing
+        # the queued value also ensures a newly received stop supersedes a move.
+        while True:
+            try:
+                self.cmd_vel_queue.put_nowait(twist)
+                return
+            except queue.Full:
+                try:
+                    self.cmd_vel_queue.get_nowait()
+                except queue.Empty:
+                    pass
 
     def on_sport_request(self, request):
         identity = request.header.identity

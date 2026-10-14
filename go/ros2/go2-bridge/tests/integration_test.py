@@ -79,11 +79,16 @@ class FakeAgent(pb_grpc.WendyUnitreeRobotServiceServicer, pairing_grpc.WendyUnit
     def __init__(self):
         self.commands = []
         self.video = h264_frames()
+        self.block_commands = threading.Event()
+        self.command_started = threading.Event()
 
     def ListUnitreePairings(self, request, context):
         return pairing_pb.ListUnitreePairingsResponse(robots=[pairing_pb.UnitreeRobot(serial=SERIAL, paired=True, connected=True)])
 
     def Command(self, request, context):
+        self.command_started.set()
+        while self.block_commands.is_set() and context.is_active():
+            time.sleep(0.01)
         self.commands.append((pb.UnitreeCommand.Name(request.command).removeprefix("UNITREE_COMMAND_"),
                               round(request.forward, 3), round(request.lateral, 3), round(request.yaw, 3)))
         return pb.UnitreeCommandResponse()
@@ -116,9 +121,13 @@ def main():
     rclpy.init()
     node = rclpy.create_node("go2_bridge_check")
     received = {}
+    responses = {}
 
     def keep(name):
         return lambda msg: received.setdefault(name, msg)
+
+    def keep_response(msg):
+        responses[msg.header.identity.id] = msg
 
     for name, kind, topic in (("lowstate", LowState, "/lowstate"), ("sport", SportModeState, "/lf/sportmodestate"),
                               ("imu", Imu, "/imu/data"), ("joints", JointState, "/joint_states"),
@@ -128,9 +137,9 @@ def main():
                               ("joy", Joy, "/joy"), ("image", Image, "/camera/color/image_raw"),
                               ("h264", CompressedVideo, "/camera/color/h264"),
                               ("raw", String, "/go2/raw/lf/lowstate"),
-                              ("raw_lidar", UInt8MultiArray, "/go2/raw/utlidar/voxel_map_compressed"),
-                              ("response", Response, "/api/sport/response")):
+                              ("raw_lidar", UInt8MultiArray, "/go2/raw/utlidar/voxel_map_compressed")):
         node.create_subscription(kind, topic, keep(name), 10)
+    node.create_subscription(Response, "/api/sport/response", keep_response, 10)
     cmd_vel = node.create_publisher(Twist, "/cmd_vel", 10)
     sport = node.create_publisher(Request, "/api/sport/request", 10)
 
@@ -152,8 +161,26 @@ def main():
         sport.publish(request)
         sport.publish(sit)
         rclpy.spin_once(node, timeout_sec=0.1)
-        if ("MOVE" in str(agent.commands)) and ("HELLO" in str(agent.commands)) and "response" in received:
+        if ("MOVE" in str(agent.commands)) and ("HELLO" in str(agent.commands)) and 7 in responses and 8 in responses:
             break
+
+    # A command can consume its full deadline while the agent restarts. It must
+    # not occupy the single-threaded ROS executor and hold up unrelated topics.
+    agent.command_started.clear()
+    agent.block_commands.set()
+    cmd_vel.publish(twist)
+    blocked_deadline = time.monotonic() + 2
+    while time.monotonic() < blocked_deadline and not agent.command_started.is_set():
+        rclpy.spin_once(node, timeout_sec=0.05)
+    prompt = Request()
+    prompt.header.identity.id, prompt.header.identity.api_id = 9, 1009
+    started = time.monotonic()
+    sport.publish(prompt)
+    while time.monotonic() - started < 0.5 and 9 not in responses:
+        rclpy.spin_once(node, timeout_sec=0.05)
+    executor_responsive = 9 in responses
+    agent.block_commands.clear()
+
     bridge.terminate()
     bridge.wait(10)
 
@@ -183,6 +210,8 @@ def main():
         failures.append(f"commands {agent.commands[:5]}")
     if any(c[0] not in ("MOVE", "HELLO", "STOP") for c in agent.commands):
         failures.append(f"unexpected command {agent.commands}")
+    if not executor_responsive:
+        failures.append("a blocked agent command stalled the ROS executor")
     if failures:
         print("FAIL:", *failures, sep="\n  ")
         sys.exit(1)
