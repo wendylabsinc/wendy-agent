@@ -35,6 +35,10 @@ wendy --version
 The CLI runs on the computer where you write code. It does not replace that
 computer's operating system.
 
+The installer starts the tour when an interactive terminal is available. When
+it leaves setup for later, it prints `wendy tour` and `wendy tour --simulator`
+as next steps.
+
 On Windows, install with `winget install WendyLabs.Wendy --source winget`.
 The managed robot VM tour requires macOS or Linux. Windows users can follow the
 [physical-device guides](https://docs.wendy.dev/latest/#2-set-up-a-device) or try
