@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
@@ -52,6 +54,11 @@ func testOpened(t *testing.T, manifestVersion string) *cloudpbv2.OpenRelaySessio
 // runRelaySession serves one relay session against script. The user's
 // answers go to answers; they count as typed after the question.
 func runRelaySession(t *testing.T, opened *cloudpbv2.OpenRelaySessionResponse, policy wendymcp.BindingPolicy, answers <-chan string, script func(cloudpbv2.RelayMcpService_RelaySessionServer) error) (<-chan error, *lockedBuffer) {
+	done, out, _ := runRelaySessionWithTerminal(t, opened, policy, answers, script, nil, nil)
+	return done, out
+}
+
+func runRelaySessionWithTerminal(t *testing.T, opened *cloudpbv2.OpenRelaySessionResponse, policy wendymcp.BindingPolicy, answers <-chan string, script func(cloudpbv2.RelayMcpService_RelaySessionServer) error, input io.Reader, typed io.Writer) (<-chan error, *lockedBuffer, *promptTerminal) {
 	t.Helper()
 	for _, env := range []string{"WENDY_MCP_CHANNEL", "WENDY_MCP_CLIENT_ID", "WENDY_MCP_RELAY_SESSION_ID"} {
 		t.Setenv(env, "")
@@ -78,17 +85,111 @@ func runRelaySession(t *testing.T, opened *cloudpbv2.OpenRelaySessionResponse, p
 		t.Fatal(err)
 	}
 	out := &lockedBuffer{}
-	term := &promptTerminal{out: out, lines: make(chan typedLine)}
+	if input == nil {
+		reader, writer := io.Pipe()
+		t.Cleanup(func() { _ = reader.Close() })
+		t.Cleanup(func() { _ = writer.Close() })
+		input, typed = reader, writer
+	}
+	prompts := make(chan struct{}, 1)
+	term := newPromptTerminal(ctx, input, &relayPromptOutput{out: out, prompts: prompts})
+	stopWatchingTerminal := context.AfterFunc(term.ctx, cancel)
+	t.Cleanup(func() { stopWatchingTerminal() })
+	t.Cleanup(func() { _ = term.close() })
 	go func() {
-		for a := range answers {
-			term.lines <- typedLine{a, time.Now().Add(time.Hour)}
+		for {
+			select {
+			case <-prompts:
+			case <-term.ctx.Done():
+				return
+			}
+			select {
+			case a := <-answers:
+				if _, err := io.WriteString(typed, a); err != nil {
+					return
+				}
+			case <-term.ctx.Done():
+				return
+			}
 		}
 	}()
 	done := make(chan error, 1)
 	go func() {
-		done <- serveCloudMCP(ctx, stream, opened, term, wendymcp.New(&config.Config{}, nil), policy)
+		err := serveCloudMCP(term.ctx, stream, opened, term, wendymcp.New(&config.Config{}, nil), policy)
+		_ = term.close()
+		done <- err
 	}()
-	return done, out
+	return done, out, term
+}
+
+func TestCloudMCPAcceptedSessionStopsOnCtrlC(t *testing.T) {
+	keyboard, tty, err := pty.Open()
+	if errors.Is(err, pty.ErrUnsupported) {
+		t.Skip(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = keyboard.Close() })
+	t.Cleanup(func() { _ = tty.Close() })
+	answers := make(chan string, 1)
+	answers <- "y"
+	ready := make(chan struct{})
+	done, out, _ := runRelaySessionWithTerminal(t, testOpened(t, ""), wendymcp.BindingPolicy{}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
+		if err := stream.Send(pairing("b1", "ABCD-2345")); err != nil {
+			return err
+		}
+		if _, err := stream.Recv(); err != nil {
+			return err
+		}
+		if err := stream.Send(frame(1, "b1", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`)); err != nil {
+			return err
+		}
+		if _, err := stream.Recv(); err != nil {
+			return err
+		}
+		close(ready)
+		<-stream.Context().Done()
+		return stream.Context().Err()
+	}, tty, keyboard)
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("accepted MCP server did not initialize")
+	}
+	if _, err := keyboard.Write([]byte{3}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Ctrl-C returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ctrl-C did not stop the accepted relay session")
+	}
+	if !strings.Contains(out.String(), "Session closed.") {
+		t.Fatalf("missing shutdown message: %s", out.String())
+	}
+}
+
+// Answer only after the real picker has been rendered, as a terminal user would.
+type relayPromptOutput struct {
+	mu      sync.Mutex
+	out     *lockedBuffer
+	prompts chan<- struct{}
+	shown   int
+}
+
+func (w *relayPromptOutput) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.out.Write(p)
+	if shown := strings.Count(w.out.String(), "(y/n)"); shown > w.shown {
+		w.shown = shown
+		w.prompts <- struct{}{}
+	}
+	return n, err
 }
 
 func pairing(binding, code string) *cloudpbv2.RelaySessionResponse {
@@ -129,7 +230,7 @@ func TestCloudMCPDeniedPairingBindsNothing(t *testing.T) {
 	if len(decisions) != 2 || decisions[0].GetAccept() || decisions[1].GetAccept() || decisions[1].GetBindingId() != "b1" {
 		t.Fatalf("decisions %v, want b0 and b1 both denied", decisions)
 	}
-	if log := out.String(); strings.Count(log, "wants to pair, code ") != 2 || !strings.Contains(log, "code ABCD-2345: accept this signed-in connection across chats until this command exits?") {
+	if log := out.String(); strings.Count(log, "wants to pair") != 2 || !strings.Contains(log, "Pairing code") || !strings.Contains(log, "ABCD-2345") || !strings.Contains(log, "Accept this signed-in connection across chats until this command exits?") {
 		t.Fatalf("want each pairing asked about with its code:\n%s", log)
 	}
 }
@@ -287,18 +388,6 @@ func TestCloudMCPEndsOnFrameSequenceGap(t *testing.T) {
 	})
 	if err := <-done; err == nil || !strings.Contains(err.Error(), "out of sequence") {
 		t.Fatalf("serveCloudMCP = %v, want an out-of-sequence end", err)
-	}
-}
-
-func TestPromptTerminalIgnoresLinesTypedBeforeTheQuestion(t *testing.T) {
-	term := &promptTerminal{out: io.Discard, lines: make(chan typedLine)}
-	go func() {
-		term.lines <- typedLine{"y", time.Now().Add(-time.Minute)}
-		term.lines <- typedLine{"y", time.Now().Add(-time.Second)}
-		term.lines <- typedLine{"n", time.Now().Add(time.Minute)}
-	}()
-	if term.ask(context.Background(), "deploy? ") {
-		t.Fatal("a y typed before the question approved it")
 	}
 }
 

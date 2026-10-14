@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -18,11 +17,13 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc/codes"
@@ -68,8 +69,11 @@ func newCloudMCPCmd() *cobra.Command {
 				return err
 			}
 			defer closeConn()
-			term := newPromptTerminal(os.Stdin, cmd.ErrOrStderr())
-			return serveCloudMCP(ctx, stream, opened, term, srv, wendymcp.BindingPolicy{AllowAll: allowAll, Tools: allowTools, Session: auth})
+			term := newPromptTerminal(ctx, os.Stdin, cmd.ErrOrStderr())
+			stopWatchingTerminal := context.AfterFunc(term.ctx, stop)
+			defer stopWatchingTerminal()
+			err = serveCloudMCP(term.ctx, stream, opened, term, srv, wendymcp.BindingPolicy{AllowAll: allowAll, Tools: allowTools, Session: auth})
+			return errors.Join(err, term.close())
 		},
 	}
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the session to use")
@@ -192,7 +196,7 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 				term.printf("Denied %q: this CLI cannot serve the relay's published tool set.\n", name)
 			case served != nil:
 				term.printf("Denied %q: this session already serves %q.\n", name, client)
-			case term.ask(ctx, fmt.Sprintf("%q (%s) wants to pair, code %s: accept this signed-in connection across chats until this command exits? [y/N] ", name, id, code)):
+			case term.askPairing(ctx, name, id, code):
 				if err := cloudrequest.SetChannel(cloudpbv2.RequestChannel_REQUEST_CHANNEL_HOSTED_MCP, p.GetClientId(), opened.GetSessionId()); err != nil {
 					return err
 				}
@@ -203,7 +207,7 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 				client = name
 				policy.Confirm = func(ctx context.Context, tool string, args map[string]any) bool {
 					shown, _ := json.Marshal(args)
-					return term.ask(ctx, fmt.Sprintf("%q wants to run %s %s. Allow? [y/N] ", client, printable(tool), printable(string(shown))))
+					return term.ask(ctx, fmt.Sprintf("%q wants to run %s %s. Allow?", client, printable(tool), printable(string(shown))))
 				}
 				policy.Log = func(tool, outcome string) {
 					term.printf("%s  %q  %s  %s\n", time.Now().Format("15:04:05"), client, printable(tool), printable(outcome))
@@ -217,6 +221,9 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 			default:
 				term.printf("Denied %q.\n", name)
 			}
+			if ctx.Err() != nil {
+				return nil
+			}
 			if err := relay.send(&cloudpbv2.RelaySessionRequest{Msg: &cloudpbv2.RelaySessionRequest_PairingDecision{
 				PairingDecision: &cloudpbv2.PairingDecision{BindingId: p.GetBindingId()},
 			}}); err != nil {
@@ -224,6 +231,19 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 			}
 		}
 	}
+}
+
+func (t *promptTerminal) askPairing(ctx context.Context, name, id, code string) bool {
+	renderer := lipgloss.NewRenderer(t.out)
+	codeStyle := renderer.NewStyle().
+		Bold(true).
+		Foreground(tui.ColorPrimary).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(tui.ColorBorder).
+		Padding(0, 2)
+	t.printf("\n%q wants to pair\n%s\n\nPairing code\n%s\n\nCheck that this code matches the one in your web chat.\n",
+		name, renderer.NewStyle().Foreground(tui.ColorDim).Render(id), codeStyle.Render(code))
+	return t.ask(ctx, "Accept this signed-in connection across chats until this command exits?")
 }
 
 // printable replaces every rune a terminal could act on (controls, escape
@@ -346,68 +366,6 @@ func (w *frameWriter) Write(p []byte) (int, error) {
 			Frame: &cloudpbv2.McpFrame{BindingId: w.binding, Message: msg},
 		}}); err != nil {
 			return 0, err
-		}
-	}
-}
-
-// promptTerminal serializes the session's yes/no questions and log lines on
-// the user's terminal; MCP frames never touch it.
-type promptTerminal struct {
-	mu    sync.Mutex
-	out   io.Writer
-	lines chan typedLine
-}
-
-type typedLine struct {
-	text string
-	at   time.Time
-}
-
-func newPromptTerminal(in io.Reader, out io.Writer) *promptTerminal {
-	t := &promptTerminal{out: out, lines: make(chan typedLine, 64)}
-	go func() {
-		// Never blocks, so each line is stamped when it arrives, not when a
-		// question takes it; a full buffer drops lines nobody asked for.
-		scanner := bufio.NewScanner(in)
-		for scanner.Scan() {
-			select {
-			case t.lines <- typedLine{scanner.Text(), time.Now()}:
-			default:
-			}
-		}
-		close(t.lines)
-	}()
-	return t
-}
-
-func (t *promptTerminal) printf(format string, args ...any) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	fmt.Fprintf(t.out, format, args...)
-}
-
-// ask reports whether the user answered y or yes. A line typed before the
-// question was shown cannot answer it, so a stray "y" never approves a call
-// the user has not seen; ctx ending or closed input answers no.
-func (t *promptTerminal) ask(ctx context.Context, question string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	fmt.Fprint(t.out, question)
-	asked := time.Now()
-	for {
-		select {
-		case line, ok := <-t.lines:
-			if !ok {
-				return false
-			}
-			if line.at.Before(asked) {
-				continue
-			}
-			answer := strings.ToLower(strings.TrimSpace(line.text))
-			return answer == "y" || answer == "yes"
-		case <-ctx.Done():
-			fmt.Fprintln(t.out)
-			return false
 		}
 	}
 }
