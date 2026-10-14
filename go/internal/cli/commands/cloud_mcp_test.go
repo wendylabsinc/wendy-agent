@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -128,12 +129,12 @@ func TestCloudMCPDeniedPairingBindsNothing(t *testing.T) {
 	if len(decisions) != 2 || decisions[0].GetAccept() || decisions[1].GetAccept() || decisions[1].GetBindingId() != "b1" {
 		t.Fatalf("decisions %v, want b0 and b1 both denied", decisions)
 	}
-	if log := out.String(); strings.Count(log, "wants to pair, code ") != 2 || !strings.Contains(log, "code ABCD-2345: accept?") {
+	if log := out.String(); strings.Count(log, "wants to pair, code ") != 2 || !strings.Contains(log, "code ABCD-2345: accept this signed-in connection across chats until this command exits?") {
 		t.Fatalf("want each pairing asked about with its code:\n%s", log)
 	}
 }
 
-// A relay that showed the chat another tool set (or none) gets no pairing,
+// A relay that showed the chat an unknown tool set (or none) gets no pairing,
 // and the user is never asked.
 func TestCloudMCPManifestMismatchDeniesPairing(t *testing.T) {
 	var decision *cloudpbv2.PairingDecision
@@ -151,8 +152,66 @@ func TestCloudMCPManifestMismatchDeniesPairing(t *testing.T) {
 	if decision == nil || decision.GetAccept() || decision.GetBindingId() != "b1" {
 		t.Fatalf("decision %v, want b1 denied", decision)
 	}
-	if log := out.String(); !strings.Contains(log, "Warning:") || strings.Contains(log, "accept?") {
+	if log := out.String(); !strings.Contains(log, "Warning:") || strings.Contains(log, "wants to pair") {
 		t.Fatalf("want a warning and no question:\n%s", log)
+	}
+}
+
+func TestCloudMCPCompatibleRelayPinsPublishedTools(t *testing.T) {
+	answers := make(chan string, 1)
+	answers <- "y"
+	var accepted *cloudpbv2.PairingDecision
+	var replies []*cloudpbv2.McpFrame
+	done, out := runRelaySession(t, testOpened(t, "2026.10.13-212424+7d3624a60bf68a8c"), wendymcp.BindingPolicy{AllowAll: true}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
+		if err := stream.Send(pairing("b1", "ABCD-2345")); err != nil {
+			return err
+		}
+		got, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		accepted = got.GetPairingDecision()
+		for seq, msg := range []string{
+			`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"simulator_start","arguments":{"name":"dev"}}}`,
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"simulator_create","arguments":{"name":"dev","profile":"wendy-lite"}}}`,
+		} {
+			if err := stream.Send(frame(uint64(seq+1), "b1", msg)); err != nil {
+				return err
+			}
+			reply, err := stream.Recv()
+			if err != nil {
+				return err
+			}
+			replies = append(replies, reply.GetFrame())
+		}
+		return nil
+	})
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !accepted.GetAccept() || len(replies) != 3 {
+		t.Fatalf("compatible pairing did not serve tools: accepted=%v replies=%d", accepted, len(replies))
+	}
+	var listed struct {
+		Result struct{ Tools []json.RawMessage }
+	}
+	if err := json.Unmarshal(replies[0].GetMessage(), &listed); err != nil || len(listed.Result.Tools) != 58 || strings.Contains(string(replies[0].GetMessage()), `"simulator_start"`) {
+		t.Fatalf("session did not pin the older 58-tool catalog: %s (%v)", replies[0].GetMessage(), err)
+	}
+	for i, want := range []string{"NOT_FOUND", "INVALID_ARGUMENT"} {
+		var call struct {
+			Result struct {
+				IsError           bool           `json:"isError"`
+				StructuredContent map[string]any `json:"structuredContent"`
+			}
+		}
+		if err := json.Unmarshal(replies[i+1].GetMessage(), &call); err != nil || !call.Result.IsError || call.Result.StructuredContent["error_code"] != want {
+			t.Fatalf("unpublished call replied %s, want %s (%v)", replies[i+1].GetMessage(), want, err)
+		}
+	}
+	if log := out.String(); strings.Contains(log, "Warning:") || strings.Contains(log, "wants to run") {
+		t.Fatalf("compatible catalog warned or unpublished call reached confirmation:\n%s", log)
 	}
 }
 
@@ -293,4 +352,25 @@ func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.String()
+}
+
+// Cloud serves RelayMcpService only on the tunnel broker; the API host answers
+// Unimplemented, so the relay session must never dial auth.CloudGRPC on dev.
+func TestCloudMCPRelaySessionDialsTunnelBroker(t *testing.T) {
+	for cloudGRPC, want := range map[string]string{
+		"api.dev.wendy.sh:443":  "tunnel.dev.wendy.dev:443",
+		"api.dev.wendy.dev:443": "tunnel.dev.wendy.dev:443",
+		"cloud.example:443":     "cloud.example:443",
+		"localhost:50051":       "localhost:50051",
+	} {
+		auth := &config.AuthConfig{CloudGRPC: cloudGRPC}
+		conn, _, err := dialLiteCloudBroker(context.Background(), auth, relayBrokerEndpoint(cloudGRPC), &tls.Config{MinVersion: tls.VersionTLS12})
+		if err != nil {
+			t.Fatalf("%s: %v", cloudGRPC, err)
+		}
+		if got := conn.Target(); got != want {
+			t.Errorf("%s: relay session dials %s, want %s", cloudGRPC, got, want)
+		}
+		_ = conn.Close()
+	}
 }

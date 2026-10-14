@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -79,16 +82,21 @@ type relayStream = cloudpbv2.RelayMcpService_RelaySessionClient
 
 // openRelaySession opens a Relay MCP session (docs/relay-mcp.md in
 // service-protos): the operator-signed OpenRelaySession, then the session's
-// one stream, attached with its session_id. The stream lives with ctx.
+// one stream, attached with its session_id. The stream lives with ctx. Both go
+// to the tunnel broker, where Cloud serves RelayMcpService, not the API host.
 func openRelaySession(ctx context.Context, auth *config.AuthConfig) (relayStream, *cloudpbv2.OpenRelaySessionResponse, func(), error) {
 	if len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() == "" {
 		return nil, nil, nil, fmt.Errorf("wendy cloud mcp needs an operator session; run 'wendy auth login'")
 	}
-	tokenCtx, err := cloudContext(ctx, auth)
-	if err != nil {
-		return nil, nil, nil, err
+	if auth.OAuthIssuer != "" {
+		// The broker dial authenticates with a copy aimed at the broker host,
+		// which cannot find its config entry to refresh: refresh this one first.
+		if err := ensureOAuthAccessToken(ctx, auth); err != nil {
+			return nil, nil, nil, err
+		}
 	}
-	conn, err := dialCloudGRPC(auth)
+	endpoint := relayBrokerEndpoint(auth.CloudGRPC)
+	conn, tokenCtx, err := dialLiteCloudBroker(ctx, auth, endpoint, &tls.Config{MinVersion: tls.VersionTLS12})
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -108,9 +116,24 @@ func openRelaySession(ctx context.Context, auth *config.AuthConfig) (relayStream
 	case codes.PermissionDenied:
 		return nil, nil, nil, fmt.Errorf("Wendy Cloud refused the relay session; your organization must allow MCP and Hosted MCP: %w", err)
 	case codes.Unimplemented:
-		return nil, nil, nil, fmt.Errorf("this Wendy Cloud does not run the MCP relay yet: %w", err)
+		return nil, nil, nil, fmt.Errorf("this Wendy Cloud does not run the MCP relay yet (%s): %w", endpoint, err)
 	}
-	return nil, nil, nil, fmt.Errorf("opening the relay session: %w", err)
+	return nil, nil, nil, fmt.Errorf("opening the relay session at %s: %w", endpoint, err)
+}
+
+// relayBrokerEndpoint is the tunnel broker's gRPC listener (tunnel.<env>:443)
+// for a Cloud gRPC host. Only dev runs a tunnel broker host today; any other
+// Cloud (prod, self-hosted, local) keeps its own gRPC host.
+func relayBrokerEndpoint(cloudGRPC string) string {
+	host, _, _ := net.SplitHostPort(cloudGRPC)
+	switch host {
+	case "api.dev.wendy.sh", "api.dev.wendy.dev":
+		return "https://tunnel.dev.wendy.dev:443"
+	}
+	if clouddefaults.UsesPublicCA(cloudGRPC) {
+		return "https://" + cloudGRPC
+	}
+	return "http://" + cloudGRPC
 }
 
 // serveCloudMCP runs one relay session: it asks the
@@ -140,11 +163,13 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 		term.printf("Session closed.\n")
 	}()
 
-	// A relay that showed the chat a different tool set than this CLI
-	// serves, or none (no manifest_version), gets no pairing: fail closed.
-	manifestErr := wendymcp.CheckRelayManifest(opened.GetManifestVersion())
+	// Pin the session to the relay's reviewed catalog. Newer CLI tools stay
+	// unavailable until the relay advertises them; unknown catalogs fail closed.
+	manifest, manifestErr := wendymcp.ResolveRelayManifest(opened.GetManifestVersion())
 	if manifestErr != nil {
-		term.printf("Warning: %v. Every pairing request will be denied; update the CLI or wait for the relay to publish this tool set.\n", manifestErr)
+		term.printf("Warning: %v. Every pairing request will be denied.\n", manifestErr)
+	} else {
+		policy.RelayManifest = manifest
 	}
 	term.printf("Waiting for a web chat to pair: use the Wendy connector there, then check that the code it shows matches the one asked about here. Press Ctrl-C to end the session.\n")
 	var client string
@@ -164,10 +189,10 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 			name, id, code := printable(p.GetClientName()), printable(p.GetClientId()), printable(p.GetCode())
 			switch {
 			case manifestErr != nil:
-				term.printf("Denied %q: the relay's tool manifest does not match this CLI.\n", name)
+				term.printf("Denied %q: this CLI cannot serve the relay's published tool set.\n", name)
 			case served != nil:
 				term.printf("Denied %q: this session already serves %q.\n", name, client)
-			case term.ask(ctx, fmt.Sprintf("%q (%s) wants to pair, code %s: accept? [y/N] ", name, id, code)):
+			case term.ask(ctx, fmt.Sprintf("%q (%s) wants to pair, code %s: accept this signed-in connection across chats until this command exits? [y/N] ", name, id, code)):
 				if err := cloudrequest.SetChannel(cloudpbv2.RequestChannel_REQUEST_CHANNEL_HOSTED_MCP, p.GetClientId(), opened.GetSessionId()); err != nil {
 					return err
 				}
@@ -183,7 +208,7 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 				policy.Log = func(tool, outcome string) {
 					term.printf("%s  %q  %s  %s\n", time.Now().Format("15:04:05"), client, printable(tool), printable(outcome))
 				}
-				term.printf("Serving %q. Read-only tools run without asking.\n", client)
+				term.printf("Serving %q for this signed-in connection. Read-only tools run without asking.\n", client)
 				served = make(chan error, 1)
 				go func() {
 					served <- srv.Serve(ctx, &policy, in, &frameWriter{relay: relay, binding: p.GetBindingId()})
