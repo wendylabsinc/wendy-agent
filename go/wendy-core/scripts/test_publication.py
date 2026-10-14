@@ -41,6 +41,17 @@ class PublicationTests(unittest.TestCase):
             return {"sha": current_sha}
         return response
 
+    def test_authenticated_redirects_do_not_leak_credentials(self):
+        from urllib.request import Request
+        request = Request("https://maven.pkg.github.com/source", headers={"Authorization": "Basic secret"})
+        handler = publication.SafeRedirect()
+        same = handler.redirect_request(request, None, 302, "Found", {}, "https://maven.pkg.github.com/other")
+        self.assertEqual(same.get_header("Authorization"), "Basic secret")
+        other = handler.redirect_request(request, None, 302, "Found", {}, "https://artifacts.example/download")
+        self.assertIsNone(other.get_header("Authorization"))
+        with self.assertRaises(ValueError):
+            handler.redirect_request(request, None, 302, "Found", {}, "http://artifacts.example/download")
+
     def test_rederive_preview_from_trusted_run_metadata(self):
         run = self.run_info("pull_request", "feature")
         with patch.object(publication, "api", side_effect=self.api(run)):

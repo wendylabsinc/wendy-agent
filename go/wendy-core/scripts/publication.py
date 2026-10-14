@@ -7,9 +7,24 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from versioning import STABLE, derive, validate
+
+
+class SafeRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, url):
+        if urlsplit(url).scheme != "https":
+            raise ValueError("Authenticated downloads must remain on HTTPS")
+        redirected = super().redirect_request(request, response, code, message, headers, url)
+        if redirected is not None and urlsplit(request.full_url).netloc != urlsplit(url).netloc:
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+def authenticated_open(request):
+    return build_opener(SafeRedirect()).open(request, timeout=30)
 
 
 def api(path, data=None):
@@ -17,7 +32,7 @@ def api(path, data=None):
                       headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
                                "Accept": "application/vnd.github+json"},
                       data=json.dumps(data).encode() if data is not None else None)
-    with urlopen(request, timeout=30) as response:
+    with authenticated_open(request) as response:
         return json.load(response)
 
 
@@ -157,7 +172,7 @@ def maven(directory, repository, expected):
         file = Path(str(prefix) + suffix)
         url = f"https://maven.pkg.github.com/{repository}/dev/wendy/wendy-core/{quote(value, safe='')}/{file.name}"
         try:
-            with urlopen(Request(url, headers={"Authorization": "Basic " + credentials}), timeout=30) as response:
+            with authenticated_open(Request(url, headers={"Authorization": "Basic " + credentials})) as response:
                 checksum = hashlib.sha256()
                 while chunk := response.read(1024 * 1024):
                     checksum.update(chunk)
