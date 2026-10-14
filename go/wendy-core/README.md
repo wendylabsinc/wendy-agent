@@ -1,6 +1,6 @@
-# Townhall — Wendy Core
+# Wendy Core
 
-Wendy Core is a standalone, SemVer-versioned Go engine with language-consumable distributions. Wendy Swift, Wendy Python, Wendy Kotlin, etc. are separate SDK layers; they are not implemented here yet.
+`wendy-core` is the standalone, strict-SemVer release unit for the portable engine, selected modules, public contracts and included platform/subsystem implementations. Go is the chosen engine implementation. Core ships in language-consumable distributions. Wendy Swift, Wendy Python, Wendy Kotlin, etc. are separate SDK layers; they are not implemented here yet.
 
 The runnable contract currently exports **one operation**, `WendyHelloWorld()`, returning the integer **42**. Every incarnation reaches the same implementation in `core/core.go`. No device, Cloud, authentication, or platform-capability behavior is implemented.
 
@@ -8,9 +8,14 @@ The runnable contract currently exports **one operation**, `WendyHelloWorld()`, 
 
 ```text
 core/                    Public Go incarnation; no C round trip
+  runtime/               Shared runtime foundation placeholder
+  identity/              Proposed domain placeholder
+  devices/               Proposed domain placeholder
+  applications/          Proposed domain placeholder
+  events/                Proposed domain placeholder
 cmd/wendy-core-native/   Go engine exported through the C bridge
 cmd/wendy-core-wasm/     The same Go engine compiled for browsers
-include/WendyCore/       Canonical public C contract
+include/WendyCore/       Public C headers: binding API + reserved platform SPI
 proto/                   Reserved structured Core schemas
 internal/bridge/         Private native-loader mechanics
 
@@ -21,7 +26,8 @@ distributions/
   kotlin/                Kotlin/JVM Maven artifact
 
 bindings/                Future language SDKs, not Core incarnations
-platform/                Independent platform families and variants
+platform/                Included adapter families/variants; Core-versioned
+subsystems/              Reusable infrastructure behind explicit contracts
 documentation/           Contract, projection, versioning and release guides
 examples/                HelloWorld consumers in all six languages
 tools/                   Build, generation and release mechanics
@@ -36,7 +42,7 @@ One SDK family serves Companion/CLI, WendyOS/Agent, and apps using Wendy capabil
 
 Portable Core sits between a stable binding contract above and a platform-capability SPI below. Substantial infrastructure such as container execution has separate subsystem contracts so it can remain reusable even if Core were theoretically implemented in another language. Go remains the chosen implementation; alternative engines are not planned.
 
-See [architecture and boundaries](documentation/architecture.md) for the diagrams, module/composition principles and implementation-neutral contracts. These are recorded design decisions, not features already implemented by the HelloWorld bootstrap.
+See [architecture and boundaries](documentation/architecture.md) for the diagrams and implementation-neutral contracts, and [module composition](documentation/modules.md) for dependency/scaffold rules. These are recorded design decisions, not features already implemented by the HelloWorld bootstrap.
 
 ## Try it
 
@@ -52,7 +58,7 @@ make documentation       # Doxygen HTML/XML under .build/sdk/site
 ```
 
 ```go
-import "github.com/wendylabsinc/townhall/core"
+import "github.com/wendylabsinc/wendy-core/core"
 value := core.WendyHelloWorld() // 42; directly in Go
 ```
 
@@ -81,7 +87,7 @@ This is the configured CI matrix, not a claim that hosted CI has already run. Lo
 
 ## Release boundary
 
-`VERSION` is the shared Core release version. All incarnations ship that version, not separate implementations or independent versions. Later SDKs depend on compatible Core releases and have independent release trains.
+`VERSION` is the shared Core release version. The runtime, selected modules, binding/platform/subsystem contracts and included adapters/backends belong to that release. All incarnations ship that version, not separate implementations or independent module/platform versions. Later SDKs depend on compatible Core releases and have independent release trains.
 
 See [releasing](documentation/releasing.md) for packaging, registry configuration, and publication gates. Nothing is published by merely pushing `main`. This local repository has no configured remote yet.
 

@@ -251,7 +251,7 @@ def pack(artifacts):
     if len(list(release.glob("*.whl"))) != len(TARGETS):
         raise ValueError("Every native target must contribute a Python wheel")
     (release / "SHA256SUMS").write_text("".join(f"{digest(path)}  {path.name}\n" for path in sorted(release.iterdir()) if path.is_file()))
-    (release / "release.json").write_text(json.dumps({"version": version(), "targets": TARGETS, "javascript": ["node", "browser"], "goModule": "github.com/wendylabsinc/townhall/core"}, indent=2) + "\n")
+    (release / "release.json").write_text(json.dumps({"version": version(), "targets": TARGETS, "javascript": ["node", "browser"], "goModule": "github.com/wendylabsinc/wendy-core/core"}, indent=2) + "\n")
 
 
 def seal():

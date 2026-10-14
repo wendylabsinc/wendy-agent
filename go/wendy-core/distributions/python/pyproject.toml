@@ -7,3 +7,6 @@ name = "wendy-core"
 version = "0.1.0"
 description = "The Python incarnation of Wendy Core, not the Wendy Python SDK"
 requires-python = ">=3.9"
+
+[project.urls]
+Repository = "https://github.com/wendylabsinc/wendy-core"

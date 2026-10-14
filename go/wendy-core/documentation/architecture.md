@@ -4,15 +4,16 @@ This page preserves the agreed direction. It is not a claim that the modules, ru
 
 ## Names and release boundaries
 
-- **Townhall**: repository codename.
+- **`wendy-core`**: canonical repository and coordinated Core release unit. Townhall is the historical codename.
+- **WendyOS**: operating system and device-image integration, distinct from the reusable Core. This scaffold does not rename or migrate the existing OS/Agent repositories.
 - **Wendy Core**: portable engine and its contracts, independently released in language-consumable incarnations. The implementation is Go; implementation-language independence is a design constraint, not a plan to build alternative engines.
-- **Wendy Platform**: native capabilities, implemented in the platform's appropriate language.
+- **Wendy Platform**: native capabilities, implemented in the platform's appropriate language, inside `wendy-core/platform/`. These adapters use the Core version, not an independent platform release train.
 - **Wendy Swift / Wendy Python / Wendy Kotlin / Wendy JavaScript / Wendy Go / Wendy C**: language SDKs above Core, collectively the **Wendy SDK**. Ergonomic SDK layers are not implemented by this bootstrap; the full C SDK remains deferred.
 - **WendyRuntime**: shared runtime foundation used by the selected modules, not a separate engine instantiated by each module.
 
 Spaced names are used in prose; joined names such as `WendyCore` are used where a code/module identifier is needed. Repository organizational directories are lowercase; language conventions such as SwiftPM `Sources` and public C `WendyCore` are retained.
 
-One Core version has C, Go, SwiftPM, Python, Maven and npm incarnations. These packages contain necessary interop, not independent product implementations. Modular Core artifacts remain part of one coordinated Core SemVer release. SDKs can independently version their ergonomic layers and declare compatible Core dependencies. See [releasing](releasing.md) for current distribution mechanics and compatibility obligations.
+One strict-SemVer Core release covers the shared runtime, selected modules, binding/platform/subsystem contracts and included adapters/backends. There is no independent module or platform version stream. One Core version has C, Go, SwiftPM, Python, Maven and npm incarnations. These packages contain necessary interop, not independent product implementations. Modular Core artifacts remain part of one coordinated Core SemVer release. SDKs can independently version their ergonomic layers and declare compatible Core dependencies. See [releasing](releasing.md) for current distribution mechanics and compatibility obligations.
 
 ## One SDK family, three consumer roles
 
@@ -70,7 +71,7 @@ Application
 - Avoid one separately compiled Go shared library per domain: that can duplicate Go runtimes/common code and complicate shared ownership and handles.
 - Measure the final native/WASM payload, not just the import graph. Wrapper tree-shaking does not reliably remove an already-built native library or exported WASM functionality. The Go runtime also imposes a baseline size.
 
-The current bootstrap has a single-operation engine, not selective module builds. No new package/repository/version stream is required merely to record a logical module. Physical separation should serve dependency and size requirements, not create machinery for its own sake.
+The [module scaffold](modules.md) reserves the runtime/domain directories and documents composition rules; they contain responsibility notes, not module APIs or Go packages. The current bootstrap has a single-operation engine, not selective module builds. No new package/repository/version stream is required merely to record a logical module. Physical separation should serve dependency and size requirements, not create machinery for its own sake.
 
 ## Two hard boundaries around portable Core
 
@@ -123,13 +124,15 @@ JavaScript has one npm package, a shared public ESM interface and TypeScript dec
 
 ### Lower boundary: native capabilities
 
-Platform adapters expose narrow capabilities rather than product workflows. Examples include hardware-backed keys, native discovery, lifecycle/background execution and native I/O. An Apple adapter may be Swift while serving Python, Kotlin or JavaScript consumers; adapter implementation language is independent of the binding language.
+Public C/C++ headers use the conventional `include/` root. `include/WendyCore/WendyCore.h` declares the upper API. `include/WendyCore/WendyPlatform.h` reserves the lower provider contract but deliberately declares no capabilities or registration API yet. Private headers remain beside implementation code. Both public boundaries are covered by Core compatibility guarantees.
+
+Platform adapters are included components of the `wendy-core` release; living in the same repository does not collapse their boundary. Builds include only the necessary adapters/capabilities. Platform adapters expose narrow capabilities rather than product workflows. Examples include hardware-backed keys, native discovery, lifecycle/background execution and native I/O. An Apple adapter may be Swift while serving Python, Kotlin or JavaScript consumers; adapter implementation language is independent of the binding language.
 
 Distinguish unsupported capability, temporary unavailability and permission denial. A uniform interface must not imply identical capability availability or silently change product behavior across bindings/platform variants.
 
 ## Subsystem boundaries beside Core
 
-Keep substantial infrastructure reusable independently of the Core implementation. Distinguish platform primitives from coherent subsystem backends such as container execution and image management:
+The `subsystems/` scaffold reserves reusable infrastructure implementations and an `execution/` responsibility placeholder. Included implementations share the Core version; these directories do not introduce an independent release or implemented backend. Keep substantial infrastructure reusable independently of the Core implementation. Distinguish platform primitives from coherent subsystem backends such as container execution and image management:
 
 ```text
                 Language SDKs

@@ -48,6 +48,8 @@ check: generate native
 	go vet ./...
 	$(PYTHON) -m unittest discover -s tools -p 'test_*.py' -v
 	clang++ -x c++ -std=c++17 -fsyntax-only -Iinclude examples/c/hello.c
+	printf '#include <WendyCore/WendyPlatform.h>\n' | clang -x c -std=c11 -fsyntax-only -Iinclude -
+	printf '#include <WendyCore/WendyPlatform.h>\n' | clang++ -x c++ -std=c++17 -fsyntax-only -Iinclude -
 
 compare-clean: documentation-manifest
 	cmp documentation/versions/$(VERSION).json $(BUILD_DIR)/api.json

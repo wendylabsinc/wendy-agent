@@ -7,7 +7,7 @@ import (
 	"os"
 	"syscall/js"
 
-	"github.com/wendylabsinc/townhall/core"
+	"github.com/wendylabsinc/wendy-core/core"
 )
 
 func main() {

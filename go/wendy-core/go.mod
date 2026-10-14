@@ -1,4 +1,4 @@
-module github.com/wendylabsinc/townhall
+module github.com/wendylabsinc/wendy-core
 
 go 1.24.0
 

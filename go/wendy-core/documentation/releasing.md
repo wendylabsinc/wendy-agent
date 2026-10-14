@@ -2,6 +2,8 @@
 
 ## One version, multiple incarnations
 
+`wendy-core` is the release unit: shared runtime, selected modules, public binding/platform/subsystem contracts and included platform adapters/infrastructure implementations. They share one Core version and compatibility policy, not independent module or platform release trains. A common source repository does not imply including all domains, adapters or backends in every consumer artifact. Ergonomic language SDKs can release independently against compatible Core versions.
+
 `VERSION`, npm metadata, Python metadata, and Kotlin's `coreVersion` must agree. Releases currently use stable SemVer `x.y.z` tags (`vx.y.z`). SwiftPM mirrors and Go use that same tag. Prerelease publication is intentionally not wired yet.
 
 Strict compatibility includes C ABI, public Go APIs, protobuf wire values, platform SPI, language projection semantics, and documented behavior/support guarantees. Adding capability is a minor release; a compatible fix is a patch; a breaking change requires a major release, including before 1.0 under this project's explicit policy. Removing the demo operation is therefore not silently allowed in a patch/minor release. Go major versions must also follow Go's module-path rules.
@@ -34,13 +36,13 @@ A pushed Go module tag is already discoverable independently of the registry job
 | Incarnation | Publication |
 |---|---|
 | C | GitHub Release native archives with headers, schemas and Go runtime notice |
-| Go | The Core repository's ordinary SemVer tag; import `github.com/wendylabsinc/townhall/core` |
+| Go | The Core repository's ordinary SemVer tag; import `github.com/wendylabsinc/wendy-core/core` |
 | JavaScript | One public npm package, `@wendylabs/core`, including all supported Node binaries and browser WASM |
 | Python | `wendy-core` on PyPI, one wheel per supported native target |
 | Kotlin/JVM | `dev.wendy:wendy-core` in this repository's GitHub Maven registry |
 | Swift | Generated, separately consumable SwiftPM distribution repository and matching tag, plus a release source archive |
 
-Package names above are bootstrap identities; verify ownership and licensing with Konstantin before first publication. A Core remote must exist before Go/GitHub/package consumers can use these coordinates. This setup does not create repositories, registry projects or credentials.
+Package names above are bootstrap identities; verify ownership and licensing with Konstantin before first publication. The canonical repository coordinate is `wendylabsinc/wendy-core`; a Core remote must exist before Go/GitHub/package consumers can use these coordinates. This setup does not create repositories, registry projects or credentials.
 
 - **npm:** configure trusted publishing for the package, this repository and `release.yml`. Uses GitHub OIDC and provenance, not an npm token. Initial scoped-package ownership/trusted-publisher setup may require registry bootstrap outside this workflow.
 - **PyPI:** configure a pending/existing trusted publisher for `wendy-core`, `release.yml`, and environment `core-release`. Uses OIDC, not a PyPI token.

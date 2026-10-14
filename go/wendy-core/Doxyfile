@@ -1,7 +1,8 @@
 PROJECT_NAME           = "Wendy Core"
 PROJECT_BRIEF          = "Standalone cross-language Core bridge contract"
 OUTPUT_DIRECTORY       = .build/sdk/site
-INPUT                  = include documentation .build/sdk/protobuf-reference.md \
+INPUT                  = include documentation core platform subsystems bindings \
+                         .build/sdk/protobuf-reference.md \
                          README.md examples/README.md \
                          examples/c/README.md examples/go/README.md \
                          examples/swift/README.md examples/python/README.md \

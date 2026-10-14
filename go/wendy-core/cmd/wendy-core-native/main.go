@@ -6,7 +6,7 @@ package main
 */
 import "C"
 
-import "github.com/wendylabsinc/townhall/core"
+import "github.com/wendylabsinc/wendy-core/core"
 
 //export WendyHelloWorld
 func WendyHelloWorld() C.int32_t {
