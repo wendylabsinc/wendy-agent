@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
 	"testing"
@@ -54,11 +55,18 @@ func testOpened(t *testing.T, manifestVersion string) *cloudpbv2.OpenRelaySessio
 // runRelaySession serves one relay session against script. The user's
 // answers go to answers; they count as typed after the question.
 func runRelaySession(t *testing.T, opened *cloudpbv2.OpenRelaySessionResponse, policy wendymcp.BindingPolicy, answers <-chan string, script func(cloudpbv2.RelayMcpService_RelaySessionServer) error) (<-chan error, *lockedBuffer) {
-	done, out, _ := runRelaySessionWithTerminal(t, opened, policy, answers, script, nil, nil)
+	done, out, _ := runRelaySessionWithTerminal(t, opened, policy, answers, script, relaySessionOptions{})
 	return done, out
 }
 
-func runRelaySessionWithTerminal(t *testing.T, opened *cloudpbv2.OpenRelaySessionResponse, policy wendymcp.BindingPolicy, answers <-chan string, script func(cloudpbv2.RelayMcpService_RelaySessionServer) error, input io.Reader, typed io.Writer) (<-chan error, *lockedBuffer, *promptTerminal) {
+type relaySessionOptions struct {
+	ctx    context.Context
+	input  io.Reader
+	typed  io.Writer
+	server *wendymcp.Server
+}
+
+func runRelaySessionWithTerminal(t *testing.T, opened *cloudpbv2.OpenRelaySessionResponse, policy wendymcp.BindingPolicy, answers <-chan string, script func(cloudpbv2.RelayMcpService_RelaySessionServer) error, opts relaySessionOptions) (<-chan error, *lockedBuffer, *promptTerminal) {
 	t.Helper()
 	for _, env := range []string{"WENDY_MCP_CHANNEL", "WENDY_MCP_CLIENT_ID", "WENDY_MCP_RELAY_SESSION_ID"} {
 		t.Setenv(env, "")
@@ -75,7 +83,10 @@ func runRelaySessionWithTerminal(t *testing.T, opened *cloudpbv2.OpenRelaySessio
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	ctx, cancel := context.WithCancel(context.Background())
+	if opts.ctx == nil {
+		opts.ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(opts.ctx)
 	t.Cleanup(cancel)
 	stream, err := cloudpbv2.NewRelayMcpServiceClient(conn).RelaySession(ctx)
 	if err != nil {
@@ -85,6 +96,7 @@ func runRelaySessionWithTerminal(t *testing.T, opened *cloudpbv2.OpenRelaySessio
 		t.Fatal(err)
 	}
 	out := &lockedBuffer{}
+	input, typed := opts.input, opts.typed
 	if input == nil {
 		reader, writer := io.Pipe()
 		t.Cleanup(func() { _ = reader.Close() })
@@ -114,8 +126,11 @@ func runRelaySessionWithTerminal(t *testing.T, opened *cloudpbv2.OpenRelaySessio
 		}
 	}()
 	done := make(chan error, 1)
+	if opts.server == nil {
+		opts.server = wendymcp.New(&config.Config{}, nil)
+	}
 	go func() {
-		err := serveCloudMCP(term.ctx, stream, opened, term, wendymcp.New(&config.Config{}, nil), policy)
+		err := serveCloudMCP(term.ctx, stream, opened, term, opts.server, policy)
 		_ = term.close()
 		done <- err
 	}()
@@ -123,6 +138,24 @@ func runRelaySessionWithTerminal(t *testing.T, opened *cloudpbv2.OpenRelaySessio
 }
 
 func TestCloudMCPAcceptedSessionStopsOnCtrlC(t *testing.T) {
+	for _, interrupt := range []string{"key", "signal"} {
+		t.Run(interrupt, func(t *testing.T) { testCloudMCPAcceptedSessionInterrupt(t, interrupt) })
+	}
+}
+
+func testCloudMCPAcceptedSessionInterrupt(t *testing.T, interrupt string) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	t.Setenv("WENDY_NO_UPDATE_CHECK", "1")
+	t.Setenv("WENDY_ANALYTICS", "false")
+	t.Setenv("WENDY_DEVICE", "")
+	t.Setenv("WENDY_AGENT_SOCKET", "")
+	server, err := newMCPServer("", []string{"core"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	t.Cleanup(stop)
 	keyboard, tty, err := pty.Open()
 	if errors.Is(err, pty.ErrUnsupported) {
 		t.Skip(err)
@@ -151,14 +184,24 @@ func TestCloudMCPAcceptedSessionStopsOnCtrlC(t *testing.T) {
 		close(ready)
 		<-stream.Context().Done()
 		return stream.Context().Err()
-	}, tty, keyboard)
+	}, relaySessionOptions{ctx: ctx, input: tty, typed: keyboard, server: server})
 	select {
 	case <-ready:
 	case <-time.After(5 * time.Second):
 		t.Fatal("accepted MCP server did not initialize")
 	}
-	if _, err := keyboard.Write([]byte{3}); err != nil {
-		t.Fatal(err)
+	if interrupt == "signal" {
+		process, err := os.FindProcess(os.Getpid())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := process.Signal(os.Interrupt); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if _, err := keyboard.Write([]byte{3}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	select {
 	case err := <-done:
