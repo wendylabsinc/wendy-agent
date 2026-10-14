@@ -49,6 +49,19 @@ func TestWriteFoxgloveApp(t *testing.T) {
 			t.Fatalf("wendy.json missing %q:\n%s", want, wjs)
 		}
 	}
+	if strings.Contains(wjs, `"services"`) {
+		t.Fatalf("generated bridge must stay on the single-container chunk-diff deploy path:\n%s", wjs)
+	}
+}
+
+func TestFoxgloveServeCommandOffersBuilderFlag(t *testing.T) {
+	flag := newFoxgloveServeCmd().Flags().Lookup("builder")
+	if flag == nil {
+		t.Fatal("serve command is missing --builder")
+	}
+	if flag.DefValue != "" {
+		t.Fatalf("builder default = %q, want automatic selection", flag.DefValue)
+	}
 }
 
 func TestWriteFoxgloveAppDistroTemplated(t *testing.T) {

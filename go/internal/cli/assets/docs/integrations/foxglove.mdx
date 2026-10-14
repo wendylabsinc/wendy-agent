@@ -23,6 +23,12 @@ ws://localhost:8765
 
 Discovered topics appear as channels you can add to any panel.
 
+<Callout type="warning">
+Safari blocks the local `ws://` connection as mixed content when Foxglove runs
+at `https://app.foxglove.dev`. Use Chrome for the web app, or use the Foxglove
+desktop app.
+</Callout>
+
 ## How it works
 
 `wendy device foxglove serve` runs three steps for you:
@@ -33,10 +39,14 @@ Discovered topics appear as channels you can add to any panel.
    `--distro`), host-scoped DDS discovery, and a host-network entitlement. This
    lets the bridge join the device's whole ROS 2 graph, including a robot's native
    host ROS 2 (for example a Unitree Go2's onboard stack).
-2. **Deploys it.** The app ships through the normal `wendy run` pipeline: built
-   locally, pushed to the device, and started detached under the app ID
-   `sh.wendy.foxglovebridge`. Re-running the command first removes any previous
-   instance, so it is always safe to run again.
+2. **Deploys it.** The app ships through the normal single-container `wendy run`
+   pipeline: built locally, transferred through the chunk-diff-capable deploy
+   path, and started detached under the app ID `sh.wendy.foxglovebridge`.
+   Re-running the command replaces a current bridge through that normal deploy
+   path, so it is not removed before the replacement build succeeds. A one-time
+   upgrade from an older CLI must stop its legacy named-service container first
+   because both versions bind the same device port; the CLI prints a notice when
+   it performs that migration.
 3. **Forwards the port.** The bridge's WebSocket port (8765 inside the app) is
    forwarded over the same Wendy agent connection used for deployment. This
    works over LAN and cloud. The CLI checks the WebSocket handshake before
@@ -50,7 +60,9 @@ Foxglove Studio --ws--> localhost:8765 --tunnel--> foxglove_bridge (device) --DD
 
 - A device reachable through Wendy over LAN or [Wendy Cloud](/docs/cloud), with
   an agent that supports container exec. Forwarding reuses that connection.
-- Docker on your development machine, so the CLI can build the bridge image.
+- A supported image builder on your development machine: Docker, Apple
+  Container, or BuildKit. Wendy uses the normal `wendy run` builder selection;
+  pass `--builder` to choose one explicitly.
 - A ROS 2 stack producing topics on the device (your own apps, or a robot's
   native ROS 2 reachable over the host network).
 
@@ -63,6 +75,7 @@ Foxglove Studio --ws--> localhost:8765 --tunnel--> foxglove_bridge (device) --DD
 | `--rmw` | RMW implementation the device's ROS 2 uses (default `rmw_cyclonedds_cpp`). |
 | `--distro` | ROS 2 distro the bridge image is built from (default `humble`). |
 | `--interface` | CycloneDDS network interface to use on a multi-interface device. The bridge still discovers apps on the same device over loopback. |
+| `--builder` | Image builder to force: `docker`, `apple-container`, or `buildkit`. |
 
 The global `--device` flag selects a device for both deployment and forwarding.
 For example, to connect to a device on your LAN:
@@ -72,7 +85,12 @@ wendy device foxglove serve --device 192.0.2.10
 ```
 
 Without `--device`, Wendy uses `WENDY_DEVICE`, the saved default, or the device
-picker. It selects the device once for the whole command.
+picker. It selects the device once for the whole command. Builder selection also
+matches `wendy run`; for example, a Mac using Apple Container can run:
+
+```bash
+wendy device foxglove serve --builder apple-container
+```
 
 The bridge exposes every topic in the selected domain. ROS 2 domains are isolated
 graphs, so stop and restart `serve` with a different `--domain` when you want to
