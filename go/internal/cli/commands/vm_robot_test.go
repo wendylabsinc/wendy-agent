@@ -190,7 +190,7 @@ func TestRobotROSAutoConfigurationPreservesManifestAndServices(t *testing.T) {
 		t.Fatal("normalization changed the source manifest")
 	}
 	for name, ros := range map[string]*appconfig.ROS2Config{"app": got.GetROS2Config(), "navigator": got.ResolveROS2ConfigForService("navigator"), "perception": got.ResolveROS2ConfigForService("perception")} {
-		if ros.DomainID == nil || *ros.DomainID != 0 || ros.ResolvedRMW() != "rmw_cyclonedds_cpp" || ros.ResolvedDistro() != "humble" || ros.ResolvedDiscoveryScope() != "app" {
+		if ros.DomainID == nil || *ros.DomainID != 0 || ros.ResolvedRMW() != "rmw_cyclonedds_cpp" || ros.ResolvedDistro() != "humble" || ros.Scope != "device" || ros.DiscoveryScope != "" {
 			t.Fatalf("%s resolved off the robot bus: %+v", name, ros)
 		}
 	}
@@ -210,6 +210,8 @@ func TestRobotROSRejectsExplicitConflictsBeforeBuild(t *testing.T) {
 		"distro":     func(c *appconfig.AppConfig) { c.Frameworks.ROS2.Distro = "jazzy" },
 		"middleware": func(c *appconfig.AppConfig) { c.Frameworks.ROS2.RMW = "fastdds" },
 		"discovery":  func(c *appconfig.AppConfig) { c.Frameworks.ROS2.DiscoveryScope = "invalid" },
+		"scope":      func(c *appconfig.AppConfig) { c.Frameworks.ROS2.Scope = "invalid" },
+		"scope app":  func(c *appconfig.AppConfig) { c.Frameworks.ROS2.Scope = "app" },
 		"network": func(c *appconfig.AppConfig) {
 			c.Entitlements = []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "bridge"}}
 		},
@@ -958,6 +960,17 @@ func TestRobotAgentMaintenanceBypassIsLimitedToExplicitAgentUpdateCommands(t *te
 	}
 }
 
+func TestRobotROSMapsPeripheralsToTheGuestBus(t *testing.T) {
+	cfg := &appconfig.AppConfig{AppID: "example.go2", Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{Scope: "peripherals"}}}
+	got, err := normalizeRobotROSConfig(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetROS2Config().Scope != "device" || cfg.GetROS2Config().Scope != "peripherals" {
+		t.Fatalf("scope = %q (source %q), want device on the guest bus and the source unchanged", got.GetROS2Config().Scope, cfg.GetROS2Config().Scope)
+	}
+}
+
 func TestRobotROSNormalizesHardwareDiscoveryWithoutChangingSource(t *testing.T) {
 	cfg := &appconfig.AppConfig{AppID: "example.go2", Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DiscoveryScope: "host"}},
 		Services: map[string]*appconfig.ServiceConfig{"driver": {Context: "driver", Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DiscoveryScope: "host"}}}}}
@@ -965,10 +978,10 @@ func TestRobotROSNormalizesHardwareDiscoveryWithoutChangingSource(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.GetROS2Config().ResolvedDiscoveryScope() != "app" || got.ResolveROS2ConfigForService("driver").ResolvedDiscoveryScope() != "app" {
+	if got.GetROS2Config().Scope != "device" || got.ResolveROS2ConfigForService("driver").Scope != "device" {
 		t.Fatal("hardware manifest escaped the guest loopback bus")
 	}
-	if cfg.GetROS2Config().ResolvedDiscoveryScope() != "host" || cfg.ResolveROS2ConfigForService("driver").ResolvedDiscoveryScope() != "host" {
+	if cfg.GetROS2Config().DiscoveryScope != "host" || cfg.ResolveROS2ConfigForService("driver").DiscoveryScope != "host" {
 		t.Fatal("source manifest was changed")
 	}
 }

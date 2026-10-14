@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -191,5 +192,59 @@ func TestUpdateGivesUpWhileAnotherProcessHoldsTheLock(t *testing.T) {
 	}
 	if called {
 		t.Fatal("Update ran fn without holding the lock")
+	}
+}
+
+func TestUpdateWithTimeoutLeavesConfigUntouchedWhenContended(t *testing.T) {
+	dir := useConfigDir(t)
+	if err := Save(&Config{DefaultDevice: "preserved.local"}); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "config.json")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := flock.Acquire(filepath.Join(dir, lockFileName), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	const timeout = 60 * time.Millisecond
+	called := false
+	start := time.Now()
+	err = UpdateWithTimeout(timeout, func(cfg *Config) (bool, error) {
+		called = true
+		cfg.DefaultDevice = "must-not-be-written.local"
+		return true, nil
+	})
+	if !errors.Is(err, flock.ErrTimeout) || !strings.Contains(err.Error(), lockFileName) || !strings.Contains(err.Error(), timeout.String()) {
+		t.Fatalf("UpdateWithTimeout = %v, want the wrapped lock timeout and its duration", err)
+	}
+	if elapsed := time.Since(start); elapsed < timeout || elapsed > time.Second {
+		t.Fatalf("lock wait = %s, want the requested short timeout", elapsed)
+	}
+	if called {
+		t.Fatal("timed-out update called its mutation without the lock")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("timed-out update changed the saved config")
+	}
+	// A later operation gets a fresh locked read and still works normally.
+	release()
+	if err := UpdateWithTimeout(timeout, addTipKey("after-timeout")); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultDevice != "preserved.local" || cfg.OptimizeTipShownAt["after-timeout"] == "" {
+		t.Fatalf("later update lost config or its own change: %+v", cfg)
 	}
 }

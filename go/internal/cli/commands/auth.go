@@ -660,7 +660,7 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 		return fmt.Errorf("no existing certificates")
 	}
 	if auth.OAuthIssuer != "" {
-		return refreshOIDCCertificate(ctx, auth)
+		return refreshOIDCCertificate(ctx, auth, false)
 	}
 
 	current := auth.Certificates[0]
