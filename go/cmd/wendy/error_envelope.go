@@ -44,6 +44,10 @@ func reportFailure(stderr io.Writer, err error, executed *cobra.Command, args []
 	if err == nil || errors.Is(err, commands.ErrDefaultCleared) {
 		return 0
 	}
+	var reported *commands.ReportedExitError
+	if errors.As(err, &reported) {
+		return reported.ExitCode()
+	}
 	class := errorClass(err)
 	outcome := outcomeForClass(class)
 	// A panic's stack is what a bug report needs. JSON mode prints it before

@@ -24,8 +24,14 @@ type activationState struct {
 	Observed7d  time.Time `json:"observed_7d,omitempty"`
 }
 
+type activationFollowup struct {
+	event       string
+	installedAt time.Time
+	observedAt  time.Time
+}
+
 func trackActivationFollowups(ctx context.Context, event, command, outcome string) {
-	if !enabled || client == nil || !activationStateEvent(event) {
+	if !trackingEnabled() || !activationStateEvent(event) {
 		return
 	}
 	dir, err := config.ConfigDir()
@@ -33,7 +39,9 @@ func trackActivationFollowups(ctx context.Context, event, command, outcome strin
 		return
 	}
 	for _, followup := range activationFollowups(dir, event, outcome, time.Now().UTC(), true) {
-		TrackStage(ctx, followup, command, "completed", "", map[string]string{"stage": "install"})
+		trackStage(ctx, followup.event, command, "completed", "", map[string]string{"stage": "install"}, func() {
+			acknowledgeActivationFollowup(dir, followup)
+		})
 	}
 }
 
@@ -41,11 +49,12 @@ func activationStateEvent(event string) bool {
 	return event == "cli_seen" || event == "install_finished" || event == "os_install_finished" || event == "run_started"
 }
 
-// Follow-ups are once per waiting window, best-effort like the event transport.
+// Successful delivery records each threshold, so later launches retry observations
+// that could not be delivered.
 // A process-local lock and atomic replacement protect against partial writes;
 // concurrent CLI processes can still observe the same threshold. These are
 // next-launch observations, never evidence that an absent user abandoned setup.
-func activationFollowups(dir, event, outcome string, now time.Time, trackingEnabled bool) []string {
+func activationFollowups(dir, event, outcome string, now time.Time, trackingEnabled bool) []activationFollowup {
 	if !trackingEnabled || !activationStateEvent(event) {
 		return nil
 	}
@@ -70,19 +79,44 @@ func activationFollowups(dir, event, outcome string, now time.Time, trackingEnab
 	if state.InstalledAt.IsZero() || now.Before(state.InstalledAt) {
 		return nil
 	}
-	var events []string
+	var events []activationFollowup
 	if now.Sub(state.InstalledAt) >= 24*time.Hour && state.Observed24h.IsZero() {
-		state.Observed24h = now
-		events = append(events, "next_launch_no_run_24h")
+		events = append(events, activationFollowup{"next_launch_no_run_24h", state.InstalledAt, now})
 	}
 	if now.Sub(state.InstalledAt) >= 7*24*time.Hour && state.Observed7d.IsZero() {
-		state.Observed7d = now
-		events = append(events, "next_launch_no_run_7d")
-	}
-	if len(events) > 0 {
-		writeActivationState(dir, state)
+		events = append(events, activationFollowup{"next_launch_no_run_7d", state.InstalledAt, now})
 	}
 	return events
+}
+
+func acknowledgeActivationFollowup(dir string, followup activationFollowup) {
+	activationStateMu.Lock()
+	defer activationStateMu.Unlock()
+	data, err := os.ReadFile(filepath.Join(dir, activationStateFile))
+	if err != nil {
+		return
+	}
+	var state activationState
+	if json.Unmarshal(data, &state) != nil || !state.InstalledAt.Equal(followup.installedAt) {
+		return
+	}
+	// An in-flight delivery must not recreate a window cleared by a run or
+	// acknowledge a threshold belonging to a subsequent installation.
+	switch followup.event {
+	case "next_launch_no_run_24h":
+		if !state.Observed24h.IsZero() {
+			return
+		}
+		state.Observed24h = followup.observedAt
+	case "next_launch_no_run_7d":
+		if !state.Observed7d.IsZero() {
+			return
+		}
+		state.Observed7d = followup.observedAt
+	default:
+		return
+	}
+	writeActivationState(dir, state)
 }
 
 func writeActivationState(dir string, state activationState) {

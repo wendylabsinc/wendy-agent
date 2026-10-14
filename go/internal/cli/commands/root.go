@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/permission"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/scan"
@@ -25,7 +24,7 @@ var (
 
 func NewRootCmd() *cobra.Command {
 	// firstRun records whether this invocation showed the first-run analytics
-	// notice in PreRunE, so PostRunE can avoid stacking another prompt on top.
+	// notice during initialization, so FinishInvocation avoids another prompt.
 	var firstRun bool
 
 	root := &cobra.Command{
@@ -65,12 +64,8 @@ func NewRootCmd() *cobra.Command {
 			}
 			premark("  prerun: config.Load")
 
-			firstRun = analytics.Init(cfg)
-			analytics.TrackStage(cmd.Context(), "cli_seen", cmd.CommandPath(), "completed", "", nil)
+			firstRun = initializeCommandAnalytics(cmd, cfg, true)
 			premark("  prerun: analytics.Init")
-			if firstRun {
-				showFirstRunNotice(cmd, cfg)
-			}
 
 			// Under sudo with the user's HOME (the Thor flash's re-exec, or
 			// `sudo wendy` on macOS), leave the housekeeping below to the
@@ -116,19 +111,9 @@ func NewRootCmd() *cobra.Command {
 				return nil
 			}
 
-			// Surface any pending CLI-update notice first. If it showed a prompt,
-			// don't stack the completion prompt on top of it this invocation.
-			var updateShown bool
-			if cmd.Context().Value(cliUpdateNoticeEligible{}) == true {
-				waitCLIUpdateCheck(cmd.Context())
-				var updateErr error
-				updateShown, updateErr = notifyCLIUpdate(cmd)
-				if updateErr != nil {
-					cmd.PrintErrf("CLI update did not complete: %v\nYour command completed successfully. Retry with `wendy update`.\n", updateErr)
-				}
-			}
-
-			maybePromptInstallCompletions(cmd, firstRun, updateShown)
+			// Defer optional prompts until main has recorded the command's
+			// outcome. Leaving a prompt must not hide work that already finished.
+			cmd.SetContext(context.WithValue(cmd.Context(), postCommandFirstRun{}, firstRun))
 			return nil
 		},
 	}
