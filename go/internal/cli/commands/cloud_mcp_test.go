@@ -129,7 +129,7 @@ func TestCloudMCPDeniedPairingBindsNothing(t *testing.T) {
 	if len(decisions) != 2 || decisions[0].GetAccept() || decisions[1].GetAccept() || decisions[1].GetBindingId() != "b1" {
 		t.Fatalf("decisions %v, want b0 and b1 both denied", decisions)
 	}
-	if log := out.String(); strings.Count(log, "wants to pair, code ") != 2 || !strings.Contains(log, "code ABCD-2345: accept?") {
+	if log := out.String(); strings.Count(log, "wants to pair, code ") != 2 || !strings.Contains(log, "code ABCD-2345: accept this signed-in connection across chats until this command exits?") {
 		t.Fatalf("want each pairing asked about with its code:\n%s", log)
 	}
 }
@@ -152,7 +152,7 @@ func TestCloudMCPManifestMismatchDeniesPairing(t *testing.T) {
 	if decision == nil || decision.GetAccept() || decision.GetBindingId() != "b1" {
 		t.Fatalf("decision %v, want b1 denied", decision)
 	}
-	if log := out.String(); !strings.Contains(log, "Warning:") || strings.Contains(log, "accept?") {
+	if log := out.String(); !strings.Contains(log, "Warning:") || strings.Contains(log, "wants to pair") {
 		t.Fatalf("want a warning and no question:\n%s", log)
 	}
 }

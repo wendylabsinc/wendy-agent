@@ -192,7 +192,7 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 				term.printf("Denied %q: this CLI cannot serve the relay's published tool set.\n", name)
 			case served != nil:
 				term.printf("Denied %q: this session already serves %q.\n", name, client)
-			case term.ask(ctx, fmt.Sprintf("%q (%s) wants to pair, code %s: accept? [y/N] ", name, id, code)):
+			case term.ask(ctx, fmt.Sprintf("%q (%s) wants to pair, code %s: accept this signed-in connection across chats until this command exits? [y/N] ", name, id, code)):
 				if err := cloudrequest.SetChannel(cloudpbv2.RequestChannel_REQUEST_CHANNEL_HOSTED_MCP, p.GetClientId(), opened.GetSessionId()); err != nil {
 					return err
 				}
@@ -208,7 +208,7 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 				policy.Log = func(tool, outcome string) {
 					term.printf("%s  %q  %s  %s\n", time.Now().Format("15:04:05"), client, printable(tool), printable(outcome))
 				}
-				term.printf("Serving %q. Read-only tools run without asking.\n", client)
+				term.printf("Serving %q for this signed-in connection. Read-only tools run without asking.\n", client)
 				served = make(chan error, 1)
 				go func() {
 					served <- srv.Serve(ctx, &policy, in, &frameWriter{relay: relay, binding: p.GetBindingId()})
