@@ -258,6 +258,17 @@ func TestValidateJSON_ServiceFrameworksUnknownKey(t *testing.T) {
 	}
 }
 
+func TestROS2Config_ScopeTakesPrecedence(t *testing.T) {
+	cfg := ROS2Config{Scope: "network", DiscoveryScope: "host"}
+	if got := cfg.ResolvedScope(); got != ROS2ScopeNetwork {
+		t.Errorf("ResolvedScope() = %q, want network", got)
+	}
+	cfg = ROS2Config{Scope: "device", DiscoveryScope: "host"}
+	if got := cfg.ResolvedScope(); got != ROS2ScopeDevice {
+		t.Errorf("ResolvedScope() = %q, want scope to win over discoveryScope", got)
+	}
+}
+
 func TestROS2Config_ResolvedScope(t *testing.T) {
 	for _, tc := range []struct {
 		cfg  ROS2Config
@@ -293,7 +304,11 @@ func TestValidateROS2Config_Scope(t *testing.T) {
 	}{
 		{"each scope", ROS2Config{Scope: "network"}, nil, ""},
 		{"unknown scope", ROS2Config{Scope: "host"}, nil, "must be one of app, device, peripherals, network"},
-		{"both fields", ROS2Config{Scope: "device", DiscoveryScope: "app"}, nil, "both scope and the deprecated discoveryScope"},
+		{"both fields, safe fallback", ROS2Config{Scope: "device", DiscoveryScope: "app"}, nil, ""},
+		{"both fields, peripherals falls back to loopback", ROS2Config{Scope: "peripherals", DiscoveryScope: "app"}, nil, ""},
+		{"both fields, network matches host", ROS2Config{Scope: "network", DiscoveryScope: "host"}, nil, ""},
+		{"both fields, older agent would be wider", ROS2Config{Scope: "device", DiscoveryScope: "host"}, nil, "conflicts with scope"},
+		{"both fields, older agent would be narrower", ROS2Config{Scope: "network", DiscoveryScope: "app"}, nil, "conflicts with scope"},
 		{"app with a domain", ROS2Config{Scope: "app", DomainID: &zero}, nil, "remove domainId"},
 		{"app without a domain", ROS2Config{Scope: "app"}, bridge, ""},
 		{"peripherals on FastDDS", ROS2Config{Scope: "peripherals", RMW: "fastdds"}, nil, "requires rmw"},

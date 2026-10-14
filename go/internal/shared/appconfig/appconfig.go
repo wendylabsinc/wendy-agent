@@ -183,7 +183,8 @@ type ROS2Config struct {
 	// directly attached hardware ("peripherals"), or the network ("network").
 	Scope string `json:"scope,omitempty"`
 	// DiscoveryScope is the deprecated predecessor of Scope: "app" behaves as
-	// scope "device" and "host" as scope "network". Setting both is an error.
+	// scope "device" and "host" as scope "network". When both are set, scope
+	// wins; discoveryScope is only read by agents that predate scope.
 	DiscoveryScope string `json:"discoveryScope,omitempty"`
 }
 
@@ -1291,7 +1292,9 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 	if _, ok := ros2["discoveryScope"]; ok {
 		var scope string
 		_ = json.Unmarshal(ros2["discoveryScope"], &scope)
-		if replacement := ros2DiscoveryScopeReplacement(scope); replacement != "" {
+		if _, both := ros2["scope"]; both {
+			warnings = append(warnings, fmt.Sprintf("%s.%s.discoveryScope is deprecated and ignored by agents that support \"scope\", which takes precedence; it is only read by older agents", prefix, FrameworkROS2))
+		} else if replacement := ros2DiscoveryScopeReplacement(scope); replacement != "" {
 			warnings = append(warnings, fmt.Sprintf("%s.%s.discoveryScope is deprecated; use \"scope\": %q, which behaves the same", prefix, FrameworkROS2, replacement))
 		} else {
 			warnings = append(warnings, fmt.Sprintf("%s.%s.discoveryScope is deprecated; use \"scope\"", prefix, FrameworkROS2))

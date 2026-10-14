@@ -1338,6 +1338,14 @@ func TestValidateJSON_DiscoveryScopeIsDeprecated(t *testing.T) {
 	}
 }
 
+func TestValidateJSON_ScopeAndDiscoveryScopeWarnOnce(t *testing.T) {
+	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"scope":"network","discoveryScope":"host"}}}`)
+	got := ValidateJSON(data)
+	if len(got) != 1 || !strings.Contains(got[0], "takes precedence") {
+		t.Errorf("got %v, want one warning that scope takes precedence", got)
+	}
+}
+
 func TestMCPEntitlementValid(t *testing.T) {
 	cfg := &AppConfig{
 		AppID: "test",

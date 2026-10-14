@@ -114,7 +114,7 @@ Every field is optional — `"frameworks": { "ros2": {} }` is a valid way to say
 | `rmw` | string | `cyclonedds` | RMW middleware implementation. Accepts short names (`cyclonedds`, `fastrtps`/`fastdds`, `connextdds`, `gurumdds`) or full identifiers (`rmw_cyclonedds_cpp`, `rmw_fastrtps_cpp`, `rmw_connextdds`, `rmw_gurumdds_cpp`). |
 | `distro` | string | `humble` | ROS 2 distribution the app targets, e.g. `humble`, `iron`, `jazzy`. Lowercase letters and digits, starting with a letter. Selects the matching CLI sidecar image. Only the shape is enforced, not a fixed list, so a new ROS 2 release is usable before Wendy ships explicit support for it. |
 | `scope` | string | `device` | Who can see the app's topics. Each scope includes the ones before it; see the table below. |
-| `discoveryScope` | string | — | **Deprecated**, use `scope`. `app` behaves as scope `device`, `host` as scope `network`. Setting both fields is an error. |
+| `discoveryScope` | string | — | **Deprecated**, use `scope`. `app` behaves as scope `device`, `host` as scope `network`. If both are set, `scope` takes precedence and `discoveryScope` is only read by older agents, so it must not be wider than `scope`: pair `network` with `host`, and the other scopes with `app`. Setting both warns. |
 
 | `scope` | Who sees the topics | How |
 |---------|---------------------|-----|

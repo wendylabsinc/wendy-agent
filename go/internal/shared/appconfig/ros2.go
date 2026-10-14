@@ -121,12 +121,16 @@ func validateROS2Config(prefix string, r *ROS2Config, entitlements []Entitlement
 	if r.Scope == "" {
 		return nil
 	}
-	if r.DiscoveryScope != "" {
-		return fmt.Errorf("%s sets both scope and the deprecated discoveryScope; keep only scope", prefix)
-	}
 	scope := r.ResolvedScope()
 	if scope == "" {
 		return fmt.Errorf("%s.scope %q must be one of %s", prefix, r.Scope, strings.Join(ROS2Scopes, ", "))
+	}
+	// scope wins on agents that know it; older agents only read discoveryScope.
+	// Both may be set so one manifest serves both, but only when the older
+	// agent's reading can never be wider than what scope asks for.
+	if r.DiscoveryScope != "" && strings.ToLower(r.DiscoveryScope) != ros2LegacyFallback(scope) {
+		return fmt.Errorf("%s: discoveryScope %q conflicts with scope %q; agents that ignore scope would use it, so with scope %q set discoveryScope to %q or remove it",
+			prefix, r.DiscoveryScope, r.Scope, scope, ros2LegacyFallback(scope))
 	}
 	if scope == ROS2ScopeApp && r.DomainID != nil {
 		return fmt.Errorf("%s.scope %q gives the app its own domain; remove domainId, or use scope %q to share a domain with other apps on the device",
@@ -140,6 +144,16 @@ func validateROS2Config(prefix string, r *ROS2Config, entitlements []Entitlement
 			prefix, scope)
 	}
 	return nil
+}
+
+// ros2LegacyFallback is the discoveryScope an agent that predates scope may
+// safely read next to the given scope. It is never wider: scope peripherals
+// falls back to loopback discovery, like device.
+func ros2LegacyFallback(scope string) string {
+	if scope == ROS2ScopeNetwork {
+		return ROS2DiscoveryScopeHost
+	}
+	return ROS2DiscoveryScopeApp
 }
 
 // sharesHostNetwork reports whether the entitlements leave the app on the
@@ -212,8 +226,8 @@ func (r *ROS2Config) ResolvedDistro() string {
 	return strings.ToLower(r.Distro)
 }
 
-// ResolvedScope returns the effective scope: scope when set, otherwise the
-// deprecated discoveryScope translated to the scope that behaves the same,
+// ResolvedScope returns the effective scope: scope when set (it takes
+// precedence over discoveryScope), otherwise the deprecated discoveryScope translated to the scope that behaves the same,
 // otherwise "device". It returns "" for unknown values so callers never widen
 // discovery because of a typo.
 func (r *ROS2Config) ResolvedScope() string {
