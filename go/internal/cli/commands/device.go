@@ -31,6 +31,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
@@ -41,6 +42,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	grpcpeer "google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -828,12 +830,14 @@ func newDeviceEnrollCmd() *cobra.Command {
 	var cloudGRPC string
 	var orgID int32
 	var acmeDirectoryURL string
+	var liteOptions liteEnrollmentOptions
 
 	cmd := &cobra.Command{
-		Use:    "enroll",
-		Short:  "Enroll this device with Wendy Cloud or a local pki-core",
-		Long:   "Enrolls the connected device using your stored auth session. OIDC accounts use direct PKI enrollment through Cloud's enrollment relay; legacy accounts use Cloud enrollment. Run 'wendy auth login' first.",
-		Hidden: true,
+		Use:         "enroll",
+		Annotations: map[string]string{"wendy.local-enrollment": "true"},
+		Short:       "Enroll this device with Wendy Cloud or a local pki-core",
+		Long:        "Enrolls the selected device using your stored auth session. WendyOS uses agent gRPC provisioning; Wendy Lite requires USB for Class C enrollment and reboots to obtain its certificate from pki-core. Run 'wendy auth login' first.",
+		Hidden:      true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -846,17 +850,13 @@ func newDeviceEnrollCmd() *cobra.Command {
 				return err
 			}
 
-			conn, err := connectToAgent(ctx, SuppressProvisioningHint(), SuppressPickerEnroll())
+			target, err := resolveTarget(ctx, SuppressProvisioningHint(), SuppressPickerEnroll())
 			if err != nil {
 				return err
 			}
-			defer conn.Close()
+			defer target.Close()
 
-			if err := promptWifiIfNeeded(ctx, conn); err != nil {
-				return err
-			}
-
-			return runEnrollDevice(ctx, conn, auth, name, orgID, acmeDirectoryURL)
+			return runSelectedDeviceEnrollment(cmd, target, auth, name, orgID, acmeDirectoryURL, liteOptions)
 		},
 	}
 
@@ -864,6 +864,14 @@ func newDeviceEnrollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&acmeDirectoryURL, "acme-directory-url", "", "ACME directory URL override for custom PKI deployments (OIDC accounts only)")
 	cmd.Flags().Int32Var(&orgID, "org", 0, "Organization ID override for legacy enrollment; OIDC enrollment uses the session's tenant")
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use; limits the organization picker to this endpoint")
+	cmd.Flags().StringVar(&liteOptions.brokerHost, "broker-host", "", "WendyCom broker TLS hostname (defaults to the agent's device hostname for the selected Cloud session)")
+	cmd.Flags().Uint32Var(&liteOptions.brokerPort, "broker-port", 5055, "WendyCom broker TLS port for Wendy Lite")
+	cmd.Flags().StringVar(&liteOptions.csrURL, "csr-url", "", "CSR enrollment base URL override for Wendy Lite on self-hosted PKI")
+	cmd.Flags().StringVar(&liteOptions.timeURL, "time-url", "", "RFC 3161 signed-time endpoint for Wendy Lite (defaults to Sigstore)")
+	cmd.Flags().StringVar(&liteOptions.caCertsURL, "ca-certs-url", "", "HTTPS CA-discovery URL for Wendy Lite (defaults to the selected PKI instance's EST endpoint)")
+	cmd.Flags().StringVar(&liteOptions.deviceRoots, "device-roots", "", "Provision this device identity PEM CA bundle over USB (also requires --https-roots)")
+	cmd.Flags().StringVar(&liteOptions.tsaRoots, "tsa-roots", "", "Signed-time PEM CA bundle (Sigstore's TSA root is bundled for the default endpoint)")
+	cmd.Flags().StringVar(&liteOptions.httpsRoots, "https-roots", "", "Provision this HTTPS/broker PEM CA bundle over USB")
 	return cmd
 }
 
@@ -954,8 +962,12 @@ func defaultEnrollmentName(host string) string {
 }
 
 func enrollmentDeviceName(conn *grpcclient.AgentConnection, name string) (string, error) {
+	return enrollmentName(conn.Host, name)
+}
+
+func enrollmentName(host, name string) (string, error) {
 	if name == "" {
-		defaultName := defaultEnrollmentName(conn.Host)
+		defaultName := defaultEnrollmentName(host)
 		if !isInteractiveTerminal() {
 			if defaultName != "" {
 				name = defaultName
@@ -1146,21 +1158,72 @@ func capitalizeFirst(s string) string {
 func newDeviceUnenrollCmd() *cobra.Command {
 	var assumeYes bool
 	var cloudGRPC string
+	var uuidAssetID string
+	var checkOnly bool
+	var cloudOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "unenroll",
+		Args:  cobra.NoArgs,
 		Short: "Unenroll a device and remove it from Wendy Cloud",
-		Long: "Reverses 'wendy device enroll': deletes the device's enrollment certificates and " +
-			"provisioning state (the agent restarts into unprovisioned mode), then revokes the " +
-			"device's certificates and deletes its asset record in Wendy Cloud.",
+		Long: "Reverses 'wendy device enroll'. UUID/direct PKI local unenrollment is disabled " +
+			"pending Cloud-authenticated reset authorization and durable device preparation. " +
+			"Numeric legacy enrollment retains its separate cleanup path. " +
+			"For Wendy Lite over USB, removes the cloud enrollment, clears the board's identity and reboots it while preserving Wi-Fi and apps. Requires firmware with enrollment reset support. " +
+			"Use --cloud-only or 'wendy cloud device unenroll' to remove an offline device by asset ID or name without contacting it.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			runCloud := func(selector string) error {
+				if uuidAssetID != "" || checkOnly {
+					return fmt.Errorf("--asset-id and --check require a directly connected WendyOS device with v2 UUID enrollment")
+				}
+				return runCloudDeviceUnenroll(cmd, cloudGRPC, selector, "", assumeYes)
+			}
 
-			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
+			selector, cloudMode, err := cloudUnenrollTarget(cmd, cloudOnly)
 			if err != nil {
 				return err
 			}
-			defer conn.Close()
+			if cloudMode {
+				return runCloud(selector)
+			}
+			target, err := resolveUnenrollTargetFn(ctx, SuppressProvisioningHint(), SuppressPickerEnroll(), SuppressUpdateCheck())
+			if err != nil {
+				if completionErr := recoverCompletedV2Unenroll(ctx, cloudGRPC, uuidAssetID); completionErr == nil {
+					return nil
+				} else {
+					return fmt.Errorf("%w; prior-reset reconciliation: %v", err, completionErr)
+				}
+			}
+			defer target.Close()
+			if _, scoped, parseErr := parseCloudDeviceSelector(target.DefaultSelector); scoped {
+				if parseErr != nil {
+					return parseErr
+				}
+				return runCloud(target.DefaultSelector)
+			}
+			if target.External != nil && target.External.ProviderKey == "wendy-lite" {
+				if uuidAssetID != "" || checkOnly {
+					return fmt.Errorf("--asset-id and --check require a directly connected WendyOS device with v2 UUID enrollment")
+				}
+				if target.External.ConnectionType() == "Cloud" {
+					selector := target.DefaultSelector
+					if selector == "" {
+						info := target.External.ConnectionInfo
+						selector = (cloudDeviceSelector{Endpoint: info["cloud"], TenantUUID: info["tenantId"], AssetUUID: info["assetId"]}).String()
+					}
+					return runCloud(selector)
+				}
+				return runLiteDeviceUnenroll(cmd, *target.External, cloudGRPC, assumeYes)
+			}
+			conn, err := connectFromSelectedDevice(target, resolveConfig{suppressProvisioningHint: true})
+			if err != nil {
+				if completionErr := recoverCompletedV2Unenroll(ctx, cloudGRPC, uuidAssetID); completionErr == nil {
+					return nil
+				} else {
+					return fmt.Errorf("%w; prior-reset reconciliation: %v", err, completionErr)
+				}
+			}
 
 			// Determine the device's current enrollment so we know which cloud
 			// asset to clean up afterwards.
@@ -1170,11 +1233,31 @@ func newDeviceUnenrollCmd() *cobra.Command {
 			}
 			prov := provResp.GetProvisioned()
 			if prov == nil {
-				return fmt.Errorf("device is not provisioned")
+				v2State, readErr := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn).IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{})
+				if readErr == nil && len(v2State.GetNotProvisioned().GetUnenrollmentCompletion()) != 0 {
+					return reconcileCompletedV2Unenroll(ctx, v2State.GetNotProvisioned().GetUnenrollmentCompletion(), cloudGRPC, uuidAssetID)
+				}
+				return fmt.Errorf("device is not provisioned; no authenticated unenrollment completion evidence")
 			}
 			cloudHost := prov.GetCloudHost()
 			orgID := prov.GetOrganizationId()
 			assetID := prov.GetAssetId()
+
+			// Numeric Cloud v1 keeps its original RPC path and caller context;
+			// it must not depend on a v2 Agent endpoint or the new timeout.
+			if !isLegacyCloudEnrollment(orgID, assetID) {
+				v2Ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+				defer cancel()
+				var verifiedPeer grpcpeer.Peer
+				v2State, v2Err := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn).IsProvisioned(v2Ctx, &agentpbv2.IsProvisionedRequest{}, grpc.Peer(&verifiedPeer))
+				if v2Err == nil && v2State.GetProvisioned().GetPrincipalUri() != "" {
+					return runV2DeviceUnenroll(v2Ctx, conn, v2State.GetProvisioned(), &verifiedPeer, cloudGRPC, uuidAssetID, assumeYes, checkOnly)
+				}
+				return fmt.Errorf("cannot safely identify this enrollment; refusing numeric legacy cleanup; update the Agent for v2 unenrollment")
+			}
+			if uuidAssetID != "" || checkOnly {
+				return fmt.Errorf("--asset-id and --check are for v2 UUID enrollments only")
+			}
 
 			if !assumeYes {
 				if !isInteractiveTerminal() {
@@ -1234,7 +1317,10 @@ func newDeviceUnenrollCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Skip the confirmation prompt")
-	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint to use for cleanup (defaults to the device's enrolled cloud host)")
+	cmd.Flags().StringVar(&uuidAssetID, "asset-id", "", "Exact Cloud asset UUID for prior-reset reconciliation; new v2 local unenrollment is disabled")
+	cmd.Flags().BoolVar(&checkOnly, "check", false, "Reserved for v2 local unenrollment, which is currently disabled")
+	cmd.Flags().BoolVar(&cloudOnly, "cloud-only", false, "Remove the cloud enrollment without contacting or resetting the device; --device accepts an asset ID, name, or PKI device ID")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint for cleanup (cloud-only uses the selected auth session; local WendyOS uses its enrolled cloud host)")
 	return cmd
 }
 
@@ -1297,7 +1383,10 @@ func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string
 		return 0, false, err
 	}
 	defer cloudConn.Close()
+	return cloudUnenrollCleanupClient(tokenCtx, cloudConn, assetID)
+}
 
+func cloudUnenrollCleanupClient(tokenCtx context.Context, cloudConn *grpc.ClientConn, assetID int32) (certsRevoked int, assetDeleted bool, err error) {
 	// Revoke the asset's active certificates first so a stale identity cannot be
 	// reused, then delete the asset record.
 	certClient := cloudpb.NewCertificateServiceClient(cloudConn)
@@ -1317,18 +1406,26 @@ func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string
 		if c == nil || c.GetStatus() != cloudpb.CertificateStatus_CERTIFICATE_STATUS_ACTIVE {
 			continue
 		}
-		if _, revErr := certClient.RevokeCertificate(tokenCtx, &cloudpb.RevokeCertificateRequest{
+		revoked, revErr := certClient.RevokeCertificate(tokenCtx, &cloudpb.RevokeCertificateRequest{
 			CertificateId: c.GetId(),
 			Reason:        "device unprovisioned",
-		}); revErr != nil {
+		})
+		if revErr != nil {
 			return certsRevoked, false, fmt.Errorf("revoking certificate %d: %w", c.GetId(), revErr)
+		}
+		if !revoked.GetSuccess() {
+			return certsRevoked, false, fmt.Errorf("cloud did not confirm revocation of certificate %d", c.GetId())
 		}
 		certsRevoked++
 	}
 
 	assetClient := cloudpb.NewAssetServiceClient(cloudConn)
-	if _, delErr := assetClient.DeleteAsset(tokenCtx, &cloudpb.DeleteAssetRequest{Id: assetID}); delErr != nil {
+	deleted, delErr := assetClient.DeleteAsset(tokenCtx, &cloudpb.DeleteAssetRequest{Id: assetID})
+	if delErr != nil {
 		return certsRevoked, false, fmt.Errorf("deleting asset %d: %w", assetID, delErr)
+	}
+	if !deleted.GetSuccess() {
+		return certsRevoked, false, fmt.Errorf("cloud did not confirm deletion of asset %d", assetID)
 	}
 	return certsRevoked, true, nil
 }
@@ -1384,8 +1481,10 @@ func newDeviceLogsCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "logs [app]",
-		Short: "Stream logs from containers on the device",
-		Long: "Stream logs from containers on the device.\n\n" +
+		Short: "Stream WendyOS logs or the Wendy Lite firmware console",
+		Long: "Stream logs from containers on WendyOS or the firmware console on Wendy Lite.\n\n" +
+			"Wendy Lite streams buffered and live console output over USB, LAN, or BLE.\n" +
+			"App/service/severity filters, --tail, and --no-follow apply to WendyOS only.\n\n" +
 			"Pass an app name (positionally or with --app) to see only that app's\n" +
 			"logs. Without a filter, logs from every container and the agent itself\n" +
 			"are streamed, which can include agent lifecycle messages.\n\n" +
@@ -1407,11 +1506,22 @@ func newDeviceLogsCmd() *cobra.Command {
 				appName = args[0]
 			}
 
-			conn, err := connectToAgent(ctx, monitoringOptions(readOnly)...)
+			target, err := resolveTarget(ctx, append(monitoringOptions(readOnly), SuppressPickerEnroll())...)
 			if err != nil {
 				if errors.Is(ctx.Err(), context.Canceled) {
 					return nil
 				}
+				return err
+			}
+			if target.External != nil && target.External.ProviderKey == "wendy-lite" {
+				return runLiteDeviceLogs(cmd, target, appName)
+			}
+			cfg := resolveConfig{}
+			for _, option := range monitoringOptions(readOnly) {
+				option(&cfg)
+			}
+			conn, err := connectFromSelectedDevice(target, cfg)
+			if err != nil {
 				return err
 			}
 			defer conn.Close()

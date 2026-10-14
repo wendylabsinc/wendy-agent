@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/enrolltoken"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -31,16 +32,30 @@ import (
 // new writes never populate it — the private key lives exclusively in
 // device-key.pem (mode 0o400) and is never written to provisioning.json.
 type provisioningState struct {
-	Enrolled         bool   `json:"enrolled"`
-	CloudHost        string `json:"cloudHost,omitempty"`
-	OrgID            int32  `json:"orgId,omitempty"`
-	AssetID          int32  `json:"assetId,omitempty"`
-	KeyPEM           string `json:"keyPem,omitempty"` // read-only: migration only; never written
-	CertPEM          string `json:"certPem,omitempty"`
-	ChainPEM         string `json:"chainPem,omitempty"`
-	PrincipalURI     string `json:"principalURI,omitempty"`
-	ACMEDirectoryURL string `json:"acmeDirectoryURL,omitempty"`
+	Enrolled         bool               `json:"enrolled"`
+	CloudHost        string             `json:"cloudHost,omitempty"`
+	OrgID            int32              `json:"orgId,omitempty"`
+	AssetID          int32              `json:"assetId,omitempty"`
+	KeyPEM           string             `json:"keyPem,omitempty"` // read-only: migration only; never written
+	CertPEM          string             `json:"certPem,omitempty"`
+	ChainPEM         string             `json:"chainPem,omitempty"`
+	PrincipalURI     string             `json:"principalURI,omitempty"`
+	ACMEDirectoryURL string             `json:"acmeDirectoryURL,omitempty"`
+	Unenrollment     *unenrollmentState `json:"unenrollment,omitempty"`
 }
+
+// Public recovery evidence lives in the existing provisioning state, never
+// alongside it in additional persistent files. Pending survives key cleanup;
+// completed is written only after all credential removals are durable.
+type unenrollmentState struct {
+	Status  string `json:"status"`
+	Receipt []byte `json:"receipt"`
+}
+
+const (
+	unenrollmentPending   = "pending"
+	unenrollmentCompleted = "completed"
+)
 
 type CloudDialer func(ctx context.Context, addr string) (*grpc.ClientConn, error)
 
@@ -101,29 +116,41 @@ type OnUnprovisionedFunc func()
 // ProvisioningService implements agentpb.WendyProvisioningServiceServer.
 type ProvisioningService struct {
 	agentpb.UnimplementedWendyProvisioningServiceServer
-	logger          *zap.Logger
-	configPath      string
-	mu              sync.Mutex
-	enrolled        bool
-	cloudHost       string
-	orgID           int32
-	assetID         int32
-	keyPEM          []byte // stored as []byte so it can be zeroed on rotation/shutdown
-	certPEM         string
-	chainPEM        string
-	principalURI    string
-	CloudDialer     CloudDialer
-	OnProvisioned   OnProvisionedFunc
-	OnUnprovisioned OnUnprovisionedFunc
+	logger           *zap.Logger
+	configPath       string
+	mu               sync.Mutex
+	unenrollmentMu   sync.Mutex
+	enrolled         bool
+	resetRecoveryErr error
+	trustedTime      func(context.Context) (timesync.TimeWindow, error)
+	cloudHost        string
+	orgID            int32
+	assetID          int32
+	keyPEM           []byte // stored as []byte so it can be zeroed on rotation/shutdown
+	certPEM          string
+	chainPEM         string
+	principalURI     string
+	CloudDialer      CloudDialer
+	OnProvisioned    OnProvisionedFunc
+	OnUnprovisioned  OnUnprovisionedFunc
 }
 
-func NewProvisioningService(logger *zap.Logger, configPath string) *ProvisioningService {
+// NewProvisioningService reuses the running Agent's time manager when provided.
+// New Cloud resets and historical pending reset recovery are disabled; legacy
+// numeric provisioning is unchanged.
+func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*timesync.Manager) *ProvisioningService {
 	svc := &ProvisioningService{
 		logger:      logger,
 		configPath:  configPath,
 		CloudDialer: DefaultCloudDialer,
 	}
-	svc.loadState()
+	if len(clock) > 0 && clock[0] != nil {
+		svc.trustedTime = clock[0].FreshTime
+	}
+	svc.resetRecoveryErr = svc.recoverCloudReset()
+	if svc.resetRecoveryErr == nil {
+		svc.loadState()
+	}
 	return svc
 }
 
@@ -159,6 +186,9 @@ func (s *ProvisioningService) IsProvisioned(_ context.Context, _ *agentpb.IsProv
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.resetRecoveryErr != nil {
+		return nil, status.Error(codes.Unavailable, "reset recovery blocked; explicit local recovery required")
+	}
 	if s.enrolled {
 		return &agentpb.IsProvisionedResponse{
 			Response: &agentpb.IsProvisionedResponse_Provisioned{
@@ -188,6 +218,9 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 		}
 	}()
 
+	if s.resetRecoveryErr != nil {
+		return nil, status.Error(codes.FailedPrecondition, "explicit local recovery required before enrollment")
+	}
 	if s.enrolled {
 		return nil, status.Error(codes.FailedPrecondition, "agent is already provisioned")
 	}
@@ -338,6 +371,10 @@ func (s *ProvisioningService) persistProvisioning(state *provisioningState, keyP
 // the response is sent so the agent can revert its mDNS advertisement and
 // restart into plaintext mode.
 func (s *ProvisioningService) Unprovision(_ context.Context, _ *agentpb.UnprovisionRequest) (*agentpb.UnprovisionResponse, error) {
+	return s.unprovision("", "")
+}
+
+func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint string) (*agentpb.UnprovisionResponse, error) {
 	s.mu.Lock()
 	locked := true
 	defer func() {
@@ -348,6 +385,10 @@ func (s *ProvisioningService) Unprovision(_ context.Context, _ *agentpb.Unprovis
 
 	if !s.enrolled {
 		return nil, status.Error(codes.FailedPrecondition, "agent is not provisioned")
+	}
+
+	if s.resetRecoveryErr != nil || s.principalURI != "" {
+		return nil, status.Error(codes.FailedPrecondition, "direct PKI reset is disabled pending Cloud-authenticated authorization; keys retained")
 	}
 
 	s.logger.Info("Unprovisioning device",
@@ -396,8 +437,16 @@ func (s *ProvisioningService) Unprovision(_ context.Context, _ *agentpb.Unprovis
 // the device private key, the mounted PEM files, and the .provisioned marker.
 // A missing file is not treated as an error.
 func (s *ProvisioningService) clearStateFiles() error {
+	if err := os.Remove(s.statePath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing provisioning state: %w", err)
+	}
+	return s.clearCredentialFiles()
+}
+
+// PKI reset keeps provisioning.json as its durable recovery record while
+// removing the same credentials and markers as the numeric legacy path.
+func (s *ProvisioningService) clearCredentialFiles() error {
 	files := []string{
-		s.statePath(),
 		filepath.Join(s.configPath, "device-key.pem"),
 		filepath.Join(s.configPath, "device.pem"),
 		filepath.Join(s.configPath, "ca.pem"),
@@ -517,6 +566,38 @@ func (s *ProvisioningService) writePEMFiles(keyPEM, certPEM, chainPEM string) er
 	return WritePEMFiles(s.configPath, keyPEM, certPEM, chainPEM)
 }
 
+// writeProvisioningState atomically replaces and syncs the existing state.
+func writeProvisioningState(path string, data []byte) error {
+	file, err := os.CreateTemp(filepath.Dir(path), ".provisioning-*")
+	if err != nil {
+		return err
+	}
+	tmp := file.Name()
+	defer os.Remove(tmp)
+	if err = file.Chmod(0600); err == nil {
+		_, err = file.Write(data)
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
 // saveState writes provisioning state to disk.
 // The private key (KeyPEM) is never included in provisioning.json; it lives
 // exclusively in device-key.pem so that the JSON file can be shared or
@@ -535,5 +616,5 @@ func (s *ProvisioningService) saveState(state *provisioningState) error {
 		return fmt.Errorf("marshaling state: %w", err)
 	}
 
-	return os.WriteFile(s.statePath(), data, 0o600)
+	return writeProvisioningState(s.statePath(), data)
 }

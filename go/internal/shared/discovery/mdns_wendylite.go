@@ -4,14 +4,16 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // WendyLiteServiceType is the mDNS service type advertised by Wendy Lite
 // (ESP32) boards. Distinct from wendyServiceType ("_wendyos._udp"): a Wendy
-// Lite board is never a WendyOS agent, but once cloud-enrolled it advertises
-// the same assetid/orgid/caps TXT keys on this service, plus its own mtls
-// key (see LANDeviceFromWendyLiteService).
+// Lite board is never a WendyOS agent. Legacy enrollment advertises
+// assetid/orgid; direct PKI enrollment advertises tenant instead. Both use
+// caps and their own mtls key (see LANDeviceFromWendyLiteService).
 const WendyLiteServiceType = "_wendy-lite._tcp"
 
 // LANDeviceFromWendyLiteService converts a resolved _wendy-lite._tcp mDNS
@@ -57,6 +59,24 @@ func LANDeviceFromWendyLiteService(svc MDNSService) models.LANDevice {
 	}
 	if dev.IPAddress != "" {
 		dev.Addresses = []string{dev.IPAddress}
+	}
+	if raw := svc.TXTRecords["tenant"]; raw != "" {
+		if tenant, err := uuid.Parse(raw); err == nil && tenant.String() == raw {
+			dev.TenantUUID = raw
+		}
+	}
+	if dev.TenantUUID != "" {
+		principal := svc.TXTRecords["principal"]
+		// Older Lite firmware advertises only its hardware ID. Enrollment uses
+		// lite-<hardware ID>; this hint is still pinned against the TLS leaf.
+		if principal == "" && svc.TXTRecords["id"] != "" && svc.TXTRecords["assetid"] == "" {
+			principal = certs.DeviceSPIFFEURI(dev.TenantUUID, "lite-"+strings.TrimPrefix(svc.TXTRecords["id"], "lite-"))
+		}
+		identity, err := certs.ParseDevicePrincipal(principal)
+		if err == nil && identity.TenantUUID == dev.TenantUUID &&
+			principal == certs.DeviceSPIFFEURI(identity.TenantUUID, identity.EntityID) {
+			dev.PrincipalURI = principal
+		}
 	}
 	if v, ok := svc.TXTRecords["assetid"]; ok {
 		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n > 0 {

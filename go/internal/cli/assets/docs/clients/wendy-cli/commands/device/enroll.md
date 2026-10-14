@@ -82,9 +82,39 @@ Enroll with an explicit name:
 wendy device enroll --device 192.168.1.11 --name lab-pi-01
 ```
 
+## Unenrollment compatibility
+
+`wendy device unenroll` retains the numeric Cloud v1 local-reset-first,
+best-effort Cloud cleanup path. UUID/direct PKI local unenrollment is disabled.
+The Agent advertises `ProvisionedResponse.cloud_unenrollment_supported=false`
+and rejects direct PKI `Unprovision` requests without changing credentials.
+The CLI also refuses this workflow, including `--yes` and `--check`, before any
+Cloud revocation or deletion even if an older Agent advertises reset support.
+UUID/direct PKI identities never fall back to numeric cleanup.
+
+Enabling this flow requires fresh FIDO2 approval bound to the exact reset
+instruction, signed-command delivery with durable device preparation before
+revocation, and Cloud-authenticated deletion evidence. A caller-serialized
+`DeletedAsset`, operator mTLS, and OCSP revocation evidence do not establish that
+authorized Cloud deletion occurred.
+
+Cloud-only unenrollment remains available and leaves local device credentials
+intact. Historical pending reset receipts block startup recovery and require explicit
+local recovery; the Agent preserves any remaining credentials. Completed receipts
+remain readable and do not enable new reset requests.
+
+The prerelease Agent RPCs `RevokeACMECertificate` and `CheckACMERevocation` always
+return `UNIMPLEMENTED`: Cloud owns revocation; those RPCs are not an alternate path.
+
+After durable guarded erasure, `NotProvisionedResponse.unenrollment_completion`
+contains a public device-signed receipt for the **prior** principal's operation,
+not proof of current device identity or reachability. Consumers must anchor its
+historical certificate to configured trust roots and verify its evidence/binding.
+An Agent without a prior guarded completion has no such receipt.
+
 ## Related
 
 - [`wendy install` → Linux Desktop](../install.md) — mint a short-lived enrollment token and embed it in the `agent.sh` one-liner so the device self-enrolls on first startup, without needing a USB connection or a running agent.
 - [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.
 - `wendy cloud enroll-device` — alias for this command, reachable through the cloud tunnel.
-- `wendy device unenroll` — reverse enrollment and delete the device from Wendy Cloud.
+- [`wendy device unenroll`](./unenroll.md) reverses enrollment and deletes the device from Wendy Cloud, using the identity-specific paths and compatibility requirements above. Cloud mode also supports offline devices.
