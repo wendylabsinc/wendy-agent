@@ -104,8 +104,8 @@ jobs:
         env:
           MANYLINUX_PLATFORM: ${{ matrix.manylinux }}
         run: |
-          sudo apt-get update && sudo apt-get install -y patchelf
-          python -m pip install auditwheel
+          # Ubuntu 22.04's patchelf is older than auditwheel's minimum.
+          python -m pip install auditwheel 'patchelf>=0.14.5'
           auditwheel repair --plat "$MANYLINUX_PLATFORM" --wheel-dir .build/repaired .build/wheels/*.whl
           rm .build/wheels/*.whl
           cp .build/repaired/*.whl .build/wheels/
