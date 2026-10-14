@@ -53,7 +53,7 @@ git clone git@github.com:wendylabsinc/wendy-core.git
 cd wendy-core
 ```
 
-Prerequisites: Go, a C compiler, Python 3.9+, `protoc`, and Clang. JavaScript tests additionally need Node 22+; Kotlin needs JDK 21. Swift needs Swift 6 and, on macOS, XcodeBuildMCP.
+Prerequisites: Go, a C compiler, Python 3.9+, `protoc`, and Clang. JavaScript tests additionally need Node 22+; Kotlin needs JDK 21. Swift tests need Swift 6.2+ and, on macOS, XcodeBuildMCP. Documentation generation needs Doxygen and Graphviz (`dot`).
 
 ```sh
 make check               # real Go/C tests, generated JS interface, metadata
@@ -90,7 +90,7 @@ See [examples/README.md](examples/README.md) for small Go, C, Swift, Python, Kot
 | Windows x64 | CI build/test target | Not yet supported |
 | Browser | Go/WASM, Chromium conformance | — |
 
-This is the configured CI matrix, not a claim that hosted CI has already run. Local validation is recorded in the worker context. Alpine/musl, Windows arm64, Android, iOS, watchOS and other variants are not claimed by this bootstrap. Go callers use the native module directly; the native-binary matrix does not define every potential Go target.
+[Wendy Core CI](https://github.com/wendylabsinc/wendy-core/actions/workflows/ci.yml) builds and tests this matrix. A passing run verifies the HelloWorld bootstrap, not the proposed domains or platform capabilities. Alpine/musl, Windows arm64, Android, iOS, watchOS and other variants are not claimed by this bootstrap. Go callers use the native module directly; the native-binary matrix does not define every potential Go target.
 
 ## Release boundary
 
