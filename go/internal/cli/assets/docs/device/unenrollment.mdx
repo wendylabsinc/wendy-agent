@@ -14,16 +14,21 @@ evidence before guarded local credential erasure; they never fall back to v1.
 
 1. Verify the direct LAN mTLS device identity and exact Cloud asset/tenant/device
    binding. Compatible Cloud and Agent builds are required; the Agent must report
-   `cloud_unenrollment_supported`. An older Agent is refused without mutation.
+   both `cloud_unenrollment_supported` and `cloud_authenticated_reset_supported`.
+   The unsafe prerelease flag alone is refused before mutation.
 2. Sign the exact Cloud deletion request with the operator certificate. Cloud
    enforces `device:delete`, revokes the device principal through PKI, then writes
    its retained deletion record and audit. PKI's existing revocation path supplies
    the SSF credential-change signal.
 3. Verify the exact typed Cloud deletion evidence and issuer-signed revoked OCSP
    evidence for the installed device leaf. Plain `NotFound` is not deletion proof.
-4. Request guarded erasure. The Agent verifies binding and operator mTLS, and
-   obtains fresh signed Roughtime from the existing servers before persisting
-   public reset authorization and removing keys. Certificate validity and
+4. Obtain fresh purpose-specific Cloud JWS by replaying deletion with the exact
+   device guard and installed-leaf SHA-256. Cloud rechecks current authorization
+   without changing the original tombstone actor/time.
+5. Relay that proof through existing Agent Unprovision. Agent independently
+   verifies HTTPS Cloud keys from its saved enrollment Cloud, purpose/issuer,
+   bindings and the exact operator signature against its actual mTLS peer, and
+   obtains fresh signed Roughtime before persisting public proof and removing keys. Certificate validity and
    revocation freshness must hold throughout the authenticated interval. This
    reset-only query does not change the system clock or read/write a clock floor.
    If signed time is unavailable, keys stay intact for retry even if Cloud deletion
@@ -49,15 +54,20 @@ current membership and ACLs with deny precedence, not freezing prior grants.
 ## Interrupted cleanup and lost replies
 
 Recovery uses the existing Agent `provisioning.json` only, with public signed
-pending/completed evidence. An ordinary restart verifies and resumes pending
-erasure; failures retain credentials or block serving an incomplete reset.
+pending/completed evidence, originally authenticated Cloud key and public
+operator certificate. An ordinary restart verifies and resumes valid protected
+pending erasure without a network query; proof-less historical pending records
+remain blocked. Unprotected state, symlinks or writable directories cannot
+supply reset authority. Failures retain credentials or block incomplete reset.
 There is no additional Agent recovery file or durable CLI workflow journal.
 
 A completed receipt proves the prior principal's operation, not the current
 identity of the machine answering. The CLI anchors its historical certificate
 to configured roots and compares its binding to current authorized Cloud
-retention evidence. Plaintext/mDNS identity is not trusted and does not change
-pins.
+retention evidence, independently fetching trusted Cloud keys for v2 proof.
+A retired unpublished historical key can prevent remote confirmation; it does
+not prevent local protected recovery. Plaintext/mDNS identity is not trusted
+and does not change pins.
 
 A valid first-boot provisioning after flashing may replace prior local recovery.
 Flashing does not revoke the old certificate or delete its Cloud asset: that

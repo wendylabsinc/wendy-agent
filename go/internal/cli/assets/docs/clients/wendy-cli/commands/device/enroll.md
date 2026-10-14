@@ -90,13 +90,15 @@ use Cloud-owned revocation and retained deletion evidence before guarded local
 credential erasure; they never fall back to numeric cleanup.
 
 The UUID candidate requires compatible Cloud and Agent versions. The Agent's
-`ProvisionedResponse.cloud_unenrollment_supported` capability must be `true`;
-absent or `false` on an older Agent means no guarded reset is attempted. It is
-not a guarantee that the system clock is correct. Before new erasure, the Agent
-checks operator validity and revocation-evidence freshness against one reading of
-the system clock. It relies on the existing time services without a separate time
-query or clock-floor write. Failed checks retain local credentials, even if Cloud
-unenrollment already finished; correct a wrong clock before retrying.
+`ProvisionedResponse.cloud_unenrollment_supported` and
+`cloud_authenticated_reset_supported` capabilities must both be `true`; the old
+prerelease flag alone is insufficient. Agent independently verifies a
+purpose-specific Cloud signature using HTTPS keys from its saved enrollment
+Cloud, plus the exact operator signature against its actual mTLS peer. Before
+erasure it obtains fresh authenticated Roughtime and checks freshness/validity
+throughout that interval. This reset-only query does not discipline the clock or
+read/write a clock floor. Missing proof, unavailable time or failed checks retain
+credentials for retry even after Cloud unenrollment finishes.
 
 AAA v0.22 (retained in v0.24), §5.1/§7(4), excludes removal-only unenrollment
 from step-up. No browser/passkey confirmation is required for asset deletion,
@@ -118,7 +120,8 @@ claim deployed or live-reset acceptance.
 | `expected_principal_uri` | Yes | Exact enrolled SPIFFE principal URI. |
 | `expected_certificate_sha256` | Yes | SHA-256 hex of the installed leaf certificate. |
 | `revocation_proof` | Yes | Issuer-signed revoked OCSP evidence for that installed leaf. |
-| `cloud_deletion` | Yes | Serialized `wendycloud.v2.DeletedAsset` with the exact asset, tenant and device binding. |
+| `cloud_deletion` | Yes | Exact serialized `wendycloud.v2.DeletedAsset` authenticated by Cloud's proof. |
+| `cloud_reset_authorization` | Yes | Purpose-specific Cloud JWS, issued after committed deletion/current authorization, binding the deletion and operator-signed request to the installed leaf. |
 
 A bare/zero-value request returns `FailedPrecondition`; numeric v1 identities
 continue accepting an empty request.
@@ -134,8 +137,12 @@ spend EAB credentials, reset, import proof or write a CLI journal.
 After durable guarded erasure, `NotProvisionedResponse.unenrollment_completion`
 contains a public device-signed receipt for the **prior** principal's operation,
 not proof of current device identity or reachability. Consumers must anchor its
-historical certificate to configured trust roots and verify its evidence/binding.
-An Agent without a prior guarded completion has no such receipt.
+historical certificate to configured trust roots and independently re-establish
+Cloud key trust for v2 proof, never trust a remotely supplied public key.
+Protected local pending recovery retains its originally authenticated key in
+existing provisioning.json; historical proof-less pending records cannot erase
+keys. Remote v2 confirmation can fail when a retired historical key is no longer
+published. An Agent without prior guarded completion has no such receipt.
 
 ## Related
 
