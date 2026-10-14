@@ -39,12 +39,12 @@ def publish(archive, repository, push=True):
         for name in ("Sources", "Tests"):
             shutil.rmtree(repository / name, ignore_errors=True)
             shutil.copytree(Path(temp) / name, repository / name)
-        for name in ("Package.swift", "README.md", "VERSION"):
+        for name in ("Package.swift", "README.md", "VERSION", "LICENSE", "NOTICE"):
             shutil.copy2(Path(temp) / name, repository / name)
     (repository / "CORE_ARTIFACT_SHA256").write_text(digest(archive) + "\n")
     git(repository, "config", "user.name", "github-actions[bot]")
     git(repository, "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
-    git(repository, "add", "Package.swift", "README.md", "VERSION", "Sources", "Tests", "CORE_ARTIFACT_SHA256")
+    git(repository, "add", "Package.swift", "README.md", "VERSION", "LICENSE", "NOTICE", "Sources", "Tests", "CORE_ARTIFACT_SHA256")
     git(repository, "commit", "-m", f"chore: distribute Wendy Core {value}")
     git(repository, "tag", "-a", tag, "-m", f"Wendy Core {value}")
     if push:

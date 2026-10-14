@@ -10,6 +10,9 @@ kotlin { jvmToolchain(21) }
 dependencies { testImplementation(kotlin("test")) }
 tasks.test { useJUnitPlatform() }
 java { withSourcesJar(); withJavadocJar() }
+tasks.withType<Jar>().configureEach {
+    from(listOf("../../LICENSE", "../../NOTICE")) { into("META-INF") }
+}
 
 publishing {
     publications {
@@ -19,6 +22,13 @@ publishing {
                 name.set("Wendy Core")
                 description.set("Thin Kotlin/JVM access to the shared Wendy Core engine")
                 url.set("https://github.com/wendylabsinc/wendy-core")
+                licenses {
+                    license {
+                        name.set("Apache License, Version 2.0")
+                        url.set("https://www.apache.org/licenses/LICENSE-2.0")
+                        distribution.set("repo")
+                    }
+                }
             }
         }
     }

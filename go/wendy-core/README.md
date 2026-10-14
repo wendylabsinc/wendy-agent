@@ -46,6 +46,13 @@ See [architecture and boundaries](documentation/architecture.md) for the diagram
 
 ## Try it
 
+Clone the repository and enter the checkout:
+
+```sh
+git clone git@github.com:wendylabsinc/wendy-core.git
+cd wendy-core
+```
+
 Prerequisites: Go, a C compiler, Python 3.9+, `protoc`, and Clang. JavaScript tests additionally need Node 22+; Kotlin needs JDK 21. Swift needs Swift 6 and, on macOS, XcodeBuildMCP.
 
 ```sh
@@ -89,6 +96,14 @@ This is the configured CI matrix, not a claim that hosted CI has already run. Lo
 
 `VERSION` is the shared Core release version. The runtime, selected modules, binding/platform/subsystem contracts and included adapters/backends belong to that release. All incarnations ship that version, not separate implementations or independent module/platform versions. Later SDKs depend on compatible Core releases and have independent release trains.
 
-See [releasing](documentation/releasing.md) for packaging, registry configuration, and publication gates. Nothing is published by merely pushing `main`. This local repository has no configured remote yet.
+See [releasing](documentation/releasing.md) for packaging, registry configuration, and publication gates. Pushing `main` runs Core CI but does not publish package releases. Registry publication remains explicitly gated; see the release guide before creating any version tag.
+
+## License
+
+Licensed under the Apache License, Version 2.0; see `LICENSE` and `NOTICE`. Native/WASM packages retain the Go runtime's separate BSD license notice. Original Gradle Wrapper notices are preserved.
+
+## Contributing
+
+Start with the architecture and module guides above. Keep shared behavior in Core, interop mechanical, and platform/subsystem implementations behind their contracts. Run `make check compare-clean documentation` and the affected language tests before submitting changes. Runtime/domain/provider placeholders are design scaffolding, not implemented APIs or support guarantees.
 
 The C distribution is only the bridge foundation—not an ergonomic C SDK. Public headers plus protobuf schemas remain normative. API manifests, JS projections, and reference sites are derived artifacts. Planned object/stream patterns are design notes, not implemented APIs.

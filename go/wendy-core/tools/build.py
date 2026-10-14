@@ -74,7 +74,14 @@ def go_license(goroot):
     raise FileNotFoundError("Cannot locate the bundled Go toolchain license")
 
 
+def stage_licenses():
+    for distribution in (JS, PYTHON, SWIFT):
+        for name in ("LICENSE", "NOTICE"):
+            copy(ROOT / name, distribution / name)
+
+
 def stage_native(target, directory):
+    stage_licenses()
     system = target.split("-")[0]
     library = directory / LIBRARIES[system]
     copy(library, JS / "assets/native" / target / library.name)
@@ -162,6 +169,7 @@ def jni():
 
 def wasm():
     check_version()
+    stage_licenses()
     output = JS / "assets/wasm"
     output.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "GOOS": "js", "GOARCH": "wasm", "CGO_ENABLED": "0"}
@@ -221,15 +229,17 @@ def assemble(artifacts):
 
 
 def swift_archive(destination):
+    stage_licenses()
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(destination, "w:gz") as archive:
-        for name in ("Package.swift", "Sources", "Tests", "README.md"):
+        for name in ("Package.swift", "Sources", "Tests", "README.md", "LICENSE", "NOTICE"):
             archive.add(SWIFT / name, arcname=name)
         archive.add(ROOT / "VERSION", arcname="VERSION")
 
 
 def pack(artifacts):
     check_version()
+    stage_licenses()
     release = BUILD / "release"
     shutil.rmtree(release, ignore_errors=True)
     release.mkdir(parents=True)
@@ -244,6 +254,8 @@ def pack(artifacts):
             archive.add(ROOT / "include", arcname="include")
             archive.add(ROOT / "proto", arcname="proto")
             archive.add(ROOT / "VERSION", arcname="VERSION")
+            for name in ("LICENSE", "NOTICE"):
+                archive.add(ROOT / name, arcname=name)
     # Complete, standalone SwiftPM source distribution (including native assets).
     swift_archive(release / f"wendy-core-{version()}-swiftpm.tar.gz")
     for wheel in artifacts.glob("wheel-*/*.whl"):

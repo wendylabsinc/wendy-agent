@@ -32,6 +32,15 @@ class ReleaseTests(unittest.TestCase):
     def test_unchanged_operation_allows_patch(self):
         require_compatible(api("1.0.0", WendyHelloWorld="int32_t (void)"), api("1.0.1", WendyHelloWorld="int32_t (void)"))
 
+    def test_distribution_license_copies_match_the_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directories = {name: Path(temp) / name for name in ("JS", "PYTHON", "SWIFT")}
+            with patch.multiple(build, **directories):
+                build.stage_licenses()
+            for directory in directories.values():
+                for name in ("LICENSE", "NOTICE"):
+                    self.assertEqual((directory / name).read_bytes(), (build.ROOT / name).read_bytes())
+
     def test_assembly_rejects_wrong_artifact_identity(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp) / "native-linux-x64"

@@ -42,7 +42,7 @@ A pushed Go module tag is already discoverable independently of the registry job
 | Kotlin/JVM | `dev.wendy:wendy-core` in this repository's GitHub Maven registry |
 | Swift | Generated, separately consumable SwiftPM distribution repository and matching tag, plus a release source archive |
 
-Package names above are bootstrap identities; verify ownership and licensing with Konstantin before first publication. The canonical repository coordinate is `wendylabsinc/wendy-core`; a Core remote must exist before Go/GitHub/package consumers can use these coordinates. This setup does not create repositories, registry projects or credentials.
+Package names above are bootstrap identities; verify registry ownership with Konstantin before first publication. Project licensing is Apache-2.0. The canonical source repository is `wendylabsinc/wendy-core`; source availability does not imply that versioned registry artifacts have been published. This setup does not create repositories, registry projects or credentials.
 
 - **npm:** configure trusted publishing for the package, this repository and `release.yml`. Uses GitHub OIDC and provenance, not an npm token. Initial scoped-package ownership/trusted-publisher setup may require registry bootstrap outside this workflow.
 - **PyPI:** configure a pending/existing trusted publisher for `wendy-core`, `release.yml`, and environment `core-release`. Uses OIDC, not a PyPI token.
@@ -57,4 +57,4 @@ A protected tag builds the artifacts once. Publishing jobs verify `SHA256SUMS` a
 
 Different registries cannot be published transactionally. If one destination fails, rerun only failed publication jobs using the same run's artifacts; do not rebuild different bytes under the same version. The GitHub Release is finalized after the language publications succeed. No tag, hosted release, registry mutation, or remote configuration is performed by local build/test commands.
 
-Go runtime notices are included with native and WASM artifacts. Project licensing remains a human decision before first public publication.
+Apache-2.0 `LICENSE` and `NOTICE` are included with Core distribution artifacts and the generated SwiftPM mirror. Native/WASM artifacts retain `LICENSE-Go.txt` for the Go runtime's separate BSD license. Maven metadata and npm/Python metadata declare Apache-2.0; original third-party notices remain intact.

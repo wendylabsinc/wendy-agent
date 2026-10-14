@@ -1,6 +1,7 @@
 {
   "name": "@wendylabs/core",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "description": "Wendy Core: one bridge interface for Node.js and browsers",
   "repository": { "type": "git", "url": "git+https://github.com/wendylabsinc/wendy-core.git" },
   "type": "module",
@@ -13,7 +14,7 @@
       "default": "./src/browser.mjs"
     }
   },
-  "files": ["src", "assets", "README.md"],
+  "files": ["src", "assets", "README.md", "LICENSE", "NOTICE"],
   "publishConfig": { "access": "public" },
   "scripts": {
     "test": "node --test tests/node.test.mjs && playwright test",
