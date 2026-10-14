@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
+	"github.com/wendylabsinc/wendy/go/internal/agent/inference"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,7 +20,7 @@ import (
 )
 
 func TestCampaignWebhookSendsDetectionMetadata(t *testing.T) {
-	notification := DetectionNotification{ID: "event-id", Event: "person_detected", Campaign: "people", SourceID: "v4l2:/dev/video0", Model: "facebook/detr-resnet-50", Revision: "revision", Count: 2}
+	notification := DetectionNotification{ID: "event-id", Event: "person_detected", Campaign: "people", SourceID: "v4l2:/dev/video0", Model: "facebook/detr-resnet-50", Revision: "revision", Count: 2, Detections: []data.NotificationDetection{{Label: "person", Score: 0.9}}}
 	received := make(chan DetectionNotification, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" || r.Header.Get("Idempotency-Key") != notification.ID {
@@ -35,7 +37,7 @@ func TestCampaignWebhookSendsDetectionMetadata(t *testing.T) {
 	if err := (&CampaignCloudSender{}).Send(context.Background(), server.URL, notification); err != nil {
 		t.Fatal(err)
 	}
-	if actual := <-received; actual != notification {
+	if actual := <-received; !reflect.DeepEqual(actual, notification) {
 		t.Fatalf("notification metadata changed: %+v", actual)
 	}
 }
@@ -119,7 +121,7 @@ func TestCampaignCloudAuthorizationFailureIsTerminal(t *testing.T) {
 	cloud := &deniedCampaignCloud{}
 	job := &campaignInferenceJob{owner: &campaignInferenceManager{service: NewDataService(manager), sender: &CampaignCloudSender{Cloud: cloud}}, campaign: campaign}
 	queue := make(chan DetectionNotification, 1)
-	queue <- detectionNotification(campaign, "camera", 1)
+	queue <- detectionNotification(campaign, "camera", []inference.Detection{{Label: "person", Score: .9}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})

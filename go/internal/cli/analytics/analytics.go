@@ -25,17 +25,21 @@ import (
 const defaultTelemetryEndpoint = "https://wendy-cli-telemetry-114319063177.us-central1.run.app/v1/telemetry/events"
 
 type eventPayload struct {
-	AnonymousID string `json:"anonymous_id"`
-	Event       string `json:"event"`
-	CommandName string `json:"command_name"`
-	CommandRoot string `json:"command_root,omitempty"`
-	DurationMS  int64  `json:"duration_ms,omitempty"`
-	Success     bool   `json:"success"`
-	ErrorClass  string `json:"error_class,omitempty"`
-	CLIVersion  string `json:"cli_version"`
-	OS          string `json:"os"`
-	Arch        string `json:"arch"`
-	IsDevBuild  bool   `json:"is_dev_build"`
+	SchemaVersion int       `json:"schema_version"`
+	EventID       string    `json:"event_id"`
+	OccurredAt    time.Time `json:"occurred_at"`
+	AttemptID     string    `json:"attempt_id"`
+	AnonymousID   string    `json:"anonymous_id"`
+	Event         string    `json:"event"`
+	CommandName   string    `json:"command_name"`
+	CommandRoot   string    `json:"command_root,omitempty"`
+	DurationMS    int64     `json:"duration_ms,omitempty"`
+	Success       bool      `json:"success"`
+	ErrorClass    string    `json:"error_class,omitempty"`
+	CLIVersion    string    `json:"cli_version"`
+	OS            string    `json:"os"`
+	Arch          string    `json:"arch"`
+	IsDevBuild    bool      `json:"is_dev_build"`
 	// Properties carries an event's own dimensions beyond the core fields,
 	// such as a deploy's phase timings. Callers pass only bounded numbers and
 	// enums — never paths, hosts, names or error text.
@@ -45,7 +49,7 @@ type eventPayload struct {
 // coreProperties travel as top-level payload fields, not in Properties.
 var coreProperties = map[string]bool{
 	"command_name": true, "command_root": true, "duration_ms": true,
-	"success": true, "error_class": true, "is_dev_build": true,
+	"success": true, "error_class": true, "is_dev_build": true, "attempt_id": true,
 }
 
 const (
@@ -55,13 +59,12 @@ const (
 	maxPropertyLen     = 64
 )
 
-// extraProperties returns the non-core properties, bounded in count and length.
-// Property values are truncated at maxPropertyLen bytes, with partial UTF-8
-// sequences removed to ensure the result is valid UTF-8.
+// extraProperties returns only documented safe dimensions, bounded in count
+// and length, with a 128-byte allowance for canned remediation. Unknown keys and invalid enum/number values are discarded.
 func extraProperties(properties map[string]string) map[string]string {
 	keys := make([]string, 0, len(properties))
 	for k := range properties {
-		if !coreProperties[k] {
+		if !coreProperties[k] && allowedProperty(k, properties[k]) {
 			keys = append(keys, k)
 		}
 	}
@@ -72,10 +75,6 @@ func extraProperties(properties map[string]string) map[string]string {
 	out := make(map[string]string, min(len(keys), maxEventProperties))
 	for _, k := range keys[:min(len(keys), maxEventProperties)] {
 		v := properties[k]
-		if len(v) > maxPropertyLen {
-			// Truncate at maxPropertyLen bytes, then remove any partial UTF-8 sequence.
-			v = strings.ToValidUTF8(v[:maxPropertyLen], "")
-		}
 		out[k] = v
 	}
 	return out
@@ -165,6 +164,8 @@ func track(event string, properties map[string]string, onDelivered func()) {
 	}
 
 	payload := eventPayload{
+		SchemaVersion: 2, EventID: uuid.NewString(), OccurredAt: time.Now().UTC(),
+		AttemptID:   validAttemptID(properties["attempt_id"]),
 		AnonymousID: distinctID,
 		Event:       event,
 		CommandName: properties["command_name"],
@@ -237,7 +238,7 @@ func TrackMilestoneOnceInDir(dir, name string) {
 	if milestoneSent(dir, name) {
 		return
 	}
-	track(name, map[string]string{"command_name": name}, func() {
+	track(name, map[string]string{"command_name": name, "success": "true"}, func() {
 		_ = recordMilestone(dir, name)
 	})
 }
