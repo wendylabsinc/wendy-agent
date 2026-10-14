@@ -22,7 +22,7 @@ import (
 )
 
 // The old RPC token field is a workflow marker, not an account credential.
-const unitreeAccountFlowMarker = "unitree-account-flow"
+const unitreeAccountFlowMarker = unitree.AccountFlowMarker
 
 type unitreePairHandler struct {
 	ctx            context.Context
@@ -64,6 +64,8 @@ type unitreePairOpMsg struct {
 	forgot bool
 	err    error
 }
+
+const unitreeAgentTooOld = "Unitree pairing requires a newer WendyOS agent"
 
 func (h *unitreePairHandler) scan(serials []string) tea.Cmd {
 	return func() tea.Msg {
@@ -127,7 +129,7 @@ func (h *unitreePairHandler) pair(robot *agentpbv2.UnitreeRobot, key string, fro
 			// The request contains secrets. Do not echo arbitrary remote text.
 			message := "Unitree connection failed; check the robot's IP, account, and network"
 			if status.Code(err) == codes.Unimplemented {
-				message = "Unitree pairing requires a newer WendyOS agent"
+				message = unitreeAgentTooOld
 			}
 			return unitreePairOpMsg{serial: req.Serial, err: errors.New(message)}
 		}
@@ -232,7 +234,9 @@ func (m *unitreePairModel) refreshRows(selectedSerial string) {
 			prior = &agentpbv2.UnitreeRobot{Serial: d.Serial}
 			byID[id] = prior
 		}
-		if d.Name != "" {
+		// Rows are added account, saved, then discovered. Keep the first name:
+		// discovery only reports a generic model name, never the user's alias.
+		if prior.Name == "" {
 			prior.Name = d.Name
 		}
 		if d.Address != "" {
@@ -382,6 +386,9 @@ func (m unitreePairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.discovered = msg.discovered
 		}
 		m.scanError = strings.Join(errs, "; ")
+		if status.Code(msg.listErr) == codes.Unimplemented || status.Code(msg.discoveryErr) == codes.Unimplemented {
+			m.scanError = unitreeAgentTooOld
+		}
 		m.refreshRows(selected)
 		return m, nil
 	case unitreePairLoginMsg:

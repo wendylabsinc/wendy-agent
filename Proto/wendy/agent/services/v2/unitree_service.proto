@@ -34,10 +34,10 @@ message PairUnitreeRequest {
   string address = 3;
   // Empty when reconnecting an existing pairing with its saved key.
   string encryption_key = 4;
-  // Compatibility field: send only a non-secret account-flow marker for
-  // initial unkeyed legacy pairing, never the Unitree cloud bearer token.
-  // Not verified by the agent and not a proof of account ownership.
-  // Never persisted or forwarded to the robot's LAN signaling endpoint.
+  // Compatibility field: empty, or the fixed non-secret marker
+  // "unitree-account-flow" for initial unkeyed legacy pairing; the agent
+  // rejects any other value. Never the Unitree cloud bearer token, and not a
+  // proof of account ownership. Never persisted or forwarded to the robot.
   string token = 5;
 }
 message PairUnitreeResponse { UnitreeRobot robot = 1; }

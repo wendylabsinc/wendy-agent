@@ -62,7 +62,7 @@ func testUnitreeService(t *testing.T) *UnitreeService {
 }
 
 func unitreeTestRequest() *agentpbv2.PairUnitreeRequest {
-	return &agentpbv2.PairUnitreeRequest{Serial: "GO2TEST1", Name: "My Go2", Address: "192.0.2.20", EncryptionKey: unitreeTestKey, Token: "cloud-token-secret"}
+	return &agentpbv2.PairUnitreeRequest{Serial: "GO2TEST1", Name: "My Go2", Address: "192.0.2.20", EncryptionKey: unitreeTestKey, Token: unitree.AccountFlowMarker}
 }
 
 func TestUnitreePairRequiresAuthenticatedAgentTransport(t *testing.T) {
@@ -214,7 +214,7 @@ func TestUnitreePairValidatesBeforeSavingAndRetainsSession(t *testing.T) {
 	calls := 0
 	s.dial = func(ctx context.Context, address, token, key string) (unitreeLink, error) {
 		calls++
-		if address != "192.0.2.20" || token != "cloud-token-secret" || key != unitreeTestKey {
+		if address != "192.0.2.20" || token != "" || key != unitreeTestKey {
 			t.Fatal("pairing credentials or address were lost")
 		}
 		if saved, _ := s.store.List(); len(saved) != 0 {
@@ -665,7 +665,7 @@ func TestUnitreePairRejectsInvalidAddressAndMissingKey(t *testing.T) {
 		t.Fatal("invalid input reached network")
 		return nil, nil
 	}
-	for _, address := range []string{"", "go2.local", "127.0.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "::ffff:255.255.255.255", "::ffff:127.0.0.1", "192.0.2.2:9991", "http://192.0.2.2", "::1"} {
+	for _, address := range []string{"", "go2.local", "127.0.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "::ffff:255.255.255.255", "::ffff:127.0.0.1", "::ffff:192.0.2.20", "192.0.2.2:9991", "http://192.0.2.2", "::1"} {
 		req := unitreeTestRequest()
 		req.Address = address
 		if _, err := s.PairUnitree(unitreeTestContext(), req); status.Code(err) != codes.InvalidArgument {
@@ -679,9 +679,28 @@ func TestUnitreePairRejectsInvalidAddressAndMissingKey(t *testing.T) {
 		t.Fatalf("missing key: %v", err)
 	}
 	req.EncryptionKey = "invalid-nonempty-key"
-	req.Token = "cloud-token-secret"
+	req.Token = unitree.AccountFlowMarker
 	if _, err := s.PairUnitree(unitreeTestContext(), req); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("malformed key: %v", err)
+	}
+}
+
+func TestUnitreePairRejectsSecretTokenAndReportsFieldErrors(t *testing.T) {
+	s := testUnitreeService(t)
+	s.dial = func(context.Context, string, string, string) (unitreeLink, error) {
+		t.Fatal("invalid request consumed a robot connection slot")
+		return nil, nil
+	}
+	req := unitreeTestRequest()
+	req.Token = "cloud-token-secret"
+	_, err := s.PairUnitree(unitreeTestContext(), req)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "account-flow marker") || strings.Contains(err.Error(), "cloud-token-secret") {
+		t.Fatalf("account token accepted or echoed: %v", err)
+	}
+	req = unitreeTestRequest()
+	req.Name = strings.Repeat("n", 257)
+	if _, err := s.PairUnitree(unitreeTestContext(), req); status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "name") {
+		t.Fatalf("long name reported as another field: %v", err)
 	}
 }
 
@@ -703,12 +722,12 @@ func TestUnitreePairRejectsInvalidSerialBeforeDialing(t *testing.T) {
 	}
 }
 
-func TestUnitreeLegacyPairUsesAccountTokenWithoutDeviceKey(t *testing.T) {
+func TestUnitreeLegacyPairUsesMarkerWithoutDeviceKey(t *testing.T) {
 	s := testUnitreeService(t)
 	link := newTestUnitreeLink()
 	s.dial = func(_ context.Context, _ string, token, key string) (unitreeLink, error) {
-		if token != "cloud-token-secret" || key != "" {
-			t.Fatal("legacy pairing lost its token or invented a key")
+		if token != "" || key != "" {
+			t.Fatal("legacy pairing forwarded the marker or invented a key")
 		}
 		return link, nil
 	}
@@ -739,8 +758,11 @@ func TestUnitreeManualPairWaitsForBackgroundDialCleanup(t *testing.T) {
 	defer releaseOnce.Do(func() { close(release) })
 	manualStarted := make(chan struct{}, 1)
 	link := newTestUnitreeLink()
-	s.dial = func(ctx context.Context, _ string, token, _ string) (unitreeLink, error) {
-		if token == "" {
+	// Neither dial carries a token, so tell them apart by order: the first is
+	// the background reconnect started by Restore.
+	var dials atomic.Int32
+	s.dial = func(ctx context.Context, _ string, _, _ string) (unitreeLink, error) {
+		if dials.Add(1) == 1 {
 			close(started)
 			<-ctx.Done()
 			close(canceled)
@@ -795,15 +817,18 @@ func TestUnitreeFailedManualPairRestoresPreviousSession(t *testing.T) {
 	s := testUnitreeService(t)
 	oldLink, restoredLink := newTestUnitreeLink(), newTestUnitreeLink()
 	restored := make(chan struct{}, 1)
-	s.dial = func(_ context.Context, address, token, key string) (unitreeLink, error) {
-		if token == "" {
+	// Dials: 1 = first manual pairing, 2 = failing replacement, 3+ = recovery.
+	var dials atomic.Int32
+	s.dial = func(_ context.Context, address, _, key string) (unitreeLink, error) {
+		n := dials.Add(1)
+		if n >= 3 {
 			if address != "192.0.2.20" || key != unitreeTestKey {
 				t.Error("recovery did not use the previous pairing")
 			}
 			restored <- struct{}{}
 			return restoredLink, nil
 		}
-		if address == "192.0.2.20" {
+		if n == 1 {
 			return oldLink, nil
 		}
 		if oldLink.Connected() {

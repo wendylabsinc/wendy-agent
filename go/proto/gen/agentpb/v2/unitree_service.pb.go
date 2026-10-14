@@ -276,10 +276,10 @@ type PairUnitreeRequest struct {
 	Address string `protobuf:"bytes,3,opt,name=address,proto3" json:"address,omitempty"`
 	// Empty when reconnecting an existing pairing with its saved key.
 	EncryptionKey string `protobuf:"bytes,4,opt,name=encryption_key,json=encryptionKey,proto3" json:"encryption_key,omitempty"`
-	// Compatibility field: send only a non-secret account-flow marker for
-	// initial unkeyed legacy pairing, never the Unitree cloud bearer token.
-	// Not verified by the agent and not a proof of account ownership.
-	// Never persisted or forwarded to the robot's LAN signaling endpoint.
+	// Compatibility field: empty, or the fixed non-secret marker
+	// "unitree-account-flow" for initial unkeyed legacy pairing; the agent
+	// rejects any other value. Never the Unitree cloud bearer token, and not a
+	// proof of account ownership. Never persisted or forwarded to the robot.
 	Token         string `protobuf:"bytes,5,opt,name=token,proto3" json:"token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
