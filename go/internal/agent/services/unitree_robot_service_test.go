@@ -23,6 +23,7 @@ type teleopFixtureLink struct {
 	mu         sync.Mutex
 	calls      []string
 	failMove   bool
+	helloDelay time.Duration
 	messages   chan unitree.TopicMessage
 	video      chan unitree.VideoFrame
 	subscribed []string
@@ -60,7 +61,21 @@ func (l *teleopFixtureLink) Move(ctx context.Context, f, s, y float64) error {
 func (l *teleopFixtureLink) Stop(context.Context) error    { l.record("stop"); return nil }
 func (l *teleopFixtureLink) StandUp(context.Context) error { l.record("stand"); return nil }
 func (l *teleopFixtureLink) LieDown(context.Context) error { l.record("lie"); return nil }
-func (l *teleopFixtureLink) Hello(context.Context) error   { l.record("hello"); return nil }
+func (l *teleopFixtureLink) Hello(ctx context.Context) error {
+	l.record("hello")
+	l.mu.Lock()
+	delay := l.helloDelay
+	l.mu.Unlock()
+	if delay == 0 {
+		return nil
+	}
+	select {
+	case <-time.After(delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 func (l *teleopFixtureLink) log() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -140,6 +155,14 @@ func TestUnitreeRobotCommandCommandsMapToRobot(t *testing.T) {
 	}
 	if got := l.log(); !sameCalls(got, []string{"stand", "hello", "lie", "stop"}) {
 		t.Fatalf("calls %v", got)
+	}
+}
+
+func TestUnitreeRobotCommandAllowsSlowPostureAcknowledgement(t *testing.T) {
+	c, l, _ := teleopFixture(t, true, time.Second)
+	l.helloDelay = 600 * time.Millisecond
+	if err := teleopSend(c, pb.UnitreeCommand_UNITREE_COMMAND_HELLO, 0, 0); err != nil {
+		t.Fatalf("slow Hello acknowledgement failed: %v", err)
 	}
 }
 

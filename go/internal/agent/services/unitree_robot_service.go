@@ -59,7 +59,12 @@ func (s *UnitreeRobotService) Command(ctx context.Context, req *pb.UnitreeComman
 
 	// Cancel any pending move expiry first, so it cannot fire after this command.
 	gen := s.cancelLease(req.GetSerial())
-	commandCtx, cancel := context.WithTimeout(ctx, teleopRobotTimeout)
+	timeout := teleopRobotTimeout
+	switch req.GetCommand() {
+	case pb.UnitreeCommand_UNITREE_COMMAND_STAND_UP, pb.UnitreeCommand_UNITREE_COMMAND_LIE_DOWN, pb.UnitreeCommand_UNITREE_COMMAND_HELLO:
+		timeout = unitree.PostureAckTimeout
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	switch req.GetCommand() {
 	case pb.UnitreeCommand_UNITREE_COMMAND_MOVE:

@@ -68,6 +68,12 @@ COMMANDS = {
     "lie_down": robot_pb.UNITREE_COMMAND_LIE_DOWN,
     "hello": robot_pb.UNITREE_COMMAND_HELLO,
 }
+# The robot acknowledges a posture change only after moving for a while (the
+# agent waits up to 3 s), so these get a longer deadline and run off the ROS
+# executor, where they would otherwise hold up /cmd_vel and stops.
+POSTURE_COMMANDS = {"stand_up", "lie_down", "hello"}
+COMMAND_TIMEOUT = 1
+POSTURE_COMMAND_TIMEOUT = 4
 
 
 def fill(msg, data):
@@ -397,7 +403,8 @@ class Bridge(Node):
             self.robot.Command(robot_pb.UnitreeCommandRequest(
                 serial=self.serial, command=COMMANDS[name],
                 forward=convert.clamp(forward, MAX_FORWARD), lateral=convert.clamp(lateral, MAX_LATERAL),
-                yaw=convert.clamp(yaw, MAX_YAW)), timeout=1)
+                yaw=convert.clamp(yaw, MAX_YAW)),
+                timeout=POSTURE_COMMAND_TIMEOUT if name in POSTURE_COMMANDS else COMMAND_TIMEOUT)
             return True
         except grpc.RpcError as e:
             log.warning("command %s failed: %s", name, e.details())
@@ -417,9 +424,20 @@ class Bridge(Node):
         if mapped is None:
             log.warning("sport API %d is not supported by the Go2 bridge", identity.api_id)
             response.header.status.code = UNSUPPORTED
-        else:
+            self.pubs["response"].publish(response)
+            return
+
+        def run():
             response.header.status.code = 0 if self.command(*mapped) else DENIED
-        self.pubs["response"].publish(response)
+            try:
+                self.pubs["response"].publish(response)
+            except RCLError:
+                if rclpy.ok():
+                    raise  # otherwise the bridge is shutting down
+        if mapped[0] in POSTURE_COMMANDS:
+            threading.Thread(target=run, daemon=True).start()
+        else:
+            run()
 
 
 def byte_array(data):

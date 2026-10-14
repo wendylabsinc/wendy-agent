@@ -26,7 +26,8 @@ func TestTeleopVelocityLimits(t *testing.T) {
 	}
 }
 func TestTeleopAcknowledgementMatchesIDAPIAndStatus(t *testing.T) {
-	c := &Connection{pendingID: 12, pendingAPI: 1008, pendingResponse: make(chan int, 1)}
+	response := make(chan int, 1)
+	c := &Connection{pending: map[uint64]pendingSportRequest{12: {api: 1008, response: response}}}
 	for _, raw := range []string{
 		`{"type":"res","topic":"rt/api/sport/request","data":{"header":{"identity":{"id":13,"api_id":1008},"status":{"code":0}}}}`,
 		`{"type":"res","topic":"rt/api/sport/request","data":{"header":{"identity":{"id":12,"api_id":1003},"status":{"code":0}}}}`,
@@ -34,7 +35,7 @@ func TestTeleopAcknowledgementMatchesIDAPIAndStatus(t *testing.T) {
 	} {
 		c.motionResponse([]byte(raw))
 		select {
-		case <-c.pendingResponse:
+		case <-response:
 			t.Fatal("accepted unrelated/missing acknowledgement")
 		default:
 		}
@@ -42,7 +43,7 @@ func TestTeleopAcknowledgementMatchesIDAPIAndStatus(t *testing.T) {
 	// Reply topic is not assumed to echo the request topic; identity/API are.
 	c.motionResponse([]byte(`{"type":"res","topic":"rt/api/sport/response","data":{"header":{"identity":{"id":12,"api_id":1008},"status":{"code":0}}}}`))
 	select {
-	case <-c.pendingResponse:
+	case <-response:
 	default:
 		t.Fatal("lost matching acknowledgement")
 	}
@@ -124,5 +125,76 @@ func TestTeleopWireCommandsWithFixturePeer(t *testing.T) {
 	case <-commands:
 		t.Fatal("invalid Move sent command")
 	default:
+	}
+}
+
+func TestSlowPostureAcknowledgementDoesNotHoldUpStop(t *testing.T) {
+	helloReceived := make(chan struct{}, 1)
+	robot, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer robot.Close()
+	robot.OnDataChannel(func(ch *webrtc.DataChannel) {
+		ch.OnOpen(func() { _ = ch.SendText(`{"type":"validation","data":"fixture"}`) })
+		ch.OnMessage(func(m webrtc.DataChannelMessage) {
+			var msg struct {
+				Type string          `json:"type"`
+				Data json.RawMessage `json:"data"`
+			}
+			if json.Unmarshal(m.Data, &msg) != nil {
+				return
+			}
+			if msg.Type == "validation" {
+				_ = ch.SendText(`{"type":"validation","data":"Validation Ok."}`)
+				return
+			}
+			var d struct {
+				Header struct {
+					Identity struct {
+						ID  uint64 `json:"id"`
+						API uint64 `json:"api_id"`
+					} `json:"identity"`
+				} `json:"header"`
+			}
+			if msg.Type != "req" || json.Unmarshal(msg.Data, &d) != nil {
+				return
+			}
+			id, api := d.Header.Identity.ID, d.Header.Identity.API
+			reply := func() {
+				_ = ch.SendText(fmt.Sprintf(`{"type":"res","topic":%q,"data":{"header":{"identity":{"id":%d,"api_id":%d},"status":{"code":0}}}}`, sportTopic, id, api))
+			}
+			if api == 1016 {
+				// Like the real Go2, acknowledge Hello only after waving for a while.
+				helloReceived <- struct{}{}
+				time.AfterFunc(600*time.Millisecond, reply)
+				return
+			}
+			reply()
+		})
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := connectWithSignaling(ctx, func(ctx context.Context, offer []byte) ([]byte, error) { return answerOffer(t, ctx, robot, offer) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	hello := make(chan error, 1)
+	go func() { hello <- c.Hello(ctx) }()
+	select {
+	case <-helloReceived:
+	case <-ctx.Done():
+		t.Fatal("fixture did not receive Hello")
+	}
+	start := time.Now()
+	if err := c.Stop(ctx); err != nil {
+		t.Fatalf("Stop during Hello: %v", err)
+	}
+	if waited := time.Since(start); waited > 300*time.Millisecond {
+		t.Fatalf("Stop waited %v behind Hello", waited)
+	}
+	if err := <-hello; err != nil {
+		t.Fatalf("Hello acknowledged after 600 ms failed: %v", err)
 	}
 }

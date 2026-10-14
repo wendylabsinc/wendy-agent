@@ -45,25 +45,23 @@ var legacyGCMKey = []byte{232, 86, 130, 189, 22, 84, 155, 0, 142, 4, 166, 104, 4
 // validation challenge is not a cryptographic proof of robot identity; modern
 // signaling is authenticated separately with the account's per-device key.
 type Connection struct {
-	peer            *webrtc.PeerConnection
-	channel         *webrtc.DataChannel
-	connected       atomic.Bool
-	validated       atomic.Bool
-	done            chan struct{}
-	closeOnce       sync.Once
-	closeErr        error
-	motionMu        sync.Mutex
-	responseMu      sync.Mutex
-	pendingID       uint64
-	pendingAPI      uint64
-	pendingResponse chan int
-	requestID       atomic.Uint64
-	videoSSRC       atomic.Uint32
-	subMu           sync.Mutex
-	subscribers     map[*subscriber]struct{}
-	topicRefs       map[string]int
-	lidarRefs       int
-	videoRefs       int
+	peer        *webrtc.PeerConnection
+	channel     *webrtc.DataChannel
+	connected   atomic.Bool
+	validated   atomic.Bool
+	done        chan struct{}
+	closeOnce   sync.Once
+	closeErr    error
+	motionMu    sync.Mutex
+	responseMu  sync.Mutex
+	pending     map[uint64]pendingSportRequest
+	requestID   atomic.Uint64
+	videoSSRC   atomic.Uint32
+	subMu       sync.Mutex
+	subscribers map[*subscriber]struct{}
+	topicRefs   map[string]int
+	lidarRefs   int
+	videoRefs   int
 }
 
 // Connected reports whether the validated WebRTC peer is currently connected.

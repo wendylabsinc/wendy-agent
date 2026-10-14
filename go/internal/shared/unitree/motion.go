@@ -42,24 +42,66 @@ func (c *Connection) StandUp(ctx context.Context) error { return c.sportRequest(
 func (c *Connection) LieDown(ctx context.Context) error { return c.sportRequest(ctx, 1005, "") }
 func (c *Connection) Hello(ctx context.Context) error   { return c.sportRequest(ctx, 1016, "") }
 
+const motionAckTimeout = 200 * time.Millisecond
+
+// PostureAckTimeout allows the robot to finish a stand, lie-down or wave before
+// acknowledging it; Move and StopMove retain the shorter motionAckTimeout.
+const PostureAckTimeout = 3 * time.Second
+
+func sportAckTimeout(api uint64) time.Duration {
+	if api == 1008 || api == 1003 {
+		return motionAckTimeout
+	}
+	return PostureAckTimeout
+}
+
+type pendingSportRequest struct {
+	api      uint64
+	response chan int
+}
+
+// sportRequest sends one request and waits for its acknowledgement. Requests
+// are sent one at a time, but the wait happens outside motionMu, so a stop is
+// not held up behind a posture change waiting for its slow acknowledgement.
 func (c *Connection) sportRequest(ctx context.Context, api uint64, parameter string) error {
-	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, sportAckTimeout(api))
 	defer cancel()
+	id, response, err := c.sendSportRequest(ctx, api, parameter)
+	if err != nil {
+		return err
+	}
+	defer func() { c.responseMu.Lock(); delete(c.pending, id); c.responseMu.Unlock() }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return errors.New("Go2 disconnected before command acknowledgement")
+	case code := <-response:
+		if code != 0 {
+			return errors.New("Go2 refused the teleop command")
+		}
+		return nil
+	}
+}
+
+func (c *Connection) sendSportRequest(ctx context.Context, api uint64, parameter string) (uint64, chan int, error) {
 	c.motionMu.Lock()
 	defer c.motionMu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, nil, err
 	}
 	if !c.Connected() || c.channel == nil || (api == 1008 && c.channel.BufferedAmount() != 0) {
-		return errors.New("Go2 command channel unavailable or backlogged")
+		return 0, nil, errors.New("Go2 command channel unavailable or backlogged")
 	}
 	// Keep numeric identifiers exactly representable by browser/robot JSON parsers.
 	id := c.requestID.Add(1) % 2147483648
 	response := make(chan int, 1)
 	c.responseMu.Lock()
-	c.pendingID, c.pendingAPI, c.pendingResponse = id, api, response
+	if c.pending == nil {
+		c.pending = make(map[uint64]pendingSportRequest)
+	}
+	c.pending[id] = pendingSportRequest{api: api, response: response}
 	c.responseMu.Unlock()
-	defer func() { c.responseMu.Lock(); c.pendingResponse = nil; c.responseMu.Unlock() }()
 	payload := struct {
 		Type  string `json:"type"`
 		Topic string `json:"topic"`
@@ -77,19 +119,12 @@ func (c *Connection) sportRequest(ctx context.Context, api uint64, parameter str
 	payload.Data.Parameter = parameter
 	raw, _ := json.Marshal(payload)
 	if err := c.channel.SendText(string(raw)); err != nil {
-		return errors.New("Go2 command send failed")
+		c.responseMu.Lock()
+		delete(c.pending, id)
+		c.responseMu.Unlock()
+		return 0, nil, errors.New("Go2 command send failed")
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-c.done:
-		return errors.New("Go2 disconnected before command acknowledgement")
-	case code := <-response:
-		if code != 0 {
-			return errors.New("Go2 refused the teleop command")
-		}
-		return nil
-	}
+	return id, response, nil
 }
 
 func (c *Connection) motionResponse(raw []byte) {
@@ -115,9 +150,9 @@ func (c *Connection) motionResponse(raw []byte) {
 	}
 	c.responseMu.Lock()
 	defer c.responseMu.Unlock()
-	if c.pendingResponse != nil && reply.Data.Header.Identity.ID == c.pendingID && reply.Data.Header.Identity.API == c.pendingAPI {
+	if pending, ok := c.pending[reply.Data.Header.Identity.ID]; ok && pending.api == reply.Data.Header.Identity.API {
 		select {
-		case c.pendingResponse <- *reply.Data.Header.Status.Code:
+		case pending.response <- *reply.Data.Header.Status.Code:
 		default:
 		}
 	}
