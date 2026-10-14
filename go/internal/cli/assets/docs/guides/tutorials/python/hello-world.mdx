@@ -13,8 +13,20 @@ The Python `simple-api` template generates a small FastAPI HTTP server. Unlike a
 ### Prerequisites
 
 - Wendy CLI installed on your development machine
-- Python 3.14 installed
+- Docker and Buildx installed, with Docker running on your development machine
 - A WendyOS device plugged in over USB or connectable over Wi-Fi
+
+Python and the app's dependencies run inside the container. You do not need to
+install Python on your development machine for this guide. Check the builder first:
+
+```bash
+docker info
+docker buildx version
+```
+
+Both commands should succeed. If Docker is unavailable, start it before continuing.
+You can also use a [WendyOS virtual device](/docs/installation/wendyos-virtual-machine)
+on macOS or Linux when you do not have hardware yet.
 
 ### Creating the Project
 

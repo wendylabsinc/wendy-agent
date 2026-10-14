@@ -80,10 +80,10 @@ func TestEnsureDockerDaemon_DarwinPersonWithPipedOutputOpensRuntime(t *testing.T
 	}
 	isInteractiveTerminalFn = func() bool { return false }
 	stubHumanPresent(t, true)
-	stubConfirmFn(t, func(q string) bool {
+	dockerConfirmFn = func(_ context.Context, q string) (bool, error) {
 		t.Fatalf("must not prompt (%q) when stdout is not a terminal", q)
-		return false
-	})
+		return false, nil
+	}
 
 	if err := ensureDockerDaemonForHostOS(context.Background(), dockerHostOSDarwin); err != nil {
 		t.Fatalf("ensureDockerDaemonForHostOS: %v", err)

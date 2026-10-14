@@ -185,8 +185,12 @@ done
 # rewriting -- DeviceEnrollmentService included, Cloud-owned though it is.
 #
 # Pin (WDY-3458 round): wendycloud/v2/*.proto and wendy/options.proto are
-# service-protos master 09097e83 (merged #91); device_enrollment.proto is cloud #741 head
-# 2c0ca481 (cloud-proto/device_enrollment.proto). Re-pin: copy those files from
+# service-protos master 09097e83 (merged #91); device_enrollment.proto is cloud #757 head
+# 5e3003e4 (cloud-proto/device_enrollment.proto), including enrollment hardware.
+# assets.proto is service-protos
+# c5220f7 (merged #96): GetAsset deletion details/expected_device_id guard
+# plus upstream asset hardware fields.
+# Re-pin: copy those files from
 # the new heads with `git show <sha>:<path>`, run `make proto`, and update the
 # SHAs here. wendy/options.proto (the signed_request method option) generates
 # into cloudpbv2 too, so the option and SignedRequest live in one Go package.
@@ -195,6 +199,7 @@ CLOUD_V2_PROTOS=(
     "wendy/options.proto"
     "wendycloud/v2/signed_request.proto"
     "wendycloud/v2/device_enrollment.proto"
+    "wendycloud/v2/pki_admin.proto"
     "wendycloud/v2/apps.proto"
     "wendycloud/v2/assets.proto"
     "wendycloud/v2/certificates.proto"
@@ -214,6 +219,25 @@ for p in "${CLOUD_V2_PROTOS[@]}"; do
     CLOUD_V2_M_OPTS="$CLOUD_V2_M_OPTS --go-grpc_opt=M${p}=${CLOUD_V2_PKG};cloudpbv2"
 done
 
+# PKIAdminService returns the PKI ledger's own response messages. These four
+# complete contracts are vendored from service-protos
+# 6ad12f11bc3359ff902d586fd601a5530792febe, the Cloud API's protocol pin.
+PKI_PKG="$MODULE/go/proto/gen/pkicorepb"
+AUTH_PKG="$MODULE/go/proto/gen/wendyauthpb"
+PKI_PROTOS=(
+    "pkicore/v1/types.proto"
+    "pkicore/v1/engine.proto"
+    "pkicore/v1/fabric_management.proto"
+    "pkicore/v1/fabric_relay.proto"
+)
+PKI_M_OPTS="--go_opt=Mwendyauth/v1/envelope.proto=${AUTH_PKG} --go-grpc_opt=Mwendyauth/v1/envelope.proto=${AUTH_PKG}"
+PKI_GO_M_OPTS="--go_opt=Mwendyauth/v1/envelope.proto=${AUTH_PKG}"
+for p in "${PKI_PROTOS[@]}"; do
+    PKI_M_OPTS="$PKI_M_OPTS --go_opt=M${p}=${PKI_PKG};pkicorepb"
+    PKI_M_OPTS="$PKI_M_OPTS --go-grpc_opt=M${p}=${PKI_PKG};pkicorepb"
+    PKI_GO_M_OPTS="$PKI_GO_M_OPTS --go_opt=M${p}=${PKI_PKG};pkicorepb"
+done
+
 # ---- Wendy System API protos ----
 SYSTEM_PKG="$MODULE/go/proto/gen/systempb"
 SYSTEM_PROTOS=(
@@ -227,7 +251,7 @@ for p in "${SYSTEM_PROTOS[@]}"; do
 done
 
 # All M opts combined for cross-package imports
-ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $CLOUD_V2_M_OPTS $SYSTEM_M_OPTS"
+ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $CLOUD_V2_M_OPTS $PKI_M_OPTS $SYSTEM_M_OPTS"
 
 echo "Generating Wendy Agent protos..."
 mkdir -p "$GEN_DIR/agentpb"
@@ -273,6 +297,17 @@ protoc \
     --go-grpc_opt=module="$CLOUD_V2_PKG" \
     ${CLOUD_V2_PROTOS[@]}
 
+echo "Generating PKI administration protos..."
+mkdir -p "$GEN_DIR/pkicorepb"
+# Cloud is the only client transport; PKI files supply message descriptors,
+# not direct engine or fabric clients.
+protoc \
+    --proto_path="$PROTO_DIR" \
+    --go_out="$GEN_DIR/pkicorepb" \
+    --go_opt=module="$PKI_PKG" \
+    $PKI_GO_M_OPTS \
+    "${PKI_PROTOS[@]}"
+
 echo "Generating Wendy System API protos..."
 mkdir -p "$GEN_DIR/systempb"
 protoc \
@@ -285,7 +320,7 @@ protoc \
     ${SYSTEM_PROTOS[@]}
 
 # wendy_com_msg.proto imports sensorlink.proto by bare filename, for the same
-# reason the tunnel protos do: in the wendy-lite project the two sit side by
+# reason the relay protos do: in the wendy-lite project the two sit side by
 # side in one directory, and the file is shared with that project verbatim. So
 # proto_path points inside wendy/lite here too. sensorlink.proto is an input
 # only -- its Go code comes from the sensorlinkpb generation further down,
@@ -305,24 +340,6 @@ protoc \
     --go_opt=Msensorlink.proto="$SENSORLINK_PKG" \
     wendy_com_msg.proto \
     wendy_conf.proto
-
-# The tunnel protos import each other by bare filename so they can be moved
-# to another project as-is; proto_path points inside wendy/lite accordingly.
-echo "Generating Wendy Lite tunnel protos..."
-TUNNEL_PKG="$MODULE/go/proto/gen/tunnelpb"
-mkdir -p "$GEN_DIR/tunnelpb"
-protoc \
-    --proto_path="$PROTO_DIR/wendy/lite" \
-    --go_out="$GEN_DIR/tunnelpb" \
-    --go_opt=module="$TUNNEL_PKG" \
-    --go_opt=Mwendy_com_tunnel_msg.proto="$TUNNEL_PKG" \
-    --go_opt=Mwendy_com_tunnel_service.proto="$TUNNEL_PKG" \
-    --go-grpc_out="$GEN_DIR/tunnelpb" \
-    --go-grpc_opt=module="$TUNNEL_PKG" \
-    --go-grpc_opt=Mwendy_com_tunnel_msg.proto="$TUNNEL_PKG" \
-    --go-grpc_opt=Mwendy_com_tunnel_service.proto="$TUNNEL_PKG" \
-    wendy_com_tunnel_msg.proto \
-    wendy_com_tunnel_service.proto
 
 echo "Generating Wendy Lite sensorlink protos..."
 SENSORLINK_PKG="$MODULE/go/proto/gen/sensorlinkpb"
@@ -348,6 +365,19 @@ protoc --proto_path="$PROTO_DIR" \
     --go-grpc_opt=Mwendycloud/tunnel/v2/tunnel.proto="$RELAY_PKG" \
     --go-grpc_opt=Mwendyauth/v1/envelope.proto="$AUTH_PKG" \
     wendycloud/tunnel/v2/tunnel.proto wendyauth/v1/envelope.proto
+
+# Packaged Lite relay contract from service-protos.
+WCOMRELAY_PKG="$MODULE/go/proto/gen/wcomrelaypb"
+protoc --proto_path="$PROTO_DIR" \
+    --go_out="$GO_DIR" --go_opt=module="$MODULE/go" \
+    --go_opt=Mwendycloud/tunnel/lite/v1/relay.proto="$WCOMRELAY_PKG" \
+    --go_opt=Mwendycloud/tunnel/v2/tunnel.proto="$RELAY_PKG" \
+    --go_opt=Mwendyauth/v1/envelope.proto="$AUTH_PKG" \
+    --go-grpc_out="$GO_DIR" --go-grpc_opt=module="$MODULE/go" \
+    --go-grpc_opt=Mwendycloud/tunnel/lite/v1/relay.proto="$WCOMRELAY_PKG" \
+    --go-grpc_opt=Mwendycloud/tunnel/v2/tunnel.proto="$RELAY_PKG" \
+    --go-grpc_opt=Mwendyauth/v1/envelope.proto="$AUTH_PKG" \
+    wendycloud/tunnel/lite/v1/relay.proto
 
 # App recording envelopes (no generated SDK is needed for lightweight streams).
 protoc --proto_path="$PROTO_DIR" --go_out="$GO_DIR" --go_opt=module="$MODULE/go" \
