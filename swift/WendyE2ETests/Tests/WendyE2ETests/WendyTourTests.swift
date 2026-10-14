@@ -18,7 +18,7 @@ struct `'wendy tour'` {
                 #expect(result.status.isSuccess)
                 #expect(
                     result.stdout.contains(
-                        "Walk and program a simulated robot or set up your first physical device"
+                        "Watch a simulated Go2 walk"
                     )
                 )
                 #expect(result.stdout.contains("--simulator"))
