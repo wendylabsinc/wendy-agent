@@ -8,6 +8,10 @@ Strict compatibility includes C ABI, public Go APIs, protobuf wire values, platf
 
 `tools/check_release.py` catches removed/changed C function signatures and additions against the preceding reachable release tag. It is deliberately not a complete ABI, wire, Go API or behavioral compatibility analyzer. New types and schemas require extending the checks and reviewing the actual boundary. Each release commits `documentation/versions/<VERSION>.json`; generated JS operations must match that contract.
 
+## Planned modular composition
+
+Selectable modules and their dependency graph share one runtime foundation and one composed Core engine. Future modular artifacts remain on the coordinated Core version; independent SDK ergonomic release trains do not imply a separate Go runtime per module. Packaging must preserve selective native/WASM composition, not merely split wrappers around a monolithic payload. Current distribution artifacts contain the single-operation engine, not a module-selection system. See [architecture](architecture.md) for the recorded design and unresolved bundle/dependency choices.
+
 ## CI without SDK coupling
 
 `build-core.yml` builds and tests Core incarnations, not the future language SDKs. It tests direct Go/C consumption, native Node (including workers), SwiftPM, installed Python wheels, Kotlin/JVM, and the same JS conformance suite in Chromium using actual Go/WASM. The final npm tarball is installed and tested in both runtimes too.

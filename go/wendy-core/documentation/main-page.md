@@ -14,4 +14,6 @@ The canonical contract is in `include/WendyCore` and `proto/wendy/core/v1`. Lang
 
 Object ownership, async unary, demand-driven streams and bulk buffers under `binding-patterns` and `c-contract` are planned conventions. They do not add operations to the current release.
 
-See `architecture.md`, `api-manifest.md`, and `releasing.md` for the design and build workflow.
+The agreed modular design shares one `WendyRuntime` foundation across selected modules. Portable Core has hard binding and platform boundaries, plus explicit contracts for reusable infrastructure backends. This is a design direction, not implemented module/provider APIs.
+
+See [architecture](architecture.md), [API manifest](api-manifest.md), and [releasing](releasing.md) for the diagrams, contracts and build workflow.

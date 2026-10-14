@@ -30,6 +30,14 @@ tools/                   Build, generation and release mechanics
 
 Language and platform are orthogonal. In particular, the Swift incarnation is not the Apple adapter, and the Kotlin/JVM incarnation is not an Android adapter.
 
+## Agreed architecture
+
+One SDK family serves Companion/CLI, WendyOS/Agent, and apps using Wendy capabilities. Selectable domain modules and their dependencies share one `WendyRuntime` foundation and one composed engine, rather than pulling every domain into each consumer.
+
+Portable Core sits between a stable binding contract above and a platform-capability SPI below. Substantial infrastructure such as container execution has separate subsystem contracts so it can remain reusable even if Core were theoretically implemented in another language. Go remains the chosen implementation; alternative engines are not planned.
+
+See [architecture and boundaries](documentation/architecture.md) for the diagrams, module/composition principles and implementation-neutral contracts. These are recorded design decisions, not features already implemented by the HelloWorld bootstrap.
+
 ## Try it
 
 Prerequisites: Go, a C compiler, Python 3.9+, `protoc`, and Clang. JavaScript tests additionally need Node 22+; Kotlin needs JDK 21. Swift needs Swift 6 and, on macOS, XcodeBuildMCP.
