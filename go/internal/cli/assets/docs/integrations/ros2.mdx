@@ -40,7 +40,7 @@ domain, so unrelated apps and robots do not discover each other. `scope` in
 to a robot or sensor attached to the device, `"network"` for a bridge or tool
 that needs the device's wider ROS 2 graph, `"app"` for an app that must stay to
 itself. `device`, `peripherals` and `network` apps that share a bus set the
-same `domainId`; `device` and `peripherals` need the host network. See
+same `domainId`; all three scopes need the host network. See
 [`frameworks.ros2`](/docs/apps/wendy.json#frameworksros2).
 
 <Callout type="info">

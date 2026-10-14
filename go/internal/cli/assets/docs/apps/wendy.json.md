@@ -120,12 +120,14 @@ Every field is optional — `"frameworks": { "ros2": {} }` is a valid way to say
 |---------|---------------------|-----|
 | `app` | Only this app (all its services) | Loopback discovery on the app's own domain, derived from `appId`. Do not set `domainId`. |
 | `device` | Every app on the device that uses the same domain | Loopback discovery (`ROS_LOCALHOST_ONLY=1`). |
-| `peripherals` | The device's apps and hardware attached to it, such as a robot or sensor on its own cable | Loopback plus the device's peripheral interfaces: physical wired interfaces other than the uplink that carries the default route. CycloneDDS only. On a device with nothing attached it behaves as `device`. |
-| `network` | Anything on the device's networks | Subnet discovery on every interface. |
+| `peripherals` | The device's apps and hardware attached to it, such as a robot or sensor on its own cable | Loopback reaches same-domain `device` apps; multicast discovery on the device's peripheral interfaces reaches physical wired interfaces other than the uplink that carries the default route. CycloneDDS only. On a device with nothing attached it behaves as `device`. |
+| `network` | Anything on the device's networks, and the device's own apps | Subnet discovery on the device's network interface, plus loopback so the app also reaches `device` apps on the same domain (with host networking). |
 
 Peripheral interfaces are detected, not configured: a robot on its own cable is found, but a robot on the same switch as the device's uplink, or one reached over Wi-Fi, is not; use `network` for those. A second ordinary network port without a default route counts as a peripheral interface.
 
-`device` and `peripherals` connect apps through the device's loopback, so they require host networking. The current runtime provides it when the app has no `network` entitlement, or when that entitlement uses mode `host` or `host-admin`; isolated modes such as `bridge` are rejected. Apps that share a bus through `device`, `peripherals` or `network` set the same `domainId`; without one each app gets its own domain.
+`device`, `peripherals`, and `network` connect apps through the device's loopback, so they require host networking. The current runtime provides it when the app has no `network` entitlement, or when that entitlement uses mode `host` or `host-admin`; isolated modes such as `bridge` are rejected. Apps that share a bus through `device`, `peripherals` or `network` set the same `domainId`; without one each app gets its own domain.
+
+> **CycloneDDS participant indexes:** Each CycloneDDS participant using `device`, `peripherals`, or `network` relies on the automatic participant-index range for its host and domain. CycloneDDS checks through `MaxAutoParticipantIndex` (default `9`). If one domain has enough participants to exhaust that range, split apps across explicit `domainId` values; Wendy does not yet expose this limit in its generated discovery config.
 
 An out-of-range `domainId`, an unsupported `rmw`, a malformed `distro`, or an unknown `scope` is rejected when the config is parsed, rather than silently starting a container with no domain or middleware isolation.
 
