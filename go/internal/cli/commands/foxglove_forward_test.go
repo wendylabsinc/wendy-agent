@@ -63,7 +63,7 @@ func receiveFoxgloveExecStart(stream agentpb.WendyContainerService_ExecContainer
 	if start == nil {
 		return fmt.Errorf("first request is not an exec start: %v", req)
 	}
-	if start.GetAppName() != "sh.wendy.foxglovebridge_foxglove" {
+	if start.GetAppName() != foxgloveAppID {
 		return fmt.Errorf("exec container = %q", start.GetAppName())
 	}
 	if start.GetTty() || start.GetTermSize() != nil {
@@ -220,58 +220,66 @@ func TestServeFoxgloveForwardCancellationClosesClientsAndExecStreams(t *testing.
 	}
 }
 
-func TestWaitForFoxgloveBridgeRetriesUntilWebSocketReady(t *testing.T) {
-	var attempts atomic.Int32
-	probeClosed := make(chan struct{}, 1)
-	client := newFoxgloveExecTestClient(t, func(stream agentpb.WendyContainerService_ExecContainerServer) error {
-		if err := receiveFoxgloveExecStart(stream); err != nil {
-			return err
-		}
-		if attempts.Add(1) == 1 {
-			return stream.Send(&agentpb.ExecContainerResponse{ResponseType: &agentpb.ExecContainerResponse_ExitCode{ExitCode: 1}})
-		}
-		var header []byte
-		for !bytes.Contains(header, []byte("\r\n\r\n")) {
-			req, err := stream.Recv()
-			if err != nil {
-				return err
+func TestWaitForFoxgloveBridgeAcceptsCurrentAndLegacySubprotocols(t *testing.T) {
+	for _, selectedProtocol := range []string{"foxglove.sdk.v1", "foxglove.websocket.v1"} {
+		t.Run(selectedProtocol, func(t *testing.T) {
+			var attempts atomic.Int32
+			probeClosed := make(chan struct{}, 1)
+			client := newFoxgloveExecTestClient(t, func(stream agentpb.WendyContainerService_ExecContainerServer) error {
+				if err := receiveFoxgloveExecStart(stream); err != nil {
+					return err
+				}
+				if attempts.Add(1) == 1 {
+					return stream.Send(&agentpb.ExecContainerResponse{ResponseType: &agentpb.ExecContainerResponse_ExitCode{ExitCode: 1}})
+				}
+				var header []byte
+				for !bytes.Contains(header, []byte("\r\n\r\n")) {
+					req, err := stream.Recv()
+					if err != nil {
+						return err
+					}
+					header = append(header, req.GetStdinData()...)
+					if len(header) > 16<<10 {
+						return fmt.Errorf("oversized WebSocket handshake")
+					}
+				}
+				req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(header)))
+				if err != nil {
+					return err
+				}
+				protocols := strings.Split(req.Header.Get("Sec-WebSocket-Protocol"), ",")
+				for i := range protocols {
+					protocols[i] = strings.TrimSpace(protocols[i])
+				}
+				if req.Method != http.MethodGet || req.Header.Get("Upgrade") != "websocket" || !reflect.DeepEqual(protocols, []string{"foxglove.sdk.v1", "foxglove.websocket.v1"}) {
+					return fmt.Errorf("invalid Foxglove WebSocket probe: %s %v", req.Method, req.Header)
+				}
+				key := req.Header.Get("Sec-WebSocket-Key")
+				if key == "" {
+					return fmt.Errorf("WebSocket probe omitted handshake key")
+				}
+				digest := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+				response := fmt.Sprintf("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\nSec-WebSocket-Protocol: %s\r\n\r\n", base64.StdEncoding.EncodeToString(digest[:]), selectedProtocol)
+				if err := stream.Send(&agentpb.ExecContainerResponse{ResponseType: &agentpb.ExecContainerResponse_StdoutData{StdoutData: []byte(response)}}); err != nil {
+					return err
+				}
+				<-stream.Context().Done()
+				probeClosed <- struct{}{}
+				return stream.Context().Err()
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := waitForFoxgloveBridge(ctx, client); err != nil {
+				t.Fatalf("bridge never became ready: %v", err)
 			}
-			header = append(header, req.GetStdinData()...)
-			if len(header) > 16<<10 {
-				return fmt.Errorf("oversized WebSocket handshake")
+			if got := attempts.Load(); got != 2 {
+				t.Errorf("readiness attempts = %d, want 2", got)
 			}
-		}
-		req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(header)))
-		if err != nil {
-			return err
-		}
-		if req.Method != http.MethodGet || req.Header.Get("Upgrade") != "websocket" || req.Header.Get("Sec-WebSocket-Protocol") != "foxglove.websocket.v1" {
-			return fmt.Errorf("invalid Foxglove WebSocket probe: %s %v", req.Method, req.Header)
-		}
-		key := req.Header.Get("Sec-WebSocket-Key")
-		if key == "" {
-			return fmt.Errorf("WebSocket probe omitted handshake key")
-		}
-		digest := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-		response := fmt.Sprintf("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\nSec-WebSocket-Protocol: foxglove.websocket.v1\r\n\r\n", base64.StdEncoding.EncodeToString(digest[:]))
-		if err := stream.Send(&agentpb.ExecContainerResponse{ResponseType: &agentpb.ExecContainerResponse_StdoutData{StdoutData: []byte(response)}}); err != nil {
-			return err
-		}
-		<-stream.Context().Done()
-		probeClosed <- struct{}{}
-		return stream.Context().Err()
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := waitForFoxgloveBridge(ctx, client); err != nil {
-		t.Fatalf("bridge never became ready: %v", err)
-	}
-	if got := attempts.Load(); got != 2 {
-		t.Errorf("readiness attempts = %d, want 2", got)
-	}
-	select {
-	case <-probeClosed:
-	case <-ctx.Done():
-		t.Fatal("readiness probe left its exec stream open")
+			select {
+			case <-probeClosed:
+			case <-ctx.Done():
+				t.Fatal("readiness probe left its exec stream open")
+			}
+		})
 	}
 }
