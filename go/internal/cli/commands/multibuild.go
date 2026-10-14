@@ -517,6 +517,9 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	)
 	if opts.buildHost != "" {
 		failed, buildErr = buildServicesRemote(ctx, conn, opts.buildHost, cwd, appCfg, services, platform, buildArgs, opts.chunking, skip, dockerfiles, opts.maxConcurrency, opts.quietBuild, sfOpts...)
+		// Cancellation can follow a successful delivery, so invalidate old
+		// local fingerprints even when the remote build returns an error.
+		invalidateRemoteServiceDeployFingerprints(appCfg.AppID, deviceKey, services, skip)
 	} else {
 		if len(skip) < len(services) {
 			noteEmulatedBuild(platform, true)
@@ -527,9 +530,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		return buildErr
 	}
 
-	if opts.buildHost != "" {
-		invalidateRemoteServiceDeployFingerprints(appCfg.AppID, deviceKey, services, skip)
-	} else {
+	if opts.buildHost == "" {
 		recordServiceDeployFingerprints(appCfg.AppID, appCfg.Version, deviceKey, services, skip, failed, hashes, preparedContent)
 	}
 

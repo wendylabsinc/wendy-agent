@@ -1,12 +1,17 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -173,5 +178,98 @@ func TestInvalidateRemoteServiceDeployFingerprints(t *testing.T) {
 		if !ok || fp.InputHash != name+"-hash" || !slices.Equal(fp.LayerDiffIDs, []string{"sha256:" + name}) {
 			t.Fatalf("%s fingerprint = %+v, present %v; want last known-good fingerprint retained", name, fp, ok)
 		}
+	}
+}
+
+// A fatal remote-build error must invalidate fingerprints before the run
+// returns, while retaining services the run never selected for rebuilding.
+func TestRunMultiServiceRemoteBuildErrorInvalidatesFingerprints(t *testing.T) {
+	for _, buildErr := range []error{context.Canceled, errors.New("build host disconnected")} {
+		t.Run(buildErr.Error(), func(t *testing.T) {
+			setTempConfig(t, &config.Config{})
+			isolateFingerprintCache(t)
+			t.Setenv("WENDY_AGENT_SOCKET", "")
+			t.Setenv("WENDY_PUSH_SKIP", "1")
+
+			const appID = "group"
+			appCfg := &appconfig.AppConfig{
+				AppID: appID,
+				Services: map[string]*appconfig.ServiceConfig{
+					"selected":   {Context: "selected", DependsOn: []string{"preserved"}},
+					"preserved":  {Context: "preserved"},
+					"unselected": {Context: "unselected"},
+				},
+			}
+			cwd := t.TempDir()
+			for name := range appCfg.Services {
+				writeFile(t, cwd, name+"/Dockerfile", "FROM scratch\n")
+			}
+			originalHasher := buildInputHasher
+			t.Cleanup(func() { buildInputHasher = originalHasher })
+			buildInputHasher = func(_, _, _, _ string, _ map[string]string, _ []string) (string, error) {
+				return "current-build-input", nil
+			}
+
+			publicKey := "target-device"
+			version := &agentpb.GetAgentVersionResponse{Os: "linux", CpuArchitecture: "arm64", PublicKey: &publicKey}
+			deviceKey := deviceFingerprintKey(version)
+			conn := &grpcclient.AgentConnection{
+				ProvisioningService: deploymentProvisioningStub{response: &agentpb.IsProvisionedResponse{}},
+				ContainerService: &fastPathContainerClient{
+					appName: multiServiceContainerName(appID, "preserved"),
+					state:   agentpb.AppRunningState_RUNNING,
+				},
+			}
+			conn.CacheAgentVersion(version)
+			for name := range appCfg.Services {
+				saveDeployFingerprint(serviceFingerprintKey(appID, name), deviceKey, deployFingerprint{
+					InputHash:    name + "-previous-input",
+					LayerDiffIDs: []string{"sha256:" + name},
+				})
+			}
+
+			opts := runOptions{
+				buildHost:  "cloud://cloud.example:443/org/7/asset/42",
+				service:    "selected",
+				watchState: &watchDeployState{hashes: map[string]string{}},
+			}
+			envs := effectiveServiceEnvs(appCfg, appCfg.Services, opts.env)
+			desiredHash, err := multiServiceWatchHash("current-build-input",
+				multiServiceCreateConfig(appCfg, "preserved", appCfg.Services["preserved"]),
+				envs["preserved"], resolveRestartPolicy(opts))
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts.watchState.record(watchServiceKey(deviceKey, appID, "preserved"), desiredHash)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			originalConnect := connectCloudDeviceSelectorFn
+			t.Cleanup(func() { connectCloudDeviceSelectorFn = originalConnect })
+			attempted := false
+			connectCloudDeviceSelectorFn = func(context.Context, cloudDeviceSelector) (*SelectedDevice, error) {
+				attempted = true
+				if errors.Is(buildErr, context.Canceled) {
+					cancel()
+				}
+				return nil, buildErr
+			}
+
+			if err := runMultiServiceWithAgent(ctx, conn, cwd, appCfg, opts); !errors.Is(err, buildErr) {
+				t.Fatalf("run error = %v, want %v", err, buildErr)
+			}
+			if !attempted {
+				t.Fatal("run did not attempt the remote build")
+			}
+			if _, ok := loadDeployFingerprint(serviceFingerprintKey(appID, "selected"), deviceKey); ok {
+				t.Fatal("fatal remote build error retained the selected service's old fingerprint")
+			}
+			for _, name := range []string{"preserved", "unselected"} {
+				fp, ok := loadDeployFingerprint(serviceFingerprintKey(appID, name), deviceKey)
+				if !ok || fp.InputHash != name+"-previous-input" || !slices.Equal(fp.LayerDiffIDs, []string{"sha256:" + name}) {
+					t.Fatalf("%s fingerprint = %+v, present %v; want previous fingerprint retained", name, fp, ok)
+				}
+			}
+		})
 	}
 }
