@@ -29,6 +29,9 @@ func lastEnv(env []string, key string) string {
 func TestBuildROS2Env_Scopes(t *testing.T) {
 	withPeripheralInterfaces(t, "eth1")
 	zero := 0
+	networkCyclone := `<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo" multicast="true"/><NetworkInterface autodetermine="true"/></Interfaces></General>` +
+		`<Discovery><ParticipantIndex>auto</ParticipantIndex><Peers><Peer address="127.0.0.1"/></Peers></Discovery>` +
+		`<SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`
 	for _, tc := range []struct {
 		name      string
 		ros2      appconfig.ROS2Config
@@ -41,9 +44,11 @@ func TestBuildROS2Env_Scopes(t *testing.T) {
 		{"default is device", appconfig.ROS2Config{DomainID: &zero}, "1", cycloneDDSInlineConfig, "0"},
 		{"deprecated app is device", appconfig.ROS2Config{DiscoveryScope: "app", DomainID: &zero}, "1", cycloneDDSInlineConfig, "0"},
 		{"peripherals adds the hardware interfaces", appconfig.ROS2Config{Scope: "peripherals", DomainID: &zero}, "0",
-			`<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/><NetworkInterface name="eth1"/></Interfaces></General><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`, "0"},
-		{"network uses every interface", appconfig.ROS2Config{Scope: "network", DomainID: &zero}, "0", cycloneDDSInlineConfig, "0"},
-		{"deprecated host is network", appconfig.ROS2Config{DiscoveryScope: "host", DomainID: &zero}, "0", cycloneDDSInlineConfig, "0"},
+			`<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo" multicast="true"/><NetworkInterface name="eth1"/></Interfaces></General>` +
+				`<Discovery><ParticipantIndex>auto</ParticipantIndex><Peers><Peer address="127.0.0.1"/></Peers></Discovery>` +
+				`<SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`, "0"},
+		{"network adds loopback to the device's network", appconfig.ROS2Config{Scope: "network", DomainID: &zero}, "0", networkCyclone, "0"},
+		{"deprecated host is network", appconfig.ROS2Config{DiscoveryScope: "host", DomainID: &zero}, "0", networkCyclone, "0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ros2 := tc.ros2
