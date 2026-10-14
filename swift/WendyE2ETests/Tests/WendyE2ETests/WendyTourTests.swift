@@ -16,7 +16,13 @@ struct `'wendy tour'` {
         try await self.scenario.run(authenticated: false) { cli, _ in
             try await cli.sh("wendy tour --help") { result in
                 #expect(result.status.isSuccess)
-                #expect(result.stdout.contains("Walk through device setup"))
+                #expect(
+                    result.stdout.contains(
+                        "Walk and program a simulated robot or set up your first physical device"
+                    )
+                )
+                #expect(result.stdout.contains("--simulator"))
+                #expect(result.stdout.contains("--hardware"))
                 #expect(result.stdout.contains("wendy tour [flags]"))
                 #expect(result.stdout.contains("--help"))
                 #expect(result.stdout.contains("--json"))
@@ -75,7 +81,11 @@ struct `'wendy tour'` {
             try await cli.sh("wendy tour") { result in
                 #expect(result.status.isFailure)
                 #expect(result.stdout == "")
-                #expect(result.stderr.contains("wendy tour requires an interactive terminal"))
+                #expect(
+                    result.stderr.contains(
+                        "choose 'wendy tour --simulator' or run 'wendy tour --hardware' in an interactive terminal"
+                    )
+                )
             }
         }
     }
