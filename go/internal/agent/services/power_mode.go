@@ -18,7 +18,7 @@ import (
 // so tests can substitute it.
 type powerModeController interface {
 	State(ctx context.Context) (powermode.State, error)
-	Set(ctx context.Context, mode string) (powermode.SetResult, error)
+	Set(ctx context.Context, mode string, reboot bool) (powermode.SetResult, error)
 }
 
 // powerModeRebootDelay lets the SetPowerMode response reach the caller before
@@ -63,14 +63,15 @@ func (s *AgentService) GetPowerMode(ctx context.Context, _ *agentpb.GetPowerMode
 	return resp, nil
 }
 
-// SetPowerMode switches the Jetson power mode. It never reboots unless the
-// request asks for it and the new mode needs one.
+// SetPowerMode switches the Jetson power mode. A mode that needs a reboot is
+// neither recorded nor rebooted into unless the request asks for the reboot;
+// without it the call only reports that a reboot is required.
 func (s *AgentService) SetPowerMode(ctx context.Context, req *agentpb.SetPowerModeRequest) (*agentpb.SetPowerModeResponse, error) {
 	if !s.onJetson() {
 		return nil, status.Error(codes.Unavailable, powerModeUnsupported)
 	}
 	s.logger.Info("SetPowerMode requested", zap.String("mode", req.GetMode()), zap.Bool("reboot", req.GetReboot()))
-	res, err := s.powerModes.Set(ctx, req.GetMode())
+	res, err := s.powerModes.Set(ctx, req.GetMode(), req.GetReboot())
 	if err != nil {
 		s.logger.Warn("SetPowerMode failed", zap.String("mode", req.GetMode()), zap.Error(err))
 		return nil, powerModeError(err)

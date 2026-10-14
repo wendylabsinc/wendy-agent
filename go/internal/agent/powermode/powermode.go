@@ -250,10 +250,13 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 	return st, nil
 }
 
-// Set switches to the named or numbered mode. nvpmodel asks on stdin whether to
-// reboot when a mode needs it; the answer is always no, and the need is
-// reported instead.
-func (c *Controller) Set(ctx context.Context, query string) (SetResult, error) {
+// Set switches to the named or numbered mode. When a mode needs a reboot,
+// nvpmodel asks on stdin whether to go ahead, and records the mode only if the
+// answer is yes (a declined prompt leaves the stored mode untouched). With
+// reboot false the answer is no and the need is only reported (RebootRequired);
+// with reboot true the answer is yes, so the mode is recorded and the device
+// restarts into it.
+func (c *Controller) Set(ctx context.Context, query string, reboot bool) (SetResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -265,7 +268,11 @@ func (c *Controller) Set(ctx context.Context, query string) (SetResult, error) {
 	if err != nil {
 		return SetResult{}, err
 	}
-	out, err := c.run(ctx, "n\n", "-m", strconv.FormatInt(int64(mode.ID), 10))
+	answer := "n\n"
+	if reboot {
+		answer = "y\n"
+	}
+	out, err := c.run(ctx, answer, "-m", strconv.FormatInt(int64(mode.ID), 10))
 	rebootRequired := strings.Contains(strings.ToLower(out), "reboot required")
 	if err != nil && !rebootRequired {
 		if errors.Is(err, ErrUnavailable) {

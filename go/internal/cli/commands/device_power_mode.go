@@ -39,14 +39,15 @@ func newDevicePowerModeCmd() *cobra.Command {
 }
 
 func newDevicePowerModeSetCmd() *cobra.Command {
-	var reboot bool
+	var assumeYes bool
 	cmd := &cobra.Command{
 		Use:   "set <name|id>",
 		Short: "Switch the NVIDIA Jetson power mode",
 		Long: "Switches a Jetson device to the named or numbered power mode, as listed by " +
-			"'wendy device power-mode'. Some modes only take effect after a reboot. The device " +
-			"is never rebooted unless you pass --reboot; without it the command reports that a " +
-			"reboot is needed and leaves the choice to you.",
+			"'wendy device power-mode'. Some modes only take effect after a reboot. For those, " +
+			"the command says so and asks for confirmation; answering yes sets the mode and reboots " +
+			"the device in one step, and answering no leaves the device untouched. Without a " +
+			"terminal, pass --yes to confirm in advance.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -55,10 +56,11 @@ func newDevicePowerModeSetCmd() *cobra.Command {
 				return err
 			}
 			defer conn.Close()
-			return runPowerModeSet(ctx, conn.AgentService, args[0], reboot, os.Stdout, jsonOutput)
+			interactive := isInteractiveTerminal() && !jsonOutput
+			return runPowerModeSet(ctx, conn.AgentService, args[0], assumeYes, interactive, os.Stdout, jsonOutput)
 		},
 	}
-	cmd.Flags().BoolVar(&reboot, "reboot", false, "Reboot the device afterwards if the new mode needs it")
+	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Set the mode and reboot the device without asking when the mode needs a reboot (required without an interactive terminal)")
 	return cmd
 }
 
@@ -142,12 +144,38 @@ func joinNotes(notes []string) string {
 	return s
 }
 
-func runPowerModeSet(ctx context.Context, client agentpb.WendyAgentServiceClient, mode string, reboot bool, out io.Writer, asJSON bool) error {
-	resp, err := client.SetPowerMode(ctx, &agentpb.SetPowerModeRequest{Mode: mode, Reboot: reboot})
+// runPowerModeSet switches the mode. The first call never reboots: for a mode
+// that needs a reboot the agent only reports it, and nothing is changed (a
+// declined nvpmodel prompt records nothing). Only a confirmed second call, which
+// sets the mode and reboots at once, changes the device.
+func runPowerModeSet(ctx context.Context, client agentpb.WendyAgentServiceClient, mode string, assumeYes, interactive bool, out io.Writer, asJSON bool) error {
+	resp, err := client.SetPowerMode(ctx, &agentpb.SetPowerModeRequest{Mode: mode})
 	if err != nil {
 		return powerModeRPCError("setting the power mode", err)
 	}
 	label := powerModeLabel(resp.GetMode())
+
+	if resp.GetRebootRequired() {
+		if !assumeYes {
+			if !interactive {
+				return fmt.Errorf("power mode %s needs a reboot and was not set; pass --yes to set it and reboot the device", label)
+			}
+			fmt.Fprintf(out, "Power mode %s only takes effect after a reboot.\n", tui.Value(label))
+			if !confirmDefaultNoFn(fmt.Sprintf("Set %s and reboot the device now?", label)) {
+				fmt.Fprintln(out, "Aborted. The power mode is unchanged.")
+				return nil
+			}
+		}
+		resp, err = client.SetPowerMode(ctx, &agentpb.SetPowerModeRequest{Mode: mode, Reboot: true})
+		if status.Code(err) == codes.Unavailable {
+			// The device may restart before it answers; the agent is gone, not failing.
+			resp = &agentpb.SetPowerModeResponse{Mode: resp.GetMode(), RebootRequired: true, RebootScheduled: true}
+			err = nil
+		}
+		if err != nil {
+			return powerModeRPCError("setting the power mode", err)
+		}
+	}
 
 	if asJSON {
 		return writeJSON(out, map[string]any{
@@ -156,14 +184,10 @@ func runPowerModeSet(ctx context.Context, client agentpb.WendyAgentServiceClient
 			"rebootScheduled": resp.GetRebootScheduled(),
 		})
 	}
-
-	switch {
-	case resp.GetRebootScheduled():
-		fmt.Fprintf(out, "Power mode %s needs a reboot; rebooting the device now.\n", tui.Value(label))
-	case resp.GetRebootRequired():
-		fmt.Fprintf(out, "Power mode %s needs a reboot to take full effect. The device was not rebooted.\n", tui.Value(label))
-		fmt.Fprintln(out, "Reboot it yourself, or run this command again with --reboot.")
-	default:
+	if resp.GetRebootScheduled() {
+		fmt.Fprintf(out, "Power mode %s set; the device is rebooting now.\n", tui.Value(label))
+		fmt.Fprintln(out, "Run 'wendy device power-mode' once it is back to check.")
+	} else {
 		fmt.Fprintf(out, "Power mode set to %s.\n", tui.Value(label))
 	}
 	return nil

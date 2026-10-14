@@ -20,11 +20,13 @@ type fakePowerModes struct {
 	result powermode.SetResult
 	err    error
 	asked  []string
+	reboot []bool
 }
 
 func (f *fakePowerModes) State(context.Context) (powermode.State, error) { return f.state, f.err }
-func (f *fakePowerModes) Set(_ context.Context, m string) (powermode.SetResult, error) {
+func (f *fakePowerModes) Set(_ context.Context, m string, reboot bool) (powermode.SetResult, error) {
 	f.asked = append(f.asked, m)
+	f.reboot = append(f.reboot, reboot)
 	return f.result, f.err
 }
 
@@ -133,6 +135,9 @@ func TestSetPowerModeRebootOnlyWhenAskedAndNeeded(t *testing.T) {
 			}
 			if resp.GetRebootRequired() != tc.wantRequired || resp.GetRebootScheduled() != tc.wantReboot || resp.GetMode().GetName() != "MAXN" {
 				t.Errorf("response = %v", resp)
+			}
+			if len(f.reboot) != 1 || f.reboot[0] != tc.ask {
+				t.Errorf("controller reboot answers = %v, want [%v]", f.reboot, tc.ask)
 			}
 			if tc.wantReboot {
 				deadline := time.Now().Add(powerModeRebootDelay + 3*time.Second)

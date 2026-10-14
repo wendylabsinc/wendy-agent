@@ -141,7 +141,7 @@ func TestResolve(t *testing.T) {
 
 func TestSetLive(t *testing.T) {
 	c, calls := fixture(t, orinConf, func(call) (string, error) { return "NVPM: switched\n", nil })
-	res, err := c.Set(context.Background(), "MODE_15W")
+	res, err := c.Set(context.Background(), "MODE_15W", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestSetRebootRequired(t *testing.T) {
 	c, _ := fixture(t, orinConf, func(call) (string, error) {
 		return "Reboot required for changing to this power mode: 0\nReboot now? (Y/N) ", errors.New("exit status 1")
 	})
-	res, err := c.Set(context.Background(), "0")
+	res, err := c.Set(context.Background(), "0", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,16 +169,29 @@ func TestSetRebootRequired(t *testing.T) {
 	}
 }
 
+func TestSetRebootAnswersTheNvpmodelPromptYes(t *testing.T) {
+	c, calls := fixture(t, orinConf, func(call) (string, error) {
+		return "Reboot required for changing to this power mode: 0\n", nil
+	})
+	res, err := c.Set(context.Background(), "MAXN", true)
+	if err != nil || !res.RebootRequired {
+		t.Fatalf("result = %+v, err = %v", res, err)
+	}
+	if got := (*calls)[0]; got.stdin != "y\n" || strings.Join(got.args, " ") != "-m 0" {
+		t.Errorf("call = %+v, want `-m 0` answered y", got)
+	}
+}
+
 func TestSetFailure(t *testing.T) {
 	c, _ := fixture(t, orinConf, func(call) (string, error) { return "NVPM ERROR: boom\n", errors.New("exit status 255") })
-	if _, err := c.Set(context.Background(), "MAXN"); err == nil || !strings.Contains(err.Error(), "boom") {
+	if _, err := c.Set(context.Background(), "MAXN", false); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("err = %v, want one carrying nvpmodel's output", err)
 	}
 }
 
 func TestSetUnknownModeRunsNothing(t *testing.T) {
 	c, calls := fixture(t, orinConf, func(call) (string, error) { return "", nil })
-	if _, err := c.Set(context.Background(), "turbo"); !errors.Is(err, ErrUnknownMode) {
+	if _, err := c.Set(context.Background(), "turbo", false); !errors.Is(err, ErrUnknownMode) {
 		t.Fatalf("err = %v, want ErrUnknownMode", err)
 	}
 	if len(*calls) != 0 {

@@ -16,10 +16,13 @@ import (
 
 type fakePowerModeClient struct {
 	agentpb.WendyAgentServiceClient
-	get    *agentpb.GetPowerModeResponse
-	set    *agentpb.SetPowerModeResponse
-	err    error
-	setReq *agentpb.SetPowerModeRequest
+	get *agentpb.GetPowerModeResponse
+	// setResps/setErrs script successive SetPowerMode calls; the last entry
+	// repeats. setReqs records every request.
+	setResps []*agentpb.SetPowerModeResponse
+	setErrs  []error
+	err      error
+	setReqs  []*agentpb.SetPowerModeRequest
 }
 
 func (f *fakePowerModeClient) GetPowerMode(context.Context, *agentpb.GetPowerModeRequest, ...grpc.CallOption) (*agentpb.GetPowerModeResponse, error) {
@@ -27,8 +30,19 @@ func (f *fakePowerModeClient) GetPowerMode(context.Context, *agentpb.GetPowerMod
 }
 
 func (f *fakePowerModeClient) SetPowerMode(_ context.Context, req *agentpb.SetPowerModeRequest, _ ...grpc.CallOption) (*agentpb.SetPowerModeResponse, error) {
-	f.setReq = req
-	return f.set, f.err
+	i := len(f.setReqs)
+	f.setReqs = append(f.setReqs, req)
+	if f.err != nil {
+		return nil, f.err
+	}
+	if i >= len(f.setResps) {
+		i = len(f.setResps) - 1
+	}
+	var err error
+	if i < len(f.setErrs) {
+		err = f.setErrs[i]
+	}
+	return f.setResps[i], err
 }
 
 func orinPowerModes() *agentpb.GetPowerModeResponse {
@@ -72,46 +86,131 @@ func TestPowerModeShowJSON(t *testing.T) {
 	}
 }
 
-func TestPowerModeSetOutcomes(t *testing.T) {
-	maxn := &agentpb.PowerMode{Id: 0, Name: "MAXN"}
-	cases := []struct {
-		name     string
-		resp     *agentpb.SetPowerModeResponse
-		reboot   bool
-		contains string
-	}{
-		{"live", &agentpb.SetPowerModeResponse{Mode: maxn}, false, "Power mode set to MAXN (0)"},
-		{"reboot needed", &agentpb.SetPowerModeResponse{Mode: maxn, RebootRequired: true}, false, "was not rebooted"},
-		{"reboot scheduled", &agentpb.SetPowerModeResponse{Mode: maxn, RebootRequired: true, RebootScheduled: true}, true, "rebooting the device now"},
+var maxnMode = &agentpb.PowerMode{Id: 0, Name: "MAXN"}
+
+func stubConfirm(t *testing.T, answer bool) *[]string {
+	t.Helper()
+	var asked []string
+	orig := confirmDefaultNoFn
+	confirmDefaultNoFn = func(q string) bool { asked = append(asked, q); return answer }
+	t.Cleanup(func() { confirmDefaultNoFn = orig })
+	return &asked
+}
+
+func needsReboot() *agentpb.SetPowerModeResponse {
+	return &agentpb.SetPowerModeResponse{Mode: maxnMode, RebootRequired: true}
+}
+
+func TestPowerModeSetLiveSwitchNeverPrompts(t *testing.T) {
+	asked := stubConfirm(t, true)
+	f := &fakePowerModeClient{setResps: []*agentpb.SetPowerModeResponse{{Mode: maxnMode}}}
+	var out bytes.Buffer
+	if err := runPowerModeSet(context.Background(), f, "MAXN", false, true, &out, false); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := &fakePowerModeClient{set: tc.resp}
-			var out bytes.Buffer
-			if err := runPowerModeSet(context.Background(), f, "MAXN", tc.reboot, &out, false); err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(out.String(), tc.contains) {
-				t.Errorf("output %q missing %q", out.String(), tc.contains)
-			}
-			if f.setReq.GetMode() != "MAXN" || f.setReq.GetReboot() != tc.reboot {
-				t.Errorf("request = %v", f.setReq)
-			}
-		})
+	if !strings.Contains(out.String(), "Power mode set to MAXN (0)") || len(*asked) != 0 || len(f.setReqs) != 1 || f.setReqs[0].GetReboot() {
+		t.Errorf("out=%q asked=%v reqs=%v", out.String(), *asked, f.setReqs)
 	}
 }
 
-func TestPowerModeSetJSON(t *testing.T) {
-	f := &fakePowerModeClient{set: &agentpb.SetPowerModeResponse{Mode: &agentpb.PowerMode{Id: 0, Name: "MAXN"}, RebootRequired: true}}
+func TestPowerModeSetConfirmedSetsAndRebootsInOneStep(t *testing.T) {
+	asked := stubConfirm(t, true)
+	f := &fakePowerModeClient{setResps: []*agentpb.SetPowerModeResponse{
+		needsReboot(),
+		{Mode: maxnMode, RebootRequired: true, RebootScheduled: true},
+	}}
 	var out bytes.Buffer
-	if err := runPowerModeSet(context.Background(), f, "0", false, &out, true); err != nil {
+	if err := runPowerModeSet(context.Background(), f, "MAXN", false, true, &out, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(*asked) != 1 || !strings.Contains((*asked)[0], "MAXN (0)") || !strings.Contains((*asked)[0], "reboot") {
+		t.Errorf("prompt = %v", *asked)
+	}
+	if len(f.setReqs) != 2 || f.setReqs[0].GetReboot() || !f.setReqs[1].GetReboot() {
+		t.Errorf("requests = %v, want a probe then a reboot=true set", f.setReqs)
+	}
+	if !strings.Contains(out.String(), "rebooting now") {
+		t.Errorf("output = %q", out.String())
+	}
+}
+
+func TestPowerModeSetDeclinedChangesNothing(t *testing.T) {
+	stubConfirm(t, false)
+	f := &fakePowerModeClient{setResps: []*agentpb.SetPowerModeResponse{needsReboot()}}
+	var out bytes.Buffer
+	if err := runPowerModeSet(context.Background(), f, "MAXN", false, true, &out, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.setReqs) != 1 || f.setReqs[0].GetReboot() {
+		t.Errorf("requests = %v, want only the non-rebooting probe", f.setReqs)
+	}
+	if !strings.Contains(out.String(), "unchanged") {
+		t.Errorf("output = %q", out.String())
+	}
+}
+
+func TestPowerModeSetWithoutTerminalNeedsYes(t *testing.T) {
+	asked := stubConfirm(t, true)
+	for _, asJSON := range []bool{false, true} {
+		f := &fakePowerModeClient{setResps: []*agentpb.SetPowerModeResponse{needsReboot()}}
+		var out bytes.Buffer
+		err := runPowerModeSet(context.Background(), f, "MAXN", false, false, &out, asJSON)
+		if err == nil || !strings.Contains(err.Error(), "--yes") || !strings.Contains(err.Error(), "was not set") {
+			t.Errorf("json=%v err = %v, want a --yes hint", asJSON, err)
+		}
+		if len(f.setReqs) != 1 || f.setReqs[0].GetReboot() || len(*asked) != 0 {
+			t.Errorf("json=%v requests=%v asked=%v", asJSON, f.setReqs, *asked)
+		}
+	}
+}
+
+func TestPowerModeSetYesSkipsThePrompt(t *testing.T) {
+	asked := stubConfirm(t, false)
+	f := &fakePowerModeClient{setResps: []*agentpb.SetPowerModeResponse{
+		needsReboot(),
+		{Mode: maxnMode, RebootRequired: true, RebootScheduled: true},
+	}}
+	var out bytes.Buffer
+	if err := runPowerModeSet(context.Background(), f, "MAXN", true, false, &out, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(*asked) != 0 || len(f.setReqs) != 2 || !f.setReqs[1].GetReboot() {
+		t.Errorf("asked=%v requests=%v", *asked, f.setReqs)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out.String())
+	}
+	if doc["rebootRequired"] != true || doc["rebootScheduled"] != true || doc["mode"].(map[string]any)["name"] != "MAXN" {
+		t.Errorf("doc = %v", doc)
+	}
+}
+
+func TestPowerModeSetDeviceDroppingTheConnectionMeansRebooting(t *testing.T) {
+	f := &fakePowerModeClient{
+		setResps: []*agentpb.SetPowerModeResponse{needsReboot(), nil},
+		setErrs:  []error{nil, status.Error(codes.Unavailable, "error reading from server: EOF")},
+	}
+	var out bytes.Buffer
+	if err := runPowerModeSet(context.Background(), f, "MAXN", true, false, &out, false); err != nil {
+		t.Fatalf("a dropped connection after the confirmed call is the reboot, got %v", err)
+	}
+	if !strings.Contains(out.String(), "rebooting now") {
+		t.Errorf("output = %q", out.String())
+	}
+}
+
+func TestPowerModeSetLiveJSON(t *testing.T) {
+	f := &fakePowerModeClient{setResps: []*agentpb.SetPowerModeResponse{{Mode: maxnMode}}}
+	var out bytes.Buffer
+	if err := runPowerModeSet(context.Background(), f, "0", false, false, &out, true); err != nil {
 		t.Fatal(err)
 	}
 	var doc map[string]any
 	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc["rebootRequired"] != true || doc["rebootScheduled"] != false || doc["mode"].(map[string]any)["name"] != "MAXN" {
+	if doc["rebootRequired"] != false || doc["rebootScheduled"] != false || doc["mode"].(map[string]any)["name"] != "MAXN" {
 		t.Errorf("doc = %v", doc)
 	}
 }
@@ -131,7 +230,7 @@ func TestPowerModeErrors(t *testing.T) {
 		var out bytes.Buffer
 		for name, err := range map[string]error{
 			"show": runPowerModeShow(context.Background(), f, &out, false),
-			"set":  runPowerModeSet(context.Background(), f, "x", false, &out, false),
+			"set":  runPowerModeSet(context.Background(), f, "x", false, false, &out, false),
 		} {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("%s %v: err = %v, want containing %q", name, tc.code, err, tc.want)
@@ -146,11 +245,15 @@ func TestPowerModeCommandShape(t *testing.T) {
 	if err != nil || set.Name() != "set" {
 		t.Fatalf("set subcommand not found: %v", err)
 	}
-	if set.Flags().Lookup("reboot") == nil {
-		t.Error("set has no --reboot flag")
+	yes := set.Flags().Lookup("yes")
+	if yes == nil || yes.Shorthand != "y" {
+		t.Fatal("set has no --yes/-y flag")
 	}
-	if set.Flags().Lookup("reboot").DefValue != "false" {
-		t.Error("--reboot must default to false")
+	if yes.DefValue != "false" {
+		t.Error("--yes must default to false")
+	}
+	if set.Flags().Lookup("reboot") != nil {
+		t.Error("--reboot was replaced by --yes")
 	}
 	if err := set.Args(set, nil); err == nil {
 		t.Error("set without a mode should be rejected")

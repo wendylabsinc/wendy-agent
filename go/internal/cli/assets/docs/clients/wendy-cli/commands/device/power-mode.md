@@ -6,7 +6,7 @@ Shows and sets the NVIDIA Jetson power mode (`nvpmodel`) of the target device.
 
 ```sh
 wendy device power-mode [flags]
-wendy device power-mode set <name|id> [--reboot]
+wendy device power-mode set <name|id> [--yes]
 ```
 
 ## Show the current and available modes
@@ -46,19 +46,22 @@ wendy device power-mode set 0
 
 The argument is a mode name or numeric ID from the list above. An unknown mode is rejected with the available modes.
 
-Some modes only take effect after a reboot. **The device is never rebooted unless you pass `--reboot`.** Without it, the command reports that a reboot is needed and exits successfully:
+Some modes switch immediately. Others only take effect after a reboot. For those, the command says so and asks before doing anything:
 
 ```text
-Power mode MAXN (0) needs a reboot to take full effect. The device was not rebooted.
-Reboot it yourself, or run this command again with --reboot.
+Power mode MAXN (0) only takes effect after a reboot.
+Set MAXN (0) and reboot the device now? (y/n)
 ```
 
-With `--reboot`, the agent reboots the device shortly after answering, but only when the mode actually needs it.
+- **Yes** sets the mode and reboots the device in one step.
+- **No** leaves the device untouched. A mode that needs a reboot is never half-applied: NVIDIA's `nvpmodel` records it only when the reboot is accepted.
+
+Without an interactive terminal (a script, CI, or `--json`), the command never asks. If the mode needs a reboot it exits with an error and changes nothing; pass `--yes` (`-y`) to confirm in advance and set the mode and reboot without asking. `--yes` has no effect on a mode that switches immediately.
 
 With `--json`:
 
 ```json
-{"mode": {"id": 0, "name": "MAXN"}, "rebootRequired": true, "rebootScheduled": false}
+{"mode": {"id": 0, "name": "MAXN"}, "rebootRequired": true, "rebootScheduled": true}
 ```
 
 A mode change can alter CPU and GPU clocks under running workloads, and a reboot stops every app on the device. Check what else is using the device first.
