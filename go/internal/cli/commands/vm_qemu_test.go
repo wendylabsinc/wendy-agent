@@ -32,13 +32,20 @@ func stubTerminal(t *testing.T, interactive bool) {
 	t.Cleanup(func() { isInteractiveTerminalFn = prev })
 }
 
+func stubQEMUConfirmAnswer(t *testing.T, confirm func(string) bool) {
+	t.Helper()
+	saved := qemuConfirmFn
+	qemuConfirmFn = func(_ context.Context, question string) (bool, error) { return confirm(question), nil }
+	t.Cleanup(func() { qemuConfirmFn = saved })
+}
+
 func TestEnsureQEMUIsANoOpWhenAlreadyInstalled(t *testing.T) {
 	saved := qemuLookPathFn
 	qemuLookPathFn = func(name string) (string, error) { return "/usr/bin/" + name, nil }
 	t.Cleanup(func() { qemuLookPathFn = saved })
 
 	asked := false
-	stubConfirmFn(t, func(string) bool { asked = true; return true })
+	stubQEMUConfirmAnswer(t, func(string) bool { asked = true; return true })
 	if err := ensureQEMUForHostOS(context.Background(), "darwin"); err != nil {
 		t.Fatalf("ensureQEMUForHostOS() = %v, want nil", err)
 	}
@@ -52,7 +59,13 @@ func TestEnsureQEMUOffersToInstallOnInteractiveMac(t *testing.T) {
 	stubQEMUMissing(t, &installed)
 	stubBrewLookPath(t, func(n string) (string, error) { return "/opt/homebrew/bin/" + n, nil })
 	stubTerminal(t, true)
-	stubConfirmFn(t, func(string) bool { asked = true; return true })
+	stubQEMUConfirmAnswer(t, func(question string) bool {
+		asked = true
+		if question != "Do you want to install QEMU?" {
+			t.Errorf("question = %q", question)
+		}
+		return true
+	})
 
 	// The stub keeps reporting the binary as missing, so the post-install PATH
 	// re-check is what this lands on -- which is the point: an install that
@@ -74,7 +87,7 @@ func TestEnsureQEMUDoesNotPromptWithoutHomebrew(t *testing.T) {
 	stubQEMUMissing(t, &installed)
 	stubBrewLookPath(t, func(string) (string, error) { return "", errors.New("not found") })
 	stubTerminal(t, true)
-	stubConfirmFn(t, func(string) bool { asked = true; return true })
+	stubQEMUConfirmAnswer(t, func(string) bool { asked = true; return true })
 
 	err := ensureQEMUForHostOS(context.Background(), "darwin")
 	if asked || installed {
@@ -90,7 +103,7 @@ func TestEnsureQEMUDoesNotPromptWhenNotInteractive(t *testing.T) {
 	stubQEMUMissing(t, &installed)
 	stubBrewLookPath(t, func(n string) (string, error) { return "/opt/homebrew/bin/" + n, nil })
 	stubTerminal(t, false)
-	stubConfirmFn(t, func(string) bool { asked = true; return true })
+	stubQEMUConfirmAnswer(t, func(string) bool { asked = true; return true })
 
 	if err := ensureQEMUForHostOS(context.Background(), "darwin"); err == nil {
 		t.Fatal("ensureQEMUForHostOS() = nil, want the not-found error")
@@ -105,7 +118,7 @@ func TestEnsureQEMUDeclinedKeepsTheManualCommand(t *testing.T) {
 	stubQEMUMissing(t, &installed)
 	stubBrewLookPath(t, func(n string) (string, error) { return "/opt/homebrew/bin/" + n, nil })
 	stubTerminal(t, true)
-	stubConfirmFn(t, func(string) bool { asked = true; return false })
+	stubQEMUConfirmAnswer(t, func(string) bool { asked = true; return false })
 
 	err := ensureQEMUForHostOS(context.Background(), "darwin")
 	if !asked {
@@ -127,7 +140,7 @@ func TestEnsureQEMUNeverPromptsOffMac(t *testing.T) {
 		stubQEMUMissing(t, &installed)
 		stubBrewLookPath(t, func(n string) (string, error) { return "/opt/homebrew/bin/" + n, nil })
 		stubTerminal(t, true)
-		stubConfirmFn(t, func(string) bool { asked = true; return true })
+		stubQEMUConfirmAnswer(t, func(string) bool { asked = true; return true })
 
 		err := ensureQEMUForHostOS(context.Background(), hostOS)
 		if asked || installed {
@@ -144,7 +157,7 @@ func TestEnsureQEMUWithYesSkipsThePromptAndInstalls(t *testing.T) {
 	stubQEMUMissing(t, &installed)
 	stubBrewLookPath(t, func(n string) (string, error) { return "/opt/homebrew/bin/" + n, nil })
 	stubTerminal(t, false)
-	stubConfirmFn(t, func(string) bool { asked = true; return false })
+	stubQEMUConfirmAnswer(t, func(string) bool { asked = true; return false })
 
 	saved := vmAssumeYes
 	vmAssumeYes = true
@@ -170,6 +183,145 @@ func TestQEMUInstallHintIsTheOnlySourceInHelp(t *testing.T) {
 	// then drifted from the error a user actually hits.
 	if long := newVMCmd().Long; !strings.Contains(long, qemuInstallHint()) {
 		t.Errorf("vm help = %q, want it to name %q", long, qemuInstallHint())
+	}
+}
+
+func TestEnsureQEMUCancelledDoesNotInstall(t *testing.T) {
+	var installed bool
+	stubQEMUMissing(t, &installed)
+	stubBrewLookPath(t, func(n string) (string, error) { return "/opt/homebrew/bin/" + n, nil })
+	stubTerminal(t, true)
+	saved := qemuConfirmFn
+	qemuConfirmFn = func(context.Context, string) (bool, error) { return false, ErrUserCancelled }
+	t.Cleanup(func() { qemuConfirmFn = saved })
+
+	if err := ensureQEMUForHostOS(context.Background(), "darwin"); !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("err = %v, want cancellation", err)
+	}
+	if installed {
+		t.Fatal("installed QEMU after cancellation")
+	}
+}
+
+func TestQEMURecoveryStopsOnContextCancellation(t *testing.T) {
+	for _, firmware := range []bool{false, true} {
+		for _, beforePrompt := range []bool{false, true} {
+			t.Run(fmt.Sprintf("firmware=%t/before_prompt=%t", firmware, beforePrompt), func(t *testing.T) {
+				var installed, asked bool
+				stubQEMUMissing(t, &installed)
+				stubTerminal(t, true)
+				stubBrewLookPath(t, func(string) (string, error) { return "/test/brew", nil })
+				savedConfirm, savedYes := qemuConfirmFn, vmAssumeYes
+				savedFind, savedInstall := findQEMUFirmwareFn, installQEMUFirmwareFn
+				t.Cleanup(func() {
+					qemuConfirmFn, vmAssumeYes = savedConfirm, savedYes
+					findQEMUFirmwareFn, installQEMUFirmwareFn = savedFind, savedInstall
+				})
+				vmAssumeYes = false
+				findQEMUFirmwareFn = func(string, string) (string, error) { return "", vm.ErrFirmwareNotFound }
+				installQEMUFirmwareFn = func(context.Context) error { installed = true; return nil }
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				qemuConfirmFn = func(promptCtx context.Context, _ string) (bool, error) {
+					asked = true
+					if promptCtx != ctx {
+						t.Fatal("confirmation did not receive the operation context")
+					}
+					cancel()
+					return true, nil
+				}
+				if beforePrompt {
+					cancel()
+				}
+
+				var err error
+				if firmware {
+					_, err = ensureQEMUFirmwareForHostOS(ctx, "darwin", "/test/homebrew")
+				} else {
+					err = ensureQEMUForHostOS(ctx, "darwin")
+				}
+				if !errors.Is(err, context.Canceled) || installed || asked == beforePrompt {
+					t.Fatalf("err=%v installed=%t asked=%t, want cancellation with no install and asked=%t", err, installed, asked, !beforePrompt)
+				}
+			})
+		}
+	}
+}
+
+func TestEnsureQEMUFirmwareRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name, hostOS     string
+		interactive, yes bool
+		brew, accept     bool
+		alreadyInstalled bool
+		stillMissing     bool
+		confirmErr       error
+		installErr       error
+		wantAsked        bool
+		wantInstalled    bool
+		wantErr          error
+	}{
+		{name: "already available", hostOS: "darwin", alreadyInstalled: true},
+		{name: "accepted repair", hostOS: "darwin", interactive: true, brew: true, accept: true, wantAsked: true, wantInstalled: true},
+		{name: "declined repair", hostOS: "darwin", interactive: true, brew: true, wantAsked: true, wantErr: vm.ErrFirmwareNotFound},
+		{name: "cancelled prompt", hostOS: "darwin", interactive: true, brew: true, confirmErr: ErrUserCancelled, wantAsked: true, wantErr: ErrUserCancelled},
+		{name: "missing after repair", hostOS: "darwin", interactive: true, brew: true, accept: true, stillMissing: true, wantAsked: true, wantInstalled: true, wantErr: vm.ErrFirmwareNotFound},
+		{name: "cancelled install", hostOS: "darwin", interactive: true, brew: true, accept: true, installErr: ErrUserCancelled, wantAsked: true, wantInstalled: true, wantErr: ErrUserCancelled},
+		{name: "no terminal", hostOS: "darwin", brew: true, wantErr: vm.ErrFirmwareNotFound},
+		{name: "explicit yes", hostOS: "darwin", brew: true, yes: true, wantInstalled: true},
+		{name: "no Homebrew", hostOS: "darwin", interactive: true, accept: true, wantErr: vm.ErrFirmwareNotFound},
+		{name: "Linux manual install", hostOS: "linux", interactive: true, brew: true, accept: true, wantErr: vm.ErrFirmwareNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			savedFind, savedInstall := findQEMUFirmwareFn, installQEMUFirmwareFn
+			savedConfirm, savedYes := qemuConfirmFn, vmAssumeYes
+			t.Cleanup(func() {
+				findQEMUFirmwareFn, installQEMUFirmwareFn = savedFind, savedInstall
+				qemuConfirmFn, vmAssumeYes = savedConfirm, savedYes
+			})
+			var asked, installed bool
+			findCalls := 0
+			findQEMUFirmwareFn = func(hostOS, prefix string) (string, error) {
+				findCalls++
+				if hostOS != tc.hostOS || prefix != "/test/homebrew" {
+					t.Fatalf("firmware discovery used host %q and prefix %q", hostOS, prefix)
+				}
+				if tc.alreadyInstalled || installed && !tc.stillMissing {
+					return "/test/arm64.fd", nil
+				}
+				return "", vm.ErrFirmwareNotFound
+			}
+			installQEMUFirmwareFn = func(context.Context) error {
+				installed = true
+				return tc.installErr
+			}
+			qemuConfirmFn = func(context.Context, string) (bool, error) {
+				asked = true
+				return tc.accept, tc.confirmErr
+			}
+			vmAssumeYes = tc.yes
+			stubTerminal(t, tc.interactive)
+			stubBrewLookPath(t, func(string) (string, error) {
+				if tc.brew {
+					return "/test/brew", nil
+				}
+				return "", errors.New("brew not found")
+			})
+
+			firmware, err := ensureQEMUFirmwareForHostOS(context.Background(), tc.hostOS, "/test/homebrew")
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if asked != tc.wantAsked || installed != tc.wantInstalled {
+				t.Errorf("asked=%t installed=%t, want asked=%t installed=%t", asked, installed, tc.wantAsked, tc.wantInstalled)
+			}
+			if err == nil && firmware != "/test/arm64.fd" {
+				t.Errorf("firmware = %q", firmware)
+			}
+			if installed && tc.installErr == nil && findCalls != 2 {
+				t.Errorf("discovery calls = %d, want another check after repair", findCalls)
+			}
+		})
 	}
 }
 

@@ -267,7 +267,6 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 		server.WithInstructions(serverInstructions),
 		server.WithToolFilter(s.filterTools),
 	)
-	srv.Use(s.cliUpdateMiddleware())
 	if err := registerSkills(srv); err != nil {
 		return nil, err
 	}
@@ -294,6 +293,9 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 	s.registerProjectTools(srv)
 	s.registerCloudTools(srv)
 	registerToolAnalytics(srv)
+	// Analytics must wrap update notices so both events use the tool call's
+	// attempt ID rather than the long-lived server's process attempt.
+	srv.Use(s.cliUpdateMiddleware())
 	return srv, nil
 }
 

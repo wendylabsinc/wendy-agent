@@ -3,16 +3,21 @@ package commands
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
 	"syscall"
+	"time"
 
+	"github.com/coder/websocket"
 	"github.com/spf13/cobra"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // foxgloveBridgePort is the port foxglove_bridge listens on inside the app.
@@ -55,15 +60,16 @@ func newFoxgloveServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Deploy foxglove_bridge to the device and open a tunnel for Foxglove Studio",
-		Long: `Generates a foxglove_bridge app, deploys it to the target device with
-'wendy run' (host networking, so it joins the device's ROS 2 graph — including a
-robot's native host ROS 2), then forwards its WebSocket port to your machine.
+		Long: `Generates a foxglove_bridge app and deploys it to the selected device.
+Host networking lets it join the device's ROS 2 graph, including a robot's native
+host ROS 2. It then forwards the bridge's WebSocket port to your machine.
 
 Connect Foxglove Studio to the printed ws:// URL. For a robot whose ROS 2 uses a
 non-default domain or RMW (e.g. a Unitree Go2 on CycloneDDS), pass --domain and
 --rmw so the bridge matches it. The bridge exposes every topic, including hidden
 ROS topics, in the selected domain. Its device-side WebSocket listens only on
-loopback and is accessed through the authenticated Wendy Cloud tunnel.
+loopback and is forwarded through the selected Wendy agent connection, over
+LAN or cloud. Deployment and forwarding use the same device.
 
 Domain selection matters: a robot's native ROS 2 is usually on domain 0, but a
 Wendy-deployed ROS 2 app with no explicit "domainId" gets a stable domain derived
@@ -140,70 +146,103 @@ func resolveFoxgloveDomain(domain int, appID string, domainSet bool) (int, error
 	}
 }
 
-// foxgloveServe generates a foxglove_bridge app in a temp dir, deploys it to the
-// device via `wendy run --detach`, then forwards the bridge's WebSocket port to
-// localhost via `wendy cloud tunnel`. The tunnel runs until ctx is cancelled.
+// Resolve once so deployment and forwarding share the same device and transport.
+var resolveFoxgloveTarget = func(ctx context.Context, device string) (*SelectedDevice, error) {
+	return resolveWithCloudFallback(ctx, device, SelectDevice(device), ExcludeProviders("local", "docker"))
+}
+
+var deployFoxgloveApp = func(ctx context.Context, conn *grpcclient.AgentConnection, dir string, cfg *appconfig.AppConfig) error {
+	return runWithAgent(ctx, conn, dir, cfg, runOptions{detach: true})
+}
+
+// foxgloveServe deploys the bridge and carries its loopback WebSocket through
+// container exec on the same agent connection. No second device lookup is needed.
 func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
+	if opts.localPort < 1 || opts.localPort > 65535 {
+		return fmt.Errorf("invalid --port %d: must be between 1 and 65535", opts.localPort)
+	}
 	dir, err := os.MkdirTemp("", "wendy-foxglove-*")
 	if err != nil {
 		return fmt.Errorf("creating temp app dir: %w", err)
 	}
 	defer os.RemoveAll(dir)
-
 	if err := writeFoxgloveApp(dir, opts); err != nil {
 		return err
 	}
-
-	self, err := os.Executable()
+	cfg, err := appconfig.LoadFromFile(filepath.Join(dir, "wendy.json"))
 	if err != nil {
-		return fmt.Errorf("locating wendy binary: %w", err)
+		return fmt.Errorf("loading foxglove_bridge config: %w", err)
 	}
 
-	// Deploy the app to the device (build locally, push to the device, start
-	// detached). Reuses the full `wendy run` pipeline.
-	//
-	// First best-effort remove any prior foxglove_bridge instance so re-running
-	// is idempotent — a previously-deployed app (it stays running detached after
-	// the tunnel is Ctrl-C'd) otherwise collides on redeploy ("snapshot already
-	// exists"). Errors (e.g. nothing deployed yet) are ignored.
-	rmArgs := []string{"device", "apps", "remove", foxgloveAppID, "--force", "--cleanup"}
-	if opts.device != "" {
-		rmArgs = append(rmArgs, "--device", opts.device)
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("validating foxglove_bridge config: %w", err)
 	}
-	rm := exec.CommandContext(ctx, self, rmArgs...)
-	_ = rm.Run() // best-effort; ignore "not found" etc.
 
+	// Reserve the local port before replacing a running bridge on the device.
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(opts.localPort)))
+	if err != nil {
+		return fmt.Errorf("listening for Foxglove Studio: %w", err)
+	}
+	defer listener.Close()
+	target, err := resolveFoxgloveTarget(ctx, opts.device)
+	if err != nil {
+		return err
+	}
+	defer target.Close()
+	if target.Agent == nil {
+		return fmt.Errorf("Foxglove requires a Wendy agent connection")
+	}
+
+	// A prior bridge stays running after Ctrl-C. Remove it before redeploying,
+	// as the existing command did. A missing prior app is harmless.
+	_, _ = target.Agent.ContainerService.DeleteContainer(ctx, &agentpb.DeleteContainerRequest{
+		AppName: foxgloveAppID, DeleteImage: true,
+	})
 	cliLogln("Deploying foxglove_bridge to the device...")
-	runArgs := []string{"run", "--detach"}
-	if opts.device != "" {
-		runArgs = append(runArgs, "--device", opts.device)
+	if err := deployFoxgloveApp(ctx, target.Agent, dir, cfg); err != nil {
+		return fmt.Errorf("deploying foxglove_bridge: %w", err)
 	}
-	run := exec.CommandContext(ctx, self, runArgs...)
-	run.Dir = dir
-	run.Stdout = os.Stdout
-	run.Stderr = os.Stderr
-	run.Stdin = os.Stdin
-	if err := run.Run(); err != nil {
-		return fmt.Errorf("deploying foxglove_bridge (wendy run): %w", err)
-	}
-
-	// Forward the bridge's WebSocket port. `cloud tunnel` listens on the local
-	// port and blocks until ctx is cancelled (Ctrl-C).
-	cliSuccess("foxglove_bridge deployed. Connect Foxglove Studio to ws://localhost:%d", opts.localPort)
-	tunArgs := []string{"cloud", "tunnel", fmt.Sprintf("%d:%d", opts.localPort, foxgloveBridgePort)}
-	if opts.device != "" {
-		tunArgs = append(tunArgs, "--device", opts.device)
-	}
-	tun := exec.CommandContext(ctx, self, tunArgs...)
-	tun.Stdout = os.Stdout
-	tun.Stderr = os.Stderr
-	if err := tun.Run(); err != nil {
+	if err := waitForFoxgloveBridge(ctx, target.Agent.ContainerService); err != nil {
 		if ctx.Err() != nil {
-			return nil // clean Ctrl-C
+			return nil
 		}
-		return fmt.Errorf("forwarding foxglove_bridge port (wendy cloud tunnel): %w", err)
+		return err
 	}
-	return nil
+	cliSuccess("foxglove_bridge ready. Connect Foxglove Studio to ws://localhost:%d", opts.localPort)
+	cliLogln("Press Ctrl+C to stop forwarding. The bridge app will keep running.")
+	return serveFoxgloveForward(ctx, listener, target.Agent.ContainerService)
+}
+
+// Confirm the WebSocket handshake through the same path Studio will use. A
+// detached deployment can finish before the bridge starts listening.
+func waitForFoxgloveBridge(ctx context.Context, client agentpb.WendyContainerServiceClient) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var lastErr error
+	for {
+		probeCtx, stop := context.WithTimeout(ctx, 3*time.Second)
+		transport := &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return openFoxgloveConnection(probeCtx, client)
+		}}
+		ws, _, err := websocket.Dial(probeCtx, "ws://127.0.0.1:8765", &websocket.DialOptions{
+			HTTPClient:   &http.Client{Transport: transport},
+			Subprotocols: []string{"foxglove.websocket.v1"},
+		})
+		if err == nil {
+			_ = ws.CloseNow()
+		}
+		transport.CloseIdleConnections()
+		stop()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for foxglove_bridge WebSocket: %w", lastErr)
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 // writeFoxgloveApp writes the Dockerfile + wendy.json for a foxglove_bridge app
@@ -245,6 +284,7 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 	dockerfile := fmt.Sprintf(`# Auto-generated by 'wendy device foxglove serve'.
 FROM ros:%s
 RUN apt-get update && apt-get install -y --no-install-recommends \
+      socat \
       ros-%s-foxglove-bridge \
       ros-%s-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*

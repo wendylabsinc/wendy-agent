@@ -587,6 +587,33 @@ holding it can start recordings. The socket is restored from container labels
 after agent restart; the entitlement never exposes the administrative agent
 socket, and grants no sensor read access.
 
+To record custom payloads, declare named streams inside the entitlement:
+
+```json
+{
+  "type": "episode-write",
+  "streams": {
+    "temperature": {
+      "mode": "durable",
+      "mediaType": "application/json",
+      "storage": { "maxBytes": 67108864, "retentionSeconds": 86400 }
+    }
+  }
+}
+```
+
+The agent injects `WENDY_DATA_STREAM_DIR`; each stream uses
+`<directory>/<stream>.sock`. Lightweight streams accept native payload bytes.
+Durable streams use Protobuf envelopes, acknowledge after local storage sync,
+and retain records even when no episode is active. They reject new records
+when their journal is full, so producers must buffer and retry.
+
+See [Wendy Data](/docs/data#record-data-from-your-app) for the recording workflow,
+the [stream reference](/docs/advanced/clients/wendy-cli/commands/data#application-recording-streams)
+for retention and export, and the
+[WendyRecording examples](https://github.com/wendylabsinc/WendyOS/tree/main/Examples/WendyRecording)
+for time-series schemas and senders.
+
 ### `admin`
 
 Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with **no authentication**.

@@ -23,10 +23,13 @@ func registerToolAnalytics(srv *server.MCPServer) {
 			if _, ok := builtins[name]; !ok {
 				name = "container_tool"
 			}
+			ctx = analytics.WithEntrypoint(analytics.NewAttempt(ctx), "mcp")
 			start := time.Now()
 			result, err := next(ctx, req)
 			props := map[string]string{
 				"command_name": "wendy mcp " + name,
+				"attempt_id":   analytics.AttemptID(ctx),
+				"entrypoint":   "mcp",
 				"command_root": "mcp",
 				"duration_ms":  strconv.FormatInt(time.Since(start).Milliseconds(), 10),
 				"success":      strconv.FormatBool(err == nil && result != nil && !result.IsError),
