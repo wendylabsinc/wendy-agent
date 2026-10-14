@@ -34,7 +34,7 @@ var (
 
 // Mode is one nvpmodel power mode.
 type Mode struct {
-	ID   int
+	ID   int32
 	Name string
 }
 
@@ -92,18 +92,18 @@ var (
 
 // ParseConfig reads the modes and the boot default from an nvpmodel.conf. It
 // ignores everything else (per-mode parameter blocks, comments).
-func ParseConfig(r io.Reader) (modes []Mode, bootDefault *int, err error) {
+func ParseConfig(r io.Reader) (modes []Mode, bootDefault *int32, err error) {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if m := modeLine.FindStringSubmatch(line); m != nil {
-			id, convErr := strconv.Atoi(m[1])
+			id, convErr := parseID(m[1])
 			if convErr != nil {
 				return nil, nil, fmt.Errorf("mode id %q: %w", m[1], convErr)
 			}
 			modes = append(modes, Mode{ID: id, Name: m[2]})
 		} else if m := defaultLine.FindStringSubmatch(line); m != nil {
-			id, convErr := strconv.Atoi(m[1])
+			id, convErr := parseID(m[1])
 			if convErr != nil {
 				return nil, nil, fmt.Errorf("default mode id %q: %w", m[1], convErr)
 			}
@@ -119,7 +119,7 @@ func ParseConfig(r io.Reader) (modes []Mode, bootDefault *int, err error) {
 // parseQuery extracts the current mode ID (and, when present, its name) from
 // `nvpmodel -q`, which prints "NV Power Mode: NAME" followed by the ID on its
 // own line, possibly with warning lines around them.
-func parseQuery(out string) (id int, name string, err error) {
+func parseQuery(out string) (id int32, name string, err error) {
 	found := false
 	for _, raw := range strings.Split(out, "\n") {
 		line := strings.TrimSpace(raw)
@@ -128,7 +128,7 @@ func parseQuery(out string) (id int, name string, err error) {
 			continue
 		}
 		if !found && digitsOnly.MatchString(line) {
-			id, err = strconv.Atoi(line)
+			id, err = parseID(line)
 			if err != nil {
 				return 0, "", err
 			}
@@ -141,7 +141,16 @@ func parseQuery(out string) (id int, name string, err error) {
 	return id, name, nil
 }
 
-func (c *Controller) loadConfig() ([]Mode, *int, error) {
+// parseID reads a mode ID, bounded to int32 as on the wire.
+func parseID(s string) (int32, error) {
+	id, err := strconv.ParseInt(s, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	return int32(id), nil
+}
+
+func (c *Controller) loadConfig() ([]Mode, *int32, error) {
 	f, err := os.Open(c.ConfPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -170,7 +179,7 @@ func (c *Controller) run(ctx context.Context, stdin string, args ...string) (str
 	return out, err
 }
 
-func find(modes []Mode, id int) (Mode, bool) {
+func find(modes []Mode, id int32) (Mode, bool) {
 	for _, m := range modes {
 		if m.ID == id {
 			return m, true
@@ -192,7 +201,7 @@ func Resolve(modes []Mode, query string) (Mode, error) {
 		}
 	}
 	if digitsOnly.MatchString(query) {
-		if id, err := strconv.Atoi(query); err == nil {
+		if id, err := parseID(query); err == nil {
 			if m, ok := find(modes, id); ok {
 				return m, nil
 			}
@@ -256,7 +265,7 @@ func (c *Controller) Set(ctx context.Context, query string) (SetResult, error) {
 	if err != nil {
 		return SetResult{}, err
 	}
-	out, err := c.run(ctx, "n\n", "-m", strconv.Itoa(mode.ID))
+	out, err := c.run(ctx, "n\n", "-m", strconv.FormatInt(int64(mode.ID), 10))
 	rebootRequired := strings.Contains(strings.ToLower(out), "reboot required")
 	if err != nil && !rebootRequired {
 		if errors.Is(err, ErrUnavailable) {

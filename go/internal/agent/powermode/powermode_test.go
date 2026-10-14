@@ -65,6 +65,16 @@ func TestParseConfig(t *testing.T) {
 	}
 }
 
+func TestOutOfRangeIDsAreRejected(t *testing.T) {
+	// 2^31 does not fit the wire's int32; it must error rather than wrap.
+	if _, _, err := ParseConfig(strings.NewReader("< POWER_MODEL ID=2147483648 NAME=BIG >\n")); err == nil {
+		t.Error("ParseConfig accepted an ID beyond int32")
+	}
+	if _, _, err := parseQuery("NV Power Mode: BIG\n2147483648\n"); err == nil {
+		t.Error("parseQuery accepted an ID beyond int32")
+	}
+}
+
 func TestParseQuery(t *testing.T) {
 	id, name, err := parseQuery("NVPM WARN: something\nNV Power Mode: MODE_30W\n2\n")
 	if err != nil || id != 2 || name != "MODE_30W" {
@@ -116,7 +126,7 @@ func TestStateUnavailable(t *testing.T) {
 
 func TestResolve(t *testing.T) {
 	modes, _, _ := ParseConfig(strings.NewReader(orinConf))
-	for query, want := range map[string]int{"MAXN": 0, "0": 0, "mode_50w": 3, " 2 ": 2, "MODE_15W": 1} {
+	for query, want := range map[string]int32{"MAXN": 0, "0": 0, "mode_50w": 3, " 2 ": 2, "MODE_15W": 1} {
 		got, err := Resolve(modes, query)
 		if err != nil || got.ID != want {
 			t.Errorf("Resolve(%q) = (%v, %v), want id %d", query, got, err, want)

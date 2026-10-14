@@ -28,7 +28,7 @@ const powerModeRebootDelay = 2 * time.Second
 const powerModeUnsupported = "power modes are only supported on NVIDIA Jetson devices"
 
 func modeToProto(m powermode.Mode) *agentpb.PowerMode {
-	return &agentpb.PowerMode{Id: int32(m.ID), Name: m.Name}
+	return &agentpb.PowerMode{Id: m.ID, Name: m.Name}
 }
 
 // powerModeError maps controller errors onto gRPC codes.
