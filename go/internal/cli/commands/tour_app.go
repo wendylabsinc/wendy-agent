@@ -77,18 +77,31 @@ func scaffoldTourApp(projectDir, kind string) (string, error) {
 }
 
 func isTourExample(path, kind string) bool {
+	found, err := tourExampleKind(path)
+	return err == nil && found == kind
+}
+
+func tourExampleKind(path string) (string, error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return false
+		return "", errors.New("the app is not a tour example directory")
 	}
 	marker := filepath.Join(path, tourExampleMarker)
 	info, err = os.Lstat(marker)
 	if err != nil || !info.Mode().IsRegular() {
-		return false
+		return "", errors.New("the app has no regular tour example marker")
 	}
 	data, err := os.ReadFile(marker)
 	var identity tourExampleIdentity
-	return err == nil && json.Unmarshal(data, &identity) == nil && identity.Version == 1 && identity.Kind == kind
+	if err != nil || json.Unmarshal(data, &identity) != nil || identity.Version != 1 {
+		return "", errors.New("the app has no valid tour example marker")
+	}
+	switch identity.Kind {
+	case "patrol", "roam", "teleop", "sensors":
+		return identity.Kind, nil
+	default:
+		return "", errors.New("the app has an unknown tour example kind")
+	}
 }
 
 var (
@@ -133,22 +146,44 @@ func connectTourApp(ctx context.Context, vmName string) (*SelectedDevice, error)
 }
 
 func runTourApp(ctx context.Context, vmName, path string) error {
-	kind := ""
-	for _, candidate := range []string{"patrol", "roam", "teleop", "sensors"} {
-		if isTourExample(path, candidate) {
-			kind = candidate
-			break
-		}
-	}
-	if kind == "" {
-		return errors.New("the app has no valid tour example marker")
-	}
-	cfg, err := appconfig.LoadFromFile(filepath.Join(path, "wendy.json"))
+	app, err := prepareTourAppDeployment(vmName, "", path)
 	if err != nil {
 		return err
 	}
+	return app.deploy(ctx)
+}
+
+// tourAppDeployment holds one attempt's configuration. Source files stay
+// editable, but deployment, controls, cleanup and browser access all use the
+// same manifest snapshot even when an editor saves wendy.json during a build.
+type tourAppDeployment struct {
+	vmName, kind, path string
+	cfg                *appconfig.AppConfig
+	nodeName           string
+	opts               runOptions
+}
+
+func prepareTourAppDeployment(vmName, kind, path string) (*tourAppDeployment, error) {
+	if err := vm.ValidName(vmName); err != nil {
+		return nil, err
+	}
+	foundKind, err := tourExampleKind(path)
+	if err != nil {
+		return nil, err
+	}
+	if kind != "" && foundKind != kind {
+		return nil, fmt.Errorf("the app has no valid %s tour example marker", kind)
+	}
+	kind = foundKind
+	cfg, err := appconfig.LoadFromFile(filepath.Join(path, "wendy.json"))
+	if err != nil {
+		return nil, err
+	}
 	if err := cfg.Validate(); err != nil {
-		return err
+		return nil, err
+	}
+	if cfg.AppID == go2RuntimeAppID || cfg.AppID == g1RuntimeAppID || cfg.AppID == r2RuntimeAppID {
+		return nil, fmt.Errorf("%s is reserved for the managed robot", cfg.AppID)
 	}
 	opts := runOptions{
 		buildType: "docker", builder: "docker", dockerfile: "Dockerfile", detach: true, noRestart: true,
@@ -156,23 +191,24 @@ func runTourApp(ctx context.Context, vmName, path string) error {
 	if cfg.Run != nil {
 		opts.userArgs = append([]string(nil), cfg.Run.Args...)
 	}
+	nodeName := ""
 	if kind != "sensors" {
 		for _, arg := range opts.userArgs {
 			flag, _, _ := strings.Cut(arg, "=")
 			if strings.HasPrefix(flag, "--") && flag != "--" && strings.HasPrefix("--autostart", flag) {
-				return errors.New("remove --autostart from run.args to use the tour's explicit Start control")
+				return nil, errors.New("remove --autostart from run.args to use the tour's explicit Start control")
 			}
 			if strings.Contains(arg, "__node:=") || strings.Contains(arg, "__name:=") || strings.Contains(arg, "__ns:=") {
-				return errors.New("remove ROS node and namespace remaps from run.args; the tour assigns the app's control identity")
+				return nil, errors.New("remove ROS node and namespace remaps from run.args; the tour assigns the app's control identity")
 			}
 			if strings.Contains(arg, kind+"/start:=") || strings.Contains(arg, kind+"/stop:=") {
-				return errors.New("remove Start/Stop service remaps from run.args; the tour assigns the app's control services")
+				return nil, errors.New("remove Start/Stop service remaps from run.args; the tour assigns the app's control services")
 			}
 		}
 		// These arguments reach rclpy.init through each example's entrypoint.
 		// Start/Stop services also need unique names so another copy of the
 		// example cannot acknowledge this app's control requests.
-		nodeName := tourAppNodeName(vmName, kind, cfg.AppID)
+		nodeName = tourAppNodeName(vmName, kind, cfg.AppID)
 		opts.userArgs = append(opts.userArgs, "--ros-args", "-r", "__node:="+nodeName, "-r", "__ns:=/")
 		if kind == "patrol" || kind == "roam" {
 			for _, action := range []string{"start", "stop"} {
@@ -180,18 +216,34 @@ func runTourApp(ctx context.Context, vmName, path string) error {
 			}
 		}
 	}
-	target, err := connectTourApp(ctx, vmName)
+	return &tourAppDeployment{vmName: vmName, kind: kind, path: path, cfg: cfg, nodeName: nodeName, opts: opts}, nil
+}
+
+func (app *tourAppDeployment) deploy(ctx context.Context) error {
+	// The deployment pipeline may normalize nested configuration. Give it a
+	// private copy so the captured cleanup identity and HTTP port stay intact.
+	data, err := json.Marshal(app.cfg)
+	if err != nil {
+		return err
+	}
+	cfg, err := appconfig.LoadFromBytes(data)
+	if err != nil {
+		return err
+	}
+	opts := app.opts
+	opts.userArgs = append([]string(nil), opts.userArgs...)
+	target, err := connectTourApp(ctx, app.vmName)
 	if err != nil {
 		return err
 	}
 	defer target.Close()
-	if err := runTourAppWithAgentFn(ctx, target.Agent, path, cfg, opts); err != nil {
+	if err := runTourAppWithAgentFn(ctx, target.Agent, app.path, cfg, opts); err != nil {
 		return err
 	}
-	if kind == "sensors" {
+	if app.kind == "sensors" {
 		return nil
 	}
-	return grantTourAppControl(ctx, vmName, tourAppNodeName(vmName, kind, cfg.AppID))
+	return grantTourAppControl(ctx, app.vmName, app.nodeName)
 }
 
 func tourAppNodeName(vmName, kind, appID string) string {
@@ -236,18 +288,19 @@ func controlTourApp(ctx context.Context, vmName, kind, nodeName, action string) 
 // tourAppURL returns a browser address only after checking the current VM's
 // actual forwarding and waiting for its HTTP listener to answer.
 func tourAppURL(ctx context.Context, vmName, path string) (string, error) {
-	if err := vm.ValidName(vmName); err != nil {
-		return "", err
-	}
-	cfg, err := appconfig.LoadFromFile(filepath.Join(path, "wendy.json"))
+	app, err := prepareTourAppDeployment(vmName, "", path)
 	if err != nil {
 		return "", err
 	}
-	guestPort, found := httpEntitlementPort(cfg.Entitlements)
+	return app.url(ctx)
+}
+
+func (app *tourAppDeployment) url(ctx context.Context) (string, error) {
+	guestPort, found := httpEntitlementPort(app.cfg.Entitlements)
 	if !found {
 		return "", nil
 	}
-	port, err := tourAppPortFn(ctx, vmName, guestPort)
+	port, err := tourAppPortFn(ctx, app.vmName, guestPort)
 	if err != nil {
 		return "", err
 	}
@@ -350,32 +403,18 @@ func grantTourAppControl(ctx context.Context, vmName, nodeName string) error {
 // can be edited again. Stopping the container also makes an unchanged redeploy
 // create a new ROS publisher, which can receive a fresh simulator grant.
 func prepareTourAppCleanup(vmName, kind, path string) (func(context.Context) error, string, error) {
-	if err := vm.ValidName(vmName); err != nil {
-		return nil, "", err
-	}
-	if kind == "sensors" {
-		return func(context.Context) error { return nil }, "", nil
-	}
-	if kind != "patrol" && kind != "roam" && kind != "teleop" {
-		return nil, "", fmt.Errorf("unknown movement app %q", kind)
-	}
-	if !isTourExample(path, kind) {
-		return nil, "", fmt.Errorf("the app has no valid %s tour example marker", kind)
-	}
-	cfg, err := appconfig.LoadFromFile(filepath.Join(path, "wendy.json"))
+	app, err := prepareTourAppDeployment(vmName, kind, path)
 	if err != nil {
 		return nil, "", err
 	}
-	if err := cfg.Validate(); err != nil {
-		return nil, "", err
+	return app.cleanup, app.nodeName, nil
+}
+
+func (app *tourAppDeployment) cleanup(ctx context.Context) error {
+	if app.kind == "sensors" {
+		return nil
 	}
-	appID := cfg.AppID
-	if appID == go2RuntimeAppID || appID == g1RuntimeAppID || appID == r2RuntimeAppID {
-		return nil, "", fmt.Errorf("%s is reserved for the managed robot", appID)
-	}
-	return func(ctx context.Context) error {
-		return releaseTourApp(ctx, vmName, kind, appID)
-	}, tourAppNodeName(vmName, kind, appID), nil
+	return releaseTourApp(ctx, app.vmName, app.kind, app.cfg.AppID)
 }
 
 func releaseTourApp(ctx context.Context, vmName, kind, appID string) error {
