@@ -51,7 +51,7 @@ func enableTestDelivery(t *testing.T, handler http.HandlerFunc) *httptest.Server
 func TestDisabledViaEnvVar(t *testing.T) {
 	clearCIEnv(t)
 	t.Setenv("WENDY_ANALYTICS", "false")
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 
 	cfg := &config.Config{
 		Analytics: &config.AnalyticsConfig{Enabled: true},
@@ -66,7 +66,7 @@ func TestDisabledViaEnvVar(t *testing.T) {
 func TestDisabledViaConfig(t *testing.T) {
 	clearCIEnv(t)
 	t.Setenv("WENDY_ANALYTICS", "")
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 
 	cfg := &config.Config{
 		Analytics: &config.AnalyticsConfig{Enabled: false},
@@ -81,7 +81,8 @@ func TestDisabledViaConfig(t *testing.T) {
 func TestEnabledByDefaultWhenNil(t *testing.T) {
 	clearCIEnv(t)
 	t.Setenv("WENDY_ANALYTICS", "")
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	t.Cleanup(Disable)
 
 	cfg := &config.Config{
 		Analytics: nil,
@@ -90,6 +91,9 @@ func TestEnabledByDefaultWhenNil(t *testing.T) {
 
 	if !firstRun {
 		t.Error("expected firstRun to be true when Analytics is nil")
+	}
+	if !Enabled() {
+		t.Error("expected analytics to be enabled when Analytics is nil")
 	}
 }
 
@@ -108,7 +112,7 @@ func TestEnvOverride(t *testing.T) {
 func TestTrackNoOpWhenDisabled(t *testing.T) {
 	clearCIEnv(t)
 	t.Setenv("WENDY_ANALYTICS", "false")
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 
 	cfg := &config.Config{}
 	Init(cfg)
@@ -128,7 +132,7 @@ func TestInitDisabledInCI(t *testing.T) {
 			clearCIEnv(t)
 			t.Setenv(ciKey, "1")
 			t.Setenv("WENDY_ANALYTICS", "true")
-			t.Setenv("HOME", t.TempDir())
+			t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 
 			cfg := &config.Config{
 				Analytics: &config.AnalyticsConfig{Enabled: true},
@@ -160,7 +164,7 @@ func TestInitDisabledInCI(t *testing.T) {
 func TestTrackHookFiresEvenWhenDisabled(t *testing.T) {
 	clearCIEnv(t)
 	t.Setenv("WENDY_ANALYTICS", "false")
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 
 	Init(&config.Config{}) // disabled
 	if Enabled() {
