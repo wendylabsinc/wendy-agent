@@ -163,11 +163,13 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 		term.printf("Session closed.\n")
 	}()
 
-	// A relay that showed the chat a different tool set than this CLI
-	// serves, or none (no manifest_version), gets no pairing: fail closed.
-	manifestErr := wendymcp.CheckRelayManifest(opened.GetManifestVersion())
+	// Pin the session to the relay's reviewed catalog. Newer CLI tools stay
+	// unavailable until the relay advertises them; unknown catalogs fail closed.
+	manifest, manifestErr := wendymcp.ResolveRelayManifest(opened.GetManifestVersion())
 	if manifestErr != nil {
-		term.printf("Warning: %v. Every pairing request will be denied; update the CLI or wait for the relay to publish this tool set.\n", manifestErr)
+		term.printf("Warning: %v. Every pairing request will be denied.\n", manifestErr)
+	} else {
+		policy.RelayManifest = manifest
 	}
 	term.printf("Waiting for a web chat to pair: use the Wendy connector there, then check that the code it shows matches the one asked about here. Press Ctrl-C to end the session.\n")
 	var client string
@@ -187,7 +189,7 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 			name, id, code := printable(p.GetClientName()), printable(p.GetClientId()), printable(p.GetCode())
 			switch {
 			case manifestErr != nil:
-				term.printf("Denied %q: the relay's tool manifest does not match this CLI.\n", name)
+				term.printf("Denied %q: this CLI cannot serve the relay's published tool set.\n", name)
 			case served != nil:
 				term.printf("Denied %q: this session already serves %q.\n", name, client)
 			case term.ask(ctx, fmt.Sprintf("%q (%s) wants to pair, code %s: accept? [y/N] ", name, id, code)):

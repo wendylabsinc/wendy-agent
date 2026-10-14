@@ -65,6 +65,7 @@ type mcpServer struct {
 	loginStarter         LoginStarter
 	binding              *BindingPolicy // set by wendy cloud mcp; nil for the local stdio server
 	relay                bool           // serving a hosted chat through the relay: the published manifest only
+	relayProfile         *relayManifestProfile
 }
 
 // Server is the wendy MCP server, named for callers that configure it before
@@ -268,15 +269,23 @@ func (s *mcpServer) ConnectToOnStartup(ctx context.Context, address string) erro
 
 func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 	instructions := serverInstructions
+	s.relayProfile = nil
 	if s.relay {
 		instructions = relayInstructions
+		if policy := s.bindingPolicy(); policy != nil && policy.RelayManifest != nil {
+			profile, err := prepareRelayManifest(policy.RelayManifest.Version)
+			if err != nil {
+				return nil, err
+			}
+			s.relayProfile = profile
+		}
 	}
 	srv := server.NewMCPServer("wendy", version.Version,
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, false),
 		server.WithPromptCapabilities(false),
 		server.WithInstructions(instructions),
-		server.WithToolFilter(s.filterTools),
+		server.WithToolFilter(s.filterManifestTools),
 	)
 	srv.Use(s.relayManifestMiddleware, s.bindingMiddleware(srv))
 	if err := registerSkills(srv); err != nil {

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -51,6 +50,27 @@ func (s *mcpServer) relayManifestMiddleware(next server.ToolHandlerFunc) server.
 		if s.relay && !inManifest(req.Params.Name) {
 			return errResultf(errCodeNotFound, "tool %s is not available in hosted chats; use a local MCP client (wendy mcp serve)", req.Params.Name), nil
 		}
+		if s.relay && s.relayProfile != nil {
+			profile := s.relayProfile.tools[req.Params.Name]
+			if profile == nil {
+				return errResultf(errCodeNotFound, "tool %s is not available in this relay's published tool set", req.Params.Name), nil
+			}
+			args := req.GetArguments()
+			if args == nil {
+				if req.GetRawArguments() != nil {
+					return errResult(errCodeInvalidArgument, "tool arguments must be an object"), nil
+				}
+				args = map[string]any{}
+			}
+			for name := range args {
+				if _, declared := profile.tool.InputSchema.Properties[name]; !declared {
+					return errResultf(errCodeInvalidArgument, "argument %s is not available for %s in this relay's published tool set", name, req.Params.Name), nil
+				}
+			}
+			if err := profile.schema.Validate(args); err != nil {
+				return errResultf(errCodeInvalidArgument, "arguments do not match this relay's published schema for %s", req.Params.Name), nil
+			}
+		}
 		return next(ctx, req)
 	}
 }
@@ -78,18 +98,11 @@ func Manifest() (ToolManifest, error) {
 	return ToolManifest{Version: version.Version + "+" + hex.EncodeToString(sum[:8]), Tools: tools}, nil
 }
 
-// CheckRelayManifest refuses a relay whose reported manifest version
-// describes a different tool set than this CLI's: the chat would see tools
-// before pairing that the CLI does not serve after it.
+// CheckRelayManifest accepts only the current catalog or a known published
+// catalog whose calls this CLI can still serve without widening that catalog.
 func CheckRelayManifest(relayVersion string) error {
-	m, err := Manifest()
-	if err != nil {
-		return err
-	}
-	if manifestHash(relayVersion) != manifestHash(m.Version) {
-		return fmt.Errorf("the relay publishes MCP tool manifest %q but this CLI serves %q; pairing refused until both run the same tool set", relayVersion, m.Version)
-	}
-	return nil
+	_, err := ResolveRelayManifest(relayVersion)
+	return err
 }
 
 func manifestHash(v string) string {

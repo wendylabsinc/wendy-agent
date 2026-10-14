@@ -10,9 +10,11 @@ wendy cloud mcp [flags]
 
 ## Description
 
-`wendy cloud mcp` opens a session with the hosted Wendy MCP relay. Add the Wendy connector in your web chat and sign in. When the chat first calls a tool, the relay shows a pairing code in the chat and the CLI asks you, with the client's name, client ID and the same code, whether to accept it. Accept only if the codes match. If the relay's published tool set differs from this CLI's, the CLI warns and refuses every pairing.
+`wendy cloud mcp` opens a session with the hosted Wendy MCP relay. Add the Wendy connector in your web chat and sign in. When the chat first calls a tool, the relay shows a pairing code in the chat and the CLI asks you, with the client's name, client ID and the same code, whether to accept it. Accept only if the codes match.
 
-Once allowed, the chat gets the same tools as [`wendy mcp serve`](/docs/integrations/mcp). Every call runs on your machine and is signed with your operator key; the relay holds no Wendy credential. Each call is shown as one log line with the client name, tool and outcome.
+The CLI supports its current tool catalog and bundled, compatible older relay catalogs. Adding tools or optional arguments to the CLI does not require upgrading a relay whose published catalog it still supports. The chat sees that relay's tools and argument schemas throughout the session; newer tools and arguments become available when the relay advertises them. Unknown or incompatible catalogs produce a warning and pairing is refused.
+
+Once allowed, the chat uses the supported hosted tools from [`wendy mcp serve`](/docs/integrations/mcp). Every call runs on your machine and is signed with your operator key; the relay holds no Wendy credential. Each call is shown as one log line with the client name, tool and outcome.
 
 - **Read-only tools** run without asking, except those that reach your machine or local network (local paths and drives, simulators, LAN scans, explicit addresses such as `os_install_verify`, `project_validate`, `device_list`).
 - **Other tools** are refused unless you allow them with `--allow-tool` or `--allow-all`, and even then each call waits for you to confirm it in the terminal, showing the tool and its arguments. An unknown name in `--allow-tool` stops the command and lists the valid ones.

@@ -24,6 +24,9 @@ type BindingPolicy struct {
 	// Session is the auth session the run started with. Cloud calls use it
 	// alone; an argument naming another session or organization is refused.
 	Session *config.AuthConfig
+	// RelayManifest pins the reviewed tool definitions served by this relay.
+	// Serve resolves its version again; caller-supplied definitions are not trusted.
+	RelayManifest *ToolManifest
 	// Confirm asks the user about one call that is not read-only. nil refuses
 	// every such call.
 	Confirm func(ctx context.Context, tool string, args map[string]any) bool
