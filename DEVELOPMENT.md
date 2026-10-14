@@ -362,8 +362,8 @@ wendy device camera view --id 203
 ### ROS 2 cameras
 
 The agent discovers image writers in every running Wendy ROS 2 app without
-changing the app's discovery scope: for the default app-local scope it creates
-its DDS sockets inside that app's network namespace. It also watches domain 0
+changing the app's discovery environment: for loopback scopes it creates its
+DDS sockets inside that app's network namespace. It also watches domain 0
 on wired device interfaces for robot-native feeds. Supported messages are
 `sensor_msgs/msg/Image`, `sensor_msgs/msg/CompressedImage`, and Unitree's
 `unitree_go/msg/Go2FrontVideoData`; the last one makes a Go2's
