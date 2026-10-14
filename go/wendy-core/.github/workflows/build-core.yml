@@ -82,10 +82,14 @@ jobs:
       - if: matrix.swift && runner.os == 'Linux'
         uses: swift-actions/setup-swift@v2
         with:
-          swift-version: '6.4.0'
+          swift-version: '6.2.1'
       - if: matrix.swift && runner.os == 'Linux'
         name: Test the standalone SwiftPM distribution
         run: cd distributions/swift && swift test
+      - if: matrix.swift && runner.os == 'macOS'
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.3'
       - if: matrix.swift && runner.os == 'macOS'
         name: Test SwiftPM through XcodeBuildMCP
         run: |
@@ -197,7 +201,7 @@ jobs:
           python tools/build.py test-npm
       - uses: swift-actions/setup-swift@v2
         with:
-          swift-version: '6.4.0'
+          swift-version: '6.2.1'
       - name: Consume the release SwiftPM package through a normal versioned dependency
         run: python tools/swift_smoke.py .build/release/*-swiftpm.tar.gz
       - name: Build the all-target Maven artifact
