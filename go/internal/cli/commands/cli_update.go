@@ -81,12 +81,15 @@ func newCLIUpdateCmdWithDeps(d cliUpdaterDeps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			latest, err := d.check(cmd.Context())
-			if err != nil {
-				return fmt.Errorf("could not check the latest CLI release: %w", err)
-			}
-			if strings.TrimSpace(latest) == "" {
-				return errors.New("release service returned an empty version; update status is unknown")
+			var latest string
+			if checkOnly || p.Channel != "nightly" {
+				latest, err = d.check(cmd.Context())
+				if err != nil {
+					return fmt.Errorf("could not check the latest CLI release: %w", err)
+				}
+				if strings.TrimSpace(latest) == "" {
+					return errors.New("release service returned an empty version; update status is unknown")
+				}
 			}
 			report := makeCLIUpdateReport(p, latest)
 			if checkOnly {
@@ -114,9 +117,6 @@ func newCLIUpdateCmdWithDeps(d cliUpdaterDeps) *cobra.Command {
 					fmt.Fprintln(cmd.ErrOrStderr(), "Update skipped. Run wendy update when you are ready.")
 					return nil
 				}
-			}
-			if p.Channel == "nightly" {
-				latest = ""
 			}
 			d.initialize(cmd)
 			return performCLIUpdateWithPlan(cmd, d, p, latest)

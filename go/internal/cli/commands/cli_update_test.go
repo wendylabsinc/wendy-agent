@@ -147,6 +147,10 @@ func TestCLIUpdateFailedDoesNotClaimSuccess(t *testing.T) {
 
 func TestCLIUpdateNightlyPreservesChannel(t *testing.T) {
 	d, events := cliUpdaterTestDeps(t)
+	d.check = func(context.Context) (string, error) {
+		t.Error("nightly update requested the latest stable release")
+		return "", errors.New("release service unavailable")
+	}
 	d.detect = func(context.Context) (cliupdate.Plan, error) {
 		return cliupdate.Plan{Method: "brew", Channel: "nightly", Supported: true, Commands: [][]string{{"brew", "upgrade", "wendylabsinc/tap/wendy-nightly"}}}, nil
 	}
@@ -154,8 +158,31 @@ func TestCLIUpdateNightlyPreservesChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(*events, ","), "apply:,") {
-		t.Fatalf("nightly was assigned stable target: %v", *events)
+	want := []string{"cli_update_started", "apply:", "cli_update_verified"}
+	if !reflect.DeepEqual(*events, want) {
+		t.Fatalf("nightly update events=%v", *events)
+	}
+}
+
+func TestCLIUpdateNightlyCheckIsFreshAndReadOnly(t *testing.T) {
+	d, events := cliUpdaterTestDeps(t)
+	d.detect = func(context.Context) (cliupdate.Plan, error) {
+		return cliupdate.Plan{Method: "brew", Channel: "nightly", Supported: true, Commands: [][]string{{"brew", "upgrade", "wendylabsinc/tap/wendy-nightly"}}}, nil
+	}
+	d.initialize = func(*cobra.Command) { t.Fatal("read-only check initialized analytics") }
+	out, _, err := executeCLIUpdater(t, d, "--check", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report cliUpdateReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "nightly_channel_not_checked" || report.UpdateAvailable || report.LatestStableVersion != "2026.10.05-134249" {
+		t.Fatalf("report=%+v", report)
+	}
+	if !reflect.DeepEqual(*events, []string{"check"}) {
+		t.Fatalf("nightly check changed state: %v", *events)
 	}
 }
 
@@ -187,11 +214,19 @@ func TestCLIUpdateUnsupportedInstallationIsGuidanceOnly(t *testing.T) {
 }
 
 func TestCLIUpdateCheckFailureNeverMeansCurrent(t *testing.T) {
-	d, events := cliUpdaterTestDeps(t)
-	d.check = func(context.Context) (string, error) { return "", errors.New("offline") }
-	out, _, err := executeCLIUpdater(t, d, "--check", "--json")
-	if err == nil || out != "" || len(*events) != 0 {
-		t.Fatalf("out=%q err=%v events=%v", out, err, *events)
+	for _, channel := range []string{"stable", "nightly"} {
+		t.Run(channel, func(t *testing.T) {
+			d, events := cliUpdaterTestDeps(t)
+			d.detect = func(context.Context) (cliupdate.Plan, error) {
+				return cliupdate.Plan{Method: "brew", Channel: channel, Supported: true}, nil
+			}
+			offline := errors.New("offline")
+			d.check = func(context.Context) (string, error) { return "", offline }
+			out, _, err := executeCLIUpdater(t, d, "--check", "--json")
+			if !errors.Is(err, offline) || out != "" || len(*events) != 0 {
+				t.Fatalf("out=%q err=%v events=%v", out, err, *events)
+			}
+		})
 	}
 }
 
