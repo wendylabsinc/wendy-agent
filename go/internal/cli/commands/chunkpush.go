@@ -386,7 +386,7 @@ func pushLayersByChunksWithPrepareModeAndCache(ctx context.Context, cs agentpb.W
 	// renderer) still get the line, routed through that writer; the plain
 	// non-interactive path keeps it as its only feedback until the
 	// end-of-push Summary() line.
-	if skipped > 0 && (output != nil || !buildProgressInteractive()) {
+	if skipped > 0 && !isRobotTour(ctx) && (output != nil || !buildProgressInteractive()) {
 		chunkPushLogln(output, "Reusing %s layer(s) already on device; chunking %s.",
 			tui.Value(fmt.Sprintf("%d", skipped)), tui.Value(fmt.Sprintf("%d", len(toPush))))
 	}

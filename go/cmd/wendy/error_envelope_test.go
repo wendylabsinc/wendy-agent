@@ -44,6 +44,7 @@ func decodeEnvelope(t *testing.T, out string) errorBody {
 }
 
 func TestReportFailure_UserCancellationIsSilentSuccess(t *testing.T) {
+	t.Setenv("WENDY_TELEMETRY_ENTRYPOINT", "")
 	for _, err := range []error{nil, commands.ErrUserCancelled, commands.ErrDefaultCleared} {
 		var out strings.Builder
 		if code := reportFailure(&out, err, nil, []string{"--json"}); code != 0 || out.Len() != 0 {
