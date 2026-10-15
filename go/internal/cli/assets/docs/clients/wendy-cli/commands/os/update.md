@@ -181,4 +181,4 @@ Thor or ESP32 targets. `--pr` is mutually exclusive with `--nightly`,
 
 A positional argument (a local `.wendy` file path, or a directory containing one) can be used instead of `--artifact-url`.
 
-> **Tip:** After an update, `wendy device info` shows a compact summary of the A/B slot state and the last update outcome. For the full record — including which healthchecks ran and the live engine diagnostics — run `wendy os update-status`.
+> **Tip:** After an update, `wendy device info` shows the last recorded update outcome. For live A/B slot state, pending updates, healthcheck results, and engine diagnostics, run `wendy os update-status`.
