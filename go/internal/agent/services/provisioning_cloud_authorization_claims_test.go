@@ -1,25 +1,113 @@
 package services
 
 import (
+	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/acmeenroll"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/unenrollproof"
+	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/protobuf/proto"
 )
 
+// otherOperatorPeer is a same-tenant operator that did NOT sign the reset request.
+func otherOperatorPeer(t *testing.T) *peer.Peer {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, _ := url.Parse("spiffe://wendy.sh/tenant/" + resetTenant + "/operator/other")
+	now := time.Now()
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(7), URIs: []*url.URL{uri}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, KeyUsage: x509.KeyUsageDigitalSignature}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{cert}, VerifiedChains: [][]*x509.Certificate{{cert}}}}}
+}
+
+func TestCloudResetGoodAuthorityErases(t *testing.T) {
+	svc, req, ctx := cloudResetFixture(t)
+	if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); err != nil {
+		t.Fatalf("verified Cloud reset authority refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(svc.configPath, "device-key.pem")); !os.IsNotExist(err) {
+		t.Fatalf("device key retained after authorized reset: %v", err)
+	}
+}
+
+// Ruling 2026-10-15 12:56: after an authenticated unenroll the device keeps
+// nothing tying it to the old org/asset and re-enrolls with the same device ID
+// in the same or a different org.
+func TestCloudResetThenReenrollSameDeviceID(t *testing.T) {
+	for name, tenant := range map[string]string{"same-org": resetTenant, "other-org": "77777777-7777-4777-8777-777777777777"} {
+		t.Run(name, func(t *testing.T) {
+			svc, req, ctx := cloudResetFixture(t)
+			oldKey := string(svc.keyPEM)
+			if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			// Restart between reset and re-enroll, as a real device would.
+			restarted := NewProvisioningService(zap.NewNop(), svc.configPath)
+			if restarted.resetRecoveryErr != nil {
+				t.Fatal(restarted.resetRecoveryErr)
+			}
+			var enrollKey []byte
+			stubACMEEnroll(t, func(_ context.Context, cfg acmeenroll.Config, _ string, key []byte) (string, string, error) {
+				enrollKey = append([]byte(nil), key...)
+				return "leaf", "chain", nil
+			})
+			enroll := acmeProvisionRequest()
+			enroll.DeviceId = resetDevice
+			enroll.DirectoryUrl = "https://acme.dev.pki.wendy.sh/" + tenant + "/acme/directory"
+			resp, err := NewProvisioningServiceV2(restarted).StartACMEProvisioning(context.Background(), enroll)
+			if err != nil {
+				t.Fatalf("re-enroll after authenticated reset refused: %v", err)
+			}
+			if want := "spiffe://wendy.sh/tenant/" + tenant + "/device/" + resetDevice; resp.GetPrincipalUri() != want {
+				t.Fatalf("principal = %q, want %q", resp.GetPrincipalUri(), want)
+			}
+			if string(enrollKey) == oldKey {
+				t.Fatal("re-enrollment reused the erased device key")
+			}
+			raw, err := os.ReadFile(restarted.statePath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, stale := range []string{"unenrollment", "33333333-3333-4333-8333-333333333333", "api.example"} {
+				if strings.Contains(string(raw), stale) {
+					t.Fatalf("re-enrolled state still references the old enrollment (%s)", stale)
+				}
+			}
+		})
+	}
+}
+
 func TestCloudResetCorrectSignatureCannotSubstituteClaims(t *testing.T) {
-	for _, name := range []string{"purpose", "issuer", "audience", "expired", "future", "lifetime", "jti", "fingerprint", "operator", "correlation", "extra-claim", "caller-key-url"} {
+	for _, name := range []string{"purpose", "issuer", "audience", "expired", "future", "lifetime", "jti", "fingerprint", "operator", "correlation", "extra-claim", "caller-key-url", "tenant", "device", "asset", "peer-not-signer"} {
 		t.Run(name, func(t *testing.T) {
 			svc, req, ctx := cloudResetFixture(t)
 			key := renewFixtureAuthorization(t, svc, req, ctx, time.Now())
@@ -58,6 +146,28 @@ func TestCloudResetCorrectSignatureCannotSubstituteClaims(t *testing.T) {
 				body["admin"] = true
 			case "caller-key-url":
 				header["jku"] = "https://evil.example/keys"
+			case "tenant", "device", "asset":
+				// Cloud-signed and byte-consistent, but bound to another target.
+				var deleted cloudpbv2.DeletedAsset
+				if err := proto.Unmarshal(req.CloudDeletion, &deleted); err != nil {
+					t.Fatal(err)
+				}
+				switch name {
+				case "tenant":
+					deleted.OrganizationId = "44444444-4444-4444-8444-444444444444"
+				case "device":
+					deleted.DeviceId = "55555555-5555-4555-8555-555555555555"
+				case "asset":
+					deleted.Id = "66666666-6666-4666-8666-666666666666"
+				}
+				raw, err := proto.Marshal(&deleted)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.CloudDeletion = raw
+				body["deletion"] = raw
+			case "peer-not-signer":
+				ctx = peer.NewContext(ctx, otherOperatorPeer(t))
 			}
 			req.CloudResetAuthorization = fixtureJWS(t, key, header, body)
 			if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); err == nil {

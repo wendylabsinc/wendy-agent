@@ -120,7 +120,7 @@ func cloudResetFixtureAt(t *testing.T, now time.Time) (*ProvisioningService, *ag
 }
 
 // Persist a development-version receipt directly to exercise historical recovery.
-// New requests cannot create these records while reset authorization is disabled.
+// New requests only create version 2 receipts with Cloud-authenticated authority.
 func persistHistoricalCloudReset(t *testing.T, svc *ProvisioningService, req *agentpbv2.UnprovisionRequest) []byte {
 	t.Helper()
 	leaves, err := certs.ParseCertsFromPEM([]byte(svc.certPEM))

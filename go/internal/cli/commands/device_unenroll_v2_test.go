@@ -203,6 +203,8 @@ func TestV2UnenrollRechecksBindingAndDeletionEvidence(t *testing.T) {
 }
 
 func TestV2UnenrollUnauthenticatedAgentRefusedBeforeCloudAccess(t *testing.T) {
+	// The prerelease CloudUnenrollmentSupported flag alone never qualifies,
+	// not even for --check.
 	for _, advertised := range []bool{false, true} {
 		for _, flags := range []struct {
 			name           string
@@ -212,19 +214,34 @@ func TestV2UnenrollUnauthenticatedAgentRefusedBeforeCloudAccess(t *testing.T) {
 			{name: "yes", yes: true},
 			{name: "check", checkOnly: true},
 		} {
-			t.Run(fmt.Sprintf("capability=%t/%s", advertised, flags.name), func(t *testing.T) {
+			t.Run(fmt.Sprintf("legacy-flag=%t/%s", advertised, flags.name), func(t *testing.T) {
 				prov := &agentpbv2.ProvisionedResponse{
 					CloudHost:                  testUnenrollProgress().Cloud,
 					PrincipalUri:               testUnenrollProgress().Principal,
 					CloudUnenrollmentSupported: advertised,
 				}
-				// Missing connection/auth configuration would fail if the disabled
-				// path attempted to start the old Cloud workflow.
+				// Missing connection/auth configuration would fail if the gate
+				// let the Cloud workflow start.
 				err := runV2DeviceUnenroll(context.Background(), nil, prov, nil, "", "", flags.yes, flags.checkOnly)
-				if err == nil || !strings.Contains(err.Error(), "updated Agent with Cloud-owned reset/recovery support required") || !strings.Contains(err.Error(), "no mutation performed") {
+				if err == nil || !strings.Contains(err.Error(), "does not support Cloud-authenticated reset") || !strings.Contains(err.Error(), "no mutation performed") {
 					t.Fatalf("unsafe workflow was not rejected before preflight: %v", err)
 				}
 			})
+		}
+	}
+}
+
+func TestV2UnenrollAuthenticatedResetBitAloneQualifies(t *testing.T) {
+	for _, checkOnly := range []bool{false, true} {
+		prov := &agentpbv2.ProvisionedResponse{
+			CloudHost:                        testUnenrollProgress().Cloud,
+			PrincipalUri:                     testUnenrollProgress().Principal,
+			CloudAuthenticatedResetSupported: true,
+		}
+		// Passes the capability gate, then stops at the direct-mTLS peer check.
+		err := runV2DeviceUnenroll(context.Background(), nil, prov, nil, "", "", true, checkOnly)
+		if err == nil || !strings.Contains(err.Error(), "directly verified mTLS device connection") {
+			t.Fatalf("check=%t: want direct-mTLS refusal after the capability gate, got %v", checkOnly, err)
 		}
 	}
 }

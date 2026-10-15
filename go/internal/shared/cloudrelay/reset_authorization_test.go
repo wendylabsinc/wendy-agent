@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -65,5 +66,21 @@ func TestResetSignatureUsesOnlyConfiguredHTTPSIssuer(t *testing.T) {
 	verifier.Issuer = "http://untrusted.example"
 	if _, _, err := verifier.VerifyResetSignature(context.Background(), token(valid)); err == nil {
 		t.Fatal("insecure issuer accepted")
+	}
+
+	// A kid the enrolled Cloud does not publish is refused, not guessed.
+	valid["typ"] = "asset-reset-authorization+jws"
+	valid["kid"] = "rotated-or-forged-key"
+	fresh := Verifier{Issuer: server.URL, HTTP: client}
+	if _, _, err := fresh.VerifyResetSignature(context.Background(), token(valid)); err == nil {
+		t.Fatal("unpublished kid accepted")
+	}
+
+	// An unreachable JWKS fails closed; there is no cached or caller key fallback.
+	valid["kid"] = "cloud-key"
+	server.Close()
+	unreachable := Verifier{Issuer: server.URL, HTTP: client}
+	if _, _, err := unreachable.VerifyResetSignature(context.Background(), token(valid)); err == nil || !strings.Contains(err.Error(), "fetching Cloud grant keys") {
+		t.Fatalf("unreachable JWKS did not fail closed: %v", err)
 	}
 }
