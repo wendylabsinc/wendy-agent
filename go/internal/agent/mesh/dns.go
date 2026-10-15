@@ -3,6 +3,7 @@ package mesh
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
@@ -10,43 +11,48 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshname"
 	"go.uber.org/zap"
 )
 
 var meshDNSSuffixRE = `(?:` + regexp.QuoteMeta(meshname.Suffix) + `|` + regexp.QuoteMeta(meshname.LegacySuffix) + `)`
 
-// meshNameRE accepts the private mesh namespace and its legacy public alias.
-var meshNameRE = regexp.MustCompile(`^device-([0-9]{1,5})\.` + meshDNSSuffixRE + `\.$`)
+// canonicalUUIDRE matches the canonical textual UUID form (lowercase,
+// hyphenated) that meshid enforces at every identity boundary. Uppercase or
+// unhyphenated spellings are deliberately not accepted: they would resolve to
+// a device the peer's own identity never produces.
+const canonicalUUIDRE = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
+
+// meshNameRE accepts the canonical device-<uuid> form of the private mesh
+// namespace and its legacy public alias.
+var meshNameRE = regexp.MustCompile(`^device-(` + canonicalUUIDRE + `)\.` + meshDNSSuffixRE + `\.$`)
 
 // friendlyNameRE matches <devicename>.<org-slug>.mesh.wendy.internal. and its
-// legacy alias. It never overlaps meshNameRE: the numeric form has one label
+// legacy alias. It never overlaps meshNameRE: the device form has one label
 // before the suffix, while this form has two.
 var friendlyNameRE = regexp.MustCompile(`^([a-z0-9-]+)\.([a-z0-9-]+)\.` + meshDNSSuffixRE + `\.$`)
 
-// ResolvedDevice is one friendly-name resolution outcome. AssetID is the
-// legacy cloud asset id — today it arrives only on an mDNS TXT sighting, and
-// it is what the legacy VIP answers are built from; 0 when the name resolved
-// without one. A Cloud v2 roster entry carries UUIDs only, so it has no VIP
-// to answer until the mesh data plane carries v2 addresses. DeviceUUID is the
-// Cloud v2 mesh identity, empty for rows with no UUID device binding.
-type ResolvedDevice struct {
-	AssetID    int32
-	DeviceUUID string
-	AssetUUID  string
-}
-
-// Resolver maps a normalized device name to the device it names within this
-// device's own org, and reports this device's own org slug. It is implemented
-// in the services package (which owns the mDNS + cloud-roster dependencies)
-// and injected via SetResolver, keeping the mesh package free of those deps.
+// Resolver maps a normalized device name to that device's principal within
+// this device's own tenant, and reports this device's own org slug. It is
+// implemented in the services package (which owns the mDNS + cloud-roster
+// dependencies) and injected via SetResolver, keeping the mesh package free of
+// those deps.
 type Resolver interface {
-	Resolve(name string) (ResolvedDevice, bool)
+	Resolve(name string) (meshid.Device, bool)
 	OrgSlug() string
 }
 
-// DNSServer answers device-N.mesh.wendy.internal with the device's mesh VIP and
-// forwards every other query to the host's upstream resolver. One UDP
+// meshIdentity is the provisioning identity the mesh name paths resolve
+// through: the tenant device names are parsed under, and the VIP table that
+// pins them. Absent until SetMeshIdentity supplies it.
+type meshIdentity struct {
+	tenant meshid.Tenant
+	vips   *VIPTable
+}
+
+// DNSServer answers device-<uuid>.mesh.wendy.internal with the device's mesh
+// VIP and forwards every other query to the host's upstream resolver. One UDP
 // listener is bound per app bridge gateway address, refcounted by the number
 // of running meshed containers behind that bridge.
 type DNSServer struct {
@@ -56,7 +62,8 @@ type DNSServer struct {
 
 	mu        sync.Mutex
 	listeners map[string]*gatewayListener
-	resolver  Resolver // friendly-name resolver; nil until SetResolver
+	resolver  Resolver      // friendly-name resolver; nil until SetResolver
+	identity  *meshIdentity // tenant + VIP table; nil until SetMeshIdentity
 }
 
 type gatewayListener struct {
@@ -76,11 +83,26 @@ func NewDNSServer(logger *zap.Logger, upstream string) *DNSServer {
 
 // SetResolver installs the friendly-name resolver. Safe to call once during
 // agent startup after provisioning identity is available; a nil resolver
-// makes every friendly name NXDOMAIN while the numeric path keeps working.
+// makes every friendly name NXDOMAIN while the device-<uuid> path keeps
+// working.
 func (s *DNSServer) SetResolver(r Resolver) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.resolver = r
+}
+
+// SetMeshIdentity installs the tenant and VIP table mesh names resolve
+// through. Safe to call once during agent startup after provisioning identity
+// is available; without it every mesh name is NXDOMAIN, since a name with no
+// tenant to parse under and no table to pin a VIP in has no answer to give.
+func (s *DNSServer) SetMeshIdentity(tenant meshid.Tenant, vips *VIPTable) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if vips == nil {
+		s.identity = nil
+		return
+	}
+	s.identity = &meshIdentity{tenant: tenant, vips: vips}
 }
 
 // EnsureListener binds a UDP DNS listener on gatewayIP (idempotent,
@@ -146,7 +168,7 @@ func (s *DNSServer) handle(w dns.ResponseWriter, r *dns.Msg) {
 	q := r.Question[0]
 	lower := strings.ToLower(q.Name)
 	if m := meshNameRE.FindStringSubmatch(lower); m != nil {
-		s.answerNumeric(w, r, q, m[1])
+		s.answerDevice(w, r, q, m[1])
 		return
 	}
 	if m := friendlyNameRE.FindStringSubmatch(lower); m != nil {
@@ -156,18 +178,28 @@ func (s *DNSServer) handle(w dns.ResponseWriter, r *dns.Msg) {
 	s.forward(w, r)
 }
 
-func (s *DNSServer) answerNumeric(w dns.ResponseWriter, r *dns.Msg, q dns.Question, digits string) {
-	id, err := strconv.ParseInt(digits, 10, 32)
+// answerDevice resolves the canonical device-<uuid> form. It needs no roster
+// data at all: the name carries the device UUID, and the VIP comes from the
+// host's own table.
+func (s *DNSServer) answerDevice(w dns.ResponseWriter, r *dns.Msg, q dns.Question, uuidText string) {
+	s.mu.Lock()
+	id := s.identity
+	s.mu.Unlock()
+	if id == nil {
+		s.reply(w, r, dns.RcodeNameError)
+		return
+	}
+	device, err := meshid.ParseDevice(id.tenant, uuidText)
 	if err != nil {
 		s.reply(w, r, dns.RcodeNameError)
 		return
 	}
-	s.answerVIP(w, r, q, int32(id))
+	s.answerAllocated(w, r, q, id.vips, device)
 }
 
 func (s *DNSServer) answerFriendly(w dns.ResponseWriter, r *dns.Msg, q dns.Question, name, orgSlug string) {
 	s.mu.Lock()
-	resolver := s.resolver
+	resolver, id := s.resolver, s.identity
 	s.mu.Unlock()
 	// Re-normalize both labels so slightly-off-but-regex-valid forms (e.g. a
 	// doubled hyphen) compare symmetrically against the resolver's
@@ -175,30 +207,44 @@ func (s *DNSServer) answerFriendly(w dns.ResponseWriter, r *dns.Msg, q dns.Quest
 	// unaffected.
 	name = Normalize(name)
 	orgSlug = Normalize(orgSlug)
-	if resolver == nil || resolver.OrgSlug() == "" || orgSlug != resolver.OrgSlug() {
+	if resolver == nil || id == nil || resolver.OrgSlug() == "" || orgSlug != resolver.OrgSlug() {
 		s.reply(w, r, dns.RcodeNameError)
 		return
 	}
-	resolved, ok := resolver.Resolve(name)
+	device, ok := resolver.Resolve(name)
 	if !ok {
 		s.reply(w, r, dns.RcodeNameError)
 		return
 	}
-	// A Cloud v2 roster entry carries no legacy asset id, so there is no VIP
-	// to answer it with; answerVIP maps an id outside the VIP range to
-	// NXDOMAIN.
-	s.answerVIP(w, r, q, resolved.AssetID)
-}
-
-// answerVIP writes the A record for a resolved asset ID, or NXDOMAIN if the ID
-// is outside the VIP range. Shared by the numeric and friendly paths so both
-// emit identical answers.
-func (s *DNSServer) answerVIP(w dns.ResponseWriter, r *dns.Msg, q dns.Question, id int32) {
-	vip, err := VIPForDevice(id)
-	if err != nil {
+	// The roster is scoped to our org, but the resolver is an injected
+	// dependency: a device from another tenant is refused rather than
+	// silently pinned to a local VIP.
+	if device.Tenant().UUID() != id.tenant.UUID() {
 		s.reply(w, r, dns.RcodeNameError)
 		return
 	}
+	s.answerAllocated(w, r, q, id.vips, device)
+}
+
+// answerAllocated pins the device's VIP in the host table and writes its A
+// record, or NXDOMAIN when the pool is exhausted. Shared by the device and
+// friendly paths so both emit identical answers.
+func (s *DNSServer) answerAllocated(w dns.ResponseWriter, r *dns.Msg, q dns.Question, vips *VIPTable, device meshid.Device) {
+	vip, err := vips.Allocate(device)
+	if err != nil {
+		s.logger.Warn("mesh dns: VIP allocation failed",
+			zap.String("mesh.device", device.UUID().String()),
+			zap.String("mesh.name", q.Name),
+			zap.Error(err))
+		s.reply(w, r, dns.RcodeNameError)
+		return
+	}
+	s.answerVIP(w, r, q, vip)
+}
+
+// answerVIP writes the A record for a resolved VIP. Shared by the device and
+// friendly paths so both emit identical answers.
+func (s *DNSServer) answerVIP(w dns.ResponseWriter, r *dns.Msg, q dns.Question, vip netip.Addr) {
 	resp := new(dns.Msg)
 	resp.SetReply(r)
 	resp.Authoritative = true
@@ -209,6 +255,8 @@ func (s *DNSServer) answerVIP(w dns.ResponseWriter, r *dns.Msg, q dns.Question, 
 		})
 	}
 	// AAAA and other types for a valid mesh name: NOERROR with no answers.
+	// The mesh VIP pool is IPv4-only; a v6 answer would advertise an address
+	// nothing routes.
 	_ = w.WriteMsg(resp)
 }
 
