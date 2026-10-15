@@ -53,6 +53,8 @@ open /Applications/WendyAgentMac.app
 
 Wendy Agent appears in the macOS menu bar. Open the menu to confirm the agent is running.
 
+macOS opens Wendy Agent when you log in and restarts it if it stops unexpectedly. Choosing **Quit** from the menu keeps it stopped until you open it again or log in. To turn this off, open **Welcome & Permissions…** from the menu and clear **Open Wendy Agent at login and restart it if it stops**, or turn Wendy Agent off in **System Settings → General → Login Items & Extensions**.
+
 ## Headless Mac Setup
 
 For any Mac that will run without a monitor, set it up once with a keyboard, mouse, and display attached before putting it on the shelf. Use a virtual display dongle or HDMI dummy plug for the final headless setup.
@@ -69,7 +71,7 @@ For any Mac that will run without a monitor, set it up once with a keyboard, mou
    ssh {user}@{hostname}
    ```
 
-7. When Wendy Agent first opens, leave **Open Wendy Agent automatically when you log in** enabled.
+7. When Wendy Agent first opens, leave **Open Wendy Agent at login and restart it if it stops** enabled.
 
 ## Verify the Installation
 
