@@ -10,7 +10,7 @@ A serialized `DeletedAsset` supplied by an operator is not authenticated Cloud e
 
 Cloud owns unenrollment for CLI and console callers. Its signed DeleteAsset path checks device:delete, relays PKI RevokeByPrincipal, then atomically records the tombstone and deletion audit. A relay failure retains the active asset; revocation already completed before an audit/database failure is irreversible and retry finishes deletion. The CLI and Agent do not perform a second ACME revocation. The old prerelease RevokeACMECertificate and CheckACMERevocation RPCs return Unimplemented.
 
-The CLI signs the Cloud request and its exact tenant/device revoke_principal management authority with the same operator leaf. Existing kid/x5c behavior is retained, with a fresh PKI replay identity on each retry. Numeric Cloud v1 follows its original reset-first best-effort path; this does not add a numeric fallback for PKI identities.
+The CLI signs the Cloud request and its exact tenant/device revoke_principal management authority with the same operator leaf. Existing kid/x5c behavior is retained, with a fresh PKI replay identity on each retry. Numeric Cloud v1 checks the complete certificate inventory before reset, then repeats the inventory and performs best-effort revocation and deletion after reset. This does not add a numeric fallback for PKI identities.
 
 ## Requirements before enabling new resets
 
