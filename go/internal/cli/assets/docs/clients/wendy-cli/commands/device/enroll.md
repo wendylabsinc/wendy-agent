@@ -20,6 +20,10 @@ In an interactive terminal, enrollment first shows an organization picker for yo
 
 Before connecting to the device, enrollment checks your certificate and attempts renewal if it is nearing expiry. If it has already expired, an interactive OIDC session offers to sign in again and then continue enrollment using the same realm and Cloud endpoints. Legacy sessions, non-interactive runs, and `--json` runs stop with login instructions. You do not need to log out first.
 
+If a previously enrolled device no longer answers with an authenticated identity, interactive enrollment asks `Do you want to trust this device anyways? [y/N]`. Accept this after intentionally resetting or reflashing the selected device. Enter declines. Accepting retries the same device's addresses over plaintext for enrollment. The previous saved identity is cleared only after enrollment succeeds; a failed connection or enrollment keeps it intact.
+
+This prompt also applies to `wendy cloud enroll-device` and enrollment from the device picker. Non-interactive and `--json` runs keep the connection error. A certificate rejection or identity mismatch does not offer this fallback.
+
 › **Certificate identity:** The CSR submitted during provisioning always
 › includes the device's authoritative Wendy identity as a URI Subject
 › Alternative Name (`urn:wendy:org:‹org›:asset:‹assetID›`). When the
