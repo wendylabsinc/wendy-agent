@@ -15,7 +15,7 @@ wendy cloud login --service-account ./wendy-service-account.json
 
 `wendy cloud login` is identical to [`wendy auth login`](../auth/login.md) — it
 reuses the same implementation. For now, it defaults to the legacy dashboard
-flow at `cloud.wendy.sh`. With `--email` or `--issuer`, it runs the OIDC flow: it
+flow. With `--email` or `--issuer`, it runs the OIDC flow: it
 discovers your realm from `--email` (or takes `--issuer` directly), completes
 authorization code + PKCE through a loopback callback, obtains an operator
 certificate from pki-core, and stores it with a refreshable Cloud API session.

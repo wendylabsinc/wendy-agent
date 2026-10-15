@@ -21,7 +21,7 @@ Wendy Labs has three main components to achieve this mission:
 
 Wendy-Agent is a daemon, akin to Docker, that manages and runs your apps. It also exposes a way to remotely control the machine and upload apps.
 
-[Wendy Cloud](../cloud/) is a tool for managing your Wendy devices, viewing (crash) logs, provisioning updates and more.
+[Wendy Cloud](https://cloud.wendy.dev) is a tool for managing your Wendy devices, viewing (crash) logs, provisioning updates and more.
 
 ### Agent & CLI
 
