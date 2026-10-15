@@ -16,10 +16,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
+// tcpProcessConfig describes one re-executed peer of the configured topology.
+// Identity is the certificate's device principal; the addresses are underlay
+// transport and never an identity.
 type tcpProcessConfig struct {
 	Identity TCPIdentity
+	Device   string
+	Peer     string
 	Dir      string
 }
 
@@ -36,15 +43,26 @@ func TestConfiguredTCPPeerProcess(t *testing.T) {
 	if err = json.Unmarshal(data, &cfg); err != nil {
 		t.Fatal(err)
 	}
+	credentials, err := NewCredentials(cfg.Identity.Certificate, cfg.Identity.Chain, cfg.Identity.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := credentials.Device
+	if self.Principal() != cfg.Device {
+		t.Fatalf("identity certificate carries %s, config names %s", self.Principal(), cfg.Device)
+	}
+	peer := testDevice(t, cfg.Peer)
 	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- RunConfiguredTCP(ctx, cfg.Dir, cfg.Identity) }()
-	if cfg.Identity.Asset == 460 {
+	// The higher UUID serves on its own mesh address; the lower one reaches it
+	// through the Babel-installed route.
+	if meshid.Compare(self, peer) > 0 {
 		var listener net.Listener
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
-			listener, err = net.Listen("tcp", "10.88.1.204:18080")
+			listener, err = net.Listen("tcp", fmt.Sprintf("[%s]:18080", self.MeshAddress()))
 			if err == nil {
 				break
 			}
@@ -73,7 +91,7 @@ func TestConfiguredTCPPeerProcess(t *testing.T) {
 		reached := false
 		for time.Now().Before(deadline) {
 			client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
-			response, err := client.Get("http://10.88.1.204:18080/")
+			response, err := client.Get(fmt.Sprintf("http://[%s]:18080/", peer.MeshAddress()))
 			if err == nil {
 				body, readErr := io.ReadAll(response.Body)
 				response.Body.Close()
@@ -122,30 +140,31 @@ func TestConfiguredTCPPairIsolatedNamespaces(t *testing.T) {
 		run("-n", name, "link", "set", iface, "up")
 		run("-n", name, "link", "set", "lo", "up")
 	}
+	lower := testDevice(t, testPrincipal(testTenantUUID, testDeviceAID))
+	higher := testDevice(t, testPrincipal(testTenantUUID, testDeviceBID))
 	dir := t.TempDir()
-	configs := map[int32]string{}
-	testCredentialsWithPEM(t, func(asset int32, cert, chain, key string) {
-		peer := int32(445)
-		address := "10.200.0.1:43020"
-		listen := "10.200.0.2:43020"
-		if asset == 445 {
-			peer = 460
-			address, listen = listen, address
+	configs := map[string]string{}
+	testCredentialsWithPEM(t, func(device meshid.Device, cert, chain, key string) {
+		// Each peer listens on its own underlay address and dials the other's;
+		// the lower UUID initiates, so the edge forms once.
+		peer, address, listen := higher, "10.200.0.2:43020", "10.200.0.1:43020"
+		if device.Principal() == higher.Principal() {
+			peer, address, listen = lower, "10.200.0.1:43020", "10.200.0.2:43020"
 		}
-		configDir := filepath.Join(dir, fmt.Sprint(asset))
+		configDir := filepath.Join(dir, device.UUID().String())
 		if err := os.MkdirAll(configDir, 0700); err != nil {
 			t.Fatal(err)
 		}
-		tcpData, _ := json.Marshal(TCPConfig{Listen: listen, Peers: []TCPPeer{{Asset: peer, Address: address}}})
+		tcpData, _ := json.Marshal(TCPConfig{Listen: listen, Peers: []TCPPeer{{Device: peer.UUID().String(), Address: address}}})
 		if err := os.WriteFile(filepath.Join(configDir, tcpConfigName), tcpData, 0600); err != nil {
 			t.Fatal(err)
 		}
-		processData, _ := json.Marshal(tcpProcessConfig{Identity: TCPIdentity{Org: 64, Asset: asset, Name: "test", AgentPort: 50052, Certificate: cert, Chain: chain, Key: key}, Dir: configDir})
-		path := filepath.Join(dir, fmt.Sprintf("%d.json", asset))
+		processData, _ := json.Marshal(tcpProcessConfig{Identity: TCPIdentity{Name: "test", AgentPort: 50052, Certificate: cert, Chain: chain, Key: key}, Device: device.Principal(), Peer: peer.Principal(), Dir: configDir})
+		path := filepath.Join(dir, device.UUID().String()+".json")
 		if err := os.WriteFile(path, processData, 0600); err != nil {
 			t.Fatal(err)
 		}
-		configs[asset] = path
+		configs[device.Principal()] = path
 	})
 	binary, err := os.Executable()
 	if err != nil {
@@ -154,14 +173,14 @@ func TestConfiguredTCPPairIsolatedNamespaces(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 24*time.Second)
 	defer cancel()
 	server := exec.CommandContext(ctx, "ip", "netns", "exec", names[1], binary, "-test.run", "^TestConfiguredTCPPeerProcess$", "-test.v")
-	server.Env = append(os.Environ(), "WENDY_LOCALMESH_TCP_TEST_CONFIG="+configs[460])
+	server.Env = append(os.Environ(), "WENDY_LOCALMESH_TCP_TEST_CONFIG="+configs[higher.Principal()])
 	var serverOutput bytes.Buffer
 	server.Stdout, server.Stderr = &serverOutput, &serverOutput
 	if err := server.Start(); err != nil {
 		t.Fatal(err)
 	}
 	client := exec.CommandContext(ctx, "ip", "netns", "exec", names[0], binary, "-test.run", "^TestConfiguredTCPPeerProcess$", "-test.v")
-	client.Env = append(os.Environ(), "WENDY_LOCALMESH_TCP_TEST_CONFIG="+configs[445])
+	client.Env = append(os.Environ(), "WENDY_LOCALMESH_TCP_TEST_CONFIG="+configs[lower.Principal()])
 	out, clientErr := client.CombinedOutput()
 	serverErr := server.Wait()
 	if clientErr != nil || serverErr != nil {

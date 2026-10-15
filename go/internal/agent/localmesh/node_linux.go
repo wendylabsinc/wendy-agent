@@ -15,11 +15,12 @@ import (
 
 	quic "github.com/quic-go/quic-go"
 	"github.com/wendylabsinc/WendyOS/go/babel"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 type nodePeer struct {
 	id      babel.LinkID
-	asset   int32
+	device  meshid.Device
 	conn    *quic.Conn
 	tun     *os.File
 	control chan ControlMessage
@@ -31,8 +32,6 @@ type nodeEvent struct {
 	remove  bool
 	packet  []byte
 	control *ControlMessage
-	uplink  *string
-	roam    *bool
 	result  chan error
 }
 
@@ -58,9 +57,6 @@ type Node struct {
 	gate            sync.RWMutex
 	paused, stopped bool
 	forwardRoutes   []babel.Route
-	gateways        map[babel.RouterID]bool
-	exit            string
-	roam            bool
 }
 
 func NewNode(parent context.Context, dir string, credentials *Credentials, name string, agentPort uint16) (*Node, error) {
@@ -68,7 +64,11 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 		return nil, errors.New("missing local-mesh credentials or agent port")
 	}
 	now := time.Now()
-	store, state, err := OpenStateStore(filepath.Join(dir, "routing-state.json"), credentials.Org, credentials.Asset)
+	derived, err := instanceRouterID()
+	if err != nil {
+		return nil, err
+	}
+	store, state, err := OpenStateStore(filepath.Join(dir, "routing-state.json"), credentials.Device, derived)
 	if err != nil {
 		return nil, err
 	}
@@ -79,17 +79,17 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 	if _, err = cache.Put(credentials.Certificate.Certificate, now); err != nil {
 		return nil, err
 	}
-	directory, err := NewDirectory(credentials.Org, 1024, cache)
+	directory, err := NewDirectory(credentials.Device.Tenant(), 1024, cache)
 	if err != nil {
 		return nil, err
 	}
-	kernel, err := NewKernel(credentials.Org, credentials.Asset)
+	kernel, err := NewKernel(credentials.Device)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
 	n := &Node{Credentials: credentials, kernel: kernel, cache: cache, directory: directory, store: store, state: state, peers: map[babel.LinkID]*nodePeer{}, events: make(chan nodeEvent, 256), ctx: ctx, cancel: cancel, started: now,
-		advertisement: Manifest{Version: 1, Org: credentials.Org, Asset: credentials.Asset, Name: name, AgentPort: agentPort}, gateways: map[babel.RouterID]bool{}}
+		advertisement: Manifest{Version: 2, Device: credentials.Device.UUID(), Name: name, AgentPort: agentPort}}
 	ok := false
 	defer func() {
 		if !ok {
@@ -108,12 +108,11 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 	}, now); err != nil {
 		return nil, err
 	}
-	id, _ := RouterID(credentials.Org, credentials.Asset)
-	config := babel.Config{RouterID: id, IPv4ViaIPv6: true, HelloInterval: time.Second, UpdateInterval: 4 * time.Second, AcceptRoute: func(origin babel.RouterID, prefix netip.Prefix) bool {
-		// Address-allocation validation is independent of a neighbour's claims.
-		// Default gateway admission is added by the host policy, not arbitrary
-		// remote prefixes. This initial event loop only originates host routes.
-		return prefix.Addr().Is4() && (OwnedPrefix(credentials.Org, origin, prefix) || (prefix.Bits() == 0 && n.gateways[origin]))
+	// The stored state pins the router ID for this device principal; a fresh
+	// instance uses the derivation. Admission is the authenticated link, so
+	// AcceptRoute never consults an origin router ID or a manifest.
+	config := babel.Config{RouterID: babel.RouterID(state.RouterID), HelloInterval: time.Second, UpdateInterval: 4 * time.Second, AcceptRoute: func(_ babel.RouterID, prefix netip.Prefix) bool {
+		return admittedPrefix(prefix)
 	}}
 	n.routing, err = NewRouting(config, state.Babel, n)
 	if err != nil {
@@ -139,15 +138,7 @@ func (n *Node) Snapshot() NodeSnapshot {
 }
 
 func (n *Node) refresh() {
-	devices := n.directory.Snapshot(time.Now())
-	n.gateways = map[babel.RouterID]bool{}
-	for _, m := range devices {
-		if m.Internet {
-			id, _ := RouterID(m.Org, m.Asset)
-			n.gateways[id] = true
-		}
-	}
-	n.view.Store(&NodeSnapshot{Peers: len(n.peers), Devices: devices, Routes: n.routing.Snapshot().Routes})
+	n.view.Store(&NodeSnapshot{Peers: len(n.peers), Devices: n.directory.Snapshot(time.Now()), Routes: n.routing.Snapshot().Routes})
 }
 
 func (n *Node) Run() error {
@@ -160,8 +151,7 @@ func (n *Node) Run() error {
 		_ = n.kernel.Close()
 		_ = n.cache.Flush(time.Now())
 	}()
-	v4, _, _ := Addresses(n.Credentials.Org, n.Credentials.Asset)
-	if err := n.step(babel.Originate{Prefix: netip.PrefixFrom(v4, 32)}); err != nil {
+	if err := n.step(babel.Originate{Prefix: netip.PrefixFrom(n.Credentials.Device.MeshAddress(), 128)}); err != nil {
 		return err
 	}
 	if err := n.publish(); err != nil {
@@ -231,48 +221,27 @@ func (n *Node) step(event babel.Event) error {
 }
 
 func (n *Node) handle(e nodeEvent) error {
-	if e.roam != nil {
-		n.gate.Lock()
-		n.roam = *e.roam
-		err := n.applyRoam()
-		n.gate.Unlock()
-		return err
-	}
-	if e.uplink != nil {
-		n.gate.Lock()
-		err := n.kernel.SetExit(*e.uplink)
-		n.gate.Unlock()
-		if err != nil {
-			return err
-		}
-		if n.exit == *e.uplink {
-			return nil
-		}
-		n.exit = *e.uplink
-		n.advertisement.Internet = n.exit != ""
-		var event babel.Event = babel.Withdraw{Prefix: netip.MustParsePrefix("0.0.0.0/0")}
-		if n.exit != "" {
-			event = babel.Originate{Prefix: netip.MustParsePrefix("0.0.0.0/0")}
-		}
-		if err = n.step(event); err != nil {
-			return err
-		}
-		return n.publish()
-	}
 	if e.add != nil {
 		if len(n.peers) >= 64 {
 			return errors.New("local-mesh link capacity reached")
 		}
+		if e.add.device.Principal() == n.Credentials.Device.Principal() {
+			return errors.New("self link")
+		}
 		n.nextLink++
 		e.add.id = n.nextLink
-		tun, err := n.kernel.AddPeer(e.add.id, e.add.asset)
+		tun, err := n.kernel.AddPeer(e.add.id, e.add.device)
 		if err != nil {
 			return err
 		}
 		e.add.tun = tun
 		e.add.sync = NewSynchronizer(n.directory, n.cache)
 		n.peers[e.add.id] = e.add
-		local, peer, _ := LinkAddresses(n.Credentials.Asset, e.add.asset)
+		// Both ends derive the same complementary pair from the full UUIDs.
+		local, peer, err := meshid.LinkLocalAddresses(n.Credentials.Device, e.add.device)
+		if err != nil {
+			return err
+		}
 		if err = n.step(babel.AddLink{Link: babel.Link{ID: e.add.id, Local: local, Peer: peer, Cost: 256, MaxPacket: DatagramLimit - 1}}); err != nil {
 			return err
 		}
@@ -324,7 +293,8 @@ func (n *Node) queue(p *nodePeer, messages []ControlMessage) {
 }
 
 func (n *Node) publish() error {
-	if _, _, ok := n.cache.Get(Fingerprint(n.Credentials.Certificate.Certificate), time.Now()); !ok {
+	principal := n.Credentials.Device.Principal()
+	if _, _, ok := n.cache.Get(principal, time.Now()); !ok {
 		if _, err := n.cache.Put(n.Credentials.Certificate.Certificate, time.Now()); err != nil {
 			return err
 		}
@@ -355,26 +325,6 @@ func (n *Node) publish() error {
 	return nil
 }
 
-// SetUplink follows successful preparation of the selected sharing NAT/DNS.
-func (n *Node) SetUplink(ctx context.Context, iface string) error {
-	return n.request(ctx, nodeEvent{uplink: &iface})
-}
-
-func (n *Node) SetRoaming(ctx context.Context, enabled bool) error {
-	return n.request(ctx, nodeEvent{roam: &enabled})
-}
-
-func (n *Node) applyRoam() error {
-	if n.roam {
-		for _, r := range n.forwardRoutes {
-			if r.Prefix.Bits() == 0 && !r.Local && !r.Unreachable {
-				return n.kernel.SetRoam(&r)
-			}
-		}
-	}
-	return n.kernel.SetRoam(nil)
-}
-
 func (n *Node) request(ctx context.Context, e nodeEvent) error {
 	e.result = make(chan error, 1)
 	select {
@@ -393,14 +343,15 @@ func (n *Node) request(ctx context.Context, e nodeEvent) error {
 }
 
 // Attach owns the authenticated connection until return. No kernel interface is
-// created until protocol negotiation succeeds. Caller must use Credentials.PeerTLS.
-func (n *Node) Attach(ctx context.Context, asset int32, conn *quic.Conn) error {
+// created until protocol negotiation succeeds. Caller must use Credentials.PeerTLS
+// so the connection is already pinned to this peer's device principal.
+func (n *Node) Attach(ctx context.Context, peer meshid.Device, conn *quic.Conn) error {
 	defer conn.CloseWithError(0, "local-mesh link ended")
-	stream, err := OpenControl(ctx, conn, n.Credentials.Org, n.Credentials.Asset, asset)
+	stream, err := OpenControl(ctx, conn, n.Credentials.Device, peer)
 	if err != nil {
 		return err
 	}
-	p := &nodePeer{asset: asset, conn: conn, control: make(chan ControlMessage, 128)}
+	p := &nodePeer{device: peer, conn: conn, control: make(chan ControlMessage, 128)}
 	if err = n.request(ctx, nodeEvent{add: p}); err != nil {
 		return err
 	}
@@ -452,6 +403,8 @@ func (n *Node) Attach(ctx context.Context, asset int32, conn *quic.Conn) error {
 	return err
 }
 
+// readTUN carries the mesh's IPv6 payload only. The mesh has no IPv4 identity, so
+// nothing else may leave a TUN.
 func (n *Node) readTUN(ctx context.Context, p *nodePeer) error {
 	buf := make([]byte, TunnelMTU+1)
 	var sequence uint32
@@ -461,11 +414,11 @@ func (n *Node) readTUN(ctx context.Context, p *nodePeer) error {
 			return err
 		}
 		packet := buf[:size]
-		if !validIP(packet) || packet[0]>>4 != 4 {
+		if !validIP(packet) || packet[0]>>4 != 6 {
 			continue
 		}
 		n.gate.RLock()
-		allowed := !n.stopped && forwardLink(n.forwardRoutes, netip.AddrFrom4([4]byte(packet[16:20]))) == p.id
+		allowed := !n.stopped && forwardLink(n.forwardRoutes, netip.AddrFrom16([16]byte(packet[24:40]))) == p.id
 		if allowed {
 			sequence++
 			fragments, _ := EncodeIP(sequence, packet)
@@ -505,7 +458,7 @@ func (n *Node) readQUIC(ctx context.Context, p *nodePeer) error {
 			if packet == nil {
 				continue
 			}
-			if packet[0]>>4 != 4 {
+			if packet[0]>>4 != 6 {
 				continue
 			}
 			n.gate.RLock()
@@ -544,7 +497,7 @@ func (n *Node) Apply(routes []babel.Route) error {
 		return err
 	}
 	n.forwardRoutes = append([]babel.Route(nil), routes...)
-	return n.applyRoam()
+	return nil
 }
 func (n *Node) Persist(cp babel.Checkpoint) error { n.state.Babel = &cp; return n.store.Save(n.state) }
 func (n *Node) Resume() error {

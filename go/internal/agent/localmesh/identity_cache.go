@@ -3,27 +3,31 @@ package localmesh
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
+// maxPrincipalBytes bounds a device principal carried in a key, a file, or a
+// control message. A canonical SPIFFE device principal is far shorter.
+const maxPrincipalBytes = 512
+
 // IdentityVerifier must validate the complete chain against CURRENT trust and
-// return the authorized identity and earliest certificate expiry. It is called
-// on every lookup, including cache hits. A cache is never a trust store.
+// return the authorized device identity and earliest certificate expiry. It is
+// called on every lookup, including cache hits. A cache is never a trust store.
 type IdentityVerifier func(chain [][]byte, now time.Time) (Identity, error)
 
+// Identity is a verified device principal with the earliest expiry in the chain
+// that produced it.
 type Identity struct {
-	Org, Asset int32
-	NotAfter   time.Time
+	Device   meshid.Device
+	NotAfter time.Time
 }
 
 type CacheLimits struct {
@@ -43,6 +47,11 @@ type cachedIdentity struct {
 
 // IdentityCache persists public certificate bundles only; presence and service
 // leases are deliberately absent. The file is scoped by caller to provisioning.
+//
+// Entries are keyed by the full device principal
+// "spiffe://wendy.sh/tenant/<tenant-uuid>/device/<device-uuid>", so the same
+// device UUID in two tenants is two entries and neither lookup can reach the
+// other. There is no certificate-hash key and no numeric fallback key.
 type IdentityCache struct {
 	mu      sync.Mutex
 	path    string
@@ -53,12 +62,14 @@ type IdentityCache struct {
 	pendingSave bool
 }
 
-func Fingerprint(chain [][]byte) string {
-	if len(chain) == 0 {
-		return ""
+// principalOf returns the cache key a chain authorizes, rejecting chains whose
+// leaf is not a device principal.
+func principalOf(id Identity) (string, error) {
+	principal := id.Device.Principal()
+	if principal == "" || len(principal) > maxPrincipalBytes {
+		return "", errors.New("identity has no device principal")
 	}
-	sum := sha256.Sum256(chain[0])
-	return hex.EncodeToString(sum[:])
+	return principal, nil
 }
 
 func OpenIdentityCache(path string, limits CacheLimits, verify IdentityVerifier, now time.Time) (*IdentityCache, error) {
@@ -92,30 +103,47 @@ func OpenIdentityCache(path string, limits CacheLimits, verify IdentityVerifier,
 	if err = json.Unmarshal(data, &disk); err != nil {
 		return nil, err
 	}
-	if disk.Version != 1 {
+	if disk.Version != 2 {
 		return nil, errors.New("unsupported identity cache version")
 	}
-	for fp, entry := range disk.Entries {
-		if fp != Fingerprint(entry.Chain) || len(fp) != 64 {
+	for principal, entry := range disk.Entries {
+		if len(principal) > maxPrincipalBytes {
+			continue
+		}
+		// A key that is not a device principal cannot be addressed by any peer.
+		if _, err := meshid.DeviceFromPrincipal(principal); err != nil {
 			continue
 		}
 		if entry.Used.After(now) {
 			entry.Used = now
 		}
-		if _, ok := c.valid(entry, now); ok {
-			c.entries[fp] = entry
+		if _, ok := c.valid(principal, entry, now); ok {
+			c.entries[principal] = entry
 		}
 	}
 	c.prune(now)
 	return c, nil
 }
 
-func (c *IdentityCache) valid(e cachedIdentity, now time.Time) (Identity, bool) {
+// valid re-runs current trust on the stored chain and requires the verified
+// principal to be the entry's key. A chain that verifies for a different device
+// is never a hit, whatever the file claimed.
+func (c *IdentityCache) valid(principal string, e cachedIdentity, now time.Time) (Identity, bool) {
 	if len(e.Chain) == 0 || len(e.Chain) > 16 || e.Added.IsZero() || now.Before(e.Added) || now.Sub(e.Added) >= c.limits.Age || e.Used.Before(e.Added) {
 		return Identity{}, false
 	}
 	id, err := c.verify(e.Chain, now)
-	return id, err == nil && id.Org > 0 && id.Asset > 0 && now.Before(id.NotAfter)
+	if err != nil {
+		return Identity{}, false
+	}
+	key, err := principalOf(id)
+	if err != nil || key != principal {
+		return Identity{}, false
+	}
+	if !now.Before(id.NotAfter) {
+		return Identity{}, false
+	}
+	return id, true
 }
 
 func chainSize(chain [][]byte) int {
@@ -135,31 +163,24 @@ func cloneChain(chain [][]byte) [][]byte {
 }
 
 func (c *IdentityCache) prune(now time.Time) {
-	total := 0
-	for fp, e := range c.entries {
-		if _, ok := c.valid(e, now); !ok {
-			delete(c.entries, fp)
-			continue
+	for principal, entry := range c.entries {
+		if _, ok := c.valid(principal, entry, now); !ok {
+			delete(c.entries, principal)
 		}
-		total += chainSize(e.Chain)
 	}
-	keys := make([]string, 0, len(c.entries))
-	for fp := range c.entries {
-		keys = append(keys, fp)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := c.entries[keys[i]], c.entries[keys[j]]
-		if a.Used.Equal(b.Used) {
-			return keys[i] < keys[j]
+	for len(c.entries) > c.limits.Entries {
+		oldest := ""
+		var when time.Time
+		for principal, entry := range c.entries {
+			if oldest == "" || entry.Used.Before(when) {
+				oldest, when = principal, entry.Used
+			}
 		}
-		return a.Used.Before(b.Used)
-	})
-	for _, fp := range keys {
-		if len(c.entries) <= c.limits.Entries && total <= c.limits.Bytes {
-			break
+		if oldest == "" {
+			return
 		}
-		total -= chainSize(c.entries[fp].Chain)
-		delete(c.entries, fp)
+		delete(c.entries, oldest)
+		c.pendingSave = true
 	}
 }
 
@@ -175,69 +196,84 @@ func sameChain(a, b [][]byte) bool {
 	return true
 }
 
+// Put stores a chain under the principal its leaf authorizes. A renewed chain
+// for the same device replaces the previous one; a chain for a different device
+// never touches this device's entry.
 func (c *IdentityCache) Put(chain [][]byte, now time.Time) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if len(chain) == 0 || len(chain) > 16 || chainSize(chain) > c.limits.Bytes {
-		return "", errors.New("invalid identity bundle size")
+		return "", errors.New("identity bundle exceeds cache limits")
 	}
-	fp := Fingerprint(chain)
-	// Repeated snapshots from different peers commonly contain exactly the same
-	// public bundle. Revalidate that identity against current trust, but do not
-	// rescan every other identity or fsync the whole cache for an LRU touch.
-	// Flush persists LRU activity. Never bypass retry of a failed durable write.
-	if old, ok := c.entries[fp]; ok && sameChain(old.Chain, chain) && !c.pendingSave {
-		if _, valid := c.valid(old, now); valid {
-			if now.After(old.Used) {
-				old.Used = now
-			}
-			c.entries[fp] = old
-			return fp, nil
-		}
-	}
-	e := cachedIdentity{cloneChain(chain), now, now}
-	if _, ok := c.valid(e, now); !ok {
-		return "", errors.New("invalid identity bundle")
-	}
-	// Receiving a duplicate is not a retention renewal. A genuine fetch after
-	// expiry may re-admit it, but never beyond current certificate validity.
-	if old, ok := c.entries[fp]; ok {
-		if _, valid := c.valid(old, now); valid {
-			e.Added = old.Added
-		}
-	}
-	c.entries[fp] = e
-	c.prune(now)
-	if err := c.save(); err != nil {
-		c.pendingSave = true
+	id, err := c.verify(chain, now)
+	if err != nil {
 		return "", err
 	}
-	c.pendingSave = false
-	return fp, nil
-}
-
-func (c *IdentityCache) Get(fp string, now time.Time) ([][]byte, Identity, bool) {
+	principal, err := principalOf(id)
+	if err != nil {
+		return "", err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.entries[fp]
+	old, ok := c.entries[principal]
+	if ok {
+		if sameChain(old.Chain, chain) {
+			// The chain verified above is the stored chain, so its own expiry is
+			// the validity check; re-verifying would double the cost of the
+			// common case. Retention still runs from when it was added.
+			if !now.Before(id.NotAfter) {
+				return "", errors.New("identity bundle is not currently valid")
+			}
+			old.Used = now
+			c.entries[principal] = old
+			c.pendingSave = true
+			return principal, nil
+		}
+		// A chain still live under current trust is only replaced by one that
+		// expires no earlier, so a replayed older bundle cannot displace it.
+		// An entry that is already expired or untrusted is simply replaced.
+		if previous, valid := c.valid(principal, old, now); valid && previous.NotAfter.After(id.NotAfter) {
+			return "", errors.New("identity bundle is not a renewal")
+		}
+	}
+	entry := cachedIdentity{Chain: cloneChain(chain), Added: now, Used: now}
+	if _, valid := c.valid(principal, entry, now); !valid {
+		return "", errors.New("identity bundle is not currently valid")
+	}
+	c.entries[principal] = entry
+	c.prune(now)
+	if err := c.save(); err != nil {
+		if ok {
+			c.entries[principal] = old
+		} else {
+			delete(c.entries, principal)
+		}
+		return "", err
+	}
+	return principal, nil
+}
+
+// Get returns the chain and identity stored for a device principal. The key is
+// the principal, not a hash: a lookup for tenant A's device cannot resolve to
+// tenant B's entry even when the device UUIDs are identical.
+func (c *IdentityCache) Get(principal string, now time.Time) ([][]byte, Identity, bool) {
+	if principal == "" || len(principal) > maxPrincipalBytes {
+		return nil, Identity{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[principal]
 	if !ok {
 		return nil, Identity{}, false
 	}
-	// A caller may have sampled its clock before another goroutine admitted
-	// this bundle. Treat that snapshot as a miss, not a cache invalidation.
-	if now.Before(e.Added) {
-		return nil, Identity{}, false
-	}
-	id, ok := c.valid(e, now)
+	id, ok := c.valid(principal, entry, now)
 	if !ok {
-		delete(c.entries, fp)
+		delete(c.entries, principal)
+		c.pendingSave = true
 		return nil, Identity{}, false
 	}
-	if now.After(e.Used) {
-		e.Used = now
-	}
-	c.entries[fp] = e
-	return cloneChain(e.Chain), id, true
+	entry.Used = now
+	c.entries[principal] = entry
+	c.pendingSave = true
+	return cloneChain(entry.Chain), id, true
 }
 
 // Flush persists LRU activity and removes expired entries. Call periodically and
@@ -246,52 +282,55 @@ func (c *IdentityCache) Flush(now time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.prune(now)
-	err := c.save()
-	c.pendingSave = err != nil
-	return err
+	if !c.pendingSave {
+		return nil
+	}
+	return c.save()
 }
 
 func (c *IdentityCache) save() error {
 	if c.path == "" {
+		c.pendingSave = false
 		return nil
 	}
-	data, err := json.Marshal(struct {
+	disk := struct {
 		Version int
 		Entries map[string]cachedIdentity
-	}{1, c.entries})
+	}{Version: 2, Entries: c.entries}
+	data, err := json.Marshal(disk)
 	if err != nil {
 		return err
+	}
+	if len(data) > c.limits.Bytes*2+c.limits.Entries*512 {
+		return errors.New("oversized identity cache")
 	}
 	dir := filepath.Dir(c.path)
-	if err = os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".identity-cache-*")
+	temp, err := os.CreateTemp(dir, ".identity-*")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
-	if _, err = f.Write(data); err != nil {
-		f.Close()
+	name := temp.Name()
+	defer os.Remove(name)
+	if _, err = temp.Write(data); err != nil {
+		temp.Close()
 		return err
 	}
-	if err = f.Sync(); err != nil {
-		f.Close()
+	if err = temp.Sync(); err != nil {
+		temp.Close()
 		return err
 	}
-	if err = f.Close(); err != nil {
+	if err = temp.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(f.Name(), c.path); err != nil {
+	if err := os.Chmod(name, 0600); err != nil {
 		return err
 	}
-	d, err := os.Open(dir)
-	if err != nil {
+	if err := os.Rename(name, c.path); err != nil {
 		return err
 	}
-	defer d.Close()
-	if err = d.Sync(); err != nil {
-		return fmt.Errorf("sync identity cache directory: %w", err)
-	}
+	c.pendingSave = false
 	return nil
 }

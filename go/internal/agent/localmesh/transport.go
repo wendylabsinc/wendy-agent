@@ -5,14 +5,20 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	quic "github.com/quic-go/quic-go"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
+// LinkHello names both ends by device UUID. The TLS handshake already pinned the
+// full principal, so the hello only has to prove the peer read the pinned
+// identity correctly - there is no numeric identity to announce.
 type LinkHello struct {
-	Version          int `json:"version"`
-	Org, Asset, Peer int32
-	MTU              int `json:"mtu"`
-	Datagram         int `json:"datagram"`
+	Version  int       `json:"version"`
+	Device   uuid.UUID `json:"device"`
+	Peer     uuid.UUID `json:"peer"`
+	MTU      int       `json:"mtu"`
+	Datagram int       `json:"datagram"`
 }
 
 func QUICConfig() *quic.Config {
@@ -22,17 +28,16 @@ func QUICConfig() *quic.Config {
 }
 
 // OpenControl binds the fresh protocol to the mutually authenticated identity.
-// The lower asset opens the sole bidirectional stream, retained for directory
-// synchronization. It cannot interoperate accidentally with Ethernet/BATMAN.
-func OpenControl(ctx context.Context, conn *quic.Conn, org, self, peer int32) (*quic.Stream, error) {
-	if _, _, err := Addresses(org, self); err != nil {
-		return nil, err
-	}
-	if _, _, err := Addresses(org, peer); err != nil {
-		return nil, err
-	}
-	if self == peer {
+// The device with the lower UUID opens the sole bidirectional stream, retained
+// for directory synchronization; both ends compute the same rule from the full
+// identity, so no negotiation is needed. It cannot interoperate accidentally
+// with Ethernet/BATMAN.
+func OpenControl(ctx context.Context, conn *quic.Conn, self, peer meshid.Device) (*quic.Stream, error) {
+	if self.Principal() == peer.Principal() {
 		return nil, errors.New("self link")
+	}
+	if self.Tenant() != peer.Tenant() {
+		return nil, errors.New("local-mesh peer is outside the tenant")
 	}
 	state := conn.ConnectionState()
 	if state.TLS.NegotiatedProtocol != LinkALPN || !state.SupportsDatagrams.Local || !state.SupportsDatagrams.Remote {
@@ -42,7 +47,7 @@ func OpenControl(ctx context.Context, conn *quic.Conn, org, self, peer int32) (*
 	defer cancel()
 	var stream *quic.Stream
 	var err error
-	if self < peer {
+	if meshid.Compare(self, peer) < 0 {
 		stream, err = conn.OpenStreamSync(ctx)
 	} else {
 		stream, err = conn.AcceptStream(ctx)
@@ -59,7 +64,7 @@ func OpenControl(ctx context.Context, conn *quic.Conn, org, self, peer int32) (*
 	}()
 	deadline, _ := ctx.Deadline()
 	_ = stream.SetDeadline(deadline)
-	if err = WriteControl(stream, ControlMessage{Kind: "hello", Hello: &LinkHello{Version: 1, Org: org, Asset: self, Peer: peer, MTU: TunnelMTU, Datagram: DatagramLimit}}); err != nil {
+	if err = WriteControl(stream, ControlMessage{Kind: "hello", Hello: &LinkHello{Version: 2, Device: self.UUID(), Peer: peer.UUID(), MTU: TunnelMTU, Datagram: DatagramLimit}}); err != nil {
 		return nil, err
 	}
 	m, err := ReadControl(stream)
@@ -70,7 +75,7 @@ func OpenControl(ctx context.Context, conn *quic.Conn, org, self, peer int32) (*
 		return nil, errors.New("missing local-mesh hello")
 	}
 	h := m.Hello
-	if h.Version != 1 || h.Org != org || h.Asset != peer || h.Peer != self || h.MTU != TunnelMTU || h.Datagram != DatagramLimit {
+	if h.Version != 2 || h.Device != peer.UUID() || h.Peer != self.UUID() || h.MTU != TunnelMTU || h.Datagram != DatagramLimit {
 		return nil, errors.New("invalid local-mesh hello")
 	}
 	_ = stream.SetDeadline(time.Time{})
