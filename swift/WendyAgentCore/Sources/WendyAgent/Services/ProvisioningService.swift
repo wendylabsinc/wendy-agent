@@ -408,10 +408,12 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     /// material. Falls back to a software PEM key otherwise (older Macs, or
     /// hardware without an SE).
     ///
-    /// Both tiers are P-256, never ML-DSA: NIOSSL, which serves the agent's
-    /// mTLS, has no ML-DSA signature scheme, and pki-core admits P-256 device
-    /// keys for tiers A/B only as its explicit, audited fallback
-    /// (`ecdsa_fallback`) until wendy-agent ships ML-DSA device keys (WDY-3620).
+    /// Both tiers are P-256, never ML-DSA: the agent has no ML-DSA signer for
+    /// the key and its CSR (swift-certificates verifies ML-DSA but cannot sign,
+    /// the Secure Enclave and CryptoKit have no ML-DSA before macOS 26), and
+    /// pki-core admits P-256 device keys for tiers A/B only as its explicit,
+    /// audited fallback (`ecdsa_fallback`) until wendy-agent ships ML-DSA device
+    /// keys (WDY-3620).
     private func generateDeviceKey(commonName: String, identityURN: String) throws -> DeviceKey {
         let backing: ProvisioningStore.KeyBacking
         let seKey: SEPrivateKey?

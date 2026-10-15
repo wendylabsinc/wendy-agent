@@ -37,6 +37,39 @@ struct ACMEEnrollmentTests {
         #expect(mode == 0o600)
     }
 
+    @Test(
+        "enrolls under a pki-core-shaped ML-DSA chain, which the agent's mTLS client check accepts",
+        .enabled(if: TestPKI.mldsaAvailable, "ML-DSA verification needs macOS 26 on Darwin")
+    )
+    func enrollsUnderMLDSAChain() async throws {
+        guard #available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, macCatalyst 26.0, visionOS 26.0, *) else {
+            return
+        }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wendy-acme-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pki = try FakePKI(tenant: Self.tenant, ca: TestPKI.makeMLDSAChain(), leafSignatureAlgorithm: .mldsa65)
+
+        let issued = try await Self.enroll(pki, P256.Signing.PrivateKey(), dir)
+
+        let chain = ClientCertAuthorizer.parseCertificates(pem: issued.chainPEM)
+        #expect(chain.map(\.signatureAlgorithm) == [.mldsa87, .mldsa87])
+        // The same verifier and tenant check the mTLS server runs on every client,
+        // fed a leaf from this chain: an ML-DSA signature must verify end to end.
+        let leaf = try Certificate(pemEncoded: issued.certPEM)
+        #expect(leaf.signatureAlgorithm == .mldsa65)
+        var serializer = DER.Serializer()
+        try serializer.serialize(leaf)
+        let authorized = await ClientCertAuthorizer.isAuthorized(
+            peerCertificatesDER: [serializer.serializedBytes],
+            trustRootsPEM: issued.chainPEM,
+            deviceScope: ClientCertAuthorizer.scope(fromLeafPEM: issued.certPEM),
+            mode: .strict
+        )
+        #expect(authorized)
+    }
+
     @Test("a retry reuses the persisted account, so the single-use EAB is presented once")
     func retryReusesAccount() async throws {
         let (pki, device, dir) = try Self.setUp()
@@ -135,6 +168,7 @@ struct ACMEEnrollmentTests {
 /// order) and issues from a test CA, stamping the identity itself.
 private actor FakePKI {
     let ca: TestPKI.CA
+    private let leafSignatureAlgorithm: Certificate.SignatureAlgorithm
     private let base: String
     private let tenant: String
     private var nonces: Set<String> = []
@@ -144,8 +178,13 @@ private actor FakePKI {
     private var issuedPrincipal: String
     private(set) var accountsCreated = 0
 
-    init(tenant: String) throws {
-        self.ca = try TestPKI.makeCA()
+    init(
+        tenant: String,
+        ca: TestPKI.CA? = nil,
+        leafSignatureAlgorithm: Certificate.SignatureAlgorithm = .ecdsaWithSHA256
+    ) throws {
+        self.ca = try ca ?? TestPKI.makeCA()
+        self.leafSignatureAlgorithm = leafSignatureAlgorithm
         self.tenant = tenant
         self.base = "https://acme.test/\(tenant)/acme/"
         self.issuedPrincipal = "spiffe://wendy.sh/tenant/\(tenant)/device/sim"
@@ -230,7 +269,7 @@ private actor FakePKI {
                 notValidAfter: Date().addingTimeInterval(3600),
                 issuer: self.ca.certificate.subject,
                 subject: try DistinguishedName { CommonName(self.issuedPrincipal) },
-                signatureAlgorithm: .ecdsaWithSHA256,
+                signatureAlgorithm: self.leafSignatureAlgorithm,
                 extensions: try Certificate.Extensions {
                     Critical(KeyUsage(digitalSignature: true))
                     try ExtendedKeyUsage([.clientAuth, .serverAuth])

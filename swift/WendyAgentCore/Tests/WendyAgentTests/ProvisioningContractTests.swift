@@ -78,7 +78,7 @@ struct ProvisioningContractTests {
         #expect(await reloaded.provisioningInfo().principalURI == Self.principal)
     }
 
-    @Test("direct PKI device key is P-256: pki-core's audited tier A/B fallback, no ML-DSA in NIOSSL")
+    @Test("direct PKI device key is P-256: pki-core's audited tier A/B fallback until WDY-3620")
     func deviceKeyAlgorithm() async throws {
         let ca = try TestPKI.makeCA()
         let leaf = try TestPKI.makeIdentity(commonName: "sim", ca: ca)
@@ -100,6 +100,29 @@ struct ProvisioningContractTests {
         #expect(csr.publicKey == publicKey)
         #expect(P256.Signing.PublicKey(publicKey) != nil)
         #expect(csr.signatureAlgorithm == .ecdsaWithSHA256)
+    }
+
+    @Test(
+        "a pki-core ML-DSA chain loads into the mTLS stack and the enrollment persists",
+        .enabled(if: TestPKI.mldsaAvailable, "ML-DSA verification needs macOS 26 on Darwin")
+    )
+    func mldsaChainPersisted() async throws {
+        guard #available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, macCatalyst 26.0, visionOS 26.0, *) else {
+            return
+        }
+        let chain = try TestPKI.makeMLDSAChain()
+        let leaf = try TestPKI.makeIdentity(commonName: "sim", ca: TestPKI.makeCA())
+        let dir = Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let service = ProvisioningService(
+            configPath: dir,
+            acmeEnroll: { _, _, _, _ in (leaf.certPEM, chain.pem) },
+            isSecureEnclaveAvailable: { false }
+        )
+
+        _ = try await service.startACMEProvisioning(cloudHost: "api.dev.wendy.sh:443", config: Self.config)
+
+        #expect(await service.provisioningCerts()?.chainPEM == chain.pem)
     }
 
     @Test("a chain the mTLS stack cannot load is refused and nothing is persisted")
