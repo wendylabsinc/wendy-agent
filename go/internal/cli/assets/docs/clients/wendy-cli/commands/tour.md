@@ -36,6 +36,8 @@ without starting Docker.
 See the [quickstart](/docs/#try-the-robot-tour) for prerequisite checks and
 installation commands. Windows users can use the physical-device route or the
 separate [local Docker robot demo](https://wendy.dev/quickstart?target=simulator).
+For a generic virtual device without a robot on native Windows, see
+[Windows foreground VMs](/docs/installation/wendyos-virtual-machine#windows-foreground-vms).
 
 The tour creates a dedicated Go2 VM and opens its browser viewer. The robot walks
 a short arc. Success requires a measured change in its position and confirmation

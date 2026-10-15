@@ -50,8 +50,8 @@ PC. `qemu-system-aarch64` names the guest architecture, not a host requirement.
 </Tabs>
 
 If QEMU is missing, Wendy offers to install it through Homebrew on macOS or
-WinGet on Windows. Without an interactive terminal, use `wendy vm --yes start
-<name>` to accept installation or run the package-manager command yourself.
+WinGet on Windows. Without an interactive terminal, use `wendy vm start <name> --yes`
+to accept installation or run the package-manager command yourself.
 
 QEMU and its firmware are the VM prerequisites. To build and deploy an app, you
 also need a running container builder, such as Docker with Buildx. The image is
@@ -99,6 +99,9 @@ The tab manages simulators without dropping to `wendy vm`:
 | `d` | Save the highlighted simulator as the default device |
 | `x` | Clear the saved default device |
 
+On Windows, `c` in `wendy discover` displays the foreground VM commands and
+keeps discovery open. Run those commands in a separate terminal.
+
 The default uses the VM's name, so it still works when its forwarded port changes.
 Saving a default does not start the VM. Your next device command starts it when
 needed. The `✦` marker identifies the saved default when you reopen the picker.
@@ -135,8 +138,8 @@ The published image is downloaded and unpacked straight into the VM's disk. It
 is cached compressed, so a second VM starts from the cache rather than the
 network, and the raw multi-gigabyte image is never written twice. `--disk` sets
 the disk size and WendyOS expands `/data` into the extra room on first boot; the
-disk is sparse on supported filesystems, including NTFS on Windows, so a 16 GiB
-VM does not allocate the entire capacity at creation. Before downloading, Wendy
+disk is sparse on supported filesystems, including NTFS on Windows, so the default
+16 GiB VM does not allocate the entire capacity at creation. Before downloading, Wendy
 prints the disk's path, virtual capacity, and available space on that volume.
 Allow space for the decompressed image, the cached download, and later disk
 growth. When the image's uncompressed size is known, Wendy checks that it fits
@@ -431,6 +434,10 @@ window before you do. Provision it promptly, or use a machine you do not share.
 | `--yes` / `-y` | off | Accept prompts, including installing QEMU |
 
 ## Troubleshooting
+
+**`QEMU installation finished but qemu-system-aarch64.exe was not found`.**
+Check that `%ProgramFiles%\qemu\qemu-system-aarch64.exe` exists. If QEMU is
+installed elsewhere, add that directory to `PATH` and open a new terminal.
 
 **`no ARM64 UEFI firmware found`** — QEMU is installed but its firmware is not.
 Reinstall it with the command under *What you'll need*; the error lists every
