@@ -208,9 +208,22 @@ func TestUnprovision_ClearsStateAndFiles(t *testing.T) {
 	// OnUnprovisioned fires asynchronously after the response; capture it.
 	called := make(chan struct{}, 1)
 	svc.OnUnprovisioned = func() { called <- struct{}{} }
+	// BeforeUnprovisioned must finish before success is reported, after
+	// enrollment state is cleared and without holding the service lock.
+	beforeRan := false
+	svc.BeforeUnprovisioned = func() {
+		if _, _, _, enrolled := svc.ProvisioningInfo(); enrolled {
+			t.Error("BeforeUnprovisioned ran while still enrolled")
+		}
+		time.Sleep(50 * time.Millisecond) // an asynchronous hook would lose this race
+		beforeRan = true
+	}
 
 	if _, err := svc.Unprovision(context.Background(), &agentpb.UnprovisionRequest{}); err != nil {
 		t.Fatalf("Unprovision: %v", err)
+	}
+	if !beforeRan {
+		t.Error("Unprovision returned before BeforeUnprovisioned completed")
 	}
 
 	// All artifacts should be gone.
