@@ -3,10 +3,10 @@
 package vm
 
 import (
-	"encoding/binary"
 	"os"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -31,11 +31,18 @@ func TestCreateWindowsDiskAndVarsAreSparse(t *testing.T) {
 			if flags&windows.FILE_SUPPORTS_SPARSE_FILES == 0 {
 				t.Skip("test volume does not support sparse files")
 			}
-			var info [24]byte // FILE_STANDARD_INFO begins with allocation size and end of file.
-			if err := windows.GetFileInformationByHandleEx(handle, windows.FileStandardInfo, &info[0], uint32(len(info))); err != nil {
+			// FILE_STANDARD_INFO requires an aligned buffer for its LARGE_INTEGER fields.
+			var info struct {
+				AllocationSize int64
+				EndOfFile      int64
+				NumberOfLinks  uint32
+				DeletePending  byte
+				Directory      byte
+			}
+			if err := windows.GetFileInformationByHandleEx(handle, windows.FileStandardInfo, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
 				t.Fatal(err)
 			}
-			allocated, size := binary.LittleEndian.Uint64(info[:8]), binary.LittleEndian.Uint64(info[8:16])
+			allocated, size := info.AllocationSize, info.EndOfFile
 			if allocated >= size {
 				t.Fatalf("%s allocated %d bytes for %d bytes of capacity", path, allocated, size)
 			}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
@@ -246,16 +247,19 @@ func TestDiscoverKeepsScanningWhenSimulatorNeedsForegroundStart(t *testing.T) {
 	t.Cleanup(func() { vmDetachSupportedFn = saved })
 	for _, existing := range [][]vm.Status{nil, {stoppedVM("sim", "test")}} {
 		m := newTestDiscoverTabsModel(0, 0)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = updated.(discoverTabsModel)
 		m, _ = discoverTabTo(t, m, devicePickerSimulatorTab)
 		m, _ = m.updateSimulator(simulatorVMsMsg{vms: existing})
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 		m = updated.(discoverTabsModel)
 		if m.action != devicePickerNoAction || m.cancelled || m.sim.createRequested() {
 			t.Fatal("unsupported simulator creation closed discovery")
 		}
 		name := nextSimulatorName(existing)
-		for _, want := range []string{"wendy vm create " + name + " --profile generic", "wendy vm start " + name, "WSL2"} {
-			if view := m.View(); !strings.Contains(view, want) {
+		view := strings.Join(strings.Fields(ansi.Strip(m.View())), " ")
+		for _, want := range []string{"wendy vm create " + name + " --profile generic", "wendy vm start " + name, "separate terminal and keep it open", "Managed robot simulators and automatic port forwarding require macOS or Linux", "on Windows, run Wendy inside WSL2"} {
+			if !strings.Contains(view, want) {
 				t.Errorf("discovery view = %q, missing %q", view, want)
 			}
 		}

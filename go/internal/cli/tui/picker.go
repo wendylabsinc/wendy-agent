@@ -742,7 +742,7 @@ func (m PickerModel) View() string {
 		if m.flashIsError {
 			style = lipgloss.NewStyle().Foreground(lipgloss.Color("#ef4444"))
 		}
-		sb.WriteString(m.viewLine(style.Render("  "+m.flashMessage)) + "\n")
+		sb.WriteString(m.viewLine(style.Render(WrapHint("  "+m.flashMessage, m.width))) + "\n")
 	}
 
 	if m.deviceLegend {
