@@ -13,17 +13,13 @@ wendy cloud login --service-account ./wendy-service-account.json
 
 ## Description
 
-`wendy cloud login` uses the same implementation as
-[`wendy auth login`](../auth/login.md). It defaults to production Wendy Cloud
-and opens `https://auth.wendy.dev/authorize`, where the browser collects your
-email and organization. With `--email`, it discovers your realm before opening
-the browser; `--issuer` selects a realm directly. The CLI completes authorization
-code + PKCE through a loopback callback, obtains an operator certificate from
-pki-core, and stores it with a refreshable Cloud API session. Subsequent
-commands use the certificate automatically.
-
-Use `--development` to select the development environment, or `--legacy` to
-use the old dashboard flow at `cloud.wendy.sh`.
+`wendy cloud login` is identical to [`wendy auth login`](../auth/login.md) — it
+reuses the same implementation. For now, it defaults to the legacy dashboard
+flow. With `--email` or `--issuer`, it runs the OIDC flow: it
+discovers your realm from `--email` (or takes `--issuer` directly), completes
+authorization code + PKCE through a loopback callback, obtains an operator
+certificate from pki-core, and stores it with a refreshable Cloud API session.
+Subsequent commands use the certificate automatically.
 
 `--api-key` selects local authentication. `--service-account` signs in
 headlessly as a wendy-auth service account and also targets production by
