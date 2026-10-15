@@ -11,13 +11,11 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
@@ -182,22 +180,12 @@ func createLinuxDesktopToken(ctx context.Context, auth *config.AuthConfig, devic
 	}
 	cert := auth.Certificates[0]
 
-	var transportOpt grpc.DialOption
-	if strings.HasSuffix(auth.CloudGRPC, ":443") {
-		keyPEM, err := cert.PrivateKeyPEM()
-		if err != nil {
-			return "", time.Time{}, fmt.Errorf("loading client key: %w", err)
-		}
-		tlsCfg, err := certs.LoadTLSConfig(cert.PemCertificate, cert.PemCertificateChain, keyPEM, "")
-		if err != nil {
-			return "", time.Time{}, fmt.Errorf("loading TLS config: %w", err)
-		}
-		transportOpt = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
-	} else {
-		transportOpt = grpc.WithTransportCredentials(insecure.NewCredentials())
+	creds, err := clouddefaults.CloudTransportCredentials(auth.CloudGRPC, &cert)
+	if err != nil {
+		return "", time.Time{}, err
 	}
 
-	dialOptions := append([]grpc.DialOption{transportOpt}, dpopDialOptions(auth)...)
+	dialOptions := append([]grpc.DialOption{grpc.WithTransportCredentials(creds)}, dpopDialOptions(auth)...)
 	conn, err := grpc.NewClient(auth.CloudGRPC, dialOptions...)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("connecting to cloud: %w", err)

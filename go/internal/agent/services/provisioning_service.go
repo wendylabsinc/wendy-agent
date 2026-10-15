@@ -114,27 +114,33 @@ type OnProvisionedFunc func(certPEM, chainPEM string, keyData []byte)
 // restart the agent process. If nil, no post-unprovision action is taken.
 type OnUnprovisionedFunc func()
 
+// BeforeUnprovisionedFunc runs synchronously after enrollment state is cleared
+// and before the RPC reports success, so dependent device-local credentials are
+// revoked first. It cannot fail unprovisioning; implementations log errors.
+type BeforeUnprovisionedFunc func()
+
 // ProvisioningService implements agentpb.WendyProvisioningServiceServer.
 type ProvisioningService struct {
 	agentpb.UnimplementedWendyProvisioningServiceServer
-	logger           *zap.Logger
-	configPath       string
-	mu               sync.Mutex
-	unenrollmentMu   sync.Mutex
-	enrolled         bool
-	resetRecoveryErr error
-	trustedTime      func(context.Context) (timesync.TimeWindow, error)
-	verifyCloudReset func(context.Context, []byte, string, string, string, []byte, *x509.Certificate, time.Time, time.Time) ([]byte, error)
-	cloudHost        string
-	orgID            int32
-	assetID          int32
-	keyPEM           []byte // stored as []byte so it can be zeroed on rotation/shutdown
-	certPEM          string
-	chainPEM         string
-	principalURI     string
-	CloudDialer      CloudDialer
-	OnProvisioned    OnProvisionedFunc
-	OnUnprovisioned  OnUnprovisionedFunc
+	logger              *zap.Logger
+	configPath          string
+	mu                  sync.Mutex
+	unenrollmentMu      sync.Mutex
+	enrolled            bool
+	resetRecoveryErr    error
+	trustedTime         func(context.Context) (timesync.TimeWindow, error)
+	verifyCloudReset    func(context.Context, []byte, string, string, string, []byte, *x509.Certificate, time.Time, time.Time) ([]byte, error)
+	cloudHost           string
+	orgID               int32
+	assetID             int32
+	keyPEM              []byte // stored as []byte so it can be zeroed on rotation/shutdown
+	certPEM             string
+	chainPEM            string
+	principalURI        string
+	CloudDialer         CloudDialer
+	OnProvisioned       OnProvisionedFunc
+	OnUnprovisioned     OnUnprovisionedFunc
+	BeforeUnprovisioned BeforeUnprovisionedFunc
 }
 
 func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*timesync.Manager) *ProvisioningService {
@@ -427,9 +433,13 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 
 	s.logger.Info("Device unprovisioned; agent will restart into unprovisioned mode")
 
-	cb := s.OnUnprovisioned
+	before, cb := s.BeforeUnprovisioned, s.OnUnprovisioned
 	locked = false
 	s.mu.Unlock()
+
+	if before != nil {
+		before()
+	}
 
 	if cb != nil {
 		// Invoke asynchronously after a short delay so the RPC response is

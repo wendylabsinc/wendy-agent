@@ -24,10 +24,10 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -40,8 +40,6 @@ import (
 	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	grpcpeer "google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
@@ -1056,26 +1054,11 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 
 	cert := auth.Certificates[0]
 
-	var cloudTransport grpc.DialOption
-	if strings.HasSuffix(auth.CloudGRPC, ":443") {
-		keyPEM, err := cert.PrivateKeyPEM()
-		if err != nil {
-			return fmt.Errorf("loading client key: %w", err)
-		}
-		tlsCfg, err := certs.LoadTLSConfig(
-			cert.PemCertificate,
-			cert.PemCertificateChain,
-			keyPEM,
-			"",
-		)
-		if err != nil {
-			return fmt.Errorf("loading TLS config: %w", err)
-		}
-		cloudTransport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
-	} else {
-		cloudTransport = grpc.WithTransportCredentials(insecure.NewCredentials())
+	cloudCreds, err := clouddefaults.CloudTransportCredentials(auth.CloudGRPC, &cert)
+	if err != nil {
+		return err
 	}
-	dialOptions := append([]grpc.DialOption{cloudTransport}, dpopDialOptions(auth)...)
+	dialOptions := append([]grpc.DialOption{grpc.WithTransportCredentials(cloudCreds)}, dpopDialOptions(auth)...)
 	cloudConn, err := grpc.NewClient(auth.CloudGRPC, dialOptions...)
 	if err != nil {
 		return fmt.Errorf("connecting to cloud: %w", err)
@@ -1371,27 +1354,12 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 	}
 	cert := auth.Certificates[0]
 
-	var transport grpc.DialOption
-	if strings.HasSuffix(auth.CloudGRPC, ":443") {
-		keyPEM, keyErr := cert.PrivateKeyPEM()
-		if keyErr != nil {
-			return nil, nil, fmt.Errorf("loading client key: %w", keyErr)
-		}
-		tlsCfg, tlsErr := certs.LoadTLSConfig(
-			cert.PemCertificate,
-			cert.PemCertificateChain,
-			keyPEM,
-			"",
-		)
-		if tlsErr != nil {
-			return nil, nil, fmt.Errorf("loading TLS config: %w", tlsErr)
-		}
-		transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
-	} else {
-		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
+	creds, credsErr := clouddefaults.CloudTransportCredentials(auth.CloudGRPC, &cert)
+	if credsErr != nil {
+		return nil, nil, credsErr
 	}
 
-	dialOptions := append([]grpc.DialOption{transport}, dpopDialOptions(auth)...)
+	dialOptions := append([]grpc.DialOption{grpc.WithTransportCredentials(creds)}, dpopDialOptions(auth)...)
 	cloudConn, dialErr := grpc.NewClient(auth.CloudGRPC, dialOptions...)
 	if dialErr != nil {
 		return nil, nil, fmt.Errorf("connecting to cloud: %w", dialErr)

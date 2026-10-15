@@ -3,21 +3,16 @@
   "mcpServers": {
     "wendy-robots": {
       "type": "streamable-http",
-      "url": "https://mcp.dev.wendy.dev",
+      "url": "https://mcp.wendy.dev",
       "extensions": {
         "com.openai": {
           "auth": {
             "type": "oauth",
             "client": {
-              "mode": "provided",
-              "clientId": "wendy-chatgpt",
-              "tokenEndpointAuthMethod": "none"
+              "mode": "cimd"
             },
             "baseScopes": [
-              "robots:read",
-              "cameras:capture",
-              "apps:control",
-              "preferences:write"
+              "mcp:relay"
             ]
           }
         }

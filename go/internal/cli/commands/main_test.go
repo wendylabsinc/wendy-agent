@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 )
 
@@ -18,7 +19,8 @@ import (
 // It also lets postStart openURL hooks reach browserOpen, which tests swap for
 // a recorder: `go test` has no interactive terminal, so the production gate
 // (defaultPostStartBrowserAllowed, tested directly) would otherwise suppress
-// every hook those tests observe.
+// every hook those tests observe. It sets WENDY_CLOUD_INSECURE for the fake
+// plaintext clouds (see below).
 func TestMain(m *testing.M) {
 	// UI initialization starts LAN discovery immediately, even if its returned
 	// tea.Cmd is never run. Default to a closed, empty stream so UI tests cannot
@@ -36,6 +38,10 @@ func TestMain(m *testing.M) {
 	// have it copied into deviceFlag by every test that executes the root
 	// command, and leak from there into later tests.
 	os.Unsetenv("WENDY_DEVICE")
+	// The fake clouds these tests start are plaintext gRPC servers, so the
+	// package opts in to plaintext the same way a developer would against a
+	// local dev cloud. The TLS default itself is pinned in clouddefaults.
+	os.Setenv(clouddefaults.CloudInsecureEnv, "true")
 	if tmp, err := os.MkdirTemp("", "wendy-commands-test-home-"); err == nil {
 		os.Setenv("HOME", tmp)
 		os.Setenv("USERPROFILE", tmp) // Windows: os.UserHomeDir consults this

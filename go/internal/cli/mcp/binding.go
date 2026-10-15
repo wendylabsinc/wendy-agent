@@ -15,20 +15,22 @@ import (
 
 // BindingPolicy is what one web client bound through the hosted MCP relay may
 // do (Relay MCP spec, WDY-3660). The relay can forge any call, so the CLI is
-// where the limits hold: a tool outside the allow-list is refused, and every
-// call that is not read-only waits for the user's confirmation. The local
-// stdio server has no policy.
+// where the limits hold: a tool outside the allow-list is refused. Allowed
+// calls require confirmation unless AllowAll or the read-only AllowRead
+// exemption applies. The local stdio server has no policy.
 type BindingPolicy struct {
-	AllowAll bool     // every tool; otherwise the read-only built-ins plus Tools
-	Tools    []string // further tools allowed by name
+	AllowAll  bool     // allow every tool without per-call confirmation
+	AllowRead bool     // skip confirmation for built-in reads that stay off the host
+	Tools     []string // further tools allowed by name
 	// Session is the auth session the run started with. Cloud calls use it
 	// alone; an argument naming another session or organization is refused.
 	Session *config.AuthConfig
 	// RelayManifest pins the reviewed tool definitions served by this relay.
 	// Serve resolves its version again; caller-supplied definitions are not trusted.
 	RelayManifest *ToolManifest
-	// Confirm asks the user about one call that is not read-only. nil refuses
-	// every such call.
+	// Confirm asks the user about allowed calls unless AllowAll or the
+	// read-only AllowRead exemption applies. nil refuses calls that require
+	// confirmation.
 	Confirm func(ctx context.Context, tool string, args map[string]any) bool
 	// Log receives one line per call: the tool and what happened to it.
 	Log func(tool, outcome string)
@@ -58,13 +60,13 @@ func (p *BindingPolicy) log(tool, outcome string) {
 
 // hostTools reach this host or past the connected device: local paths and
 // drives, simulators, LAN scans, explicit addresses and broker URLs. The relay
-// can forge any call, so a bound client gets them only by --allow-tool, and
-// each call is confirmed even when it only reads.
+// can forge any call, so a bound client gets them only by --allow-tool or
+// --allow-all. Each call is confirmed unless --allow-all was passed.
 var hostTools = append([]string{"project_validate", "app_inspect", "device_list", "cloud_ping"}, gatewayHostTools...)
 
-// readOnlyTool reports whether a bound client may call tool unasked: a
-// built-in annotated read-only that stays off the host. Tools proxied from
-// app containers describe themselves, so they never count.
+// readOnlyTool identifies built-in reads that stay off the host. These tools
+// are allowed by default, but skip confirmation only when AllowRead is set.
+// Tools proxied from app containers describe themselves, so they never count.
 func readOnlyTool(tool mcpgo.Tool) bool {
 	builtin := false
 	for _, names := range toolGroups {
@@ -149,7 +151,7 @@ func (s *mcpServer) bindingMiddleware(srv *server.MCPServer) server.ToolHandlerM
 				p.log(name, "refused: "+key+" names another session")
 				return errResultf(errCodeDenied, "%s names another Wendy Cloud session or organization; this client may use only the one 'wendy cloud mcp' started with", key), nil
 			}
-			if !readOnlyTool(registered.Tool) {
+			if !p.AllowAll && !(p.AllowRead && readOnlyTool(registered.Tool)) {
 				if p.Confirm == nil || !p.Confirm(ctx, name, req.GetArguments()) {
 					p.log(name, "refused by the user")
 					return errResultf(errCodeDenied, "the user did not confirm %s", name), nil
