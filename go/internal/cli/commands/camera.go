@@ -53,9 +53,13 @@ const (
 	cameraV4L2Controls
 )
 
-// Swift serves camera listing, video and USB controls after enrollment, but
-// never serves network-camera management. Go agents can also report Darwin;
-// their camera service is available on the plaintext listener.
+// Swift serves camera listing, video and USB controls, enrolled or not, like
+// the Linux agent, but never serves network-camera management. Go agents can
+// also report Darwin; they take no Swift-specific path here.
+//
+// SECURITY: this preflight is guidance, not access control. Whether an
+// unenrolled device serves its camera is the agent's decision; both agents
+// currently accept that risk until devices can be provisioned locally.
 func cameraServicePreflight(ctx context.Context, conn *grpcclient.AgentConnection, action cameraAction) error {
 	if err := diagnosticContextError(ctx); err != nil {
 		return err
@@ -76,10 +80,6 @@ func cameraServicePreflight(ctx context.Context, conn *grpcclient.AgentConnectio
 		return fmt.Errorf("Custom camera dimensions and frame rates are not yet supported by Wendy Agent for Mac")
 	case cameraNetworkManagement:
 		return fmt.Errorf("network camera management is not supported by Wendy Agent for macOS")
-	case cameraCapture, cameraV4L2Controls:
-		if !conn.IsMTLS {
-			return fmt.Errorf("camera access on Wendy Agent for macOS requires enrollment; run 'wendy device enroll'")
-		}
 	}
 	return nil
 }
