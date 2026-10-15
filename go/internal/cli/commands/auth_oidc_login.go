@@ -313,6 +313,8 @@ type oidcHTTPDoer interface {
 
 // requestPKIIdentityCertificate implements pki-core's operator identity wire
 // contract: raw PKCS#10 body, DPoP authorization, and a leaf-first PEM chain.
+// privateKeyPEM is the CSR key; key signs the DPoP proof. They differ only for
+// the Lite leaf (P-256 CSR proved by the ML-DSA session).
 func requestPKIIdentityCertificate(
 	ctx context.Context,
 	client oidcHTTPDoer,
@@ -379,7 +381,11 @@ func requestPKIIdentityCertificate(
 	if err != nil {
 		return config.CertificateInfo{}, fmt.Errorf("parsing pki-core certificate chain: %w", err)
 	}
-	wantPublicKey, err := x509.MarshalPKIXPublicKey(key.Public())
+	csrKey, err := certs.ParseSigningPrivateKeyPEM([]byte(privateKeyPEM))
+	if err != nil {
+		return config.CertificateInfo{}, fmt.Errorf("parsing operator CSR key: %w", err)
+	}
+	wantPublicKey, err := x509.MarshalPKIXPublicKey(csrKey.Public())
 	if err != nil {
 		return config.CertificateInfo{}, fmt.Errorf("encoding generated operator public key: %w", err)
 	}
@@ -438,8 +444,10 @@ func splitCertificateChainPEM(chain []byte) (string, string, *x509.Certificate, 
 // refreshOIDCCertificate replays the direct pki-core flow for an existing
 // OAuth session. The refresh-token family is first scoped to pki-core and then
 // rotated back to the Cloud API resource. The DPoP key cannot change here:
-// pki-core requires it to remain the CSR key as well.
-func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig) error {
+// pki-core requires it to remain the CSR key as well. With lite set it issues
+// the session's P-256 Lite leaf instead of the primary: same token and DPoP
+// key, a fresh P-256 CSR key.
+func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite bool) error {
 	refreshToken, err := auth.OAuthRefreshToken()
 	if err != nil {
 		return fmt.Errorf("loading OAuth refresh token: %w", err)
@@ -502,12 +510,23 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig) error 
 	}
 	expectedTenant := auth.Certificates[0].TenantUUID()
 
+	csrKeyPEM := privateKeyPEM
+	if lite {
+		if csrKeyPEM, err = certs.GenerateKeyPair(); err != nil {
+			return err
+		}
+	}
 	certInfo, err := requestPKIIdentityCertificate(
-		ctx, http.DefaultClient, identityEndpoint, privateKeyPEM, key,
+		ctx, http.DefaultClient, identityEndpoint, csrKeyPEM, key,
 		identityToken.AccessToken, expectedTenant, subject,
 	)
 	if err != nil {
 		return err
+	}
+	if lite {
+		if err := checkLiteOperatorLeaf(certInfo.PemCertificate); err != nil {
+			return err
+		}
 	}
 	cloudToken, err := refreshOIDCToken(
 		ctx, key, meta, auth.OAuthClientID, identityToken.RefreshToken, auth.OAuthResource,
@@ -529,7 +548,12 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig) error 
 	auth.OAuthExpiresAt = time.Now().Add(time.Duration(cloudToken.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
 	auth.PKIResource = identityResource
 	auth.PKIEndpoint = identityEndpoint
-	auth.Certificates = []config.CertificateInfo{certInfo}
+	if lite {
+		auth.LiteCertificate = certInfo.PemCertificate + certInfo.PemCertificateChain
+		auth.LitePrivateKey = csrKeyPEM
+	} else {
+		auth.Certificates = []config.CertificateInfo{certInfo}
+	}
 	clitimesync.CacheProof(ctx)
 	return nil
 }

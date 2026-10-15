@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -216,7 +217,7 @@ func newDevicePairCmd() *cobra.Command {
 					if p.Connected {
 						state = "connected"
 					}
-					cliLogln("%-20s asset %d  %s", p.Name, p.SourceAssetId, state)
+					cliLogln("%-20s %s  %s", p.Name, sensorPairLabel(p.SourceAssetId, p.SourcePrincipalUri), state)
 				}
 				return nil
 			}
@@ -227,7 +228,7 @@ func newDevicePairCmd() *cobra.Command {
 				&btTUIHandler{ctx: pairCtx, agent: conn.AgentService},
 				&sensorPairHandler{
 					ctx: pairCtx, client: conn.SensorPairingService,
-					discover: discoverSensorSources, orgIDs: cliOrgIDs,
+					discover: discoverSensorSources, orgIDs: cliOrgIDs, tenantIDs: cliTenantIDs,
 					name: name, sensors: sensors,
 				},
 				&cameraPairHandler{ctx: pairCtx, client: conn.VideoService, preflight: func(ctx context.Context) error {
@@ -262,7 +263,7 @@ func newDevicePairCmd() *cobra.Command {
 func newDeviceUnpairCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Hidden: true,
-		Use:    "unpair [source-asset-id]",
+		Use:    "unpair [source-asset-id-or-principal]",
 		Short:  "Remove a sensor-source pairing",
 		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -274,8 +275,14 @@ func newDeviceUnpairCmd() *cobra.Command {
 			defer conn.Close()
 
 			var assetID int32
+			var principal string
 			if len(args) == 1 {
-				if _, err := fmt.Sscanf(args[0], "%d", &assetID); err != nil {
+				if strings.HasPrefix(args[0], "spiffe://") {
+					if _, err := certs.ParseDevicePrincipal(args[0]); err != nil {
+						return err
+					}
+					principal = args[0]
+				} else if _, err := fmt.Sscanf(args[0], "%d", &assetID); err != nil {
 					return fmt.Errorf("invalid source asset id %q: %w", args[0], err)
 				}
 			} else {
@@ -295,26 +302,46 @@ func newDeviceUnpairCmd() *cobra.Command {
 					}
 					items = append(items, tui.PickerItem{
 						Name:     p.Name,
-						Address:  fmt.Sprintf("asset %d · %s", p.SourceAssetId, state),
-						DedupKey: fmt.Sprintf("asset-%d", p.SourceAssetId),
-						Value:    p.SourceAssetId,
+						Address:  fmt.Sprintf("%s · %s", sensorPairLabel(p.SourceAssetId, p.SourcePrincipalUri), state),
+						DedupKey: sensorPairKey(p.SourceAssetId, p.SourcePrincipalUri),
+						Value:    p,
 					})
 				}
 				sel, err := runPicker("Select a pairing to remove", items)
 				if err != nil {
 					return err
 				}
-				assetID = sel.Value.(int32)
+				selected := sel.Value.(*agentpbv2.SensorPairing)
+				assetID, principal = selected.SourceAssetId, selected.SourcePrincipalUri
 			}
 
 			if _, err := conn.SensorPairingService.RemoveSensorPairing(ctx, &agentpbv2.RemoveSensorPairingRequest{
-				SourceAssetId: assetID,
+				SourceAssetId: assetID, SourcePrincipalUri: principal,
 			}); err != nil {
 				return cleanRPCError(err)
 			}
-			cliSuccess("Unpaired asset %d.", assetID)
+			cliSuccess("Unpaired %s.", sensorPairLabel(assetID, principal))
 			return nil
 		},
 	}
 	return cmd
+}
+
+func cliTenantIDs() (map[string]bool, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	tenants := make(map[string]bool)
+	for _, auth := range cfg.Auth {
+		for _, cert := range auth.Certificates {
+			if tenant := cert.TenantUUID(); tenant != "" {
+				tenants[tenant] = true
+			}
+		}
+	}
+	if len(tenants) == 0 {
+		return nil, config.ErrNotLoggedIn
+	}
+	return tenants, nil
 }

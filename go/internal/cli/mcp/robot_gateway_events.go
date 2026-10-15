@@ -58,7 +58,7 @@ func (g *RobotGateway) registerEventTools() {
 		}
 		return okResult(map[string]any{"robot_id": r.ID, "triggers": out}), nil
 	}))
-	g.protocol.AddTool(gatewayTool("configure_device_trigger", "Enable or disable an approved persistent detection campaign. Enabling activates its cameras and inference on the device. Disabling stops inference; the approved capture policy can still retain or record data. External app triggers are managed by that app. This does not start a ChatGPT background turn.", mutating(), robotArgument(), prop, mcpgo.WithBoolean("enabled", mcpgo.Required())), g.withRobot(RobotTriggerScope, func(ctx context.Context, r *GatewayRobot, s *mcpServer, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	g.protocol.AddTool(gatewayTool("configure_device_trigger", "Enable or disable an approved persistent detection campaign. Enabling activates its cameras and inference on the device. Disabling stops inference; the approved capture policy can still retain or record data. External app triggers are managed by that app. This does not start a ChatGPT background turn.", destructive(), robotArgument(), prop, mcpgo.WithBoolean("enabled", mcpgo.Required())), g.withRobot(RobotTriggerScope, func(ctx context.Context, r *GatewayRobot, s *mcpServer, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 		t, err := findGatewayTrigger(r, req.GetString("trigger_id", ""))
 		if err != nil {
 			return mcpgo.NewToolResultError(err.Error()), nil

@@ -89,6 +89,15 @@ func (g *RobotGateway) settingsPath(ctx context.Context) (string, error) {
 }
 func (g *RobotGateway) settingsValues(ctx context.Context) (map[string]any, error) {
 	values := map[string]any{"show_3d": true, "include_offline": false}
+	if g.cfg.HTTP != nil && g.cfg.HTTP.CloudLink != nil {
+		_, principal := g.grant(ctx)
+		// Copy into defaults so returned maps cannot mutate another call's
+		// values. Cloud-linked preferences never read or write a settings file.
+		for key, value := range g.workspacePreferences[principal.Subject] {
+			values[key] = value
+		}
+		return values, nil
+	}
 	path, err := g.settingsPath(ctx)
 	if err != nil {
 		return nil, err
@@ -117,8 +126,9 @@ func (g *RobotGateway) registerGatewaySettings() {
 		}
 		return okResult(gatewaySettingsResult{Schema: map[string]any{"type": "object", "properties": map[string]any{"include_offline": map[string]any{"type": "boolean", "title": "Include offline enrollments"}}}, Values: v, CanUpdate: g.hasScope(ctx, RobotSettingsScope)}), nil
 	})
-	update := mcpgo.NewToolWithRawSchema("update_device_settings", "Save your device workspace preferences.", json.RawMessage(`{"type":"object","properties":{"set":{"type":"object","properties":{"show_3d":{"type":"boolean"},"include_offline":{"type":"boolean"}},"additionalProperties":false}},"required":["set"],"additionalProperties":false}`))
-	update.Annotations = mcpgo.ToolAnnotation{ReadOnlyHint: mcpgo.ToBoolPtr(false), DestructiveHint: mcpgo.ToBoolPtr(false), IdempotentHint: mcpgo.ToBoolPtr(true), OpenWorldHint: mcpgo.ToBoolPtr(false)}
+	update := mcpgo.NewToolWithRawSchema("update_device_settings", "Adjust your device workspace preferences.", json.RawMessage(`{"type":"object","properties":{"set":{"type":"object","properties":{"show_3d":{"type":"boolean"},"include_offline":{"type":"boolean"}},"additionalProperties":false}},"required":["set"],"additionalProperties":false}`))
+	update.RawOutputSchema = gatewayOutputSchema(update.Name)
+	update.Annotations = mcpgo.ToolAnnotation{ReadOnlyHint: mcpgo.ToBoolPtr(false), DestructiveHint: mcpgo.ToBoolPtr(true), IdempotentHint: mcpgo.ToBoolPtr(true), OpenWorldHint: mcpgo.ToBoolPtr(false)}
 	update.Meta = mcpgo.NewMetaFromMap(map[string]any{"ui": map[string]any{"visibility": []string{"model", "app"}}, "openai/widgetAccessible": true})
 	g.protocol.AddTool(update, func(ctx context.Context, r mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 		if !g.hasScope(ctx, RobotSettingsScope) {
@@ -142,6 +152,14 @@ func (g *RobotGateway) registerGatewaySettings() {
 				return mcpgo.NewToolResultError("Settings must be boolean"), nil
 			}
 			v[k] = value
+		}
+		if g.cfg.HTTP != nil && g.cfg.HTTP.CloudLink != nil {
+			_, principal := g.grant(ctx)
+			if g.workspacePreferences == nil {
+				g.workspacePreferences = make(map[string]map[string]any)
+			}
+			g.workspacePreferences[principal.Subject] = v
+			return okResult(map[string]any{"values": v}), nil
 		}
 		path, err := g.settingsPath(ctx)
 		if err != nil {

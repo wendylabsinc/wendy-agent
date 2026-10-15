@@ -289,7 +289,7 @@ func main() {
 	shellSvc := services.NewShellService(logger, hostexec.New())
 	audioSvc := services.NewAudioService(logger)
 
-	provisioningSvc := services.NewProvisioningService(logger, configPath)
+	provisioningSvc := services.NewProvisioningService(logger, configPath, timesyncMgr)
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
@@ -443,13 +443,16 @@ func main() {
 	// Let `wendy device audio list` name mounted Loopback capture subdevices
 	// after the remote source they carry, instead of a generic "plughw:2,1".
 	audioSvc.SetSensorLinkNaming(audioLoop.Mounts, sensorStore.NameFor)
+	audioSvc.SetSensorLinkPrincipalNaming(sensorStore.NameForKey)
 	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, ros2camera.NewFrameWriter, audioLoop)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
-	sensorAgentOrgID := func() int32 {
-		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
-		return orgID
+	sensorAgentScope := func() certs.Scope {
+		certPEM, _, _ := mcuIdentity()
+		scope, _ := certs.ScopeFromCertPEM(certPEM)
+		_, scope.OrgID, _, _ = provisioningSvc.ProvisioningInfo()
+		return scope
 	}
-	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentOrgID, sensorRunner.Start, sensorRunner.Stop, sensorSup.IsConnected)
+	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentScope, sensorRunner.Start, sensorRunner.StopPairing, sensorSup.IsPairingConnected)
 	_, _, _, unitreeEnrolled := provisioningSvc.ProvisioningInfo()
 	unitreeSvc := services.NewUnitreeService(ctx, filepath.Join(configPath, "unitree-pairings.json"), unitreePairingOwner(deviceScope(provisioningSvc), unitreeEnrolled))
 	defer unitreeSvc.Close()
@@ -918,6 +921,13 @@ func main() {
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
 
+	// Advertise the device's Ethernet addresses so hosts can prefer the cable.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		services.RunWiredAdvertisement(ctx, logger)
+	}()
+
 	// Start the embedded dev container registry (Linux only, best-effort).
 	// If already provisioned, start immediately with HTTPS; otherwise HTTP until provisioned.
 	if runtime.GOOS == "linux" && ctrdErr == nil {
@@ -955,6 +965,12 @@ func main() {
 		if err != nil {
 			logger.Fatal("Failed to listen on agent port", zap.String("port", agentPort), zap.Error(err))
 		}
+
+		// Avahi's service file survives agent restarts. Reconcile it after
+		// binding the setup listener, including when stored enrollment has
+		// lost its key or certificate. This only changes discovery metadata;
+		// the enrollment record is retained for recovery.
+		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
 
 		wg.Add(1)
 		go func() {

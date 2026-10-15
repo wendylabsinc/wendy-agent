@@ -22,6 +22,59 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type RequestChannel int32
+
+const (
+	RequestChannel_REQUEST_CHANNEL_UNSPECIFIED RequestChannel = 0
+	// A local MCP client driving the CLI (`wendy mcp serve`). Needs the realm's
+	// `allow_mcp` claim.
+	RequestChannel_REQUEST_CHANNEL_MCP_LOCAL RequestChannel = 1
+	// A web chat through the hosted relay (`wendy cloud mcp`). Needs
+	// `allow_mcp` and `allow_hosted_mcp`.
+	RequestChannel_REQUEST_CHANNEL_HOSTED_MCP RequestChannel = 2
+)
+
+// Enum value maps for RequestChannel.
+var (
+	RequestChannel_name = map[int32]string{
+		0: "REQUEST_CHANNEL_UNSPECIFIED",
+		1: "REQUEST_CHANNEL_MCP_LOCAL",
+		2: "REQUEST_CHANNEL_HOSTED_MCP",
+	}
+	RequestChannel_value = map[string]int32{
+		"REQUEST_CHANNEL_UNSPECIFIED": 0,
+		"REQUEST_CHANNEL_MCP_LOCAL":   1,
+		"REQUEST_CHANNEL_HOSTED_MCP":  2,
+	}
+)
+
+func (x RequestChannel) Enum() *RequestChannel {
+	p := new(RequestChannel)
+	*p = x
+	return p
+}
+
+func (x RequestChannel) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RequestChannel) Descriptor() protoreflect.EnumDescriptor {
+	return file_wendycloud_v2_signed_request_proto_enumTypes[0].Descriptor()
+}
+
+func (RequestChannel) Type() protoreflect.EnumType {
+	return &file_wendycloud_v2_signed_request_proto_enumTypes[0]
+}
+
+func (x RequestChannel) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RequestChannel.Descriptor instead.
+func (RequestChannel) EnumDescriptor() ([]byte, []int) {
+	return file_wendycloud_v2_signed_request_proto_rawDescGZIP(), []int{0}
+}
+
 // SignedRequest is the input of every operator-signed RPC, the ones marked
 // `option (wendy.signed_request) = true` (WDY-3458). The signature travels in
 // the body, not in headers; headers carry only the bearer token and DPoP proof.
@@ -56,8 +109,20 @@ type SignedRequest struct {
 	// pki-core tier-3 operations only: the operator's "management-request+jws",
 	// relayed verbatim as the fabric Envelope signed_artifact.
 	PkiManagementRequest []byte `protobuf:"bytes,4,opt,name=pki_management_request,json=pkiManagementRequest,proto3,oneof" json:"pki_management_request,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// The MCP channel the request came through (WDY-3657, docs/relay-mcp.md).
+	// UNSPECIFIED = not MCP. Outside `signature`: client-asserted, as honest as
+	// the client that sets it. Cloud audits it and refuses an MCP channel the
+	// caller's realm does not allow; a verifier that ignores it is unaffected.
+	Channel RequestChannel `protobuf:"varint,5,opt,name=channel,proto3,enum=wendycloud.v2.RequestChannel" json:"channel,omitempty"`
+	// HOSTED_MCP only, then both required: the web client's OAuth client_id
+	// (PairingRequested.client_id) and the relay session
+	// (OpenRelaySessionResponse.session_id). Audited, never authorizing.
+	// INVALID_ARGUMENT when HOSTED_MCP lacks either, or another channel sets
+	// either. OpenRelaySession itself is sent UNSPECIFIED.
+	McpClientId    string `protobuf:"bytes,6,opt,name=mcp_client_id,json=mcpClientId,proto3" json:"mcp_client_id,omitempty"`
+	RelaySessionId string `protobuf:"bytes,7,opt,name=relay_session_id,json=relaySessionId,proto3" json:"relay_session_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SignedRequest) Reset() {
@@ -116,6 +181,27 @@ func (x *SignedRequest) GetPkiManagementRequest() []byte {
 		return x.PkiManagementRequest
 	}
 	return nil
+}
+
+func (x *SignedRequest) GetChannel() RequestChannel {
+	if x != nil {
+		return x.Channel
+	}
+	return RequestChannel_REQUEST_CHANNEL_UNSPECIFIED
+}
+
+func (x *SignedRequest) GetMcpClientId() string {
+	if x != nil {
+		return x.McpClientId
+	}
+	return ""
+}
+
+func (x *SignedRequest) GetRelaySessionId() string {
+	if x != nil {
+		return x.RelaySessionId
+	}
+	return ""
 }
 
 type RegisterOperatorLeafRequest struct {
@@ -220,19 +306,26 @@ var File_wendycloud_v2_signed_request_proto protoreflect.FileDescriptor
 
 const file_wendycloud_v2_signed_request_proto_rawDesc = "" +
 	"\n" +
-	"\"wendycloud/v2/signed_request.proto\x12\rwendycloud.v2\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x13wendy/options.proto\"\xc0\x01\n" +
+	"\"wendycloud/v2/signed_request.proto\x12\rwendycloud.v2\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x13wendy/options.proto\"\xc7\x02\n" +
 	"\rSignedRequest\x12\x18\n" +
 	"\apayload\x18\x01 \x01(\fR\apayload\x12!\n" +
 	"\fpayload_type\x18\x02 \x01(\tR\vpayloadType\x12\x1c\n" +
 	"\tsignature\x18\x03 \x01(\fR\tsignature\x129\n" +
-	"\x16pki_management_request\x18\x04 \x01(\fH\x00R\x14pkiManagementRequest\x88\x01\x01B\x19\n" +
+	"\x16pki_management_request\x18\x04 \x01(\fH\x00R\x14pkiManagementRequest\x88\x01\x01\x127\n" +
+	"\achannel\x18\x05 \x01(\x0e2\x1d.wendycloud.v2.RequestChannelR\achannel\x12\"\n" +
+	"\rmcp_client_id\x18\x06 \x01(\tR\vmcpClientId\x12(\n" +
+	"\x10relay_session_id\x18\a \x01(\tR\x0erelaySessionIdB\x19\n" +
 	"\x17_pki_management_request\"F\n" +
 	"\x1bRegisterOperatorLeafRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\"k\n" +
 	"\x1cRegisterOperatorLeafResponse\x12\x10\n" +
 	"\x03kid\x18\x01 \x01(\tR\x03kid\x129\n" +
 	"\n" +
-	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt2\x81\x01\n" +
+	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt*p\n" +
+	"\x0eRequestChannel\x12\x1f\n" +
+	"\x1bREQUEST_CHANNEL_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19REQUEST_CHANNEL_MCP_LOCAL\x10\x01\x12\x1e\n" +
+	"\x1aREQUEST_CHANNEL_HOSTED_MCP\x10\x022\x81\x01\n" +
 	"\x16OperatorSessionService\x12g\n" +
 	"\x14RegisterOperatorLeaf\x12\x1c.wendycloud.v2.SignedRequest\x1a+.wendycloud.v2.RegisterOperatorLeafResponse\"\x04\x88\xb5\x18\x01b\x06proto3"
 
@@ -248,22 +341,25 @@ func file_wendycloud_v2_signed_request_proto_rawDescGZIP() []byte {
 	return file_wendycloud_v2_signed_request_proto_rawDescData
 }
 
+var file_wendycloud_v2_signed_request_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_wendycloud_v2_signed_request_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_wendycloud_v2_signed_request_proto_goTypes = []any{
-	(*SignedRequest)(nil),                // 0: wendycloud.v2.SignedRequest
-	(*RegisterOperatorLeafRequest)(nil),  // 1: wendycloud.v2.RegisterOperatorLeafRequest
-	(*RegisterOperatorLeafResponse)(nil), // 2: wendycloud.v2.RegisterOperatorLeafResponse
-	(*timestamppb.Timestamp)(nil),        // 3: google.protobuf.Timestamp
+	(RequestChannel)(0),                  // 0: wendycloud.v2.RequestChannel
+	(*SignedRequest)(nil),                // 1: wendycloud.v2.SignedRequest
+	(*RegisterOperatorLeafRequest)(nil),  // 2: wendycloud.v2.RegisterOperatorLeafRequest
+	(*RegisterOperatorLeafResponse)(nil), // 3: wendycloud.v2.RegisterOperatorLeafResponse
+	(*timestamppb.Timestamp)(nil),        // 4: google.protobuf.Timestamp
 }
 var file_wendycloud_v2_signed_request_proto_depIdxs = []int32{
-	3, // 0: wendycloud.v2.RegisterOperatorLeafResponse.expires_at:type_name -> google.protobuf.Timestamp
-	0, // 1: wendycloud.v2.OperatorSessionService.RegisterOperatorLeaf:input_type -> wendycloud.v2.SignedRequest
-	2, // 2: wendycloud.v2.OperatorSessionService.RegisterOperatorLeaf:output_type -> wendycloud.v2.RegisterOperatorLeafResponse
-	2, // [2:3] is the sub-list for method output_type
-	1, // [1:2] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0, // 0: wendycloud.v2.SignedRequest.channel:type_name -> wendycloud.v2.RequestChannel
+	4, // 1: wendycloud.v2.RegisterOperatorLeafResponse.expires_at:type_name -> google.protobuf.Timestamp
+	1, // 2: wendycloud.v2.OperatorSessionService.RegisterOperatorLeaf:input_type -> wendycloud.v2.SignedRequest
+	3, // 3: wendycloud.v2.OperatorSessionService.RegisterOperatorLeaf:output_type -> wendycloud.v2.RegisterOperatorLeafResponse
+	3, // [3:4] is the sub-list for method output_type
+	2, // [2:3] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_wendycloud_v2_signed_request_proto_init() }
@@ -278,13 +374,14 @@ func file_wendycloud_v2_signed_request_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendycloud_v2_signed_request_proto_rawDesc), len(file_wendycloud_v2_signed_request_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_wendycloud_v2_signed_request_proto_goTypes,
 		DependencyIndexes: file_wendycloud_v2_signed_request_proto_depIdxs,
+		EnumInfos:         file_wendycloud_v2_signed_request_proto_enumTypes,
 		MessageInfos:      file_wendycloud_v2_signed_request_proto_msgTypes,
 	}.Build()
 	File_wendycloud_v2_signed_request_proto = out.File

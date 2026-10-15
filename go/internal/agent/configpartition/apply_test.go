@@ -378,6 +378,40 @@ func TestApplyPreProvisioning_Success(t *testing.T) {
 	}
 }
 
+func TestApplyPreProvisioningFlashReplacesResetRecovery(t *testing.T) {
+	for _, existing := range []string{
+		`{"enrolled":true,"unenrollment":{"status":"pending","receipt":"public-evidence"}}`,
+		`{"enrolled":false,"unenrollment":{"status":"completed","receipt":"public-evidence"}}`,
+		`{"unenrollment":null}`,
+		`invalid existing state`,
+	} {
+		t.Run(existing, func(t *testing.T) {
+			cfgDir, configPath := t.TempDir(), t.TempDir()
+			media := []byte(`{"enrolled":true,"cloudHost":"cloud.example","keyPem":"fixture-key","certPem":"fixture-cert","chainPem":"fixture-chain"}`)
+			if err := os.WriteFile(filepath.Join(cfgDir, "provisioning.json"), media, 0600); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(configPath, "provisioning.json")
+			if err := os.WriteFile(path, []byte(existing), 0600); err != nil {
+				t.Fatal(err)
+			}
+			applyPreProvisioning(zap.NewNop(), cfgDir, configPath)
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != string(media) {
+				t.Fatal("flash provisioning did not replace old local state", err)
+			}
+			for _, name := range []string{"device-key.pem", "device.pem", "ca.pem", ".provisioned"} {
+				if _, err := os.Stat(filepath.Join(configPath, name)); err != nil {
+					t.Fatalf("first-boot credential missing: %s: %v", name, err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(cfgDir, "provisioning.json")); !os.IsNotExist(err) {
+				t.Fatal("first-boot source not consumed", err)
+			}
+		})
+	}
+}
+
 func TestApplyPreProvisioning_NoFile(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	applyPreProvisioning(logger, t.TempDir(), t.TempDir()) // must not panic
@@ -544,10 +578,14 @@ func TestUpdateAvahiService_ProvisioningWritesAssetIDTXTRecord(t *testing.T) {
 	}
 }
 
-func TestUpdateAvahiService_UnprovisioningRemovesAssetID(t *testing.T) {
+func TestUpdateAvahiService_UnprovisioningClearsEnrollment(t *testing.T) {
 	dir := t.TempDir()
 	serviceFile := filepath.Join(dir, "wendyos-mdns.service")
-	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215, 0)
+	provisioned := strings.Replace(avahiServiceTemplate, "<port>50051</port>", `<port>50052</port>
+    <txt-record>tls=true</txt-record>
+    <txt-record>assetid=215</txt-record>
+    <txt-record>orgid=42</txt-record>
+    <txt-record>id=device-uuid</txt-record>`, 1)
 	if err := os.WriteFile(serviceFile, []byte(provisioned), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -563,8 +601,15 @@ func TestUpdateAvahiService_UnprovisioningRemovesAssetID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(got), "assetid=") {
-		t.Errorf("expected assetid TXT record removed from service file:\n%s", got)
+	for _, stale := range []string{"assetid=", "orgid=", "tls=true", "<port>50052</port>"} {
+		if strings.Contains(string(got), stale) {
+			t.Errorf("stale enrollment field %q remains:\n%s", stale, got)
+		}
+	}
+	for _, want := range []string{"<port>50051</port>", "<txt-record>tls=false</txt-record>", "<txt-record>id=device-uuid</txt-record>", "<type>_ssh._tcp</type>", "<port>22</port>"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("missing setup or unrelated field %q:\n%s", want, got)
+		}
 	}
 }
 

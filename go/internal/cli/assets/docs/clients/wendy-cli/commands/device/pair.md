@@ -23,8 +23,14 @@ by default; `h` shows or hides them. `Enter` connects and pairs, and `d`
 disconnects the selected peripheral.
 
 SensorLink discovers sources on the CLI's local network. Devices must belong to
-an organization you are logged into. Saved pairings remain available to forget
-when their sources are offline.
+the same organization as the target device, and you must be logged into that
+organization. An mTLS Wendy Lite source with a valid advertised PKI principal can
+pair without a numeric asset ID when the target Agent supports principal pairing.
+Update the target Agent if it reports that principal pairing is unsupported.
+Sources without either a numeric asset ID or an authenticated PKI identity appear
+under "Found sensors that need enrollment". Enroll those sources before pairing,
+then press `r` to rescan. Saved pairings remain available to forget when their
+sources are offline.
 
 IP cameras are discovered on the connected device's network. `Enter` opens a
 username and password form that saves the camera's login on the device. Passwords

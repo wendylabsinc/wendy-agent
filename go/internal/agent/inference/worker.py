@@ -22,6 +22,25 @@ def emit(result):
 
 output_lock = threading.Lock()
 
+# The worker exits, so the agent restarts it with a fresh process, once this
+# many of the last FAILURE_WINDOW frames failed. Fewer failures cost only their
+# frames. A window rather than a run of consecutive failures, so a detector
+# that fails nine frames in ten still counts as broken.
+FAILURE_WINDOW = 20
+MAX_FAILURES_IN_WINDOW = 10
+
+
+def detection_error(exc):
+    """A detector failure for one frame, cut to 512 UTF-8 bytes."""
+    message = "inference: " + type(exc).__name__
+    try:
+        text = str(exc)
+    except Exception:
+        text = ""
+    if text:
+        message += ": " + text
+    return message.encode(errors="replace")[:512].decode(errors="ignore")
+
 
 class StreamBytes(io.RawIOBase):
     """Bounded streaming file for libav, including H.264 and VP8/WebM."""
@@ -324,6 +343,7 @@ def run(config, detector):
             stopped.set()
 
     threading.Thread(target=receive, daemon=True).start()
+    recent = deque(maxlen=FAILURE_WINDOW)
     try:
         while not stopped.is_set():
             with lock:
@@ -332,7 +352,20 @@ def run(config, detector):
                 frame = decoder.take(time.monotonic(), 1 / config["rate"])
                 if frame is None:
                     continue
-                detections = detector(frame)
+                try:
+                    detections = detector(frame)
+                except Exception as exc:
+                    # One bad frame costs that frame, not the worker. Before,
+                    # the exception ended the process, and the agent lost the
+                    # stderr tail once the model had loaded.
+                    recent.append(False)
+                    if recent.count(False) >= MAX_FAILURES_IN_WINDOW:
+                        emit({"type": "error", "error": detection_error(exc)})
+                        return
+                    emit({"type": "source_error", "source_id": decoder.source_id,
+                          "generation": decoder.generation, "error": detection_error(exc)})
+                    continue
+                recent.append(True)
                 with lock:
                     # A source reset while inference ran invalidates the result.
                     if decoders.get(decoder.source_id) is not decoder or decoder.stream.stopped:

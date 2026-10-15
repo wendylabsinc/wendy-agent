@@ -1,9 +1,12 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "wendy-robots",
-  "version": "0.4.1",
-  "description": "Guidance on building and deploying apps to robots and edge devices using WendyOS, including NVIDIA Jetson, Raspberry Pi, Qualcomm Dragonwing, and MuJoCo simulation.",
-  "author": { "name": "Wendy Labs", "url": "https://wendy.dev" },
+  "version": "0.5.0",
+  "description": "Connect your Wendy Cloud account to inspect robots and edge devices, read device logs, capture camera images, and control permitted apps in ChatGPT.",
+  "author": {
+    "name": "Wendy Labs Inc.",
+    "url": "https://wendy.dev"
+  },
   "homepage": "https://wendy.dev",
   "extensions": {
     "com.openai": {
@@ -11,10 +14,13 @@
       "interface": {
         "displayName": "Wendy",
         "shortDescription": "Your devices and their apps",
-        "longDescription": "Guidance on building and deploying apps to robots and edge devices using WendyOS, including NVIDIA Jetson, Raspberry Pi, Qualcomm Dragonwing, and MuJoCo simulation. Get help setting up your first robot or edge device, or try a simulator while waiting for hardware. Local use does not require a Cloud account. Browse your fleet, inspect devices, preview cameras, open app web UIs, and control approved apps. With local permissions, create robot simulators, open their live MuJoCo scenes, edit approved project files, and build and deploy apps. Share selected device and camera context with ChatGPT.",
-        "developerName": "Wendy Labs",
+        "longDescription": "Connect your Wendy Cloud account to work with your robots and edge devices in ChatGPT. Browse your enrolled devices, inspect their connection and installed apps, read device logs and metrics, and capture a camera image when you request one. Start or stop permitted apps and adjust your device workspace display.\n\nThe hosted connection uses your linked Wendy Cloud account and its device access. No local Wendy CLI process is required. Your devices must be enrolled in Wendy Cloud and reachable for live operations. Camera capture and app control require the corresponding permissions. Device, app, telemetry, and camera results you request are returned to ChatGPT.\n\nBundled Wendy guidance can help explain device setup, app development, ROS 2, and Wendy Data. The hosted tools support Cloud device inspection, camera access, app control, and workspace preferences. A returned inventory entry or running-container state does not by itself establish application readiness.",
+        "developerName": "Wendy Labs Inc.",
         "category": "Productivity",
-        "capabilities": ["Read", "Write"],
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
         "websiteURL": "https://wendy.dev",
         "logo": "./assets/wendy-icon.png",
         "composerIcon": "./assets/wendy-icon.png",
@@ -23,7 +29,65 @@
           "Open Wendy and show my robots.",
           "Look through my robot's camera and describe the scene.",
           "Check which apps are running on my robot."
-        ]
+        ],
+        "supportURL": "https://wendy.dev/schedule-demo",
+        "privacyPolicyURL": "https://wendy.dev/privacy",
+        "termsOfServiceURL": "https://wendy.dev/terms"
+      },
+      "publication": {
+        "release_notes": "Adds a standalone hosted Wendy Cloud connection for device inspection, telemetry, camera images, permitted app control, and workspace preferences. Includes publisher and support information and review scenarios for the hosted workflows.",
+        "countries": []
+      },
+      "review": {
+        "commerce": false,
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Requires the standalone Cloud account-linking gateway deployed at https://mcp.dev.wendy.dev and the submitted plugin connected with a dedicated review account. Provision one online enrolled device named Review Device and grant robots:read. Provision a second offline enrollment named Review Offline. This case covers Cloud inventory including offline enrollments and search/pagination without probing devices.",
+              "prompt": "Show all my Wendy Cloud devices, including offline enrollments.",
+              "tools_triggered": "list_robots",
+              "expected_behavior": "Call list_robots with include_offline=true. Follow each non-null next_offset using the same include_offline value and a valid limit from 1 through 200 or omitted. Report returned device names and identifiers, including both fixture enrollments. Distinguish reported Cloud presence from a verified agent connection. If discovery_complete=false, include its warnings and do not claim the inventory is complete. Do not activate cameras or change device/app state."
+            },
+            {
+              "description": "Requires the standalone Cloud account-linking gateway deployed at https://mcp.dev.wendy.dev and the submitted plugin connected with a dedicated review account. Provision one online enrolled device named Review Device and grant robots:read. Provision two harmless sample apps on Review Device, one running and one stopped, with names recorded in reviewer setup. This case covers explicit target resolution and current app inspection.",
+              "prompt": "Find Review Device and tell me whether it is reachable and which apps are running. Do not change anything.",
+              "tools_triggered": "list_robots, inspect_robot",
+              "expected_behavior": "Call list_robots with query=\"Review Device\" and resolve the exact returned id, asking for clarification if multiple names match. Pass that id as robot_id to inspect_robot. Base connection and app-state claims on its returned data and retain unknown readiness. Do not call start_robot_app, stop_robot_app, capture_robot_image, or start_camera_preview."
+            },
+            {
+              "description": "Requires the standalone Cloud account-linking gateway deployed at https://mcp.dev.wendy.dev and the submitted plugin connected with a dedicated review account. Provision one online enrolled device named Review Device and grant robots:read. Run a harmless sample app that continuously emits synthetic INFO and WARN telemetry. Ensure the bounded current sample contains useful logs and no personal information. This case covers reading and explaining current telemetry.",
+              "prompt": "Read a recent log sample from Review Device and explain any warnings you find.",
+              "tools_triggered": "list_robots, read_device_logs",
+              "expected_behavior": "Resolve Review Device through list_robots, then call read_device_logs with only its exact robot_id. Summarize warnings from the returned records and state when no warning appears in the bounded sample. Preserve returned omission information. Do not add unsupported app_name or severity parameters, claim a complete log history, or restart any app."
+            },
+            {
+              "description": "Requires the standalone Cloud account-linking gateway deployed at https://mcp.dev.wendy.dev and the submitted plugin connected with a dedicated review account. Provision one online enrolled device named Review Device and grant robots:read. Grant cameras:capture and enable the gateway camera opt-in. Supply one working camera aimed at a staged scene without people/private material and the required capture runtime on the gateway host. This case covers explicit camera selection and a fresh still image.",
+              "prompt": "Take one fresh picture from the test camera on Review Device and describe what is visible.",
+              "tools_triggered": "list_robots, inspect_robot, capture_robot_image",
+              "expected_behavior": "Resolve robot_id from list_robots and use inspect_robot to identify the permitted test camera. Call capture_robot_image with that exact robot_id and its integer camera_id. Describe the actual returned image and identify it as a single still frame. Do not infer camera capability solely from can_capture, invent a scene after an error, or claim that a live stream continues."
+            },
+            {
+              "description": "Requires the standalone Cloud account-linking gateway deployed at https://mcp.dev.wendy.dev and the submitted plugin connected with a dedicated review account. Provision one online enrolled device named Review Device and grant robots:read. Grant apps:control and enable the gateway app-control opt-in for a disposable running app named review-logger with no actuators, external writes, or important work. This case covers an explicit app stop with read-back. Keep a second sample app running to verify it is untouched.",
+              "prompt": "Stop review-logger on Review Device, then check that it stopped. Leave the other app running and keep all saved data.",
+              "tools_triggered": "list_robots, inspect_robot, stop_robot_app",
+              "expected_behavior": "Resolve robot_id from list_robots, inspect_robot to confirm the app name and control permission, then call stop_robot_app with the exact robot_id and app_name=\"review-logger\". Require state_verified=true and state=\"STOPPED\" before reporting the stop as verified. Call inspect_robot afterward to confirm the other app remains running. Report uncertainty if either read-back fails. Do not delete apps/data, stop another app, or retry an uncertain mutation automatically."
+            }
+          ],
+          "negative": [
+            {
+              "description": "The standalone Cloud account-linking gateway has no access to the user laptop or local simulator lifecycle. Explain that it cannot create a simulator on that computer and offer local setup instructions if wanted. Do not invoke any Wendy tool or claim a local VM was created.",
+              "prompt": "Create a new Go2 simulator on my laptop using this hosted Wendy connection. I have not installed any Wendy software on the laptop."
+            },
+            {
+              "description": "The standalone gateway exposes no local project/file tools, build jobs, or deployment tools. Explain that this connection cannot read the stated laptop path, edit the project, or deploy it. Offer to explain a separate development workflow. Do not invoke a Wendy tool for file access or deployment, ask for credentials, or claim a build completed.",
+              "prompt": "Read the project in ~/robot-app on my laptop, change its Python code, and build and deploy it through this Wendy connection."
+            },
+            {
+              "description": "The publisher declares no payments or purchases in this plugin, and the gateway has no checkout tools. Explain that the plugin cannot place an order or charge a card. Do not invoke any Wendy tool, collect payment details, or claim a purchase.",
+              "prompt": "Use Wendy to buy me a Raspberry Pi and charge my saved credit card."
+            }
+          ]
+        }
       }
     }
   }

@@ -43,6 +43,18 @@ per MCP session, including sessions where a terminal already printed the notice.
 The notice preserves the tool's result and error state. Run the supplied update
 command, then restart the Wendy MCP server to load the new version and tools.
 
+## Organization setting and web chats
+
+`wendy mcp serve` refuses to start, and its cloud tools refuse calls, when your
+organization has turned off Allow MCP. Signed cloud calls it makes are marked as
+coming through a local MCP client.
+
+To use Wendy from ChatGPT or Claude on the web, run
+[`wendy cloud mcp`](/docs/advanced/clients/wendy-cli/commands/cloud/mcp) and pair the chat
+with the code it prints. The chat gets these tools through your CLI session,
+read-only unless you allow more, and asks you before every call that changes
+state.
+
 ## Enable specialist tools
 
 Call `wendy_tools` with `{"groups":["robotics"]}` to expose ROS inspection tools.
