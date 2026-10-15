@@ -82,6 +82,9 @@ func TestV2DeleteAssetRequiresSignedCanonicalUUID(t *testing.T) {
 }
 
 func TestV2DeleteCarriesSameOperatorExactPrincipalAuthority(t *testing.T) {
+	t.Setenv(channelEnv, cloudpbv2.RequestChannel_REQUEST_CHANNEL_HOSTED_MCP.String())
+	t.Setenv(mcpClientIDEnv, "https://chatgpt.com/oauth")
+	t.Setenv(relaySessionIDEnv, "sess-1")
 	auth, key, _ := testAuth(t)
 	signer, err := newSigner(auth)
 	if err != nil {
@@ -95,6 +98,9 @@ func TestV2DeleteCarriesSameOperatorExactPrincipalAuthority(t *testing.T) {
 		signed, err := signer.signRequest(cloudpbv2.AssetService_DeleteAsset_FullMethodName, request, byKID, uuid.NewString())
 		if err != nil {
 			t.Fatal(err)
+		}
+		if signed.GetChannel() != cloudpbv2.RequestChannel_REQUEST_CHANNEL_HOSTED_MCP || signed.GetMcpClientId() != "https://chatgpt.com/oauth" || signed.GetRelaySessionId() != "sess-1" {
+			t.Fatal("unenrollment envelope lost its hosted MCP channel metadata")
 		}
 		parts := strings.Split(string(signed.GetPkiManagementRequest()), ".")
 		if len(parts) != 3 {

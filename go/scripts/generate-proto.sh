@@ -187,6 +187,8 @@ done
 # Pin (WDY-3458 round): wendycloud/v2/*.proto and wendy/options.proto are
 # service-protos master 09097e83 (merged #91); device_enrollment.proto is cloud #757 head
 # 5e3003e4 (cloud-proto/device_enrollment.proto), including enrollment hardware.
+# signed_request.proto is service-protos master 26ece19e (merged #118, WDY-3657);
+# relay_mcp.proto is service-protos master a41b4bac (merged #120, WDY-3675).
 # assets.proto is service-protos
 # c5220f7 (merged #96): GetAsset deletion details/expected_device_id guard
 # plus upstream asset hardware fields.
@@ -198,6 +200,7 @@ CLOUD_V2_PKG="$MODULE/go/proto/gen/cloudpb/v2"
 CLOUD_V2_PROTOS=(
     "wendy/options.proto"
     "wendycloud/v2/signed_request.proto"
+    "wendycloud/v2/relay_mcp.proto"
     "wendycloud/v2/device_enrollment.proto"
     "wendycloud/v2/pki_admin.proto"
     "wendycloud/v2/apps.proto"

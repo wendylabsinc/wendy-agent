@@ -1,6 +1,18 @@
 # Wendy for ChatGPT
 
-## Add Wendy to your personal marketplace
+## Hosted plugin
+
+The public package targets standalone Cloud account linking at
+`https://mcp.dev.wendy.dev` using Streamable HTTP and OAuth. Users should need no
+local CLI process. The current endpoint still serves the separate session relay;
+replace it with the standalone gateway before submitting this package. See
+[submission preparation](SUBMISSION.md) for the verified service configuration,
+OAuth registrations, review cases, recording, and release checks.
+
+Package a review draft with
+`python3 scripts/package-chatgpt-plugin.py --output /tmp/wendy-robots-marketplace-draft.zip`.
+
+## Add the local desktop plugin to your personal marketplace
 
 With the Wendy CLI installed, run:
 
@@ -164,10 +176,9 @@ Configure a local MCP connection or ChatGPT's private Secure MCP Tunnel with:
 }
 ```
 
-The portable `plugin.json` and `mcp.json` in this directory are for a local plugin
-install. That manifest expects the new CLI as `wendy` on PATH and
-`WENDY_ROBOT_GATEWAY_CONFIG` in the MCP process environment. Alternatively edit
-the installed copy's command and args to use the absolute paths above. Restart
+The portable `mcp.json` in this directory connects to the hosted gateway. For
+this local pilot, use `wendy mcp setup chatgpt` to generate a separate desktop
+package, or configure the local command and absolute paths above. Restart
 the MCP connection after changing the binary, policy, or exported tools. Then
 refresh Wendy in ChatGPT Plugins and open its workspace in a new conversation.
 ChatGPT caches trusted tools and UI resources. New tools cannot be called from a
@@ -415,12 +426,12 @@ For per-user Cloud credential delegation, use the separate
 credentials with encrypted sessions for each linked account, serves the gateway
 OAuth flow, and discovers only that account's Cloud inventory. Production service
 configuration, client/callback registration, and a real ChatGPT connection check
-remain required before deployment. The packaged local MCP plugin is unchanged.
+remain required before deployment.
 
-For hosted distribution, change the installed `mcp.json` server to
-`{"type":"streamable-http","url":"https://<your-host>/mcp"}`. Register the
-actual MCP endpoint through OpenAI's plugin builder and complete review before
-public distribution. The plugin package deliberately contains no invented app ID.
+The portable `mcp.json` uses
+`{"type":"streamable-http","url":"https://mcp.dev.wendy.dev"}`. Register this
+MCP endpoint through OpenAI's plugin builder and complete review before public
+distribution. The plugin package contains no app ID.
 
 ## Simulators and app web UIs
 

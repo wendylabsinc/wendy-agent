@@ -69,8 +69,11 @@ type Profile struct {
 	Expires        string `json:"expires"`
 }
 type Session struct {
-	Settings                              *Settings
-	Store                                 CredentialStore
+	Settings *Settings
+	Store    CredentialStore
+	// RequireHostedMCPPolicy is set by the hosted gateway, never from saved
+	// credentials. Its verified user tokens must permit both MCP channels.
+	RequireHostedMCPPolicy                bool
 	mu                                    sync.Mutex
 	Client                                HTTPDoer
 	meta                                  metadata
@@ -400,6 +403,13 @@ func (s *Session) verifyAccess(ctx context.Context, raw, audience string) (map[s
 	cnf, _ := claims["cnf"].(map[string]any)
 	if cnf["jkt"] != thumb {
 		return nil, errors.New("Access token belongs to a different operator key")
+	}
+	if s.RequireHostedMCPPolicy {
+		allowMCP, _ := claims["allow_mcp"].(bool)
+		allowHostedMCP, _ := claims["allow_hosted_mcp"].(bool)
+		if !allowMCP || !allowHostedMCP {
+			return nil, errors.New("Wendy Cloud organization does not allow hosted MCP access")
+		}
 	}
 	return claims, nil
 }

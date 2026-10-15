@@ -38,6 +38,28 @@ message SignedRequest {
   // pki-core tier-3 operations only: the operator's "management-request+jws",
   // relayed verbatim as the fabric Envelope signed_artifact.
   optional bytes pki_management_request = 4;
+  // The MCP channel the request came through (WDY-3657, docs/relay-mcp.md).
+  // UNSPECIFIED = not MCP. Outside `signature`: client-asserted, as honest as
+  // the client that sets it. Cloud audits it and refuses an MCP channel the
+  // caller's realm does not allow; a verifier that ignores it is unaffected.
+  RequestChannel channel = 5;
+  // HOSTED_MCP only, then both required: the web client's OAuth client_id
+  // (PairingRequested.client_id) and the relay session
+  // (OpenRelaySessionResponse.session_id). Audited, never authorizing.
+  // INVALID_ARGUMENT when HOSTED_MCP lacks either, or another channel sets
+  // either. OpenRelaySession itself is sent UNSPECIFIED.
+  string mcp_client_id = 6;
+  string relay_session_id = 7;
+}
+
+enum RequestChannel {
+  REQUEST_CHANNEL_UNSPECIFIED = 0;
+  // A local MCP client driving the CLI (`wendy mcp serve`). Needs the realm's
+  // `allow_mcp` claim.
+  REQUEST_CHANNEL_MCP_LOCAL = 1;
+  // A web chat through the hosted relay (`wendy cloud mcp`). Needs
+  // `allow_mcp` and `allow_hosted_mcp`.
+  REQUEST_CHANNEL_HOSTED_MCP = 2;
 }
 
 // OperatorSessionService lets a client check its operator leaf once at session
