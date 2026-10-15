@@ -198,9 +198,9 @@ completion, duplicate/stale/invalid pieces, expiry/eviction/discard counts and
 current/peak reservations. These are hop-local receive counters, not app-message
 metrics or proof of delivery.
 
-Internet-sharing overlays, application catalogue gossip, local VIP proxying and
-LAN service projection are integrated by subsequent stages. Their separate
-protocols should not be inferred from this presence directory.
+Application catalogue gossip uses the separate protocol described below; it
+should not be inferred from the device presence directory. Internet-sharing
+overlays and LAN service projection are integrated in subsequent stages.
 
 ## Verification
 
@@ -216,3 +216,48 @@ forwarding. Run them only inside a disposable privileged container/network
 namespace, never in a host or Jetson management namespace. The container needs
 `iproute2`, `iptables`, `iputils-ping`, `/dev/net/tun` and IPv6 enabled. Namespace
 tests do not establish physical radio performance.
+
+## Neighbour service catalogue
+
+Service catalogue messages use the existing reliable neighbour control stream,
+not a TCP listener or a connection to each routed origin. The catalogue owns a
+synchronizer for each authenticated link incarnation. The node exposes a bounded
+ControlHub and never runs catalogue signature verification or disk writes in its
+routing event loop. Catalogue messages are split into 1 KiB fragments, with a
+64 KiB logical-message bound; the neighbour writer interleaves these fragments
+with urgent device control. Babel datagrams retain the carrier's existing path.
+
+Every neighbour exchanges its current certificate inventory and incremental
+service snapshot. Accepted origin signatures are preserved on relay. Verified
+supplier records seed per-link send stamps to prevent echoes. Failed queue
+admission does not consume a send stamp. The existing 15-second repair scan
+sends unqueued generations only. Certificate cache misses can be repaired through
+other neighbours with bounded, coalesced requests. Ordinary signed-record formats,
+service leases and device-directory renewal/repair intervals are unchanged.
+
+Projection readiness uses a fresh origin-signed inventory challenge instead of an
+origin TLS session. A route loss or process restart invalidates readiness. On
+route recovery, a random 256-bit nonce request follows neighbour control links
+towards the origin; the signed response follows bounded reverse-path state. The
+response binds mesh, full origin/requester principals, nonce, issue/expiry times,
+and a complete immutable inventory of the origin's durable per-service generation
+and body-hash receipts, including inactive keys. Responses are chunked, bounded to
+4 MiB each and 8 MiB retained assembly, and expire after 30 seconds. Generation
+fences persist before readiness becomes visible. Newer concurrent publications
+are preserved; old active bodies cannot bypass an inactive inventory fence, while
+signed withdrawal bodies remain relayable. Request, transfer and queue bounds
+limit work on malformed or non-responsive peers. No request creates a routed
+socket. These freshness requests occur on readiness recovery, not on each normal
+service renewal. An origin without a live route remains unprojected.
+
+The catalogue capability is part of the neighbour ALPN, so connected neighbours
+must be upgraded together. Later route-proof versions retain their stronger
+signature contract alongside that capability. Compact HAVE/WANT artifact
+dissemination is a separate follow-up; full signed-record gossip and certificate
+inventories are preserved.
+
+Run the native affected-package race checks and the opt-in
+`TestNeighbourCatalogueLinuxNamespaces` in a disposable privileged Linux container.
+The latter creates four real routers in separate network namespaces with only
+A-B, B-C and C-D links, checks multihop catalogue readiness and withdrawal after
+partition/heal, and asserts no catalogue TCP listener on port 43022.

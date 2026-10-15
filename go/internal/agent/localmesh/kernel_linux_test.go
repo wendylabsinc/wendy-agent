@@ -77,8 +77,9 @@ func TestKernelIsolatedNamespace(t *testing.T) {
 				done <- nil
 				return
 			}
-			// Only the test's IPv6 payload is application data.
-			if n > 0 && buf[0]>>4 == 6 {
+			// Interface setup also emits IPv6 multicast control traffic.
+			// Wait for the injected UDP packet before checking its addresses.
+			if n >= 40 && buf[0]>>4 == 6 && buf[6] == 17 {
 				done <- buf[:n]
 				return
 			}

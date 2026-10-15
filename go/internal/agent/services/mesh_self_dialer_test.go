@@ -53,7 +53,7 @@ func TestOwnVIPUsesLiveIngressAndRevokesOnStop(t *testing.T) {
 				}
 				t.Fatalf("unpublished port: %v", err)
 			}
-			if err := registry.Claim("publisher", port, "10.3.0.2", port); err != nil {
+			if err := registry.ClaimForApp("publisher", "publisher", port, "10.3.0.2", port); err != nil {
 				t.Fatal(err)
 			}
 			conn, mode, err := dial(context.Background())

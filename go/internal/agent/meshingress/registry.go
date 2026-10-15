@@ -21,6 +21,7 @@ type Registry struct {
 	tcpByOwner map[string]map[*authorizedConn]struct{}
 	mu         sync.RWMutex
 	byPort     map[uint16]string
+	appByPort  map[uint16]string
 	targets    map[uint16]netip.AddrPort
 	byOwner    map[string]map[uint16]struct{}
 }
@@ -48,6 +49,16 @@ func (r *Registry) OwnedBy(containerID string, port uint16) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.byPort[port] == containerID
+}
+
+// AllowedApp binds a catalog publication to the running app that owns the port.
+func (r *Registry) AllowedApp(appID string, port uint16) bool {
+	if r == nil || appID == "" || port == 0 {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.byPort[port] != "" && r.appByPort[port] == appID
 }
 
 // DialAuthorized holds the admission read lock across a bounded TCP dial.
@@ -134,6 +145,11 @@ func (r *Registry) CheckAvailable(containerID string, port uint16) error {
 // matching host port forward. The caller supplies its verified CNI address
 // and container port. Repeating the exact same admission is safe.
 func (r *Registry) Claim(containerID string, port uint16, containerIP string, containerPort uint16) error {
+	return r.ClaimForApp(containerID, "", port, containerIP, containerPort)
+}
+
+// ClaimForApp records app ownership and the verified CNI endpoint together.
+func (r *Registry) ClaimForApp(containerID, appID string, port uint16, containerIP string, containerPort uint16) error {
 	if r == nil {
 		return fmt.Errorf("wendy net ingress registry is unavailable")
 	}
@@ -150,12 +166,16 @@ func (r *Registry) Claim(containerID string, port uint16, containerIP string, co
 	if err := checkOwner(r.byPort[port], containerID, port); err != nil {
 		return err
 	}
+	if r.byPort[port] != "" && r.appByPort[port] != appID {
+		return fmt.Errorf("wendy net ingress host port %d cannot change app owner", port)
+	}
 	if r.byPort[port] != "" && r.targets[port] != target {
 		return fmt.Errorf("wendy net ingress host port %d cannot change its live container endpoint", port)
 	}
 	if r.byPort == nil {
 		r.byPort = make(map[uint16]string)
 		r.targets = make(map[uint16]netip.AddrPort)
+		r.appByPort = make(map[uint16]string)
 		r.byOwner = make(map[string]map[uint16]struct{})
 	}
 	if r.byOwner[containerID] == nil {
@@ -163,6 +183,7 @@ func (r *Registry) Claim(containerID string, port uint16, containerIP string, co
 	}
 	r.byPort[port] = containerID
 	r.targets[port] = target
+	r.appByPort[port] = appID
 	r.byOwner[containerID][port] = struct{}{}
 	return nil
 }
@@ -185,6 +206,7 @@ func (r *Registry) Release(containerID string) {
 		if r.byPort[port] == containerID {
 			delete(r.byPort, port)
 			delete(r.targets, port)
+			delete(r.appByPort, port)
 		}
 	}
 	delete(r.byOwner, containerID)

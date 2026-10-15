@@ -36,6 +36,8 @@ type nodePeer struct {
 	sync       *Synchronizer
 	replies    []ControlMessage
 	replyBytes int
+	catalog    chan ControlMessage
+	done       chan struct{}
 }
 
 type nodeLink interface {
@@ -76,6 +78,7 @@ type nodeEvent struct {
 // authenticated QUIC connections and pass them to Attach; no NAN concepts appear
 // in routing or service synchronization. Parallel links have distinct LinkIDs.
 type Node struct {
+	controlHub      *ControlHub
 	Credentials     *Credentials
 	kernel          *Kernel
 	cache           *IdentityCache
@@ -127,7 +130,7 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	n := &Node{Credentials: credentials, kernel: kernel, cache: cache, directory: directory, bundleHints: newBundleHintCache(), store: store, state: state, peers: map[babel.LinkID]*nodePeer{}, events: make(chan nodeEvent, 256), ctx: ctx, cancel: cancel, started: now,
+	n := &Node{controlHub: NewControlHub(), Credentials: credentials, kernel: kernel, cache: cache, directory: directory, bundleHints: newBundleHintCache(), store: store, state: state, peers: map[babel.LinkID]*nodePeer{}, events: make(chan nodeEvent, 256), ctx: ctx, cancel: cancel, started: now,
 		advertisement: Manifest{Version: 1, Device: credentials.Device.UUID(), Name: name, AgentPort: agentPort},
 		diagnostics:   carrierDiagnostics{enabled: os.Getenv("WENDY_NET_CARRIER_DIAGNOSTICS") == "1"}}
 	ok := false
@@ -165,6 +168,8 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 	ok = true
 	return n, nil
 }
+
+func (n *Node) ControlHub() *ControlHub { return n.controlHub }
 
 func (n *Node) Snapshot() NodeSnapshot {
 	v := n.view.Load()
@@ -230,6 +235,7 @@ func (n *Node) Run() error {
 	defer n.cancel()
 	defer func() {
 		_ = n.Stop()
+		n.controlHub.Close()
 		for _, p := range n.peers {
 			p.sync.Close()
 			_ = p.link.Close()
@@ -357,6 +363,17 @@ func (n *Node) handle(e nodeEvent) error {
 		e.add.tun = tun
 		e.add.sync = NewSynchronizer(n.directory, n.cache)
 		n.peers[e.add.id] = e.add
+		p := e.add
+		n.controlHub.Add(ControlPeer{ID: p.id, Device: p.device}, func(ctx context.Context, data []byte) error {
+			select {
+			case p.catalog <- ControlMessage{Kind: "catalog", Catalog: data}:
+				return nil
+			case <-p.done:
+				return io.ErrClosedPipe
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}, func() { _ = p.link.Close() })
 		// Both ends derive the same complementary pair from the full UUIDs.
 		local, peer, err := meshid.LinkLocalAddresses(n.Credentials.Device, e.add.device)
 		if err != nil {
@@ -377,6 +394,8 @@ func (n *Node) handle(e nodeEvent) error {
 		if err := n.step(babel.RemoveLink{ID: e.id}); err != nil {
 			return err
 		}
+		n.controlHub.Remove(e.id)
+		close(p.done)
 		delete(n.peers, e.id)
 		_ = n.kernel.RemovePeer(e.id)
 		n.refresh()
@@ -386,6 +405,12 @@ func (n *Node) handle(e nodeEvent) error {
 		return n.step(babel.Receive{ID: e.id, Packet: e.packet})
 	}
 	if e.control != nil {
+		if e.control.Kind == "catalog" {
+			if err := n.controlHub.Deliver(e.id, e.control.Catalog); err != nil {
+				_ = p.link.Close()
+			}
+			return nil
+		}
 		replies, changed, err := p.sync.Receive(*e.control, time.Now())
 		if err != nil {
 			_ = p.link.Close()
@@ -544,42 +569,65 @@ func (n *Node) verifyPeerCertificates(peer meshid.Device, certs []*x509.Certific
 // boundary. Renewal or supersession while a previous write blocks must not
 // send an obsolete signature or tear down a healthy neighbour link.
 func (n *Node) writeControls(ctx context.Context, p *nodePeer) error {
+	// Route/device control has priority, with one catalogue frame after
+	// at most four control messages. No catalogue work runs on Node.Run.
+	urgent := 0
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case m := <-p.control:
-			if m.Kind == "certificate" && m.Certificate != nil && m.Certificate.Chain != nil {
-				// Chain hints can wait behind a slow write across renewal too.
-				// Keep content-addressed requests/chunks independent, but name
-				// only the principal's current trusted chain in a new hint.
-				if n.cache == nil {
-					continue
-				}
-				principal := m.Certificate.Chain.Principal
-				chain, _, ok := n.cache.Get(principal, time.Now())
-				if !ok {
-					continue
-				}
-				m.Certificate = DescribeCertificates(principal, chain)
-				if m.Certificate == nil {
-					continue
-				}
+		var m ControlMessage
+		if urgent >= 4 {
+			select {
+			case m = <-p.catalog:
+				urgent = 0
+			default:
 			}
-			if m.Kind == "manifest" {
-				if m.Manifest == nil || n.directory == nil {
-					continue
-				}
-				if _, ok := n.directory.CurrentRecordChain(*m.Manifest, time.Now()); !ok {
-					continue
-				}
+		}
+		if m.Kind == "" && urgent < 4 {
+			select {
+			case m = <-p.control:
+				urgent++
+			default:
 			}
-			if err := p.link.WriteControl(m); err != nil {
-				return err
+		}
+		if m.Kind == "" {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case m = <-p.control:
+				urgent++
+			case m = <-p.catalog:
+				urgent = 0
 			}
-			if m.Kind == "bundle" {
-				n.bundleHints.Written(p.device, m.Bundle, time.Now())
+		}
+		if m.Kind == "certificate" && m.Certificate != nil && m.Certificate.Chain != nil {
+			// Chain hints can wait behind a slow write across renewal too.
+			// Keep content-addressed requests/chunks independent, but name
+			// only the principal's current trusted chain in a new hint.
+			if n.cache == nil {
+				continue
 			}
+			principal := m.Certificate.Chain.Principal
+			chain, _, ok := n.cache.Get(principal, time.Now())
+			if !ok {
+				continue
+			}
+			m.Certificate = DescribeCertificates(principal, chain)
+			if m.Certificate == nil {
+				continue
+			}
+		}
+		if m.Kind == "manifest" {
+			if m.Manifest == nil || n.directory == nil {
+				continue
+			}
+			if _, ok := n.directory.CurrentRecordChain(*m.Manifest, time.Now()); !ok {
+				continue
+			}
+		}
+		if err := p.link.WriteControl(m); err != nil {
+			return err
+		}
+		if m.Kind == "bundle" {
+			n.bundleHints.Written(p.device, m.Bundle, time.Now())
 		}
 	}
 }
@@ -588,7 +636,7 @@ func (n *Node) attachLink(ctx context.Context, peer meshid.Device, cost uint16, 
 	if cost == 0 || cost == ^uint16(0) {
 		return errors.New("invalid wendy net link cost")
 	}
-	p := &nodePeer{device: peer, cost: cost, link: link, control: make(chan ControlMessage, 128)}
+	p := &nodePeer{device: peer, cost: cost, link: link, control: make(chan ControlMessage, 128), catalog: make(chan ControlMessage, 16), done: make(chan struct{})}
 	if err := n.request(ctx, nodeEvent{add: p}); err != nil {
 		return err
 	}
