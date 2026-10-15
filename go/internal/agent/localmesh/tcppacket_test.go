@@ -35,7 +35,7 @@ func TestQUICOverConfiguredTCPPair(t *testing.T) {
 		}
 		transport := &quic.Transport{Conn: pc}
 		defer transport.Close()
-		tlsConfig, err := b.PeerTLS(a.Asset)
+		tlsConfig, err := b.PeerTLS(a.Device)
 		if err != nil {
 			server <- err
 			return
@@ -52,7 +52,7 @@ func TestQUICOverConfiguredTCPPair(t *testing.T) {
 			return
 		}
 		defer conn.CloseWithError(0, "test done")
-		stream, err := OpenControl(ctx, conn, b.Org, b.Asset, a.Asset)
+		stream, err := OpenControl(ctx, conn, b.Device, a.Device)
 		if err != nil {
 			server <- err
 			return
@@ -70,7 +70,7 @@ func TestQUICOverConfiguredTCPPair(t *testing.T) {
 	}
 	transport := &quic.Transport{Conn: pc}
 	defer transport.Close()
-	tlsConfig, err := a.PeerTLS(b.Asset)
+	tlsConfig, err := a.PeerTLS(b.Device)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestQUICOverConfiguredTCPPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.CloseWithError(0, "test done")
-	if _, err = OpenControl(ctx, conn, a.Org, a.Asset, b.Asset); err != nil {
+	if _, err = OpenControl(ctx, conn, a.Device, b.Device); err != nil {
 		t.Fatal(err)
 	}
 	if err = <-server; err != nil {

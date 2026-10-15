@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"strconv"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 // TCPConfig is an opt-in, explicitly provisioned topology for local agent
@@ -16,21 +18,30 @@ import (
 type TCPConfig struct {
 	Listen string    `json:"listen"`
 	Peers  []TCPPeer `json:"peers"`
+
+	// devices holds the parsed peer identities, in the same order as Peers.
+	devices []meshid.Device
 }
 
+// TCPPeer names a configured neighbour by its device UUID - the same 16 bytes
+// the mesh address and link-local ordering are derived from. There is no asset
+// number and no organization number: the tenant comes from this device's own
+// verified certificate.
 type TCPPeer struct {
-	Asset   int32  `json:"asset"`
+	Device  string `json:"device"`
 	Address string `json:"address"`
 }
 
 type TCPIdentity struct {
-	Org, Asset              int32
 	Name                    string
 	AgentPort               uint16
 	Certificate, Chain, Key string
 }
 
-func LoadTCPConfig(path string, self int32) (*TCPConfig, error) {
+// Devices returns the parsed peers of a config loaded for self.
+func (c *TCPConfig) Devices() []meshid.Device { return c.devices }
+
+func LoadTCPConfig(path string, self meshid.Device) (*TCPConfig, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -57,15 +68,21 @@ func LoadTCPConfig(path string, self int32) (*TCPConfig, error) {
 	if len(cfg.Peers) > 64 {
 		return nil, errors.New("too many configured mesh peers")
 	}
-	seen := make(map[int32]bool, len(cfg.Peers))
+	seen := make(map[string]bool, len(cfg.Peers))
+	cfg.devices = make([]meshid.Device, 0, len(cfg.Peers))
 	for _, p := range cfg.Peers {
-		if p.Asset <= 0 || p.Asset > 65534 || p.Asset == self || seen[p.Asset] {
-			return nil, fmt.Errorf("invalid or duplicate mesh peer asset %d", p.Asset)
+		device, err := meshid.ParseDevice(self.Tenant(), p.Device)
+		if err != nil {
+			return nil, fmt.Errorf("mesh peer: %w", err)
 		}
-		seen[p.Asset] = true
+		if device.Principal() == self.Principal() || seen[device.Principal()] {
+			return nil, fmt.Errorf("invalid or duplicate mesh peer device %s", p.Device)
+		}
+		seen[device.Principal()] = true
 		if err := validateTCPAddress(p.Address, false); err != nil {
-			return nil, fmt.Errorf("peer %d: %w", p.Asset, err)
+			return nil, fmt.Errorf("peer %s: %w", p.Device, err)
 		}
+		cfg.devices = append(cfg.devices, device)
 	}
 	return &cfg, nil
 }

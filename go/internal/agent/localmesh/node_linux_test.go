@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -17,14 +16,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miekg/dns"
 	quic "github.com/quic-go/quic-go"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
+// nodeTestConfig is handed to each re-executed peer process. Identity is the
+// device principal; the underlay address is transport only and never an identity.
 type nodeTestConfig struct {
-	Asset                                 int32
-	Cert, Chain, Key, Dir, Underlay, Peer string
-	Internet                              bool
+	Device, Peer      string
+	Cert, Chain, Key  string
+	Dir               string
+	Underlay, Address string
 }
 
 func TestNodePeerProcess(t *testing.T) {
@@ -40,9 +43,17 @@ func TestNodePeerProcess(t *testing.T) {
 	if err = json.Unmarshal(data, &config); err != nil {
 		t.Fatal(err)
 	}
-	credentials, err := NewCredentials(64, config.Asset, config.Cert, config.Chain, config.Key)
+	credentials, err := NewCredentials(config.Cert, config.Chain, config.Key)
 	if err != nil {
 		t.Fatal(err)
+	}
+	self := credentials.Device
+	if self.Principal() != config.Device {
+		t.Fatalf("credentials carry %s, config names %s", self.Principal(), config.Device)
+	}
+	peer := testDevice(t, config.Peer)
+	if self.Principal() == peer.Principal() {
+		t.Fatal("test config names itself as the peer")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
@@ -53,30 +64,15 @@ func TestNodePeerProcess(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- node.Run() }()
 	defer func() { cancel(); <-runDone }()
-	peer := int32(445)
-	if config.Asset == 445 {
-		peer = 460
-	}
 	tlsConfig, err := credentials.PeerTLS(peer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Asset == 460 {
-		if config.Internet {
-			policy, err := NewHostPolicy(ctx, config.Asset)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer policy.Close()
-			if err = policy.SetSharing(ctx, "wlmu1", "10.201.0.1"); err != nil {
-				t.Fatal(err)
-			}
-			if err = node.SetUplink(ctx, "wlmu1"); err != nil {
-				t.Fatal(err)
-			}
-		}
-		server := &http.Server{Addr: "10.88.1.204:18080", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.RemoteAddr, "10.88.1.189:") {
+	// The higher UUID serves; the lower one drives the request. Which device is
+	// which follows from the principals in the config, not from a numeric asset.
+	if meshid.Compare(self, peer) > 0 {
+		server := &http.Server{Addr: fmt.Sprintf("[%s]:18080", self.MeshAddress()), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasPrefix(r.RemoteAddr, "["+peer.MeshAddress().String()+"]:") {
 				http.Error(w, "request bypassed mesh source addressing", http.StatusForbidden)
 				return
 			}
@@ -99,7 +95,7 @@ func TestNodePeerProcess(t *testing.T) {
 	var conn *quic.Conn
 	for ctx.Err() == nil {
 		attempt, cancelAttempt := context.WithTimeout(ctx, time.Second)
-		conn, err = quic.DialAddr(attempt, config.Peer, tlsConfig, QUICConfig())
+		conn, err = quic.DialAddr(attempt, config.Address, tlsConfig, QUICConfig())
 		cancelAttempt()
 		if err == nil {
 			break
@@ -112,39 +108,18 @@ func TestNodePeerProcess(t *testing.T) {
 	go func() { linkDone <- node.Attach(ctx, peer, conn) }()
 	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{Proxy: nil}}
 	for ctx.Err() == nil {
-		response, err := client.Get("http://10.88.1.204:18080/")
+		response, err := client.Get(fmt.Sprintf("http://[%s]:18080/", peer.MeshAddress()))
 		if err == nil {
 			body, err := io.ReadAll(response.Body)
 			response.Body.Close()
 			if err == nil && string(body) == "hello over Babel and QUIC" {
 				found := false
 				for _, m := range node.Snapshot().Devices {
-					if m.Asset == 460 {
+					if m.Device == peer.UUID() {
 						found = true
 					}
 				}
 				if found {
-					if config.Internet {
-						if err = node.SetRoaming(ctx, true); err != nil {
-							t.Fatal(err)
-						}
-						query := new(dns.Msg)
-						query.SetQuestion("internet.test.", dns.TypeA)
-						answer, _, err := (&dns.Client{Timeout: time.Second}).Exchange(query, "10.88.1.204:53")
-						if err != nil || len(answer.Answer) == 0 {
-							continue
-						}
-						response, err := client.Get("http://10.201.0.1:18081/")
-						if err != nil {
-							continue
-						}
-						body, err := io.ReadAll(response.Body)
-						response.Body.Close()
-						if err != nil || string(body) != "shared uplink" {
-							continue
-						}
-						t.Log("Internet default routing, source NAT, and peer DNS forwarding succeeded")
-					}
 					t.Log("HTTP and signed device discovery succeeded across live Babel/QUIC/TUN nodes")
 					cancel()
 					<-linkDone
@@ -161,13 +136,10 @@ func TestNodePeerProcess(t *testing.T) {
 	t.Fatal("timed out", node.Snapshot())
 }
 
+// TestNodePairIsolatedNamespaces runs two real nodes in disposable namespaces on
+// a veth underlay: authenticated QUIC link, Babel route exchange, TUN payload to
+// the peer's ULA address, and signed device discovery keyed by device principal.
 func TestNodePairIsolatedNamespaces(t *testing.T) {
-	testNodePair(t, false)
-}
-
-func TestInternetSharingIsolatedNamespaces(t *testing.T) { testNodePair(t, true) }
-
-func testNodePair(t *testing.T, sharing bool) {
 	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
 		t.Skip("requires disposable privileged container")
 	}
@@ -195,65 +167,36 @@ func testNodePair(t *testing.T, sharing bool) {
 		run("-n", name, "link", "set", iface, "up")
 		run("-n", name, "link", "set", "lo", "up")
 	}
-	if sharing {
-		run("link", "add", "wlmu0", "type", "veth", "peer", "name", "wlmu1")
-		defer exec.Command("ip", "link", "del", "wlmu0").Run()
-		run("link", "set", "wlmu1", "netns", names[1])
-		run("addr", "add", "10.201.0.1/30", "dev", "wlmu0")
-		run("link", "set", "wlmu0", "up")
-		run("-n", names[1], "addr", "add", "10.201.0.2/30", "dev", "wlmu1")
-		run("-n", names[1], "link", "set", "wlmu1", "up")
-		run("-n", names[1], "route", "add", "default", "via", "10.201.0.1")
-		listener, err := net.Listen("tcp4", "10.201.0.1:18081")
-		if err != nil {
-			t.Fatal(err)
-		}
-		httpServer := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.RemoteAddr, "10.201.0.2:") {
-				http.Error(w, "missing source NAT", 403)
-				return
-			}
-			fmt.Fprint(w, "shared uplink")
-		})}
-		defer httpServer.Close()
-		go httpServer.Serve(listener)
-		socket, err := net.ListenPacket("udp4", "10.201.0.1:53")
-		if err != nil {
-			t.Fatal(err)
-		}
-		dnsServer := &dns.Server{PacketConn: socket, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
-			m := new(dns.Msg)
-			m.SetReply(r)
-			if len(r.Question) > 0 {
-				m.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30}, A: net.ParseIP("10.201.0.1")}}
-			}
-			_ = w.WriteMsg(m)
-		})}
-		defer dnsServer.Shutdown()
-		go dnsServer.ActivateAndServe()
-	}
 	dir := t.TempDir()
-	configs := map[int32]string{}
-	testCredentialsWithPEM(t, func(asset int32, cert, chain, key string) {
-		cfg := nodeTestConfig{Asset: asset, Cert: cert, Chain: chain, Key: key, Dir: filepath.Join(dir, fmt.Sprint(asset)), Underlay: "10.200.0.2:18500", Peer: "10.200.0.2:18500", Internet: sharing}
+	configs := map[string]string{}
+	testCredentialsWithPEM(t, func(device meshid.Device, cert, chain, key string) {
+		lower := testDevice(t, testPrincipal(testTenantUUID, testDeviceAID))
+		higher := testDevice(t, testPrincipal(testTenantUUID, testDeviceBID))
+		peer, underlay, address := higher, "10.200.0.2:18500", "10.200.0.2:18500"
+		if device.Principal() == higher.Principal() {
+			peer, underlay, address = lower, "10.200.0.2:18500", "10.200.0.1:18500"
+		}
+		cfg := nodeTestConfig{Device: device.Principal(), Peer: peer.Principal(), Cert: cert, Chain: chain, Key: key, Dir: filepath.Join(dir, device.UUID().String()), Underlay: underlay, Address: address}
 		data, err := json.Marshal(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
-		path := filepath.Join(dir, fmt.Sprint(asset)+".json")
+		path := filepath.Join(dir, device.UUID().String()+".json")
 		if err = os.WriteFile(path, data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		configs[asset] = path
+		configs[device.Principal()] = path
 	})
 	binary, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
+	lower := testPrincipal(testTenantUUID, testDeviceAID)
+	higher := testPrincipal(testTenantUUID, testDeviceBID)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	server := exec.CommandContext(ctx, "ip", "netns", "exec", names[1], binary, "-test.run", "^TestNodePeerProcess$", "-test.v")
-	server.Env = append(os.Environ(), "WENDY_LOCALMESH_NODE_TEST_CONFIG="+configs[460])
+	server.Env = append(os.Environ(), "WENDY_LOCALMESH_NODE_TEST_CONFIG="+configs[higher])
 	var serverOutput bytes.Buffer
 	server.Stdout = &serverOutput
 	server.Stderr = &serverOutput
@@ -261,7 +204,7 @@ func testNodePair(t *testing.T, sharing bool) {
 		t.Fatal(err)
 	}
 	client := exec.CommandContext(ctx, "ip", "netns", "exec", names[0], binary, "-test.run", "^TestNodePeerProcess$", "-test.v")
-	client.Env = append(os.Environ(), "WENDY_LOCALMESH_NODE_TEST_CONFIG="+configs[445])
+	client.Env = append(os.Environ(), "WENDY_LOCALMESH_NODE_TEST_CONFIG="+configs[lower])
 	out, clientErr := client.CombinedOutput()
 	serverErr := server.Wait()
 	if clientErr != nil || serverErr != nil {

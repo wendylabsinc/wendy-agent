@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 const MaxControlMessage = 64 << 10
@@ -13,11 +15,11 @@ const MaxControlMessage = 64 << 10
 // Control messages use one bounded reliable stream per authenticated link;
 // routing and payload packets remain independent QUIC datagrams.
 type ControlMessage struct {
-	Kind        string          `json:"kind"`
-	Hello       *LinkHello      `json:"hello,omitempty"`
-	Bundle      [][]byte        `json:"bundle,omitempty"`
-	Manifest    *SignedManifest `json:"manifest,omitempty"`
-	Fingerprint string          `json:"fingerprint,omitempty"`
+	Kind      string          `json:"kind"`
+	Hello     *LinkHello      `json:"hello,omitempty"`
+	Bundle    [][]byte        `json:"bundle,omitempty"`
+	Manifest  *SignedManifest `json:"manifest,omitempty"`
+	Principal string          `json:"principal,omitempty"`
 }
 
 func WriteControl(w io.Writer, m ControlMessage) error {
@@ -69,19 +71,23 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 	}
 	switch m.Kind {
 	case "hello":
-		if m.Hello == nil || len(m.Bundle) != 0 || m.Manifest != nil || m.Fingerprint != "" {
+		if m.Hello == nil || len(m.Bundle) != 0 || m.Manifest != nil || m.Principal != "" {
 			return m, errors.New("invalid hello message")
 		}
 	case "bundle":
-		if len(m.Bundle) == 0 || len(m.Bundle) > 16 || m.Manifest != nil || m.Fingerprint != "" {
+		if len(m.Bundle) == 0 || len(m.Bundle) > 16 || m.Manifest != nil || m.Principal != "" {
 			return m, errors.New("invalid bundle message")
 		}
 	case "manifest":
-		if m.Manifest == nil || len(m.Bundle) != 0 || m.Fingerprint != "" {
+		if m.Manifest == nil || len(m.Bundle) != 0 || m.Principal != "" {
 			return m, errors.New("invalid manifest message")
 		}
 	case "identity-request":
-		if len(m.Fingerprint) != 64 || m.Manifest != nil || len(m.Bundle) != 0 {
+		// Only a full device principal addresses an identity: no hash, no number.
+		if _, err := meshid.DeviceFromPrincipal(m.Principal); err != nil {
+			return m, errors.New("invalid identity request")
+		}
+		if m.Manifest != nil || len(m.Bundle) != 0 {
 			return m, errors.New("invalid identity request")
 		}
 	default:
@@ -110,15 +116,15 @@ func NewSynchronizer(d *Directory, c *IdentityCache) *Synchronizer {
 
 func (s *Synchronizer) Record(w SignedManifest, now time.Time) []ControlMessage {
 	var out []ControlMessage
-	if !s.sent[w.Fingerprint] {
-		chain, _, ok := s.cache.Get(w.Fingerprint, now)
+	if !s.sent[w.Principal] {
+		chain, _, ok := s.cache.Get(w.Principal, now)
 		if !ok {
 			return nil
 		}
 		if len(s.sent) >= 1024 {
 			s.sent = map[string]bool{}
 		}
-		s.sent[w.Fingerprint] = true
+		s.sent[w.Principal] = true
 		out = append(out, ControlMessage{Kind: "bundle", Bundle: chain})
 	}
 	w.Body = append(json.RawMessage(nil), w.Body...)
@@ -139,17 +145,17 @@ func (s *Synchronizer) Reconcile(now time.Time) []ControlMessage {
 func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []ControlMessage, changed []SignedManifest, err error) {
 	switch m.Kind {
 	case "identity-request":
-		chain, _, ok := s.cache.Get(m.Fingerprint, now)
+		chain, _, ok := s.cache.Get(m.Principal, now)
 		if ok {
 			replies = append(replies, ControlMessage{Kind: "bundle", Bundle: chain})
 		}
 	case "bundle":
-		fp, e := s.cache.Put(m.Bundle, now)
+		principal, e := s.cache.Put(m.Bundle, now)
 		if e != nil {
 			return nil, nil, e
 		}
-		if w, ok := s.pending[fp]; ok {
-			delete(s.pending, fp)
+		if w, ok := s.pending[principal]; ok {
+			delete(s.pending, principal)
 			return s.Receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
 		}
 	case "manifest":
@@ -166,8 +172,8 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 			if len(s.pending) >= 8 {
 				return nil, nil, errors.New("too many unresolved identities")
 			}
-			s.pending[m.Manifest.Fingerprint] = *m.Manifest
-			return []ControlMessage{{Kind: "identity-request", Fingerprint: m.Manifest.Fingerprint}}, nil, nil
+			s.pending[m.Manifest.Principal] = *m.Manifest
+			return []ControlMessage{{Kind: "identity-request", Principal: m.Manifest.Principal}}, nil, nil
 		}
 		if e != nil {
 			return nil, nil, e

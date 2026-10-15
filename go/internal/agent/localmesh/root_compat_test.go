@@ -21,6 +21,8 @@ import (
 	"time"
 
 	quic "github.com/quic-go/quic-go"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 type rootByteConn struct {
@@ -154,11 +156,11 @@ func rootQUICRoundtrip(client, server *tls.Config) rootHandshakeResult {
 
 func TestMeshTrimmedRootFullHandshakeCompatibility(t *testing.T) {
 	var root []byte
-	a, b := testCredentialsWithPEM(t, func(_ int32, _ string, chain, _ string) {
+	a, b := testCredentialsWithPEM(t, func(_ meshid.Device, _, chain, _ string) {
 		block, _ := pem.Decode([]byte(chain))
 		root = append([]byte(nil), block.Bytes...)
 	})
-	config := func(c *Credentials, peer int32, old bool) *tls.Config {
+	config := func(c *Credentials, peer meshid.Device, old bool) *tls.Config {
 		t.Helper()
 		cfg, err := c.PeerTLS(peer)
 		if err != nil {
@@ -183,7 +185,7 @@ func TestMeshTrimmedRootFullHandshakeCompatibility(t *testing.T) {
 		for _, pair := range [][2]bool{{false, false}, {false, true}, {true, false}, {true, true}} {
 			name := fmt.Sprintf("%s/clientOld%v/serverOld%v", transport, pair[0], pair[1])
 			t.Run(name, func(t *testing.T) {
-				r := handshake(config(a, b.Asset, pair[0]), config(b, a.Asset, pair[1]))
+				r := handshake(config(a, b.Device, pair[0]), config(b, a.Device, pair[1]))
 				if r.err != nil {
 					t.Fatal(r.err)
 				}
@@ -215,22 +217,22 @@ func TestMeshTrimmedRootFullHandshakeCompatibility(t *testing.T) {
 			}
 		}
 		t.Run(transport+"/wrong-server-pin", func(t *testing.T) {
-			if r := handshake(config(a, b.Asset+1, false), config(b, a.Asset, true)); r.err == nil {
+			if r := handshake(config(a, testDevice(t, testPrincipal(testTenantUUID, testDeviceCID)), false), config(b, a.Device, true)); r.err == nil {
 				t.Fatal("wrong peer pin accepted")
 			}
 		})
 		t.Run(transport+"/wrong-client-pin", func(t *testing.T) {
-			if r := handshake(config(a, b.Asset, true), config(b, a.Asset+1, false)); r.err == nil {
+			if r := handshake(config(a, b.Device, true), config(b, testDevice(t, testPrincipal(testTenantUUID, testDeviceCID)), false)); r.err == nil {
 				t.Fatal("wrong peer pin accepted")
 			}
 		})
 		t.Run(transport+"/untrusted-root", func(t *testing.T) {
-			other, _ := testCredentials(t)
-			cfg, err := other.PeerTLS(b.Asset)
+			other := testForeignCredentials(t, testPrincipal(testTenantUUID, testDeviceCID))
+			cfg, err := other.PeerTLS(b.Device)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if r := handshake(cfg, config(b, a.Asset, false)); r.err == nil {
+			if r := handshake(cfg, config(b, a.Device, false)); r.err == nil {
 				t.Fatal("untrusted root accepted")
 			}
 		})
@@ -238,13 +240,18 @@ func TestMeshTrimmedRootFullHandshakeCompatibility(t *testing.T) {
 	now := time.Now()
 	oldChain := [][]byte{a.Certificate.Certificate[0], root}
 	newChain := a.Certificate.Certificate
-	if Fingerprint(oldChain) != Fingerprint(newChain) {
-		t.Fatal("leaf identity fingerprint changed")
+	// The cache key is the device principal, so trimming the root cannot move an
+	// identity: both bundles must verify to the same one.
+	oldID, err := b.Verify(oldChain, now)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, chain := range [][][]byte{oldChain, newChain} {
-		if id, err := b.Verify(chain, now); err != nil || id.Asset != a.Asset {
-			t.Fatalf("catalog bundle failed: %+v %v", id, err)
-		}
+	newID, err := b.Verify(newChain, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldID.Device.Principal() != a.Device.Principal() || newID.Device.Principal() != a.Device.Principal() {
+		t.Fatalf("trimmed bundle changed identity: %s vs %s", oldID.Device.Principal(), newID.Device.Principal())
 	}
 	var oldWire, newWire bytes.Buffer
 	if err := WriteControl(&oldWire, ControlMessage{Kind: "bundle", Bundle: oldChain}); err != nil {
@@ -269,17 +276,19 @@ func TestMeshTrimmedRootFullHandshakeCompatibility(t *testing.T) {
 }
 
 func TestMeshTrimmedRootRetainsRequiredIntermediateOnWire(t *testing.T) {
-	makeCert := func(name string, asset int32, parent *x509.Certificate, parentKey *ecdsa.PrivateKey) (*x509.Certificate, *ecdsa.PrivateKey, string, string) {
+	// makeCert mints one certificate in the chain; an empty principal marks a
+	// CA, anything else is a device principal carried as the leaf's URI SAN.
+	makeCert := func(name, principal string, parent *x509.Certificate, parentKey *ecdsa.PrivateKey) (*x509.Certificate, *ecdsa.PrivateKey, string, string) {
 		t.Helper()
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
-		template := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: name}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), BasicConstraintsValid: true, IsCA: asset == 0, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}}
-		if asset == 0 {
+		template := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: name}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), BasicConstraintsValid: true, IsCA: principal == "", KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}}
+		if principal == "" {
 			template.KeyUsage |= x509.KeyUsageCertSign
 		} else {
-			u, _ := url.Parse(fmt.Sprintf("urn:wendy:org:64:asset:%d", asset))
+			u, _ := url.Parse(principal)
 			template.URIs = []*url.URL{u}
 		}
 		if parent == nil {
@@ -300,26 +309,27 @@ func TestMeshTrimmedRootRetainsRequiredIntermediateOnWire(t *testing.T) {
 		}
 		return cert, key, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kd}))
 	}
-	root, rk, rp, _ := makeCert("root", 0, nil, nil)
-	intermediate, ik, ip, _ := makeCert("intermediate", 0, root, rk)
-	_, _, ap, ak := makeCert("a", 445, root, rk)
-	_, _, bp, bk := makeCert("b", 460, intermediate, ik)
-	a, err := NewCredentials(64, 445, ap, rp, ak)
+	deviceA, deviceB := testPrincipal(testTenantUUID, testDeviceAID), testPrincipal(testTenantUUID, testDeviceBID)
+	root, rk, rp, _ := makeCert("root", "", nil, nil)
+	intermediate, ik, ip, _ := makeCert("intermediate", "", root, rk)
+	_, _, ap, ak := makeCert("a", deviceA, root, rk)
+	_, _, bp, bk := makeCert("b", deviceB, intermediate, ik)
+	a, err := NewCredentials(ap, rp, ak)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := NewCredentials(64, 460, bp, ip+rp, bk)
+	b, err := NewCredentials(bp, ip+rp, bk)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, handshake := range map[string]func(*tls.Config, *tls.Config) rootHandshakeResult{"TLS13": rootTLSRoundtrip, "QUIC": rootQUICRoundtrip} {
 		for _, oldSide := range []string{"neither", "client", "server"} {
 			t.Run(name+"/old-"+oldSide, func(t *testing.T) {
-				ac, e := a.PeerTLS(b.Asset)
+				ac, e := a.PeerTLS(b.Device)
 				if e != nil {
 					t.Fatal(e)
 				}
-				bc, e := b.PeerTLS(a.Asset)
+				bc, e := b.PeerTLS(a.Device)
 				if e != nil {
 					t.Fatal(e)
 				}
@@ -352,8 +362,8 @@ func TestMeshTrimmedRootRetainsRequiredIntermediateOnWire(t *testing.T) {
 			})
 		}
 		t.Run(name+"/missing-intermediate-rejected", func(t *testing.T) {
-			ac, _ := a.PeerTLS(b.Asset)
-			bc, _ := b.PeerTLS(a.Asset)
+			ac, _ := a.PeerTLS(b.Device)
+			bc, _ := b.PeerTLS(a.Device)
 			cert := bc.Certificates[0]
 			cert.Certificate = cert.Certificate[:1]
 			bc.Certificates = []tls.Certificate{cert}

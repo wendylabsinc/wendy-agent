@@ -1,6 +1,7 @@
 package localmesh
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -11,34 +12,42 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 const (
 	MaxManifestBytes = 32768
 	MaxLease         = 2 * time.Minute
-	manifestDomain   = "wendy-local-mesh/manifest/1\x00"
+	manifestDomain   = "wendy-local-mesh/manifest/2\x00"
 )
 
+// Manifest is a device's own advertisement. It names the device by its UUID -
+// the same 16 bytes as the last ten bytes of its mesh address - and carries no
+// organization number, asset number, or origin proof: admission to the mesh is
+// the authenticated link, not this document.
 type Manifest struct {
-	Version    int `json:"version"`
-	Org, Asset int32
+	Version int       `json:"version"`
+	Device  uuid.UUID `json:"device"`
 	// Revision is a persistently increasing origin counter, including restart.
 	Revision        uint64 `json:"revision"`
 	Issued, Expires int64
 	Name            string `json:"name"`
 	AgentPort       uint16 `json:"agentPort"`
-	Internet        bool   `json:"internet"`
 	Withdraw        bool   `json:"withdraw,omitempty"`
 }
 
+// SignedManifest is a manifest plus the full device principal of the identity
+// that signed it. The principal is the lookup key; the manifest body carries the
+// UUID, and Accept requires the two to agree.
 type SignedManifest struct {
-	Fingerprint string          `json:"fingerprint"`
-	Body        json.RawMessage `json:"body"`
-	Signature   []byte          `json:"signature"`
+	Principal string          `json:"principal"`
+	Body      json.RawMessage `json:"body"`
+	Signature []byte          `json:"signature"`
 }
 
 var ErrExpiredManifest = errors.New("expired local-mesh manifest")
@@ -49,13 +58,10 @@ func (m Manifest) validate(now time.Time) error {
 	if !expires.After(now) {
 		return ErrExpiredManifest
 	}
-	if m.Version != 1 || m.Org <= 0 || m.Asset <= 0 || m.Asset > 65534 || m.Revision == 0 ||
-		issued.After(now.Add(5*time.Second)) || !expires.After(now) || !expires.After(issued) || expires.Sub(issued) > MaxLease ||
+	if m.Version != 2 || m.Device == uuid.Nil || m.Revision == 0 ||
+		issued.After(now.Add(5*time.Second)) || !expires.After(issued) || expires.Sub(issued) > MaxLease ||
 		len(m.Name) > 255 || (!m.Withdraw && m.AgentPort == 0) {
 		return errors.New("invalid or expired local-mesh manifest")
-	}
-	if m.Withdraw && m.Internet {
-		return errors.New("withdrawal advertises internet")
 	}
 	return nil
 }
@@ -69,6 +75,10 @@ func signingInput(key crypto.PublicKey, body []byte) ([]byte, crypto.SignerOpts)
 	return h[:], crypto.SHA256
 }
 
+// SignManifest signs an advertisement with the provisioned device identity and
+// records that identity's principal. The manifest's device UUID must be the
+// signing leaf's own; an advertisement for another device is refused here rather
+// than discovered later by a receiver.
 func SignManifest(m Manifest, chain [][]byte, signer crypto.Signer, now time.Time) (SignedManifest, error) {
 	var out SignedManifest
 	if err := m.validate(now); err != nil {
@@ -77,7 +87,18 @@ func SignManifest(m Manifest, chain [][]byte, signer crypto.Signer, now time.Tim
 	if signer == nil || len(chain) == 0 {
 		return out, errors.New("missing manifest signer")
 	}
-	out.Fingerprint = Fingerprint(chain)
+	leaf, err := x509.ParseCertificate(chain[0])
+	if err != nil {
+		return out, err
+	}
+	device, err := meshid.DeviceFromCert(leaf)
+	if err != nil {
+		return out, err
+	}
+	if device.UUID() != m.Device {
+		return out, errors.New("manifest identity mismatch")
+	}
+	out.Principal = device.Principal()
 	body, err := json.Marshal(m)
 	if err != nil {
 		return out, err
@@ -109,20 +130,20 @@ type directoryEntry struct {
 
 type Directory struct {
 	mu      sync.Mutex
-	org     int32
+	tenant  meshid.Tenant
 	limit   int
 	cache   *IdentityCache
-	entries map[int32]directoryEntry
-	history map[int32]DirectoryReceipt
+	entries map[string]directoryEntry
+	history map[string]DirectoryReceipt
 	persist func([]DirectoryReceipt) error
 }
 
 // DirectoryReceipt is durable replay protection, not cached presence.
 type DirectoryReceipt struct {
-	Asset    int32
-	Revision uint64
-	Hash     string
-	Until    time.Time
+	Device   string    `json:"device"` // full device principal
+	Revision uint64    `json:"revision"`
+	Hash     string    `json:"hash"`
+	Until    time.Time `json:"until"`
 }
 
 func (d *Directory) SetPersistence(receipts []DirectoryReceipt, persist func([]DirectoryReceipt) error, now time.Time) error {
@@ -131,13 +152,17 @@ func (d *Directory) SetPersistence(receipts []DirectoryReceipt, persist func([]D
 	if len(receipts) > d.limit || persist == nil {
 		return errors.New("invalid directory persistence")
 	}
-	history := map[int32]DirectoryReceipt{}
+	history := map[string]DirectoryReceipt{}
 	for _, r := range receipts {
-		if r.Asset <= 0 || r.Asset > 65534 || r.Revision == 0 || len(r.Hash) != 64 {
+		if len(r.Device) > maxPrincipalBytes || r.Revision == 0 || len(r.Hash) != 64 {
+			return errors.New("invalid directory receipt")
+		}
+		device, err := meshid.DeviceFromPrincipal(r.Device)
+		if err != nil || device.Tenant() != d.tenant {
 			return errors.New("invalid directory receipt")
 		}
 		if r.Until.After(now) {
-			history[r.Asset] = r
+			history[r.Device] = r
 		}
 	}
 	d.history = history
@@ -145,34 +170,46 @@ func (d *Directory) SetPersistence(receipts []DirectoryReceipt, persist func([]D
 	return nil
 }
 
-func NewDirectory(org int32, limit int, cache *IdentityCache) (*Directory, error) {
-	if org <= 0 || limit < 1 || cache == nil {
+// NewDirectory scopes a directory to one tenant: the tenant half of every
+// principal it will accept.
+func NewDirectory(tenant meshid.Tenant, limit int, cache *IdentityCache) (*Directory, error) {
+	if tenant == (meshid.Tenant{}) || limit < 1 || cache == nil {
 		return nil, errors.New("invalid directory configuration")
 	}
-	return &Directory{org: org, limit: limit, cache: cache, entries: map[int32]directoryEntry{}}, nil
+	return &Directory{tenant: tenant, limit: limit, cache: cache, entries: map[string]directoryEntry{}}, nil
 }
 
-// Accept validates the origin, not the relaying neighbour. Return true only for
-// a new version: duplicate delivery never renews its signed absolute expiry.
+// Accept validates the advertising device's own verified identity, never the
+// relaying neighbour: a manifest is admitted because its signer is the device
+// named in it, and that device was admitted by the authenticated link. Return
+// true only for a new version: duplicate delivery never renews its signed
+// absolute expiry.
 func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
-	if len(w.Body) > MaxManifestBytes || len(w.Signature) > 1024 || len(w.Fingerprint) != 64 {
+	if len(w.Body) > MaxManifestBytes || len(w.Signature) > 1024 || w.Principal == "" || len(w.Principal) > maxPrincipalBytes {
 		return false, errors.New("oversized manifest envelope")
+	}
+	device, err := meshid.DeviceFromPrincipal(w.Principal)
+	if err != nil {
+		return false, err
+	}
+	if device.Tenant() != d.tenant {
+		return false, errors.New("manifest belongs to another tenant")
 	}
 	var m Manifest
 	if err := json.Unmarshal(w.Body, &m); err != nil {
 		return false, err
 	}
-	if err := m.validate(now); err != nil {
+	if err = m.validate(now); err != nil {
 		return false, err
 	}
-	if m.Org != d.org {
-		return false, errors.New("manifest belongs to another organization")
-	}
-	chain, id, ok := d.cache.Get(w.Fingerprint, now)
+	chain, id, ok := d.cache.Get(w.Principal, now)
 	if !ok {
 		return false, ErrIdentityNeeded
 	}
-	if id.Org != m.Org || id.Asset != m.Asset {
+	if id.Device.Principal() != device.Principal() {
+		return false, errors.New("manifest identity mismatch")
+	}
+	if m.Device != device.UUID() {
 		return false, errors.New("manifest identity mismatch")
 	}
 	if time.UnixMilli(m.Expires).After(id.NotAfter) {
@@ -195,19 +232,18 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 	if !valid {
 		return false, errors.New("invalid manifest signature")
 	}
-	h := sha256.Sum256(w.Body)
-	hash := hex.EncodeToString(h[:])
+	hash := manifestHash(w.Body)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for asset, e := range d.entries {
+	for principal, e := range d.entries {
 		if !e.retainUntil.After(now) {
-			delete(d.entries, asset)
+			delete(d.entries, principal)
 		}
 	}
 	if d.history == nil {
-		d.history = map[int32]DirectoryReceipt{}
+		d.history = map[string]DirectoryReceipt{}
 	}
-	if receipt, ok := d.history[m.Asset]; ok && receipt.Until.After(now) {
+	if receipt, ok := d.history[device.Principal()]; ok && receipt.Until.After(now) {
 		if m.Revision < receipt.Revision {
 			return false, ErrStaleManifest
 		}
@@ -215,7 +251,7 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 			return false, errors.New("conflicting persisted manifest revision")
 		}
 	}
-	if old, exists := d.entries[m.Asset]; exists {
+	if old, exists := d.entries[device.Principal()]; exists {
 		if m.Revision < old.manifest.Revision {
 			return false, ErrStaleManifest
 		}
@@ -230,29 +266,34 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 	}
 	w.Body = append(json.RawMessage(nil), w.Body...)
 	w.Signature = append([]byte(nil), w.Signature...)
-	next := make(map[int32]DirectoryReceipt, len(d.history)+1)
-	for asset, r := range d.history {
+	next := make(map[string]DirectoryReceipt, len(d.history)+1)
+	for principal, r := range d.history {
 		if r.Until.After(now) {
-			next[asset] = r
+			next[principal] = r
 		}
 	}
-	if _, ok := next[m.Asset]; !ok && len(next) >= d.limit {
+	if _, ok := next[device.Principal()]; !ok && len(next) >= d.limit {
 		return false, errors.New("directory receipt capacity reached")
 	}
-	next[m.Asset] = DirectoryReceipt{m.Asset, m.Revision, hash, now.Add(MaxLease + 5*time.Second)}
+	next[device.Principal()] = DirectoryReceipt{Device: device.Principal(), Revision: m.Revision, Hash: hash, Until: now.Add(MaxLease + 5*time.Second)}
 	if d.persist != nil {
 		all := make([]DirectoryReceipt, 0, len(next))
 		for _, r := range next {
 			all = append(all, r)
 		}
-		sort.Slice(all, func(i, j int) bool { return all[i].Asset < all[j].Asset })
+		sort.Slice(all, func(i, j int) bool { return all[i].Device < all[j].Device })
 		if err := d.persist(all); err != nil {
 			return false, err
 		}
 	}
 	d.history = next
-	d.entries[m.Asset] = directoryEntry{m, w, hash, now.Add(MaxLease + 5*time.Second)}
+	d.entries[device.Principal()] = directoryEntry{m, w, hash, now.Add(MaxLease + 5*time.Second)}
 	return true, nil
+}
+
+func manifestHash(body []byte) string {
+	h := sha256.Sum256(body)
+	return hex.EncodeToString(h[:])
 }
 
 // Snapshot returns current origin records. Route reachability is a separate
@@ -266,12 +307,12 @@ func (d *Directory) Snapshot(now time.Time) []Manifest {
 		if m.Withdraw || !time.UnixMilli(m.Expires).After(now) {
 			continue
 		}
-		if _, _, ok := d.cache.Get(e.wire.Fingerprint, now); !ok {
+		if _, _, ok := d.cache.Get(e.wire.Principal, now); !ok {
 			continue
 		}
 		out = append(out, m)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Asset < out[j].Asset })
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].Device[:], out[j].Device[:]) < 0 })
 	return out
 }
 
@@ -291,7 +332,10 @@ func (d *Directory) Records(now time.Time) []SignedManifest {
 		out = append(out, w)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return fmt.Sprint(out[i].Fingerprint, string(out[i].Body)) < fmt.Sprint(out[j].Fingerprint, string(out[j].Body))
+		if out[i].Principal != out[j].Principal {
+			return out[i].Principal < out[j].Principal
+		}
+		return string(out[i].Body) < string(out[j].Body)
 	})
 	return out
 }

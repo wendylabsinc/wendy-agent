@@ -3,8 +3,8 @@
 package localmesh
 
 import (
+	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -14,21 +14,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	quic "github.com/quic-go/quic-go"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 const tcpConfigName = "local-mesh.json"
 
-// RunConfiguredTCP runs the explicitly configured topology. The smaller asset
-// initiates each edge, so a symmetric peer list creates one connection. A
-// missing config leaves the local mesh disabled.
+// RunConfiguredTCP runs the explicitly configured topology. The device with the
+// lower UUID initiates each edge, so a symmetric peer list creates one
+// connection. A missing config leaves the local mesh disabled.
 func RunConfiguredTCP(parent context.Context, configDir string, id TCPIdentity) error {
-	cfg, err := LoadTCPConfig(filepath.Join(configDir, tcpConfigName), id.Asset)
-	if err != nil || cfg == nil {
+	credentials, err := NewCredentials(id.Certificate, id.Chain, id.Key)
+	if err != nil {
 		return err
 	}
-	credentials, err := NewCredentials(id.Org, id.Asset, id.Certificate, id.Chain, id.Key)
-	if err != nil {
+	cfg, err := LoadTCPConfig(filepath.Join(configDir, tcpConfigName), credentials.Device)
+	if err != nil || cfg == nil {
 		return err
 	}
 	stateDir := filepath.Join(configDir, "local-mesh")
@@ -49,42 +51,43 @@ func RunConfiguredTCP(parent context.Context, configDir string, id TCPIdentity) 
 	go func() { <-ctx.Done(); listener.Close() }()
 	nodeDone := make(chan error, 1)
 	go func() { nodeDone <- node.Run(); cancel() }()
-	allowed := make(map[int32]TCPPeer, len(cfg.Peers))
-	for _, peer := range cfg.Peers {
-		allowed[peer.Asset] = peer
+	allowed := make(map[string]meshid.Device, len(cfg.Peers))
+	for _, peer := range cfg.devices {
+		allowed[peer.Principal()] = peer
 	}
-	active := make(map[int32]bool)
+	active := make(map[string]bool)
 	var activeMu sync.Mutex
-	claim := func(asset int32) bool {
+	claim := func(device meshid.Device) bool {
 		activeMu.Lock()
 		defer activeMu.Unlock()
-		if active[asset] {
+		if active[device.Principal()] {
 			return false
 		}
-		active[asset] = true
+		active[device.Principal()] = true
 		return true
 	}
-	release := func(asset int32) { activeMu.Lock(); delete(active, asset); activeMu.Unlock() }
+	release := func(device meshid.Device) { activeMu.Lock(); delete(active, device.Principal()); activeMu.Unlock() }
 	var wg sync.WaitGroup
-	for _, peer := range cfg.Peers {
-		if id.Asset >= peer.Asset {
+	for _, peer := range cfg.devices {
+		if meshid.Compare(credentials.Device, peer) >= 0 {
 			continue
 		}
 		wg.Add(1)
-		go func(peer TCPPeer) {
+		go func(peer meshid.Device) {
 			defer wg.Done()
+			address := cfg.Peers[indexOfDevice(cfg.devices, peer)].Address
 			backoff := time.Second
 			for ctx.Err() == nil {
-				if claim(peer.Asset) {
-					conn, err := net.DialTimeout("tcp", peer.Address, 5*time.Second)
+				if claim(peer) {
+					conn, err := net.DialTimeout("tcp", address, 5*time.Second)
 					if err == nil {
-						err = writeTCPPreface(conn, id.Org, id.Asset)
+						err = writeTCPPreface(conn, credentials.Device)
 						if err == nil {
-							err = attachTCP(ctx, node, credentials, peer.Asset, conn, false)
+							err = attachTCP(ctx, node, credentials, peer, conn, false)
 						}
 						conn.Close()
 					}
-					release(peer.Asset)
+					release(peer)
 				}
 				select {
 				case <-time.After(backoff):
@@ -113,15 +116,21 @@ func RunConfiguredTCP(parent context.Context, configDir string, id TCPIdentity) 
 					defer wg.Done()
 					defer func() { <-sem }()
 					defer conn.Close()
-					asset, err := readTCPPreface(conn, id.Org)
-					if err != nil || asset >= id.Asset {
+					id, err := readTCPPreface(conn, credentials.Device.Tenant())
+					if err != nil {
 						return
 					}
-					if _, ok := allowed[asset]; !ok || !claim(asset) {
+					peer, err := meshid.ParseDevice(credentials.Device.Tenant(), id.String())
+					if err != nil || meshid.Compare(peer, credentials.Device) >= 0 {
+						// Only the lower UUID of an edge dials; anything else is a
+						// duplicate or a peer that did not read its own ordering.
 						return
 					}
-					defer release(asset)
-					_ = attachTCP(ctx, node, credentials, asset, conn, true)
+					if _, ok := allowed[peer.Principal()]; !ok || !claim(peer) {
+						return
+					}
+					defer release(peer)
+					_ = attachTCP(ctx, node, credentials, peer, conn, true)
 				}()
 			default:
 				conn.Close()
@@ -147,32 +156,52 @@ func RunConfiguredTCP(parent context.Context, configDir string, id TCPIdentity) 
 	return nil
 }
 
-func writeTCPPreface(conn net.Conn, org, asset int32) error {
-	var data [12]byte
-	copy(data[:4], "WMT1")
-	binary.BigEndian.PutUint32(data[4:8], uint32(org))
-	binary.BigEndian.PutUint32(data[8:12], uint32(asset))
+func indexOfDevice(devices []meshid.Device, want meshid.Device) int {
+	for i, d := range devices {
+		if d.Principal() == want.Principal() {
+			return i
+		}
+	}
+	return -1
+}
+
+// writeTCPPreface announces this device's tenant and device UUID before the
+// QUIC handshake, so a listener can order the edge and reject a peer it has no
+// configured relationship with. The preface is not trusted identity: the TLS
+// handshake pins the full principal afterwards.
+func writeTCPPreface(conn net.Conn, device meshid.Device) error {
+	tenant, id := device.Tenant().UUID(), device.UUID()
+	data := make([]byte, 0, 4+16+16)
+	data = append(data, "WMT2"...)
+	data = append(data, tenant[:]...)
+	data = append(data, id[:]...)
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	err := writeFull(conn, data[:])
+	err := writeFull(conn, data)
 	conn.SetDeadline(time.Time{})
 	return err
 }
 
-func readTCPPreface(conn net.Conn, org int32) (int32, error) {
-	var data [12]byte
+func readTCPPreface(conn net.Conn, tenant meshid.Tenant) (uuid.UUID, error) {
+	data := make([]byte, 4+16+16)
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	_, err := io.ReadFull(conn, data[:])
+	_, err := io.ReadFull(conn, data)
 	conn.SetDeadline(time.Time{})
 	if err != nil {
-		return 0, err
+		return uuid.Nil, err
 	}
-	if string(data[:4]) != "WMT1" || int32(binary.BigEndian.Uint32(data[4:8])) != org {
-		return 0, errors.New("invalid mesh TCP preface")
+	want := tenant.UUID()
+	if string(data[:4]) != "WMT2" || !bytes.Equal(data[4:20], want[:]) {
+		return uuid.Nil, errors.New("invalid mesh TCP preface")
 	}
-	return int32(binary.BigEndian.Uint32(data[8:12])), nil
+	var id uuid.UUID
+	copy(id[:], data[20:])
+	if id == uuid.Nil {
+		return uuid.Nil, errors.New("invalid mesh TCP preface")
+	}
+	return id, nil
 }
 
-func attachTCP(ctx context.Context, node *Node, credentials *Credentials, peer int32, tcp net.Conn, server bool) error {
+func attachTCP(ctx context.Context, node *Node, credentials *Credentials, peer meshid.Device, tcp net.Conn, server bool) error {
 	pc, err := NewTCPPacketConn(tcp)
 	if err != nil {
 		return err
@@ -206,7 +235,7 @@ func attachTCP(ctx context.Context, node *Node, credentials *Credentials, peer i
 		conn, err = transport.Dial(handshake, pc.RemoteAddr(), tlsConfig, QUICConfig())
 	}
 	if err != nil {
-		return fmt.Errorf("mesh QUIC peer %d: %w", peer, err)
+		return fmt.Errorf("mesh QUIC peer %s: %w", peer.Principal(), err)
 	}
 	return node.Attach(ctx, peer, conn)
 }

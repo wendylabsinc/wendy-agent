@@ -1,44 +1,59 @@
 package localmesh
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"math/big"
+	"net/url"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
-func directoryFixture(t *testing.T) (*Directory, [][]byte, ed25519.PrivateKey, time.Time) {
+// directoryFixture is one admitted device's own directory: the cached chain is
+// that device's leaf, so every manifest here is signed by the device it names.
+func directoryFixture(t *testing.T) (*Directory, [][]byte, ed25519.PrivateKey, meshid.Device, time.Time) {
 	t.Helper()
 	now := time.Unix(1800000000, 0)
+	device := testDevice(t, testPrincipal(testTenantUUID, testDeviceAID))
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour)}
+	uri, err := url.Parse(device.Principal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), URIs: []*url.URL{uri}}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, pub, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	chain := [][]byte{der}
-	cache, err := OpenIdentityCache("", DefaultCacheLimits(), func(_ [][]byte, _ time.Time) (Identity, error) { return Identity{64, 445, template.NotAfter}, nil }, now)
+	cache, err := OpenIdentityCache("", DefaultCacheLimits(), func(_ [][]byte, _ time.Time) (Identity, error) {
+		return Identity{Device: device, NotAfter: template.NotAfter}, nil
+	}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = cache.Put(chain, now); err != nil {
 		t.Fatal(err)
 	}
-	d, err := NewDirectory(64, 10, cache)
+	d, err := NewDirectory(testTenant(t), 10, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return d, chain, key, now
+	return d, chain, key, device, now
 }
 
 func TestDirectoryOriginSignatureLeaseAndReplay(t *testing.T) {
-	d, chain, key, now := directoryFixture(t)
-	m := Manifest{Version: 1, Org: 64, Asset: 445, Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), Name: "Orin", AgentPort: 50052, Internet: true}
+	d, chain, key, device, now := directoryFixture(t)
+	m := Manifest{Version: 2, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), Name: "Orin", AgentPort: 50052}
 	sign := func(m Manifest) SignedManifest {
 		t.Helper()
 		w, err := SignManifest(m, chain, key, now)
@@ -65,14 +80,29 @@ func TestDirectoryOriginSignatureLeaseAndReplay(t *testing.T) {
 	if _, err := d.Accept(bad, now); err == nil {
 		t.Fatal("invalid signature accepted")
 	}
-	m.Asset = 460
-	if _, err := d.Accept(sign(m), now); err == nil {
-		t.Fatal("origin spoof accepted")
+	// A manifest correctly signed by an admitted device but naming a different
+	// device UUID is refused: the advertisement is about its signer, and the
+	// principal is the key it is stored under.
+	other := testDevice(t, testPrincipal(testTenantUUID, testDeviceBID))
+	mismatched := m
+	mismatched.Device = other.UUID()
+	mismatched.Revision = 3
+	body, err := json.Marshal(mismatched)
+	if err != nil {
+		t.Fatal(err)
 	}
-	m.Asset = 445
+	input, _ := signingInput(key.Public(), body)
+	if _, err = d.Accept(SignedManifest{Principal: device.Principal(), Body: body, Signature: ed25519.Sign(key, input)}, now); err == nil {
+		t.Fatal("advertisement for another device accepted")
+	}
+	// A principal from another tenant never reaches signature or cache checks.
+	foreign := w
+	foreign.Principal = testPrincipal(testOtherTenant, testDeviceAID)
+	if _, err = d.Accept(foreign, now); err == nil {
+		t.Fatal("manifest from another tenant accepted")
+	}
 	m.Revision = 2
 	m.Withdraw = true
-	m.Internet = false
 	m.Expires = now.Add(2 * time.Second).UnixMilli()
 	if _, err := d.Accept(sign(m), now); err != nil {
 		t.Fatal(err)
@@ -89,17 +119,22 @@ func TestDirectoryOriginSignatureLeaseAndReplay(t *testing.T) {
 }
 
 func TestManifestTransportAndLimits(t *testing.T) {
-	_, chain, key, now := directoryFixture(t)
-	m := Manifest{Version: 1, Org: 64, Asset: 445, Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
-	m.Withdraw = true
-	m.Internet = true
-	if _, err := SignManifest(m, chain, key, now); err == nil {
-		t.Fatal("withdrawal advertised internet")
+	_, chain, key, device, now := directoryFixture(t)
+	manifest := func(mutate func(*Manifest)) SignedManifest {
+		t.Helper()
+		m := Manifest{Version: 2, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+		mutate(&m)
+		w, err := SignManifest(m, chain, key, now)
+		if err == nil {
+			t.Fatal("invalid manifest signed without error")
+		}
+		return w
 	}
-	m.Withdraw = false
-	m.Internet = false
-	m.Expires = now.Add(MaxLease + time.Second).UnixMilli()
-	if _, err := SignManifest(m, chain, key, now); err == nil {
-		t.Fatal("unbounded lease")
-	}
+	manifest(func(m *Manifest) { m.Version = 1 })
+	manifest(func(m *Manifest) { m.Device = uuid.Nil })
+	manifest(func(m *Manifest) { m.Revision = 0 })
+	manifest(func(m *Manifest) { m.AgentPort = 0 })
+	manifest(func(m *Manifest) { m.Expires = now.Add(MaxLease + time.Second).UnixMilli() })
+	manifest(func(m *Manifest) { m.Expires = now.Add(-time.Second).UnixMilli() })
+	manifest(func(m *Manifest) { m.Name = string(bytes.Repeat([]byte("n"), 256)) })
 }
