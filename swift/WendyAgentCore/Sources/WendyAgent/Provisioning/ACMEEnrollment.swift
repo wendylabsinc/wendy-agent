@@ -4,7 +4,7 @@ import SwiftASN1
 import X509
 
 #if canImport(FoundationNetworking)
-import FoundationNetworking
+    import FoundationNetworking
 #endif
 
 /// Enrollment material Cloud mints for one direct PKI enrollment. Mirrors the
@@ -51,7 +51,9 @@ struct ACMEEnrollmentConfig: Sendable {
         }
         let parts = url.path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 3, parts[1] == "acme", parts[2] == "directory" else {
-            throw ACMEEnrollmentError("ACME directory URL must have the path /<tenant-uuid>/acme/directory")
+            throw ACMEEnrollmentError(
+                "ACME directory URL must have the path /<tenant-uuid>/acme/directory"
+            )
         }
         let tenant = String(parts[0])
         guard let uuid = UUID(uuidString: tenant), uuid.uuidString.lowercased() == tenant else {
@@ -65,7 +67,8 @@ struct ACMEEnrollmentConfig: Sendable {
                 )
             }
             let allowed = { (c: Unicode.Scalar) in
-                ("a"..."z").contains(c) || ("A"..."Z").contains(c) || ("0"..."9").contains(c) || ".-_".unicodeScalars.contains(c)
+                ("a"..."z").contains(c) || ("A"..."Z").contains(c) || ("0"..."9").contains(c)
+                    || ".-_".unicodeScalars.contains(c)
             }
             guard segment.unicodeScalars.allSatisfy(allowed) else {
                 throw ACMEEnrollmentError(
@@ -79,7 +82,9 @@ struct ACMEEnrollmentConfig: Sendable {
     private static func isLoopback(_ host: String) -> Bool {
         let host = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         if host == "localhost" || host == "::1" { return true }
-        let octets = host.split(separator: ".", omittingEmptySubsequences: false).compactMap { UInt8($0) }
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false).compactMap {
+            UInt8($0)
+        }
         return octets.count == 4 && octets[0] == 127
     }
 }
@@ -145,7 +150,10 @@ enum ACMEEnrollment {
                 )
             )
             // 201 creates the account, 200 returns the existing one for this key.
-            let (_, response) = try await session.post(directory.newAccount, payload: Self.json(account))
+            let (_, response) = try await session.post(
+                directory.newAccount,
+                payload: Self.json(account)
+            )
             guard let kid = response.value(forHTTPHeaderField: "Location"), !kid.isEmpty else {
                 throw ACMEEnrollmentError("ACME server returned no account URL")
             }
@@ -154,12 +162,19 @@ enum ACMEEnrollment {
             throw ACMEEnrollmentError("registering ACME account: \(error)")
         }
 
-        let newOrder = NewOrder(identifiers: [.init(type: "permanent-identifier", value: config.deviceID)])
+        let newOrder = NewOrder(identifiers: [
+            .init(type: "permanent-identifier", value: config.deviceID)
+        ])
         let (orderData, orderResponse): (Data, HTTPURLResponse)
         do {
-            (orderData, orderResponse) = try await session.post(directory.newOrder, payload: Self.json(newOrder))
+            (orderData, orderResponse) = try await session.post(
+                directory.newOrder,
+                payload: Self.json(newOrder)
+            )
         } catch {
-            throw ACMEEnrollmentError("creating ACME order for device \"\(config.deviceID)\": \(error)")
+            throw ACMEEnrollmentError(
+                "creating ACME order for device \"\(config.deviceID)\": \(error)"
+            )
         }
         let orderURL = orderResponse.value(forHTTPHeaderField: "Location")
         var order = try JSONDecoder().decode(Order.self, from: orderData)
@@ -177,16 +192,22 @@ enum ACMEEnrollment {
             order = try JSONDecoder().decode(Order.self, from: data)
             // ponytail: fixed 1 s poll for up to a minute; honour Retry-After if issuance gets slower.
             var polls = 0
-            while order.status == "processing" || order.status == "ready", let orderURL, polls < 60 {
+            while order.status == "processing" || order.status == "ready", let orderURL, polls < 60
+            {
                 try await Task.sleep(for: .seconds(1))
-                order = try JSONDecoder().decode(Order.self, from: try await session.post(orderURL, payload: nil).0)
+                order = try JSONDecoder().decode(
+                    Order.self,
+                    from: try await session.post(orderURL, payload: nil).0
+                )
                 polls += 1
             }
         } catch {
             throw ACMEEnrollmentError("finalizing ACME order: \(error)")
         }
         guard order.status == "valid", let certURL = order.certificate else {
-            throw ACMEEnrollmentError("finalizing ACME order: order is \"\(order.status)\", want \"valid\"")
+            throw ACMEEnrollmentError(
+                "finalizing ACME order: order is \"\(order.status)\", want \"valid\""
+            )
         }
 
         let ders: [[UInt8]]
@@ -194,9 +215,15 @@ enum ACMEEnrollment {
             let pem: Data
             do {
                 pem = try await session.post(certURL, payload: nil).0
-            } catch let error as ACMEEnrollmentError where error.status == 404 || error.status == 405 {
+            } catch let error as ACMEEnrollmentError
+                where error.status == 404 || error.status == 405
+            {
                 // PKI may expose the certificate resource as GET only.
-                pem = try await Self.fetchPKICertificate(config.directoryURL, certURL, transport: transport)
+                pem = try await Self.fetchPKICertificate(
+                    config.directoryURL,
+                    certURL,
+                    transport: transport
+                )
             }
             ders = try Self.parseChain(pem)
         } catch {
@@ -207,13 +234,17 @@ enum ACMEEnrollment {
         guard leaf.publicKey == devicePublicKey else {
             throw ACMEEnrollmentError("ACME certificate does not match the device key")
         }
-        let principals = (try? leaf.extensions.subjectAlternativeNames)?.compactMap { name -> String? in
-            guard case .uniformResourceIdentifier(let uri) = name, uri.hasPrefix("spiffe://wendy.sh/tenant/")
+        let principals = (try? leaf.extensions.subjectAlternativeNames)?.compactMap {
+            name -> String? in
+            guard case .uniformResourceIdentifier(let uri) = name,
+                uri.hasPrefix("spiffe://wendy.sh/tenant/")
             else { return nil }
             return uri
         }
         guard principals == [expected] else {
-            throw ACMEEnrollmentError("ACME certificate does not identify the expected device \(expected)")
+            throw ACMEEnrollmentError(
+                "ACME certificate does not identify the expected device \(expected)"
+            )
         }
         // Enrollment switches the agent to mTLS. Reject a profile that would lock
         // out inbound clients or outbound authentication before it is persisted.
@@ -289,14 +320,19 @@ enum ACMEEnrollment {
                 var request = try Self.request(url, method: "POST")
                 request.setValue("application/jose+json", forHTTPHeaderField: "Content-Type")
                 request.httpBody = try ACMEEnrollment.json(
-                    JWS(protected: header, payload: body, signature: ACMEEnrollment.b64url(signature.rawRepresentation))
+                    JWS(
+                        protected: header,
+                        payload: body,
+                        signature: ACMEEnrollment.b64url(signature.rawRepresentation)
+                    )
                 )
                 let (data, response) = try await self.send(request)
                 do {
                     try ACMEEnrollment.check(data, response)
                     return (data, response)
                 } catch let error as ACMEEnrollmentError
-                    where attempt == 0 && error.description.contains("urn:ietf:params:acme:error:badNonce")
+                    where attempt == 0
+                    && error.description.contains("urn:ietf:params:acme:error:badNonce")
                 {
                     continue
                 }
@@ -315,15 +351,21 @@ enum ACMEEnrollment {
                 self.nonce = nil
                 return nonce
             }
-            guard let url = self.newNonceURL else { throw ACMEEnrollmentError("ACME directory has no newNonce") }
+            guard let url = self.newNonceURL else {
+                throw ACMEEnrollmentError("ACME directory has no newNonce")
+            }
             _ = try await self.send(Self.request(url, method: "HEAD"))
-            guard let nonce = self.nonce else { throw ACMEEnrollmentError("ACME server returned no nonce") }
+            guard let nonce = self.nonce else {
+                throw ACMEEnrollmentError("ACME server returned no nonce")
+            }
             self.nonce = nil
             return nonce
         }
 
         static func request(_ url: String, method: String) throws -> URLRequest {
-            guard let parsed = URL(string: url) else { throw ACMEEnrollmentError("invalid ACME URL \(url)") }
+            guard let parsed = URL(string: url) else {
+                throw ACMEEnrollmentError("invalid ACME URL \(url)")
+            }
             var request = URLRequest(url: parsed)
             request.httpMethod = method
             return request
@@ -339,7 +381,8 @@ enum ACMEEnrollment {
         _ certURL: String,
         transport: Transport
     ) async throws -> Data {
-        guard let dir = URLComponents(string: directory), let cert = URLComponents(string: certURL) else {
+        guard let dir = URLComponents(string: directory), let cert = URLComponents(string: certURL)
+        else {
             throw ACMEEnrollmentError("invalid ACME directory URL")
         }
         let prefix = String(dir.percentEncodedPath.dropLast("/directory".count)) + "/cert/"
@@ -347,11 +390,15 @@ enum ACMEEnrollment {
             cert.user == nil, cert.password == nil, cert.query == nil, cert.fragment == nil,
             cert.percentEncodedPath.hasPrefix(prefix), cert.percentEncodedPath.count > prefix.count
         else {
-            throw ACMEEnrollmentError("PKI certificate URL is outside the selected tenant's certificate endpoint")
+            throw ACMEEnrollmentError(
+                "PKI certificate URL is outside the selected tenant's certificate endpoint"
+            )
         }
         let (data, response) = try await transport(Session.request(certURL, method: "GET"))
         guard response.statusCode == 200 else {
-            throw ACMEEnrollmentError("PKI certificate download returned HTTP \(response.statusCode)")
+            throw ACMEEnrollmentError(
+                "PKI certificate download returned HTTP \(response.statusCode)"
+            )
         }
         return data
     }
@@ -367,9 +414,14 @@ enum ACMEEnrollment {
 
     private static func parseChain(_ data: Data) throws -> [[UInt8]] {
         let maxChainBytes = 256 * 1024
-        guard data.count <= maxChainBytes else { throw ACMEEnrollmentError("PKI certificate chain exceeds 256 KiB") }
-        let documents = try PEMDocument.parseMultiple(pemString: String(decoding: data, as: UTF8.self))
-        guard !documents.isEmpty, documents.count <= 10, documents.allSatisfy({ $0.discriminator == "CERTIFICATE" })
+        guard data.count <= maxChainBytes else {
+            throw ACMEEnrollmentError("PKI certificate chain exceeds 256 KiB")
+        }
+        let documents = try PEMDocument.parseMultiple(
+            pemString: String(decoding: data, as: UTF8.self)
+        )
+        guard !documents.isEmpty, documents.count <= 10,
+            documents.allSatisfy({ $0.discriminator == "CERTIFICATE" })
         else {
             throw ACMEEnrollmentError("invalid PKI certificate chain")
         }
@@ -386,7 +438,9 @@ enum ACMEEnrollment {
         let scope = SHA256.hash(data: Data("\(config.directoryURL)\u{0}\(config.deviceID)".utf8))
         return base.deletingLastPathComponent()
             .appendingPathComponent(base.lastPathComponent + ".d", isDirectory: true)
-            .appendingPathComponent(scope.map { ($0 < 16 ? "0" : "") + String($0, radix: 16) }.joined() + ".pem")
+            .appendingPathComponent(
+                scope.map { ($0 < 16 ? "0" : "") + String($0, radix: 16) }.joined() + ".pem"
+            )
     }
 
     /// The persisted P-256 account key (ES256 is what pki-core's outer-JWS
@@ -398,9 +452,19 @@ enum ACMEEnrollment {
         let key = P256.Signing.PrivateKey()
         let manager = FileManager.default
         let dir = path.deletingLastPathComponent()
-        try manager.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try manager.createDirectory(
+            at: dir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
         let tmp = dir.appendingPathComponent(".\(UUID().uuidString).tmp")
-        guard manager.createFile(atPath: tmp.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+        guard
+            manager.createFile(
+                atPath: tmp.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            )
+        else {
             throw ACMEEnrollmentError("storing ACME account key \(path.path) failed")
         }
         do {
@@ -424,7 +488,11 @@ enum ACMEEnrollment {
         var bytes: [UInt8] = []
         bytes.reserveCapacity(digits.count / 2)
         for index in stride(from: 0, to: digits.count, by: 2) {
-            guard let byte = UInt8(String(decoding: digits[index...index + 1], as: UTF8.self), radix: 16)
+            guard
+                let byte = UInt8(
+                    String(decoding: digits[index...index + 1], as: UTF8.self),
+                    radix: 16
+                )
             else { return nil }
             bytes.append(byte)
         }

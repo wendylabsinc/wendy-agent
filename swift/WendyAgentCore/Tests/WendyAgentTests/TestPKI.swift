@@ -63,7 +63,8 @@ enum TestPKI {
     /// Whether this platform can verify ML-DSA certificates: swift-certificates
     /// does so through CryptoKit on Darwin, which has ML-DSA from macOS 26.
     static var mldsaAvailable: Bool {
-        if #available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, macCatalyst 26.0, visionOS 26.0, *) {
+        if #available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, macCatalyst 26.0,
+        visionOS 26.0, *) {
             return true
         }
         return false
@@ -78,7 +79,12 @@ enum TestPKI {
         let tenantKey = MLDSAKey(variant: .mldsa65(try MLDSA65.PrivateKey()))
         let rootName = try DistinguishedName { CommonName("Wendy Test Root (ML-DSA-87)") }
         let tenantName = try DistinguishedName { CommonName("Wendy Test Tenant CA (ML-DSA-65)") }
-        func ca(_ key: MLDSAKey, _ subject: DistinguishedName, by issuer: MLDSAKey, _ issuerName: DistinguishedName)
+        func ca(
+            _ key: MLDSAKey,
+            _ subject: DistinguishedName,
+            by issuer: MLDSAKey,
+            _ issuerName: DistinguishedName
+        )
             throws -> Certificate
         {
             try Certificate(
@@ -131,7 +137,9 @@ enum TestPKI {
             }
         }
 
-        var supportedSignatureAlgorithms: [Certificate.SignatureAlgorithm] { [self.defaultSignatureAlgorithm] }
+        var supportedSignatureAlgorithms: [Certificate.SignatureAlgorithm] {
+            [self.defaultSignatureAlgorithm]
+        }
 
         func signSynchronously(
             bytes: some DataProtocol,
@@ -152,7 +160,9 @@ enum TestPKI {
         func hash(into hasher: inout Hasher) { hasher.combine(self.id) }
         static var defaultPEMDiscriminator: String { "PRIVATE KEY" }
         func serialize(into coder: inout DER.Serializer) throws {
-            throw CertificateError.unsupportedPrivateKey(reason: "test-only ML-DSA key is not serializable")
+            throw CertificateError.unsupportedPrivateKey(
+                reason: "test-only ML-DSA key is not serializable"
+            )
         }
     }
 

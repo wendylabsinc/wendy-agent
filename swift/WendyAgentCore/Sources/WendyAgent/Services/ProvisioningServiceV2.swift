@@ -5,7 +5,8 @@ import WendyAgentGRPC
 /// (`IsProvisioned` preflight, then `StartACMEProvisioning`). Delegates to the
 /// v1 `ProvisioningService`, which owns the state, exactly as the Go agent's
 /// `ProvisioningServiceV2` does; v1 stays registered for existing callers.
-struct ProvisioningServiceV2: Wendy_Agent_Services_V2_WendyProvisioningService.SimpleServiceProtocol {
+struct ProvisioningServiceV2: Wendy_Agent_Services_V2_WendyProvisioningService.SimpleServiceProtocol
+{
     let v1: ProvisioningService
 
     func isProvisioned(
@@ -91,13 +92,19 @@ struct ProvisioningServiceV2: Wendy_Agent_Services_V2_WendyProvisioningService.S
         request: Wendy_Agent_Services_V2_RevokeACMECertificateRequest,
         context: ServerContext
     ) async throws -> Wendy_Agent_Services_V2_RevokeACMECertificateResponse {
-        throw RPCError(code: .unimplemented, message: "Cloud owns device unenrollment and certificate revocation")
+        throw RPCError(
+            code: .unimplemented,
+            message: "Cloud owns device unenrollment and certificate revocation"
+        )
     }
 
     func checkACMERevocation(
         request: Wendy_Agent_Services_V2_RevokeACMECertificateRequest,
         context: ServerContext
     ) async throws -> Wendy_Agent_Services_V2_RevokeACMECertificateResponse {
-        throw RPCError(code: .unimplemented, message: "use Cloud binding preflight; no Agent ACME revocation path")
+        throw RPCError(
+            code: .unimplemented,
+            message: "use Cloud binding preflight; no Agent ACME revocation path"
+        )
     }
 }

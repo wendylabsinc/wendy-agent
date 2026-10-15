@@ -14,7 +14,8 @@ import X509
 /// preflight and RPCs get the same answers from either agent.
 @Suite("Provisioning v2 contract")
 struct ProvisioningContractTests {
-    private static let principal = "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/sim"
+    private static let principal =
+        "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/sim"
 
     @Test("Swift agent answers exactly as the Go agent")
     func replay() async throws {
@@ -25,7 +26,8 @@ struct ProvisioningContractTests {
             .deletingLastPathComponent()  // swift
             .deletingLastPathComponent()  // repository root
             .appendingPathComponent("Proto/conformance/agent-provisioning-v2/contract.json")
-        let contract = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        let contract =
+            try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
         let steps = try #require(contract?["steps"] as? [[String: Any]])
 
         let ca = try TestPKI.makeCA()
@@ -48,7 +50,8 @@ struct ProvisioningContractTests {
                     try await v2.isProvisioned(request: r, context: context)
                 }
             case "StartACMEProvisioning":
-                try await Self.check(step) { (r: Wendy_Agent_Services_V2_StartACMEProvisioningRequest) in
+                try await Self.check(step) {
+                    (r: Wendy_Agent_Services_V2_StartACMEProvisioningRequest) in
                     try await v2.startACMEProvisioning(request: r, context: context)
                 }
             case "Unprovision":
@@ -60,11 +63,13 @@ struct ProvisioningContractTests {
                     try await v1.unprovision(request: r, context: context)
                 }
             case "RevokeACMECertificate":
-                try await Self.check(step) { (r: Wendy_Agent_Services_V2_RevokeACMECertificateRequest) in
+                try await Self.check(step) {
+                    (r: Wendy_Agent_Services_V2_RevokeACMECertificateRequest) in
                     try await v2.revokeACMECertificate(request: r, context: context)
                 }
             case "CheckACMERevocation":
-                try await Self.check(step) { (r: Wendy_Agent_Services_V2_RevokeACMECertificateRequest) in
+                try await Self.check(step) {
+                    (r: Wendy_Agent_Services_V2_RevokeACMECertificateRequest) in
                     try await v2.checkACMERevocation(request: r, context: context)
                 }
             case let method:
@@ -73,7 +78,10 @@ struct ProvisioningContractTests {
         }
 
         // The identity survives a restart, and the one-time EAB never reaches disk.
-        let state = try String(contentsOf: dir.appendingPathComponent("provisioning.json"), encoding: .utf8)
+        let state = try String(
+            contentsOf: dir.appendingPathComponent("provisioning.json"),
+            encoding: .utf8
+        )
         #expect(!state.contains("eab-id") && !state.contains("abababab"))
         let reloaded = ProvisioningService(configPath: dir, isSecureEnclaveAvailable: { false })
         #expect(await reloaded.provisioningInfo().principalURI == Self.principal)
@@ -95,7 +103,10 @@ struct ProvisioningContractTests {
             isSecureEnclaveAvailable: { false },
             acmeEnrollmentUnavailableReason: { nil }
         )
-        _ = try await service.startACMEProvisioning(cloudHost: "api.dev.wendy.sh:443", config: Self.config)
+        _ = try await service.startACMEProvisioning(
+            cloudHost: "api.dev.wendy.sh:443",
+            config: Self.config
+        )
 
         let (csrDER, publicKey) = try #require(await seen.value)
         let csr = try CertificateSigningRequest(derEncoded: csrDER)
@@ -110,7 +121,9 @@ struct ProvisioningContractTests {
     func hostEnrollmentFloor() async throws {
         let dir = Self.tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let v2 = ProvisioningServiceV2(v1: ProvisioningService(configPath: dir, isSecureEnclaveAvailable: { false }))
+        let v2 = ProvisioningServiceV2(
+            v1: ProvisioningService(configPath: dir, isSecureEnclaveAvailable: { false })
+        )
 
         let status = try await v2.isProvisioned(
             request: Wendy_Agent_Services_V2_IsProvisionedRequest(),
@@ -123,7 +136,9 @@ struct ProvisioningContractTests {
         if TestPKI.mldsaAvailable {
             #expect(notProvisioned.acmeEnrollmentUnavailableReason.isEmpty)
         } else {
-            #expect(notProvisioned.acmeEnrollmentUnavailableReason.contains("needs macOS 26 or later"))
+            #expect(
+                notProvisioned.acmeEnrollmentUnavailableReason.contains("needs macOS 26 or later")
+            )
         }
     }
 
@@ -131,7 +146,8 @@ struct ProvisioningContractTests {
     func belowFloorRefusesBeforePKI() async throws {
         let dir = Self.tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let reason = "direct PKI enrollment needs macOS 26 or later to verify ML-DSA certificate chains; this Mac runs macOS 15.5"
+        let reason =
+            "direct PKI enrollment needs macOS 26 or later to verify ML-DSA certificate chains; this Mac runs macOS 15.5"
         let service = ProvisioningService(
             configPath: dir,
             acmeEnroll: { _, _, _, _ in
@@ -151,13 +167,20 @@ struct ProvisioningContractTests {
         #expect(status.notProvisioned.acmeEnrollmentUnavailableReason == reason)
 
         do {
-            _ = try await service.startACMEProvisioning(cloudHost: "api.dev.wendy.sh:443", config: Self.config)
+            _ = try await service.startACMEProvisioning(
+                cloudHost: "api.dev.wendy.sh:443",
+                config: Self.config
+            )
             Issue.record("enrollment below the floor must be refused")
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
             #expect(error.message == reason)
         }
-        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("acme-account-key.pem.d").path))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: dir.appendingPathComponent("acme-account-key.pem.d").path
+            )
+        )
     }
 
     @Test(
@@ -165,7 +188,10 @@ struct ProvisioningContractTests {
         .enabled(if: TestPKI.mldsaAvailable, "ML-DSA verification needs macOS 26 on Darwin")
     )
     func mldsaChainPersisted() async throws {
-        guard #available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, macCatalyst 26.0, visionOS 26.0, *) else {
+        guard
+            #available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, macCatalyst 26.0,
+            visionOS 26.0, *)
+        else {
             return
         }
         let chain = try TestPKI.makeMLDSAChain()
@@ -179,7 +205,10 @@ struct ProvisioningContractTests {
             acmeEnrollmentUnavailableReason: { nil }
         )
 
-        _ = try await service.startACMEProvisioning(cloudHost: "api.dev.wendy.sh:443", config: Self.config)
+        _ = try await service.startACMEProvisioning(
+            cloudHost: "api.dev.wendy.sh:443",
+            config: Self.config
+        )
 
         #expect(await service.provisioningCerts()?.chainPEM == chain.pem)
     }
@@ -198,16 +227,24 @@ struct ProvisioningContractTests {
             acmeEnrollmentUnavailableReason: { nil }
         )
         await #expect(throws: RPCError.self) {
-            _ = try await service.startACMEProvisioning(cloudHost: "api.dev.wendy.sh:443", config: Self.config)
+            _ = try await service.startACMEProvisioning(
+                cloudHost: "api.dev.wendy.sh:443",
+                config: Self.config
+            )
         }
         #expect(await service.provisioningInfo().enrolled == false)
-        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("provisioning.json").path))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: dir.appendingPathComponent("provisioning.json").path
+            )
+        )
     }
 
     // MARK: - Helpers
 
     private static let config = ACMEEnrollmentConfig(
-        directoryURL: "https://acme.dev.pki.wendy.sh/11111111-1111-4111-8111-111111111111/acme/directory",
+        directoryURL:
+            "https://acme.dev.pki.wendy.sh/11111111-1111-4111-8111-111111111111/acme/directory",
         deviceID: "sim",
         eabKeyID: "eab-id",
         eabHMACKey: String(repeating: "ab", count: 32)
@@ -232,7 +269,9 @@ struct ProvisioningContractTests {
             let got = try await call(request)
             #expect(code == "OK", "\(name): succeeded, want \(code)")
             if let response = step["response"] {
-                let want = try Response(jsonUTF8Data: JSONSerialization.data(withJSONObject: response))
+                let want = try Response(
+                    jsonUTF8Data: JSONSerialization.data(withJSONObject: response)
+                )
                 #expect(got.isEqualTo(message: want), "\(name): got \(got)")
             }
         } catch let error as RPCError {

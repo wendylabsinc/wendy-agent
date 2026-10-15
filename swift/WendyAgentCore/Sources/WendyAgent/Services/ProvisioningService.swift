@@ -66,7 +66,9 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     init(
         configPath: URL,
         cloudClient: CloudCertificateClient = .live,
-        acmeEnroll: @escaping ACMEEnroll = { try await ACMEEnrollment.enroll($0, accountKeyPath: $1, csrDER: $2, devicePublicKey: $3) },
+        acmeEnroll: @escaping ACMEEnroll = {
+            try await ACMEEnrollment.enroll($0, accountKeyPath: $1, csrDER: $2, devicePublicKey: $3)
+        },
         isSecureEnclaveAvailable: @Sendable @escaping () -> Bool = {
             SecureEnclaveIdentity.isAvailable
         },
@@ -257,7 +259,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         guard self.principalURI.isEmpty else {
             throw RPCError(
                 code: .failedPrecondition,
-                message: "direct PKI reset is disabled pending Cloud-authenticated authorization; keys retained"
+                message:
+                    "direct PKI reset is disabled pending Cloud-authenticated authorization; keys retained"
             )
         }
 
@@ -300,11 +303,17 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     /// Enrolls directly with pki-core's ACME frontend using a Cloud-minted EAB
     /// and returns the issued principal. Same check order and refusals as the
     /// Go agent, so the CLI sees the same answers from either agent.
-    func startACMEProvisioning(cloudHost: String, config: ACMEEnrollmentConfig) async throws -> String {
+    func startACMEProvisioning(
+        cloudHost: String,
+        config: ACMEEnrollmentConfig
+    ) async throws -> String {
         do {
             try config.validate()
         } catch {
-            throw RPCError(code: .invalidArgument, message: "invalid ACME enrollment config: \(error)")
+            throw RPCError(
+                code: .invalidArgument,
+                message: "invalid ACME enrollment config: \(error)"
+            )
         }
         guard !cloudHost.isEmpty else {
             throw RPCError(code: .invalidArgument, message: "cloud host is required")
@@ -341,7 +350,10 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             throw RPCError(code: .internalError, message: "enrolling with PKI: \(error)")
         }
         guard !issued.chainPEM.isEmpty else {
-            throw RPCError(code: .internalError, message: "PKI returned no certificate chain for device mTLS")
+            throw RPCError(
+                code: .internalError,
+                message: "PKI returned no certificate chain for device mTLS"
+            )
         }
         // The mTLS server hands this chain to NIOSSL and verifies clients against
         // it with swift-certificates. A certificate either cannot load would lock
@@ -354,7 +366,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         else {
             throw RPCError(
                 code: .internalError,
-                message: "PKI certificate chain cannot be loaded by this agent's mTLS stack; enrollment not persisted"
+                message:
+                    "PKI certificate chain cannot be loaded by this agent's mTLS stack; enrollment not persisted"
             )
         }
 
@@ -369,8 +382,14 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
                 principalURI: principal
             )
         } catch {
-            self.logger.error("Failed to persist provisioning state", metadata: ["error": "\(error)"])
-            throw RPCError(code: .internalError, message: "failed to save provisioning state: \(error)")
+            self.logger.error(
+                "Failed to persist provisioning state",
+                metadata: ["error": "\(error)"]
+            )
+            throw RPCError(
+                code: .internalError,
+                message: "failed to save provisioning state: \(error)"
+            )
         }
 
         self.enrolled = true
@@ -383,7 +402,10 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         self.certPEM = issued.certPEM
         self.chainPEM = issued.chainPEM
 
-        self.logger.info("Direct PKI provisioning completed", metadata: ["principal": "\(principal)"])
+        self.logger.info(
+            "Direct PKI provisioning completed",
+            metadata: ["principal": "\(principal)"]
+        )
 
         if let cb = self.onProvisioned {
             await cb(
@@ -415,7 +437,10 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
 
     private func beginProvisioning() throws {
         guard !self.provisioningInFlight else {
-            throw RPCError(code: .failedPrecondition, message: "provisioning is already in progress")
+            throw RPCError(
+                code: .failedPrecondition,
+                message: "provisioning is already in progress"
+            )
         }
         self.provisioningInFlight = true
     }
@@ -477,7 +502,10 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
                 )
                 publicKey = try Certificate.PrivateKey(pemEncoded: keyPEM).publicKey
             } catch {
-                throw RPCError(code: .internalError, message: "failed to generate key pair or CSR: \(error)")
+                throw RPCError(
+                    code: .internalError,
+                    message: "failed to generate key pair or CSR: \(error)"
+                )
             }
             backing = .softwarePEM(keyPEM)
             seKey = nil
@@ -488,6 +516,12 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         } catch {
             throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")
         }
-        return DeviceKey(backing: backing, seKey: seKey, csrPEM: csrPEM, csrDER: csrDER, publicKey: publicKey)
+        return DeviceKey(
+            backing: backing,
+            seKey: seKey,
+            csrPEM: csrPEM,
+            csrDER: csrDER,
+            publicKey: publicKey
+        )
     }
 }
