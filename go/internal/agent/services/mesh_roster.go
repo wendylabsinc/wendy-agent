@@ -113,6 +113,16 @@ func (r *MeshRoster) OrgSlug() string {
 	return r.slug
 }
 
+// OwnTenant returns the tenant of the provisioned identity the roster
+// authenticates with; false until provisioning completes. The friendly-name
+// resolver filters LAN sightings through it so tenant scope lives in exactly
+// one place.
+func (r *MeshRoster) OwnTenant() (meshid.Tenant, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.tenant, r.hasTenant
+}
+
 // UpdateIdentity swaps the identity used to authenticate GetMeshRoster calls.
 // Called when BLE first-boot enrollment provisions the device while the agent
 // is already running, so the boot-time snapshot (no certificate, no principal)
