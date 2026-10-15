@@ -39,13 +39,13 @@ func newCloudMCPCmd() *cobra.Command {
 		Short: "Let a web chat (ChatGPT, Claude) use Wendy through this session",
 		Long: "Open a session with the hosted Wendy MCP relay and serve the wendy MCP tools to a web chat you pair with it.\n" +
 			"Every call runs here and is signed with your operator key; the chat can do nothing once this command exits.\n" +
-			"The chat may call read-only tools; widen that with --allow-tool or --allow-all. Every call that changes state waits for your confirmation here.",
+			"The chat may call read-only device and Cloud tools. Use --allow-tool to permit other tools with confirmation, or --allow-all to permit every tool without per-call confirmation. Pairing still requires your acceptance.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := wendymcp.CheckToolNames(allowTools); err != nil {
 				return fmt.Errorf("--allow-tool: %w", err)
 			}
 			if !isatty.IsTerminal(os.Stdin.Fd()) {
-				return fmt.Errorf("wendy cloud mcp asks you before each call that changes state, so it needs a terminal on stdin")
+				return fmt.Errorf("wendy cloud mcp needs a terminal on stdin to confirm web-chat pairing")
 			}
 			// OpenRelaySession goes out unmarked, whatever this process inherited.
 			if err := cloudrequest.SetChannel(cloudpbv2.RequestChannel_REQUEST_CHANNEL_UNSPECIFIED, "", ""); err != nil {
@@ -77,8 +77,8 @@ func newCloudMCPCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the session to use")
-	cmd.Flags().StringSliceVar(&allowTools, "allow-tool", nil, "Also allow these tools by name (comma-separated); read-only tools are always allowed")
-	cmd.Flags().BoolVar(&allowAll, "allow-all", false, "Allow every tool; calls that change state still need your confirmation")
+	cmd.Flags().StringSliceVar(&allowTools, "allow-tool", nil, "Also allow these tools by name (comma-separated); state changes and host access require confirmation")
+	cmd.Flags().BoolVar(&allowAll, "allow-all", false, "Allow every tool without per-call confirmation; pairing still requires acceptance")
 	return cmd
 }
 
@@ -214,7 +214,11 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 				policy.Log = func(tool, outcome string) {
 					term.printf("%s  %q  %s  %s\n", time.Now().Format("15:04:05"), client, printable(tool), printable(outcome))
 				}
-				term.printf("Serving %q for this signed-in connection. Read-only tools run without asking.\n", client)
+				if policy.AllowAll {
+					term.printf("Serving %q for this signed-in connection. All tool calls run without confirmation (--allow-all).\n", client)
+				} else {
+					term.printf("Serving %q for this signed-in connection. State changes and host access require confirmation.\n", client)
+				}
 				served = make(chan error, 1)
 				go func() {
 					served <- srv.Serve(ctx, &policy, in, &frameWriter{relay: relay, binding: p.GetBindingId()})

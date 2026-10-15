@@ -252,7 +252,7 @@ func TestCloudMCPDeniedPairingBindsNothing(t *testing.T) {
 	answers <- "n"
 	answers <- "n"
 	var decisions []*cloudpbv2.PairingDecision
-	done, out := runRelaySession(t, testOpened(t, ""), wendymcp.BindingPolicy{}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
+	done, out := runRelaySession(t, testOpened(t, ""), wendymcp.BindingPolicy{AllowAll: true}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
 		// The relay mints the code; the user checks it against the chat's.
 		for _, p := range []*cloudpbv2.RelaySessionResponse{pairing("b0", "WRONG-0000"), pairing("b1", "ABCD-2345")} {
 			if err := stream.Send(p); err != nil {
@@ -365,7 +365,7 @@ func TestCloudMCPAcceptedClientNeedsConfirmationToMutate(t *testing.T) {
 	answers <- "n" // refuse the call
 	var accepted *cloudpbv2.PairingDecision
 	var replies []*cloudpbv2.McpFrame
-	done, out := runRelaySession(t, testOpened(t, ""), wendymcp.BindingPolicy{AllowAll: true}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
+	done, out := runRelaySession(t, testOpened(t, ""), wendymcp.BindingPolicy{Tools: []string{"device_disconnect"}}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
 		if err := stream.Send(pairing("b1", "ABCD-2345")); err != nil {
 			return err
 		}
@@ -415,6 +415,64 @@ func TestCloudMCPAcceptedClientNeedsConfirmationToMutate(t *testing.T) {
 	}
 	log := out.String()
 	for _, want := range []string{`"ChatGPT" wants to run device_disconnect {}`, `"ChatGPT"  device_disconnect  refused by the user`, "Session closed."} {
+		if !strings.Contains(log, want) {
+			t.Errorf("terminal lacks %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestCloudMCPAllowAllOnlyConfirmsPairing(t *testing.T) {
+	answers := make(chan string, 1)
+	answers <- "y" // The pairing is the only prompt the user answers.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var accepted *cloudpbv2.PairingDecision
+	var replies []*cloudpbv2.McpFrame
+	done, out, _ := runRelaySessionWithTerminal(t, testOpened(t, ""), wendymcp.BindingPolicy{AllowAll: true}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
+		if err := stream.Send(pairing("b1", "ABCD-2345")); err != nil {
+			return err
+		}
+		got, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		accepted = got.GetPairingDecision()
+		for seq, msg := range []string{
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"device_list","arguments":{}}}`,
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"device_disconnect","arguments":{}}}`,
+		} {
+			if err := stream.Send(frame(uint64(seq+1), "b1", msg)); err != nil {
+				return err
+			}
+			reply, err := stream.Recv()
+			if err != nil {
+				return err
+			}
+			replies = append(replies, reply.GetFrame())
+		}
+		return nil
+	}, relaySessionOptions{ctx: ctx})
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !accepted.GetAccept() || len(replies) != 2 {
+		t.Fatalf("--allow-all did not serve both calls after pairing: accepted=%v replies=%d\n%s", accepted, len(replies), out.String())
+	}
+	for _, reply := range replies {
+		var call struct {
+			Result *struct {
+				IsError bool `json:"isError"`
+			}
+		}
+		if err := json.Unmarshal(reply.GetMessage(), &call); err != nil || call.Result == nil || call.Result.IsError {
+			t.Fatalf("--allow-all tool call failed: %s (%v)", reply.GetMessage(), err)
+		}
+	}
+	log := out.String()
+	if strings.Count(log, "wants to pair") != 1 || strings.Contains(log, "wants to run") {
+		t.Fatalf("--allow-all must ask only about pairing:\n%s", log)
+	}
+	for _, want := range []string{"All tool calls run without confirmation (--allow-all).", `"ChatGPT"  device_list  ok`, `"ChatGPT"  device_disconnect  ok`} {
 		if !strings.Contains(log, want) {
 			t.Errorf("terminal lacks %q:\n%s", want, log)
 		}
@@ -492,8 +550,8 @@ func TestCloudMCPRelaySessionDialsTunnelBroker(t *testing.T) {
 	for cloudGRPC, want := range map[string]string{
 		"api.dev.wendy.sh:443":  "tunnel.dev.wendy.dev:443",
 		"api.dev.wendy.dev:443": "tunnel.dev.wendy.dev:443",
-		"api.wendy.sh:443":     "tunnel.wendy.dev:443",
-		"api.wendy.dev:443":    "tunnel.wendy.dev:443",
+		"api.wendy.sh:443":      "tunnel.wendy.dev:443",
+		"api.wendy.dev:443":     "tunnel.wendy.dev:443",
 		"cloud.example:443":     "cloud.example:443",
 		"localhost:50051":       "localhost:50051",
 	} {

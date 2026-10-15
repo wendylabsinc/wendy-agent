@@ -10,7 +10,7 @@
   "homepage": "https://wendy.dev",
   "extensions": {
     "com.openai": {
-      "onboardingSkill": "./skills/wendy/references/skills/wendy-onboarding/SKILL.md",
+      "onboardingSkill": "./skills/wendy/SKILL.md",
       "interface": {
         "displayName": "Wendy",
         "shortDescription": "Your devices and their apps",

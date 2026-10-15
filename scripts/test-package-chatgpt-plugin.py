@@ -51,6 +51,24 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(len(extension["review"]["test_cases"]["positive"]), 5)
             self.assertEqual(len(extension["review"]["test_cases"]["negative"]), 3)
             self.assertEqual(json.loads(archive.read("wendy-robots/mcp.json")), mcp)
+            onboarding = extension["onboardingSkill"]
+            self.assertEqual(onboarding, "./skills/wendy/SKILL.md")
+            self.assertIn("wendy-robots/" + onboarding.removeprefix("./"), archive.namelist())
+
+    def test_rejects_nested_onboarding_skill(self):
+        # This file exists in the ZIP, but the portal does not import it as a skill.
+        self.manifest["extensions"]["com.openai"]["onboardingSkill"] = "./skills/wendy/references/skills/wendy-onboarding/SKILL.md"
+        self.save()
+        with self.assertRaisesRegex(ValueError, "onboardingSkill"):
+            package.validate_package(self.source)
+
+    def test_rejects_missing_or_non_skill_onboarding(self):
+        for reference in ("./skills/missing/SKILL.md", "./skills/wendy/references/wendy.json.md", None):
+            with self.subTest(reference=reference):
+                self.manifest["extensions"]["com.openai"]["onboardingSkill"] = reference
+                self.save()
+                with self.assertRaisesRegex(ValueError, "onboardingSkill"):
+                    package.validate_package(self.source)
 
     def test_no_recording_is_an_explicit_gap(self):
         extension = copy.deepcopy(self.manifest["extensions"]["com.openai"])

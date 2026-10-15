@@ -8,10 +8,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 func bindingServer(t *testing.T, p *BindingPolicy) *server.MCPServer {
@@ -77,7 +79,7 @@ func TestBindingAllowListRefusesUnlistedTools(t *testing.T) {
 
 func TestBindingConfirmsMutatingCallsNotReads(t *testing.T) {
 	var asked []string
-	srv := bindingServer(t, &BindingPolicy{AllowAll: true, Confirm: func(_ context.Context, tool string, _ map[string]any) bool {
+	srv := bindingServer(t, &BindingPolicy{Tools: []string{"device_disconnect"}, Confirm: func(_ context.Context, tool string, _ map[string]any) bool {
 		asked = append(asked, tool)
 		return false
 	}})
@@ -97,13 +99,55 @@ func TestBindingConfirmsMutatingCallsNotReads(t *testing.T) {
 
 	// AAA §5.1 high-impact actions (deploy, container control, config push,
 	// tunnel open, unenroll) and other state changes must never pass as
-	// read-only, or a bound web client could run them unconfirmed.
+	// read-only, or a bound web client could run them unconfirmed without
+	// --allow-all.
 	for _, name := range []string{"run", "container_start", "container_stop", "container_delete", "container_exec",
 		"cloud_tunnel", "cloud_enroll_device", "device_update_agent", "os_update", "os_install_start",
 		"wifi_connect", "camera_set_control", "auth_login"} {
 		if readOnlyTool(srv.GetTool(name).Tool) {
 			t.Errorf("%s is read-only, so a bound web client could call it unconfirmed", name)
 		}
+	}
+}
+
+func TestBindingAllowAllSkipsToolConfirmation(t *testing.T) {
+	for _, withConfirm := range []bool{false, true} {
+		t.Run(fmt.Sprintf("confirm_callback_%t", withConfirm), func(t *testing.T) {
+			p := &BindingPolicy{AllowAll: true}
+			if withConfirm {
+				p.Confirm = func(_ context.Context, tool string, _ map[string]any) bool {
+					t.Errorf("--allow-all asked for confirmation of %s", tool)
+					return false
+				}
+			}
+			s := New(&config.Config{}, nil)
+			s.setBindingPolicy(p)
+			scanned := false
+			s.SetLANDiscoverer(func(context.Context, time.Duration) ([]models.LANDevice, error) {
+				scanned = true
+				return nil, nil
+			})
+			srv, err := s.newProtocolServer()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, call := range []struct {
+				name string
+				args map[string]any
+			}{
+				{name: "wendy_status"},
+				{name: "device_list"},
+				{name: "device_list", args: map[string]any{"scan": true}},
+				{name: "device_disconnect"},
+			} {
+				if result := callProtocolTool(t, srv, call.name, call.args); result.IsError {
+					t.Errorf("--allow-all %s %v failed: %+v", call.name, call.args, result)
+				}
+			}
+			if !scanned {
+				t.Error("--allow-all device_list scan=true did not reach LAN discovery")
+			}
+		})
 	}
 }
 

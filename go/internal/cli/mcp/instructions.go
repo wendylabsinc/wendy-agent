@@ -40,6 +40,7 @@ const relayInstructions = "Wendy MCP, served through the hosted relay, reaches t
 	"Call `wendy_status` first: it reports the connection and a suggested next step. " +
 	"Connect with `device_connect` and a cloud selector (cloud://HOST:PORT/org/ID/asset/ID), " +
 	"then inspect the device with `device_info`, `container_list` and `telemetry_logs`.\n\n" +
-	"Read-only tools run without asking. Every call that changes state waits for the user to confirm it in that terminal; " +
-	"a refused call returns DENIED: tell the user what you asked for instead of retrying. " +
+	"Read-only device and Cloud tools run without asking. Calls that change state or access the host wait for confirmation in that terminal, " +
+	"unless the user started the session with --allow-all, which skips all tool confirmations. Pairing always requires acceptance. " +
+	"A refused call returns DENIED: tell the user what you asked for instead of retrying. " +
 	"Tools the user has not allowed are not listed; the user can allow more by restarting 'wendy cloud mcp' with --allow-tool or --allow-all."

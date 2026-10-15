@@ -180,7 +180,11 @@ def validate_package(source):
                 files.append(path)
     require(source / "skills/wendy/SKILL.md" in files, "Missing Wendy skill")
     onboarding = extension.get("onboardingSkill", "")
-    require(onboarding.startswith("./skills/") and (source / onboarding).resolve() in files, "onboardingSkill must point to an included skill")
+    # Portable skill discovery only includes skills/<name>/SKILL.md. A nested
+    # supporting SKILL.md is an asset, not an invocable onboarding skill.
+    require(nonblank(onboarding) and re.fullmatch(r"\./skills/[^./][^/]*/SKILL\.md", onboarding)
+            and (source / onboarding).resolve() in files,
+            "onboardingSkill must reference an included ./skills/<name>/SKILL.md, not a nested supporting file")
     for field, minimum in (("logo", 256), ("composerIcon", 48), ("logoDark", 256), ("composerIconDark", 48)):
         if field not in interface and field.endswith("Dark"):
             continue
