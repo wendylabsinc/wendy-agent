@@ -260,6 +260,13 @@ type brokerRequestMetadata func(fullMethod string) (metadata.MD, error)
 // brokerDialOpts returns gRPC options and identity metadata shared by the
 // presence client (serving side) and the mesh dialer (dialing side).
 func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, certPEM, keyPEM, chainPEM string) ([]grpc.DialOption, brokerRequestMetadata, error) {
+	return brokerIdentityDialOpts(logger, fmt.Sprintf("urn:wendy:org:%d:asset:%d", orgID, assetID), certPEM, keyPEM, chainPEM)
+}
+
+// brokerIdentityDialOpts is brokerDialOpts for a caller that authenticates
+// with a principal URI instead of the legacy asset URN. The transport options
+// and the certificate-bound metadata are identical either way.
+func brokerIdentityDialOpts(logger *zap.Logger, identityURI, certPEM, keyPEM, chainPEM string) ([]grpc.DialOption, brokerRequestMetadata, error) {
 	// Cloud Run cannot forward the TLS client certificate to the broker, so each
 	// RPC carries a fresh method-bound signature from the enrolled certificate
 	// key. Legacy XFCC headers remain during the additive rollout only. Direct
@@ -272,7 +279,6 @@ func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, certPEM, keyPEM, c
 		return nil, nil, err
 	}
 
-	identityURI := fmt.Sprintf("urn:wendy:org:%d:asset:%d", orgID, assetID)
 	certHeader := "URI=" + identityURI
 	legacyMD := metadata.Pairs(
 		"x-wendy-client-cert", certHeader,

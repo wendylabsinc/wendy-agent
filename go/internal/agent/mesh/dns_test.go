@@ -143,9 +143,9 @@ type fakeResolver struct {
 }
 
 func (f fakeResolver) OrgSlug() string { return f.slug }
-func (f fakeResolver) Resolve(name string) (int32, bool) {
+func (f fakeResolver) Resolve(name string) (ResolvedDevice, bool) {
 	id, ok := f.byName[name]
-	return id, ok
+	return ResolvedDevice{AssetID: id}, ok
 }
 
 func answerA(t *testing.T, s *DNSServer, qname string) (rcode int, ip string) {

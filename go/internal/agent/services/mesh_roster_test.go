@@ -2,47 +2,152 @@ package services
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"net"
+	"net/url"
 	"testing"
 	"time"
 
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"go.uber.org/zap/zaptest"
 )
 
-func newTestRoster(t *testing.T) *MeshRoster {
-	return NewMeshRoster(zaptest.NewLogger(t), "cloud.example:443", 42, 215, "", "", "")
+const (
+	rosterTenant      = "11111111-1111-4111-8111-111111111111"
+	rosterOtherTenant = "99999999-9999-4999-8999-999999999999"
+	rosterDevice      = "22222222-2222-4222-8222-222222222222"
+	rosterAssetA      = "33333333-3333-4333-8333-333333333333"
+	rosterAssetB      = "44444444-4444-4444-8444-444444444444"
+	rosterDeviceB     = "55555555-5555-4555-8555-555555555555"
+)
+
+// deviceIdentityCertPEM mints a self-signed P-256 leaf carrying the tenant
+// SPIFFE device principal pki-core stamps on an enrolled device.
+func deviceIdentityCertPEM(t *testing.T, tenant, device string) (certPEM, keyPEM string) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	uri, err := url.Parse(certs.DeviceSPIFFEURI(tenant, device))
+	if err != nil {
+		t.Fatalf("parsing principal: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(7),
+		Subject:      pkix.Name{CommonName: "roster-test-device"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		URIs:         []*url.URL{uri},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("creating cert: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshaling key: %v", err)
+	}
+	certPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	keyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	return certPEM, keyPEM
+}
+
+// provisionedRoster is a roster authenticated by an enrolled device identity,
+// which is the shape a synced roster always has: the cloud scopes the entries
+// to the tenant that identity authenticates.
+func provisionedRoster(t *testing.T) *MeshRoster {
+	t.Helper()
+	certPEM, keyPEM := deviceIdentityCertPEM(t, rosterTenant, rosterDevice)
+	return NewMeshRoster(zaptest.NewLogger(t), "cloud.example:443", certPEM, keyPEM, "")
 }
 
 func TestRosterLookupNormalizes(t *testing.T) {
-	r := newTestRoster(t)
-	r.applyResponse(&cloudpb.GetMeshRosterResponse{
+	r := provisionedRoster(t)
+	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
-		Entries: []*cloudpb.MeshRosterEntry{
-			{Name: "Brave Dolphin", AssetId: 215},
-			{Name: "calm-otter", AssetId: 216},
+		Entries: []*cloudpbv2.MeshRosterEntry{
+			{Name: "Brave Dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice},
+			{Name: "calm-otter", AssetId: rosterAssetB, DeviceUuid: rosterDeviceB},
 		},
 	})
 	if r.OrgSlug() != "acme" {
 		t.Fatalf("OrgSlug = %q, want acme", r.OrgSlug())
 	}
-	if id, ok := r.Lookup("brave-dolphin"); !ok || id != 215 {
-		t.Fatalf("Lookup(brave-dolphin) = %d,%v want 215,true", id, ok)
+	entry, ok := r.Lookup("brave-dolphin")
+	if !ok {
+		t.Fatal("Lookup(brave-dolphin) must resolve")
 	}
-	if id, ok := r.Lookup("calm-otter"); !ok || id != 216 {
-		t.Fatalf("Lookup(calm-otter) = %d,%v want 216,true", id, ok)
+	if entry.Name != "brave-dolphin" || entry.AssetUUID != rosterAssetA || entry.DeviceUUID != rosterDevice {
+		t.Fatalf("Lookup(brave-dolphin) = %+v, want name brave-dolphin asset %s device %s", entry, rosterAssetA, rosterDevice)
+	}
+	if !entry.Dialable() {
+		t.Fatal("an entry with a device UUID must be dialable")
+	}
+	device, ok := entry.Device()
+	if !ok || device.Principal() != certs.DeviceSPIFFEURI(rosterTenant, rosterDevice) {
+		t.Fatalf("Device() = %+v,%v want principal %s", device, ok, certs.DeviceSPIFFEURI(rosterTenant, rosterDevice))
+	}
+	if entry, ok := r.Lookup("calm-otter"); !ok || entry.AssetUUID != rosterAssetB {
+		t.Fatalf("Lookup(calm-otter) = %+v,%v want asset %s,true", entry, ok, rosterAssetB)
 	}
 	if _, ok := r.Lookup("ghost"); ok {
 		t.Fatal("Lookup(ghost) should be false")
 	}
 }
 
-func TestRosterDuplicateNameIsAmbiguous(t *testing.T) {
-	r := newTestRoster(t)
-	r.applyResponse(&cloudpb.GetMeshRosterResponse{
+// TestRosterEmptyDeviceUUIDIsNotDialable covers the contract's legacy rows: a
+// roster entry with no device UUID has no mesh identity, so it stays in the
+// directory for its name and asset id but never yields an address.
+func TestRosterEmptyDeviceUUIDIsNotDialable(t *testing.T) {
+	r := provisionedRoster(t)
+	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
-		Entries: []*cloudpb.MeshRosterEntry{
-			{Name: "Brave Dolphin", AssetId: 215},
-			{Name: "brave dolphin", AssetId: 999}, // normalizes to the same label
+		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "legacy-box", AssetId: rosterAssetA}},
+	})
+	entry, ok := r.Lookup("legacy-box")
+	if !ok {
+		t.Fatal("a row without a device UUID must still be listed")
+	}
+	if entry.DeviceUUID != "" || entry.Dialable() {
+		t.Fatalf("entry %+v must not be dialable", entry)
+	}
+	if device, ok := entry.Device(); ok {
+		t.Fatalf("Device() invented an identity for a UUID-less row: %+v", device)
+	}
+}
+
+// TestRosterNonCanonicalDeviceUUIDIsNotDialable keeps a malformed device
+// component from being hashed or otherwise coerced into an address.
+func TestRosterNonCanonicalDeviceUUIDIsNotDialable(t *testing.T) {
+	r := provisionedRoster(t)
+	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+		OrgSlug: "acme",
+		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "odd-box", AssetId: rosterAssetA, DeviceUuid: "fleet/box-01"}},
+	})
+	entry, ok := r.Lookup("odd-box")
+	if !ok {
+		t.Fatal("the row must remain listed")
+	}
+	if entry.Dialable() {
+		t.Fatalf("entry %+v must not be dialable", entry)
+	}
+}
+
+func TestRosterDuplicateNameIsAmbiguous(t *testing.T) {
+	r := provisionedRoster(t)
+	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+		OrgSlug: "acme",
+		Entries: []*cloudpbv2.MeshRosterEntry{
+			{Name: "Brave Dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice},
+			{Name: "brave dolphin", AssetId: rosterAssetB, DeviceUuid: rosterDeviceB}, // normalizes to the same label
 		},
 	})
 	if _, ok := r.Lookup("brave-dolphin"); ok {
@@ -51,20 +156,73 @@ func TestRosterDuplicateNameIsAmbiguous(t *testing.T) {
 }
 
 func TestRosterSlugNormalized(t *testing.T) {
-	r := newTestRoster(t)
-	r.applyResponse(&cloudpb.GetMeshRosterResponse{OrgSlug: "ACME Corp."})
+	r := provisionedRoster(t)
+	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{OrgSlug: "ACME Corp."})
 	if r.OrgSlug() != "acme-corp" {
 		t.Fatalf("OrgSlug = %q, want acme-corp", r.OrgSlug())
 	}
 }
 
+// TestRosterUpdateIdentityClearsCache proves entries scoped to the previous
+// identity never survive an identity swap: after moving to a different tenant
+// the old names, and the old slug, are gone rather than being served from a
+// stale tenant.
+func TestRosterUpdateIdentityClearsCache(t *testing.T) {
+	r := provisionedRoster(t)
+	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+		OrgSlug: "acme",
+		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "brave-dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice}},
+	})
+	if _, ok := r.Lookup("brave-dolphin"); !ok {
+		t.Fatal("precondition: the entry must resolve before the identity swap")
+	}
+
+	certPEM, keyPEM := deviceIdentityCertPEM(t, rosterOtherTenant, rosterDevice)
+	r.UpdateIdentity("cloud.example:443", certPEM, keyPEM, "")
+	if _, ok := r.Lookup("brave-dolphin"); ok {
+		t.Fatal("an entry from the previous tenant must not survive UpdateIdentity")
+	}
+	if r.OrgSlug() != "" {
+		t.Fatalf("OrgSlug = %q after identity change, want empty", r.OrgSlug())
+	}
+
+	// The new identity is what the next response is scoped by: its tenant's
+	// device UUIDs parse into dialable entries.
+	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+		OrgSlug: "other",
+		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "brave-dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice}},
+	})
+	entry, ok := r.Lookup("brave-dolphin")
+	if !ok || !entry.Dialable() {
+		t.Fatalf("Lookup after identity change = %+v,%v want a dialable entry", entry, ok)
+	}
+	if device, ok := entry.Device(); !ok || device.Principal() != certs.DeviceSPIFFEURI(rosterOtherTenant, rosterDevice) {
+		t.Fatalf("entry kept the old tenant: %+v,%v", device, ok)
+	}
+}
+
 // TestRosterSyncSkipsUnprovisionedIdentity proves Sync fails closed without
-// attempting a dial when assetID==0 (the boot-time snapshot before BLE
-// first-boot enrollment completes): a real dial would hang/error against the
-// bogus "cloud.invalid:1" address, but Sync must return nil quickly instead
-// because there's no asset cert to authenticate an RPC with.
+// attempting a dial when the device has no provisioned identity (the boot-time
+// snapshot before BLE first-boot enrollment completes): a real dial would
+// hang/error against the listener below, but Sync must return nil quickly
+// because there is no device principal to authenticate an RPC with — and the
+// endpoint must never see a connection.
 func TestRosterSyncSkipsUnprovisionedIdentity(t *testing.T) {
-	r := NewMeshRoster(zaptest.NewLogger(t), "cloud.invalid:1", 0, 0, "", "", "")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	dialed := make(chan struct{}, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			_ = conn.Close()
+			dialed <- struct{}{}
+		}
+	}()
+
+	r := NewMeshRoster(zaptest.NewLogger(t), listener.Addr().String(), "", "", "")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -73,30 +231,30 @@ func TestRosterSyncSkipsUnprovisionedIdentity(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("Sync() with assetID=0 = %v, want nil (no-dial skip)", err)
+			t.Fatalf("Sync() without an identity = %v, want nil (no-dial skip)", err)
 		}
 	case <-time.After(1 * time.Second):
-		t.Fatal("Sync() with assetID=0 should return immediately without dialing")
+		t.Fatal("Sync() without an identity should return immediately without dialing")
+	}
+	select {
+	case <-dialed:
+		t.Fatal("Sync() dialled the cloud endpoint without a provisioned identity")
+	case <-time.After(250 * time.Millisecond):
 	}
 }
 
-// TestRosterUpdateIdentityIsUsedBySync proves UpdateIdentity's write is what
-// a subsequent Sync reads: after moving from assetID=0 (skip branch) to a
-// real assetID via UpdateIdentity, Sync no longer takes the skip path (it
-// proceeds to a real dial attempt against an unreachable address instead of
-// returning nil immediately).
+// TestRosterUpdateIdentityIsUsedBySync proves UpdateIdentity's write is what a
+// subsequent Sync reads: after moving from no identity (skip branch) to a real
+// device principal, Sync no longer takes the skip path — it proceeds to a real
+// dial attempt against an unreachable address instead of returning nil.
 func TestRosterUpdateIdentityIsUsedBySync(t *testing.T) {
-	r := NewMeshRoster(zaptest.NewLogger(t), "127.0.0.1:1", 0, 0, "", "", "")
-	r.UpdateIdentity("127.0.0.1:1", 7, 215, "", "", "")
+	certPEM, keyPEM := deviceIdentityCertPEM(t, rosterTenant, rosterDevice)
+	r := NewMeshRoster(zaptest.NewLogger(t), "127.0.0.1:1", "", "", "")
+	r.UpdateIdentity("127.0.0.1:1", certPEM, keyPEM, "")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err := r.Sync(ctx)
-	// A real dial is attempted now (assetID=215 != 0), so this must NOT be
-	// the nil the skip-branch would return; brokerDialOpts/dial/RPC against
-	// an unreachable loopback port fails, confirming the identity swap took
-	// effect and Sync proceeded past the assetID==0 guard.
-	if err == nil {
-		t.Fatal("Sync() after UpdateIdentity to a real assetID should attempt a dial and fail against an unreachable address, not silently skip")
+	if err := r.Sync(ctx); err == nil {
+		t.Fatal("Sync() after UpdateIdentity to a real device principal should attempt a dial and fail against an unreachable address, not silently skip")
 	}
 }

@@ -40,23 +40,32 @@ func (r *MeshResolver) UpdateOwnOrgID(orgID int32) {
 
 func (r *MeshResolver) OrgSlug() string { return r.roster.OrgSlug() }
 
-// Resolve returns the asset id for a normalized device name, mDNS first.
-func (r *MeshResolver) Resolve(name string) (int32, bool) {
-	if id, ok := r.resolveLAN(name); ok {
-		return id, true
+// Resolve returns the device a normalized name maps to, mDNS first. A LAN
+// sighting carries the legacy asset id from its mDNS TXT record — the only
+// source the legacy VIP answers are built from. A roster entry carries the
+// Cloud v2 UUIDs and no legacy id, so it resolves without a VIP to answer.
+func (r *MeshResolver) Resolve(name string) (mesh.ResolvedDevice, bool) {
+	if d, ok := r.resolveLAN(name); ok {
+		return mesh.ResolvedDevice{AssetID: d.AssetID}, true
 	}
-	return r.roster.Lookup(name)
+	entry, ok := r.roster.Lookup(name)
+	if !ok {
+		return mesh.ResolvedDevice{}, false
+	}
+	return mesh.ResolvedDevice{DeviceUUID: entry.DeviceUUID, AssetUUID: entry.AssetUUID}, true
 }
 
-func (r *MeshResolver) resolveLAN(name string) (int32, bool) {
+// resolveLAN returns the LAN sighting for a normalized name, or ok=false when
+// none matches or the name is ambiguous across LAN devices.
+func (r *MeshResolver) resolveLAN(name string) (models.LANDevice, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	devices, err := r.browse(ctx)
 	if err != nil {
 		r.logger.Warn("mesh: LAN browse failed for friendly-name resolution", zap.Error(err))
-		return 0, false
+		return models.LANDevice{}, false
 	}
-	var found int32
+	var found models.LANDevice
 	matches := 0
 	for _, d := range devices {
 		if d.OrgID != r.ownOrgID.Load() || d.AssetID == 0 {
@@ -66,15 +75,15 @@ func (r *MeshResolver) resolveLAN(name string) (int32, bool) {
 			continue
 		}
 		if matches == 0 {
-			found = d.AssetID
-		} else if d.AssetID != found {
+			found = d
+		} else if d.AssetID != found.AssetID {
 			// Two different LAN devices share the name -> ambiguous.
-			return 0, false
+			return models.LANDevice{}, false
 		}
 		matches++
 	}
 	if matches == 0 {
-		return 0, false
+		return models.LANDevice{}, false
 	}
 	return found, true
 }

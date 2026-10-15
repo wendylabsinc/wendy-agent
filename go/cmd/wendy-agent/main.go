@@ -979,10 +979,11 @@ func main() {
 
 	// Hybrid friendly-name resolver: <devicename>.<org-slug>.cloud.wendy.dev.
 	// Mirrors the meshDialer construction just above — not gated on
-	// alreadyProvisioned. On an unenrolled device orgID/assetID/chainPEM are
-	// zero/empty, so MeshRoster.Sync simply fails closed (logged, retried)
-	// until the device is provisioned, rather than never starting at all.
-	meshRoster := services.NewMeshRoster(logger, cloudGRPCURLForCloudHost(cloudHost), orgID, assetID, certPEM, keyPEM, chainPEM)
+	// alreadyProvisioned. On an unenrolled device certPEM/keyPEM are empty, so
+	// MeshRoster has no device principal to authenticate with and Sync simply
+	// fails closed (logged, retried) until the device is provisioned, rather
+	// than never starting at all.
+	meshRoster := services.NewMeshRoster(logger, cloudGRPCURLForCloudHost(cloudHost), certPEM, keyPEM, chainPEM)
 	meshBrowse := func(ctx context.Context) ([]models.LANDevice, error) {
 		col, err := discovery.Discover(ctx, discovery.DiscoveryOptions{
 			Types:   []models.InterfaceType{models.InterfaceLAN},
@@ -1144,10 +1145,11 @@ func main() {
 		}
 		meshDialer.UpdateIdentity(freshBrokerURL, orgID, assetID, certPEM, keyPEM, chainPEM)
 		// Same story for the friendly-name roster/resolver: the boot-time
-		// snapshot is org=0/asset=0/empty chain, so without this refresh
-		// friendly names stay dead (resolver rejects every LAN peer, roster
-		// dials with a null identity) until the agent is restarted.
-		meshRoster.UpdateIdentity(cloudGRPCURLForCloudHost(cloudHost), orgID, assetID, certPEM, keyPEM, chainPEM)
+		// snapshot has no certificate and so no device principal, meaning the
+		// roster cannot authenticate a sync and the resolver rejects every LAN
+		// peer, until the agent is restarted — so swap in the freshly issued
+		// identity here.
+		meshRoster.UpdateIdentity(cloudGRPCURLForCloudHost(cloudHost), certPEM, keyPEM, chainPEM)
 		meshResolver.UpdateOwnOrgID(orgID)
 		// Resync immediately so friendly names work without waiting for the periodic tick.
 		go func() {

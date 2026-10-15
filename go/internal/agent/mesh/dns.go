@@ -24,12 +24,24 @@ var meshNameRE = regexp.MustCompile(`^device-([0-9]{1,5})\.` + meshDNSSuffixRE +
 // before the suffix, while this form has two.
 var friendlyNameRE = regexp.MustCompile(`^([a-z0-9-]+)\.([a-z0-9-]+)\.` + meshDNSSuffixRE + `\.$`)
 
-// Resolver maps a normalized device name to a cloud asset ID within this
+// ResolvedDevice is one friendly-name resolution outcome. AssetID is the
+// legacy cloud asset id — today it arrives only on an mDNS TXT sighting, and
+// it is what the legacy VIP answers are built from; 0 when the name resolved
+// without one. A Cloud v2 roster entry carries UUIDs only, so it has no VIP
+// to answer until the mesh data plane carries v2 addresses. DeviceUUID is the
+// Cloud v2 mesh identity, empty for rows with no UUID device binding.
+type ResolvedDevice struct {
+	AssetID    int32
+	DeviceUUID string
+	AssetUUID  string
+}
+
+// Resolver maps a normalized device name to the device it names within this
 // device's own org, and reports this device's own org slug. It is implemented
 // in the services package (which owns the mDNS + cloud-roster dependencies)
 // and injected via SetResolver, keeping the mesh package free of those deps.
 type Resolver interface {
-	Resolve(name string) (assetID int32, ok bool)
+	Resolve(name string) (ResolvedDevice, bool)
 	OrgSlug() string
 }
 
@@ -167,12 +179,15 @@ func (s *DNSServer) answerFriendly(w dns.ResponseWriter, r *dns.Msg, q dns.Quest
 		s.reply(w, r, dns.RcodeNameError)
 		return
 	}
-	id, ok := resolver.Resolve(name)
+	resolved, ok := resolver.Resolve(name)
 	if !ok {
 		s.reply(w, r, dns.RcodeNameError)
 		return
 	}
-	s.answerVIP(w, r, q, id)
+	// A Cloud v2 roster entry carries no legacy asset id, so there is no VIP
+	// to answer it with; answerVIP maps an id outside the VIP range to
+	// NXDOMAIN.
+	s.answerVIP(w, r, q, resolved.AssetID)
 }
 
 // answerVIP writes the A record for a resolved asset ID, or NXDOMAIN if the ID
