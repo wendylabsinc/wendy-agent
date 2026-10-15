@@ -217,31 +217,25 @@ func TestPlayVideoWithGStreamer_RemoteStreamErrorPrecedesMissingGStreamer(t *tes
 	}
 }
 
-func TestCameraListUnenrolledMacExplainsEnrollment(t *testing.T) {
-	startUDSAgentWithFeatures(t, "darwin", []string{"native-process"}) // Swift plaintext has no video service.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := newCameraListCmd()
-	cmd.SetContext(ctx)
-
-	err := cmd.RunE(cmd, nil)
-	if err == nil {
-		t.Fatal("camera list unexpectedly succeeded without enrollment")
-	}
-	if !strings.Contains(err.Error(), "wendy device enroll") {
-		t.Fatalf("error = %q, want enrollment guidance", err)
-	}
-	if strings.Contains(err.Error(), "beta") || strings.Contains(err.Error(), "updat") {
-		t.Fatalf("error = %q, want the actual enrollment blocker", err)
-	}
-}
-
 type emptyCameraService struct {
 	agentpb.UnimplementedWendyVideoServiceServer
 }
 
 func (emptyCameraService) ListVideoDevices(context.Context, *agentpb.ListVideoDevicesRequest) (*agentpb.ListVideoDevicesResponse, error) {
 	return &agentpb.ListVideoDevicesResponse{}, nil
+}
+
+func TestCameraListPlaintextSwiftMacStillWorks(t *testing.T) {
+	startUDSAgentWithFeatures(t, "darwin", []string{"native-process"}, func(s *grpc.Server) {
+		agentpb.RegisterWendyVideoServiceServer(s, emptyCameraService{})
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := newCameraListCmd()
+	cmd.SetContext(ctx)
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("camera list on plaintext Wendy Agent for Mac: %v", err)
+	}
 }
 
 func TestCameraListPlaintextWendyOSStillWorks(t *testing.T) {
@@ -295,19 +289,7 @@ func TestCameraLoginOnSwiftMacDoesNotPromptForUnsupportedOperation(t *testing.T)
 	}
 }
 
-func TestCameraControlsOnUnenrolledSwiftMacRequiresEnrollment(t *testing.T) {
-	startUDSAgentWithFeatures(t, "darwin", []string{"native-process"})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := newCameraControlsCmd()
-	cmd.SetContext(ctx)
-	err := cmd.RunE(cmd, []string{"1"})
-	if err == nil || !strings.Contains(err.Error(), "wendy device enroll") {
-		t.Fatalf("camera controls error = %v, want enrollment requirement", err)
-	}
-}
-
-func TestCameraControlsEnrolledSwiftMacDefersCapabilityToAgent(t *testing.T) {
+func TestCameraSwiftMacPreflightDefersToAgentEnrolledOrNot(t *testing.T) {
 	startUDSAgentWithFeatures(t, "darwin", []string{"native-process"})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -318,9 +300,13 @@ func TestCameraControlsEnrolledSwiftMacDefersCapabilityToAgent(t *testing.T) {
 	defer conn.Close()
 	// The fake server is UDS; only simulate the transport marker here. No
 	// production transport/authentication behavior is changed by this test.
-	conn.IsMTLS = true
-	if err := cameraServicePreflight(ctx, conn, cameraV4L2Controls); err != nil {
-		t.Fatalf("enrolled Mac preflight must let the Agent answer controls: %v", err)
+	for _, mtls := range []bool{false, true} {
+		conn.IsMTLS = mtls
+		for _, action := range []cameraAction{cameraCapture, cameraV4L2Controls} {
+			if err := cameraServicePreflight(ctx, conn, action); err != nil {
+				t.Fatalf("Mac preflight (mTLS=%v, action=%d) must let the Agent answer: %v", mtls, action, err)
+			}
+		}
 	}
 }
 
