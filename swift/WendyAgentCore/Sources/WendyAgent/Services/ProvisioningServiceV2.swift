@@ -26,7 +26,10 @@ struct ProvisioningServiceV2: Wendy_Agent_Services_V2_WendyProvisioningService.S
             response.provisioned = provisioned
         } else {
             var notProvisioned = Wendy_Agent_Services_V2_NotProvisionedResponse()
-            notProvisioned.acmeEnrollmentSupported = true
+            // Refusing here stops the CLI before Cloud mints a single-use EAB.
+            let unavailable = self.v1.acmeEnrollmentUnavailableReason()
+            notProvisioned.acmeEnrollmentSupported = unavailable == nil
+            notProvisioned.acmeEnrollmentUnavailableReason = unavailable ?? ""
             response.notProvisioned = notProvisioned
         }
         return response

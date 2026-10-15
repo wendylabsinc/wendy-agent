@@ -66,3 +66,20 @@ func TestCheckAgentEnrollmentContract(t *testing.T) {
 		t.Fatal("contract has no preflight steps")
 	}
 }
+
+// A Mac below macOS 26 says why it cannot enroll; the CLI must stop before Cloud
+// mints an EAB and show that reason, escaped, on one line.
+func TestCheckAgentEnrollmentShowsUnavailableReason(t *testing.T) {
+	supported := false
+	resp := &agentpbv2.IsProvisionedResponse{ResponseType: &agentpbv2.IsProvisionedResponse_NotProvisioned{
+		NotProvisioned: &agentpbv2.NotProvisionedResponse{
+			AcmeEnrollmentSupported:         &supported,
+			AcmeEnrollmentUnavailableReason: "direct PKI enrollment needs macOS 26 or later to verify ML-DSA certificate chains; this Mac runs macOS 15.5\n\x1b[2J",
+		},
+	}}
+	err := CheckAgentEnrollment(context.Background(), statusConn{resp})
+	want := `this device cannot enroll directly with PKI: "direct PKI enrollment needs macOS 26 or later to verify ML-DSA certificate chains; this Mac runs macOS 15.5\n\x1b[2J" (no Cloud reservation made)`
+	if err == nil || err.Error() != want {
+		t.Fatalf("preflight error %v, want %s", err, want)
+	}
+}

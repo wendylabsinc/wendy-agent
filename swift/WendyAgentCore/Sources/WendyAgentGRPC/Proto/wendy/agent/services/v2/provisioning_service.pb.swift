@@ -89,6 +89,11 @@ public nonisolated struct Wendy_Agent_Services_V2_NotProvisionedResponse: Sendab
   /// Public device-signed completion evidence, only after durable local erasure.
   public var unenrollmentCompletion: Data = Data()
 
+  /// Why acme_enrollment_supported is false on this host, for the operator
+  /// (e.g. a Mac below the macOS version that can verify ML-DSA chains).
+  /// Empty when enrollment is supported or the agent gives no reason.
+  public var acmeEnrollmentUnavailableReason: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -334,7 +339,7 @@ nonisolated extension Wendy_Agent_Services_V2_IsProvisionedResponse: SwiftProtob
 
 nonisolated extension Wendy_Agent_Services_V2_NotProvisionedResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".NotProvisionedResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}acme_enrollment_supported\0\u{3}unenrollment_completion\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}acme_enrollment_supported\0\u{3}unenrollment_completion\0\u{3}acme_enrollment_unavailable_reason\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -344,6 +349,7 @@ nonisolated extension Wendy_Agent_Services_V2_NotProvisionedResponse: SwiftProto
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self._acmeEnrollmentSupported) }()
       case 2: try { try decoder.decodeSingularBytesField(value: &self.unenrollmentCompletion) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.acmeEnrollmentUnavailableReason) }()
       default: break
       }
     }
@@ -360,12 +366,16 @@ nonisolated extension Wendy_Agent_Services_V2_NotProvisionedResponse: SwiftProto
     if !self.unenrollmentCompletion.isEmpty {
       try visitor.visitSingularBytesField(value: self.unenrollmentCompletion, fieldNumber: 2)
     }
+    if !self.acmeEnrollmentUnavailableReason.isEmpty {
+      try visitor.visitSingularStringField(value: self.acmeEnrollmentUnavailableReason, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V2_NotProvisionedResponse, rhs: Wendy_Agent_Services_V2_NotProvisionedResponse) -> Bool {
     if lhs._acmeEnrollmentSupported != rhs._acmeEnrollmentSupported {return false}
     if lhs.unenrollmentCompletion != rhs.unenrollmentCompletion {return false}
+    if lhs.acmeEnrollmentUnavailableReason != rhs.acmeEnrollmentUnavailableReason {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

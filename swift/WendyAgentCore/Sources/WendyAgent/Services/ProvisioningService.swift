@@ -42,6 +42,9 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     /// Overridable so tests can force the SE / software branch deterministically
     /// regardless of the host's actual hardware. Defaults to the real check.
     private let isSecureEnclaveAvailable: @Sendable () -> Bool
+    /// Why this host cannot take a direct PKI enrollment, or nil when it can.
+    /// Overridable for tests; defaults to `hostACMEEnrollmentUnavailableReason`.
+    let acmeEnrollmentUnavailableReason: @Sendable () -> String?
     private let logger = Logger(label: "sh.wendy.agent.provisioning")
 
     private var enrolled = false
@@ -66,6 +69,9 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         acmeEnroll: @escaping ACMEEnroll = { try await ACMEEnrollment.enroll($0, accountKeyPath: $1, csrDER: $2, devicePublicKey: $3) },
         isSecureEnclaveAvailable: @Sendable @escaping () -> Bool = {
             SecureEnclaveIdentity.isAvailable
+        },
+        acmeEnrollmentUnavailableReason: @Sendable @escaping () -> String? = {
+            ProvisioningService.hostACMEEnrollmentUnavailableReason()
         }
     ) {
         self.store = ProvisioningStore(configPath: configPath)
@@ -73,6 +79,7 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         self.cloudClient = cloudClient
         self.acmeEnroll = acmeEnroll
         self.isSecureEnclaveAvailable = isSecureEnclaveAvailable
+        self.acmeEnrollmentUnavailableReason = acmeEnrollmentUnavailableReason
         guard let loaded = self.store.load() else { return }
 
         if loaded.keyBacking == .secureEnclave {
@@ -305,6 +312,11 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         guard !self.enrolled else {
             throw RPCError(code: .failedPrecondition, message: "agent is already provisioned")
         }
+        // The CLI's IsProvisioned preflight stops first; this backstop keeps any
+        // other caller from spending an EAB on a chain this host cannot verify.
+        if let reason = self.acmeEnrollmentUnavailableReason() {
+            throw RPCError(code: .failedPrecondition, message: reason)
+        }
         try self.beginProvisioning()
         defer { self.provisioningInFlight = false }
         let principal = try config.principalURI()
@@ -387,6 +399,19 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     }
 
     // MARK: - Helpers
+
+    /// pki-core issues device leaves under ML-DSA CAs, and the agent's mTLS
+    /// verifies clients against that chain with swift-certificates, which on
+    /// Darwin verifies ML-DSA only from macOS 26 (CryptoKit). Below that an
+    /// enrolled Mac would reject every client, so it must not enroll at all.
+    static func hostACMEEnrollmentUnavailableReason() -> String? {
+        if #available(macOS 26.0, *) {
+            return nil
+        }
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        return
+            "direct PKI enrollment needs macOS 26 or later to verify ML-DSA certificate chains; this Mac runs macOS \(version.majorVersion).\(version.minorVersion)"
+    }
 
     private func beginProvisioning() throws {
         guard !self.provisioningInFlight else {

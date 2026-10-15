@@ -35,7 +35,8 @@ struct ProvisioningContractTests {
         let v1 = ProvisioningService(
             configPath: dir,
             acmeEnroll: { _, _, _, _ in (leaf.certPEM, ca.pem) },
-            isSecureEnclaveAvailable: { false }
+            isSecureEnclaveAvailable: { false },
+            acmeEnrollmentUnavailableReason: { nil }
         )
         let v2 = ProvisioningServiceV2(v1: v1)
         let context = Self.context()
@@ -91,7 +92,8 @@ struct ProvisioningContractTests {
                 await seen.set(csrDER, publicKey)
                 return (leaf.certPEM, ca.pem)
             },
-            isSecureEnclaveAvailable: { false }
+            isSecureEnclaveAvailable: { false },
+            acmeEnrollmentUnavailableReason: { nil }
         )
         _ = try await service.startACMEProvisioning(cloudHost: "api.dev.wendy.sh:443", config: Self.config)
 
@@ -100,6 +102,62 @@ struct ProvisioningContractTests {
         #expect(csr.publicKey == publicKey)
         #expect(P256.Signing.PublicKey(publicKey) != nil)
         #expect(csr.signatureAlgorithm == .ecdsaWithSHA256)
+    }
+
+    // Runs on every host, deliberately unconditional: on the macos-15 CI runner it
+    // exercises the refusal, on macOS 26+ (and Linux) the supported branch.
+    @Test("this host advertises direct PKI enrollment only from macOS 26, and says why otherwise")
+    func hostEnrollmentFloor() async throws {
+        let dir = Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let v2 = ProvisioningServiceV2(v1: ProvisioningService(configPath: dir, isSecureEnclaveAvailable: { false }))
+
+        let status = try await v2.isProvisioned(
+            request: Wendy_Agent_Services_V2_IsProvisionedRequest(),
+            context: Self.context()
+        )
+
+        let notProvisioned = try #require(status.notProvisioned)
+        #expect(notProvisioned.hasAcmeEnrollmentSupported)
+        #expect(notProvisioned.acmeEnrollmentSupported == TestPKI.mldsaAvailable)
+        if TestPKI.mldsaAvailable {
+            #expect(notProvisioned.acmeEnrollmentUnavailableReason.isEmpty)
+        } else {
+            #expect(notProvisioned.acmeEnrollmentUnavailableReason.contains("needs macOS 26 or later"))
+        }
+    }
+
+    @Test("a host below the floor refuses enrollment before PKI is contacted")
+    func belowFloorRefusesBeforePKI() async throws {
+        let dir = Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let reason = "direct PKI enrollment needs macOS 26 or later to verify ML-DSA certificate chains; this Mac runs macOS 15.5"
+        let service = ProvisioningService(
+            configPath: dir,
+            acmeEnroll: { _, _, _, _ in
+                Issue.record("PKI must not be contacted below the floor")
+                return ("", "")
+            },
+            isSecureEnclaveAvailable: { false },
+            acmeEnrollmentUnavailableReason: { reason }
+        )
+        let v2 = ProvisioningServiceV2(v1: service)
+
+        let status = try await v2.isProvisioned(
+            request: Wendy_Agent_Services_V2_IsProvisionedRequest(),
+            context: Self.context()
+        )
+        #expect(status.notProvisioned.acmeEnrollmentSupported == false)
+        #expect(status.notProvisioned.acmeEnrollmentUnavailableReason == reason)
+
+        do {
+            _ = try await service.startACMEProvisioning(cloudHost: "api.dev.wendy.sh:443", config: Self.config)
+            Issue.record("enrollment below the floor must be refused")
+        } catch let error as RPCError {
+            #expect(error.code == .failedPrecondition)
+            #expect(error.message == reason)
+        }
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("acme-account-key.pem.d").path))
     }
 
     @Test(
@@ -117,7 +175,8 @@ struct ProvisioningContractTests {
         let service = ProvisioningService(
             configPath: dir,
             acmeEnroll: { _, _, _, _ in (leaf.certPEM, chain.pem) },
-            isSecureEnclaveAvailable: { false }
+            isSecureEnclaveAvailable: { false },
+            acmeEnrollmentUnavailableReason: { nil }
         )
 
         _ = try await service.startACMEProvisioning(cloudHost: "api.dev.wendy.sh:443", config: Self.config)
@@ -135,7 +194,8 @@ struct ProvisioningContractTests {
             acmeEnroll: { _, _, _, _ in
                 (leaf.certPEM, "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
             },
-            isSecureEnclaveAvailable: { false }
+            isSecureEnclaveAvailable: { false },
+            acmeEnrollmentUnavailableReason: { nil }
         )
         await #expect(throws: RPCError.self) {
             _ = try await service.startACMEProvisioning(cloudHost: "api.dev.wendy.sh:443", config: Self.config)
