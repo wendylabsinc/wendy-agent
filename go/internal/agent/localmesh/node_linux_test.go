@@ -6,18 +6,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	quic "github.com/quic-go/quic-go"
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv6"
 
+	"github.com/wendylabsinc/WendyOS/babel"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -80,6 +88,27 @@ func TestNodePeerProcess(t *testing.T) {
 		})}
 		defer server.Close()
 		go server.ListenAndServe()
+		udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IP(self.MeshAddress().AsSlice()), Port: 18081})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer udp.Close()
+		go func() {
+			buf := make([]byte, 2048)
+			for {
+				n, src, err := udp.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				// Payload arriving over the mesh must carry the peer's own ULA,
+				// never a link-local or an underlay address.
+				if !src.(*net.UDPAddr).IP.Equal(net.IP(peer.MeshAddress().AsSlice())) {
+					t.Errorf("UDP datagram from %v bypassed mesh source addressing", src)
+					continue
+				}
+				_, _ = udp.WriteTo([]byte(strconv.Itoa(n)), src)
+			}
+		}()
 		listener, err := quic.ListenAddr(config.Underlay, tlsConfig, QUICConfig())
 		if err != nil {
 			t.Fatal(err)
@@ -120,7 +149,8 @@ func TestNodePeerProcess(t *testing.T) {
 					}
 				}
 				if found {
-					t.Log("HTTP and signed device discovery succeeded across live Babel/QUIC/TUN nodes")
+					verifyMeshTransport(t, node, self, peer)
+					t.Log("HTTP, signed discovery, origination, MTU and ICMPv6 checks passed across live Babel/QUIC/TUN nodes")
 					cancel()
 					<-linkDone
 					return
@@ -136,9 +166,135 @@ func TestNodePeerProcess(t *testing.T) {
 	t.Fatal("timed out", node.Snapshot())
 }
 
+// verifyMeshTransport checks what the routing core promises the host: the
+// instance originates only its own /128 at metric 0, the peer's /128 is
+// installed with a link-local next hop, the pool prefix is never reachability,
+// a full 1280-byte IPv6 packet crosses the tunnel while one byte more is
+// refused to the application, and kernel-generated ICMPv6 travels back.
+func verifyMeshTransport(t *testing.T, node *Node, self, peer meshid.Device) {
+	t.Helper()
+	own := netip.PrefixFrom(self.MeshAddress(), 128)
+	theirs := netip.PrefixFrom(peer.MeshAddress(), 128)
+	var local, learned *babel.Route
+	routes := node.Snapshot().Routes
+	for i, r := range routes {
+		if r.Prefix.Bits() <= meshid.MeshPrefix.Bits() {
+			t.Fatalf("node carries %s; the mesh pool is an address pool, never advertised reachability", r.Prefix)
+		}
+		if r.Prefix == own {
+			local = &routes[i]
+		}
+		if r.Prefix == theirs {
+			learned = &routes[i]
+		}
+	}
+	if local == nil || !local.Local || local.Metric != 0 {
+		t.Fatalf("own mesh address is not originated at metric 0: %+v", local)
+	}
+	if learned == nil || learned.Local || learned.Metric == 0 || !learned.NextHop.IsLinkLocalUnicast() {
+		t.Fatalf("peer mesh address is not a learnt route with a link-local next hop: %+v", learned)
+	}
+
+	conn, err := net.Dial("udp", net.JoinHostPort(peer.MeshAddress().String(), "18081"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// 1232 bytes of UDP payload is exactly one 1280-byte IPv6 packet: 40 header,
+	// 8 UDP header, 1232 data - the IPv6 minimum link, end to end.
+	if _, err = conn.Write(make([]byte, 1232)); err != nil {
+		t.Fatalf("a full 1280-byte IPv6 packet did not cross the tunnel: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("no UDP echo across the tunnel: %v", err)
+	}
+	if got := string(buf[:n]); got != "1232" {
+		t.Fatalf("peer received %s bytes, want 1232", got)
+	}
+	// One byte more does not fit in a single packet. An ordinary socket lets the
+	// kernel fragment the datagram at the source; the fragments travel the tunnel
+	// and the peer's kernel reassembles them. A socket that told the kernel not
+	// to fragment learns the 1280-byte link limit as EMSGSIZE. Both are correct;
+	// a silent drop is not.
+	if _, err = conn.Write(make([]byte, 1233)); err != nil {
+		t.Fatalf("a 1281-byte IPv6 datagram failed at the source: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err = conn.Read(buf); err != nil {
+		t.Fatalf("no UDP echo for the fragmented datagram: %v", err)
+	}
+	if got := string(buf[:n]); got != "1233" {
+		t.Fatalf("peer reassembled %s bytes, want 1233", got)
+	}
+	assertDFReachesPacketTooBig(t, peer)
+
+	// ICMPv6 is ordinary payload on this link: the peer's own kernel answers the
+	// echo request and its reply comes back through QUIC and the TUN.
+	echo, err := icmp.ListenPacket("ip6:ipv6-icmp", "::")
+	if err != nil {
+		t.Fatalf("ICMPv6 socket: %v", err)
+	}
+	defer echo.Close()
+	request := icmp.Message{Type: ipv6.ICMPTypeEchoRequest, Code: 0, Body: &icmp.Echo{
+		ID: os.Getpid() & 0xffff, Seq: 7, Data: []byte("wendy-mesh-probe"),
+	}}
+	wire, err := request.Marshal(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := &net.IPAddr{IP: net.IP(peer.MeshAddress().AsSlice())}
+	if _, err = echo.WriteTo(wire, dst); err != nil {
+		t.Fatalf("ICMPv6 echo request: %v", err)
+	}
+	_ = echo.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf = make([]byte, 1024)
+	for {
+		n, src, err := echo.ReadFrom(buf)
+		if err != nil {
+			t.Fatalf("no ICMPv6 echo reply crossed the mesh: %v", err)
+		}
+		reply, err := icmp.ParseMessage(58, buf[:n])
+		if err != nil || reply.Type != ipv6.ICMPTypeEchoReply {
+			continue
+		}
+		if !src.(*net.IPAddr).IP.Equal(net.IP(peer.MeshAddress().AsSlice())) {
+			t.Fatalf("echo reply came from %v, not the peer's mesh address", src)
+		}
+		body, ok := reply.Body.(*icmp.Echo)
+		if !ok || string(body.Data) != "wendy-mesh-probe" {
+			t.Fatalf("echo reply body changed: %+v", reply.Body)
+		}
+		return
+	}
+}
+
+// assertDFReachesPacketTooBig sends from a socket that told the kernel not to
+// fragment, so the link limit must surface to the application as EMSGSIZE
+// rather than a silent drop.
+func assertDFReachesPacketTooBig(t *testing.T, peer meshid.Device) {
+	t.Helper()
+	fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	if err = syscall.SetsockoptInt(fd, syscall.IPPROTO_IPV6, syscall.IPV6_MTU_DISCOVER, syscall.IP_PMTUDISC_DO); err != nil {
+		t.Fatal(err)
+	}
+	destination := syscall.SockaddrInet6{Port: 18081}
+	copy(destination.Addr[:], peer.MeshAddress().AsSlice())
+	if err = syscall.Sendto(fd, make([]byte, 1233), 0, &destination); !errors.Is(err, syscall.EMSGSIZE) {
+		t.Fatalf("a 1281-byte IPv6 packet with DF set returned %v, want EMSGSIZE", err)
+	}
+}
+
 // TestNodePairIsolatedNamespaces runs two real nodes in disposable namespaces on
 // a veth underlay: authenticated QUIC link, Babel route exchange, TUN payload to
-// the peer's ULA address, and signed device discovery keyed by device principal.
+// the peer's ULA address, signed device discovery keyed by device principal, and
+// the Stage-4 transport promises - origination, MTU and ICMPv6 behaviour.
 func TestNodePairIsolatedNamespaces(t *testing.T) {
 	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
 		t.Skip("requires disposable privileged container")
@@ -157,6 +313,9 @@ func TestNodePairIsolatedNamespaces(t *testing.T) {
 	for _, name := range names {
 		run("netns", "add", name)
 		defer exec.Command("ip", "netns", "del", name).Run()
+		// An ICMP datagram socket is only permitted for groups inside the
+		// namespace's ping group range, and the default range admits none.
+		run("netns", "exec", name, "sh", "-c", "echo 0 2147483647 > /proc/sys/net/ipv4/ping_group_range")
 	}
 	run("link", "add", "wlmtesta", "type", "veth", "peer", "name", "wlmtestb")
 	run("link", "set", "wlmtesta", "netns", names[0])
@@ -193,7 +352,7 @@ func TestNodePairIsolatedNamespaces(t *testing.T) {
 	}
 	lower := testPrincipal(testTenantUUID, testDeviceAID)
 	higher := testPrincipal(testTenantUUID, testDeviceBID)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	server := exec.CommandContext(ctx, "ip", "netns", "exec", names[1], binary, "-test.run", "^TestNodePeerProcess$", "-test.v")
 	server.Env = append(os.Environ(), "WENDY_LOCALMESH_NODE_TEST_CONFIG="+configs[higher])
@@ -210,7 +369,7 @@ func TestNodePairIsolatedNamespaces(t *testing.T) {
 	if clientErr != nil || serverErr != nil {
 		t.Fatalf("client: %v\n%s\nserver: %v\n%s", clientErr, out, serverErr, serverOutput.String())
 	}
-	if !strings.Contains(string(out), "HTTP and signed device discovery succeeded") {
+	if !strings.Contains(string(out), "origination, MTU and ICMPv6 checks passed") {
 		t.Fatal(string(out))
 	}
 	t.Log(string(out))

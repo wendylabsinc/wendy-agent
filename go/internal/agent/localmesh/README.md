@@ -51,6 +51,18 @@ split-horizon and loop prevention still apply unchanged. The signed manifest
 authenticates the device that published a directory entry; it is not a routing
 credential.
 
+## Payload path
+
+Each admitted peer gets a TUN carrying its own ULA /128 (with no prefix route)
+and the complementary link-local pair, plus an IPv6 default route into the mesh
+table. The link MTU is the 1280-byte IPv6 minimum: a datagram one byte larger is
+fragmented by the sending kernel and reassembled by the peer, while a socket that
+asked for path MTU discovery gets `EMSGSIZE` instead of a silent drop. ICMPv6 is
+ordinary payload, so a peer's own kernel answers pings across the tunnel. An
+abrupt exit leaves the dummy link, its TUNs, rules and routes behind; the next
+start reclaims exactly the state this package owns and refuses to adopt a table
+holding anything else.
+
 ## Not yet implemented
 
 This module does **not** yet connect the existing app-facing `10.99.0.0/16` VIP
@@ -59,8 +71,8 @@ mDNS, or a general end-to-end app QUIC session. The existing WendyOS mesh-mode
 app path still selects direct LAN or cloud relay. These are the next local-mesh
 integration gates, not implied by this branch.
 
-Production review is still needed for transport failure recovery, resource
-limits and host cleanup after an abrupt process exit.
+Production review is still needed for transport failure recovery on real carriers
+— the TCP carrier exists only to simulate chosen topologies in tests.
 
 Run from the WendyOS root:
 

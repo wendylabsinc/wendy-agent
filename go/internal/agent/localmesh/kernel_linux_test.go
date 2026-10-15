@@ -116,13 +116,16 @@ func TestKernelIsolatedNamespace(t *testing.T) {
 }
 
 // TestKernelRefusesForeignTableOwnership runs in the same disposable namespace:
-// a route already occupying the reserved table is never adopted.
+// a route in the reserved table that does not carry this package's protocol is
+// never adopted. A route that does carry it is this package's own leftover from
+// an abrupt exit, which NewKernel reclaims instead (see
+// TestKernelCrashRecoveryIsolatedNamespace).
 func TestKernelRefusesForeignTableOwnership(t *testing.T) {
 	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
 		t.Skip("requires disposable privileged container network namespace")
 	}
 	self, _ := testDevices(t)
-	foreign := netlink.Route{Table: RouteTable, Protocol: routeProtocol, Family: netlink.FAMILY_V6, Dst: ipNet(netip.MustParsePrefix("fd00::445:1/128")), LinkIndex: 1}
+	foreign := netlink.Route{Table: RouteTable, Protocol: 187, Family: netlink.FAMILY_V6, Dst: ipNet(netip.MustParsePrefix("fd00::445:1/128")), LinkIndex: 1}
 	if err := netlink.RouteReplace(&foreign); err != nil {
 		t.Skipf("cannot plant a foreign route: %v", err)
 	}
