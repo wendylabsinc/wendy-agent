@@ -113,7 +113,7 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Wendy Cloud or a local pki-core instance",
-		Long: "Signs in to Wendy Cloud using the dashboard flow by default. For the OIDC flow, pass --email to discover your realm (or --issuer to name it), then sign in with authorization code + PKCE, obtain an operator certificate directly from pki-core, and save a refreshable Cloud API session.\n" +
+		Long: "Signs in to production Wendy Cloud using the browser-based OIDC flow by default. The browser collects your email and organization. The CLI obtains an operator certificate from pki-core and saves a refreshable Cloud API session. Pass --email to discover your realm before opening the browser, or --issuer to name it directly.\n" +
 			"With --api-key: issues a certificate from a self-hosted pki-core instance using a Bearer API key.\n" +
 			"With --service-account <key-file> (or " + serviceAccountKeyEnv + "): signs in headlessly as a wendy-auth service account; no browser or terminal is needed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -137,9 +137,9 @@ func newAuthLoginCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			target := developmentCloudLoginTarget
-			if production {
-				target = productionCloudLoginTarget
+			target := productionCloudLoginTarget
+			if development {
+				target = developmentCloudLoginTarget
 			}
 			if saKey != nil && !otherMode {
 				if cloudDashboard == "" {
@@ -157,11 +157,6 @@ func newAuthLoginCmd() *cobra.Command {
 					CloudGRPC: cloudGRPC,
 					Resource:  resource,
 				})
-			}
-			// Keep the dashboard flow implicit while the new Cloud transition is
-			// underway. Explicit OIDC, local, and target options bypass it.
-			if !cmd.Flags().Changed("legacy") && !production && !development && email == "" && issuer == "" && apiKey == "" {
-				legacy = true
 			}
 			if legacy {
 				if apiKey != "" || issuer != "" || email != "" {
@@ -237,17 +232,17 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint, or local pki-core address (host:port) when using --api-key")
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "Bearer API key for local pki-core authentication")
 	cmd.Flags().Int32Var(&orgID, "org", 1, "Organization ID for --api-key local login. For Wendy Cloud, each login is stored as an auth context; switch with 'wendy auth use <context>'.")
-	cmd.Flags().StringVar(&issuer, "issuer", "", "wendy-auth realm issuer URL, e.g. https://auth.wendy.sh/realms/acme (enables OIDC login)")
+	cmd.Flags().StringVar(&issuer, "issuer", "", "wendy-auth realm issuer URL, e.g. https://auth.wendy.dev/realms/acme")
 	cmd.Flags().StringVar(&email, "email", "", "Email address for explicit organization discovery with wendy-auth")
-	cmd.Flags().StringVar(&authBase, "auth", defaultDevAuthBase, "wendy-auth base URL used with --email")
+	cmd.Flags().StringVar(&authBase, "auth", defaultProdAuthBase, "wendy-auth base URL for browser login and --email discovery")
 	cmd.Flags().StringVar(&clientID, "client-id", "wendy-cli", "public DPoP OAuth client ID registered in wendy-auth")
 	cmd.Flags().StringVar(&resource, "resource", "", "RFC 8707 API resource indicator (used with OIDC login)")
 	cmd.Flags().StringVar(&identityResource, "pki-resource", defaultPKIIdentityResource, "RFC 8707 pki-core identity resource (used with OIDC login)")
-	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", defaultDevPKIIdentityEndpoint, "pki-core operator identity CSR endpoint")
+	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", defaultProdPKIIdentityEndpoint, "pki-core operator identity CSR endpoint")
 	cmd.Flags().BoolVar(&printClaims, "print-claims", false, "Print the decoded access-token claims after login (used with --issuer)")
 	cmd.Flags().StringVar(&serviceAccount, "service-account", "", "Service-account key file for headless login (or set "+serviceAccountKeyEnv+" to its contents)")
-	// HIDDEN: Keep these transitional target controls available for cutover work,
-	// but do not advertise them in CLI help until the Cloud transition is ready.
+	// Keep explicit environment selection and the legacy flow available without
+	// advertising them in CLI help.
 	cmd.Flags().BoolVar(&production, "production", false, "Use the production Wendy Cloud")
 	cmd.Flags().BoolVar(&development, "development", false, "Use the development Wendy Cloud")
 	cmd.Flags().BoolVar(&legacy, "legacy", false, "Use the old Wendy Cloud dashboard enrollment flow (cloud.wendy.sh)")
