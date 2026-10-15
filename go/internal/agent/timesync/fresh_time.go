@@ -12,6 +12,26 @@ import (
 type TimeWindow struct {
 	Earliest time.Time
 	Latest   time.Time
+	// Boot is the CLOCK_BOOTTIME sample the bounds were anchored to.
+	Boot int64
+}
+
+// BootTime reads the suspend-inclusive clock that anchors TimeWindow.Boot.
+func BootTime() (int64, error) { return bootTimeNanos() }
+
+// Advance moves the window by the boot time elapsed since it was sampled.
+// Unlike time.Since (CLOCK_MONOTONIC), CLOCK_BOOTTIME keeps counting through
+// suspend, so a window held across I/O cannot lag real time.
+func (w TimeWindow) Advance() (TimeWindow, error) {
+	now, err := bootTimeNanos()
+	if err != nil {
+		return TimeWindow{}, fmt.Errorf("timesync: boot clock unavailable: %w", err)
+	}
+	if w.Boot <= 0 || now < w.Boot {
+		return TimeWindow{}, fmt.Errorf("timesync: window has no boot-time anchor")
+	}
+	elapsed := time.Duration(now - w.Boot)
+	return TimeWindow{Earliest: w.Earliest.Add(elapsed), Latest: w.Latest.Add(elapsed), Boot: now}, nil
 }
 
 // FreshTime obtains new nonce-bound signed responses from the existing baked-in
@@ -40,6 +60,7 @@ func (m *Manager) FreshTime(ctx context.Context) (TimeWindow, error) {
 	window := TimeWindow{
 		Earliest: time.Unix(0, boot+c.LowerOffsetNanos),
 		Latest:   time.Unix(0, boot+c.UpperOffsetNanos),
+		Boot:     boot,
 	}
 	if window.Earliest.Before(floorMin) || window.Latest.After(floorMax) {
 		return TimeWindow{}, fmt.Errorf("timesync: implausible authenticated interval")

@@ -111,7 +111,7 @@ func cloudResetFixtureAt(t *testing.T, now time.Time) (*ProvisioningService, *ag
 	svc := NewProvisioningService(zap.NewNop(), dir)
 	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
 		instant := time.Now()
-		return timesync.TimeWindow{Earliest: instant, Latest: instant}, nil
+		return anchored(timesync.TimeWindow{Earliest: instant, Latest: instant}), nil
 	}
 	ctx = context.WithValue(ctx, resetActorKey{}, actorKey)
 	req := &agentpbv2.UnprovisionRequest{ExpectedPrincipalUri: principal, ExpectedCertificateSha256: unenrollproof.Fingerprint(leaf), RevocationProof: evidence, CloudDeletion: binding}

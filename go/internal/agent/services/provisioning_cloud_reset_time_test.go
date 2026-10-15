@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,28 @@ func checkResetStateUnchanged(t *testing.T, svc *ProvisioningService) func() {
 			}
 		}
 	}
+}
+
+// anchored stamps an injected window with the current boot time, as FreshTime does.
+func anchored(w timesync.TimeWindow) timesync.TimeWindow {
+	w.Boot, _ = timesync.BootTime()
+	return w
+}
+
+func TestCloudResetCountsSuspendSinceFreshTime(t *testing.T) {
+	svc, req, ctx := cloudResetFixture(t)
+	unchanged := checkResetStateUnchanged(t, svc)
+	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
+		now := time.Now()
+		w := anchored(timesync.TimeWindow{Earliest: now, Latest: now})
+		w.Boot -= int64(2 * time.Minute) // suspend after the sample
+		return w, nil
+	}
+	_, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req)
+	if !strings.Contains(status.Convert(err).Message(), "Cloud reset authorization") {
+		t.Fatalf("30-second authorization after 2m of suspend: %v", err)
+	}
+	unchanged()
 }
 
 func TestCloudResetChecksOperatorValidityAtAuthenticatedTime(t *testing.T) {
@@ -116,7 +139,7 @@ func TestCloudResetRecordsAuthenticatedAuthorizationTime(t *testing.T) {
 	svc, req, ctx := cloudResetFixture(t)
 	latest := time.Now().Add(10 * time.Second)
 	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
-		return timesync.TimeWindow{Earliest: latest.Add(-10 * time.Second), Latest: latest}, nil
+		return anchored(timesync.TimeWindow{Earliest: latest.Add(-10 * time.Second), Latest: latest}), nil
 	}
 	response, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req)
 	if err != nil {
@@ -183,7 +206,7 @@ func TestCloudResetAuthenticatedIntervalRejectsPartialValidity(t *testing.T) {
 					window.Latest = now.Add(2 * time.Hour)
 				}
 			}
-			svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) { return window, nil }
+			svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) { return anchored(window), nil }
 			if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); status.Code(err) != want {
 				t.Fatalf("reset = %v, want %v", err, want)
 			}
@@ -199,7 +222,7 @@ func TestCloudResetFreshTimeDoesNotUseWallClock(t *testing.T) {
 			svc, req, ctx := cloudResetFixtureAt(t, now)
 			renewFixtureAuthorization(t, svc, req, ctx, now)
 			svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
-				return timesync.TimeWindow{Earliest: now, Latest: now}, nil
+				return anchored(timesync.TimeWindow{Earliest: now, Latest: now}), nil
 			}
 			unchanged := checkResetStateUnchanged(t, svc)
 			_, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req)
@@ -226,7 +249,7 @@ func TestCloudResetRechecksIdentityAfterFreshTime(t *testing.T) {
 		svc.certPEM = "rotated identity"
 		svc.mu.Unlock()
 		now := time.Now()
-		return timesync.TimeWindow{Earliest: now, Latest: now}, nil
+		return anchored(timesync.TimeWindow{Earliest: now, Latest: now}), nil
 	}
 	if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("reset = %v, want failed precondition", err)

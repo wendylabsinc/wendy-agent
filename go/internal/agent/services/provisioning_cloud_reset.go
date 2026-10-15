@@ -225,7 +225,6 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 	// and exact installed identity after acquiring time; no floor file is used.
 	svc.mu.Unlock()
 	window, timeErr := svc.trustedTime(ctx)
-	acquired := time.Now() // monotonic elapsed time only, never UTC authority
 	var cloudKey []byte
 	var authorizationErr error
 	if timeErr == nil {
@@ -236,13 +235,14 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 		svc.mu.Unlock()
 		return nil, status.FromContextError(err).Err()
 	}
+	if timeErr == nil {
+		// Suspend-inclusive: the HTTPS fetch and lock wait may span a suspend.
+		window, timeErr = window.Advance()
+	}
 	if timeErr != nil || window.Earliest.IsZero() || window.Latest.Before(window.Earliest) {
 		svc.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "fresh authenticated time required; keys retained")
 	}
-	elapsed := time.Since(acquired)
-	window.Earliest = window.Earliest.Add(elapsed)
-	window.Latest = window.Latest.Add(elapsed)
 	if err := svc.requirePKIOperator(ctx, window); err != nil {
 		svc.mu.Unlock()
 		return nil, err
