@@ -32,7 +32,7 @@ func TestLanDialCandidatesIncludesEverySightedAddress(t *testing.T) {
 		Port:      50051,
 	}
 
-	cands := lanDialCandidates(dev)
+	cands := lanDialCandidates(context.Background(), dev)
 
 	wantAddrs := []string{"192.168.1.69", "169.254.1.2"}
 	for _, want := range wantAddrs {
@@ -49,7 +49,7 @@ func TestLanDialCandidatesIncludesEverySightedAddress(t *testing.T) {
 		}
 	}
 	// A single-address device must still work (fall back to the primary path).
-	single := lanDialCandidates(models.LANDevice{Hostname: "n.local", IPAddress: "10.0.0.5", Port: 50051})
+	single := lanDialCandidates(context.Background(), models.LANDevice{Hostname: "n.local", IPAddress: "10.0.0.5", Port: 50051})
 	if len(single) == 0 {
 		t.Fatal("single-address device produced no dial candidates")
 	}
@@ -343,7 +343,7 @@ func TestOrderRoutedDialCandidatesPrefersEthernetBeforeCandidateCap(t *testing.T
 	}
 	t.Cleanup(func() { dialCandidateRoutePreferenceFn = original })
 
-	got := orderRoutedDialCandidates([]string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"})
+	got := orderRoutedDialCandidates([]string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"}, nil)
 	want := []string{"10.0.0.4", "10.0.0.1", "10.0.0.2"}
 	if len(got) != len(want) {
 		t.Fatalf("orderRoutedDialCandidates = %v, want %v", got, want)

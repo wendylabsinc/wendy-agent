@@ -31,3 +31,15 @@ const serverInstructions = "Wendy MCP manages WendyOS edge devices (Raspberry Pi
 	"Avoid DEV=\"--device robot\": zsh passes it as one argument. " +
 	"Relay CLI update notices to the user with the update command and MCP server restart step.\n\n" +
 	"More: read the wendy://guide resource for workflows, entitlements, error codes and links to wendy://docs/."
+
+// relayInstructions replace serverInstructions on the relay channel (`wendy
+// cloud mcp`): a hosted chat has no shell, no tool groups and no CLI to
+// update, so it gets only what the relay can do and how calls are confirmed.
+const relayInstructions = "Wendy MCP, served through the hosted relay, reaches the WendyOS edge devices of the user who started " +
+	"'wendy cloud mcp' in a terminal. Every call runs on that user's machine under their Wendy Cloud session and organization. " +
+	"Call `wendy_status` first: it reports the connection and a suggested next step. " +
+	"Connect with `device_connect` and a cloud selector (cloud://HOST:PORT/org/ID/asset/ID), " +
+	"then inspect the device with `device_info`, `container_list` and `telemetry_logs`.\n\n" +
+	"Read-only tools run without asking. Every call that changes state waits for the user to confirm it in that terminal; " +
+	"a refused call returns DENIED: tell the user what you asked for instead of retrying. " +
+	"Tools the user has not allowed are not listed; the user can allow more by restarting 'wendy cloud mcp' with --allow-tool or --allow-all."

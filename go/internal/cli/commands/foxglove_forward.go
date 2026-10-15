@@ -25,7 +25,7 @@ func openFoxgloveConnection(ctx context.Context, client agentpb.WendyContainerSe
 	}
 	if err := stream.Send(&agentpb.ExecContainerRequest{
 		RequestType: &agentpb.ExecContainerRequest_Start{Start: &agentpb.ExecContainerRequest_ExecStart{
-			AppName: multiServiceContainerName(foxgloveAppID, "foxglove"),
+			AppName: foxgloveAppID,
 			Command: []string{"socat", "STDIO", "TCP:127.0.0.1:8765"},
 			Tty:     false,
 		}},

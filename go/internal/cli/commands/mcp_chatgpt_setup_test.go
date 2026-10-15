@@ -69,6 +69,13 @@ func TestChatGPTSetupStartsWithoutCloudDeviceOrDeveloperAccess(t *testing.T) {
 		t.Fatal("onboarding is unavailable without an MCP connection", err)
 	}
 	presentation := manifest["extensions"].(map[string]any)["com.openai"].(map[string]any)["interface"].(map[string]any)
+	if !strings.Contains(presentation["longDescription"].(string), "local CLI process must remain available") {
+		t.Fatal("desktop package must describe its local connection requirements", presentation)
+	}
+	openai := manifest["extensions"].(map[string]any)["com.openai"].(map[string]any)
+	if openai["review"] != nil || openai["publication"] != nil {
+		t.Fatal("desktop export inherited public Cloud review metadata", openai)
+	}
 	for _, field := range []string{"logo", "composerIcon"} {
 		path, ok := presentation[field].(string)
 		if !ok || path == "" {

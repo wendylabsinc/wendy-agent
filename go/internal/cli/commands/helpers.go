@@ -698,7 +698,8 @@ func preferredLANAddress(dev models.LANDevice) string {
 // vice versa). Without this the picker collapsed a multi-homed device to a single
 // address and the ladder never saw the reachable sibling; see the discovery
 // Addresses union in internal/shared/discovery/stream.go.
-func lanDialCandidates(dev models.LANDevice) []string {
+func lanDialCandidates(ctx context.Context, dev models.LANDevice) []string {
+	dev = preferCableCandidate(ctx, dev)
 	base := lanAgentAddresses(dev)
 	if len(dev.Addresses) == 0 {
 		return base
@@ -712,7 +713,7 @@ func lanDialCandidates(dev models.LANDevice) []string {
 			out = append(out, a)
 		}
 	}
-	for _, ip := range orderRoutedDialCandidates(dev.Addresses) {
+	for _, ip := range orderRoutedDialCandidates(dev.Addresses, dev.WiredAddresses) {
 		hp := hostPort(ip, port)
 		if seen[hp] {
 			continue
@@ -1524,7 +1525,7 @@ func connectPickedLANDevice(ctx context.Context, d *models.DiscoveredDevice, add
 	// a device the CLI can reach only over its USB link (WiFi on another net)
 	// advertises both, and dialing addr alone (its unreachable WiFi IP) is what
 	// made `device info/shell/pair` report a reachable device as unreachable.
-	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls }, lanDialCandidates(*d.LAN)...)
+	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls }, lanDialCandidates(ctx, *d.LAN)...)
 	if err != nil {
 		// Neither refusal is "the LAN attempt failed", and the BLE half of this
 		// row is named by the same unauthenticated advertisement that named the
@@ -1619,6 +1620,7 @@ func init() {
 			devices = append(devices, models.LANDevice{
 				Hostname:         svc.Hostname,
 				IPAddress:        svc.IPAddress,
+				WiredAddresses:   discovery.ParseWiredTXT(svc.TXTRecords["wired"]),
 				Port:             svc.Port,
 				NetworkInterface: svc.InterfaceName,
 			})
@@ -1720,11 +1722,12 @@ func orderDialCandidatesUnbounded(ips []string) []string {
 	return ordered
 }
 
-// orderRoutedDialCandidates adds host-interface preference to the ordinary
-// address-family ordering. It runs before the candidate cap so a wired answer
-// cannot be dropped merely because several Wi-Fi/IPv6 records arrived first.
-func orderRoutedDialCandidates(ips []string) []string {
-	ordered := preferWiredDialCandidates(orderDialCandidatesUnbounded(ips))
+// orderRoutedDialCandidates adds host-interface preference, then the device's
+// own cable addresses (deviceWired), to the ordinary address-family ordering.
+// It runs before the candidate cap so a wired answer cannot be dropped merely
+// because several Wi-Fi/IPv6 records arrived first.
+func orderRoutedDialCandidates(ips, deviceWired []string) []string {
+	ordered := preferWiredDialCandidates(orderDialCandidatesUnbounded(ips), deviceWired)
 	if len(ordered) > maxDialCandidates {
 		ordered = ordered[:maxDialCandidates]
 	}
@@ -1748,23 +1751,32 @@ func resolveHostAllMDNSFallback(ctx context.Context, host string) []string {
 		ips = nil
 	}
 
-	ordered := orderRoutedDialCandidates(ips)
 	// A .local hostname can legitimately answer once per interface. When the
 	// discovery cache tells us its saved path is Wi-Fi or internally inconsistent
 	// (for example en7 metadata with an en0-routed IP), merge interface-scoped
 	// DNS-SD sightings even though the system resolver returned an answer. Once a
 	// correct wired address is cached, the last-known-good path avoids this browse.
 	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	needsInterfaceBrowse := len(ordered) == 0
-	if !needsInterfaceBrowse && strings.HasSuffix(normalized, ".local") {
+	isLocal := strings.HasSuffix(normalized, ".local")
+	needsInterfaceBrowse := len(orderDialCandidatesUnbounded(ips)) == 0
+	var wired []string
+	if isLocal {
 		if cached, ok := cachedDeviceHostEntry(host); ok {
-			needsInterfaceBrowse = !shouldUseCachedDeviceAddress(cached.InterfaceName, cached.IP)
+			wired = cached.WiredAddresses
+			if !needsInterfaceBrowse {
+				needsInterfaceBrowse = !shouldUseCachedDeviceAddress(cached.InterfaceName, cached.IP)
+			}
 		}
 	}
-	if needsInterfaceBrowse && strings.HasSuffix(normalized, ".local") {
-		ips = append(ips, resolveMDNSHostAll(ctx, host)...)
+	if needsInterfaceBrowse && isLocal {
+		browsed, browsedWired := resolveMDNSHostAll(ctx, host)
+		ips = append(ips, browsed...)
+		wired = append(wired, browsedWired...)
 	}
-	return orderRoutedDialCandidates(ips)
+	// One host link hearing a device's cable and Wi-Fi often caches just one
+	// of them; the cable joins once it answers for itself.
+	ips = append(ips, answeringCables(ctx, host, wired, ips)...)
+	return orderRoutedDialCandidates(ips, wired)
 }
 
 // resolveAddrOnce resolves a host:port whose host is a DNS/mDNS name to an
@@ -1811,21 +1823,22 @@ func resolveAddrCandidates(ctx context.Context, addr string) []string {
 // path, which already prefers discovered IPs for the same reason. Returns "" for
 // non-".local" hosts or when no advertised device matches.
 func resolveMDNSHost(ctx context.Context, host string) string {
-	if all := resolveMDNSHostAll(ctx, host); len(all) > 0 {
+	if all, _ := resolveMDNSHostAll(ctx, host); len(all) > 0 {
 		return all[0]
 	}
 	return ""
 }
 
 // resolveMDNSHostAll is resolveMDNSHost's list-returning form: the IPs of every
-// advertised device whose hostname matches host, in browse order.
+// advertised device whose hostname matches host, in browse order, and the cable
+// addresses those devices advertise.
 //
 // The browse is the ONLY way the shipped CLI resolves a ".local" name (built
 // CGO_ENABLED=0, so the pure Go resolver never consults mDNS), which made this
 // the path that mattered most and the one with no address preference at all: it
 // returned whichever matching record the browse happened to surface first.
 // Returning the full list lets the caller order and walk them.
-func resolveMDNSHostAll(ctx context.Context, host string) []string {
+func resolveMDNSHostAll(ctx context.Context, host string) (ips, wired []string) {
 	// A dial made *by* a discovery probe must never browse: the browse starts
 	// another discovery session, whose probes dial, which browse again. Each
 	// level re-reads and re-parses the CLI config, certs and pin store, so the
@@ -1833,30 +1846,30 @@ func resolveMDNSHostAll(ctx context.Context, host string) []string {
 	// `wendy device logs`. The probe already has the addresses this browse would
 	// look up — discovery handed them to it. See discovery.WithinProbe.
 	if discovery.IsWithinProbe(ctx) {
-		return nil
+		return nil, nil
 	}
 	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if !strings.HasSuffix(normalized, ".local") {
-		return nil
+		return nil, nil
 	}
 	timeout := mdnsBrowseTimeoutValue()
 	bctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	devices, err := lanBrowseFn(bctx, timeout)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	want := normalizeMDNSHost(host)
-	var ips []string
 	for _, dev := range devices {
 		if dev.IPAddress == "" {
 			continue
 		}
 		if normalizeMDNSHost(dev.Hostname) == want {
 			ips = append(ips, dev.IPAddress)
+			wired = append(wired, dev.WiredAddresses...)
 		}
 	}
-	return ips
+	return ips, wired
 }
 
 // normalizeMDNSHost lowercases a hostname and strips a trailing dot and ".local"
@@ -2156,6 +2169,7 @@ func connectWithAutoTLSDiagnosticsKeyed(ctx context.Context, plaintextAddr, pinK
 	fromCache := false
 	if plainHost, plainPort, splitErr := net.SplitHostPort(plaintextAddr); splitErr == nil && net.ParseIP(plainHost) == nil {
 		if e, ok := cachedDeviceHostEntry(plainHost); ok && shouldUseCachedDeviceAddress(e.InterfaceName, e.IP) {
+			e = preferLiveCable(ctx, e)
 			cachedAddr := net.JoinHostPort(e.IP, plainPort)
 			switch {
 			case e.MTLS && e.Port > 0:
@@ -3792,6 +3806,10 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 			md.DisplayName = nd.DisplayName
 			existing.SortKey = deviceSortKey(existing.Name, existing.USB)
 		}
+	}
+	if nd.LAN != nil && md.LAN != nil && nd.LAN.ID == md.LAN.ID {
+		// A later event from the same device carries its current cable record.
+		md.LAN.WiredAddresses = nd.LAN.WiredAddresses
 	}
 	if nd.LAN != nil && md.LAN != nil && nd.LAN.USB != "" && md.LAN.USB == "" {
 		md.LAN.USB = nd.LAN.USB

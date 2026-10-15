@@ -7,8 +7,5 @@
   },
   "entitlements": [
     { "type": "network", "mode": "host" }
-  ],
-  "services": {
-    "foxglove": { "context": "." }
-  }
+  ]
 }

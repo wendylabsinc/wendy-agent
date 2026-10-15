@@ -94,6 +94,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),
 		newDeviceRenameCmd(),
+		newDevicePowerModeCmd(),
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
 	)
@@ -199,6 +200,12 @@ func newDevicePushAgentCmd() *cobra.Command {
 	return cmd
 }
 
+var resolveDeviceInfoTargetFn = resolveTarget
+
+// Reading the persisted update record should not delay basic device info when
+// an older or overloaded agent cannot answer this optional request.
+const deviceInfoOSUpdateTimeout = 2 * time.Second
+
 func newDeviceInfoCmd() *cobra.Command {
 	return newDeviceInfoLikeCmd("info", false)
 }
@@ -233,7 +240,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				conn, err = connectToAgent(ctx, ReadOnlyMonitoring())
 				target = &SelectedDevice{Agent: conn}
 			} else {
-				target, err = resolveTarget(ctx, IncludeBluetooth())
+				target, err = resolveDeviceInfoTargetFn(ctx, IncludeBluetooth())
 			}
 			if err != nil {
 				return err
@@ -254,6 +261,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			// nil for mains-powered devices, for agents predating the field,
 			// and for the BLE/provider paths that never report one.
 			var battery *agentpb.BatteryStats
+			// nil off Jetson, on agents predating the field, and on the
+			// BLE/provider paths.
+			var powerMode *agentpb.PowerMode
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 				cliLogln("Connecting to %s via Bluetooth...", tui.Device(target.Bluetooth.DisplayName))
@@ -271,9 +281,16 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				osVersion = bleResp.GetOsVersion()
 				cpuArch = bleResp.GetCpuArchitecture()
 			} else if target.Agent != nil {
-				resp, respErr := target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
-				if respErr != nil {
-					return fmt.Errorf("getting agent version: %w", respErr)
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				resp, cached := target.Agent.CachedAgentVersion()
+				if !cached {
+					var respErr error
+					resp, respErr = target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+					if respErr != nil {
+						return fmt.Errorf("getting agent version: %w", respErr)
+					}
 				}
 				agentVersion = resp.GetVersion()
 				osName = resp.GetOs()
@@ -298,6 +315,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuCapabilities = resp.GetGpuCapabilities()
 				netInterfaces = resp.GetNetworkInterfaces()
 				battery = resp.GetBattery()
+				powerMode = resp.GetPowerMode()
 			} else if target.External != nil && target.Provider != nil {
 				info, infoErr := target.Provider.GetDeviceInfo(ctx, *target.External)
 				if infoErr != nil {
@@ -316,15 +334,17 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				return fmt.Errorf("selected device does not support this command")
 			}
 
-			// Best-effort OS-update status (wendyos-update slots + last update
-			// outcome). Older agents answer Unimplemented and OTA-less devices
-			// have nothing to report — device info must keep working either way.
+			// Read only the persisted update outcome. A live engine scan can mount
+			// inactive partitions and probe boot firmware; it belongs to the explicit
+			// `wendy os update-status` command. Older agents may not support this RPC.
 			var osUpdateStatus *agentpb.GetOSUpdateStatusResponse
 			if target.Agent != nil {
-				if resp, err := target.Agent.AgentService.GetOSUpdateStatus(ctx,
-					&agentpb.GetOSUpdateStatusRequest{IncludeEngineStatus: true}); err == nil {
+				statusCtx, cancel := context.WithTimeout(ctx, deviceInfoOSUpdateTimeout)
+				if resp, err := target.Agent.AgentService.GetOSUpdateStatus(statusCtx,
+					&agentpb.GetOSUpdateStatusRequest{}); err == nil {
 					osUpdateStatus = resp
 				}
+				cancel()
 			}
 
 			organization := deviceOrganization(ctx, target.Agent)
@@ -428,6 +448,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if b := batteryJSON(battery); b != nil {
 					out["battery"] = b
 				}
+				if powerMode != nil {
+					out["powerMode"] = powerModeJSON(powerMode)
+				}
 				if osUpdate := osUpdateJSON(osUpdateStatus); osUpdate != nil {
 					out["osUpdate"] = osUpdate
 				}
@@ -461,6 +484,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			if battery != nil {
 				fmt.Printf("%s %s\n", tui.Dim("Battery:"), tui.Value(formatBatterySummary(battery)))
+			}
+			if powerMode != nil {
+				fmt.Printf("%s %s\n", tui.Dim("Power Mode:"), tui.Value(powerModeLabel(powerMode)))
 			}
 			if deviceType != "" {
 				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))

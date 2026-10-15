@@ -42,14 +42,14 @@ func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 
 	infoOpts := []mcpgo.ToolOption{mcpgo.WithDescription("Get device versions, hardware, storage, and battery percentage/charge state. Missing battery fields mean unavailable readings or estimates. No ROS app required.")}
 	infoOpts = append(infoOpts, readOnly()...)
-	infoOpts = append(infoOpts, localOnly()...)
+	infoOpts = append(infoOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("device_info", infoOpts...), s.handleDeviceInfo)
 
 	setDefaultOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Save an address as the default device in ~/.wendy/config.json"),
+		mcpgo.WithDescription("Save an address as the default device in ~/.wendy/config.json, replacing the current default"),
 		mcpgo.WithString("address", mcpgo.Required(), mcpgo.Description("Device address to save as default, e.g. mydevice.local:50051")),
 	}
-	setDefaultOpts = append(setDefaultOpts, mutating()...)
+	setDefaultOpts = append(setDefaultOpts, destructive()...)
 	setDefaultOpts = append(setDefaultOpts, idempotent()...)
 	setDefaultOpts = append(setDefaultOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("device_set_default", setDefaultOpts...), s.handleDeviceSetDefault)
@@ -147,6 +147,7 @@ func (s *mcpServer) listCloudDevices(ctx context.Context, cloudGRPC string) ([]m
 	if err != nil {
 		return nil, err
 	}
+	s.minimizeCloudRows(devices)
 	for _, entry := range devices {
 		entry["type"] = "cloud"
 		entry["source"] = "cloud"

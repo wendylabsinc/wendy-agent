@@ -64,7 +64,7 @@ func (m *Manager) ServeOAuth(w http.ResponseWriter, r *http.Request) bool {
 				methods = append(methods, "client_secret_basic", "client_secret_post")
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"issuer": m.origin, "authorization_endpoint": m.origin + "/oauth/authorize", "token_endpoint": m.origin + "/oauth/token", "revocation_endpoint": m.origin + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": methods, "scopes_supported": m.config.Scopes})
+		writeJSON(w, http.StatusOK, map[string]any{"issuer": m.origin, "authorization_response_iss_parameter_supported": true, "authorization_endpoint": m.origin + "/oauth/authorize", "token_endpoint": m.origin + "/oauth/token", "revocation_endpoint": m.origin + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": methods, "scopes_supported": m.config.Scopes})
 	case "/oauth/authorize":
 		if r.Method == http.MethodGet {
 			m.authorize(w, r)
@@ -208,7 +208,7 @@ func (m *Manager) approve(w http.ResponseWriter, r *http.Request) {
 	delete(m.pending, cookie.Value)
 	m.mu.Unlock()
 	if r.PostForm.Get("approve") != "yes" {
-		redirectError(w, r, p, "access_denied")
+		m.redirectError(w, r, p, "access_denied")
 		return
 	}
 	email := r.PostForm.Get("email")
@@ -238,11 +238,12 @@ func (m *Manager) approve(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
-func redirectError(w http.ResponseWriter, r *http.Request, p *pending, code string) {
+func (m *Manager) redirectError(w http.ResponseWriter, r *http.Request, p *pending, code string) {
 	u, _ := url.Parse(p.redirect)
 	q := u.Query()
 	q.Set("error", code)
 	q.Set("state", p.state)
+	q.Set("iss", m.origin)
 	u.RawQuery = q.Encode()
 	http.Redirect(w, r, u.String(), http.StatusSeeOther)
 }
@@ -265,22 +266,22 @@ func (m *Manager) callback(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	if q.Get("error") != "" {
-		redirectError(w, r, p, "access_denied")
+		m.redirectError(w, r, p, "access_denied")
 		return
 	}
 	_, err = p.upstream.Complete(r.Context(), q.Get("code"), q.Get("state"), q.Get("iss"))
 	if err != nil || len(p.store.raw) == 0 {
-		redirectError(w, r, p, "server_error")
+		m.redirectError(w, r, p, "server_error")
 		return
 	}
 	id, err := secret()
 	if err != nil {
-		redirectError(w, r, p, "server_error")
+		m.redirectError(w, r, p, "server_error")
 		return
 	}
 	code, err := secret()
 	if err != nil {
-		redirectError(w, r, p, "server_error")
+		m.redirectError(w, r, p, "server_error")
 		return
 	}
 	m.mu.Lock()
@@ -292,7 +293,7 @@ func (m *Manager) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	m.mu.Unlock()
 	if err != nil {
-		redirectError(w, r, p, "server_error")
+		m.redirectError(w, r, p, "server_error")
 		return
 	}
 	u, _ := url.Parse(p.redirect)
