@@ -23,6 +23,17 @@ import (
 // the app on an entirely different machine.
 var errSimulatorUnavailable = errors.New("simulator unavailable")
 
+var vmDetachSupportedFn = vm.DetachSupported
+
+func simulatorForegroundHint(name string, create bool) string {
+	command := fmt.Sprintf("'wendy vm start %s'", name)
+	if create {
+		command = fmt.Sprintf("'wendy vm create %s --profile generic', then %s", name, command)
+	}
+	return "Run " + command + " in a separate terminal and keep it open. " +
+		"Managed robot simulators and automatic port forwarding require macOS or Linux; on Windows, run Wendy inside WSL2."
+}
+
 // markSimulatorUnavailable tags err so resolveWithCloudFallback will not answer
 // it by deploying to a cloud device -- without stacking a second copy of the
 // prefix onto an error that already carries one.
@@ -84,6 +95,9 @@ func ensureSimulatorRunning(ctx context.Context, name string) (addr string, star
 		// candidate and would otherwise run for a VM that was never created.
 		return "", false, fmt.Errorf("%w: no VM named %q; create it with 'wendy vm create %s'",
 			errSimulatorUnavailable, name, name)
+	}
+	if !vmDetachSupportedFn() {
+		return "", false, fmt.Errorf("%w; %s", vm.ErrDetachUnsupported, simulatorForegroundHint(name, false))
 	}
 
 	// resolveVMSpec re-checks the winner, so this only has to find a candidate.
@@ -290,8 +304,8 @@ func connectSimulatorChoice(ctx context.Context, choice *simulatorChoice, suppre
 // The caller must not be inside a Bubble Tea program -- the download runs its
 // own, and two cannot share a terminal.
 var createSimulator = func(name string) error {
-	if !vm.DetachSupported() {
-		return fmt.Errorf("%w: %w", errSimulatorUnavailable, vm.ErrDetachUnsupported)
+	if !vmDetachSupportedFn() {
+		return fmt.Errorf("%w: %w; %s", errSimulatorUnavailable, vm.ErrDetachUnsupported, simulatorForegroundHint(name, true))
 	}
 	if !isInteractiveTerminalFn() && !vmAssumeYes {
 		return fmt.Errorf("%w: no simulator yet; create one with 'wendy vm create %s'",

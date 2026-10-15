@@ -14,13 +14,13 @@ import (
 // install was attempted.
 func stubQEMUMissing(t *testing.T, installed *bool) {
 	t.Helper()
-	savedLook, savedInstall := qemuLookPathFn, installQEMUFn
-	qemuLookPathFn = func(string) (string, error) { return "", errors.New("not found") }
+	savedLook, savedInstall := findQEMUFn, installQEMUFn
+	findQEMUFn = func(string) (string, error) { return "", errors.New("not found") }
 	installQEMUFn = func(context.Context) error {
 		*installed = true
 		return nil
 	}
-	t.Cleanup(func() { qemuLookPathFn, installQEMUFn = savedLook, savedInstall })
+	t.Cleanup(func() { findQEMUFn, installQEMUFn = savedLook, savedInstall })
 }
 
 // stubTerminal forces the interactive check either way; the shared
@@ -40,9 +40,9 @@ func stubQEMUConfirmAnswer(t *testing.T, confirm func(string) bool) {
 }
 
 func TestEnsureQEMUIsANoOpWhenAlreadyInstalled(t *testing.T) {
-	saved := qemuLookPathFn
-	qemuLookPathFn = func(name string) (string, error) { return "/usr/bin/" + name, nil }
-	t.Cleanup(func() { qemuLookPathFn = saved })
+	saved := findQEMUFn
+	findQEMUFn = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	t.Cleanup(func() { findQEMUFn = saved })
 
 	asked := false
 	stubQEMUConfirmAnswer(t, func(string) bool { asked = true; return true })
@@ -127,15 +127,13 @@ func TestEnsureQEMUDeclinedKeepsTheManualCommand(t *testing.T) {
 	if installed {
 		t.Error("installed despite the prompt being declined")
 	}
-	if err == nil || !strings.Contains(err.Error(), qemuInstallHint()) {
-		t.Errorf("ensureQEMUForHostOS() = %v, want it to name %q", err, qemuInstallHint())
+	if err == nil || !strings.Contains(err.Error(), qemuInstallHintForHostOS("darwin")) {
+		t.Errorf("ensureQEMUForHostOS() = %v, want the Homebrew install command", err)
 	}
 }
 
-func TestEnsureQEMUNeverPromptsOffMac(t *testing.T) {
-	// No non-brew installer is ever driven for the user, so Linux and Windows
-	// get the hint and nothing else.
-	for _, hostOS := range []string{"linux", "windows"} {
+func TestEnsureQEMUNeverPromptsOnLinux(t *testing.T) {
+	for _, hostOS := range []string{"linux"} {
 		var installed, asked bool
 		stubQEMUMissing(t, &installed)
 		stubBrewLookPath(t, func(n string) (string, error) { return "/opt/homebrew/bin/" + n, nil })
@@ -149,6 +147,92 @@ func TestEnsureQEMUNeverPromptsOffMac(t *testing.T) {
 		if err == nil {
 			t.Errorf("%s: ensureQEMUForHostOS() = nil, want the not-found error", hostOS)
 		}
+	}
+}
+
+func TestEnsureQEMUOnWindows(t *testing.T) {
+	for _, tc := range []struct {
+		name                                                      string
+		installed, interactive, yes, winget, accept, stillMissing bool
+		cancelBefore, cancelPrompt, cancelInstall                 bool
+		installErr                                                error
+		wantAsked, wantInstall, wantError                         bool
+	}{
+		{name: "already installed", installed: true},
+		{name: "accepted", interactive: true, winget: true, accept: true, wantAsked: true, wantInstall: true},
+		{name: "declined", interactive: true, winget: true, wantAsked: true, wantError: true},
+		{name: "noninteractive", winget: true, wantError: true},
+		{name: "explicit yes", yes: true, winget: true, wantInstall: true},
+		{name: "no winget", interactive: true, wantError: true},
+		{name: "installer failed", interactive: true, winget: true, accept: true, installErr: errors.New("install failed"), wantAsked: true, wantInstall: true, wantError: true},
+		{name: "still missing", interactive: true, winget: true, accept: true, stillMissing: true, wantAsked: true, wantInstall: true, wantError: true},
+		{name: "cancelled before lookup", cancelBefore: true, wantError: true},
+		{name: "cancelled prompt", interactive: true, winget: true, accept: true, cancelPrompt: true, wantAsked: true, wantError: true},
+		{name: "cancelled install", yes: true, winget: true, cancelInstall: true, wantInstall: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			savedFind, savedWinget := findQEMUFn, wingetLookPathFn
+			savedInstall, savedConfirm, savedYes := installWindowsQEMUFn, qemuConfirmFn, vmAssumeYes
+			t.Cleanup(func() {
+				findQEMUFn, wingetLookPathFn = savedFind, savedWinget
+				installWindowsQEMUFn, qemuConfirmFn, vmAssumeYes = savedInstall, savedConfirm, savedYes
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var asked, installed bool
+			findQEMUFn = func(hostOS string) (string, error) {
+				if hostOS != "windows" {
+					t.Fatalf("looked up QEMU for %q", hostOS)
+				}
+				if tc.installed || installed && !tc.stillMissing {
+					return `C:\Program Files\qemu\qemu-system-aarch64.exe`, nil
+				}
+				return "", errors.New("not found")
+			}
+			wingetLookPathFn = func(string) (string, error) {
+				if tc.winget {
+					return "winget.exe", nil
+				}
+				return "", errors.New("not found")
+			}
+			qemuConfirmFn = func(context.Context, string) (bool, error) {
+				asked = true
+				if tc.cancelPrompt {
+					cancel()
+				}
+				return tc.accept, nil
+			}
+			installWindowsQEMUFn = func(context.Context) error {
+				installed = true
+				if tc.cancelInstall {
+					cancel()
+				}
+				return tc.installErr
+			}
+			vmAssumeYes = tc.yes
+			stubTerminal(t, tc.interactive)
+			if tc.cancelBefore {
+				cancel()
+			}
+			err := ensureQEMUForHostOS(ctx, "windows")
+			if (err != nil) != tc.wantError || asked != tc.wantAsked || installed != tc.wantInstall {
+				t.Fatalf("err=%v asked=%t installed=%t", err, asked, installed)
+			}
+			if tc.cancelBefore || tc.cancelPrompt || tc.cancelInstall {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("err=%v, want cancellation", err)
+				}
+			}
+			if tc.installErr != nil && !errors.Is(err, tc.installErr) {
+				t.Fatalf("lost installer error: %v", err)
+			}
+			if err != nil && !tc.wantInstall && !tc.cancelBefore && !tc.cancelPrompt {
+				message := err.Error()
+				if !strings.Contains(message, "winget install --id SoftwareFreedomConservancy.QEMU") || !strings.Contains(message, "x86_64") {
+					t.Fatalf("missing Windows install or guest architecture guidance: %s", message)
+				}
+			}
+		})
 	}
 }
 

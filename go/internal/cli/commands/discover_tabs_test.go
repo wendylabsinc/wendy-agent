@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
@@ -234,5 +236,32 @@ func TestDiscoverStillDefaultsToLocal(t *testing.T) {
 	}
 	if m.simStarted {
 		t.Error("the simulator poll started before its tab was ever shown")
+	}
+}
+
+func TestDiscoverKeepsScanningWhenSimulatorNeedsForegroundStart(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	saved := vmDetachSupportedFn
+	vmDetachSupportedFn = func() bool { return false }
+	t.Cleanup(func() { vmDetachSupportedFn = saved })
+	for _, existing := range [][]vm.Status{nil, {stoppedVM("sim", "test")}} {
+		m := newTestDiscoverTabsModel(0, 0)
+		m, _ = discoverTabTo(t, m, devicePickerSimulatorTab)
+		m, _ = m.updateSimulator(simulatorVMsMsg{vms: existing})
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+		m = updated.(discoverTabsModel)
+		if m.action != devicePickerNoAction || m.cancelled || m.sim.createRequested() {
+			t.Fatal("unsupported simulator creation closed discovery")
+		}
+		name := nextSimulatorName(existing)
+		for _, want := range []string{"wendy vm create " + name + " --profile generic", "wendy vm start " + name, "WSL2"} {
+			if view := m.View(); !strings.Contains(view, want) {
+				t.Errorf("discovery view = %q, missing %q", view, want)
+			}
+		}
+		m, _ = discoverTabTo(t, m, devicePickerLocalTab)
+		if m.cancelled || !strings.Contains(m.View(), "Scanning for WendyOS devices") {
+			t.Fatal("nearby discovery did not remain available")
+		}
 	}
 }

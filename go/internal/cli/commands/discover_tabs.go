@@ -47,6 +47,12 @@ func newDiscoverTabsModel(ctx context.Context, local discoverModel, auth *config
 	if active == devicePickerSimulatorTab {
 		m.simStarted = true
 	}
+	if !vmDetachSupportedFn() {
+		vms := m.sim.vms
+		m.sim.picker.OnCreateItem = func() (string, bool) {
+			return simulatorForegroundHint(nextSimulatorName(*vms), true), false
+		}
+	}
 	if auth != nil {
 		m.cloud = newCloudDiscoverModel(ctx, auth, os.Getenv("WENDY_BROKER_URL"), false, false, nil)
 	}
