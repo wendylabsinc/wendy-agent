@@ -42,7 +42,12 @@ func legacyDeviceTLSConfig(cert tls.Certificate, chain string, orgID, assetID in
 	}
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert},
-		InsecureSkipVerify: true, // The verifier checks the chain and exact legacy asset instead of a hostname.
+		// SECURITY: Legacy certificates identify assets by Wendy URN or CN, not
+		// a DNS/IP SAN. VerifyConnection replaces Go's hostname-based verifier
+		// with trusted-chain, validity, server-auth and exact org/asset checks.
+		// Keep it installed whenever InsecureSkipVerify is true. See
+		// https://pkg.go.dev/crypto/tls#example-Config-VerifyConnection.
+		InsecureSkipVerify: true,
 		VerifyConnection: func(state tls.ConnectionState) error {
 			if err := verify(state); err != nil {
 				return err
