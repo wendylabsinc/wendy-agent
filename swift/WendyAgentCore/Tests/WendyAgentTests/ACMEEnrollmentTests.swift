@@ -89,6 +89,13 @@ struct ACMEEnrollmentTests {
         #expect(((try? config.validate()) != nil) == valid)
     }
 
+    @Test("EAB key must be plain hex, as Go's hex decoder requires", arguments: ["+a+a", "-0-0", "abc", "zz"])
+    func signedHexRefused(key: String) {
+        var config = Self.config
+        config.eabHMACKey = key
+        #expect(throws: ACMEEnrollmentError.self) { try config.validate() }
+    }
+
     // MARK: - Helpers
 
     private static func setUp() throws -> (FakePKI, P256.Signing.PrivateKey, URL) {

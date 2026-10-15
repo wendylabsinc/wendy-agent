@@ -175,9 +175,9 @@ enum ACMEEnrollment {
                 payload: Self.json(["csr": Self.b64url(Data(csrDER))])
             )
             order = try JSONDecoder().decode(Order.self, from: data)
-            // ponytail: fixed 1 s poll, 10 tries; honour Retry-After if issuance gets slower.
+            // ponytail: fixed 1 s poll for up to a minute; honour Retry-After if issuance gets slower.
             var polls = 0
-            while order.status == "processing" || order.status == "ready", let orderURL, polls < 10 {
+            while order.status == "processing" || order.status == "ready", let orderURL, polls < 60 {
                 try await Task.sleep(for: .seconds(1))
                 order = try JSONDecoder().decode(Order.self, from: try await session.post(orderURL, payload: nil).0)
                 polls += 1
@@ -400,16 +400,15 @@ enum ACMEEnrollment {
         let dir = path.deletingLastPathComponent()
         try manager.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let tmp = dir.appendingPathComponent(".\(UUID().uuidString).tmp")
-        guard
-            manager.createFile(
-                atPath: tmp.path,
-                contents: Data(key.pemRepresentation.utf8),
-                attributes: [.posixPermissions: 0o600]
-            )
-        else {
+        guard manager.createFile(atPath: tmp.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
             throw ACMEEnrollmentError("storing ACME account key \(path.path) failed")
         }
         do {
+            // Durable before the rename: the EAB this key is about to bind is single-use.
+            let handle = try FileHandle(forWritingTo: tmp)
+            defer { try? handle.close() }
+            try handle.write(contentsOf: Data(key.pemRepresentation.utf8))
+            try handle.synchronize()
             try manager.moveItem(at: tmp, to: path)
         } catch {
             try? manager.removeItem(at: tmp)
@@ -420,7 +419,8 @@ enum ACMEEnrollment {
 
     static func hexDecode(_ hex: String) -> [UInt8]? {
         let digits = Array(hex.utf8)
-        guard digits.count % 2 == 0 else { return nil }
+        // UInt8(_:radix:) alone would accept a "+"/"-" sign that Go's hex decoder refuses.
+        guard digits.count % 2 == 0, hex.allSatisfy(\.isHexDigit) else { return nil }
         var bytes: [UInt8] = []
         bytes.reserveCapacity(digits.count / 2)
         for index in stride(from: 0, to: digits.count, by: 2) {
