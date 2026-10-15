@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 
 	"github.com/vishvananda/netlink"
 	"github.com/wendylabsinc/WendyOS/go/babel"
@@ -44,24 +45,14 @@ type Kernel struct {
 
 func NewKernel(device meshid.Device) (*Kernel, error) {
 	address := device.MeshAddress()
-	// Reserved route table must be empty; never adopt foreign or stale state.
-	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		existing, err := netlink.RouteListFiltered(family, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
-		if err != nil {
-			return nil, err
-		}
-		if len(existing) != 0 {
-			return nil, errors.New("local-mesh route table already occupied")
-		}
-	}
-	rules, err := netlink.RuleList(netlink.FAMILY_ALL)
-	if err != nil {
+	// An abrupt exit leaves the dummy link, its TUNs, their rules and the mesh
+	// routes behind. Reclaim exactly the state this package owns first, so a
+	// restart recovers instead of refusing to start forever; anything else in
+	// the reserved table or rule slots belongs to someone else and stays a
+	// hard conflict.
+	var err error
+	if err = reclaimReservedState(); err != nil {
 		return nil, err
-	}
-	for _, r := range rules {
-		if r.Table == RouteTable || r.Priority == RouteTable {
-			return nil, errors.New("local-mesh rule ownership conflict")
-		}
 	}
 	attrs := netlink.NewLinkAttrs()
 	attrs.Name = InterfaceName
@@ -78,6 +69,11 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 		}
 	}()
 	if err = netlink.LinkSetAlias(k.link, interfaceOwner); err != nil {
+		return nil, err
+	}
+	// The host link is quiesced before it is raised: it carries only the
+	// device's own mesh address, never a router-advertised or SLAAC address.
+	if err = sysctls(InterfaceName); err != nil {
 		return nil, err
 	}
 	if err = netlink.AddrAdd(k.link, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(address, 128)), Flags: unix.IFA_F_NOPREFIXROUTE}); err != nil {
@@ -152,26 +148,15 @@ func (k *Kernel) AddPeer(id babel.LinkID, peer meshid.Device) (*os.File, error) 
 		return nil, err
 	}
 	// Babel owns addressing and routing on this point-to-point link. Never
-	// accept peer router advertisements or manufacture SLAAC/default routes.
+	// accept peer router advertisements or manufacture SLAAC, prefix or
+	// default routes, and never let the kernel add its own MAC-derived
+	// link-local beside the UUID-derived pair.
 	// accept_ra_rt_info_max_plen only bounds routes carried inside router
 	// information options, and some kernel builds do not expose it at all;
 	// accept_ra=0 already blocks every advertisement. The knobs that actually
 	// stop SLAAC, prefix assignment and solicitations stay mandatory.
-	for _, setting := range []struct {
-		name     string
-		optional bool
-	}{
-		{"accept_ra", false},
-		{"autoconf", false},
-		{"accept_ra_rt_info_max_plen", true},
-		{"router_solicitations", false},
-	} {
-		if err = os.WriteFile("/proc/sys/net/ipv6/conf/"+attrs.Name+"/"+setting.name, []byte("0\n"), 0600); err != nil {
-			if setting.optional && errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, err
-		}
+	if err = sysctls(attrs.Name); err != nil {
+		return nil, err
 	}
 	if err = netlink.AddrAdd(tun, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(local, 64)), Flags: unix.IFA_F_NODAD}); err != nil {
 		return nil, err
@@ -209,6 +194,21 @@ func (k *Kernel) RemovePeer(id babel.LinkID) error {
 // the packet forwarding gate until all routes and durable engine state are
 // committed. On any error it must call Stop, not resume a partial FIB.
 func (k *Kernel) Apply(routes []babel.Route) error {
+	// Re-assert the unreachable fallback and the table rule before mutating
+	// anything. If either was removed out from under this instance, a pool
+	// address with no mesh route would fall through to the host's ordinary
+	// uplink instead of failing closed.
+	if len(k.routes) == 0 || k.routes[0].Priority != 32767 {
+		return errors.New("local-mesh fallback guard is missing")
+	}
+	if err := netlink.RouteReplace(&k.routes[0]); err != nil {
+		return err
+	}
+	if k.rule != nil {
+		if err := netlink.RuleAdd(k.rule); err != nil && !errors.Is(err, unix.EEXIST) {
+			return err
+		}
+	}
 	var desired []netlink.Route
 	for _, r := range routes {
 		if r.Local {
@@ -309,4 +309,87 @@ func (k *Kernel) Close() error {
 	}
 	errs = append(errs, netlink.LinkDel(live))
 	return errors.Join(errs...)
+}
+
+// sysctls confines one local-mesh interface to Babel-managed addressing and
+// routing. addr_gen_mode=1 (none) suppresses the kernel's MAC-derived
+// link-local, so the only link-local on a TUN is the one both ends derived
+// from the device UUIDs.
+func sysctls(name string) error {
+	for _, setting := range []struct {
+		name     string
+		value    string
+		optional bool
+	}{
+		{"disable_ipv6", "0", false},
+		{"accept_ra", "0", false},
+		{"accept_ra_rt_info_max_plen", "0", true},
+		{"autoconf", "0", false},
+		{"router_solicitations", "0", false},
+		{"addr_gen_mode", "1", false},
+	} {
+		path := "/proc/sys/net/ipv6/conf/" + name + "/" + setting.name
+		if err := os.WriteFile(path, []byte(setting.value+"\n"), 0o600); err != nil {
+			if setting.optional && errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("configure %s for %s: %w", setting.name, name, err)
+		}
+	}
+	return nil
+}
+
+// reclaimReservedState removes local-mesh state left behind by an earlier
+// instance that exited abruptly. Ownership is the interface alias and the
+// reserved route protocol: leftover interfaces, rules and routes are deleted,
+// while an interface name, rule slot or table entry that does not carry them
+// belongs to someone else and is refused.
+func reclaimReservedState() error {
+	links, err := netlink.LinkList()
+	if err != nil {
+		return err
+	}
+	for _, l := range links {
+		name := l.Attrs().Name
+		if name != InterfaceName && !strings.HasPrefix(name, peerInterfacePrefix) {
+			continue
+		}
+		if l.Attrs().Alias != interfaceOwner {
+			return fmt.Errorf("interface %q exists and is not owned by local-mesh", name)
+		}
+		if err := netlink.LinkDel(l); err != nil && !errors.Is(err, unix.ENODEV) {
+			return err
+		}
+	}
+	rules, err := netlink.RuleList(netlink.FAMILY_ALL)
+	if err != nil {
+		return err
+	}
+	for _, r := range rules {
+		if r.Table == RouteTable {
+			// The table is reserved, so a rule selecting it is this package's.
+			if err := netlink.RuleDel(&r); err != nil && !errors.Is(err, unix.ENOENT) {
+				return err
+			}
+			continue
+		}
+		if r.Priority == RouteTable || r.Priority == RouteTable+1 {
+			return fmt.Errorf("local-mesh rule priority %d is already in use", r.Priority)
+		}
+	}
+	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
+		if err != nil {
+			return err
+		}
+		for _, r := range routes {
+			if r.Protocol != routeProtocol {
+				return fmt.Errorf("local-mesh route table %d holds a foreign route", RouteTable)
+			}
+			if err := netlink.RouteDel(&r); err != nil && !errors.Is(err, unix.ESRCH) {
+				return err
+			}
+		}
+	}
+	return nil
 }
