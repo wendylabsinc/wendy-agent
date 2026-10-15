@@ -13,6 +13,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 )
 
@@ -25,8 +26,8 @@ type runtime struct {
 	bus                  *dbus.Conn
 	freshness            *advertisementFreshness
 	mu                   sync.Mutex
-	active               map[int32]struct{}
-	nextAttempt          map[int32]time.Time
+	active               map[meshid.Device]struct{}
+	nextAttempt          map[meshid.Device]time.Time
 	links                sync.WaitGroup
 	dialSlot             chan struct{}
 	serverTLS            *tls.Config
@@ -37,15 +38,15 @@ type runtime struct {
 }
 
 type cheaperLinkChecker interface {
-	HasCheaperLink(asset int32, cost uint16) bool
+	HasCheaperLink(device meshid.Device, cost uint16) bool
 }
 
-func (r *runtime) hasCheaperLink(asset int32) bool {
+func (r *runtime) hasCheaperLink(device meshid.Device) bool {
 	checker, ok := r.cfg.Node.(cheaperLinkChecker)
-	return ok && checker.HasCheaperLink(asset, LinkCost)
+	return ok && checker.HasCheaperLink(device, LinkCost)
 }
 
-func (r *runtime) watchCheaperLink(ctx context.Context, asset int32, conn net.Conn) func() {
+func (r *runtime) watchCheaperLink(ctx context.Context, device meshid.Device, conn net.Conn) func() {
 	stop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(time.Second)
@@ -57,8 +58,8 @@ func (r *runtime) watchCheaperLink(ctx context.Context, asset int32, conn net.Co
 			case <-stop:
 				return
 			case <-ticker.C:
-				if r.hasCheaperLink(asset) {
-					r.cfg.Logger.Debug("BLE closing CoC on cheaper-link decision", zap.Int32("peer", asset))
+				if r.hasCheaperLink(device) {
+					r.cfg.Logger.Debug("BLE closing CoC on cheaper-link decision", zap.Stringer("peer", device.UUID()))
 					_ = conn.Close()
 					return
 				}
@@ -68,43 +69,43 @@ func (r *runtime) watchCheaperLink(ctx context.Context, asset int32, conn net.Co
 	return func() { close(stop) }
 }
 
-func (r *runtime) claim(asset int32) bool {
+func (r *runtime) claim(device meshid.Device) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.active[asset]; exists || len(r.active) >= r.cfg.TargetPeers {
+	if _, exists := r.active[device]; exists || len(r.active) >= r.cfg.TargetPeers {
 		return false
 	}
-	r.active[asset] = struct{}{}
+	r.active[device] = struct{}{}
 	return true
 }
-func (r *runtime) release(asset int32) {
+func (r *runtime) release(device meshid.Device) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.active, asset)
-	r.nextAttempt[asset] = time.Now().Add(5 * time.Second)
+	delete(r.active, device)
+	r.nextAttempt[device] = time.Now().Add(5 * time.Second)
 }
-func (r *runtime) shouldDial(asset int32) bool {
+func (r *runtime) shouldDial(device meshid.Device) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, active := r.active[asset]
-	return !active && len(r.active) < r.cfg.TargetPeers && !time.Now().Before(r.nextAttempt[asset])
+	_, active := r.active[device]
+	return !active && len(r.active) < r.cfg.TargetPeers && !time.Now().Before(r.nextAttempt[device])
 }
 
 // Run advertises, scans, listens for CoC channels, and initiates channels to
-// lower-numbered peers concurrently. It blocks until ctx ends. BlueZ data is
-// only a discovery hint: every link requires a Wendy asset certificate pinned
-// to the expected organization and peer asset before AttachStream is called.
+// lower device UUIDs concurrently. It blocks until ctx ends. BlueZ data is
+// only a discovery hint: every link requires a Wendy device certificate pinned
+// to the expected tenant and peer device before AttachStream is called.
 func Run(ctx context.Context, cfg Config) error {
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 	if err := cfg.defaults(); err != nil {
 		return err
 	}
-	uuid, err := ServiceUUID(cfg.Credentials.Org)
-	if err != nil {
-		return err
+	uuid := ServiceUUID(cfg.Credentials.Device.Tenant())
+	if uuid == "" {
+		return errors.New("BLE requires a tenant UUID")
 	}
-	adv, err := NewAdvertisement(cfg.Credentials.Asset, cfg.MeshName, cfg.PSM)
+	adv, err := NewAdvertisement(cfg.Credentials.Device.UUID(), cfg.MeshName, cfg.PSM)
 	if err != nil {
 		return err
 	}
@@ -128,7 +129,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	freshness := newAdvertisementFreshness(adapter, uuid, cfg.MeshName, cfg.Credentials.Asset)
+	freshness := newAdvertisementFreshness(adapter, uuid, cfg.MeshName, cfg.Credentials.Device)
 	stopWatching, err := watchAdvertisements(runCtx, bus, owner, freshness)
 	if err != nil {
 		return err
@@ -151,7 +152,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if parseErr != nil {
 		cfg.Logger.Debug("BLE connection interval tuning unavailable", zap.Error(parseErr))
 	}
-	r := &runtime{cfg: cfg, uuid: uuid, owner: owner, hciIndex: hciIndex, ownerLookup: bluezOwner, bus: bus, freshness: freshness, active: make(map[int32]struct{}), nextAttempt: make(map[int32]time.Time), dialSlot: make(chan struct{}, 1), tlsGate: newTLSHandshakeAdmission()}
+	r := &runtime{cfg: cfg, uuid: uuid, owner: owner, hciIndex: hciIndex, ownerLookup: bluezOwner, bus: bus, freshness: freshness, active: make(map[meshid.Device]struct{}), nextAttempt: make(map[meshid.Device]time.Time), dialSlot: make(chan struct{}, 1), tlsGate: newTLSHandshakeAdmission()}
 	r.serverTLS = r.makeServerTLS()
 	r.advertisementRefresh = make(chan struct{}, 1)
 	var loops sync.WaitGroup
@@ -220,8 +221,11 @@ func (r *runtime) makeServerTLS() *tls.Config {
 			if err != nil {
 				return err
 			}
-			if id.Org != r.cfg.Credentials.Org || id.Asset <= r.cfg.Credentials.Asset {
-				return errors.New("BLE inbound peer must be a higher asset in this organization")
+			if id.Device.Tenant() != r.cfg.Credentials.Device.Tenant() {
+				return errors.New("BLE inbound peer is outside the tenant")
+			}
+			if meshid.Compare(r.cfg.Credentials.Device, id.Device) >= 0 {
+				return errors.New("BLE inbound peer must be a higher device in this tenant")
 			}
 			return nil
 		},
@@ -240,30 +244,30 @@ func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 	wait, elapsed, err := r.tlsGate.run(ctx, meshTLSAdmissionWait, meshTLSHandshakeTimeout, secure.HandshakeContext)
 	measurement := meter.finish()
 	state := secure.ConnectionState()
-	var peer int32
+	var peer meshid.Device
 	if err == nil && state.NegotiatedProtocol == ALPN {
 		chain := make([][]byte, 0, len(state.PeerCertificates))
 		for _, cert := range state.PeerCertificates {
 			chain = append(chain, cert.Raw)
 		}
-		if id, verifyErr := r.cfg.Credentials.Verify(chain, time.Now()); verifyErr == nil && id.Org == r.cfg.Credentials.Org && id.Asset > r.cfg.Credentials.Asset {
-			peer = id.Asset
+		if id, verifyErr := r.cfg.Credentials.Verify(chain, time.Now()); verifyErr == nil && id.Device.Tenant() == r.cfg.Credentials.Device.Tenant() && meshid.Compare(r.cfg.Credentials.Device, id.Device) < 0 {
+			peer = id.Device
 		}
 	}
-	measurement.log(r.cfg.Logger, "inbound", peer, state, err == nil && state.NegotiatedProtocol == ALPN && peer != 0)
-	if err != nil || state.NegotiatedProtocol != ALPN || peer == 0 {
+	measurement.log(r.cfg.Logger, "inbound", peer, state, err == nil && state.NegotiatedProtocol == ALPN && peer != (meshid.Device{}))
+	if err != nil || state.NegotiatedProtocol != ALPN || peer == (meshid.Device{}) {
 		r.cfg.Logger.Warn("BLE inbound TLS rejected", zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Error(err))
 		_ = secure.Close()
 		return
 	}
-	r.cfg.Logger.Info("BLE inbound TLS established", zap.Int32("peer", peer), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Bool("resumed", state.DidResume))
+	r.cfg.Logger.Info("BLE inbound TLS established", zap.Stringer("peer", peer.UUID()), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Bool("resumed", state.DidResume))
 	if r.hasCheaperLink(peer) {
-		r.cfg.Logger.Debug("BLE closing inbound CoC on cheaper-link decision", zap.Int32("peer", peer))
+		r.cfg.Logger.Debug("BLE closing inbound CoC on cheaper-link decision", zap.Stringer("peer", peer.UUID()))
 		_ = secure.Close()
 		return
 	}
 	if !r.claim(peer) {
-		r.cfg.Logger.Debug("BLE closing inbound CoC on claim conflict", zap.Int32("peer", peer))
+		r.cfg.Logger.Debug("BLE closing inbound CoC on claim conflict", zap.Stringer("peer", peer.UUID()))
 		_ = secure.Close()
 		return
 	}
@@ -273,7 +277,7 @@ func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 	stopCheaperWatch := r.watchCheaperLink(ctx, peer, secure)
 	defer stopCheaperWatch()
 	if err = r.cfg.Node.AttachStream(ctx, peer, secure, LinkCost); err != nil && ctx.Err() == nil {
-		r.cfg.Logger.Debug("BLE link ended", zap.Int32("peer", peer), zap.Error(err))
+		r.cfg.Logger.Debug("BLE link ended", zap.Stringer("peer", peer.UUID()), zap.Error(err))
 	}
 }
 
@@ -328,17 +332,17 @@ func (r *runtime) scanOnce(ctx context.Context, bus *dbus.Conn, adapter dbus.Obj
 	now := time.Now()
 	peers := r.discoveredCandidates(objects, now)
 	for _, peer := range peers {
-		if r.hasCheaperLink(peer.asset) {
+		if r.hasCheaperLink(peer.device) {
 			continue
 		}
-		if !r.shouldDial(peer.asset) {
+		if !r.shouldDial(peer.device) {
 			continue
 		}
-		if !r.claim(peer.asset) {
+		if !r.claim(peer.device) {
 			continue
 		}
 		r.links.Add(1)
-		go func(peer candidate) { defer r.links.Done(); defer r.release(peer.asset); r.dialLink(ctx, peer) }(peer)
+		go func(peer candidate) { defer r.links.Done(); defer r.release(peer.device); r.dialLink(ctx, peer) }(peer)
 	}
 	r.maybeRestartDiscovery(ctx, bus, adapter, now)
 	return nil
@@ -359,18 +363,18 @@ func (r *runtime) missingPeerSlots() bool {
 	if r.cfg.TargetPeers <= 0 {
 		return false
 	}
-	assets := make(map[int32]struct{}, r.cfg.TargetPeers)
+	devices := make(map[meshid.Device]struct{}, r.cfg.TargetPeers)
 	r.mu.Lock()
-	for asset := range r.active {
-		assets[asset] = struct{}{}
+	for device := range r.active {
+		devices[device] = struct{}{}
 	}
 	r.mu.Unlock()
 	if node, ok := r.cfg.Node.(interface{ Snapshot() localmesh.NodeSnapshot }); ok {
 		for _, link := range node.Snapshot().Links {
-			assets[link.Asset] = struct{}{}
+			devices[link.Device] = struct{}{}
 		}
 	}
-	return len(assets) < r.cfg.TargetPeers
+	return len(devices) < r.cfg.TargetPeers
 }
 
 func (r *runtime) maybeRestartDiscovery(ctx context.Context, bus *dbus.Conn, adapter dbus.ObjectPath, now time.Time) {
@@ -392,8 +396,8 @@ func (r *runtime) maybeRestartDiscovery(ctx context.Context, bus *dbus.Conn, ada
 }
 
 func (r *runtime) dialLink(ctx context.Context, peer candidate) {
-	if r.hasCheaperLink(peer.asset) {
-		r.cfg.Logger.Debug("BLE closing outbound CoC on cheaper-link decision", zap.Int32("peer", peer.asset))
+	if r.hasCheaperLink(peer.device) {
+		r.cfg.Logger.Debug("BLE closing outbound CoC on cheaper-link decision", zap.Stringer("peer", peer.device.UUID()))
 		return
 	}
 	// Serializing outgoing LE creation avoids accumulating simultaneous pending
@@ -409,7 +413,7 @@ func (r *runtime) dialLink(ctx context.Context, peer candidate) {
 			<-r.dialSlot
 		}
 	}()
-	if r.hasCheaperLink(peer.asset) || ctx.Err() != nil {
+	if r.hasCheaperLink(peer.device) || ctx.Err() != nil {
 		return
 	}
 	// Multiple BlueZ advertisements share the controller's advertising time.
@@ -428,21 +432,21 @@ func (r *runtime) dialLink(ctx context.Context, peer candidate) {
 			abortErr := disconnectLEPeer(abortCtx, r.hciIndex, peer.address, peer.addressType)
 			stopAbort()
 			if abortErr != nil {
-				r.cfg.Logger.Warn("BLE timed-out peer ACL cancel failed", zap.Int32("peer", peer.asset), zap.Error(abortErr))
+				r.cfg.Logger.Warn("BLE timed-out peer ACL cancel failed", zap.Stringer("peer", peer.device.UUID()), zap.Error(abortErr))
 			} else {
-				r.cfg.Logger.Info("BLE timed-out peer ACL cancel completed", zap.Int32("peer", peer.asset))
+				r.cfg.Logger.Info("BLE timed-out peer ACL cancel completed", zap.Stringer("peer", peer.device.UUID()))
 			}
 		} else {
 			r.disconnectOwnedPeer(peer)
 		}
-		r.cfg.Logger.Debug("BLE CoC dial failed", zap.Int32("peer", peer.asset), zap.Error(err))
+		r.cfg.Logger.Debug("BLE CoC dial failed", zap.Stringer("peer", peer.device.UUID()), zap.Error(err))
 		return
 	}
 	<-r.dialSlot
 	slotHeld = false
 	// Closing the CoC socket alone can leave its LE ACL held by BlueZ. The
-	// higher-asset dialer owns this link and releases that specific peer after
-	// every failed attempt, route suppression, or provider shutdown.
+	// higher device UUID dialer owns this link and releases that specific peer
+	// after every failed attempt, route suppression, or provider shutdown.
 	defer func() {
 		if raw != nil {
 			_ = raw.Close()
@@ -470,13 +474,13 @@ func (r *runtime) dialLink(ctx context.Context, peer candidate) {
 		}
 		return requestMeshConnectionInterval(updateCtx, r.hciIndex, aclHandle)
 	})
-	r.cfg.Logger.Info("BLE initial tune barrier completed", zap.Int32("peer", peer.asset),
+	r.cfg.Logger.Info("BLE initial tune barrier completed", zap.Stringer("peer", peer.device.UUID()),
 		zap.Duration("wait", time.Since(tuneStarted)), zap.Duration("interval", interval),
 		zap.Bool("untuned_fallback", untuned), zap.Error(tuneErr))
 	if tuneErr != nil && !untuned {
 		return
 	}
-	cfg, err := r.cfg.Credentials.PeerTLSWithTickets(peer.asset, ALPN, "ble-tls")
+	cfg, err := r.cfg.Credentials.PeerTLSWithTickets(peer.device, ALPN, "ble-tls")
 	if err != nil {
 		return
 	}
@@ -488,21 +492,21 @@ func (r *runtime) dialLink(ctx context.Context, peer candidate) {
 	meter.start()
 	wait, elapsed, err := r.tlsGate.run(ctx, meshTLSAdmissionWait, meshTLSHandshakeTimeout, secure.HandshakeContext)
 	measurement := meter.finish()
-	measurement.log(r.cfg.Logger, "outbound", peer.asset, secure.ConnectionState(), err == nil && secure.ConnectionState().NegotiatedProtocol == ALPN)
+	measurement.log(r.cfg.Logger, "outbound", peer.device, secure.ConnectionState(), err == nil && secure.ConnectionState().NegotiatedProtocol == ALPN)
 	if err != nil || secure.ConnectionState().NegotiatedProtocol != ALPN {
-		r.cfg.Logger.Warn("BLE outbound TLS rejected", zap.Int32("peer", peer.asset), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Error(err))
+		r.cfg.Logger.Warn("BLE outbound TLS rejected", zap.Stringer("peer", peer.device.UUID()), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Error(err))
 		return
 	}
-	r.cfg.Logger.Info("BLE outbound TLS established", zap.Int32("peer", peer.asset), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Bool("resumed", secure.ConnectionState().DidResume))
-	if r.hasCheaperLink(peer.asset) {
-		r.cfg.Logger.Debug("BLE closing outbound CoC on cheaper-link decision", zap.Int32("peer", peer.asset))
+	r.cfg.Logger.Info("BLE outbound TLS established", zap.Stringer("peer", peer.device.UUID()), zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Bool("resumed", secure.ConnectionState().DidResume))
+	if r.hasCheaperLink(peer.device) {
+		r.cfg.Logger.Debug("BLE closing outbound CoC on cheaper-link decision", zap.Stringer("peer", peer.device.UUID()))
 		return
 	}
-	stopCheaperWatch := r.watchCheaperLink(ctx, peer.asset, secure)
+	stopCheaperWatch := r.watchCheaperLink(ctx, peer.device, secure)
 	defer stopCheaperWatch()
-	err = r.cfg.Node.AttachStream(ctx, peer.asset, secure, LinkCost)
+	err = r.cfg.Node.AttachStream(ctx, peer.device, secure, LinkCost)
 	if err != nil && ctx.Err() == nil {
-		r.cfg.Logger.Debug("BLE link ended", zap.Int32("peer", peer.asset), zap.Error(err))
+		r.cfg.Logger.Debug("BLE link ended", zap.Stringer("peer", peer.device.UUID()), zap.Error(err))
 	}
 }
 
@@ -517,7 +521,7 @@ func (r *runtime) disconnectOwnedPeer(peer candidate) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := r.bus.Object(bluezName, peer.path).CallWithContext(ctx, deviceInterface+".Disconnect", 0).Err; err != nil {
-		r.cfg.Logger.Debug("BLE owned ACL disconnect unavailable", zap.Int32("peer", peer.asset), zap.Error(err))
+		r.cfg.Logger.Debug("BLE owned ACL disconnect unavailable", zap.Stringer("peer", peer.device.UUID()), zap.Error(err))
 	}
 }
 

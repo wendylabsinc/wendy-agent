@@ -13,6 +13,8 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 const (
@@ -51,14 +53,14 @@ func verifyBlueZOwner(expected, current string) error {
 type managedObjects map[dbus.ObjectPath]map[string]map[string]dbus.Variant
 
 type candidate struct {
-	asset                int32
+	device               meshid.Device
 	address, addressType string
 	path                 dbus.ObjectPath
 	psm                  uint16
 }
 
-func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, meshName string, self int32) []candidate {
-	peers := make(map[int32]candidate)
+func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, meshName string, self meshid.Device) []candidate {
+	peers := make(map[meshid.Device]candidate)
 	for path, ifaces := range objects {
 		if !strings.HasPrefix(string(path), string(adapter)+"/dev_") {
 			continue
@@ -76,21 +78,25 @@ func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, meshName 
 			continue
 		}
 		adv, ok := matchingServiceData(serviceData(props["ServiceData"]), uuid, meshName)
-		if !ok || adv.Asset >= self {
+		if !ok {
+			continue
+		}
+		device := meshid.NewDevice(self.Tenant(), adv.Device)
+		if meshid.Compare(device, self) >= 0 {
 			continue
 		}
 		if _, _, err := parseAddress(address, kind, adv.PSM); err != nil {
 			continue
 		}
-		if prior, exists := peers[adv.Asset]; !exists || address < prior.address {
-			peers[adv.Asset] = candidate{asset: adv.Asset, address: address, addressType: kind, path: path, psm: adv.PSM}
+		if prior, exists := peers[device]; !exists || address < prior.address {
+			peers[device] = candidate{device: device, address: address, addressType: kind, path: path, psm: adv.PSM}
 		}
 	}
 	out := make([]candidate, 0, len(peers))
 	for _, p := range peers {
 		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].asset < out[j].asset })
+	sort.Slice(out, func(i, j int) bool { return meshid.Compare(out[i].device, out[j].device) < 0 })
 	return out
 }
 

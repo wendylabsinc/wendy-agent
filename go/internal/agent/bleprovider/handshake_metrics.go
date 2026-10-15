@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 // handshakeMeter counts encrypted socket I/O without changing stream framing,
@@ -57,11 +59,11 @@ func (m *handshakeMeter) finish() *handshakeMeasurement {
 	completed := time.Now()
 	return &handshakeMeasurement{started: m.started, completed: completed, read: m.read.Load(), written: m.written.Load()}
 }
-func (m *handshakeMeasurement) log(logger *zap.Logger, direction string, peer int32, state tls.ConnectionState, identityAccepted bool) {
+func (m *handshakeMeasurement) log(logger *zap.Logger, direction string, peer meshid.Device, state tls.ConnectionState, identityAccepted bool) {
 	if m == nil {
 		return
 	}
-	logger.Debug("BLE TLS handshake measured", zap.String("direction", direction), zap.Int32("peer", peer),
+	logger.Debug("BLE TLS handshake measured", zap.String("direction", direction), zap.Stringer("peer", peer.UUID()),
 		zap.Int64("started_unix_ns", m.started.UnixNano()), zap.Int64("completed_unix_ns", m.completed.UnixNano()),
 		zap.Duration("elapsed", m.completed.Sub(m.started)), zap.Bool("tls_complete", state.HandshakeComplete),
 		zap.Bool("identity_accepted", identityAccepted), zap.Bool("session_resumed", state.DidResume),

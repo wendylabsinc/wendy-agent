@@ -10,31 +10,36 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+
+	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 func TestBLEServerRevalidatesResumedClient(t *testing.T) {
 	var valid = true
-	credentials := &localmesh.Credentials{Org: 64, Asset: 445,
+	credentials := &localmesh.Credentials{Device: selfFixture,
 		Verify: func(chain [][]byte, _ time.Time) (localmesh.Identity, error) {
 			if !valid || len(chain) != 1 || len(chain[0]) != 1 {
 				return localmesh.Identity{}, errors.New("expired or missing identity")
 			}
-			return localmesh.Identity{Org: 64, Asset: int32(chain[0][0]) + 400}, nil
+			peer := uuid.MustParse("6f6b1c9e-2d4a-4c8f-9a01-7e5d3b2c1a00")
+			peer[15] = chain[0][0]
+			return localmesh.Identity{Device: meshid.NewDevice(testTenant, peer)}, nil
 		}}
 	r := &runtime{cfg: Config{Credentials: credentials}}
 	config := r.makeServerTLS()
 	if config.SessionTicketsDisabled || config.WrapSession == nil || config.UnwrapSession == nil {
 		t.Fatal("BLE server cannot resume scoped in-memory tickets")
 	}
-	state := tls.ConnectionState{DidResume: true, PeerCertificates: []*x509.Certificate{{Raw: []byte{60}}}}
+	state := tls.ConnectionState{DidResume: true, PeerCertificates: []*x509.Certificate{{Raw: []byte{0x60}}}}
 	if err := config.VerifyConnection(state); err != nil {
-		t.Fatalf("valid resumed asset rejected: %v", err)
+		t.Fatalf("valid resumed device rejected: %v", err)
 	}
-	state.PeerCertificates[0].Raw[0] = 44 // lower asset is never BLE inbound
+	state.PeerCertificates[0].Raw[0] = 0x04 // lower device is never BLE inbound
 	if err := config.VerifyConnection(state); err == nil {
-		t.Fatal("resumed lower asset accepted")
+		t.Fatal("resumed lower device accepted")
 	}
-	state.PeerCertificates[0].Raw[0] = 60
+	state.PeerCertificates[0].Raw[0] = 0x60
 	valid = false // current trust/expiry check must still run on resumption
 	if err := config.VerifyConnection(state); err == nil {
 		t.Fatal("resumed expired identity accepted")

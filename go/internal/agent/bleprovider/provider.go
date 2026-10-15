@@ -8,13 +8,14 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 // StreamNode is implemented by localmesh.Node.AttachStream. The provider
 // supplies a mutually authenticated TLS 1.3 byte stream and the expensive BLE
 // Babel cost. It never wraps BLE in QUIC.
 type StreamNode interface {
-	AttachStream(context.Context, int32, net.Conn, uint16) error
+	AttachStream(context.Context, meshid.Device, net.Conn, uint16) error
 }
 
 type Config struct {

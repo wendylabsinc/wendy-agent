@@ -56,7 +56,7 @@ func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmes
 			start("NAN", provider.Run)
 		}
 		if cfg.BLE {
-			ble := bleprovider.Config{Credentials: node.Credentials, Node: node, MeshName: fmt.Sprintf("org:%d:default", id.Org), Logger: logger}
+			ble := bleprovider.Config{Credentials: node.Credentials, Node: node, MeshName: fmt.Sprintf("tenant:%s:default", node.Credentials.Device.Tenant()), Logger: logger}
 			start("BLE", func(ctx context.Context) error { return bleprovider.Run(ctx, ble) })
 		}
 	})

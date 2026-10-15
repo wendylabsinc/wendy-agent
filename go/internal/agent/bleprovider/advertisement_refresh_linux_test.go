@@ -21,6 +21,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 )
 
@@ -192,8 +193,8 @@ func TestAdvertisementRefreshRealDBusExactOwnedSignalAndProperties(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	uuid, _ := ServiceUUID(64)
-	adv, _ := NewAdvertisement(445, "field", DefaultPSM)
+	uuid := ServiceUUID(testTenant)
+	adv, _ := NewAdvertisement(testDevice, "field", DefaultPSM)
 	payload, _ := adv.MarshalBinary()
 	properties := advertisementProperties(uuid, payload, nil)
 	if _, err = prop.Export(app, advertPath, map[string]map[string]*prop.Prop{advertInterface: properties}); err != nil {
@@ -256,8 +257,8 @@ type refreshTestNode struct {
 	cheaper  bool
 }
 
-func (n *refreshTestNode) HasCheaperLink(int32, uint16) bool { return n.cheaper }
-func (n *refreshTestNode) AttachStream(ctx context.Context, _ int32, _ net.Conn, _ uint16) error {
+func (n *refreshTestNode) HasCheaperLink(meshid.Device, uint16) bool { return n.cheaper }
+func (n *refreshTestNode) AttachStream(ctx context.Context, _ meshid.Device, _ net.Conn, _ uint16) error {
 	close(n.attached)
 	<-ctx.Done()
 	return ctx.Err()
@@ -266,16 +267,16 @@ func TestAdvertisementRefreshOnlyAfterAuthenticatedInboundAdmission(t *testing.T
 	for _, kind := range []string{"admitted", "untrusted", "full", "cheaper"} {
 		t.Run(kind, func(t *testing.T) {
 			server, client := metricsTLSConfigs(t)
-			credentials := &localmesh.Credentials{Org: 64, Asset: 1, Certificate: server.Certificates[0], Verify: func(chain [][]byte, _ time.Time) (localmesh.Identity, error) {
+			credentials := &localmesh.Credentials{Device: selfFixture, Certificate: server.Certificates[0], Verify: func(chain [][]byte, _ time.Time) (localmesh.Identity, error) {
 				if kind == "untrusted" {
 					return localmesh.Identity{}, errors.New("untrusted")
 				}
-				return localmesh.Identity{Org: 64, Asset: 2}, nil
+				return localmesh.Identity{Device: peerFixture}, nil
 			}}
 			node := &refreshTestNode{attached: make(chan struct{}), cheaper: kind == "cheaper"}
-			r := &runtime{cfg: Config{Credentials: credentials, Node: node, TargetPeers: 1, Logger: zap.NewNop()}, active: map[int32]struct{}{}, nextAttempt: map[int32]time.Time{}, advertisementRefresh: make(chan struct{}, 1)}
+			r := &runtime{cfg: Config{Credentials: credentials, Node: node, TargetPeers: 1, Logger: zap.NewNop()}, active: map[meshid.Device]struct{}{}, nextAttempt: map[meshid.Device]time.Time{}, advertisementRefresh: make(chan struct{}, 1)}
 			if kind == "full" {
-				r.active[77] = struct{}{}
+				r.active[lowFixture] = struct{}{}
 			}
 			r.serverTLS = r.makeServerTLS()
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
