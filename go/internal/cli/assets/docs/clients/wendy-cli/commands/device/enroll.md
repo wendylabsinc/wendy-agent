@@ -90,9 +90,9 @@ use Cloud-owned revocation and retained deletion evidence before guarded local
 credential erasure; they never fall back to numeric cleanup.
 
 The UUID candidate requires compatible Cloud and Agent versions. The Agent's
-`ProvisionedResponse.cloud_unenrollment_supported` and
-`cloud_authenticated_reset_supported` capabilities must both be `true`; the old
-prerelease flag alone is insufficient. Agent independently verifies a
+`ProvisionedResponse.cloud_authenticated_reset_supported` capability must be
+`true`; the old prerelease `cloud_unenrollment_supported` flag is ignored (current
+Agents report it `false` so prerelease CLIs stop before Cloud changes). Agent independently verifies a
 purpose-specific Cloud signature using HTTPS keys from its saved enrollment
 Cloud, plus the exact operator signature against its actual mTLS peer. Before
 erasure it obtains fresh authenticated Roughtime and checks freshness/validity

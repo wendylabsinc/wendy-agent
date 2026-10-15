@@ -14,8 +14,8 @@ evidence before guarded local credential erasure; they never fall back to v1.
 
 1. Verify the direct LAN mTLS device identity and exact Cloud asset/tenant/device
    binding. Compatible Cloud and Agent builds are required; the Agent must report
-   both `cloud_unenrollment_supported` and `cloud_authenticated_reset_supported`.
-   The unsafe prerelease flag alone is refused before mutation.
+   `cloud_authenticated_reset_supported`. The unsafe prerelease
+   `cloud_unenrollment_supported` flag is ignored; older Agents are refused before mutation.
 2. Sign the exact Cloud deletion request with the operator certificate. Cloud
    enforces `device:delete`, revokes the device principal through PKI, then writes
    its retained deletion record and audit. PKI's existing revocation path supplies

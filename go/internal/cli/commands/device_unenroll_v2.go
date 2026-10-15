@@ -195,8 +195,11 @@ func v2UnenrollCloudContext(ctx context.Context, auth *config.AuthConfig) (conte
 }
 
 func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, prov *agentpbv2.ProvisionedResponse, verifiedPeer *grpcpeer.Peer, override, assetOverride string, yes, checkOnly bool) error {
-	if !prov.GetCloudUnenrollmentSupported() || !prov.GetCloudAuthenticatedResetSupported() {
-		return fmt.Errorf("updated Agent with Cloud-owned reset/recovery support required; no mutation performed")
+	// SECURITY: only the authenticated-reset bit counts. CloudUnenrollmentSupported
+	// was advertised by prerelease Agents that trusted caller-supplied deletion
+	// fields, so it is ignored here, including for --check.
+	if !prov.GetCloudAuthenticatedResetSupported() {
+		return fmt.Errorf("this Agent does not support Cloud-authenticated reset; update it with 'wendy device update' and retry; no mutation performed")
 	}
 	principal, err := certs.ParsePrincipal(prov.GetPrincipalUri())
 	if err != nil || principal.EntityType != certs.EntityAsset {

@@ -202,7 +202,9 @@ type ProvisionedResponse struct {
 	AssetId        int32                  `protobuf:"varint,3,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
 	// Set for direct PKI enrollment; legacy numeric IDs remain unset.
 	PrincipalUri string `protobuf:"bytes,4,opt,name=principal_uri,json=principalUri,proto3" json:"principal_uri,omitempty"`
-	// Absent/false on agents without Cloud-owned guarded reset and recovery.
+	// Deprecated prerelease flag: clients that trusted it sent caller-serialized
+	// deletion fields. Current Agents always report false so those clients stop
+	// before Cloud mutation; clients gate only on cloud_authenticated_reset_supported.
 	CloudUnenrollmentSupported bool `protobuf:"varint,5,opt,name=cloud_unenrollment_supported,json=cloudUnenrollmentSupported,proto3" json:"cloud_unenrollment_supported,omitempty"`
 	// Distinguishes verified Cloud authorization from unsafe prerelease resets
 	// that accepted caller-serialized deletion fields. Clients require this
