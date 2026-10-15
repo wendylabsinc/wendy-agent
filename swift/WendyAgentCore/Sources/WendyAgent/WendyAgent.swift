@@ -360,9 +360,11 @@ public actor WendyAgent {
         // When enrolled, run mTLS on `port + 1`; otherwise plaintext on `port`.
         let certs = info.enrolled ? await provisioningService.provisioningCerts() : nil
 
-        // As on the Linux agent, the camera is served whether or not the device
-        // is enrolled, so before enrollment it is reachable on the plaintext
-        // listener like the other services here.
+        // SECURITY: accepted risk, matching the Linux agent. Before enrollment
+        // the camera, like the other services here, is reachable without
+        // authentication by anyone who can reach the plaintext setup listener.
+        // A way to provision devices locally, so unenrolled devices can
+        // require a credential, is planned to replace this.
         let videoService = VideoService()
         let services: [any RegistrableRPCService] = [
             AgentService(

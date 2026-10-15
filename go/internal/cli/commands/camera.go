@@ -56,6 +56,10 @@ const (
 // Swift serves camera listing, video and USB controls, enrolled or not, like
 // the Linux agent, but never serves network-camera management. Go agents can
 // also report Darwin; they take no Swift-specific path here.
+//
+// SECURITY: this preflight is guidance, not access control. Whether an
+// unenrolled device serves its camera is the agent's decision; both agents
+// currently accept that risk until devices can be provisioned locally.
 func cameraServicePreflight(ctx context.Context, conn *grpcclient.AgentConnection, action cameraAction) error {
 	if err := diagnosticContextError(ctx); err != nil {
 		return err
