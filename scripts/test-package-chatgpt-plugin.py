@@ -6,11 +6,13 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
 
 
 SCRIPT = Path(__file__).with_name("package-chatgpt-plugin.py")
@@ -49,11 +51,39 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(len(extension["review"]["test_cases"]["positive"]), 5)
             self.assertEqual(len(extension["review"]["test_cases"]["negative"]), 3)
             self.assertEqual(json.loads(archive.read("wendy-robots/mcp.json")), mcp)
+            auth = mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
+            self.assertEqual(auth["baseScopes"], ["mcp:relay"])
+            self.assertEqual(auth["client"], {"mode": "cimd"})
+            onboarding = extension["onboardingSkill"]
+            self.assertEqual(onboarding, "./skills/wendy/SKILL.md")
+            self.assertIn("wendy-robots/" + onboarding.removeprefix("./"), archive.namelist())
+
+    def test_rejects_nested_onboarding_skill(self):
+        # This file exists in the ZIP, but the portal does not import it as a skill.
+        self.manifest["extensions"]["com.openai"]["onboardingSkill"] = "./skills/wendy/references/skills/wendy-onboarding/SKILL.md"
+        self.save()
+        with self.assertRaisesRegex(ValueError, "onboardingSkill"):
+            package.validate_package(self.source)
+
+    def test_rejects_missing_or_non_skill_onboarding(self):
+        for reference in ("./skills/missing/SKILL.md", "./skills/wendy/references/wendy.json.md", None):
+            with self.subTest(reference=reference):
+                self.manifest["extensions"]["com.openai"]["onboardingSkill"] = reference
+                self.save()
+                with self.assertRaisesRegex(ValueError, "onboardingSkill"):
+                    package.validate_package(self.source)
 
     def test_no_recording_is_an_explicit_gap(self):
         extension = copy.deepcopy(self.manifest["extensions"]["com.openai"])
         extension["review"].pop("demo_recording_url", None)
         self.assertTrue(any("demo_recording_url" in gap for gap in package.submission_gaps(extension)))
+
+    def test_relay_auth_accepts_complete_submission_metadata(self):
+        # This fixture checks metadata compatibility, not remote playback.
+        self.manifest["extensions"]["com.openai"]["review"]["demo_recording_url"] = "https://wendy.dev/review-fixture.mp4"
+        self.save()
+        _, _, _, gaps = package.validate_package(self.source)
+        self.assertEqual(gaps, [])
 
     def test_strict_export_fails_before_writing_incomplete_archive(self):
         self.manifest["extensions"]["com.openai"]["review"].pop("demo_recording_url", None)
@@ -79,12 +109,36 @@ class PackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "authentication headers"):
             package.validate_package(self.source)
 
-    def test_rejects_relay_auth_for_standalone_package(self):
+    def test_rejects_standalone_gateway_scopes(self):
         auth = self.mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
-        auth["baseScopes"] = ["mcp:relay"]
-        self.save()
-        with self.assertRaisesRegex(ValueError, "standalone gateway scopes"):
-            package.validate_package(self.source)
+        for scopes in (["robots:read", "cameras:capture", "apps:control", "preferences:write"],
+                       ["mcp:relay", "robots:read"], [], "mcp:relay"):
+            with self.subTest(scopes=scopes):
+                auth["baseScopes"] = scopes
+                self.save()
+                with self.assertRaisesRegex(ValueError, "hosted CLI relay scope"):
+                    package.validate_package(self.source)
+
+    def test_rejects_fixed_or_dynamic_client_registration(self):
+        auth = self.mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
+        clients = ({"mode": "provided", "clientId": "wendy-chatgpt", "tokenEndpointAuthMethod": "none"},
+                   {"mode": "dcr"}, {"mode": "cimd", "clientId": "wendy-chatgpt"})
+        for client in clients:
+            with self.subTest(client=client):
+                auth["client"] = client
+                self.save()
+                with self.assertRaisesRegex(ValueError, "CIMD OAuth client discovery"):
+                    package.validate_package(self.source)
+
+    def test_rejects_oauth_client_secret(self):
+        auth = self.mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
+        for location in (auth, auth["client"]):
+            with self.subTest(location="auth" if location is auth else "client"):
+                location["clientSecret"] = "do-not-export"
+                self.save()
+                with self.assertRaisesRegex(ValueError, "Never package an OAuth client secret"):
+                    package.validate_package(self.source)
+                del location["clientSecret"]
 
     def test_rejects_array_in_expected_behavior(self):
         self.manifest["extensions"]["com.openai"]["review"]["test_cases"]["positive"][0]["expected_behavior"] = ["not a string"]
@@ -96,6 +150,62 @@ class PackageTests(unittest.TestCase):
         (self.source / "assets/private.txt").symlink_to(self.source / "plugin.json")
         with self.assertRaisesRegex(ValueError, "Symlinks"):
             package.validate_package(self.source)
+
+    def test_rejects_hidden_and_generated_component_files(self):
+        for name in ("skills/wendy/.env", "assets/.DS_Store", "skills/wendy/.cache/data.json",
+                     "skills/wendy/__pycache__/skill.pyc", "assets/node_modules/package/index.js",
+                     "assets/__MACOSX/icon.png", "skills/wendy/notes.md~", "assets/icon.png.bak"):
+            with self.subTest(name=name):
+                source = self.root / "case"
+                shutil.copytree(self.source, source)
+                try:
+                    path = source / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("do-not-export")
+                    with self.assertRaisesRegex(ValueError, "Hidden or generated"):
+                        package.validate_package(source)
+                finally:
+                    shutil.rmtree(source)
+
+    def test_rejects_truncated_png(self):
+        icon = self.source / "assets/wendy-icon.png"
+        original = icon.read_bytes()
+        for data in (original[:24], original[:-1], original[:-12]):
+            with self.subTest(length=len(data)):
+                icon.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, "PNG"):
+                    package.validate_package(self.source)
+
+    def test_rejects_png_crc_corruption(self):
+        icon = self.source / "assets/wendy-icon.png"
+        data = bytearray(icon.read_bytes())
+        data[29] ^= 1  # Corrupt IHDR's CRC without changing its dimensions.
+        icon.write_bytes(data)
+        with self.assertRaisesRegex(ValueError, "PNG chunk CRC"):
+            package.validate_package(self.source)
+
+    def test_rejects_png_without_image_data_and_with_trailing_data(self):
+        icon = self.source / "assets/wendy-icon.png"
+        original = icon.read_bytes()
+        cases = ((original[:33] + original[-12:], "missing PNG image data"),
+                 (original + b"unrelated", "end with an empty PNG IEND"))
+        for data, error in cases:
+            with self.subTest(error=error):
+                icon.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, error):
+                    package.validate_package(self.source)
+
+    def test_accepts_png_with_consecutive_image_chunks(self):
+        def chunk(kind, payload):
+            return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload))
+
+        # A real 256-square RGB image with compressed scanlines, split over IDATs.
+        compressed = zlib.compress((b"\x00" + b"\xff\x00\x00" * 256) * 256)
+        midpoint = len(compressed) // 2
+        data = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 256, 256, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", compressed[:midpoint]) + chunk(b"IDAT", compressed[midpoint:]) + chunk(b"IEND", b""))
+        (self.source / "assets/wendy-icon.png").write_bytes(data)
+        package.validate_package(self.source)
 
     def test_rejects_credential_url(self):
         self.manifest["extensions"]["com.openai"]["interface"]["supportURL"] = "https://user:secret@wendy.dev/support"

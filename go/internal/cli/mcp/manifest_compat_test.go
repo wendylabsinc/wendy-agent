@@ -206,7 +206,7 @@ func TestRelayPublishedProfileControlsListingAndDispatch(t *testing.T) {
 			t.Fatalf("published profile %s failed: %+v", profile, reply)
 		}
 	}
-	if confirmed != 4 || created != 4 || started != 0 {
-		t.Fatalf("published calls lost confirmation or create behavior: %d %d %d", confirmed, created, started)
+	if confirmed != 0 || created != 4 || started != 0 {
+		t.Fatalf("published calls with --allow-all prompted or lost create behavior: %d %d %d", confirmed, created, started)
 	}
 }

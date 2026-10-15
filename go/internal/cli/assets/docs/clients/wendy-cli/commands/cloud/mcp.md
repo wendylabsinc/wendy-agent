@@ -16,8 +16,11 @@ The CLI supports its current tool catalog and bundled, compatible older relay ca
 
 Once allowed, the chat uses the supported hosted tools from [`wendy mcp serve`](/docs/integrations/mcp). Every call runs on your machine and is signed with your operator key; the relay holds no Wendy credential. Each call is shown as one log line with the client name, tool and outcome.
 
-- **Read-only tools** run without asking, except those that reach your machine or local network (local paths and drives, simulators, LAN scans, explicit addresses such as `os_install_verify`, `project_validate`, `device_list`).
-- **Other tools** are refused unless you allow them with `--allow-tool` or `--allow-all`, and even then each call waits for you to confirm it in the terminal, showing the tool and its arguments. An unknown name in `--allow-tool` stops the command and lists the valid ones.
+- Built-in read-only device and Cloud tools that do not access the host are available by default. Every permitted call waits for confirmation in the terminal, showing the tool and its arguments.
+- `--allow-read` skips confirmation for those built-in read-only tools only. Host access, local discovery, and proxied tools do not qualify, even if their annotations say they are read-only.
+- Other tools are refused unless you allow them with `--allow-tool` or `--allow-all`. With `--allow-tool`, each call still needs confirmation unless it already qualifies for `--allow-read`. An unknown tool name stops the command and lists the valid ones.
+- `--allow-all` allows every supported relay tool without per-call confirmation, including state changes and host access. To allow specific tools while keeping their confirmations, use `--allow-tool` instead.
+- `--auto-accept` automatically pairs ChatGPT's known OAuth client. It does not change tool permissions or confirmations. Other clients still require the matching-code prompt.
 - The chat uses only the session the command started with; a call that names another Cloud endpoint or organization is refused.
 - One signed-in client connection per CLI session. The relay can reuse its pairing when that connection opens another MCP session. Different connections require their own CLI sessions.
 
@@ -30,19 +33,39 @@ Your organization must allow MCP and Hosted MCP. The CLI refuses to start when y
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--cloud-grpc` | `""` | Cloud gRPC endpoint of the session to use. |
-| `--allow-tool` | none | Also allow these tools by name (comma-separated). Calls that change state still need your confirmation. |
-| `--allow-all` | `false` | Allow every tool. Calls that change state still need your confirmation. |
+| `--allow-tool` | none | Also allow these tools by name, comma-separated. Each call requires confirmation unless it qualifies for `--allow-read`. |
+| `--allow-read` | `false` | Skip confirmation for built-in read-only device and Cloud tools that do not access the host. |
+| `--allow-all` | `false` | Allow every supported relay tool without per-call confirmation. |
+| `--auto-accept` | `false` | Automatically accept pairing from ChatGPT's known OAuth client. Tool permissions and confirmations are separate. |
 
 ## Examples
 
-Pair a web chat with read-only access:
+Pair a web chat with read-only access, confirming each call:
 
 ```sh
 wendy cloud mcp
 ```
 
+Allow built-in device and Cloud reads without confirmation:
+
+```sh
+wendy cloud mcp --allow-read
+```
+
 Also let it deploy, confirming each deploy:
 
 ```sh
-wendy cloud mcp --allow-tool run
+wendy cloud mcp --allow-read --allow-tool run
+```
+
+Allow every supported tool without further tool confirmations after pairing:
+
+```sh
+wendy cloud mcp --allow-all
+```
+
+Automatically pair ChatGPT and allow built-in device and Cloud reads without confirmation:
+
+```sh
+wendy cloud mcp --auto-accept --allow-read
 ```

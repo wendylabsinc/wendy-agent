@@ -7,7 +7,7 @@ Authenticates the CLI with Wendy Cloud. This is the primary login entry point.
 ```sh
 wendy cloud login
 wendy cloud login --email you@example.com
-wendy cloud login --issuer https://auth.dev.wendy.sh/realms/<realm>
+wendy cloud login --issuer https://auth.wendy.dev/realms/<realm>
 wendy cloud login --service-account ./wendy-service-account.json
 ```
 
@@ -22,8 +22,8 @@ certificate from pki-core, and stores it with a refreshable Cloud API session.
 Subsequent commands use the certificate automatically.
 
 `--api-key` selects local authentication. `--service-account` signs in
-headlessly as a wendy-auth service account (see
-[`wendy auth login`](../auth/login.md#service-account-login)).
+headlessly as a wendy-auth service account and also targets production by
+default. See [`wendy auth login`](../auth/login.md#service-account-login).
 
 `wendy auth login` remains functional for backward compatibility but is no
 longer listed in the top-level help. See [`wendy auth login`](../auth/login.md)
@@ -36,8 +36,8 @@ for the full flag reference and multi-session behaviour.
 | `--email` | `""` | Email address for explicit realm discovery (OIDC flow). |
 | `--issuer` | `""` | Complete realm issuer URL; skips email-based realm discovery. |
 | `--service-account` | `""` | Service-account key file for headless login; `WENDY_SERVICE_ACCOUNT_KEY` may hold its contents instead. |
-| `--cloud` | `""` | Dashboard URL of a non-default cloud instance. |
-| `--cloud-grpc` | `""` | gRPC endpoint of a non-default cloud instance. |
+| `--cloud` | `""` | Dashboard URL override; uses `https://cloud.wendy.dev` by default. |
+| `--cloud-grpc` | `""` | gRPC endpoint override; uses `api.wendy.dev:443` by default. |
 
 ## See also
 
