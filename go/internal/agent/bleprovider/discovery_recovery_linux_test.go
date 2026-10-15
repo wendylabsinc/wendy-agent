@@ -11,12 +11,13 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 )
 
 type recoveryTestNode struct{ links []localmesh.PeerLink }
 
-func (*recoveryTestNode) AttachStream(context.Context, int32, net.Conn, uint16) error { return nil }
+func (*recoveryTestNode) AttachStream(context.Context, meshid.Device, net.Conn, uint16) error { return nil }
 func (n *recoveryTestNode) Snapshot() localmesh.NodeSnapshot {
 	return localmesh.NodeSnapshot{Links: n.links}
 }
@@ -51,17 +52,18 @@ func TestDiscoveryRecoveryRequiresSilenceAndMissingPeers(t *testing.T) {
 }
 
 func TestDiscoveryRecoveryCountsDistinctActiveAndAuthenticatedPeers(t *testing.T) {
-	node := &recoveryTestNode{links: []localmesh.PeerLink{{Asset: 10}, {Asset: 20}}}
-	r := &runtime{cfg: Config{Node: node, TargetPeers: 3}, active: map[int32]struct{}{10: {}}}
+	dev10, dev20, dev30 := fixtureDevice("00000000-0000-4000-8000-000000000010"), fixtureDevice("00000000-0000-4000-8000-000000000020"), fixtureDevice("00000000-0000-4000-8000-000000000030")
+	node := &recoveryTestNode{links: []localmesh.PeerLink{{Device: dev10}, {Device: dev20}}}
+	r := &runtime{cfg: Config{Node: node, TargetPeers: 3}, active: map[meshid.Device]struct{}{dev10: {}}}
 	if !r.missingPeerSlots() {
 		t.Fatal("two distinct peers did not leave a slot")
 	}
-	r.active[30] = struct{}{}
+	r.active[dev30] = struct{}{}
 	if r.missingPeerSlots() {
 		t.Fatal("an in-flight third peer triggered discovery restart")
 	}
-	delete(r.active, 30)
-	node.links = append(node.links, localmesh.PeerLink{Asset: 30})
+	delete(r.active, dev30)
+	node.links = append(node.links, localmesh.PeerLink{Device: dev30})
 	if r.missingPeerSlots() {
 		t.Fatal("three authenticated peers triggered discovery restart")
 	}
@@ -103,7 +105,7 @@ func TestDiscoveryRestartIsBoundedAfterFailure(t *testing.T) {
 	var attempts int
 	r := &runtime{
 		cfg:    Config{Node: &recoveryTestNode{}, TargetPeers: 3, Logger: zap.NewNop()},
-		active: map[int32]struct{}{},
+		active: map[meshid.Device]struct{}{},
 		restartScan: func(context.Context, *dbus.Conn, dbus.ObjectPath) error {
 			attempts++
 			return errors.New("controller busy")

@@ -11,14 +11,16 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
-func TestCandidatesRequireMatchingServiceDataAndLowerAsset(t *testing.T) {
-	uuid, _ := ServiceUUID(64)
-	otherUUID, _ := ServiceUUID(65)
-	a, _ := NewAdvertisement(12, "field", 0x81)
+func TestCandidatesRequireMatchingServiceDataAndLowerDevice(t *testing.T) {
+	uuid := ServiceUUID(testTenant)
+	otherUUID := ServiceUUID(otherTenant)
+	a, _ := NewAdvertisement(lowDevice, "field", 0x81)
 	raw, _ := a.MarshalBinary()
-	wrong, _ := NewAdvertisement(13, "other", 0x81)
+	wrong, _ := NewAdvertisement(peerDevice, "other", 0x81)
 	wrongRaw, _ := wrong.MarshalBinary()
 	props := func(address, kind, serviceUUID string, data []byte) map[string]dbus.Variant {
 		return map[string]dbus.Variant{
@@ -32,12 +34,12 @@ func TestCandidatesRequireMatchingServiceDataAndLowerAsset(t *testing.T) {
 		"/org/bluez/hci0/dev_C": {deviceInterface: props("AA:BB:CC:DD:EE:03", "public", uuid, wrongRaw)},
 		"/org/bluez/hci1/dev_D": {deviceInterface: props("AA:BB:CC:DD:EE:04", "public", uuid, raw)},
 	}
-	got := candidates(objects, "/org/bluez/hci0", uuid, "field", 20)
-	if len(got) != 1 || got[0].asset != 12 || got[0].address != "AA:BB:CC:DD:EE:01" || got[0].path != "/org/bluez/hci0/dev_A" {
+	got := candidates(objects, "/org/bluez/hci0", uuid, "field", selfFixture)
+	if len(got) != 1 || got[0].device != lowFixture || got[0].address != "AA:BB:CC:DD:EE:01" || got[0].path != "/org/bluez/hci0/dev_A" {
 		t.Fatalf("candidates = %+v", got)
 	}
-	if got = candidates(objects, "/org/bluez/hci0", uuid, "field", 12); len(got) != 0 {
-		t.Fatalf("higher/equal asset dialed: %+v", got)
+	if got = candidates(objects, "/org/bluez/hci0", uuid, "field", lowFixture); len(got) != 0 {
+		t.Fatalf("higher/equal device dialed: %+v", got)
 	}
 }
 
@@ -61,17 +63,19 @@ func TestBlueZOwnerChangeRequiresProviderRestart(t *testing.T) {
 }
 
 func TestRuntimeClaimsTargetAndSuppressesDuplicate(t *testing.T) {
-	r := &runtime{cfg: Config{TargetPeers: 3}, active: map[int32]struct{}{}, nextAttempt: map[int32]time.Time{}}
-	for _, asset := range []int32{1, 2, 3} {
-		if !r.claim(asset) {
-			t.Fatalf("could not claim %d", asset)
+	r := &runtime{cfg: Config{TargetPeers: 3}, active: map[meshid.Device]struct{}{}, nextAttempt: map[meshid.Device]time.Time{}}
+	peers := []meshid.Device{fixtureDevice("00000000-0000-4000-8000-000000000001"), fixtureDevice("00000000-0000-4000-8000-000000000002"), fixtureDevice("00000000-0000-4000-8000-000000000003")}
+	fourth := fixtureDevice("00000000-0000-4000-8000-000000000004")
+	for _, device := range peers {
+		if !r.claim(device) {
+			t.Fatalf("could not claim %s", device.UUID())
 		}
 	}
-	if r.claim(1) || r.claim(4) {
+	if r.claim(peers[0]) || r.claim(fourth) {
 		t.Fatal("duplicate or fourth peer accepted")
 	}
-	r.release(1)
-	if !r.claim(4) {
+	r.release(peers[0])
+	if !r.claim(fourth) {
 		t.Fatal("slot not reusable")
 	}
 }

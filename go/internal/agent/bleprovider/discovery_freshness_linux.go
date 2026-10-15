@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 // GetManagedObjects retains ServiceData after an advertiser disappears. Only
@@ -27,12 +29,12 @@ type freshAdvertisement struct {
 type advertisementFreshness struct {
 	adapter        dbus.ObjectPath
 	uuid, meshName string
-	self           int32
+	self           meshid.Device
 	mu             sync.Mutex
 	seen           map[dbus.ObjectPath]freshAdvertisement
 }
 
-func newAdvertisementFreshness(adapter dbus.ObjectPath, uuid, meshName string, self int32) *advertisementFreshness {
+func newAdvertisementFreshness(adapter dbus.ObjectPath, uuid, meshName string, self meshid.Device) *advertisementFreshness {
 	return &advertisementFreshness{adapter: adapter, uuid: uuid, meshName: meshName, self: self, seen: make(map[dbus.ObjectPath]freshAdvertisement)}
 }
 
@@ -64,7 +66,8 @@ func (f *advertisementFreshness) observe(path dbus.ObjectPath, props map[string]
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if adv.Asset >= f.self {
+	device := meshid.NewDevice(f.self.Tenant(), adv.Device)
+	if meshid.Compare(device, f.self) >= 0 {
 		delete(f.seen, path)
 		return
 	}
@@ -121,13 +124,13 @@ func (f *advertisementFreshness) forget(path dbus.ObjectPath) {
 	f.mu.Unlock()
 }
 
-// candidates also returns the assets newly heard since the previous scan.
+// candidates also returns the devices newly heard since the previous scan.
 // Selection.Seen must follow advertisement events, not each cache poll.
-func (f *advertisementFreshness) candidates(objects managedObjects, at time.Time) ([]candidate, []int32) {
+func (f *advertisementFreshness) candidates(objects managedObjects, at time.Time) ([]candidate, []meshid.Device) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	fresh := make(managedObjects)
-	pendingAssets := make(map[int32]struct{})
+	pendingDevices := make(map[meshid.Device]struct{})
 	for path, entry := range f.seen {
 		if at.Before(entry.seen) || at.Sub(entry.seen) >= advertisementFreshnessTTL {
 			delete(f.seen, path)
@@ -150,16 +153,16 @@ func (f *advertisementFreshness) candidates(objects managedObjects, at time.Time
 		fresh[path] = map[string]map[string]dbus.Variant{deviceInterface: device}
 		if entry.pending {
 			adv, _ := ParseAdvertisement(entry.data, f.meshName)
-			pendingAssets[adv.Asset] = struct{}{}
+			pendingDevices[meshid.NewDevice(f.self.Tenant(), adv.Device)] = struct{}{}
 			entry.pending = false
 			f.seen[path] = entry
 		}
 	}
 	peers := candidates(fresh, f.adapter, f.uuid, f.meshName, f.self)
-	updates := make([]int32, 0, len(pendingAssets))
+	updates := make([]meshid.Device, 0, len(pendingDevices))
 	for _, peer := range peers {
-		if _, pending := pendingAssets[peer.asset]; pending {
-			updates = append(updates, peer.asset)
+		if _, pending := pendingDevices[peer.device]; pending {
+			updates = append(updates, peer.device)
 		}
 	}
 	return peers, updates

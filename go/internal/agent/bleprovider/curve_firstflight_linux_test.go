@@ -147,12 +147,12 @@ func TestBLECurvePreferenceShrinksFullAndResumedClientHello(t *testing.T) {
 }
 
 func TestBLEServerCurveDoesNotChangePeerVerifier(t *testing.T) {
-	r := &runtime{cfg: Config{Credentials: &localmesh.Credentials{Org: 64, Asset: 445}}}
+	r := &runtime{cfg: Config{Credentials: &localmesh.Credentials{Device: selfFixture}}}
 	server := r.makeServerTLS()
 	if len(server.CurvePreferences) != 1 || server.CurvePreferences[0] != tls.X25519 {
 		t.Fatalf("BLE server curve preferences: %v", server.CurvePreferences)
 	}
 	if server.VerifyConnection == nil || server.ClientAuth != tls.RequireAnyClientCert {
-		t.Fatal("BLE mutual asset verification was removed")
+		t.Fatal("BLE mutual device verification was removed")
 	}
 }

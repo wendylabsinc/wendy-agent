@@ -3,21 +3,45 @@ package bleprovider
 import (
 	"bytes"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
-func TestAdvertisementRoundTripAndMeshIsolation(t *testing.T) {
-	uuid, err := ServiceUUID(64)
+var (
+	testTenant  = mustFixtureTenant("9ba0dd9f-65ea-34da-8878-d92358210b80")
+	otherTenant = mustFixtureTenant("11111111-1111-4111-8111-111111111111")
+	testDevice  = uuid.MustParse("6f6b1c9e-2d4a-4c8f-9a01-7e5d3b2c1a09")
+	peerDevice  = uuid.MustParse("c1c2c3c4-0000-4000-8000-000000000000")
+	lowDevice   = uuid.MustParse("11111111-2222-3333-4444-555555555555")
+	selfFixture = meshid.NewDevice(testTenant, testDevice)
+	peerFixture = meshid.NewDevice(testTenant, peerDevice)
+	lowFixture  = meshid.NewDevice(testTenant, lowDevice)
+)
+
+func fixtureDevice(text string) meshid.Device {
+	return meshid.NewDevice(testTenant, uuid.MustParse(text))
+}
+
+func mustFixtureTenant(text string) meshid.Tenant {
+	tenant, err := meshid.ParseTenant(text)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
-	if uuid != "9fd0d83a-47dc-41ef-b85d-0000211be7b4" {
+	return tenant
+}
+
+func TestAdvertisementRoundTripAndMeshIsolation(t *testing.T) {
+	uuid := ServiceUUID(testTenant)
+	if uuid != testTenant.String() {
 		t.Fatalf("uuid = %s", uuid)
 	}
-	other, _ := ServiceUUID(65)
-	if other == uuid {
-		t.Fatal("orgs share a UUID")
+	other, _ := meshid.ParseTenant("11111111-1111-4111-8111-111111111111")
+	if ServiceUUID(other) == uuid {
+		t.Fatal("tenants share a UUID")
 	}
-	a, err := NewAdvertisement(1042, "production.mesh", DefaultPSM)
+	a, err := NewAdvertisement(testDevice, "production.mesh", DefaultPSM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,25 +63,33 @@ func TestAdvertisementRoundTripAndMeshIsolation(t *testing.T) {
 		t.Fatal("accepted truncation")
 	}
 	bad := bytes.Clone(raw)
-	bad[8], bad[9] = 0, 1
+	bad[20], bad[21] = 0, 1
 	if _, err := ParseAdvertisement(bad, "production.mesh"); err == nil {
 		t.Fatal("accepted non-LE PSM")
+	}
+	bad = bytes.Clone(raw)
+	for i := range bad[:16] {
+		bad[i] = 0
+	}
+	if _, err := ParseAdvertisement(bad, "production.mesh"); err == nil {
+		t.Fatal("accepted nil device UUID")
 	}
 }
 
 func TestInvalidAdvertisedIdentityAndPSM(t *testing.T) {
-	if _, err := ServiceUUID(0); err == nil {
-		t.Fatal("accepted org zero")
+	if ServiceUUID(testTenant) == "" {
+		t.Fatal("tenant service UUID empty")
 	}
-	for _, asset := range []int32{0, -1} {
-		if _, err := NewAdvertisement(asset, "mesh", DefaultPSM); err == nil {
-			t.Fatal("accepted invalid asset")
-		}
+	if ServiceUUID(meshid.Tenant{}) != "" {
+		t.Fatal("accepted zero tenant")
 	}
-	if _, err := NewAdvertisement(1, "", DefaultPSM); err == nil {
+	if _, err := NewAdvertisement(uuid.Nil, "mesh", DefaultPSM); err == nil {
+		t.Fatal("accepted nil device")
+	}
+	if _, err := NewAdvertisement(peerDevice, "", DefaultPSM); err == nil {
 		t.Fatal("accepted empty mesh")
 	}
-	if _, err := NewAdvertisement(1, "mesh", 0x1001); err == nil {
+	if _, err := NewAdvertisement(peerDevice, "mesh", 0x1001); err == nil {
 		t.Fatal("accepted BR/EDR PSM")
 	}
 }

@@ -29,7 +29,7 @@ func TestHandshakeMeterDisabled(t *testing.T) {
 			t.Fatal("disabled debug changed the raw connection")
 		}
 		m.start()
-		m.finish().log(zap.New(core), "outbound", 1, tls.ConnectionState{}, false)
+		m.finish().log(zap.New(core), "outbound", selfFixture, tls.ConnectionState{}, false)
 		if logs.Len() != 0 {
 			t.Fatal("disabled debug emitted telemetry")
 		}
@@ -102,7 +102,7 @@ func metricsHandshakePair(t *testing.T, serverCfg, clientCfg *tls.Config) (metri
 		meter.start()
 		err := secure.HandshakeContext(context.Background())
 		result := meter.finish()
-		result.log(logger, direction, 42, secure.ConnectionState(), err == nil)
+		result.log(logger, direction, selfFixture, secure.ConnectionState(), err == nil)
 		return metricsResult{secure, meter, result, err}
 	}
 	done := make(chan metricsResult, 1)
