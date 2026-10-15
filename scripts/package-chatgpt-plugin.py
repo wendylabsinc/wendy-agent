@@ -161,11 +161,11 @@ def validate_package(source):
     require(server.get("type") == "streamable-http" and server.get("url") == ENDPOINT, f"Use the hosted MCP endpoint {ENDPOINT}")
     require(not any(key in server for key in ("command", "args", "env")) and not server.get("headers"), "Do not package local MCP commands, environment values, or authentication headers")
     auth = server.get("extensions", {}).get("com.openai", {}).get("auth", {})
-    require(auth.get("type") == "oauth", "The standalone Cloud gateway requires OAuth")
+    require(auth.get("type") == "oauth", "The hosted CLI relay requires OAuth")
     require("clientSecret" not in auth and "clientSecret" not in auth.get("client", {}), "Never package an OAuth client secret")
-    require(set(auth.get("baseScopes", [])) == {"robots:read", "cameras:capture", "apps:control", "preferences:write"}, "Declare the standalone gateway scopes; mcp:relay belongs to the separate local-session relay")
+    require(auth.get("baseScopes") == ["mcp:relay"], "Declare only the hosted CLI relay scope mcp:relay; standalone gateway scopes are not supported")
     client = auth.get("client", {})
-    require(client.get("mode") == "provided" and nonblank(client.get("clientId")) and client.get("tokenEndpointAuthMethod") == "none", "Declare the standalone gateway's registered public OAuth client")
+    require(client == {"mode": "cimd"}, "Use the hosted CLI relay's CIMD OAuth client discovery; do not package a fixed client registration")
 
     # Root inventory excludes developer notes and policies. Reject hidden files
     # and generated artifacts inside the public component directories as well.

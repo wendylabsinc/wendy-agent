@@ -51,6 +51,9 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(len(extension["review"]["test_cases"]["positive"]), 5)
             self.assertEqual(len(extension["review"]["test_cases"]["negative"]), 3)
             self.assertEqual(json.loads(archive.read("wendy-robots/mcp.json")), mcp)
+            auth = mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
+            self.assertEqual(auth["baseScopes"], ["mcp:relay"])
+            self.assertEqual(auth["client"], {"mode": "cimd"})
             onboarding = extension["onboardingSkill"]
             self.assertEqual(onboarding, "./skills/wendy/SKILL.md")
             self.assertIn("wendy-robots/" + onboarding.removeprefix("./"), archive.namelist())
@@ -74,6 +77,13 @@ class PackageTests(unittest.TestCase):
         extension = copy.deepcopy(self.manifest["extensions"]["com.openai"])
         extension["review"].pop("demo_recording_url", None)
         self.assertTrue(any("demo_recording_url" in gap for gap in package.submission_gaps(extension)))
+
+    def test_relay_auth_accepts_complete_submission_metadata(self):
+        # This fixture checks metadata compatibility, not remote playback.
+        self.manifest["extensions"]["com.openai"]["review"]["demo_recording_url"] = "https://wendy.dev/review-fixture.mp4"
+        self.save()
+        _, _, _, gaps = package.validate_package(self.source)
+        self.assertEqual(gaps, [])
 
     def test_strict_export_fails_before_writing_incomplete_archive(self):
         self.manifest["extensions"]["com.openai"]["review"].pop("demo_recording_url", None)
@@ -99,12 +109,36 @@ class PackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "authentication headers"):
             package.validate_package(self.source)
 
-    def test_rejects_relay_auth_for_standalone_package(self):
+    def test_rejects_standalone_gateway_scopes(self):
         auth = self.mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
-        auth["baseScopes"] = ["mcp:relay"]
-        self.save()
-        with self.assertRaisesRegex(ValueError, "standalone gateway scopes"):
-            package.validate_package(self.source)
+        for scopes in (["robots:read", "cameras:capture", "apps:control", "preferences:write"],
+                       ["mcp:relay", "robots:read"], [], "mcp:relay"):
+            with self.subTest(scopes=scopes):
+                auth["baseScopes"] = scopes
+                self.save()
+                with self.assertRaisesRegex(ValueError, "hosted CLI relay scope"):
+                    package.validate_package(self.source)
+
+    def test_rejects_fixed_or_dynamic_client_registration(self):
+        auth = self.mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
+        clients = ({"mode": "provided", "clientId": "wendy-chatgpt", "tokenEndpointAuthMethod": "none"},
+                   {"mode": "dcr"}, {"mode": "cimd", "clientId": "wendy-chatgpt"})
+        for client in clients:
+            with self.subTest(client=client):
+                auth["client"] = client
+                self.save()
+                with self.assertRaisesRegex(ValueError, "CIMD OAuth client discovery"):
+                    package.validate_package(self.source)
+
+    def test_rejects_oauth_client_secret(self):
+        auth = self.mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
+        for location in (auth, auth["client"]):
+            with self.subTest(location="auth" if location is auth else "client"):
+                location["clientSecret"] = "do-not-export"
+                self.save()
+                with self.assertRaisesRegex(ValueError, "Never package an OAuth client secret"):
+                    package.validate_package(self.source)
+                del location["clientSecret"]
 
     def test_rejects_array_in_expected_behavior(self):
         self.manifest["extensions"]["com.openai"]["review"]["test_cases"]["positive"][0]["expected_behavior"] = ["not a string"]

@@ -9,15 +9,10 @@
           "auth": {
             "type": "oauth",
             "client": {
-              "mode": "provided",
-              "clientId": "wendy-chatgpt",
-              "tokenEndpointAuthMethod": "none"
+              "mode": "cimd"
             },
             "baseScopes": [
-              "robots:read",
-              "cameras:capture",
-              "apps:control",
-              "preferences:write"
+              "mcp:relay"
             ]
           }
         }

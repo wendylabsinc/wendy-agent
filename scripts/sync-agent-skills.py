@@ -44,11 +44,16 @@ connection, and their first physical device or simulator. It also works before
 any Wendy MCP tools are connected. Do not assume the user knows Wendy or has
 installed its CLI.
 
-Inspect the available tools first. The CLI server uses `wendy_status` and
-`device_list`; the ChatGPT gateway uses `list_robots` and `inspect_robot`.
+Inspect the available tools first. The local CLI server uses `wendy_status` and
+`device_list`. The public hosted relay uses `wendy_status` and `cloud_discover`.
+It requires a signed-in CLI, pairing through `wendy cloud mcp`, and a running
+relay process. Its default policy is read-only; `device_connect` and local
+discovery through `device_list` require explicit `--allow-tool` permission and
+per-call terminal confirmation. Local desktop gateways and separately
+configured standalone Cloud gateways use `list_robots` and `inspect_robot`.
 Use the connected server's tools and explicit target identifiers. Use CLI
-commands only when a local terminal is available. A skill cannot grant access
-or add tools missing from the server.
+commands only when a terminal on the intended computer is available. A skill
+cannot grant access or add tools missing from the server.
 
 """
     index += "".join(f"- [{name}](references/skills/{name}/SKILL.md)\n" for name in skills)

@@ -34,18 +34,20 @@ func newCloudMCPCmd() *cobra.Command {
 	var cloudGRPC string
 	var allowTools []string
 	var allowAll bool
+	var autoAccept bool
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "Let a web chat (ChatGPT, Claude) use Wendy through this session",
 		Long: "Open a session with the hosted Wendy MCP relay and serve the wendy MCP tools to a web chat you pair with it.\n" +
 			"Every call runs here and is signed with your operator key; the chat can do nothing once this command exits.\n" +
-			"The chat may call read-only device and Cloud tools. Use --allow-tool to permit other tools with confirmation, or --allow-all to permit every tool without per-call confirmation. Pairing still requires your acceptance.",
+			"The chat may call read-only device and Cloud tools. Use --allow-tool to permit other tools with confirmation, or --allow-all to permit every tool without per-call confirmation.\n" +
+			"Pairing requires your acceptance unless --auto-accept is set for ChatGPT. That flag only accepts ChatGPT's verified OAuth client ID; other clients still need confirmation. A terminal is required for interactive confirmations.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := wendymcp.CheckToolNames(allowTools); err != nil {
 				return fmt.Errorf("--allow-tool: %w", err)
 			}
 			if !isatty.IsTerminal(os.Stdin.Fd()) {
-				return fmt.Errorf("wendy cloud mcp needs a terminal on stdin to confirm web-chat pairing")
+				return fmt.Errorf("wendy cloud mcp needs a terminal on stdin for pairing and tool confirmations")
 			}
 			// OpenRelaySession goes out unmarked, whatever this process inherited.
 			if err := cloudrequest.SetChannel(cloudpbv2.RequestChannel_REQUEST_CHANNEL_UNSPECIFIED, "", ""); err != nil {
@@ -72,17 +74,22 @@ func newCloudMCPCmd() *cobra.Command {
 			term := newPromptTerminal(ctx, os.Stdin, cmd.ErrOrStderr())
 			stopWatchingTerminal := context.AfterFunc(term.ctx, stop)
 			defer stopWatchingTerminal()
-			err = serveCloudMCP(term.ctx, stream, opened, term, srv, wendymcp.BindingPolicy{AllowAll: allowAll, Tools: allowTools, Session: auth})
+			err = serveCloudMCP(term.ctx, stream, opened, term, srv, wendymcp.BindingPolicy{AllowAll: allowAll, Tools: allowTools, Session: auth}, autoAccept)
 			return errors.Join(err, term.close())
 		},
 	}
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the session to use")
 	cmd.Flags().StringSliceVar(&allowTools, "allow-tool", nil, "Also allow these tools by name (comma-separated); state changes and host access require confirmation")
-	cmd.Flags().BoolVar(&allowAll, "allow-all", false, "Allow every tool without per-call confirmation; pairing still requires acceptance")
+	cmd.Flags().BoolVar(&allowAll, "allow-all", false, "Allow every tool without per-call confirmation; does not change pairing approval")
+	cmd.Flags().BoolVar(&autoAccept, "auto-accept", false, "Automatically accept ChatGPT pairing; tool permissions and per-call confirmations are unchanged")
 	return cmd
 }
 
 type relayStream = cloudpbv2.RelayMcpService_RelaySessionClient
+
+// The relay supplies the OAuth client ID verified from the web client's token.
+// Match the exact public metadata document URL, never its display name or host.
+const chatGPTRelayClientID = "https://chatgpt.com/oauth/client.json"
 
 // openRelaySession opens a Relay MCP session (docs/relay-mcp.md in
 // service-protos): the operator-signed OpenRelaySession, then the session's
@@ -142,15 +149,15 @@ func relayBrokerEndpoint(cloudGRPC string) string {
 	return "http://" + cloudGRPC
 }
 
-// serveCloudMCP runs one relay session: it asks the
-// user about each web client that asks to bind, and serves the first accepted
-// one until the relay ends the session or ctx ends (Ctrl-C). Every cloud call
+// serveCloudMCP asks about each web client that wants to bind, unless ChatGPT
+// auto-accept is enabled. It serves the first accepted client until the relay
+// ends the session or ctx ends (Ctrl-C). Every cloud call
 // made meanwhile carries channel HOSTED_MCP with the client and session ids.
 // Strings from the relay are untrusted: they reach the terminal only through
 // printable, so none can rewrite a question the user answers.
 // ponytail: one binding per session, later pairings are denied; serve several
 // when the desktop app needs it.
-func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.OpenRelaySessionResponse, term *promptTerminal, srv *wendymcp.Server, policy wendymcp.BindingPolicy) (result error) {
+func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.OpenRelaySessionResponse, term *promptTerminal, srv *wendymcp.Server, policy wendymcp.BindingPolicy, autoAccept bool) (result error) {
 	ctx, cancel := context.WithCancel(ctx)
 	relay := &relayConn{stream: stream}
 	pairings := make(chan *cloudpbv2.PairingRequested)
@@ -177,7 +184,11 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 	} else {
 		policy.RelayManifest = manifest
 	}
-	term.printf("Waiting for a web chat to pair: use the Wendy connector there, then check that the code it shows matches the one asked about here. Press Ctrl-C to end the session.\n")
+	if autoAccept {
+		term.printf("Waiting for a web chat to pair. ChatGPT pairing is accepted automatically (--auto-accept); other clients require confirmation. Tool permissions are unchanged. Press Ctrl-C to end the session.\n")
+	} else {
+		term.printf("Waiting for a web chat to pair: use the Wendy connector there, then check that the code it shows matches the one asked about here. Press Ctrl-C to end the session.\n")
+	}
 	var client string
 	for {
 		select {
@@ -198,7 +209,10 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 				term.printf("Denied %q: this CLI cannot serve the relay's published tool set.\n", name)
 			case served != nil:
 				term.printf("Denied %q: this session already serves %q.\n", name, client)
-			case term.askPairing(ctx, name, id, code):
+			case autoAccept && p.GetClientId() == chatGPTRelayClientID || term.askPairing(ctx, name, id, code):
+				if autoAccept && p.GetClientId() == chatGPTRelayClientID {
+					term.printf("Accepted ChatGPT pairing automatically (--auto-accept): %s.\n", id)
+				}
 				if err := cloudrequest.SetChannel(cloudpbv2.RequestChannel_REQUEST_CHANNEL_HOSTED_MCP, p.GetClientId(), opened.GetSessionId()); err != nil {
 					return err
 				}

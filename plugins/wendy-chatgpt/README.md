@@ -2,15 +2,36 @@
 
 ## Hosted plugin
 
-The public package targets standalone Cloud account linking at
-`https://mcp.wendy.dev` using Streamable HTTP and OAuth. Users should need no
-local CLI process. Verify that the production endpoint serves the standalone
-gateway before submitting this package. See
-[submission preparation](SUBMISSION.md) for the service configuration,
-OAuth registrations, review cases, recording, and release checks.
+The public package connects to the Wendy CLI relay at `https://mcp.wendy.dev`
+using Streamable HTTP, OAuth client metadata discovery, and the `mcp:relay`
+scope. A signed-in, compatible CLI must run on a computer while ChatGPT uses
+the plugin. Connect with the same Wendy account and organization, then ask
+ChatGPT to check Wendy's status. That first tool call starts pairing. Compare
+the returned code with the terminal code, accept it, and retry the status check.
+
+```sh
+wendy auth login
+wendy cloud mcp --allow-tool device_connect,camera_snapshot,container_stop
+```
+
+The example permits the extra tools used by the review walkthrough. Each
+connection, camera, or stop call still needs terminal confirmation. Ordinary
+read-only device and Cloud tools are available by default; local host access
+requires separate permission. Calls stop when the CLI exits. Keep its host
+awake and connected when using ChatGPT from a phone or another computer.
+
+Use `--auto-accept` to accept pairing requests from ChatGPT's known OAuth client
+automatically. Tool permissions and per-call confirmations still apply. Other
+clients require manual pairing. See [submission preparation](SUBMISSION.md)
+for the relay tools, review cases, recording steps, and reviewer-access checks.
 
 Package a review draft with
 `python3 scripts/package-chatgpt-plugin.py --output /tmp/wendy-robots-marketplace-draft.zip`.
+
+The local desktop gateway and standalone Cloud gateway described below are
+separate connection options. The `gateway.marketplace.example.json` and
+`oauth-client-registration.json` files configure that standalone gateway;
+they do not describe the deployed relay and are excluded from the public ZIP.
 
 ## Add the local desktop plugin to your personal marketplace
 

@@ -1,151 +1,181 @@
 # Wendy marketplace submission
 
-The public package targets standalone Wendy Cloud access at
-`https://mcp.wendy.dev`. Users link their account and operate permitted
-devices without running a local CLI. The publisher is Wendy Labs Inc.; the
-package allows all countries and declares no payments or purchases.
+The public package uses the production CLI relay at `https://mcp.wendy.dev`.
+ChatGPT sends calls through Wendy Cloud to a paired `wendy cloud mcp` process
+on the operator's computer. Calls stop when that process exits. The publisher
+is Wendy Labs Inc. The package allows all countries and declares no commerce.
 
-## Current release gate
+## Connection and OAuth
 
-Before submitting, verify that the production endpoint serves the standalone
-gateway's `http.cloud_link` mode, with `robots:read`, `cameras:capture`,
-`apps:control`, and `preferences:write`. The 2026-10-14 development audit found
-the separate session relay, with `mcp:relay` and CLI pairing. That audit does
-not establish production readiness. Deploy and test the standalone service first.
+The public endpoint uses Streamable HTTP. Its protected-resource metadata
+advertises only `mcp:relay` and issuer `https://auth.wendy.dev/relay`.
+Issuer discovery is available at
+`https://auth.wendy.dev/.well-known/oauth-authorization-server/relay`.
+It advertises authorization at `https://auth.wendy.dev/authorize`, token
+exchange at `https://auth.wendy.dev/relay/token`, PKCE S256, and client metadata
+discovery. The package declares `client.mode: cimd` and
+`baseScopes: ["mcp:relay"]`.
 
-The supplied configuration and OAuth registrations are deployment inputs.
-They do not establish that the service, clients, or domain verification exist.
+Do not use the standalone gateway's `wendy-chatgpt` client or its
+`robots:read`, `cameras:capture`, `apps:control`, and `preferences:write` scopes
+for this relay. Its separate configuration examples are not in the public ZIP.
+
+Read-only checks on 2026-10-15 confirmed the relay metadata and that the
+authorization endpoint accepts ChatGPT's client metadata URL before sign-in.
+Those checks did not establish a successful OAuth grant or device operation.
+Verify the current metadata and the complete connection before submission.
+
+A live smoke check on 2026-10-15 used the rebuilt branch CLI with
+`--cloud-grpc api.wendy.dev:443 --auto-accept` and an existing ChatGPT OAuth
+connection. The CLI accepted the exact ChatGPT client identity without a
+pairing prompt. The first `wendy_status` returned `relay_not_paired`; a retry
+returned `auth: logged_in`. `cloud_discover(online_only=false)` returned the
+account's enrolled devices. The relay accepted the CLI's tool catalog. The
+session was then stopped. This check did not exercise a fresh sign-in,
+reviewer account, camera, app control, or video recording.
+
+## CLI setup and permissions
+
+Use a dedicated test account and computer. Its Wendy organization must allow
+MCP and Hosted MCP. Check the CLI before starting:
+
+```sh
+wendy --version
+wendy cloud mcp --help
+wendy auth login
+wendy cloud mcp --allow-tool device_connect,camera_snapshot,container_stop
+```
+
+Use a CLI compatible with the relay's published catalog. The local installation
+`2026.10.13-144211` checked during preparation lacked `cloud mcp`; a build of
+this branch provides the command. A build alone does not establish compatibility
+with the live relay or availability in the published CLI release.
+
+Connect ChatGPT using the intended Wendy account and organization, then call
+`wendy_status` to start pairing. OAuth sign-in alone does not start it. Compare
+the returned code with the CLI terminal before accepting, then retry the status
+call. With `--auto-accept`, the initial status request may return
+`relay_not_paired` while approval is being processed; retry it after acceptance.
+Keep that computer awake and the CLI process running. The relay serves its
+reviewed CLI catalog, including `wendy_status`, `cloud_discover`,
+`device_connect`, `device_info`, `container_list`, `telemetry_logs`,
+`camera_list`, `camera_snapshot`, and `container_stop`. It does not serve the
+standalone gateway's `list_robots` or `inspect_robot` tools.
+
+The default policy permits read-only tools that do not access the host.
+`cloud_discover` lists the paired session's Cloud enrollments. `device_list`
+also accesses host configuration or LAN discovery, so it requires its own
+`--allow-tool` permission even when `scan=false`. Device connection, camera
+snapshots, and app stops require both an allowlisted tool name and confirmation
+of each call in the terminal. Tool catalog visibility does not grant permission.
+
+Add `--auto-accept` to automatically accept a pairing request from ChatGPT's
+known OAuth client identity. It does not trust a client merely because its
+display name says ChatGPT. Other clients still require manual pairing. The
+flag does not grant tool permissions or skip per-call confirmations.
+
+## Reviewer access remains a release gate
+
+Pairing is scoped to the Wendy subject, organization, OAuth client, and OAuth
+connection grant. A publisher's existing pairing does not prepair a reviewer's
+new grant. `--auto-accept` can accept a new ChatGPT pairing while an eligible
+CLI session is waiting, but that path still needs live verification. Session
+expiry, network loss, or exiting the CLI can require setup again.
+
+The extra tools in the walkthrough still need per-call terminal confirmation.
+OpenAI requires a demo account reviewers can use without further configuration.
+Verify how reviewers can complete all submitted cases without depending on a
+developer's terminal before calling this package ready. Do not assume that
+pairing automation alone resolves this requirement, or enable `--allow-all`
+without an explicit decision about its much broader access.
+
+Provide account credentials and access instructions only in the secure reviewer
+fields, never in the repository or ZIP. Reviewers must not depend on a personal
+mailbox, phone, production account, or private network.
+
+## Fixtures and cases
+
+Five positive and three negative cases are embedded in `plugin.json`. Their
+status is **not run** against the submitted version. Prepare:
+
+- An online Cloud enrollment named `Review Device` and an offline enrollment
+  named `Review Offline`.
+- A disposable running `review-logger` app with synthetic INFO/WARN telemetry,
+  another harmless running app named `review-helper`, and a stopped sample app.
+- A working test camera aimed at a staged scene without people or private data.
+  The CLI host needs GStreamer with snapshot decoding and JPEG plugins.
+
+Positive cases cover Cloud inventory, device and app inspection, bounded logs,
+one camera snapshot, and an explicit app stop followed by `container_list`
+read-back. The stop response alone acknowledges a request. Negative cases cover
+unsupported WiFi credential handling, retrieving authentication secrets, and
+purchases. The relay can expose simulator and development tools with permission,
+so local simulation and deployment are not unsupported-capability tests.
+
+Also test unpaired/expired sessions, denied tool permissions, denied terminal
+confirmation, account/organization isolation, and reconnect behavior. Record
+Passed, Failed, Blocked, or Not run with evidence outside the manifest. Keep
+unknown readiness explicit. Test desktop and mobile access.
+
+## Record the walkthrough
+
+Use an existing development connection to this relay with the dedicated test
+account. Rehearse the exact prompts in `plugin.json` before recording. Show the
+CLI version and command, ChatGPT connection, pairing, actual tool results, and
+terminal confirmations. Keep credentials and unrelated content off screen.
+Do not substitute mock results or a different gateway for this package.
+
+Record the five positive prompts in their manifest order, then the unsupported
+Raspberry Pi purchase prompt. Allow time to read each result. The sequence
+shows inventory, inspection, logs, a snapshot, a verified disposable app stop,
+and an explanation of an unsupported action.
+
+Verify playback, readable results, and absence of secrets. Host the actual
+recording at a reviewer-accessible URL and verify playback without requesting
+access. Add it to `extensions.com.openai.review.demo_recording_url`. A script
+or a local video alone does not complete this field.
 
 ## Package checks
 
-From the repository root:
+From the repository root, synchronize generated skills and the embedded
+manifest, then validate and build the draft:
 
 ```sh
+python3 scripts/sync-agent-skills.py
 python3 scripts/sync-agent-skills.py --check
 python3 scripts/test-package-chatgpt-plugin.py
 python3 scripts/package-chatgpt-plugin.py --check
 python3 scripts/package-chatgpt-plugin.py --output /tmp/wendy-robots-marketplace-draft.zip
 ```
 
-The exporter checks the public file inventory, images, publisher, hosted MCP
-connection and required review fields. It preserves the review cases in the
-ZIP and reports missing metadata. When the actual recording is hosted and
-verified, add `extensions.com.openai.review.demo_recording_url`, then run:
+After adding and verifying the recording URL:
 
 ```sh
+python3 scripts/sync-agent-skills.py
 python3 scripts/package-chatgpt-plugin.py --require-submission-metadata --output /tmp/wendy-robots-marketplace.zip
 ```
 
-This stricter check verifies field presence and structure. It cannot verify
-policy coverage, recording playback, test-account access, or portal approval.
-The upload includes only `plugin.json`, `mcp.json`, `skills/`, and `assets/`.
-Deployment configuration, reviewer credentials and private state stay outside it.
+Strict validation checks metadata structure and presence. It does not verify
+playback, reviewer access, live cases, or approval. Inspect the final ZIP,
+which contains only `plugin.json`, `mcp.json`, `skills/`, and `assets/`.
 
-## Standalone service deployment
+## Listing and final portal checks
 
-Use [gateway.marketplace.example.json](gateway.marketplace.example.json) for
-the production host. Its Wendy service URLs match the CLI production login
-target. Keep its dedicated upstream client and the
-downstream ChatGPT client separate:
+Verify the existing website, support, privacy, and terms URLs in the manifest.
+The privacy policy must cover requested device results and camera images
+passing through the CLI and Wendy Cloud to ChatGPT, with actual retention and
+account-linking practices. Do not infer coverage from an HTTP success.
 
-- `wendy-chatgpt-gateway` is a public, DPoP-bound Wendy OAuth client. Register
-  [oauth-client-registration.json](oauth-client-registration.json) through
-  the existing platform-admin client flow, or its authenticated
-  `POST /api/realms/system/clients` endpoint. The exact upstream callback is
-  `https://mcp.wendy.dev/auth/callback`. Verify the client is registered in
-  production. The development audit found it was missing there. Do not
-  substitute the browser's `cloud-login` client,
-  whose registered callbacks do not include this gateway.
-- `wendy-chatgpt` is the public client registered in the gateway configuration
-  and declared in `mcp.json`. It uses PKCE and the stable ChatGPT callback
-  `https://chatgpt.com/connector_platform_oauth_redirect`. The gateway's
-  authorization responses identify their exact issuer, including errors.
+Use the existing draft in the intended OpenAI organization and project.
+Reuploading replaces the bundle and resets attestations; inspect the saved
+version and preserved connection before changing it. Complete domain
+verification, OAuth setup, tool/skill scans, reviewer access, and live cases.
+The domain challenge belongs to the Cloud relay deployment; do not replace it
+with an invented value or route traffic to a different service for this package.
 
-Provision a private persistent directory at `/var/lib/wendy-chatgpt`, mode
-`0700`, and supply `WENDY_CHATGPT_STATE_KEY` from the deployment secret store.
-It must be base64 for a random 32-byte key. Do not put it in the configuration,
-package, command history, or review notes. Run one gateway process per state
-file; the current encrypted file store does not support multiple writers.
-Keep its key and encrypted login file across service restarts.
-
-Build the current MCP UI assets and CLI using the repository build process,
-then run the service behind HTTPS with the chosen policy:
-
-```sh
-wendy mcp gateway --config /etc/wendy/gateway.json --listen 127.0.0.1:8788
-```
-
-Route the exact root MCP endpoint, `/.well-known/oauth-protected-resource`,
-`/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/auth/callback`,
-`/oauth/token`, `/oauth/revoke`, and `/healthz` to that process. Verify the
-production ingress routes to the standalone gateway, and cut over any existing
-session-relay route. A successful `/healthz` alone is insufficient.
-Camera capture needs the gateway host's GStreamer runtime and capture plugins.
-
-Serve the portal's actual domain challenge token as plain text at
-`https://mcp.wendy.dev/.well-known/openai-apps-challenge`. Do not invent a
-token or replace another plugin's challenge. Apply authorization/token rate
-limits at ingress. Do not log MCP request or response bodies, device results,
-camera data, or authorization credentials. Hosted display preferences are
-temporary; encrypted account-link state remains persistent.
-
-## Listing and policy evidence
-
-All four listing URLs are public pages on `wendy.dev`. The support page provides
-contact and help links. The privacy page needs to describe requested device
-results passing through Wendy to ChatGPT, no retention of MCP session data,
-and the separate encrypted login state. Its existing blanket statement about
-not collecting device contents does not explain this flow. Keep terms and
-support copy consistent with the Wendy plugin. Publish and inspect the final
-pages before checking off policy coverage.
-
-The icon is the existing 1024 × 1024 PNG and remains legible at small sizes.
-The listing describes standalone device inspection, telemetry, requested camera
-images, permitted app controls, and temporary workspace preferences. It does
-not promise laptop files, simulators, builds, deployments or app web proxies.
-
-## Review fixtures and test evidence
-
-Five positive and three negative cases are embedded in `plugin.json`. They
-are **not run** against the submitted service. Prepare a dedicated test account
-whose realm allows MCP and hosted MCP, with:
-
-- An online enrollment named `Review Device` and an offline one named
-  `Review Offline`.
-- A disposable running `review-logger` app emitting synthetic INFO/WARN logs,
-  another harmless running app, and a stopped sample app.
-- A working test camera aimed at a staged scene without people or private data.
-
-The positive cases cover inventory, explicit device/app inspection, bounded
-logs, one camera still, and an explicitly requested app stop with read-back.
-The negative cases cover unsupported laptop simulation, local files/builds,
-and purchases. Read each case's exact permissions and expected arguments.
-Record Passed/Failed/Blocked with evidence outside the public manifest.
-
-Verify two accounts cannot access each other's devices. Test revoked and
-expired logins, token refresh, reconnect, denied camera/app permissions and
-disabled hosted-MCP realm policy. Run the UI on desktop and mobile. No local
-test result substitutes for these live account and device checks.
-
-## Demo and final portal work
-
-After a development connection to the standalone service works, rehearse the
-positive cases and the unsupported laptop-simulator case in ChatGPT. Record
-account linking and the actual prompts/results using the test fixtures. Keep
-credentials off screen, play back the recording, then host it where reviewers
-can watch without requesting access. Write the verified URL into the manifest.
-
-Supply the test account, exact login URL, tenant and sign-in instructions only
-in the secure reviewer-access fields. Reviewers must not need the developer's
-phone, mailbox, terminal or a private network. Keep that account and fixtures
-available for later reviews.
-
-Once preparation is complete, use the intended OpenAI organization/project and
-verified Wendy Labs Inc. identity to upload the ZIP as a draft. Complete domain
-verification, OAuth connection, tool/skill scans and live cases on that saved
-version. Have the publisher complete attestations, submit for review, and
-publish only after approval. These are separate actions.
+Have the publisher complete attestations. Draft upload, submission for review,
+and publication after approval are separate actions.
 
 References: [OpenAI submission requirements](https://developers.openai.com/plugins/deploy/submission),
-[authentication](https://developers.openai.com/plugins/build/auth), and
+[remote MCP review](https://developers.openai.com/plugins/deploy/app-review), and
 [plugin guidelines](https://developers.openai.com/plugins/plugin-guidelines).
