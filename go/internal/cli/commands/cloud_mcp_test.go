@@ -357,8 +357,9 @@ func TestCloudMCPAutoAcceptMatchesExactChatGPTIdentity(t *testing.T) {
 func TestCloudMCPAutoAcceptKeepsToolPermissionsAndOneBinding(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	answers := make(chan string, 1)
-	answers <- "n" // Refuse the allowed mutation; pairing needs no answer.
+	answers := make(chan string, 2)
+	answers <- "n" // Refuse the read; automatic pairing does not approve calls.
+	answers <- "n" // Refuse the allowed mutation.
 	var decisions []*cloudpbv2.PairingDecision
 	var replies []*cloudpbv2.McpFrame
 	done, out, _ := runRelaySessionWithTerminal(t, testOpened(t, ""), wendymcp.BindingPolicy{Tools: []string{"device_disconnect"}}, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
@@ -375,8 +376,9 @@ func TestCloudMCPAutoAcceptKeepsToolPermissionsAndOneBinding(t *testing.T) {
 			decisions = append(decisions, got.GetPairingDecision())
 		}
 		for seq, msg := range []string{
-			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"device_list","arguments":{}}}`,
-			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"device_disconnect","arguments":{}}}`,
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wendy_status","arguments":{}}}`,
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"device_list","arguments":{}}}`,
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"device_disconnect","arguments":{}}}`,
 		} {
 			if err := stream.Send(frame(uint64(seq+1), "b1", msg)); err != nil {
 				return err
@@ -395,8 +397,8 @@ func TestCloudMCPAutoAcceptKeepsToolPermissionsAndOneBinding(t *testing.T) {
 	if len(decisions) != 2 || !decisions[0].GetAccept() || decisions[1].GetAccept() || decisions[1].GetBindingId() != "b2" {
 		t.Fatalf("want only the first binding accepted, got %v\n%s", decisions, out.String())
 	}
-	if len(replies) != 2 {
-		t.Fatalf("got %d tool replies, want two\n%s", len(replies), out.String())
+	if len(replies) != 3 {
+		t.Fatalf("got %d tool replies, want three\n%s", len(replies), out.String())
 	}
 	for _, reply := range replies {
 		var call struct {
@@ -409,10 +411,10 @@ func TestCloudMCPAutoAcceptKeepsToolPermissionsAndOneBinding(t *testing.T) {
 		}
 	}
 	log := out.String()
-	if strings.Contains(log, "wants to pair") || strings.Count(log, "wants to run") != 1 {
-		t.Fatalf("want only the tool confirmation prompt:\n%s", log)
+	if strings.Contains(log, "wants to pair") || strings.Count(log, "wants to run") != 2 {
+		t.Fatalf("want read and mutation confirmation prompts:\n%s", log)
 	}
-	for _, want := range []string{"this session already serves", "device_list  refused: not allowed for this client", "device_disconnect  refused by the user"} {
+	for _, want := range []string{"Every permitted tool call requires confirmation.", "this session already serves", "wendy_status  refused by the user", "device_list  refused: not allowed for this client", "device_disconnect  refused by the user"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("missing %q:\n%s", want, log)
 		}
@@ -533,6 +535,69 @@ func TestCloudMCPAcceptedClientNeedsConfirmationToMutate(t *testing.T) {
 	}
 	log := out.String()
 	for _, want := range []string{`"ChatGPT" wants to run device_disconnect {}`, `"ChatGPT"  device_disconnect  refused by the user`, "Session closed."} {
+		if !strings.Contains(log, want) {
+			t.Errorf("terminal lacks %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestCloudMCPAllowReadOnlySkipsReadConfirmation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	answers := make(chan string, 3)
+	answers <- "y" // Pairing still needs approval.
+	answers <- "n" // Refuse host access.
+	answers <- "n" // Refuse the mutation.
+	var replies []*cloudpbv2.McpFrame
+	policy := wendymcp.BindingPolicy{AllowRead: true, Tools: []string{"device_list", "device_disconnect"}}
+	done, out, _ := runRelaySessionWithTerminal(t, testOpened(t, ""), policy, answers, func(stream cloudpbv2.RelayMcpService_RelaySessionServer) error {
+		if err := stream.Send(pairing("b1", "ABCD-2345")); err != nil {
+			return err
+		}
+		if _, err := stream.Recv(); err != nil {
+			return err
+		}
+		for seq, msg := range []string{
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wendy_status","arguments":{}}}`,
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"device_list","arguments":{}}}`,
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"device_disconnect","arguments":{}}}`,
+		} {
+			if err := stream.Send(frame(uint64(seq+1), "b1", msg)); err != nil {
+				return err
+			}
+			reply, err := stream.Recv()
+			if err != nil {
+				return err
+			}
+			replies = append(replies, reply.GetFrame())
+		}
+		return nil
+	}, relaySessionOptions{ctx: ctx})
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(replies) != 3 {
+		t.Fatalf("got %d tool replies, want three\n%s", len(replies), out.String())
+	}
+	for i, reply := range replies {
+		var call struct {
+			Result *struct {
+				IsError           bool           `json:"isError"`
+				StructuredContent map[string]any `json:"structuredContent"`
+			}
+		}
+		if err := json.Unmarshal(reply.GetMessage(), &call); err != nil || call.Result == nil {
+			t.Fatalf("invalid tool reply: %s (%v)", reply.GetMessage(), err)
+		}
+		if i == 0 && call.Result.IsError || i > 0 && call.Result.StructuredContent["error_code"] != "DENIED" {
+			t.Fatalf("want successful read followed by denied host/mutation calls, got %s", reply.GetMessage())
+		}
+	}
+	log := out.String()
+	if strings.Count(log, "wants to pair") != 1 || strings.Count(log, "wants to run") != 2 || strings.Contains(log, "wants to run wendy_status") {
+		t.Fatalf("--allow-read must ask only about pairing, host access and mutations:\n%s", log)
+	}
+	for _, want := range []string{"Read-only device and Cloud calls run without confirmation (--allow-read).", `"ChatGPT"  wendy_status  ok`, `"ChatGPT" wants to run device_list`, `"ChatGPT" wants to run device_disconnect`} {
 		if !strings.Contains(log, want) {
 			t.Errorf("terminal lacks %q:\n%s", want, log)
 		}

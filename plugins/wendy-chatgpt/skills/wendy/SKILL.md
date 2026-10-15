@@ -19,10 +19,14 @@ installed its CLI.
 Inspect the available tools first. The local CLI server uses `wendy_status` and
 `device_list`. The public hosted relay uses `wendy_status` and `cloud_discover`.
 It requires a signed-in CLI, pairing through `wendy cloud mcp`, and a running
-relay process. Its default policy is read-only; `device_connect` and local
-discovery through `device_list` require explicit `--allow-tool` permission and
-per-call terminal confirmation. Local desktop gateways and separately
-configured standalone Cloud gateways use `list_robots` and `inspect_robot`.
+relay process. Its default policy permits built-in read-only device and Cloud
+tools that do not access the host, with confirmation for each call. `--allow-read`
+skips confirmation for those tools only. `device_connect` and local discovery
+through `device_list` require explicit `--allow-tool` permission and per-call
+terminal confirmation. `--allow-all` permits every supported relay tool and
+skips all per-call confirmations. `--auto-accept` controls ChatGPT pairing only.
+Local desktop gateways and separately configured standalone Cloud gateways use
+`list_robots` and `inspect_robot`.
 Use the connected server's tools and explicit target identifiers. Use CLI
 commands only when a terminal on the intended computer is available. A skill
 cannot grant access or add tools missing from the server.

@@ -31,8 +31,9 @@ connection. The CLI accepted the exact ChatGPT client identity without a
 pairing prompt. The first `wendy_status` returned `relay_not_paired`; a retry
 returned `auth: logged_in`. `cloud_discover(online_only=false)` returned the
 account's enrolled devices. The relay accepted the CLI's tool catalog. The
-session was then stopped. This check did not exercise a fresh sign-in,
-reviewer account, camera, app control, or video recording.
+session was then stopped. This check preceded the `--allow-read` split and does
+not verify the current confirmation behavior. It did not exercise a fresh
+sign-in, reviewer account, camera, app control, or video recording.
 
 ## CLI setup and permissions
 
@@ -43,7 +44,7 @@ MCP and Hosted MCP. Check the CLI before starting:
 wendy --version
 wendy cloud mcp --help
 wendy auth login
-wendy cloud mcp --allow-tool device_connect,camera_snapshot,container_stop
+wendy cloud mcp --allow-read --allow-tool device_connect,camera_snapshot,container_stop
 ```
 
 Use a CLI compatible with the relay's published catalog. The local installation
@@ -62,12 +63,17 @@ reviewed CLI catalog, including `wendy_status`, `cloud_discover`,
 `camera_list`, `camera_snapshot`, and `container_stop`. It does not serve the
 standalone gateway's `list_robots` or `inspect_robot` tools.
 
-The default policy permits read-only tools that do not access the host.
-`cloud_discover` lists the paired session's Cloud enrollments. `device_list`
-also accesses host configuration or LAN discovery, so it requires its own
-`--allow-tool` permission even when `scan=false`. Device connection, camera
-snapshots, and app stops require both an allowlisted tool name and confirmation
-of each call in the terminal. Tool catalog visibility does not grant permission.
+The default policy permits built-in read-only device and Cloud tools that do
+not access the host, and asks for confirmation before each call. `--allow-read`
+skips confirmation for those tools only. `cloud_discover` lists the paired
+session's Cloud enrollments. `device_list` also accesses host configuration or
+LAN discovery, so it requires its own `--allow-tool` permission and terminal
+confirmation even when `scan=false`. Device connection, camera snapshots, and
+app stops likewise require an allowlisted tool name and confirmation of each
+call with the command above. `--allow-all` permits every supported relay tool
+and skips all per-call confirmations, including state changes and host access.
+Read-only annotations on host or proxied tools do not qualify for `--allow-read`.
+Tool catalog visibility does not grant permission.
 
 Add `--auto-accept` to automatically accept a pairing request from ChatGPT's
 known OAuth client identity. It does not trust a client merely because its
@@ -82,12 +88,14 @@ new grant. `--auto-accept` can accept a new ChatGPT pairing while an eligible
 CLI session is waiting, but that path still needs live verification. Session
 expiry, network loss, or exiting the CLI can require setup again.
 
-The extra tools in the walkthrough still need per-call terminal confirmation.
+With the review command above, the extra tools in the walkthrough still need
+per-call terminal confirmation.
 OpenAI requires a demo account reviewers can use without further configuration.
 Verify how reviewers can complete all submitted cases without depending on a
 developer's terminal before calling this package ready. Do not assume that
-pairing automation alone resolves this requirement, or enable `--allow-all`
-without an explicit decision about its much broader access.
+pairing automation alone resolves this requirement. `--allow-all` permits all
+supported relay tools without terminal confirmation and requires a separate
+decision about that access.
 
 Provide account credentials and access instructions only in the secure reviewer
 fields, never in the repository or ZIP. Reviewers must not depend on a personal

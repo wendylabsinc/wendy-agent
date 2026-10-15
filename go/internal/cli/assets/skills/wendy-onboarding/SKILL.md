@@ -63,13 +63,15 @@ to the chosen computer, explain each command and have the user run it there.
    retry the harmless status call after the CLI reports acceptance. Do not
    retry state-changing tool calls automatically.
 
-The default relay policy permits read-only device and Cloud tools that do not
-access the host. Use `cloud_discover(online_only=false)` to list the signed-in
-account's enrolled devices, including offline devices. To connect to one of
-those devices, restart the relay with permission for `device_connect`:
+The default relay policy permits built-in read-only device and Cloud tools that
+do not access the host, and asks for confirmation before each call. Add
+`--allow-read` to skip confirmation for those tools only. Use
+`cloud_discover(online_only=false)` to list the signed-in account's enrolled
+devices, including offline devices. To allow these reads without prompting and
+connect to one of those devices, restart the relay with:
 
 ```sh
-wendy cloud mcp --allow-tool device_connect
+wendy cloud mcp --allow-read --allow-tool device_connect
 ```
 
 Use an exact selector returned by `cloud_discover`. The user must confirm the
@@ -78,7 +80,9 @@ also requires `--allow-tool device_list` and per-call terminal confirmation,
 even without a network scan. Add other tool names only when needed for the
 user's task. State changes and host access still require per-call
 terminal confirmation after `--allow-tool`; enabling a tool does not approve
-its next call. Do not enable `--allow-all` to avoid those confirmations.
+its next call. Read-only annotations on host or proxied tools do not qualify
+for `--allow-read`. `--allow-all` permits every supported relay tool and skips
+every per-call confirmation. Use it only when the user authorizes that access.
 
 The public relay exposes a fixed catalog of tools. It does not expose
 `wendy_tools`; use only the tools actually listed by the connected server.
@@ -158,8 +162,8 @@ no hardware. Do not turn an empty discovery result into a flashing decision.
 Inspect the running server's tools before calling them:
 
 - With the public hosted relay, call `wendy_status` and `cloud_discover`.
-  Connecting to a device requires the allow-list and terminal confirmations
-  described above. `device_list` needs separate permission for local discovery.
+  Calls follow the permission and confirmation rules above. `device_connect`
+  and local discovery through `device_list` need separate permission.
 - With the local CLI MCP server, call `wendy_status` and `device_list`. Enable
   `setup` for installation or `simulator` for local VMs through `wendy_tools`.
 - With a local desktop gateway or separately configured standalone Cloud

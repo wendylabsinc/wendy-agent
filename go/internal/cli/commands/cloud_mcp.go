@@ -33,6 +33,7 @@ import (
 func newCloudMCPCmd() *cobra.Command {
 	var cloudGRPC string
 	var allowTools []string
+	var allowRead bool
 	var allowAll bool
 	var autoAccept bool
 	cmd := &cobra.Command{
@@ -40,7 +41,8 @@ func newCloudMCPCmd() *cobra.Command {
 		Short: "Let a web chat (ChatGPT, Claude) use Wendy through this session",
 		Long: "Open a session with the hosted Wendy MCP relay and serve the wendy MCP tools to a web chat you pair with it.\n" +
 			"Every call runs here and is signed with your operator key; the chat can do nothing once this command exits.\n" +
-			"The chat may call read-only device and Cloud tools. Use --allow-tool to permit other tools with confirmation, or --allow-all to permit every tool without per-call confirmation.\n" +
+			"Every permitted tool call requires confirmation by default. Use --allow-read to automatically approve read-only device and Cloud tools that do not access the host.\n" +
+			"Use --allow-tool to permit other tools with confirmation, or --allow-all to permit every tool without per-call confirmation.\n" +
 			"Pairing requires your acceptance unless --auto-accept is set for ChatGPT. That flag only accepts ChatGPT's verified OAuth client ID; other clients still need confirmation. A terminal is required for interactive confirmations.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := wendymcp.CheckToolNames(allowTools); err != nil {
@@ -74,12 +76,13 @@ func newCloudMCPCmd() *cobra.Command {
 			term := newPromptTerminal(ctx, os.Stdin, cmd.ErrOrStderr())
 			stopWatchingTerminal := context.AfterFunc(term.ctx, stop)
 			defer stopWatchingTerminal()
-			err = serveCloudMCP(term.ctx, stream, opened, term, srv, wendymcp.BindingPolicy{AllowAll: allowAll, Tools: allowTools, Session: auth}, autoAccept)
+			err = serveCloudMCP(term.ctx, stream, opened, term, srv, wendymcp.BindingPolicy{AllowRead: allowRead, AllowAll: allowAll, Tools: allowTools, Session: auth}, autoAccept)
 			return errors.Join(err, term.close())
 		},
 	}
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the session to use")
 	cmd.Flags().StringSliceVar(&allowTools, "allow-tool", nil, "Also allow these tools by name (comma-separated); state changes and host access require confirmation")
+	cmd.Flags().BoolVar(&allowRead, "allow-read", false, "Automatically approve read-only device and Cloud tools that do not access the host")
 	cmd.Flags().BoolVar(&allowAll, "allow-all", false, "Allow every tool without per-call confirmation; does not change pairing approval")
 	cmd.Flags().BoolVar(&autoAccept, "auto-accept", false, "Automatically accept ChatGPT pairing; tool permissions and per-call confirmations are unchanged")
 	return cmd
@@ -230,8 +233,10 @@ func serveCloudMCP(ctx context.Context, stream relayStream, opened *cloudpbv2.Op
 				}
 				if policy.AllowAll {
 					term.printf("Serving %q for this signed-in connection. All tool calls run without confirmation (--allow-all).\n", client)
+				} else if policy.AllowRead {
+					term.printf("Serving %q for this signed-in connection. Read-only device and Cloud calls run without confirmation (--allow-read). State changes and host access require confirmation.\n", client)
 				} else {
-					term.printf("Serving %q for this signed-in connection. State changes and host access require confirmation.\n", client)
+					term.printf("Serving %q for this signed-in connection. Every permitted tool call requires confirmation.\n", client)
 				}
 				served = make(chan error, 1)
 				go func() {

@@ -11,14 +11,17 @@ the returned code with the terminal code, accept it, and retry the status check.
 
 ```sh
 wendy auth login
-wendy cloud mcp --allow-tool device_connect,camera_snapshot,container_stop
+wendy cloud mcp --allow-read --allow-tool device_connect,camera_snapshot,container_stop
 ```
 
-The example permits the extra tools used by the review walkthrough. Each
-connection, camera, or stop call still needs terminal confirmation. Ordinary
-read-only device and Cloud tools are available by default; local host access
-requires separate permission. Calls stop when the CLI exits. Keep its host
-awake and connected when using ChatGPT from a phone or another computer.
+The example skips confirmation for built-in read-only device and Cloud tools
+that do not access the host. It also permits the extra tools used by the review
+walkthrough. Each connection, camera, or stop call still needs terminal
+confirmation. By default, every permitted call asks for confirmation.
+Local host access requires separate permission. `--allow-all` permits every
+supported relay tool and skips all per-call confirmations. Calls stop when the
+CLI exits. Keep its host awake and connected when using ChatGPT from a phone or
+another computer.
 
 Use `--auto-accept` to accept pairing requests from ChatGPT's known OAuth client
 automatically. Tool permissions and per-call confirmations still apply. Other
