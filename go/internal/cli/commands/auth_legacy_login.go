@@ -15,13 +15,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // legacyLoginCallbackPage is what the browser shows once the dashboard
@@ -145,15 +144,12 @@ var legacyIssueTimeout = 60 * time.Second
 // var so tests can stand in for the cloud.
 var issueLegacyCertificate = func(ctx context.Context, cloudGRPC string, req *cloudpb.IssueCertificateRequest) (*cloudpb.IssueCertificateResponse, error) {
 	// This is the bootstrap step: no client cert exists yet, so we cannot do
-	// mTLS. Non-:443 endpoints are local dev cloud; use plaintext because we
-	// have no CA cert to verify the server with at this point.
-	var bootstrapCreds grpc.DialOption
-	if strings.HasSuffix(cloudGRPC, ":443") {
-		bootstrapCreds = grpc.WithTransportCredentials(credentials.NewTLS(nil))
-	} else {
-		bootstrapCreds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	// mTLS; server-authenticated TLS still protects the request.
+	creds, err := clouddefaults.CloudTransportCredentials(cloudGRPC, nil)
+	if err != nil {
+		return nil, err
 	}
-	certConn, err := grpc.NewClient(cloudGRPC, bootstrapCreds)
+	certConn, err := grpc.NewClient(cloudGRPC, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
 	}

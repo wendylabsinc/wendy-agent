@@ -28,7 +28,6 @@ import (
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -846,27 +845,11 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
-	var transport grpc.DialOption
-	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
-		certInfo := auth.Certificates[0]
-		keyPEM, err := certInfo.PrivateKeyPEM()
-		if err != nil {
-			return nil, fmt.Errorf("loading client key: %w", err)
-		}
-		tlsCfg, err := certs.LoadTLSConfig(
-			certInfo.PemCertificate,
-			certInfo.PemCertificateChain,
-			keyPEM,
-			"",
-		)
-		if err != nil {
-			return nil, fmt.Errorf("loading TLS config: %w", err)
-		}
-		transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
-	} else {
-		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
+	creds, err := clouddefaults.CloudTransportCredentials(auth.CloudGRPC, &auth.Certificates[0])
+	if err != nil {
+		return nil, err
 	}
-	dialOptions := []grpc.DialOption{transport}
+	dialOptions := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
 	// Per-RPC DPoP proof for a cnf-bound token; nil for unbound sessions. The
 	// MCP provider uses the stored token without refreshing (WDY-3107).
 	dialOptions = append(dialOptions, cloudrequest.DPoPDialOptions(auth, mcpDPoPTokenProvider(auth))...)
