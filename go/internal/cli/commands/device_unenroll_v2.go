@@ -180,6 +180,17 @@ func directUnenrollPeerFingerprint(conn *grpcclient.AgentConnection, verifiedPee
 	return hex.EncodeToString(digest[:]), nil
 }
 
+// requireDeviceOperatorLeaf refuses before any Cloud mutation when the Cloud
+// operator leaf is not the one the device connection presented: the Agent only
+// erases on a reset signed by its mTLS peer, so a renewal or another session
+// picked after the dial would let Cloud delete and revoke while the Agent refuses.
+func requireDeviceOperatorLeaf(conn *grpcclient.AgentConnection, auth *config.AuthConfig) error {
+	if conn.CertInfo == nil || conn.CertInfo.PemCertificate != auth.Certificates[0].PemCertificate {
+		return fmt.Errorf("operator certificate changed since the device connection (renewed, or another session selected); rerun to reconnect with it; no mutation performed")
+	}
+	return nil
+}
+
 // Keep one flow at the affected Cloud boundary. cloudContext intentionally
 // replaces authentication metadata; only the validated correlation crosses it.
 func v2UnenrollCloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context, error) {
@@ -223,6 +234,9 @@ func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 	if len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() != principal.TenantUUID {
 		return fmt.Errorf("cleanup operator tenant does not match the device")
+	}
+	if err := requireDeviceOperatorLeaf(conn, auth); err != nil {
+		return err
 	}
 	rpcctx, err := v2UnenrollCloudContext(ctx, auth)
 	if err != nil {

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc/codes"
@@ -243,5 +245,17 @@ func TestV2UnenrollAuthenticatedResetBitAloneQualifies(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "directly verified mTLS device connection") {
 			t.Fatalf("check=%t: want direct-mTLS refusal after the capability gate, got %v", checkOnly, err)
 		}
+	}
+}
+
+func TestV2UnenrollRequiresDeviceConnectionOperatorLeaf(t *testing.T) {
+	auth := &config.AuthConfig{Certificates: []config.CertificateInfo{{PemCertificate: "renewed"}}}
+	for _, conn := range []*grpcclient.AgentConnection{{}, {CertInfo: &config.CertificateInfo{PemCertificate: "dialed"}}} {
+		if err := requireDeviceOperatorLeaf(conn, auth); err == nil || !strings.Contains(err.Error(), "no mutation performed") {
+			t.Fatalf("mismatched operator leaf accepted: %v", err)
+		}
+	}
+	if err := requireDeviceOperatorLeaf(&grpcclient.AgentConnection{CertInfo: &config.CertificateInfo{PemCertificate: "renewed"}}, auth); err != nil {
+		t.Fatal(err)
 	}
 }
