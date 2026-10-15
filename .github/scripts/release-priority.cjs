@@ -1,6 +1,11 @@
+const fs = require('node:fs');
+const path = require('node:path');
+
 const ACTIVE_STATUSES = ['queued', 'in_progress', 'pending', 'waiting', 'requested'];
+// Set by build.yml's run-name. Releases that skip integration tests never use
+// the device runners, so build.yml titles them differently and nightly work
+// does not yield to them.
 const RELEASE_TITLE_PREFIX = 'Stable release · ';
-const LEGACY_BUILD_TITLE = 'Build products and release';
 
 async function activeStableReleases({ github, context }) {
   const results = await Promise.all(ACTIVE_STATUSES.map(status =>
@@ -15,16 +20,7 @@ async function activeStableReleases({ github, context }) {
 
   const releases = new Map();
   for (const run of results.flat()) {
-    if (String(run.id) === String(context.runId) ||
-        run.event !== 'workflow_dispatch' ||
-        !ACTIVE_STATUSES.includes(run.status)) {
-      continue;
-    }
-
-    // Older manual builds did not expose their publish input in the title.
-    // Treat them as releases until they finish rather than delaying a release.
-    if (run.display_title?.startsWith(RELEASE_TITLE_PREFIX) ||
-        run.display_title === LEGACY_BUILD_TITLE) {
+    if (run.display_title?.startsWith(RELEASE_TITLE_PREFIX)) {
       releases.set(String(run.id), run);
     }
   }
@@ -33,14 +29,58 @@ async function activeStableReleases({ github, context }) {
   return [...releases.values()];
 }
 
-async function hasDeferredNightly({ github, context, releaseId }) {
-  const name = `nightly-deferred-for-${releaseId}`;
-  const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+// Markers are per release attempt, so re-running a release only retries
+// nightly work deferred during that attempt.
+function deferralName(release) {
+  return `nightly-deferred-for-${release.id}-${release.run_attempt}`;
+}
+
+// Devices whose update job in this run has not finished, including the one
+// running the check. Before the update matrix starts, that is all of them.
+async function unfinishedDevices({ github, context, devices }) {
+  const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+    ...context.repo,
+    run_id: context.runId,
+    filter: 'latest',
+    per_page: 100,
+  });
+  const finished = new Set(jobs.filter(job => job.status === 'completed').map(job => job.name));
+  return devices.filter(device => !finished.has(device));
+}
+
+async function readMarker({ github, context, exec, artifact }) {
+  const { data } = await github.rest.actions.downloadArtifact({
+    ...context.repo,
+    artifact_id: artifact.id,
+    archive_format: 'zip',
+  });
+  const zip = path.join(process.env.RUNNER_TEMP, `nightly-deferral-${artifact.id}.zip`);
+  fs.writeFileSync(zip, Buffer.from(data));
+  const { stdout } = await exec.getExecOutput('unzip', ['-p', zip], { silent: true });
+  return JSON.parse(stdout);
+}
+
+// Whether nightly work was deferred for this release attempt, and which
+// devices the retry should update. Null devices means every discovered device.
+async function deferredNightly({ github, context, exec, release }) {
+  const name = deferralName(release);
+  const artifacts = (await github.paginate(github.rest.actions.listArtifactsForRepo, {
     ...context.repo,
     name,
     per_page: 100,
-  });
-  return artifacts.some(artifact => artifact.name === name && !artifact.expired);
+  })).filter(artifact => artifact.name === name && !artifact.expired);
+  if (!artifacts.length) return { deferred: false, devices: null };
+
+  const markers = await Promise.all(artifacts.map(artifact =>
+    readMarker({ github, context, exec, artifact })));
+  if (markers.some(marker => marker.devices === null)) return { deferred: true, devices: null };
+  return { deferred: true, devices: [...new Set(markers.flatMap(marker => marker.devices))] };
 }
 
-module.exports = { activeStableReleases, hasDeferredNightly };
+module.exports = {
+  RELEASE_TITLE_PREFIX,
+  activeStableReleases,
+  deferralName,
+  unfinishedDevices,
+  deferredNightly,
+};

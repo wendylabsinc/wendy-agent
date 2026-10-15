@@ -16,11 +16,11 @@ permissions:
 # A retry and the scheduled run must not enqueue two device matrices.
 concurrency:
   # Unrelated build completions skip immediately, outside the device queue.
+  # Sharing the queue with the deferring run means a retry starts only after
+  # that run has recorded which devices it deferred.
   group: >-
     nightly-os-update-${{ (github.event_name != 'workflow_run' ||
-    (github.event.workflow_run.event == 'workflow_dispatch' &&
-    (startsWith(github.event.workflow_run.display_title, 'Stable release · ') ||
-    github.event.workflow_run.display_title == 'Build products and release'))) && 'devices' || github.run_id }}
+    startsWith(github.event.workflow_run.display_title, 'Stable release · ')) && 'devices' || github.run_id }}
   cancel-in-progress: false
   queue: max
 
@@ -36,13 +36,12 @@ jobs:
     name: Check for stable releases
     if: >-
       github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.event == 'workflow_dispatch' &&
-       (startsWith(github.event.workflow_run.display_title, 'Stable release · ') ||
-        github.event.workflow_run.display_title == 'Build products and release'))
+      startsWith(github.event.workflow_run.display_title, 'Stable release · ')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       allowed: ${{ steps.priority.outputs.allowed }}
+      devices: ${{ steps.retry.outputs.devices }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Check whether this release deferred nightly work
@@ -51,12 +50,15 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
-            const { hasDeferredNightly } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/release-priority.cjs`);
-            const deferred = await hasDeferredNightly({ github, context, releaseId: context.payload.workflow_run.id });
+            const { deferredNightly } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/release-priority.cjs`);
+            const { deferred, devices } = await deferredNightly({ github, context, exec, release: context.payload.workflow_run });
             core.setOutput('deferred', String(deferred));
+            core.setOutput('devices', devices ? JSON.stringify(devices) : '');
       - uses: ./.github/actions/release-priority
         id: priority
         if: github.event_name != 'workflow_run' || steps.retry.outputs.deferred == 'true'
+        with:
+          devices: ${{ steps.retry.outputs.devices }}
 
   discover:
     name: Discover devices
@@ -73,6 +75,8 @@ jobs:
       # A release can arrive after the hosted check but before runner assignment.
       - uses: ./.github/actions/release-priority
         id: priority
+        with:
+          devices: ${{ needs.release-priority.outputs.devices }}
 
       - name: Set up Go
         if: steps.priority.outputs.allowed == 'true'
@@ -89,6 +93,9 @@ jobs:
       - name: Clear cache and scan for WendyOS devices
         id: scan
         if: steps.priority.outputs.allowed == 'true'
+        env:
+          # A retry only updates the devices the deferred run had not finished.
+          RETRY_DEVICES: ${{ needs.release-priority.outputs.devices }}
         run: |
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
@@ -101,6 +108,11 @@ jobs:
 
           MATRIX=$(echo "$RESULT" | jq -c \
             '[.lanDevices[] | select(.isWendyDevice and (.hostname // .ipAddress)) | .hostname // .ipAddress]')
+          if [ -n "$RETRY_DEVICES" ]; then
+            echo "Retrying deferred devices: $RETRY_DEVICES"
+            MATRIX=$(echo "$MATRIX" | jq -c --argjson retry "$RETRY_DEVICES" \
+              'map(select(ascii_downcase as $device | any($retry[]; ascii_downcase == $device)))')
+          fi
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
           COUNT=$(echo "$MATRIX" | jq 'length')
@@ -125,12 +137,26 @@ jobs:
       matrix:
         hostname: ${{ fromJson(needs.discover.outputs.matrix) }}
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write  # Cancel the remaining device jobs after a deferral.
     env:
       DEVICE_HOSTNAME: ${{ matrix.hostname }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: ./.github/actions/release-priority
         id: priority
+        with:
+          devices: ${{ needs.discover.outputs.matrix }}
+
+      # Each later device job would otherwise take the runner only to defer
+      # again. The deferral already recorded those devices for the retry.
+      - name: Cancel remaining device jobs
+        if: steps.priority.outputs.allowed != 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId });
 
       - name: Set up Go
         if: steps.priority.outputs.allowed == 'true'
