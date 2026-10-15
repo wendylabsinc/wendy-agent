@@ -3,16 +3,16 @@
   "robots": [],
   "grants": [],
   "http": {
-    "resource_url": "https://mcp.dev.wendy.dev",
+    "resource_url": "https://mcp.wendy.dev",
     "cloud_link": {
       "services": {
-        "auth_base": "https://auth.dev.wendy.sh",
+        "auth_base": "https://auth.wendy.dev",
         "client_id": "wendy-chatgpt-gateway",
         "identity_resource": "https://pki.wendy.sh/identity",
-        "identity_endpoint": "https://identity.dev.pki.wendy.sh/v1/identity/certificate",
-        "cloud_resource": "https://cloud.dev.wendy.sh/api",
-        "cloud_grpc": "api.dev.wendy.sh:443",
-        "relay_issuer": "https://api.dev.wendy.sh"
+        "identity_endpoint": "https://identity.pki.wendy.dev/v1/identity/certificate",
+        "cloud_resource": "https://cloud.wendy.dev/api",
+        "cloud_grpc": "api.wendy.dev:443",
+        "relay_issuer": "https://api.wendy.dev"
       },
       "state_file": "/var/lib/wendy-chatgpt/accounts.enc",
       "encryption_key_env": "WENDY_CHATGPT_STATE_KEY",

@@ -1,17 +1,17 @@
 # Wendy marketplace submission
 
 The public package targets standalone Wendy Cloud access at
-`https://mcp.dev.wendy.dev`. Users link their account and operate permitted
+`https://mcp.wendy.dev`. Users link their account and operate permitted
 devices without running a local CLI. The publisher is Wendy Labs Inc.; the
 package allows all countries and declares no payments or purchases.
 
 ## Current release gate
 
-**Do not submit this draft against the currently deployed endpoint.** The
-2026-10-14 audit found that it still serves the session relay, with the
-`mcp:relay` scope and CLI pairing. The intended service is the standalone
+Before submitting, verify that the production endpoint serves the standalone
 gateway's `http.cloud_link` mode, with `robots:read`, `cameras:capture`,
-`apps:control`, and `preferences:write`. Deploy and test that service first.
+`apps:control`, and `preferences:write`. The 2026-10-14 development audit found
+the separate session relay, with `mcp:relay` and CLI pairing. That audit does
+not establish production readiness. Deploy and test the standalone service first.
 
 The supplied configuration and OAuth registrations are deployment inputs.
 They do not establish that the service, clients, or domain verification exist.
@@ -44,16 +44,17 @@ Deployment configuration, reviewer credentials and private state stay outside it
 ## Standalone service deployment
 
 Use [gateway.marketplace.example.json](gateway.marketplace.example.json) for
-the requested development host. Its Wendy service URLs were checked against
-the current auth/cloud source. Keep its dedicated upstream client and the
+the production host. Its Wendy service URLs match the CLI production login
+target. Keep its dedicated upstream client and the
 downstream ChatGPT client separate:
 
 - `wendy-chatgpt-gateway` is a public, DPoP-bound Wendy OAuth client. Register
   [oauth-client-registration.json](oauth-client-registration.json) through
   the existing platform-admin client flow, or its authenticated
   `POST /api/realms/system/clients` endpoint. The exact upstream callback is
-  `https://mcp.dev.wendy.dev/auth/callback`. The live audit found this client
-  was not registered. Do not substitute the browser's `cloud-login` client,
+  `https://mcp.wendy.dev/auth/callback`. Verify the client is registered in
+  production. The development audit found it was missing there. Do not
+  substitute the browser's `cloud-login` client,
   whose registered callbacks do not include this gateway.
 - `wendy-chatgpt` is the public client registered in the gateway configuration
   and declared in `mcp.json`. It uses PKCE and the stable ChatGPT callback
@@ -76,13 +77,13 @@ wendy mcp gateway --config /etc/wendy/gateway.json --listen 127.0.0.1:8788
 
 Route the exact root MCP endpoint, `/.well-known/oauth-protected-resource`,
 `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/auth/callback`,
-`/oauth/token`, `/oauth/revoke`, and `/healthz` to that process. The existing
-cloud tunnel MIG routes this hostname to the Swift session relay; it needs an
-explicit infrastructure cutover. A successful `/healthz` alone is insufficient.
+`/oauth/token`, `/oauth/revoke`, and `/healthz` to that process. Verify the
+production ingress routes to the standalone gateway, and cut over any existing
+session-relay route. A successful `/healthz` alone is insufficient.
 Camera capture needs the gateway host's GStreamer runtime and capture plugins.
 
 Serve the portal's actual domain challenge token as plain text at
-`https://mcp.dev.wendy.dev/.well-known/openai-apps-challenge`. Do not invent a
+`https://mcp.wendy.dev/.well-known/openai-apps-challenge`. Do not invent a
 token or replace another plugin's challenge. Apply authorization/token rate
 limits at ingress. Do not log MCP request or response bodies, device results,
 camera data, or authorization credentials. Hosted display preferences are

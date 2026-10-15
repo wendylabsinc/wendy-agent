@@ -3,7 +3,7 @@
   "mcpServers": {
     "wendy-robots": {
       "type": "streamable-http",
-      "url": "https://mcp.dev.wendy.dev",
+      "url": "https://mcp.wendy.dev",
       "extensions": {
         "com.openai": {
           "auth": {

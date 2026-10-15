@@ -12,7 +12,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "plugins/wendy-chatgpt"
-ENDPOINT = "https://mcp.dev.wendy.dev"
+ENDPOINT = "https://mcp.wendy.dev"
 LISTING_URLS = ("websiteURL", "supportURL", "privacyPolicyURL", "termsOfServiceURL")
 
 

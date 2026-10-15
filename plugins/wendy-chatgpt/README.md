@@ -3,10 +3,10 @@
 ## Hosted plugin
 
 The public package targets standalone Cloud account linking at
-`https://mcp.dev.wendy.dev` using Streamable HTTP and OAuth. Users should need no
-local CLI process. The current endpoint still serves the separate session relay;
-replace it with the standalone gateway before submitting this package. See
-[submission preparation](SUBMISSION.md) for the verified service configuration,
+`https://mcp.wendy.dev` using Streamable HTTP and OAuth. Users should need no
+local CLI process. Verify that the production endpoint serves the standalone
+gateway before submitting this package. See
+[submission preparation](SUBMISSION.md) for the service configuration,
 OAuth registrations, review cases, recording, and release checks.
 
 Package a review draft with
@@ -429,7 +429,7 @@ configuration, client/callback registration, and a real ChatGPT connection check
 remain required before deployment.
 
 The portable `mcp.json` uses
-`{"type":"streamable-http","url":"https://mcp.dev.wendy.dev"}`. Register this
+`{"type":"streamable-http","url":"https://mcp.wendy.dev"}`. Register this
 MCP endpoint through OpenAI's plugin builder and complete review before public
 distribution. The plugin package contains no app ID.
 
