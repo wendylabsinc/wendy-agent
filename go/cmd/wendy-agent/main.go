@@ -205,6 +205,7 @@ func main() {
 	// provisioning identity needed to build the roster becomes available.
 	var meshDNS *mesh.DNSServer
 	meshIngress := meshingress.NewRegistry()
+	meshCatalog := newMeshCatalogManager(configPath, meshIngress, logger)
 	containerdAddr := os.Getenv("WENDY_CONTAINERD_ADDR")
 	if containerdAddr == "" {
 		containerdAddr = agentcontainerd.DefaultAddress
@@ -224,6 +225,7 @@ func main() {
 		containerdClient = ctrdClient
 		defer ctrdClient.Close()
 		ctrdClient.SetMeshIngressRegistry(meshIngress)
+		ctrdClient.SetMeshMDNSManager(meshCatalog)
 
 		// Inject the shared mesh DNS server so applyMeshEgress/teardownMeshEgress
 		// can resolve peer-device names for containers on the mesh network mode.
@@ -882,6 +884,17 @@ func main() {
 	var localMeshMu sync.RWMutex
 	var localMeshSnapshot func() localmesh.NodeSnapshot
 	var localMeshAppClient *meshsession.Client
+	// Persistent VIP table shared by DNS answers, the proxy's reverse
+	// lookup, and every allocation: (tenant UUID, device UUID) ↔ VIP. A
+	// corrupt table file refuses to open rather than silently re-allocating
+	// — recycled VIPs would hijack live flows pinned to their old owners.
+	meshVIPs, vipErr := mesh.OpenVIPTable(filepath.Join(configPath, "mesh-vips.json"))
+	if vipErr != nil {
+		logger.Error("mesh: VIP table could not be opened; mesh name answers and proxy dialing are disabled", zap.Error(vipErr))
+	} else {
+		stats := meshVIPs.Stats()
+		logger.Info("mesh: VIP table loaded", zap.Int("allocated", stats.Allocated), zap.Int("retired", stats.Retired), zap.Int("capacity", stats.Capacity))
+	}
 	startConfiguredLocalMesh := func(certPEM, chainPEM, keyPEM string) {
 		if runtime.GOOS != "linux" {
 			return
@@ -948,7 +961,7 @@ func main() {
 					err := runConfiguredMeshCarriers(ctx, configPath, localmesh.TCPIdentity{
 						Name: name, AgentPort: uint16(mtlsPortNum),
 						Certificate: certPEM, Chain: chainPEM, Key: keyPEM,
-					}, logger, func(snapshot func() localmesh.NodeSnapshot) {
+					}, logger, meshCatalog, meshVIPs, func(snapshot func() localmesh.NodeSnapshot) {
 						localMeshMu.Lock()
 						localMeshSnapshot = snapshot
 						localMeshMu.Unlock()
@@ -1022,29 +1035,6 @@ func main() {
 			}
 			return nil
 		})
-	})
-	// Persistent VIP table shared by DNS answers, the proxy's reverse
-	// lookup, and every allocation: (tenant UUID, device UUID) ↔ VIP. A
-	// corrupt table file refuses to open rather than silently re-allocating
-	// — recycled VIPs would hijack live flows pinned to their old owners.
-	meshVIPs, vipErr := mesh.OpenVIPTable(filepath.Join(configPath, "mesh-vips.json"))
-	if vipErr != nil {
-		logger.Error("mesh: VIP table could not be opened; mesh name answers and proxy dialing are disabled", zap.Error(vipErr))
-	} else {
-		stats := meshVIPs.Stats()
-		logger.Info("mesh: VIP table loaded", zap.Int("allocated", stats.Allocated), zap.Int("retired", stats.Retired), zap.Int("capacity", stats.Capacity))
-	}
-	meshDialer.SetLocalServiceDialer(func(dialCtx context.Context, peer meshid.Device, port uint16) (net.Conn, error) {
-		localMeshMu.RLock()
-		snapshot := localMeshSnapshot
-		localMeshMu.RUnlock()
-		if snapshot == nil {
-			return nil, meshsession.ErrNoRoute
-		}
-		if _, err := meshsession.Resolve(snapshot(), peer); err != nil {
-			return nil, err
-		}
-		return (&net.Dialer{}).DialContext(dialCtx, "tcp6", net.JoinHostPort(peer.MeshAddress().String(), strconv.Itoa(int(port))))
 	})
 	// VIP dialing is mesh-local only. Without a configured local mesh the
 	// app dialer fails closed with ErrNoRoute rather than falling back to
