@@ -6,11 +6,13 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
 
 
 SCRIPT = Path(__file__).with_name("package-chatgpt-plugin.py")
@@ -96,6 +98,62 @@ class PackageTests(unittest.TestCase):
         (self.source / "assets/private.txt").symlink_to(self.source / "plugin.json")
         with self.assertRaisesRegex(ValueError, "Symlinks"):
             package.validate_package(self.source)
+
+    def test_rejects_hidden_and_generated_component_files(self):
+        for name in ("skills/wendy/.env", "assets/.DS_Store", "skills/wendy/.cache/data.json",
+                     "skills/wendy/__pycache__/skill.pyc", "assets/node_modules/package/index.js",
+                     "assets/__MACOSX/icon.png", "skills/wendy/notes.md~", "assets/icon.png.bak"):
+            with self.subTest(name=name):
+                source = self.root / "case"
+                shutil.copytree(self.source, source)
+                try:
+                    path = source / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("do-not-export")
+                    with self.assertRaisesRegex(ValueError, "Hidden or generated"):
+                        package.validate_package(source)
+                finally:
+                    shutil.rmtree(source)
+
+    def test_rejects_truncated_png(self):
+        icon = self.source / "assets/wendy-icon.png"
+        original = icon.read_bytes()
+        for data in (original[:24], original[:-1], original[:-12]):
+            with self.subTest(length=len(data)):
+                icon.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, "PNG"):
+                    package.validate_package(self.source)
+
+    def test_rejects_png_crc_corruption(self):
+        icon = self.source / "assets/wendy-icon.png"
+        data = bytearray(icon.read_bytes())
+        data[29] ^= 1  # Corrupt IHDR's CRC without changing its dimensions.
+        icon.write_bytes(data)
+        with self.assertRaisesRegex(ValueError, "PNG chunk CRC"):
+            package.validate_package(self.source)
+
+    def test_rejects_png_without_image_data_and_with_trailing_data(self):
+        icon = self.source / "assets/wendy-icon.png"
+        original = icon.read_bytes()
+        cases = ((original[:33] + original[-12:], "missing PNG image data"),
+                 (original + b"unrelated", "end with an empty PNG IEND"))
+        for data, error in cases:
+            with self.subTest(error=error):
+                icon.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, error):
+                    package.validate_package(self.source)
+
+    def test_accepts_png_with_consecutive_image_chunks(self):
+        def chunk(kind, payload):
+            return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload))
+
+        # A real 256-square RGB image with compressed scanlines, split over IDATs.
+        compressed = zlib.compress((b"\x00" + b"\xff\x00\x00" * 256) * 256)
+        midpoint = len(compressed) // 2
+        data = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 256, 256, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", compressed[:midpoint]) + chunk(b"IDAT", compressed[midpoint:]) + chunk(b"IEND", b""))
+        (self.source / "assets/wendy-icon.png").write_bytes(data)
+        package.validate_package(self.source)
 
     def test_rejects_credential_url(self):
         self.manifest["extensions"]["com.openai"]["interface"]["supportURL"] = "https://user:secret@wendy.dev/support"

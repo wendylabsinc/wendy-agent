@@ -487,11 +487,13 @@ func (l *lockedBuffer) String() string {
 }
 
 // Cloud serves RelayMcpService only on the tunnel broker; the API host answers
-// Unimplemented, so the relay session must never dial auth.CloudGRPC on dev.
+// Unimplemented, so hosted dev and prod sessions must dial their tunnel broker.
 func TestCloudMCPRelaySessionDialsTunnelBroker(t *testing.T) {
 	for cloudGRPC, want := range map[string]string{
 		"api.dev.wendy.sh:443":  "tunnel.dev.wendy.dev:443",
 		"api.dev.wendy.dev:443": "tunnel.dev.wendy.dev:443",
+		"api.wendy.sh:443":     "tunnel.wendy.dev:443",
+		"api.wendy.dev:443":    "tunnel.wendy.dev:443",
 		"cloud.example:443":     "cloud.example:443",
 		"localhost:50051":       "localhost:50051",
 	} {

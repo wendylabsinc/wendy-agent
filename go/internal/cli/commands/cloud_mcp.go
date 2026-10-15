@@ -126,13 +126,15 @@ func openRelaySession(ctx context.Context, auth *config.AuthConfig) (relayStream
 }
 
 // relayBrokerEndpoint is the tunnel broker's gRPC listener (tunnel.<env>:443)
-// for a Cloud gRPC host. Only dev runs a tunnel broker host today; any other
-// Cloud (prod, self-hosted, local) keeps its own gRPC host.
+// for a hosted dev or prod Cloud gRPC host. Self-hosted and local Clouds keep
+// their own gRPC host.
 func relayBrokerEndpoint(cloudGRPC string) string {
 	host, _, _ := net.SplitHostPort(cloudGRPC)
 	switch host {
 	case "api.dev.wendy.sh", "api.dev.wendy.dev":
 		return "https://tunnel.dev.wendy.dev:443"
+	case "api.wendy.sh", "api.wendy.dev":
+		return "https://tunnel.wendy.dev:443"
 	}
 	if clouddefaults.UsesPublicCA(cloudGRPC) {
 		return "https://" + cloudGRPC
