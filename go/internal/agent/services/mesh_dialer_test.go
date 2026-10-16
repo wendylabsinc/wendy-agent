@@ -543,3 +543,14 @@ func TestMeshDialContextDialerDialsVerbatim(t *testing.T) {
 		ln.Close()
 	}
 }
+
+func TestDialTargetRejectsAbsentDeviceBeforeDialing(t *testing.T) {
+	d, probes := testDialer()
+	_, _, err := d.DialTarget(context.Background(), DeliveryTarget{}, 50052)
+	if err == nil || !strings.Contains(err.Error(), "invalid mesh service target") {
+		t.Fatalf("absent target was not rejected at the identity boundary: %v", err)
+	}
+	if probes.lookups != 0 || probes.lanDials != 0 || probes.brokerDials != 0 {
+		t.Fatal("absent target triggered network discovery or dialing")
+	}
+}

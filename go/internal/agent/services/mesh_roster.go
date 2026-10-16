@@ -74,11 +74,9 @@ func NewMeshRoster(logger *zap.Logger, cloudURL, certPEM, keyPEM, chainPEM strin
 	return r
 }
 
-// loadIdentity derives the identity used to authenticate GetMeshRoster calls
-// from the provisioned leaf certificate: the tenant SPIFFE device principal
-// pki-core stamps on every leaf it issues, or the legacy URN on an old-chain
-// certificate. An empty identity means the device has no provisioned identity
-// yet and Sync will not dial. The caller must hold the write lock.
+// loadIdentity requires this device's canonical mesh principal. Unsupported
+// certificates cannot establish the tenant for roster or LAN mesh discovery.
+// The caller must hold the write lock.
 func (r *MeshRoster) loadIdentity() {
 	r.identity, r.tenant, r.hasTenant = "", meshid.Tenant{}, false
 	if r.certPEM == "" || r.keyPEM == "" {
@@ -89,24 +87,13 @@ func (r *MeshRoster) loadIdentity() {
 		r.logger.Warn("mesh roster: device certificate could not be read; sync stays disabled until provisioning completes", zap.Error(err))
 		return
 	}
-	identity, found, err := certs.IdentityFromCert(leaves[0])
+	device, err := meshid.DeviceFromCert(leaves[0])
 	if err != nil {
-		r.logger.Warn("mesh roster: device certificate identity could not be parsed; sync stays disabled until provisioning completes", zap.Error(err))
+		r.logger.Warn("mesh roster: certificate has no supported mesh device identity; sync stays disabled", zap.Error(err))
 		return
 	}
-	if !found {
-		return
-	}
-	r.identity = identity.IdentityKey()
-	if identity.TenantUUID == "" {
-		return
-	}
-	tenant, err := meshid.ParseTenant(identity.TenantUUID)
-	if err != nil {
-		r.logger.Warn("mesh roster: certificate tenant UUID is not canonical; roster entries will not be dialable", zap.Error(err))
-		return
-	}
-	r.tenant, r.hasTenant = tenant, true
+	r.identity = device.Principal()
+	r.tenant, r.hasTenant = device.Tenant(), true
 }
 
 // OrgSlug returns this device's tenant slug as the cloud normalized it.
@@ -235,8 +222,8 @@ func (r *MeshRoster) applyResponse(generation uint64, resp *cloudpbv2.GetMeshRos
 }
 
 // Sync performs one GetMeshRoster refresh over the cloud gRPC endpoint using
-// the same certificate-bound identity the tunnel broker client uses; the cloud
-// scopes the roster it returns to the tenant that identity authenticates.
+// the device's certificate directly. Cloud scopes the response to the tenant
+// authenticated at its device mTLS listener.
 func (r *MeshRoster) Sync(ctx context.Context) error {
 	r.mu.RLock()
 	cloudURL, identity, generation := r.cloudURL, r.identity, r.generation

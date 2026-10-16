@@ -280,3 +280,18 @@ func TestRosterUpdateIdentityIsUsedBySync(t *testing.T) {
 		t.Fatal("Sync() after UpdateIdentity to a real device principal should attempt a dial and fail against an unreachable address, not silently skip")
 	}
 }
+
+func TestRosterUnsupportedDevicePrincipalCannotEstablishTenant(t *testing.T) {
+	certPEM, keyPEM := deviceIdentityCertPEM(t, rosterTenant, "fleet/box")
+	r := NewMeshRoster(zaptest.NewLogger(t), "invalid endpoint", certPEM, keyPEM, "")
+	if _, ok := r.OwnTenant(); ok {
+		t.Fatal("non-UUID device established mesh scope")
+	}
+	if r.identity != "" {
+		t.Fatal("unsupported device enabled roster authentication")
+	}
+	// No network request should be attempted without a supported mesh identity.
+	if err := r.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -267,7 +267,7 @@ func (d *MeshDialer) DialDevice(ctx context.Context, device meshid.Device, port 
 // cannot authorize a device-to-device relay fallback.
 func (d *MeshDialer) DialTarget(ctx context.Context, target DeliveryTarget, port uint16) (net.Conn, string, error) {
 	device := target.Device
-	if device.Principal() == "" || port == 0 {
+	if !device.IsValid() || port == 0 {
 		return nil, "", errors.New("invalid mesh service target")
 	}
 	if target.AssetUUID != "" {
@@ -294,6 +294,22 @@ func (d *MeshDialer) DialTarget(ctx context.Context, target DeliveryTarget, port
 		d.metrics.RecordDial(device, "lan-direct", result, float64(d.now().Sub(started).Milliseconds()))
 		if err == nil {
 			return conn, "lan-direct", nil
+		}
+	}
+	return d.DialRoutedTarget(ctx, target, port)
+}
+
+// DialRoutedTarget retries an administrative connection over Babel alone.
+// Delivery uses it after a LAN socket connects but fails principal-pinned TLS;
+// the returned stream still requires exactly the same endpoint authentication.
+func (d *MeshDialer) DialRoutedTarget(ctx context.Context, target DeliveryTarget, port uint16) (net.Conn, string, error) {
+	device := target.Device
+	if !device.IsValid() || port == 0 {
+		return nil, "", errors.New("invalid mesh service target")
+	}
+	if target.AssetUUID != "" {
+		if _, err := meshid.ParseAsset(target.AssetUUID); err != nil {
+			return nil, "", err
 		}
 	}
 	d.mu.Lock()
@@ -516,4 +532,10 @@ func (streamConnAddr) String() string  { return "wendy-mesh" }
 // once, on Close.
 func streamNetConn(s tunnelStream, teardown func()) net.Conn {
 	return &streamConn{s: s, teardown: teardown}
+}
+
+// IsSelf checks the authenticated full device principal.
+func (d *MeshDialer) IsSelf(device meshid.Device) bool {
+	self := d.identity().device
+	return self != (meshid.Device{}) && self == device
 }
