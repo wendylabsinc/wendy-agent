@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +46,9 @@ type Provider struct {
 	Node        LinkNode
 	Selection   *localmesh.PeerSelection
 	Logger      *zap.Logger
+	// Status receives local setup readiness/failure, not peer reachability.
+	// The optional callback must return promptly.
+	Status func(localmesh.CarrierStatus)
 }
 
 func (p Provider) Run(parent context.Context) error {
@@ -85,6 +90,17 @@ func (p Provider) Run(parent context.Context) error {
 		return err
 	}
 	plan := planSession(present, marked)
+	if hasAppNANNDI() {
+		// App-entitled sessions share this radio-wide cluster. If we inherited
+		// an ownership marker from an older provider, relinquish it instead
+		// of resetting nan0 out from under the app.
+		plan = sessionPlan{}
+		if marked {
+			if err := clearSessionOwner(id); err != nil {
+				return err
+			}
+		}
+	}
 	if plan.own {
 		// Record ownership before START: a process killed during START must not
 		// leave an unclaimable nan0. The exclusive provider lock is held here.
@@ -92,6 +108,31 @@ func (p Provider) Run(parent context.Context) error {
 			return err
 		}
 		defer func() {
+			// A host-shell stop/start can replace nan0 while this provider is
+			// running. Never stop an interface whose socket is no longer ours.
+			current, socketErr := nanControlSocketIdentity()
+			if errors.Is(socketErr, os.ErrNotExist) {
+				if err := clearSessionOwner(id); err != nil {
+					logger.Warn("NAN ownership marker removal failed", zap.Error(err))
+				}
+				return
+			}
+			if socketErr != nil {
+				logger.Warn("NAN ownership check failed; preserving interface", zap.Error(socketErr))
+				return
+			}
+			owned, ownerErr := sessionOwnerMatches(id, current)
+			if ownerErr != nil || !owned {
+				logger.Warn("NAN ownership changed; preserving interface", zap.Error(ownerErr))
+				return
+			}
+			if hasAppNANNDI() {
+				logger.Info("Preserving NAN interface for app-owned NDP sessions")
+				if err := clearSessionOwner(id); err != nil {
+					logger.Warn("NAN ownership marker removal failed", zap.Error(err))
+				}
+				return
+			}
 			if err := runCleanupHelper("stop"); err != nil {
 				logger.Warn("NAN stop failed", zap.Error(err))
 			} else if err := clearSessionOwner(id); err != nil {
@@ -102,6 +143,9 @@ func (p Provider) Run(parent context.Context) error {
 	if plan.reset {
 		// An interrupted provider can leave old service handles and a live
 		// cluster behind. Clear them before opening this provider's radio.
+		if hasAppNANNDI() {
+			return errors.New("cannot reset shared NAN interface while an app NDI exists")
+		}
 		if err := runHelper(ctx, "stop"); err != nil {
 			return fmt.Errorf("reset abandoned NAN session: %w", err)
 		}
@@ -121,6 +165,126 @@ func (p Provider) Run(parent context.Context) error {
 	if err := runHelper(ctx, "schedule-default"); err != nil {
 		return err
 	}
+	// A false-connected NDP first gets an NDI-only reset. If a second epoch
+	// still has no RX, an agent-owned nan0 gets one stop/start. The helper's
+	// stop preserves the supplicant and station Wi-Fi; P2P restoration is an
+	// explicit, separate operation. External nan0 is never restarted here.
+	recovery := nanRecovery{ownsSession: plan.own}
+	for {
+		err := p.runNDIEpoch(ctx, id, logger, recovery.canReset())
+		if err != nil && ctx.Err() == nil && p.Status != nil {
+			p.Status(localmesh.CarrierStatus{Err: err})
+		}
+		if errors.Is(err, errSoftNANRecovery) {
+			switch recovery.next(errors.Is(err, errNoRXNANRecovery)) {
+			case resetNDI:
+				logger.Warn("NAN data path unavailable; recreating only agent-owned NDI and service handles")
+				continue
+			case resetOwnedSession:
+				logger.Warn("NAN data path unavailable after NDI reset; restarting agent-owned NAN interface")
+				if err = restartOwnedNAN(ctx, id); err == nil {
+					continue
+				}
+				logger.Error("NAN interface recovery failed; preserving supplicant and Wi-Fi until carrier configuration changes", zap.Error(err))
+			}
+		}
+		if recovery.attempted() && err != nil && ctx.Err() == nil {
+			// A failed recovery stays in place until the carrier config changes.
+			// The provider's deferred cleanup will stop only its own nan0.
+			logger.Error("NAN soft recovery failed; keeping supplicant and Wi-Fi up until carrier configuration changes", zap.Error(err))
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return err
+	}
+}
+
+type nanResetAction uint8
+
+const (
+	resetNone nanResetAction = iota
+	resetNDI
+	resetOwnedSession
+)
+
+type nanRecovery struct {
+	ownsSession, ndiReset, sessionReset bool
+}
+
+func (r nanRecovery) canReset() bool {
+	return r.ownsSession && (!r.ndiReset || !r.sessionReset)
+}
+
+func (r nanRecovery) attempted() bool { return r.ndiReset || r.sessionReset }
+
+func (r *nanRecovery) next(noRX bool) nanResetAction {
+	if !r.ownsSession {
+		return resetNone
+	}
+	if !r.ndiReset {
+		r.ndiReset = true
+		return resetNDI
+	}
+	if noRX && !r.sessionReset {
+		r.sessionReset = true
+		return resetOwnedSession
+	}
+	return resetNone
+}
+
+func restartOwnedNAN(ctx context.Context, id meshid.Device) error {
+	if hasAppNANNDI() {
+		return errors.New("cannot restart shared NAN interface while an app NDI exists")
+	}
+	current, err := nanControlSocketIdentity()
+	if err != nil {
+		return fmt.Errorf("NAN control socket before owned restart: %w", err)
+	}
+	owned, err := sessionOwnerMatches(id, current)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return errors.New("NAN ownership changed before restart")
+	}
+	if err := runHelper(ctx, "stop"); err != nil {
+		return fmt.Errorf("stop owned NAN interface: %w", err)
+	}
+	if err := markSessionOwner(id, socketIdentity{}); err != nil {
+		return err
+	}
+	if err := runHelper(ctx, "start"); err != nil {
+		return fmt.Errorf("restart owned NAN interface: %w", err)
+	}
+	current, err = nanControlSocketIdentity()
+	if err != nil {
+		return fmt.Errorf("NAN control socket after owned restart: %w", err)
+	}
+	if err := markSessionOwner(id, current); err != nil {
+		return err
+	}
+	return runHelper(ctx, "schedule-default")
+}
+
+var appNANNDIPattern = regexp.MustCompile(`^wa[0-9a-f]{12}$`)
+
+func hasAppNANNDI() bool {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		// Preserve shared nan0 when we cannot establish that it is unused.
+		return true
+	}
+	for _, iface := range ifaces {
+		if appNANNDIPattern.MatchString(iface.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p Provider) runNDIEpoch(parent context.Context, id meshid.Device, logger *zap.Logger, allowSoftReset bool) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
 	// The exclusive reservation and initial reclaim have established that this
 	// private interface is unused. A helper can create it and then fail (or be
 	// canceled) before returning, so arm cleanup before invoking interface_add.
@@ -150,7 +314,7 @@ func (p Provider) Run(parent context.Context) error {
 	peers := make(chan radioPeer, 8)
 	health := make(chan radioHealth, 32)
 	radioDone := make(chan error, 1)
-	go func() { radioDone <- runRadio(ctx, id, peers, health, p.Selection, logger) }()
+	go func() { radioDone <- runRadio(ctx, id, peers, health, p.Selection, allowSoftReset, logger, p.Status) }()
 	// runRadio drains NDPs before returning. Do not remove the NDI until then.
 	defer func() { cancel(); <-radioDone }()
 	type worker struct {
