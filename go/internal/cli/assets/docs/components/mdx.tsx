@@ -15,7 +15,7 @@ import {
 } from './docs/buyers-tables';
 import { CliClip, CliShot } from './docs/cli-shot';
 import { CliToAgentRelationshipDiagram } from './docs/cli-to-agent-relationship-diagram';
-import { TrackedCodeBlock, TrackQuickstartInstallCopy } from './docs/install-copy-tracking';
+import { TrackedCodeBlock } from './docs/install-copy-tracking';
 import { SetDefaultDeviceSection } from './docs/set-default-device-section';
 import { YouTubeVideo } from './docs/youtube-video';
 
@@ -47,7 +47,6 @@ export function getMDXComponents(components?: MDXComponents) {
     CliShot,
     CliToAgentRelationshipDiagram,
     SetDefaultDeviceSection,
-    TrackQuickstartInstallCopy,
     YouTubeVideo,
     ...components,
   } satisfies MDXComponents;
