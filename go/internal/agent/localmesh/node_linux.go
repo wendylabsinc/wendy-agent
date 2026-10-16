@@ -526,7 +526,10 @@ func (n *Node) attachLink(ctx context.Context, peer meshid.Device, cost uint16, 
 	// fail with ENODEV and stopping the shared routing engine.
 	removeErr := n.request(n.ctx, nodeEvent{id: p.id, remove: true})
 	cancel()
-	_ = p.tun.Close()
+	// Kernel.RemovePeer closes the TUN after route withdrawal. If node
+	// cancellation interrupted the request, Node.Run's Kernel.Close owns it
+	// instead: the event loop may still be finishing a FIB operation. Closing
+	// the descriptor here would destroy its link before that operation ends.
 	wg.Wait()
 	return errors.Join(err, removeErr)
 }
