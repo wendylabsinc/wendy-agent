@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/containerd/v2/core/snapshots"
+	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/google/uuid"
 	digest "github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
@@ -189,10 +191,23 @@ func requireRootfsFiles(t *testing.T, ctx context.Context, mounts []mount.Mount)
 	}
 }
 
-// requireImageRootfs checks the rootfs a new container gets from
-// WithNewSnapshot, which stacks a snapshot on the image's top chain ID.
+// requireImageRootfs checks that imageUnpacked reports the image ready, so
+// the next create reuses its snapshots as they are, and that the rootfs a new
+// container gets from WithNewSnapshot, which stacks a snapshot on the image's
+// top chain ID, holds every layer.
 func requireImageRootfs(t *testing.T, c *Client, ctx context.Context, img integrationImage) {
 	t.Helper()
+	image, err := c.client.GetImage(ctx, normalizeImageName(img.name))
+	if err != nil {
+		t.Fatalf("loading image: %v", err)
+	}
+	unpacked, err := c.imageUnpacked(ctx, image)
+	if err != nil {
+		t.Fatalf("checking unpack state: %v", err)
+	}
+	if !unpacked {
+		t.Fatal("imageUnpacked = false for a correctly stacked image")
+	}
 	sn := c.client.SnapshotService(c.snapshotter)
 	key := "verify-" + uuid.NewString()
 	mounts, err := sn.View(ctx, key, img.topChainID())
@@ -238,6 +253,36 @@ func TestIntegrationUnpackRepairsDetachedLayers(t *testing.T) {
 	requireImageRootfs(t, c, ctx, img)
 }
 
+func TestIntegrationUnpackNamesContainerBlockingRepair(t *testing.T) {
+	c, ctx := newIntegrationClient(t)
+	img := newIntegrationImage(t, c, ctx)
+	image := assembleIntegrationImage(t, c, ctx, img)
+	detachLayers(t, c, ctx, img)
+
+	// Another app built from identical layers still runs on the detached top
+	// layer, from a rootfs staged by PrepareImage.
+	lctx, done, err := c.client.WithLease(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.client.SnapshotService(c.snapshotter).Prepare(lctx, "wendy-prepared-sibling", img.topChainID()); err != nil {
+		t.Fatalf("preparing sibling rootfs: %v", err)
+	}
+	if _, err := c.client.NewContainer(lctx, "sibling-app",
+		containerd.WithSnapshotter(c.snapshotter),
+		containerd.WithSnapshot("wendy-prepared-sibling"),
+		containerd.WithSpec(&oci.Spec{}),
+	); err != nil {
+		t.Fatalf("creating sibling container: %v", err)
+	}
+	_ = done(context.WithoutCancel(ctx))
+
+	err = c.UnpackImage(ctx, image, nil)
+	if err == nil || !strings.Contains(err.Error(), "sibling-app") {
+		t.Fatalf("UnpackImage error = %v; want it to name the container still using the layers", err)
+	}
+}
+
 func TestIntegrationPrepareImageStacksLayers(t *testing.T) {
 	c, ctx := newIntegrationClient(t)
 	img := newIntegrationImage(t, c, ctx)
@@ -274,6 +319,9 @@ func TestIntegrationPrepareImageDoesNotStageRootfsOnDetachedLayers(t *testing.T)
 	image, err := c.client.GetImage(ctx, normalizeImageName(img.name))
 	if err != nil {
 		t.Fatalf("loading image: %v", err)
+	}
+	if unpacked, err := c.imageUnpacked(ctx, image); err != nil || unpacked {
+		t.Fatalf("imageUnpacked = %v, %v after PrepareImage left detached layers; want false", unpacked, err)
 	}
 	ensureUnpacked(t, c, ctx, image)
 	requireImageRootfs(t, c, ctx, img)

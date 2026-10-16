@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,6 +124,40 @@ func removeLayerSnapshots(ctx context.Context, sn snapshotRemover, chainIDs []st
 	return nil
 }
 
+// snapshotUsers names what is stacked on the given layer snapshots, apart
+// from those snapshots themselves: the IDs of containers whose rootfs is
+// stacked on them, and the keys of any other snapshots, such as a rootfs
+// PrepareImage staged. It is best-effort, for error messages.
+func (c *Client) snapshotUsers(ctx context.Context, sn snapshots.Snapshotter, layers []string) []string {
+	filters := make([]string, len(layers))
+	for i, layer := range layers {
+		filters[i] = fmt.Sprintf("parent==%q", layer)
+	}
+	children := make(map[string]bool)
+	_ = sn.Walk(ctx, func(_ context.Context, info snapshots.Info) error {
+		children[info.Name] = true
+		return nil
+	}, filters...)
+	for _, layer := range layers {
+		delete(children, layer)
+	}
+
+	var users []string
+	if ctrs, err := c.client.ContainerService().List(ctx); err == nil {
+		for _, ctr := range ctrs {
+			if ctr.Snapshotter == c.snapshotter && children[ctr.SnapshotKey] {
+				users = append(users, ctr.ID)
+				delete(children, ctr.SnapshotKey)
+			}
+		}
+	}
+	for key := range children {
+		users = append(users, key)
+	}
+	slices.Sort(users)
+	return users
+}
+
 // imageUnpacked reports whether every layer of img has a snapshot stacked on
 // the layer below, ready for a container rootfs. Unlike containerd's
 // Image.IsUnpacked, which only checks that the top layer's snapshot exists,
@@ -217,13 +252,27 @@ func (c *Client) UnpackImage(ctx context.Context, img containerd.Image, progress
 	// Snapshots above the stacked layers occupy their chain IDs without
 	// holding the layers below. Remove them so the layers can be applied again.
 	stacked := stackedLayers(chainIDs, infos)
-	if slices.ContainsFunc(infos[stacked:], func(info *snapshots.Info) bool { return info != nil }) {
+	var unstacked []string
+	for i := stacked; i < len(infos); i++ {
+		if infos[i] != nil {
+			unstacked = append(unstacked, chainIDs[i])
+		}
+	}
+	if len(unstacked) > 0 {
 		c.logger.Warn("Replacing layer snapshots that are not stacked on their parent layers",
 			zap.String("image", img.Name()),
 			zap.Int("first_layer", stacked),
 		)
 		if err := removeLayerSnapshots(ctx, sn, chainIDs, infos, stacked); err != nil {
-			return fmt.Errorf("image %q has layer snapshots that are not stacked on their parent layers; delete any container still using the image and retry: %w", img.Name(), err)
+			// Images built from identical layers share these snapshots, so the
+			// user may be another app's container rather than this image's.
+			if errdefs.IsFailedPrecondition(err) {
+				if users := c.snapshotUsers(ctx, sn, unstacked); len(users) > 0 {
+					return fmt.Errorf("layer snapshots that are not stacked on their parent layers are still used by %s; delete those containers and redeploy: %w",
+						strings.Join(users, ", "), err)
+				}
+			}
+			return fmt.Errorf("replacing layer snapshots that are not stacked on their parent layers: %w", err)
 		}
 	}
 

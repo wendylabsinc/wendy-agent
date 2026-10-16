@@ -81,11 +81,13 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 		}
 
 		if unstackedLayer >= 0 {
+			parentChainID = chainID
 			continue
 		}
 		if info, err := sn.Stat(ctx, chainID); err == nil {
 			if info.Parent != parentChainID {
 				unstackedLayer = i
+				parentChainID = chainID
 				continue
 			}
 			c.refreshSnapshotLabels(ctx, sn, chainID)
