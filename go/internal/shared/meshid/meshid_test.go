@@ -278,3 +278,33 @@ func TestAssetStaysSeparate(t *testing.T) {
 		t.Error("non-canonical tenant accepted")
 	}
 }
+
+func TestAbsentIdentityDiffersFromExplicitNilUUID(t *testing.T) {
+	var absent Device
+	if absent.IsValid() || absent.Principal() != "" || absent.MeshAddress().IsValid() {
+		t.Fatal("zero-value device fabricated an identity or address")
+	}
+	tenant, err := ParseTenant(uuid.Nil.String())
+	if err != nil || !tenant.IsValid() || tenant == (Tenant{}) {
+		t.Fatalf("explicit nil tenant = %#v, %v", tenant, err)
+	}
+	device, err := ParseDevice(tenant, uuid.Nil.String())
+	if err != nil || !device.IsValid() || device == absent {
+		t.Fatalf("explicit nil device = %#v, %v", device, err)
+	}
+	if device.MeshAddress() != MeshAddressFor(uuid.Nil) {
+		t.Fatal("nil UUID did not use its literal final 80 bits")
+	}
+	if parsed, err := DeviceFromPrincipal(device.Principal()); err != nil || parsed != device {
+		t.Fatalf("nil principal round trip = %#v, %v", parsed, err)
+	}
+	if _, err := ParseDevice(Tenant{}, uuid.Nil.String()); err == nil {
+		t.Fatal("device parser accepted an absent tenant")
+	}
+	if NewDevice(Tenant{}, uuid.Nil).IsValid() {
+		t.Fatal("constructor accepted an absent tenant")
+	}
+	if _, _, err := LinkLocalAddresses(absent, device); err == nil {
+		t.Fatal("link accepted an absent identity")
+	}
+}
