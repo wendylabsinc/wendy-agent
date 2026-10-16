@@ -19,7 +19,7 @@ type meshCatalogManager struct{}
 func newMeshCatalogManager(string, *meshingress.Registry, *zap.Logger) *meshCatalogManager {
 	return &meshCatalogManager{}
 }
-func (*meshCatalogManager) Activate(context.Context, *localmesh.Credentials, func() localmesh.NodeSnapshot, *mesh.VIPTable, *localmesh.ControlHub, func()) error {
+func (*meshCatalogManager) Activate(context.Context, *localmesh.Credentials, func() localmesh.NodeSnapshot, *mesh.VIPTable, *localmesh.ControlHub) error {
 	return nil
 }
 func (*meshCatalogManager) Deactivate() {}
