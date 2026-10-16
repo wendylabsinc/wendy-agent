@@ -24,10 +24,102 @@ run returns a JSON result with the target, app and available HTTP URLs; progress
 goes to stderr. Build, attached run and flash still emit progress text. Supply
 explicit targets and choices to avoid interactive pickers. (There is no `-j` shorthand.)
 
+## Using the Wendy MCP tools
+
+When the Wendy MCP server (`wendy mcp serve`) is connected, prefer its tools to
+CLI commands for device state, apps, logs and deploys. Results are structured
+and reuse the session's single device connection.
+
+1. Call `wendy_status`. It reports the connection, Cloud sign-in (`auth`), the
+   server's CLI version and any update notice, and a suggested next step.
+2. Find a target with `device_list` (`scan=true` adds LAN discovery). Pass its
+   selector unchanged to `device_connect`: host:port, `vm:<name>` or a
+   `cloud://` selector. `device_disconnect` closes the connection.
+3. Deploy with `run(project_path=<absolute path>)`. It reuses the connected
+   target unless you pass `device`. `start=false` creates without starting.
+4. Verify: `container_list` (`running_state`, `termination_reason`), then
+   `telemetry_logs(app_name=...)` for startup errors, then the app's own output.
+   `run` reports `readiness: "not_checked"`.
+
+On `AUTH_REQUIRED`, or when `wendy_status` reports `auth` as `logged_out` or
+`expired`, call `auth_login` and show the user the
+returned link; it must be opened on the computer running the server. Fall back
+to `wendy auth login` in a terminal only when `auth_login` is unavailable.
+
+Only the core group is listed at first. `wendy_tools(groups=[...])` replaces the
+enabled specialist groups (core always stays), so list every group you still
+need. Hosts that cache the tool list can start `wendy mcp serve --tool-groups all`.
+The hosted relay (`wendy cloud mcp`) offers a subset of these same tools under
+its own permission policy.
+
+| Group | Tools | Use for |
+|---|---|---|
+| core | `wendy_status`, `wendy_tools`, `auth_login`, `device_list`, `device_connect`, `device_disconnect`, `device_info`, `hardware_capabilities`, `run`, `container_list`, `container_start`, `container_stop`, `container_delete`, `container_stats`, `container_exec`, `telemetry_logs` | Connect, deploy, control apps, read app logs, versions, battery and hardware |
+| setup | `project_validate`, `os_install_plan`, `os_list_drives`, `os_install_start`, `os_install_resume`, `os_install_status`, `os_install_verify`, `os_update`, `os_update_status`, `device_update_agent`, `device_set_default`, `cloud_enroll_device`, `provisioning_start`, `provisioning_status`, `wifi_list`, `wifi_status`, `wifi_known_networks`, `wifi_connect`, `wifi_disconnect` | Project checks, installs, agent and OS updates, saved default, Cloud enrollment, WiFi |
+| simulator | `simulator_list`, `simulator_create`, `simulator_start`, `simulator_stop`, `simulator_delete` | Local VMs; `device_connect(device="vm:<name>")` also boots one |
+| hardware | `camera_list`, `camera_controls`, `camera_set_control`, `camera_snapshot`, `bluetooth_scan`, `bluetooth_connect`, `bluetooth_disconnect` | Cameras and Bluetooth |
+| robotics | `ros2_topics`, `ros2_topic_info`, `ros2_topic_sample`, `ros2_topic_hz`, `ros2_lidar_summary` | ROS 2 inspection; see `wendy-robot-deploy` |
+| observability | `app_inspect`, `device_os_logs`, `telemetry_metrics`, `telemetry_traces` | Service state and recorded exits, kernel log (dmesg), metrics, traces |
+| cloud | `cloud_discover`, `cloud_connect`, `cloud_ping`, `cloud_tunnel`, `cloud_tunnel_list`, `cloud_tunnel_close` | Cloud devices, reachability and port forwards |
+
+The server also provides:
+
+- Resources: `wendy://guide` (tool workflows, result shapes and error codes),
+  `wendy://docs/...` (Wendy documentation, listed by `resources/list`), and
+  `wendy://diagnostics` when an expected tool is missing.
+- Prompts: `deploy_app`, `diagnose_container` and `provision_device`.
+- App tools: a running app with an `mcp` entitlement adds tools prefixed with its
+  app name while its device is connected.
+
+Errors carry an `error_code` to branch on: `NOT_CONNECTED`, `DEVICE_UNREACHABLE`,
+`ENTITLEMENT_DENIED`, `AUTH_REQUIRED`, `INVALID_ARGUMENT`, `NOT_FOUND`,
+`MULTIPLE_SESSIONS`, `UNSUPPORTED`, `TIMEOUT`, `CANCELLED`, `INTERNAL`, or
+`DENIED` when a `wendy cloud mcp` relay policy refuses the call. List
+results nest rows under one key such as `devices`, `containers` or `logs`. Ask
+before calls that interrupt or erase: `container_stop`, `container_delete`,
+`wifi_connect` (the device leaves its current network), `os_update`,
+`device_update_agent` and `simulator_delete`.
+
+A running server keeps the tools of the CLI that started it. When `wendy_status`
+reports a CLI update, give the user the update command and ask them to restart
+the MCP server; newer skill text cannot add tools to an older process.
+
+### ChatGPT and Codex desktop gateway
+
+`wendy mcp setup chatgpt` installs a separate, scoped gateway (`wendy mcp
+gateway`) with its own tools. They take a `robot_id` from `list_robots`, not a
+device selector, and appear only when the gateway policy grants their scope:
+
+- Devices: `list_robots`, `search_devices`, `inspect_robot`, `identify_device`,
+  `open_robot`, `open_devices`, `read_device_logs`, `read_device_metrics`,
+  `read_device_settings`, `update_device_settings`.
+- Cameras: `capture_robot_image` for one still image. `start_camera_preview`,
+  `read_camera_preview` and `stop_camera_preview` run a live view in the Wendy
+  panel; its frames are not sent to the model.
+- Apps: `start_robot_app`, `stop_robot_app`, `open_robot_app`.
+- Projects and deploys: `list_workspaces`, `list_workspace_files`,
+  `read_workspace_file`, `write_workspace_file`, `validate_device_project`,
+  `plan_fleet_deployment`, `start_device_deployment`, `get_deployment_job`,
+  `cancel_deployment_job`; see `wendy-app-lifecycle`.
+- Detection: `list_device_triggers`, `configure_device_trigger`,
+  `deploy_yolo_detector`, `inspect_yolo_detector`, `stop_yolo_detector`,
+  `list_device_events`, `wait_for_device_event`, `read_device_notifications`;
+  see `wendy-data`.
+- Host and simulators, when permitted: the same `os_install_plan`,
+  `os_list_drives` and `os_install_*` job tools as the `setup` group, and
+  `simulator_list`, `simulator_create`, `simulator_start`,
+  `simulator_update_agent`, `simulator_viewer`, `simulator_stop`,
+  `simulator_delete`, and `simulator_scene_read`, `simulator_scene_pause` and
+  `simulator_scene_close` for the observer view.
+
+`--developer-tools` adds the full `wendy mcp serve` server beside the gateway,
+with its own connection; never use it to bypass access the gateway denied.
+
 ## Common Tasks
 
 For first-time setup, use `wendy-onboarding` to install and verify a physical
-device or start a local simulator while waiting for hardware.
+device or start a local simulator while waiting for hardware. With the MCP server
+connected, use the matching tools from the table above instead of these commands.
 
 - Run an app: `wendy run`
 - Create a new project: `wendy init`
