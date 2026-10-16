@@ -66,7 +66,7 @@ func TestOrgAllowedNamesKnownOrganizations(t *testing.T) {
 	if err == nil {
 		t.Fatal("cross-org should fail")
 	}
-	want := "device is in organization Wendy Labs (9), but you are logged in to organizations Robotics (3), 4"
+	want := `device is in organization "Wendy Labs" (9), but you are logged in to organizations "Robotics" (3), 4`
 	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %v, want %q", err, want)
 	}

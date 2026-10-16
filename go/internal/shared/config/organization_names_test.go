@@ -9,7 +9,7 @@ func TestOrganizationLabelNamesFirstAndFallsBackToTheID(t *testing.T) {
 		t.Fatalf("unknown organization = %q, want the bare ID", got)
 	}
 	SetOrganizationName("prod:443", tenant, "Wendy Labs")
-	if got := OrganizationLabel("prod:443", tenant); got != "Wendy Labs ("+tenant+")" {
+	if got := OrganizationLabel("prod:443", tenant); got != `"Wendy Labs" (`+tenant+")" {
 		t.Fatalf("known organization = %q", got)
 	}
 	// Another endpoint's organization with the same key is not this one.
@@ -18,7 +18,7 @@ func TestOrganizationLabelNamesFirstAndFallsBackToTheID(t *testing.T) {
 	}
 	// Without an endpoint, a name is used only when no cloud disagrees: legacy
 	// numeric IDs repeat across clouds.
-	if got := OrganizationLabel("", tenant); got != "Wendy Labs ("+tenant+")" {
+	if got := OrganizationLabel("", tenant); got != `"Wendy Labs" (`+tenant+")" {
 		t.Fatalf("any endpoint, one name = %q", got)
 	}
 	SetOrganizationName("prod:443", "7", "Robotics")
@@ -26,7 +26,13 @@ func TestOrganizationLabelNamesFirstAndFallsBackToTheID(t *testing.T) {
 	if got := OrganizationLabel("", "7"); got != "7" {
 		t.Fatalf("any endpoint, conflicting names = %q, want the bare ID", got)
 	}
-	if got := OrganizationLabel("dev:443", "7"); got != "Sandbox (7)" {
+	if got := OrganizationLabel("dev:443", "7"); got != `"Sandbox" (7)` {
 		t.Fatalf("scoped lookup = %q", got)
+	}
+	// A name cannot pass itself off as another organization's label, or reach
+	// the terminal as a control sequence.
+	SetOrganizationName("prod:443", "8", "Acme\" (9)\n\x1b[2J")
+	if got := OrganizationLabel("prod:443", "8"); got != `"Acme\" (9)\n\x1b[2J" (8)` {
+		t.Fatalf("hostile name = %q", got)
 	}
 }

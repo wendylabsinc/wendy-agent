@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -80,12 +81,14 @@ func SetOrganizationName(endpoint, organization, name string) {
 }
 
 // OrganizationLabel renders an organization the way people know it, name first
-// with the ID secondary ("Robotics (7)"), or the bare ID when no name is known
-// (WDY-3797). It reads only the local name cache and never calls Cloud, so it
-// is safe on error paths and offline, and it can only show names this machine
-// has already been told. An empty endpoint matches the organization on any
-// endpoint, but only when every endpoint that knows it agrees on the name:
-// legacy numeric IDs repeat across clouds.
+// with the ID secondary (`"Robotics" (7)`), or the bare ID when no name is known
+// (WDY-3797). The name is an organization's own free text, so it is quoted and
+// escaped: quotes, newlines and terminal controls cannot forge another label.
+// It reads only the local name cache and never calls Cloud, so it is safe on
+// error paths and offline, and it can only show names this machine has already
+// been told. An empty endpoint matches the organization on any endpoint, but
+// only when every endpoint that knows it agrees on the name: legacy numeric IDs
+// repeat across clouds.
 func OrganizationLabel(endpoint, organization string) string {
 	if organization == "" {
 		return ""
@@ -114,5 +117,5 @@ func OrganizationLabel(endpoint, organization string) string {
 	if name == "" {
 		return organization
 	}
-	return name + " (" + organization + ")"
+	return strconv.Quote(name) + " (" + organization + ")"
 }

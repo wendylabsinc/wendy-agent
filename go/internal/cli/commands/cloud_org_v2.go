@@ -256,5 +256,5 @@ func switchCloudOrganizationV2(ctx context.Context, cfg *config.Config, source *
 	if a := find(fresh); a != nil {
 		return a, fresh, nil
 	}
-	return nil, fresh, fmt.Errorf("login completed without credentials for selected organization %s (%s)", chosen.Name, id)
+	return nil, fresh, fmt.Errorf("login completed without credentials for selected organization %q (%s)", chosen.Name, id)
 }

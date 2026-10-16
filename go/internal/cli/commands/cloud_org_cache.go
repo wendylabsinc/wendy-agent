@@ -24,7 +24,7 @@ func cacheCloudOrganizationName(endpoint, organization, name string) {
 	config.SetOrganizationName(endpoint, organization, name)
 }
 
-// orgLabel renders a legacy numeric organization as "Name (7)", or "7" when
+// orgLabel renders a legacy numeric organization as `"Name" (7)`, or "7" when
 // its name is unknown. An empty endpoint matches any cloud; see
 // config.OrganizationLabel.
 func orgLabel(endpoint string, id int32) string {
