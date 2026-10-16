@@ -163,7 +163,7 @@ public nonisolated struct Wendy_Agent_Services_V2_LocalMeshStatus: Sendable {
 
   public var authenticatedPeers: UInt32 = 0
 
-  public var gatewayAssetID: Int32 = 0
+  public var gatewayPrincipal: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -331,7 +331,7 @@ nonisolated extension Wendy_Agent_Services_V2_LocalMeshConfiguration: SwiftProto
 
 nonisolated extension Wendy_Agent_Services_V2_LocalMeshStatus: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".LocalMeshStatus"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}configured\0\u{3}runtime_available\0\u{1}state\0\u{1}detail\0\u{3}authenticated_peers\0\u{3}gateway_asset_id\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}configured\0\u{3}runtime_available\0\u{1}state\0\u{1}detail\0\u{3}authenticated_peers\0\u{3}gateway_principal\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -344,7 +344,7 @@ nonisolated extension Wendy_Agent_Services_V2_LocalMeshStatus: SwiftProtobuf.Mes
       case 3: try { try decoder.decodeSingularStringField(value: &self.state) }()
       case 4: try { try decoder.decodeSingularStringField(value: &self.detail) }()
       case 5: try { try decoder.decodeSingularUInt32Field(value: &self.authenticatedPeers) }()
-      case 6: try { try decoder.decodeSingularInt32Field(value: &self.gatewayAssetID) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.gatewayPrincipal) }()
       default: break
       }
     }
@@ -370,8 +370,8 @@ nonisolated extension Wendy_Agent_Services_V2_LocalMeshStatus: SwiftProtobuf.Mes
     if self.authenticatedPeers != 0 {
       try visitor.visitSingularUInt32Field(value: self.authenticatedPeers, fieldNumber: 5)
     }
-    if self.gatewayAssetID != 0 {
-      try visitor.visitSingularInt32Field(value: self.gatewayAssetID, fieldNumber: 6)
+    if !self.gatewayPrincipal.isEmpty {
+      try visitor.visitSingularStringField(value: self.gatewayPrincipal, fieldNumber: 6)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -382,7 +382,7 @@ nonisolated extension Wendy_Agent_Services_V2_LocalMeshStatus: SwiftProtobuf.Mes
     if lhs.state != rhs.state {return false}
     if lhs.detail != rhs.detail {return false}
     if lhs.authenticatedPeers != rhs.authenticatedPeers {return false}
-    if lhs.gatewayAssetID != rhs.gatewayAssetID {return false}
+    if lhs.gatewayPrincipal != rhs.gatewayPrincipal {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
