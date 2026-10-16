@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -21,11 +22,15 @@ import (
 type echoUDPFlow struct {
 	replies chan []byte
 	t       *testing.T
+	onSend  func([]byte)
 }
 
 func (f *echoUDPFlow) Send(data []byte) error {
 	if f.t != nil {
 		f.t.Logf("QUIC datagram send %q", data)
+	}
+	if f.onSend != nil {
+		f.onSend(data)
 	}
 	f.replies <- append([]byte(nil), data...)
 	return nil
@@ -47,6 +52,7 @@ type namespaceSource struct {
 	ip, dst netip.Addr
 	ifindex int
 	t       *testing.T
+	token   *atomic.Uint64
 }
 
 func (s namespaceSource) SourceToken(ip, dst netip.Addr, ifindex int) uint64 {
@@ -54,6 +60,9 @@ func (s namespaceSource) SourceToken(ip, dst netip.Addr, ifindex int) uint64 {
 		s.t.Logf("redirected UDP source=%s destination=%s ifindex=%d expected=%d", ip, dst, ifindex, s.ifindex)
 	}
 	if ip == s.ip && dst == s.dst && ifindex == s.ifindex {
+		if s.token != nil {
+			return s.token.Load()
+		}
 		return 1
 	}
 	return 0
@@ -121,21 +130,30 @@ func TestUDPProxyRedirectNamespace(t *testing.T) {
 	if dst.String() != "10.99.0.1" {
 		t.Fatalf("unexpected fixture VIP: %s", dst)
 	}
+	var sourceToken atomic.Uint64
+	sourceToken.Store(1)
 	p, err := NewUDPProxy(UDPDialFunc(func(_ context.Context, peer meshid.Device, port uint16) (UDPFlow, error) {
 		t.Logf("UDP dial peer=%s port=%d", peer, port)
 		if peer != device || port != 7777 {
 			return nil, fmt.Errorf("denied port")
 		}
-		return &echoUDPFlow{replies: make(chan []byte, 32), t: t}, nil
-	}), namespaceSource{netip.MustParseAddr("10.79.42.2"), dst, iface.Index, t}, vips)
+		return &echoUDPFlow{replies: make(chan []byte, 32), t: t, onSend: func(data []byte) {
+			if string(data) == "revoke-source" {
+				sourceToken.Store(0)
+			}
+		}}, nil
+	}), namespaceSource{netip.MustParseAddr("10.79.42.2"), dst, iface.Index, t, &sourceToken}, vips)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	baseReplyDial := p.replyDial
-	p.replyDial = func(src, dst netip.AddrPort) (*net.UDPConn, error) {
-		conn, err := baseReplyDial(src, dst)
-		t.Logf("reply socket %s -> %s: %v", src, dst, err)
+	baseReplyListen := p.replyListen
+	p.replyListen = func(src netip.AddrPort) (*net.UDPConn, error) {
+		conn, err := baseReplyListen(src)
+		t.Logf("reply socket %s: %v", src, err)
+		if err == nil && conn.RemoteAddr() != nil {
+			t.Error("transparent reply socket must remain unconnected")
+		}
 		return conn, err
 	}
 	if err := p.Start("0.0.0.0:0"); err != nil {
@@ -184,17 +202,48 @@ s.sendto(b'echo',('10.99.0.1',7777))
 data,addr=s.recvfrom(1024)
 assert data==b'echo' and addr==('10.99.0.1',7777),(data,addr)
 print('VIP_REPLY_OK',flush=True)
+for index in range(1, 4):
+    payload=('repeat-%d'%index).encode()
+    s.sendto(payload,('10.99.0.1',7777))
+    data,addr=s.recvfrom(1024)
+    assert data==payload and addr==('10.99.0.1',7777),(index,data,addr)
+print('VIP_REPEAT_REPLY_OK',flush=True)
+# Both flows bind replies at the same VIP:port. Keep two different app
+# source tuples active and verify that responses cannot cross between them.
+other=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+other.settimeout(3)
+for index in range(3):
+    s.sendto(('first-%d'%index).encode(),('10.99.0.1',7777))
+    other.sendto(('other-%d'%index).encode(),('10.99.0.1',7777))
+    a,aa=s.recvfrom(1024)
+    b,ba=other.recvfrom(1024)
+    assert a==('first-%d'%index).encode() and aa==('10.99.0.1',7777),(a,aa)
+    assert b==('other-%d'%index).encode() and ba==('10.99.0.1',7777),(b,ba)
+print('VIP_TUPLE_ISOLATION_OK',flush=True)
 s.settimeout(0.4)
 s.sendto(b'denied',('10.99.0.1',7778))
 try:
     data,addr=s.recvfrom(1024)
     raise AssertionError((data,addr))
 except socket.timeout: print('DENIED_PORT_OK',flush=True)
+# Revoke the admitted source while its first flow still owns a reply
+# socket. Its pending reply, later packets, and a new tuple must all stop.
+s.sendto(b'revoke-source',('10.99.0.1',7777))
+try:
+    raise AssertionError(s.recvfrom(1024))
+except socket.timeout: pass
+for client in (s,other,socket.socket(socket.AF_INET,socket.SOCK_DGRAM)):
+    client.settimeout(0.4)
+    client.sendto(b'after-revoke',('10.99.0.1',7777))
+    try:
+        raise AssertionError(client.recvfrom(1024))
+    except socket.timeout: pass
+print('SOURCE_REVOCATION_OK',flush=True)
 `
 	cmd := exec.Command("ip", "netns", "exec", ns, "python3", "-c", script)
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "VIP_REPLY_OK") || !strings.Contains(string(out), "DENIED_PORT_OK") {
+	if err != nil || !strings.Contains(string(out), "VIP_REPLY_OK") || !strings.Contains(string(out), "VIP_REPEAT_REPLY_OK") || !strings.Contains(string(out), "VIP_TUPLE_ISOLATION_OK") || !strings.Contains(string(out), "DENIED_PORT_OK") || !strings.Contains(string(out), "SOURCE_REVOCATION_OK") {
 		if rules, ruleErr := exec.Command("ip", "-4", "rule", "show").CombinedOutput(); ruleErr == nil {
 			t.Logf("policy rules:\n%s", rules)
 		}

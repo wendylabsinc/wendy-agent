@@ -59,21 +59,21 @@ type udpProxyFlow struct {
 // original destinations inside their service CIDR. One QUIC connection per
 // source/destination tuple preserves independent reply mappings.
 type UDPProxy struct {
-	vips      *VIPTable
-	dialer    UDPDialer
-	sources   UDPSourcePolicy
-	mu        sync.Mutex
-	flows     map[udpKey]*udpProxyFlow
-	conn      *net.UDPConn
-	closed    bool
-	replyDial func(netip.AddrPort, netip.AddrPort) (*net.UDPConn, error)
+	vips        *VIPTable
+	dialer      UDPDialer
+	sources     UDPSourcePolicy
+	mu          sync.Mutex
+	flows       map[udpKey]*udpProxyFlow
+	conn        *net.UDPConn
+	closed      bool
+	replyListen func(netip.AddrPort) (*net.UDPConn, error)
 }
 
 func NewUDPProxy(dialer UDPDialer, sources UDPSourcePolicy, vips *VIPTable) (*UDPProxy, error) {
 	if dialer == nil || sources == nil || vips == nil {
 		return nil, errors.New("missing UDP mesh dialer or app source registry")
 	}
-	return &UDPProxy{vips: vips, dialer: dialer, sources: sources, flows: make(map[udpKey]*udpProxyFlow), replyDial: dialUDPReply}, nil
+	return &UDPProxy{vips: vips, dialer: dialer, sources: sources, flows: make(map[udpKey]*udpProxyFlow), replyListen: listenUDPReply}, nil
 }
 
 func (p *UDPProxy) Start(addr string) error {
@@ -242,7 +242,7 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 		return
 	}
 	defer remote.Close()
-	reply, err := p.replyDial(key.destination, key.source)
+	reply, err := p.replyListen(key.destination)
 	if err != nil {
 		return
 	}
@@ -257,7 +257,7 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 			}
 			_ = reply.SetWriteDeadline(time.Now().Add(time.Second))
 			if err := p.sources.WithSourceToken(key.source.Addr(), key.destination.Addr(), key.ifindex, key.token, func() error {
-				_, err := reply.Write(data)
+				_, err := reply.WriteToUDPAddrPort(data, key.source)
 				return err
 			}); err != nil {
 				return
@@ -289,8 +289,13 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 	}
 }
 
-func dialUDPReply(source, destination netip.AddrPort) (*net.UDPConn, error) {
-	lc := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(source), Control: func(_, _ string, raw syscall.RawConn) error {
+func listenUDPReply(source netip.AddrPort) (*net.UDPConn, error) {
+	// TPROXY first looks for an established socket matching the original
+	// tuple, before using its configured listener port. Connecting this reply
+	// socket would therefore divert subsequent app packets into its unread
+	// receive queue. Leave it unconnected and address each authorized reply
+	// explicitly, so every request stays owned by the proxy listener.
+	lc := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
 		var sockErr error
 		err := raw.Control(func(fd uintptr) {
 			if sockErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_FREEBIND, 1); sockErr != nil {
@@ -309,7 +314,7 @@ func dialUDPReply(source, destination netip.AddrPort) (*net.UDPConn, error) {
 		}
 		return sockErr
 	}}
-	conn, err := lc.DialContext(context.Background(), "udp4", destination.String())
+	conn, err := lc.ListenPacket(context.Background(), "udp4", source.String())
 	if err != nil {
 		return nil, fmt.Errorf("UDP reply bind %s: %w", source, err)
 	}
