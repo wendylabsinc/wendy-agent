@@ -874,13 +874,13 @@ func newDeviceEnrollCmd() *cobra.Command {
 				return err
 			}
 
-			target, err := resolveTarget(ctx, SuppressProvisioningHint(), SuppressPickerEnroll())
-			if err != nil {
-				return err
-			}
-			defer target.Close()
-
-			return runSelectedDeviceEnrollment(cmd, target, auth, name, orgID, acmeDirectoryURL, liteOptions)
+			return runWithEnrollmentTarget(ctx, func() (*SelectedDevice, error) {
+				return resolveTarget(ctx, SuppressProvisioningHint(), SuppressPickerEnroll(), func(c *resolveConfig) {
+					c.enrollmentTrustRecovery = true
+				})
+			}, func(target *SelectedDevice) error {
+				return runSelectedDeviceEnrollment(cmd, target, auth, name, orgID, acmeDirectoryURL, liteOptions)
+			})
 		},
 	}
 

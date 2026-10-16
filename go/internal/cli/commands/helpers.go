@@ -2730,8 +2730,9 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 		// ever compared: this refusal is about reachability and says so, and it
 		// is deliberately NOT an errDeviceIdentityRefused (see
 		// errNoAuthenticatedEndpoint).
-		return nil, walk.lastMTLSErr, pinnedHostNoAuthenticatedEndpointError(
-			target.refusalKey(), candidates, walk.attempts, walk.anyCertRejection)
+		failure := pinnedHostNoAuthenticatedEndpointError(target.refusalKey(), candidates, walk.attempts, walk.anyCertRejection)
+		failure.pinKey = target.PinKey
+		return nil, walk.lastMTLSErr, failure
 	}
 	// The plaintext rung stays on the primary address rather than walking the
 	// candidates. grpc.NewClient is lazy, so a plaintext "success" against a dead
@@ -3258,6 +3259,7 @@ type resolveConfig struct {
 	disablePickerEnroll      bool
 	sameTargetFallback       defaultDeviceSameTargetFallback
 	readOnlyMonitoring       bool
+	enrollmentTrustRecovery  bool
 }
 
 var (
@@ -3536,6 +3538,11 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 				if errors.Is(err, ErrUserCancelled) {
 					return nil, err
 				}
+				// Enrollment offers to trust this same device before recovery
+				// can ask the user to pick a different one.
+				if cfg.enrollmentTrustRecovery && errors.Is(err, errNoAuthenticatedEndpoint) {
+					return nil, err
+				}
 				if !cfg.readOnlyMonitoring {
 					conn, err = recoverAgentConnection(ctx, cfg.nonInteractive, err, func() (*grpcclient.AgentConnection, error) {
 						return connectResolvedAgentKeyed(ctx, device, addr, pinKey, isDefault, provisionedMTLS)
@@ -3543,7 +3550,8 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 				}
 				if err == nil {
 					// Continue with the same target's pin and version checks below.
-				} else if ctx.Err() != nil || cfg.readOnlyMonitoring || stopConnectionRecovery(err) || errors.Is(err, errProvisionedAgentUnauthorized) {
+				} else if ctx.Err() != nil || cfg.readOnlyMonitoring || stopConnectionRecovery(err) || errors.Is(err, errProvisionedAgentUnauthorized) ||
+					(cfg.enrollmentTrustRecovery && errors.Is(err, errNoAuthenticatedEndpoint)) {
 					return nil, err
 				} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 					// Default device is unreachable — offer interactive recovery.
