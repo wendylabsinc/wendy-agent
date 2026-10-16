@@ -12,6 +12,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/meshcatalog"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
+	"go.uber.org/zap"
 )
 
 const gatewayOfferRefreshInterval = meshcatalog.GatewayOfferLease / 2
@@ -44,6 +45,11 @@ type Probe interface {
 	Gateway(context.Context, netip.Addr, netip.Addr) bool
 }
 
+type dnsState struct {
+	gateway        meshid.Device
+	iface, address string
+}
+
 type Controller struct {
 	mu                    sync.Mutex
 	self                  meshid.Device
@@ -57,6 +63,9 @@ type Controller struct {
 	shareKey              string
 	gatewayOfferRefreshed time.Time
 	shareCleanupPending   bool
+	logger                *zap.Logger
+	dns                   dnsState
+	dnsUncertain          bool
 	closed                bool
 }
 
@@ -67,8 +76,53 @@ func NewWithDeps(self meshid.Device, node Node, policy Policy, probe Probe) (*Co
 	if node == nil || policy == nil || probe == nil {
 		return nil, errors.New("mesh sharing needs node, policy and probe")
 	}
-	return &Controller{self: self, node: node, policy: policy, probe: probe,
+	return &Controller{self: self, node: node, policy: policy, probe: probe, logger: zap.NewNop(),
 		uplinkHealth: map[string]*HealthTracker{}, gatewayHealth: map[meshid.Device]*HealthTracker{}}, nil
+}
+
+// SetLogger enables structured DNS transition audit events. Repeated successful
+// reconciliations do not emit events; failures and subsequent recovery do.
+func (c *Controller) SetLogger(logger *zap.Logger) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	c.logger = logger
+}
+
+// setDNS runs with c.mu held, just like all other policy transitions.
+func (c *Controller) setDNS(ctx context.Context, next dnsState) error {
+	err := c.policy.SetDNS(ctx, next.iface, next.address)
+	return c.auditDNS(next, err)
+}
+
+func (c *Controller) auditDNS(next dnsState, err error) error {
+	if err == nil && next == c.dns && !c.dnsUncertain {
+		return nil
+	}
+	action, subject := "apply", next
+	if next.iface == "" {
+		action, subject = "remove", c.dns
+	}
+	fields := []zap.Field{
+		zap.String("action", action), zap.String("organization", c.self.Tenant().String()),
+		zap.String("gateway_principal", subject.gateway.Principal()), zap.String("interface", subject.iface),
+		zap.String("resolver", subject.address), zap.String("dns_scope", "~."),
+		zap.String("previous_gateway_principal", c.dns.gateway.Principal()),
+		zap.String("previous_interface", c.dns.iface),
+		zap.String("previous_resolver", c.dns.address),
+	}
+	if err != nil {
+		// SetDNS may have reverted the old resolver before a new apply failed.
+		// Preserve the last successful target for audit, but flag state unknown.
+		c.dnsUncertain = true
+		c.logger.Warn("mesh DNS transition", append(fields, zap.String("outcome", "failed"), zap.Error(err))...)
+		return err
+	}
+	c.logger.Info("mesh DNS transition", append(fields, zap.String("outcome", "applied"))...)
+	c.dns, c.dnsUncertain = next, false
+	return nil
 }
 
 // Step reconciles the complete sharing policy. It may block for bounded
@@ -258,7 +312,7 @@ func (c *Controller) reconcile(ctx context.Context, d Decision) error {
 	// default before enabling advertisement, so borrowed Internet is never
 	// re-exported even for one reconciliation interval.
 	if d.Mode != "roaming" {
-		if err := errors.Join(c.policy.SetGateway(ctx, meshid.Device{}), c.policy.SetDNS(ctx, "", "")); err != nil {
+		if err := errors.Join(c.policy.SetGateway(ctx, meshid.Device{}), c.setDNS(ctx, dnsState{})); err != nil {
 			return err
 		}
 	}
@@ -319,7 +373,7 @@ func (c *Controller) reconcile(ctx context.Context, d Decision) error {
 	// DNS reaches the donor's mesh ULA over Babel independently of the borrowed
 	// Internet default. resolved binds queries to the current first-hop TUN.
 	link := fmt.Sprintf("wlmp%x", uint64(d.DNSLink))
-	if err := c.policy.SetDNS(ctx, link, d.GatewayDevice.MeshAddress().String()); err != nil {
+	if err := c.setDNS(ctx, dnsState{d.GatewayDevice, link, d.GatewayDevice.MeshAddress().String()}); err != nil {
 		return errors.Join(err, c.withdrawGateway(cleanup))
 	}
 	return nil
@@ -328,7 +382,7 @@ func (c *Controller) reconcile(ctx context.Context, d Decision) error {
 func (c *Controller) withdrawGateway(ctx context.Context) error {
 	// SetDNS may have partially changed resolved before failing. Attempt both
 	// withdrawals even if one fails, using the caller's independent cleanup context.
-	return errors.Join(c.policy.SetDNS(ctx, "", ""), c.policy.SetGateway(ctx, meshid.Device{}))
+	return errors.Join(c.setDNS(ctx, dnsState{}), c.policy.SetGateway(ctx, meshid.Device{}))
 }
 
 func (c *Controller) withdrawSharing(ctx context.Context) error {
@@ -349,5 +403,11 @@ func (c *Controller) Close() error {
 	// Withdrawing routes and signed capability precedes NAT/DNS removal.
 	uplinkErr := c.node.SetGatewayOffer(ctx, "")
 	roamErr := c.withdrawGateway(ctx)
-	return errors.Join(uplinkErr, roamErr, c.policy.Close())
+	closeErr := c.policy.Close()
+	if c.dnsUncertain && closeErr == nil {
+		// Close retries policy cleanup. A successful retry must also be visible
+		// after a failed explicit resolver-removal event.
+		_ = c.auditDNS(dnsState{}, nil)
+	}
+	return errors.Join(uplinkErr, roamErr, closeErr)
 }

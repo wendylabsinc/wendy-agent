@@ -113,6 +113,7 @@ func (m *meshSharingManager) run(ctx context.Context, node *localmesh.Node) {
 			}
 		}
 		if controller != nil {
+			controller.SetLogger(m.logger)
 			stepCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			decision, stepErr := controller.Step(stepCtx, config)
 			cancel()
