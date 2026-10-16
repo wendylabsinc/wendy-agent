@@ -38,15 +38,17 @@ let package = Package(
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.9.1"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         // ML-DSA-65/87 certificate parsing lives on apple/swift-certificates PR #312, not yet
-        // released. We pin its head commit, which GitHub keeps fetchable from apple's own repo
-        // only while that PR stays open and is not force-pushed (wendylabsinc/swift-certificates
-        // keeps it at refs/heads/pin-65ecdea6). Do not rebase/force-push that PR without bumping
-        // this revision in the same change. Swap to `from: "<version>"` once Apple ships a
-        // release carrying it. Same revision as Wendy Cloud and wendy-auth: a cert this parses
+        // released. We pin its head commit (1c664223, the PR rebased onto apple main 715a2f4),
+        // which GitHub keeps fetchable from apple's own repo only while that PR stays open and
+        // is not force-pushed. Do not rebase/force-push that PR without bumping this revision in
+        // the same change. The MLDSA trait is required: without it ML-DSA subject keys throw
+        // unsupportedPublicKeyAlgorithm. Swap to `from: "<version>"` once Apple ships a release
+        // carrying it. Same revision and trait as Wendy Cloud and wendy-auth: a cert this parses
         // has to parse there too. On Darwin it verifies ML-DSA only on macOS 26+ (CryptoKit).
         .package(
             url: "https://github.com/apple/swift-certificates.git",
-            revision: "65ecdea656b6764c77f49d213aa417f1d2838b52"
+            revision: "1c664223f60de3dd625fa2e31092d40167d3b65b",
+            traits: ["MLDSA"]
         ),
         // swift-nio-ssl comes from the wendylabsinc fork, branch mldsa-on-upstream: apple main
         // 15e0b9e (which carries apple/swift-nio-ssl#604, the fix this package pinned for)
