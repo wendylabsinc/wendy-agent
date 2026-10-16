@@ -20,6 +20,11 @@ import (
 var installQEMUFn = installQEMUViaBrew
 
 var (
+	wingetLookPathFn     = exec.LookPath
+	installWindowsQEMUFn = installQEMUViaWinget
+)
+
+var (
 	qemuConfirmFn = func(ctx context.Context, question string) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -46,10 +51,8 @@ var (
 // the flag here would be an unsynchronised write for no gain.
 var vmAssumeYes bool
 
-// ensureQEMUForHostOS resolves the emulator, and on an interactive macOS
-// session where it is missing offers to install QEMU via Homebrew first.
-// Non-interactive runs, other platforms and hosts without Homebrew fall
-// straight through to the plain "not found" error.
+// ensureQEMUForHostOS offers the host's package manager when QEMU is missing.
+// Non-interactive runs need --yes to authorize installation.
 //
 // Homebrew's qemu also ships the aarch64 UEFI firmware, so accepting here
 // resolves FindFirmware's separate failure at the same time.
@@ -57,23 +60,30 @@ func ensureQEMUForHostOS(ctx context.Context, hostOS string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	binary := vm.Spec{}.Binary()
-	if _, err := qemuLookPathFn(binary); err == nil {
+	if _, err := findQEMUFn(hostOS); err == nil {
 		return nil
 	}
-	notFound := fmt.Errorf("%s not found: install QEMU (%s)", binary, qemuInstallHint())
+	notFound := fmt.Errorf("qemu-system-aarch64 not found: install QEMU (%s). The ARM64 emulator runs the WendyOS guest on both ARM64 and x86_64 PCs", qemuInstallHintForHostOS(hostOS))
 
-	if hostOS != "darwin" {
-		return notFound
-	}
 	if !isInteractiveTerminalFn() && !vmAssumeYes {
 		return notFound
 	}
-	if _, err := brewLookPathFn("brew"); err != nil {
+	installer, packageManager := installQEMUFn, "Homebrew"
+	switch hostOS {
+	case "darwin":
+		if _, err := brewLookPathFn("brew"); err != nil {
+			return notFound
+		}
+	case "windows":
+		if _, err := wingetLookPathFn("winget"); err != nil {
+			return notFound
+		}
+		installer, packageManager = installWindowsQEMUFn, "WinGet"
+	default:
 		return notFound
 	}
 	if !vmAssumeYes {
-		cliLogln("QEMU runs the simulator and is not installed. Wendy can install it with `brew install qemu`.")
+		cliLogln("QEMU runs the simulator and is not installed. Wendy can install it with `%s`.", qemuInstallHintForHostOS(hostOS))
 		accepted, err := qemuConfirmFn(ctx, "Do you want to install QEMU?")
 		if err != nil {
 			return err
@@ -85,17 +95,33 @@ func ensureQEMUForHostOS(ctx context.Context, hostOS string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := installQEMUFn(ctx); err != nil {
+	if err := installer(ctx); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if errors.Is(err, ErrUserCancelled) {
 			return err
 		}
-		return fmt.Errorf("installing QEMU via Homebrew: %w", err)
+		return fmt.Errorf("installing QEMU via %s: %w", packageManager, err)
 	}
-	if _, err := qemuLookPathFn(binary); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := findQEMUFn(hostOS); err != nil {
+		if hostOS == "windows" {
+			return fmt.Errorf("QEMU installation finished but qemu-system-aarch64.exe was not found on PATH or in %%ProgramFiles%%\\qemu; check the installation and retry")
+		}
 		return errors.New("QEMU was installed via Homebrew but is not yet on PATH; " +
 			"open a new terminal or run: eval \"$(brew shellenv)\"")
 	}
 	return nil
+}
+
+func installQEMUViaWinget(ctx context.Context) error {
+	cliLogln("Installing QEMU via WinGet. Windows may ask for administrator permission.")
+	cmd := exec.CommandContext(ctx, "winget", "install", "--id", "SoftwareFreedomConservancy.QEMU", "--exact", "--source", "winget", "--accept-source-agreements", "--accept-package-agreements")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
+	return cmd.Run()
 }
 
 func installQEMUViaBrew(ctx context.Context) error {
@@ -222,11 +248,15 @@ func brewPackageWithSpinner(ctx context.Context, action, formula, label string) 
 // firmware. The single source for that advice: the VM command's help, the
 // missing-emulator error and the missing-firmware error all read it.
 func qemuInstallHint() string {
-	switch runtime.GOOS {
+	return qemuInstallHintForHostOS(runtime.GOOS)
+}
+
+func qemuInstallHintForHostOS(hostOS string) string {
+	switch hostOS {
 	case "darwin":
 		return "brew install qemu"
 	case "windows":
-		return "the QEMU for Windows installer"
+		return "winget install --id SoftwareFreedomConservancy.QEMU --exact --source winget"
 	default:
 		return "apt install qemu-system-arm qemu-efi-aarch64"
 	}

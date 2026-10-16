@@ -140,6 +140,15 @@ jobs:
         working-directory: go
         run: go test ./cmd/wendy -run '^(TestInvocationAnalytics|TestEnablingAnalyticsReportsTheCurrentInvocation|TestHelpDoesNotCountAsProductUse)' -v -count=1 -timeout 120s
 
+      - name: Test Windows VM setup
+        working-directory: go
+        shell: pwsh
+        run: |
+          go test ./internal/cli/vm -run '^(TestCreateWindowsDiskAndVarsAreSparse|TestFindQEMUOnWindows|TestWindowsFirmwareFollowsQEMUInstallation|TestSpecUsesWindowsQEMUPath|TestBinaryIsTheAArch64SystemEmulator)$' -v -count=1 -timeout 120s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test ./internal/cli/commands -run '^(TestEnsureQEMUOnWindows|TestSimulatorWithoutDetachedSupport|TestDiscoverKeepsScanningWhenSimulatorNeedsForegroundStart|TestDiscoverSimulatorGuidanceFitsPopulatedTerminal|TestVMStorage|TestVMImageSpace|TestVMCreate)' -v -count=1 -timeout 120s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   # Preserve the existing required "Test" check after splitting its work.
   test:
     name: Test
