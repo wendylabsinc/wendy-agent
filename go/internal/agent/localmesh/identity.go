@@ -60,34 +60,24 @@ func instanceRouterID() (babel.RouterID, error) {
 	return babel.RouterIDFromRandom(seed), nil
 }
 
-// permanentMAC picks a stable factory address: the kernel's persistent MAC when
-// it exposes one, otherwise the interface address, from the lowest eligible
-// interface name so the choice does not depend on which carrier happened to be
-// up first.
+// permanentMAC selects a factory address by interface name, independent of
+// carrier state. If the platform cannot establish permanence, use random state.
 func permanentMAC() (net.HardwareAddr, bool) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, false
 	}
-	addresses := map[string]net.HardwareAddr{}
 	names := make([]string, 0, len(ifaces))
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagLoopback != 0 || ownedInterface(iface.Name) {
 			continue
 		}
-		if iface.Flags&(net.FlagUp|net.FlagRunning) == 0 {
-			continue
-		}
-		addresses[iface.Name] = iface.HardwareAddr
 		names = append(names, iface.Name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
 		mac, ok := persistentMAC(name)
-		if !ok || len(mac) != 6 {
-			mac = addresses[name]
-		}
-		if usableMAC(mac) {
+		if ok && usableMAC(mac) {
 			return mac, true
 		}
 	}

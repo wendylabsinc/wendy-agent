@@ -21,29 +21,207 @@ const RouteTable = 18865
 const routeProtocol = 186
 
 type kernelPeer struct {
-	link *netlink.Tuntap
-	file *os.File
-	rule *netlink.Rule
+	link   *netlink.Tuntap
+	file   *os.File
+	rule   *netlink.Rule
+	device meshid.Device
 }
 
-// Kernel owns only links it creates. It does not enable forwarding, change
-// default routes, or touch the old NAN implementation. Session policy owns those
-// operations and must quiesce transport around Apply.
+// Kernel owns its links, ULA routes and scoped mesh transit grant. IPv6
+// forwarding is shared with Internet sharing through hostnetwork ownership.
+// Session policy must quiesce transport around Apply.
 //
 // The mesh is IPv6-only: the host link carries the device's own ULA address, each
 // point-to-point TUN carries the complementary pair derived from the two device
 // UUIDs, and Babel routes are installed as ULA destinations with link-local next
 // hops on the interface they arrived on.
 type Kernel struct {
-	link    *netlink.Dummy
-	peers   map[babel.LinkID]kernelPeer
-	routes  []netlink.Route
-	rule    *netlink.Rule
-	device  meshid.Device
-	address net.IP
+	link        *netlink.Dummy
+	peers       map[babel.LinkID]kernelPeer
+	routes      []netlink.Route
+	rule        *netlink.Rule
+	device      meshid.Device
+	address     net.IP
+	forwarding  bool
+	forwardRule bool
+}
+
+// ReconcileBase restores only this kernel's invariant host address, policy
+// rule and fall-through guard. NetworkManager may remove these after link
+// creation even when it is subsequently told to leave wlmesh0 unmanaged.
+// Never adopt a replacement interface or replace an unfamiliar rule/route.
+func (k *Kernel) ReconcileBase() error {
+	state, err := k.inspectBase()
+	if err != nil {
+		return err
+	}
+	// Restore the guard first so a surviving policy rule cannot fall through
+	// to the ordinary uplink while the other base state is being repaired.
+	if !state.guard {
+		guard := k.routes[0]
+		if err := netlink.RouteAdd(&guard); err != nil && !errors.Is(err, unix.EEXIST) {
+			return fmt.Errorf("restore local-mesh guard route: %w", err)
+		}
+	}
+	if !state.address {
+		addr := &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(k.device.MeshAddress(), 128)), Flags: unix.IFA_F_NOPREFIXROUTE | unix.IFA_F_NODAD}
+		if err := netlink.AddrAdd(state.link, addr); err != nil && !errors.Is(err, unix.EEXIST) {
+			return fmt.Errorf("restore local-mesh address: %w", err)
+		}
+	}
+	if !state.up {
+		if err := netlink.LinkSetUp(state.link); err != nil {
+			return fmt.Errorf("restore local-mesh link state: %w", err)
+		}
+	}
+	if !state.rule {
+		if err := netlink.RuleAdd(k.rule); err != nil && !errors.Is(err, unix.EEXIST) {
+			return fmt.Errorf("restore local-mesh policy rule: %w", err)
+		}
+	}
+	// EEXIST can mean a competing writer installed different state. Confirm
+	// all invariants after repair rather than treating that error as success.
+	state, err = k.inspectBase()
+	if err != nil {
+		return err
+	}
+	if !state.address || !state.up || !state.guard || !state.rule {
+		return errors.New("local-mesh base state changed during reconciliation")
+	}
+	return nil
+}
+
+type baseState struct {
+	link    netlink.Link
+	address bool
+	up      bool
+	rule    bool
+	guard   bool
+}
+
+func (k *Kernel) inspectBase() (baseState, error) {
+	var state baseState
+	if k.link == nil || k.rule == nil || len(k.routes) == 0 {
+		return state, errors.New("local-mesh kernel is not initialized")
+	}
+	live, err := netlink.LinkByName(InterfaceName)
+	if err != nil {
+		return state, fmt.Errorf("local-mesh interface missing: %w", err)
+	}
+	if live.Attrs().Index != k.link.Index || live.Attrs().Alias != interfaceOwner || live.Type() != "dummy" {
+		return state, errors.New("local-mesh interface ownership changed")
+	}
+	state.link = live
+	state.up = live.Attrs().Flags&net.FlagUp != 0
+	addresses, err := netlink.AddrList(live, netlink.FAMILY_V6)
+	if err != nil {
+		return state, fmt.Errorf("inspect local-mesh address: %w", err)
+	}
+	own := ipNet(netip.PrefixFrom(k.device.MeshAddress(), 128))
+	for _, address := range addresses {
+		if !address.IP.Equal(k.address) {
+			continue
+		}
+		if address.IPNet == nil || address.IPNet.String() != own.String() {
+			return state, errors.New("local-mesh address has conflicting prefix")
+		}
+		state.address = true
+	}
+	rules, err := netlink.RuleList(netlink.FAMILY_V6)
+	if err != nil {
+		return state, fmt.Errorf("inspect local-mesh policy rule: %w", err)
+	}
+	for _, rule := range rules {
+		if rule.Priority == RouteTable {
+			if !baseRuleMatches(rule) {
+				return state, errors.New("local-mesh policy rule ownership conflict")
+			}
+			state.rule = true
+		} else if rule.Table == RouteTable {
+			ownedPeer := false
+			for _, peer := range k.peers {
+				if peerRuleMatches(rule, peer.rule) {
+					ownedPeer = true
+					break
+				}
+			}
+			if !ownedPeer {
+				return state, errors.New("local-mesh route table rule ownership conflict")
+			}
+		}
+	}
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return state, fmt.Errorf("inspect local-mesh guard route: %w", err)
+	}
+	for _, route := range routes {
+		if !defaultIPv6Route(route.Dst) {
+			continue
+		}
+		// A signed peer's Babel default is also installed in this table. It is
+		// an owned route, tracked by Apply, even when this host is not roaming.
+		if k.ownsLearnedDefault(route) {
+			continue
+		}
+		// The kernel binds device-less error routes to the loopback interface,
+		// so a reclaimed guard reports RTA_OIF=lo rather than no device. The
+		// protocol, metric, type and absent gateway are the ownership signature.
+		if route.Priority != 32767 || route.Protocol != routeProtocol || route.Type != unix.RTN_UNREACHABLE || route.Gw != nil {
+			return state, errors.New("local-mesh guard route ownership conflict")
+		}
+		state.guard = true
+	}
+	return state, nil
+}
+
+func (k *Kernel) ownsLearnedDefault(route netlink.Route) bool {
+	for _, expected := range k.routes {
+		if expected.Priority != 100 || !defaultIPv6Route(expected.Dst) ||
+			route.Priority != expected.Priority || route.Protocol != expected.Protocol ||
+			route.Type != expected.Type || route.LinkIndex != expected.LinkIndex ||
+			!route.Src.Equal(expected.Src) || !route.Gw.Equal(expected.Gw) {
+			continue
+		}
+		if route.Via == nil || expected.Via == nil {
+			return route.Via == nil && expected.Via == nil
+		}
+		actual, ok := route.Via.(*netlink.Via)
+		want, expectedOK := expected.Via.(*netlink.Via)
+		if ok && expectedOK && actual.AddrFamily == want.AddrFamily && actual.Addr.Equal(want.Addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func baseRuleMatches(rule netlink.Rule) bool {
+	return rule.Table == RouteTable && rule.Dst != nil && rule.Dst.String() == meshid.MeshPrefix.String() &&
+		rule.Src == nil && rule.IifName == "" && rule.OifName == "" &&
+		rule.Mark == 0 && rule.Mask == nil && rule.Tos == 0 && !rule.Invert &&
+		rule.Dport == nil && rule.Sport == nil && rule.UIDRange == nil && rule.IPProto == 0
+}
+
+func peerRuleMatches(rule netlink.Rule, peer *netlink.Rule) bool {
+	return rule.Priority == peer.Priority && rule.IifName == peer.IifName &&
+		rule.OifName == "" && rule.Src == nil && rule.Dst == nil &&
+		rule.Mark == 0 && rule.Mask == nil && rule.Tos == 0 && !rule.Invert &&
+		rule.Dport == nil && rule.Sport == nil && rule.UIDRange == nil && rule.IPProto == 0
+}
+
+func defaultIPv6Route(dst *net.IPNet) bool {
+	if dst == nil {
+		return true
+	}
+	return dst.String() == "::/0"
 }
 
 func NewKernel(device meshid.Device) (*Kernel, error) {
+	if !device.IsValid() {
+		return nil, errors.New("mesh kernel needs a device principal")
+	}
+	if err := reclaimMeshForwarding(); err != nil {
+		return nil, err
+	}
 	address := device.MeshAddress()
 	// An abrupt exit leaves the dummy link, its TUNs, their rules and the mesh
 	// routes behind. Reclaim exactly the state this package owns first, so a
@@ -76,7 +254,7 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 	if err = sysctls(InterfaceName); err != nil {
 		return nil, err
 	}
-	if err = netlink.AddrAdd(k.link, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(address, 128)), Flags: unix.IFA_F_NOPREFIXROUTE}); err != nil {
+	if err = netlink.AddrAdd(k.link, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(address, 128)), Flags: unix.IFA_F_NOPREFIXROUTE | unix.IFA_F_NODAD}); err != nil {
 		return nil, err
 	}
 	if err = netlink.LinkSetUp(k.link); err != nil {
@@ -100,6 +278,9 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 		return nil, err
 	}
 	k.rule = rule
+	if err = k.enableForwarding(); err != nil {
+		return nil, err
+	}
 	ok = true
 	return k, nil
 }
@@ -162,7 +343,7 @@ func (k *Kernel) AddPeer(id babel.LinkID, peer meshid.Device) (*os.File, error) 
 		return nil, err
 	}
 	// The device's own mesh address is the source for payload leaving this link.
-	if err = netlink.AddrAdd(tun, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(k.device.MeshAddress(), 128)), Flags: unix.IFA_F_NOPREFIXROUTE}); err != nil {
+	if err = netlink.AddrAdd(tun, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(k.device.MeshAddress(), 128)), Flags: unix.IFA_F_NOPREFIXROUTE | unix.IFA_F_NODAD}); err != nil {
 		return nil, err
 	}
 	if err = netlink.LinkSetUp(tun); err != nil {
@@ -176,7 +357,7 @@ func (k *Kernel) AddPeer(id babel.LinkID, peer meshid.Device) (*os.File, error) 
 	if err = netlink.RuleAdd(rule); err != nil {
 		return nil, err
 	}
-	k.peers[id] = kernelPeer{tun, tun.Fds[0], rule}
+	k.peers[id] = kernelPeer{tun, tun.Fds[0], rule, peer}
 	ok = true
 	return tun.Fds[0], nil
 }
@@ -287,6 +468,8 @@ func (k *Kernel) Stop() error {
 
 func (k *Kernel) Close() error {
 	var errs []error
+	// Withdraw transit before removing its routes and interfaces.
+	errs = append(errs, k.closeForwarding())
 	for id := range k.peers {
 		errs = append(errs, k.RemovePeer(id))
 	}

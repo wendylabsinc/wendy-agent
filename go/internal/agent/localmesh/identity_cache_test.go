@@ -127,7 +127,7 @@ func TestIdentityCacheKeysByFullPrincipal(t *testing.T) {
 	// A persisted key that is not a device principal - a legacy numeric identity
 	// or a bare UUID - is dropped rather than adopted.
 	path := filepath.Join(t.TempDir(), "identities.json")
-	disk := map[string]any{"Version": 2, "Entries": map[string]cachedIdentity{
+	disk := map[string]any{"Version": 1, "Entries": map[string]cachedIdentity{
 		own.Principal():                 {Chain: [][]byte{[]byte("own")}, Added: now, Used: now},
 		"urn:wendy:org:64:asset:445":    {Chain: [][]byte{[]byte("own")}, Added: now, Used: now},
 		own.UUID().String():             {Chain: [][]byte{[]byte("own")}, Added: now, Used: now},

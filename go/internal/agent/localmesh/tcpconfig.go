@@ -13,14 +13,18 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
-// TCPConfig is an opt-in, explicitly provisioned topology for local agent
-// simulations. Each edge must be configured at both endpoints.
+// TCPConfig retains explicit TCP simulation links and independently enables
+// discovered local mesh carriers. Each explicit edge is configured at both ends.
 type TCPConfig struct {
 	Listen string    `json:"listen"`
 	Peers  []TCPPeer `json:"peers"`
+	NAN    bool      `json:"nan,omitempty"`
+	BLE    bool      `json:"ble,omitempty"`
 
 	// devices holds the parsed peer identities, in the same order as Peers.
-	devices []meshid.Device
+	devices            []meshid.Device
+	Ethernet           bool `json:"ethernet,omitempty"`
+	InfrastructureWiFi bool `json:"infrastructureWifi,omitempty"`
 }
 
 // TCPPeer names a configured neighbour by its device UUID - the same 16 bytes
@@ -62,7 +66,11 @@ func LoadTCPConfig(path string, self meshid.Device) (*TCPConfig, error) {
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return nil, errors.New("local mesh config has trailing data")
 	}
-	if err := validateTCPAddress(cfg.Listen, true); err != nil {
+	if cfg.Listen == "" {
+		if (!cfg.NAN && !cfg.BLE && !cfg.Ethernet && !cfg.InfrastructureWiFi) || len(cfg.Peers) != 0 {
+			return nil, errors.New("listen is required for configured TCP peers; enable a carrier for discovery-only mesh")
+		}
+	} else if err := validateTCPAddress(cfg.Listen, true); err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
 	if len(cfg.Peers) > 64 {

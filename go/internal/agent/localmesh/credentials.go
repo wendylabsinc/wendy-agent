@@ -1,10 +1,13 @@
 package localmesh
 
 import (
+	"container/list"
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
@@ -21,11 +24,14 @@ import (
 // carries an organization number, an asset number, or a hash of either: a Cloud
 // asset UUID is a database record ID and never a mesh identity.
 type Credentials struct {
-	Device      meshid.Device
-	Certificate tls.Certificate
-	Signer      crypto.Signer
-	Verify      IdentityVerifier
-	peerTLS     func(meshid.Device) (*tls.Config, error)
+	Device         meshid.Device
+	Certificate    tls.Certificate
+	Signer         crypto.Signer
+	Verify         IdentityVerifier
+	peerTLS        func(meshid.Device) (*tls.Config, error)
+	peerTLSTickets func(meshid.Device, string, string) (*tls.Config, error)
+	ticketOnce     sync.Once
+	ticketMemory   *meshSessionCache
 }
 
 // NewCredentials loads the provisioned identity and derives the local-mesh
@@ -91,6 +97,18 @@ func NewCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
 			return Identity{}, errors.New("local-mesh identity is not currently valid")
 		}
 		expires := peerLeaf.NotAfter
+		// A peer may present an intermediate absent from our own enrollment
+		// bundle. Sessions and identity caches must end when that issuer expires,
+		// even if both leaf certificates and our local trust anchors live longer.
+		for _, der := range chain[1:] {
+			issuer, err := x509.ParseCertificate(der)
+			if err != nil {
+				return Identity{}, err
+			}
+			if issuer.NotAfter.Before(expires) {
+				expires = issuer.NotAfter
+			}
+		}
 		for _, certificate := range trustChain {
 			if certificate.NotAfter.Before(expires) {
 				expires = certificate.NotAfter
@@ -98,21 +116,62 @@ func NewCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
 		}
 		return Identity{Device: device, NotAfter: expires}, nil
 	}
-	peerTLS := func(peer meshid.Device) (*tls.Config, error) {
-		config, err := mtls.NewClientTLSConfig(certPEM, chainPEM, keyPEM, nil)
+	// The enrolled PEM material and ML-DSA-aware trust chain are immutable for
+	// this Credentials incarnation. Parse each peer's pinned TLS config once;
+	// callers receive a clone so carrier-specific ALPN and settings cannot
+	// change another connection. Provisioning/trust refresh creates a new
+	// Credentials object and therefore a fresh cache.
+	var peerMu sync.Mutex
+	type peerConfigEntry struct {
+		peer   meshid.Device
+		config *tls.Config
+	}
+	peerConfigs := make(map[meshid.Device]*list.Element)
+	var peerRecency list.List
+
+	credentials := &Credentials{Device: self, Certificate: cert, Signer: signer, Verify: verify, peerTLS: func(peer meshid.Device) (*tls.Config, error) {
+		peerMu.Lock()
+		defer peerMu.Unlock()
+		if cached := peerConfigs[peer]; cached != nil {
+			peerRecency.MoveToFront(cached)
+			return cached.Value.(peerConfigEntry).config.Clone(), nil
+		}
+		c, err := mtls.NewClientTLSConfig(certPEM, chainPEM, keyPEM, nil)
 		if err != nil {
 			return nil, err
 		}
-		pinPeer(config, peer)
-		config.MinVersion = tls.VersionTLS13
-		config.MaxVersion = tls.VersionTLS13
-		config.NextProtos = []string{LinkALPN}
-		config.ClientAuth = tls.RequireAnyClientCert
-		config.ClientSessionCache = nil
-		config.SessionTicketsDisabled = true
-		return config, nil
+		pinPeer(c, peer)
+		c.MinVersion = tls.VersionTLS13
+		c.MaxVersion = tls.VersionTLS13
+		c.NextProtos = []string{LinkALPN}
+		c.ClientAuth = tls.RequireAnyClientCert
+		c.ClientSessionCache = nil
+		c.SessionTicketsDisabled = true
+		if len(peerConfigs) >= 256 {
+			oldest := peerRecency.Back()
+			delete(peerConfigs, oldest.Value.(peerConfigEntry).peer)
+			peerRecency.Remove(oldest)
+		}
+		peerConfigs[peer] = peerRecency.PushFront(peerConfigEntry{peer, c})
+		return c.Clone(), nil
+	}}
+	credentials.peerTLSTickets = func(peer meshid.Device, alpn, transport string) (*tls.Config, error) {
+		if alpn == "" || transport == "" {
+			return nil, errors.New("mesh ticket scope needs ALPN and transport")
+		}
+		cfg, err := credentials.PeerTLS(peer)
+		if err != nil {
+			return nil, err
+		}
+		key := fmt.Sprintf("%s/%d:%s/%d:%s", peer.Principal(), len(alpn), alpn, len(transport), transport)
+		cfg.NextProtos = []string{alpn}
+		cfg.ServerName = fmt.Sprintf("device-%s.mesh.wendy.invalid", peer.UUID())
+		cfg.ClientSessionCache = scopedClientSessionCache{cache: credentials.ticketCache(), scope: key}
+		(&TicketStore{cache: credentials.ticketCache(), scope: key}).Configure(cfg)
+
+		return cfg, nil
 	}
-	return &Credentials{Device: self, Certificate: cert, Signer: signer, Verify: verify, peerTLS: peerTLS}, nil
+	return credentials, nil
 }
 
 // pinPeer requires the handshake leaf to carry exactly the configured peer's
@@ -172,3 +231,29 @@ func (c *Credentials) PeerTLS(peer meshid.Device) (*tls.Config, error) {
 	}
 	return c.peerTLS(peer)
 }
+
+// PeerTLSWithTickets enables in-memory TLS 1.3 resumption for a specific peer,
+// ALPN and transport. QUIC and raw TLS never share tickets. The cache is
+// discarded with this Credentials instance when provisioning rotates.
+func (c *Credentials) PeerTLSWithTickets(peer meshid.Device, alpn, transport string) (*tls.Config, error) {
+	if c == nil || c.peerTLSTickets == nil {
+		return nil, errors.New("missing mesh credential ticket scope")
+	}
+	return c.peerTLSTickets(peer, alpn, transport)
+}
+
+func (c *Credentials) ticketCache() *meshSessionCache {
+	c.ticketOnce.Do(func() { c.ticketMemory = newMeshSessionCache() })
+	return c.ticketMemory
+}
+
+// ServerTicketStore shares the credentials-wide memory budget for a listener
+// accepting multiple peer assets. The caller still verifies the authenticated
+// peer identity on every resumed connection. Its protocol and transport scope is
+// distinct from pinned outbound/link stores and other protocol listeners.
+func (c *Credentials) ServerTicketStore(protocolScope, transport string) *TicketStore {
+	return &TicketStore{cache: c.ticketCache(), scope: fmt.Sprintf("server/%d:%s/%d:%s", len(protocolScope), protocolScope, len(transport), transport)}
+}
+
+// QUIC links share tickets across LAN and NAN; BLE has a separate TLS scope.
+const LinkQUICSessionScope = "link-quic"

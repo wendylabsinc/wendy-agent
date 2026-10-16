@@ -25,6 +25,29 @@ const tcpConfigName = "local-mesh.json"
 // lower UUID initiates each edge, so a symmetric peer list creates one
 // connection. A missing config leaves the local mesh disabled.
 func RunConfiguredTCP(parent context.Context, configDir string, id TCPIdentity) error {
+	return RunConfiguredTCPObserved(parent, configDir, id, nil)
+}
+
+// RunConfiguredTCPObserved publishes the running node to an observer. The
+// observer receives nil when the runtime exits; consumers also check the
+// current route snapshot before using it.
+func RunConfiguredTCPObserved(parent context.Context, configDir string, id TCPIdentity, observe func(func() NodeSnapshot)) error {
+	return RunConfiguredWithNode(parent, configDir, id, func(node *Node, _ *TCPConfig) {
+		if observe == nil {
+			return
+		}
+		if node == nil {
+			observe(nil)
+		} else {
+			observe(node.Snapshot)
+		}
+	})
+}
+
+// RunConfiguredWithNode owns one Babel node shared by configured TCP and
+// optional radio providers. The observer may start providers and must stop
+// them when it receives nil before the node is closed.
+func RunConfiguredWithNode(parent context.Context, configDir string, id TCPIdentity, observe func(*Node, *TCPConfig)) error {
 	credentials, err := NewCredentials(id.Certificate, id.Chain, id.Key)
 	if err != nil {
 		return err
@@ -37,20 +60,30 @@ func RunConfiguredTCP(parent context.Context, configDir string, id TCPIdentity) 
 	if err = os.MkdirAll(stateDir, 0700); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(parent)
+	// Keep the node alive while radio providers drain their links on parent
+	// shutdown. The runtime cancels it only after the observer has stopped them.
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	defer cancel()
-	listener, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		return err
+	var listener net.Listener
+	if cfg.Listen != "" {
+		listener, err = net.Listen("tcp", cfg.Listen)
+		if err != nil {
+			return err
+		}
+		defer listener.Close()
 	}
-	defer listener.Close()
 	node, err := NewNode(ctx, stateDir, credentials, id.Name, id.AgentPort)
 	if err != nil {
 		return err
 	}
-	go func() { <-ctx.Done(); listener.Close() }()
+	if listener != nil {
+		go func() { <-ctx.Done(); listener.Close() }()
+	}
 	nodeDone := make(chan error, 1)
 	go func() { nodeDone <- node.Run(); cancel() }()
+	if observe != nil {
+		observe(node, cfg)
+	}
 	allowed := make(map[string]meshid.Device, len(cfg.Peers))
 	for _, peer := range cfg.devices {
 		allowed[peer.Principal()] = peer
@@ -83,7 +116,13 @@ func RunConfiguredTCP(parent context.Context, configDir string, id TCPIdentity) 
 					if err == nil {
 						err = writeTCPPreface(conn, credentials.Device)
 						if err == nil {
+							joined := time.Now()
 							err = attachTCP(ctx, node, credentials, peer, conn, false)
+							if time.Since(joined) >= 10*time.Second {
+								// A stable session should reconnect promptly after a
+								// later link loss. Keep exponential delay for flapping.
+								backoff = time.Second
+							}
 						}
 						conn.Close()
 					}
@@ -94,57 +133,64 @@ func RunConfiguredTCP(parent context.Context, configDir string, id TCPIdentity) 
 				case <-ctx.Done():
 					return
 				}
-				if backoff < 30*time.Second {
-					backoff *= 2
-				}
+				backoff = min(backoff*2, 30*time.Second)
 			}
 		}(peer)
 	}
 	sem := make(chan struct{}, 64)
 	acceptDone := make(chan struct{})
-	go func() {
-		defer close(acceptDone)
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
+	if listener == nil {
+		close(acceptDone)
+	} else {
+		go func() {
+			defer close(acceptDone)
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				select {
+				case sem <- struct{}{}:
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						defer func() { <-sem }()
+						defer conn.Close()
+						id, err := readTCPPreface(conn, credentials.Device.Tenant())
+						if err != nil {
+							return
+						}
+						peer, err := meshid.ParseDevice(credentials.Device.Tenant(), id.String())
+						if err != nil || meshid.Compare(peer, credentials.Device) >= 0 {
+							// Only the lower UUID of an edge dials; anything else is a
+							// duplicate or a peer that did not read its own ordering.
+							return
+						}
+						if _, ok := allowed[peer.Principal()]; !ok || !claim(peer) {
+							return
+						}
+						defer release(peer)
+						_ = attachTCP(ctx, node, credentials, peer, conn, true)
+					}()
+				default:
+					conn.Close()
+				}
 			}
-			select {
-			case sem <- struct{}{}:
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					defer func() { <-sem }()
-					defer conn.Close()
-					id, err := readTCPPreface(conn, credentials.Device.Tenant())
-					if err != nil {
-						return
-					}
-					peer, err := meshid.ParseDevice(credentials.Device.Tenant(), id.String())
-					if err != nil || meshid.Compare(peer, credentials.Device) >= 0 {
-						// Only the lower UUID of an edge dials; anything else is a
-						// duplicate or a peer that did not read its own ordering.
-						return
-					}
-					if _, ok := allowed[peer.Principal()]; !ok || !claim(peer) {
-						return
-					}
-					defer release(peer)
-					_ = attachTCP(ctx, node, credentials, peer, conn, true)
-				}()
-			default:
-				conn.Close()
-			}
-		}
-	}()
+		}()
+	}
 	nodeStopped := false
 	select {
-	case <-ctx.Done():
+	case <-parent.Done():
 	case err = <-nodeDone:
 		nodeStopped = true
 	}
+	if observe != nil {
+		observe(nil, nil)
+	}
 	cancel()
-	listener.Close()
+	if listener != nil {
+		listener.Close()
+	}
 	<-acceptDone
 	wg.Wait()
 	if !nodeStopped {
@@ -170,9 +216,12 @@ func indexOfDevice(devices []meshid.Device, want meshid.Device) int {
 // configured relationship with. The preface is not trusted identity: the TLS
 // handshake pins the full principal afterwards.
 func writeTCPPreface(conn net.Conn, device meshid.Device) error {
+	if !device.IsValid() {
+		return errors.New("TCP preface requires a device identity")
+	}
 	tenant, id := device.Tenant().UUID(), device.UUID()
 	data := make([]byte, 0, 4+16+16)
-	data = append(data, "WMT2"...)
+	data = append(data, "WMT1"...)
 	data = append(data, tenant[:]...)
 	data = append(data, id[:]...)
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
@@ -182,6 +231,9 @@ func writeTCPPreface(conn net.Conn, device meshid.Device) error {
 }
 
 func readTCPPreface(conn net.Conn, tenant meshid.Tenant) (uuid.UUID, error) {
+	if !tenant.IsValid() {
+		return uuid.Nil, errors.New("TCP preface requires a tenant identity")
+	}
 	data := make([]byte, 4+16+16)
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	_, err := io.ReadFull(conn, data)
@@ -190,18 +242,18 @@ func readTCPPreface(conn net.Conn, tenant meshid.Tenant) (uuid.UUID, error) {
 		return uuid.Nil, err
 	}
 	want := tenant.UUID()
-	if string(data[:4]) != "WMT2" || !bytes.Equal(data[4:20], want[:]) {
+	if string(data[:4]) != "WMT1" || !bytes.Equal(data[4:20], want[:]) {
 		return uuid.Nil, errors.New("invalid mesh TCP preface")
 	}
 	var id uuid.UUID
 	copy(id[:], data[20:])
-	if id == uuid.Nil {
-		return uuid.Nil, errors.New("invalid mesh TCP preface")
-	}
 	return id, nil
 }
 
 func attachTCP(ctx context.Context, node *Node, credentials *Credentials, peer meshid.Device, tcp net.Conn, server bool) error {
+	return attachTCPWithCost(ctx, node, credentials, peer, tcp, server, 256)
+}
+func attachTCPWithCost(ctx context.Context, node *Node, credentials *Credentials, peer meshid.Device, tcp net.Conn, server bool, cost uint16) error {
 	pc, err := NewTCPPacketConn(tcp)
 	if err != nil {
 		return err
@@ -217,7 +269,7 @@ func attachTCP(ctx context.Context, node *Node, credentials *Credentials, peer m
 		case <-done:
 		}
 	}()
-	tlsConfig, err := credentials.PeerTLS(peer)
+	tlsConfig, err := credentials.PeerTLSWithTickets(peer, LinkALPN, LinkQUICSessionScope)
 	if err != nil {
 		return err
 	}
@@ -237,5 +289,10 @@ func attachTCP(ctx context.Context, node *Node, credentials *Credentials, peer m
 	if err != nil {
 		return fmt.Errorf("mesh QUIC peer %s: %w", peer.Principal(), err)
 	}
-	return node.Attach(ctx, peer, conn)
+	// quic-go can return a nil accepted connection after rejecting an
+	// unauthenticated peer. Treat it as a failed handshake before Node sees it.
+	if conn == nil {
+		return fmt.Errorf("mesh QUIC peer %s: no authenticated connection", peer.Principal())
+	}
+	return node.AttachWithCost(ctx, peer, conn, cost)
 }

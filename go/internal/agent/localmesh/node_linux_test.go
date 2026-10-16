@@ -151,8 +151,10 @@ func TestNodePeerProcess(t *testing.T) {
 				if found {
 					verifyMeshTransport(t, node, self, peer)
 					t.Log("HTTP, signed discovery, origination, MTU and ICMPv6 checks passed across live Babel/QUIC/TUN nodes")
-					cancel()
+					// End the carrier and wait for its routes to be withdrawn.
+					conn.CloseWithError(0, "test ending link")
 					<-linkDone
+					cancel()
 					return
 				}
 			}
@@ -169,7 +171,7 @@ func TestNodePeerProcess(t *testing.T) {
 // verifyMeshTransport checks what the routing core promises the host: the
 // instance originates only its own /128 at metric 0, the peer's /128 is
 // installed with a link-local next hop, the pool prefix is never reachability,
-// a full 1280-byte IPv6 packet crosses the tunnel while one byte more is
+// a full link-MTU IPv6 packet crosses the tunnel while one byte more is
 // refused to the application, and kernel-generated ICMPv6 travels back.
 func verifyMeshTransport(t *testing.T, node *Node, self, peer meshid.Device) {
 	t.Helper()
@@ -191,8 +193,10 @@ func verifyMeshTransport(t *testing.T, node *Node, self, peer meshid.Device) {
 	if local == nil || !local.Local || local.Metric != 0 {
 		t.Fatalf("own mesh address is not originated at metric 0: %+v", local)
 	}
-	if learned == nil || learned.Local || learned.Metric == 0 || !learned.NextHop.IsLinkLocalUnicast() {
-		t.Fatalf("peer mesh address is not a learnt route with a link-local next hop: %+v", learned)
+	// The origin advertises its own /128 at metric 0, so one hop across a link
+	// configured with receive cost 256 must arrive as exactly 256.
+	if learned == nil || learned.Local || learned.Metric != 256 || !learned.NextHop.IsLinkLocalUnicast() {
+		t.Fatalf("peer mesh address is not a metric-0 origin plus one 256-cost hop: %+v", learned)
 	}
 
 	conn, err := net.Dial("udp", net.JoinHostPort(peer.MeshAddress().String(), "18081"))
@@ -200,10 +204,10 @@ func verifyMeshTransport(t *testing.T, node *Node, self, peer meshid.Device) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	// 1232 bytes of UDP payload is exactly one 1280-byte IPv6 packet: 40 header,
-	// 8 UDP header, 1232 data - the IPv6 minimum link, end to end.
-	if _, err = conn.Write(make([]byte, 1232)); err != nil {
-		t.Fatalf("a full 1280-byte IPv6 packet did not cross the tunnel: %v", err)
+	// Fill the logical mesh MTU after the 40-byte IPv6 and 8-byte UDP headers.
+	const payload = TunnelMTU - 48
+	if _, err = conn.Write(make([]byte, payload)); err != nil {
+		t.Fatalf("a full link-MTU IPv6 packet did not cross the tunnel: %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 64)
@@ -211,23 +215,23 @@ func verifyMeshTransport(t *testing.T, node *Node, self, peer meshid.Device) {
 	if err != nil {
 		t.Fatalf("no UDP echo across the tunnel: %v", err)
 	}
-	if got := string(buf[:n]); got != "1232" {
-		t.Fatalf("peer received %s bytes, want 1232", got)
+	if got := string(buf[:n]); got != strconv.Itoa(payload) {
+		t.Fatalf("peer received %s bytes, want %d", got, payload)
 	}
 	// One byte more does not fit in a single packet. An ordinary socket lets the
 	// kernel fragment the datagram at the source; the fragments travel the tunnel
 	// and the peer's kernel reassembles them. A socket that told the kernel not
-	// to fragment learns the 1280-byte link limit as EMSGSIZE. Both are correct;
+	// to fragment learns the logical link limit as EMSGSIZE. Both are correct;
 	// a silent drop is not.
-	if _, err = conn.Write(make([]byte, 1233)); err != nil {
-		t.Fatalf("a 1281-byte IPv6 datagram failed at the source: %v", err)
+	if _, err = conn.Write(make([]byte, TunnelMTU-48+1)); err != nil {
+		t.Fatalf("an over-MTU IPv6 datagram failed at the source: %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if n, err = conn.Read(buf); err != nil {
 		t.Fatalf("no UDP echo for the fragmented datagram: %v", err)
 	}
-	if got := string(buf[:n]); got != "1233" {
-		t.Fatalf("peer reassembled %s bytes, want 1233", got)
+	if got := string(buf[:n]); got != strconv.Itoa(payload+1) {
+		t.Fatalf("peer reassembled %s bytes, want %d", got, payload+1)
 	}
 	assertDFReachesPacketTooBig(t, peer)
 
@@ -271,9 +275,6 @@ func verifyMeshTransport(t *testing.T, node *Node, self, peer meshid.Device) {
 	}
 }
 
-// assertDFReachesPacketTooBig sends from a socket that told the kernel not to
-// fragment, so the link limit must surface to the application as EMSGSIZE
-// rather than a silent drop.
 func assertDFReachesPacketTooBig(t *testing.T, peer meshid.Device) {
 	t.Helper()
 	fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
@@ -286,8 +287,8 @@ func assertDFReachesPacketTooBig(t *testing.T, peer meshid.Device) {
 	}
 	destination := syscall.SockaddrInet6{Port: 18081}
 	copy(destination.Addr[:], peer.MeshAddress().AsSlice())
-	if err = syscall.Sendto(fd, make([]byte, 1233), 0, &destination); !errors.Is(err, syscall.EMSGSIZE) {
-		t.Fatalf("a 1281-byte IPv6 packet with DF set returned %v, want EMSGSIZE", err)
+	if err = syscall.Sendto(fd, make([]byte, TunnelMTU-48+1), 0, &destination); !errors.Is(err, syscall.EMSGSIZE) {
+		t.Fatalf("an over-MTU IPv6 packet with DF set returned %v, want EMSGSIZE", err)
 	}
 }
 

@@ -4,7 +4,5 @@ package localmesh
 
 import "net"
 
-// persistentMAC has no factory-address record to read off a non-Linux host, so
-// router-ID derivation falls back to the interface address and, when no usable
-// one exists, the tagged-random form pinned by PersistentState.
+// No permanent-address query is available here; use the persisted random ID.
 func persistentMAC(string) (net.HardwareAddr, bool) { return nil, false }

@@ -53,7 +53,7 @@ func directoryFixture(t *testing.T) (*Directory, [][]byte, ed25519.PrivateKey, m
 
 func TestDirectoryOriginSignatureLeaseAndReplay(t *testing.T) {
 	d, chain, key, device, now := directoryFixture(t)
-	m := Manifest{Version: 2, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), Name: "Orin", AgentPort: 50052}
+	m := Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), Name: "Orin", AgentPort: 50052}
 	sign := func(m Manifest) SignedManifest {
 		t.Helper()
 		w, err := SignManifest(m, chain, key, now)
@@ -122,7 +122,7 @@ func TestManifestTransportAndLimits(t *testing.T) {
 	_, chain, key, device, now := directoryFixture(t)
 	manifest := func(mutate func(*Manifest)) SignedManifest {
 		t.Helper()
-		m := Manifest{Version: 2, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+		m := Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
 		mutate(&m)
 		w, err := SignManifest(m, chain, key, now)
 		if err == nil {
@@ -130,11 +130,21 @@ func TestManifestTransportAndLimits(t *testing.T) {
 		}
 		return w
 	}
-	manifest(func(m *Manifest) { m.Version = 1 })
+	manifest(func(m *Manifest) { m.Version = 2 })
 	manifest(func(m *Manifest) { m.Device = uuid.Nil })
 	manifest(func(m *Manifest) { m.Revision = 0 })
 	manifest(func(m *Manifest) { m.AgentPort = 0 })
 	manifest(func(m *Manifest) { m.Expires = now.Add(MaxLease + time.Second).UnixMilli() })
 	manifest(func(m *Manifest) { m.Expires = now.Add(-time.Second).UnixMilli() })
 	manifest(func(m *Manifest) { m.Name = string(bytes.Repeat([]byte("n"), 256)) })
+}
+
+func TestManifestAllowsExplicitNilUUID(t *testing.T) {
+	now := time.Now()
+	m := Manifest{Version: 1, Device: uuid.Nil, Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+	if err := m.validate(now); err != nil {
+		t.Fatalf("nil UUID is still a UUID: %v", err)
+	}
+	// SignManifest/Accept separately require that the complete principal's device
+	// UUID equals this field, including for a certificate with an explicit nil UUID.
 }

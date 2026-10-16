@@ -102,7 +102,8 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 // Synchronizer is per-link, single-caller, and does not own networking. Changed
 // records are broadcast immediately by its caller; periodic Reconcile repairs
 // loss/reconnect. Certificates are sent once per bounded link cache, not once per
-// service. A missing bundle holds at most eight manifests until a validated reply.
+// service. Missing bundles hold a bounded number of manifests until validated
+// replies arrive; further manifests are requested again at reconciliation.
 type Synchronizer struct {
 	directory *Directory
 	cache     *IdentityCache
@@ -114,17 +115,28 @@ func NewSynchronizer(d *Directory, c *IdentityCache) *Synchronizer {
 	return &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}}
 }
 
+// SeedKnownBundles uses only the sender's per-peer record of completed writes.
+// It does not trust the hint for authentication: the receiving directory still
+// verifies each signed manifest against its own validated identity cache.
+func (s *Synchronizer) SeedKnownBundles(fingerprints []string) {
+	for _, fp := range fingerprints {
+		if len(fp) == 64 {
+			s.sent[fp] = true
+		}
+	}
+}
+
 func (s *Synchronizer) Record(w SignedManifest, now time.Time) []ControlMessage {
 	var out []ControlMessage
-	if !s.sent[w.Principal] {
-		chain, _, ok := s.cache.Get(w.Principal, now)
-		if !ok {
-			return nil
-		}
+	chain, _, ok := s.cache.Get(w.Principal, now)
+	if !ok {
+		return nil
+	}
+	if fp := Fingerprint(chain); !s.sent[fp] {
 		if len(s.sent) >= 1024 {
 			s.sent = map[string]bool{}
 		}
-		s.sent[w.Principal] = true
+		s.sent[fp] = true
 		out = append(out, ControlMessage{Kind: "bundle", Bundle: chain})
 	}
 	w.Body = append(json.RawMessage(nil), w.Body...)
@@ -169,10 +181,12 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 			return nil, nil, nil
 		}
 		if errors.Is(e, ErrIdentityNeeded) {
-			if len(s.pending) >= 8 {
-				return nil, nil, errors.New("too many unresolved identities")
+			// Do not disconnect a valid neighbour if many hints are stale after
+			// a receiver restart. The request repairs its identity cache, and
+			// the periodic reconciliation repeats any manifest we cannot hold.
+			if _, exists := s.pending[m.Manifest.Principal]; exists || len(s.pending) < 128 {
+				s.pending[m.Manifest.Principal] = *m.Manifest
 			}
-			s.pending[m.Manifest.Principal] = *m.Manifest
 			return []ControlMessage{{Kind: "identity-request", Principal: m.Manifest.Principal}}, nil, nil
 		}
 		if e != nil {

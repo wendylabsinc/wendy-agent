@@ -5,13 +5,17 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
+	"net"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,7 +39,7 @@ func testPrincipal(tenant, device string) string {
 	return certs.DeviceSPIFFEURI(tenant, device)
 }
 
-func testDevice(t *testing.T, principal string) meshid.Device {
+func testDevice(t testing.TB, principal string) meshid.Device {
 	t.Helper()
 	device, err := meshid.DeviceFromPrincipal(principal)
 	if err != nil {
@@ -44,13 +48,13 @@ func testDevice(t *testing.T, principal string) meshid.Device {
 	return device
 }
 
-func testDevices(t *testing.T) (meshid.Device, meshid.Device) {
+func testDevices(t testing.TB) (meshid.Device, meshid.Device) {
 	t.Helper()
 	return testDevice(t, testPrincipal(testTenantUUID, testDeviceAID)),
 		testDevice(t, testPrincipal(testTenantUUID, testDeviceBID))
 }
 
-func testTenant(t *testing.T) meshid.Tenant {
+func testTenant(t testing.TB) meshid.Tenant {
 	t.Helper()
 	tenant, err := meshid.ParseTenant(testTenantUUID)
 	if err != nil {
@@ -86,7 +90,7 @@ var testPKI = sync.OnceValue(func() testCA {
 })
 
 // testIssue mints a leaf for one principal under the shared test CA.
-func testIssue(t *testing.T, principal string) (certPEM, keyPEM string) {
+func testIssue(t testing.TB, principal string) (certPEM, keyPEM string) {
 	t.Helper()
 	pki := testPKI()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -111,11 +115,11 @@ func testIssue(t *testing.T, principal string) (certPEM, keyPEM string) {
 		string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
 }
 
-func testCredentials(t *testing.T) (*Credentials, *Credentials) {
+func testCredentials(t testing.TB) (*Credentials, *Credentials) {
 	return testCredentialsWithPEM(t, nil)
 }
 
-func testCredentialsWithPEM(t *testing.T, capture func(meshid.Device, string, string, string)) (*Credentials, *Credentials) {
+func testCredentialsWithPEM(t testing.TB, capture func(meshid.Device, string, string, string)) (*Credentials, *Credentials) {
 	t.Helper()
 	chainPEM := testPKI().chainPEM
 	issue := func(principal string) *Credentials {
@@ -134,7 +138,7 @@ func testCredentialsWithPEM(t *testing.T, capture func(meshid.Device, string, st
 
 // testCredentialsFor builds credentials for an arbitrary principal under the
 // same CA - a different device, or the same device UUID in another tenant.
-func testCredentialsFor(t *testing.T, principal string) *Credentials {
+func testCredentialsFor(t testing.TB, principal string) *Credentials {
 	t.Helper()
 	chainPEM := testPKI().chainPEM
 	certPEM, keyPEM := testIssue(t, principal)
@@ -147,7 +151,7 @@ func testCredentialsFor(t *testing.T, principal string) *Credentials {
 
 // testForeignCredentials mints credentials whose chain is signed by a CA this
 // mesh does not trust, so a rejected handshake can only be about trust.
-func testForeignCredentials(t *testing.T, principal string) *Credentials {
+func testForeignCredentials(t testing.TB, principal string) *Credentials {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -297,5 +301,336 @@ func TestCredentialsRejectPeerOutsideTenant(t *testing.T) {
 	}
 	if _, err := a.PeerTLS(a.Device); err == nil {
 		t.Fatal("self link accepted")
+	}
+}
+
+type tlsByteConn struct {
+	net.Conn
+	written atomic.Int64
+}
+
+type countedPacketConn struct {
+	net.PacketConn
+	written atomic.Int64
+}
+
+func (c *countedPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	n, err := c.PacketConn.WriteTo(p, addr)
+	c.written.Add(int64(n))
+	return n, err
+}
+
+// Two fresh UDP transports model a NAN-to-LAN carrier change: the QUIC
+// connection and socket are replaced, but the authenticated peer and TLS
+// security context are identical. The ticket must survive that change without
+// allowing a different peer or protocol to use it.
+func TestLinkQUICResumesAcrossCarriers(t *testing.T) {
+	a, b := testCredentials(t)
+	type result struct {
+		resumed                  bool
+		clientBytes, serverBytes int64
+	}
+	handshake := func(carrier, alpn, scope string) (result, error) {
+		clientTLS, err := a.PeerTLSWithTickets(b.Device, alpn, scope)
+		if err != nil {
+			return result{}, err
+		}
+		serverTLS, err := b.PeerTLSWithTickets(a.Device, alpn, scope)
+		if err != nil {
+			return result{}, err
+		}
+		var serverSocket, clientSocket net.PacketConn
+		if carrier == "lan" {
+			// The configured and discovered LAN paths frame QUIC packets on
+			// a TCP socket. QUIC's TLS session state must also work here.
+			tcpListener, listenErr := net.Listen("tcp4", "127.0.0.1:0")
+			if listenErr != nil {
+				return result{}, listenErr
+			}
+			clientTCP, dialErr := net.Dial("tcp4", tcpListener.Addr().String())
+			if dialErr != nil {
+				tcpListener.Close()
+				return result{}, dialErr
+			}
+			serverTCP, acceptErr := tcpListener.Accept()
+			tcpListener.Close()
+			if acceptErr != nil {
+				clientTCP.Close()
+				return result{}, acceptErr
+			}
+			serverSocket, err = NewTCPPacketConn(serverTCP)
+			if err == nil {
+				clientSocket, err = NewTCPPacketConn(clientTCP)
+			}
+			if err != nil {
+				serverTCP.Close()
+				clientTCP.Close()
+				return result{}, err
+			}
+		} else {
+			serverSocket, err = net.ListenPacket("udp4", "127.0.0.1:0")
+			if err != nil {
+				return result{}, err
+			}
+			clientSocket, err = net.ListenPacket("udp4", "127.0.0.1:0")
+			if err != nil {
+				serverSocket.Close()
+				return result{}, err
+			}
+		}
+		defer serverSocket.Close()
+		defer clientSocket.Close()
+		serverMeter := &countedPacketConn{PacketConn: serverSocket}
+		clientMeter := &countedPacketConn{PacketConn: clientSocket}
+		serverTransport := &quic.Transport{Conn: serverMeter}
+		defer serverTransport.Close()
+		clientTransport := &quic.Transport{Conn: clientMeter}
+		defer clientTransport.Close()
+		listener, err := serverTransport.Listen(serverTLS, QUICConfig())
+		if err != nil {
+			return result{}, err
+		}
+		defer listener.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		serverDone := make(chan error, 1)
+		go func() {
+			conn, err := listener.Accept(ctx)
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			defer conn.CloseWithError(0, "done")
+			stream, err := conn.AcceptStream(ctx)
+			if err == nil {
+				var one [1]byte
+				_, err = io.ReadFull(stream, one[:])
+			}
+			serverDone <- err
+		}()
+		conn, err := clientTransport.Dial(ctx, listener.Addr(), clientTLS, QUICConfig())
+		if err != nil {
+			return result{}, err
+		}
+		defer conn.CloseWithError(0, "done")
+		state := conn.ConnectionState()
+		if state.TLS.NegotiatedProtocol != alpn {
+			return result{}, fmt.Errorf("unexpected QUIC ALPN %q", state.TLS.NegotiatedProtocol)
+		}
+		stream, err := conn.OpenStreamSync(ctx)
+		if err == nil {
+			_, err = stream.Write([]byte{1})
+		}
+		if err != nil {
+			return result{}, err
+		}
+		if err = <-serverDone; err != nil {
+			return result{}, err
+		}
+		// QUIC sends the TLS 1.3 ticket after the handshake. Wait until the
+		// client processes it before tearing down this fixture socket.
+		until := time.Now().Add(time.Second)
+		for {
+			if _, ok := clientTLS.ClientSessionCache.Get(clientTLS.ServerName); ok {
+				break
+			}
+			if time.Now().After(until) {
+				return result{}, fmt.Errorf("QUIC session ticket was not received")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return result{state.TLS.DidResume, clientMeter.written.Load(), serverMeter.written.Load()}, nil
+	}
+	cold, err := handshake("nan", LinkALPN, LinkQUICSessionScope)
+	if err != nil || cold.resumed {
+		t.Fatalf("cold NAN QUIC: %+v %v", cold, err)
+	}
+	warm, err := handshake("lan", LinkALPN, LinkQUICSessionScope)
+	if err != nil || !warm.resumed {
+		t.Fatalf("LAN QUIC after NAN: %+v %v", warm, err)
+	}
+	t.Logf("QUIC NAN-to-LAN packet payload bytes: cold client=%d server=%d total=%d; resumed client=%d server=%d total=%d",
+		cold.clientBytes, cold.serverBytes, cold.clientBytes+cold.serverBytes,
+		warm.clientBytes, warm.serverBytes, warm.clientBytes+warm.serverBytes)
+	if warm.clientBytes+warm.serverBytes >= cold.clientBytes+cold.serverBytes {
+		t.Fatalf("cross-carrier resumption did not save bytes: cold=%+v warm=%+v", cold, warm)
+	}
+	separate, err := handshake("nan", "wendy-app-mesh/1", "app-quic")
+	if err != nil || separate.resumed {
+		t.Fatalf("app QUIC resumed mesh link ticket: %+v %v", separate, err)
+	}
+	separate, err = handshake("nan", LinkALPN, "ble-tls")
+	if err != nil || separate.resumed {
+		t.Fatalf("BLE TLS scope resumed mesh link ticket: %+v %v", separate, err)
+	}
+	var peerCerts []*x509.Certificate
+	for _, der := range b.Certificate.Certificate {
+		cert, parseErr := x509.ParseCertificate(der)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		peerCerts = append(peerCerts, cert)
+	}
+	wrongAsset, err := a.PeerTLSWithTickets(testDevice(t, testPrincipal(testTenantUUID, testDeviceCID)), LinkALPN, LinkQUICSessionScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wrongAsset.VerifyConnection(tls.ConnectionState{DidResume: true, PeerCertificates: peerCerts}); err == nil {
+		t.Fatal("resumed cross-carrier QUIC bypassed peer asset pin")
+	}
+}
+
+func (c *tlsByteConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.written.Add(int64(n))
+	return n, err
+}
+
+func TestScopedPeerTLSResumesOnlyWithinCredentialALPNAndTransport(t *testing.T) {
+	a, b := testCredentials(t)
+	type measuredHandshake struct {
+		resumed                                                    bool
+		clientHandshake, clientTotal, serverHandshake, serverTotal int64
+	}
+	handshake := func(client *Credentials, alpn, transport string) (measuredHandshake, error) {
+		clientCfg, err := client.PeerTLSWithTickets(b.Device, alpn, transport)
+		if err != nil {
+			return measuredHandshake{}, err
+		}
+		serverCfg, err := b.PeerTLSWithTickets(client.Device, alpn, transport)
+		if err != nil {
+			return measuredHandshake{}, err
+		}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return measuredHandshake{}, err
+		}
+		defer listener.Close()
+		serverErr := make(chan error, 1)
+		serverState := make(chan tls.ConnectionState, 1)
+		type serverCount struct{ handshake, total int64 }
+		serverBytes := make(chan serverCount, 1)
+		go func() {
+			raw, err := listener.Accept()
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			defer raw.Close()
+			_ = raw.SetDeadline(time.Now().Add(3 * time.Second))
+			meter := &tlsByteConn{Conn: raw}
+			server := tls.Server(meter, serverCfg)
+			defer server.Close()
+			if err := server.Handshake(); err != nil {
+				serverErr <- err
+				return
+			}
+			serverState <- server.ConnectionState()
+			handshakeBytes := meter.written.Load()
+			_, err = server.Write([]byte("x"))
+			serverBytes <- serverCount{handshakeBytes, meter.written.Load()}
+			serverErr <- err
+		}()
+		raw, err := net.Dial("tcp", listener.Addr().String())
+		if err != nil {
+			return measuredHandshake{}, err
+		}
+		defer raw.Close()
+		_ = raw.SetDeadline(time.Now().Add(3 * time.Second))
+		meter := &tlsByteConn{Conn: raw}
+		peer := tls.Client(meter, clientCfg)
+		defer peer.Close()
+		if err := peer.Handshake(); err != nil {
+			return measuredHandshake{}, err
+		}
+		clientHandshake := meter.written.Load()
+		var one [1]byte
+		if _, err := io.ReadFull(peer, one[:]); err != nil {
+			return measuredHandshake{}, err
+		}
+		if err := <-serverErr; err != nil {
+			return measuredHandshake{}, err
+		}
+		if state := <-serverState; state.NegotiatedProtocol != alpn || !state.HandshakeComplete {
+			t.Fatalf("server TLS state = %+v", state)
+		}
+		sizes := <-serverBytes
+		return measuredHandshake{peer.ConnectionState().DidResume, clientHandshake, meter.written.Load(), sizes.handshake, sizes.total}, nil
+	}
+	cold, err := handshake(a, "wendy-mesh-test/1", "ble-tls")
+	if err != nil || cold.resumed {
+		t.Fatalf("first BLE handshake=%+v err=%v", cold, err)
+	}
+	warm, err := handshake(a, "wendy-mesh-test/1", "ble-tls")
+	if err != nil || !warm.resumed {
+		t.Fatalf("second BLE handshake=%+v err=%v", warm, err)
+	}
+	t.Logf("TLS CoC-like stream bytes cold: client handshake=%d total=%d, server handshake=%d total=%d; resumed: client handshake=%d total=%d, server handshake=%d total=%d",
+		cold.clientHandshake, cold.clientTotal, cold.serverHandshake, cold.serverTotal,
+		warm.clientHandshake, warm.clientTotal, warm.serverHandshake, warm.serverTotal)
+	if warm.clientTotal+warm.serverTotal >= cold.clientTotal+cold.serverTotal {
+		t.Fatal("resumed handshake did not save TLS record bytes")
+	}
+
+	// Keep the client's real ticket while aggregate pressure evicts its server
+	// secret. TLS must authenticate fully, then issue a usable fresh ticket.
+	memory := b.ticketCache()
+	memory.mu.Lock()
+	memory.maxEntries = 1
+	memory.mu.Unlock()
+	memory.put(sessionKey{scope: "pressure", key: "replacement"}, []byte{1}, nil)
+	memory.mu.Lock()
+	memory.maxEntries = meshSessionCacheEntries
+	memory.mu.Unlock()
+	if fallback, err := handshake(a, "wendy-mesh-test/1", "ble-tls"); err != nil || fallback.resumed {
+		t.Fatalf("evicted server secret failed full mTLS fallback: %+v %v", fallback, err)
+	}
+	if fresh, err := handshake(a, "wendy-mesh-test/1", "ble-tls"); err != nil || !fresh.resumed {
+		t.Fatalf("post-eviction replacement ticket did not resume: %+v %v", fresh, err)
+	}
+	if other, err := handshake(a, "wendy-mesh-test/1", "nan-quic"); err != nil || other.resumed {
+		t.Fatalf("cross-transport ticket reused=%+v err=%v", other, err)
+	}
+	if other, err := handshake(a, "wendy-mesh-test/2", "ble-tls"); err != nil || other.resumed {
+		t.Fatalf("cross-ALPN ticket reused=%+v err=%v", other, err)
+	}
+	correct, err := a.PeerTLSWithTickets(b.Device, "wendy-mesh-test/1", "ble-tls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored []*x509.Certificate
+	for _, der := range b.Certificate.Certificate {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restored = append(restored, cert)
+	}
+	resumedState := tls.ConnectionState{DidResume: true, PeerCertificates: restored}
+	if err := correct.VerifyConnection(resumedState); err != nil {
+		t.Fatalf("restored pinned peer rejected: %v", err)
+	}
+	wrong, err := a.PeerTLSWithTickets(testDevice(t, testPrincipal(testTenantUUID, testDeviceCID)), "wendy-mesh-test/1", "ble-tls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wrong.VerifyConnection(resumedState); err == nil {
+		t.Fatal("resumed handshake skipped peer asset pin")
+	}
+	// Reconstructing Credentials (as live reprovisioning does via restart)
+	// creates new in-memory caches and ticket keys even for identical PEMs.
+	var cert, chain, key string
+	_, _ = testCredentialsWithPEM(t, func(asset meshid.Device, c, ca, k string) {
+		if asset.UUID().String() == testDeviceAID {
+			cert, chain, key = c, ca, k
+		}
+	})
+	newClient, err := NewCredentials(cert, chain, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rebuilding credentials must drop resumption state even with the same trust.
+	if state, err := handshake(newClient, "wendy-mesh-test/1", "ble-tls"); err != nil || state.resumed {
+		t.Fatalf("credential replacement retained tickets: %+v %v", state, err)
 	}
 }

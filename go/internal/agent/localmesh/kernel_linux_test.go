@@ -13,6 +13,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/wendylabsinc/WendyOS/babel"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
+	"golang.org/x/sys/unix"
 )
 
 // TestKernelIsolatedNamespace exercises the real FIB: a device's own ULA address
@@ -150,3 +151,198 @@ func ipv6Addresses(p []byte) (netip.Addr, netip.Addr, error) {
 	}
 	return src.Unmap(), dst.Unmap(), nil
 }
+
+// TestKernelReconcileBaseIsolatedNamespace runs in the same disposable
+// namespace: a peer's advertised default coexists with the guard, base state
+// stripped behind the instance's back is restored, and foreign owners of the
+// guard, the link or the reserved rule slot are refused.
+func TestKernelReconcileBaseIsolatedNamespace(t *testing.T) {
+	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
+		t.Skip("requires disposable privileged container network namespace")
+	}
+	self, peer := testDevices(t)
+	k, err := NewKernel(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := k.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := k.AddPeer(1, peer); err != nil {
+		t.Fatal(err)
+	}
+	_, nextHop, err := meshid.LinkLocalAddresses(self, peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A signed peer advertises a default into the reserved table. Periodic
+	// reconciliation treats it as an owned route, not a foreign default.
+	if err := k.Apply([]babel.Route{{Prefix: netip.MustParsePrefix("::/0"), Link: 1, NextHop: nextHop, Metric: 256}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.ReconcileBase(); err != nil {
+		t.Fatalf("reconcile with learned Babel default: %v", err)
+	}
+	if err := k.Apply(nil); err != nil {
+		t.Fatal(err)
+	}
+	own := ipNet(netip.PrefixFrom(self.MeshAddress(), 128))
+	live, err := netlink.LinkByName(InterfaceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.AddrDel(live, &netlink.Addr{IPNet: own}); err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.RuleDel(k.rule); err != nil {
+		t.Fatal(err)
+	}
+	guard := k.routes[0]
+	if err := netlink.RouteDel(&guard); err != nil {
+		t.Fatal(err)
+	}
+	foreign := netlink.Route{Table: RouteTable, Protocol: 99, Family: netlink.FAMILY_V6,
+		Type: unix.RTN_UNICAST, Priority: 200, LinkIndex: 1,
+		Dst: ipNet(netip.MustParsePrefix("2001:db8::/64"))}
+	if err := netlink.RouteAdd(&foreign); err != nil {
+		t.Fatal(err)
+	}
+	// A conflicting default must fail before any missing state is repaired.
+	foreignDefault := netlink.Route{Table: RouteTable, Protocol: 99, Family: netlink.FAMILY_V6,
+		Type: unix.RTN_UNREACHABLE, Priority: 200, Dst: ipNet(netip.MustParsePrefix("::/0"))}
+	if err := netlink.RouteAdd(&foreignDefault); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.ReconcileBase(); err == nil {
+		t.Fatal("foreign default route accepted")
+	}
+	addresses, err := netlink.AddrList(live, netlink.FAMILY_V6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range addresses {
+		if a.IP.Equal(k.address) {
+			t.Fatal("repaired address before checking route conflict")
+		}
+	}
+	if err := netlink.RouteDel(&foreignDefault); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.ReconcileBase(); err != nil {
+		t.Fatalf("restore missing base state: %v", err)
+	}
+	if err := k.ReconcileBase(); err != nil {
+		t.Fatalf("idempotent reconciliation: %v", err)
+	}
+	if err := netlink.LinkSetDown(live); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.ReconcileBase(); err != nil {
+		t.Fatalf("restore link state: %v", err)
+	}
+	live, err = netlink.LinkByName(InterfaceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Attrs().Flags&net.FlagUp == 0 {
+		t.Fatal("local-mesh link was not brought up")
+	}
+	addresses, err = netlink.AddrList(live, netlink.FAMILY_V6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, a := range addresses {
+		if a.IP.Equal(k.address) && a.IPNet != nil && a.IPNet.String() == own.String() {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("own /128 address not restored")
+	}
+	rules, err := netlink.RuleList(netlink.FAMILY_V6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, r := range rules {
+		if r.Priority == RouteTable && r.Table == RouteTable && r.Dst != nil && r.Dst.String() == meshid.MeshPrefix.String() {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("own policy rule not restored")
+	}
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardFound, foreignFound := false, false
+	for _, r := range routes {
+		if defaultIPv6Route(r.Dst) && r.Priority == 32767 && r.Type == unix.RTN_UNREACHABLE && r.Protocol == routeProtocol {
+			guardFound = true
+		}
+		if r.Dst != nil && r.Dst.String() == "2001:db8::/64" && r.Protocol == 99 {
+			foreignFound = true
+		}
+	}
+	if !guardFound || !foreignFound {
+		t.Fatalf("guard or foreign route lost: guard=%v foreign=%v", guardFound, foreignFound)
+	}
+	if err := netlink.RouteDel(&foreign); err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.LinkSetAlias(live, "another-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.ReconcileBase(); err == nil {
+		t.Fatal("foreign replacement link accepted")
+	}
+	if err := netlink.LinkSetAlias(live, interfaceOwner); err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.RuleDel(k.rule); err != nil {
+		t.Fatal(err)
+	}
+	conflictRule := netlink.NewRule()
+	conflictRule.Family = netlink.FAMILY_V6
+	conflictRule.Priority = RouteTable
+	conflictRule.Table = 254
+	if err := netlink.RuleAdd(conflictRule); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.ReconcileBase(); err == nil {
+		t.Fatal("foreign rule at reserved priority accepted")
+	}
+	if err := netlink.RuleDel(conflictRule); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.ReconcileBase(); err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.RouteDel(&guard); err != nil {
+		t.Fatal(err)
+	}
+	foreignGuard := guard
+	foreignGuard.Protocol = 99
+	if err := netlink.RouteAdd(&foreignGuard); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.ReconcileBase(); err == nil {
+		t.Fatal("foreign guard route accepted")
+	}
+	if err := netlink.RouteDel(&foreignGuard); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.ReconcileBase(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestKernelRoamingIsolatedNamespace exercises the borrowed IPv4 default:
+// installed in the main table at the reserved priority with the host's
+// transport address as source and the peer's link-local as next hop, refused
+// when a foreign writer holds that priority, withdrawn with the link, and
+// swept from a crashed predecessor.
