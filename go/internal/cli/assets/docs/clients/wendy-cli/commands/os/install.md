@@ -260,7 +260,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | `--storage` | auto | Storage variant: `nvme`/`sd` for raw imaging; AGX Orin recovery requires `nvme` or `emmc` non-interactively |
 | `--no-bmap` | false | Disable bmap-accelerated flashing even when a block map is available |
 
-> **TODO**: Post-flashing Linux devices still need certificate provisioning and Wendy Cloud enrollment if `--pre-enroll` was not used. See [`wendy device setup`](../device/setup.md), [PKI](../../../../pki/), and [Wendy Cloud](https://cloud.wendy.dev).
+> **TODO**: Post-flashing Linux devices still need certificate provisioning and Wendy Cloud enrollment if `--pre-enroll` was not used. See [`wendy device setup`](../device/setup.md), [PKI](../../../../pki/), and [Wendy Cloud](https://cloud.wendy.dev/login).
 ## Agent-driven installation
 
 `wendy install plan` and `wendy install verify` also work under the `wendy os install`
