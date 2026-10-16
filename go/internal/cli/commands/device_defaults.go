@@ -114,6 +114,55 @@ var fetchDefaultCloudAssetsFn = fetchCloudAssets
 var connectDefaultCloudAssetFn = connectCloudAsset
 var fetchDefaultCloudAssetsV2Fn = fetchCloudAssetsV2
 var connectDefaultCloudAssetV2Fn = connectCloudAssetV2
+var refreshDefaultCloudCertificateFn = refreshCertsForAuth
+
+// A saved cloud selector resolves its own tenant session instead of going
+// through pickAuthEntry. Prepare that session before discovery or the lazy
+// tunnel dial can turn an expired certificate into an opaque PKI refusal.
+func prepareDefaultCloudCertificate(ctx context.Context, auth *config.AuthConfig) error {
+	err := ensureFreshCertificateFn(ctx, auth)
+	if err == nil {
+		return nil
+	}
+	notAfter, expiryErr := leafNotAfterFn(auth.Certificates[0].PemCertificate)
+	if expiryErr != nil {
+		return err
+	}
+	if timeNowFn().Before(notAfter) {
+		// Like pickAuthEntry, a refused renewal must not block a certificate
+		// that can still authorize the connection.
+		reportStaleCertificate(err)
+		return nil
+	}
+	if auth.OAuthIssuer == "" || auth.ServiceAccount != "" {
+		return err
+	}
+	// An OAuth refresh token can obtain a new certificate after the old one
+	// expires. Serialize its rotation with API refresh and re-read the selected
+	// session, since another process may already have replaced the certificate.
+	unlock, err := acquireAuthRefreshLock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := reloadOAuthSession(auth); err != nil {
+		return err
+	}
+	notAfter, err = leafNotAfterFn(auth.Certificates[0].PemCertificate)
+	if err != nil {
+		return fmt.Errorf("reading Cloud certificate: %w", err)
+	}
+	if timeNowFn().Before(notAfter) {
+		return nil
+	}
+	err = refreshDefaultCloudCertificateFn(ctx, auth)
+	// Issuance can fail after the refresh token rotates. Persist that token
+	// even on failure so the next attempt can still use the selected session.
+	if saveErr := persistOAuthSession(auth); err == nil {
+		err = saveErr
+	}
+	return err
+}
 
 func connectCloudDeviceSelector(ctx context.Context, selector cloudDeviceSelector) (*SelectedDevice, error) {
 	cfg, err := config.Load()
@@ -123,6 +172,9 @@ func connectCloudDeviceSelector(ctx context.Context, selector cloudDeviceSelecto
 	auth, err := selector.auth(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if err := prepareDefaultCloudCertificate(ctx, auth); err != nil {
+		return nil, fmt.Errorf("preparing Cloud device certificate: %w; run 'wendy auth refresh-certs' or 'wendy auth login'", err)
 	}
 	if selector.TenantUUID != "" {
 		assets, err := fetchDefaultCloudAssetsV2Fn(ctx, auth, true)
