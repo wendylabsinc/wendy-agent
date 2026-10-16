@@ -53,14 +53,14 @@ func verifyBlueZOwner(expected, current string) error {
 type managedObjects map[dbus.ObjectPath]map[string]map[string]dbus.Variant
 
 type candidate struct {
-	device               meshid.Device
+	hint                 [4]byte
 	address, addressType string
 	path                 dbus.ObjectPath
 	psm                  uint16
 }
 
 func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, meshName string, self meshid.Device) []candidate {
-	peers := make(map[meshid.Device]candidate)
+	peers := make(map[string]candidate)
 	for path, ifaces := range objects {
 		if !strings.HasPrefix(string(path), string(adapter)+"/dev_") {
 			continue
@@ -81,22 +81,20 @@ func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, meshName 
 		if !ok {
 			continue
 		}
-		device := meshid.NewDevice(self.Tenant(), adv.Device)
-		if meshid.Compare(device, self) >= 0 {
+		if !mayDial(adv.DeviceHint, self) {
 			continue
 		}
 		if _, _, err := parseAddress(address, kind, adv.PSM); err != nil {
 			continue
 		}
-		if prior, exists := peers[device]; !exists || address < prior.address {
-			peers[device] = candidate{device: device, address: address, addressType: kind, path: path, psm: adv.PSM}
-		}
+		key := kind + ":" + strings.ToUpper(address)
+		peers[key] = candidate{hint: adv.DeviceHint, address: address, addressType: kind, path: path, psm: adv.PSM}
 	}
 	out := make([]candidate, 0, len(peers))
 	for _, p := range peers {
 		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool { return meshid.Compare(out[i].device, out[j].device) < 0 })
+	sort.Slice(out, func(i, j int) bool { return out[i].key() < out[j].key() })
 	return out
 }
 
@@ -190,6 +188,10 @@ func advertisementProperties(uuid string, payload []byte, manager map[string]dbu
 	properties := map[string]*prop.Prop{
 		"Type":        {Value: "peripheral", Writable: false, Emit: prop.EmitFalse},
 		"ServiceData": {Value: map[string]dbus.Variant{uuid: dbus.MakeVariant(payload)}, Writable: false, Emit: prop.EmitFalse},
+		// NOTE (golden16): MinInterval/MaxInterval 160/320 reverted — BlueZ
+		// 5.87 on Jetson/BE202 rejects the advertisement outright
+		// ("Failed to parse advertisement", carrier down fleet-wide on
+		// golden15). Scan governor in provider_linux.go is retained.
 	}
 	if power, ok := advertisementTxPower(manager); ok {
 		properties["TxPower"] = &prop.Prop{Value: power, Writable: false, Emit: prop.EmitFalse}
@@ -202,12 +204,19 @@ func registerAdvertisementWithFallback(properties map[string]*prop.Prop, export 
 		return fmt.Errorf("exporting BLE advertisement: %w", err)
 	}
 	if err := register(); err != nil {
-		if _, requested := properties["TxPower"]; !requested {
+		_, hasPower := properties["TxPower"]
+		_, hasMin := properties["MinInterval"]
+		_, hasMax := properties["MaxInterval"]
+		if !hasPower && !hasMin && !hasMax {
 			return fmt.Errorf("registering BLE advertisement: %w", err)
 		}
-		// A controller or BlueZ version may report support yet reject this
-		// optional request. Retry at the controller's default power.
+		// A controller or BlueZ version may report support yet reject an
+		// optional request (TxPower and/or Min/MaxInterval — golden15
+		// proved intervals alone break BlueZ 5.87 registration). Retry
+		// at the controller's defaults.
 		delete(properties, "TxPower")
+		delete(properties, "MinInterval")
+		delete(properties, "MaxInterval")
 		if exportErr := export(properties); exportErr != nil {
 			return fmt.Errorf("registering BLE advertisement with TxPower: %w; fallback export: %v", err, exportErr)
 		}
@@ -261,3 +270,5 @@ func cleanupBlueZ(bus *dbus.Conn, adapter dbus.ObjectPath, logger *zap.Logger) {
 		logger.Debug("BLE UnregisterAdvertisement failed", zap.Error(err))
 	}
 }
+
+func (p candidate) key() string { return p.addressType + ":" + strings.ToUpper(p.address) }

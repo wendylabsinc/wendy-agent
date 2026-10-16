@@ -45,3 +45,53 @@ func TestBLEServerRevalidatesResumedClient(t *testing.T) {
 		t.Fatal("resumed expired identity accepted")
 	}
 }
+
+func TestBLEDiscoveryAuthenticatesFullUUIDWithCollidingHint(t *testing.T) {
+	peer := selfFixture.UUID()
+	peer[15]--
+	identity := meshid.NewDevice(testTenant, peer)
+	trusted := true
+	credentials := &localmesh.Credentials{Device: selfFixture,
+		Verify: func(_ [][]byte, _ time.Time) (localmesh.Identity, error) {
+			if !trusted {
+				return localmesh.Identity{}, errors.New("untrusted certificate")
+			}
+			return localmesh.Identity{Device: identity}, nil
+		},
+	}
+	r := &runtime{cfg: Config{Credentials: credentials}}
+	config, authenticated, err := r.clientTLS(candidate{hint: deviceHint(peer)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, resumed := range []bool{false, true} {
+		state := tls.ConnectionState{DidResume: resumed}
+		if err := config.VerifyConnection(state); err != nil || *authenticated != identity {
+			t.Fatalf("lower UUID with same hint: %v", err)
+		}
+		identity = selfFixture
+		if err := config.VerifyConnection(state); err == nil {
+			t.Fatal("accepted self identity")
+		}
+		peer[15] += 2
+		identity = meshid.NewDevice(testTenant, peer)
+		if err := config.VerifyConnection(state); err == nil {
+			t.Fatal("accepted higher UUID with same hint")
+		}
+		peer[15] -= 2
+		identity = meshid.NewDevice(otherTenant, peer)
+		if err := config.VerifyConnection(state); err == nil {
+			t.Fatal("accepted other tenant")
+		}
+		identity = lowFixture
+		if err := config.VerifyConnection(state); err == nil {
+			t.Fatal("accepted different discovery hint")
+		}
+		identity = meshid.NewDevice(testTenant, peer)
+		trusted = false
+		if err := config.VerifyConnection(state); err == nil {
+			t.Fatal("accepted untrusted certificate")
+		}
+		trusted = true
+	}
+}

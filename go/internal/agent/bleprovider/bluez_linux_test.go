@@ -35,11 +35,11 @@ func TestCandidatesRequireMatchingServiceDataAndLowerDevice(t *testing.T) {
 		"/org/bluez/hci1/dev_D": {deviceInterface: props("AA:BB:CC:DD:EE:04", "public", uuid, raw)},
 	}
 	got := candidates(objects, "/org/bluez/hci0", uuid, "field", selfFixture)
-	if len(got) != 1 || got[0].device != lowFixture || got[0].address != "AA:BB:CC:DD:EE:01" || got[0].path != "/org/bluez/hci0/dev_A" {
+	if len(got) != 1 || got[0].hint != deviceHint(lowDevice) || got[0].address != "AA:BB:CC:DD:EE:01" || got[0].path != "/org/bluez/hci0/dev_A" {
 		t.Fatalf("candidates = %+v", got)
 	}
-	if got = candidates(objects, "/org/bluez/hci0", uuid, "field", lowFixture); len(got) != 0 {
-		t.Fatalf("higher/equal device dialed: %+v", got)
+	if got = candidates(objects, "/org/bluez/hci0", uuid, "field", lowFixture); len(got) != 1 {
+		t.Fatalf("equal hint must reach authentication: %+v", got)
 	}
 }
 
@@ -168,5 +168,58 @@ func TestAdvertisementRegistrationFallsBackToDefaultPower(t *testing.T) {
 	})
 	if err == nil || registrations != 1 {
 		t.Fatalf("ordinary failure err=%v registrations=%d", err, registrations)
+	}
+
+	// A failure with interval props (e.g. a future re-introduction) must
+	// also fall back to defaults: strip intervals and retry once.
+	withIntervals := advertisementProperties("uuid", []byte{1}, nil)
+	withIntervals["MinInterval"] = &prop.Prop{Value: uint16(160)}
+	withIntervals["MaxInterval"] = &prop.Prop{Value: uint16(320)}
+	registrations = 0
+	err = registerAdvertisementWithFallback(withIntervals, func(map[string]*prop.Prop) error {
+		return nil
+	}, func() error {
+		registrations++
+		if registrations == 1 {
+			return errors.New("BlueZ rejected intervals")
+		}
+		return nil
+	})
+	if err != nil || registrations != 2 {
+		t.Fatalf("interval fallback err=%v registrations=%d", err, registrations)
+	}
+	if _, ok := withIntervals["MinInterval"]; ok {
+		t.Fatal("fallback left MinInterval in place")
+	}
+	if _, ok := withIntervals["MaxInterval"]; ok {
+		t.Fatal("fallback left MaxInterval in place")
+	}
+}
+
+func TestAdvertisementRelaxedIntervalsPresent(t *testing.T) {
+	// golden16: intervals reverted — BlueZ 5.87 rejects them outright.
+	// Advertisement must carry only required props; fallback must strip
+	// any optional interval/power props on registration failure.
+	properties := advertisementProperties("uuid", []byte{1}, nil)
+	if _, ok := properties["MinInterval"]; ok {
+		t.Fatal("MinInterval present (reverted in golden16)")
+	}
+	if _, ok := properties["MaxInterval"]; ok {
+		t.Fatal("MaxInterval present (reverted in golden16)")
+	}
+}
+
+func TestCandidatesDoNotDeduplicateCollidingHints(t *testing.T) {
+	adv, _ := NewAdvertisement(lowDevice, "field", DefaultPSM)
+	raw, _ := adv.MarshalBinary()
+	first := meshDeviceProps(ServiceUUID(testTenant), raw)
+	second := meshDeviceProps(ServiceUUID(testTenant), raw)
+	second["Address"] = dbus.MakeVariant("AA:BB:CC:DD:EE:02")
+	objects := managedObjects{
+		"/org/bluez/hci0/dev_A": {deviceInterface: first},
+		"/org/bluez/hci0/dev_B": {deviceInterface: second},
+	}
+	if peers := candidates(objects, "/org/bluez/hci0", ServiceUUID(testTenant), "field", selfFixture); len(peers) != 2 {
+		t.Fatalf("colliding candidates lost: %+v", peers)
 	}
 }

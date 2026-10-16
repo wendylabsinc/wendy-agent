@@ -3,6 +3,7 @@
 package bleprovider
 
 import (
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"sync"
 	"testing"
 	"time"
@@ -10,7 +11,6 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/google/uuid"
-	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 func meshDeviceProps(uuid string, raw []byte) map[string]dbus.Variant {
@@ -42,7 +42,7 @@ func TestBlueZCachedServiceDataNeedsLiveAdvertisement(t *testing.T) {
 	check(base, 0) // A legacy advertisement or connection can update RSSI.
 	tracker.handle(&dbus.Signal{Name: "org.freedesktop.DBus.Properties.PropertiesChanged", Path: path, Body: []any{deviceInterface, map[string]dbus.Variant{"ServiceData": props["ServiceData"]}, []string{}}}, base)
 	peers, updates := tracker.candidates(objects, base)
-	if len(peers) != 1 || len(updates) != 1 || updates[0] != lowFixture {
+	if len(peers) != 1 || len(updates) != 1 || updates[0] != path {
 		t.Fatalf("live advertisement peers=%+v seen updates=%v", peers, updates)
 	}
 	peers, updates = tracker.candidates(objects, base.Add(time.Second))
@@ -85,18 +85,18 @@ func TestAdvertisementFreshnessTracksLiveMeshAmongOtherAdvertisements(t *testing
 	other, _ := NewAdvertisement(low2, "field", DefaultPSM)
 	otherRaw, _ := other.MarshalBinary()
 	objects[path][deviceInterface] = meshDeviceProps(serviceUUID, otherRaw)
-	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].device != lowFixture {
+	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].hint != deviceHint(lowDevice) {
 		t.Fatalf("cached payload replaced live identity: %+v", got)
 	}
 	changed(path, meshDeviceProps(serviceUUID, otherRaw))
-	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].device != meshid.NewDevice(testTenant, low2) {
+	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].hint != deviceHint(low2) {
 		t.Fatalf("new live identity rejected: %+v", got)
 	}
 	legacy := dbus.MakeVariant(map[string]dbus.Variant{"0000180f-0000-1000-8000-00805f9b34fb": dbus.MakeVariant([]byte{1})})
 	objects[path][deviceInterface]["ServiceData"] = legacy
 	tracker.handle(&dbus.Signal{Name: "org.freedesktop.DBus.Properties.PropertiesChanged", Path: path, Body: []any{deviceInterface, map[string]dbus.Variant{"ServiceData": legacy}, []string{}}}, base)
 	tracker.handle(&dbus.Signal{Name: "org.freedesktop.DBus.Properties.PropertiesChanged", Path: path, Body: []any{deviceInterface, map[string]dbus.Variant{}, []string{"ServiceData"}}}, base)
-	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].device != meshid.NewDevice(testTenant, low2) {
+	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].hint != deviceHint(low2) {
 		t.Fatalf("concurrent legacy advertisement hid recent mesh advert: %+v", got)
 	}
 	if got, _ := tracker.candidates(objects, base.Add(advertisementFreshnessTTL)); len(got) != 0 {
@@ -117,16 +117,16 @@ func TestAdvertisementFreshnessTracksLiveMeshAmongOtherAdvertisements(t *testing
 }
 
 func TestStaleBlueZCacheCannotRefreshRadioSelection(t *testing.T) {
-	uuid, _ := ServiceUUID(64)
-	adv, _ := NewAdvertisement(12, "field", DefaultPSM)
+	uuid := ServiceUUID(testTenant)
+	adv, _ := NewAdvertisement(lowDevice, "field", DefaultPSM)
 	raw, _ := adv.MarshalBinary()
 	path := dbus.ObjectPath("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01")
 	props := meshDeviceProps(uuid, raw)
 	objects := managedObjects{path: {deviceInterface: props}}
 	selection := localmesh.NewPeerSelection(func() localmesh.NodeSnapshot {
-		return localmesh.NodeSnapshot{Links: []localmesh.PeerLink{{Asset: 15, Cost: 512}}}
+		return localmesh.NodeSnapshot{Links: []localmesh.PeerLink{{Device: peerFixture, Cost: 512}}}
 	})
-	r := &runtime{cfg: Config{MeshName: "field", Credentials: &localmesh.Credentials{Asset: 20}, Selection: selection}, uuid: uuid, freshness: newAdvertisementFreshness("/org/bluez/hci0", uuid, "field", 20)}
+	r := &runtime{cfg: Config{MeshName: "field", Credentials: &localmesh.Credentials{Device: selfFixture}, Selection: selection}, uuid: uuid, freshness: newAdvertisementFreshness("/org/bluez/hci0", uuid, "field", selfFixture)}
 	base := time.Now()
 	if got := r.discoveredCandidates(objects, base); len(got) != 0 {
 		t.Fatalf("cached peer before live advertisement: %+v", got)
@@ -134,7 +134,7 @@ func TestStaleBlueZCacheCannotRefreshRadioSelection(t *testing.T) {
 	if !r.discovery.lastMeshSignal.IsZero() {
 		t.Fatal("cached service data refreshed discovery liveness")
 	}
-	if !selection.AllowRadio(15, localmesh.RadioBLE) {
+	if !selection.AllowRadio(peerFixture, localmesh.RadioBLE) {
 		t.Fatal("stale cached BLE peer suppressed an otherwise useful second radio")
 	}
 	r.freshness.observe(path, map[string]dbus.Variant{"ServiceData": props["ServiceData"]}, base)
@@ -144,8 +144,8 @@ func TestStaleBlueZCacheCannotRefreshRadioSelection(t *testing.T) {
 	if !r.discovery.lastMeshSignal.Equal(base) {
 		t.Fatal("live service data did not refresh discovery liveness")
 	}
-	if selection.AllowRadio(15, localmesh.RadioBLE) {
-		t.Fatal("live diverse BLE peer did not influence radio selection")
+	if !selection.AllowRadio(peerFixture, localmesh.RadioBLE) {
+		t.Fatal("unverified hint influenced identity-based radio selection")
 	}
 	if got := r.discoveredCandidates(objects, base.Add(advertisementFreshnessTTL)); len(got) != 0 {
 		t.Fatalf("expired BLE peer retained: %+v", got)
@@ -180,7 +180,7 @@ func TestAdvertisementSignalsAndScansConcurrent(t *testing.T) {
 		}
 	}()
 	wg.Wait()
-	if got, _ := tracker.candidates(objects, at); len(got) != 1 || got[0].device != lowFixture {
+	if got, _ := tracker.candidates(objects, at); len(got) != 1 || got[0].hint != deviceHint(lowDevice) {
 		t.Fatalf("concurrent advertisement lost: %+v", got)
 	}
 }

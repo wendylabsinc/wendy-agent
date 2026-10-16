@@ -33,12 +33,12 @@ func mustFixtureTenant(text string) meshid.Tenant {
 }
 
 func TestAdvertisementRoundTripAndMeshIsolation(t *testing.T) {
-	uuid := ServiceUUID(testTenant)
-	if uuid != testTenant.String() {
-		t.Fatalf("uuid = %s", uuid)
+	serviceUUID := ServiceUUID(testTenant)
+	if serviceUUID != testTenant.String() {
+		t.Fatalf("uuid = %s", serviceUUID)
 	}
 	other, _ := meshid.ParseTenant("11111111-1111-4111-8111-111111111111")
-	if ServiceUUID(other) == uuid {
+	if ServiceUUID(other) == serviceUUID {
 		t.Fatal("tenants share a UUID")
 	}
 	a, err := NewAdvertisement(testDevice, "production.mesh", DefaultPSM)
@@ -63,17 +63,24 @@ func TestAdvertisementRoundTripAndMeshIsolation(t *testing.T) {
 		t.Fatal("accepted truncation")
 	}
 	bad := bytes.Clone(raw)
-	bad[20], bad[21] = 0, 1
+	bad[8], bad[9] = 0, 1
 	if _, err := ParseAdvertisement(bad, "production.mesh"); err == nil {
 		t.Fatal("accepted non-LE PSM")
 	}
-	bad = bytes.Clone(raw)
-	for i := range bad[:16] {
-		bad[i] = 0
+	if total := 3 + 2 + 16 + len(raw); total > 31 {
+		t.Fatalf("legacy advertisement needs %d bytes", total)
 	}
-	if _, err := ParseAdvertisement(bad, "production.mesh"); err == nil {
-		t.Fatal("accepted nil device UUID")
+	// A zero hint is valid; UUIDv7 and many other allocation schemes can
+	// produce equal hints. Authentication must resolve the complete identity.
+	zero, err := NewAdvertisement(uuid.Nil, "production.mesh", DefaultPSM)
+	if err != nil {
+		t.Fatal(err)
 	}
+	raw, _ = zero.MarshalBinary()
+	if _, err := ParseAdvertisement(raw, "production.mesh"); err != nil {
+		t.Fatal(err)
+	}
+
 }
 
 func TestInvalidAdvertisedIdentityAndPSM(t *testing.T) {
@@ -83,9 +90,7 @@ func TestInvalidAdvertisedIdentityAndPSM(t *testing.T) {
 	if ServiceUUID(meshid.Tenant{}) != "" {
 		t.Fatal("accepted zero tenant")
 	}
-	if _, err := NewAdvertisement(uuid.Nil, "mesh", DefaultPSM); err == nil {
-		t.Fatal("accepted nil device")
-	}
+
 	if _, err := NewAdvertisement(peerDevice, "", DefaultPSM); err == nil {
 		t.Fatal("accepted empty mesh")
 	}

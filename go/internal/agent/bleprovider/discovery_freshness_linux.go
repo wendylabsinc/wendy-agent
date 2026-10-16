@@ -66,8 +66,7 @@ func (f *advertisementFreshness) observe(path dbus.ObjectPath, props map[string]
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	device := meshid.NewDevice(f.self.Tenant(), adv.Device)
-	if meshid.Compare(device, f.self) >= 0 {
+	if !mayDial(adv.DeviceHint, f.self) {
 		delete(f.seen, path)
 		return
 	}
@@ -126,11 +125,11 @@ func (f *advertisementFreshness) forget(path dbus.ObjectPath) {
 
 // candidates also returns the devices newly heard since the previous scan.
 // Selection.Seen must follow advertisement events, not each cache poll.
-func (f *advertisementFreshness) candidates(objects managedObjects, at time.Time) ([]candidate, []meshid.Device) {
+func (f *advertisementFreshness) candidates(objects managedObjects, at time.Time) ([]candidate, []dbus.ObjectPath) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	fresh := make(managedObjects)
-	pendingDevices := make(map[meshid.Device]struct{})
+	pendingDevices := make(map[dbus.ObjectPath]struct{})
 	for path, entry := range f.seen {
 		if at.Before(entry.seen) || at.Sub(entry.seen) >= advertisementFreshnessTTL {
 			delete(f.seen, path)
@@ -152,17 +151,16 @@ func (f *advertisementFreshness) candidates(objects managedObjects, at time.Time
 		device["ServiceData"] = dbus.MakeVariant(map[string]dbus.Variant{f.uuid: dbus.MakeVariant(entry.data)})
 		fresh[path] = map[string]map[string]dbus.Variant{deviceInterface: device}
 		if entry.pending {
-			adv, _ := ParseAdvertisement(entry.data, f.meshName)
-			pendingDevices[meshid.NewDevice(f.self.Tenant(), adv.Device)] = struct{}{}
+			pendingDevices[path] = struct{}{}
 			entry.pending = false
 			f.seen[path] = entry
 		}
 	}
 	peers := candidates(fresh, f.adapter, f.uuid, f.meshName, f.self)
-	updates := make([]meshid.Device, 0, len(pendingDevices))
+	updates := make([]dbus.ObjectPath, 0, len(pendingDevices))
 	for _, peer := range peers {
-		if _, pending := pendingDevices[peer.device]; pending {
-			updates = append(updates, peer.device)
+		if _, pending := pendingDevices[peer.path]; pending {
+			updates = append(updates, peer.path)
 		}
 	}
 	return peers, updates
