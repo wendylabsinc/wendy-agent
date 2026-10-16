@@ -19,7 +19,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
-	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -173,6 +172,8 @@ func (p *MicroWendyProvider) mdnsExternalDevice(svc discovery.MDNSService) model
 			"port":     fmt.Sprintf("%d", svc.Port),
 			"mtls":     fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
 			"tenantId": svc.TXTRecords["tenant"],
+			"orgId":    svc.TXTRecords["orgid"],
+			"assetId":  svc.TXTRecords["assetid"],
 		},
 		IsWendyDevice: true,
 	}
@@ -928,6 +929,11 @@ func (p *MicroWendyProvider) ConnectEnrollment(device models.ExternalDevice) (*l
 // renew asks for a fresh Lite operator leaf instead of the stored one.
 var CloudRelayDialer func(ctx context.Context, device models.ExternalDevice, renew bool) (*grpc.ClientConn, context.Context, liteclient.RelayOptions, error)
 
+// LiteIdentityResolver refreshes a session's primary identity for direct
+// LAN/BLE connections and returns device trust separately from the client chain.
+// The commands package owns credential persistence and installs this hook.
+var LiteIdentityResolver func(ctx context.Context, auth *config.AuthConfig) (config.CertificateInfo, string, error)
+
 // connectClient opens a WendyLiteClient connection to the device over serial,
 // LAN or BLE (with mTLS when the device advertises it), or through the Wendy
 // Cloud relay. The caller must Close the client.
@@ -953,7 +959,19 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 		}
 		addr := net.JoinHostPort(ip, port)
 		if device.ConnectionInfo["mtls"] == "true" {
-			if err := connectWithCLIIdentities(ctx, func(cert tls.Certificate, chain string) error {
+			legacy, err := legacyLiteIdentity(device)
+			if err != nil {
+				return nil, err
+			}
+			if legacy != nil {
+				if err := connectWithLegacyCLIIdentities(ctx, legacy.orgID, func(cert tls.Certificate, chain string) error {
+					return client.ConnectWithLegacyAuthenticationContext(ctx, addr, cert, chain, legacy.orgID, legacy.assetID)
+				}); err != nil {
+					return nil, err
+				}
+				return client, nil
+			}
+			if err := connectWithCLIIdentities(ctx, device.ConnectionInfo["tenantId"], func(cert tls.Certificate, chain string) error {
 				if tenant := device.ConnectionInfo["tenantId"]; tenant != "" {
 					leaf, err := x509.ParseCertificate(cert.Certificate[0])
 					if err != nil {
@@ -986,7 +1004,7 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 		psm64, _ := strconv.ParseUint(device.ConnectionInfo["psm"], 10, 16)
 		psm := uint16(psm64)
 		if device.ConnectionInfo["mtls"] == "true" {
-			if err := connectWithCLIIdentities(ctx, func(cert tls.Certificate, chain string) error {
+			if err := connectWithCLIIdentities(ctx, device.ConnectionInfo["tenantId"], func(cert tls.Certificate, chain string) error {
 				return client.ConnectViaBLEWithPKIAuthenticationContext(ctx, address, psm, cert, chain, device.ConnectionInfo["deviceId"])
 			}); err != nil {
 				return nil, err
@@ -1063,51 +1081,131 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 	return client, nil
 }
 
-// connectWithCLIIdentities tries connect once per CLI certificate, since the
-// user may hold identities from several organizations and only one of them is
-// the device's issuer. It reports the failures of every identity it tried:
-// with one certificate per organization, "which one was this device enrolled
-// with" is exactly what the reader needs to see.
-func connectWithCLIIdentities(ctx context.Context, connect func(cert tls.Certificate, chain string) error) error {
-	certInfos, err := loadAllCLICerts()
+type liteLegacyIdentity struct {
+	orgID   int32
+	assetID int32
+}
+
+// Legacy IDs select a trust path; TLS must still authenticate the exact asset.
+// An advertised tenant always selects PKI, even if legacy hints are also present.
+func legacyLiteIdentity(device models.ExternalDevice) (*liteLegacyIdentity, error) {
+	info := device.ConnectionInfo
+	if info["tenantId"] != "" || (info["orgId"] == "" && info["assetId"] == "") {
+		return nil, nil
+	}
+	org, orgErr := strconv.ParseInt(info["orgId"], 10, 32)
+	asset, assetErr := strconv.ParseInt(info["assetId"], 10, 32)
+	if orgErr != nil || assetErr != nil || org <= 0 || asset <= 0 {
+		return nil, fmt.Errorf("legacy Wendy Lite device must advertise a valid organization and asset ID")
+	}
+	return &liteLegacyIdentity{orgID: int32(org), assetID: int32(asset)}, nil
+}
+
+// connectWithCLIIdentities tries eligible operator sessions until one connects.
+// The resolver retains the tenant credential and handles certificate renewal;
+// the separate Cloud relay authority is not used for direct connections.
+func connectWithCLIIdentities(ctx context.Context, advertisedTenant string, connect func(cert tls.Certificate, chain string) error) error {
+	return connectWithScopedCLIIdentities(ctx, advertisedTenant, 0, connect)
+}
+
+func connectWithLegacyCLIIdentities(ctx context.Context, orgID int32, connect func(cert tls.Certificate, chain string) error) error {
+	if orgID <= 0 {
+		return fmt.Errorf("legacy Wendy Lite connection requires an organization ID")
+	}
+	return connectWithScopedCLIIdentities(ctx, "", orgID, connect)
+}
+
+func connectWithScopedCLIIdentities(ctx context.Context, advertisedTenant string, legacyOrg int32, connect func(cert tls.Certificate, chain string) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if LiteIdentityResolver == nil {
+		return fmt.Errorf("wendy-lite provider: Lite operator identity resolver is not available")
+	}
+	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
+		return fmt.Errorf("wendy-lite provider: loading operator sessions: %w", err)
 	}
 	var connectErrs []error
-	for _, certInfo := range certInfos {
+	for i := range cfg.Auth {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		certInfo, err = cloudrelay.LiteOperatorIdentity(certInfo)
-		if err != nil {
-			connectErrs = append(connectErrs, err)
+		auth := &cfg.Auth[i]
+		if len(auth.Certificates) == 0 {
 			continue
 		}
-		keyPEM, err := certInfo.PrivateKeyPEM()
-		if err != nil {
-			return fmt.Errorf("wendy-lite provider: loading client key: %w", err)
+		leaves, err := certs.ParseCertsFromPEM([]byte(auth.Certificates[0].PemCertificate))
+		if err != nil || len(leaves) != 1 {
+			continue
 		}
-		cert, err := certs.TLSKeyPair(certInfo.PemCertificate, certInfo.PemCertificateChain, keyPEM)
-		if err != nil {
-			return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
+		identity, hasIdentity, err := certs.IdentityFromCert(leaves[0])
+		if err != nil || !hasIdentity {
+			continue
 		}
-		if err := connect(cert, certInfo.PemCertificateChain); err != nil {
+		if legacyOrg > 0 {
+			if identity.TenantUUID != "" || identity.OrgID != legacyOrg || identity.EntityType != certs.EntityUser {
+				continue
+			}
+		} else if identity.TenantUUID == "" || !strings.HasPrefix(identity.Principal, "spiffe://wendy.sh/tenant/"+identity.TenantUUID+"/operator/") {
+			continue
+		}
+		// Discovery is only a selection hint. The TLS verifier still checks the
+		// device's authenticated tenant and identity after this filtering.
+		if advertisedTenant != "" && identity.TenantUUID != advertisedTenant {
+			continue
+		}
+		name := auth.Name
+		if name == "" {
+			name = auth.CloudGRPC
+		}
+		certInfo, deviceTrust, err := LiteIdentityResolver(ctx, auth)
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			connectErrs = append(connectErrs, err)
+			connectErrs = append(connectErrs, fmt.Errorf("context %q: %w", name, err))
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		keyPEM, err := certInfo.PrivateKeyPEM()
+		if err != nil {
+			connectErrs = append(connectErrs, fmt.Errorf("context %q: loading Lite client key: %w", name, err))
+			continue
+		}
+		cert, err := certs.TLSKeyPair(certInfo.PemCertificate, certInfo.PemCertificateChain, keyPEM)
+		if err != nil {
+			connectErrs = append(connectErrs, fmt.Errorf("context %q: parsing Lite mTLS certificate: %w", name, err))
+			continue
+		}
+		if err := connect(cert, deviceTrust); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			connectErrs = append(connectErrs, fmt.Errorf("context %q: %w", name, err))
 			continue
 		}
 		return nil
 	}
 
+	if len(connectErrs) == 0 {
+		if legacyOrg > 0 {
+			return fmt.Errorf("no legacy Cloud user login matches organization %d; run 'wendy auth login' for that organization", legacyOrg)
+		}
+		if advertisedTenant != "" {
+			return fmt.Errorf("no operator login matches the device's advertised tenant; sign in to its organization with 'wendy auth login --email <email>'")
+		}
+		return fmt.Errorf("Wendy Lite requires a tenant-scoped operator login; run 'wendy auth login'")
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Wendy Lite connection error")
 	for i, e := range connectErrs {
 		if i == 0 {
-			fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
+			fmt.Fprintf(&b, ": %v", e)
 		} else {
-			fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
+			fmt.Fprintf(&b, "; %v", e)
 		}
 	}
 	return errors.New(b.String())
@@ -1159,19 +1257,4 @@ func connectSerialWithRetry(ctx context.Context, client *liteclient.WendyLiteCli
 		"%w after %d attempts — if this keeps happening, make sure no other process (e.g. `idf.py monitor`, `wendy device camera view`) is using %s, or try unplugging and reconnecting the board",
 		lastErr, serialConnectMaxAttempts, serialPort,
 	)
-}
-
-func loadAllCLICerts() ([]config.CertificateInfo, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, err
-	}
-	var out []config.CertificateInfo
-	for _, auth := range cfg.Auth {
-		out = append(out, auth.Certificates...)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("not logged in (no certificate found)")
-	}
-	return out, nil
 }

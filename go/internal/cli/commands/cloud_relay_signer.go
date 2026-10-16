@@ -17,10 +17,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
-// A request-signing certificate is separate from the ECDSA TLS certificate:
-// Go TLS cannot present the ML-DSA-only credential required for tunnel reqsigs.
-// Until login can obtain both profiles, an explicitly supplied signing pair
-// must belong to exactly the same operator principal as the active session.
+// Tunnel request signatures use the primary operator identity. An explicitly
+// supplied signing pair must belong to the active session's operator principal.
 func tunnelPrincipalSigner(auth *config.AuthConfig) (func([]byte) ([]byte, error), error) {
 	return configuredTunnelSigner(auth, cloudrelay.PrincipalSigner)
 }
