@@ -24,18 +24,23 @@ you can go straight to [device setup](#2-set-up-a-device) and deploy a small app
 
 <Tabs items={['macOS / Linux', 'Windows']} groupId="quickstart-host-os" persist>
 <Tab value="macOS / Linux">
+<TrackQuickstartInstallCopy target="unix">
 
 ```bash
 curl -fsSL https://install.wendy.dev/cli.sh | bash
 wendy --version
 ```
 
+</TrackQuickstartInstallCopy>
 </Tab>
 <Tab value="Windows">
+<TrackQuickstartInstallCopy target="windows">
 
 ```powershell
 winget install WendyLabs.Wendy --source winget
 ```
+
+</TrackQuickstartInstallCopy>
 
 The managed robot VM tour needs macOS or Linux. On Windows, follow device setup
 below or try the [local Docker robot demo](https://wendy.dev/quickstart?target=simulator).
