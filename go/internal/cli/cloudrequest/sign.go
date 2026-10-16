@@ -375,6 +375,13 @@ func (s *Signer) principalRevocationManagementRequest(deviceID string) ([]byte, 
 // target.resource (cloud RequestSigning.md). The type assertion is what keeps
 // payload_type equal to the method's request message.
 var signedResources = map[string]func(tenant string, req proto.Message) (string, bool){
+	cloudpbv2.AppService_UpsertApp_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.UpsertAppRequest)
+		if !ok || in.GetOrganizationId() != tenant || in.GetId() == "" {
+			return "", false
+		}
+		return "org/" + tenant + "/app/" + in.GetId(), true
+	},
 	cloudpbv2.OperatorSessionService_RegisterOperatorLeaf_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
 		in, ok := req.(*cloudpbv2.RegisterOperatorLeafRequest)
 		return "org/" + in.GetOrganizationId() + "/operator-leaf", ok
