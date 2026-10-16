@@ -106,6 +106,7 @@ func (t *VIPTable) Allocate(device meshid.Device) (netip.Addr, error) {
 
 	// Allocate before retiring the stale principal, so the VIP it still owns
 	// is never picked up by the scan below.
+	previousCursor := t.cursor
 	vip, err := t.nextVIPLocked()
 	if err != nil {
 		return netip.Addr{}, err
@@ -121,6 +122,7 @@ func (t *VIPTable) Allocate(device meshid.Device) (netip.Addr, error) {
 	if err := t.persist(); err != nil {
 		// Keep memory and disk identical: a VIP the agent cannot prove it
 		// persisted is a VIP it must not hand out.
+		t.cursor = previousCursor
 		delete(t.entries, id)
 		delete(t.owner, vip)
 		if rekeyed {

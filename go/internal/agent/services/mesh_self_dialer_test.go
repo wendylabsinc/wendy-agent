@@ -14,7 +14,7 @@ import (
 
 func TestOwnVIPUsesLiveIngressAndRevokesOnStop(t *testing.T) {
 	for _, local := range []bool{false, true} {
-		t.Run(map[bool]string{false: "legacy", true: "local-mesh"}[local], func(t *testing.T) {
+		t.Run(map[bool]string{false: "device-dialer", true: "local-mesh"}[local], func(t *testing.T) {
 			d, probes := testDialer()
 			registry := meshingress.NewRegistry()
 			listener, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -33,15 +33,14 @@ func TestOwnVIPUsesLiveIngressAndRevokesOnStop(t *testing.T) {
 				return nil, nil
 			})
 			own := mustDevice(t, rosterTenant, rosterDevice)
-			if local {
-				certPEM, keyPEM := deviceIdentityCertPEM(t, rosterTenant, rosterDevice)
-				d.UpdateIdentity("broker.example:443", 7, 100, certPEM, keyPEM, "")
-			}
+			certPEM, keyPEM := deviceIdentityCertPEM(t, rosterTenant, rosterDevice)
+			d.UpdateIdentity(certPEM, keyPEM, "")
 			dial := func(ctx context.Context) (net.Conn, string, error) {
 				if local {
 					return NewMeshAppDialer(d).DialDevice(ctx, own, port)
 				}
-				return d.DialDevice(ctx, 100, port)
+				conn, mode, err, _ := d.dialSelf(ctx, own, port)
+				return conn, mode, err
 			}
 			// A host listener alone cannot authorize an app port.
 			if conn, _, err := dial(context.Background()); !errors.Is(err, meshingress.ErrPortDenied) {
@@ -91,8 +90,8 @@ func TestOwnVIPIdentityChangeDoesNotRetainOldSelfRoute(t *testing.T) {
 		t.Fatal("previous asset retained self route")
 		return nil, nil
 	})
-	d.UpdateIdentity("broker.example", 8, 200, "", "", "")
-	conn, _, err := d.DialDevice(context.Background(), 100, 8080)
+	d.UpdateIdentity("", "", "")
+	conn, _, err := d.DialTarget(context.Background(), dialerTestTarget, 8080)
 	if err != nil {
 		t.Fatal(err)
 	}

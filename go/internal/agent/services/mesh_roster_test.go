@@ -71,7 +71,7 @@ func provisionedRoster(t *testing.T) *MeshRoster {
 
 func TestRosterLookupNormalizes(t *testing.T) {
 	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{
 			{Name: "Brave Dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice},
@@ -108,7 +108,7 @@ func TestRosterLookupNormalizes(t *testing.T) {
 // directory for its name and asset id but never yields an address.
 func TestRosterEmptyDeviceUUIDIsNotDialable(t *testing.T) {
 	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "legacy-box", AssetId: rosterAssetA}},
 	})
@@ -128,7 +128,7 @@ func TestRosterEmptyDeviceUUIDIsNotDialable(t *testing.T) {
 // component from being hashed or otherwise coerced into an address.
 func TestRosterNonCanonicalDeviceUUIDIsNotDialable(t *testing.T) {
 	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "odd-box", AssetId: rosterAssetA, DeviceUuid: "fleet/box-01"}},
 	})
@@ -143,7 +143,7 @@ func TestRosterNonCanonicalDeviceUUIDIsNotDialable(t *testing.T) {
 
 func TestRosterDuplicateNameIsAmbiguous(t *testing.T) {
 	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{
 			{Name: "Brave Dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice},
@@ -153,11 +153,33 @@ func TestRosterDuplicateNameIsAmbiguous(t *testing.T) {
 	if _, ok := r.Lookup("brave-dolphin"); ok {
 		t.Fatal("duplicate normalized name must resolve to ok=false")
 	}
+	for _, asset := range []string{rosterAssetA, rosterAssetB} {
+		if _, ok := r.LookupAsset(asset); !ok {
+			t.Fatalf("ambiguous display name hid unambiguous asset %s", asset)
+		}
+	}
+}
+
+func TestRosterDiscardsResponseFromPreviousEnrollment(t *testing.T) {
+	r := provisionedRoster(t)
+	oldGeneration := r.generation
+	certPEM, keyPEM := deviceIdentityCertPEM(t, rosterOtherTenant, rosterDevice)
+	r.UpdateIdentity("cloud.example:443", certPEM, keyPEM, "")
+	r.applyResponse(oldGeneration, &cloudpbv2.GetMeshRosterResponse{
+		OrgSlug: "old-tenant",
+		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "camera", AssetId: rosterAssetA, DeviceUuid: rosterDevice}},
+	})
+	if r.OrgSlug() != "" {
+		t.Fatal("stale response restored the old tenant's slug")
+	}
+	if _, ok := r.LookupAsset(rosterAssetA); ok {
+		t.Fatal("stale response relabeled an old tenant asset under the new tenant")
+	}
 }
 
 func TestRosterSlugNormalized(t *testing.T) {
 	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{OrgSlug: "ACME Corp."})
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{OrgSlug: "ACME Corp."})
 	if r.OrgSlug() != "acme-corp" {
 		t.Fatalf("OrgSlug = %q, want acme-corp", r.OrgSlug())
 	}
@@ -169,7 +191,7 @@ func TestRosterSlugNormalized(t *testing.T) {
 // stale tenant.
 func TestRosterUpdateIdentityClearsCache(t *testing.T) {
 	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "brave-dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice}},
 	})
@@ -188,7 +210,7 @@ func TestRosterUpdateIdentityClearsCache(t *testing.T) {
 
 	// The new identity is what the next response is scoped by: its tenant's
 	// device UUIDs parse into dialable entries.
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "other",
 		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "brave-dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice}},
 	})

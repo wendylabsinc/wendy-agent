@@ -13,7 +13,7 @@ import (
 
 func TestMeshAppDialerNeverUsesLegacyOrCloudFallback(t *testing.T) {
 	d, probes := testDialer()
-	peer := testMeshDevice(t)
+	peer := appTestMeshDevice(t)
 	d.SetLocalMeshDialer(func(context.Context, meshid.Device, uint16) (net.Conn, error) {
 		return nil, meshsession.ErrDenied
 	})
@@ -40,7 +40,7 @@ func TestMeshAppDialerNeverUsesLegacyOrCloudFallback(t *testing.T) {
 
 func TestMeshAppDialerRetriesTransientKernelRouteFailure(t *testing.T) {
 	d, probes := testDialer()
-	peer := testMeshDevice(t)
+	peer := appTestMeshDevice(t)
 	attempts := 0
 	d.SetLocalMeshDialer(func(context.Context, meshid.Device, uint16) (net.Conn, error) {
 		attempts++
@@ -61,9 +61,9 @@ func TestMeshAppDialerRetriesTransientKernelRouteFailure(t *testing.T) {
 	}
 }
 
-// testMeshDevice is the fixed device principal used by the mesh app-path
+// appTestMeshDevice is the fixed device principal used by the mesh app-path
 // tests.
-func testMeshDevice(t *testing.T) meshid.Device {
+func appTestMeshDevice(t *testing.T) meshid.Device {
 	t.Helper()
 	device, err := meshid.DeviceFromPrincipal("spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/22222222-2222-4222-8222-222222222222")
 	if err != nil {

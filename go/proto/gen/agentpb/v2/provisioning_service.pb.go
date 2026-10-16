@@ -204,8 +204,14 @@ type ProvisionedResponse struct {
 	PrincipalUri string `protobuf:"bytes,4,opt,name=principal_uri,json=principalUri,proto3" json:"principal_uri,omitempty"`
 	// Absent/false on agents without Cloud-owned guarded reset and recovery.
 	CloudUnenrollmentSupported bool `protobuf:"varint,5,opt,name=cloud_unenrollment_supported,json=cloudUnenrollmentSupported,proto3" json:"cloud_unenrollment_supported,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// The device's Cloud asset UUID, canonical lowercase text. Enrollment
+	// returns it but the agent does not persist it; the roster entry whose
+	// device_uuid matches this device's leaf principal is the runtime source,
+	// so it is empty until the roster has synced. Mesh-keyed callers (build
+	// delivery) address devices by this, not by the numeric asset id.
+	AssetUuid     string `protobuf:"bytes,6,opt,name=asset_uuid,json=assetUuid,proto3" json:"asset_uuid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProvisionedResponse) Reset() {
@@ -271,6 +277,13 @@ func (x *ProvisionedResponse) GetCloudUnenrollmentSupported() bool {
 		return x.CloudUnenrollmentSupported
 	}
 	return false
+}
+
+func (x *ProvisionedResponse) GetAssetUuid() string {
+	if x != nil {
+		return x.AssetUuid
+	}
+	return ""
 }
 
 type StartProvisioningRequest struct {
@@ -738,14 +751,16 @@ const file_wendy_agent_services_v2_provisioning_service_proto_rawDesc = "" +
 	"\x16NotProvisionedResponse\x12?\n" +
 	"\x19acme_enrollment_supported\x18\x01 \x01(\bH\x00R\x17acmeEnrollmentSupported\x88\x01\x01\x127\n" +
 	"\x17unenrollment_completion\x18\x02 \x01(\fR\x16unenrollmentCompletionB\x1c\n" +
-	"\x1a_acme_enrollment_supported\"\xdf\x01\n" +
+	"\x1a_acme_enrollment_supported\"\xfe\x01\n" +
 	"\x13ProvisionedResponse\x12\x1d\n" +
 	"\n" +
 	"cloud_host\x18\x01 \x01(\tR\tcloudHost\x12'\n" +
 	"\x0forganization_id\x18\x02 \x01(\x05R\x0eorganizationId\x12\x19\n" +
 	"\basset_id\x18\x03 \x01(\x05R\aassetId\x12#\n" +
 	"\rprincipal_uri\x18\x04 \x01(\tR\fprincipalUri\x12@\n" +
-	"\x1ccloud_unenrollment_supported\x18\x05 \x01(\bR\x1acloudUnenrollmentSupported\"\xa8\x01\n" +
+	"\x1ccloud_unenrollment_supported\x18\x05 \x01(\bR\x1acloudUnenrollmentSupported\x12\x1d\n" +
+	"\n" +
+	"asset_uuid\x18\x06 \x01(\tR\tassetUuid\"\xa8\x01\n" +
 	"\x18StartProvisioningRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\x05R\x0eorganizationId\x12)\n" +
 	"\x10enrollment_token\x18\x02 \x01(\tR\x0fenrollmentToken\x12\x1d\n" +

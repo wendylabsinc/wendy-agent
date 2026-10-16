@@ -621,7 +621,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cloudHost, orgID, assetID, enrolled := provisioningSvc.ProvisioningInfo()
+			cloudHost, _, _, enrolled := provisioningSvc.ProvisioningInfo()
 			if !enrolled {
 				return
 			}
@@ -655,7 +655,7 @@ func main() {
 				logger.Warn("CA chain PEM unavailable; cannot start tunnel broker (re-provision if this persists)")
 				return
 			}
-			client := services.NewTunnelBrokerClient(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, mtlsPortNum)
+			client := services.NewTunnelBrokerClient(logger, brokerURL, certPEM, keyPEM, chainPEM, mtlsPortNum)
 			client.Run(ctx)
 		}()
 	}
@@ -669,6 +669,7 @@ func main() {
 	// registerAllServices runs after the assignment; if that ever stops being
 	// true, BuildImage reports "no mesh dialer" rather than panicking.
 	var meshDialer *services.MeshDialer
+	var meshRoster *services.MeshRoster
 	// All listeners extract into the same per-app context directories. Share
 	// their locks so a local-socket build cannot race an mTLS build for the same
 	// app and replace its source tree while buildctl is reading it.
@@ -698,19 +699,36 @@ func main() {
 			// Legacy fallback for a CLI that does not put each target's actual
 			// mTLS agent port in PushTarget.
 			TargetAgentPort: uint16(mtlsPortNum),
+			// A PushTarget names a Cloud asset; only this tenant's roster can
+			// say which mesh device that asset is. Read fresh per build: the
+			// roster syncs on its own schedule and enrollment can re-provision
+			// the tenant while the agent runs.
+			ResolveTarget: func(assetUUID string) (services.DeliveryTarget, error) {
+				if meshRoster == nil {
+					return services.DeliveryTarget{}, fmt.Errorf("this agent has no mesh roster yet; cannot resolve asset %s", assetUUID)
+				}
+				entry, ok := meshRoster.LookupAsset(assetUUID)
+				if !ok {
+					return services.DeliveryTarget{}, fmt.Errorf("asset %s is not in this tenant's mesh roster", assetUUID)
+				}
+				device, ok := entry.Device()
+				if !ok {
+					return services.DeliveryTarget{}, fmt.Errorf("asset %s has no mesh device identity", assetUUID)
+				}
+				return services.DeliveryTarget{Device: device, AssetUUID: entry.AssetUUID}, nil
+			},
 			// Read fresh per build rather than captured: a certificate rotated
 			// while the agent runs must be picked up without a restart.
 			//
-			// ExpectingPeer, not the plain client config: the plain one validates
+			// ExpectingDevice, not the plain client config: the plain one validates
 			// the chain but skips hostname verification (device certs carry wendy
 			// URN SANs, not DNS names), so any org-issued certificate could
 			// terminate the registry hop and receive the image. The mesh LAN path
 			// picks its peer from an unauthenticated mDNS TXT record, which is the
 			// spoofing gap this helper was written for.
-			PushTLS: func(targetAssetID int32) (*tls.Config, error) {
+			PushTLS: func(device meshid.Device) (*tls.Config, error) {
 				certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
-				return mtls.NewClientTLSConfigExpectingPeer(certPEM, chainPEM, string(keyData), logger,
-					strconv.FormatInt(int64(targetAssetID), 10))
+				return mtls.NewClientTLSConfigExpectingDevice(certPEM, chainPEM, string(keyData), logger, device)
 			},
 		})
 
@@ -953,7 +971,7 @@ func main() {
 	// chain above sends to ProxyPort. Constructed here — the first point where
 	// cert material (certPEM/chainPEM/keyPEM, just above) and provisioning
 	// info are both in scope — rather than gated on alreadyProvisioned: on an
-	// unenrolled device brokerURL/cert fields are empty, so DialDevice simply
+	// unenrolled device the cert fields are empty, so DialDevice simply
 	// fails closed at runtime with a clear error instead of never starting.
 	cloudHost, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
 	var activeProvisioningIdentity provisioningIdentityTracker
@@ -961,17 +979,13 @@ func main() {
 		activeProvisioningIdentity.Changed(certPEM, chainPEM, keyPEM, orgID, assetID)
 		startConfiguredLocalMesh(certPEM, chainPEM, keyPEM)
 	}
-	brokerURL := os.Getenv("WENDY_BROKER_URL")
-	if brokerURL == "" {
-		brokerURL = brokerURLForCloudHost(cloudHost)
-	}
 	meshMetrics := services.NewMeshMetrics(telemetryBuf, logger)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		meshMetrics.Collect(ctx)
 	}()
-	meshDialer = services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, meshMetrics)
+	meshDialer = services.NewMeshDialer(logger, certPEM, keyPEM, chainPEM, meshMetrics)
 	meshDialer.SetSelfDialer(func(dialCtx context.Context, port uint16) (net.Conn, error) {
 		bounded, cancel := context.WithTimeout(dialCtx, 5*time.Second)
 		defer cancel()
@@ -1020,6 +1034,18 @@ func main() {
 		stats := meshVIPs.Stats()
 		logger.Info("mesh: VIP table loaded", zap.Int("allocated", stats.Allocated), zap.Int("retired", stats.Retired), zap.Int("capacity", stats.Capacity))
 	}
+	meshDialer.SetLocalServiceDialer(func(dialCtx context.Context, peer meshid.Device, port uint16) (net.Conn, error) {
+		localMeshMu.RLock()
+		snapshot := localMeshSnapshot
+		localMeshMu.RUnlock()
+		if snapshot == nil {
+			return nil, meshsession.ErrNoRoute
+		}
+		if _, err := meshsession.Resolve(snapshot(), peer); err != nil {
+			return nil, err
+		}
+		return (&net.Dialer{}).DialContext(dialCtx, "tcp6", net.JoinHostPort(peer.MeshAddress().String(), strconv.Itoa(int(port))))
+	})
 	// VIP dialing is mesh-local only. Without a configured local mesh the
 	// app dialer fails closed with ErrNoRoute rather than falling back to
 	// the asset-addressed cloud relay, which carries no device-principal
@@ -1039,7 +1065,8 @@ func main() {
 	// MeshRoster has no device principal to authenticate with and Sync simply
 	// fails closed (logged, retried) until the device is provisioned, rather
 	// than never starting at all.
-	meshRoster := services.NewMeshRoster(logger, cloudGRPCURLForCloudHost(cloudHost), certPEM, keyPEM, chainPEM)
+	meshRoster = services.NewMeshRoster(logger, cloudGRPCURLForCloudHost(cloudHost), certPEM, keyPEM, chainPEM)
+	provisioningSvcV2.SetRoster(meshRoster)
 	meshBrowse := func(ctx context.Context) ([]models.LANDevice, error) {
 		col, err := discovery.Discover(ctx, discovery.DiscoveryOptions{
 			Types:   []models.InterfaceType{models.InterfaceLAN},
@@ -1072,8 +1099,7 @@ func main() {
 	if alreadyProvisioned {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
-		_, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
-		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
+		advertiseProvisionedMeshIdentity(logger, mtlsPortNum, provisioningSvc)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
 
@@ -1195,11 +1221,7 @@ func main() {
 		// server and tunnel broker above, it consumes cert material, and BLE
 		// first-boot enrollment happens while the agent is running, so the
 		// boot-time snapshot is empty on virtually every new device.
-		freshBrokerURL := os.Getenv("WENDY_BROKER_URL")
-		if freshBrokerURL == "" {
-			freshBrokerURL = brokerURLForCloudHost(cloudHost)
-		}
-		meshDialer.UpdateIdentity(freshBrokerURL, orgID, assetID, certPEM, keyPEM, chainPEM)
+		meshDialer.UpdateIdentity(certPEM, keyPEM, chainPEM)
 		// Same story for the friendly-name roster/resolver: the boot-time
 		// snapshot has no certificate and so no device principal, meaning the
 		// roster cannot authenticate a sync and the resolver rejects every LAN
@@ -1228,7 +1250,7 @@ func main() {
 				logger.Warn("mesh roster resync after provisioning failed", zap.Error(err))
 			}
 		}()
-		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
+		advertiseProvisionedMeshIdentity(logger, mtlsPortNum, provisioningSvc)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 		if agentServer != nil {
 			logger.Info("Device provisioned — shutting down plaintext gRPC port", zap.String("port", agentPort))
@@ -1448,6 +1470,46 @@ func deviceScope(provisioningSvc *services.ProvisioningService) certs.Scope {
 	// "unidentified" — the same grace the mTLS interceptor applies.
 	_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
 	return certs.Scope{OrgID: orgID}
+}
+
+// deviceIdentity reports this device's current tenant and device principal
+// from its provisioning leaf, re-read on every call for the same reason
+// deviceScope reads fresh: enrollment and renewal replace the leaf while the
+// agent runs. A leaf without a tenant SPIFFE principal (legacy chain or an
+// unprovisioned device) yields the zero pair, which the admin service reads
+// as "not enrolled".
+func deviceIdentity(provisioningSvc *services.ProvisioningService) (meshid.Tenant, meshid.Device) {
+	certPEM, _, _ := provisioningSvc.ProvisioningCerts()
+	if certPEM == "" {
+		return meshid.Tenant{}, meshid.Device{}
+	}
+	chain, err := certs.ParseCertsFromPEM([]byte(certPEM))
+	if err != nil || len(chain) == 0 {
+		return meshid.Tenant{}, meshid.Device{}
+	}
+	device, err := meshid.DeviceFromCert(chain[0])
+	if err != nil {
+		return meshid.Tenant{}, meshid.Device{}
+	}
+	return device.Tenant(), device
+}
+
+// advertiseProvisionedMeshIdentity republishes the avahi advertisement with
+// this device's full SPIFFE principal, read from its current leaf. The
+// principal is what mesh peers dial and pin, so a sighting of this device
+// cannot be spoofed by re-advertising someone else's id.
+//
+// A provisioned device whose leaf carries no tenant principal is a broken
+// identity, not a naming detail: advertising a zero or numeric id would put a
+// fake claim at the center of the mesh, so the advertisement is left alone
+// and the failure is logged.
+func advertiseProvisionedMeshIdentity(logger *zap.Logger, mtlsPort int, provisioningSvc *services.ProvisioningService) {
+	_, device := deviceIdentity(provisioningSvc)
+	if device == (meshid.Device{}) {
+		logger.Warn("Provisioned certificate carries no tenant SPIFFE principal; mesh advertisement not updated")
+		return
+	}
+	configpartition.UpdateAvahiForProvisioning(logger, mtlsPort, device.Principal())
 }
 
 // ensureCNIBinDir (re)creates agentcontainerd.CNIBinDir with "bridge" and

@@ -36,7 +36,7 @@ func mustTenant(t *testing.T, tenant string) meshid.Tenant {
 
 func TestResolverMDNSHitShortCircuits(t *testing.T) {
 	roster := provisionedRoster(t)
-	roster.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	roster.applyResponse(roster.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "brave-dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice}},
 	})
@@ -67,7 +67,7 @@ func TestResolverIgnoresForeignTenantOnLAN(t *testing.T) {
 // invented identity.
 func TestResolverFallsBackToRosterWithDeviceUUIDs(t *testing.T) {
 	roster := provisionedRoster(t)
-	roster.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	roster.applyResponse(roster.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{
 			{Name: "calm-otter", AssetId: rosterAssetB, DeviceUuid: rosterDeviceB},
@@ -134,7 +134,7 @@ func TestResolverUpdateIdentityReachesFilter(t *testing.T) {
 
 func TestResolverBrowseErrorFallsBackToRoster(t *testing.T) {
 	roster := provisionedRoster(t)
-	roster.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	roster.applyResponse(roster.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "calm-otter", AssetId: rosterAssetB, DeviceUuid: rosterDeviceB}},
 	})
