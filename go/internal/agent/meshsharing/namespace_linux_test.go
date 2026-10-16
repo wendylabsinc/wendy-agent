@@ -244,6 +244,19 @@ func TestSharingNamespaceBorrowerProcess(t *testing.T) {
 		}
 	}
 	namespaceReady(t, "borrower.ready")
+	namespaceWait(t, "app.denied.checked")
+	if err := hostnetwork.EnsureBridgeInternetAccess("namespace-internet-app", "app0", []net.IP{net.ParseIP("10.42.0.2")}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hostnetwork.RevokeBridgeInternetAccess("namespace-internet-app") })
+	namespaceReady(t, "app.allowed")
+	namespaceWait(t, "app.allowed.checked")
+	if err := hostnetwork.RevokeBridgeInternetAccess("namespace-internet-app"); err != nil {
+		t.Fatal(err)
+	}
+	namespaceReady(t, "app.revoked")
+	namespaceWait(t, "app.revoked.checked")
+	namespaceReady(t, "app.done")
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		policy.mu.Lock()
@@ -287,12 +300,18 @@ func TestSharingPolicyDualStackAcrossIPv6Namespaces(t *testing.T) {
 		}
 	}
 	base := fmt.Sprintf("wmsp%d", os.Getpid())
-	borrower, transit, donor := base+"b", base+"t", base+"d"
-	for _, ns := range []string{borrower, transit, donor} {
+	borrower, transit, donor, app := base+"b", base+"t", base+"d", base+"a"
+	for _, ns := range []string{borrower, transit, donor, app} {
 		run("netns", "add", ns)
 		t.Cleanup(func() { _ = exec.Command("ip", "netns", "del", ns).Run() })
 		run("-n", ns, "link", "set", "lo", "up")
 	}
+	run("-n", borrower, "link", "add", "app0", "type", "veth", "peer", "name", "eth0", "netns", app)
+	run("-n", borrower, "link", "set", "app0", "up")
+	run("-n", borrower, "addr", "add", "10.42.0.1/24", "dev", "app0")
+	run("-n", app, "link", "set", "eth0", "up")
+	run("-n", app, "addr", "add", "10.42.0.2/24", "dev", "eth0")
+	run("-n", app, "route", "add", "default", "via", "10.42.0.1")
 	for i, endpoint := range []string{borrower, donor} {
 		mesh, hop := fmt.Sprintf("wlmp%d", i), fmt.Sprintf("hop%d", i)
 		run("-n", endpoint, "link", "add", mesh, "type", "veth", "peer", "name", hop, "netns", transit)
@@ -444,6 +463,24 @@ func TestSharingPolicyDualStackAcrossIPv6Namespaces(t *testing.T) {
 	}
 	borrowerProcess := start(borrower, "borrower", "TestSharingNamespaceBorrowerProcess")
 	await("borrower.ready", borrowerProcess)
+	for _, stage := range []string{"denied", "allowed", "revoked"} {
+		if stage != "denied" {
+			await("app."+stage, borrowerProcess)
+		}
+		probe := exec.Command("ip", "netns", "exec", app, os.Args[0], "-test.run=^TestSharingNamespaceAppProcess$", "-test.v")
+		allowed := "0"
+		if stage == "allowed" {
+			allowed = "1"
+		}
+		probe.Env = append(os.Environ(), "WENDY_SHARING_ROLE=app", "WENDY_SHARING_APP_ALLOWED="+allowed)
+		if out, err := probe.CombinedOutput(); err != nil {
+			t.Fatalf("app %s: %v: %s", stage, err, out)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "app."+stage+".checked"), []byte("done"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	await("app.done", borrowerProcess)
 	if _, err := io.WriteString(donorProcess.stdin, "withdraw\n"); err != nil {
 		t.Fatal(err)
 	}
