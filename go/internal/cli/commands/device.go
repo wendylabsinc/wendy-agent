@@ -2985,6 +2985,25 @@ func isELFBinary(data []byte) bool {
 	return len(data) >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F'
 }
 
+// isMachOBinary reports the thin and universal Mach-O magic values. A local
+// macOS CLI executable is not a Linux agent binary; accepting it as a generic
+// non-ELF payload would install bytes that systemd cannot execute and strand
+// the device's agent.
+func isMachOBinary(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	switch string(data[:4]) {
+	case "\xfe\xed\xfa\xce", "\xce\xfa\xed\xfe", // 32-bit thin, big/little endian
+		"\xfe\xed\xfa\xcf", "\xcf\xfa\xed\xfe", // 64-bit thin, big/little endian
+		"\xca\xfe\xba\xbe", "\xbe\xba\xfe\xca", // 32-bit universal, big/little endian
+		"\xca\xfe\xba\xbf", "\xbf\xba\xfe\xca": // 64-bit universal, big/little endian
+		return true
+	default:
+		return false
+	}
+}
+
 // checkLocalAgentArtifact validates a --binary payload against the device OS,
 // so a mismatched artifact (a Linux ELF pushed to a Mac, or a macOS zip pushed
 // to a Linux box) is caught locally instead of failing deep inside the agent's
@@ -3003,6 +3022,13 @@ func checkLocalAgentArtifact(data []byte, deviceOS, deviceArch string) error {
 				"(build one with swift/Scripts/Build.sh), not a Linux agent binary", deviceArch)
 		}
 		return errors.New("this device runs macOS; --binary must be a wendy-agent-macos zip app bundle")
+	}
+	if isMachOBinary(data) {
+		osLabel := deviceOS
+		if osLabel == "" {
+			osLabel = "Linux"
+		}
+		return fmt.Errorf("--binary is a macOS Mach-O executable, but this device runs %s; provide the Wendy agent Linux ELF binary", osLabel)
 	}
 
 	if isZipArchive(data) {

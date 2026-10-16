@@ -98,7 +98,7 @@ func TestReportOSUpdateOutcomeWithSlowEngineStatus(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
 				baseline := osUpdateBaseline{preVersion: "WendyOS-0.19.3", recordCleared: true, bootedSlot: "A"}
-				err := reportOSUpdateOutcome(ctx, "127.0.0.1", baseline.preVersion, baseline)
+				err := reportOSUpdateOutcome(ctx, &grpcclient.AgentConnection{Host: "127.0.0.1"}, baseline.preVersion, baseline)
 				if tc.wantErr == "" {
 					if err != nil {
 						t.Fatal(err)
