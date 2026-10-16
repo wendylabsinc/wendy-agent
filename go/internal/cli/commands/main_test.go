@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -34,6 +35,10 @@ func TestMain(m *testing.M) {
 	}
 
 	postStartBrowserAllowed = func() bool { return true }
+	// A test that reaches the Linux QEMU or the EIM install offer without its
+	// own stub fails here instead of running sudo or Homebrew on the host.
+	installLinuxPackagesFn = func(context.Context, []string) error { return errors.New("test ran a Linux package manager") }
+	installEIMFn = func(context.Context) error { return errors.New("test ran Homebrew to install EIM") }
 	// A developer who exported WENDY_DEVICE (as the docs suggest) must not
 	// have it copied into deviceFlag by every test that executes the root
 	// command, and leak from there into later tests.
