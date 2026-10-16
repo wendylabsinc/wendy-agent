@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -719,21 +718,7 @@ func main() {
 				client.Run(ctx)
 				return
 			}
-			brokerURL := os.Getenv("WENDY_BROKER_URL")
-			if brokerURL == "" {
-				brokerURL = brokerURLForCloudHost(cloudHost)
-			}
-			certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
-			keyPEM := string(keyData)
-			for i := range keyData {
-				keyData[i] = 0
-			}
-			if chainPEM == "" {
-				logger.Warn("CA chain PEM unavailable; cannot start tunnel broker (re-provision if this persists)")
-				return
-			}
-			client := services.NewTunnelBrokerClient(logger, brokerURL, certPEM, keyPEM, chainPEM, mtlsPortNum)
-			client.Run(ctx)
+			logger.Warn("Cloud relay requires a Cloud v2 device principal; re-enroll this device")
 		}()
 	}
 
@@ -971,12 +956,23 @@ func main() {
 	var localMeshStart sync.Once
 	var localMeshMu sync.RWMutex
 	var localMeshSnapshot func() localmesh.NodeSnapshot
+	var localMeshCredentials *localmesh.Credentials
 	var localMeshAppClient *meshsession.Client
 	// Persistent VIP table shared by DNS answers, the proxy's reverse
 	// lookup, and every allocation: (tenant UUID, device UUID) ↔ VIP. A
 	// corrupt table file refuses to open rather than silently re-allocating
 	// — recycled VIPs would hijack live flows pinned to their old owners.
 	meshVIPs, vipErr := mesh.OpenVIPTable(filepath.Join(configPath, "mesh-vips.json"))
+	if vipErr == nil {
+		// Enrollment replacement restarts the agent, so retirement must happen
+		// on startup too, before any proxy can resolve a persisted old-tenant VIP.
+		if tenant, _ := deviceIdentity(provisioningSvc); tenant.IsValid() {
+			vipErr = meshVIPs.RetireTenant(tenant)
+			if vipErr != nil {
+				meshVIPs = nil
+			}
+		}
+	}
 	if vipErr != nil {
 		logger.Error("wendy net: VIP table could not be opened; wendy net name answers and proxy dialing are disabled", zap.Error(vipErr))
 	} else {
@@ -987,12 +983,8 @@ func main() {
 		if runtime.GOOS != "linux" {
 			return
 		}
-		if _, err := os.Stat(filepath.Join(configPath, "local-mesh.json")); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				logger.Error("wendy net configuration is inaccessible", zap.Error(err))
-			}
-			return
-		}
+		// Enrollment starts the supervisor even before the first wendy net configure.
+		// The participation policy keeps its carrier runner inert until opt-in.
 		credentials, err := localmesh.NewCredentials(certPEM, chainPEM, keyPEM)
 		if err != nil {
 			logger.Error("wendy net identity unavailable", zap.Error(err))
@@ -1045,8 +1037,8 @@ func main() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for ctx.Err() == nil {
-					err := runConfiguredNetCarriers(ctx, configPath, localmesh.TCPIdentity{
+				runMeshSupervisor(ctx, 5*time.Second, func(ctx context.Context) error {
+					return runConfiguredNetCarriers(ctx, configPath, localmesh.TCPIdentity{
 						Name: name, AgentPort: uint16(mtlsPortNum),
 						Certificate: certPEM, Chain: chainPEM, Key: keyPEM,
 					}, logger, meshCatalog, meshVIPs, meshSharing, func(snapshot func() localmesh.NodeSnapshot) {
@@ -1054,15 +1046,9 @@ func main() {
 						localMeshSnapshot = snapshot
 						localMeshMu.Unlock()
 					})
-					if err != nil && !errors.Is(err, context.Canceled) {
-						logger.Error("configured wendy net stopped", zap.Error(err))
-					}
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(5 * time.Second):
-					}
-				}
+				}, func(err error) {
+					logger.Error("configured wendy net stopped", zap.Error(err))
+				})
 			}()
 		})
 	}
@@ -1124,14 +1110,26 @@ func main() {
 			return nil
 		})
 	})
+	meshDialer.SetLocalServiceDialer(func(dialCtx context.Context, peer meshid.Device, port uint16) (net.Conn, error) {
+		localMeshMu.RLock()
+		snapshot := localMeshSnapshot
+		localMeshMu.RUnlock()
+		if snapshot == nil {
+			return nil, meshsession.ErrNoRoute
+		}
+		if _, err := meshsession.Resolve(snapshot(), peer); err != nil {
+			return nil, err
+		}
+		return (&net.Dialer{}).DialContext(dialCtx, "tcp6", net.JoinHostPort(peer.MeshAddress().String(), strconv.Itoa(int(port))))
+	})
 	// VIP dialing is mesh-local only. Without a configured local mesh the
 	// app dialer fails closed with ErrNoRoute rather than falling back to
 	// the asset-addressed cloud relay, which carries no device-principal
 	// app admission.
-	appDialer := services.NewMeshAppDialer(nil)
-	if _, err := os.Stat(filepath.Join(configPath, "local-mesh.json")); err == nil {
-		appDialer = services.NewMeshAppDialer(meshDialer)
-	}
+	// Keep the dialer attached across first enrollment/configuration. Its local
+	// callback resolves the current runtime on every dial and fails closed while
+	// no admitted route exists; a boot-time file check would disable it forever.
+	appDialer := services.NewMeshAppDialer(meshDialer)
 	meshProxy := mesh.NewProxy(logger, appDialer, meshMetrics, meshVIPs)
 	// The proxy listens on bridge addresses because container REDIRECT traffic
 	// cannot reach a loopback-only listener. It accepts only mesh VIP targets;
@@ -1356,10 +1354,8 @@ func main() {
 		// boot snapshot. Retire every VIP slot outside the new tenant (they
 		// are never re-allocated) and re-point DNS at the new scope.
 		if newTenant, ok := meshRoster.OwnTenant(); ok && meshVIPs != nil {
-			if meshTenant != (meshid.Tenant{}) && newTenant != meshTenant {
-				if err := meshVIPs.RetireTenant(newTenant); err != nil {
-					logger.Warn("wendy net: retiring VIPs outside the new tenant failed", zap.Error(err))
-				}
+			if err := meshVIPs.RetireTenant(newTenant); err != nil {
+				logger.Error("wendy net: retiring VIPs outside the new tenant failed; VIP resolution is disabled", zap.Error(err))
 			}
 			meshTenant = newTenant
 			if meshDNS != nil {
@@ -1703,25 +1699,14 @@ func ensureCNIBinDir(logger *zap.Logger) {
 	}
 }
 
-func brokerURLForCloudHost(cloudHost string) string {
-	host, port, err := net.SplitHostPort(cloudHost)
-	if err == nil {
-		if port == "443" {
-			return cloudHost
-		}
-		return net.JoinHostPort(host, "50052")
-	}
-	return net.JoinHostPort(cloudHost, "50052")
-}
-
-// cloudGRPCURLForCloudHost returns the cloud API gRPC target for the mesh
-// roster RPC, derived from the provisioning cloud host the same way the broker
-// URL is. If WENDY_CLOUD_URL is set it wins (dev/self-host override).
+// cloudGRPCURLForCloudHost retains the enrolled Cloud endpoint (or explicit
+// API override). MeshRoster selects the device mTLS listener with DeviceEndpoint;
+// the old broker's port mapping is not part of the Cloud v2 contract.
 func cloudGRPCURLForCloudHost(cloudHost string) string {
 	if v := os.Getenv("WENDY_CLOUD_URL"); v != "" {
 		return v
 	}
-	return brokerURLForCloudHost(cloudHost) // same host:port; MeshRosterService is served there
+	return cloudHost
 }
 
 func handleUtilityCommand(args []string) (bool, int) {

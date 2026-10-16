@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"net"
 	"os"
 	"os/exec"
@@ -163,5 +164,34 @@ func TestLANRejectsSpoofedHelloGate(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "PASS") {
 		t.Fatalf("attacker did not pass: %s", out)
+	}
+}
+
+func TestTCPPrefaceAllowsExplicitNilUUID(t *testing.T) {
+	tenant, err := meshid.ParseTenant("00000000-0000-0000-0000-000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := meshid.ParseDevice(tenant, "00000000-0000-0000-0000-000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, reader := net.Pipe()
+	defer writer.Close()
+	defer reader.Close()
+	done := make(chan error, 1)
+	go func() { done <- writeTCPPreface(writer, device) }()
+	id, err := readTCPPreface(reader, tenant)
+	if err != nil || id != device.UUID() {
+		t.Fatalf("nil UUID preface: %s, %v", id, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTCPPreface(writer, meshid.Device{}); err == nil {
+		t.Fatal("absent device accepted")
+	}
+	if _, err := readTCPPreface(reader, meshid.Tenant{}); err == nil {
+		t.Fatal("absent tenant accepted")
 	}
 }

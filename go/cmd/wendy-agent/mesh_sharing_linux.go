@@ -29,6 +29,7 @@ type meshSharingManager struct {
 	done           chan struct{}
 	state          services.LocalMeshRuntimeStatus
 	pendingCleanup interface{ Close() error }
+	carriers       meshCarrierHealth
 }
 
 type sharingNode struct {
@@ -50,7 +51,7 @@ func (m *meshSharingManager) Status() services.LocalMeshRuntimeStatus {
 	m.mu.Lock()
 	state := m.state
 	m.mu.Unlock()
-	return state
+	return m.carriers.status(state)
 }
 
 func (m *meshSharingManager) setState(state services.LocalMeshRuntimeStatus) {

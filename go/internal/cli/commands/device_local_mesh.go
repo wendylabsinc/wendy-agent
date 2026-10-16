@@ -12,7 +12,7 @@ import (
 func newDeviceLocalMeshCmd() *cobra.Command {
 	root := &cobra.Command{Use: "wendy-net", Aliases: []string{"local-mesh", "nan-mesh"}, Short: "Configure Wendy Net carriers and Internet sharing"}
 	configure := &cobra.Command{Use: "configure", Short: "Update selected Wendy Net settings", Args: cobra.NoArgs}
-	configure.Flags().Bool("participate", false, "Participate in the wendy net")
+	configure.Flags().Bool("participate", false, "Join and relay the wendy net (false stops all carriers; saved carrier choices are retained)")
 	configure.Flags().Bool("roam", false, "Use Wendy Net Internet when an independent uplink is unavailable")
 	configure.Flags().Bool("share-uplink", false, "Offer an independent uplink to the net")
 	configure.Flags().Bool("nan", false, "Enable Wi-Fi Aware NAN as a net carrier")

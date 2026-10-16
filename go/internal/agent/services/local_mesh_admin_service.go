@@ -83,7 +83,7 @@ func (s *LocalMeshAdminService) read(device meshid.Device) (meshsharing.Config, 
 
 func (s *LocalMeshAdminService) response(sharing meshsharing.Config, carriers localmesh.TCPConfig) *pb.LocalMeshStatus {
 	state, detail := "disabled", "Wendy net is disabled."
-	if sharing.Participate || carriers.NAN || carriers.BLE || carriers.Ethernet || carriers.InfrastructureWiFi || carriers.Listen != "" {
+	if sharing.Participate {
 		state, detail = "pending-runtime", "Configuration is saved; awaiting runtime state."
 	}
 	out := &pb.LocalMeshStatus{Configured: &pb.LocalMeshConfiguration{
