@@ -24,6 +24,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/pkicorepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -401,7 +402,10 @@ var signedResources = map[string]func(tenant string, req proto.Message) (string,
 	},
 	cloudpbv2.AppService_UpsertApp_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
 		in, ok := req.(*cloudpbv2.UpsertAppRequest)
-		return "org/" + in.GetOrganizationId() + "/app/" + in.GetId(), ok
+		if !ok || in.GetOrganizationId() != tenant || in.GetId() == "" {
+			return "", false
+		}
+		return "org/" + tenant + "/app/" + in.GetId(), true
 	},
 	// Ruled 2026-10-13 (WDY-3660); cloud's RequestSigning.md row follows.
 	cloudpbv2.RelayMcpService_OpenRelaySession_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
