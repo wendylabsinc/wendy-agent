@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -28,7 +27,7 @@ func parseEvent(raw string) (string, map[string]string) {
 	return fields[0], values
 }
 
-// decodePresence parses a NAN presence claim: "wendy-nan:2:<device-uuid>".
+// decodePresence parses a NAN presence claim: "wendy-nan:1:<device-uuid>".
 // The claim is untrusted until the peer's enrolled certificate pins the full
 // device principal during the QUIC handshake.
 func decodePresence(tenant meshid.Tenant, ssi string) (meshid.Device, error) {
@@ -38,14 +37,14 @@ func decodePresence(tenant meshid.Tenant, ssi string) (meshid.Device, error) {
 	}
 	var version int
 	var text string
-	if _, err = fmt.Sscanf(string(b), "wendy-nan:%d:%36s", &version, &text); err != nil || version != 2 {
+	if _, err = fmt.Sscanf(string(b), "wendy-nan:%d:%36s", &version, &text); err != nil || version != 1 {
 		return meshid.Device{}, errors.New("invalid peer presence")
 	}
 	peer, err := meshid.ParseDevice(tenant, text)
-	if err != nil || peer.UUID() == uuid.Nil {
+	if err != nil {
 		return meshid.Device{}, errors.New("invalid peer presence")
 	}
-	if string(b) != fmt.Sprintf("wendy-nan:2:%s", peer.UUID()) {
+	if string(b) != fmt.Sprintf("wendy-nan:1:%s", peer.UUID()) {
 		return meshid.Device{}, errors.New("noncanonical peer presence")
 	}
 	return peer, nil

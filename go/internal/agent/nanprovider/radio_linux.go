@@ -152,7 +152,7 @@ func disconnectedPeer(v map[string]string, local string, active map[string]*radi
 
 // runRadio runs all NDP responses on a persistent local control socket so it
 // meets the firmware deadline. Discovery claims remain untrusted until QUIC TLS.
-func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPeer, health <-chan radioHealth, selection *localmesh.PeerSelection, logger *zap.Logger) error {
+func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPeer, health <-chan radioHealth, selection *localmesh.PeerSelection, allowSoftReset bool, logger *zap.Logger, status func(localmesh.CarrierStatus)) error {
 	control, err := openRadio()
 	if err != nil {
 		return err
@@ -191,7 +191,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 	}
 	local := iface.HardwareAddr.String()
 	defer drainRadio(control, rawEvents, local, "", logger)
-	ssi := hex.EncodeToString([]byte("wendy-nan:2:" + ident.UUID().String()))
+	ssi := hex.EncodeToString([]byte("wendy-nan:1:" + ident.UUID().String()))
 	pub, err := control.command("NAN_PUBLISH service_name=wendy.mesh.v1 sync=1 data_path=1 ttl=0 ssi=" + ssi)
 	if err != nil {
 		return err
@@ -208,11 +208,16 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 		return fmt.Errorf("invalid NAN subscribe handle %q", sub)
 	}
 	defer control.command("NAN_CANCEL_SUBSCRIBE subscribe_id=" + sub)
+	if status != nil {
+		status(localmesh.CarrierStatus{Ready: true})
+	}
 	known := map[string]meshid.Device{}
 	attempts := map[string]time.Time{}
 	active := map[string]*radioLink{}
 	lastProbe := time.Now()
 	recovery := radioRecovery{}
+	coldRecovery := coldNDPRecovery{}
+	warnedWarmRecovery := false
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	emit := func(p radioPeer) {
@@ -271,9 +276,28 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 			for _, link := range active {
 				anyHealthy = anyHealthy || link.healthy
 			}
-			recovery.observe(time.Now(), anyHealthy)
-			if recovery.expired(time.Now()) {
-				return fmt.Errorf("NAN data recovery: repeated replacement NDPs without authenticated traffic; cycling owned NAN session after staggered deadline")
+			now := time.Now()
+			recovery.observe(now, anyHealthy)
+			if recovery.expired(now) {
+				if allowSoftReset {
+					return fmt.Errorf("NAN data recovery: repeated replacement NDPs without authenticated traffic: %w", errSoftNANRecovery)
+				}
+				if !warnedWarmRecovery {
+					logger.Warn("NAN remains degraded after bounded soft recovery; preserving supplicant and Wi-Fi")
+					warnedWarmRecovery = true
+				}
+			}
+			if traffic, err := ndiTrafficSnapshot(); err == nil {
+				coldRecovery.observe(now, traffic)
+			}
+			if coldRecovery.ready(now, anyHealthy) {
+				logger.Warn("NAN connected repeatedly without an authenticated data path", zap.Int("paths_since_last_receive", coldRecovery.paths), zap.Bool("received_traffic", coldRecovery.hadRX), zap.Bool("soft_reset_allowed", allowSoftReset))
+				if allowSoftReset {
+					if !coldRecovery.hadRX {
+						return fmt.Errorf("%w: %w", errSoftNANRecovery, errNoRXNANRecovery)
+					}
+					return errSoftNANRecovery
+				}
 			}
 			if time.Since(lastProbe) >= 5*time.Second {
 				if pong, err := control.command("PING"); err != nil || pong != "PONG" {
@@ -422,6 +446,9 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 			}
 			active[p.NMI] = &radioLink{peer: p, since: time.Now()}
 			recovery.connected()
+			if traffic, err := ndiTrafficSnapshot(); err == nil {
+				coldRecovery.connected(time.Now(), traffic)
+			}
 			emit(p)
 		case "NAN-NDP-DISCONNECTED":
 			if p, ok := disconnectedPeer(v, local, active); ok {
