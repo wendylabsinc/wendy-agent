@@ -124,3 +124,83 @@ func TestDiscoveryRestartIsBoundedAfterFailure(t *testing.T) {
 		t.Fatalf("bounded retry did not occur: %d", attempts)
 	}
 }
+
+func TestDiscoveryRestartFailureDegradesWithoutDroppingPeers(t *testing.T) {
+	base := time.Unix(1_000, 0)
+	peer := fixtureDevice("00000000-0000-4000-8000-000000000010")
+	node := &recoveryTestNode{links: []localmesh.PeerLink{{Device: peer, Cost: LinkCost}}}
+	failed := errors.New("controller busy")
+	var updates []localmesh.CarrierStatus
+	var attempts int
+	r := &runtime{
+		cfg: Config{Node: node, TargetPeers: 3, Logger: zap.NewNop(), Status: func(s localmesh.CarrierStatus) {
+			updates = append(updates, s)
+		}},
+		active: map[meshid.Device]struct{}{peer: {}},
+		restartScan: func(context.Context, *dbus.Conn, dbus.ObjectPath) error {
+			attempts++
+			if attempts == 1 {
+				return failed
+			}
+			return nil
+		},
+	}
+	r.discovery.observed(base)
+	first := base.Add(discoverySilenceLimit)
+	r.maybeRestartDiscovery(context.Background(), nil, "/org/bluez/hci0", first)
+	if len(updates) != 1 || !updates[0].Ready || !errors.Is(updates[0].Err, failed) {
+		t.Fatalf("discovery failure did not degrade local readiness: %+v", updates)
+	}
+	if len(r.active) != 1 || r.blePeerCount() != 1 {
+		t.Fatal("discovery failure removed an established peer")
+	}
+	// A normal governor pass does not clear the error, and the failed restart
+	// retains its original cooldown rather than resetting the provider/ACLs.
+	if !r.governDiscovery(context.Background(), nil, "/org/bluez/hci0") {
+		t.Fatal("partial peer complement unexpectedly paused discovery")
+	}
+	r.maybeRestartDiscovery(context.Background(), nil, "/org/bluez/hci0", first.Add(time.Second))
+	if attempts != 1 || len(updates) != 1 || !errors.Is(r.discoveryErr, failed) {
+		t.Fatalf("failure disappeared or retried early: attempts=%d updates=%+v", attempts, updates)
+	}
+	// A deliberately paused provider neither attempts recovery nor falsely
+	// clears the error. Unpausing permits the next bounded session restart.
+	r.scanPaused = true
+	r.maybeRestartDiscovery(context.Background(), nil, "/org/bluez/hci0", first.Add(discoveryRestartPeriod))
+	if attempts != 1 || len(updates) != 1 {
+		t.Fatal("paused discovery changed health or restarted")
+	}
+	r.scanPaused = false
+	r.maybeRestartDiscovery(context.Background(), nil, "/org/bluez/hci0", first.Add(discoveryRestartPeriod))
+	if attempts != 2 || len(updates) != 2 || !updates[1].Ready || updates[1].Err != nil || r.discoveryErr != nil {
+		t.Fatalf("successful session restart did not restore readiness: %+v", updates)
+	}
+	if len(r.active) != 1 || r.blePeerCount() != 1 {
+		t.Fatal("discovery recovery removed an established peer")
+	}
+}
+
+func TestDiscoveryHealthIgnoresCancellationAndPeerAbsence(t *testing.T) {
+	var updates []localmesh.CarrierStatus
+	r := &runtime{cfg: Config{Node: &recoveryTestNode{}, TargetPeers: 3, Status: func(s localmesh.CarrierStatus) {
+		updates = append(updates, s)
+	}}}
+	// No first live advertisement: do not turn a healthy isolated node into a
+	// radio failure or attempt a restart based only on missing peers.
+	r.maybeRestartDiscovery(context.Background(), nil, "/org/bluez/hci0", time.Unix(1_000, 0))
+	if len(updates) != 0 {
+		t.Fatalf("peer absence changed local health: %+v", updates)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.reportDiscoveryHealth(ctx, context.Canceled)
+	if len(updates) != 0 || r.discoveryErr != nil {
+		t.Fatal("provider cancellation reported a discovery failure")
+	}
+	failed := errors.New("scan unavailable")
+	r.reportDiscoveryHealth(context.Background(), failed)
+	r.reportDiscoveryHealth(ctx, nil)
+	if len(updates) != 1 || !errors.Is(r.discoveryErr, failed) {
+		t.Fatal("canceled recovery cleared the discovery failure")
+	}
+}

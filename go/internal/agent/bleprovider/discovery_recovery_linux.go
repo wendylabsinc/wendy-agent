@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 )
 
 const (
@@ -22,6 +23,20 @@ const (
 type discoveryRecovery struct {
 	lastMeshSignal time.Time
 	lastRestart    time.Time
+}
+
+// Discovery failures degrade local readiness without dropping the listener,
+// advertisement or existing ACLs. Only a successful discovery operation clears
+// this error: a successful cached object read says nothing about controller I/O.
+// Called only by the scan loop; peer absence alone is not a local failure.
+func (r *runtime) reportDiscoveryHealth(ctx context.Context, err error) {
+	if ctx.Err() != nil || (err == nil && r.discoveryErr == nil) {
+		return
+	}
+	r.discoveryErr = err
+	if r.cfg.Status != nil {
+		r.cfg.Status(localmesh.CarrierStatus{Ready: true, Err: err})
+	}
 }
 
 func (d *discoveryRecovery) observed(at time.Time) {

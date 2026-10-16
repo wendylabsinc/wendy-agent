@@ -26,7 +26,8 @@ type Config struct {
 	TargetPeers int    // zero selects DefaultTargetPeers
 	AdapterPath string // empty selects the first advertising-capable BlueZ adapter
 	Logger      *zap.Logger
-	// Status receives local setup readiness/failure, not peer reachability.
+	// Status receives local setup readiness and discovery failures/recovery,
+	// not peer reachability. Discovery failures preserve established links.
 	// The optional callback must return promptly.
 	Status func(localmesh.CarrierStatus)
 }
