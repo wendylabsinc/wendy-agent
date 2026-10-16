@@ -10,8 +10,7 @@ export type DocsInstallCopyLabel =
   | 'wendy-agent for Linux'
   | 'wendy-agent for Mac';
 export type DocsAnalyticsLocation =
-  | 'docs_get_started_cli_install_command'
-  | 'docs_get_started_agent_install_command'
+  | 'docs_quickstart_cli_install_command'
   | 'docs_install_scripts_dialog';
 
 export type DocsAnalyticsEvents = {
