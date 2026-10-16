@@ -3,7 +3,6 @@
 package localmesh_test
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
-	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 )
 
 func TestLANForwardEndpoint(t *testing.T) {
@@ -99,7 +97,7 @@ func TestLANForwardPolicyComposition(t *testing.T) {
 					exec.Command("iptables", "-F", chain).Run()
 				}
 			}()
-			var policy *localmesh.HostPolicy
+			var policy *compositionForwardingOwner
 			var err error
 			if !c.policyFirst {
 				if err = hostnetwork.InitMeshChain(); err != nil {
@@ -107,7 +105,7 @@ func TestLANForwardPolicyComposition(t *testing.T) {
 				}
 			}
 			if !c.lanOnly {
-				policy, err = localmesh.NewHostPolicy(context.Background(), 460)
+				policy, err = newCompositionForwardingOwner()
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -255,7 +253,7 @@ func TestLANForwardPolicyComposition(t *testing.T) {
 				}
 			}
 
-			policy, err = localmesh.NewHostPolicy(context.Background(), 460)
+			policy, err = newCompositionForwardingOwner()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -292,4 +290,18 @@ func TestLANForwardPolicyComposition(t *testing.T) {
 
 		})
 	}
+}
+
+// Sharing and LAN projection independently own the common forwarding switch.
+// Exercise their reference counting without installing obsolete raw IPv4 mesh policy.
+type compositionForwardingOwner struct{}
+
+func newCompositionForwardingOwner() (*compositionForwardingOwner, error) {
+	if err := hostnetwork.AcquireForwarding("mesh-sharing-composition-test"); err != nil {
+		return nil, err
+	}
+	return &compositionForwardingOwner{}, nil
+}
+func (*compositionForwardingOwner) Close() error {
+	return hostnetwork.ReleaseForwarding("mesh-sharing-composition-test")
 }

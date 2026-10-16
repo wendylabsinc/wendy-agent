@@ -1,6 +1,7 @@
 package meshcatalog
 
 import (
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"net"
 	"testing"
 	"time"
@@ -11,9 +12,9 @@ import (
 
 func TestRouteChurnKeepsIndependentSignedServiceLeases(t *testing.T) {
 	f := newFixture(t)
-	viewer, cache := f.newCatalog(t, 533, "default", nil, nil)
-	origin, _ := f.newCatalog(t, 535, "default", nil, nil)
-	if _, err := cache.Put(f.creds[535].Certificate.Certificate, f.now); err != nil {
+	viewer, cache := f.newCatalog(t, p533, "default", nil, nil)
+	origin, _ := f.newCatalog(t, p535, "default", nil, nil)
+	if _, err := cache.Put(f.creds[p535].Certificate.Certificate, f.now); err != nil {
 		t.Fatal(err)
 	}
 	first := testSpec()
@@ -29,9 +30,9 @@ func TestRouteChurnKeepsIndependentSignedServiceLeases(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	view := bridgeRouteView(t, f.now, 535)
+	view := bridgeRouteView(t, f.now, p535)
 	bridge, err := NewMDNSBridge(AppScope{AppID: "com.wendy.browse", AppIP: net.IPv4(10, 77, 0, 2), BridgeIndex: 7},
-		viewer, func(string, Record) bool { return true }, func(SignedRecord) {},
+		viewer, testVIPs(t), func(string, Record) bool { return true }, func(SignedRecord) {},
 		func() localmesh.NodeSnapshot { return view })
 	if err != nil {
 		t.Fatal(err)
@@ -92,9 +93,9 @@ func TestRouteChurnKeepsIndependentSignedServiceLeases(t *testing.T) {
 
 func TestRouteHealWaitsForOriginCatalogSnapshot(t *testing.T) {
 	f := newFixture(t)
-	viewer, cache := f.newCatalog(t, 533, "default", nil, nil)
-	origin, _ := f.newCatalog(t, 535, "default", nil, nil)
-	if _, err := cache.Put(f.creds[535].Certificate.Certificate, f.now); err != nil {
+	viewer, cache := f.newCatalog(t, p533, "default", nil, nil)
+	origin, _ := f.newCatalog(t, p535, "default", nil, nil)
+	if _, err := cache.Put(f.creds[p535].Certificate.Certificate, f.now); err != nil {
 		t.Fatal(err)
 	}
 	wire, err := origin.Publish(testSpec(), f.now)
@@ -114,16 +115,16 @@ func TestRouteHealWaitsForOriginCatalogSnapshot(t *testing.T) {
 	if _, err := viewer.Accept(wire, f.now); err != nil {
 		t.Fatal(err)
 	}
-	view := bridgeRouteView(t, f.now, 535)
+	view := bridgeRouteView(t, f.now, p535)
 	bridge, err := NewMDNSBridge(AppScope{AppID: "com.wendy.browse", AppIP: net.IPv4(10, 77, 0, 2), BridgeIndex: 7},
-		viewer, func(string, Record) bool { return true }, func(SignedRecord) {},
+		viewer, testVIPs(t), func(string, Record) bool { return true }, func(SignedRecord) {},
 		func() localmesh.NodeSnapshot { return view })
 	if err != nil {
 		t.Fatal(err)
 	}
 	ready := false
 	invalidations := 0
-	bridge.SetRemoteSync(func(int32) bool { return ready }, func(int32) {
+	bridge.SetRemoteSync(func(meshid.Device) bool { return ready }, func(meshid.Device) {
 		invalidations++
 		ready = false
 	})

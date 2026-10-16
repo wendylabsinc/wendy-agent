@@ -13,9 +13,9 @@ import (
 
 func TestLANProjectionSurvivesBabelRouteLossAndWithdrawsOnGoodbye(t *testing.T) {
 	f := newFixture(t)
-	local, identities := f.newCatalog(t, 533, "default", nil, nil)
-	remote, _ := f.newCatalog(t, 535, "default", nil, nil)
-	if _, err := identities.Put(f.creds[535].Certificate.Certificate, f.now); err != nil {
+	local, identities := f.newCatalog(t, p533, "default", nil, nil)
+	remote, _ := f.newCatalog(t, p535, "default", nil, nil)
+	if _, err := identities.Put(f.creds[p535].Certificate.Certificate, f.now); err != nil {
 		t.Fatal(err)
 	}
 	w, err := remote.Publish(testSpec(), f.now)
@@ -27,7 +27,7 @@ func TestLANProjectionSurvivesBabelRouteLossAndWithdrawsOnGoodbye(t *testing.T) 
 	}
 	var view localmesh.NodeSnapshot
 	bridge, err := NewMDNSBridge(AppScope{AppID: "com.wendy.browse", AppIP: net.ParseIP("10.42.2.2"), BridgeIndex: 8},
-		local, func(string, Record) bool { return true }, func(SignedRecord) {}, func() localmesh.NodeSnapshot { return view })
+		local, testVIPs(t), func(string, Record) bool { return true }, func(SignedRecord) {}, func() localmesh.NodeSnapshot { return view })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestLANProjectionSurvivesBabelRouteLossAndWithdrawsOnGoodbye(t *testing.T) 
 	if len(added) != 4 || len(gone) != 0 || granted != 1 {
 		t.Fatalf("LAN service without Babel: added=%d gone=%d grants=%d", len(added), len(gone), granted)
 	}
-	view = bridgeRouteView(t, f.now, 535)
+	view = bridgeRouteView(t, f.now, p535)
 	added, gone = project(f.now.Add(2*time.Second), 8)
 	if len(added) != 4 || len(gone) != 0 || granted != 1 {
 		t.Fatalf("mesh route up changed LAN grant: added=%d gone=%d grants=%d", len(added), len(gone), granted)
@@ -94,10 +94,10 @@ func TestLANProjectionSurvivesBabelRouteLossAndWithdrawsOnGoodbye(t *testing.T) 
 
 func TestLANProjectionCoexistsWithNativePublisherOfSameServiceType(t *testing.T) {
 	f := newFixture(t)
-	catalog, _ := f.newCatalog(t, 533, "default", nil, nil)
+	catalog, _ := f.newCatalog(t, p533, "default", nil, nil)
 	appIP := net.ParseIP("10.42.2.2")
 	bridge, err := NewMDNSBridge(AppScope{AppID: "com.wendy.browse", AppIP: appIP, BridgeIndex: 8},
-		catalog, func(string, Record) bool { return true }, func(SignedRecord) {}, func() localmesh.NodeSnapshot { return localmesh.NodeSnapshot{} })
+		catalog, testVIPs(t), func(string, Record) bool { return true }, func(SignedRecord) {}, func() localmesh.NodeSnapshot { return localmesh.NodeSnapshot{} })
 	if err != nil {
 		t.Fatal(err)
 	}
