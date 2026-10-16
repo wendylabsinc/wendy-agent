@@ -1741,3 +1741,12 @@ func envBytes(logger *zap.Logger, name string, fallback, minimum int64) int64 {
 	}
 	return v
 }
+
+func advertiseProvisionedMeshIdentity(logger *zap.Logger, mtlsPort int, provisioningSvc *services.ProvisioningService) {
+	_, device := deviceIdentity(provisioningSvc)
+	if device == (meshid.Device{}) {
+		logger.Warn("Provisioned certificate carries no tenant SPIFFE principal; mesh advertisement not updated")
+		return
+	}
+	configpartition.UpdateAvahiForProvisioning(logger, mtlsPort, device.Principal())
+}
