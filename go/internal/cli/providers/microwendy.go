@@ -1192,7 +1192,7 @@ func connectWithScopedCLIIdentities(ctx context.Context, advertisedTenant string
 
 	if len(connectErrs) == 0 {
 		if legacyOrg > 0 {
-			return fmt.Errorf("no legacy Cloud user login matches organization %d; run 'wendy auth login' for that organization", legacyOrg)
+			return fmt.Errorf("no legacy Cloud user login matches organization %s; run 'wendy auth login' for that organization", config.OrganizationLabel("", strconv.FormatInt(int64(legacyOrg), 10)))
 		}
 		if advertisedTenant != "" {
 			return fmt.Errorf("no operator login matches the device's advertised tenant; sign in to its organization with 'wendy auth login --email <email>'")

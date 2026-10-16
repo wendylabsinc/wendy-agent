@@ -564,12 +564,12 @@ func refuseIdentity(format string, args ...any) *deviceIdentityRefusalError {
 func identityRefusal(pinKey string, im *certs.IdentityMismatchError) error {
 	got := "no wendy identity"
 	if im.GotAsset != "" {
-		got = fmt.Sprintf("asset %s in organization %d", im.GotAsset, im.GotOrg)
+		got = fmt.Sprintf("asset %s in organization %s", im.GotAsset, orgLabel("", im.GotOrg))
 	}
 	return refuseDevicePin(devicePinDiagnostic{
 		hostname: pinKey,
 		heading:  fmt.Sprintf("Connection blocked: device %q identity changed.", pinKey),
-		details:  fmt.Sprintf("Saved: asset %s in organization %d\nNow:   %s", im.WantAsset, im.WantOrg, got),
+		details:  fmt.Sprintf("Saved: asset %s in organization %s\nNow:   %s", im.WantAsset, orgLabel("", im.WantOrg), got),
 	})
 }
 

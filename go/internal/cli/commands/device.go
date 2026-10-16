@@ -771,8 +771,8 @@ func newDeviceSetupCmd() *cobra.Command {
 
 			if provResp.GetProvisioned() != nil {
 				prov := provResp.GetProvisioned()
-				fmt.Printf("Device is already enrolled (org: %d, asset: %d, cloud: %s).\n",
-					prov.GetOrganizationId(), prov.GetAssetId(), prov.GetCloudHost())
+				fmt.Printf("Device is already enrolled (org: %s, asset: %d, cloud: %s).\n",
+					orgLabel(prov.GetCloudHost(), prov.GetOrganizationId()), prov.GetAssetId(), prov.GetCloudHost())
 			} else {
 				fmt.Println("Device is not enrolled.")
 				if loadCLICert() == nil {
@@ -1101,8 +1101,8 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 		return fmt.Errorf("enrolling device: %w", err)
 	}
 
-	fmt.Printf("Device enrolled (org: %d, asset: %d).\n",
-		tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
+	fmt.Printf("Device enrolled (org: %s, asset: %d).\n",
+		orgLabel(auth.CloudGRPC, tokenResp.GetOrganizationId()), tokenResp.GetAssetId())
 	return nil
 }
 
@@ -1273,7 +1273,7 @@ func newDeviceUnenrollCmd() *cobra.Command {
 				if !isInteractiveTerminal() {
 					return fmt.Errorf("unenroll is destructive; pass --yes to confirm when not running interactively")
 				}
-				fmt.Printf("This will unenroll the device (org: %d, asset: %d) and delete its asset in Wendy Cloud.\n", orgID, assetID)
+				fmt.Printf("This will unenroll the device (org: %s, asset: %d) and delete its asset in Wendy Cloud.\n", orgLabel(cloudHost, orgID), assetID)
 				if !confirmDefaultNoFn("Continue?") {
 					fmt.Println("Aborted.")
 					return nil

@@ -53,7 +53,7 @@ func orgAllowed(cliOrgs map[int32]bool, sourceOrg int32) error {
 	sort.Ints(have)
 	labels := make([]string, len(have))
 	for i, org := range have {
-		labels[i] = fmt.Sprintf("%d", org)
+		labels[i] = orgLabel("", int32(org))
 	}
 	yours := "no organizations"
 	if len(labels) == 1 {
@@ -61,7 +61,7 @@ func orgAllowed(cliOrgs map[int32]bool, sourceOrg int32) error {
 	} else if len(labels) > 1 {
 		yours = "organizations " + strings.Join(labels, ", ")
 	}
-	return fmt.Errorf("device is in organization %d, but you are logged in to %s; pairing is only allowed within an organization you belong to", sourceOrg, yours)
+	return fmt.Errorf("device is in organization %s, but you are logged in to %s; pairing is only allowed within an organization you belong to", orgLabel("", sourceOrg), yours)
 }
 
 // discoverWendyLiteSensorSources browses _wendy-lite._tcp and returns every

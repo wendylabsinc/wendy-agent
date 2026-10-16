@@ -140,8 +140,9 @@ type orgMismatchDeviceError struct {
 	// userOrgNames is a best-effort org ID -> name map for the user's own orgs,
 	// resolved live from the cloud when the error is built. It may be nil or
 	// partial (offline, or a name couldn't be fetched); missing entries render as
-	// the bare numeric ID. The device's org is deliberately not resolved — the
-	// account has no access to it, so its name isn't obtainable here.
+	// the bare numeric ID. The device's org is deliberately not resolved live —
+	// the account has no access to it — so it is named only when this machine's
+	// name cache already knows it.
 	userOrgNames map[int32]string
 }
 
@@ -163,10 +164,11 @@ func (e orgMismatchDeviceError) Error() string {
 	if len(parts) > 0 {
 		have = strings.Join(parts, ", ")
 	}
+	deviceOrg := orgLabel("", e.deviceOrg)
 	return fmt.Sprintf(
-		"The device's certificate indicates it belongs to org %d; your credentials cover %s.\n"+
-			"Your account isn't a member of org %d — run 'wendy cloud login' with an account that can access org %d.",
-		e.deviceOrg, have, e.deviceOrg, e.deviceOrg)
+		"The device's certificate indicates it belongs to org %s; your credentials cover %s.\n"+
+			"Your account isn't a member of org %s — run 'wendy cloud login' with an account that can access org %s.",
+		deviceOrg, have, deviceOrg, deviceOrg)
 }
 
 // orgInCerts reports whether any of the given certs carries the org ID.
@@ -3241,11 +3243,11 @@ func connectBLEAgent(device *models.BluetoothDevice) (*ble.AgentClient, error) {
 	// The device belongs to a different org. Search all auth entries.
 	cfg, cfgErr := config.Load()
 	if cfgErr != nil {
-		return nil, fmt.Errorf("device belongs to org %d but could not load config to find matching certificate: %w", mismatch.Got, cfgErr)
+		return nil, fmt.Errorf("device belongs to org %s but could not load config to find matching certificate: %w", orgLabel("", mismatch.Got), cfgErr)
 	}
 	alt := findCertByOrgID(cfg.Auth, int(mismatch.Got))
 	if alt == nil {
-		return nil, fmt.Errorf("device belongs to org %d; authenticate for that org with 'wendy auth login'", mismatch.Got)
+		return nil, fmt.Errorf("device belongs to org %s; authenticate for that org with 'wendy auth login'", orgLabel("", mismatch.Got))
 	}
 	return attemptBLEConnect(device, *alt, pins)
 }
