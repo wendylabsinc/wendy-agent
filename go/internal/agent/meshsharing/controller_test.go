@@ -68,6 +68,7 @@ type fakePolicy struct {
 	failGateway           bool
 	failGatewayWithdrawal bool
 	failDNS               bool
+	failDNSWithdrawal     bool
 	cancelOnDNS           context.CancelFunc
 	cleanupContexts       []error
 }
@@ -104,7 +105,7 @@ func (p *fakePolicy) SetDNS(ctx context.Context, iface, address string) error {
 	if address == "" {
 		p.cleanupContexts = append(p.cleanupContexts, ctx.Err())
 	}
-	if address != "" && p.failDNS {
+	if (address != "" && p.failDNS) || (address == "" && p.failDNSWithdrawal) {
 		if p.cancelOnDNS != nil {
 			p.cancelOnDNS()
 		}
