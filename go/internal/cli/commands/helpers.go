@@ -2517,9 +2517,9 @@ func (w *mtlsWalk) recordMTLSErr(addr string, err error, isPrimary bool) {
 // dialAddr runs the two-port × every-cert rungs at ONE candidate address.
 //
 // The three return shapes are the walk's control flow: a live connection (stop,
-// success), a refusal (stop, and the whole walk must end — see the identity
-// aborts inline), or (nil, nil) meaning "nothing answered here, try the next
-// address".
+// success), a refusal (stop this candidate and prevent new candidates or
+// plaintext fallback), or (nil, nil) meaning "nothing answered here, try the
+// next address". Already-started candidates may still authenticate the target.
 func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*grpcclient.AgentConnection, error) {
 	host, portStr, err := net.SplitHostPort(cand)
 	if err != nil {
@@ -2566,12 +2566,11 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 			w.recordMTLSErr(mtlsAddr, probeErr, isPrimary)
 			if im, mismatched := identityMismatchFn(conn); mismatched {
 				conn.Close()
-				// The device is wrong, not our certificate — every remaining
-				// cert, port AND ADDRESS would be judged against the same pin,
-				// and the plaintext rung must not be reached at all. Trying the
-				// next address here would be the bug: "try somewhere else" is
-				// the right answer to silence, never to a device that answered
-				// and identified itself as someone else.
+				// The device is wrong, so trying another certificate or port at
+				// this address cannot help. Stop scheduling new candidates and
+				// forbid plaintext, but let already-started candidates finish:
+				// another address may still authenticate the requested device
+				// after this address was reassigned by DHCP.
 				//
 				// refusalKey, not PinKey: the pin that produced this constraint
 				// may be filed under one of the device's other names, and that
@@ -2580,11 +2579,10 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 			}
 			if pm, mismatched := pinMismatchFn(conn); mismatched {
 				conn.Close()
-				// The SPKI store rejected the peer's public key. Same reasoning
-				// as above — the key belongs to the device, not to our
-				// certificate — but this refusal also has to exist because
-				// gRPC's handshake wrapper is otherwise the only thing the user
-				// sees, and it names no way out.
+				// The SPKI store rejected the peer's public key. Apply the same
+				// candidate and fallback rules as an identity mismatch. Preserve
+				// the typed refusal because gRPC's handshake wrapper otherwise
+				// hides the reason and the recovery steps.
 				return nil, spkiRefusal(w.target.refusalKey(), pm)
 			}
 			if w.tlsDebug {
@@ -2662,10 +2660,10 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 // about identity for what was really a routing failure.
 //
 // target.PinKey and target.Expected are what the user asked for, and they make
-// this the single point where the two identity rules hold: a peer that proves it
-// is the wrong device aborts the ENTIRE walk (no further cert, no further port,
-// no further address), and a host with any pin is never offered the plaintext
-// rung.
+// this the single point where the identity rules hold: a wrong peer stops new
+// candidates and forbids plaintext, while an already-started candidate can still
+// authenticate the requested device. A host with any pin is never offered the
+// plaintext rung.
 func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
 	candidates := target.dialCandidates()
 	walk := &mtlsWalk{target: target, tlsDebug: os.Getenv("WENDY_TLS_DEBUG") != ""}
@@ -2698,7 +2696,11 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 			walk.probeOrder[i] = i
 		}
 		conn, refusal := raceMTLSCandidates(ctx, walk, candidates)
-		if refusal != nil {
+		// A parent timeout must not erase completed primary certificate
+		// rejections. Defer cancellation until after that diagnosis, but keep
+		// identity and SPKI refusals ahead of all certificate diagnostics.
+		if refusal != nil && (errors.Is(refusal, errDeviceIdentityRefused) ||
+			(!errors.Is(refusal, context.Canceled) && !errors.Is(refusal, context.DeadlineExceeded))) {
 			return nil, walk.lastMTLSErr, refusal
 		}
 		if conn != nil {

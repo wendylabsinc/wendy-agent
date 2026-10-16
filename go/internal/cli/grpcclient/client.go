@@ -55,9 +55,10 @@ const (
 	// refresh mutable fields such as interfaces and disk usage.
 	agentVersionCacheTTL = 10 * time.Second
 
-	// Limit reaching an endpoint independently of the TLS handshake budget.
-	// A dead route cannot become reachable by trying another operator cert.
-	agentTCPDialTimeout = time.Second
+	// Limit the initial TCP probe independently of the TLS handshake budget.
+	// Allow a lost SYN to be retransmitted before treating the route as dead.
+	// Once TCP succeeds, reconnects retain gRPC's normal connection budget.
+	agentTCPDialTimeout = 2 * time.Second
 )
 
 // tlsDebugWriter is where WENDY_TLS_DEBUG resumption logging is written.
@@ -163,9 +164,15 @@ func (c *AgentConnection) TCPDialError() error {
 func boundedAgentTCPDialer(dial func(context.Context, string) (net.Conn, error)) (func(context.Context, string) (net.Conn, error), *agentTCPDialState) {
 	state := new(agentTCPDialState)
 	return func(ctx context.Context, addr string) (net.Conn, error) {
-		dialCtx, cancel := context.WithTimeout(ctx, agentTCPDialTimeout)
-		defer cancel()
-		conn, err := dial(dialCtx, addr)
+		state.mu.Lock()
+		connected := state.connected
+		state.mu.Unlock()
+		if !connected {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, agentTCPDialTimeout)
+			defer cancel()
+		}
+		conn, err := dial(ctx, addr)
 		state.mu.Lock()
 		if err == nil {
 			state.connected = true

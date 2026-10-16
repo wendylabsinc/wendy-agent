@@ -38,7 +38,8 @@ type mtlsCandidateResult struct {
 
 // raceMTLSCandidates staggers authenticated attempts in route preference order.
 // A failed attempt starts the next address immediately. A success cancels the
-// remaining attempts, then joins them so no connection or refusal is lost.
+// remaining attempts, then joins them so no connection or refusal is lost. A
+// refusal stops new attempts but lets an already started attempt authenticate.
 func raceMTLSCandidates(ctx context.Context, walk *mtlsWalk, candidates []string) (*grpcclient.AgentConnection, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -93,16 +94,17 @@ func raceMTLSCandidates(ctx context.Context, walk *mtlsWalk, candidates []string
 					refusal = result.err
 				}
 				stopping = true
-				cancel()
 			}
 			if result.conn != nil {
-				if winner == nil && refusal == nil && ctx.Err() == nil {
+				if winner == nil && result.err == nil && ctx.Err() == nil {
 					winner = result.conn
 				} else {
 					result.conn.Close()
 				}
-				stopping = true
-				cancel()
+				if result.err == nil {
+					stopping = true
+					cancel()
+				}
 			}
 			if !stopping && next < len(candidates) && running < maxDialCandidates {
 				startNext()
@@ -122,15 +124,19 @@ func raceMTLSCandidates(ctx context.Context, walk *mtlsWalk, candidates []string
 		if winner != nil {
 			winner.Close()
 		}
+		// A peer's identity or key mismatch remains actionable even if the
+		// parent was canceled while the remaining attempts were finishing.
+		if refusal != nil {
+			return nil, refusal
+		}
 		return nil, err
 	}
-	if refusal != nil {
-		if winner != nil {
-			winner.Close()
-		}
-		return nil, refusal
+	if winner != nil {
+		// Another address may have been reassigned to an unrelated device.
+		// Its refusal does not invalidate this authenticated connection.
+		return winner, nil
 	}
-	return winner, nil
+	return nil, refusal
 }
 
 // Keep diagnostic order stable even though addresses finish in any order.

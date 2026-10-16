@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -129,33 +130,143 @@ func TestMTLSCandidateRaceFailureStartsNextWithoutDelay(t *testing.T) {
 	_ = winner.Close()
 }
 
-func TestMTLSCandidateRaceObservedRefusalOverridesWinner(t *testing.T) {
-	refusals := []struct {
+func dialRaceRefusals() []struct {
+	name string
+	err  error
+} {
+	return []struct {
 		name string
 		err  error
 	}{
 		{"identity", identityRefusal("pi.local", &certs.IdentityMismatchError{WantOrg: 7, WantAsset: "42", GotOrg: 7, GotAsset: "43"})},
 		{"public key", spkiRefusal("pi.local", &devicepin.PinMismatchError{Key: "asset:42", Want: "original", Got: "changed"})},
 	}
-	for _, refusal := range refusals {
+}
+
+// Signal when the scheduler reads the refusal, so tests can order another
+// candidate's completion without relying on sleeps or goroutine scheduling.
+type observedDialRaceRefusal struct {
+	err      error
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (e *observedDialRaceRefusal) Error() string { return e.err.Error() }
+func (e *observedDialRaceRefusal) Unwrap() error { return e.err }
+func (e *observedDialRaceRefusal) Is(target error) bool {
+	if target == errDeviceIdentityRefused {
+		e.once.Do(func() { close(e.observed) })
+	}
+	return errors.Is(e.err, target)
+}
+
+func TestMTLSCandidateRaceAuthenticatedWinnerOverridesOtherAddressRefusal(t *testing.T) {
+	for _, refusal := range dialRaceRefusals() {
 		t.Run(refusal.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			winner, closed := newDialRaceConnection()
-			stubMTLSCandidate(t, func(ctx context.Context, _ *mtlsWalk, _ string, isPrimary bool) (*grpcclient.AgentConnection, error) {
-				if isPrimary {
-					<-ctx.Done()
-					// The mismatch was observed while the backup completed its RPC.
-					return nil, refusal.err
-				}
-				return winner, nil
-			})
-			conn, err := raceMTLSCandidates(ctx, &mtlsWalk{}, []string{"primary", "backup"})
-			if conn != nil || !errors.Is(err, errDeviceIdentityRefused) {
-				t.Fatalf("race = (%v, %v), want observed identity refusal", conn, err)
+			for _, refusalFirst := range []bool{false, true} {
+				t.Run(map[bool]string{false: "winner first", true: "refusal first"}[refusalFirst], func(t *testing.T) {
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer cancel()
+					winner, closed := newDialRaceConnection()
+					observed := &observedDialRaceRefusal{err: refusal.err, observed: make(chan struct{})}
+					var thirdStarted atomic.Bool
+					stubMTLSCandidate(t, func(ctx context.Context, _ *mtlsWalk, candidate string, isPrimary bool) (*grpcclient.AgentConnection, error) {
+						if candidate == "third" {
+							thirdStarted.Store(true)
+							return nil, nil
+						}
+						if refusalFirst {
+							if !isPrimary {
+								return nil, observed
+							}
+							select {
+							case <-observed.observed:
+							case <-ctx.Done():
+								return nil, ctx.Err()
+							}
+							if err := ctx.Err(); err != nil {
+								return nil, err
+							}
+							return winner, nil
+						}
+						if isPrimary {
+							<-ctx.Done()
+							// Success canceled this attempt after its mismatch.
+							return nil, refusal.err
+						}
+						return winner, nil
+					})
+					conn, err := raceMTLSCandidates(ctx, &mtlsWalk{}, []string{"primary", "backup", "third"})
+					if conn != winner || err != nil {
+						t.Fatalf("race = (%v, %v), want authenticated winner", conn, err)
+					}
+					if closed.calls.Load() != 0 {
+						t.Fatalf("winner closed %d times before return, want zero", closed.calls.Load())
+					}
+					if thirdStarted.Load() {
+						t.Fatal("race started another candidate after success or refusal")
+					}
+					_ = conn.Close()
+				})
 			}
-			if closed.calls.Load() != 1 {
-				t.Fatalf("tentative winner closed %d times, want once", closed.calls.Load())
+		})
+	}
+}
+
+func TestMTLSCandidateRaceCancellationPreservesRefusal(t *testing.T) {
+	for _, refusal := range dialRaceRefusals() {
+		t.Run(refusal.name, func(t *testing.T) {
+			for _, order := range []string{"refusal before cancellation", "refusal after cancellation", "winner before cancellation"} {
+				t.Run(order, func(t *testing.T) {
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					conn, closed := newDialRaceConnection()
+					backupStarted := make(chan struct{})
+					observed := &observedDialRaceRefusal{err: refusal.err, observed: make(chan struct{})}
+					stubMTLSCandidate(t, func(workerCtx context.Context, _ *mtlsWalk, _ string, isPrimary bool) (*grpcclient.AgentConnection, error) {
+						switch order {
+						case "refusal before cancellation":
+							if !isPrimary {
+								return nil, observed
+							}
+							<-observed.observed
+							cancel()
+							<-workerCtx.Done()
+							return conn, nil
+						case "refusal after cancellation":
+							if isPrimary {
+								<-backupStarted
+								cancel()
+								<-workerCtx.Done()
+								return nil, refusal.err
+							}
+							close(backupStarted)
+							<-workerCtx.Done()
+							return conn, nil
+						default:
+							if isPrimary {
+								<-workerCtx.Done()
+								// The backup won, but cancellation arrived while
+								// the race was draining this observed refusal.
+								cancel()
+								return nil, refusal.err
+							}
+							return conn, nil
+						}
+					})
+					results := make(chan dialRaceOutcome, 1)
+					go func() {
+						conn, err := raceMTLSCandidates(ctx, &mtlsWalk{}, []string{"primary", "backup"})
+						results <- dialRaceOutcome{conn, err}
+					}()
+					result := awaitDialRaceOutcome(t, results)
+					if result.conn != nil || !errors.Is(result.err, refusal.err) {
+						t.Fatalf("race = (%v, %v), want observed refusal %v", result.conn, result.err, refusal.err)
+					}
+					if closed.calls.Load() != 1 {
+						t.Fatalf("connection closed %d times, want once", closed.calls.Load())
+					}
+				})
 			}
 		})
 	}
