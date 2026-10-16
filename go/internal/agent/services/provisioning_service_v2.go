@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
+	"sync/atomic"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -13,11 +15,28 @@ import (
 // delegating to the v1 ProvisioningService.
 type ProvisioningServiceV2 struct {
 	agentpbv2.UnimplementedWendyProvisioningServiceServer
-	v1 *ProvisioningService
+	v1     *ProvisioningService
+	roster atomic.Pointer[MeshRoster]
 }
 
 func NewProvisioningServiceV2(v1 *ProvisioningService) *ProvisioningServiceV2 {
 	return &ProvisioningServiceV2{v1: v1}
+}
+
+// SetRoster supplies the authenticated asset/device mapping after startup.
+func (s *ProvisioningServiceV2) SetRoster(roster *MeshRoster) { s.roster.Store(roster) }
+
+func (s *ProvisioningServiceV2) assetUUID(principal string) string {
+	roster := s.roster.Load()
+	device, err := meshid.DeviceFromPrincipal(principal)
+	if roster == nil || err != nil {
+		return ""
+	}
+	entry, ok := roster.LookupDevice(device)
+	if !ok {
+		return ""
+	}
+	return entry.AssetUUID
 }
 
 func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.IsProvisionedRequest) (*agentpbv2.IsProvisionedResponse, error) {
@@ -42,6 +61,7 @@ func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.
 		ResponseType: &agentpbv2.IsProvisionedResponse_Provisioned{
 			Provisioned: &agentpbv2.ProvisionedResponse{
 				CloudHost:      s.v1.cloudHost,
+				AssetUuid:      s.assetUUID(s.v1.principalURI),
 				OrganizationId: s.v1.orgID,
 				AssetId:        s.v1.assetID,
 				PrincipalUri:   s.v1.principalURI,

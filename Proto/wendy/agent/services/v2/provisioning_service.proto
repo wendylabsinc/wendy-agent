@@ -54,6 +54,12 @@ message ProvisionedResponse {
     // that accepted caller-serialized deletion fields. Clients require this
     // before starting the UUID reset workflow; older Agents fail closed.
     bool cloud_authenticated_reset_supported = 6;
+    // The device's Cloud asset UUID, canonical lowercase text. Enrollment
+    // returns it but the agent does not persist it; the roster entry whose
+    // device_uuid matches this device's leaf principal is the runtime source,
+    // so it is empty until the roster has synced. Mesh-keyed callers (build
+    // delivery) address devices by this, not by the numeric asset id.
+    string asset_uuid = 7;
 }
 
 message StartProvisioningRequest {

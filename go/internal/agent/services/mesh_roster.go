@@ -2,29 +2,26 @@ package services
 
 import (
 	"context"
+	"os"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 )
 
-// RosterEntry is one record of the tenant's name directory: a friendly device
-// name plus the two Cloud UUIDs. DeviceUUID is the mesh identity — the SPIFFE
-// device component the mesh derives its address from — while AssetUUID names
-// the Cloud asset record for asset-targeted RPCs. An empty DeviceUUID means
-// the row carries no mesh identity (a path-shaped PKI name): it is never
-// dialable, and no address is ever invented for it.
+// RosterEntry is a friendly name and one certificate device UUID. Cloud's
+// asset_id wire field carries that same UUID. AssetUUID is retained as an alias
+// for existing Cloud RPC adapters, never a second identity or address input.
 type RosterEntry struct {
 	Name       string // normalized DNS label
 	DeviceUUID string // canonical lowercase device UUID; "" = no mesh identity
-	AssetUUID  string // Cloud asset record id
+	AssetUUID  string // alias of DeviceUUID for Cloud asset_id adapters
 
 	device    meshid.Device
 	hasDevice bool
@@ -48,13 +45,15 @@ type MeshRoster struct {
 	keyPEM   string
 	chainPEM string
 
-	mu        sync.RWMutex
-	identity  string        // proof identity read from the leaf cert; "" until provisioned
-	tenant    meshid.Tenant // tenant that identity authenticates; valid when hasTenant
-	hasTenant bool
-	slug      string
-	byName    map[string]RosterEntry
-	ambiguous map[string]struct{}
+	mu         sync.RWMutex
+	generation uint64
+	identity   string        // proof identity read from the leaf cert; "" until provisioned
+	tenant     meshid.Tenant // tenant that identity authenticates; valid when hasTenant
+	hasTenant  bool
+	slug       string
+	byName     map[string]RosterEntry
+	byAsset    map[string]RosterEntry // canonical asset UUID -> entry
+	ambiguous  map[string]struct{}
 }
 
 func NewMeshRoster(logger *zap.Logger, cloudURL, certPEM, keyPEM, chainPEM string) *MeshRoster {
@@ -65,6 +64,7 @@ func NewMeshRoster(logger *zap.Logger, cloudURL, certPEM, keyPEM, chainPEM strin
 		keyPEM:    keyPEM,
 		chainPEM:  chainPEM,
 		byName:    make(map[string]RosterEntry),
+		byAsset:   make(map[string]RosterEntry),
 		ambiguous: make(map[string]struct{}),
 	}
 	r.loadIdentity()
@@ -133,10 +133,12 @@ func (r *MeshRoster) OwnTenant() (meshid.Tenant, bool) {
 func (r *MeshRoster) UpdateIdentity(cloudURL, certPEM, keyPEM, chainPEM string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.generation++
 	r.cloudURL, r.certPEM, r.keyPEM, r.chainPEM = cloudURL, certPEM, keyPEM, chainPEM
 	r.loadIdentity()
 	r.slug = ""
 	r.byName = make(map[string]RosterEntry)
+	r.byAsset = make(map[string]RosterEntry)
 	r.ambiguous = make(map[string]struct{})
 }
 
@@ -152,41 +154,83 @@ func (r *MeshRoster) Lookup(name string) (RosterEntry, bool) {
 	return entry, ok
 }
 
+// LookupAsset returns the roster entry for a Cloud asset UUID. Asset UUIDs
+// are globally unique, so unlike names this has no ambiguity case; unknown
+// and non-canonical UUIDs return ok=false.
+func (r *MeshRoster) LookupAsset(assetUUID string) (RosterEntry, bool) {
+	if !canonicalRosterUUID(assetUUID) {
+		return RosterEntry{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.byAsset[assetUUID]
+	return entry, ok
+}
+
+// LookupDevice finds this authenticated device under the same UUID used by
+// Cloud. The tenant remains part of the full principal and must still match.
+func (r *MeshRoster) LookupDevice(device meshid.Device) (RosterEntry, bool) {
+	if device == (meshid.Device{}) {
+		return RosterEntry{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, entry := range r.byAsset {
+		if entry.hasDevice && entry.device == device {
+			return entry, true
+		}
+	}
+	return RosterEntry{}, false
+}
+
 // applyResponse rebuilds the cache from a roster response. Names that collide
 // after normalization are recorded as ambiguous and never resolve. Device
 // UUIDs become mesh identities through meshid against the authenticated
 // tenant; rows with no device UUID — or a device component that is not a
 // canonical UUID — stay in the directory as non-dialable rather than acquiring
 // an invented address.
-func (r *MeshRoster) applyResponse(resp *cloudpbv2.GetMeshRosterResponse) {
-	r.mu.RLock()
+func (r *MeshRoster) applyResponse(generation uint64, resp *cloudpbv2.GetMeshRosterResponse) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if generation != r.generation {
+		return
+	}
 	tenant, hasTenant := r.tenant, r.hasTenant
-	r.mu.RUnlock()
 
 	byName := make(map[string]RosterEntry, len(resp.GetEntries()))
+	byAsset := make(map[string]RosterEntry, len(resp.GetEntries()))
 	ambiguous := make(map[string]struct{})
 	for _, e := range resp.GetEntries() {
 		n := mesh.Normalize(e.GetName())
-		if n == "" {
-			continue
-		}
-		entry := RosterEntry{Name: n, DeviceUUID: e.GetDeviceUuid(), AssetUUID: e.GetAssetId()}
+
+		entry := RosterEntry{Name: n, DeviceUUID: e.GetAssetId(), AssetUUID: e.GetAssetId()}
 		if hasTenant && entry.DeviceUUID != "" {
 			if device, err := meshid.ParseDevice(tenant, entry.DeviceUUID); err == nil {
 				entry.device, entry.hasDevice = device, true
 			}
 		}
-		if existing, ok := byName[n]; ok && existing.AssetUUID != entry.AssetUUID {
-			ambiguous[n] = struct{}{}
+		if !canonicalRosterUUID(entry.DeviceUUID) {
 			continue
 		}
-		byName[n] = entry
+		byAsset[entry.AssetUUID] = entry
+		if n == "" {
+			continue
+		}
+		if existing, ok := byName[n]; ok && existing.AssetUUID != entry.AssetUUID {
+			ambiguous[n] = struct{}{}
+		} else {
+			byName[n] = entry
+		}
 	}
-	r.mu.Lock()
 	r.slug = mesh.Normalize(resp.GetOrgSlug())
 	r.byName = byName
+	r.byAsset = byAsset
 	r.ambiguous = ambiguous
-	r.mu.Unlock()
+}
+
+func canonicalRosterUUID(text string) bool {
+	_, err := meshid.ParseDeviceUUID(text)
+	return err == nil
 }
 
 // Sync performs one GetMeshRoster refresh over the cloud gRPC endpoint using
@@ -194,7 +238,7 @@ func (r *MeshRoster) applyResponse(resp *cloudpbv2.GetMeshRosterResponse) {
 // scopes the roster it returns to the tenant that identity authenticates.
 func (r *MeshRoster) Sync(ctx context.Context) error {
 	r.mu.RLock()
-	cloudURL, identity := r.cloudURL, r.identity
+	cloudURL, identity, generation := r.cloudURL, r.identity, r.generation
 	certPEM, keyPEM, chainPEM := r.certPEM, r.keyPEM, r.chainPEM
 	r.mu.RUnlock()
 
@@ -207,27 +251,23 @@ func (r *MeshRoster) Sync(ctx context.Context) error {
 		return nil
 	}
 
-	dialOpts, requestMetadata, err := brokerIdentityDialOpts(r.logger, identity, certPEM, keyPEM, chainPEM)
+	endpoint, err := cloudrelay.DeviceEndpoint(cloudURL, os.Getenv("WENDY_DEVICE_CLOUD_URL"))
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(cloudURL, dialOpts...)
+	conn, err := cloudrelay.DialCloud(endpoint, certPEM, chainPEM, []byte(keyPEM))
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	client := cloudpbv2.NewMeshRosterServiceClient(conn)
-	md, err := requestMetadata(cloudpbv2.MeshRosterService_GetMeshRoster_FullMethodName)
-	if err != nil {
-		return err
-	}
-	callCtx, cancel := context.WithTimeout(metadata.NewOutgoingContext(ctx, md), 10*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	resp, err := client.GetMeshRoster(callCtx, &cloudpbv2.GetMeshRosterRequest{})
 	if err != nil {
 		return err
 	}
-	r.applyResponse(resp)
+	r.applyResponse(generation, resp)
 	return nil
 }
 

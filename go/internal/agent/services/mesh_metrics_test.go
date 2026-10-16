@@ -69,7 +69,7 @@ func attrString(attrs []*commonpb.KeyValue, key string) (string, bool) {
 func TestMeshMetricsPublishesConnectionsBytesAndDialDuration(t *testing.T) {
 	pub := &fakeTelemetryPublisher{}
 	m := NewMeshMetrics(pub, zap.NewNop())
-	device := testMeshDevice(t)
+	device := appTestMeshDevice(t)
 
 	m.RecordDial(device, "lan-direct", "ok", 3)
 	m.RecordDial(device, "lan-direct", "ok", 4)
@@ -189,7 +189,7 @@ func TestMeshMetricsPublishSkipsWhenNothingRecorded(t *testing.T) {
 func TestMeshMetricsHistogramBucketBoundaries(t *testing.T) {
 	pub := &fakeTelemetryPublisher{}
 	m := NewMeshMetrics(pub, zap.NewNop())
-	device := testMeshDevice(t)
+	device := appTestMeshDevice(t)
 	m.RecordDial(device, "relay", "ok", meshDialDurationBoundsMs[0]) // exactly the first bound
 	m.RecordDial(device, "relay", "ok", 999999)                      // far past the last bound
 	m.publish(newAgentResource(), time.Now())
@@ -218,6 +218,6 @@ func TestMeshMetricsHistogramBucketBoundaries(t *testing.T) {
 // forest of nil-checks at every call site.
 func TestMeshMetricsNilReceiverIsNoOp(t *testing.T) {
 	var m *MeshMetrics
-	m.RecordDial(testMeshDevice(t), "lan-direct", "ok", 5)
-	m.RecordBytes(testMeshDevice(t), "tx", 10)
+	m.RecordDial(appTestMeshDevice(t), "lan-direct", "ok", 5)
+	m.RecordBytes(appTestMeshDevice(t), "tx", 10)
 }

@@ -23,8 +23,8 @@ const (
 	rosterTenant      = "11111111-1111-4111-8111-111111111111"
 	rosterOtherTenant = "99999999-9999-4999-8999-999999999999"
 	rosterDevice      = "22222222-2222-4222-8222-222222222222"
-	rosterAssetA      = "33333333-3333-4333-8333-333333333333"
-	rosterAssetB      = "44444444-4444-4444-8444-444444444444"
+	rosterAssetA      = rosterDevice
+	rosterAssetB      = rosterDeviceB
 	rosterDeviceB     = "55555555-5555-4555-8555-555555555555"
 )
 
@@ -71,11 +71,11 @@ func provisionedRoster(t *testing.T) *MeshRoster {
 
 func TestRosterLookupNormalizes(t *testing.T) {
 	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{
-			{Name: "Brave Dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice},
-			{Name: "calm-otter", AssetId: rosterAssetB, DeviceUuid: rosterDeviceB},
+			{Name: "Brave Dolphin", AssetId: rosterAssetA},
+			{Name: "calm-otter", AssetId: rosterAssetB},
 		},
 	})
 	if r.OrgSlug() != "acme" {
@@ -103,61 +103,56 @@ func TestRosterLookupNormalizes(t *testing.T) {
 	}
 }
 
-// TestRosterEmptyDeviceUUIDIsNotDialable covers the contract's legacy rows: a
-// roster entry with no device UUID has no mesh identity, so it stays in the
-// directory for its name and asset id but never yields an address.
-func TestRosterEmptyDeviceUUIDIsNotDialable(t *testing.T) {
-	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
-		OrgSlug: "acme",
-		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "legacy-box", AssetId: rosterAssetA}},
-	})
-	entry, ok := r.Lookup("legacy-box")
-	if !ok {
-		t.Fatal("a row without a device UUID must still be listed")
-	}
-	if entry.DeviceUUID != "" || entry.Dialable() {
-		t.Fatalf("entry %+v must not be dialable", entry)
-	}
-	if device, ok := entry.Device(); ok {
-		t.Fatalf("Device() invented an identity for a UUID-less row: %+v", device)
-	}
-}
-
-// TestRosterNonCanonicalDeviceUUIDIsNotDialable keeps a malformed device
-// component from being hashed or otherwise coerced into an address.
-func TestRosterNonCanonicalDeviceUUIDIsNotDialable(t *testing.T) {
-	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
-		OrgSlug: "acme",
-		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "odd-box", AssetId: rosterAssetA, DeviceUuid: "fleet/box-01"}},
-	})
-	entry, ok := r.Lookup("odd-box")
-	if !ok {
-		t.Fatal("the row must remain listed")
-	}
-	if entry.Dialable() {
-		t.Fatalf("entry %+v must not be dialable", entry)
+// Empty or noncanonical Cloud IDs must not manufacture device identities.
+func TestRosterInvalidDeviceUUIDIsNotListed(t *testing.T) {
+	for _, id := range []string{"", "fleet/box-01", "UPPER", "42"} {
+		r := provisionedRoster(t)
+		r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{OrgSlug: "acme", Entries: []*cloudpbv2.MeshRosterEntry{{Name: "bad-box", AssetId: id}}})
+		if entry, ok := r.Lookup("bad-box"); ok {
+			t.Fatalf("invalid UUID %q acquired an entry: %+v", id, entry)
+		}
 	}
 }
 
 func TestRosterDuplicateNameIsAmbiguous(t *testing.T) {
 	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{
-			{Name: "Brave Dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice},
-			{Name: "brave dolphin", AssetId: rosterAssetB, DeviceUuid: rosterDeviceB}, // normalizes to the same label
+			{Name: "Brave Dolphin", AssetId: rosterAssetA},
+			{Name: "brave dolphin", AssetId: rosterAssetB}, // normalizes to the same label
 		},
 	})
 	if _, ok := r.Lookup("brave-dolphin"); ok {
 		t.Fatal("duplicate normalized name must resolve to ok=false")
 	}
+	for _, asset := range []string{rosterAssetA, rosterAssetB} {
+		if _, ok := r.LookupAsset(asset); !ok {
+			t.Fatalf("ambiguous display name hid unambiguous asset %s", asset)
+		}
+	}
+}
+
+func TestRosterDiscardsResponseFromPreviousEnrollment(t *testing.T) {
+	r := provisionedRoster(t)
+	oldGeneration := r.generation
+	certPEM, keyPEM := deviceIdentityCertPEM(t, rosterOtherTenant, rosterDevice)
+	r.UpdateIdentity("cloud.example:443", certPEM, keyPEM, "")
+	r.applyResponse(oldGeneration, &cloudpbv2.GetMeshRosterResponse{
+		OrgSlug: "old-tenant",
+		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "camera", AssetId: rosterAssetA}},
+	})
+	if r.OrgSlug() != "" {
+		t.Fatal("stale response restored the old tenant's slug")
+	}
+	if _, ok := r.LookupAsset(rosterAssetA); ok {
+		t.Fatal("stale response relabeled an old tenant asset under the new tenant")
+	}
 }
 
 func TestRosterSlugNormalized(t *testing.T) {
 	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{OrgSlug: "ACME Corp."})
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{OrgSlug: "ACME Corp."})
 	if r.OrgSlug() != "acme-corp" {
 		t.Fatalf("OrgSlug = %q, want acme-corp", r.OrgSlug())
 	}
@@ -169,9 +164,9 @@ func TestRosterSlugNormalized(t *testing.T) {
 // stale tenant.
 func TestRosterUpdateIdentityClearsCache(t *testing.T) {
 	r := provisionedRoster(t)
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "acme",
-		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "brave-dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice}},
+		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "brave-dolphin", AssetId: rosterAssetA}},
 	})
 	if _, ok := r.Lookup("brave-dolphin"); !ok {
 		t.Fatal("precondition: the entry must resolve before the identity swap")
@@ -188,9 +183,9 @@ func TestRosterUpdateIdentityClearsCache(t *testing.T) {
 
 	// The new identity is what the next response is scoped by: its tenant's
 	// device UUIDs parse into dialable entries.
-	r.applyResponse(&cloudpbv2.GetMeshRosterResponse{
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{
 		OrgSlug: "other",
-		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "brave-dolphin", AssetId: rosterAssetA, DeviceUuid: rosterDevice}},
+		Entries: []*cloudpbv2.MeshRosterEntry{{Name: "brave-dolphin", AssetId: rosterAssetA}},
 	})
 	entry, ok := r.Lookup("brave-dolphin")
 	if !ok || !entry.Dialable() {
