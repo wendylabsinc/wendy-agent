@@ -49,6 +49,11 @@ type VIPTable struct {
 	owner    map[netip.Addr]uuid.UUID
 	retired  map[netip.Addr]bool
 	cursor   int // next usable host index to try, 1-based
+	// A failed directory sync after rename leaves the committed filename's
+	// durability uncertain. Fail closed until reopen; rolling back only memory
+	// would let a later mutation reuse an address still present on disk.
+	persistenceErr error
+	syncDirectory  func(string) error // test seam; nil uses syncVIPDirectory
 }
 
 // vipEntry is one pinned allocation.
@@ -83,6 +88,11 @@ func openVIPTable(path string, prefix netip.Prefix) (*VIPTable, error) {
 	if err := t.load(); err != nil {
 		return nil, err
 	}
+	// This also makes a visible rename durable when reopening after a previous
+	// post-rename error, before existing allocations can be returned again.
+	if err := syncVIPDirectory(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("mesh: VIP table directory sync: %w", err)
+	}
 	return t, nil
 }
 
@@ -96,6 +106,12 @@ func (t *VIPTable) CIDR() netip.Prefix { return t.prefix }
 func (t *VIPTable) Allocate(device meshid.Device) (netip.Addr, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.persistenceErr != nil {
+		return netip.Addr{}, t.persistenceErr
+	}
+	if !device.IsValid() {
+		return netip.Addr{}, errors.New("mesh: VIP allocation requires a device identity")
+	}
 
 	id := device.UUID()
 	tenant := device.Tenant()
@@ -120,6 +136,9 @@ func (t *VIPTable) Allocate(device meshid.Device) (netip.Addr, error) {
 	t.owner[vip] = id
 
 	if err := t.persist(); err != nil {
+		if t.persistenceErr != nil {
+			return netip.Addr{}, err
+		}
 		// Keep memory and disk identical: a VIP the agent cannot prove it
 		// persisted is a VIP it must not hand out.
 		t.cursor = previousCursor
@@ -139,6 +158,9 @@ func (t *VIPTable) Allocate(device meshid.Device) (netip.Addr, error) {
 func (t *VIPTable) Lookup(device meshid.Device) (netip.Addr, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.persistenceErr != nil || !device.IsValid() {
+		return netip.Addr{}, false
+	}
 	e, ok := t.entries[device.UUID()]
 	if !ok || e.tenant.UUID() != device.Tenant().UUID() {
 		return netip.Addr{}, false
@@ -151,6 +173,9 @@ func (t *VIPTable) Lookup(device meshid.Device) (netip.Addr, bool) {
 func (t *VIPTable) Device(vip netip.Addr) (meshid.Device, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.persistenceErr != nil {
+		return meshid.Device{}, t.persistenceErr
+	}
 	if _, ok := t.indexOfVIP(vip); !ok {
 		return meshid.Device{}, fmt.Errorf("mesh: %s is outside the mesh service CIDR %s", vip, t.prefix)
 	}
@@ -168,6 +193,12 @@ func (t *VIPTable) Device(vip netip.Addr) (meshid.Device, error) {
 func (t *VIPTable) RetireTenant(tenant meshid.Tenant) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.persistenceErr != nil {
+		return t.persistenceErr
+	}
+	if !tenant.IsValid() {
+		return errors.New("mesh: VIP retirement requires a tenant identity")
+	}
 
 	var dropped []vipEntry
 	for _, e := range t.entries {
@@ -184,12 +215,12 @@ func (t *VIPTable) RetireTenant(tenant meshid.Tenant) error {
 		t.retired[e.vip] = true
 	}
 	if err := t.persist(); err != nil {
-		for _, e := range dropped {
-			t.entries[e.id] = e
-			t.owner[e.vip] = e.id
-			delete(t.retired, e.vip)
+		// Tenant retirement is an admission change. Even a pre-rename failure
+		// must stop old VIPs resolving under the new enrollment.
+		if t.persistenceErr == nil {
+			t.persistenceErr = fmt.Errorf("mesh: VIP tenant retirement failed: %w; reopen table before further use", err)
 		}
-		return err
+		return t.persistenceErr
 	}
 	return nil
 }
@@ -351,8 +382,9 @@ func (t *VIPTable) corrupt(format string, args ...any) error {
 
 // persist writes the whole table atomically: a temp file in the same directory
 // is fsynced, then renamed over path, so a crash mid-write leaves either the
-// old table or the new one, never a truncated file. Entries are written in
-// sorted order for determinism.
+// old table or the new one, never a truncated file. The parent directory is
+// synced before any allocation can be published. Entries are sorted for
+// determinism. A post-rename error poisons the table until it is reopened.
 func (t *VIPTable) persist() error {
 	f := vipTableFile{
 		Version: vipTableVersion,
@@ -410,5 +442,22 @@ func (t *VIPTable) persist() error {
 	if err := os.Rename(tmpName, t.path); err != nil {
 		return fmt.Errorf("mesh: VIP table %s: rename: %w", t.path, err)
 	}
+	syncDirectory := t.syncDirectory
+	if syncDirectory == nil {
+		syncDirectory = syncVIPDirectory
+	}
+	if err := syncDirectory(filepath.Dir(t.path)); err != nil {
+		t.persistenceErr = fmt.Errorf("mesh: VIP table %s: directory sync after rename: %w; reopen table before further use", t.path, err)
+		return t.persistenceErr
+	}
 	return nil
+}
+
+func syncVIPDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

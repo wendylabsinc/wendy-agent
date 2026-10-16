@@ -6,10 +6,12 @@ import (
 	"context"
 	"fmt"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,14 +106,28 @@ func TestUDPProxyRedirectNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst := netip.MustParseAddr("10.99.2.22")
-	p, err := NewUDPProxy(UDPDialFunc(func(_ context.Context, peer int32, port uint16) (UDPFlow, error) {
-		t.Logf("UDP dial peer=%d port=%d", peer, port)
-		if peer != 534 || port != 7777 {
+	vips, err := OpenVIPTable(filepath.Join(t.TempDir(), "vips.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := meshid.DeviceFromPrincipal("spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/00000000-0000-4000-8000-000000000534")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst, err := vips.Allocate(device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dst.String() != "10.99.0.1" {
+		t.Fatalf("unexpected fixture VIP: %s", dst)
+	}
+	p, err := NewUDPProxy(UDPDialFunc(func(_ context.Context, peer meshid.Device, port uint16) (UDPFlow, error) {
+		t.Logf("UDP dial peer=%s port=%d", peer, port)
+		if peer != device || port != 7777 {
 			return nil, fmt.Errorf("denied port")
 		}
 		return &echoUDPFlow{replies: make(chan []byte, 32), t: t}, nil
-	}), namespaceSource{netip.MustParseAddr("10.79.42.2"), dst, iface.Index, t})
+	}), namespaceSource{netip.MustParseAddr("10.79.42.2"), dst, iface.Index, t}, vips)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,12 +180,12 @@ func TestUDPProxyRedirectNamespace(t *testing.T) {
 	const script = `import socket
 s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
 s.settimeout(3)
-s.sendto(b'echo',('10.99.2.22',7777))
+s.sendto(b'echo',('10.99.0.1',7777))
 data,addr=s.recvfrom(1024)
-assert data==b'echo' and addr==('10.99.2.22',7777),(data,addr)
+assert data==b'echo' and addr==('10.99.0.1',7777),(data,addr)
 print('VIP_REPLY_OK',flush=True)
 s.settimeout(0.4)
-s.sendto(b'denied',('10.99.2.22',7778))
+s.sendto(b'denied',('10.99.0.1',7778))
 try:
     data,addr=s.recvfrom(1024)
     raise AssertionError((data,addr))
@@ -182,7 +198,7 @@ except socket.timeout: print('DENIED_PORT_OK',flush=True)
 		if rules, ruleErr := exec.Command("ip", "-4", "rule", "show").CombinedOutput(); ruleErr == nil {
 			t.Logf("policy rules:\n%s", rules)
 		}
-		if route, routeErr := exec.Command("ip", "-4", "route", "get", "10.99.2.22", "from", "10.79.42.2", "iif", "wudp-br", "mark", "0x40000000").CombinedOutput(); routeErr == nil {
+		if route, routeErr := exec.Command("ip", "-4", "route", "get", "10.99.0.1", "from", "10.79.42.2", "iif", "wudp-br", "mark", "0x40000000").CombinedOutput(); routeErr == nil {
 			t.Logf("marked route:\n%s", route)
 		} else {
 			t.Logf("marked route error: %s", route)

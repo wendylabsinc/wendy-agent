@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"io"
 	"net"
 	"net/netip"
@@ -30,7 +31,7 @@ type UDPAuthorizer interface {
 // authenticated for the intended peer and cannot switch destination port.
 type DatagramFlow struct{ conn *quic.Conn }
 
-func DialUDP(ctx context.Context, credentials *localmesh.Credentials, peer int32, address netip.AddrPort, port uint16) (*DatagramFlow, error) {
+func DialUDP(ctx context.Context, credentials *localmesh.Credentials, peer meshid.Device, address netip.AddrPort, port uint16) (*DatagramFlow, error) {
 	if credentials == nil || port == 0 || !address.IsValid() {
 		return nil, errors.New("invalid mesh UDP dial")
 	}
@@ -41,6 +42,10 @@ func DialUDP(ctx context.Context, credentials *localmesh.Credentials, peer int32
 	conn, err := quic.DialAddr(ctx, address.String(), cfg, quicConfig())
 	if err != nil {
 		return nil, fmt.Errorf("mesh UDP QUIC dial: %w", err)
+	}
+	if _, err := limitSessionLifetime(credentials, conn); err != nil {
+		_ = conn.CloseWithError(1, "mesh app credentials invalid")
+		return nil, err
 	}
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {

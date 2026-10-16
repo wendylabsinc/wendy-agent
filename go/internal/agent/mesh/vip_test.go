@@ -422,3 +422,89 @@ func TestVIPConcurrentAllocateAndRead(t *testing.T) {
 		t.Fatalf("Stats after restart = %+v, want %+v", reopened.Stats(), table.Stats())
 	}
 }
+
+// A failed parent-directory sync happens after the new filename is visible.
+// Rolling back memory and continuing could contradict the surviving disk state.
+func TestVIPPostRenameFailureStopsPublicationAndReuse(t *testing.T) {
+	table, path := newVIPTable(t)
+	tenant := mustTenant(t, tenantA)
+	first := deviceForIndex(t, tenant, 1)
+	oldVIP := mustAllocate(t, table, first)
+	second := deviceForIndex(t, tenant, 2)
+	table.syncDirectory = func(string) error { return errors.New("injected directory sync failure") }
+	if _, err := table.Allocate(second); err == nil {
+		t.Fatal("allocation succeeded without durable rename")
+	}
+	if _, ok := table.Lookup(second); ok {
+		t.Fatal("lookup published an allocation with uncertain durability")
+	}
+	if _, err := table.Device(oldVIP); err == nil {
+		t.Fatal("poisoned table continued to route")
+	}
+	if _, err := table.Allocate(first); err == nil {
+		t.Fatal("cached allocation bypassed failed persistence")
+	}
+	if err := table.RetireTenant(mustTenant(t, tenantB)); err == nil {
+		t.Fatal("retirement overwrote uncertain persisted state")
+	}
+	reopened, err := OpenVIPTable(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondVIP, ok := reopened.Lookup(second)
+	if !ok {
+		t.Fatal("visible committed table was rolled back")
+	}
+	thirdVIP := mustAllocate(t, reopened, deviceForIndex(t, tenant, 3))
+	if thirdVIP == oldVIP || thirdVIP == secondVIP {
+		t.Fatal("reopen reused a persisted VIP")
+	}
+}
+
+func TestVIPRejectsAbsentIdentityButAllowsNilUUID(t *testing.T) {
+	table, _ := newVIPTable(t)
+	if _, err := table.Allocate(meshid.Device{}); err == nil {
+		t.Fatal("allocated a VIP for an absent device")
+	}
+	tenant := mustTenant(t, "00000000-0000-0000-0000-000000000000")
+	device, err := meshid.ParseDevice(tenant, "00000000-0000-0000-0000-000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vip := mustAllocate(t, table, device)
+	if got, err := table.Device(vip); err != nil || got != device {
+		t.Fatalf("explicit nil UUID mapping: %s, %v", got, err)
+	}
+	if err := table.RetireTenant(meshid.Tenant{}); err == nil {
+		t.Fatal("retired VIPs without a tenant")
+	}
+}
+
+func TestVIPRetirementFailureStopsOldTenantResolution(t *testing.T) {
+	table, path := newVIPTable(t)
+	oldDevice := deviceForIndex(t, mustTenant(t, tenantA), 1)
+	oldVIP := mustAllocate(t, table, oldDevice)
+	// Fail before rename, when the old table is still the authoritative disk file.
+	table.path = filepath.Join(t.TempDir(), "missing-directory", "vips.json")
+	if err := table.RetireTenant(mustTenant(t, tenantB)); err == nil {
+		t.Fatal("retirement unexpectedly succeeded")
+	}
+	if _, err := table.Device(oldVIP); err == nil {
+		t.Fatal("failed enrollment retirement kept resolving an old tenant")
+	}
+	table.path = path
+	if _, err := table.Allocate(oldDevice); err == nil {
+		t.Fatal("failed retirement allowed later allocations")
+	}
+	// A subsequent startup retries retirement before handing the table to proxies.
+	reopened, err := OpenVIPTable(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.RetireTenant(mustTenant(t, tenantB)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.Device(oldVIP); err == nil {
+		t.Fatal("restart resurrected retired tenant")
+	}
+}

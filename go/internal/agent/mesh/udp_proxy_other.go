@@ -5,6 +5,7 @@ package mesh
 import (
 	"context"
 	"errors"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"net"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/meshingress"
@@ -18,10 +19,10 @@ type UDPFlow interface {
 	Close() error
 }
 
-type UDPDialFunc func(context.Context, int32, uint16) (UDPFlow, error)
+type UDPDialFunc func(context.Context, meshid.Device, uint16) (UDPFlow, error)
 type UDPProxy struct{}
 
-func NewUDPProxy(UDPDialFunc, *meshingress.Registry) (*UDPProxy, error) {
+func NewUDPProxy(UDPDialFunc, *meshingress.Registry, *VIPTable) (*UDPProxy, error) {
 	return nil, errors.New("mesh UDP VIP proxy requires Linux")
 }
 func (*UDPProxy) Start(string) error { return errors.New("mesh UDP VIP proxy requires Linux") }

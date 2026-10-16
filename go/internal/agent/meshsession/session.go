@@ -78,6 +78,10 @@ func Dial(ctx context.Context, credentials *localmesh.Credentials, peer meshid.D
 	if err != nil {
 		return nil, fmt.Errorf("mesh app QUIC dial: %w", err)
 	}
+	if _, err := limitSessionLifetime(credentials, conn); err != nil {
+		_ = conn.CloseWithError(1, "mesh app credentials invalid")
+		return nil, err
+	}
 	ok := false
 	defer func() {
 		if !ok {
@@ -141,7 +145,7 @@ func NewServer(credentials *localmesh.Credentials, authorizer Authorizer) (*Serv
 	if credentials == nil || authorizer == nil {
 		return nil, errors.New("missing mesh app credentials or authorizer")
 	}
-	return &Server{credentials: credentials, authorizer: authorizer, tickets: localmesh.NewTicketStore()}, nil
+	return &Server{credentials: credentials, authorizer: authorizer, tickets: credentials.ServerTicketStore(ALPN, "app-quic")}, nil
 }
 
 func (s *Server) TLSConfig() *tls.Config {
@@ -240,6 +244,10 @@ func (s *Server) Addr() net.Addr {
 }
 
 func (s *Server) serve(parent context.Context, conn *quic.Conn) {
+	if _, err := limitSessionLifetime(s.credentials, conn); err != nil {
+		_ = conn.CloseWithError(1, "mesh app credentials invalid")
+		return
+	}
 	var streams sync.WaitGroup
 	defer func() { _ = conn.CloseWithError(0, "app session complete"); streams.Wait() }()
 	doneConn := make(chan struct{})
