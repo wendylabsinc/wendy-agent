@@ -41,6 +41,7 @@ type runtime struct {
 	advertisementRefresh chan struct{}
 	tlsGate              tlsHandshakeAdmission
 	discovery            discoveryRecovery
+	discoveryErr         error // owned by the scan loop; cached object reads cannot clear it
 	restartScan          func(context.Context, *dbus.Conn, dbus.ObjectPath) error
 }
 
@@ -282,6 +283,10 @@ func Run(ctx context.Context, cfg Config) error {
 	r.advertisementRefresh = make(chan struct{}, 1)
 	var loops sync.WaitGroup
 	loopErrors := make(chan error, 3)
+	// Publish setup completion before the loops can report a discovery failure.
+	if cfg.Status != nil {
+		cfg.Status(localmesh.CarrierStatus{Ready: true})
+	}
 	loops.Add(3)
 	go func() { defer loops.Done(); loopErrors <- r.acceptLoop(runCtx, listener) }()
 	go func() { defer loops.Done(); loopErrors <- r.scanLoop(runCtx, bus, adapter) }()
@@ -291,9 +296,6 @@ func Run(ctx context.Context, cfg Config) error {
 			return refreshOwnedAdvertisement(ctx, bus, closeTransport, owner, uuid, payload)
 		})
 	}()
-	if cfg.Status != nil {
-		cfg.Status(localmesh.CarrierStatus{Ready: true})
-	}
 	var loopErr error
 	select {
 	case <-ctx.Done():
@@ -461,13 +463,16 @@ func (r *runtime) governDiscovery(ctx context.Context, bus *dbus.Conn, adapter d
 		if wantPaused := r.blePeerCount() >= target; wantPaused != paused {
 			if wantPaused {
 				if err := stopBlueZDiscovery(ctx, bus, adapter); err != nil {
+					r.reportDiscoveryHealth(ctx, fmt.Errorf("pausing BLE discovery: %w", err))
 					r.cfg.Logger.Debug("BLE discovery pause unavailable", zap.Error(err))
 					return !paused
 				}
 			} else if err := startBlueZDiscovery(ctx, bus, adapter); err != nil {
+				r.reportDiscoveryHealth(ctx, fmt.Errorf("resuming BLE discovery: %w", err))
 				r.cfg.Logger.Debug("BLE discovery resume unavailable", zap.Error(err))
 				return !paused
 			}
+			r.reportDiscoveryHealth(ctx, nil)
 			paused = wantPaused
 			r.scanPaused = paused
 			r.lastScanToggle = now
@@ -591,9 +596,11 @@ func (r *runtime) maybeRestartDiscovery(ctx context.Context, bus *dbus.Conn, ada
 	err := restart(restartCtx, bus, adapter)
 	cancel()
 	if err != nil {
+		r.reportDiscoveryHealth(ctx, fmt.Errorf("restarting BLE discovery: %w", err))
 		r.cfg.Logger.Warn("BLE discovery restart failed", zap.Duration("mesh_advert_silence", now.Sub(r.discovery.lastMeshSignal)), zap.Error(err))
 		return
 	}
+	r.reportDiscoveryHealth(ctx, nil)
 	r.cfg.Logger.Info("BLE discovery restarted after mesh advertisement silence", zap.Duration("mesh_advert_silence", now.Sub(r.discovery.lastMeshSignal)))
 }
 
