@@ -968,6 +968,7 @@ func main() {
 	var localMeshMu sync.RWMutex
 	var localMeshSnapshot func() localmesh.NodeSnapshot
 	var localMeshAppClient *meshsession.Client
+	var localMeshCredentials *localmesh.Credentials
 	// Persistent VIP table shared by DNS answers, the proxy's reverse
 	// lookup, and every allocation: (tenant UUID, device UUID) ↔ VIP. A
 	// corrupt table file refuses to open rather than silently re-allocating
@@ -1002,6 +1003,7 @@ func main() {
 			}
 			localMeshMu.Lock()
 			localMeshAppClient = appClient
+			localMeshCredentials = credentials
 			localMeshMu.Unlock()
 			go func() { <-ctx.Done(); _ = appClient.Close() }()
 			wg.Add(1)
@@ -1135,7 +1137,7 @@ func main() {
 	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
 		logger.Warn("wendy net proxy failed to start; wendy net egress disabled", zap.Error(err))
 	}
-	udpProxy, udpErr := mesh.NewUDPProxy(mesh.UDPDialFunc(func(dialCtx context.Context, peer int32, port uint16) (mesh.UDPFlow, error) {
+	udpProxy, udpErr := mesh.NewUDPProxy(mesh.UDPDialFunc(func(dialCtx context.Context, peer meshid.Device, port uint16) (mesh.UDPFlow, error) {
 		if meshDialer.IsSelf(peer) {
 			return meshsession.DialLocalUDP(dialCtx, meshIngress, port)
 		}
@@ -1146,12 +1148,12 @@ func main() {
 		if snapshot == nil || credentials == nil {
 			return nil, meshsession.ErrNoRoute
 		}
-		address, err := meshsession.Resolve(snapshot(), credentials.Org, peer)
+		address, err := meshsession.Resolve(snapshot(), peer)
 		if err != nil {
 			return nil, err
 		}
 		return meshsession.DialUDP(dialCtx, credentials, peer, address, port)
-	}), meshIngress)
+	}), meshIngress, meshVIPs)
 	if udpErr == nil {
 		udpErr = udpProxy.Start(fmt.Sprintf(":%d", mesh.UDPProxyPort))
 	}
