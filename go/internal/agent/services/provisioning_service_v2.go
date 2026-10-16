@@ -45,9 +45,11 @@ func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.
 				OrganizationId: s.v1.orgID,
 				AssetId:        s.v1.assetID,
 				PrincipalUri:   s.v1.principalURI,
-				// Direct PKI reset stays disabled until Cloud authorization and
-				// durable device preparation are implemented.
-				CloudUnenrollmentSupported: false,
+				// SECURITY: prerelease CLIs trusted CloudUnenrollmentSupported and
+				// sent caller-serialized deletion fields; keep it false so they stop
+				// before Cloud mutation. Only the authenticated-reset bit gates reset.
+				CloudUnenrollmentSupported:       false,
+				CloudAuthenticatedResetSupported: supportsTrustedResetStorage && s.v1.trustedTime != nil,
 			},
 		},
 	}, nil

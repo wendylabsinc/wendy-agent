@@ -84,37 +84,71 @@ wendy device enroll --device 192.168.1.11 --name lab-pi-01
 
 ## Unenrollment compatibility
 
-`wendy device unenroll` retains the numeric Cloud v1 local-reset-first,
-best-effort Cloud cleanup path. UUID/direct PKI local unenrollment is disabled.
-The Agent advertises `ProvisionedResponse.cloud_unenrollment_supported=false`
-and rejects direct PKI `Unprovision` requests without changing credentials.
-The CLI also refuses this workflow, including `--yes` and `--check`, before any
-Cloud revocation or deletion even if an older Agent advertises reset support.
-UUID/direct PKI identities never fall back to numeric cleanup.
+`wendy device unenroll` has separate paths. Numeric Cloud v1 identities retain the
+original local-reset-first, best-effort Cloud cleanup. UUID/direct PKI identities
+use Cloud-owned revocation and retained deletion evidence before guarded local
+credential erasure; they never fall back to numeric cleanup.
 
-Enabling this flow requires fresh FIDO2 approval bound to the exact reset
-instruction, signed-command delivery with durable device preparation before
-revocation, and Cloud-authenticated deletion evidence. A caller-serialized
-`DeletedAsset`, operator mTLS, and OCSP revocation evidence do not establish that
-authorized Cloud deletion occurred.
+The UUID candidate requires compatible Cloud and Agent versions. The Agent's
+`ProvisionedResponse.cloud_authenticated_reset_supported` capability must be
+`true`; the old prerelease `cloud_unenrollment_supported` flag is ignored (current
+Agents report it `false` so prerelease CLIs stop before Cloud changes). Agent independently verifies a
+purpose-specific Cloud signature using HTTPS keys from its saved enrollment
+Cloud, plus the exact operator signature against its actual mTLS peer. Before
+erasure it obtains fresh authenticated Roughtime and checks freshness/validity
+throughout that interval. This reset-only query does not discipline the clock or
+read/write a clock floor. Missing proof, unavailable time or failed checks retain
+credentials for retry even after Cloud unenrollment finishes.
 
-Cloud-only unenrollment remains available and leaves local device credentials
-intact. Historical pending reset receipts block startup recovery and require explicit
-local recovery; the Agent preserves any remaining credentials. Completed receipts
-remain readable and do not enable new reset requests.
+AAA v0.22 (retained in v0.24), §5.1/§7(4), excludes removal-only unenrollment
+from step-up. No browser/passkey confirmation is required for asset deletion,
+device-certificate revocation or device reset. Yes/No or `--yes` confirms intent,
+not identity; `device:delete`, the exact-body operator signature, retained deletion
+record, audit and SSF protections still apply.
 
-The prerelease Agent RPCs `RevokeACMECertificate` and `CheckACMERevocation` always
-return `UNIMPLEMENTED`: Cloud owns revocation; those RPCs are not an alternate path.
+AAA applies at the Cloud/Auth/PKI interface, not as a wholesale migration of
+local CLI or Agent behavior. This command signs and authorizes Cloud deletion;
+local guarded erasure is not a new backend postbox implementation.
+
+Compatible Cloud and Agent builds are required. These source semantics do not
+claim deployed or live-reset acceptance.
+
+### UnprovisionRequest fields (direct PKI identities)
+
+| Field | Required for UUID/PKI | Contents |
+| --- | --- | --- |
+| `expected_principal_uri` | Yes | Exact enrolled SPIFFE principal URI. |
+| `expected_certificate_sha256` | Yes | SHA-256 hex of the installed leaf certificate. |
+| `revocation_proof` | Yes | Issuer-signed revoked OCSP evidence for that installed leaf. |
+| `cloud_deletion` | Yes | Exact serialized `wendycloud.v2.DeletedAsset` authenticated by Cloud's proof. |
+| `cloud_reset_authorization` | Yes | Purpose-specific Cloud JWS, issued after committed deletion/current authorization, binding the deletion and operator-signed request to the installed leaf. |
+
+A bare/zero-value request returns `FailedPrecondition`; numeric v1 identities
+continue accepting an empty request.
+
+The Agent RPCs `RevokeACMECertificate` and `CheckACMERevocation` are deprecated and
+unconditionally return `UNIMPLEMENTED` on Agents that include these changes.
+Cloud owns revocation through `DeleteAsset`; these RPCs are not an alternate path.
+
+The v2 command has a three-minute bound covering all phases. `--check` is
+read-only: it reads the Cloud binding and Agent capability but does not revoke,
+spend EAB credentials, reset, import proof or write a CLI journal.
 
 After durable guarded erasure, `NotProvisionedResponse.unenrollment_completion`
 contains a public device-signed receipt for the **prior** principal's operation,
 not proof of current device identity or reachability. Consumers must anchor its
-historical certificate to configured trust roots and verify its evidence/binding.
-An Agent without a prior guarded completion has no such receipt.
+historical certificate to configured trust roots and independently re-establish
+Cloud key trust for v2 proof, never trust a remotely supplied public key.
+Protected local pending recovery retains its originally authenticated key in
+existing provisioning.json; historical proof-less pending records cannot erase
+keys. Remote v2 confirmation can fail when a retired historical key is no longer
+published. An Agent without prior guarded completion has no such receipt.
 
 ## Related
+
+- [Cloud-owned unenrollment](/docs/device/unenrollment) — operator flow, recovery and rollout limits.
 
 - [`wendy install` → Linux Desktop](../install.md) — mint a short-lived enrollment token and embed it in the `agent.sh` one-liner so the device self-enrolls on first startup, without needing a USB connection or a running agent.
 - [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.
 - `wendy cloud enroll-device` — alias for this command, reachable through the cloud tunnel.
-- [`wendy device unenroll`](./unenroll.md) reverses enrollment and deletes the device from Wendy Cloud, using the identity-specific paths and compatibility requirements above. Cloud mode also supports offline devices.
+- `wendy device unenroll` — reverse enrollment and delete the device from Wendy Cloud, using the identity-specific paths and compatibility requirements above.
