@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/url"
 	"path/filepath"
@@ -456,4 +457,15 @@ func TestExpiredLeaseNeverRenewsByRelay(t *testing.T) {
 	if _, err := a.Accept(w, f.now.Add(1100*time.Millisecond)); !errors.Is(err, ErrExpired) {
 		t.Fatalf("expired relay = %v", err)
 	}
+}
+
+func catalogTestDevice(principal string) meshid.Device {
+	d, err := meshid.DeviceFromPrincipal(principal)
+	if err != nil {
+		panic(err)
+	}
+	return d
+}
+func catalogNumberedDevice(number int) meshid.Device {
+	return catalogTestDevice(fmt.Sprintf("spiffe://wendy.sh/tenant/%s/device/00000000-0000-4000-8000-%012x", testTenantID, number))
 }
