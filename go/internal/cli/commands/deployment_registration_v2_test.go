@@ -207,7 +207,8 @@ func TestCloudRegistrationV2BeforeRosterSyncUsesSignedOperatorRequest(t *testing
 	srv := &deploymentV2Server{device: deploymentV2Device(), key: key.Public().(*mldsa.PublicKey), apps: map[string]*cloudpb.App{
 		"existing": {Id: "existing", OrganizationId: deploymentTenant, Name: "operator metadata", CanSendNotifications: true},
 	}}
-	conn := deploymentTestConnection(t, srv, legacy)
+	conn := deploymentTLSConnection(t, srv, legacy, srv.device.PrincipalUri)
+	conn.CertInfo = &cert
 	setTempConfig(t, &config.Config{Auth: []config.AuthConfig{{CloudGRPC: srv.device.CloudHost, Certificates: []config.CertificateInfo{cert}}}})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -245,6 +246,9 @@ func TestDeploymentProvisioningFallsBackOnlyForUnimplementedV2(t *testing.T) {
 			}}}
 			srv := &deploymentV2Server{stateErr: status.Error(code, "test"), device: deploymentV2Device()}
 			conn := deploymentTestConnection(t, srv, legacy)
+			if code == codes.OK {
+				conn = deploymentTLSConnection(t, srv, legacy, srv.device.PrincipalUri)
+			}
 			response, err := (deploymentProvisioningService{conn}).IsProvisioned(context.Background(), &agentpb.IsProvisionedRequest{})
 			if code == codes.Unimplemented {
 				if err != nil || legacy.calls != 1 || response.GetProvisioned().GetAssetId() != 9 {
