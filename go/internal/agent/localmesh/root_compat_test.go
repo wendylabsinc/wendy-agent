@@ -285,6 +285,9 @@ func TestMeshTrimmedRootRetainsRequiredIntermediateOnWire(t *testing.T) {
 			t.Fatal(err)
 		}
 		template := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: name}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), BasicConstraintsValid: true, IsCA: principal == "", KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}}
+		if name == "intermediate" {
+			template.NotAfter = time.Now().Add(30 * time.Minute)
+		}
 		if principal == "" {
 			template.KeyUsage |= x509.KeyUsageCertSign
 		} else {
@@ -322,6 +325,10 @@ func TestMeshTrimmedRootRetainsRequiredIntermediateOnWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if peer, err := a.Verify(b.Certificate.Certificate, time.Now()); err != nil || !peer.NotAfter.Equal(intermediate.NotAfter) {
+		t.Fatalf("peer lifetime must stop at its presented intermediate: %s, %v", peer.NotAfter, err)
+	}
+
 	for name, handshake := range map[string]func(*tls.Config, *tls.Config) rootHandshakeResult{"TLS13": rootTLSRoundtrip, "QUIC": rootQUICRoundtrip} {
 		for _, oldSide := range []string{"neither", "client", "server"} {
 			t.Run(name+"/old-"+oldSide, func(t *testing.T) {

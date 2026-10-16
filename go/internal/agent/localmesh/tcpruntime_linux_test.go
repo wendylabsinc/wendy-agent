@@ -82,6 +82,15 @@ func TestConfiguredTCPPeerProcess(t *testing.T) {
 		go server.Serve(listener)
 		select {
 		case <-seen:
+			// A request can arrive while the reverse route is still settling.
+			// Closing the listener the instant one lands turns a slow first
+			// exchange into a failure the client cannot retry.
+			hold := time.NewTimer(3 * time.Second)
+			select {
+			case <-hold.C:
+			case <-ctx.Done():
+			}
+			hold.Stop()
 		case <-ctx.Done():
 			t.Fatal("no routed request")
 		}
@@ -90,7 +99,7 @@ func TestConfiguredTCPPeerProcess(t *testing.T) {
 		deadline := time.Now().Add(15 * time.Second)
 		reached := false
 		for time.Now().Before(deadline) {
-			client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
+			client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 4 * time.Second}
 			response, err := client.Get(fmt.Sprintf("http://[%s]:18080/", peer.MeshAddress()))
 			if err == nil {
 				body, readErr := io.ReadAll(response.Body)

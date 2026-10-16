@@ -6,23 +6,32 @@ import (
 	"net"
 	"os"
 	"strings"
+
+	"github.com/vishvananda/netlink"
 )
 
-// persistentMAC returns the factory address the kernel records for an
-// interface. An address set with `ip link set ... address` leaves this record at
-// its original value, so an administratively changed address cannot decide a
-// router ID that peers hold feasibility history for.
+// Prefer the kernel's permanent address. For drivers that omit IFLA_PERM_ADDRESS,
+// a physical interface with NET_ADDR_PERM still exposes its factory address.
+// Virtual and administratively randomized addresses are not identity sources.
 func persistentMAC(name string) (net.HardwareAddr, bool) {
 	if name == "" || strings.ContainsAny(name, "/\\") {
 		return nil, false
 	}
-	data, err := os.ReadFile("/sys/class/net/" + name + "/persistentmac")
+	link, err := netlink.LinkByName(name)
 	if err != nil {
 		return nil, false
 	}
-	mac, err := net.ParseMAC(strings.TrimSpace(string(data)))
-	if err != nil {
+	if mac := link.Attrs().PermHWAddr; usableMAC(mac) {
+		return mac, true
+	}
+	base := "/sys/class/net/" + name
+	if _, err := os.Stat(base + "/device"); err != nil {
 		return nil, false
 	}
-	return mac, true
+	kind, err := os.ReadFile(base + "/addr_assign_type")
+	if err != nil || strings.TrimSpace(string(kind)) != "0" {
+		return nil, false
+	}
+	mac := link.Attrs().HardwareAddr
+	return mac, usableMAC(mac)
 }

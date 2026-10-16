@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -103,7 +104,7 @@ func OpenIdentityCache(path string, limits CacheLimits, verify IdentityVerifier,
 	if err = json.Unmarshal(data, &disk); err != nil {
 		return nil, err
 	}
-	if disk.Version != 2 {
+	if disk.Version != 1 {
 		return nil, errors.New("unsupported identity cache version")
 	}
 	for principal, entry := range disk.Entries {
@@ -276,6 +277,27 @@ func (c *IdentityCache) Get(principal string, now time.Time) ([][]byte, Identity
 	return cloneChain(entry.Chain), id, true
 }
 
+// Fingerprints returns a bounded snapshot of identities available under current
+// trust and retention. It grants no lease: Get revalidates every later lookup.
+func (c *IdentityCache) Fingerprints(now time.Time, limit int) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if limit <= 0 {
+		return nil
+	}
+	out := make([]string, 0, min(limit, len(c.entries)))
+	for fp, entry := range c.entries {
+		if _, valid := c.valid(fp, entry, now); valid {
+			out = append(out, Fingerprint(entry.Chain))
+		}
+	}
+	sort.Strings(out)
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
 // Flush persists LRU activity and removes expired entries. Call periodically and
 // on orderly shutdown, not on every signed announcement.
 func (c *IdentityCache) Flush(now time.Time) error {
@@ -296,7 +318,7 @@ func (c *IdentityCache) save() error {
 	disk := struct {
 		Version int
 		Entries map[string]cachedIdentity
-	}{Version: 2, Entries: c.entries}
+	}{Version: 1, Entries: c.entries}
 	data, err := json.Marshal(disk)
 	if err != nil {
 		return err

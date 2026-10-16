@@ -58,7 +58,7 @@ func (m Manifest) validate(now time.Time) error {
 	if !expires.After(now) {
 		return ErrExpiredManifest
 	}
-	if m.Version != 2 || m.Device == uuid.Nil || m.Revision == 0 ||
+	if m.Version != 1 || m.Revision == 0 ||
 		issued.After(now.Add(5*time.Second)) || !expires.After(issued) || expires.Sub(issued) > MaxLease ||
 		len(m.Name) > 255 || (!m.Withdraw && m.AgentPort == 0) {
 		return errors.New("invalid or expired local-mesh manifest")

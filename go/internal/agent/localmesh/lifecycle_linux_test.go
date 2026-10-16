@@ -102,9 +102,14 @@ func TestMeshLifecyclePeerProcess(t *testing.T) {
 			}
 		}()
 	}
+	checked := false
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		if !checked && node.Snapshot().Peers > 0 {
+			assertDerivedLinkLocals(t, self, peer)
+			checked = true
+		}
 		if _, err = os.Stat(config.StopFile); err == nil {
 			cancel()
 			<-runDone
@@ -375,6 +380,7 @@ func TestKernelProcessLifecycle(t *testing.T) {
 		if _, err = kernel.AddPeer(1, peer); err != nil {
 			t.Fatal(err)
 		}
+		assertDerivedLinkLocals(t, device, peer)
 		fmt.Println("RECLAIMED")
 	case "foreign":
 		foreign := netlink.Route{Table: RouteTable, Family: netlink.FAMILY_V6, Protocol: 187, Type: unix.RTN_UNREACHABLE, Dst: ipNet(netip.MustParsePrefix("fd45:b891:567f::1/128"))}
@@ -431,5 +437,70 @@ func TestKernelCrashRecoveryIsolatedNamespace(t *testing.T) {
 	}
 	if out, err = mode("foreign"); err != nil || !strings.Contains(out, "REFUSED") {
 		t.Fatalf("a foreign route in the reserved table was not refused (err=%v):\n%s", err, out)
+	}
+}
+
+// assertDerivedLinkLocals shows that a mesh interface carries exactly the
+// link-local this package derived from the device UUIDs. addr_gen_mode is set
+// to none before any address is added, so the kernel never manufactures a
+// MAC-derived link-local beside it, and the host mesh link carries no
+// link-local at all - only the device's own ULA.
+func assertDerivedLinkLocals(t *testing.T, self, peer meshid.Device) {
+	t.Helper()
+	want, _, err := meshid.LinkLocalAddresses(self, peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, err := netlink.LinkList()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnels := 0
+	for _, l := range links {
+		name := l.Attrs().Name
+		if name != InterfaceName && !strings.HasPrefix(name, peerInterfacePrefix) {
+			continue
+		}
+		addrs, err := netlink.AddrList(l, netlink.FAMILY_V6)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var derived, own int
+		for _, a := range addrs {
+			addr, ok := netip.AddrFromSlice(a.IP)
+			if !ok {
+				t.Fatalf("%s carries an unparseable address %s", name, a.IP)
+			}
+			addr = addr.Unmap()
+			switch {
+			case addr.IsLinkLocalUnicast():
+				derived++
+				if addr != want {
+					t.Fatalf("%s carries the link-local %s, want the derived %s", name, addr, want)
+				}
+			case addr == self.MeshAddress():
+				own++
+			default:
+				t.Fatalf("%s carries %s, which is neither the derived link-local nor the device's own mesh address", name, addr)
+			}
+		}
+		if name == InterfaceName {
+			// The host mesh link is a routing anchor: the device's own ULA and
+			// nothing else. A kernel link-local here would be a second,
+			// MAC-derived identity on the same host.
+			if derived != 0 || own != 1 {
+				t.Fatalf("%s carries %d link-local and %d mesh addresses, want 0 and 1", name, derived, own)
+			}
+			continue
+		}
+		tunnels++
+		// A peer TUN carries the derived link-local for the link and the device's
+		// own ULA as the payload source - exactly one of each.
+		if derived != 1 || own != 1 {
+			t.Fatalf("%s carries %d link-local and %d mesh addresses, want 1 and 1", name, derived, own)
+		}
+	}
+	if tunnels == 0 {
+		t.Fatal("no local-mesh TUN exists")
 	}
 }
