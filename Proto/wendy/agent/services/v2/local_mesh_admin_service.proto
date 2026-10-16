@@ -11,6 +11,8 @@ service WendyLocalMeshAdminService {
 
 message ConfigureLocalMeshRequest {
   // Presence means update; omitted fields preserve the saved value.
+  // Master switch for joining/relaying the mesh. Carrier choices are retained
+  // while disabled. Roaming and uplink sharing require participation.
   optional bool participate = 1;
   optional bool roam = 2;
   optional bool share_uplink = 3;

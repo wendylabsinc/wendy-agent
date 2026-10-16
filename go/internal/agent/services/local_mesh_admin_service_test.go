@@ -155,11 +155,35 @@ func TestLocalMeshAdminCanDisableLastCarrierWithoutTCPConfig(t *testing.T) {
 	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Ethernet: proto.Bool(true), InfrastructureWifi: proto.Bool(true)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(false), Ethernet: proto.Bool(false)}); err != nil {
+	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(false), Ethernet: proto.Bool(false), InfrastructureWifi: proto.Bool(false)}); err != nil {
 		t.Fatal(err)
 	}
 	carriers, err := localmesh.LoadTCPConfig(filepath.Join(dir, "local-mesh.json"), device)
 	if err != nil || carriers != nil {
 		t.Fatalf("carrier-only disabled state should remove opt-in file: %+v %v", carriers, err)
+	}
+}
+
+func TestLocalMeshParticipationDisableRetainsCarrierChoices(t *testing.T) {
+	dir := t.TempDir()
+	tenant, device := adminTenant(t), adminDevice(t)
+	svc := NewLocalMeshAdminService(nil, dir, func() (meshid.Tenant, meshid.Device) { return tenant, device })
+	ctx := ctxWithIdentity(t, userPrincipal(adminTenantID, "alice"))
+	_, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Participate: proto.Bool(true), Nan: proto.Bool(true), Ble: proto.Bool(true), Ethernet: proto.Bool(true), InfrastructureWifi: proto.Bool(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{false, true} {
+		got, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Participate: proto.Bool(enabled)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := got.GetConfigured()
+		if c.GetParticipate() != enabled || !c.GetNan() || !c.GetBle() || !c.GetEthernet() || !c.GetInfrastructureWifi() {
+			t.Fatalf("lost carrier preferences: %+v", c)
+		}
+		if !enabled && got.GetState() != "disabled" {
+			t.Fatalf("saved disabled state: %+v", got)
+		}
 	}
 }

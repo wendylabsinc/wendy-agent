@@ -20,13 +20,14 @@ import (
 // meshSharingManager follows the lifetime of one Babel node. The controller
 // owns only policies it installed and closes before the node is torn down.
 type meshSharingManager struct {
-	mu      sync.Mutex
-	path    string
-	logger  *zap.Logger
-	catalog *meshCatalogManager
-	cancel  context.CancelFunc
-	done    chan struct{}
-	state   services.LocalMeshRuntimeStatus
+	mu       sync.Mutex
+	path     string
+	logger   *zap.Logger
+	catalog  *meshCatalogManager
+	cancel   context.CancelFunc
+	done     chan struct{}
+	state    services.LocalMeshRuntimeStatus
+	carriers meshCarrierHealth
 }
 
 type sharingNode struct {
@@ -48,7 +49,7 @@ func (m *meshSharingManager) Status() services.LocalMeshRuntimeStatus {
 	m.mu.Lock()
 	state := m.state
 	m.mu.Unlock()
-	return state
+	return m.carriers.status(state)
 }
 
 func (m *meshSharingManager) setState(state services.LocalMeshRuntimeStatus) {

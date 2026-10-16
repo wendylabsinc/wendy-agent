@@ -12,7 +12,7 @@ import (
 func newDeviceLocalMeshCmd() *cobra.Command {
 	root := &cobra.Command{Use: "local-mesh", Aliases: []string{"nan-mesh"}, Short: "Configure local mesh carriers and Internet sharing"}
 	configure := &cobra.Command{Use: "configure", Short: "Update selected local mesh settings", Args: cobra.NoArgs}
-	configure.Flags().Bool("participate", false, "Participate in the local mesh")
+	configure.Flags().Bool("participate", false, "Join and relay the local mesh (false stops all carriers; saved carrier choices are retained)")
 	configure.Flags().Bool("roam", false, "Use signed mesh Internet when an independent uplink is unavailable")
 	configure.Flags().Bool("share-uplink", false, "Offer an independent uplink to the mesh")
 	configure.Flags().Bool("nan", false, "Enable Wi-Fi Aware NAN as a mesh carrier")
