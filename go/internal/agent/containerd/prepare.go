@@ -3,6 +3,7 @@ package containerd
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/errdefs"
@@ -44,7 +45,14 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 	}()
 
 	sn := c.client.SnapshotService(c.snapshotter)
+	rebase := sync.OnceValue(func() bool { return c.snapshotterRebases(ctx) })
 	parentChainID := ""
+	// unstackedLayer is the first layer whose snapshot exists without being
+	// stacked on the layer below (see stackedLayers), or -1. Removing it here
+	// would fail while the app's old container still runs on it, so snapshot
+	// work stops there and CreateContainer's unpack replaces it once that
+	// container is gone.
+	unstackedLayer := -1
 	for i, layer := range layers {
 		if layer == nil {
 			return fmt.Errorf("layer %d is nil", i)
@@ -72,7 +80,14 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 			}
 		}
 
-		if _, err := sn.Stat(ctx, chainID); err == nil {
+		if unstackedLayer >= 0 {
+			continue
+		}
+		if info, err := sn.Stat(ctx, chainID); err == nil {
+			if info.Parent != parentChainID {
+				unstackedLayer = i
+				continue
+			}
 			c.refreshSnapshotLabels(ctx, sn, chainID)
 			parentChainID = chainID
 			continue
@@ -89,7 +104,7 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 			Digest:    layerDigest,
 			Size:      layer.GetSize(),
 		}
-		if _, err := c.applyLayerSnapshot(ctx, cleanupCtx, sn, imageName, i, desc, diffID, parentChainID, chainID); err != nil {
+		if _, err := c.applyLayerSnapshot(ctx, cleanupCtx, sn, imageName, i, desc, diffID, parentChainID, chainID, rebase()); err != nil {
 			return err
 		}
 		parentChainID = chainID
@@ -97,6 +112,13 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 
 	if err := c.AssembleImage(ctx, imageName, layers, imageConfig); err != nil {
 		return fmt.Errorf("assembling prepared image: %w", err)
+	}
+	if unstackedLayer >= 0 {
+		c.logger.Warn("Layer snapshot is not stacked on its parent layer; it will be replaced when the container is created",
+			zap.String("image", normalizeImageName(imageName)),
+			zap.Int("layer", unstackedLayer),
+		)
+		return nil
 	}
 
 	// Prepare a pristine writable rootfs while the caller is still outside the
