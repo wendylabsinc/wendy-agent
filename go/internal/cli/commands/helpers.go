@@ -1651,18 +1651,16 @@ func resolveHostMDNSFallback(ctx context.Context, host string) string {
 	return ""
 }
 
-// maxDialCandidates bounds how many addresses one connect will walk. A name with
-// a dozen stale AAAA records must not turn a failed connect into a dozen
-// sequential handshake budgets; three covers the real case this exists for (a
-// device holding one IPv4 plus a couple of IPv6 addresses).
+// maxDialCandidates bounds the address list and concurrent connection attempts.
+// Three covers a device holding one IPv4 plus a couple of IPv6 addresses without
+// letting stale DNS records create arbitrary connection fan-out.
 //
-// It is a real multiplier, not a free one: a fully failing walk now costs up to
-// maxDialCandidates × 2 ports × certs × mtlsProbeTimeout, i.e. ~42s with a
-// single cert against three black-holed addresses, where one address cost ~14s.
-// Every caller on this path wraps the connect in its own deadline (typically
-// 3-5s), which is what actually bounds it in practice — but do not raise this
-// constant without checking those deadlines, and note the cached path can run
-// the walk twice (see connectWithAutoTLSDiagnostics's retry).
+// Direct endpoints that do not accept TCP cost one bounded dial per port,
+// independent of certificate count. Responsive endpoints and proxy routes
+// retain the per-certificate mtlsProbeTimeout budget.
+// Commands such as enroll and info have no overall connection deadline, so this
+// cap matters even though discovery callers supply their own deadlines. The
+// cached path can run the walk twice when fresh resolution finds new addresses.
 const maxDialCandidates = 3
 
 // stripZone removes an IPv6 zone suffix ("fe80::1%en0" → "fe80::1") so
@@ -2426,16 +2424,9 @@ func (e mtlsAttemptError) Error() string { return e.addr + ": " + e.err.Error() 
 
 func (e mtlsAttemptError) Unwrap() error { return e.err }
 
-// mtlsWalk carries the state one ladder walk accumulates ACROSS every candidate
-// address: the cert probe order (corrected at most once, and shared so a later
-// address inherits an earlier one's correction), the two failure buckets that
-// decide whether the plaintext rung is suppressed, and the attempt log the
-// unreachable-device message is built from.
-//
-// It exists because the ladder grew a third nested dimension. Ports × certs were
-// two local loops with local counters; addresses × ports × certs needs the
-// counters to outlive one address, and "which cert order have we learned" to be
-// shared rather than relearned per address.
+// mtlsWalk carries a candidate's certificate order, failure evidence, and
+// diagnostics. Address attempts run independently; raceMTLSCandidates merges
+// their evidence after every started attempt has finished.
 type mtlsWalk struct {
 	target     dialTarget
 	allCerts   []config.CertificateInfo
@@ -2526,9 +2517,9 @@ func (w *mtlsWalk) recordMTLSErr(addr string, err error, isPrimary bool) {
 // dialAddr runs the two-port × every-cert rungs at ONE candidate address.
 //
 // The three return shapes are the walk's control flow: a live connection (stop,
-// success), a refusal (stop, and the whole walk must end — see the identity
-// aborts inline), or (nil, nil) meaning "nothing answered here, try the next
-// address".
+// success), a refusal (stop this candidate and prevent new candidates or
+// plaintext fallback), or (nil, nil) meaning "nothing answered here, try the
+// next address". Already-started candidates may still authenticate the target.
 func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*grpcclient.AgentConnection, error) {
 	host, portStr, err := net.SplitHostPort(cand)
 	if err != nil {
@@ -2543,7 +2534,13 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 	// discovery returns the plaintext port and mTLS is port+1).
 	mtlsAddrs := []string{cand, hostPort(host, port+1)}
 	for addrIdx, mtlsAddr := range mtlsAddrs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		for pos := range w.probeOrder {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			i := w.probeOrder[pos]
 			conn, tlsErr := grpcclient.ConnectWithTLSExpecting(ctx, mtlsAddr, &w.allCerts[i], w.pins, w.target.Expected)
 			if tlsErr != nil {
@@ -2569,12 +2566,11 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 			w.recordMTLSErr(mtlsAddr, probeErr, isPrimary)
 			if im, mismatched := identityMismatchFn(conn); mismatched {
 				conn.Close()
-				// The device is wrong, not our certificate — every remaining
-				// cert, port AND ADDRESS would be judged against the same pin,
-				// and the plaintext rung must not be reached at all. Trying the
-				// next address here would be the bug: "try somewhere else" is
-				// the right answer to silence, never to a device that answered
-				// and identified itself as someone else.
+				// The device is wrong, so trying another certificate or port at
+				// this address cannot help. Stop scheduling new candidates and
+				// forbid plaintext, but let already-started candidates finish:
+				// another address may still authenticate the requested device
+				// after this address was reassigned by DHCP.
 				//
 				// refusalKey, not PinKey: the pin that produced this constraint
 				// may be filed under one of the device's other names, and that
@@ -2583,15 +2579,23 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 			}
 			if pm, mismatched := pinMismatchFn(conn); mismatched {
 				conn.Close()
-				// The SPKI store rejected the peer's public key. Same reasoning
-				// as above — the key belongs to the device, not to our
-				// certificate — but this refusal also has to exist because
-				// gRPC's handshake wrapper is otherwise the only thing the user
-				// sees, and it names no way out.
+				// The SPKI store rejected the peer's public key. Apply the same
+				// candidate and fallback rules as an identity mismatch. Preserve
+				// the typed refusal because gRPC's handshake wrapper otherwise
+				// hides the reason and the recovery steps.
 				return nil, spkiRefusal(w.target.refusalKey(), pm)
 			}
 			if w.tlsDebug {
 				fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
+			}
+			if conn.TCPDialError() != nil {
+				// The actual dial never reached TCP. Another credential cannot
+				// change that, so try the next port without repeating its wait.
+				conn.Close()
+				if isPrimary && addrIdx == 1 {
+					w.primaryMTLSPortNonCertFails++
+				}
+				break
 			}
 			if org, ok := conn.ObservedServerOrg(); ok {
 				w.observedDeviceOrg = org
@@ -2604,10 +2608,8 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 				// the trust decision stays with BuildServerVerifyConnection
 				// (expected-org, ML-DSA chain, SPKI pin), so an org claimed by a
 				// hostile server only ever gets shown a cert this loop would
-				// have shown it anyway. Honoured once per WALK, not per address:
-				// a device that keeps naming orgs must not be able to reshuffle
-				// the ladder indefinitely, and spreading its attempts across
-				// several addresses must not buy it more reshuffles.
+				// have shown it anyway. Each candidate may reorder once, so
+				// repeated org claims cannot reshuffle its ladder indefinitely.
 				if !w.jumped && promoteOrgNext(w.probeOrder, pos, w.allCerts, org) {
 					w.jumped = true
 				}
@@ -2636,10 +2638,9 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 	return nil, nil
 }
 
-// dialAgentLadderWithCerts walks every candidate address (see
-// dialTarget.dialCandidates) and, at each, every usable org cert against that
-// address's own port and port+1 — falling back to a plaintext connection only
-// when no candidate produced an authenticated one.
+// dialAgentLadderWithCerts races candidate addresses with a short stagger. Each
+// tries usable org credentials against its own port and port+1. Plaintext is
+// considered only after every candidate fails to produce an authenticated one.
 //
 // allCerts must include expired credentials: transport filters them when valid
 // alternatives exist, while diagnostics need the complete stored snapshot.
@@ -2659,10 +2660,10 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 // about identity for what was really a routing failure.
 //
 // target.PinKey and target.Expected are what the user asked for, and they make
-// this the single point where the two identity rules hold: a peer that proves it
-// is the wrong device aborts the ENTIRE walk (no further cert, no further port,
-// no further address), and a host with any pin is never offered the plaintext
-// rung.
+// this the single point where the identity rules hold: a wrong peer stops new
+// candidates and forbids plaintext, while an already-started candidate can still
+// authenticate the requested device. A host with any pin is never offered the
+// plaintext rung.
 func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
 	candidates := target.dialCandidates()
 	walk := &mtlsWalk{target: target, tlsDebug: os.Getenv("WENDY_TLS_DEBUG") != ""}
@@ -2686,23 +2687,24 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 		// advertise an mDNS `orgid` TXT record from a full linear scan on a cold
 		// certorder memo: BuildServerVerifyConnection fires OnServerIdentity
 		// before the expected-org and chain checks, so even a rejected probe
-		// tells us which org the device actually belongs to. Shared across every
-		// rung of every address, so a later address inherits what an earlier one
-		// learned. In practice the correction lands on whichever rung is
+		// tells us which org the device actually belongs to. Each concurrent
+		// address attempt owns its order. The correction lands on whichever rung is
 		// actually an mTLS endpoint: probing a plaintext port with TLS fails
 		// before any server certificate arrives, so it observes no org.
 		walk.probeOrder = make([]int, len(walk.allCerts))
 		for i := range walk.probeOrder {
 			walk.probeOrder[i] = i
 		}
-		for i, cand := range candidates {
-			conn, refusal := walk.dialAddr(ctx, cand, i == 0)
-			if refusal != nil {
-				return nil, walk.lastMTLSErr, refusal
-			}
-			if conn != nil {
-				return conn, nil, nil
-			}
+		conn, refusal := raceMTLSCandidates(ctx, walk, candidates)
+		// A parent timeout must not erase completed primary certificate
+		// rejections. Defer cancellation until after that diagnosis, but keep
+		// identity and SPKI refusals ahead of all certificate diagnostics.
+		if refusal != nil && (errors.Is(refusal, errDeviceIdentityRefused) ||
+			(!errors.Is(refusal, context.Canceled) && !errors.Is(refusal, context.DeadlineExceeded))) {
+			return nil, walk.lastMTLSErr, refusal
+		}
+		if conn != nil {
+			return conn, nil, nil
 		}
 		if walk.primaryRejectedOurCert() {
 			// A genuine cross-org mismatch (device's org is one we hold no cert
@@ -2717,6 +2719,9 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 			}
 			return nil, cause, chooseRejectionError(ctx, walk.primaryObservedOrg, allCerts, cause)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, walk.lastMTLSErr, err
 	}
 	if target.pinned() {
 		// A host we have already reached over mTLS must never be reached
