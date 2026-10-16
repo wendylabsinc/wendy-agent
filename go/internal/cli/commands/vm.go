@@ -28,11 +28,11 @@ func newVMCmd() *cobra.Command {
 		Hidden: true,
 		Long: "Run a WendyOS ARM64 virtual machine on this computer, so you can " +
 			"develop and evaluate WendyOS without a Jetson or Raspberry Pi.\n\n" +
-			"Requires QEMU (" + qemuInstallHint() + "); on macOS and Windows it is offered " +
-			"automatically when missing.",
+			"Requires QEMU (" + qemuInstallHint() + "). When it is missing, Wendy " +
+			"offers to install it with Homebrew, WinGet, apt-get, or dnf.",
 	}
 	cmd.PersistentFlags().BoolVarP(&vmAssumeYes, "yes", "y", false,
-		"Accept prompts, including installing QEMU when it is missing")
+		"Accept prompts, including installing QEMU when it is missing (Linux still asks before running sudo)")
 	cmd.AddCommand(newVMCreateCmd(), newVMStartCmd(), newVMStopCmd(),
 		newVMLogsCmd(), newVMListCmd(), newVMRemoveCmd(), newVMRobotCmd())
 	return cmd
@@ -283,7 +283,7 @@ func resolveVMSpec(name string, o vmStartOptions) (vm.Spec, *vm.Store, error) {
 	}
 
 	brew := vm.BrewPrefix()
-	firmware, err := vm.FindFirmware(runtime.GOOS, brew)
+	firmware, err := ensureQEMUFirmwareForHostOS(context.Background(), runtime.GOOS, brew)
 	if err != nil {
 		return vm.Spec{}, nil, err
 	}

@@ -29,13 +29,15 @@ Allow several minutes and disk space for the images. No physical robot, cloud
 account, or host Python installation is required.
 
 On macOS with Homebrew, the tour offers to install QEMU and repair missing
-firmware. It also offers to install or start a Docker runtime when a build needs
-one. These prompts default to Yes. A healthy existing simulation can run again
-without starting Docker.
+firmware. On Linux with apt-get or dnf, it offers to install QEMU and its
+firmware; that install runs `sudo`, which may ask for your password. On macOS it
+also offers to install or start a Docker runtime when a build needs one; on
+Linux, install and start Docker yourself. These prompts default to Yes. A healthy
+existing simulation can run again without starting Docker.
 
-See the [quickstart](/docs/#try-the-robot-tour) for prerequisite checks and
-installation commands. Windows users can use the physical-device route or the
-separate [local Docker robot demo](https://wendy.dev/quickstart?target=simulator).
+See the [quickstart](/docs/#try-the-robot-tour) for prerequisites. Windows users
+can use the physical-device route or the separate
+[local Docker robot demo](https://wendy.dev/quickstart?target=simulator).
 For device inspection with a generic virtual device on native Windows, see
 [Windows foreground VMs](/docs/installation/wendyos-virtual-machine#windows-foreground-vms).
 To build and deploy local apps to a VM on Windows, run the Linux Wendy CLI, QEMU,
