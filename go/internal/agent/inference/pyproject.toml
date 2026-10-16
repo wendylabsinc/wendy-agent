@@ -11,7 +11,7 @@ dependencies = [
   "Pillow==11.3.0",
   "numpy==2.2.6",
   "onnxruntime==1.23.2",
-  "onnx==1.19.1",
+  "onnx==1.22.0",
   "huggingface-hub==0.36.2",
 ]
 
