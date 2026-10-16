@@ -1327,7 +1327,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Unpack the image into the snapshotter if not already done.
 	phaseStarted = time.Now()
-	unpacked, err := image.IsUnpacked(ctx, c.snapshotter)
+	unpacked, err := c.imageUnpacked(ctx, image)
 	if err != nil {
 		c.logger.Warn("Failed to check if image is unpacked", zap.Error(err))
 	}
