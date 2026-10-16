@@ -34,7 +34,7 @@ func TestIngressCleanupPreservesOtherPortsAndForeignMasquerades(t *testing.T) {
 				deleted = append(deleted, strings.Join(args, " "))
 				return nil, nil
 			}
-			if err := flushStaleRulesForPort(tc.chain, 80, tc.containerIP); err != nil {
+			if err := flushStaleRulesForPort(tc.chain, 80, tc.containerIP, "tcp"); err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(deleted, tc.want) {

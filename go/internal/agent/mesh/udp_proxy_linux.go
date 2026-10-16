@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"net"
 	"net/netip"
 	"sync"
@@ -30,12 +31,12 @@ type UDPFlow interface {
 }
 
 type UDPDialer interface {
-	DialUDP(context.Context, int32, uint16) (UDPFlow, error)
+	DialUDP(context.Context, meshid.Device, uint16) (UDPFlow, error)
 }
 
-type UDPDialFunc func(context.Context, int32, uint16) (UDPFlow, error)
+type UDPDialFunc func(context.Context, meshid.Device, uint16) (UDPFlow, error)
 
-func (f UDPDialFunc) DialUDP(ctx context.Context, peer int32, port uint16) (UDPFlow, error) {
+func (f UDPDialFunc) DialUDP(ctx context.Context, peer meshid.Device, port uint16) (UDPFlow, error) {
 	return f(ctx, peer, port)
 }
 
@@ -58,6 +59,7 @@ type udpProxyFlow struct {
 // original destinations inside their service CIDR. One QUIC connection per
 // source/destination tuple preserves independent reply mappings.
 type UDPProxy struct {
+	vips      *VIPTable
 	dialer    UDPDialer
 	sources   UDPSourcePolicy
 	mu        sync.Mutex
@@ -67,11 +69,11 @@ type UDPProxy struct {
 	replyDial func(netip.AddrPort, netip.AddrPort) (*net.UDPConn, error)
 }
 
-func NewUDPProxy(dialer UDPDialer, sources UDPSourcePolicy) (*UDPProxy, error) {
-	if dialer == nil || sources == nil {
+func NewUDPProxy(dialer UDPDialer, sources UDPSourcePolicy, vips *VIPTable) (*UDPProxy, error) {
+	if dialer == nil || sources == nil || vips == nil {
 		return nil, errors.New("missing UDP mesh dialer or app source registry")
 	}
-	return &UDPProxy{dialer: dialer, sources: sources, flows: make(map[udpKey]*udpProxyFlow), replyDial: dialUDPReply}, nil
+	return &UDPProxy{vips: vips, dialer: dialer, sources: sources, flows: make(map[udpKey]*udpProxyFlow), replyDial: dialUDPReply}, nil
 }
 
 func (p *UDPProxy) Start(addr string) error {
@@ -193,7 +195,7 @@ func (p *UDPProxy) handlePacket(key udpKey, payload []byte) {
 	if key.token == 0 {
 		return
 	}
-	peer, err := DeviceForVIP(key.destination.Addr())
+	peer, err := p.vips.Device(key.destination.Addr())
 	if err != nil || key.destination.Port() == 0 {
 		return
 	}
@@ -220,7 +222,7 @@ func (p *UDPProxy) handlePacket(key udpKey, payload []byte) {
 	p.mu.Unlock()
 }
 
-func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer int32, flow *udpProxyFlow) {
+func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, flow *udpProxyFlow) {
 	defer func() {
 		flow.cancel()
 		p.mu.Lock()

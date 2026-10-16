@@ -57,25 +57,7 @@ func AddIngressUDPPortForward(host uint16, ip string, container uint16) error {
 
 // Only the exact Wendy loopback hairpin signature is ours to remove.
 func flushStaleUDPMasquerades(ip string, container uint16) error {
-	out, err := meshPortsIPTables("-t", "nat", "-S", "POSTROUTING")
-	if err != nil {
-		return fmt.Errorf("listing UDP hairpin rules: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if !strings.HasPrefix(line, "-A POSTROUTING ") ||
-			!strings.Contains(line, "-s 127.0.0.1/32 ") ||
-			!strings.Contains(line, "-d "+ip+"/32 ") ||
-			!strings.Contains(line, "-p udp ") ||
-			!strings.Contains(line, "--dport "+strconv.Itoa(int(container))+" ") ||
-			!strings.HasSuffix(line, "-j MASQUERADE") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if delOut, err := meshPortsIPTables(append([]string{"-t", "nat", "-D", "POSTROUTING"}, fields[2:]...)...); err != nil {
-			return fmt.Errorf("removing stale Wendy UDP hairpin: %w (%s)", err, strings.TrimSpace(string(delOut)))
-		}
-	}
-	return nil
+	return flushStaleRulesForPort("POSTROUTING", container, ip, "udp")
 }
 
 func RemoveIngressUDPPortForward(host uint16, ip string, container uint16) error {

@@ -241,7 +241,7 @@ func FlushOrphanMeshPort(hostPort uint16, protocol string) error {
 		if delOut, err := meshPortsIPTables(append([]string{"-t", "nat", "-D", MeshPortsChainName}, fields[2:]...)...); err != nil {
 			return fmt.Errorf("removing orphan mesh ingress: %w (%s)", err, strings.TrimSpace(string(delOut)))
 		}
-		if err := flushStaleRulesForPort("POSTROUTING", uint16(portValue), "-d "+ip+"/32", protocol); err != nil {
+		if err := flushStaleRulesForPort("POSTROUTING", uint16(portValue), ip, protocol); err != nil {
 			return err
 		}
 	}

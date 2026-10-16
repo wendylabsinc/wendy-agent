@@ -32,6 +32,7 @@ type Client struct {
 	credentials  *localmesh.Credentials
 	mu           sync.Mutex
 	peers        map[meshid.Device]*pooledSession
+	sessions     map[*pooledSession]struct{} // includes retired sessions with active streams
 	closed       bool
 	stop         chan struct{}
 	done         chan struct{}
@@ -40,6 +41,8 @@ type Client struct {
 }
 
 type pooledSession struct {
+	peer    meshid.Device
+	expires time.Time
 	address netip.AddrPort
 	ready   chan struct{}
 	conn    *quic.Conn
@@ -54,7 +57,7 @@ func NewClient(credentials *localmesh.Credentials) (*Client, error) {
 	if credentials == nil {
 		return nil, errors.New("missing wendy net app credentials")
 	}
-	c := &Client{credentials: credentials, peers: make(map[meshid.Device]*pooledSession), stop: make(chan struct{}), done: make(chan struct{}),
+	c := &Client{credentials: credentials, peers: make(map[meshid.Device]*pooledSession), sessions: make(map[*pooledSession]struct{}), stop: make(chan struct{}), done: make(chan struct{}),
 		dial: func(ctx context.Context, endpoint netip.AddrPort, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
 			return quic.DialAddr(ctx, endpoint.String(), tlsConfig, config)
 		}}
@@ -102,7 +105,7 @@ func (c *Client) Close() error {
 	c.closed = true
 	close(c.stop)
 	var conns []*quic.Conn
-	for _, entry := range c.peers {
+	for entry := range c.sessions {
 		entry.retired = true
 		if entry.conn != nil {
 			conns = append(conns, entry.conn)
@@ -126,9 +129,9 @@ func (c *Client) Invalidate(peer meshid.Device) {
 		return
 	}
 	c.mu.Lock()
-	conn := c.invalidateLocked(peer)
+	conns := c.invalidateLocked(peer)
 	c.mu.Unlock()
-	if conn != nil {
+	for _, conn := range conns {
 		_ = conn.CloseWithError(0, "wendy net app route withdrawn")
 	}
 }
@@ -142,12 +145,20 @@ func (c *Client) PruneRoutes(snapshot localmesh.NodeSnapshot) {
 	}
 	var stale []*quic.Conn
 	c.mu.Lock()
+	peers := make(map[meshid.Device]netip.AddrPort)
 	for peer, entry := range c.peers {
-		address, err := Resolve(snapshot, peer)
+		peers[peer] = entry.address
+	}
+	for entry := range c.sessions {
+		address, err := Resolve(snapshot, entry.peer)
 		if err != nil || address != entry.address {
-			if conn := c.invalidateLocked(peer); conn != nil {
-				stale = append(stale, conn)
-			}
+			peers[entry.peer] = entry.address
+		}
+	}
+	for peer, endpoint := range peers {
+		address, err := Resolve(snapshot, peer)
+		if err != nil || address != endpoint {
+			stale = append(stale, c.invalidateLocked(peer)...)
 		}
 	}
 	c.mu.Unlock()
@@ -158,14 +169,19 @@ func (c *Client) PruneRoutes(snapshot localmesh.NodeSnapshot) {
 
 // Caller holds c.mu. Close is done after unlocking, including for sessions
 // with active streams: those streams have lost their authorized data path.
-func (c *Client) invalidateLocked(peer meshid.Device) *quic.Conn {
-	entry := c.peers[peer]
-	if entry == nil {
-		return nil
+func (c *Client) invalidateLocked(peer meshid.Device) []*quic.Conn {
+	if entry := c.peers[peer]; entry != nil {
+		entry.retired = true
 	}
 	delete(c.peers, peer)
-	entry.retired = true
-	return entry.conn
+	var conns []*quic.Conn
+	for entry := range c.sessions {
+		if entry.peer == peer {
+			entry.retired = true
+			conns = append(conns, entry.conn)
+		}
+	}
+	return conns
 }
 
 // Dial requires a fresh caller-side route check before each call. The passed
@@ -248,7 +264,7 @@ func (c *Client) acquire(ctx context.Context, peer meshid.Device, address netip.
 			}
 		}
 		if entry != nil && entry.address == address && entry.conn != nil && entry.conn.Context().Err() == nil &&
-			now.Sub(entry.born) < clientAgeLimit && now.Sub(entry.used) < clientIdleLimit {
+			now.Before(entry.expires) && now.Sub(entry.born) < clientAgeLimit && now.Sub(entry.used) < clientIdleLimit {
 			entry.active++
 			entry.used = now
 			c.mu.Unlock()
@@ -262,7 +278,7 @@ func (c *Client) acquire(ctx context.Context, peer meshid.Device, address netip.
 				oldConn = entry.conn
 			}
 		}
-		newEntry := &pooledSession{address: address, ready: make(chan struct{}), born: now, used: now}
+		newEntry := &pooledSession{peer: peer, address: address, ready: make(chan struct{}), born: now, used: now}
 		ready := newEntry.ready
 		c.peers[peer] = newEntry
 		c.mu.Unlock()
@@ -274,12 +290,22 @@ func (c *Client) acquire(ctx context.Context, peer meshid.Device, address netip.
 		if err == nil {
 			conn, err = c.dial(ctx, address, cfg, quicConfig())
 		}
+		if err == nil {
+			newEntry.expires, err = limitSessionLifetime(c.credentials, conn)
+		}
 		c.mu.Lock()
 		newEntry.conn, newEntry.err = conn, err
 		newEntry.ready = nil
 		valid := err == nil && !c.closed && c.peers[peer] == newEntry
 		if valid {
 			newEntry.active = 1
+			c.sessions[newEntry] = struct{}{}
+			go func() {
+				<-conn.Context().Done()
+				c.mu.Lock()
+				delete(c.sessions, newEntry)
+				c.mu.Unlock()
+			}()
 		} else {
 			if c.peers[peer] == newEntry {
 				delete(c.peers, peer)

@@ -59,7 +59,7 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 	if !endpoint.IsValid() {
 		t.Fatal("QUIC listener did not start")
 	}
-	flow, err := DialUDP(ctx, a, b.Asset, endpoint, port)
+	flow, err := DialUDP(ctx, a, b.Device, endpoint, port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,10 +76,10 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 	if err := flow.Send(bytes.Repeat([]byte{1}, MaxUDPPayload+1)); err == nil {
 		t.Fatal("oversize UDP payload accepted")
 	}
-	if _, err := DialUDP(ctx, a, b.Asset, endpoint, port+1); !errors.Is(err, ErrDenied) {
+	if _, err := DialUDP(ctx, a, b.Device, endpoint, port+1); !errors.Is(err, ErrDenied) {
 		t.Fatalf("unpublished UDP port: %v", err)
 	}
-	if _, err := DialUDP(ctx, a, b.Asset+1, endpoint, port); err == nil {
+	if _, err := DialUDP(ctx, a, a.Device, endpoint, port); err == nil {
 		t.Fatal("wrong peer asset accepted")
 	}
 	registry.Release("echo")
@@ -93,7 +93,7 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 			t.Fatalf("revoked app received reply %q", got)
 		}
 	}
-	replacement, err := DialUDP(ctx, a, b.Asset, endpoint, port)
+	replacement, err := DialUDP(ctx, a, b.Device, endpoint, port)
 	if err != nil {
 		t.Fatalf("replacement UDP session: %v", err)
 	}

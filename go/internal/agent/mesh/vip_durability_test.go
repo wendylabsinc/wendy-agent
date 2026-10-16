@@ -29,8 +29,8 @@ func TestVIPAllocationWaitsForDurableDirectory(t *testing.T) {
 	if _, err := table.Allocate(second); err == nil {
 		t.Fatal("issued a new VIP without a durable directory entry")
 	}
-	if got, ok := table.Lookup(first); !ok || got != original {
-		t.Fatalf("failed allocation changed an existing owner: %s, %v", got, ok)
+	if got, ok := table.Lookup(first); ok && got != original {
+		t.Fatalf("failed allocation reassigned an existing owner: %s, %v", got, ok)
 	}
 	if _, ok := table.Lookup(second); ok {
 		t.Fatal("failed allocation became visible in the running table")

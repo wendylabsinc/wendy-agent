@@ -49,7 +49,7 @@ func TestDeniedUDPControlsPreserveACKAndReturnStreamCredit(t *testing.T) {
 		case <-time.After(time.Millisecond):
 		}
 	}
-	config, err := a.PeerTLSWithTickets(b.Asset, ALPN, "app-quic")
+	config, err := a.PeerTLSWithTickets(b.Device, ALPN, "app-quic")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestDeniedUDPControlsPreserveACKAndReturnStreamCredit(t *testing.T) {
 		}
 	}
 	// The standard API still returns the exact authorization error.
-	if flow, err := DialUDP(ctx, a, b.Asset, netip.MustParseAddrPort(server.Addr().String()), 12345); flow != nil || !errors.Is(err, ErrDenied) {
+	if flow, err := DialUDP(ctx, a, b.Device, netip.MustParseAddrPort(server.Addr().String()), 12345); flow != nil || !errors.Is(err, ErrDenied) {
 		t.Fatalf("DialUDP denied flow=%v error=%v", flow, err)
 	}
 }
