@@ -1,0 +1,19 @@
+{
+  "module": "github.com/quic-go/quic-go",
+  "version": "v0.62.0",
+  "module_zip_sha256": "92beca3d3ef957b4d9de3b11d28acb7e6fdb98603111ca4a74139ae7e2a618f3",
+  "module_zip_h1": "h1:ZHDjCk5OacATwGvs8PWE97CTvX7AqZiVoW7++ZOXTf8=",
+  "upstream_info": {
+    "Version": "v0.62.0",
+    "Time": "2026-08-30T06:05:43Z",
+    "Origin": {
+      "VCS": "git",
+      "URL": "https://github.com/quic-go/quic-go",
+      "Hash": "793f74d8e03368c5aded128af6f48d21dbb47f73",
+      "Ref": "refs/tags/v0.62.0"
+    }
+  },
+  "modified_upstream_files": [
+    "internal/protocol/params.go"
+  ]
+}

@@ -1,0 +1,11 @@
+--- a/internal/protocol/params.go
++++ b/internal/protocol/params.go
+@@ -85,7 +85,7 @@
+ 
+ // MaxCryptoStreamOffset is the maximum offset allowed on any of the crypto streams.
+ // This limits the size of the ClientHello and Certificates that can be received.
+-const MaxCryptoStreamOffset = 16 * (1 << 10)
++const MaxCryptoStreamOffset = 64 * (1 << 10)
+ 
+ // MinRemoteIdleTimeout is the minimum value that we accept for the remote idle timeout
+ const MinRemoteIdleTimeout = 5 * time.Second

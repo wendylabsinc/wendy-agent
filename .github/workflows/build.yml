@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'go/**'
+      - 'third_party/quic-go/**'
       - 'Proto/**'
       - 'go.mod'
       - 'go.sum'
