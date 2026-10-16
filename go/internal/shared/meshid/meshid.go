@@ -56,7 +56,10 @@ func parseCanonical(text string) (uuid.UUID, error) {
 }
 
 // Tenant is an authenticated organization scope.
-type Tenant struct{ id uuid.UUID }
+type Tenant struct {
+	id    uuid.UUID
+	valid bool // an explicitly parsed nil UUID is distinct from an absent tenant
+}
 
 // ParseTenant parses a canonical tenant UUID.
 func ParseTenant(text string) (Tenant, error) {
@@ -64,11 +67,19 @@ func ParseTenant(text string) (Tenant, error) {
 	if err != nil {
 		return Tenant{}, fmt.Errorf("tenant UUID: %w", err)
 	}
-	return Tenant{id}, nil
+	return Tenant{id: id, valid: true}, nil
 }
 
 func (t Tenant) UUID() uuid.UUID { return t.id }
-func (t Tenant) String() string  { return t.id.String() }
+func (t Tenant) String() string {
+	if !t.valid {
+		return ""
+	}
+	return t.id.String()
+}
+
+// IsValid distinguishes a parsed tenant UUID (including nil) from the zero value.
+func (t Tenant) IsValid() bool { return t.valid }
 
 // Device is the stable device component of a certificate principal: the mesh
 // identity used for addressing, peer pinning, and link ordering. Renewal
@@ -79,9 +90,21 @@ type Device struct {
 	id     uuid.UUID
 }
 
+// NewDevice combines an already authenticated tenant scope with a device
+// UUID, e.g. a device UUID recovered from a discovery advertisement.
+func NewDevice(tenant Tenant, id uuid.UUID) Device {
+	if !tenant.IsValid() {
+		return Device{}
+	}
+	return Device{tenant: tenant, id: id}
+}
+
 // ParseDevice parses a canonical device UUID within a known tenant, e.g. from
 // a roster entry or configured peer list.
 func ParseDevice(tenant Tenant, text string) (Device, error) {
+	if !tenant.IsValid() {
+		return Device{}, errors.New("device requires a tenant UUID")
+	}
 	id, err := parseCanonical(text)
 	if err != nil {
 		return Device{}, fmt.Errorf("device UUID: %w", err)
@@ -125,9 +148,16 @@ func DeviceFromCert(leaf *x509.Certificate) (Device, error) {
 	return DeviceFromPrincipal(identity.Principal)
 }
 
-func (d Device) Tenant() Tenant   { return d.tenant }
-func (d Device) UUID() uuid.UUID  { return d.id }
+func (d Device) Tenant() Tenant  { return d.tenant }
+func (d Device) UUID() uuid.UUID { return d.id }
+
+// IsValid reports whether this identity has an explicit tenant and device UUID.
+// Nil UUIDs are valid identifiers; they do not stand for missing enrollment.
+func (d Device) IsValid() bool { return d.tenant.IsValid() }
 func (d Device) Principal() string {
+	if !d.IsValid() {
+		return ""
+	}
 	return certs.DeviceSPIFFEURI(d.tenant.String(), d.id.String())
 }
 func (d Device) String() string { return d.Principal() }
@@ -152,7 +182,12 @@ func MeshAddressFor(id uuid.UUID) netip.Addr {
 
 // MeshAddress is the device's deterministic ULA, assigned /128 to the stable
 // mesh host interface and originated through Babel at metric zero.
-func (d Device) MeshAddress() netip.Addr { return MeshAddressFor(d.id) }
+func (d Device) MeshAddress() netip.Addr {
+	if !d.IsValid() {
+		return netip.Addr{}
+	}
+	return MeshAddressFor(d.id)
+}
 
 // InMesh reports whether an address lies in the managed device pool.
 func InMesh(a netip.Addr) bool {
@@ -171,6 +206,9 @@ func Compare(a, b Device) int { return bytes.Compare(a.id[:], b.id[:]) }
 // interface. Equal identities are a self/duplicate-identity connection, not
 // two distinct routers.
 func LinkLocalAddresses(self, peer Device) (netip.Addr, netip.Addr, error) {
+	if !self.IsValid() || !peer.IsValid() {
+		return netip.Addr{}, netip.Addr{}, errors.New("link requires two device identities")
+	}
 	switch Compare(self, peer) {
 	case 0:
 		return netip.Addr{}, netip.Addr{}, errors.New("self or duplicate device identity on link")
