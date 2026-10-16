@@ -174,7 +174,7 @@ func connectCloudDeviceSelector(ctx context.Context, selector cloudDeviceSelecto
 		return nil, err
 	}
 	if err := prepareDefaultCloudCertificate(ctx, auth); err != nil {
-		return nil, fmt.Errorf("preparing Cloud device certificate: %w; run 'wendy auth refresh-certs' or 'wendy auth login'", err)
+		return nil, fmt.Errorf("preparing Cloud device certificate: %w", err)
 	}
 	if selector.TenantUUID != "" {
 		assets, err := fetchDefaultCloudAssetsV2Fn(ctx, auth, true)
