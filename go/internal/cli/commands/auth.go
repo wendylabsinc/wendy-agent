@@ -464,8 +464,8 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 		return fmt.Errorf("saving config: %w", err)
 	}
 
-	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Local authentication successful (org=%d, device=%s). Certificates saved.",
-		issueResp.GetOrganizationId(), deviceID)))
+	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Local authentication successful (organization %s, device %s). Certificates saved.",
+		orgLabel(cloudGRPC, issueResp.GetOrganizationId()), deviceID)))
 	fmt.Println(sessionKeyLine(privateKeyAlgorithm(privateKeyPEM), "legacy"))
 	clitimesync.CacheProof(ctx)
 
@@ -965,8 +965,8 @@ func matchAuthSelector(cfg *config.Config, selector string) (*config.AuthConfig,
 // gives the exact command that fixes it.
 func noSessionMatchError(cfg *config.Config, selector string) error {
 	var b strings.Builder
-	if orgID, err := strconv.Atoi(selector); err == nil {
-		fmt.Fprintf(&b, "not logged in to org %d on this machine", orgID)
+	if _, err := strconv.Atoi(selector); err == nil {
+		fmt.Fprintf(&b, "not logged in to org %s on this machine", config.OrganizationLabel("", selector))
 	} else {
 		fmt.Fprintf(&b, "no auth session matches %q", selector)
 	}

@@ -105,9 +105,9 @@ func (s cloudDeviceSelector) auth(cfg *config.Config) (*config.AuthConfig, error
 		}
 	}
 	if s.TenantUUID != "" {
-		return nil, fmt.Errorf("no login for cloud %s tenant %s; log in to that tenant or choose another default", s.Endpoint, s.TenantUUID)
+		return nil, fmt.Errorf("no login for cloud %s tenant %s; log in to that tenant or choose another default", s.Endpoint, config.OrganizationLabel(s.Endpoint, s.TenantUUID))
 	}
-	return nil, fmt.Errorf("no login for cloud %s organization %d; log in to that organization or choose another default", s.Endpoint, s.OrgID)
+	return nil, fmt.Errorf("no login for cloud %s organization %s; log in to that organization or choose another default", s.Endpoint, orgLabel(s.Endpoint, s.OrgID))
 }
 
 var fetchDefaultCloudAssetsFn = fetchCloudAssets
@@ -198,7 +198,7 @@ func connectCloudDeviceSelector(ctx context.Context, selector cloudDeviceSelecto
 			}
 			return &SelectedDevice{Agent: conn, DefaultSelector: selector.String()}, nil
 		}
-		return nil, fmt.Errorf("cloud asset %s in tenant %s is offline or unavailable; choose another device with --device or 'wendy device set-default'", selector.AssetUUID, selector.TenantUUID)
+		return nil, fmt.Errorf("cloud asset %s in tenant %s is offline or unavailable; choose another device with --device or 'wendy device set-default'", selector.AssetUUID, config.OrganizationLabel(selector.Endpoint, selector.TenantUUID))
 	}
 	assets, err := fetchDefaultCloudAssetsFn(ctx, auth)
 	if err != nil {
@@ -214,7 +214,7 @@ func connectCloudDeviceSelector(ctx context.Context, selector cloudDeviceSelecto
 		}
 		return &SelectedDevice{Agent: conn, DefaultSelector: selector.String()}, nil
 	}
-	return nil, fmt.Errorf("cloud asset %d in organization %d is offline or unavailable; choose another device with --device or 'wendy device set-default'", selector.AssetID, selector.OrgID)
+	return nil, fmt.Errorf("cloud asset %d in organization %s is offline or unavailable; choose another device with --device or 'wendy device set-default'", selector.AssetID, orgLabel(selector.Endpoint, selector.OrgID))
 }
 
 // saveDefaultDevice records key as the default device ("" clears it), changing

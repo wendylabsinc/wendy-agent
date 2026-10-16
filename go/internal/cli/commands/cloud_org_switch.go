@@ -119,7 +119,7 @@ func switchCloudOrganization(ctx context.Context, cfg *config.Config) (*config.A
 
 	entry, ok := byID[orgID]
 	if !ok || entry.source == nil {
-		return nil, cfg, fmt.Errorf("selected organization %d is no longer available", orgID)
+		return nil, cfg, fmt.Errorf("selected organization %s (%d) is no longer available", orgName, orgID)
 	}
 	fmt.Println(tui.InfoMessage(fmt.Sprintf("No credentials are stored for %s (org %d). Complete login and select that organization in the browser.", orgName, orgID)))
 	if err := relogin(ctx, entry.source); err != nil {

@@ -159,5 +159,5 @@ func switchCloudOrganizationAcrossContexts(ctx context.Context, cfg *config.Conf
 	if auth := cloudAuthForSessionKey(fresh, key); auth != nil {
 		return auth, fresh, nil
 	}
-	return nil, fresh, fmt.Errorf("login completed without credentials for selected organization %s", selected.id)
+	return nil, fresh, fmt.Errorf("login completed without credentials for selected organization %s (%s)", selected.name, selected.id)
 }

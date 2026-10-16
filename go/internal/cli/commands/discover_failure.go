@@ -127,7 +127,7 @@ func lanIdentityFailure(err error) *models.ProbeFailure {
 		key = pin.Key
 		details = fmt.Sprintf("Saved certificate key: %s. Presented certificate key: %s.", pin.Want, pin.Got)
 	case errors.As(err, &identity):
-		details = fmt.Sprintf("Saved: asset %s in organization %d. Now: asset %s in organization %d.", identity.WantAsset, identity.WantOrg, identity.GotAsset, identity.GotOrg)
+		details = fmt.Sprintf("Saved: asset %s in organization %s. Now: asset %s in organization %s.", identity.WantAsset, orgLabel("", identity.WantOrg), identity.GotAsset, orgLabel("", identity.GotOrg))
 	}
 	// Render only known diagnostic fields, with terminal controls removed.
 	if key != "" {
