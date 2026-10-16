@@ -14,6 +14,8 @@ import (
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -25,8 +27,15 @@ func (s deploymentProvisioningService) IsProvisioned(ctx context.Context, req *a
 	if s.conn == nil {
 		return nil, fmt.Errorf("device provisioning service is unavailable")
 	}
+	var remote peer.Peer
+	opts = append(opts, grpc.Peer(&remote))
 	if s.conn.Conn != nil {
 		response, err := agentpb.NewWendyProvisioningServiceClient(s.conn.Conn).IsProvisioned(ctx, req, opts...)
+		if err == nil {
+			if err := validateDeploymentEnrollment(s.conn, &remote, response.GetProvisioned()); err != nil {
+				return nil, err
+			}
+		}
 		if status.Code(err) != codes.Unimplemented {
 			return response, err
 		}
@@ -39,8 +48,12 @@ func (s deploymentProvisioningService) IsProvisioned(ctx context.Context, req *a
 		return nil, err
 	}
 	if device := response.GetProvisioned(); device != nil {
+		provisioned := &agentpb.ProvisionedResponse{CloudHost: device.GetCloudHost(), OrganizationId: device.GetOrganizationId(), AssetId: device.GetAssetId()}
+		if err := validateDeploymentEnrollment(s.conn, &remote, provisioned); err != nil {
+			return nil, err
+		}
 		return &agentpb.IsProvisionedResponse{ResponseType: &agentpb.IsProvisionedResponse_Provisioned{
-			Provisioned: &agentpb.ProvisionedResponse{CloudHost: device.GetCloudHost(), OrganizationId: device.GetOrganizationId(), AssetId: device.GetAssetId()},
+			Provisioned: provisioned,
 		}}, nil
 	}
 	if response.GetNotProvisioned() != nil {
@@ -49,6 +62,61 @@ func (s deploymentProvisioningService) IsProvisioned(ctx context.Context, req *a
 		}}, nil
 	}
 	return nil, fmt.Errorf("device returned no enrollment status")
+}
+
+// Enrollment is device-controlled data, so it cannot select another stored
+// tenant's operator credentials. Bind it before configuration or Cloud access.
+func validateDeploymentEnrollment(conn *grpcclient.AgentConnection, remote *peer.Peer, device *agentpb.ProvisionedResponse) error {
+	if device == nil {
+		return nil
+	}
+	if conn == nil {
+		return fmt.Errorf("device connection unavailable for Cloud registration")
+	}
+	operatorTenant := ""
+	if conn.CertInfo != nil {
+		operatorTenant = conn.CertInfo.TenantUUID()
+	}
+	expectedPrincipal := ""
+	if conn.IsSessionProxy {
+		// The owner-only local broker retains the original verified identity
+		// and the exact operator certificate used by its pinned upstream.
+		if conn.IsMTLS {
+			if identity, ok := conn.ObservedServerIdentity(); ok {
+				expectedPrincipal = identity.Principal
+			}
+		}
+	} else if remote != nil {
+		if info, ok := remote.AuthInfo.(credentials.TLSInfo); ok && info.State.HandshakeComplete && len(info.State.PeerCertificates) != 0 {
+			expectedPrincipal, _ = certs.TenantPrincipalFromCert(info.State.PeerCertificates[0])
+		}
+	}
+	if device.GetPrincipalUri() == "" {
+		if expectedPrincipal != "" || operatorTenant != "" {
+			return fmt.Errorf("Agent enrollment omits its authenticated Cloud principal")
+		}
+		return nil // Preserve numeric enrollment on legacy connections.
+	}
+	identity, err := certs.ParsePrincipal(device.GetPrincipalUri())
+	if err != nil || identity.EntityType != certs.EntityAsset || identity.TenantUUID == "" {
+		return fmt.Errorf("device returned invalid Cloud enrollment principal")
+	}
+	if operatorTenant != "" && identity.TenantUUID != operatorTenant {
+		return fmt.Errorf("Agent enrollment disagrees with the connection operator tenant")
+	}
+	if expectedPrincipal != "" {
+		if device.GetPrincipalUri() != expectedPrincipal {
+			return fmt.Errorf("Agent enrollment disagrees with its verified device identity")
+		}
+		return nil
+	}
+	// Older broker state may retain only a numeric device identity. The
+	// operator's authenticated tenant still prevents cross-tenant registration,
+	// though that state cannot prove the response's full device principal.
+	if conn.IsSessionProxy && conn.IsMTLS && operatorTenant != "" {
+		return nil
+	}
+	return fmt.Errorf("verified device identity unavailable for Cloud registration")
 }
 
 func registerAppsWithCloudV2(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, device *agentpb.ProvisionedResponse, appIDs []string) error {
