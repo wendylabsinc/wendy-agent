@@ -56,16 +56,16 @@ func TestRuntimePinnedTLS13PeerOrder(t *testing.T) {
 	}
 }
 
-func TestRuntimeCatalogALPNRollingUpgrade(t *testing.T) {
+func TestRuntimeCatalogALPN(t *testing.T) {
 	f := newFixture(t)
-	serverCatalog, _ := f.newCatalog(t, 534, "default", nil, nil)
+	serverCatalog, _ := f.newCatalog(t, p534, "default", nil, nil)
 	server, _ := NewRuntime(serverCatalog, func() localmesh.NodeSnapshot { return localmesh.NodeSnapshot{} })
 	for _, tc := range []struct {
 		name, want string
 		serverALPN []string
+		clientALPN []string
 	}{
-		{name: "new-to-new", want: syncALPNv2, serverALPN: []string{syncALPNv2, syncALPN}},
-		{name: "new-to-old", want: syncALPN, serverALPN: []string{syncALPN}},
+		{name: "catalog", want: syncALPN, serverALPN: []string{syncALPN}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			left, right := net.Pipe()
@@ -77,11 +77,14 @@ func TestRuntimeCatalogALPNRollingUpgrade(t *testing.T) {
 			serverConfig.NextProtos = tc.serverALPN
 			serverResult := make(chan error, 1)
 			go func() { serverResult <- tls.Server(right, serverConfig).Handshake() }()
-			clientConfig, err := f.creds[533].PeerTLS(534)
+			clientConfig, err := f.creds[p533].PeerTLS(f.creds[p534].Device)
 			if err != nil {
 				t.Fatal(err)
 			}
-			clientConfig.NextProtos = []string{syncALPNv2, syncALPN}
+			clientConfig.NextProtos = []string{syncALPN}
+			if tc.clientALPN != nil {
+				clientConfig.NextProtos = tc.clientALPN
+			}
 			client := tls.Client(left, clientConfig)
 			clientErr := client.Handshake()
 			serverErr := <-serverResult
@@ -136,8 +139,8 @@ func TestRuntimeThreeHopPartitionAndReconcile(t *testing.T) {
 	rc, _ := NewRuntime(c, view)
 	connect := func(left *Runtime, leftPeer meshid.Device, right *Runtime, rightPeer meshid.Device) (net.Conn, net.Conn) {
 		l, r := net.Pipe()
-		go left.session(ctx, leftPeer, l)
-		go right.session(ctx, rightPeer, r)
+		go left.sessionInventory(ctx, leftPeer, l)
+		go right.sessionInventory(ctx, rightPeer, r)
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			left.mu.Lock()
@@ -187,9 +190,9 @@ func TestRuntimeThreeHopPartitionAndReconcile(t *testing.T) {
 
 func TestProjectionReadyWaitsForOriginTombstoneSnapshot(t *testing.T) {
 	f := newFixture(t)
-	viewer, cache := f.newCatalog(t, 533, "default", nil, nil)
-	origin, _ := f.newCatalog(t, 535, "default", nil, nil)
-	if _, err := cache.Put(f.creds[535].Certificate.Certificate, f.now); err != nil {
+	viewer, cache := f.newCatalog(t, p533, "default", nil, nil)
+	origin, _ := f.newCatalog(t, p535, "default", nil, nil)
+	if _, err := cache.Put(f.creds[p535].Certificate.Certificate, f.now); err != nil {
 		t.Fatal(err)
 	}
 	wire, err := origin.Publish(testSpec(), f.now)
@@ -202,7 +205,7 @@ func TestProjectionReadyWaitsForOriginTombstoneSnapshot(t *testing.T) {
 	if _, err := origin.Remove(testSpec().AppID, testSpec().ServiceID, f.now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	view := bridgeRouteView(t, f.now, 535)
+	view := bridgeRouteView(t, f.now, p535)
 	ra, _ := NewRuntime(viewer, func() localmesh.NodeSnapshot { return view })
 	rc, _ := NewRuntime(origin, func() localmesh.NodeSnapshot { return localmesh.NodeSnapshot{} })
 	ctx, cancel := context.WithCancel(context.Background())
@@ -210,16 +213,16 @@ func TestProjectionReadyWaitsForOriginTombstoneSnapshot(t *testing.T) {
 	left, right := net.Pipe()
 	defer left.Close()
 	defer right.Close()
-	go ra.session(ctx, 535, left)
-	go rc.session(ctx, 533, right)
+	go ra.sessionInventory(ctx, f.creds[p535].Device, left)
+	go rc.sessionInventory(ctx, f.creds[p533].Device, right)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if ra.ProjectionReady(535) {
+		if ra.ProjectionReady(f.creds[p535].Device) {
 			if len(viewer.Snapshot(time.Now())) != 0 {
 				t.Fatal("origin snapshot marked ready before its tombstone was admitted")
 			}
-			ra.InvalidateProjection(535)
-			if ra.ProjectionReady(535) {
+			ra.InvalidateProjection(f.creds[p535].Device)
+			if ra.ProjectionReady(f.creds[p535].Device) {
 				t.Fatal("invalidated route retained catalog projection readiness")
 			}
 			return
@@ -243,14 +246,12 @@ func (c *failedCatalogWriter) Write([]byte) (int, error) {
 	<-c.fail
 	return 0, errors.New("test peer write failed")
 }
-func TestRuntimeFailedSessionJoinsBackloggedReader(t *testing.T) {
+func TestInventoryRuntimeFailedSessionJoinsBackloggedReader(t *testing.T) {
 	f := newFixture(t)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	receiver, cache := f.newCatalog(t, p533, "default", nil, nil)
-	// V1 sends records without an initial manifest. Seed a real outbound
-	// record before blocking incoming persistence so both protocol versions
-	// start the failing writer independently of reader progress.
+	// Seed a real outbound record before blocking incoming persistence.
 	if _, err := receiver.Publish(testSpec(), f.now); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +281,7 @@ func TestRuntimeFailedSessionJoinsBackloggedReader(t *testing.T) {
 	sessionDone := make(chan struct{})
 	go func() {
 		defer close(sessionDone)
-		runtime.session(ctx, principalOf(t, p535), &failedCatalogWriter{Conn: left, fail: fail, started: started})
+		runtime.sessionInventory(ctx, f.creds[p535].Device, &failedCatalogWriter{Conn: left, fail: fail, started: started})
 	}()
 	// Do not let a racing incoming Accept block the session select before
 	// it queues that first write; then deliberately fill its read backlog.
@@ -291,6 +292,9 @@ func TestRuntimeFailedSessionJoinsBackloggedReader(t *testing.T) {
 	}
 	sent := make(chan struct{})
 	go func() {
+		if writeInventoryMessage(right, inventoryMessage{Message: Message{Kind: "identity-cache-done"}}) != nil {
+			return
+		}
 		// One record is in Accept, sixteen are queued and the eighteenth is
 		// decoded by the reader, which cannot enqueue it until Accept returns.
 		for i := 0; ; i++ {

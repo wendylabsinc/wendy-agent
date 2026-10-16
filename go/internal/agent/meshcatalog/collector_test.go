@@ -108,7 +108,7 @@ func TestCollectorAnyValidTCPTypeAndLifecycleWithdrawal(t *testing.T) {
 
 func TestCollectorPublishesUDPOnlyThroughUDPEntitlement(t *testing.T) {
 	f := newFixture(t)
-	catalog, _ := f.newCatalog(t, 535, "default", nil, nil)
+	catalog, _ := f.newCatalog(t, p535, "default", nil, nil)
 	udpAnnouncement := func() *dns.Msg {
 		msg := announcement("Echo", 60, 7777, "10.79.99.162")
 		for _, rr := range append(msg.Answer, msg.Extra...) {

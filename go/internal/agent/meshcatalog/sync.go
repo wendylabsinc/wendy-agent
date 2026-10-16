@@ -14,6 +14,8 @@ import (
 
 const MaxMessageBytes = 64 << 10
 
+var errPendingIdentities = errors.New("too many pending mesh service identities")
+
 // Message is carried on a reliable, authenticated mesh control stream.
 // Signed records retain their origin proof across relays. The bundle request
 // path repairs reordered announcements and cache misses after restart.
@@ -110,12 +112,6 @@ type Synchronizer struct {
 	catalog *Catalog
 	cache   *localmesh.IdentityCache
 	sent    map[string]bool
-	// Hints describe bundles successfully written to this same peer during a
-	// previous session. A restarted peer may have lost them, so after a small
-	// number of record-only frames send a bundle proactively. Missing bundles
-	// are also repaired by the authenticated identity-request path.
-	hinted            map[string]bool
-	hintedRecordCount int
 	// One authenticated TCP session delivers records in order. Remember the
 	// exact signed body last queued for each service so the periodic repair
 	// pass sends only records that a dropped Broadcast never queued.
@@ -130,19 +126,7 @@ type sentRecordStamp struct {
 
 func NewSynchronizer(c *Catalog, cache *localmesh.IdentityCache) *Synchronizer {
 	return &Synchronizer{catalog: c, cache: cache, sent: map[string]bool{},
-		hinted: map[string]bool{}, sentRecords: map[Key]sentRecordStamp{}, pending: map[string][]SignedRecord{}}
-}
-
-// SeedKnownBundles must run before the first Reconcile. It changes only wire
-// efficiency: every received record still needs a currently valid cached
-// identity and a valid origin signature before Catalog.Accept admits it.
-func (s *Synchronizer) SeedKnownBundles(fingerprints []string) {
-	for _, fp := range fingerprints {
-		if len(fp) == 64 {
-			s.sent[fp] = true
-			s.hinted[fp] = true
-		}
-	}
+		sentRecords: map[Key]sentRecordStamp{}, pending: map[string][]SignedRecord{}}
 }
 
 func (s *Synchronizer) Record(w SignedRecord, now time.Time) []Message {
@@ -164,16 +148,6 @@ func (s *Synchronizer) Record(w SignedRecord, now time.Time) []Message {
 		return nil
 	}
 	var out []Message
-	if s.hinted[w.Fingerprint] {
-		if s.hintedRecordCount >= 4 {
-			// Limit pending records on a cold restarted receiver. The receiver
-			// currently permits at most eight unknown-identity records.
-			delete(s.sent, w.Fingerprint)
-			delete(s.hinted, w.Fingerprint)
-		} else {
-			s.hintedRecordCount++
-		}
-	}
 	if !s.sent[w.Fingerprint] {
 		if len(s.sent) >= 1024 {
 			s.sent = map[string]bool{}
@@ -202,6 +176,25 @@ func (s *Synchronizer) Reconcile(now time.Time) []Message {
 		}
 	}
 	return out
+}
+
+// snapshotRecords retains only stamps for keys still present in the bounded
+// catalog. The runtime feeds this snapshot incrementally to its bounded writer.
+func (s *Synchronizer) snapshotRecords(now time.Time) []SignedRecord {
+	records := s.catalog.Records(now)
+	live := make(map[Key]bool, len(records))
+	for _, w := range records {
+		var record Record
+		if json.Unmarshal(w.Body, &record) == nil {
+			live[record.Key] = true
+		}
+	}
+	for key := range s.sentRecords {
+		if !live[key] {
+			delete(s.sentRecords, key)
+		}
+	}
+	return records
 }
 
 // PendingIdentity reports whether a record from this peer still awaits its
@@ -249,7 +242,7 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 				count += len(entries)
 			}
 			if count >= 8 {
-				return nil, nil, errors.New("too many pending mesh service identities")
+				return nil, nil, errPendingIdentities
 			}
 			var record Record
 			if json.Unmarshal(m.Record.Body, &record) != nil {

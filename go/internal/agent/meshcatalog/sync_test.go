@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -23,7 +22,7 @@ func TestWarmReconnectSkipsBundleAndColdReceiverRepairs(t *testing.T) {
 		t.Fatalf("cold session = %+v", first)
 	}
 	warmSender := NewSynchronizer(senderCatalog, senderCache)
-	warmSender.SeedKnownBundles([]string{w.Fingerprint})
+	warmSender.useCurrentInventory(receivedInventory{done: true, fingerprints: map[string]bool{w.Fingerprint: true}})
 	warm := warmSender.Record(w, f.now.Add(time.Second))
 	if len(warm) != 1 || warm[0].Kind != "record" {
 		t.Fatalf("warm reconnect = %+v", warm)
@@ -37,7 +36,7 @@ func TestWarmReconnectSkipsBundleAndColdReceiverRepairs(t *testing.T) {
 	if err := WriteMessage(&warmWire, warm[0]); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("org64 fixture catalog reconnect bytes: cold=%d warm=%d", coldWire.Len(), warmWire.Len())
+	t.Logf("catalog reconnect bytes: cold=%d warm=%d", coldWire.Len(), warmWire.Len())
 	if warmWire.Len() >= coldWire.Len() {
 		t.Fatal("warm reconnect did not save certificate bundle bytes")
 	}
@@ -60,33 +59,7 @@ func TestWarmReconnectSkipsBundleAndColdReceiverRepairs(t *testing.T) {
 	tampered := cloneWire(w)
 	tampered.Signature[0] ^= 0xff
 	if _, _, err := receiver.Receive(Message{Kind: "record", Record: &tampered}, f.now.Add(2*time.Second)); err == nil {
-		t.Fatal("warm identity hint bypassed origin signature verification")
-	}
-}
-
-func TestWarmBundleHintHasColdReceiverPendingBound(t *testing.T) {
-	f := newFixture(t)
-	c, cache := f.newCatalog(t, p533, "default", nil, nil)
-	s := NewSynchronizer(c, cache)
-	var records []SignedRecord
-	for i := 0; i < 6; i++ {
-		spec := testSpec()
-		spec.ServiceID = fmt.Sprintf("http-%d", i)
-		w, err := c.Publish(spec, f.now)
-		if err != nil {
-			t.Fatal(err)
-		}
-		records = append(records, w)
-	}
-	s.SeedKnownBundles([]string{records[0].Fingerprint})
-	for i, w := range records {
-		messages := s.Record(w, f.now)
-		if i < 4 && (len(messages) != 1 || messages[0].Kind != "record") {
-			t.Fatalf("record %d should use warm hint: %+v", i, messages)
-		}
-		if i == 4 && (len(messages) != 2 || messages[0].Kind != "bundle") {
-			t.Fatalf("record %d should proactively repair cold receiver: %+v", i, messages)
-		}
+		t.Fatal("current inventory bypassed origin signature verification")
 	}
 }
 

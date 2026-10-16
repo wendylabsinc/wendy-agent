@@ -1,7 +1,6 @@
 package meshcatalog
 
 import (
-	"fmt"
 	"net/netip"
 	"testing"
 	"time"
@@ -9,40 +8,6 @@ import (
 	"github.com/wendylabsinc/WendyOS/babel"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 )
-
-func TestBundleHintsArePeerScopedAndBounded(t *testing.T) {
-	f := newFixture(t)
-	c, _ := f.newCatalog(t, p533, "default", nil, nil)
-	r, err := NewRuntime(c, func() localmesh.NodeSnapshot { return localmesh.NodeSnapshot{} })
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle := f.creds[p533].Certificate.Certificate
-	fp := localmesh.Fingerprint(bundle)
-	peer, other := deviceForIndex(534), deviceForIndex(535)
-	r.bundleWritten(peer, bundle, f.now)
-	if got := r.knownBundles(peer, f.now.Add(time.Second)); len(got) != 1 || got[0] != fp {
-		t.Fatalf("same-peer warm hint = %v", got)
-	}
-	if got := r.knownBundles(other, f.now.Add(time.Second)); len(got) != 0 {
-		t.Fatalf("different peer inherited bundle hint = %v", got)
-	}
-	if got := r.knownBundles(peer, f.now.Add(bundleHintLifetime)); len(got) != 0 {
-		t.Fatalf("expired bundle hint survived = %v", got)
-	}
-	for i := 0; i < maxBundleHintsPerPeer+2; i++ {
-		r.bundleWritten(peer, [][]byte{[]byte(fmt.Sprintf("identity-%d", i))}, f.now.Add(time.Duration(i)*time.Second))
-	}
-	if got := r.knownBundles(peer, f.now.Add((maxBundleHintsPerPeer+2)*time.Second)); len(got) != maxBundleHintsPerPeer {
-		t.Fatalf("per-peer bundle hints=%d", len(got))
-	}
-	for i := 1; i <= maxBundleHintPeers+2; i++ {
-		r.bundleWritten(deviceForIndex(i), bundle, f.now)
-	}
-	if got := len(r.bundleHints); got > maxBundleHintPeers {
-		t.Fatalf("hint peers=%d", got)
-	}
-}
 
 func TestEligibleSnapshotRequiresSignedPresenceAndDeviceRoute(t *testing.T) {
 	now := time.Now()
