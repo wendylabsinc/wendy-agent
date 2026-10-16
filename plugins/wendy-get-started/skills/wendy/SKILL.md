@@ -107,8 +107,8 @@ its own permission policy.
 
 The server also provides:
 
-- Resources: `wendy://guide` (tool workflows, result shapes and error codes),
-  `wendy://docs/...` (Wendy documentation, listed by `resources/list`), and
+- Resources: read `wendy://guide` for tool details this skill omits,
+  `wendy://docs/...` for Wendy documentation (listed by `resources/list`), and
   `wendy://diagnostics` when an expected tool is missing.
 - Prompts: `deploy_app`, `diagnose_container` and `provision_device`.
 - App tools: a running app with an `mcp` entitlement adds tools prefixed with its
@@ -168,7 +168,8 @@ connected, use the matching tools from the table above instead of these commands
 - Create a new project: `wendy init`
 - Discover devices: `wendy discover`
 - Update agent: `wendy device update`
-- Configure WiFi: `wendy device wifi connect`
+- Configure WiFi: `wendy device wifi connect --ssid "<ssid>" --password "<password>"`
+  (see `wendy-device-ops`)
 - Install WendyOS on an external drive: `wendy os install`
 - Set a device as default using `wendy device set-default`
 - Check the default device with `wendy device get-default`
@@ -183,26 +184,16 @@ scaffolding. When already inside the requested destination, include `--here` so
 `--app-id` does not create another directory. See `wendy-template-app`.
 
 `wendy run --device <selector> --detach --yes` builds, transfers and starts the app.
-The MCP `run` tool uses its explicit `device` or the connected session's target;
-legacy `device_name` selects cloud deployment. Verify the returned target, container
-state, logs and application health separately: detached run skips readiness waits.
+Verify the returned target, container state, logs and application health
+separately: detached run skips readiness waits.
 For a local VM, `--device vm:dev` selects the agent; it is not a DNS hostname or
 HTTP URL. With default user networking, fetch the detached result's `url` (for
 example `http://127.0.0.1:18880`), rather than `vm:dev`, `dev`, or the guest's
 `10.0.2.15` address. Declare the app's HTTP port in an `http` entitlement so Wendy
 can forward and report it. `readiness: "not_checked"` means start was acknowledged,
 not that the HTTP endpoint is healthy; verify the expected response separately.
-Wendy Lite uses a separate MCU/WASM workflow; see `wendy-lite` for ESP32.
-
-### `wendy device wifi connect` — Set Up WiFi
-
-Configures WiFi credentials on a connected device:
-
-```bash
-wendy device wifi connect
-```
-
-This sends WiFi SSID and password to the device so it can connect to the local network. The device must be reachable over USB or an existing connection first.
+Wendy Lite uses a separate MCU/WASM workflow for ESP32; read
+`wendy docs wendy-lite/getting-started` or the `wendy://docs/wendy-lite/` resources.
 
 ## Setup and Configuration
 
@@ -211,37 +202,30 @@ Wendy CLI connects to a device over gRPC (TCP) port 50051. If Wendy CLI is not i
 Devices are discovered over USB or LAN. On Linux, USB tethering may need a
 one-time host setup: run `wendy discover` in a terminal and accept its USB-C
 setup prompt (it needs sudo). An empty scan can also mean a blank board.
-Use `wendy-device-install` and `os_install_plan` for initial installation and
-`os_install_verify` for first boot; both are in the MCP `setup` tool group, which
-`wendy_tools(groups=["setup"])` enables. Full Jetson recovery updates boot firmware;
-rootfs-only media writes do not. Unitree G1 PC2 keeps vendor Ubuntu and receives
-the Agent, not a generic Jetson image.
+Use `wendy-device-install` for initial installation and first-boot checks.
+Unitree G1 PC2 keeps vendor Ubuntu and receives the Agent, not a generic Jetson
+image.
 
 For robotics, use `wendy-robot-deploy`: inspect actual ROS topics, QoS, frames,
 clocks and DDS scope, test in simulation, deploy without automatic motion, and
-verify the app's output before any authorized physical test. Check the live MCP
-tool list; newer skill text cannot add tools to an older running server.
+verify the app's output before any authorized physical test.
 
 ## Development
 
-WendyOS is a Linux-based containerized operating system. It uses Linux containers to run your apps.
-
-WendyOS uses Swift.org as its flagship language. This uses Swift Package Manager and the Swift Container Plugin to build and run your app. Wendy CLI will cross compile Swift for you.
-
-Other programming languages are supported, but require the use of a Dockerfile or Containerfile to build your app.
+WendyOS runs apps as Linux containers. `wendy run` picks a build from the project
+directory: a Compose file, then a Stagefile, Dockerfile or Containerfile, then a
+Swift package (`Package.swift`, cross-compiled by the CLI), then a Python project
+(`requirements.txt`, `setup.py` or `pyproject.toml`). Xcode projects target Wendy
+for Mac and ESP-IDF projects target Wendy Lite. `--build-type` overrides the
+choice when several apply; see `wendy-app-lifecycle`.
 
 ### Entitlements
 
-WendyOS uses an entitlement system, managed through `wendy.json`, to manage permissions for your app. This reflects how your container will be set up on the device.
-
-See `references/wendy.json.md` for detailed entitlement configuration.
-
-### Quick Start
-
-1. Create a new Swift project or navigate to an existing one
-2. Initialize wendy.json: `wendy init`
-3. Add required entitlements (e.g., for a web server): `wendy project entitlements add network` (the mode is chosen at the interactive prompt; there is no `--mode` flag)
-4. Run on device: `wendy run`
+Apps declare the device access they need in `wendy.json`, and the container is
+set up with only those permissions. Add one with
+`wendy project entitlements add <type>` (modes are chosen at an interactive
+prompt; there is no `--mode` flag). See `references/wendy.json.md` for every
+entitlement and `wendy-entitlements` for choosing them.
 
 ### Common Entitlements
 
@@ -276,34 +260,18 @@ For synchronized sensor capture, event-triggered recordings, model input/output
 records, or custom measurements, use `wendy-data`. Its campaign and episode
 workflow is separate from the OpenTelemetry collector described below.
 
-WendyOS runs a local OpenTelemetry collector on each device. Apps should report telemetry (logs, metrics, traces) to this local collector.
-
-### Configuration
-
-Use HTTP protocol (not gRPC) for OTel exports:
-
-```swift
-import OTel
-
-var config = OTel.Configuration.default
-config.traces.otlpExporter.protocol = .httpProtobuf
-config.traces.otlpExporter.endpoint = "http://localhost:4318"
-config.metrics.otlpExporter.protocol = .httpProtobuf
-config.metrics.otlpExporter.endpoint = "http://localhost:4318"
-config.logs.otlpExporter.protocol = .httpProtobuf
-config.logs.otlpExporter.endpoint = "http://localhost:4318"
-
-let observability = try OTel.bootstrap(configuration: config)
-```
-
-Or via environment variables:
+WendyOS runs a local OpenTelemetry collector on each device. Apps should export
+logs, metrics and traces to it over OTLP/HTTP, not gRPC. Standard OpenTelemetry
+SDKs in any language read these environment variables:
 
 ```bash
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-The local collector handles forwarding telemetry to your backend infrastructure.
+The collector forwards telemetry to your backend. Read it back with
+`wendy device logs` or the MCP `telemetry_logs`, `telemetry_metrics` and
+`telemetry_traces` tools.
 
 ## Troubleshooting
 
@@ -313,7 +281,7 @@ The local collector handles forwarding telemetry to your backend infrastructure.
 | Network access denied | Add network entitlement with host mode |
 | GPU not detected | Add gpu entitlement (Jetson for CUDA, Raspberry Pi for board telemetry) |
 | Camera not found | Add camera entitlement, verify camera at `/dev/video0` (for CSI cameras also check `/run/udev` is present on host) |
-| Build fails | Check Swift version compatibility, try `wendy run --verbose` |
+| Build fails | Read the build log that `wendy run` prints on failure; check configuration with `wendy json validate` or the MCP `project_validate` tool |
 
 ## Reference Files
 
