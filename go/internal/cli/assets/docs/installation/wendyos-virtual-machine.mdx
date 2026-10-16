@@ -59,7 +59,8 @@ downloaded the first time you need one and reused for every virtual device after
 
 ### Windows foreground VMs
 
-Native Windows supports a generic VM while its console terminal stays open:
+Native Windows supports a generic VM for device inspection while its console
+terminal stays open:
 
 ```powershell
 wendy vm create dev --profile generic
@@ -71,11 +72,11 @@ running VM in discovery. A stopped VM must be started in its own terminal.
 The Simulator tab's create key displays these instructions and keeps discovery
 open.
 
-Background VMs, managed robot simulators, and automatic app-port forwarding
-require macOS or Linux. On Windows, run the Linux Wendy CLI, QEMU, and your
-container builder inside WSL2 for that workflow. Native Windows still uses
-slower software emulation for the ARM64 guest, so first boot can take several
-minutes.
+Local app builds for a VM, background VMs, managed robot simulators, and automatic
+app-port forwarding require macOS or Linux. On Windows, run the Linux Wendy CLI,
+QEMU, and your container builder inside WSL2 for the quickstart's app-deployment
+workflow. Native Windows still uses slower software emulation for the ARM64 guest,
+so first boot can take several minutes.
 
 ## The short version
 

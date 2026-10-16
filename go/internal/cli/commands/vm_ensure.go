@@ -31,7 +31,7 @@ func simulatorForegroundHint(name string, create bool) string {
 		command = fmt.Sprintf("'wendy vm create %s --profile generic', then %s", name, command)
 	}
 	return "Run " + command + " in a separate terminal and keep it open. " +
-		"Managed robot simulators and automatic port forwarding require macOS or Linux; on Windows, run Wendy inside WSL2."
+		"Local app builds, managed robot simulators, and automatic port forwarding require macOS or Linux; on Windows, run Wendy inside WSL2."
 }
 
 // markSimulatorUnavailable tags err so resolveWithCloudFallback will not answer

@@ -260,7 +260,7 @@ func TestDiscoverKeepsScanningWhenSimulatorNeedsForegroundStart(t *testing.T) {
 		}
 		name := nextSimulatorName(existing)
 		view := strings.Join(strings.Fields(ansi.Strip(m.View())), " ")
-		for _, want := range []string{"wendy vm create " + name + " --profile generic", "wendy vm start " + name, "separate terminal and keep it open", "Managed robot simulators and automatic port forwarding require macOS or Linux", "on Windows, run Wendy inside WSL2"} {
+		for _, want := range []string{"wendy vm create " + name + " --profile generic", "wendy vm start " + name, "separate terminal and keep it open", "Local app builds, managed robot simulators, and automatic port forwarding require macOS or Linux", "on Windows, run Wendy inside WSL2"} {
 			if !strings.Contains(view, want) {
 				t.Errorf("discovery view = %q, missing %q", view, want)
 			}

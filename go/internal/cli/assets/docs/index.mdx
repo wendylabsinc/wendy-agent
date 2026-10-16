@@ -103,16 +103,17 @@ needed for each board. Installing WendyOS erases the selected target storage.
 
 No hardware needed. On macOS and Linux, Wendy creates the simulator for you in step 4.
 
-When QEMU is missing, Wendy offers to install it through Homebrew on macOS or
-WinGet on Windows. On Debian or Ubuntu, install it now:
+When QEMU is missing on macOS, Wendy offers to install it through Homebrew.
+On Debian or Ubuntu, including inside WSL2, install it now:
 
 ```bash
 sudo apt install qemu-system-arm qemu-efi-aarch64
 ```
 
-On native Windows, create and start a [generic foreground VM](/docs/installation/wendyos-virtual-machine#windows-foreground-vms)
-in a separate terminal and keep it open. Use the Linux CLI inside WSL2 for
-managed robot simulators and automatic app-port forwarding.
+On Windows, run the Linux Wendy CLI, QEMU, and your container builder inside
+WSL2 for this quickstart. Native Windows [foreground VMs](/docs/installation/wendyos-virtual-machine#windows-foreground-vms)
+support device inspection, but local app builds and automatic app-port forwarding
+require macOS or Linux.
 
 This generic virtual device runs your app without a simulated robot or physical
 camera, GPU, or GPIO. Use the tour above for a moving Go2.
