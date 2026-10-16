@@ -137,7 +137,8 @@ and compound pan/tilt/white-balance controls are not inferred.
 
 Use a CLI containing the matching preflight update: older CLIs refuse Mac
 controls before sending an RPC. New CLIs still let an older Agent return its
-honest unsupported-operation error. Enrollment remains required.
+honest unsupported-operation error. Like Linux, the camera does not require
+enrollment; older CLIs still ask for it on an unenrolled Mac.
 
 The backend uses public, non-seizing IOKit USB control requests. It never resets,
 detaches or reconfigures the camera, and does not open an AVFoundation capture

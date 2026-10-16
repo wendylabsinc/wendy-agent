@@ -16,12 +16,20 @@ nonisolated final class TestLocationManager: CLLocationManager {
     }
 }
 
+final class TestLaunchAtLogin: LaunchAtLoginSetting {
+    var isEnabled = false
+    func setEnabled(_ enabled: Bool) { self.isEnabled = enabled }
+}
+
 @main
 struct LocationPermissionSourceTests {
     @MainActor
     static func main() async {
         let native = TestLocationManager()
-        let model = WelcomeAndPermissions(locationManager: native)
+        let model = WelcomeAndPermissions(
+            locationManager: native,
+            launchAtLogin: TestLaunchAtLogin()
+        )
         precondition(model.locationStatus == .pending)
 
         // Reads must reflect the source even before a delegate notification.
