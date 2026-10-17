@@ -4111,6 +4111,19 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 	}
 	c.appStopping[appID] = true
 	c.mu.Unlock()
+	// The cleanup section at the end clears appStopping. If a panic skips it
+	// (the gRPC interceptor recovers it), clear it here, or every later stop and
+	// delete of this app is refused until the agent restarts (WDY-3835). Only
+	// on that path: a late delete after normal cleanup could wipe the flag of a
+	// concurrent stop that has since claimed the app.
+	appStoppingCleared := false
+	defer func() {
+		if !appStoppingCleared {
+			c.mu.Lock()
+			delete(c.appStopping, appID)
+			c.mu.Unlock()
+		}
+	}()
 
 	// A whole-app operation is keyed by bare appID, while service starts and
 	// creates are keyed by concrete container ID. Hold every member key for the
@@ -4183,6 +4196,7 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 		delete(c.serviceIPs, appID)
 	}
 	delete(c.appStopping, appID)
+	appStoppingCleared = true
 	c.mu.Unlock()
 
 	return errors.Join(errs...)
