@@ -22,17 +22,19 @@ Install the Wendy CLI from [docs.wendy.dev](https://docs.wendy.dev). The
 
 ## What this plugin runs
 
-- **MCP server:** starts `wendy mcp serve` from the Wendy CLI on your `PATH`.
-  Its tools talk to the devices you connect to, over your local network or
-  through Wendy Cloud when you sign in with `wendy auth login`.
+- **MCP server:** connects to the hosted Wendy MCP server at
+  `https://mcp.wendy.dev`, which asks you to sign in with your Wendy account.
+  Its tools reach your devices through `wendy cloud mcp` running on your
+  computer; the `wendy-onboarding` skill walks you through pairing it.
 - **SessionStart hook:** `hooks/session-start.sh` checks for a `wendy.json` in
   the project and, if one exists, prints the installed `wendy --version`. It
   sends nothing over the network.
 - **Skills and commands:** instructions that tell Claude which `wendy` commands
   to run. Claude asks before running them, following your permission settings.
 
-If you already added the Wendy MCP server with `wendy mcp setup`, remove that
-entry (`claude mcp remove wendy`) to avoid duplicate tools.
+The hosted server offers a subset of the local server's tools. For the full
+local set without Wendy Cloud, run `wendy mcp setup`; Claude then sees both
+servers.
 
 ## License
 
