@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -70,6 +71,9 @@ func deviceOrganization(ctx context.Context, conn *grpcclient.AgentConnection) *
 // which carries principal_uri, and falls back to v1 on an agent that predates
 // it. A v1 answer is returned in the v2 shape with principal_uri unset.
 func deviceProvisioning(ctx context.Context, conn *grpcclient.AgentConnection) (*agentpbv2.IsProvisionedResponse, error) {
+	if conn == nil || conn.Conn == nil {
+		return nil, errors.New("device provisioning service is unavailable")
+	}
 	resp, err := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn).IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{})
 	if status.Code(err) != codes.Unimplemented {
 		return resp, err
