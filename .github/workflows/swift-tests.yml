@@ -72,7 +72,7 @@ jobs:
 
       - name: Archive SwiftPM build cache
         id: archive_swiftpm
-        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')) || github.head_ref == 'kb.macos-ci-caching' }} # TEMPORARY: PR validation only, remove before ready
         shell: bash
         run: |
           set -euo pipefail
@@ -162,7 +162,7 @@ jobs:
 
       - name: Archive Xcode build cache
         id: archive_xcode
-        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')) || github.head_ref == 'kb.macos-ci-caching' }} # TEMPORARY: PR validation only, remove before ready
         shell: bash
         run: |
           set -euo pipefail
