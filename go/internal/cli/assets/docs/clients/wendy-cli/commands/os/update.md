@@ -58,6 +58,18 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 
 ---
 
+## Jetson A/B preparation
+
+Before starting `wendyos-update install`, the agent checks Jetson rootfs A/B
+configuration and the alternate `APP_b` partition. It repairs missing or disabled
+persistent EFI settings, preserves valid retry counts, and verifies each write
+by reading the variable back. This preparation applies to both agent API versions.
+
+If firmware rejects a write, the agent stops before downloading or staging the
+OS update. It also refuses to change a disabled volatile setting: that change
+would be lost at reboot. Such devices need an A/B-enabled firmware configuration
+or image. Preparation does not repair an incompatible bootloader capsule.
+
 ## How the agent reboots
 
 The agent always flushes filesystems before restarting. Without that, an
