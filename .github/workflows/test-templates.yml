@@ -160,12 +160,17 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: inputs.hostname == ''
 
+      - uses: ./.github/actions/check-runner-disk
+        if: inputs.hostname == ''
+
+      # The runner keeps ~/go/pkg/mod and the Go build cache on disk, so
+      # restoring setup-go's archive over them every job only rewrites ~1.5 GB.
       - name: Set up Go
         if: inputs.hostname == ''
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
 
       - name: Build embedded MCP app
         if: inputs.hostname == ''
@@ -251,13 +256,21 @@ jobs:
       INPUT_TEMPLATE: ${{ inputs.template }}
       INPUT_EXCLUDE_TEMPLATE: ${{ inputs.exclude_template }}
       INPUT_LANGUAGE: ${{ inputs.language }}
+      # Keep the CLI's build caches on the Mac well below its 100 GiB default;
+      # that runner also holds Docker Desktop and a Tart VM (WDY-3837).
+      WENDY_BUILD_CACHE_MAX_BYTES: ${{ matrix.runner.name == 'macOS' && '32212254720' || '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: ./.github/actions/check-runner-disk
+        if: runner.os == 'macOS'
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
+          # The Mac keeps its Go caches on disk; see resolve-deploy-devices.
+          cache: ${{ runner.os != 'macOS' }}
           cache-dependency-path: go.sum
 
       - name: Build embedded MCP app

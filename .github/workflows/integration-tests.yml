@@ -100,6 +100,9 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
 
+      - uses: ./.github/actions/check-runner-disk
+        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
+
       - name: Set up Go
         if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -182,8 +185,13 @@ jobs:
     env:
       INPUT_HOSTNAME: ${{ matrix.hostname }}
       INPUT_TESTS: ${{ inputs.tests }}
+      # Keep the CLI's build caches well below its 100 GiB default; the runner
+      # also holds Docker Desktop and a Tart VM (WDY-3837).
+      WENDY_BUILD_CACHE_MAX_BYTES: '32212254720' # 30 GiB
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: ./.github/actions/check-runner-disk
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -301,8 +309,8 @@ jobs:
           # positional after it shifts down — which silently handed test-ci.sh a
           # nonsense argument list. Send a sentinel instead of an empty word; it
           # must contain no shell metacharacters, since the remote shell parses
-          # that string.
-          if "${SSH[@]}" bash -s -- "$WORKDIR" "$BUILDER" "${DOCKER_HOST:-__unset__}" "$INPUT_HOSTNAME" "${TEST_ARGS[@]}" <<'REMOTE'
+          # that string. The cache cap is a plain number for the same reason.
+          if "${SSH[@]}" env "WENDY_BUILD_CACHE_MAX_BYTES=$WENDY_BUILD_CACHE_MAX_BYTES" bash -s -- "$WORKDIR" "$BUILDER" "${DOCKER_HOST:-__unset__}" "$INPUT_HOSTNAME" "${TEST_ARGS[@]}" <<'REMOTE'
           set -euo pipefail
           WORKDIR="$1"; shift
           BUILDER="$1"; shift
