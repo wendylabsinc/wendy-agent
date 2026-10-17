@@ -20,7 +20,9 @@ fi
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+: "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 
+SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ARTIFACT_NAME="$1"
 shift
 RESTORE_PATHS=("$@")
@@ -36,22 +38,28 @@ if ! command -v zstd >/dev/null 2>&1 || ! command -v gtar >/dev/null 2>&1; then
   exit 0
 fi
 
-# shellcheck disable=SC2016 # $event is a jq variable.
-if ! run_ids="$(
-  gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW_FILE/runs?branch=main&status=completed&per_page=20" \
-    --jq '
-      .workflow_runs[]
-      | select(
-          .head_branch == "main"
-          and .head_repository.full_name == env.GITHUB_REPOSITORY
-          and (.event as $event | [env.BUILD_CACHE_TRUSTED_EVENTS | split(" ")[] | select(. == $event)] | length > 0)
-        )
-      | .id
-    '
-)"; then
-  echo "::notice::Could not list trusted $WORKFLOW_FILE runs; building without the $ARTIFACT_NAME cache."
-  exit 0
-fi
+# Newest successful runs on main for each trusted event, newest first.
+candidates=""
+for event in $BUILD_CACHE_TRUSTED_EVENTS; do
+  if ! runs="$(
+    BUILD_CACHE_EVENT="$event" gh api \
+      "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW_FILE/runs?branch=main&event=$event&status=success&per_page=10" \
+      --jq '
+        .workflow_runs[]
+        | select(
+            .head_branch == "main"
+            and .event == env.BUILD_CACHE_EVENT
+            and .head_repository.full_name == env.GITHUB_REPOSITORY
+          )
+        | "\(.created_at) \(.id)"
+      '
+  )"; then
+    echo "::notice::Could not list trusted $WORKFLOW_FILE runs; building without the $ARTIFACT_NAME cache."
+    exit 0
+  fi
+  candidates="$candidates$runs"$'\n'
+done
+run_ids="$(printf '%s' "$candidates" | sort -r | awk 'NF { print $2 }')"
 
 for run_id in $run_ids; do
   artifact="$(
@@ -63,8 +71,10 @@ for run_id in $run_ids; do
   read -r artifact_id expected_digest <<< "$artifact"
 
   # SECURITY: GitHub records the uploaded archive's SHA-256 server-side; verify
-  # it before extracting anything, then extract into a staging directory and
-  # move only the requested paths into the workspace.
+  # it before extracting anything. The digest proves which run produced the
+  # archive, not that its entries are safe, so also reject entries that could
+  # escape the workspace, extract without preserving owners or modes into a
+  # staging directory, and move only the requested paths into the workspace.
   if [[ ! "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "::warning::$ARTIFACT_NAME from run $run_id has no SHA-256 digest; building without it."
     exit 0
@@ -86,8 +96,18 @@ for run_id in $run_ids; do
     exit 0
   fi
 
-  if ! unzip -q "$zip_path" "$ARTIFACT_NAME.tar.zst" -d "$DOWNLOAD_DIRECTORY" \
-    || ! zstd -dc "$DOWNLOAD_DIRECTORY/$ARTIFACT_NAME.tar.zst" | gtar -xpf - -C "$DOWNLOAD_DIRECTORY/stage"; then
+  archive="$DOWNLOAD_DIRECTORY/$ARTIFACT_NAME.tar.zst"
+  if ! unzip -q "$zip_path" "$ARTIFACT_NAME.tar.zst" -d "$DOWNLOAD_DIRECTORY"; then
+    echo "::warning::Could not unpack $ARTIFACT_NAME from run $run_id; building without it."
+    rm -rf "$DOWNLOAD_DIRECTORY"
+    exit 0
+  fi
+  if ! zstd -dc "$archive" | python3 "$SCRIPT_DIRECTORY/validate-build-cache-archive.py" "$GITHUB_WORKSPACE"; then
+    echo "::warning::$ARTIFACT_NAME from run $run_id contains unsafe entries; building without it."
+    rm -rf "$DOWNLOAD_DIRECTORY"
+    exit 0
+  fi
+  if ! zstd -dc "$archive" | gtar -xf - --no-same-owner --no-same-permissions -C "$DOWNLOAD_DIRECTORY/stage"; then
     echo "::warning::Could not extract $ARTIFACT_NAME from run $run_id; building without it."
     rm -rf "$DOWNLOAD_DIRECTORY"
     exit 0
