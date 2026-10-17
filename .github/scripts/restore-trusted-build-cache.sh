@@ -20,7 +20,6 @@ fi
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
-: "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 
 SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ARTIFACT_NAME="$1"
@@ -75,8 +74,9 @@ for run_id in $run_ids; do
   # SECURITY: GitHub records the uploaded archive's SHA-256 server-side; verify
   # it before extracting anything. The digest proves which run produced the
   # archive, not that its entries are safe, so also reject entries that could
-  # escape the workspace, extract without preserving owners or modes into a
-  # staging directory, and move only the requested paths into the workspace.
+  # escape the workspace (before and after extracting), extract without
+  # preserving owners or modes into a staging directory, and move only the
+  # requested paths into the workspace.
   if [[ ! "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "::warning::$ARTIFACT_NAME from run $run_id has no SHA-256 digest; building without it."
     exit 0
@@ -104,13 +104,19 @@ for run_id in $run_ids; do
     rm -rf "$DOWNLOAD_DIRECTORY"
     exit 0
   fi
-  if ! zstd -dc "$archive" | python3 "$SCRIPT_DIRECTORY/validate-build-cache-archive.py" "$GITHUB_WORKSPACE"; then
+  if ! zstd -dc "$archive" | python3 "$SCRIPT_DIRECTORY/validate-build-cache-archive.py" --archive; then
     echo "::warning::$ARTIFACT_NAME from run $run_id contains unsafe entries; building without it."
     rm -rf "$DOWNLOAD_DIRECTORY"
     exit 0
   fi
   if ! zstd -dc "$archive" | gtar -xf - --no-same-owner --no-same-permissions -C "$DOWNLOAD_DIRECTORY/stage"; then
     echo "::warning::Could not extract $ARTIFACT_NAME from run $run_id; building without it."
+    rm -rf "$DOWNLOAD_DIRECTORY"
+    exit 0
+  fi
+  # Check what tar actually wrote, so parser differences cannot hide anything.
+  if ! python3 "$SCRIPT_DIRECTORY/validate-build-cache-archive.py" --tree "$DOWNLOAD_DIRECTORY/stage"; then
+    echo "::warning::$ARTIFACT_NAME from run $run_id extracted unsafe entries; building without it."
     rm -rf "$DOWNLOAD_DIRECTORY"
     exit 0
   fi
