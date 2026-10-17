@@ -215,7 +215,7 @@ func TestRunMultiServiceRemoteBuildErrorInvalidatesFingerprints(t *testing.T) {
 			version := &agentpb.GetAgentVersionResponse{Os: "linux", CpuArchitecture: "arm64", PublicKey: &publicKey}
 			deviceKey := deviceFingerprintKey(version)
 			conn := &grpcclient.AgentConnection{
-				ProvisioningService: remoteBuildProvisioningStub{},
+				ProvisioningService: unprovisionedDevice{},
 				ContainerService: &fastPathContainerClient{
 					appName: multiServiceContainerName(appID, "preserved"),
 					state:   agentpb.AppRunningState_RUNNING,
@@ -275,12 +275,12 @@ func TestRunMultiServiceRemoteBuildErrorInvalidatesFingerprints(t *testing.T) {
 	}
 }
 
-type remoteBuildProvisioningStub struct {
+// unprovisionedDevice reports a device without Cloud enrollment, so a deploy
+// needs no registry client certificate.
+type unprovisionedDevice struct {
 	agentpb.WendyProvisioningServiceClient
 }
 
-func (remoteBuildProvisioningStub) IsProvisioned(context.Context, *agentpb.IsProvisionedRequest, ...grpc.CallOption) (*agentpb.IsProvisionedResponse, error) {
-	return &agentpb.IsProvisionedResponse{Response: &agentpb.IsProvisionedResponse_NotProvisioned{
-		NotProvisioned: &agentpb.NotProvisionedResponse{},
-	}}, nil
+func (unprovisionedDevice) IsProvisioned(context.Context, *agentpb.IsProvisionedRequest, ...grpc.CallOption) (*agentpb.IsProvisionedResponse, error) {
+	return &agentpb.IsProvisionedResponse{}, nil
 }
