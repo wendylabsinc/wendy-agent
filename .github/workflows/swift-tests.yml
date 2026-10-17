@@ -11,8 +11,9 @@ name: Swift Tests
 #
 # SECURITY: Pull requests reuse dependency outputs compiled by main's own
 # workflow on ephemeral GitHub-hosted runners, the same trust as main's source.
-# The restore verifies GitHub's recorded SHA-256 digest of each archive before
-# extracting it into a staging directory. First-party code is always rebuilt.
+# The restore verifies GitHub's recorded SHA-256 digest of each archive and
+# rejects entries that could escape the workspace before and after extracting
+# it into a staging directory. First-party code is always rebuilt.
 
 on:
   pull_request:
