@@ -40,6 +40,7 @@ const relayInstructions = "Wendy MCP, served through the hosted relay, reaches t
 	"Call `wendy_status` first: it reports the connection and a suggested next step. " +
 	"Connect with `device_connect` and a cloud selector (cloud://HOST:PORT/org/ID/asset/ID), " +
 	"then inspect the device with `device_info`, `container_list` and `telemetry_logs`.\n\n" +
-	"Read-only tools run without asking. Every call that changes state waits for the user to confirm it in that terminal; " +
-	"a refused call returns DENIED: tell the user what you asked for instead of retrying. " +
+	"Every permitted tool call waits for confirmation in that terminal by default. --allow-read skips confirmation only for built-in read-only device and Cloud tools that do not access the host. " +
+	"--allow-all permits every supported tool without per-call confirmation. Pairing is separate: --auto-accept automatically accepts ChatGPT's verified OAuth client; other clients still require approval. " +
+	"A refused call returns DENIED: tell the user what you asked for instead of retrying. " +
 	"Tools the user has not allowed are not listed; the user can allow more by restarting 'wendy cloud mcp' with --allow-tool or --allow-all."

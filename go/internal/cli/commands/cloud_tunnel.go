@@ -25,7 +25,6 @@ import (
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 )
@@ -706,32 +705,16 @@ func boolPtr(b bool) *bool { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 
 func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
-	var transport grpc.DialOption
-	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
-		if len(auth.Certificates) > 0 {
-			cert := auth.Certificates[0]
-			keyPEM, err := cert.PrivateKeyPEM()
-			if err != nil {
-				return nil, fmt.Errorf("loading client key: %w", err)
-			}
-			tlsCfg, err := certs.LoadTLSConfig(
-				cert.PemCertificate,
-				cert.PemCertificateChain,
-				keyPEM,
-				"",
-			)
-			if err != nil {
-				return nil, fmt.Errorf("loading TLS config: %w", err)
-			}
-			transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
-		} else {
-			transport = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
-		}
-	} else {
-		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
+	var cert *config.CertificateInfo
+	if len(auth.Certificates) > 0 {
+		cert = &auth.Certificates[0]
+	}
+	creds, err := clouddefaults.CloudTransportCredentials(auth.CloudGRPC, cert)
+	if err != nil {
+		return nil, err
 	}
 	dialOptions := append([]grpc.DialOption{
-		transport,
+		grpc.WithTransportCredentials(creds),
 		grpc.WithInitialWindowSize(8 * 1024 * 1024),
 		grpc.WithInitialConnWindowSize(16 * 1024 * 1024),
 		grpc.WithReadBufferSize(256 * 1024),

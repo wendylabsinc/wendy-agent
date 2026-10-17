@@ -24,12 +24,81 @@ devices connected to a hosted account. Ask only what the next step needs.
 - Local hardware, simulators, and project files use the desktop connection.
   A Wendy Cloud account is optional. A local gateway can also access Cloud
   devices when the user explicitly adds those targets and logs in.
-- Existing hosted devices use the registered hosted plugin and its connection
-  flow. No CLI is needed on the user's computer for hosted inspection and app
-  control. Do not install a CLI just to connect their hosted account.
+- The public hosted plugin at `https://mcp.wendy.dev` uses a CLI relay.
+  It needs a signed-in Wendy CLI on a computer, a paired `wendy cloud mcp`
+  process, and that process to stay running. A Cloud account alone is not
+  enough to use this connection.
+- A separately configured standalone Cloud gateway can provide hosted access
+  without a local CLI. Use that path only when the configured server and its
+  tools establish that it is available. Do not describe the public CLI relay
+  as a standalone gateway.
 - Browser/mobile conversations cannot directly launch laptop processes. Use
-  the hosted connection or guide the user through local desktop setup. A
-  private OpenAI MCP tunnel is an optional advanced route, with its own setup.
+  the hosted relay after setup on a computer, an available standalone gateway,
+  or guide the user through local desktop setup. A private OpenAI MCP tunnel
+  is an optional advanced route, with its own setup.
+
+## Connect the public hosted plugin
+
+Check `wendy --version` and `wendy cloud mcp --help` on the computer that will
+run the relay. If the CLI is missing or does not support the command, use
+[wendy-install](../wendy-install/SKILL.md). Do not install it into a remote
+execution environment and call that the user's laptop. Without terminal access
+to the chosen computer, explain each command and have the user run it there.
+
+1. Use the intended Wendy Cloud operator session. If sign-in is needed, run
+   `wendy auth login` and let the user finish authentication.
+2. Start `wendy cloud mcp` in an interactive terminal. Calls run on this
+   computer under that operator session, and access ends when the command
+   exits. Keep the terminal and process running while using the plugin.
+3. Connect the Wendy plugin in ChatGPT, inspect the tools it exposes, and call
+   `wendy_status`. The first tool call starts pairing; OAuth sign-in alone does
+   not. If the relay returns a pairing code, show it and have the user compare
+   it with the code in the terminal. They must match before acceptance. Approval
+   links that signed-in connection across chats while the relay session stays
+   active. A new sign-in grant requires a new matching-code approval. Never ask
+   the user to paste the pairing code into the conversation.
+4. After acceptance, retry `wendy_status` and report the actual connection and
+   authentication state before continuing. With `--auto-accept`, the initial
+   call may still return `relay_not_paired` while approval is being processed;
+   retry the harmless status call after the CLI reports acceptance. Do not
+   retry state-changing tool calls automatically.
+
+The default relay policy permits built-in read-only device and Cloud tools that
+do not access the host, and asks for confirmation before each call. Add
+`--allow-read` to skip confirmation for those tools only. Use
+`cloud_discover(online_only=false)` to list the signed-in account's enrolled
+devices, including offline devices. To allow these reads without prompting and
+connect to one of those devices, restart the relay with:
+
+```sh
+wendy cloud mcp --allow-read --allow-tool device_connect
+```
+
+Use an exact selector returned by `cloud_discover`. The user must confirm the
+connection call in the terminal. For LAN devices or simulators, `device_list`
+also requires `--allow-tool device_list` and per-call terminal confirmation,
+even without a network scan. Add other tool names only when needed for the
+user's task. State changes and host access still require per-call
+terminal confirmation after `--allow-tool`; enabling a tool does not approve
+its next call. Read-only annotations on host or proxied tools do not qualify
+for `--allow-read`. `--allow-all` permits every supported relay tool and skips
+every per-call confirmation. Use it only when the user authorizes that access.
+
+The public relay exposes a fixed catalog of tools. It does not expose
+`wendy_tools`; use only the tools actually listed by the connected server.
+
+If the user explicitly wants automatic ChatGPT pairing, `--auto-accept` accepts
+requests from ChatGPT's known OAuth client identity. It does not trust the
+display name alone, grant extra tool permissions, or skip per-call terminal
+confirmations. Other clients keep manual pairing. Explain that new ChatGPT
+connections for the same signed-in account can pair while the CLI is waiting.
+
+If the organization disables MCP, the relay has exited, or the CLI and relay
+report incompatible tool catalogs, explain that specific blocker. Restore the
+authorized connection or update the CLI as appropriate. Do not switch accounts,
+widen permissions, or claim that a gateway is available to bypass the failure.
+
+## Set up a local desktop connection
 
 If a local terminal is available on the user's selected computer, check whether
 `wendy --version` works. If absent, use
@@ -73,6 +142,8 @@ Hosted personal/workspace packaging uses an existing registered app ID with
 separate local and hosted entries. These commands are operator packaging steps,
 not prerequisites for a novice connecting an already available hosted plugin.
 They do not deploy a server, register an app, or publish to the public directory.
+The registered app's configured server determines whether it uses the CLI relay
+or a standalone gateway; these flags do not change the server's connection model.
 
 The broader `wendy mcp serve` tools are opt-in through `--developer-tools`.
 Explain that they have broader access and do not inherit the gateway policy.
@@ -90,9 +161,13 @@ no hardware. Do not turn an empty discovery result into a flashing decision.
 
 Inspect the running server's tools before calling them:
 
-- With the CLI MCP server, call `wendy_status`. Enable `setup` for installation
-  or `simulator` for local VMs through `wendy_tools`.
-- With the ChatGPT gateway, use `list_robots` to find existing authorized devices.
+- With the public hosted relay, call `wendy_status` and `cloud_discover`.
+  Calls follow the permission and confirmation rules above. `device_connect`
+  and local discovery through `device_list` need separate permission.
+- With the local CLI MCP server, call `wendy_status` and `device_list`. Enable
+  `setup` for installation or `simulator` for local VMs through `wendy_tools`.
+- With a local desktop gateway or separately configured standalone Cloud
+  gateway, use `list_robots` to find existing authorized devices.
   Call `open_devices` when available to open the device and simulator workspace.
   It prefers fullscreen, but the host chooses the actual display mode. Continue
   in the conversation when no UI is available.

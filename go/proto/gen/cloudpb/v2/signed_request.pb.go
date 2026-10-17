@@ -106,8 +106,10 @@ type SignedRequest struct {
 	// (DeploymentService.CreateDeployment, ControlContainer), whose JWS is
 	// forwarded verbatim to devices in PostboxEntry.request_jws.
 	Signature []byte `protobuf:"bytes,3,opt,name=signature,proto3" json:"signature,omitempty"`
-	// pki-core tier-3 operations only: the operator's "management-request+jws",
-	// relayed verbatim as the fabric Envelope signed_artifact.
+	// The operator's "management-request+jws", relayed verbatim as the fabric
+	// Envelope signed_artifact. Required for pki-core tier-3 operations and for
+	// DeleteAsset on a PKI-bound device (op revoke_principal, same signing leaf).
+	// Other operations and unbound asset deletion leave this unset.
 	PkiManagementRequest []byte `protobuf:"bytes,4,opt,name=pki_management_request,json=pkiManagementRequest,proto3,oneof" json:"pki_management_request,omitempty"`
 	// The MCP channel the request came through (WDY-3657, docs/relay-mcp.md).
 	// UNSPECIFIED = not MCP. Outside `signature`: client-asserted, as honest as

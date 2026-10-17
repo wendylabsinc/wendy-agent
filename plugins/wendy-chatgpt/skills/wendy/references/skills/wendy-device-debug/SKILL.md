@@ -22,6 +22,12 @@ required.
    dependencies, architecture, entitlements, environment and startup logs.
 5. Use `wendy-app-lifecycle` to inspect app state and logs. A successful deploy
    or running container is not a health check. Probe the app's actual output.
+   With MCP, `container_list` shows `termination_reason` (for example
+   `ENTITLEMENT_DENIED`) and `telemetry_logs` returns app logs. Enable
+   `observability` for `app_inspect` (service states, recorded exit, recent
+   errors) and `device_os_logs` (kernel messages such as driver, USB or
+   out-of-memory events). The `diagnose_container` prompt follows these steps.
+   Read `wendy://diagnostics` when an expected MCP tool is missing.
 6. For robot sensor, DDS or stop behavior, follow `wendy-robot-deploy` and keep
    physical motion stopped during diagnosis.
 

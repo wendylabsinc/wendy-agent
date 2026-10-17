@@ -2,15 +2,39 @@
 
 ## Hosted plugin
 
-The public package targets standalone Cloud account linking at
-`https://mcp.dev.wendy.dev` using Streamable HTTP and OAuth. Users should need no
-local CLI process. The current endpoint still serves the separate session relay;
-replace it with the standalone gateway before submitting this package. See
-[submission preparation](SUBMISSION.md) for the verified service configuration,
-OAuth registrations, review cases, recording, and release checks.
+The public package connects to the Wendy CLI relay at `https://mcp.wendy.dev`
+using Streamable HTTP, OAuth client metadata discovery, and the `mcp:relay`
+scope. A signed-in, compatible CLI must run on a computer while ChatGPT uses
+the plugin. Connect with the same Wendy account and organization, then ask
+ChatGPT to check Wendy's status. That first tool call starts pairing. Compare
+the returned code with the terminal code, accept it, and retry the status check.
+
+```sh
+wendy auth login
+wendy cloud mcp --allow-read --allow-tool device_connect,camera_snapshot,container_stop
+```
+
+The example skips confirmation for built-in read-only device and Cloud tools
+that do not access the host. It also permits the extra tools used by the review
+walkthrough. Each connection, camera, or stop call still needs terminal
+confirmation. By default, every permitted call asks for confirmation.
+Local host access requires separate permission. `--allow-all` permits every
+supported relay tool and skips all per-call confirmations. Calls stop when the
+CLI exits. Keep its host awake and connected when using ChatGPT from a phone or
+another computer.
+
+Use `--auto-accept` to accept pairing requests from ChatGPT's known OAuth client
+automatically. Tool permissions and per-call confirmations still apply. Other
+clients require manual pairing. See [submission preparation](SUBMISSION.md)
+for the relay tools, review cases, recording steps, and reviewer-access checks.
 
 Package a review draft with
 `python3 scripts/package-chatgpt-plugin.py --output /tmp/wendy-robots-marketplace-draft.zip`.
+
+The local desktop gateway and standalone Cloud gateway described below are
+separate connection options. The `gateway.marketplace.example.json` and
+`oauth-client-registration.json` files configure that standalone gateway;
+they do not describe the deployed relay and are excluded from the public ZIP.
 
 ## Add the local desktop plugin to your personal marketplace
 
@@ -429,7 +453,7 @@ configuration, client/callback registration, and a real ChatGPT connection check
 remain required before deployment.
 
 The portable `mcp.json` uses
-`{"type":"streamable-http","url":"https://mcp.dev.wendy.dev"}`. Register this
+`{"type":"streamable-http","url":"https://mcp.wendy.dev"}`. Register this
 MCP endpoint through OpenAI's plugin builder and complete review before public
 distribution. The plugin package contains no app ID.
 

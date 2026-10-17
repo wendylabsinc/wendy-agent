@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"text/tabwriter"
@@ -29,11 +28,11 @@ func newVMCmd() *cobra.Command {
 		Hidden: true,
 		Long: "Run a WendyOS ARM64 virtual machine on this computer, so you can " +
 			"develop and evaluate WendyOS without a Jetson or Raspberry Pi.\n\n" +
-			"Requires QEMU (" + qemuInstallHint() + "); on macOS it is offered " +
-			"automatically when missing.",
+			"Requires QEMU (" + qemuInstallHint() + "). When it is missing, Wendy " +
+			"offers to install it with Homebrew, WinGet, apt-get, or dnf.",
 	}
 	cmd.PersistentFlags().BoolVarP(&vmAssumeYes, "yes", "y", false,
-		"Accept prompts, including installing QEMU when it is missing")
+		"Accept prompts, including installing QEMU when it is missing (Linux still asks before running sudo)")
 	cmd.AddCommand(newVMCreateCmd(), newVMStartCmd(), newVMStopCmd(),
 		newVMLogsCmd(), newVMListCmd(), newVMRemoveCmd(), newVMRobotCmd())
 	return cmd
@@ -165,6 +164,11 @@ func createVMContext(ctx context.Context, out io.Writer, name, image, version st
 	if err := store.CheckCreatable(name); err != nil {
 		return err
 	}
+	diskBytes, err := vmDiskBytes(diskGiB)
+	if err != nil {
+		return err
+	}
+	reportVMStorage(out, store.DiskPath(name), diskBytes)
 
 	if pr > 0 {
 		// Booting an image is running it. A PR build comes from a contributor
@@ -192,10 +196,13 @@ func createVMContext(ctx context.Context, out io.Writer, name, image, version st
 		return err
 	}
 	defer stream.Close()
+	if err := checkVMImageSpace(store.DiskPath(name), stream.uncompressedSize); err != nil {
+		return err
+	}
 
 	meta := vm.Meta{ImageVersion: resolvedVersion, ImageSource: vmImageSource(image, nightly, pr)}
-	if err := store.CreateFromContext(ctx, name, stream, stream.uncompressedSize, int64(diskGiB)<<30, meta); err != nil {
-		return err
+	if err := store.CreateFromContext(ctx, name, stream, stream.uncompressedSize, diskBytes, meta); err != nil {
+		return vmStorageError(err, store.DiskPath(name), stream.uncompressedSize, diskBytes)
 	}
 	fmt.Fprintf(out, "Created VM %q. Start it with 'wendy vm start %s'.\n", name, name)
 	return nil
@@ -276,7 +283,7 @@ func resolveVMSpec(name string, o vmStartOptions) (vm.Spec, *vm.Store, error) {
 	}
 
 	brew := vm.BrewPrefix()
-	firmware, err := vm.FindFirmware(runtime.GOOS, brew)
+	firmware, err := ensureQEMUFirmwareForHostOS(context.Background(), runtime.GOOS, brew)
 	if err != nil {
 		return vm.Spec{}, nil, err
 	}
@@ -478,9 +485,9 @@ var ensureQEMUFn = func(ctx context.Context) error {
 	return ensureQEMUForHostOS(ctx, runtime.GOOS)
 }
 
-// qemuLookPathFn resolves the emulator binary; indirected so tests can describe
+// findQEMUFn resolves the emulator binary; indirected so tests can describe
 // a host that does not have it.
-var qemuLookPathFn = exec.LookPath
+var findQEMUFn = vm.FindQEMU
 
 func newVMListCmd() *cobra.Command {
 	return &cobra.Command{

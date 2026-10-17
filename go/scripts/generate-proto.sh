@@ -107,6 +107,8 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/timesync_service.proto"
     "wendy/agent/services/v2/build_service.proto"
     "wendy/agent/services/v2/sensor_pairing_service.proto"
+    "wendy/agent/services/v2/unitree_service.proto"
+    "wendy/agent/services/v2/unitree_robot_service.proto"
     "wendy/agent/services/v2/sensor_service.proto"
     "wendy/agent/services/v2/tunnel_service.proto"
     "wendy/agent/services/v2/data_service.proto"
@@ -190,8 +192,10 @@ done
 # signed_request.proto is service-protos master 26ece19e (merged #118, WDY-3657);
 # relay_mcp.proto is service-protos master a41b4bac (merged #120, WDY-3675).
 # assets.proto is service-protos
-# c5220f7 (merged #96): GetAsset deletion details/expected_device_id guard
-# plus upstream asset hardware fields.
+# 33cfab5 (service-protos #115, additive signed-reset proof; unmerged):
+# GetAsset deletion details/expected_device_id guard, reset certificate binding
+# and Cloud authorization bytes, plus upstream asset hardware/OS fields.
+# Other protocol ownership and vendored source baselines are unchanged.
 # Re-pin: copy those files from
 # the new heads with `git show <sha>:<path>`, run `make proto`, and update the
 # SHAs here. wendy/options.proto (the signed_request method option) generates

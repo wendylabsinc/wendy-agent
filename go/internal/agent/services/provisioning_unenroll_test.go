@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -38,7 +39,11 @@ const resetDevice = "22222222-2222-4222-8222-222222222222"
 
 func cloudResetFixture(t *testing.T) (*ProvisioningService, *agentpbv2.UnprovisionRequest, context.Context) {
 	t.Helper()
-	now := time.Now()
+	return cloudResetFixtureAt(t, time.Now())
+}
+
+func cloudResetFixtureAt(t *testing.T, now time.Time) (*ProvisioningService, *agentpbv2.UnprovisionRequest, context.Context) {
+	t.Helper()
 	key, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if e != nil {
 		t.Fatal(e)
@@ -89,17 +94,33 @@ func cloudResetFixture(t *testing.T) (*ProvisioningService, *agentpbv2.Unprovisi
 		t.Fatal(e)
 	}
 	actorURI, _ := url.Parse("spiffe://wendy.sh/tenant/" + resetTenant + "/operator/op")
-	actor := &x509.Certificate{URIs: []*url.URL{actorURI}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, KeyUsage: x509.KeyUsageDigitalSignature}
+	actorKey, e := mldsa.GenerateKey(mldsa.MLDSA65())
+	if e != nil {
+		t.Fatal(e)
+	}
+	actor := &x509.Certificate{SerialNumber: big.NewInt(99), URIs: []*url.URL{actorURI}, NotBefore: now.Add(-4 * time.Hour), NotAfter: now.Add(4 * time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, KeyUsage: x509.KeyUsageDigitalSignature}
+	actorDER, e := x509.CreateCertificate(rand.Reader, actor, ca, actorKey.Public(), key)
+	if e != nil {
+		t.Fatal(e)
+	}
+	actor, e = x509.ParseCertificate(actorDER)
+	if e != nil {
+		t.Fatal(e)
+	}
 	ctx := peer.NewContext(context.Background(), &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{actor}, VerifiedChains: [][]*x509.Certificate{{actor}}}}})
 	svc := NewProvisioningService(zap.NewNop(), dir)
 	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
-		return timesync.TimeWindow{Earliest: now, Latest: now}, nil
+		instant := time.Now()
+		return anchored(timesync.TimeWindow{Earliest: instant, Latest: instant}), nil
 	}
-	return svc, &agentpbv2.UnprovisionRequest{ExpectedPrincipalUri: principal, ExpectedCertificateSha256: unenrollproof.Fingerprint(leaf), RevocationProof: evidence, CloudDeletion: binding}, ctx
+	ctx = context.WithValue(ctx, resetActorKey{}, actorKey)
+	req := &agentpbv2.UnprovisionRequest{ExpectedPrincipalUri: principal, ExpectedCertificateSha256: unenrollproof.Fingerprint(leaf), RevocationProof: evidence, CloudDeletion: binding}
+	renewFixtureAuthorization(t, svc, req, ctx, time.Now())
+	return svc, req, ctx
 }
 
 // Persist a development-version receipt directly to exercise historical recovery.
-// New requests cannot create these records while reset authorization is disabled.
+// New requests only create version 2 receipts with Cloud-authenticated authority.
 func persistHistoricalCloudReset(t *testing.T, svc *ProvisioningService, req *agentpbv2.UnprovisionRequest) []byte {
 	t.Helper()
 	leaves, err := certs.ParseCertsFromPEM([]byte(svc.certPEM))

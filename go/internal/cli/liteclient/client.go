@@ -1198,6 +1198,12 @@ func (c *WendyLiteClient) ConnectWithPKIAuthenticationContext(ctx context.Contex
 	if err != nil {
 		return err
 	}
+	return c.connectTLSContext(ctx, address, cfg)
+}
+
+// connectTLSContext uses an already configured verifier for the TLS handshake,
+// then establishes WendyCom under the same cancellation context.
+func (c *WendyLiteClient) connectTLSContext(ctx context.Context, address string, cfg *tls.Config) error {
 	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 15 * time.Second}, Config: cfg}
 	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {

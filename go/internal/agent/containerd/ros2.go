@@ -361,7 +361,7 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 				return services.ROS2Sidecar{}, fmt.Errorf("pulling ROS 2 sidecar image %q: %w", imageName, err)
 			}
 		}
-		if unpacked, uerr := image.IsUnpacked(ctx, ""); uerr == nil && !unpacked {
+		if unpacked, uerr := c.imageUnpacked(ctx, image); uerr == nil && !unpacked {
 			if uerr := c.UnpackImage(ctx, image, nil); uerr != nil {
 				return services.ROS2Sidecar{}, fmt.Errorf("unpacking ROS 2 sidecar image: %w", uerr)
 			}

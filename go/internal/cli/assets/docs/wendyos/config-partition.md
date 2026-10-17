@@ -8,6 +8,13 @@ The root filesystem on a WendyOS device is replaced wholesale during OTA updates
 
 The `config` partition is outside the update boundary. Files placed there survive OS updates and are available from the very first boot. This makes it the right place for anything that needs to be pre-staged before a device has ever booted, or preserved across updates.
 
+## Flashing an enrolled device
+
+Valid first-boot provisioning after a flash replaces prior pending or completed
+local unenrollment recovery. Flashing does **not** revoke certificates or delete
+the old Cloud asset. Clean up that old Cloud identity separately; do not use a
+newly provisioned device's identity as proof that the prior one was unenrolled.
+
 ## Accessing it from a host computer
 
 Because the partition is FAT32, your computer mounts it automatically when you plug in the storage.
