@@ -281,7 +281,7 @@ Known non-interactive guidance:
 - `wendy build` can still use Bubble Tea spinners in a TTY and does not currently provide structured JSON output.
 - Agent-backed `wendy --json run --detach` returns one JSON result with `status`, `app`, `device`, `readiness` and `endpoints`; `url` is the first available HTTP endpoint and is omitted when no host URL can be determined. Progress goes to stderr. Attached run and local container providers still use progress/log output.
 - `wendy run --yes` avoids app-config creation prompts where possible.
-- `--json` also prevents device picker fallback; if no device/default is configured, pass `--device` or set a default first.
+- `--json` also prevents device picker fallback; if no device/default is configured, pass `--device` or set a default first. With no hardware, pass an existing simulator from `wendy --json vm list` as `--device vm:<name>`; follow the [wendy](../wendy/SKILL.md) skill's *No device available* section before creating one.
 - `device apps start|stop|remove` and `device volumes remove` can prompt for a name if omitted; pass the app or volume name explicitly in agent workflows.
 
 ## Operator flow

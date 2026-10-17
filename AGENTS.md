@@ -29,6 +29,8 @@ Supports: Claude Code, Claude Desktop, Cursor, Windsurf, Codex.
    - On Linux, a USB-C tethered device can't be reached until the host's USB-C link
      is configured; `device_list` then returns a `usb` warning. Ask the user to run
      `wendy discover` in a terminal and accept its USB-C setup prompt (it needs sudo).
+   - It also lists local simulators (`vm:name`). Without hardware, connect to one
+     rather than skipping on-device checks; ask the user before creating a new one.
 3. Call `device_connect` with a selector from `device_list`: host:port for LAN,
    `vm:name` for a simulator, or a `cloud://` selector for a cloud device.
 4. Use container, WiFi, hardware, telemetry, and OS tools. Only core tools are

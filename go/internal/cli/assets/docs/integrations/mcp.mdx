@@ -100,6 +100,12 @@ Calling `auth_login` again starts a fresh link.
 tenant, and device identity. `vm:name` selects an existing local simulator and
 starts it if needed. `run` without `device` uses the current connection's target.
 
+On `wendy mcp serve`, `device_list` also returns each local simulator as a
+`simulator` row with its `vm:name` selector, state and profile. With no physical
+device available, an agent can connect to one of those for checks that need no
+physical hardware. Creating a new simulator downloads an image, so agents ask the
+user before calling `simulator_create`.
+
 `run(start=false)` creates the container without starting it. Starting or
 restarting a container may interrupt its current task. Use `telemetry_logs` for
 passive inspection and `container_exec` for a command in a running container.

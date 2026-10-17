@@ -34,7 +34,8 @@ and reuse the session's single device connection.
    server's CLI version and any update notice, and a suggested next step.
 2. Find a target with `device_list` (`scan=true` adds LAN discovery). Pass its
    selector unchanged to `device_connect`: host:port, `vm:<name>` or a
-   `cloud://` selector. `device_disconnect` closes the connection.
+   `cloud://` selector. `device_disconnect` closes the connection. With no
+   physical device, follow *No device available* below.
 3. Deploy with `run(project_path=<absolute path>)`. It reuses the connected
    target unless you pass `device`. `start=false` creates without starting.
 4. Verify: `container_list` (`running_state`, `termination_reason`), then
@@ -83,6 +84,38 @@ before calls that interrupt or erase: `container_stop`, `container_delete`,
 A running server keeps the tools of the CLI that started it. When `wendy_status`
 reports a CLI update, give the user the update command and ask them to restart
 the MCP server; newer skill text cannot add tools to an older process.
+
+### No device available
+
+A simulator runs WendyOS with the same agent, containerd and entitlements as
+hardware. When no physical device is connected or listed, run checks that need
+no physical hardware on a simulator: builds, deploys, container state, logs,
+telemetry, HTTP endpoints, configuration, and ROS 2 apps on a robot profile
+(`go2`, `g1`, `rosmaster-r2`). A request to test "on the device" is such a check
+unless it depends on the hardware listed at the end of this section.
+
+1. Use a connected or listed physical device when there is one.
+2. Otherwise use an existing simulator. `device_list` returns it as a
+   `simulator` row with a `vm:<name>` selector. Tell the user which one you are
+   using and connect without waiting for approval:
+   `device_connect(device="vm:<name>")` boots a stopped one. Prefer a `generic`
+   VM unless the task needs a robot profile. If `wendy_status`'s
+   `suggested_next_step` does not mention simulators, the server predates these
+   rows: enable the `simulator` group and call `simulator_list` instead.
+3. With no simulator, ask the user before creating one, and offer it as the way
+   to finish the check now. `simulator_create` downloads an image of a few
+   hundred MB, and the first boot can take minutes.
+4. Report results as verified on simulator `vm:<name>`, and say that the
+   user's hardware was not connected. Leave the VM running; stop or delete it
+   only when asked.
+
+Physical cameras, microphones, speakers, Bluetooth, GPU or CUDA, GPIO, USB and
+serial peripherals, OS installation, real network conditions, performance and
+physical motion still need hardware. For those, run what the simulator can and
+name what remains unverified.
+
+Without MCP, `wendy --json vm list` lists simulators and
+`wendy run --device vm:<name>` boots an existing one before deploying.
 
 ### ChatGPT and Codex desktop gateway
 
