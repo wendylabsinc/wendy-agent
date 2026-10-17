@@ -1182,6 +1182,11 @@ func connectResolvedAgentKeyed(ctx context.Context, hostname, addr, pinKey strin
 // an interactive device picker is presented (unless running in --json mode).
 func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.AgentConnection, error) {
 	conn, err := connectToAgentInner(ctx, opts...)
+	if err != nil {
+		if cloudConn, cloudErr, attempted := connectUnresolvedCloudName(ctx, deviceFlag, err, opts...); attempted {
+			conn, err = cloudConn, cloudErr
+		}
+	}
 	if err == nil {
 		noteEnvDevice("")
 	}
@@ -3394,6 +3399,18 @@ func ExcludeProviders(keys ...string) resolveOption {
 // device, so the clock fix applies to info, run, deploy, ros2 bag, etc.
 func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice, error) {
 	sel, err := resolveTargetInner(ctx, opts...)
+	if err != nil {
+		device := resolveOptionsDevice(opts)
+		if device == "" {
+			device = deviceFlag
+		}
+		if conn, cloudErr, attempted := connectUnresolvedCloudName(ctx, device, err, opts...); attempted {
+			err = cloudErr
+			if err == nil {
+				sel = &SelectedDevice{Agent: conn}
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

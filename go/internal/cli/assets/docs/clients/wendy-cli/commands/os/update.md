@@ -158,6 +158,21 @@ When no artifact path or `--artifact-url` is given, the CLI uses the device's `d
 
 Use `--nightly` to select nightly (pre-release) artifacts instead of stable ones.
 
+Cloud-connected devices download the artifact directly from its URL. Ethernet
+devices with a routable address and NAT-connected simulators also use the URL;
+disconnected WiFi alone does not trigger a download on your computer. For an
+isolated local connection with no reported routable address or active WiFi,
+the CLI downloads and serves the artifact locally after checking the local route.
+
+If a bare device name such as `--device ci-mesh-2` does not resolve locally,
+the CLI looks for that exact device in your Cloud account. Explicit IP addresses,
+hostnames with a domain, and host:port endpoints retain their direct connection.
+
+Local artifact files require a direct LAN or USB connection. With a cloud tunnel,
+use an artifact URL the device can reach. Reboot and update-result checks retain
+the selected cloud device's identity instead of resolving its display name as a
+LAN hostname.
+
 After the artifact is resolved, the CLI checks its format against the device's advertised backend featureset. A `.wendy` artifact requires the `wendyos-update` engine; if the device does not advertise it, the update errors out with a reflash explanation rather than being applied.
 
 ---

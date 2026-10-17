@@ -2521,7 +2521,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		otaURL = u
 	}
 
-	if _, isCloud := cloudDeviceConfigFromContext(ctx); isCloud {
+	if osUpdateThroughCloud(ctx, conn) {
 		if err := streamOSUpdate(ctx, conn, otaURL, ""); err != nil {
 			return osUpdateOutcome{}, err
 		}
@@ -2533,7 +2533,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		return osUpdateOutcome{}, err
 	}
 	fmt.Println("WendyOS update applied. Device is rebooting...")
-	if err := waitForDeviceOnline(ctx, priorConn.Host); err != nil {
+	if err := waitForDeviceOnline(ctx, conn); err != nil {
 		return osUpdateOutcome{applied: true}, err
 	}
 	fmt.Println("Device is back online.")
@@ -2541,7 +2541,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	// also reboots and reconnects. Query the recorded outcome and surface a
 	// rollback as an error so `wendy device update` exits non-zero instead of
 	// silently reporting success (mirrors `wendy os update`).
-	if err := reportOSUpdateOutcome(ctx, priorConn.Host, preUpdateOSVersion, recordCleared); err != nil {
+	if err := reportOSUpdateOutcome(ctx, conn, preUpdateOSVersion, recordCleared); err != nil {
 		return osUpdateOutcome{applied: true, online: true}, err
 	}
 	return osUpdateOutcome{applied: true, online: true}, nil
@@ -2556,6 +2556,9 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 // agent, macOS target), an esc'd picker, or a failed join never blocks the
 // update prompt — a wired device is fine without WiFi.
 func ensureDeviceWiFiForOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection) {
+	if osUpdateThroughCloud(ctx, conn) || isLoopbackHost(conn.Host) {
+		return
+	}
 	status, err := conn.AgentService.GetWiFiStatus(ctx, &agentpb.GetWiFiStatusRequest{})
 	if err != nil || status.GetConnected() {
 		return
