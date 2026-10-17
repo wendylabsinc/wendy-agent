@@ -37,12 +37,17 @@ the device. Local enrollment credentials remain on the device.
 wendy device unenroll --device <device-selector>
 ```
 
-For a WendyOS agent with numeric Cloud v1 enrollment, this first checks Cloud
-authentication and lists every page of the device's certificates. A failed
-check leaves the device enrolled. It then clears the device's enrollment and
-provisioning state, restarts the agent, and removes its cloud enrollment.
-Cleanup lists the certificates again after reset before revoking them and
-deleting the asset.
+For a WendyOS agent with numeric Cloud v1 enrollment, this first verifies that
+the user in the selected Cloud session is an owner or admin of the device's
+organization, then lists every page of the device's certificates. A failed
+check leaves the device enrolled and its Cloud records unchanged. Members,
+viewers, billing managers, and users absent from the organization's membership
+list cannot run this reset. Sign in as an owner or admin of that organization
+to continue. If the session has no stored user ID, run `wendy auth login` again.
+
+After these checks, the command clears the device's enrollment and provisioning
+state, restarts the agent, and removes its cloud enrollment. Cleanup lists the
+certificates again after reset before revoking them and deleting the asset.
 
 If Cloud cleanup fails after the reset, the command reports the original Cloud,
 organization and asset, plus a `wendy cloud device unenroll` command scoped to

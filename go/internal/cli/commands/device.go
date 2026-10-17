@@ -1281,13 +1281,13 @@ func newDeviceUnenrollCmd() *cobra.Command {
 				}
 			}
 
-			cloudConn, cloudCtx, err := dialCloud(ctx, cloudGRPC, cloudHost)
+			cloudConn, cloudCtx, cloudAuth, err := dialCloud(ctx, cloudGRPC, cloudHost)
 			if err != nil {
 				return fmt.Errorf("cloud cleanup preflight failed; device was not reset: %w", err)
 			}
 			defer cloudConn.Close()
 
-			result, cloudErr := performLegacyDeviceUnenroll(cloudCtx, cloudConn, assetID, func() error {
+			result, cloudErr := performLegacyDeviceUnenroll(cloudCtx, cloudConn, orgID, assetID, cloudAuth.Certificates[0].UserID, func() error {
 				_, err := conn.ProvisioningService.Unprovision(ctx, &agentpb.UnprovisionRequest{})
 				return err
 			})
@@ -1343,18 +1343,18 @@ func newDeviceUnenrollCmd() *cobra.Command {
 
 // dialCloud opens an authenticated gRPC connection to Wendy Cloud using the
 // user's stored session for target (or deviceCloudHost when target is empty).
-// It returns the connection and a context carrying the auth token; the caller
-// must Close the connection.
-func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.ClientConn, context.Context, error) {
+// It returns the connection, a context carrying the auth token, and the selected
+// session. The caller must Close the connection.
+func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.ClientConn, context.Context, *config.AuthConfig, error) {
 	if target == "" {
 		target = deviceCloudHost
 	}
 	auth, err := pickAuthEntry(target)
 	if err != nil {
-		return nil, nil, fmt.Errorf("selecting cloud auth session: %w", err)
+		return nil, nil, nil, fmt.Errorf("selecting cloud auth session: %w", err)
 	}
 	if len(auth.Certificates) == 0 {
-		return nil, nil, fmt.Errorf("auth session has no certificates; re-run 'wendy auth login'")
+		return nil, nil, nil, fmt.Errorf("auth session has no certificates; re-run 'wendy auth login'")
 	}
 	cert := auth.Certificates[0]
 
@@ -1362,7 +1362,7 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
 		keyPEM, keyErr := cert.PrivateKeyPEM()
 		if keyErr != nil {
-			return nil, nil, fmt.Errorf("loading client key: %w", keyErr)
+			return nil, nil, nil, fmt.Errorf("loading client key: %w", keyErr)
 		}
 		tlsCfg, tlsErr := certs.LoadTLSConfig(
 			cert.PemCertificate,
@@ -1371,7 +1371,7 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 			"",
 		)
 		if tlsErr != nil {
-			return nil, nil, fmt.Errorf("loading TLS config: %w", tlsErr)
+			return nil, nil, nil, fmt.Errorf("loading TLS config: %w", tlsErr)
 		}
 		transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
 	} else {
@@ -1381,14 +1381,14 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 	dialOptions := append([]grpc.DialOption{transport}, dpopDialOptions(auth)...)
 	cloudConn, dialErr := grpc.NewClient(auth.CloudGRPC, dialOptions...)
 	if dialErr != nil {
-		return nil, nil, fmt.Errorf("connecting to cloud: %w", dialErr)
+		return nil, nil, nil, fmt.Errorf("connecting to cloud: %w", dialErr)
 	}
 	cloudCtx, ctxErr := cloudContext(ctx, auth)
 	if ctxErr != nil {
 		cloudConn.Close()
-		return nil, nil, ctxErr
+		return nil, nil, nil, ctxErr
 	}
-	return cloudConn, cloudCtx, nil
+	return cloudConn, cloudCtx, auth, nil
 }
 
 // scanWiFiNetworks queries the agent for available WiFi networks.
