@@ -98,6 +98,17 @@ type dbusProxyManager interface {
 	StopAll()
 }
 
+// dbusProxyManagerOrNil converts the manager main.go passes, which is a nil
+// *dbusproxy.Manager when xdg-dbus-proxy is not installed. Storing that pointer
+// directly would yield a non-nil interface holding a nil pointer, which passes
+// every c.proxyManager nil check and then panics in Stop/Start (WDY-3835).
+func dbusProxyManagerOrNil(m *dbusproxy.Manager) dbusProxyManager {
+	if m == nil {
+		return nil
+	}
+	return m
+}
+
 type Client struct {
 	client                  *containerd.Client
 	logger                  *zap.Logger
@@ -394,7 +405,7 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		client:            c,
 		logger:            logger,
 		namespace:         "default",
-		proxyManager:      proxyMgr,
+		proxyManager:      dbusProxyManagerOrNil(proxyMgr),
 		appServices:       make(map[string]map[string]*appconfig.ServiceConfig),
 		primaryPIDs:       make(map[string]uint32),
 		appIsolation:      make(map[string]string),
