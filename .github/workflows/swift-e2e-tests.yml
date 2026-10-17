@@ -112,7 +112,7 @@ jobs:
 
       - name: Archive E2E build cache
         id: archive_e2e
-        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.workflow == 'Swift E2E Tests' }}
+        if: ${{ (github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.workflow == 'Swift E2E Tests') || github.head_ref == 'kb.macos-ci-caching' }} # TEMPORARY: PR validation only, remove before ready
         shell: bash
         run: |
           set -euo pipefail
