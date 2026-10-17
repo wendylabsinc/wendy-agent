@@ -282,14 +282,16 @@ jobs:
           builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
           BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
           BUILDER="${BUILDER:0:128}"
-          # Wendy appends -oci to WENDY_BUILDX_BUILDER for chunk-diff exports.
-          # Remove that actual builder too; cleaning only the unsuffixed name
-          # leaked one buildkitd container per integration run until the runner
-          # exhausted memory.
+          # Wendy appends -oci to WENDY_BUILDX_BUILDER for chunk-diff exports and
+          # -mtls for mTLS registries. Remove those actual builders too; cleaning
+          # only the unsuffixed name leaked one buildkitd container per
+          # integration run until the runner exhausted memory.
           cleanup_builders() {
             docker buildx rm "${BUILDER}-oci" --force 2>/dev/null || true
+            docker buildx rm "${BUILDER}-mtls" --force 2>/dev/null || true
             docker buildx rm "$BUILDER" --force 2>/dev/null || true
           }
+          .github/scripts/remove-stale-ci-builders.sh
           cleanup_builders
           trap cleanup_builders EXIT
 
@@ -421,10 +423,12 @@ jobs:
           builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
           BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
           BUILDER="${BUILDER:0:128}"
-          # The CLI creates ${BUILDER}-oci for chunk-diff exports; clean both
-          # names so a buildkitd container is not leaked after every CI run.
+          # The CLI creates ${BUILDER}-oci for chunk-diff exports and
+          # ${BUILDER}-mtls for mTLS registries; clean every name so a buildkitd
+          # container is not leaked after every CI run.
           cleanup_builders() {
             docker buildx rm "${BUILDER}-oci" --force 2>/dev/null || true
+            docker buildx rm "${BUILDER}-mtls" --force 2>/dev/null || true
             docker buildx rm "$BUILDER" --force 2>/dev/null || true
           }
           cleanup_builders

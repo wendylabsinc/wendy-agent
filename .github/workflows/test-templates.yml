@@ -301,10 +301,15 @@ jobs:
           builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
           BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
           BUILDER="${BUILDER:0:128}"
+          # The CLI also creates ${BUILDER}-oci and ${BUILDER}-mtls builders.
           cleanup_builders() {
             docker buildx rm "${BUILDER}-oci" --force 2>/dev/null || true
+            docker buildx rm "${BUILDER}-mtls" --force 2>/dev/null || true
             docker buildx rm "$BUILDER" --force 2>/dev/null || true
           }
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            "$GITHUB_WORKSPACE/.github/scripts/remove-stale-ci-builders.sh"
+          fi
           cleanup_builders
           trap cleanup_builders EXIT
 
