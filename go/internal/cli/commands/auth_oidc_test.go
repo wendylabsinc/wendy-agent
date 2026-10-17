@@ -253,25 +253,38 @@ func TestBuildAuthorizeURLPercentEncodesScopeSpaces(t *testing.T) {
 func TestDiscoverOIDCIssuer(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, wantRealm string
+		status                int
+		wantErr               bool
 	}{
-		{"home realm", `{"loginURL":"/realms/acme/account/login?email=u","realm":"acme"}`, "acme"},
-		{"home realm from loginURL only", `{"loginURL":"/realms/acme/account/login?email=u"}`, "acme"},
-		{"unknown state", `{"state":"unknown"}`, ""},
-		{"unknown state with stale realm", `{"state":"unknown","realm":"acme"}`, ""},
-		{"null realm", `{"realm":null}`, ""},
-		{"legacy system realm", `{"loginURL":"/realms/system/account/login?email=u","realm":"system"}`, ""},
-		{"legacy system loginURL only", `{"loginURL":"/realms/system/account/login?email=u"}`, ""},
+		{"home realm", `{"loginURL":"/realms/acme/account/login?email=u","realm":"acme"}`, "acme", 0, false},
+		{"home realm from loginURL only", `{"loginURL":"/realms/acme/account/login?email=u"}`, "acme", 0, false},
+		{"unknown state", `{"state":"unknown"}`, "", 0, false},
+		{"unknown state with stale realm", `{"state":"unknown","realm":"acme"}`, "", 0, false},
+		{"null realm", `{"realm":null}`, "", 0, false},
+		{"legacy system realm", `{"loginURL":"/realms/system/account/login?email=u","realm":"system"}`, "", 0, false},
+		{"legacy system loginURL only", `{"loginURL":"/realms/system/account/login?email=u"}`, "", 0, false},
+		{"non-200", `unavailable`, "", http.StatusServiceUnavailable, true},
+		{"loginURL not under /realms", `{"loginURL":"/account/login?email=u"}`, "", 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/login/realm" || r.Method != http.MethodPost {
 					t.Errorf("unexpected discovery request: %s %s", r.Method, r.URL.Path)
 				}
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
 
 			issuer, err := discoverOIDCIssuer(context.Background(), server.URL, "user@acme.test")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("issuer = %q, want an error", issuer)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("discoverOIDCIssuer: %v", err)
 			}
@@ -305,6 +318,9 @@ func TestPerformOIDCLoginSettlesRealmBeforeKey(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatalf("%s: want an error", issuer)
+		}
+		if !strings.Contains(err.Error(), issuer) {
+			t.Errorf("%s: error does not name the passed issuer: %v", issuer, err)
 		}
 		if strings.Contains(err.Error(), "callback issuer") {
 			t.Errorf("%s: a pinned-realm failure is not a callback issuer mismatch: %v", issuer, err)

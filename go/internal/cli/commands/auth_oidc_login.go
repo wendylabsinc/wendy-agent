@@ -71,9 +71,11 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	var meta *oidcProviderMetadata
 	var err error
 	if opts.Issuer != "" {
-		if opts.Issuer, err = validateRealmIssuer(opts.Issuer, opts.Issuer); err != nil {
+		issuer, err := validateRealmIssuer(opts.Issuer, opts.Issuer)
+		if err != nil {
 			return fmt.Errorf("realm issuer %q is not a canonical non-system realm issuer", opts.Issuer)
 		}
+		opts.Issuer = issuer
 		meta, err = discoverOIDC(ctx, opts.Issuer)
 		if err != nil {
 			return err
