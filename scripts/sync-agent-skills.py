@@ -9,7 +9,6 @@ SOURCE = ROOT / "plugins/wendy-agentic-coding/skills"
 TARGET = ROOT / "go/internal/cli/assets/skills"
 GROUP = SOURCE.parent / "skill-group.json"
 MCP_TARGETS = [
-    ROOT / "plugins/wendy-chatgpt/skills/wendy",
     ROOT / "plugins/wendy-get-started/skills/wendy",
     ROOT / "plugins/wendyos/skills/wendy",
     ROOT / "go/internal/cli/assets/mcp-skills/wendy",
@@ -114,7 +113,13 @@ def main():
     for target in MCP_TARGETS:
         sync_files(bundle, target, args.check, differences)
     plugin_source = ROOT / "plugins/wendy-chatgpt"
-    plugin_files = {Path("plugin.json"): (plugin_source / "plugin.json").read_bytes()}
+    # The public plugin owns a curated skill independently of the local
+    # developer bundle. Embed that exact source without regenerating it.
+    public_skill = Path("skills/wendy/SKILL.md")
+    plugin_files = {
+        Path("plugin.json"): (plugin_source / "plugin.json").read_bytes(),
+        public_skill: (plugin_source / public_skill).read_bytes(),
+    }
     plugin_files.update({
         p.relative_to(plugin_source): p.read_bytes()
         for p in (plugin_source / "assets").rglob("*") if p.is_file()

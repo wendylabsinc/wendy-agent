@@ -14,9 +14,16 @@ import zlib
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "plugins/wendy-chatgpt"
 ENDPOINT = "https://mcp.wendy.dev"
+SERVER_NAME = "wendy-relay"
+CHATGPT_PUBLIC_CLIENT = {
+    "mode": "provided",
+    "clientId": "https://chatgpt.com/oauth/client.json",
+    "tokenEndpointAuthMethod": "none",
+}
 LISTING_URLS = ("websiteURL", "supportURL", "privacyPolicyURL", "termsOfServiceURL")
 IGNORED_DIRECTORIES = {"__pycache__", "__MACOSX", "node_modules"}
 IGNORED_SUFFIXES = {".pyc", ".pyo", ".swp", ".swo", ".tmp", ".bak"}
+PUBLIC_SKILL_FILES = {Path("skills/wendy/SKILL.md")}
 
 
 def require(condition, message):
@@ -140,7 +147,7 @@ def validate_package(source):
     manifest = json.loads((source / "plugin.json").read_text())
     extension = manifest["extensions"]["com.openai"]
     interface = extension["interface"]
-    require(manifest["name"] == "wendy-robots", "Preserve the wendy-robots plugin identity")
+    require(manifest["name"] in {"wendy-robots", "wendyos"}, "Preserve the Wendy plugin identity")
     require(re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", manifest.get("version", "")), "Use an explicit semantic version")
     require(not (source / ".app.json").exists(), "Public uploads cannot contain .app.json; prepare a separate upload source")
     for metadata in (manifest, extension):
@@ -156,16 +163,28 @@ def validate_package(source):
     require(len({" ".join(p.split()) for p in prompts}) == len(prompts), "Default prompts must be unique")
 
     mcp = json.loads((source / "mcp.json").read_text())
-    require(set(mcp["mcpServers"]) == {"wendy-robots"}, "The public plugin must declare exactly its Wendy server")
-    server = mcp["mcpServers"]["wendy-robots"]
+    servers = mcp.get("mcpServers")
+    require(isinstance(servers, dict) and set(servers) == {SERVER_NAME},
+            f"The public plugin must declare exactly its {SERVER_NAME} server")
+    server = servers[SERVER_NAME]
     require(server.get("type") == "streamable-http" and server.get("url") == ENDPOINT, f"Use the hosted MCP endpoint {ENDPOINT}")
     require(not any(key in server for key in ("command", "args", "env")) and not server.get("headers"), "Do not package local MCP commands, environment values, or authentication headers")
     auth = server.get("extensions", {}).get("com.openai", {}).get("auth", {})
-    require(auth.get("type") == "oauth", "The hosted CLI relay requires OAuth")
-    require("clientSecret" not in auth and "clientSecret" not in auth.get("client", {}), "Never package an OAuth client secret")
+    require(isinstance(auth, dict) and auth.get("type") == "oauth", "The hosted CLI relay requires OAuth")
+    client = auth.get("client")
+    require("clientSecret" not in auth, "Never package an OAuth client secret")
+    if "client" in auth:
+        require(isinstance(client, dict), "OAuth client must be an object identifying ChatGPT")
+        require("clientSecret" not in client, "Never package an OAuth client secret")
     require(auth.get("baseScopes") == ["mcp:relay"], "Declare only the hosted CLI relay scope mcp:relay; standalone gateway scopes are not supported")
-    client = auth.get("client", {})
-    require(client == {"mode": "cimd"}, "Use the hosted CLI relay's CIMD OAuth client discovery; do not package a fixed client registration")
+    require(auth.get("defaultScopes") == [], "Set defaultScopes to [] to prevent inherited OAuth scopes")
+    require(auth.get("oidcEnabled") is False, "Set oidcEnabled to false; the hosted relay does not request OIDC scopes")
+    require(auth.get("oidcScopesSupported", []) == [], "Do not declare OIDC scopes for the hosted relay")
+    # Omission leaves client registration to the host's OAuth discovery. Explicit
+    # configurations still select only ChatGPT's public identity or CIMD.
+    require("client" not in auth or client == CHATGPT_PUBLIC_CLIENT or client == {"mode": "cimd"},
+            "Use ChatGPT's exact public metadata-document client with tokenEndpointAuthMethod none, "
+            "exact CIMD discovery, or omit client for discovery; legacy provided clients and DCR are not supported")
 
     # Root inventory excludes developer notes and policies. Reject hidden files
     # and generated artifacts inside the public component directories as well.
@@ -179,6 +198,13 @@ def validate_package(source):
             if path.is_file():
                 files.append(path)
     require(source / "skills/wendy/SKILL.md" in files, "Missing Wendy skill")
+    # The public ChatGPT package deliberately excludes the local developer
+    # bundle, supporting workflows, and executable helpers.
+    skill_files = {path.relative_to(source) for path in files
+                   if path.is_relative_to(source / "skills")}
+    require(skill_files == PUBLIC_SKILL_FILES,
+            "Public skill inventory must contain only skills/wendy/SKILL.md; "
+            f"unexpected files: {sorted(map(str, skill_files - PUBLIC_SKILL_FILES))}")
     onboarding = extension.get("onboardingSkill", "")
     # Portable skill discovery only includes skills/<name>/SKILL.md. A nested
     # supporting SKILL.md is an asset, not an invocable onboarding skill.

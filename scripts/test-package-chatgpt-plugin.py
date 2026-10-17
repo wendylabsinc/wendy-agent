@@ -41,25 +41,38 @@ class PackageTests(unittest.TestCase):
         manifest, mcp, files, gaps = package.validate_package(self.source)
         output = self.root / "plugin.zip"
         package.export_package(self.source, output, manifest, mcp, files)
+        prefix = manifest["name"] + "/"
         with zipfile.ZipFile(output) as archive:
-            self.assertNotIn("wendy-robots/gateway.json", archive.namelist())
-            self.assertNotIn("wendy-robots/SUBMISSION.md", archive.namelist())
-            exported = json.loads(archive.read("wendy-robots/plugin.json"))
+            self.assertNotIn(prefix + "gateway.json", archive.namelist())
+            self.assertNotIn(prefix + "SUBMISSION.md", archive.namelist())
+            exported = json.loads(archive.read(prefix + "plugin.json"))
             extension = exported["extensions"]["com.openai"]
             self.assertEqual(extension["publication"]["countries"], [])
             self.assertIs(extension["review"]["commerce"], False)
             self.assertEqual(len(extension["review"]["test_cases"]["positive"]), 5)
             self.assertEqual(len(extension["review"]["test_cases"]["negative"]), 3)
-            self.assertEqual(json.loads(archive.read("wendy-robots/mcp.json")), mcp)
-            auth = mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
+            self.assertEqual(json.loads(archive.read(prefix + "mcp.json")), mcp)
+            auth = mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
             self.assertEqual(auth["baseScopes"], ["mcp:relay"])
-            self.assertEqual(auth["client"], {"mode": "cimd"})
+            self.assertEqual(auth["client"], {
+                "mode": "provided",
+                "clientId": "https://chatgpt.com/oauth/client.json",
+                "tokenEndpointAuthMethod": "none",
+            })
+            self.assertEqual(auth["defaultScopes"], [])
+            self.assertIs(auth["oidcEnabled"], False)
             onboarding = extension["onboardingSkill"]
             self.assertEqual(onboarding, "./skills/wendy/SKILL.md")
-            self.assertIn("wendy-robots/" + onboarding.removeprefix("./"), archive.namelist())
+            self.assertIn(prefix + onboarding.removeprefix("./"), archive.namelist())
+            self.assertEqual(
+                {name for name in archive.namelist() if name.startswith(prefix + "skills/")},
+                {prefix + "skills/wendy/SKILL.md"},
+            )
+            self.assertEqual(archive.read(prefix + "skills/wendy/SKILL.md"),
+                             (self.source / "skills/wendy/SKILL.md").read_bytes())
 
     def test_rejects_nested_onboarding_skill(self):
-        # This file exists in the ZIP, but the portal does not import it as a skill.
+        # Nested supporting files cannot be the public onboarding entrypoint.
         self.manifest["extensions"]["com.openai"]["onboardingSkill"] = "./skills/wendy/references/skills/wendy-onboarding/SKILL.md"
         self.save()
         with self.assertRaisesRegex(ValueError, "onboardingSkill"):
@@ -72,6 +85,110 @@ class PackageTests(unittest.TestCase):
                 self.save()
                 with self.assertRaisesRegex(ValueError, "onboardingSkill"):
                     package.validate_package(self.source)
+
+    def test_rejects_additional_public_skill_files(self):
+        for name in ("skills/wendy/references/skills/wendy-install/SKILL.md",
+                     "skills/wendy/references/setup.md", "skills/wendy/scripts/setup.sh",
+                     "skills/wendy/helper.py", "skills/extra/SKILL.md"):
+            with self.subTest(name=name):
+                path = self.source / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("Unexpected workflow or helper")
+                try:
+                    with self.assertRaisesRegex(ValueError, "Public skill inventory"):
+                        package.validate_package(self.source)
+                finally:
+                    path.unlink()
+
+    def test_sync_preserves_curated_public_skill_and_full_local_bundles(self):
+        """Public ChatGPT skills stay independent of the developer skill bundle."""
+        root = self.root / "sync-fixture"
+        root.mkdir()
+
+        def write(relative, content):
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+
+        def snapshot(directory):
+            return {
+                path.relative_to(directory).as_posix(): path.read_bytes()
+                for path in directory.rglob("*") if path.is_file()
+            }
+
+        scripts = root / "scripts"
+        scripts.mkdir()
+        script = scripts / "sync-agent-skills.py"
+        shutil.copy2(Path(__file__).with_name(script.name), script)
+
+        developer = root / "plugins/wendy-agentic-coding"
+        group = json.dumps({
+            "name": "wendy-agentic-coding",
+            "audience": "end-users",
+            "skills": ["wendy", "wendy-install"],
+        }).encode()
+        write(developer / "skill-group.json", group)
+        developer_files = {
+            "wendy/SKILL.md": (
+                b"---\nname: wendy\ndescription: Developer workflow\n---\n"
+                b"Use the developer CLI to build an application.\n"
+            ),
+            "wendy-install/SKILL.md": (
+                b"---\nname: wendy-install\ndescription: Local setup\n---\n"
+                b"Read [setup](references/setup.md) for local installation.\n"
+            ),
+            "wendy-install/references/setup.md": (
+                b"Developer-only installation instructions.\n"
+            ),
+        }
+        for relative, content in developer_files.items():
+            write(developer / "skills" / relative, content)
+
+        public = root / "plugins/wendy-chatgpt"
+        public_files = {
+            relative: (self.source / relative).read_bytes()
+            for relative in ("plugin.json", "mcp.json", "assets/wendy-icon.png",
+                             "skills/wendy/SKILL.md")
+        }
+        for relative, content in public_files.items():
+            write(public / relative, content)
+        public_before = snapshot(public)
+
+        # The current CLI group writer expects its assets directory to exist.
+        cli_skills = root / "go/internal/cli/assets/skills"
+        cli_skills.mkdir(parents=True)
+        for arguments in ([], ["--check"]):
+            result = subprocess.run(
+                [sys.executable, str(script), *arguments],
+                cwd=root, capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            # Compare both the file inventory and bytes after each command.
+            self.assertEqual(snapshot(public), public_before)
+
+        self.assertEqual((cli_skills / "end-user-group.json").read_bytes(), group)
+        for relative, content in developer_files.items():
+            self.assertEqual((cli_skills / relative).read_bytes(), content)
+
+        local_bundles = (
+            root / "plugins/wendy-get-started/skills/wendy",
+            root / "plugins/wendyos/skills/wendy",
+            root / "go/internal/cli/assets/mcp-skills/wendy",
+        )
+        for bundle in local_bundles:
+            with self.subTest(bundle=bundle.relative_to(root).as_posix()):
+                self.assertTrue((bundle / "SKILL.md").is_file())
+                for relative, content in developer_files.items():
+                    self.assertEqual(
+                        (bundle / "references/skills" / relative).read_bytes(),
+                        content,
+                    )
+
+        embedded = root / "go/internal/cli/assets/chatgpt-plugin"
+        self.assertEqual(snapshot(embedded), {
+            relative: public_files[relative]
+            for relative in ("plugin.json", "assets/wendy-icon.png", "skills/wendy/SKILL.md")
+        })
 
     def test_no_recording_is_an_explicit_gap(self):
         extension = copy.deepcopy(self.manifest["extensions"]["com.openai"])
@@ -104,34 +221,127 @@ class PackageTests(unittest.TestCase):
             package.validate_package(self.source)
 
     def test_rejects_bearer_header(self):
-        self.mcp["mcpServers"]["wendy-robots"]["headers"] = {"Authorization": "Bearer do-not-export"}
+        self.mcp["mcpServers"]["wendy-relay"]["headers"] = {"Authorization": "Bearer do-not-export"}
         self.save()
         with self.assertRaisesRegex(ValueError, "authentication headers"):
             package.validate_package(self.source)
 
     def test_rejects_standalone_gateway_scopes(self):
-        auth = self.mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
+        auth = self.mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
         for scopes in (["robots:read", "cameras:capture", "apps:control", "preferences:write"],
-                       ["mcp:relay", "robots:read"], [], "mcp:relay"):
+                       ["mcp:relay", "robots:read"], ["mcp:relay", "mcp:relay"], [], "mcp:relay"):
             with self.subTest(scopes=scopes):
                 auth["baseScopes"] = scopes
                 self.save()
                 with self.assertRaisesRegex(ValueError, "hosted CLI relay scope"):
                     package.validate_package(self.source)
 
-    def test_rejects_fixed_or_dynamic_client_registration(self):
-        auth = self.mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
-        clients = ({"mode": "provided", "clientId": "wendy-chatgpt", "tokenEndpointAuthMethod": "none"},
-                   {"mode": "dcr"}, {"mode": "cimd", "clientId": "wendy-chatgpt"})
+    def test_accepts_explicit_chatgpt_public_identity_and_cimd(self):
+        auth = self.mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
+        for client in ({"mode": "provided", "clientId": "https://chatgpt.com/oauth/client.json",
+                        "tokenEndpointAuthMethod": "none"}, {"mode": "cimd"}):
+            with self.subTest(client=client):
+                auth["client"] = client
+                auth["defaultScopes"] = []
+                auth["oidcEnabled"] = False
+                self.save()
+                _, checked_mcp, _, _ = package.validate_package(self.source)
+                checked_auth = checked_mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
+                self.assertEqual(checked_auth, auth)
+
+    def test_discovered_oauth_client_stays_omitted_in_archive(self):
+        auth = self.mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
+        del auth["client"]
+        self.save()
+        manifest, mcp, files, gaps = package.validate_package(self.source)
+        self.assertEqual(gaps, [])
+        output = self.root / "discovery.zip"
+        package.export_package(self.source, output, manifest, mcp, files)
+        with zipfile.ZipFile(output) as archive:
+            exported = json.loads(archive.read(manifest["name"] + "/mcp.json"))
+        exported_auth = exported["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
+        self.assertNotIn("client", exported_auth)
+        self.assertEqual(exported_auth, auth)
+        auth["clientSecret"] = "do-not-export"
+        self.save()
+        with self.assertRaisesRegex(ValueError, "Never package an OAuth client secret"):
+            package.validate_package(self.source)
+
+    def test_rejects_other_oauth_client_registrations(self):
+        auth = self.mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
+        clients = (
+            {},
+            {"mode": "provided", "clientId": "wendy-chatgpt", "tokenEndpointAuthMethod": "none"},
+            {"mode": "provided", "clientId": "https://example.org/client.json", "tokenEndpointAuthMethod": "none"},
+            {"mode": "provided", "clientId": "https://chatgpt.com/oauth/client.json"},
+            {"mode": "provided", "clientId": "https://chatgpt.com/oauth/client.json", "tokenEndpointAuthMethod": "client_secret_post"},
+            {"mode": "provided", "clientId": "https://chatgpt.com/oauth/client.json", "tokenEndpointAuthMethod": "private_key_jwt"},
+            {"mode": "dcr"}, {"mode": "cimd", "clientId": "wendy-chatgpt"},
+        )
         for client in clients:
             with self.subTest(client=client):
                 auth["client"] = client
                 self.save()
-                with self.assertRaisesRegex(ValueError, "CIMD OAuth client discovery"):
+                with self.assertRaisesRegex(ValueError, "ChatGPT's exact public"):
+                    package.validate_package(self.source)
+
+    def test_rejects_non_object_oauth_client(self):
+        auth = self.mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
+        for client in (None, [], "cimd"):
+            with self.subTest(client=client):
+                auth["client"] = client
+                self.save()
+                with self.assertRaisesRegex(ValueError, "OAuth client must be an object"):
+                    package.validate_package(self.source)
+
+    def test_rejects_inherited_or_nonempty_default_scopes(self):
+        auth = self.mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
+        auth.pop("defaultScopes", None)
+        self.save()
+        with self.assertRaisesRegex(ValueError, "defaultScopes"):
+            package.validate_package(self.source)
+        for scopes in (None, ["robots:read"], ["mcp:relay"], "", {}):
+            with self.subTest(scopes=scopes):
+                auth["defaultScopes"] = scopes
+                self.save()
+                with self.assertRaisesRegex(ValueError, "defaultScopes"):
+                    package.validate_package(self.source)
+
+    def test_rejects_oidc_enablement_or_scopes(self):
+        auth = self.mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
+        auth.pop("oidcEnabled", None)
+        self.save()
+        with self.assertRaisesRegex(ValueError, "oidcEnabled"):
+            package.validate_package(self.source)
+        for enabled in (None, True, 0, "false"):
+            with self.subTest(enabled=enabled):
+                auth["oidcEnabled"] = enabled
+                self.save()
+                with self.assertRaisesRegex(ValueError, "oidcEnabled"):
+                    package.validate_package(self.source)
+        auth["oidcEnabled"] = False
+        for scopes in (["openid"], ["email", "profile"], None, "", {}):
+            with self.subTest(scopes=scopes):
+                auth["oidcScopesSupported"] = scopes
+                self.save()
+                with self.assertRaisesRegex(ValueError, "Do not declare OIDC scopes"):
+                    package.validate_package(self.source)
+        auth["oidcScopesSupported"] = []
+        self.save()
+        package.validate_package(self.source)
+
+    def test_rejects_old_or_additional_mcp_server_keys(self):
+        server = self.mcp["mcpServers"]["wendy-relay"]
+        for servers in ({"wendy-robots": server}, {"wendy-relay": server, "other": server},
+                        ["wendy-relay"], "wendy-relay", None):
+            with self.subTest(servers=servers):
+                self.mcp["mcpServers"] = servers
+                self.save()
+                with self.assertRaisesRegex(ValueError, "exactly its wendy-relay server"):
                     package.validate_package(self.source)
 
     def test_rejects_oauth_client_secret(self):
-        auth = self.mcp["mcpServers"]["wendy-robots"]["extensions"]["com.openai"]["auth"]
+        auth = self.mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
         for location in (auth, auth["client"]):
             with self.subTest(location="auth" if location is auth else "client"):
                 location["clientSecret"] = "do-not-export"
