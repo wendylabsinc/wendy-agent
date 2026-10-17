@@ -13,6 +13,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"google.golang.org/grpc"
 )
 
 // TestServiceBuildSpecRepositoryMatchesDeployedImage is the contract that makes
@@ -214,7 +215,7 @@ func TestRunMultiServiceRemoteBuildErrorInvalidatesFingerprints(t *testing.T) {
 			version := &agentpb.GetAgentVersionResponse{Os: "linux", CpuArchitecture: "arm64", PublicKey: &publicKey}
 			deviceKey := deviceFingerprintKey(version)
 			conn := &grpcclient.AgentConnection{
-				ProvisioningService: deploymentProvisioningStub{response: &agentpb.IsProvisionedResponse{}},
+				ProvisioningService: remoteBuildProvisioningStub{},
 				ContainerService: &fastPathContainerClient{
 					appName: multiServiceContainerName(appID, "preserved"),
 					state:   agentpb.AppRunningState_RUNNING,
@@ -272,4 +273,14 @@ func TestRunMultiServiceRemoteBuildErrorInvalidatesFingerprints(t *testing.T) {
 			}
 		})
 	}
+}
+
+type remoteBuildProvisioningStub struct {
+	agentpb.WendyProvisioningServiceClient
+}
+
+func (remoteBuildProvisioningStub) IsProvisioned(context.Context, *agentpb.IsProvisionedRequest, ...grpc.CallOption) (*agentpb.IsProvisionedResponse, error) {
+	return &agentpb.IsProvisionedResponse{Response: &agentpb.IsProvisionedResponse_NotProvisioned{
+		NotProvisioned: &agentpb.NotProvisionedResponse{},
+	}}, nil
 }
