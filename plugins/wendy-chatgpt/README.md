@@ -3,8 +3,13 @@
 ## Hosted plugin
 
 The public package connects to the Wendy CLI relay at `https://mcp.wendy.dev`
-using Streamable HTTP, OAuth client metadata discovery, and the `mcp:relay`
-scope. A signed-in, compatible CLI must run on a computer while ChatGPT uses
+using Streamable HTTP and the `mcp:relay` OAuth scope. The public MCP entry is
+`wendy-relay`. For submission-portal compatibility, its OAuth configuration
+provides ChatGPT's published client ID, `https://chatgpt.com/oauth/client.json`,
+explicitly with token authentication `none`. Wendy still resolves and validates
+that client metadata and requires PKCE. No client secret is packaged. Empty
+default scopes and disabled OIDC prevent unrelated login scopes from being added.
+A signed-in, compatible CLI must run on a computer while ChatGPT uses
 the plugin. Connect with the same Wendy account and organization, then ask
 ChatGPT to check Wendy's status. That first tool call starts pairing. Compare
 the returned code with the terminal code, accept it, and retry the status check.
@@ -150,24 +155,35 @@ The gateway is part of the Go CLI. It uses an explicit robot ID on every operati
 and opens a separate authenticated device connection per call. The existing
 general-purpose `wendy mcp serve` connection and its selected device are separate.
 
-## Run the private pilot
+## Maintain the public and local skills
 
-The plugin packages a single `wendy` skill with all end-user workflows, including
-`wendy-onboarding`. Its setup entry guides users through installing and verifying
-their first physical device, or creating a local simulator when hardware is not
-available. The existing device workspace prefers fullscreen; setup also works
-without the UI.
+The public ZIP contains one independently authored skill at
+`skills/wendy/SKILL.md`. It covers existing-device inspection, bounded telemetry,
+requested camera snapshots, and starting or stopping named installed apps. It
+requires an already installed CLI and leaves installation, builds, deployment,
+firmware, and privileged setup to a separate local developer workflow.
 
-Edit skills in `plugins/wendy-agentic-coding/skills`, then run
-`python3 scripts/sync-agent-skills.py` from the repository root. The script updates
-this package and the matching bundle embedded in the CLI. Both gateway transports
-serve `skills/list`, `skills/get`, and the listed `skill://wendy/wendy/` resources
-with SHA-256 digests. The HTTP endpoint retains its authentication requirements.
+Edit this public skill directly. Edit the full local developer skills in
+`plugins/wendy-agentic-coding/skills`. Run `python3 scripts/sync-agent-skills.py`
+from the repository root to embed both catalogs in the CLI. Synchronization does
+not overwrite the public skill with the developer bundle. The packager rejects
+extra public skill files so nested developer workflows cannot enter unnoticed.
+
+The hosted relay serves the public skill through `skills/list`, `skills/get`,
+and its listed `skill://wendy/wendy/` resource with a SHA-256 digest. Local CLI
+and standalone gateway transports retain the full developer catalog. A rebuilt
+CLI must be running for an embedded-skill change to reach the relay. The HTTP
+endpoint retains its authentication requirements.
 
 OpenAI imports these files as a submission-time snapshot. After updating the
 server, run Scan Tools again and review the imported skills before submitting a
 new version. See [MCP skill import](https://developers.openai.com/plugins/build/mcp-server#import-skills-from-the-mcp-server)
 and [plugin onboarding](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md#plugin-onboarding).
+
+## Run the private pilot
+
+The personal desktop package retains the full developer workflows and the
+device workspace described above.
 
 Build this checkout. An older installed CLI does not have the gateway command.
 

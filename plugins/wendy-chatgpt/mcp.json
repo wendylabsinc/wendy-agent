@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
-    "wendy-robots": {
+    "wendy-relay": {
       "type": "streamable-http",
       "url": "https://mcp.wendy.dev",
       "extensions": {
@@ -9,11 +9,15 @@
           "auth": {
             "type": "oauth",
             "client": {
-              "mode": "cimd"
+              "mode": "provided",
+              "clientId": "https://chatgpt.com/oauth/client.json",
+              "tokenEndpointAuthMethod": "none"
             },
             "baseScopes": [
               "mcp:relay"
-            ]
+            ],
+            "defaultScopes": [],
+            "oidcEnabled": false
           }
         }
       }
