@@ -8,7 +8,10 @@ set -euo pipefail
 # cache entries, but an artifact can only be uploaded by the run that owns it.
 # Only archives from runs of BUILD_CACHE_WORKFLOW_FILE on main whose event is
 # listed in BUILD_CACHE_TRUSTED_EVENTS are accepted; those runs execute main's
-# own workflow and never archive from pull requests. WDY-3798.
+# own workflow and never archive from pull requests. The residual trust anchor
+# is GitHub's run metadata and main itself: a compromised main-context run of
+# this workflow could publish a bad archive, but the same run could change main's
+# source too. WDY-3798.
 #
 # A missing or unusable archive is never an error: the build then starts cold.
 
@@ -28,6 +31,18 @@ RESTORE_PATHS=("$@")
 : "${BUILD_CACHE_WORKFLOW_FILE:?BUILD_CACHE_WORKFLOW_FILE is required}"
 export BUILD_CACHE_TRUSTED_EVENTS="${BUILD_CACHE_TRUSTED_EVENTS:-schedule workflow_dispatch}"
 WORKFLOW_FILE="$BUILD_CACHE_WORKFLOW_FILE"
+
+# Only events that run main's own workflow code can be trusted; pull-request
+# style events never are, whatever a caller configures.
+for event in $BUILD_CACHE_TRUSTED_EVENTS; do
+  case "$event" in
+    schedule|workflow_dispatch|push) ;;
+    *)
+      echo "::warning::Refusing to trust $event runs for build caches; building without the $ARTIFACT_NAME cache."
+      exit 0
+      ;;
+  esac
+done
 DOWNLOAD_DIRECTORY="$RUNNER_TEMP/trusted-build-cache/$ARTIFACT_NAME"
 
 # GNU tar keeps nanosecond mtimes; the runner's bsdtar truncates them to whole
