@@ -99,9 +99,9 @@ func deploymentAuth(cfg *config.Config, device *agentpbv2.ProvisionedResponse) (
 			var match bool
 			if tenant != "" {
 				operator, err := certs.ParsePrincipal(cert.PrincipalURI)
-				match = err == nil && operator.TenantUUID == tenant && operator.EntityType == certs.EntityUser
+				match = err == nil && operator.TenantUUID == tenant && operator.EntityType == certs.EntityUser && !certExpired(cert, time.Now())
 			} else {
-				match = cert.PrincipalURI == "" && cert.OrganizationID == int(device.GetOrganizationId()) && cert.UserID != "" && cert.AssetID == 0
+				match = cert.OrganizationID == int(device.GetOrganizationId()) && cert.UserID != "" && cert.AssetID == 0
 			}
 			if match {
 				entry.Certificates = []config.CertificateInfo{cert}
