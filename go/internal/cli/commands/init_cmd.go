@@ -96,6 +96,7 @@ type initOptions struct {
 	ros2DomainID        int
 	ros2RMW             string
 	ros2Distro          string
+	ros2Scope           string
 	ros2DiscoveryScope  string
 
 	appIDSet              bool
@@ -113,6 +114,7 @@ type initOptions struct {
 	ros2DomainIDSet       bool
 	ros2RMWSet            bool
 	ros2DistroSet         bool
+	ros2ScopeSet          bool
 	ros2DiscoveryScopeSet bool
 }
 
@@ -142,7 +144,7 @@ func newInitCmd() *cobra.Command {
 			"scaffold into the current directory instead (with no app ID, --here infers one from the current " +
 			"directory's name).\n\n" +
 			"wendy.json also supports a separate, top-level \"frameworks\" key for framework-level config " +
-			"(currently ROS 2: domain ID, RMW middleware, discovery scope). Enable it with --framework " +
+			"(currently ROS 2: domain ID, RMW middleware, and scope). Enable it with --framework " +
 			"(see the ROS 2 example below), through the interactive prompt on a WendyOS target, or by hand-editing " +
 			"\"frameworks\" in wendy.json afterwards.",
 		Example: `  # Interactive wizard
@@ -220,14 +222,14 @@ func newInitCmd() *cobra.Command {
     --assistant claude \
     --install-claude-skills
 
-  # ROS 2 app: enable the "frameworks" key with the ros2 framework
+  # ROS 2 app that talks to hardware attached to the device
   wendy init \
-    --app-id go2-network-bridge \
+    --app-id go2-robot-app \
     --target wendyos \
     --language swift \
     --framework ros2 \
     --ros2-rmw cyclonedds \
-    --ros2-discovery-scope host \
+    --ros2-scope peripherals \
     --assistant skip`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -246,6 +248,7 @@ func newInitCmd() *cobra.Command {
 			opts.ros2DomainIDSet = cmd.Flags().Changed("ros2-domain-id")
 			opts.ros2RMWSet = cmd.Flags().Changed("ros2-rmw")
 			opts.ros2DistroSet = cmd.Flags().Changed("ros2-distro")
+			opts.ros2ScopeSet = cmd.Flags().Changed("ros2-scope")
 			opts.ros2DiscoveryScopeSet = cmd.Flags().Changed("ros2-discovery-scope")
 
 			err := runInitWizard(args, opts)
@@ -277,7 +280,11 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().IntVar(&opts.ros2DomainID, "ros2-domain-id", -1, fmt.Sprintf("ROS 2 domain ID, %d-%d (default: derived from the app ID)", appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax))
 	cmd.Flags().StringVar(&opts.ros2RMW, "ros2-rmw", "", "ROS 2 middleware implementation: cyclonedds (default), fastrtps, connextdds, or gurumdds")
 	cmd.Flags().StringVar(&opts.ros2Distro, "ros2-distro", "", fmt.Sprintf("ROS 2 distribution (default: %s)", appconfig.ROS2DefaultDistro))
-	cmd.Flags().StringVar(&opts.ros2DiscoveryScope, "ros2-discovery-scope", "", fmt.Sprintf("ROS 2 discovery scope: %s (default, isolated) or %s (shared with the device's host network)", appconfig.ROS2DiscoveryScopeApp, appconfig.ROS2DiscoveryScopeHost))
+	cmd.Flags().StringVar(&opts.ros2Scope, "ros2-scope", "", fmt.Sprintf("Who can see the app's ROS 2 topics: %s (only this app), %s (default, every app on the device), %s (the device and attached hardware such as a robot), or %s (the network)",
+		appconfig.ROS2ScopeApp, appconfig.ROS2ScopeDevice, appconfig.ROS2ScopePeripherals, appconfig.ROS2ScopeNetwork))
+	cmd.Flags().StringVar(&opts.ros2DiscoveryScope, "ros2-discovery-scope", "", fmt.Sprintf("Deprecated: use --ros2-scope (%s is scope %s, %s is scope %s)",
+		appconfig.ROS2DiscoveryScopeApp, appconfig.ROS2ScopeDevice, appconfig.ROS2DiscoveryScopeHost, appconfig.ROS2ScopeNetwork))
+	_ = cmd.Flags().MarkDeprecated("ros2-discovery-scope", "use --ros2-scope")
 
 	// Allow bare `--template` (no value) by rewriting os.Args before cobra
 	// parses flags. When --template appears as the last arg or is followed by
@@ -387,6 +394,12 @@ func runInitWizard(args []string, opts initOptions) error {
 		cfg.Python = &appconfig.PythonConfig{}
 	}
 
+	// Interactive choices must satisfy the same cross-field rules as flags and
+	// hand-written manifests (for example, peripherals requires CycloneDDS).
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("validating generated wendy.json: %w", err)
+	}
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
@@ -399,7 +412,7 @@ func runInitWizard(args []string, opts initOptions) error {
 
 	cliSuccess("\nCreated wendy.json for %s", appID)
 	if frameworks != nil && frameworks.ROS2 != nil {
-		cliLogln("  Framework: ros2 (edit the \"frameworks\" key in wendy.json to change domain ID, RMW, or discovery scope)")
+		cliLogln("  Framework: ros2 (edit the \"frameworks\" key in wendy.json to change domain ID, RMW, or scope)")
 	}
 
 	// Step 5: Scaffold project files.
@@ -1360,7 +1373,7 @@ var ros2RMWPickerItems = []tui.PickerItem{
 // askFrameworkQuestions interactively offers ROS 2 support for a WendyOS
 // app (WDY frameworks discoverability: `wendy init` gave no hint that a
 // separate top-level "frameworks" key exists in wendy.json). Domain ID and
-// discovery scope are surfaced; the distro is left at its default and can be
+// scope are surfaced; the distro is left at its default and can be
 // changed by hand afterwards.
 var askFrameworkQuestions = func() (*appconfig.FrameworksConfig, error) {
 	wantROS2, err := tui.Confirm("Does your app use ROS 2 (Robot Operating System)?")
@@ -1376,12 +1389,21 @@ var askFrameworkQuestions = func() (*appconfig.FrameworksConfig, error) {
 		return nil, err
 	}
 
-	scope, err := pickFromItems("ROS 2 discovery scope?", []tui.PickerItem{
-		{Name: "App-local (default)", Description: "Isolated to this app's own containers", Value: appconfig.ROS2DiscoveryScopeApp, SortKey: "0"},
-		{Name: "Host network", Description: "Discoverable across the device's host network", Value: appconfig.ROS2DiscoveryScopeHost, SortKey: "1"},
+	scope, err := pickFromItems("Who should see the app's ROS 2 topics?", []tui.PickerItem{
+		{Name: "Device (default)", Description: "Every app on this device", Value: appconfig.ROS2ScopeDevice, SortKey: "0"},
+		{Name: "Peripherals", Description: "This device and hardware attached to it, such as a robot", Value: appconfig.ROS2ScopePeripherals, SortKey: "1"},
+		{Name: "App", Description: "Only this app", Value: appconfig.ROS2ScopeApp, SortKey: "2"},
+		{Name: "Network", Description: "Anything on the device's networks", Value: appconfig.ROS2ScopeNetwork, SortKey: "3"},
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	ros2 := &appconfig.ROS2Config{RMW: rmw, Scope: scope}
+	if scope == appconfig.ROS2ScopeApp {
+		// Scope app always gets the app's own domain.
+		cliLogln("ROS 2 distro left at the default (%q) — edit \"frameworks.ros2.distro\" in wendy.json to change it.", appconfig.ROS2DefaultDistro)
+		return &appconfig.FrameworksConfig{ROS2: ros2}, nil
 	}
 
 	domainIDInput, err := tui.PromptText(
@@ -1406,7 +1428,6 @@ var askFrameworkQuestions = func() (*appconfig.FrameworksConfig, error) {
 		return nil, err
 	}
 
-	ros2 := &appconfig.ROS2Config{RMW: rmw, DiscoveryScope: scope}
 	if domainIDInput = strings.TrimSpace(domainIDInput); domainIDInput != "" {
 		domainID, err := strconv.Atoi(domainIDInput)
 		if err != nil {
@@ -1423,7 +1444,7 @@ var askFrameworkQuestions = func() (*appconfig.FrameworksConfig, error) {
 // initFrameworksProvided reports whether the user supplied any
 // --framework/--ros2-* flag, mirroring initEntitlementsProvided.
 func initFrameworksProvided(opts initOptions) bool {
-	return opts.frameworksSet || opts.ros2DomainIDSet || opts.ros2RMWSet || opts.ros2DistroSet || opts.ros2DiscoveryScopeSet
+	return opts.frameworksSet || opts.ros2DomainIDSet || opts.ros2RMWSet || opts.ros2DistroSet || opts.ros2ScopeSet || opts.ros2DiscoveryScopeSet
 }
 
 // buildInitFrameworksFromFlags resolves --framework/--ros2-* into a
@@ -1433,7 +1454,7 @@ func initFrameworksProvided(opts initOptions) bool {
 // --flag-specific message instead of surfacing later from `wendy run` or
 // `wendy device ros2`.
 func buildInitFrameworksFromFlags(target string, opts initOptions) (*appconfig.FrameworksConfig, error) {
-	ros2Requested := opts.ros2DomainIDSet || opts.ros2RMWSet || opts.ros2DistroSet || opts.ros2DiscoveryScopeSet
+	ros2Requested := opts.ros2DomainIDSet || opts.ros2RMWSet || opts.ros2DistroSet || opts.ros2ScopeSet || opts.ros2DiscoveryScopeSet
 
 	if opts.frameworksSet {
 		var unknown []string
@@ -1491,11 +1512,29 @@ func buildInitFrameworksFromFlags(target string, opts initOptions) (*appconfig.F
 		ros2.Distro = distro
 	}
 
+	if opts.ros2ScopeSet && opts.ros2DiscoveryScopeSet {
+		return nil, fmt.Errorf("use --ros2-scope only; --ros2-discovery-scope is deprecated")
+	}
 	if opts.ros2DiscoveryScopeSet {
-		ros2.DiscoveryScope = strings.TrimSpace(opts.ros2DiscoveryScope)
-		if ros2.ResolvedDiscoveryScope() == "" {
+		// Written as the scope that behaves the same, never as the deprecated key.
+		legacy := &appconfig.ROS2Config{DiscoveryScope: strings.TrimSpace(opts.ros2DiscoveryScope)}
+		if legacy.ResolvedDiscoveryScope() == "" {
 			return nil, fmt.Errorf("invalid --ros2-discovery-scope %q (valid: %s, %s)", opts.ros2DiscoveryScope, appconfig.ROS2DiscoveryScopeApp, appconfig.ROS2DiscoveryScopeHost)
 		}
+		ros2.Scope = legacy.ResolvedScope()
+	}
+	if opts.ros2ScopeSet {
+		ros2.Scope = strings.TrimSpace(opts.ros2Scope)
+		if ros2.ResolvedScope() == "" {
+			return nil, fmt.Errorf("invalid --ros2-scope %q (valid: %s)", opts.ros2Scope, strings.Join(appconfig.ROS2Scopes, ", "))
+		}
+		ros2.Scope = ros2.ResolvedScope()
+	}
+	if ros2.Scope == appconfig.ROS2ScopeApp && ros2.DomainID != nil {
+		return nil, fmt.Errorf("--ros2-scope %s gives the app its own domain; drop --ros2-domain-id or use --ros2-scope %s", appconfig.ROS2ScopeApp, appconfig.ROS2ScopeDevice)
+	}
+	if ros2.Scope == appconfig.ROS2ScopePeripherals && ros2.ResolvedRMW() != appconfig.ROS2DefaultRMW {
+		return nil, fmt.Errorf("--ros2-scope %s currently requires --ros2-rmw cyclonedds", appconfig.ROS2ScopePeripherals)
 	}
 
 	return &appconfig.FrameworksConfig{ROS2: ros2}, nil

@@ -58,6 +58,18 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 
 ---
 
+## Jetson A/B preparation
+
+Before starting `wendyos-update install`, the agent checks Jetson rootfs A/B
+configuration and the alternate `APP_b` partition. It repairs missing or disabled
+persistent EFI settings, preserves valid retry counts, and verifies each write
+by reading the variable back. This preparation applies to both agent API versions.
+
+If firmware rejects a write, the agent stops before downloading or staging the
+OS update. It also refuses to change a disabled volatile setting: that change
+would be lost at reboot. Such devices need an A/B-enabled firmware configuration
+or image. Preparation does not repair an incompatible bootloader capsule.
+
 ## How the agent reboots
 
 The agent always flushes filesystems before restarting. Without that, an
@@ -181,4 +193,4 @@ Thor or ESP32 targets. `--pr` is mutually exclusive with `--nightly`,
 
 A positional argument (a local `.wendy` file path, or a directory containing one) can be used instead of `--artifact-url`.
 
-> **Tip:** After an update, `wendy device info` shows a compact summary of the A/B slot state and the last update outcome. For the full record — including which healthchecks ran and the live engine diagnostics — run `wendy os update-status`.
+> **Tip:** After an update, `wendy device info` shows the last recorded update outcome. For live A/B slot state, pending updates, healthcheck results, and engine diagnostics, run `wendy os update-status`.

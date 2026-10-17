@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -17,6 +18,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -45,6 +47,9 @@ type TunnelBrokerClient struct {
 	keyPEM   string
 	chainPEM string
 	mtlsPort int
+
+	// sessions counts live tunnel sessions; they ride the presence connection.
+	sessions atomic.Int32
 }
 
 func NewTunnelBrokerClient(logger *zap.Logger, url string, orgID, assetID int32, certPEM, keyPEM, chainPEM string, mtlsPort int) *TunnelBrokerClient {
@@ -67,12 +72,20 @@ func (c *TunnelBrokerClient) Run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
+			moved := errors.Is(err, errBrokerPathMoved)
+			if moved {
+				// Not a failure, but still pause: the broker must finish
+				// dropping the old stream before the new one registers.
+				attempt = 0
+			}
 			backoff := time.Duration(math.Min(
 				float64(time.Second)*math.Pow(2, float64(attempt)),
 				float64(brokerMaxBackoff),
 			))
-			c.logger.Warn("broker connection failed, reconnecting",
-				zap.Error(err), zap.Duration("backoff", backoff))
+			if !moved {
+				c.logger.Warn("broker connection failed, reconnecting",
+					zap.Error(err), zap.Duration("backoff", backoff))
+			}
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -121,6 +134,10 @@ func (c *TunnelBrokerClient) runOnce(ctx context.Context) (retErr error) {
 
 	hbTicker := time.NewTicker(brokerHeartbeatInterval)
 	defer hbTicker.Stop()
+	pathTicker := time.NewTicker(brokerPathCheckInterval)
+	defer pathTicker.Stop()
+	var pathWatch brokerPathWatch
+	var lastHeartbeat time.Time
 
 	recvCh := make(chan *cloudpb.DialRequest, 8)
 	recvErr := make(chan error, 1)
@@ -145,7 +162,11 @@ func (c *TunnelBrokerClient) runOnce(ctx context.Context) (retErr error) {
 	for {
 		select {
 		case req := <-recvCh:
-			go c.handleDialRequest(ctx, client, req, requestMetadata)
+			c.sessions.Add(1)
+			go func() {
+				defer c.sessions.Add(-1)
+				c.handleDialRequest(ctx, client, req, requestMetadata)
+			}()
 		case err := <-recvErr:
 			if err == io.EOF {
 				return nil
@@ -155,6 +176,32 @@ func (c *TunnelBrokerClient) runOnce(ctx context.Context) (retErr error) {
 			if err := stream.Send(&cloudpb.AgentHeartbeat{}); err != nil {
 				return err
 			}
+			lastHeartbeat = time.Now()
+		case <-pathTicker.C:
+			p, _ := peer.FromContext(stream.Context())
+			preferred, moved := brokerPathMoved(p)
+			busy := func() bool {
+				return brokerBusy(c.sessions.Load(), len(recvCh), time.Since(lastHeartbeat))
+			}
+			if !pathWatch.shouldRedial(moved, busy()) {
+				continue
+			}
+			if !brokerPathReachableFn(ctx, c.url, dialOpts) {
+				if ctx.Err() != nil {
+					return nil
+				}
+				c.logger.Info("preferred network path does not reach the broker; keeping the current one",
+					zap.Stringer("current", p.LocalAddr), zap.Stringer("preferred", preferred))
+				pathWatch.unreachable()
+				continue
+			}
+			// The probe took time; a session may have arrived meanwhile.
+			if busy() {
+				continue
+			}
+			c.logger.Info("moving the broker connection to the preferred network path",
+				zap.Stringer("from", p.LocalAddr), zap.Stringer("to", preferred))
+			return errBrokerPathMoved
 		case <-ctx.Done():
 			return nil
 		}
@@ -165,11 +212,9 @@ func (c *TunnelBrokerClient) buildDialOpts() ([]grpc.DialOption, brokerRequestMe
 	return brokerDialOpts(c.logger, c.orgID, c.assetID, c.certPEM, c.keyPEM, c.chainPEM)
 }
 
-// brokerDialOpts returns gRPC dial options and identity metadata for any
-// brokerTLSConfig builds the TLS config for a broker connection: it validates
-// the broker's chain against the Wendy CA (hostname verification is skipped —
-// the broker cert CN is localhost, not the cloud host) and presents the
-// device's ECDSA leaf for mTLS.
+// brokerTLSConfig validates the broker certificate chain against system and
+// provisioned Wendy roots. gRPC supplies the endpoint name for DNS/IP SAN
+// verification. The device leaf is presented for direct endpoint mTLS.
 //
 // Loading the TLS client cert remains non-fatal because Cloud Run terminates
 // TLS before the broker. Request authentication separately proves possession
@@ -183,29 +228,12 @@ func brokerTLSConfig(logger *zap.Logger, certPEM, keyPEM, chainPEM string) (*tls
 	if chainPEM != "" && certs.AppendChainToPool(caPool, chainPEM) == 0 {
 		return nil, fmt.Errorf("no valid CA certificates in chainPEM")
 	}
+	// gRPC sets ServerName from the configured endpoint (including IP
+	// literals). Standard verification checks both the trusted chain and its
+	// DNS/IP SAN; trusting a public or Wendy CA alone is not broker identity.
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: true, //nolint:gosec
-		VerifyConnection: func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 {
-				return fmt.Errorf("broker presented no TLS certificate")
-			}
-			intermediates := x509.NewCertPool()
-			for _, cert := range cs.PeerCertificates[1:] {
-				intermediates.AddCert(cert)
-			}
-			_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-				Roots:         caPool,
-				Intermediates: intermediates,
-				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-			})
-			if err != nil {
-				logger.Warn("broker TLS chain verification failed",
-					zap.String("subject", cs.PeerCertificates[0].Subject.String()),
-					zap.Error(err),
-				)
-			}
-			return err
-		},
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    caPool,
 	}
 
 	// Present the device's ECDSA leaf certificate so the broker can authenticate
@@ -226,18 +254,19 @@ func brokerTLSConfig(logger *zap.Logger, certPEM, keyPEM, chainPEM string) (*tls
 	return tlsCfg, nil
 }
 
-// agent-originated connection to the tunnel broker. Shared by the presence
-// client (serving side) and the mesh dialer (dialing side).
+// brokerRequestMetadata signs identity metadata for an agent-originated RPC.
 type brokerRequestMetadata func(fullMethod string) (metadata.MD, error)
 
+// brokerDialOpts returns gRPC options and identity metadata shared by the
+// presence client (serving side) and the mesh dialer (dialing side).
 func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, certPEM, keyPEM, chainPEM string) ([]grpc.DialOption, brokerRequestMetadata, error) {
 	// Cloud Run cannot forward the TLS client certificate to the broker, so each
 	// RPC carries a fresh method-bound signature from the enrolled certificate
 	// key. Legacy XFCC headers remain during the additive rollout only. Direct
 	// broker endpoints also receive the certificate at the TLS layer.
 	//
-	// Broker cert CN is localhost and won't match the cloud host — skip hostname
-	// verification but still validate the chain against the Wendy CA.
+	// Standard TLS binds the broker certificate to the configured endpoint.
+	// Local development broker certificates carry localhost/LAN-IP SANs.
 	tlsCfg, err := brokerTLSConfig(logger, certPEM, keyPEM, chainPEM)
 	if err != nil {
 		return nil, nil, err

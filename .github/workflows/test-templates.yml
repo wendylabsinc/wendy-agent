@@ -55,6 +55,8 @@ permissions:
 concurrency:
   group: template-tests-${{ github.ref }}
   cancel-in-progress: false
+  # Preserve queued release checks when more builds arrive.
+  queue: max
 
 jobs:
   generate-validate:
@@ -69,6 +71,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+
+      - name: Build embedded MCP app
+        uses: ./.github/actions/build-mcp-app
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev
@@ -162,6 +167,10 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Build embedded MCP app
+        if: inputs.hostname == ''
+        uses: ./.github/actions/build-mcp-app
+
       - name: Build CLI
         if: inputs.hostname == ''
         working-directory: go
@@ -250,6 +259,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+
+      - name: Build embedded MCP app
+        uses: ./.github/actions/build-mcp-app
 
       # The Linux CLI links libusb via cgo (Thor flashing), so the self-hosted
       # runner needs the dev headers before `make build-cli`.

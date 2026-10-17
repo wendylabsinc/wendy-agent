@@ -110,7 +110,7 @@ func (s *Session) Restore(ctx context.Context) (*Profile, error) {
 	}
 	// Validate into a temporary session; a failed restore cannot replace an
 	// authenticated in-memory identity. Store is shared to retain token rotation.
-	restored := &Session{Settings: s.Settings, Client: s.Client, Store: s.Store, meta: meta, key: key, privatePEM: saved.PrivateKey, certificate: saved.Certificate, tokens: saved.Tokens, profile: saved.Profile}
+	restored := &Session{Settings: s.Settings, Client: s.Client, Store: s.Store, RequireHostedMCPPolicy: s.RequireHostedMCPPolicy, meta: meta, key: key, privatePEM: saved.PrivateKey, certificate: saved.Certificate, tokens: saved.Tokens, profile: saved.Profile}
 	if err = restored.refreshCloudToken(ctx); err != nil {
 		return nil, fmt.Errorf("Could not restore sign-in: %w", err)
 	}

@@ -72,7 +72,7 @@ Declare ROS in the application's `wendy.json`:
       "distro": "humble",
       "rmw": "rmw_cyclonedds_cpp",
       "domainId": 0,
-      "discoveryScope": "host"
+      "scope": "peripherals"
     }
   }
 }
@@ -80,7 +80,7 @@ Declare ROS in the application's `wendy.json`:
 
 Run `wendy --device vm:go2-sim run` from the application project. Wendy resolves
 declared ROS applications onto the profile's guest host network and loopback
-ROS bus, normalizing host discovery to app discovery and checking domain and middleware settings before
+ROS bus, mapping the declared scope to the guest's loopback bus and checking domain and middleware settings before
 deployment. Source manifests are not rewritten. The managed runtime installs
 guest firewall rules that confine UDP RTPS to loopback, then drops its network
 administration capability. Application downloads and ordinary networking work.

@@ -53,6 +53,8 @@ open /Applications/WendyAgentMac.app
 
 Wendy Agent appears in the macOS menu bar. Open the menu to confirm the agent is running.
 
+macOS opens Wendy Agent when you log in and restarts it if it stops unexpectedly. Choosing **Quit** from the menu keeps it stopped until you open it again or log in. To turn this off, open **Welcome & Permissions…** from the menu and clear **Open Wendy Agent at login and restart it if it stops**, or turn Wendy Agent off in **System Settings → General → Login Items & Extensions**.
+
 ## Headless Mac Setup
 
 For any Mac that will run without a monitor, set it up once with a keyboard, mouse, and display attached before putting it on the shelf. Use a virtual display dongle or HDMI dummy plug for the final headless setup.
@@ -69,7 +71,7 @@ For any Mac that will run without a monitor, set it up once with a keyboard, mou
    ssh {user}@{hostname}
    ```
 
-7. When Wendy Agent first opens, leave **Open Wendy Agent automatically when you log in** enabled.
+7. When Wendy Agent first opens, leave **Open Wendy Agent at login and restart it if it stops** enabled.
 
 ## Verify the Installation
 
@@ -189,6 +191,7 @@ uses Swift string storage, which cannot be reliably zeroed after use.
 - Deploying native SwiftPM macOS apps with `wendy run`
 - Discovering Mac targets over Bonjour/mDNS
 - Setting the Mac as your default Wendy device
+- Listing and viewing the Mac's cameras with `wendy device camera`, before or after enrollment
 - Starting the optional BuildKit-based Local Build Service from the menu bar
 - Opt-in Wendy Mesh VPN for legacy numeric Cloud contexts (beta)
 
@@ -198,7 +201,7 @@ uses Swift string storage, which cannot be reliably zeroed after use.
 - Linux containers as the Mac application runtime — the Local Build Service builds images but does not run Wendy apps
 - Wi-Fi remote provisioning — configure Wi-Fi through macOS network settings
 - Bluetooth, audio, and GPU hardware APIs via Wendy
-- Wendy camera APIs — use native hardware SDKs (AVFoundation, etc.) directly in your app
+- Wendy camera APIs inside your app — use native hardware SDKs (AVFoundation, etc.) directly
 - WendyOS OTA updates — update macOS and Wendy Agent through their normal install paths
 - Wendy Mesh VPN with Cloud v2 UUID contexts
 

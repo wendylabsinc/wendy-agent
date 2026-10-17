@@ -11,9 +11,11 @@ import (
 )
 
 func (s *mcpServer) registerStatusTools(srv *server.MCPServer) {
-	statusOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Return current MCP session connection state, cached CLI update details, and a plain-English suggested next step. Call this first to orient yourself. cli_update.available means a newer release is known; false does not confirm a successful release check."),
+	desc := "Return current MCP session connection state, cached CLI update details, and a plain-English suggested next step. Call this first to orient yourself. cli_update.available means a newer release is known; false does not confirm a successful release check."
+	if s.relay {
+		desc = "Return the current connection state and a plain-English suggested next step. Call this first to orient yourself."
 	}
+	statusOpts := []mcpgo.ToolOption{mcpgo.WithDescription(desc)}
 	statusOpts = append(statusOpts, readOnly()...)
 	statusOpts = append(statusOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("wendy_status", statusOpts...), s.handleWendyStatus)
@@ -25,6 +27,9 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 
 	if conn == nil {
 		next := "Call device_list, then device_connect with the returned device selector. For uninstalled hardware enable setup with wendy_tools, then use os_install_plan. An empty scan does not establish a network failure."
+		if s.relay {
+			next = "Call device_list, then device_connect with the returned device selector. For uninstalled hardware use os_install_plan. An empty scan does not establish a network failure."
+		}
 		if auth == "logged_out" || auth == "expired" {
 			next = "Sign in first: call auth_login and show the user the link (devices need a signed-in session). Then " + next
 		}
@@ -43,7 +48,7 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 		if loginErr != nil {
 			out["auth_login_error"] = loginErr.Error()
 		}
-		return okResult(out), nil
+		return s.statusResult(out), nil
 	}
 
 	host := conn.Host
@@ -70,5 +75,19 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 	if target.Device != "" {
 		out["command_target"] = target
 	}
-	return okResult(out), nil
+	if s.relay {
+		out["suggested_next_step"] = fmt.Sprintf("Connected to %s via %s. Use run or inspect containers and logs.", host, connType)
+	}
+	return s.statusResult(out), nil
+}
+
+// statusResult drops what a hosted chat has no use for: CLI upgrade details,
+// the local command target, group state and app-proxy diagnostics.
+func (s *mcpServer) statusResult(out map[string]any) *mcpgo.CallToolResult {
+	if s.relay {
+		for _, k := range []string{"cli_update", "command_target", "tool_groups", "proxy_diagnostics"} {
+			delete(out, k)
+		}
+	}
+	return okResult(out)
 }

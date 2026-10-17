@@ -7,6 +7,9 @@ description: Use when a developer wants to build, deploy, run, detach, stream lo
 
 Use this for normal operator/developer workflows around Wendy apps, not only debugging. Prefer explicit, reproducible CLI commands that work in agent/non-interactive contexts.
 
+For sensor episodes, event-triggered campaigns, or durable application recording
+streams, use `wendy-data`. Deploying an app does not deploy its campaign YAML.
+
 ## ChatGPT plugin development loop
 
 When using the ChatGPT gateway, work through its tools without assuming a local
@@ -31,8 +34,12 @@ terminal. The gateway exposes different tools from `wendy mcp serve`.
    `request_id`. Keep the returned job ID and poll `get_deployment_job`. Reuse the
    request ID after an uncertain response, not for a new build of edited code.
    `cancel_deployment_job` cancels the build/deploy command; it may leave an app
-   already running on the target.
+   already running on the target. For several targets, `plan_fleet_deployment`
+   freezes the target set; deploy one canary, inspect it, then deploy each
+   remaining target explicitly. There is no automatic fan-out or rollback.
 6. Check `inspect_robot`, `read_device_logs`, and actual app or robot output.
+   `start_robot_app` and `stop_robot_app` control permitted apps; starting may
+   restart one, so do not retry an uncertain result automatically.
    `open_robot_app` opens a running app's declared HTTP UI. The gateway's
    `completed` deployment status and `RUNNING` app state do not prove readiness.
 
@@ -133,6 +140,21 @@ a cloud device. Inspect the returned target and status. A created or started
 container does not establish sensor, HTTP or robot behavior; use `wendy-robot-deploy`
 for robot checks. If the installed server exposes only the older cloud-only run
 tool, use the CLI with an explicit target or update and restart the MCP host.
+
+The MCP server's equivalents for the rest of this workflow:
+
+- Before building: `project_validate(project_path=...)` (`setup` group).
+- `run(start=false)` matches `--deploy`.
+- Inventory and control: `container_list`, `container_start`, `container_stop`,
+  `container_delete` (`delete_image`, `delete_volumes`) and `container_stats`.
+  `container_start` may restart a running app.
+- Logs: `telemetry_logs(app_name=..., service_name=..., min_severity=...)`
+  returns a bounded sample, not a live stream.
+- Service state, recorded exit, usage and recent errors: `app_inspect`
+  (`observability` group). With `project_path` it also checks the project's
+  declared TCP readiness on a direct device.
+- A bounded command in a running app: `container_exec(app_name=...,
+  command=[...])`, without shell expansion, TTY or stdin.
 
 `--deploy` creates the container but does not start it. To start that existing app later without attaching to its output, use `wendy device apps start <app-id> --detach --device <hostname>` (see Manage apps).
 

@@ -130,6 +130,16 @@ jobs:
         shell: bash
         run: python3 ./Scripts/ValidateMacProvisioning_test.py
 
+      - name: Test launch agent supervision
+        working-directory: swift
+        env:
+          APP_PATH: ${{ github.workspace }}/swift/Build/Xcode/Build/Products/Debug/WendyAgentMac.app
+        shell: bash
+        run: |
+          set -euo pipefail
+          plutil -lint "$APP_PATH/Contents/Library/LaunchAgents/sh.wendy.WendyAgentMac.plist"
+          bash ./Scripts/TestLaunchAgentSupervision.sh
+
   lint:
     name: Lint Swift Sources
     runs-on: ubuntu-latest

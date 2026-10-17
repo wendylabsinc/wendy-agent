@@ -49,6 +49,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/rtps"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	sharedenv "github.com/wendylabsinc/wendy/go/internal/shared/env"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -1326,7 +1327,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Unpack the image into the snapshotter if not already done.
 	phaseStarted = time.Now()
-	unpacked, err := image.IsUnpacked(ctx, c.snapshotter)
+	unpacked, err := c.imageUnpacked(ctx, image)
 	if err != nil {
 		c.logger.Warn("Failed to check if image is unpacked", zap.Error(err))
 	}
@@ -2903,12 +2904,46 @@ func validateUserEnv(entries []string) error {
 // DISABLED: it requires an iox-roudi daemon that WendyOS does not run, and
 // enabling it makes CycloneDDS block at startup ("RouDi not found - waiting")
 // until the container is SIGKILLed, restart-looping. With it off, CycloneDDS
-// uses UDP. ROS_LOCALHOST_ONLY selects loopback for app-scoped discovery; for
-// host-scoped discovery CycloneDDS selects a device interface automatically.
-// No <Interfaces> block is supplied so the same inline config works for both
-// scopes. Re-enabling zero-copy needs an iox-roudi system service on the device
-// first (WDY-884).
+// uses UDP. Scopes app and device use it; ROS_LOCALHOST_ONLY selects loopback.
+// Scopes peripherals and network use cycloneDDSBeyondDeviceConfig instead.
+// Re-enabling zero-copy needs an iox-roudi system service on the device first
+// (WDY-884).
 const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`
+
+// cycloneDDSBeyondDeviceConfig is the CycloneDDS configuration for scopes that
+// discover beyond the device (peripherals, network). It also joins the
+// device's loopback, so such an app still reaches the device's own apps.
+// Device-scoped apps (ROS_LOCALHOST_ONLY=1) run CycloneDDS on loopback with
+// multicast off and find each other by unicast to the localhost ports of each
+// participant index. A wider participant only meets them with loopback in its
+// interfaces, a participant index of its own and localhost as a peer. Loopback
+// is marked multicast-capable: otherwise CycloneDDS turns multicast off on
+// every interface and no longer discovers anything beyond the device.
+//
+// interfaces limits discovery to the given peripheral interfaces; with none,
+// CycloneDDS picks the device's interface as it does without a configuration.
+// The names come from rtps.PeripheralInterfaces, which only returns kernel
+// interface names, so they are safe to place in the XML.
+func cycloneDDSBeyondDeviceConfig(interfaces []string) string {
+	var b strings.Builder
+	b.WriteString(`<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo" multicast="true"/>`)
+	for _, name := range interfaces {
+		b.WriteString(`<NetworkInterface name="` + name + `"/>`)
+	}
+	if len(interfaces) == 0 {
+		b.WriteString(`<NetworkInterface autodetermine="true"/>`)
+	}
+	b.WriteString(`</Interfaces></General>`)
+	b.WriteString(`<Discovery><ParticipantIndex>auto</ParticipantIndex><Peers><Peer address="127.0.0.1"/></Peers></Discovery>`)
+	b.WriteString(`<SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`)
+	return b.String()
+}
+
+// ros2PeripheralInterfaces finds the device's peripheral interfaces; tests
+// replace it.
+var ros2PeripheralInterfaces = func() ([]string, error) {
+	return rtps.PeripheralInterfaces()
+}
 
 // buildROS2Env returns ROS2 environment variables for the container resolved
 // from the app's frameworks.ros2 config (group-level, overridden by the
@@ -2932,11 +2967,21 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]str
 			"the container without ROS_DOMAIN_ID isolation (it would default to domain 0)",
 			appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
 	}
-	discoveryScope := ros2.ResolvedDiscoveryScope()
-	if discoveryScope == "" {
-		return nil, fmt.Errorf("frameworks.ros2.discoveryScope %q is not %q or %q; refusing to "+
-			"start the container with an undefined DDS discovery scope",
-			ros2.DiscoveryScope, appconfig.ROS2DiscoveryScopeApp, appconfig.ROS2DiscoveryScopeHost)
+	scope := ros2.ResolvedScope()
+	if scope == "" {
+		return nil, fmt.Errorf("frameworks.ros2 scope %q / discoveryScope %q is not valid; refusing to "+
+			"start the container with an undefined DDS discovery scope", ros2.Scope, ros2.DiscoveryScope)
+	}
+	// Peripherals without any peripheral interface is exactly device scope.
+	var peripherals []string
+	if scope == appconfig.ROS2ScopePeripherals {
+		var err error
+		if peripherals, err = ros2PeripheralInterfaces(); err != nil {
+			return nil, fmt.Errorf("finding peripheral interfaces for frameworks.ros2 scope %q: %w", scope, err)
+		}
+		if len(peripherals) == 0 {
+			scope = appconfig.ROS2ScopeDevice
+		}
 	}
 	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", domainID)}
 	// ResolvedRMW validates against a fixed allowlist and returns "" for
@@ -2945,11 +2990,17 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]str
 	if rmw := ros2.ResolvedRMW(); rmw != "" {
 		env = append(env, "RMW_IMPLEMENTATION="+rmw)
 		if rmw == appconfig.ROS2DefaultRMW {
-			env = append(env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
+			if scope == appconfig.ROS2ScopePeripherals || scope == appconfig.ROS2ScopeNetwork {
+				env = append(env, "CYCLONEDDS_URI="+cycloneDDSBeyondDeviceConfig(peripherals))
+			} else {
+				env = append(env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
+			}
 		}
 	}
-	// Services are app-local by default. Host-scoped tools such as Foxglove
-	// explicitly opt in to discovering ROS 2 participants on the device network.
+	// Scopes app and device discover over loopback only; app is kept to itself
+	// by its own domain (ResolvedDomainID). Peripherals discovers beyond the
+	// device, but CycloneDDS is limited to loopback and the peripheral
+	// interfaces above. Network discovers on loopback and the device's network.
 	//
 	// Both variables are set, not just ROS_LOCALHOST_ONLY. That one has been
 	// deprecated since Iron in favour of ROS_AUTOMATIC_DISCOVERY_RANGE, and
@@ -2957,7 +3008,7 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]str
 	// claim to support, the sole mechanism enforcing app-local isolation was at
 	// best deprecated. For an app carrying `network: host` it is the only thing
 	// between that app and every other DDS participant on the device.
-	if discoveryScope == appconfig.ROS2DiscoveryScopeHost {
+	if scope == appconfig.ROS2ScopeNetwork || scope == appconfig.ROS2ScopePeripherals {
 		env = append(env, "ROS_LOCALHOST_ONLY=0", "ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET")
 	} else {
 		env = append(env, "ROS_LOCALHOST_ONLY=1", "ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST")

@@ -2,6 +2,10 @@
 
 WendyOS is a Yocto-based Linux distribution managed entirely by systemd. This document covers what runs on a WendyOS device, the startup order, and how services depend on one another.
 
+For the Agent's Cloud-owned UUID unenrollment, guarded local erasure and restart
+recovery, see [Cloud-owned unenrollment](/docs/device/unenrollment). This requires
+compatible Cloud and Agent builds; it is not an assertion of deployed acceptance.
+
 ## Service inventory
 
 | Service | Unit file | Purpose |
