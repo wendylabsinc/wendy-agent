@@ -88,6 +88,14 @@ func TestServerInstructionsShape(t *testing.T) {
 			t.Errorf("instructions do not mention %q", want)
 		}
 	}
+	// Claude Code loads only this text at session start: an agent without
+	// hardware must learn here that a listed simulator is a target, and that
+	// creating one is the user's decision.
+	for _, want := range []string{"listed simulator rather than skip on-device checks", "ask the user before creating one"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("instructions do not mention %q", want)
+		}
+	}
 }
 
 // Names the instructions use that are deliberately not tools: run arguments
@@ -133,6 +141,21 @@ func TestGuideDescribesConnectedTargetRun(t *testing.T) {
 	for _, want := range []string{`run(project_path="/path/to/project") // reuse`, "NOT_CONNECTED", "AUTH_REQUIRED", "not_checked"} {
 		if !strings.Contains(guideText, want) {
 			t.Errorf("guide deploy section is missing %q", want)
+		}
+	}
+}
+
+// Without this section an agent with no hardware either stops at "this needs a
+// device" or overclaims a simulator run as a hardware result.
+func TestGuideSendsMissingHardwareToSimulators(t *testing.T) {
+	_, section, ok := strings.Cut(guideText, "## No device available")
+	if !ok {
+		t.Fatal("guide has no section for working without a device")
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	for _, want := range []string{`device_connect(device="vm:NAME")`, "simulator_create", "ask the user before creating", "camera", "GPU", "verified on the simulator"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("guide simulator section is missing %q", want)
 		}
 	}
 }

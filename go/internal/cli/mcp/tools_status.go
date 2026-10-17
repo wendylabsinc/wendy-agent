@@ -27,6 +27,12 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 
 	if conn == nil {
 		next := "Call device_list, then device_connect with the returned device selector. For uninstalled hardware enable setup with wendy_tools, then use os_install_plan. An empty scan does not establish a network failure."
+		if s.hostSimulators() {
+			next = "Call device_list, then device_connect with the returned device selector. " +
+				"If no physical device is available and the task needs no physical hardware, use a local simulator rather than skipping on-device checks: " +
+				"device_connect boots a listed vm:NAME without asking; ask the user before simulator_create (simulator group) downloads a new one. " +
+				"For uninstalled hardware enable setup with wendy_tools, then use os_install_plan. An empty scan does not establish a network failure."
+		}
 		if s.relay {
 			next = "Call device_list, then device_connect with the returned device selector. For uninstalled hardware use os_install_plan. An empty scan does not establish a network failure."
 		}
