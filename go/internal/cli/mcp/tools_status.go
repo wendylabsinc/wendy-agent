@@ -36,8 +36,19 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 		if s.relay {
 			next = "Call device_list, then device_connect with the returned device selector. For uninstalled hardware use os_install_plan. An empty scan does not establish a network failure."
 		}
+		// Signing in only reaches Cloud devices: gating discovery on it made
+		// agents wait for a sign-in that local targets never needed.
 		if auth == "logged_out" || auth == "expired" {
-			next = "Sign in first: call auth_login and show the user the link (devices need a signed-in session). Then " + next
+			signedOut := "Not signed in to Wendy Cloud"
+			if auth == "expired" {
+				signedOut = "The Wendy Cloud session has expired"
+			}
+			local := "LAN devices that are not Cloud-enrolled need no sign-in."
+			if s.hostSimulators() {
+				local = "Local simulators and " + local
+			}
+			next += " " + signedOut + ", so device_list omits Cloud devices. " + local +
+				" Call auth_login and show the user the link only when the task needs a Cloud device or a device error asks for a sign-in."
 		}
 		out := map[string]any{
 			"connected":             false,

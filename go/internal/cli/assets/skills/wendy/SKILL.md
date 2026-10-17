@@ -42,10 +42,13 @@ and reuse the session's single device connection.
    `telemetry_logs(app_name=...)` for startup errors, then the app's own output.
    `run` reports `readiness: "not_checked"`.
 
-On `AUTH_REQUIRED`, or when `wendy_status` reports `auth` as `logged_out` or
-`expired`, call `auth_login` and show the user the
-returned link; it must be opened on the computer running the server. Fall back
-to `wendy auth login` in a terminal only when `auth_login` is unavailable.
+On `AUTH_REQUIRED`, or a device error that names `wendy auth login`, call
+`auth_login` and show the user the returned link; it must be opened on the
+computer running the server. Fall back to `wendy auth login` in a terminal only
+when `auth_login` is unavailable. When `wendy_status` reports `auth` as
+`logged_out` or `expired`, only Cloud devices are out of reach: local simulators
+and LAN devices that are not Cloud-enrolled need no sign-in. Continue with
+those, and sign in only when the task needs a Cloud device.
 
 Only the core group is listed at first. `wendy_tools(groups=[...])` replaces the
 enabled specialist groups (core always stays), so list every group you still

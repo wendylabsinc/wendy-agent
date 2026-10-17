@@ -94,9 +94,11 @@ For a host not detected by `wendy mcp setup`, configure a stdio server named `we
 ## Verification
 
 Call `wendy_status` after restarting the host and inspect the actual tool list;
-`wendy_tools` with no arguments lists the enabled groups and their tools. If
-`wendy_status` reports `auth` as `logged_out` or `expired`, or a tool returns
-`AUTH_REQUIRED`, call `auth_login` and show the user its link. The server reports its CLI version; changing the CLI on disk does
+`wendy_tools` with no arguments lists the enabled groups and their tools. If a
+tool returns `AUTH_REQUIRED`, or `wendy_status` reports `auth` as `logged_out` or
+`expired` and the task needs a Cloud device, call `auth_login` and show the user
+its link. Local simulators and LAN devices that are not Cloud-enrolled need no
+sign-in. The server reports its CLI version; changing the CLI on disk does
 not replace an already running MCP process. It also serves this skill bundle
 through the MCP skills extension, its guide as `wendy://guide`, and Wendy docs
 under `wendy://docs/`. A skill mentioning a tool is not evidence that the

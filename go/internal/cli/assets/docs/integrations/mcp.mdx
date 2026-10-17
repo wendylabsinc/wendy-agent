@@ -80,7 +80,8 @@ app-provided tools remain visible. Restart the MCP process after upgrading the C
 
 ## Sign in
 
-Most devices need a signed-in Wendy Cloud session. `wendy_status` reports `auth`
+Cloud devices, and LAN devices enrolled in Wendy Cloud, need a signed-in Wendy
+Cloud session; local simulators and unenrolled LAN devices do not. `wendy_status` reports `auth`
 as `logged_in`, `pending`, `expired`, or `logged_out`. Call `auth_login` to sign
 in without a terminal: it returns a link to show the user, opens it in the
 browser on a desktop session, and finishes in the background (up to five
