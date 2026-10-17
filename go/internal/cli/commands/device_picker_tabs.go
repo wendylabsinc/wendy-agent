@@ -325,23 +325,24 @@ func (m devicePickerModel) View() string {
 }
 
 func deviceCloudOrgLabel(auth *config.AuthConfig, name string, defaultOrg int32) string {
+	const switchHint = "  (o switch organization)"
 	if auth != nil && len(auth.Certificates) > 0 {
 		if tenant := auth.Certificates[0].TenantUUID(); tenant != "" {
 			if name != "" {
-				return fmt.Sprintf("Organization: %s  (o switch)", name)
+				return fmt.Sprintf("Showing devices only from %s", name) + switchHint
 			}
-			return fmt.Sprintf("Organization: %s  (o switch)", tenant)
+			return fmt.Sprintf("Showing devices only from %s", tenant) + switchHint
 		}
 	}
 	orgID := cloudAuthOrgID(auth)
-	label := fmt.Sprintf("Organization: org %d", orgID)
+	label := fmt.Sprintf("Showing devices only from org %d", orgID)
 	if name != "" {
-		label = fmt.Sprintf("Organization: %s", name)
+		label = fmt.Sprintf("Showing devices only from %s", name)
 	}
 	if orgID != 0 && orgID == defaultOrg {
 		label += "  ✦ default"
 	}
-	return label + "  (o switch)"
+	return label + switchHint
 }
 
 // choice reports the confirmed selection. ok is false when the picker exited

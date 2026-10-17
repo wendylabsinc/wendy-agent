@@ -123,7 +123,7 @@ func TestCloudOrganizationNameCacheIdentityScopeAndImmediateLabels(t *testing.T)
 	if updated.(discoverTabsModel).cloudOrg != names[0] {
 		t.Fatal("empty refresh cleared discovery name")
 	}
-	if got := deviceCloudOrgLabel(a, names[0], 0); got != "Organization: Robotics  (o switch)" {
+	if got := deviceCloudOrgLabel(a, names[0], 0); got != "Showing devices only from Robotics  (o switch organization)" {
 		t.Fatalf("header = %q", got)
 	}
 }
