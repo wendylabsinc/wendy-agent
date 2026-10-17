@@ -36,19 +36,15 @@ if ! command -v zstd >/dev/null 2>&1 || ! command -v gtar >/dev/null 2>&1; then
   exit 0
 fi
 
-# TEMPORARY: PR validation also accepts runs of the kb.macos-ci-caching branch; remove before ready.
 # shellcheck disable=SC2016 # $event is a jq variable.
 if ! run_ids="$(
-  gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW_FILE/runs?status=completed&per_page=50" \
+  gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW_FILE/runs?branch=main&status=completed&per_page=20" \
     --jq '
       .workflow_runs[]
       | select(
-          (
-            .head_branch == "main"
-            and .head_repository.full_name == env.GITHUB_REPOSITORY
-            and (.event as $event | [env.BUILD_CACHE_TRUSTED_EVENTS | split(" ")[] | select(. == $event)] | length > 0)
-          )
-          or (.head_branch == "kb.macos-ci-caching" and .event == "pull_request" and .head_repository.full_name == env.GITHUB_REPOSITORY)
+          .head_branch == "main"
+          and .head_repository.full_name == env.GITHUB_REPOSITORY
+          and (.event as $event | [env.BUILD_CACHE_TRUSTED_EVENTS | split(" ")[] | select(. == $event)] | length > 0)
         )
       | .id
     '
