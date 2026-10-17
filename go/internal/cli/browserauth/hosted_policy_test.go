@@ -42,7 +42,7 @@ func TestHostedMCPLoginRequiresVerifiedTenantPermission(t *testing.T) {
 				}
 				return original.Do(r)
 			})
-			_, err := s.Complete(context.Background(), "valid-code", s.state, s.meta.Issuer)
+			_, err := s.Complete(context.Background(), "valid-code", s.state, testIssuer)
 			if err == nil || !strings.Contains(err.Error(), "does not allow hosted MCP") {
 				t.Fatalf("expected hosted policy refusal, got %v", err)
 			}
@@ -61,7 +61,7 @@ func TestHostedMCPLoginChecksCloudResourcePolicy(t *testing.T) {
 	s.RequireHostedMCPPolicy = true
 	store := &memoryStore{}
 	s.Store = store
-	if _, err := s.Complete(context.Background(), "valid-code", s.state, s.meta.Issuer); err == nil || !strings.Contains(err.Error(), "does not allow hosted MCP") {
+	if _, err := s.Complete(context.Background(), "valid-code", s.state, testIssuer); err == nil || !strings.Contains(err.Error(), "does not allow hosted MCP") {
 		t.Fatalf("Cloud resource token must also permit hosted MCP, got %v", err)
 	}
 	if len(store.raw) != 0 || s.tokens.Access != "" {
@@ -78,7 +78,7 @@ func TestHostedMCPRefreshRechecksTenantPolicy(t *testing.T) {
 	s.RequireHostedMCPPolicy = true
 	store := &memoryStore{}
 	s.Store = store
-	if _, err := s.Complete(context.Background(), "valid-code", s.state, s.meta.Issuer); err != nil {
+	if _, err := s.Complete(context.Background(), "valid-code", s.state, testIssuer); err != nil {
 		t.Fatal(err)
 	}
 	oldAccess, oldSaved := s.tokens.Access, string(store.raw)
@@ -104,7 +104,7 @@ func TestHostedMCPRestoreDoesNotTrustOldNonMCPLogin(t *testing.T) {
 			s, _ := setup(t, nil)
 			store := &memoryStore{}
 			s.Store = store
-			if _, err := s.Complete(context.Background(), "valid-code", s.state, s.meta.Issuer); err != nil {
+			if _, err := s.Complete(context.Background(), "valid-code", s.state, testIssuer); err != nil {
 				t.Fatal(err)
 			}
 			if expired {

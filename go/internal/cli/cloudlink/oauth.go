@@ -229,9 +229,13 @@ func (m *Manager) approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.upstreamState = u.Query().Get("state")
-	// Session.Begin pins this URL to the configured auth realm. Keep the expected
-	// issuer separately, so a callback cannot substitute another trusted realm.
+	// When Session.Begin pins a realm, keep the expected issuer separately so a
+	// callback cannot substitute another trusted realm. A realm-less universal
+	// start learns its realm from the callback; Session.Complete validates it.
 	p.issuer = strings.TrimSuffix(strings.Split(target, "?")[0], "/authorize")
+	if !strings.Contains(p.issuer, "/realms/") {
+		p.issuer = ""
+	}
 	m.mu.Lock()
 	m.pending[cookie.Value] = p
 	m.mu.Unlock()
@@ -257,7 +261,7 @@ func (m *Manager) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	m.mu.Lock()
 	p := m.pending[cookie.Value]
-	if p == nil || !p.expires.After(time.Now()) || p.upstream == nil || !same(p.upstreamState, q.Get("state")) || p.issuer != q.Get("iss") {
+	if p == nil || !p.expires.After(time.Now()) || p.upstream == nil || !same(p.upstreamState, q.Get("state")) || (p.issuer != "" && p.issuer != q.Get("iss")) {
 		m.mu.Unlock()
 		oauthError(w, 400, "invalid_request")
 		return
