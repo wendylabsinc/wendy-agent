@@ -58,8 +58,6 @@ for event in $BUILD_CACHE_TRUSTED_EVENTS; do
   fi
   candidates="$candidates$runs"$'\n'
 done
-# TEMPORARY: PR validation also accepts this branch's successful PR runs; remove before ready.
-candidates="$candidates$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW_FILE/runs?branch=kb.macos-ci-caching&event=pull_request&status=success&per_page=10" --jq '.workflow_runs[] | "\(.created_at) \(.id)"')"$'\n'
 run_ids="$(printf '%s' "$candidates" | sort -r | awk 'NF { print $2 }')"
 
 for run_id in $run_ids; do
