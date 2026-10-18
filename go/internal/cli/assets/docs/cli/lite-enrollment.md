@@ -134,9 +134,12 @@ This requires the coordinated firmware and broker update in
 
 ## Remove an old enrollment
 
-A Lite board's PKI device ID is `lite-` followed by its hardware ID, such as
-`lite-441bf6804824`. Renaming the board does not release that ID from an existing
-cloud asset. Remove the old enrollment before enrolling the same board again.
+Firmware that advertises UUID enrollment support receives a fresh device UUID.
+This identity supports signed local mesh routing. USB status reports the PKI
+identity separately from the board's hardware ID, which still binds local resets.
+Older firmware uses `lite-` followed by the hardware ID, such as
+`lite-441bf6804824`. Existing enrollments retain their identity until explicitly
+removed. Remove the old enrollment before enrolling the same board again.
 
 Use cloud unenrollment when the board is offline or its firmware is corrupt:
 
