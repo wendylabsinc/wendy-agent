@@ -4,48 +4,57 @@ import (
 	"context"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/mcusource"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // StartPairingFunc launches (or restarts) a supervisor goroutine for a pairing.
 type StartPairingFunc func(p mcusource.SensorPairing, addr string)
 
 // StopPairingFunc cancels a running supervisor.
-type StopPairingFunc func(sourceAssetID int32)
+type StopPairingFunc func(mcusource.SensorPairing)
 
 // IsConnectedFunc reports whether a pairing is delivering sensor frames.
-type IsConnectedFunc func(sourceAssetID int32) bool
+type IsConnectedFunc func(mcusource.SensorPairing) bool
 
 type SensorPairingService struct {
 	agentpbv2.UnimplementedWendySensorPairingServiceServer
 	logger      *zap.Logger
 	store       *mcusource.PairingStore
-	agentOrgID  func() int32
+	agentScope  func() certs.Scope
 	start       StartPairingFunc
 	stop        StopPairingFunc
 	isConnected IsConnectedFunc
 }
 
-// agentOrgID returns this agent's own current provisioning org id, read
-// fresh on every Add (not captured once at construction) so a device
-// provisioned or re-provisioned while the agent runs gets the right org
-// without a restart. Sensor pairing is same-org by design (no org_id field
-// on the request), so every pairing's SensorPairing.OrgID is set to the
-// agent's own org — that's the identity the per-pairing mTLS dialer pins
-// against on the handshake, so a wrong org here means no real source can
-// ever connect.
-func NewSensorPairingService(logger *zap.Logger, store *mcusource.PairingStore, agentOrgID func() int32, start StartPairingFunc, stop StopPairingFunc, isConnected IsConnectedFunc) *SensorPairingService {
-	return &SensorPairingService{logger: logger, store: store, agentOrgID: agentOrgID, start: start, stop: stop, isConnected: isConnected}
+// agentScope reads this agent's current identity on every Add so pairing
+// follows provisioning changes without a restart. The dialer independently
+// verifies the source certificate against the current consumer identity.
+func NewSensorPairingService(logger *zap.Logger, store *mcusource.PairingStore, agentScope func() certs.Scope, start StartPairingFunc, stop StopPairingFunc, isConnected IsConnectedFunc) *SensorPairingService {
+	return &SensorPairingService{logger: logger, store: store, agentScope: agentScope, start: start, stop: stop, isConnected: isConnected}
 }
 
 func (s *SensorPairingService) AddSensorPairing(_ context.Context, req *agentpbv2.AddSensorPairingRequest) (*agentpbv2.AddSensorPairingResponse, error) {
+	scope := s.agentScope()
 	p := mcusource.SensorPairing{
-		SourceAssetID:   req.SourceAssetId,
-		OrgID:           s.agentOrgID(),
-		Name:            req.Name,
-		SensorAllowlist: req.SensorAllowlist,
-		Transport:       req.Transport,
+		SourceAssetID:      req.SourceAssetId,
+		SourcePrincipalURI: req.SourcePrincipalUri,
+		OrgID:              scope.OrgID,
+		Name:               req.Name,
+		SensorAllowlist:    req.SensorAllowlist,
+		Transport:          req.Transport,
+	}
+	if err := p.Validate(); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if p.SourcePrincipalURI != "" {
+		identity, _ := certs.ParsePrincipal(p.SourcePrincipalURI)
+		if !identity.Scope().Matches(scope) {
+			return nil, status.Error(codes.PermissionDenied, "sensor source must belong to this device's tenant")
+		}
 	}
 	if err := s.store.Add(p); err != nil {
 		return nil, err
@@ -58,10 +67,14 @@ func (s *SensorPairingService) AddSensorPairing(_ context.Context, req *agentpbv
 }
 
 func (s *SensorPairingService) RemoveSensorPairing(_ context.Context, req *agentpbv2.RemoveSensorPairingRequest) (*agentpbv2.RemoveSensorPairingResponse, error) {
-	if s.stop != nil {
-		s.stop(req.SourceAssetId)
+	p := mcusource.SensorPairing{SourceAssetID: req.SourceAssetId, SourcePrincipalURI: req.SourcePrincipalUri, Transport: "wendycom"}
+	if err := p.Validate(); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := s.store.Remove(req.SourceAssetId); err != nil {
+	if s.stop != nil {
+		s.stop(p)
+	}
+	if err := s.store.RemovePairing(p); err != nil {
 		return nil, err
 	}
 	return &agentpbv2.RemoveSensorPairingResponse{}, nil
@@ -71,19 +84,20 @@ func (s *SensorPairingService) ListSensorPairings(_ context.Context, _ *agentpbv
 	list := s.store.List()
 	out := make([]*agentpbv2.SensorPairing, 0, len(list))
 	for _, p := range list {
-		connected := s.isConnected != nil && s.isConnected(p.SourceAssetID)
+		connected := s.isConnected != nil && s.isConnected(p)
 		out = append(out, toProto(p, connected))
 	}
-	return &agentpbv2.ListSensorPairingsResponse{Pairings: out}, nil
+	return &agentpbv2.ListSensorPairingsResponse{Pairings: out, SupportsPrincipalPairing: true}, nil
 }
 
 func toProto(p mcusource.SensorPairing, connected bool) *agentpbv2.SensorPairing {
 	return &agentpbv2.SensorPairing{
-		SourceAssetId:   p.SourceAssetID,
-		OrgId:           p.OrgID,
-		Name:            p.Name,
-		SensorAllowlist: p.SensorAllowlist,
-		Connected:       connected,
-		Transport:       p.Transport,
+		SourceAssetId:      p.SourceAssetID,
+		SourcePrincipalUri: p.SourcePrincipalURI,
+		OrgId:              p.OrgID,
+		Name:               p.Name,
+		SensorAllowlist:    p.SensorAllowlist,
+		Connected:          connected,
+		Transport:          p.Transport,
 	}
 }

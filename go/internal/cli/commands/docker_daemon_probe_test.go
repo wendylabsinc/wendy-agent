@@ -21,6 +21,7 @@ func stubDockerDaemonSeams(t *testing.T, d time.Duration) {
 	oldVersionOK := dockerVersionOKFn
 	oldOpenRuntime := dockerOpenRuntimeFn
 	oldInstallRuntime := dockerInstallRuntimeFn
+	oldConfirm := dockerConfirmFn
 	oldInteractive := isInteractiveTerminalFn
 	oldTimeout := dockerVersionProbeTimeout
 	oldPoll, oldWait := dockerDaemonPollInterval, dockerDaemonReadyWait
@@ -30,6 +31,7 @@ func stubDockerDaemonSeams(t *testing.T, d time.Duration) {
 		dockerVersionOKFn = oldVersionOK
 		dockerOpenRuntimeFn = oldOpenRuntime
 		dockerInstallRuntimeFn = oldInstallRuntime
+		dockerConfirmFn = oldConfirm
 		isInteractiveTerminalFn = oldInteractive
 		dockerVersionProbeTimeout = oldTimeout
 		dockerDaemonPollInterval, dockerDaemonReadyWait = oldPoll, oldWait
@@ -74,10 +76,10 @@ func stubHungDaemonHost(t *testing.T, answerAfter int) {
 		return nil
 	}
 	isInteractiveTerminalFn = func() bool { return true }
-	stubConfirmFn(t, func(q string) bool {
+	dockerConfirmFn = func(_ context.Context, q string) (bool, error) {
 		t.Fatalf("must not prompt (%q) for a daemon that is running but not answering", q)
-		return false
-	})
+		return false, nil
+	}
 }
 
 // A wedged Docker daemon (the socket accepts the connection but never

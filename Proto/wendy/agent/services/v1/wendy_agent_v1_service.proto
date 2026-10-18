@@ -67,6 +67,16 @@ service WendyAgentService {
     // first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
     // is applied exactly as given. The value is persisted so it survives reboots.
     rpc SetHostname(SetHostnameRequest) returns (SetHostnameResponse);
+
+    // Report the NVIDIA Jetson power mode (nvpmodel) the device is in and the
+    // modes it offers. Modes are the device's own names and IDs, untranslated.
+    // Fails with UNAVAILABLE on devices that are not a Jetson.
+    rpc GetPowerMode(GetPowerModeRequest) returns (GetPowerModeResponse);
+
+    // Switch the Jetson power mode. Some modes only take effect after a reboot;
+    // the agent never reboots unless the request asks for it. Fails with
+    // UNAVAILABLE on devices that are not a Jetson.
+    rpc SetPowerMode(SetPowerModeRequest) returns (SetPowerModeResponse);
 }
 
 message RunContainerRequest {
@@ -257,6 +267,9 @@ message GetAgentVersionResponse {
     // reached over FastRPC). Only populated when has_npu is true; empty when the
     // vendor's runtime is unrecognized, or on agents predating this field.
     repeated string npu_backends = 27;
+    // Current Jetson power mode (nvpmodel). Absent on devices that are not a
+    // Jetson, when the mode cannot be read, and on agents predating this field.
+    optional PowerMode power_mode = 28;
 }
 
 // A network interface on the device and the IP addresses assigned to it.
@@ -710,6 +723,43 @@ message SetHostnameRequest {
 message SetHostnameResponse {
     // The hostname that was applied.
     string hostname = 1;
+}
+
+// A Jetson power mode as nvpmodel names it.
+message PowerMode {
+    // nvpmodel mode ID (e.g. 0).
+    int32 id = 1;
+    // nvpmodel mode name (e.g. "MAXN"), exactly as in /etc/nvpmodel.conf.
+    string name = 2;
+}
+
+message GetPowerModeRequest {}
+
+message GetPowerModeResponse {
+    // The mode the device is currently in.
+    PowerMode current = 1;
+    // Every mode the device's nvpmodel configuration offers, in file order.
+    repeated PowerMode available = 2;
+    // The mode nvpmodel applies at boot (PM_CONFIG DEFAULT). Absent when the
+    // configuration does not declare one.
+    optional PowerMode boot_default = 3;
+}
+
+message SetPowerModeRequest {
+    // A mode name (e.g. "MAXN") or numeric ID (e.g. "0") from GetPowerMode.
+    string mode = 1;
+    // Reboot the device after the response when the new mode needs one to take
+    // effect. Ignored when no reboot is needed.
+    bool reboot = 2;
+}
+
+message SetPowerModeResponse {
+    // The mode that was requested.
+    PowerMode mode = 1;
+    // The mode only takes full effect after the device reboots.
+    bool reboot_required = 2;
+    // The agent will reboot the device shortly after this response.
+    bool reboot_scheduled = 3;
 }
 
 // A detected GPU and the host compute backends an app can use on it.

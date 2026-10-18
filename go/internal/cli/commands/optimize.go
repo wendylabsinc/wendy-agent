@@ -151,7 +151,7 @@ func newOptimizeCmd() *cobra.Command {
 			}
 
 			if rep.MaxSeverity() >= threshold && len(rep.Findings) > 0 {
-				os.Exit(1)
+				return &ReportedExitError{}
 			}
 			return nil
 		},

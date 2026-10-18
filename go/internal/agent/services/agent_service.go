@@ -25,6 +25,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/gpudiscovery"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
 	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
+	"github.com/wendylabsinc/wendy/go/internal/agent/powermode"
 	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -41,6 +42,12 @@ type AgentService struct {
 	installer                *AgentInstaller
 	isWendyOSHost            func() bool
 	osUpdateStateDir         string
+
+	// powerModes, isJetson and rebootFn back GetPowerMode/SetPowerMode;
+	// settable within-package so tests need neither nvpmodel nor a reboot.
+	powerModes powerModeController
+	isJetson   func() bool
+	rebootFn   func() error
 
 	// verifier checks the update binary's signature before install. Defaults
 	// to sigverify.DefaultVerifier (disabled until a real pinned key is
@@ -78,13 +85,16 @@ func NewAgentService(
 		bluetoothManager:   bm,
 		installer:          installer,
 		isWendyOSHost:      defaultIsWendyOSHost,
+		powerModes:         powermode.New(),
+		isJetson:           defaultIsJetson,
+		rebootFn:           defaultReboot,
 		osUpdateStateDir:   oshealth.DefaultStateDir,
 		verifier:           sigverify.DefaultVerifier,
 		restartFn:          scheduleAgentRestartExit,
 	}
 }
 
-func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVersionRequest) (*agentpb.GetAgentVersionResponse, error) {
+func (s *AgentService) GetAgentVersion(ctx context.Context, _ *agentpb.GetAgentVersionRequest) (*agentpb.GetAgentVersionResponse, error) {
 	resp := &agentpb.GetAgentVersionResponse{
 		Version:         version.Version,
 		Os:              detectOS(),
@@ -173,6 +183,9 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	// most of the fleet, which leaves the field absent so `wendy device info`
 	// prints no battery line.
 	resp.Battery = batteryToProto(hoststats.ResolveBattery())
+
+	// Jetson only; absent elsewhere and whenever nvpmodel cannot be read.
+	resp.PowerMode = s.currentPowerMode(ctx)
 
 	return resp, nil
 }

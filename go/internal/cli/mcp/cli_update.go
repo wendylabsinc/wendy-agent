@@ -9,6 +9,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cliupdate"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
@@ -26,22 +27,29 @@ type cliUpdateInfo struct {
 
 func (s *mcpServer) cliUpdateStatus() cliUpdateInfo {
 	info := cliUpdateInfo{}
+	if cliupdate.BackgroundChecksDisabled() {
+		return info
+	}
 	cfg := s.currentConfig()
 	if cfg == nil {
 		return info
 	}
 	info.LastCheckedAt = cfg.LastCLIUpdateCheck
-	if cfg.AvailableCLIUpdate == "" || version.CompareVersions(cfg.AvailableCLIUpdate, version.Version) <= 0 {
+	// A newer CLI process can be current while this long-lived server still
+	// runs an older executable. Compare the last observed release with this
+	// process, independently of another process's pending-update flag.
+	latest := cfg.LatestCLIRelease
+	if latest == "" {
+		latest = cfg.AvailableCLIUpdate
+	}
+	if latest == "" || version.IsDev(latest) || version.CompareVersions(latest, version.Version) <= 0 {
 		return info
 	}
 	info.Available = true
-	info.LatestVersion = cfg.AvailableCLIUpdate
+	info.LatestVersion = latest
 	info.UpdateCommand = cliupdate.Command(runtime.GOOS)
 	info.RestartRequired = true
 	info.Message = fmt.Sprintf("A new Wendy CLI version is available: %s (running %s). Update with: %s. Then restart the Wendy MCP server to load the new version and tools.", info.LatestVersion, version.Version, info.UpdateCommand)
-	if runtime.GOOS == "darwin" {
-		info.Message += " If the tap is untrusted, run: brew trust wendylabsinc/tap."
-	}
 	return info
 }
 
@@ -53,7 +61,8 @@ func (s *mcpServer) cliUpdateMiddleware() server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 			result, err := next(ctx, req)
-			if err != nil || result == nil || ctx.Err() != nil {
+			// A hosted chat is not the place for CLI upgrade steps (store policy).
+			if err != nil || result == nil || ctx.Err() != nil || s.relay {
 				return result, err
 			}
 			info := s.cliUpdateStatus()
@@ -73,6 +82,9 @@ func (s *mcpServer) cliUpdateMiddleware() server.ToolHandlerMiddleware {
 				announced[sessionID] = make(map[string]bool)
 			}
 			announced[sessionID][info.LatestVersion] = true
+			analytics.TrackStage(analytics.WithEntrypoint(ctx, "mcp"), "cli_update_offered", "wendy update", "completed", "", map[string]string{
+				"stage": "cli_update", "install_method": "unknown",
+			})
 			// Preserve the handler's structured payload and error state, and
 			// avoid changing a result the handler may reuse on later calls.
 			withNotice := *result

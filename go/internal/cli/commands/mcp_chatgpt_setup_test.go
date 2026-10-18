@@ -64,11 +64,24 @@ func TestChatGPTSetupStartsWithoutCloudDeviceOrDeveloperAccess(t *testing.T) {
 		t.Fatal("wrong gateway routing", gateway)
 	}
 	manifest := readChatGPTJSON(t, filepath.Join(root, "plugin.json"))
+	if manifest["name"] != filepath.Base(root) {
+		t.Fatal("desktop manifest identity must match its marketplace entry and directory", manifest["name"])
+	}
 	onboarding := manifest["extensions"].(map[string]any)["com.openai"].(map[string]any)["onboardingSkill"].(string)
 	if _, err := os.Stat(filepath.Join(root, onboarding)); err != nil {
 		t.Fatal("onboarding is unavailable without an MCP connection", err)
 	}
 	presentation := manifest["extensions"].(map[string]any)["com.openai"].(map[string]any)["interface"].(map[string]any)
+	if !strings.Contains(presentation["longDescription"].(string), "local CLI process must remain available") {
+		t.Fatal("desktop package must describe its local connection requirements", presentation)
+	}
+	if !reflect.DeepEqual(presentation["defaultPrompt"], []any{"Open Wendy and show my robots.", "Look through my robot's camera and describe the scene.", "Check which apps are running on my robot."}) {
+		t.Fatal("desktop package inherited hosted connection prompts", presentation)
+	}
+	openai := manifest["extensions"].(map[string]any)["com.openai"].(map[string]any)
+	if openai["review"] != nil || openai["publication"] != nil {
+		t.Fatal("desktop export inherited public Cloud review metadata", openai)
+	}
 	for _, field := range []string{"logo", "composerIcon"} {
 		path, ok := presentation[field].(string)
 		if !ok || path == "" {
@@ -161,7 +174,7 @@ func TestChatGPTSetupBothKeepsHostedIndependentAndMarketplaceEntries(t *testing.
 		t.Fatal("hosted app binding changed", apps)
 	}
 	if _, err := os.Stat(filepath.Join(hosted, "mcp.json")); !os.IsNotExist(err) {
-		t.Fatal("hosted package depends on a local MCP process", err)
+		t.Fatal("hosted package must reference the registered app instead of launching a local MCP server", err)
 	}
 	servers := readChatGPTJSON(t, filepath.Join(root, "wendy-robots", "mcp.json"))["mcpServers"].(map[string]any)
 	if len(servers) != 2 {
@@ -192,6 +205,16 @@ func TestChatGPTHostedSetupDoesNotCreateLocalPolicy(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".wendy")); !os.IsNotExist(err) {
 		t.Fatal("hosted setup created local permissions", err)
+	}
+	manifest := readChatGPTJSON(t, filepath.Join(home, ".codex", "plugins", "sources", "wendy-robots-cloud", "plugin.json"))
+	presentation := manifest["extensions"].(map[string]any)["com.openai"].(map[string]any)["interface"].(map[string]any)
+	for _, description := range []string{manifest["description"].(string), presentation["longDescription"].(string)} {
+		if strings.Contains(strings.ToLower(description), "no local cli") || !strings.Contains(description, "relay") {
+			t.Fatal("hosted export must describe the registered connection's CLI relay requirements", description)
+		}
+	}
+	if !strings.Contains(presentation["longDescription"].(string), "signed-in, paired wendy cloud mcp process to stay running") {
+		t.Fatal("hosted export omitted the relay runtime requirement", presentation)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 // user's token refreshes, and the update prompt would install the CLI as root.
 // The user's own runs do that work instead.
 func TestRootSkipsHousekeepingUnderSudo(t *testing.T) {
+	enableCLIUpdateChecks(t)
 	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 	t.Setenv("WENDY_SECRET_STORE", "file")
 	t.Setenv("WENDY_ANALYTICS", "false")
@@ -44,9 +45,11 @@ func TestRootSkipsHousekeepingUnderSudo(t *testing.T) {
 		var stderr bytes.Buffer
 		root.SetErr(&stderr)
 		root.SetOut(io.Discard)
-		if err := root.Execute(); err != nil {
+		cmd, err := root.ExecuteC()
+		if err != nil {
 			t.Fatal(err)
 		}
+		FinishInvocation(cmd, err)
 		return stderr.String()
 	}
 

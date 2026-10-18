@@ -1,4 +1,11 @@
 name: Build products and release
+# Nightly device updates yield to "Stable release · " runs (see
+# .github/scripts/release-priority.cjs). Releases that skip integration tests
+# never use the device runners, so they get a title nightly does not yield to.
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && inputs.publish &&
+  (inputs.skip_integration_tests && format('Stable release without integration tests · {0}', github.ref_name) ||
+  format('Stable release · {0}', github.ref_name)) || format('Build · {0}', github.ref_name) }}
 
 on:
   push:
@@ -118,6 +125,10 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Build embedded MCP app
+        if: matrix.cmd == 'wendy'
+        uses: ./.github/actions/build-mcp-app
+
       - name: Build
         working-directory: go
         env:
@@ -195,6 +206,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+
+      - name: Build embedded MCP app
+        uses: ./.github/actions/build-mcp-app
 
       - name: Install musl toolchain
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -298,6 +312,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+
+      - name: Build embedded MCP app
+        uses: ./.github/actions/build-mcp-app
 
       - name: Install libusb
         run: |

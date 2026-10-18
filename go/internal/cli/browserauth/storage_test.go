@@ -16,7 +16,7 @@ func TestSavedSignInRestoresSameCertificateAndRotatesTokens(t *testing.T) {
 	s, calls := setup(t, nil)
 	store := &memoryStore{}
 	s.Store = store
-	p, err := s.Complete(context.Background(), "valid-code", s.state, s.meta.Issuer)
+	p, err := s.Complete(context.Background(), "valid-code", s.state, testIssuer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestSavedSignInRejectsMismatchedCertificate(t *testing.T) {
 	s, _ := setup(t, nil)
 	store := &memoryStore{}
 	s.Store = store
-	if _, err := s.Complete(context.Background(), "valid-code", s.state, s.meta.Issuer); err != nil {
+	if _, err := s.Complete(context.Background(), "valid-code", s.state, testIssuer); err != nil {
 		t.Fatal(err)
 	}
 	var saved savedSession

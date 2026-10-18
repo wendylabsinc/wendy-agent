@@ -195,7 +195,7 @@ Regular ESP-IDF projects are the recommended app model for ESP32 targets. Wendy 
 wendy run
 ```
 
-The connected device must run a firmware variant with native app support. Wendy reads its chip target, ensures ESP-IDF 5.5.4 is available through `eim`, runs `idf.py set-target` when needed, builds the project, uploads the native application firmware, reboots, reconnects, and streams its console output. ESP-IDF projects are detected automatically; `--build-type` does not need to be set.
+The connected device must run a firmware variant with native app support. Wendy reads its chip target, ensures ESP-IDF 5.5.4 is available through `eim` (offering to install `eim` with Homebrew when it is missing), runs `idf.py set-target` when needed, builds the project, uploads the native application firmware, reboots, reconnects, and streams its console output. ESP-IDF projects are detected automatically; `--build-type` does not need to be set.
 
 See [ESP32 installation](/docs/installation/wendy-lite-esp32) for setup and a minimal project layout.
 
@@ -345,6 +345,11 @@ delivery receives a registry push instead, and the build log says so.
 
 Use a remote host for builds that need its GPU or CPU architecture, such as an
 arm64 build that would otherwise use QEMU emulation on an x86 development machine.
+
+A multi-service `wendy.json` builds remotely too: every selected service is
+built on the host and delivered to the target. See
+[Multi-service apps: remote build host](../../../apps/wendy-services.md#remote-build-host)
+for how it differs from a local build. Compose projects cannot use `--build-host`.
 
 Your machine does not need a container builder. With `--build-host`, the CLI
 does not start Docker, Apple Container, or a local BuildKit daemon. The

@@ -84,6 +84,10 @@ func (m *Manager) ApplyFloor() {
 	if floor.IsZero() {
 		return
 	}
+	if m.apply != nil {
+		m.apply(floor)
+		return
+	}
 	if err := AdvanceTo(floor, m.logger); err != nil && m.logger != nil {
 		m.logger.Warn("timesync: floor apply failed", zap.Error(err))
 	}
