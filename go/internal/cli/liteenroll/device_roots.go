@@ -36,6 +36,7 @@ func DiscoverLiteDeviceCAChain(ctx context.Context, pkiEndpoint, tenantID string
 	return discoverLiteDeviceCAChain(ctx, http.DefaultClient, endpoint)
 }
 
+// Fetched certs are intermediates only, never anchors, so X-Wendy-Chain-Algorithm is not checked here.
 func discoverLiteDeviceCAChain(ctx context.Context, client *http.Client, endpoint string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
