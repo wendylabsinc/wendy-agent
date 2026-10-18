@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package wendy.agent.services.v2;
+
+option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2;agentpbv2";
+
+// WendyTrustedKeysService manages the device's local operator keys: the
+// public keys whose self-issued client certificates the agent accepts without
+// any CA chain. Every RPC requires a caller authenticated by a trusted key with
+// the owner role; tenant (cloud-issued) certificates never qualify. The last
+// owner key cannot be removed; recovery from a lost owner key is a reinstall.
+service WendyTrustedKeysService {
+  rpc AddTrustedKey(AddTrustedKeyRequest) returns (AddTrustedKeyResponse);
+  rpc ListTrustedKeys(ListTrustedKeysRequest) returns (ListTrustedKeysResponse);
+  rpc RemoveTrustedKey(RemoveTrustedKeyRequest) returns (RemoveTrustedKeyResponse);
+}
+
+enum TrustedKeyRole {
+  TRUSTED_KEY_ROLE_UNSPECIFIED = 0;
+  // Everything, including key management and unprovisioning.
+  TRUSTED_KEY_ROLE_OWNER = 1;
+  // Apps and containers, logs and telemetry, shell, tunnel, drivers, device
+  // settings, agent and OS updates.
+  TRUSTED_KEY_ROLE_OPERATOR = 2;
+  // Reads only: info, lists, status, logs.
+  TRUSTED_KEY_ROLE_VIEWER = 3;
+}
+
+message TrustedKey {
+  // "sha256:" + hex SHA-256 of the SubjectPublicKeyInfo DER.
+  string fingerprint = 1;
+  // SubjectPublicKeyInfo, DER.
+  bytes public_key = 2;
+  TrustedKeyRole role = 3;
+  string label = 4;
+  // Unix seconds.
+  int64 added_at = 5;
+  // Fingerprint of the key that added this one; "install" for the seeded key.
+  string added_by = 6;
+}
+
+message AddTrustedKeyRequest {
+  // SubjectPublicKeyInfo, DER or PEM ("PUBLIC KEY").
+  bytes public_key = 1;
+  TrustedKeyRole role = 2;
+  string label = 3;
+}
+
+message AddTrustedKeyResponse {
+  TrustedKey key = 1;
+}
+
+message ListTrustedKeysRequest {}
+
+message ListTrustedKeysResponse {
+  repeated TrustedKey keys = 1;
+}
+
+message RemoveTrustedKeyRequest {
+  string fingerprint = 1;
+}
+
+message RemoveTrustedKeyResponse {}
