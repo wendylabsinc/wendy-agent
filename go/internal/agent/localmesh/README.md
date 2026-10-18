@@ -64,8 +64,10 @@ bytes. The key includes every presented DER entry, including unused issuers.
 Current leaf validity, the verified path's expiry, full principal and tenant, and
 the configured identity authorization callback still run on every lookup. The
 existing `checkRevocation` policy limits leaf validity windows; it does not query
-a dynamic Cloud revocation service. Clock rollback forces a fresh path check,
-failed checks are not cached, and new credentials or trust create a fresh cache.
+a dynamic Cloud revocation service. Rollback of the verifier's actual clock
+forces a fresh path check. Concurrent callers' snapshot timestamps retain their
+own validity bounds without evicting newer proofs or extending cache lifetimes.
+Failed checks are not cached, and new credentials or trust create a fresh cache.
 
 A device's mesh address is the ULA pool `fd45:b891:567f::/48` followed by the
 last ten bytes of its device UUID, verbatim. Each point-to-point TUN carries the

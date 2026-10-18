@@ -245,7 +245,7 @@ func buildPeerCertificateVerifier(caPool *x509.CertPool, caCerts []*x509.Certifi
 func buildPeerCertificateVerifierWithCache(caPool *x509.CertPool, caCerts []*x509.Certificate, logger *zap.Logger, notBeforeFloor time.Time, cache *peerPathCache) func([][]byte, time.Time) (time.Time, error) {
 	return func(rawCerts [][]byte, realNow time.Time) (time.Time, error) {
 		if cache != nil {
-			cache.observe(realNow)
+			cache.observe()
 		}
 		if len(rawCerts) == 0 {
 			return time.Time{}, fmt.Errorf("no client certificate presented")

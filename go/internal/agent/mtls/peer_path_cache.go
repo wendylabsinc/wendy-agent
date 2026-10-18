@@ -26,8 +26,10 @@ type peerPathCache struct {
 	bytes      int
 	maxEntries int
 	maxBytes   int
-	clock      func() time.Time // time.Now retains a monotonic component.
-	highWater  time.Time        // Wall clock only, across all observed lookups.
+	clock      func() peerPathClockSample
+	highWater  time.Time // Actual wall clock, never a caller snapshot timestamp.
+	rollback   bool
+	generation uint64
 }
 
 type peerPathEntry struct {
@@ -38,8 +40,17 @@ type peerPathEntry struct {
 	verifiedEffective, expires  time.Time
 }
 
+// Separate fields let tests move wall time backwards while monotonic time
+// continues forward, matching a real system-clock adjustment.
+type peerPathClockSample struct {
+	wall, monotonic time.Time
+}
+
 func newPeerPathCache() *peerPathCache {
-	return &peerPathCache{entries: make(map[[sha256.Size]byte]*list.Element), maxEntries: peerPathCacheEntries, maxBytes: peerPathCacheBytes, clock: time.Now}
+	return &peerPathCache{entries: make(map[[sha256.Size]byte]*list.Element), maxEntries: peerPathCacheEntries, maxBytes: peerPathCacheBytes, clock: func() peerPathClockSample {
+		now := time.Now()
+		return peerPathClockSample{wall: now.Round(0), monotonic: now}
+	}}
 }
 
 func samePeerChain(a, b [][]byte) bool {
@@ -83,41 +94,62 @@ func (c *peerPathCache) remove(element *list.Element) {
 	c.bytes -= entry.bytes
 }
 
-// observe includes calls rejected by per-call policy before path verification,
-// so an expiry failure followed by a wall rollback cannot reuse an older proof.
-func (c *peerPathCache) observe(now time.Time) {
-	now = now.Round(0)
-	c.mu.Lock()
-	if now.After(c.highWater) {
-		c.highWater = now
+// sampleLocked observes the actual clock under the same lock as highWater.
+// Sampling outside the lock would mistake scheduler reordering for rollback.
+// A generation prevents a verification that spans an observed rollback from
+// inserting its result even if wall time catches up before it finishes.
+func (c *peerPathCache) sampleLocked() (peerPathClockSample, bool) {
+	now := c.clock()
+	now.wall = now.wall.Round(0)
+	if now.wall.Before(c.highWater) {
+		if !c.rollback {
+			c.generation++
+			clear(c.entries)
+			c.recency.Init()
+			c.bytes = 0
+		}
+		c.rollback = true
+		return now, false
 	}
+	c.highWater = now.wall
+	c.rollback = false
+	return now, true
+}
+
+// observe includes calls rejected before path verification. Caller-provided
+// snapshot times are authorization inputs, not observations of the system clock.
+func (c *peerPathCache) observe() {
+	c.mu.Lock()
+	c.sampleLocked()
 	c.mu.Unlock()
 }
 
-// verify requires both clocks used by path verification to move forward. A
-// rollback always repeats verification, even if it remains inside a leaf's
-// validity window. The fixed monotonic age prevents a stalled wall clock from
-// extending reuse. Effective time is separate because a NotBefore floor can
-// change discontinuously when wall time catches up with provisioning time.
+func (entry peerPathEntry) current(now peerPathClockSample) bool {
+	age := now.monotonic.Sub(entry.verifiedClock)
+	return age >= 0 && age < peerPathCacheAge && now.wall.Before(entry.expires)
+}
+
+// verify retains the caller's wall/effective bounds for the selected path.
+// Older snapshots may need their own verification, but cannot evict a current
+// proof or extend its fixed monotonic lifetime. Actual clock rollback disables
+// reuse independently of snapshot ordering.
 func (c *peerPathCache) verify(chain [][]byte, wall, effective time.Time, verify func([][]byte, time.Time) (time.Time, error)) (time.Time, error) {
 	wall, effective = wall.Round(0), effective.Round(0)
 	key, size, cacheable := peerChainKey(chain, c.maxBytes)
 	cacheable = cacheable && c.maxEntries > 0
-	started := c.clock()
 	c.mu.Lock()
-	if wall.After(c.highWater) {
-		c.highWater = wall
-	}
+	started, canReuse := c.sampleLocked()
+	generation := c.generation
 	if element := c.entries[key]; cacheable && element != nil {
 		entry := element.Value.(peerPathEntry)
-		age := started.Sub(entry.verifiedClock)
-		if !wall.Before(c.highWater) && !wall.Before(entry.verifiedWall) && !effective.Before(entry.verifiedEffective) &&
-			wall.Before(entry.expires) && effective.Before(entry.expires) && age >= 0 && age < peerPathCacheAge && samePeerChain(chain, entry.chain) {
+		if !entry.current(started) {
+			c.remove(element)
+		} else if canReuse && !wall.Before(entry.verifiedWall) && !effective.Before(entry.verifiedEffective) &&
+			wall.Before(entry.expires) && effective.Before(entry.expires) && samePeerChain(chain, entry.chain) {
 			c.recency.MoveToFront(element)
 			c.mu.Unlock()
 			return entry.expires, nil
 		}
-		c.remove(element)
 	}
 	c.mu.Unlock()
 	if !cacheable {
@@ -135,17 +167,24 @@ func (c *peerPathCache) verify(chain [][]byte, wall, effective time.Time, verify
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	age := c.clock().Sub(started)
-	if wall.Before(c.highWater) || !wall.Before(expires) || !effective.Before(expires) || age < 0 || age >= peerPathCacheAge {
+	finished, stillCurrent := c.sampleLocked()
+	age := finished.monotonic.Sub(started.monotonic)
+	if !canReuse || !stillCurrent || generation != c.generation || !finished.wall.Before(expires) ||
+		!wall.Before(expires) || !effective.Before(expires) || age < 0 || age >= peerPathCacheAge {
 		return expires, nil
 	}
 	if previous := c.entries[key]; previous != nil {
+		if previous.Value.(peerPathEntry).current(finished) {
+			// A concurrent verification already installed a current proof. Keep
+			// its time bounds and deadline, regardless of completion ordering.
+			return expires, nil
+		}
 		c.remove(previous)
 	}
 	for c.recency.Len() >= c.maxEntries || c.bytes+size > c.maxBytes {
 		c.remove(c.recency.Back())
 	}
-	entry := peerPathEntry{key: key, chain: copyChain, bytes: size, verifiedWall: wall, verifiedClock: started, verifiedEffective: effective, expires: expires}
+	entry := peerPathEntry{key: key, chain: copyChain, bytes: size, verifiedWall: wall, verifiedClock: started.monotonic, verifiedEffective: effective, expires: expires}
 	c.entries[key] = c.recency.PushFront(entry)
 	c.bytes += size
 	return expires, nil
