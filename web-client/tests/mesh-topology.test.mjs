@@ -182,6 +182,73 @@ test("re-reading a cached runtime snapshot does not reset its capture age", () =
   assert.equal(isStale(disabled, 40_000), false);
 });
 
+test("disabled control runtime needs fresh reads but no node capture timestamp", () => {
+  const disabled = mergeMeshObservation(
+    undefined,
+    {
+      status: "ok",
+      observedAt: new Date(40_000).toISOString(),
+      topology: snapshot(a, {
+        runtimeAvailable: false,
+        capturedAtUnixMs: "0",
+        status: {
+          runtimeAvailable: true,
+          state: "disabled",
+          configured: { participate: false },
+        },
+      }),
+    },
+    40_000,
+  );
+  const group = buildMeshGroups([device(a)], { [a]: disabled }, 40_000)
+    .groups[0];
+  assert.equal(isStale(disabled, 40_000), false);
+  assert.equal(nodeState(group.nodes[0], 40_000).label, "Disabled");
+  assert.equal(isStale(disabled, 70_001), true);
+  assert.equal(nodeState(group.nodes[0], 70_001).label, "Stale");
+
+  const failure = mergeMeshObservation(
+    disabled,
+    { status: "unavailable", error: "Timed out" },
+    41_000,
+  );
+  assert.equal(failure.topology, disabled.topology);
+  assert.equal(failure.receivedAt, 40_000);
+  assert.equal(isStale(failure, 41_000), true);
+  assert.equal(
+    nodeState({ ...group.nodes[0], observation: failure }, 41_000).label,
+    "Stale",
+  );
+});
+
+test("active or retained node snapshots still require valid capture times", () => {
+  for (const capturedAtUnixMs of [undefined, "0", "invalid", "1000", "90000"]) {
+    // An active-state claim still requires a capture even if the top-level
+    // flag was omitted or incorrectly returned false.
+    assert.equal(
+      isStale(
+        observe(snapshot(a, { runtimeAvailable: false, capturedAtUnixMs }), 40_000),
+        40_000,
+      ),
+      true,
+    );
+    // Disabling participation cannot make retained, old runtime data fresh.
+    assert.equal(
+      isStale(
+        observe(
+          snapshot(a, {
+            capturedAtUnixMs,
+            status: { state: "disabled", configured: { participate: false } },
+          }),
+          40_000,
+        ),
+        40_000,
+      ),
+      true,
+    );
+  }
+});
+
 test("same principal reached by two targets keeps its newest successful snapshot", () => {
   const group = buildMeshGroups(
     [{ id: "cloud" }, { id: "lan" }],

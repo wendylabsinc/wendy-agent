@@ -129,16 +129,18 @@ function inventoryIdentity(device: MeshDevice) {
 export function isStale(observation: MeshObservation | undefined, now: number) {
   if (!observation?.topology) return false;
   const captured = Number(observation.topology.capturedAtUnixMs || 0);
-  const running =
+  // The status runtime can be available while participation is disabled and
+  // no node snapshot exists. Its availability does not imply a capture time.
+  const hasRuntimeSnapshot =
     observation.topology.runtimeAvailable ||
-    observation.topology.status?.runtimeAvailable;
+    observation.topology.status?.state === "mesh-active";
   return (
     observation.result.status !== "ok" ||
     !observation.receivedAt ||
     now - observation.receivedAt > MESH_STALE_MS ||
     // A successful RPC may contain an old cached runtime snapshot. A missing,
     // invalid or far-future device clock cannot establish fresh peer state.
-    (!!running &&
+    (!!hasRuntimeSnapshot &&
       (!Number.isFinite(captured) ||
         captured <= 0 ||
         now - captured > MESH_STALE_MS ||

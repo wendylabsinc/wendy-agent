@@ -27,7 +27,7 @@ func topologyFixture(t *testing.T) (meshid.Device, localmesh.NodeSnapshot, time.
 	return self, localmesh.NodeSnapshot{
 		Self: self, CapturedAt: now, Peers: 2,
 		Links:               []localmesh.PeerLink{{ID: 2, Device: peer, Cost: 4096, Transport: "ble"}, {ID: 1, Device: peer, Cost: 64, Transport: "ethernet"}},
-		Devices:             []localmesh.Manifest{{Version: 2, Device: peer.UUID(), Revision: 42, Name: "peer", Issued: now.Add(-time.Second).UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), Route: &origin}},
+		Devices:             []localmesh.Manifest{{Version: localmesh.ManifestVersionRoute, Device: peer.UUID(), Revision: 42, Name: "peer", Issued: now.Add(-time.Second).UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), Route: &origin}},
 		Routes:              []babel.Route{{Prefix: origin.Prefix, RouterID: origin.RouterID, Seqno: origin.Seqno, Metric: 128, Link: 1, NextHop: netip.MustParseAddr("fe80::2")}, {Prefix: netip.PrefixFrom(self.MeshAddress(), 128), Local: true}},
 		RouteAuthorizations: map[localmesh.RouteOrigin]bool{origin: true},
 	}, now
@@ -135,7 +135,7 @@ func TestLocalMeshTopologyBounds(t *testing.T) {
 		id := babel.LinkID(i + 1)
 		origin := localmesh.RouteOrigin{Prefix: netip.PrefixFrom(peer.MeshAddress(), 128), RouterID: babel.RouterID(id), Seqno: 1}
 		snapshot.Links = append(snapshot.Links, localmesh.PeerLink{ID: id, Device: peer, Cost: 64})
-		snapshot.Devices = append(snapshot.Devices, localmesh.Manifest{Version: 2, Device: peer.UUID(), Revision: 1, Route: &origin})
+		snapshot.Devices = append(snapshot.Devices, localmesh.Manifest{Version: localmesh.ManifestVersionRoute, Device: peer.UUID(), Revision: 1, Route: &origin})
 		snapshot.Routes = append(snapshot.Routes, babel.Route{Prefix: origin.Prefix, Link: id})
 	}
 	got := projectLocalMeshTopology(self, snapshot, now)
