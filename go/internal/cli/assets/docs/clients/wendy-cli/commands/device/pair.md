@@ -22,10 +22,22 @@ Bluetooth scans on the connected WendyOS device. Unnamed peripherals are hidden
 by default; `h` shows or hides them. `Enter` connects and pairs, and `d`
 disconnects the selected peripheral.
 
-SensorLink discovers sources on the CLI's local network. Devices must belong to
-the same organization as the target device, and you must be logged into that
-organization. An mTLS Wendy Lite source with a valid advertised PKI principal can
-pair without a numeric asset ID when the target Agent supports principal pairing.
+SensorLink discovers sources on the connected WendyOS device's network: WendyOS
+devices and Wendy Lite boards that advertise sensors. The device does not list
+itself. The source must be reachable from that device, even when the CLI runs
+elsewhere, for example over Wendy Cloud. Addresses in the list are the ones the
+device sees. After pairing, the device finds the source by its identity, so a
+source whose address changes is found again.
+
+If the device's agent is too old to scan its own network, the tab scans the
+CLI's local network instead and labels the list. The device can pair only with
+sources it can reach, so update its agent to list those. Other discovery errors,
+such as an unreachable device, are reported instead of falling back.
+
+Sources must belong to the same organization as the target device, and you must
+be logged into that organization. An mTLS Wendy Lite source with a valid
+advertised PKI principal can pair without a numeric asset ID when the target
+Agent supports principal pairing.
 Update the target Agent if it reports that principal pairing is unsupported.
 Sources without either a numeric asset ID or an authenticated PKI identity appear
 under "Found sensors that need enrollment". Enroll those sources before pairing,
