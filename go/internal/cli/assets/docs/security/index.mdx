@@ -64,8 +64,37 @@ Each key has one role:
 | Role | May |
 |------|-----|
 | `owner` | everything, including managing trusted keys, enrolling and unenrolling the device |
-| `operator` | apps and containers, builds, logs and telemetry, shell, tunnels, drivers, device settings, agent and OS updates |
-| `viewer` | reads only: device info, lists, status, logs and telemetry |
+| `operator` | everything a viewer may, plus apps and containers, builds, shell, tunnels, drivers, device settings, camera and audio settings, data recording, ROS 2 and robot control, agent and OS updates |
+| `viewer` | reads only: device info, lists, status, logs and telemetry, the kernel log, live camera and microphone streams, ROS 2 topic echo and bag downloads, recorded data downloads, the robot state stream |
+
+A viewer may call exactly these (generated from the agent's role table; a test keeps this list
+in step with it):
+
+{/* viewer-methods:begin */}
+- `BLE`: agent_version, apps_list, bluetooth_list, hardware_list, wifi_known_list, wifi_list, wifi_status
+- `wendy.agent.services.v1.WendyAgentService`: DumpKernelLog, GetAgentVersion, GetOSUpdateStatus, GetPowerMode, GetWiFiStatus, ListHardwareCapabilities, ListKnownWiFiNetworks, ListWiFiNetworks, ScanBluetoothPeripherals
+- `wendy.agent.services.v1.WendyAudioService`: ListAudioDevices, StreamAudio, StreamAudioLevels
+- `wendy.agent.services.v1.WendyContainerService`: GetContainerPorts, GetResourceStats, ListContainerStats, ListContainers, ListLayers, ListVolumes
+- `wendy.agent.services.v1.WendyProvisioningService`: IsProvisioned
+- `wendy.agent.services.v1.WendyTelemetryService`: StreamLogs, StreamMetrics, StreamTraces
+- `wendy.agent.services.v1.WendyVideoService`: GetCameraControls, ListVideoDevices, StreamVideo
+- `wendy.agent.services.v2.DataService`: CampaignInspect, Campaigns, Download, Episodes, Events, Inspect, Sources, Status
+- `wendy.agent.services.v2.ROS2Service`: Doctor, DownloadBag, EchoTopic, GetActionInfo, GetGraph, GetLifecycleState, GetParam, GetTopicInfo, ListActions, ListBags, ListComponents, ListLifecycleNodes, ListLifecycleTransitions, ListNodes, ListParams, ListServices, ListTopics, MonitorHz
+- `wendy.agent.services.v2.WendyAudioService`: ListAudioDevices, StreamAudio, StreamAudioLevels
+- `wendy.agent.services.v2.WendyBluetoothService`: ScanBluetoothPeripherals
+- `wendy.agent.services.v2.WendyBuildService`: GetBuildCapabilities
+- `wendy.agent.services.v2.WendyContainerService`: ListContainerStats, ListContainers, ListVolumes
+- `wendy.agent.services.v2.WendyDeviceInfoService`: GetDeviceInfo, ListHardwareCapabilities
+- `wendy.agent.services.v2.WendyDriverService`: ListDrivers
+- `wendy.agent.services.v2.WendyOSUpdateService`: GetOSUpdateStatus
+- `wendy.agent.services.v2.WendyProvisioningService`: CheckACMERevocation, IsProvisioned
+- `wendy.agent.services.v2.WendySensorPairingService`: ListSensorPairings
+- `wendy.agent.services.v2.WendyTelemetryService`: StreamLogs, StreamMetrics, StreamTraces
+- `wendy.agent.services.v2.WendyTimeSyncService`: GetClock
+- `wendy.agent.services.v2.WendyUnitreeRobotService`: Stream
+- `wendy.agent.services.v2.WendyUnitreeService`: DiscoverUnitreeRobots, ListUnitreePairings
+- `wendy.agent.services.v2.WendyWiFiService`: GetWiFiStatus, ListKnownWiFiNetworks, ListWiFiNetworks
+{/* viewer-methods:end */}
 
 - **One check on every channel.** A single method→role table runs on the mTLS port, the BLE
   channel, the admin socket inside entitled containers (treated as `operator`) and the legacy
