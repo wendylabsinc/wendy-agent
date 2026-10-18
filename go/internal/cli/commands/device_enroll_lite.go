@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteenroll"
@@ -99,7 +100,11 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if err != nil {
 		return err
 	}
-	cfg, err := liteenroll.Config(auth, "lite-"+identity.ID, opts.csrURL, opts.timeURL, opts.brokerHost, opts.brokerPort)
+	deviceID, err := liteEnrollmentDeviceID(identity.ID, challenge.GetUuidEnrollmentSupported())
+	if err != nil {
+		return err
+	}
+	cfg, err := liteenroll.Config(auth, deviceID, opts.csrURL, opts.timeURL, opts.brokerHost, opts.brokerPort)
 	if err != nil {
 		return err
 	}
@@ -190,6 +195,17 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Enrolled %s as asset %s. Broker presence is reported after the board establishes mTLS; check 'wendy cloud discover'.\n", name, asset)
 	return nil
+}
+
+func liteEnrollmentDeviceID(hardwareID string, supportsUUID bool) (string, error) {
+	if !supportsUUID {
+		return "lite-" + hardwareID, nil
+	}
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return "", fmt.Errorf("generating enrollment device UUID: %w", err)
+	}
+	return id.String(), nil
 }
 
 func waitLiteEnrollment(ctx context.Context, target models.ExternalDevice) error {

@@ -44,7 +44,7 @@ func addLiteDeviceTrust(cfg *tls.Config, operator tls.Certificate, chain, device
 		}
 		own, ownOK, ownErr := certs.IdentityFromCert(client)
 		peer, peerOK, peerErr := certs.IdentityFromCert(leaf)
-		principal := "spiffe://wendy.sh/tenant/" + own.TenantUUID + "/device/lite-" + strings.TrimPrefix(deviceID, "lite-")
+		principal := "spiffe://wendy.sh/tenant/" + own.TenantUUID + "/device/" + enrollmentDeviceID(deviceID)
 		if ownErr != nil || !ownOK || peerErr != nil || !peerOK || peer.Principal != principal {
 			return err
 		}
