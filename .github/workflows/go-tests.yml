@@ -7,6 +7,8 @@ on:
     paths:
       - 'go/**'
       - 'web-client/mcp-app/**'
+      - 'web-client/package.json'
+      - 'web-client/scripts/build-wasm.mjs'
       - 'go/simulator/go2/go2_sim/**'
       - 'Proto/**'
       - 'go.mod'
@@ -24,6 +26,8 @@ on:
     paths:
       - 'go/**'
       - 'web-client/mcp-app/**'
+      - 'web-client/package.json'
+      - 'web-client/scripts/build-wasm.mjs'
       - 'go/simulator/go2/go2_sim/**'
       - 'Proto/**'
       - 'go.mod'
@@ -104,6 +108,28 @@ jobs:
           go build ./internal/cli/... ./cmd/wendy/
           go test -c -o /dev/null ./internal/cli/commands
 
+  wasm:
+    name: Browser WASM
+    runs-on: runs-on,runner=2cpu-linux-x64
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go and Node
+        uses: ./.github/actions/setup-go-ci
+        with:
+          cache-name: wasm
+
+      - name: Build browser WASM assets
+        run: npm --prefix web-client run build:wasm
+
+      - name: Run WASM tests in Node
+        env:
+          GOOS: js
+          GOARCH: wasm
+          CGO_ENABLED: '0'
+        run: go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./go/cmd/wendy-web ./go/internal/cli/browserauth ./go/internal/shared/flock -count=1 -timeout 120s
+
   windows-telemetry:
     name: Windows telemetry
     runs-on: windows-latest
@@ -155,7 +181,7 @@ jobs:
   test:
     name: Test
     if: ${{ always() }}
-    needs: [unit-tests, windows, windows-telemetry, vet, agent-startup]
+    needs: [unit-tests, windows, windows-telemetry, wasm, vet, agent-startup]
     runs-on: ubuntu-latest
     steps:
       - name: Check test results
@@ -163,12 +189,14 @@ jobs:
           RACE_RESULT: ${{ needs.unit-tests.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
           WINDOWS_TELEMETRY_RESULT: ${{ needs.windows-telemetry.result }}
+          WASM_RESULT: ${{ needs.wasm.result }}
           VET_RESULT: ${{ needs.vet.result }}
           STARTUP_RESULT: ${{ needs.agent-startup.result }}
         run: |
           test "$RACE_RESULT" = success
           test "$WINDOWS_RESULT" = success
           test "$WINDOWS_TELEMETRY_RESULT" = success
+          test "$WASM_RESULT" = success
           test "$VET_RESULT" = success
           test "$STARTUP_RESULT" = success
 
