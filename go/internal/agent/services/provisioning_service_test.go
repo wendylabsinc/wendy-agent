@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,9 +16,12 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
@@ -251,6 +255,36 @@ func TestUnprovision_ClearsStateAndFiles(t *testing.T) {
 	// A subsequent unprovision should fail (already cleared).
 	if _, err := svc.Unprovision(context.Background(), &agentpb.UnprovisionRequest{}); err == nil {
 		t.Error("expected error when unprovisioning an already-unprovisioned device")
+	}
+}
+
+// CanUnprovision refuses before anything changes, on v1 and v2: the device
+// stays enrolled with every state file in place.
+func TestUnprovision_RefusedByCanUnprovision(t *testing.T) {
+	svc, tmpDir := newTestProvisioningService(t)
+	defer os.RemoveAll(tmpDir)
+	if _, err := svc.StartProvisioning(context.Background(), &agentpb.StartProvisioningRequest{
+		OrganizationId: 7, CloudHost: "unprov.wendy.io", AssetId: 70,
+	}); err != nil {
+		t.Fatalf("StartProvisioning: %v", err)
+	}
+	svc.CanUnprovision = func() error { return errors.New("device could not start unenrolled") }
+	svc.BeforeUnprovisioned = func() { t.Error("BeforeUnprovisioned ran on a refused unprovision") }
+	svc.OnUnprovisioned = func() { t.Error("OnUnprovisioned ran on a refused unprovision") }
+
+	if _, err := svc.Unprovision(context.Background(), &agentpb.UnprovisionRequest{}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("v1 Unprovision = %v, want FailedPrecondition", err)
+	}
+	if _, err := NewProvisioningServiceV2(svc).Unprovision(context.Background(), &agentpbv2.UnprovisionRequest{}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("v2 Unprovision = %v, want FailedPrecondition", err)
+	}
+	if _, _, _, enrolled := svc.ProvisioningInfo(); !enrolled {
+		t.Fatal("refused unprovision cleared enrollment")
+	}
+	for _, f := range []string{"provisioning.json", "device-key.pem", "device.pem", "ca.pem", ".provisioned"} {
+		if _, err := os.Stat(filepath.Join(tmpDir, f)); err != nil {
+			t.Errorf("%s removed by a refused unprovision: %v", f, err)
+		}
 	}
 }
 

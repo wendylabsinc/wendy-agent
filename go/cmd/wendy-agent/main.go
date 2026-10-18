@@ -485,9 +485,13 @@ func main() {
 	// back when the device is unenrolled.
 	_, _, _, enrolled := provisioningSvc.ProvisioningInfo()
 	localOperatorsAtBoot(logger, trustedKeys, enrolled)
-	if err := checkLocalAccessMode(os.Getenv("WENDY_LOCAL_ACCESS"), trustedKeys); err != nil {
+	localAccessMode := os.Getenv("WENDY_LOCAL_ACCESS")
+	if err := checkLocalAccessMode(localAccessMode, trustedKeys); err != nil {
 		logger.Fatal("refusing to start", zap.Error(err))
 	}
+	// An enrolled `required` device boots without an owner key; unenrolling
+	// it would leave an agent that refuses every start. Refuse the unenroll.
+	provisioningSvc.CanUnprovision = func() error { return checkUnenrollLocalAccess(localAccessMode, trustedKeys) }
 	localAccess := trustedKeys.Present()
 	if localAccess && !trustedKeys.Dormant() {
 		logger.Info("local access: trusted keys present; plaintext pre-enroll listener disabled",
@@ -1363,18 +1367,34 @@ func checkLocalAccessMode(mode string, keys *trustedkeys.Store) error {
 	case "", "auto":
 		return nil
 	case "required":
-		if keys.Dormant() {
+		if keys.Dormant() || hasOwnerKey(keys) {
 			return nil // cloud-enrolled: cloud is the authority
-		}
-		for _, e := range keys.List() {
-			if e.EntryRole() == trustedkeys.RoleOwner {
-				return nil
-			}
 		}
 		return fmt.Errorf("WENDY_LOCAL_ACCESS=required but the trusted keys file has no owner key")
 	default:
 		return fmt.Errorf("WENDY_LOCAL_ACCESS has unrecognised value %q (want auto or required)", mode)
 	}
+}
+
+// checkUnenrollLocalAccess re-evaluates WENDY_LOCAL_ACCESS for the unenrolled
+// boot that follows an unenroll: under "required" the saved keys must hold an
+// owner (they cannot change while enrolled), or the agent would refuse every
+// start and only a reinstall would recover the device.
+func checkUnenrollLocalAccess(mode string, keys *trustedkeys.Store) error {
+	if mode == "required" && !hasOwnerKey(keys) {
+		return fmt.Errorf("WENDY_LOCAL_ACCESS=required and the trusted keys file has no owner key: the device could not start unenrolled")
+	}
+	return nil
+}
+
+// hasOwnerKey reads the saved keys whether or not they are dormant.
+func hasOwnerKey(keys *trustedkeys.Store) bool {
+	for _, e := range keys.List() {
+		if e.EntryRole() == trustedkeys.RoleOwner {
+			return true
+		}
+	}
+	return false
 }
 
 // localServerIdentity is the mTLS server identity of a device that is not

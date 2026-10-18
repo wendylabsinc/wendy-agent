@@ -150,4 +150,24 @@ func TestLocalOperatorsAtBoot(t *testing.T) {
 	if err := checkLocalAccessMode("required", unenrolled); err == nil {
 		t.Fatal("required without an owner key booted on an unenrolled device")
 	}
+
+	// Unenroll re-evaluates `required` against the saved (dormant) keys: an
+	// enrolled `required` box without an owner key must not unenroll into an
+	// agent that refuses every start.
+	if err := checkUnenrollLocalAccess("required", enrolled); err == nil {
+		t.Fatal("required without an owner key allowed an unenroll")
+	}
+	if err := checkUnenrollLocalAccess("auto", enrolled); err != nil {
+		t.Fatalf("auto refused an unenroll: %v", err)
+	}
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.MarshalPKIXPublicKey(k.Public())
+	enrolled.SetDormant(false) // writes are refused while enrolled; seed as before enrollment
+	if _, err := enrolled.Add(der, trustedkeys.RoleOwner, "", trustedkeys.AddedByInstall, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	enrolled.SetDormant(true)
+	if err := checkUnenrollLocalAccess("required", enrolled); err != nil {
+		t.Fatalf("required with a saved owner key refused an unenroll: %v", err)
+	}
 }
