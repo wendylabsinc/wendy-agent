@@ -26,13 +26,14 @@ import (
 )
 
 type nodePeer struct {
-	id      babel.LinkID
-	device  meshid.Device
-	cost    uint16
-	link    nodeLink
-	tun     *os.File
-	control chan ControlMessage
-	sync    *Synchronizer
+	id        babel.LinkID
+	device    meshid.Device
+	cost      uint16
+	transport string
+	link      nodeLink
+	tun       *os.File
+	control   chan ControlMessage
+	sync      *Synchronizer
 }
 
 type nodeLink interface {
@@ -174,6 +175,10 @@ func (n *Node) Snapshot() NodeSnapshot {
 		}
 	}
 	out.Routes = append([]babel.Route(nil), v.Routes...)
+	out.RouteAuthorizations = make(map[RouteOrigin]bool, len(v.RouteAuthorizations))
+	for origin, authorized := range v.RouteAuthorizations {
+		out.RouteAuthorizations[origin] = authorized
+	}
 	out.Devices = append([]Manifest(nil), v.Devices...)
 	for i := range out.Devices {
 		if route := out.Devices[i].Route; route != nil {
@@ -193,10 +198,11 @@ func (n *Node) HasCheaperLink(device meshid.Device, cost uint16) bool {
 }
 
 func (n *Node) refresh() {
-	devices := n.directory.Snapshot(time.Now())
+	now := time.Now()
+	devices := n.directory.Snapshot(now)
 	links := make([]PeerLink, 0, len(n.peers))
 	for _, p := range n.peers {
-		link := PeerLink{Device: p.device, Cost: p.cost}
+		link := PeerLink{ID: p.id, Device: p.device, Cost: p.cost, Transport: p.transport}
 		if stream, ok := p.link.(*streamNodeLink); ok {
 			link.queue = stream.ipPackets
 		}
@@ -208,7 +214,7 @@ func (n *Node) refresh() {
 		}
 		return meshid.Compare(links[i].Device, links[j].Device) < 0
 	})
-	n.view.Store(&NodeSnapshot{Peers: len(n.peers), Links: links, Devices: devices, Routes: n.routing.Snapshot().Routes})
+	n.view.Store(&NodeSnapshot{Self: n.Credentials.Device, CapturedAt: now, Peers: len(n.peers), Links: links, Devices: devices, Routes: n.routing.Snapshot().Routes, RouteAuthorizations: n.directory.RouteAuthorizations(now)})
 }
 
 func (n *Node) Run() error {
@@ -456,7 +462,7 @@ func (n *Node) AttachWithCost(ctx context.Context, peer meshid.Device, conn *qui
 	if err != nil {
 		return err
 	}
-	return n.attachLink(ctx, peer, cost, quicNodeLink{conn, stream})
+	return n.attachLink(WithCarrier(ctx, carrierName(ctx, "quic")), peer, cost, quicNodeLink{conn, stream})
 }
 
 // AttachStream admits a mutually authenticated TLS 1.3 byte stream. The
@@ -473,7 +479,7 @@ func (n *Node) AttachStream(ctx context.Context, peer meshid.Device, conn net.Co
 	if err := OpenStreamHello(ctx, conn, n.Credentials.Device, peer); err != nil {
 		return err
 	}
-	return n.attachLink(ctx, peer, cost, newStreamNodeLink(conn))
+	return n.attachLink(WithCarrier(ctx, carrierName(ctx, "tls-stream")), peer, cost, newStreamNodeLink(conn))
 }
 
 func (n *Node) verifyPeerCertificates(peer meshid.Device, certs []*x509.Certificate) error {
@@ -498,7 +504,7 @@ func (n *Node) attachLink(ctx context.Context, peer meshid.Device, cost uint16, 
 	if cost == 0 || cost == ^uint16(0) {
 		return errors.New("invalid local-mesh link cost")
 	}
-	p := &nodePeer{device: peer, cost: cost, link: link, control: make(chan ControlMessage, 128)}
+	p := &nodePeer{device: peer, cost: cost, transport: carrierName(ctx, "unknown"), link: link, control: make(chan ControlMessage, 128)}
 	if err := n.request(ctx, nodeEvent{add: p}); err != nil {
 		return err
 	}

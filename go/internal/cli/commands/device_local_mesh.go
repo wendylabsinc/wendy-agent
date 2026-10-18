@@ -1,12 +1,27 @@
 package commands
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/browserauth"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
+
+var connectLocalMeshTopology = connectToAgent
+var observedLocalMeshTopologyIdentity = func(conn *grpcclient.AgentConnection) (certs.WendyIdentity, bool) {
+	return conn.ObservedServerIdentity()
+}
+
+const localMeshTopologyTimeout = 15 * time.Second
 
 // Register this constructor under the device command's manage group.
 func newDeviceLocalMeshCmd() *cobra.Command {
@@ -55,8 +70,102 @@ func newDeviceLocalMeshCmd() *cobra.Command {
 		}
 		return printLocalMeshStatus(cmd, response)
 	}}
-	root.AddCommand(configure, inspect)
+	root.AddCommand(configure, inspect, newDeviceLocalMeshTopologyCmd())
 	return root
+}
+
+func newDeviceLocalMeshTopologyCmd() *cobra.Command {
+	var observation bool
+	cmd := &cobra.Command{
+		Use:   "topology",
+		Short: "Show the selected device's observed mesh peers, routes and route proofs",
+		Long:  "Reads one live topology snapshot from the selected agent. Observations are local to that device; they do not prove fleet-wide reachability. Use --json for the complete snapshot.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if observation && !jsonOutput {
+				return fmt.Errorf("--observation requires --json")
+			}
+			topology, err := readLocalMeshTopology(cmd.Context())
+			if observation {
+				return printLocalMeshObservation(cmd, topology, err)
+			}
+			if err != nil {
+				return err
+			}
+			return printLocalMeshTopology(cmd, topology)
+		},
+	}
+	cmd.Flags().BoolVar(&observation, "observation", false, "With --json, emit a typed observation result including unsupported, unavailable and unauthorized states")
+	return cmd
+}
+
+func readLocalMeshTopology(parent context.Context) (*pb.LocalMeshTopology, error) {
+	ctx, cancel := context.WithTimeout(parent, localMeshTopologyTimeout)
+	defer cancel()
+	conn, err := connectLocalMeshTopology(ctx, ReadOnlyMonitoring())
+	if err != nil {
+		return nil, err
+	}
+	if conn == nil {
+		return nil, fmt.Errorf("local mesh topology requires a WendyOS agent")
+	}
+	defer conn.Close()
+	if conn.Conn == nil {
+		return nil, fmt.Errorf("local mesh topology requires a WendyOS agent")
+	}
+	client := pb.NewWendyLocalMeshAdminServiceClient(conn.Conn)
+	topology, err := client.GetLocalMeshTopology(ctx, &pb.GetLocalMeshTopologyRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("reading local mesh topology: %w", err)
+	}
+	peer, verified := observedLocalMeshTopologyIdentity(conn)
+	if !verified {
+		return nil, status.Error(codes.Unauthenticated, "topology reporter identity was not verified")
+	}
+	if err := browserauth.ValidateTopologyReporter(topology, peer); err != nil {
+		return nil, err
+	}
+	return topology, nil
+}
+
+func printLocalMeshObservation(cmd *cobra.Command, topology *pb.LocalMeshTopology, readErr error) error {
+	var observation browserauth.TopologyObservation
+	if readErr != nil {
+		observation = browserauth.TopologyFailure(readErr)
+	} else {
+		data, err := (protojson.MarshalOptions{EmitUnpopulated: true}).Marshal(topology)
+		if err != nil {
+			observation = browserauth.TopologyFailure(err)
+		} else {
+			observation = browserauth.TopologyObservation{Status: "ok", Topology: data, ObservedAt: time.Now().UTC()}
+		}
+	}
+	encoder := json.NewEncoder(cmd.OutOrStdout())
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(observation)
+}
+
+func printLocalMeshTopology(cmd *cobra.Command, topology *pb.LocalMeshTopology) error {
+	if topology == nil {
+		return fmt.Errorf("agent returned no local mesh topology snapshot")
+	}
+	if jsonOutput {
+		data, err := (protojson.MarshalOptions{Indent: "  ", EmitUnpopulated: true}).Marshal(topology)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+		return err
+	}
+	captured := "unknown"
+	if topology.GetCapturedAtUnixMs() > 0 {
+		captured = time.UnixMilli(topology.GetCapturedAtUnixMs()).UTC().Format(time.RFC3339Nano)
+	}
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "Device: %s\nMesh address: %s\nCaptured: %s\nRuntime available: %t\nState: %s\n%s\nObserved peers: %d\nRoutes: %d\nRoute announcements: %d\nSnapshot truncated: %t\nUse --json for peer, route and proof details.\n",
+		topology.GetSelfPrincipal(), topology.GetSelfMeshAddress(), captured, topology.GetRuntimeAvailable(),
+		topology.GetStatus().GetState(), topology.GetStatus().GetDetail(), len(topology.GetPeers()),
+		len(topology.GetRoutes()), len(topology.GetAnnouncements()), topology.GetTruncated())
+	return err
 }
 
 func localMeshRequest(cmd *cobra.Command) (*pb.ConfigureLocalMeshRequest, error) {

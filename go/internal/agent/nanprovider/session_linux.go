@@ -513,5 +513,5 @@ func (p Provider) attachPeer(ctx context.Context, id meshid.Device, peer radioPe
 	defer conn.CloseWithError(0, "NAN path stopped")
 	connected(true)
 	defer connected(false)
-	return p.Node.AttachWithCost(ctx, peer.Device, conn, NANLinkCost)
+	return p.Node.AttachWithCost(localmesh.WithCarrier(ctx, "nan"), peer.Device, conn, NANLinkCost)
 }

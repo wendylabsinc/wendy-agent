@@ -1,6 +1,20 @@
 package localmesh
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
+
+func TestCarrierLabelsPreserveActualTransport(t *testing.T) {
+	for _, carrier := range []string{"ethernet", "infrastructure-wifi", "tcp", "nan", "ble", "quic", "tls-stream"} {
+		if got := carrierName(WithCarrier(context.Background(), carrier), "unknown"); got != carrier {
+			t.Fatalf("carrier %q became %q", carrier, got)
+		}
+	}
+	if got := carrierName(WithCarrier(context.Background(), "untrusted-string"), "quic"); got != "quic" {
+		t.Fatalf("invalid carrier label accepted: %q", got)
+	}
+}
 
 func TestSnapshotHasCheaperDirectLink(t *testing.T) {
 	a := testDevice(t, testPrincipal(testTenantUUID, testDeviceAID))

@@ -81,6 +81,18 @@ func (b *bridge) handle(r request) (any, error) {
 	if strings.HasPrefix(r.Method, "shell-") {
 		return nil, errors.New("Shell access is disabled in the browser client")
 	}
+	if r.Method == "mesh-topology" {
+		if js.Global().Get("location").Get("origin").String() != "http://localhost:5173" {
+			return nil, errors.New("Mesh observations require the local browser relay")
+		}
+		var p struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(r.Params, &p); err != nil {
+			return nil, err
+		}
+		return b.auth.MeshTopology(context.Background(), p.ID, browserCloudDial, &http.Client{Transport: authProxyTransport{}, Timeout: 12 * time.Second}), nil
+	}
 	if r.Method == "cloud-connect" {
 		if js.Global().Get("location").Get("origin").String() != "http://localhost:5173" {
 			return nil, errors.New("Cloud sessions require the local browser relay")
@@ -117,7 +129,7 @@ func (b *bridge) handle(r request) (any, error) {
 		b.conn, b.life, b.close = conn, life, stop
 		return true, nil
 	}
-	if r.Method == "cloud-discover" {
+	if r.Method == "cloud-discover" || r.Method == "mesh-discover" {
 		// The local relay has a fixed TLS-verified upstream. Never send the session
 		// token to a caller-supplied relay URL.
 		if js.Global().Get("location").Get("origin").String() != "http://localhost:5173" {
@@ -125,13 +137,13 @@ func (b *bridge) handle(r request) (any, error) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		assets, err := b.auth.Discover(ctx, func(ctx context.Context, _ string) (net.Conn, error) {
+		assets, err := b.auth.DiscoverFiltered(ctx, func(ctx context.Context, _ string) (net.Conn, error) {
 			ws, _, err := websocket.Dial(ctx, "ws://127.0.0.1:8788/cloud", nil)
 			if err != nil {
 				return nil, fmt.Errorf("Browser relay connection failed; check the npm run dev terminal: %w", err)
 			}
 			return websocket.NetConn(ctx, ws, websocket.MessageBinary), nil
-		})
+		}, r.Method == "cloud-discover")
 		profile := b.auth.Profile()
 		if profile.Subject != "" {
 			event("auth-profile", profile)

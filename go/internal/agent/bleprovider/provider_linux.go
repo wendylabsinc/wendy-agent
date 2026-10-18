@@ -409,7 +409,7 @@ func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 	r.requestAdvertisementRefresh()
 	stopCheaperWatch := r.watchCheaperLink(ctx, peer, secure)
 	defer stopCheaperWatch()
-	if err = r.cfg.Node.AttachStream(ctx, peer, secure, LinkCost); err != nil && ctx.Err() == nil {
+	if err = r.cfg.Node.AttachStream(localmesh.WithCarrier(ctx, "ble"), peer, secure, LinkCost); err != nil && ctx.Err() == nil {
 		r.cfg.Logger.Debug("BLE link ended", zap.Stringer("peer", peer.UUID()), zap.Error(err))
 	}
 }
@@ -745,7 +745,7 @@ func (r *runtime) dialLink(ctx context.Context, peer candidate) {
 			r.cfg.Logger.Info("BLE steady-state interval relaxed", zap.String("peer", device.Principal()), zap.Duration("interval", relaxed))
 		}
 	}
-	err = r.cfg.Node.AttachStream(ctx, device, secure, LinkCost)
+	err = r.cfg.Node.AttachStream(localmesh.WithCarrier(ctx, "ble"), device, secure, LinkCost)
 	if err != nil && ctx.Err() == nil {
 		r.cfg.Logger.Debug("BLE link ended", zap.String("radio", peer.address), zap.Error(err))
 	}

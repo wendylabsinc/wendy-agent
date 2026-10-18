@@ -1,12 +1,59 @@
 package browserauth
 
 import (
+	"context"
 	"crypto/x509"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
+	"net"
 	"net/url"
 	"testing"
+	"time"
 )
+
+func TestSlowDeviceConnectionDoesNotLockSessionProfile(t *testing.T) {
+	s, _ := setup(t, nil)
+	if _, err := s.Complete(context.Background(), "valid-code", s.state, testIssuer); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	dialing := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, _ := s.ConnectDevice(ctx, "00000000-0000-4000-8000-000000000001", func(ctx context.Context, _ string) (net.Conn, error) {
+			select {
+			case dialing <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}, nil)
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+	select {
+	case <-dialing:
+	case <-done:
+		t.Fatal("connection did not attempt its authenticated Cloud lookup")
+	case <-ctx.Done():
+		t.Fatal("connection did not begin")
+	}
+	profile := make(chan Profile, 1)
+	go func() { profile <- s.Profile() }()
+	select {
+	case got := <-profile:
+		if got.Tenant == "" {
+			t.Fatal("lost authenticated profile")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("slow device locked unrelated session operations")
+	}
+	cancel()
+	<-done
+}
 
 func TestCloudDeviceIdentityUsesEnrollmentBinding(t *testing.T) {
 	const tenant = "8a53be77-2a69-464f-8f73-83643fe0beaa"

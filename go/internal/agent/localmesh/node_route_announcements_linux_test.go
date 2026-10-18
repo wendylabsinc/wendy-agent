@@ -192,6 +192,13 @@ func TestNodeRoutePublicationSnapshotOwnsRouteBinding(t *testing.T) {
 		t.Fatal("published proof missing from node snapshot")
 	}
 	want := *snapshot.Devices[0].Route
+	if snapshot.Self != n.Credentials.Device || snapshot.CapturedAt.IsZero() || !snapshot.RouteAuthorizations[want] {
+		t.Fatal("snapshot lacks its enrolled identity, capture time, or admitted route origin")
+	}
+	delete(snapshot.RouteAuthorizations, want)
+	if !n.Snapshot().RouteAuthorizations[want] {
+		t.Fatal("caller mutated node route authorization through snapshot")
+	}
 	snapshot.Devices[0].Route.Seqno++
 	snapshot.Devices[0].Route.RouterID++
 	if got := *n.Snapshot().Devices[0].Route; got != want {

@@ -712,6 +712,8 @@ func main() {
 	// true, BuildImage reports "no mesh dialer" rather than panicking.
 	var meshDialer *services.MeshDialer
 	var meshRoster *services.MeshRoster
+	var localMeshMu sync.RWMutex
+	var localMeshSnapshot func() localmesh.NodeSnapshot
 	// All listeners extract into the same per-app context directories. Share
 	// their locks so a local-socket build cannot race an mTLS build for the same
 	// app and replace its source tree while buildctl is reading it.
@@ -729,6 +731,15 @@ func main() {
 			return deviceIdentity(provisioningSvc)
 		})
 		localMeshAdmin.SetRuntimeStatusSource(meshSharing.Status)
+		localMeshAdmin.SetTopologySource(func() localmesh.NodeSnapshot {
+			localMeshMu.RLock()
+			snapshot := localMeshSnapshot
+			localMeshMu.RUnlock()
+			if snapshot == nil {
+				return localmesh.NodeSnapshot{}
+			}
+			return snapshot()
+		})
 		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{
 			ConfigPath:   configPath,
 			Chunks:       buildChunkSource,
@@ -923,8 +934,6 @@ func main() {
 	}
 	alreadyProvisioned := certPEM != "" && keyPEM != ""
 	var localMeshLife meshLifetime
-	var localMeshMu sync.RWMutex
-	var localMeshSnapshot func() localmesh.NodeSnapshot
 	var localMeshCredentials *localmesh.Credentials
 	var localMeshAppClient *meshsession.Client
 	// Persistent VIP table shared by DNS answers, the proxy's reverse

@@ -32,6 +32,7 @@ type LocalMeshAdminService struct {
 	carrierPath string
 	identity    func() (meshid.Tenant, meshid.Device)
 	runtime     func() LocalMeshRuntimeStatus
+	topology    func() localmesh.NodeSnapshot
 	logger      *zap.Logger
 }
 

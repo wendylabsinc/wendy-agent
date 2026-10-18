@@ -294,5 +294,5 @@ func attachTCPWithCost(ctx context.Context, node *Node, credentials *Credentials
 	if conn == nil {
 		return fmt.Errorf("mesh QUIC peer %s: no authenticated connection", peer.Principal())
 	}
-	return node.AttachWithCost(ctx, peer, conn, cost)
+	return node.AttachWithCost(WithCarrier(ctx, carrierName(ctx, "tcp")), peer, conn, cost)
 }
