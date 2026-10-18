@@ -389,6 +389,10 @@ func installDragonwing(ctx context.Context, board dragonwingBoard, version strin
 	if err != nil {
 		return err
 	}
+	trustedKeys, err := resolveTrustedKeysSeed(preOpts.localAccess, plan.version, os.Stdout)
+	if err != nil {
+		return err
+	}
 
 	if err := confirmDragonwingReady(board, plan.version, force); err != nil {
 		return err
@@ -448,11 +452,15 @@ func installDragonwing(ctx context.Context, board dragonwingBoard, version strin
 	run := &dragonwingFlashRun{
 		plan: plan, dev: dev, board: board,
 		seedDir: seedDir, zerosPath: zerosPath,
-		creds: creds, name: name, provJSON: provJSON,
+		creds: creds, name: name, provJSON: provJSON, trustedKeys: trustedKeys,
 	}
 	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version),
 		run.steps(flashCtx), cancelFlash, logW)
-	return finishDragonwingFlash(os.Stdout, board, run.collected(), plan.version, err, failedID == stepFlashPartitions)
+	if err := finishDragonwingFlash(os.Stdout, board, run.collected(), plan.version, err, failedID == stepFlashPartitions); err != nil {
+		return err
+	}
+	printOwnerKeys(os.Stdout, trustedKeys)
+	return nil
 }
 
 // dragonwingFlashRun holds what the flash steps share: the closures fill
@@ -467,6 +475,8 @@ type dragonwingFlashRun struct {
 	creds     []wendyconf.WifiCredential
 	name      string
 	provJSON  []byte
+	// trustedKeys is the owner-key seed, nil when none is seeded.
+	trustedKeys []byte
 
 	bundleDir string
 	flash     *qdl.FlashPlan
@@ -508,7 +518,7 @@ func (r *dragonwingFlashRun) steps(ctx context.Context) []flashStep {
 			// first write command: a failure discovered mid-flash leaves the
 			// board half-written with the GPT still unpatched.
 			flash, err := planDragonwingFlash(r.seedDir, r.bundleDir, r.zerosPath,
-				r.creds, r.name, r.provJSON, out, detail, r.warn)
+				r.creds, r.name, r.provJSON, r.trustedKeys, out, detail, r.warn)
 			if err != nil {
 				return false, errors.Join(err, errDragonwingNothingWritten)
 			}
@@ -568,18 +578,25 @@ func openDragonwingFlashLog(board dragonwingBoard, version string) (io.Writer, f
 // planDragonwingFlash resolves every write the flash will make: the seeded
 // config image, and the zeros that blank /data. Non-fatal problems go to warn,
 // which the caller surfaces once the steps UI has released the terminal.
-func planDragonwingFlash(seedDir, bundleDir, zerosPath string, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte,
+func planDragonwingFlash(seedDir, bundleDir, zerosPath string, creds []wendyconf.WifiCredential, deviceName string, provJSON, trustedKeys []byte,
 	out io.Writer, detail func(string), warn func(string)) (*qdl.FlashPlan, error) {
 	plan, err := qdl.LoadFlashPlan(bundleDir)
 	if err != nil {
 		return nil, err
 	}
 
-	agent, agentWarning := resolveSeedAgent(out, detail)
+	agent, agentVer, agentWarning := resolveSeedAgent(out, detail)
 	if agentWarning != "" {
 		warn(agentWarning)
 	}
-	img, err := buildDragonwingConfigImage(seedDir, plan, agent, creds, deviceName, provJSON)
+	// Without a downloaded agent the baked one boots; resolveTrustedKeysSeed
+	// already gated the image version.
+	if len(agent) > 0 {
+		if err := checkSeedAgent(trustedKeys, agentVer); err != nil {
+			return nil, err
+		}
+	}
+	img, err := buildDragonwingConfigImage(seedDir, plan, agent, creds, deviceName, provJSON, trustedKeys)
 	if err == nil {
 		err = plan.Seed(dragonwingConfigLabel, img)
 	}
@@ -587,7 +604,7 @@ func planDragonwingFlash(seedDir, bundleDir, zerosPath string, creds []wendyconf
 	// factory reset, and a surviving provisioning.json would re-enrol the fresh
 	// install as the previous device.
 	if err != nil {
-		if provisioningRequired(creds, deviceName, provJSON) {
+		if provisioningRequired(creds, deviceName, provJSON, trustedKeys) {
 			return nil, err
 		}
 		// Worded for both outcomes: the warning is printed whether or not the

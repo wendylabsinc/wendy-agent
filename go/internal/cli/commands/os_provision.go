@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -239,14 +240,15 @@ func parseConfigPartition(jsonBytes []byte) (int, error) {
 // the floor and must be treated as fatal — silently printing "successfully
 // installed" hides the lost data (--wifi never reaches the device, the
 // pre-enroll EAB credential is discarded, etc.).
-func provisioningRequired(creds []wendyconf.WifiCredential, deviceName string, enrollmentJSON []byte) bool {
-	return len(creds) > 0 || deviceName != "" || len(enrollmentJSON) > 0
+func provisioningRequired(creds []wendyconf.WifiCredential, deviceName string, enrollmentJSON, trustedKeys []byte) bool {
+	return len(creds) > 0 || deviceName != "" || len(enrollmentJSON) > 0 || len(trustedKeys) > 0
 }
 
 // configTarget receives the config-partition files: a mounted directory (disk
 // installs) or a FAT32 image (Thor).
 type configTarget interface {
 	WriteFile(name string, data []byte, perm os.FileMode) error
+	ReadFile(name string) ([]byte, error)
 }
 
 // dirTarget writes into a mounted config-partition directory.
@@ -256,13 +258,18 @@ func (d dirTarget) WriteFile(name string, data []byte, perm os.FileMode) error {
 	return os.WriteFile(filepath.Join(string(d), name), data, perm)
 }
 
-func writeConfigFiles(mountPoint string, agentBinary []byte, creds []wendyconf.WifiCredential, deviceName string, enrollmentJSON []byte) error {
-	return writeConfigFilesTo(dirTarget(mountPoint), agentBinary, creds, deviceName, enrollmentJSON)
+func (d dirTarget) ReadFile(name string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(string(d), name))
+}
+
+func writeConfigFiles(mountPoint string, agentBinary []byte, creds []wendyconf.WifiCredential, deviceName string, enrollmentJSON, trustedKeys []byte) error {
+	return writeConfigFilesTo(dirTarget(mountPoint), agentBinary, creds, deviceName, enrollmentJSON, trustedKeys)
 }
 
 // writeConfigFilesTo writes the config-partition files to any target. agentBinary
 // is skipped when empty (Thor omits it only if a caller passes none).
-func writeConfigFilesTo(t configTarget, agentBinary []byte, creds []wendyconf.WifiCredential, deviceName string, enrollmentJSON []byte) error {
+// trustedKeys is the owner-key seed from resolveTrustedKeysSeed, nil for none.
+func writeConfigFilesTo(t configTarget, agentBinary []byte, creds []wendyconf.WifiCredential, deviceName string, enrollmentJSON, trustedKeys []byte) error {
 	if len(agentBinary) > 0 {
 		if err := t.WriteFile("wendy-agent", agentBinary, 0o755); err != nil {
 			return fmt.Errorf("writing wendy-agent to config partition: %w", err)
@@ -303,6 +310,22 @@ func writeConfigFilesTo(t configTarget, agentBinary []byte, creds []wendyconf.Wi
 	if len(enrollmentJSON) > 0 {
 		if err := t.WriteFile("acme-enrollment.json", enrollmentJSON, 0o600); err != nil {
 			return fmt.Errorf("writing acme-enrollment.json to config partition: %w", err)
+		}
+	}
+
+	// The owner keys are read back: a seed that did not
+	// land leaves a device that boots open, so the install must fail instead.
+	// FAT has no permissions; the agent installs the seed 0600 on first boot.
+	if len(trustedKeys) > 0 {
+		if err := t.WriteFile(trustedKeysSeedFile, trustedKeys, 0o600); err != nil {
+			return fmt.Errorf("writing %s to config partition: %w", trustedKeysSeedFile, err)
+		}
+		got, err := t.ReadFile(trustedKeysSeedFile)
+		if err != nil {
+			return fmt.Errorf("reading back %s from config partition: %w", trustedKeysSeedFile, err)
+		}
+		if !bytes.Equal(got, trustedKeys) {
+			return fmt.Errorf("read-back of %s from config partition does not match what was written", trustedKeysSeedFile)
 		}
 	}
 

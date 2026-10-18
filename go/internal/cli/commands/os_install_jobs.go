@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -63,8 +64,21 @@ func installationJobBackend() onboarding.Backend {
 	}
 }
 
+// errInstallJobNoOwnerKey refuses an installation job that was not started
+// with --no-local-key: jobs write no config partition, so they cannot seed the
+// owner key a terminal install seeds, and the device would boot open.
+var errInstallJobNoOwnerKey = errors.New("installation jobs cannot seed an owner key, so the device would accept unauthenticated connections until enrolled; start the job with --no-local-key (MCP: no_local_key) to install without one, or use 'wendy os install', which seeds it")
+
+// planInstallJob is planOSInstall for jobs, refusing one without --no-local-key.
+func planInstallJob(ctx context.Context, o onboarding.Options) (*onboarding.Plan, error) {
+	if !o.NoLocalKey {
+		return nil, errInstallJobNoOwnerKey
+	}
+	return planOSInstall(ctx, o)
+}
+
 func installationJobHooks() onboarding.JobHooks {
-	return onboarding.JobHooks{Plan: planOSInstall, Probe: probeInstallJobTarget, Ready: installJobPrivileges, Launch: launchInstallJob,
+	return onboarding.JobHooks{Plan: planInstallJob, Probe: probeInstallJobTarget, Ready: installJobPrivileges, Launch: launchInstallJob,
 		Verify: func(ctx context.Context, j *onboarding.Job, o onboarding.ResumeOptions) (*onboarding.Verification, error) {
 			if os.Getenv("WENDY_AGENT_SOCKET") != "" {
 				return nil, fmt.Errorf("verify from a host without WENDY_AGENT_SOCKET overriding the explicit target")
@@ -210,6 +224,7 @@ func newOSInstallJobsCmd() *cobra.Command {
 	startCmd.Flags().StringVar(&start.Storage, "storage", "", "sd, nvme or emmc")
 	startCmd.Flags().StringVar(&start.Drive, "drive", "", "Exact host drive path")
 	startCmd.Flags().BoolVar(&start.RootfsOnly, "rootfs-only", false, "Write only the Orin rootfs media")
+	startCmd.Flags().BoolVar(&start.NoLocalKey, "no-local-key", false, "Install without an owner key (required: jobs cannot seed one; the device accepts unauthenticated connections until enrolled)")
 	var statusID string
 	statusCmd := &cobra.Command{Use: "status", Short: "Read job progress and required physical steps", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
 		s, err := installationJobStore(root)
@@ -275,6 +290,10 @@ func executeInstallJob(ctx context.Context, j *onboarding.Job, checkpoint onboar
 		}
 		activationStep(ctx, step, nil)
 		return originalCheckpoint(phase, beginsWrite)
+	}
+	// Also checked here for jobs saved before the refusal existed.
+	if !j.Options.NoLocalKey {
+		return errInstallJobNoOwnerKey
 	}
 	activationStep(ctx, "permission", nil)
 	if err := installJobPrivileges(ctx, j); err != nil {

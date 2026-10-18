@@ -42,16 +42,16 @@ func writeDragonwingZeros(dir string) (string, error) {
 // network step in a flash, so an offline re-flash must still seed wifi and
 // enrollment. The warning it returns is for the caller to surface — a step's own
 // output only reaches the screen when that step fails.
-func resolveSeedAgent(out io.Writer, detail func(string)) ([]byte, string) {
+func resolveSeedAgent(out io.Writer, detail func(string)) (agent []byte, version, warning string) {
 	detail("downloading agent")
 	agent, version, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
 		// Written to out as well, so the flash log keeps it for a post-mortem.
 		fmt.Fprintf(out, "warning: could not download wendy-agent (%v)\n", err)
-		return nil, fmt.Sprintf("could not download wendy-agent (%v); the board keeps the agent baked into its image", err)
+		return nil, "", fmt.Sprintf("could not download wendy-agent (%v); the board keeps the agent baked into its image", err)
 	}
 	detail("agent " + version)
-	return agent, ""
+	return agent, version, ""
 }
 
 // newConfigFS creates and formats a bare FAT32 config image. The caller closes
@@ -82,7 +82,7 @@ func newConfigFS(path string, size int64, sectorSize int64) (*disk.Disk, filesys
 // its descriptor declares the partition with an empty filename — so unlike Thor
 // and Orin the host has to make one.
 func buildDragonwingConfigImage(dir string, plan *qdl.FlashPlan, agent []byte,
-	creds []wendyconf.WifiCredential, deviceName string, provJSON []byte) (string, error) {
+	creds []wendyconf.WifiCredential, deviceName string, provJSON, trustedKeys []byte) (string, error) {
 	declared, err := plan.Declared(dragonwingConfigLabel)
 	if err != nil {
 		return "", err
@@ -95,7 +95,7 @@ func buildDragonwingConfigImage(dir string, plan *qdl.FlashPlan, agent []byte,
 	if err != nil {
 		return "", err
 	}
-	if err := writeConfigFilesTo(fatWriter{fs}, agent, creds, deviceName, provJSON); err != nil {
+	if err := writeConfigFilesTo(fatWriter{fs}, agent, creds, deviceName, provJSON, trustedKeys); err != nil {
 		_ = d.Close()
 		return "", err
 	}

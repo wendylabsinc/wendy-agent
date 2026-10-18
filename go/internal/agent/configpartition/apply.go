@@ -21,6 +21,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/network"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
@@ -750,9 +751,10 @@ func applyPreProvisioning(logger *zap.Logger, cfgDir, configPath string) {
 	)
 }
 
-// Apply checks the config partition for a pending agent binary, WiFi config, and
-// pre-provisioning state, applying them in order. If a binary update is installed,
-// the process exits so systemd can restart it with the new binary.
+// Apply checks the config partition for a pending agent binary, WiFi config,
+// pre-provisioning state and seeded owner keys, applying them in order. If a
+// binary update is installed, the process exits so systemd can restart it with
+// the new binary.
 // configPath is the agent's configuration directory (e.g. /etc/wendy-agent).
 func Apply(logger *zap.Logger, configPath string) {
 	// The running binary is the target. EvalSymlinks is best effort: it walks
@@ -771,7 +773,74 @@ func Apply(logger *zap.Logger, configPath string) {
 	applyWendyConf(logger, configDir)
 	applyPreProvisioning(logger, configDir, configPath)
 	applyClockFloor(logger, configDir, configPath)
+	// A seed that cannot be installed must not leave this boot open: refuse
+	// to start, and systemd retries with the seed still in place.
+	if err := applyTrustedKeysSeed(logger, configDir, configPath); err != nil {
+		logger.Fatal("refusing to start: owner keys seeded at install could not be installed", zap.Error(err))
+	}
 	applyExtensions(logger, configDir)
+}
+
+const (
+	// trustedKeysFile is both the seed's name on the config partition and the
+	// installed file's name in configPath (WDY-3882).
+	trustedKeysFile = "trusted-keys.json"
+	// localAccessMarker in configPath records that this device was installed
+	// with owner keys; see LocalAccessRequired.
+	localAccessMarker = "local-access"
+)
+
+// applyTrustedKeysSeed installs the owner keys `wendy os install` placed on the
+// config partition as configPath/trusted-keys.json (0600), records the
+// local-access marker, then deletes the seed.
+//
+// A device that already has a trusted-keys file ignores the seed: anyone
+// holding the storage can write /config, and it must not become a way to add an
+// owner to a device that has one. The seed is copied as-is rather than parsed
+// here: the agent refuses to start on a trusted-keys file it cannot use, and
+// with the marker set it also refuses without an owner key, so a bad seed
+// leaves the device closed, never open. An error means a seed is present but
+// not installed; the caller must not start.
+func applyTrustedKeysSeed(logger *zap.Logger, cfgDir, configPath string) error {
+	src := filepath.Join(cfgDir, trustedKeysFile)
+	data, err := os.ReadFile(src)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", src, err)
+	}
+	dst := filepath.Join(configPath, trustedKeysFile)
+	if _, err := os.Lstat(dst); err == nil {
+		logger.Warn("configpartition: device already has trusted keys; ignoring and removing the seed on the config partition")
+		os.Remove(src) //nolint:errcheck
+		return nil
+	}
+	if err := os.MkdirAll(configPath, 0o700); err != nil {
+		return err
+	}
+	// Marker first: a power cut before the keys land leaves a device that
+	// refuses to start without an owner, and the seed is retried next boot.
+	if err := atomicfile.Write(filepath.Join(configPath, localAccessMarker), []byte("required\n"), 0o600); err != nil {
+		return fmt.Errorf("recording local access mode: %w", err)
+	}
+	if err := atomicfile.Write(dst, data, 0o600); err != nil {
+		return fmt.Errorf("installing trusted keys: %w", err)
+	}
+	if err := os.Remove(src); err != nil {
+		logger.Warn("configpartition: failed to remove trusted keys seed", zap.Error(err))
+	}
+	logger.Info("configpartition: installed owner keys seeded at install time; local access is required")
+	return nil
+}
+
+// LocalAccessRequired reports whether this device was installed with owner
+// keys. Such a device runs with WENDY_LOCAL_ACCESS=required for good: it never
+// falls back to the open pre-enrollment path, even if its trusted-keys file is
+// later lost. Any marker file counts, whatever it holds.
+func LocalAccessRequired(configPath string) bool {
+	_, err := os.Lstat(filepath.Join(configPath, localAccessMarker))
+	return err == nil
 }
 
 // applyClockFloor copies clock_floor from cfgDir (the FAT32 config partition,
