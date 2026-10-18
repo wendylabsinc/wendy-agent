@@ -367,3 +367,21 @@ func TestSessionLiteCertificateReusesLeafCappedByPrimary(t *testing.T) {
 		t.Fatal("short leaf under a longer primary was reused")
 	}
 }
+
+// Each verifier keeps the discovery it was built with, so concurrent sessions
+// (and tests) never observe each other's lookups.
+func TestLiteDeviceCAChainKeepsItsOwnDiscovery(t *testing.T) {
+	for _, chain := range []string{"first", "second"} {
+		t.Run(chain, func(t *testing.T) {
+			t.Parallel()
+			fallback := liteDeviceCAChainVia(liteTestAuth("cloud.example:443"), func(context.Context, string, string) (string, error) {
+				return chain, nil
+			})
+			for range 100 {
+				if got, err := fallback(context.Background()); err != nil || got != chain {
+					t.Fatalf("discovery = %q, %v; want %q", got, err, chain)
+				}
+			}
+		})
+	}
+}
