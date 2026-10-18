@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "plugins/wendy-chatgpt"
 ENDPOINT = "https://mcp.wendy.dev"
 SERVER_NAME = "wendy-relay"
+CIMD_CLIENT = {"mode": "cimd"}
+# Legacy 0.5.4 form: ChatGPT's public URL client named explicitly.
 CHATGPT_PUBLIC_CLIENT = {
     "mode": "provided",
     "clientId": "https://chatgpt.com/oauth/client.json",
@@ -180,11 +182,12 @@ def validate_package(source):
     require(auth.get("defaultScopes") == [], "Set defaultScopes to [] to prevent inherited OAuth scopes")
     require(auth.get("oidcEnabled") is False, "Set oidcEnabled to false; the hosted relay does not request OIDC scopes")
     require(auth.get("oidcScopesSupported", []) == [], "Do not declare OIDC scopes for the hosted relay")
-    # Omission leaves client registration to the host's OAuth discovery. Explicit
-    # configurations still select only ChatGPT's public identity or CIMD.
-    require("client" not in auth or client == CHATGPT_PUBLIC_CLIENT or client == {"mode": "cimd"},
-            "Use ChatGPT's exact public metadata-document client with tokenEndpointAuthMethod none, "
-            "exact CIMD discovery, or omit client for discovery; legacy provided clients and DCR are not supported")
+    # CIMD is the documented form. Omission leaves client registration to the
+    # host's OAuth discovery; ChatGPT's explicit public identity stays as legacy.
+    require("client" not in auth or client in (CIMD_CLIENT, CHATGPT_PUBLIC_CLIENT),
+            'Use the CIMD client {"mode": "cimd"} without clientId or credentials, omit client for discovery, '
+            "or the legacy ChatGPT public metadata-document client with tokenEndpointAuthMethod none; "
+            "other provided clients and DCR are not supported")
 
     # Root inventory excludes developer notes and policies. Reject hidden files
     # and generated artifacts inside the public component directories as well.
