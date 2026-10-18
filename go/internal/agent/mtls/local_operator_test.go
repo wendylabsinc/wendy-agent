@@ -291,7 +291,7 @@ func TestLocalOperatorRecheckedOnResumeAndMustBeSelfSigned(t *testing.T) {
 	if err := registry.VerifyConnection(resumed); err != nil {
 		t.Fatalf("resume with a trusted operator key: %v", err)
 	}
-	if _, err := keys.Remove(trustedkeys.Fingerprint(spkiOf(t, op))); err != nil {
+	if _, err := keys.Remove(trustedkeys.Fingerprint(spkiOf(t, op)), trustedkeys.Fingerprint(spkiOf(t, owner))); err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.VerifyConnection(resumed); err == nil {

@@ -79,13 +79,13 @@ func TestAddLookupRemoveRoundTrip(t *testing.T) {
 		t.Fatalf("entry = %+v", e)
 	}
 
-	if _, err := reloaded.Remove(Fingerprint(viewerKey)); err != nil {
+	if _, err := reloaded.Remove(Fingerprint(viewerKey), Fingerprint(ownerKey)); err != nil {
 		t.Fatal(err)
 	}
 	if role, _ := reloaded.Lookup(viewerKey); role != RoleNone {
 		t.Fatalf("removed key still trusted as %s", role)
 	}
-	if _, err := reloaded.Remove(Fingerprint(viewerKey)); !errors.Is(err, ErrNotFound) {
+	if _, err := reloaded.Remove(Fingerprint(viewerKey), Fingerprint(ownerKey)); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second Remove = %v, want ErrNotFound", err)
 	}
 }
@@ -102,10 +102,10 @@ func TestLastOwnerCannotBeRemoved(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.Remove(Fingerprint(a)); err != nil {
+	if _, err := s.Remove(Fingerprint(a), Fingerprint(b)); err != nil {
 		t.Fatalf("removing one of two owners: %v", err)
 	}
-	if _, err := s.Remove(Fingerprint(b)); !errors.Is(err, ErrLastOwner) {
+	if _, err := s.Remove(Fingerprint(b), Fingerprint(b)); !errors.Is(err, ErrLastOwner) {
 		t.Fatalf("removing the last owner = %v, want ErrLastOwner", err)
 	}
 	if role, _ := s.Lookup(b); role != RoleOwner {

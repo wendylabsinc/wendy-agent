@@ -226,7 +226,7 @@ func TestAuthorizerReadsKeysPerCall(t *testing.T) {
 	if _, err := a.Authorize(ctx, mShell); err != nil {
 		t.Fatalf("operator before removal: %v", err)
 	}
-	if _, err := store.Remove(trustedkeys.Fingerprint(op)); err != nil {
+	if _, err := store.Remove(trustedkeys.Fingerprint(op), trustedkeys.Fingerprint(owner)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Authorize(ctx, mShell); status.Code(err) != codes.PermissionDenied {
@@ -253,7 +253,7 @@ func TestRemovedKeyDoesNotFallBackToLegacyAccess(t *testing.T) {
 	}
 	leaf, _ := x509.ParseCertificate(der)
 	ctx := ctxWithLeaf(leaf)
-	if _, err := store.Remove(trustedkeys.Fingerprint(viewerSPKI)); err != nil {
+	if _, err := store.Remove(trustedkeys.Fingerprint(viewerSPKI), trustedkeys.Fingerprint(ownerSPKI)); err != nil {
 		t.Fatal(err)
 	}
 	for _, mode := range []OrgMode{OrgModeGrace, OrgModeOff} {

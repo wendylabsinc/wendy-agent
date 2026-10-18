@@ -78,10 +78,18 @@ func (s *TrustedKeysService) AddTrustedKey(ctx context.Context, req *agentpbv2.A
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	entry, err := s.keys.Add(spki, role, req.GetLabel(), p.Fingerprint, s.now())
-	if errors.Is(err, trustedkeys.ErrAlreadyExists) {
+	switch {
+	case errors.Is(err, trustedkeys.ErrAlreadyExists):
 		return nil, status.Error(codes.AlreadyExists, err.Error())
-	}
-	if err != nil {
+	case errors.Is(err, trustedkeys.ErrActorNotOwner):
+		s.logger.Warn("audit: trusted key add refused",
+			zap.String("audit", "trusted_keys"),
+			zap.String("action", "add_refused"),
+			zap.String("actor_fingerprint", p.Fingerprint),
+			zap.String("fingerprint", trustedkeys.Fingerprint(spki)),
+			zap.String("reason", "actor not owner"))
+		return nil, status.Error(codes.PermissionDenied, err.Error())
+	case err != nil:
 		return nil, status.Errorf(codes.Internal, "adding trusted key: %v", err)
 	}
 	s.logger.Info("audit: trusted key added",
@@ -110,8 +118,16 @@ func (s *TrustedKeysService) RemoveTrustedKey(ctx context.Context, req *agentpbv
 	if err != nil {
 		return nil, err
 	}
-	removed, err := s.keys.Remove(req.GetFingerprint())
+	removed, err := s.keys.Remove(req.GetFingerprint(), p.Fingerprint)
 	switch {
+	case errors.Is(err, trustedkeys.ErrActorNotOwner):
+		s.logger.Warn("audit: trusted key removal refused",
+			zap.String("audit", "trusted_keys"),
+			zap.String("action", "remove_refused"),
+			zap.String("actor_fingerprint", p.Fingerprint),
+			zap.String("fingerprint", req.GetFingerprint()),
+			zap.String("reason", "actor not owner"))
+		return nil, status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, trustedkeys.ErrNotFound):
 		return nil, status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, trustedkeys.ErrLastOwner):

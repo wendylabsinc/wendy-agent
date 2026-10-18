@@ -67,6 +67,7 @@ var (
 	ErrNotFound      = errors.New("trusted key not found")
 	ErrAlreadyExists = errors.New("key is already trusted")
 	ErrLastOwner     = errors.New("cannot remove the last owner key")
+	ErrActorNotOwner = errors.New("acting key is no longer a trusted owner")
 )
 
 // Entry is one trusted key as stored on disk.
@@ -245,7 +246,20 @@ func (s *Store) List() []Entry {
 // EntryRole is the parsed role of e.
 func (e Entry) EntryRole() Role { return e.role }
 
-// Add trusts a new key. addedBy is the acting key's fingerprint.
+// actorIsOwner is checked inside mutate's lock: the Authorizer's owner check
+// runs before it, so an owner removed in between must not still write.
+func actorIsOwner(entries []Entry, actor string) bool {
+	for _, e := range entries {
+		if e.Fingerprint() == actor {
+			return e.role == RoleOwner
+		}
+	}
+	return false
+}
+
+// Add trusts a new key. addedBy is the acting key's fingerprint, which must
+// still be an owner when the write happens (ErrActorNotOwner otherwise), or
+// AddedByInstall for the key seeded at install time.
 func (s *Store) Add(spki []byte, role Role, label, addedBy string, now time.Time) (Entry, error) {
 	if role == RoleNone {
 		return Entry{}, errors.New("role is required")
@@ -255,6 +269,9 @@ func (s *Store) Add(spki []byte, role Role, label, addedBy string, now time.Time
 	}
 	var added Entry
 	err := s.mutate(func(entries []Entry) ([]Entry, error) {
+		if addedBy != AddedByInstall && !actorIsOwner(entries, addedBy) {
+			return nil, ErrActorNotOwner
+		}
 		fp := Fingerprint(spki)
 		for _, e := range entries {
 			if e.Fingerprint() == fp {
@@ -275,12 +292,17 @@ func (s *Store) Add(spki []byte, role Role, label, addedBy string, now time.Time
 	return added, err
 }
 
-// Remove drops the key with this fingerprint. The last owner key cannot be
-// removed: recovery from a lost owner is a reinstall, so the device must
-// never be left without one.
-func (s *Store) Remove(fingerprint string) (Entry, error) {
+// Remove drops the key with this fingerprint. actor is the acting key's
+// fingerprint and must still be an owner when the write happens
+// (ErrActorNotOwner otherwise). The last owner key cannot be removed:
+// recovery from a lost owner is a reinstall, so the device must never be
+// left without one.
+func (s *Store) Remove(fingerprint, actor string) (Entry, error) {
 	var removed Entry
 	err := s.mutate(func(entries []Entry) ([]Entry, error) {
+		if !actorIsOwner(entries, actor) {
+			return nil, ErrActorNotOwner
+		}
 		idx, owners := -1, 0
 		for i, e := range entries {
 			if e.role == RoleOwner {

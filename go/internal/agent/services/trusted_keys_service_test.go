@@ -128,3 +128,68 @@ func TestTrustedKeysServiceRefusesCallsWithoutOwnerPrincipal(t *testing.T) {
 		t.Fatalf("no principal = %v, want PermissionDenied", err)
 	}
 }
+
+// The Authorizer checks the owner role before the store lock. Owners A and B
+// both pass it, then remove each other concurrently: exactly one removal may
+// land, the loser is refused inside the lock (it is no longer an owner), and
+// a removed owner cannot re-add a key either.
+func TestTrustedKeysServiceRechecksActorInsideLock(t *testing.T) {
+	store, err := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b, c := testSPKI(t), testSPKI(t), testSPKI(t)
+	for _, k := range [][]byte{a, b, c} {
+		if _, err := store.Add(k, trustedkeys.RoleOwner, "", trustedkeys.AddedByInstall, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	core, logs := observer.New(zapcore.InfoLevel)
+	svc := NewTrustedKeysService(zap.New(core), store)
+	ctxA := asLocalKey(t, store, a, keysPrefix+"RemoveTrustedKey")
+	ctxB := asLocalKey(t, store, b, keysPrefix+"RemoveTrustedKey")
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, call := range []struct {
+		ctx    context.Context
+		target []byte
+	}{{ctxA, b}, {ctxB, a}} {
+		go func() {
+			<-start
+			_, err := svc.RemoveTrustedKey(call.ctx, &agentpbv2.RemoveTrustedKeyRequest{Fingerprint: trustedkeys.Fingerprint(call.target)})
+			errs <- err
+		}()
+	}
+	close(start)
+	var ok, denied int
+	for range 2 {
+		switch err := <-errs; status.Code(err) {
+		case codes.OK:
+			ok++
+		case codes.PermissionDenied:
+			denied++
+		default:
+			t.Fatalf("mutual removal: unexpected error %v", err)
+		}
+	}
+	if ok != 1 || denied != 1 {
+		t.Fatalf("mutual removal: %d succeeded, %d refused; want exactly one each", ok, denied)
+	}
+	if store.Len() != 2 {
+		t.Fatalf("keys after mutual removal = %d, want 2 (winner + C)", store.Len())
+	}
+	refused := logs.FilterField(zap.String("reason", "actor not owner")).All()
+	if len(refused) != 1 || refused[0].ContextMap()["action"] != "remove_refused" {
+		t.Fatalf("refusal audit rows = %v, want one remove_refused", refused)
+	}
+
+	loser := ctxB
+	if role, _ := store.Lookup(b); role == trustedkeys.RoleOwner {
+		loser = ctxA
+	}
+	if _, err := svc.AddTrustedKey(loser, &agentpbv2.AddTrustedKeyRequest{
+		PublicKey: testSPKI(t), Role: agentpbv2.TrustedKeyRole_TRUSTED_KEY_ROLE_OWNER}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("add by a removed owner = %v, want PermissionDenied", err)
+	}
+}
