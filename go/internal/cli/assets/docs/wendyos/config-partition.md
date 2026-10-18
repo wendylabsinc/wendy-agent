@@ -49,11 +49,11 @@ If a file named `wendy-agent` is present in `/config` on boot, the agent validat
 
 The install is refused if the target directory sits on a merged systemd-sysext overlay. A binary written there is discarded when the overlay is rebuilt on the next boot, so the seed would appear to succeed, silently do nothing, and retry forever.
 
-`wendy install` writes the latest stable arm64 agent binary to the config partition automatically after flashing. If this write fails, `wendy install` warns rather than aborting (unless WiFi, device-name, or pre-enroll provisioning was explicitly requested — then the install exits non-zero, see [wendy.conf](#wendyconf)) — the device still boots using the agent baked into the image and fetches updates after first boot.
+`wendy install` writes the latest stable arm64 agent binary to the config partition automatically after flashing. If this write fails, `wendy install` warns rather than aborting (unless WiFi, device-name, or pre-enroll provisioning was explicitly requested, or an owner key was seeded — then the install exits non-zero, see [wendy.conf](#wendyconf) and [Owner keys](#owner-keys-trusted-keysjson)) — the device still boots using the agent baked into the image and fetches updates after first boot.
 
 ## Owner keys (`trusted-keys.json`)
 
-`wendy install` writes the public keys that will own the device to `trusted-keys.json`. On boot, the agent copies the file to `/etc/wendy-agent/trusted-keys.json` (`0600`), records that the device requires local access, and deletes the seed. If the device already has a trusted-keys file, the agent deletes the seed without using it, so writing this file to the partition cannot add an owner to a device that already has one. See [Your key is the device's first owner key](../clients/wendy-cli/commands/os/install.md#your-key-is-the-devices-first-owner-key).
+`wendy install` writes the public keys that will own the device to `trusted-keys.json`. On boot, the agent copies the file to `/etc/wendy-agent/trusted-keys.json` (`0600`), records that the device requires local access, and deletes the seed. If the device already has a trusted-keys file, the agent deletes the seed without using it, so writing this file to the partition cannot add an owner to a device that already has one. The CLI's own key comes from `~/.wendy/local-operator-key.pem` (or `$WENDY_CONFIG_DIR/local-operator-key.pem`); only its public half is written to the partition. See [Your key is the device's first owner key](../clients/wendy-cli/commands/os/install.md#your-key-is-the-devices-first-owner-key).
 
 ## Driver add-ons (`extensions.json`)
 

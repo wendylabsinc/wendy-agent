@@ -108,19 +108,26 @@ func TestResolveTrustedKeysSeedSeedsTheLocalKeyAsOwner(t *testing.T) {
 
 func TestCheckLocalKeyVersion(t *testing.T) {
 	for _, tc := range []struct {
-		got, min string
-		ok       bool
+		what, got, min string
+		ok             bool
 	}{
-		{"0.20.0", "0.20.0", true},
-		{"v0.21.1", "0.20.0", true},
-		{"2026.10.20-120000", "2026.10.19-090000", true},
-		{"0.19.5", "0.20.0", false},
-		{"2026.10.18-115727", "2026.10.19-090000", false},
-		{"nightly-20261018T111855", "0.20.0", false}, // cannot be placed
-		{"", "0.20.0", false},
-		{"9.9.9", localKeyVersionUnset, false}, // floor not set: refuse all
+		{"WendyOS", "0.20.0", "0.20.0", true},
+		{"WendyOS", "v0.21.1", "0.20.0", true},
+		{"wendy-agent", "2026.10.20-120000", "2026.10.19-090000", true},
+		{"WendyOS", "0.19.5", "0.20.0", false},
+		{"wendy-agent", "2026.10.18-115727", "2026.10.19-090000", false},
+		// Pre-release, dev and nightly builds never pass, even above the floor.
+		{"WendyOS", "nightly-20261018T111855", "0.20.0", false},
+		{"WendyOS", "0.21.0-dev", "0.20.0", false},
+		{"WendyOS", "0.21.0-rc1", "0.20.0", false},
+		{"WendyOS", "dev", "0.20.0", false},
+		{"wendy-agent", "2026.10.20-120000-dev", "2026.10.19-090000", false},
+		{"wendy-agent", "dev", "2026.10.19-090000", false},
+		{"WendyOS", "2026.10.20-120000", "0.20.0", false}, // agent-shaped image version
+		{"WendyOS", "", "0.20.0", false},
+		{"WendyOS", "9.9.9", localKeyVersionUnset, false}, // floor not set: refuse all
 	} {
-		err := checkLocalKeyVersion("WendyOS", tc.got, tc.min)
+		err := checkLocalKeyVersion(tc.what, tc.got, tc.min)
 		if (err == nil) != tc.ok {
 			t.Errorf("checkLocalKeyVersion(%q, %q) = %v, want ok=%v", tc.got, tc.min, err, tc.ok)
 		}

@@ -12,7 +12,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/localkey"
@@ -34,14 +34,20 @@ const (
 	minLocalKeyImageVersion = localKeyVersionUnset
 )
 
-// checkLocalKeyVersion refuses to seed when got (the version of what will
-// boot: "WendyOS" image or "wendy-agent") may predate min. A version that is
-// not a release number (nightly-…, a PR build, empty) cannot be placed, so it
-// is refused too.
+// releasedVersion is the exact shape of a published release: WendyOS images
+// are 0.19.5, the agent 2026.10.18-115727. Anything else (nightly-…, a PR
+// build, a -dev or -rc suffix) cannot be placed against a release, and
+// CompareVersions would even rank a -dev build above every release.
+var releasedVersion = map[string]*regexp.Regexp{
+	"WendyOS":     regexp.MustCompile(`^v?\d+\.\d+\.\d+$`),
+	"wendy-agent": regexp.MustCompile(`^v?\d{4}\.\d{2}\.\d{2}-\d{6}$`),
+}
+
+// checkLocalKeyVersion refuses to seed unless got, the version of what will
+// boot ("WendyOS" image or "wendy-agent"), is a released version at or above
+// min.
 func checkLocalKeyVersion(what, got, min string) error {
-	v := strings.TrimPrefix(got, "v")
-	isRelease := v != "" && v[0] >= '0' && v[0] <= '9'
-	if min != localKeyVersionUnset && isRelease && version.CompareVersions(got, min) >= 0 {
+	if min != localKeyVersionUnset && releasedVersion[what].MatchString(got) && version.CompareVersions(got, min) >= 0 {
 		return nil
 	}
 	floor := min
