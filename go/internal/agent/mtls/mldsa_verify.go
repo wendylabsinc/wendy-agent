@@ -204,19 +204,38 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 // short-lived cache reuses only signature/path verification for exact chains.
 // New roots or policy require a new verifier and therefore a fresh cache.
 func NewPeerCertificateVerifier(chainPEM string, logger *zap.Logger, notBeforeFloor time.Time) (func([][]byte, time.Time) (time.Time, error), error) {
-	if chainPEM == "" {
-		return nil, fmt.Errorf("CA chain PEM is required to verify client certificates; device may need to be re-provisioned")
-	}
-	caPool := x509.NewCertPool()
-	certs.AppendChainToPool(caPool, chainPEM)
-	caCerts, err := parseCertsFromPEM([]byte(chainPEM))
+	caPool, caCerts, err := peerCertificateTrust(chainPEM)
 	if err != nil {
-		return nil, fmt.Errorf("parsing chain PEM: %w", err)
-	}
-	if len(caCerts) == 0 {
-		return nil, fmt.Errorf("parsing chain PEM: no certificates found")
+		return nil, err
 	}
 	return buildPeerCertificateVerifierWithCache(caPool, caCerts, logger, notBeforeFloor, newPeerPathCache()), nil
+}
+
+// peerCertificateTrust excludes leaf certificates even if enrollment material
+// duplicates them in the CA bundle. Otherwise crypto/x509 can treat the leaf
+// itself as a trust anchor and bypass its issuer's expiry. General mTLS's
+// explicit loopback policy does not use this mesh-only trust builder.
+func peerCertificateTrust(chainPEM string) (*x509.CertPool, []*x509.Certificate, error) {
+	if chainPEM == "" {
+		return nil, nil, fmt.Errorf("CA chain PEM is required to verify client certificates; device may need to be re-provisioned")
+	}
+	parsed, err := parseCertsFromPEM([]byte(chainPEM))
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing chain PEM: %w", err)
+	}
+	caPool := x509.NewCertPool()
+	var caCerts []*x509.Certificate
+	for _, ca := range parsed {
+		if !ca.BasicConstraintsValid || !ca.IsCA || ca.KeyUsage != 0 && ca.KeyUsage&x509.KeyUsageCertSign == 0 {
+			continue
+		}
+		caPool.AddCert(ca)
+		caCerts = append(caCerts, ca)
+	}
+	if len(caCerts) == 0 {
+		return nil, nil, fmt.Errorf("parsing chain PEM: no eligible certificate authorities found")
+	}
+	return caPool, caCerts, nil
 }
 
 func buildPeerCertificateVerifier(caPool *x509.CertPool, caCerts []*x509.Certificate, logger *zap.Logger, notBeforeFloor time.Time) func([][]byte, time.Time) (time.Time, error) {

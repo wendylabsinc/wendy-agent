@@ -70,16 +70,18 @@ func TestCredentialsExpiryUsesVerifiedPath(t *testing.T) {
 	} {
 		t.Run(selected.name, func(t *testing.T) {
 			own := mint("own long leaf", testPrincipal(testTenantUUID, testDeviceAID), now.Add(3*time.Hour), &selected.issuer)
-			credentials, err := NewCredentials(own.pem, selected.trust, own.keyPEM)
-			if err != nil {
-				t.Fatal(err)
-			}
-			identity, err := credentials.Verify(credentials.Certificate.Certificate, now)
-			if err != nil || !identity.NotAfter.Equal(selected.issuer.parsed.NotAfter) {
-				t.Fatalf("own expiry=%v want=%v err=%v", identity.NotAfter, selected.issuer.parsed.NotAfter, err)
-			}
-			if _, err := credentials.Verify(credentials.Certificate.Certificate, selected.issuer.parsed.NotAfter.Add(time.Second)); err == nil {
-				t.Fatal("local leaf bypassed expired issuer")
+			for _, trust := range []string{selected.trust, own.pem + selected.trust} {
+				credentials, err := NewCredentials(own.pem, trust, own.keyPEM)
+				if err != nil {
+					t.Fatal(err)
+				}
+				identity, err := credentials.Verify(credentials.Certificate.Certificate, now)
+				if err != nil || !identity.NotAfter.Equal(selected.issuer.parsed.NotAfter) {
+					t.Fatalf("own expiry=%v want=%v err=%v", identity.NotAfter, selected.issuer.parsed.NotAfter, err)
+				}
+				if _, err := credentials.Verify(credentials.Certificate.Certificate, selected.issuer.parsed.NotAfter.Add(time.Second)); err == nil {
+					t.Fatal("local leaf bypassed expired issuer")
+				}
 			}
 		})
 	}
@@ -95,8 +97,10 @@ func TestCredentialsExpiryUsesVerifiedPath(t *testing.T) {
 			if parent != nil {
 				trust += parent.pem
 			}
-			if _, err := NewCredentials(own.pem, trust, own.keyPEM); err == nil {
-				t.Fatal("own expired issuer accepted at startup")
+			for _, bundle := range []string{trust, own.pem + trust} {
+				if _, err := NewCredentials(own.pem, bundle, own.keyPEM); err == nil {
+					t.Fatal("own expired issuer accepted at startup")
+				}
 			}
 		})
 	}
