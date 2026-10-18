@@ -431,7 +431,10 @@ func (e *Engine) selectRoutes() {
 		was, ok := old[p]
 		if !ok || was.RouterID != r.RouterID || was.Unreachable != r.Unreachable {
 			e.scheduleTrigger(true)
-		} else if was.Metric != r.Metric {
+		} else if was.Metric != r.Metric || was.Seqno != r.Seqno {
+			// A new sequence must reach every neighbour, even at the same
+			// metric. Origin authorization may already have superseded the
+			// previous sequence on links other than the requester's.
 			e.scheduleTrigger(false)
 		}
 	}

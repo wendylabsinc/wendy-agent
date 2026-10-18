@@ -2,6 +2,7 @@ package localmesh
 
 import (
 	"crypto/ed25519"
+	"encoding/binary"
 	"encoding/json"
 	"net/netip"
 	"testing"
@@ -31,7 +32,7 @@ type signedRouteTestNetwork struct {
 	key     ed25519.PrivateKey
 }
 
-func newSignedRouteTestNetwork(t *testing.T, count int) *signedRouteTestNetwork {
+func newSignedRouteTestNetwork(t *testing.T, count int, configure ...func(*babel.Config)) *signedRouteTestNetwork {
 	t.Helper()
 	directory, chain, key, _, now := directoryFixture(t)
 	n := &signedRouteTestNetwork{t: t, epoch: now, chain: chain, key: key}
@@ -52,6 +53,9 @@ func newSignedRouteTestNetwork(t *testing.T, count int) *signedRouteTestNetwork 
 			io:     &routingRecorder{}, directory: d, peers: make(map[babel.LinkID]int),
 		}
 		config := genericMeshConfig(node.device)
+		for _, apply := range configure {
+			apply(&config)
+		}
 		config.AcceptRouteUpdate = func(id babel.RouterID, p netip.Prefix, seq uint16) bool {
 			return node.origins[RouteOrigin{Prefix: p, RouterID: id, Seqno: seq}]
 		}
@@ -62,6 +66,63 @@ func newSignedRouteTestNetwork(t *testing.T, count int) *signedRouteTestNetwork 
 		n.nodes = append(n.nodes, node)
 	}
 	return n
+}
+
+// Encode the RFC 8966 Seqno Request TLV to exercise the public routing adapter.
+// The production wire codec is internal to the separate Babel module.
+func routeSequenceRequest(prefix netip.Prefix, id babel.RouterID, seq uint16) []byte {
+	packet := make([]byte, 36)
+	copy(packet, []byte{42, 2, 0, 32, 10, 30, 2, 128})
+	binary.BigEndian.PutUint16(packet[8:10], seq)
+	packet[10] = 64
+	binary.BigEndian.PutUint64(packet[12:20], uint64(id))
+	address := prefix.Addr().As16()
+	copy(packet[20:], address[:])
+	return packet
+}
+
+func TestSignedRouteSequenceProofAheadOfUpdateConverges(t *testing.T) {
+	n := newSignedRouteTestNetwork(t, 3, func(config *babel.Config) {
+		config.UpdateInterval = 4 * time.Second
+	})
+	n.connect(0, 1, 1)
+	n.connect(0, 2, 2)
+	proof := n.sign(1, time.Minute, false)
+	n.accept(1, proof)
+	n.accept(2, proof)
+	n.step(0, babel.Originate{Prefix: n.nodes[0].device.prefix})
+	n.advance(2 * time.Second)
+	n.assertForwarded(1, true, 0)
+	n.assertForwarded(2, true, 0)
+
+	origin := n.nodes[0]
+	n.step(0, babel.Receive{ID: 1, Packet: routeSequenceRequest(origin.device.prefix, origin.device.routerID, 1)})
+	if seq := origin.routing.Snapshot().Seqno; seq != 1 {
+		t.Fatalf("request did not advance origin sequence: %d", seq)
+	}
+	// Node.Persist gossips the new signed proof to every peer. Deliver it
+	// before the independent Babel datagrams, including to the passive peer.
+	proof = n.sign(2, time.Minute, false)
+	for _, index := range []int{1, 2} {
+		n.accept(index, proof)
+		n.step(index, babel.Tick{})
+		n.assertForwarded(index, false, 0)
+	}
+	n.deliver()
+	n.advance(2200 * time.Millisecond)
+	n.assertForwarded(1, true, 1)
+	n.assertForwarded(2, true, 1)
+	// Recovery must settle without requesting further origin sequences.
+	n.advance(5 * time.Second)
+	if seq := origin.routing.Snapshot().Seqno; seq != 1 {
+		t.Fatalf("proof/update reordering caused sequence churn: %d", seq)
+	}
+	for _, index := range []int{1, 2} {
+		n.assertForwarded(index, true, 1)
+		if requests := n.nodes[index].routing.Snapshot().PendingRequests; requests != 0 {
+			t.Fatalf("node %d retained %d sequence requests", index, requests)
+		}
+	}
 }
 
 func (n *signedRouteTestNetwork) now() time.Time { return n.epoch.Add(n.elapsed) }

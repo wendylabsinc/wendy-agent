@@ -4,6 +4,7 @@ package localmesh
 
 import (
 	"crypto"
+	"encoding/json"
 	"io"
 	"net/netip"
 	"os"
@@ -242,5 +243,99 @@ func TestNodeRefreshVerifiesEachIdentityOnce(t *testing.T) {
 	}
 	if !snapshot.RouteAuthorizations[*m.Route] || !snapshot.RouteAuthorizations[*n.advertisement.Route] {
 		t.Fatal("refresh did not derive both signed origins from its verified manifests")
+	}
+}
+
+type sequencePublicationIO struct {
+	*routingRecorder
+	node  *Node
+	check func(babel.Datagram)
+}
+
+func (r *sequencePublicationIO) Persist(cp babel.Checkpoint) error { return r.node.Persist(cp) }
+func (r *sequencePublicationIO) Send(d babel.Datagram) error {
+	if r.check != nil {
+		r.check(d)
+	}
+	return r.routingRecorder.Send(d)
+}
+
+func TestNodeSequenceFanoutPersistsAndQueuesProofBeforeSend(t *testing.T) {
+	n := routePublicationNode(t)
+	io := &sequencePublicationIO{routingRecorder: &routingRecorder{}, node: n}
+	var err error
+	n.routing, err = NewRouting(babel.Config{RouterID: 1, HelloInterval: time.Second, UpdateInterval: 4 * time.Second}, nil, io)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := netip.PrefixFrom(n.Credentials.Device.MeshAddress(), 128)
+	for _, id := range []babel.LinkID{1, 2} {
+		n.peers[id] = &nodePeer{id: id, control: make(chan ControlMessage, 16), sync: NewSynchronizer(n.directory, n.cache)}
+		link := babel.Link{ID: id, Local: netip.MustParseAddr("fe80::1"), Peer: netip.MustParseAddr("fe80::2"), Cost: 64}
+		if err := n.routing.Step(0, babel.AddLink{Link: link}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := n.routing.Step(0, babel.Originate{Prefix: prefix}); err != nil {
+		t.Fatal(err)
+	}
+	for now := 100 * time.Millisecond; now <= 500*time.Millisecond; now += 100 * time.Millisecond {
+		if err := n.routing.Step(now, babel.Tick{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, peer := range n.peers {
+		for len(peer.control) != 0 {
+			<-peer.control
+		}
+	}
+	checked := make(map[babel.LinkID]bool)
+	io.check = func(d babel.Datagram) {
+		if checked[d.Link] {
+			return
+		}
+		persisted, _, err := readPersistentState(n.store.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if persisted.Babel == nil || persisted.Babel.Seqno != 1 || persisted.Revision != n.advertisement.Revision {
+			t.Fatalf("link %d sent before sequence/revision persistence: %+v", d.Link, persisted)
+		}
+		var proof *SignedManifest
+		for len(n.peers[d.Link].control) != 0 {
+			if message := <-n.peers[d.Link].control; message.Manifest != nil {
+				proof = message.Manifest
+			}
+		}
+		if proof == nil {
+			t.Fatalf("link %d sent before its new proof was queued", d.Link)
+		}
+		var manifest Manifest
+		if err := json.Unmarshal(proof.Body, &manifest); err != nil {
+			t.Fatal(err)
+		}
+		if manifest.Route == nil || manifest.Route.Seqno != 1 || manifest.Revision != persisted.Revision {
+			t.Fatalf("link %d queued the wrong proof: %+v", d.Link, manifest)
+		}
+		if len(persisted.Receipts) != 1 || persisted.Receipts[0].Revision != manifest.Revision || persisted.Receipts[0].Hash != manifestHash(proof.Body) {
+			t.Fatalf("link %d sent before its signed proof receipt was durable", d.Link)
+		}
+		verifier, err := NewDirectory(n.Credentials.Device.Tenant(), 10, n.cache)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed, err := verifier.Accept(*proof, time.Now()); err != nil || !changed {
+			t.Fatalf("link %d proof failed independent signature verification: %v", d.Link, err)
+		}
+		checked[d.Link] = true
+	}
+	if err := n.routing.Step(500*time.Millisecond, babel.Receive{ID: 1, Packet: routeSequenceRequest(prefix, 1, 1)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.routing.Step(600*time.Millisecond, babel.Tick{}); err != nil {
+		t.Fatal(err)
+	}
+	if !checked[1] || !checked[2] {
+		t.Fatalf("sequence fanout did not exercise both persistence barriers: %v", checked)
 	}
 }
