@@ -391,3 +391,51 @@ func TestLeafDirectoryUsesVerifiedBundlesAndRepairsMissingIdentity(t *testing.T)
 		t.Fatalf("expired identity answered: %#v, %v", replies, err)
 	}
 }
+
+func TestLeafInternetTunnelConfinement(t *testing.T) {
+	self, leaf := testDevices(t)
+	link := &leafNodeLink{self: self, leaf: leaf}
+	packet := leafTestPacket(leaf.MeshAddress(), self.MeshAddress(), 4, TunnelMTU)
+	inner := packet[40:]
+	inner[0], inner[9] = 0x45, 6
+	binary.BigEndian.PutUint16(inner[2:4], uint16(len(inner)))
+	copy(inner[12:16], []byte{10, 88, 1, 2})
+	copy(inner[16:20], []byte{203, 0, 113, 1})
+	if !link.admitsIP(packet, true) {
+		t.Fatal("valid borrower IPv4 tunnel rejected")
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte)
+	}{
+		{"spoofed outer source", func(p []byte) { copy(p[8:24], self.MeshAddress().AsSlice()) }},
+		{"unleased source", func(p []byte) { p[52] = 192 }},
+		{"zero slot", func(p []byte) { p[54], p[55] = 0, 0 }},
+		{"reserved slot", func(p []byte) { p[54], p[55] = 255, 255 }},
+		{"fragment", func(p []byte) { p[46] = 0x20 }},
+		{"fragment offset", func(p []byte) { p[47] = 1 }},
+		{"nested IPv4", func(p []byte) { p[49] = 4 }},
+		{"nested IPv6", func(p []byte) { p[49] = 41 }},
+		{"options", func(p []byte) { p[40] = 0x46 }},
+		{"length mismatch", func(p []byte) { p[43] ^= 1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := append([]byte(nil), packet...)
+			tc.mutate(changed)
+			if link.admitsIP(changed, true) {
+				t.Fatal("invalid tunnel admitted")
+			}
+		})
+	}
+	copy(packet[8:24], self.MeshAddress().AsSlice())
+	copy(packet[24:40], leaf.MeshAddress().AsSlice())
+	copy(inner[12:16], []byte{203, 0, 113, 1})
+	copy(inner[16:20], []byte{10, 88, 1, 2})
+	if !link.admitsIP(packet, false) {
+		t.Fatal("lease reply rejected")
+	}
+	inner[16] = 192
+	if link.admitsIP(packet, false) {
+		t.Fatal("unleased destination admitted")
+	}
+}

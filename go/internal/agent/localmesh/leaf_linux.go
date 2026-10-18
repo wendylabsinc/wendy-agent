@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -95,9 +96,9 @@ func (l *leafNodeLink) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 }
 
 // admitsIP runs after bounded reassembly on ingress and before fragmentation
-// on egress. This first leaf profile supports basic IPv6 endpoint traffic only:
-// no IPv4, extension headers, fragments, or IP-in-IP Internet-sharing tunnels.
-// Application services may still proxy traffic; this is a packet-layer policy.
+// on egress. Outer packets remain confined to the authenticated leaf's ULA.
+// IPv4-in-IPv6 uses the Internet-sharing lease pool. The gateway independently
+// authenticates its control session and enforces the assigned address/firewall.
 func (l *leafNodeLink) admitsIP(packet []byte, incoming bool) bool {
 	if !validIP(packet) || packet[0]>>4 != 6 {
 		return false
@@ -111,6 +112,23 @@ func (l *leafNodeLink) admitsIP(packet []byte, incoming bool) bool {
 	switch packet[6] {
 	case 6, 17, 58: // TCP, UDP, ICMPv6; lwIP endpoint packets need no extensions.
 		return true
+	case 4:
+		inner := packet[40:]
+		if len(inner) < 20 || len(inner) > 1280 || inner[0] != 0x45 ||
+			int(binary.BigEndian.Uint16(inner[2:4])) != len(inner) ||
+			binary.BigEndian.Uint16(inner[6:8])&0xbfff != 0 {
+			return false
+		}
+		// No nested tunnels, fragments or IPv4 options in the leaf profile.
+		if inner[9] != 6 && inner[9] != 17 && inner[9] != 1 {
+			return false
+		}
+		address := inner[16:20]
+		if incoming {
+			address = inner[12:16]
+		}
+		slot := binary.BigEndian.Uint16(address[2:4])
+		return address[0] == 10 && address[1] == 88 && slot != 0 && slot != 65535
 	default:
 		return false
 	}

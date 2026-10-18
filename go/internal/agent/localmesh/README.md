@@ -158,9 +158,17 @@ source ULA and a mesh destination. Outgoing packets must target that leaf's ULA.
 This first endpoint profile supports TCP, UDP and ICMPv6 without IPv6 extension
 headers. Its MTU is 1320, so endpoints must obey path MTU limits instead of
 emitting IPv6 fragments. The carrier fragments a valid full-size packet into
-at most two frames. Raw IPv4 and IP-in-IP sharing tunnels are refused, so this
-connection cannot serve as a transit path or use the built-in Internet-sharing
-data path. Application services can still proxy traffic.
+at most two frames. Raw IPv4 and IPv6-in-IPv6 remain refused. IPv4-in-IPv6 is
+admitted only for the Internet-sharing lease pool, with an IPv4 header without
+options or fragments, and TCP, UDP or ICMP payload. The outer source on ingress
+and destination on egress must still be the authenticated leaf's ULA. This does
+not admit leaf transit. The gateway separately requires its same-tenant mTLS
+lease and enforces the exact assigned inner address in its tunnel firewall.
+
+Lite's optional Cloud borrower uses this path for automatic Internet fallback.
+It authenticates the gateway with `wendy-mesh-internet/1`; Cloud TLS remains end
+to end. See the companion firmware's signed-mesh-leaf documentation for the
+borrower configuration and hardware validation limits.
 
 The leaf protocol exchanges complete currently verified certificate bundles,
 including replies to identity lookups. Certificate descriptors and chunk requests
