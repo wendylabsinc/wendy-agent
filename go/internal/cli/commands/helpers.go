@@ -108,6 +108,9 @@ var errTLSHandshakeRejected = errors.New("TLS handshake rejected by device")
 type tlsHandshakeRejectedError struct {
 	cause         error
 	refreshReason string
+	// useContext names the non-current auth context holding the device org's
+	// certificate; refresh-certs must not renew the current one instead.
+	useContext string
 }
 
 func newTLSHandshakeRejectedError(cause error) error {
@@ -282,7 +285,7 @@ func chooseRejectionError(ctx context.Context, observedDeviceOrg int32, allCerts
 			cause:    cause,
 		}
 	}
-	rejection := tlsHandshakeRejectedError{cause: cause}
+	rejection := tlsHandshakeRejectedError{cause: cause, useContext: authContextToUse(observedDeviceOrg)}
 	if isTLSCertificateError(cause) {
 		rejection.refreshReason = expiredClientCertificateReason(observedDeviceOrg, allCerts, time.Now())
 	}

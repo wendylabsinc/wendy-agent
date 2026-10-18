@@ -256,3 +256,50 @@ func TestConnectionEntryPointsKeepRecoveryFailure(t *testing.T) {
 		}
 	}
 }
+
+// TestConnectionRecoveryNeverRefreshesAnotherContextsCert pins WDY-3864: when
+// the rejected certificate for the device's org belongs to a context other than
+// the current one, recovery must not renew the current context (that spends its
+// refresh token and cannot fix the dial); it says which context to switch to.
+func TestConnectionRecoveryNeverRefreshesAnotherContextsCert(t *testing.T) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	expired := config.CertificateInfo{OrganizationID: 2, PemCertificate: certPEM(t, time.Now().Add(-time.Hour))}
+	current := config.CertificateInfo{OrganizationID: 1, PemCertificate: certPEM(t, time.Now().Add(time.Hour))}
+	if err := config.Save(&config.Config{
+		CurrentContext: "acme",
+		Auth: []config.AuthConfig{
+			{Name: "acme", CloudGRPC: "acme:443", Certificates: []config.CertificateInfo{current}},
+			{Name: "wendy", CloudGRPC: "wendy:443", Certificates: []config.CertificateInfo{expired}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	isolateConnectionRecovery(t) // fails on any refresh prompt or refresh
+	cause := chooseRejectionError(context.Background(), 2, []config.CertificateInfo{current, expired}, errors.New("remote error: tls: bad certificate"))
+	_, err := recoverAgentConnection(context.Background(), false, cause, func() (*grpcclient.AgentConnection, error) {
+		t.Fatal("retry without a usable certificate")
+		return nil, nil
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("cause lost: %v", err)
+	}
+	if !strings.Contains(err.Error(), "wendy auth use wendy") {
+		t.Fatalf("missing switch-context guidance: %v", err)
+	}
+
+	// The same org held by the current context keeps the plain advice.
+	if err := config.Save(&config.Config{
+		CurrentContext: "wendy",
+		Auth: []config.AuthConfig{
+			{Name: "acme", CloudGRPC: "acme:443", Certificates: []config.CertificateInfo{current}},
+			{Name: "wendy", CloudGRPC: "wendy:443", Certificates: []config.CertificateInfo{expired}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cause = chooseRejectionError(context.Background(), 2, []config.CertificateInfo{current, expired}, errors.New("remote error: tls: bad certificate"))
+	if strings.Contains(cause.Error(), "wendy auth use") || !strings.Contains(cause.Error(), "wendy auth refresh-certs") {
+		t.Fatalf("current context holds the cert, want plain refresh advice: %v", cause)
+	}
+}

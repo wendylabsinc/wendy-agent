@@ -1,11 +1,11 @@
 # `wendy auth refresh-certs`
 
 Refreshes the mTLS certificate of the current auth context (the one chosen
-with [`wendy auth use`](./use.md)) directly against [pki-core](../../../../pki/).
-Other stored contexts are left alone unless you pass `--all`. OIDC sessions use
-their refresh token and PKI identity endpoint to obtain a fresh operator
-certificate. Certificate-only sessions use the renew frontend described below. Cloud does not relay either
-request.
+with [`wendy auth use`](./use.md)) directly against
+[pki-core](../../../../pki/). Other stored contexts are left alone unless you
+pass `--all`. OIDC sessions use their refresh token and PKI identity endpoint
+to obtain a fresh operator certificate. Certificate-only sessions use the renew
+frontend described below. Cloud does not relay either request.
 
 A renewal is a re-issue, not a re-key of the same certificate: the CLI generates
 a new key pair of the same algorithm as the current one (an ML-DSA-65 session
@@ -45,7 +45,10 @@ pick one with `wendy auth use` or pass `--all` rather than guessing. To refresh
 another context, switch to it first with `wendy auth use <context>`.
 
 Refreshing an OIDC session spends its refresh token, so a context you did not
-select is never touched.
+select is never touched. This holds for the "Refresh certificates and retry?"
+offer after a rejected device connection too: when the rejected certificate
+belongs to another context, the CLI names it and asks you to switch with
+`wendy auth use <context>` first instead of refreshing the current one.
 
 ## The renew frontend
 

@@ -568,19 +568,19 @@ func refreshCerts(ctx context.Context, all bool) error {
 	}
 
 	var targets []*config.AuthConfig
-	switch {
-	case all:
+	if all {
 		for i := range cfg.Auth {
 			targets = append(targets, &cfg.Auth[i])
 		}
-	case len(cfg.Auth) == 1:
-		targets = append(targets, &cfg.Auth[0])
-	default:
-		a, ok := cfg.ContextByName(cfg.CurrentContext)
-		if !ok {
+	} else {
+		current, err := config.ResolveAuth(cfg, "", nil)
+		if errors.Is(err, config.ErrMultipleSessions) {
 			return fmt.Errorf("no current auth context; run 'wendy auth use <context>' or pass --all")
 		}
-		targets = append(targets, a)
+		if err != nil {
+			return err
+		}
+		targets = append(targets, current)
 	}
 
 	refreshed := 0
@@ -626,6 +626,43 @@ func refreshCerts(ctx context.Context, all bool) error {
 		return fmt.Errorf("no certificates were refreshed")
 	}
 	return nil
+}
+
+// authContextToUse names the stored context that holds the certificate for
+// org when refresh-certs would renew a different one, so recovery says to
+// switch first instead of spending the wrong session's refresh token
+// (WDY-3864). It returns "" when org is unknown or the current context holds it.
+func authContextToUse(org int32) string {
+	if org == 0 {
+		return ""
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return ""
+	}
+	current, _ := config.ResolveAuth(cfg, "", nil)
+	other := ""
+	for _, a := range cfg.Auth {
+		if len(a.Certificates) == 0 || a.Certificates[0].OrganizationID != int(org) {
+			continue
+		}
+		if current != nil && a.Name == current.Name {
+			return ""
+		}
+		if other == "" {
+			other = a.Name
+		}
+	}
+	return other
+}
+
+// refreshCertsStep is the advice for renewing a certificate held by
+// useContext ("" = the current context).
+func refreshCertsStep(useContext string) string {
+	if useContext != "" {
+		return fmt.Sprintf("Run 'wendy auth use %s', then 'wendy auth refresh-certs', then retry.", useContext)
+	}
+	return "Run 'wendy auth refresh-certs', then retry."
 }
 
 // firstAuthEntryForRelogin returns the stored auth entry a re-login should target

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -205,6 +206,7 @@ func TestRefreshCertsSelectsContexts(t *testing.T) {
 		current  string
 		all      bool
 		recovery bool
+		single   bool
 		failing  string
 		want     []string
 		wantErr  bool
@@ -212,6 +214,7 @@ func TestRefreshCertsSelectsContexts(t *testing.T) {
 		{name: "default refreshes only the current context", current: "acme", want: []string{"acme"}},
 		{name: "connection recovery refreshes only the current context", current: "acme", recovery: true, want: []string{"acme"}},
 		{name: "no current context refuses to guess", wantErr: true},
+		{name: "single session without a current context is refreshed", single: true, want: []string{"wendy"}},
 		{name: "--all iterates every context", current: "acme", all: true, want: []string{"wendy", "acme", "lab"}},
 		{name: "--all keeps going past a failure", current: "acme", all: true, failing: "wendy", want: []string{"wendy", "acme", "lab"}, wantErr: true},
 	}
@@ -220,14 +223,15 @@ func TestRefreshCertsSelectsContexts(t *testing.T) {
 			t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
 			t.Setenv("WENDY_SECRET_STORE", "file")
 			cert := []config.CertificateInfo{{PemCertificate: "leaf"}}
-			if err := config.Save(&config.Config{
-				CurrentContext: tt.current,
-				Auth: []config.AuthConfig{
-					{Name: "wendy", CloudGRPC: "wendy:443", Certificates: cert},
-					{Name: "acme", CloudGRPC: "acme:443", Certificates: cert},
-					{Name: "lab", CloudGRPC: "lab:443", Certificates: cert},
-				},
-			}); err != nil {
+			auths := []config.AuthConfig{
+				{Name: "wendy", CloudGRPC: "wendy:443", Certificates: cert},
+				{Name: "acme", CloudGRPC: "acme:443", Certificates: cert},
+				{Name: "lab", CloudGRPC: "lab:443", Certificates: cert},
+			}
+			if tt.single {
+				auths = auths[:1]
+			}
+			if err := config.Save(&config.Config{CurrentContext: tt.current, Auth: auths}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -255,5 +259,58 @@ func TestRefreshCertsSelectsContexts(t *testing.T) {
 				t.Errorf("refreshed %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRefreshCertsFailureLeavesOtherContextsUntouched pins WDY-3864: a failed
+// current-context refresh (which may already have rotated that session's
+// refresh token) persists that context only; every other stored context stays
+// exactly as it was.
+func TestRefreshCertsFailureLeavesOtherContextsUntouched(t *testing.T) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	cert := []config.CertificateInfo{{PemCertificate: "leaf"}}
+	if err := config.Save(&config.Config{
+		CurrentContext: "acme",
+		Auth: []config.AuthConfig{
+			{Name: "wendy", CloudGRPC: "wendy:443", Certificates: cert, RefreshToken: "prod-token"},
+			{Name: "acme", CloudGRPC: "acme:443", Certificates: cert, RefreshToken: "dev-token"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func() map[string]string {
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, a := range cfg.Auth {
+			b, err := json.Marshal(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[a.Name] = string(b)
+		}
+		return out
+	}
+	before := snapshot()
+
+	orig := refreshCertsForAuthFn
+	refreshCertsForAuthFn = func(_ context.Context, a *config.AuthConfig) error {
+		a.RefreshToken = "rotated" // consumed before the failure, as in refreshOIDCCertificate
+		return errors.New("issuance failed")
+	}
+	t.Cleanup(func() { refreshCertsForAuthFn = orig })
+
+	if err := refreshCerts(context.Background(), false); err == nil {
+		t.Fatal("want the refresh failure")
+	}
+	after := snapshot()
+	if after["wendy"] != before["wendy"] {
+		t.Fatalf("non-current context changed:\nbefore %s\nafter  %s", before["wendy"], after["wendy"])
+	}
+	if after["acme"] == before["acme"] {
+		t.Fatal("rotated refresh token of the current context was not persisted")
 	}
 }

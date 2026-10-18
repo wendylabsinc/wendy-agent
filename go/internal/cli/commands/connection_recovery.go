@@ -76,7 +76,9 @@ func tlsRecoveryMessage(err error) string {
 
 func tlsRecoveryNextSteps(err error) []string {
 	if certificateRefreshReason(err) != "" {
-		return []string{"Run 'wendy auth refresh-certs', then retry."}
+		var rejection tlsHandshakeRejectedError
+		errors.As(err, &rejection)
+		return []string{refreshCertsStep(rejection.useContext)}
 	}
 	return []string{
 		"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.",
@@ -124,6 +126,13 @@ func offerCertRefreshAndRetry(ctx context.Context, nonInteractive bool, cause er
 		return nil, cause
 	}
 	fmt.Fprintln(os.Stderr, reason)
+	// Renewing the current context cannot fix a certificate another context
+	// holds, and would spend its refresh token (WDY-3864).
+	var rejection tlsHandshakeRejectedError
+	if errors.As(cause, &rejection) && rejection.useContext != "" {
+		fmt.Fprintln(os.Stderr, refreshCertsStep(rejection.useContext))
+		return nil, cause
+	}
 	if !confirmFn("Refresh certificates and retry?") {
 		return nil, cause
 	}
