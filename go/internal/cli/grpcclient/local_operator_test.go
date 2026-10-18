@@ -129,7 +129,7 @@ func TestConnectWithLocalKeyReachesALocalDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := func(leaf *x509.Certificate) error { return pins.CheckLocal("box", leaf) }
+	check := func(leaf *x509.Certificate) error { return pins.CheckLocal([]string{"box"}, leaf) }
 
 	conn, err := grpcclient.ConnectWithLocalKey(context.Background(), addr, owner, check)
 	if err != nil {
@@ -175,7 +175,7 @@ func TestConnectWithLocalKeyRefusesAChangedDeviceKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := func(leaf *x509.Certificate) error { return pins.CheckLocal("box", leaf) }
+	check := func(leaf *x509.Certificate) error { return pins.CheckLocal([]string{"box"}, leaf) }
 	first := localDevice(t, owner)
 	conn, err := grpcclient.ConnectWithLocalKey(context.Background(), first, owner, check)
 	if err != nil {

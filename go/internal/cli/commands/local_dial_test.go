@@ -27,6 +27,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -336,7 +337,7 @@ func TestUnpinClearsLocalDeviceKeyPin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CheckLocal("box", cert.Leaf); err != nil {
+	if err := store.CheckLocal([]string{"box"}, cert.Leaf); err != nil {
 		t.Fatal(err)
 	}
 	cleared := clearPinsGoverning(&config.Config{}, "box")
@@ -345,5 +346,95 @@ func TestUnpinClearsLocalDeviceKeyPin(t *testing.T) {
 	}
 	if store, _ = openLocalPinStoreFn(); store.Has(devicepin.LocalPinKey("box")) {
 		t.Fatal("local pin survived unpin")
+	}
+}
+
+// Reviewer's scenario: a device that completes a verified local-operator
+// handshake but then fails the version probe (here: no AgentService) must
+// not be reached in plaintext on first contact.
+func TestLadderNeverPlaintextAfterVerifiedLocalHandshake(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	setPinCache(t)
+	forbidPlaintext(t)
+	owner := useLocalKey(t)
+	keys, err := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spki, _ := localkey.PublicKeyDER(owner)
+	if _, err := keys.Add(spki, trustedkeys.RoleOwner, "owner", trustedkeys.AddedByInstall, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	deviceKeyPEM, _ := certs.GenerateKeyPair()
+	certPEM, _ := mtls.SelfSignedCert(deviceKeyPEM, time.Now())
+	srv, err := mtls.NewServer(certPEM, "", deviceKeyPEM, zap.NewNop(), keys.Floor(),
+		&interceptor.Authorizer{Logger: zap.NewNop(), Listener: interceptor.ListenerMTLS, Keys: keys, OrgMode: interceptor.OrgModeOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := serveTest(t, srv) // no AgentService registered
+
+	_, _, err = dialAgentLadderWithCerts(ladderCtx(t), newDialTarget("box", addr), nil)
+	if !errors.Is(err, errNoAuthenticatedEndpoint) || !strings.Contains(err.Error(), "wendy device update") {
+		t.Fatalf("err = %v, want a refusal naming the agent update", err)
+	}
+}
+
+// The same rule for the cloud rung: a candidate whose server certificate was
+// verified and then failed the probe forbids plaintext.
+func TestLadderNeverPlaintextAfterVerifiedCloudHandshake(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	setPinCache(t)
+	forbidPlaintext(t)
+	stubMTLSCandidate(t, func(_ context.Context, w *mtlsWalk, cand string, _ bool) (*grpcclient.AgentConnection, error) {
+		w.verifiedProbeErr = mtlsAttemptError{addr: cand, err: context.DeadlineExceeded}
+		return nil, nil
+	})
+	_, _, err := dialAgentLadderWithCerts(ladderCtx(t), newDialTarget("box", "127.0.0.1:1"), []config.CertificateInfo{selfSignedCLICert(t, 7)})
+	if !errors.Is(err, errNoAuthenticatedEndpoint) {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+}
+
+// An unusable local key (group-readable, or sudo before one exists) is named
+// in the refusal instead of being swallowed.
+func TestLadderNamesUnusableLocalKey(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	setPinCache(t)
+	forbidPlaintext(t)
+	owner := useLocalKey(t)
+	conn, _, err := dialAgentLadderWithCerts(ladderCtx(t), newDialTarget("box", startLocalOnlyAgent(t, owner)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	localOperatorKeyFn = func() (crypto.Signer, error) {
+		return nil, errors.New("key.pem is accessible by group or others; run chmod 600 on it")
+	}
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	dead := ln.Addr().String()
+	ln.Close()
+	_, _, err = dialAgentLadderWithCerts(ladderCtx(t), newDialTarget("box", dead), nil)
+	if err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("err = %v, want the key's own error", err)
+	}
+}
+
+// A device key pinned under another name the device is known by (a cache
+// alias) is checked too, and the refusal names that key for unpin.
+func TestLadderChecksLocalPinUnderAliases(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	setPinCache(t, discoverycache.Entry{ID: "dev-1", DisplayName: "box-alias", Hostname: "box.local"})
+	forbidPlaintext(t)
+	owner := useLocalKey(t)
+	conn, _, err := dialAgentLadderWithCerts(ladderCtx(t), newDialTarget("box-alias", startLocalOnlyAgent(t, owner)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+
+	_, _, err = dialAgentLadderWithCerts(ladderCtx(t), newDialTarget("box.local", startLocalOnlyAgent(t, owner)), nil)
+	if !errors.Is(err, errDeviceIdentityRefused) || !strings.Contains(err.Error(), "wendy device unpin box-alias") {
+		t.Fatalf("err = %v, want an identity refusal naming the alias", err)
 	}
 }

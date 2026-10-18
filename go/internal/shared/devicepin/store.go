@@ -196,19 +196,25 @@ func LocalPinKey(name string) string {
 
 // CheckLocal pins the key of a device that is not cloud-enrolled (WDY-3882):
 // it serves a certificate self-signed over its device key, so the key is the
-// device's only identity. First use records it under LocalPinKey(name); a
-// later different key is always a PinMismatchError, since the device key
-// never rotates (it survives enrollment and unenrollment).
-func (s *Store) CheckLocal(name string, leaf *x509.Certificate) error {
-	key := LocalPinKey(name)
-	fingerprint := certs.SPKIFingerprint(leaf.RawSubjectPublicKeyInfo)
-	existing, pinned := s.devices[key]
-	if pinned && existing.SPKIFingerprint != fingerprint {
-		return &PinMismatchError{Key: key, DisplayName: name, Want: existing.SPKIFingerprint, Got: fingerprint}
+// device's only identity. names[0] is the name being dialled, the rest are
+// other names the device is known by; the key must match a pin under any of
+// them (a PinMismatchError naming the key that differs otherwise, since the
+// device key never rotates), and is recorded under names[0] on first use.
+func (s *Store) CheckLocal(names []string, leaf *x509.Certificate) error {
+	if len(names) == 0 {
+		return nil
 	}
+	fingerprint := certs.SPKIFingerprint(leaf.RawSubjectPublicKeyInfo)
+	for _, name := range names {
+		if existing, pinned := s.devices[LocalPinKey(name)]; pinned && existing.SPKIFingerprint != fingerprint {
+			return &PinMismatchError{Key: LocalPinKey(name), DisplayName: name, Want: existing.SPKIFingerprint, Got: fingerprint}
+		}
+	}
+	key := LocalPinKey(names[0])
+	_, pinned := s.devices[key]
 	s.devices[key] = PinnedDevice{
 		SPKIFingerprint: fingerprint,
-		DisplayName:     name,
+		DisplayName:     names[0],
 		LastSeen:        time.Now().UTC().Format(time.RFC3339),
 	}
 	if pinned {

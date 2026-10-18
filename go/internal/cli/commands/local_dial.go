@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -14,6 +15,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Local-operator rung of the dial ladder (WDY-3882). A device installed with
@@ -52,6 +55,11 @@ type localDialResult struct {
 	// over the local-operator path before and must never be reached in the
 	// clear.
 	pinned bool
+	// verifiedProbeErr: a device verified as local-only during the handshake
+	// then failed the version probe for a reason other than refusing the key.
+	verifiedProbeErr error
+	// keyErr: the local operator key could not be loaded or created.
+	keyErr error
 }
 
 // localKeyRefusedError is a local-only device refusing this computer's local
@@ -83,10 +91,16 @@ func (e *localPinnedUnreachableError) Is(target error) bool {
 func dialLocalOperator(ctx context.Context, target dialTarget, candidates []string) (*grpcclient.AgentConnection, localDialResult, error) {
 	var res localDialResult
 	var pins *devicepin.Store
-	if target.PinKey != "" {
+	// The name dialled first, then the other names the device is known by
+	// (the same aliases lookupPin consults). An alias can only add a pin to
+	// match, never remove one, so a spoofed alias makes the check stricter.
+	names := pinCandidateKeys(target.PinKey)
+	if len(names) > 0 {
 		if store, err := openLocalPinStoreFn(); err == nil {
 			pins = store
-			res.pinned = store.Has(devicepin.LocalPinKey(target.PinKey))
+			for _, name := range names {
+				res.pinned = res.pinned || store.Has(devicepin.LocalPinKey(name))
+			}
 		}
 	}
 	var addrs []string
@@ -106,8 +120,10 @@ func dialLocalOperator(ctx context.Context, target dialTarget, candidates []stri
 	}
 	key, err := localOperatorKeyFn()
 	if err != nil {
-		// No usable key (for instance under sudo before one exists): the
-		// rung cannot run; the ladder's other refusals still apply.
+		// No usable key (a group-readable file, or sudo before one exists):
+		// the rung cannot run. The ladder's other refusals still apply, and
+		// the reason is reported with whatever the dial ends in.
+		res.keyErr = err
 		return nil, res, nil
 	}
 	// A device pinned to a cloud identity answering as a locally owned one
@@ -119,7 +135,7 @@ func dialLocalOperator(ctx context.Context, target dialTarget, candidates []stri
 		check = func(leaf *x509.Certificate) error {
 			mu.Lock()
 			defer mu.Unlock()
-			return pins.CheckLocal(target.PinKey, leaf)
+			return pins.CheckLocal(names, leaf)
 		}
 	}
 	type attempt struct {
@@ -148,7 +164,7 @@ func dialLocalOperator(ctx context.Context, target dialTarget, candidates []stri
 
 	var winner *grpcclient.AgentConnection
 	var refusal error
-	keyRefused := false
+	keyRefused, keyClosed := false, false
 	for i, a := range attempts {
 		conn := a.conn
 		if conn == nil {
@@ -165,17 +181,30 @@ func dialLocalOperator(ctx context.Context, target dialTarget, candidates []stri
 		}
 		conn.Close()
 		if pm, ok := pinMismatchFn(conn); ok && refusal == nil {
+			// Name the key the pin is filed under: that is what unpin clears.
 			refusal = refuseIdentity(
-				"device %q presented a different device key than the one pinned when this computer first reached it (pinned %s, now %s); refusing to connect — if the device was reinstalled, run 'wendy device unpin %s'",
-				target.PinKey, pm.Want, pm.Got, target.PinKey)
+				"device %q presented a different device key than the one pinned for %q when this computer first reached it (pinned %s, now %s); refusing to connect — if the device was reinstalled, run 'wendy device unpin %s'",
+				target.PinKey, pm.DisplayName, pm.Want, pm.Got, strings.TrimPrefix(pm.Key, "local:"))
 		}
 		if conn.NotLocalDevice() {
 			res.enrolledSeen = true
 		}
 		// Only a device that proved itself local-only (its certificate
 		// verified) and then failed the handshake refused our key.
-		if conn.LocalDeviceVerified() && isCertRejectionError(addrs[i], a.err) {
-			keyRefused = true
+		if conn.LocalDeviceVerified() {
+			switch {
+			case isCertRejectionError(addrs[i], a.err):
+				keyRefused = true
+			case status.Code(a.err) == codes.Unavailable:
+				// The device closed the connection right after its verified
+				// handshake: on loopback and some stacks that is how a
+				// refused client certificate shows instead of an alert.
+				keyClosed = true
+			case res.verifiedProbeErr == nil:
+				// The device proved itself; whatever failed after the
+				// handshake, plaintext is not an option for it.
+				res.verifiedProbeErr = mtlsAttemptError{addr: addrs[i], err: a.err}
+			}
 		}
 	}
 	if refusal != nil {
@@ -193,13 +222,15 @@ func dialLocalOperator(ctx context.Context, target dialTarget, candidates []stri
 		}
 		return winner, res, nil
 	}
-	if keyRefused {
+	if keyRefused || keyClosed {
 		fp, _ := localkey.Fingerprint(key)
-		return nil, res, &localKeyRefusedError{msg: fmt.Sprintf(
-			"device %q accepts only trusted operator keys and does not trust this computer's local operator key (%s). "+
-				"Ask an owner of the device to add it: they run 'wendy device keys add <key file> --role operator' with the output of 'wendy auth local-key show' from this computer. "+
-				"If you installed the device yourself with another computer, use that computer or reinstall the device.",
-			targetName(target), fp)}
+		lead := fmt.Sprintf("device %q accepts only trusted operator keys and does not trust this computer's local operator key (%s). ", targetName(target), fp)
+		if !keyRefused {
+			lead = fmt.Sprintf("device %q accepts only trusted operator keys and closed the connection after the TLS handshake, which is how it refuses a key it does not trust (this computer's local operator key is %s). ", targetName(target), fp)
+		}
+		return nil, res, &localKeyRefusedError{msg: lead +
+			"Ask an owner of the device to add it: they run 'wendy device keys add <key file> --role operator' with the output of 'wendy auth local-key show' from this computer. " +
+			"If you installed the device yourself with another computer, use that computer or reinstall the device."}
 	}
 	return nil, res, ctx.Err()
 }
@@ -214,18 +245,51 @@ func targetName(t dialTarget) string {
 
 // localDialRefusal is the ladder's verdict after every authenticated rung
 // failed, for what the local rung saw: nil means the plaintext rung may run.
-func localDialRefusal(target dialTarget, res localDialResult, haveCloudCerts bool) error {
+// verifiedProbeErr is a cloud rung's equivalent of res.verifiedProbeErr.
+func localDialRefusal(target dialTarget, res localDialResult, haveCloudCerts bool, verifiedProbeErr error) error {
+	if verifiedProbeErr == nil {
+		verifiedProbeErr = res.verifiedProbeErr
+	}
+	var msg string
 	switch {
+	case verifiedProbeErr != nil:
+		return &verifiedDeviceUnresponsiveError{msg: verifiedProbeMessage(targetName(target), verifiedProbeErr)}
 	case res.pinned:
-		return &localPinnedUnreachableError{msg: fmt.Sprintf(
+		msg = fmt.Sprintf(
 			"device %q is a locally owned device this computer has reached with its local operator key before, and no authenticated endpoint answered at %s; refusing to connect without authentication. Check that the device is on and reachable.",
-			target.PinKey, target.Addr)}
+			target.PinKey, target.Addr)
+		if res.keyErr != nil {
+			msg += fmt.Sprintf(" The local operator key could not be used: %v.", res.keyErr)
+		}
+		return &localPinnedUnreachableError{msg: msg}
 	case res.enrolledSeen && !haveCloudCerts:
 		return &noCloudCredentialError{msg: fmt.Sprintf(
 			"device %q is enrolled in Wendy Cloud and only accepts operator certificates of its organization; local operator keys are not used while a device is cloud-enrolled. Run 'wendy auth login' for the device's organization.",
 			targetName(target))}
 	}
 	return nil
+}
+
+// verifiedDeviceUnresponsiveError: a device authenticated itself over TLS
+// (cloud chain or local key) and then failed the version probe. It is
+// errNoAuthenticatedEndpoint: no unauthenticated transport may stand in for
+// a device that has just proved it speaks TLS.
+type verifiedDeviceUnresponsiveError struct{ msg string }
+
+func (e *verifiedDeviceUnresponsiveError) Error() string { return e.msg }
+func (e *verifiedDeviceUnresponsiveError) Is(target error) bool {
+	return target == errNoAuthenticatedEndpoint
+}
+
+func verifiedProbeMessage(name string, err error) string {
+	next := "Retry; if it persists, check the network path to the device."
+	switch status.Code(err) {
+	case codes.DeadlineExceeded:
+		next = "The device may be busy or slow to answer; retry."
+	case codes.Unimplemented:
+		next = "Its agent does not serve the version check; update it with 'wendy device update' or reinstall it."
+	}
+	return fmt.Sprintf("device %q authenticated over TLS but did not answer the version check (%v); refusing to fall back to an unauthenticated connection. %s", name, err, next)
 }
 
 // noCloudCredentialError: a cloud-enrolled device answered and the CLI holds

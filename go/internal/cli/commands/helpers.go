@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/netip"
 	"os"
@@ -2488,6 +2489,11 @@ type mtlsWalk struct {
 	// addresses actually dialled instead of asserting that "no endpoint
 	// answered" and leaving the user to guess where we looked.
 	attempts []mtlsAttemptError
+	// verifiedProbeErr is the probe failure of a candidate whose server
+	// certificate was VERIFIED (chain and org) before the probe failed for a
+	// reason other than our certificate. A device that proved itself over TLS
+	// is never offered the plaintext rung, whichever candidate it was.
+	verifiedProbeErr error
 }
 
 // primaryRejectedOurCert reports whether the PRIMARY candidate proved itself a
@@ -2594,6 +2600,9 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 			}
 			if w.tlsDebug {
 				fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
+			}
+			if _, verified := conn.ObservedServerIdentity(); verified && w.verifiedProbeErr == nil && !isCertRejectionError(cand, probeErr) {
+				w.verifiedProbeErr = mtlsAttemptError{addr: mtlsAddr, err: probeErr}
 			}
 			if conn.TCPDialError() != nil {
 				// The actual dial never reached TCP. Another credential cannot
@@ -2741,7 +2750,7 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 	if err := ctx.Err(); err != nil {
 		return nil, walk.lastMTLSErr, err
 	}
-	if refusal := localDialRefusal(target, local, len(walk.allCerts) > 0); refusal != nil {
+	if refusal := localDialRefusal(target, local, len(walk.allCerts) > 0, walk.verifiedProbeErr); refusal != nil {
 		return nil, walk.lastMTLSErr, refusal
 	}
 	if target.pinned() {
@@ -2766,6 +2775,9 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 	// first RPC — walking here would spend dials that cannot report which of them
 	// actually worked. The authenticated walk above is where reachability gets
 	// established; cacheFastPathReachable is what proves a plaintext one.
+	if local.keyErr != nil && !errors.Is(local.keyErr, fs.ErrNotExist) && !jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: the local operator key was not used: %v\n", local.keyErr)
+	}
 	conn, err := plaintextConnectFn(ctx, target.Addr)
 	return conn, walk.lastMTLSErr, err
 }
