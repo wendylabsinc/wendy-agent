@@ -54,11 +54,7 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(json.loads(archive.read(prefix + "mcp.json")), mcp)
             auth = mcp["mcpServers"]["wendy-relay"]["extensions"]["com.openai"]["auth"]
             self.assertEqual(auth["baseScopes"], ["mcp:relay"])
-            self.assertEqual(auth["client"], {
-                "mode": "provided",
-                "clientId": "https://chatgpt.com/oauth/client.json",
-                "tokenEndpointAuthMethod": "none",
-            })
+            self.assertEqual(auth["client"], {"mode": "cimd"})
             self.assertEqual(auth["defaultScopes"], [])
             self.assertIs(auth["oidcEnabled"], False)
             onboarding = extension["onboardingSkill"]
@@ -282,7 +278,7 @@ class PackageTests(unittest.TestCase):
             with self.subTest(client=client):
                 auth["client"] = client
                 self.save()
-                with self.assertRaisesRegex(ValueError, "ChatGPT's exact public"):
+                with self.assertRaisesRegex(ValueError, r'Use the CIMD client \{"mode": "cimd"\}'):
                     package.validate_package(self.source)
 
     def test_rejects_non_object_oauth_client(self):
