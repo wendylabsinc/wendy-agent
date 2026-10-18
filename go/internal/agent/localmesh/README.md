@@ -419,6 +419,20 @@ Application catalogue gossip uses the separate protocol described below; it
 should not be inferred from the device presence directory. Internet-sharing
 overlays and LAN service projection have their own policy and runtime layers.
 
+## Cloud relay presence
+
+Cloud relay presence checks its TCP source address every ten seconds. If that
+address disappears when a borrowed interface is withdrawn, presence ends,
+invalidates its old lease and reconnects through the current route. When the
+source remains assigned, a changed preferred source must persist for two checks
+and pass a broker TLS transport probe before reconnecting. Failed probes back
+off to five minutes; they do not delay offers or lease expiry.
+
+Gateway DNS listens on the device ULA and accepts mesh ingress. `HostPolicy`
+now only manages resolver selection and restores its owned resolver changes.
+The kernel feature contract is checked by WendyOS-Builder's
+`recipes-kernel/linux/mesh-internet.inc`.
+
 ## Verification
 
 From the WendyOS root:
