@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -68,7 +69,7 @@ func TestLegacyLiteSelectsMatchingUserCertificate(t *testing.T) {
 		selected = append(selected, auth.Name)
 		return auth.Certificates[0], "device trust", nil
 	}
-	err := connectWithLegacyCLIIdentities(context.Background(), 2, func(_ tls.Certificate, trust string) error {
+	err := connectWithLegacyCLIIdentities(context.Background(), 2, func(_ tls.Certificate, trust string, _ liteclient.LiteDeviceCAChain) error {
 		if trust != "device trust" {
 			t.Fatal("lost the selected device trust")
 		}

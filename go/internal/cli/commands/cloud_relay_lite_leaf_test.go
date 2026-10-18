@@ -81,6 +81,7 @@ func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
 	t.Setenv("WENDY_LITE_OPERATOR_CERT", "")
 	t.Setenv("WENDY_LITE_OPERATOR_KEY", "")
 	auth := liteTestAuth("cloud.example:443")
+	auth.PKIEndpoint = "https://identity.selected.example/v1/identity/certificate"
 	auth.Certificates, _ = liteRelayTestPKI(t)
 	lite, _ := liteRelayTestPKI(t)
 	auth.LiteCertificate = lite[0].PemCertificate + lite[0].PemCertificateChain
@@ -106,6 +107,23 @@ func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
 	}
 	if alg := jwsHeader(t, proof)["alg"]; alg != "ES256" {
 		t.Fatalf("Lite request alg = %v, want ES256", alg)
+	}
+	if options.DeviceTrustFallback == nil {
+		t.Fatal("missing lazy Lite device CA chain discovery")
+	}
+	// A later session switch must not redirect an in-flight device handshake's
+	// trust lookup.
+	var gotEndpoint, gotTenant string
+	real := discoverLiteDeviceCAChain
+	discoverLiteDeviceCAChain = func(_ context.Context, endpoint, tenant string) (string, error) {
+		gotEndpoint, gotTenant = endpoint, tenant
+		return "", nil
+	}
+	t.Cleanup(func() { discoverLiteDeviceCAChain = real })
+	auth.PKIEndpoint = ""
+	auth.Certificates[0].PrincipalURI = "invalid"
+	if _, err := options.DeviceTrustFallback(context.Background()); err != nil || gotEndpoint != "https://identity.selected.example/v1/identity/certificate" || gotTenant != liteTestTenant {
+		t.Fatalf("device trust discovery = %q, %q, %v; want the selected PKI and tenant", gotEndpoint, gotTenant, err)
 	}
 }
 

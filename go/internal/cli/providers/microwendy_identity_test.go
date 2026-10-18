@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -96,7 +97,7 @@ func TestLocalLiteIdentityAndTrust(t *testing.T) {
 				return selected, auth.Certificates[0].PemCertificateChain, nil
 			}
 			connected := false
-			err := connectWithCLIIdentities(context.Background(), "", func(cert tls.Certificate, trust string) error {
+			err := connectWithCLIIdentities(context.Background(), "", func(cert tls.Certificate, trust string, _ liteclient.LiteDeviceCAChain) error {
 				connected = true
 				leaf, _ := pem.Decode([]byte(selected.PemCertificate))
 				ca, _ := pem.Decode([]byte(selected.PemCertificateChain))
@@ -144,7 +145,7 @@ func TestLocalLiteSkipsIneligibleSessionsAndTriesOtherContexts(t *testing.T) {
 		}
 		return primary, auth.Name, nil
 	}
-	err := connectWithCLIIdentities(context.Background(), "", func(cert tls.Certificate, trust string) error {
+	err := connectWithCLIIdentities(context.Background(), "", func(cert tls.Certificate, trust string, _ liteclient.LiteDeviceCAChain) error {
 		connected = append(connected, trust)
 		if trust == "wrong-issuer" {
 			return errors.New("untrusted issuer")
@@ -171,7 +172,7 @@ func TestLocalLiteErrorsNameContexts(t *testing.T) {
 		}
 		return primary, "device trust", nil
 	}
-	err := connectWithCLIIdentities(context.Background(), "", func(tls.Certificate, string) error {
+	err := connectWithCLIIdentities(context.Background(), "", func(tls.Certificate, string, liteclient.LiteDeviceCAChain) error {
 		return errors.New("connection reset by peer")
 	})
 	if err == nil || !strings.Contains(err.Error(), `context "old": operator certificate expired`) || !strings.Contains(err.Error(), `context "work": connection reset by peer`) || strings.Contains(err.Error(), "identity 1") {
@@ -204,7 +205,7 @@ func TestLocalLiteTenantSelection(t *testing.T) {
 				resolved = append(resolved, auth.Name)
 				return auth.Certificates[0], "device trust", nil
 			}
-			err := connectWithCLIIdentities(context.Background(), tc.tenant, func(tls.Certificate, string) error { return nil })
+			err := connectWithCLIIdentities(context.Background(), tc.tenant, func(tls.Certificate, string, liteclient.LiteDeviceCAChain) error { return nil })
 			if (err != nil) != tc.wantError || !slices.Equal(resolved, tc.want) {
 				t.Fatalf("tenant selection: resolved=%v want=%v err=%v", resolved, tc.want, err)
 			}
@@ -239,7 +240,7 @@ func TestLocalLiteCancellationStopsIdentityFallback(t *testing.T) {
 				}
 				return primary, "device trust", nil
 			}
-			err := connectWithCLIIdentities(ctx, "", func(tls.Certificate, string) error {
+			err := connectWithCLIIdentities(ctx, "", func(tls.Certificate, string, liteclient.LiteDeviceCAChain) error {
 				connected++
 				cancel()
 				return errors.New("transport closed")
@@ -258,7 +259,7 @@ func TestLocalLiteRequiresIdentityResolver(t *testing.T) {
 	primary := localLiteTestCertificate(t, localLiteOperator, true)
 	localLiteTestSessions(t, config.AuthConfig{Name: "work", Certificates: []config.CertificateInfo{primary}})
 	LiteIdentityResolver = nil
-	err := connectWithCLIIdentities(context.Background(), "", func(tls.Certificate, string) error {
+	err := connectWithCLIIdentities(context.Background(), "", func(tls.Certificate, string, liteclient.LiteDeviceCAChain) error {
 		t.Fatal("connection bypassed the configured identity resolver")
 		return nil
 	})
@@ -274,7 +275,7 @@ func TestLocalLiteRequiresTenantOperatorSession(t *testing.T) {
 		t.Fatal("attempted operator refresh for a legacy login")
 		return config.CertificateInfo{}, "", nil
 	}
-	err := connectWithCLIIdentities(context.Background(), "", func(tls.Certificate, string) error {
+	err := connectWithCLIIdentities(context.Background(), "", func(tls.Certificate, string, liteclient.LiteDeviceCAChain) error {
 		t.Fatal("attempted a connection without an operator login")
 		return nil
 	})
