@@ -18,9 +18,10 @@ const BLEMethodPrefix = "/wendy.agent.ble/"
 //
 // owner: key management, enrollment and unprovisioning.
 // operator: apps/containers, builds, shell, tunnel, drivers, device settings,
-// agent/OS update, data campaigns, robot control. Device settings sit here,
-// not at owner, because shell already reaches them.
-// viewer: reads — info, lists, status, logs, telemetry, sensor streams.
+// agent/OS update, data campaigns, robot control, live camera and microphone
+// streams. Device settings sit here, not at owner, because shell already
+// reaches them.
+// viewer: reads — info, lists, status, logs, telemetry, audio levels.
 var methodRoles = map[string]trustedkeys.Role{
 	// v1 WendyAgentService
 	"/wendy.agent.services.v1.WendyAgentService/RunContainer":                  operator,
@@ -50,7 +51,7 @@ var methodRoles = map[string]trustedkeys.Role{
 	"/wendy.agent.services.v1.WendyAudioService/ListAudioDevices":      viewer,
 	"/wendy.agent.services.v1.WendyAudioService/SetDefaultAudioDevice": operator,
 	"/wendy.agent.services.v1.WendyAudioService/StreamAudioLevels":     viewer,
-	"/wendy.agent.services.v1.WendyAudioService/StreamAudio":           viewer,
+	"/wendy.agent.services.v1.WendyAudioService/StreamAudio":           operator,
 
 	// v1 WendyContainerService
 	"/wendy.agent.services.v1.WendyContainerService/ListLayers":                  viewer,
@@ -90,7 +91,7 @@ var methodRoles = map[string]trustedkeys.Role{
 
 	// v1 WendyVideoService
 	"/wendy.agent.services.v1.WendyVideoService/ListVideoDevices":      viewer,
-	"/wendy.agent.services.v1.WendyVideoService/StreamVideo":           viewer,
+	"/wendy.agent.services.v1.WendyVideoService/StreamVideo":           operator,
 	"/wendy.agent.services.v1.WendyVideoService/SetCameraCredentials":  operator,
 	"/wendy.agent.services.v1.WendyVideoService/ForgetCamera":          operator,
 	"/wendy.agent.services.v1.WendyVideoService/RefreshCameras":        operator,
@@ -151,7 +152,7 @@ var methodRoles = map[string]trustedkeys.Role{
 	"/wendy.agent.services.v2.WendyAudioService/SetDefaultAudioDevice": operator,
 	"/wendy.agent.services.v2.WendyAudioService/SetAudioVolume":        operator,
 	"/wendy.agent.services.v2.WendyAudioService/StreamAudioLevels":     viewer,
-	"/wendy.agent.services.v2.WendyAudioService/StreamAudio":           viewer,
+	"/wendy.agent.services.v2.WendyAudioService/StreamAudio":           operator,
 
 	// v2 WendyBluetoothService
 	"/wendy.agent.services.v2.WendyBluetoothService/ScanBluetoothPeripherals":      viewer,
@@ -225,7 +226,7 @@ var methodRoles = map[string]trustedkeys.Role{
 
 	// v2 WendyUnitreeRobotService
 	"/wendy.agent.services.v2.WendyUnitreeRobotService/Command": operator,
-	"/wendy.agent.services.v2.WendyUnitreeRobotService/Stream":  viewer,
+	"/wendy.agent.services.v2.WendyUnitreeRobotService/Stream":  operator,
 
 	// v2 WendyUnitreeService
 	"/wendy.agent.services.v2.WendyUnitreeService/DiscoverUnitreeRobots": viewer,
