@@ -2,6 +2,17 @@
 
 Wendy uses mutual TLS (mTLS) to authenticate both devices and CLI clients against the agent's gRPC server. Certificates are issued by a CA managed by either Wendy Cloud or a self-hosted **pki-core** instance.
 
+## Device unenrollment and retired Agent RPCs
+
+For UUID/direct PKI devices, Cloud's signed `DeleteAsset` operation owns
+certificate revocation. The CLI verifies issuer-signed revocation evidence and
+exact retained deletion binding before requesting guarded local erasure.
+See [Cloud-owned unenrollment](/docs/device/unenrollment).
+
+The prerelease Agent RPCs `RevokeACMECertificate` and `CheckACMERevocation` are
+deprecated and always return `UNIMPLEMENTED` on updated Agents. They are not an
+alternate revocation path. Numeric Cloud v1 cleanup remains separate.
+
 ## Certificate roles
 
 | Certificate | Issued to | Used for |
@@ -284,6 +295,13 @@ wendy device enroll \
 › shell has no effect. The agent logs a warning naming the target address
 › whenever the variable is active, because the enrollment token is a bearer
 › credential. Never set it on a real device.
+›
+› The CLI's own cloud dials follow the same rule: TLS for every address, so
+› `wendy` commands that talk to a local plaintext cloud need
+› `WENDY_CLOUD_INSECURE=1` in **your** shell as well. A local or on-prem tunnel
+› broker is always verified by hostname: its certificate must chain to the
+› Wendy CA and carry a DNS or IP SAN for the address the CLI dials (for
+› example `localhost` or the LAN IP).
 
 After this, `wendy device version`, `wendy run`, and other device commands automatically use the mTLS port (plaintext port + 1) when the device's Avahi advertisement includes `tls=true`.
 

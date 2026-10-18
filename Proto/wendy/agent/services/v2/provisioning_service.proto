@@ -34,6 +34,10 @@ message NotProvisionedResponse {
     optional bool acme_enrollment_supported = 1;
     // Public device-signed completion evidence, only after durable local erasure.
     bytes unenrollment_completion = 2;
+    // Why acme_enrollment_supported is false on this host, for the operator
+    // (e.g. a Mac below the macOS version that can verify ML-DSA chains).
+    // Empty when enrollment is supported or the agent gives no reason.
+    string acme_enrollment_unavailable_reason = 3;
 }
 
 message ProvisionedResponse {
@@ -42,14 +46,20 @@ message ProvisionedResponse {
     int32 asset_id = 3;
     // Set for direct PKI enrollment; legacy numeric IDs remain unset.
     string principal_uri = 4;
-    // Absent/false on agents without Cloud-owned guarded reset and recovery.
+    // Deprecated prerelease flag: clients that trusted it sent caller-serialized
+    // deletion fields. Current Agents always report false so those clients stop
+    // before Cloud mutation; clients gate only on cloud_authenticated_reset_supported.
     bool cloud_unenrollment_supported = 5;
+    // Distinguishes verified Cloud authorization from unsafe prerelease resets
+    // that accepted caller-serialized deletion fields. Clients require this
+    // before starting the UUID reset workflow; older Agents fail closed.
+    bool cloud_authenticated_reset_supported = 6;
     // The device's Cloud asset UUID, canonical lowercase text. Enrollment
     // returns it but the agent does not persist it; the roster entry whose
     // device_uuid matches this device's leaf principal is the runtime source,
     // so it is empty until the roster has synced. Mesh-keyed callers (build
     // delivery) address devices by this, not by the numeric asset id.
-    string asset_uuid = 6;
+    string asset_uuid = 7;
 }
 
 message StartProvisioningRequest {
@@ -69,6 +79,10 @@ message UnprovisionRequest {
     bytes revocation_proof = 3;
     // Serialized wendycloud.v2.DeletedAsset; exact tenant/device binding required.
     bytes cloud_deletion = 4;
+    // Purpose-specific Cloud JWS from DeleteAsset. Agent obtains the key from
+    // its enrolled Cloud's authenticated JWKS, not from this request. Must bind
+    // the exact operator, installed identity, tombstone and signed deletion.
+    bytes cloud_reset_authorization = 5;
 }
 
 message UnprovisionResponse {

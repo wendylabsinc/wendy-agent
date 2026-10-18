@@ -47,22 +47,11 @@ If `wendy --version` is unavailable after installation, open a new terminal and 
 
 ## Try the robot tour
 
-On macOS or Linux, start [Docker](https://docs.docker.com/get-started/get-docker/)
-and check its builder:
-
-```bash
-docker info
-docker buildx version
-```
-
-Both commands should succeed. Python runs inside the container and does not
-need to be installed on your computer. The robot VM also needs QEMU and ARM64
-firmware. On macOS, Wendy offers to install QEMU if Homebrew is available.
-On Debian or Ubuntu, install it first:
-
-```bash
-sudo apt install qemu-system-arm qemu-efi-aarch64
-```
+`wendy tour` and `wendy run` check Docker and QEMU, and offer to install what is
+missing: Docker Desktop and QEMU through Homebrew on macOS, or QEMU through
+apt-get or dnf on Linux. On Linux, install and start
+[Docker](https://docs.docker.com/get-started/get-docker/) with Buildx first.
+Python runs inside the container, so you do not need it on your computer.
 
 Allow four virtual CPUs, 4 GiB of VM memory, and space for the downloaded OS and
 container images. Apple Silicon runs the ARM64 VM with hardware acceleration;
@@ -94,20 +83,22 @@ starter, pass `--project DIR`. You can add a coding agent or cloud connection la
 
 For guided hardware setup, run `wendy tour --hardware`, or choose a path below.
 
-For the app below, have Docker and Buildx installed and Docker running on your
-development computer. The hardware guides list the storage, power, and cables
-needed for each board. Installing WendyOS erases the selected target storage.
+The app below builds with Docker and Buildx. On macOS, `wendy run` offers to
+install Docker Desktop; on Linux, install and start Docker yourself. The hardware
+guides list the storage, power, and cables needed for each board. Installing
+WendyOS erases the selected target storage.
 
 <Tabs items={['WendyOS VM', 'Jetson Orin', 'Jetson Thor', 'Raspberry Pi', 'Linux computer']} groupId="quickstart-device" persist>
 <Tab value="WendyOS VM">
 
-No hardware needed. Wendy creates the simulator for you in step 4.
+No hardware needed. On macOS and Linux, Wendy creates the simulator for you in
+step 4 and offers to install QEMU if it is missing.
 
-On macOS, Wendy installs QEMU for you when needed. On Debian or Ubuntu, install it now:
-
-```bash
-sudo apt install qemu-system-arm qemu-efi-aarch64
-```
+On Windows, run the Linux Wendy CLI and your container builder inside WSL2 for
+this quickstart; Wendy offers to install QEMU there as on Linux. Native Windows
+[foreground VMs](/docs/installation/wendyos-virtual-machine#windows-foreground-vms)
+support device inspection, but local app builds and automatic app-port forwarding
+require macOS or Linux.
 
 This generic virtual device runs your app without a simulated robot or physical
 camera, GPU, or GPIO. Use the tour above for a moving Go2.

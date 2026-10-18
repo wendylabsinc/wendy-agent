@@ -71,6 +71,10 @@ type LANDevice struct {
 	Addresses []string `json:"addresses,omitempty"`
 	Port      int      `json:"port"`
 	IsMTLS    bool     `json:"isMTLS,omitempty"`
+	// WiredAddresses are the cable addresses from the device's wired TXT
+	// record that have answered mDNS as the device, in this discovery session
+	// or an earlier one; a one-off browse carries the record as advertised.
+	WiredAddresses []string `json:"wiredAddresses,omitempty"`
 	// AssetID is the legacy cloud asset ID from the assetid TXT record; 0 when
 	// absent, including devices enrolled directly with a PKI identity.
 	AssetID int32 `json:"assetId,omitempty"`

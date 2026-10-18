@@ -56,6 +56,7 @@ func newCloudCmd() *cobra.Command {
 	addToGroup("connectivity",
 		newCloudTunnelCmd(),
 		newCloudPingCmd(),
+		newCloudMCPCmd(),
 	)
 	return cmd
 }

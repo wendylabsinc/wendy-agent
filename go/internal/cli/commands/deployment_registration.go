@@ -99,7 +99,7 @@ func deploymentAuth(cfg *config.Config, device *agentpb.ProvisionedResponse) (*c
 					principal = cert.CertificatePrincipal()
 				}
 				identity, err := certs.ParsePrincipal(principal)
-				if err != nil || identity.EntityType != certs.EntityUser || identity.TenantUUID != tenant {
+				if err != nil || identity.EntityType != certs.EntityUser || identity.TenantUUID != tenant || certExpired(cert, time.Now()) {
 					continue
 				}
 				cert.PrincipalURI = principal

@@ -61,7 +61,7 @@ func TestEnsureDBusProxyForStartRecreatesPersistedProxy(t *testing.T) {
 }
 
 func TestEnsureDBusProxyForStartRejectsMissingManager(t *testing.T) {
-	client := &Client{logger: zap.NewNop()}
+	client := clientWithoutDBusProxy()
 	mounts := []specs.Mount{{
 		Destination: "/var/run/dbus",
 		Source:      dbusproxy.SocketDir("rumble_ui"),

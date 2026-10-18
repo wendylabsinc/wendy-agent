@@ -55,3 +55,19 @@ func TestOrgAllowedAcceptsAnyLoggedInOrg(t *testing.T) {
 		}
 	}
 }
+
+// Errors name organizations the way people know them, ID secondary, when this
+// machine has seen the name (WDY-3797); unknown ones keep the bare ID.
+func TestOrgAllowedNamesKnownOrganizations(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cacheCloudOrganizationName("prod:443", "3", "Robotics")
+	cacheCloudOrganizationName("prod:443", "9", "Wendy Labs")
+	err := orgAllowed(map[int32]bool{3: true, 4: true}, 9)
+	if err == nil {
+		t.Fatal("cross-org should fail")
+	}
+	want := `device is in organization "Wendy Labs" (9), but you are logged in to organizations "Robotics" (3), 4`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}

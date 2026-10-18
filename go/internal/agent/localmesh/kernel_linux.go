@@ -290,6 +290,83 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 	return k, nil
 }
 
+// CleanupStaleKernel removes only the state reserved and marked by local-mesh.
+// It does not require credentials or create interfaces, so reset recovery can
+// use it after the enrollment has already been erased. No mesh node may be live.
+func CleanupStaleKernel() error {
+	// Inspect all reserved objects before deleting any. Reset cleanup must not
+	// remove an administrator's conflicting rule merely because it selects our
+	// usual table number.
+	if err := validateStaleKernelOwnership(); err != nil {
+		return err
+	}
+	if err := reclaimMeshForwarding(); err != nil {
+		return err
+	}
+	return reclaimReservedStateWith(netlinkKernelCleanup(), true)
+}
+
+func validateStaleKernelOwnership() error {
+	return validateStaleKernelOwnershipWith(netlink.LinkList, netlink.RuleList, netlink.RouteListFiltered)
+}
+
+func validateStaleKernelOwnershipWith(listLinks func() ([]netlink.Link, error), listRules func(int) ([]netlink.Rule, error), listRoutes func(int, *netlink.Route, uint64) ([]netlink.Route, error)) error {
+	links, err := listLinks()
+	if err != nil {
+		return err
+	}
+	ownedLinks := false
+	for _, link := range links {
+		name := link.Attrs().Name
+		if name != InterfaceName && !strings.HasPrefix(name, peerInterfacePrefix) {
+			continue
+		}
+		if link.Attrs().Alias != interfaceOwner || (name == InterfaceName && link.Type() != "dummy") || (name != InterfaceName && link.Type() != "tuntap") {
+			return fmt.Errorf("interface %q is not owned by local-mesh", name)
+		}
+		ownedLinks = true
+	}
+	rules, err := listRules(netlink.FAMILY_ALL)
+	if err != nil && (ownedLinks || (!errors.Is(err, unix.EAFNOSUPPORT) && !errors.Is(err, unix.EOPNOTSUPP))) {
+		return err
+	}
+	for _, rule := range rules {
+		if rule.Table != RouteTable && rule.Priority != RouteTable && rule.Priority != RouteTable+1 {
+			continue
+		}
+		if !ownedKernelRule(rule) {
+			return errors.New("local-mesh policy rule ownership conflict during reset cleanup")
+		}
+	}
+	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		routes, err := listRoutes(family, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
+		if errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EOPNOTSUPP) {
+			if ownedLinks {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, route := range routes {
+			if route.Protocol != routeProtocol {
+				return errors.New("local-mesh route table holds a foreign route during reset cleanup")
+			}
+		}
+	}
+	return nil
+}
+
+func ownedKernelRule(rule netlink.Rule) bool {
+	if rule.Family != netlink.FAMILY_V6 || rule.Table != RouteTable {
+		return false
+	}
+	base := rule.Priority == RouteTable && baseRuleMatches(rule)
+	peer := rule.Priority == RouteTable+1 && strings.HasPrefix(rule.IifName, peerInterfacePrefix) && peerRuleMatches(rule, &netlink.Rule{Priority: RouteTable + 1, IifName: rule.IifName})
+	return base || peer
+}
+
 func ipNet(p netip.Prefix) *net.IPNet {
 	return &net.IPNet{IP: net.IP(p.Addr().AsSlice()), Mask: net.CIDRMask(p.Bits(), p.Addr().BitLen())}
 }
@@ -533,7 +610,24 @@ func sysctls(name string) error {
 // while an interface name, rule slot or table entry that does not carry them
 // belongs to someone else and is refused.
 func reclaimReservedState() error {
-	links, err := netlink.LinkList()
+	return reclaimReservedStateWith(netlinkKernelCleanup(), false)
+}
+
+type kernelCleanupOps struct {
+	links       func() ([]netlink.Link, error)
+	deleteLink  func(netlink.Link) error
+	rules       func(int) ([]netlink.Rule, error)
+	deleteRule  func(*netlink.Rule) error
+	routes      func(int, *netlink.Route, uint64) ([]netlink.Route, error)
+	deleteRoute func(*netlink.Route) error
+}
+
+func netlinkKernelCleanup() kernelCleanupOps {
+	return kernelCleanupOps{netlink.LinkList, netlink.LinkDel, netlink.RuleList, netlink.RuleDel, netlink.RouteListFiltered, netlink.RouteDel}
+}
+
+func reclaimReservedStateWith(ops kernelCleanupOps, allowUnavailableQueries bool) error {
+	links, err := ops.links()
 	if err != nil {
 		return kernelOperationError("inspect existing interfaces", "", err)
 	}
@@ -545,18 +639,22 @@ func reclaimReservedState() error {
 		if l.Attrs().Alias != interfaceOwner {
 			return fmt.Errorf("interface %q exists and is not owned by local-mesh", name)
 		}
-		if err := netlink.LinkDel(l); err != nil && !errors.Is(err, unix.ENODEV) {
+		if err := ops.deleteLink(l); err != nil && !errors.Is(err, unix.ENODEV) {
 			return kernelOperationError("reclaim owned interface "+name, "", err)
 		}
 	}
-	rules, err := netlink.RuleList(netlink.FAMILY_ALL)
-	if err != nil {
+	rules, err := ops.rules(netlink.FAMILY_ALL)
+	if err != nil && !(allowUnavailableQueries && (errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EOPNOTSUPP))) {
 		return kernelOperationError("inspect existing IP policy rules", "", err)
 	}
 	for _, r := range rules {
 		if r.Table == RouteTable {
-			// The table is reserved, so a rule selecting it is this package's.
-			if err := netlink.RuleDel(&r); err != nil && !errors.Is(err, unix.ENOENT) {
+			// Recheck the newly listed object, including when reset already
+			// prevalidated the table. Another owner may have added a rule since.
+			if !ownedKernelRule(r) {
+				return errors.New("local-mesh policy rule ownership conflict during cleanup")
+			}
+			if err := ops.deleteRule(&r); err != nil && !errors.Is(err, unix.ENOENT) {
 				return kernelOperationError("reclaim owned IP policy rule", "", err)
 			}
 			continue
@@ -566,7 +664,10 @@ func reclaimReservedState() error {
 		}
 	}
 	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
+		routes, err := ops.routes(family, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
+		if allowUnavailableQueries && (errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EOPNOTSUPP)) {
+			continue
+		}
 		if err != nil {
 			return kernelOperationError(fmt.Sprintf("inspect route table %d for address family %d", RouteTable, family), "", err)
 		}
@@ -574,7 +675,7 @@ func reclaimReservedState() error {
 			if r.Protocol != routeProtocol {
 				return fmt.Errorf("local-mesh route table %d holds a foreign route", RouteTable)
 			}
-			if err := netlink.RouteDel(&r); err != nil && !errors.Is(err, unix.ESRCH) {
+			if err := ops.deleteRoute(&r); err != nil && !errors.Is(err, unix.ESRCH) {
 				return kernelOperationError("reclaim owned mesh route", "", err)
 			}
 		}

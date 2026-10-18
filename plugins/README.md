@@ -70,6 +70,8 @@ The installer preserves pre-existing or edited skill files and reports conflicts
 It does not manage Claude's private plugin registry. The optional
 `wendy-agentic-coding` plugin packages these same skills for plugin installation.
 Choose CLI-managed skills or the plugin to avoid duplicate skill entries.
+The Claude Code plugin also starts `wendy mcp serve` from the `wendy` on `PATH`,
+so remove a `wendy` server added by `wendy mcp setup` to avoid duplicate tools.
 
 `wendy-engineering` is a separate, opt-in group for changing Wendy itself. It
 holds repository orientation, PR workflows, and implementation debugging. CLI

@@ -1,4 +1,11 @@
 name: Build products and release
+# Nightly device updates yield to "Stable release · " runs (see
+# .github/scripts/release-priority.cjs). Releases that skip integration tests
+# never use the device runners, so they get a title nightly does not yield to.
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && inputs.publish &&
+  (inputs.skip_integration_tests && format('Stable release without integration tests · {0}', github.ref_name) ||
+  format('Stable release · {0}', github.ref_name)) || format('Build · {0}', github.ref_name) }}
 
 on:
   push:

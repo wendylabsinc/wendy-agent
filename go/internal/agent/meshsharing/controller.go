@@ -67,6 +67,8 @@ type Controller struct {
 	dns                   dnsState
 	dnsUncertain          bool
 	closed                bool
+	closeComplete         bool
+	offerWithdrawn        bool
 }
 
 func NewWithDeps(self meshid.Device, node Node, policy Policy, probe Probe) (*Controller, error) {
@@ -394,20 +396,32 @@ func (c *Controller) withdrawSharing(ctx context.Context) error {
 func (c *Controller) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closeComplete {
 		return nil
 	}
+	firstAttempt := !c.closed
 	c.closed = true
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	// Withdrawing routes and signed capability precedes NAT/DNS removal.
-	uplinkErr := c.node.SetGatewayOffer(ctx, "")
-	roamErr := c.withdrawGateway(ctx)
+	var uplinkErr, roamErr error
+	if !c.offerWithdrawn {
+		uplinkErr = c.node.SetGatewayOffer(ctx, "")
+		c.offerWithdrawn = uplinkErr == nil
+	}
+	if firstAttempt {
+		roamErr = c.withdrawGateway(ctx)
+	}
+	// Policy.Close retains ownership of failed cleanup and can be retried.
+	// Do not call its normal mutation methods after the first Close: the
+	// Linux policy is already closed to new gateway/sharing transitions.
 	closeErr := c.policy.Close()
 	if c.dnsUncertain && closeErr == nil {
 		// Close retries policy cleanup. A successful retry must also be visible
 		// after a failed explicit resolver-removal event.
 		_ = c.auditDNS(dnsState{}, nil)
 	}
-	return errors.Join(uplinkErr, roamErr, closeErr)
+	err := errors.Join(uplinkErr, roamErr, closeErr)
+	c.closeComplete = err == nil
+	return err
 }

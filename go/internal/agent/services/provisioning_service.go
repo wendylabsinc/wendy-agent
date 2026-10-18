@@ -23,6 +23,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/enrolltoken"
+	"github.com/wendylabsinc/wendy/go/internal/shared/unenrollproof"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
@@ -113,36 +114,44 @@ type OnProvisionedFunc func(certPEM, chainPEM string, keyData []byte)
 // restart the agent process. If nil, no post-unprovision action is taken.
 type OnUnprovisionedFunc func()
 
+// BeforeUnprovisionedFunc runs synchronously after enrollment state is cleared
+// and before the RPC reports success, so dependent device-local credentials are
+// revoked first. An error means credentials are already erased but local cleanup
+// is incomplete. The restart callback still runs so startup can retry cleanup.
+type BeforeUnprovisionedFunc func() error
+
 // ProvisioningService implements agentpb.WendyProvisioningServiceServer.
 type ProvisioningService struct {
 	agentpb.UnimplementedWendyProvisioningServiceServer
-	logger           *zap.Logger
-	configPath       string
-	mu               sync.Mutex
-	unenrollmentMu   sync.Mutex
-	enrolled         bool
-	resetRecoveryErr error
-	trustedTime      func(context.Context) (timesync.TimeWindow, error)
-	cloudHost        string
-	orgID            int32
-	assetID          int32
-	keyPEM           []byte // stored as []byte so it can be zeroed on rotation/shutdown
-	certPEM          string
-	chainPEM         string
-	principalURI     string
-	CloudDialer      CloudDialer
-	OnProvisioned    OnProvisionedFunc
-	OnUnprovisioned  OnUnprovisionedFunc
+	logger              *zap.Logger
+	configPath          string
+	mu                  sync.Mutex
+	unenrollmentMu      sync.Mutex
+	enrolled            bool
+	resetRecoveryErr    error
+	resetCleanupErr     error
+	resetRestartPending bool
+	trustedTime         func(context.Context) (timesync.TimeWindow, error)
+	verifyCloudReset    func(context.Context, []byte, string, string, string, []byte, *x509.Certificate, time.Time, time.Time) ([]byte, error)
+	cloudHost           string
+	orgID               int32
+	assetID             int32
+	keyPEM              []byte // stored as []byte so it can be zeroed on rotation/shutdown
+	certPEM             string
+	chainPEM            string
+	principalURI        string
+	CloudDialer         CloudDialer
+	OnProvisioned       OnProvisionedFunc
+	OnUnprovisioned     OnUnprovisionedFunc
+	BeforeUnprovisioned BeforeUnprovisionedFunc
 }
 
-// NewProvisioningService reuses the running Agent's time manager when provided.
-// New Cloud resets and historical pending reset recovery are disabled; legacy
-// numeric provisioning is unchanged.
 func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*timesync.Manager) *ProvisioningService {
 	svc := &ProvisioningService{
-		logger:      logger,
-		configPath:  configPath,
-		CloudDialer: DefaultCloudDialer,
+		logger:           logger,
+		configPath:       configPath,
+		CloudDialer:      DefaultCloudDialer,
+		verifyCloudReset: unenrollproof.VerifyCloudReset,
 	}
 	if len(clock) > 0 && clock[0] != nil {
 		svc.trustedTime = clock[0].FreshTime
@@ -152,6 +161,15 @@ func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*tim
 		svc.loadState()
 	}
 	return svc
+}
+
+// SetResetCleanupError gates enrollment and completion receipts while the agent
+// removes resources from a completed reset. Clearing a transient cleanup error
+// never clears a failure to verify the durable reset authorization itself.
+func (s *ProvisioningService) SetResetCleanupError(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resetCleanupErr = err
 }
 
 // ProvisioningCerts returns the stored certificate material if the agent is provisioned.
@@ -187,7 +205,10 @@ func (s *ProvisioningService) IsProvisioned(_ context.Context, _ *agentpb.IsProv
 	defer s.mu.Unlock()
 
 	if s.resetRecoveryErr != nil {
-		return nil, status.Error(codes.Unavailable, "reset recovery blocked; explicit local recovery required")
+		return nil, status.Error(codes.Unavailable, "authorized reset recovery incomplete")
+	}
+	if s.resetCleanupErr != nil {
+		return nil, status.Error(codes.Unavailable, "reset resource cleanup incomplete; agent recovery is retrying")
 	}
 	if s.enrolled {
 		return &agentpb.IsProvisionedResponse{
@@ -219,7 +240,13 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 	}()
 
 	if s.resetRecoveryErr != nil {
-		return nil, status.Error(codes.FailedPrecondition, "explicit local recovery required before enrollment")
+		return nil, status.Error(codes.FailedPrecondition, "authorized reset recovery must finish before enrollment")
+	}
+	if s.resetCleanupErr != nil {
+		return nil, status.Error(codes.FailedPrecondition, "reset resource cleanup must finish before enrollment")
+	}
+	if s.resetRestartPending {
+		return nil, status.Error(codes.FailedPrecondition, "agent must restart after reset before enrollment")
 	}
 	if s.enrolled {
 		return nil, status.Error(codes.FailedPrecondition, "agent is already provisioned")
@@ -383,8 +410,13 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 		return nil, status.Error(codes.FailedPrecondition, "agent is not provisioned")
 	}
 
-	if s.resetRecoveryErr != nil || s.principalURI != "" {
-		return nil, status.Error(codes.FailedPrecondition, "direct PKI reset is disabled pending Cloud-authenticated authorization; keys retained")
+	if s.principalURI != "" {
+		if expectedPrincipal == "" || expectedPrincipal != s.principalURI {
+			return nil, status.Error(codes.FailedPrecondition, "direct PKI reset requires the exact expected principal through v2")
+		}
+		if expectedFingerprint == "" || expectedFingerprint != s.certificateFingerprintLocked() || !s.cloudResetAuthorizedLocked() {
+			return nil, status.Error(codes.FailedPrecondition, "verify Cloud unenrollment and installed-leaf PKI revocation before clearing enrollment keys")
+		}
 	}
 
 	s.logger.Info("Unprovisioning device",
@@ -392,7 +424,13 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 		zap.Int32("asset_id", s.assetID),
 	)
 
-	if err := s.clearStateFiles(); err != nil {
+	var cleanupErr error
+	if s.principalURI != "" {
+		cleanupErr = s.finishCloudReset()
+	} else {
+		cleanupErr = s.clearStateFiles()
+	}
+	if err := cleanupErr; err != nil {
 		s.logger.Error("Failed to delete provisioning state files", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to delete provisioning state: %v", err)
 	}
@@ -412,9 +450,22 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 
 	s.logger.Info("Device unprovisioned; agent will restart into unprovisioned mode")
 
-	cb := s.OnUnprovisioned
+	before, cb := s.BeforeUnprovisioned, s.OnUnprovisioned
+	// Keep enrollment closed during the response-flush delay. Otherwise a new
+	// enrollment could consume a one-time credential just before process exit.
+	s.resetRestartPending = cb != nil
+	if before != nil {
+		// Gate status and new enrollment before releasing the lock: the durable
+		// completion already exists, but its dependent resources are not gone.
+		s.resetCleanupErr = fmt.Errorf("reset resource cleanup pending")
+	}
 	locked = false
 	s.mu.Unlock()
+
+	if before != nil {
+		cleanupErr = before()
+		s.SetResetCleanupError(cleanupErr)
+	}
 
 	if cb != nil {
 		// Invoke asynchronously after a short delay so the RPC response is
@@ -426,6 +477,10 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 		}()
 	}
 
+	if cleanupErr != nil {
+		s.logger.Error("Enrollment credentials erased but resource cleanup failed", zap.Error(cleanupErr))
+		return nil, status.Error(codes.Unavailable, "enrollment credentials erased; resource cleanup incomplete, restart will retry; reset completion unconfirmed")
+	}
 	return &agentpb.UnprovisionResponse{}, nil
 }
 

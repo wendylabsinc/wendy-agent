@@ -225,7 +225,7 @@ func checkDonorRoutingAvailable() error {
 func reclaimDonorRouting() error {
 	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
 		rules, err := netlink.RuleList(family)
-		if err != nil {
+		if err != nil && !errors.Is(err, unix.EAFNOSUPPORT) && !errors.Is(err, unix.EOPNOTSUPP) {
 			return err
 		}
 		for _, rule := range rules {
@@ -236,6 +236,9 @@ func reclaimDonorRouting() error {
 			}
 		}
 		routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: donorRoutingTable}, netlink.RT_FILTER_TABLE)
+		if errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EOPNOTSUPP) {
+			continue // This kernel cannot retain policy routes for this family.
+		}
 		if err != nil {
 			return err
 		}

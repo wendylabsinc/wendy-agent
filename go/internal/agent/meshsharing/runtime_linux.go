@@ -517,10 +517,15 @@ func (p *linuxTunnelPolicy) stopBorrowingLocked(ctx context.Context) error {
 func (p *linuxTunnelPolicy) Close() error {
 	p.mu.Lock()
 	p.closed = true
+	server := p.server
+	p.server = nil
 	p.mu.Unlock()
 	var errs []error
-	if p.server != nil {
-		errs = append(errs, p.server.Close())
+	if server != nil {
+		// The drained server can report a historical lease-cleanup failure.
+		// Keep that error for this attempt; subsequent Close calls retry the
+		// retained grants below instead of replaying the same stale error.
+		errs = append(errs, server.Close())
 	}
 	p.mu.Lock()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

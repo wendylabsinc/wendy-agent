@@ -78,6 +78,7 @@ func TestGatewayCameraPreviewOwnershipAndUIOnlyFrames(t *testing.T) {
 	if result.IsError || result.Meta == nil {
 		t.Fatal("missing frame")
 	}
+	assertGatewayOutputSchema(t, g.protocol.ListTools()["read_camera_preview"].Tool, result)
 	visible, _ := json.Marshal(result.Content)
 	if bytes.Contains(visible, []byte("private")) || len(result.Content) != 1 {
 		t.Fatal("frame entered model content")
@@ -110,6 +111,7 @@ func TestGatewayCameraPreviewOwnershipAndUIOnlyFrames(t *testing.T) {
 	if stopped.IsError || closed.Err() == nil || len(g.previews) != 0 {
 		t.Fatal("stop did not release preview")
 	}
+	assertGatewayOutputSchema(t, g.protocol.ListTools()["stop_camera_preview"].Tool, stopped)
 	denied, _ = g.startCameraPreview(other, callToolReq("start_camera_preview", map[string]any{"robot_id": "alpha", "camera_id": 0}))
 	if !denied.IsError {
 		t.Fatal("cross-account camera started")

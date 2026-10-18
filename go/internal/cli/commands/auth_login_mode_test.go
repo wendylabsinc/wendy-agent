@@ -70,8 +70,18 @@ func TestAuthLoginModeSelection(t *testing.T) {
 
 func TestAuthLoginTargetsStartRealmLess(t *testing.T) {
 	t.Setenv(serviceAccountKeyEnv, "")
-	original := performOIDCLoginFn
-	t.Cleanup(func() { performOIDCLoginFn = original })
+	original, originalLegacy, originalDiscover := performOIDCLoginFn, performLoginFn, discoverOIDCIssuerFn
+	t.Cleanup(func() {
+		performOIDCLoginFn, performLoginFn, discoverOIDCIssuerFn = original, originalLegacy, originalDiscover
+	})
+	performLoginFn = func(context.Context, string, string) error {
+		t.Fatal("Cloud login must not use the legacy dashboard flow")
+		return nil
+	}
+	discoverOIDCIssuerFn = func(context.Context, string, string) (string, error) {
+		t.Fatal("realm-less login must not discover an issuer before browser sign-in")
+		return "", nil
+	}
 	var got oidcLoginOptions
 	performOIDCLoginFn = func(_ context.Context, opts oidcLoginOptions) error {
 		got = opts
@@ -79,25 +89,34 @@ func TestAuthLoginTargetsStartRealmLess(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		flag   string
+		name   string
+		args   []string
 		target cloudLoginTarget
 	}{
-		{"--production", productionCloudLoginTarget},
-		{"--development", developmentCloudLoginTarget},
+		{"default", []string{}, productionCloudLoginTarget},
+		{"production", []string{"--production"}, productionCloudLoginTarget},
+		{"development", []string{"--development"}, developmentCloudLoginTarget},
+		{"legacy disabled", []string{"--legacy=false"}, productionCloudLoginTarget},
 	} {
-		t.Run(tc.flag, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			got = oidcLoginOptions{}
 			cmd := newAuthLoginCmd()
 			cmd.SilenceUsage, cmd.SilenceErrors = true, true
-			cmd.SetArgs([]string{tc.flag})
+			cmd.SetArgs(tc.args)
 			if err := cmd.Execute(); err != nil {
 				t.Fatal(err)
 			}
-			if got.Issuer != "" || got.AuthorizationBase != tc.target.authBase {
-				t.Fatalf("realm-less routing = issuer %q, base %q", got.Issuer, got.AuthorizationBase)
+			want := oidcLoginOptions{
+				AuthorizationBase: tc.target.authBase,
+				ClientID:          "wendy-cli",
+				CloudResource:     tc.target.cloudResource,
+				IdentityResource:  defaultPKIIdentityResource,
+				IdentityEndpoint:  tc.target.identityEndpoint,
+				CloudURL:          tc.target.cloudDashboard,
+				CloudGRPC:         tc.target.cloudGRPC,
 			}
-			if got.CloudResource != tc.target.cloudResource || got.IdentityEndpoint != tc.target.identityEndpoint {
-				t.Fatalf("target presets not reused: %+v", got)
+			if got != want {
+				t.Fatalf("OIDC options = %+v, want %+v", got, want)
 			}
 		})
 	}
@@ -131,7 +150,7 @@ func TestAuthLoginCloudTargetDefaults(t *testing.T) {
 		args   []string
 		target cloudLoginTarget
 	}{
-		{name: "existing OIDC path defaults to development", target: developmentCloudLoginTarget},
+		{name: "OIDC path defaults to production", target: productionCloudLoginTarget},
 		{name: "production explicitly", args: []string{"--production"}, target: productionCloudLoginTarget},
 		{name: "development explicitly", args: []string{"--development"}, target: developmentCloudLoginTarget},
 	} {
@@ -164,6 +183,35 @@ func TestAuthLoginCloudTargetDefaults(t *testing.T) {
 	}
 }
 
+// --email with no pinned realm falls through to the realm-less universal flow:
+// no issuer, the email as login_hint, and one line telling the user so.
+func TestAuthLoginEmailWithoutPinnedRealmUsesUniversalFlow(t *testing.T) {
+	t.Setenv(serviceAccountKeyEnv, "")
+	originalDiscover, originalLogin := discoverOIDCIssuerFn, performOIDCLoginFn
+	t.Cleanup(func() { discoverOIDCIssuerFn, performOIDCLoginFn = originalDiscover, originalLogin })
+	discoverOIDCIssuerFn = func(context.Context, string, string) (string, error) { return "", nil }
+	var got oidcLoginOptions
+	performOIDCLoginFn = func(_ context.Context, opts oidcLoginOptions) error {
+		got = opts
+		return nil
+	}
+
+	cmd := newAuthLoginCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetArgs([]string{"--development", "--email", "person@example.com"})
+	var err error
+	out := captureStdout(t, func() { err = cmd.Execute() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Issuer != "" || got.AuthorizationBase != developmentCloudLoginTarget.authBase || got.LoginHint != "person@example.com" {
+		t.Fatalf("OIDC options = %+v, want the universal flow with the email as login hint", got)
+	}
+	if !strings.Contains(out, "No organization is pinned for person@example.com; continuing with the universal sign-in.") {
+		t.Fatalf("missing fall-through notice, got:\n%s", out)
+	}
+}
+
 func TestAuthLoginCustomOIDCEndpointsOverrideTargetDefaults(t *testing.T) {
 	t.Setenv(serviceAccountKeyEnv, "")
 	original := performOIDCLoginFn
@@ -174,27 +222,36 @@ func TestAuthLoginCustomOIDCEndpointsOverrideTargetDefaults(t *testing.T) {
 		return nil
 	}
 
-	cmd := newAuthLoginCmd()
-	cmd.SilenceUsage, cmd.SilenceErrors = true, true
-	cmd.SetArgs([]string{
-		"--issuer", "https://auth.example/realms/acme",
-		"--cloud", "https://cloud.example",
-		"--cloud-grpc", "api.example:443",
-		"--resource", "https://cloud.example/api",
-		"--pki-resource", "https://pki.example/identity",
-		"--pki-identity-endpoint", "https://identity.example/v1/identity/certificate",
-	})
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if got.CloudURL != "https://cloud.example" || got.CloudGRPC != "api.example:443" ||
-		got.CloudResource != "https://cloud.example/api" || got.IdentityResource != "https://pki.example/identity" ||
-		got.IdentityEndpoint != "https://identity.example/v1/identity/certificate" {
-		t.Fatalf("custom endpoints were not preserved: %+v", got)
+	for _, issuer := range []string{"", "https://auth.example/realms/acme"} {
+		t.Run("issuer="+issuer, func(t *testing.T) {
+			cmd := newAuthLoginCmd()
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			cmd.SetArgs([]string{
+				"--issuer", issuer,
+				"--auth", "https://auth.example",
+				"--cloud", "https://cloud.example",
+				"--cloud-grpc", "api.example:443",
+				"--resource", "https://cloud.example/api",
+				"--pki-resource", "https://pki.example/identity",
+				"--pki-identity-endpoint", "https://identity.example/v1/identity/certificate",
+			})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			want := oidcLoginOptions{
+				Issuer: issuer, AuthorizationBase: "https://auth.example", ClientID: "wendy-cli",
+				CloudURL: "https://cloud.example", CloudGRPC: "api.example:443",
+				CloudResource: "https://cloud.example/api", IdentityResource: "https://pki.example/identity",
+				IdentityEndpoint: "https://identity.example/v1/identity/certificate",
+			}
+			if got != want {
+				t.Fatalf("OIDC options = %+v, want %+v", got, want)
+			}
+		})
 	}
 }
 
-func TestAuthLoginDefaultsToLegacy(t *testing.T) {
+func TestAuthLoginExplicitLegacy(t *testing.T) {
 	t.Setenv(serviceAccountKeyEnv, "")
 	original := performLoginFn
 	t.Cleanup(func() { performLoginFn = original })
@@ -205,11 +262,13 @@ func TestAuthLoginDefaultsToLegacy(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name string
-		args []string
+		name      string
+		args      []string
+		dashboard string
+		grpc      string
 	}{
-		{name: "implicit"},
-		{name: "explicit", args: []string{"--legacy"}},
+		{name: "default endpoints", args: []string{"--legacy"}, dashboard: defaultCloudDashboard, grpc: defaultCloudGRPC},
+		{name: "custom endpoints", args: []string{"--legacy", "--cloud", "legacy.example", "--cloud-grpc", "grpc.legacy.example:443"}, dashboard: "https://legacy.example", grpc: "grpc.legacy.example:443"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dashboard, grpc = "", ""
@@ -219,8 +278,8 @@ func TestAuthLoginDefaultsToLegacy(t *testing.T) {
 			if err := cmd.Execute(); err != nil {
 				t.Fatal(err)
 			}
-			if dashboard != defaultCloudDashboard || grpc != defaultCloudGRPC {
-				t.Fatalf("legacy target = %q %q, want %q %q", dashboard, grpc, defaultCloudDashboard, defaultCloudGRPC)
+			if dashboard != tc.dashboard || grpc != tc.grpc {
+				t.Fatalf("legacy target = %q %q, want %q %q", dashboard, grpc, tc.dashboard, tc.grpc)
 			}
 		})
 	}
@@ -241,11 +300,11 @@ func TestAuthLoginTargetFlagsStayHidden(t *testing.T) {
 		}
 	}
 	for name, want := range map[string]string{
-		"auth":                  defaultDevAuthBase,
-		"pki-identity-endpoint": defaultDevPKIIdentityEndpoint,
+		"auth":                  defaultProdAuthBase,
+		"pki-identity-endpoint": defaultProdPKIIdentityEndpoint,
 	} {
 		if got := cmd.Flags().Lookup(name).DefValue; got != want {
-			t.Errorf("--%s default = %q, want existing development default %q", name, got, want)
+			t.Errorf("--%s default = %q, want production default %q", name, got, want)
 		}
 	}
 
@@ -259,7 +318,7 @@ func TestAuthLoginTargetFlagsStayHidden(t *testing.T) {
 			t.Errorf("user-facing help exposes transitional flag %s", hidden)
 		}
 	}
-	for _, want := range []string{"dashboard flow by default", "For the OIDC flow, pass --email"} {
+	for _, want := range []string{"production Wendy Cloud", "OIDC flow by default", "Pass --email"} {
 		if !strings.Contains(cmd.Long, want) {
 			t.Errorf("long help does not mention %q: %s", want, cmd.Long)
 		}

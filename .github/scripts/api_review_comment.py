@@ -480,7 +480,7 @@ def render_continuations(result: dict, repo: str, previous: list[dict] | None = 
     """Pack whole decision blocks; never truncate prose, evidence, or checkboxes."""
     current_records, withdrawn = reconcile_records(result, previous or [])
     limit = MAX_COMMENT_BYTES - WARNING_RESERVE_BYTES
-    maximum_parts = max(1, len(result["decisions"]) + (1 if withdrawn else 0))
+    maximum_parts = max(1, len(current_records) + len(withdrawn))
 
     def render(lines: list[str], index: int, total: int) -> str:
         return "\n".join([
@@ -512,16 +512,21 @@ def render_continuations(result: dict, repo: str, previous: list[dict] | None = 
             else:
                 page_lines = candidate
             current_category = category
-    history = withdrawn_lines(withdrawn)
-    if history:
-        candidate = page_lines + history
-        if page_lines and len(render(candidate, maximum_parts, maximum_parts).encode()) > limit:
-            pages.append(page_lines)
-            page_lines = history
+    # History grows across runs independently of the active checklist. Pack
+    # whole records, with a complete details wrapper on every history page.
+    history: list[dict] = []
+    for record in sorted(withdrawn, key=lambda item: (item["decision"]["title"], item["id"])):
+        candidate = page_lines + withdrawn_lines([*history, record])
+        if len(render(candidate, maximum_parts, maximum_parts).encode()) > limit:
+            if page_lines or history:
+                pages.append(page_lines + withdrawn_lines(history))
+            page_lines = []
+            history = [record]
+            if len(render(withdrawn_lines(history), maximum_parts, maximum_parts).encode()) > limit:
+                raise ValueError("An individual withdrawn API decision exceeds GitHub's comment limit; no history was truncated")
         else:
-            page_lines = candidate
-        if len(render(page_lines, maximum_parts, maximum_parts).encode()) > limit:
-            raise ValueError("Withdrawn API decision history exceeds GitHub's comment limit")
+            history.append(record)
+    page_lines += withdrawn_lines(history)
     if page_lines:
         pages.append(page_lines)
     if not pages:

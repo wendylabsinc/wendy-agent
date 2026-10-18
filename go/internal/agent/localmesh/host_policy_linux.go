@@ -4,6 +4,7 @@ package localmesh
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -11,12 +12,24 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 )
 
 // HostPolicy owns resolver roaming only. Internet tunnels, leases and forwarding
 // policy belong to meshsharing; Babel owns device ULA routing.
 type HostPolicy struct {
 	dnsAddress, dnsInterface, previousResolver string
+	resolverFiles                              *resolverFiles
+}
+
+type resolverFiles struct{ link, stub, journal string }
+
+func (p *HostPolicy) files() resolverFiles {
+	if p.resolverFiles != nil {
+		return *p.resolverFiles
+	}
+	return resolverFiles{"/etc/resolv.conf", resolverStub, "/etc/.wendy-local-mesh-resolver.json"}
 }
 
 func policyCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -32,6 +45,9 @@ func policyCommand(ctx context.Context, name string, args ...string) ([]byte, er
 // DNS is associated with the real TUN toward the gateway, not the dummy address
 // interface: resolved binds its outbound queries to this link.
 func (p *HostPolicy) SetDNS(ctx context.Context, iface, address string) error {
+	if address == "" && p.dnsInterface == "" {
+		return p.restoreResolver()
+	}
 	if address == p.dnsAddress && iface == p.dnsInterface {
 		return nil
 	}
@@ -72,8 +88,8 @@ func (p *HostPolicy) Close() error {
 
 const resolverStub = "/run/systemd/resolve/stub-resolv.conf"
 
-func replaceResolverLink(target string) error {
-	file, err := os.CreateTemp("/etc", ".wendy-local-mesh-resolver-")
+func replaceResolverLink(path, target string) error {
+	file, err := os.CreateTemp(filepath.Dir(path), ".wendy-local-mesh-resolver-")
 	if err != nil {
 		return err
 	}
@@ -86,46 +102,118 @@ func replaceResolverLink(target string) error {
 	if err = os.Symlink(target, name); err != nil {
 		return err
 	}
-	return os.Rename(name, "/etc/resolv.conf")
+	if err = os.Rename(name, path); err != nil {
+		return err
+	}
+	return syncResolverDirectory(path)
+}
+
+func syncResolverDirectory(path string) error {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+type resolverJournal struct {
+	Version  int    `json:"version"`
+	Previous string `json:"previous"`
+}
+
+// CleanupStaleResolver restores only a symlink recorded before mesh changed it.
+// The journal survives process exit so failed reset cleanup can retry at startup.
+func CleanupStaleResolver(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return (&HostPolicy{}).restoreResolver()
 }
 
 func (p *HostPolicy) useResolverStub() error {
-	if _, err := os.Stat(resolverStub); err != nil {
+	f := p.files()
+	if p.previousResolver == "" {
+		if err := p.restoreResolver(); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(f.stub); err != nil {
 		return err
 	}
-	current, err := os.Readlink("/etc/resolv.conf")
+	current, err := os.Readlink(f.link)
 	if err != nil {
 		return fmt.Errorf("mesh DNS requires a managed resolv.conf symlink: %w", err)
 	}
 	resolved := current
 	if !filepath.IsAbs(resolved) {
-		resolved = filepath.Join("/etc", resolved)
+		resolved = filepath.Join(filepath.Dir(f.link), resolved)
 	}
-	if filepath.Clean(resolved) == resolverStub {
+	if filepath.Clean(resolved) == f.stub {
 		return nil
 	}
 	if p.previousResolver != "" {
 		return errors.New("resolver changed externally during local-mesh roaming")
 	}
-	if err = replaceResolverLink(resolverStub); err != nil {
+	data, err := json.Marshal(resolverJournal{Version: 1, Previous: current})
+	if err != nil {
+		return err
+	}
+	// Persist ownership before changing the link. Recovery accepts either the
+	// original link or our stub, covering a crash on either side of the rename.
+	if err = atomicfile.Write(f.journal, data, 0600); err != nil {
+		return err
+	}
+	if err = syncResolverDirectory(f.journal); err != nil {
 		return err
 	}
 	p.previousResolver = current
+	if err = replaceResolverLink(f.link, f.stub); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (p *HostPolicy) restoreResolver() error {
+	f := p.files()
 	if p.previousResolver == "" {
-		return nil
+		data, err := os.ReadFile(f.journal)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var saved resolverJournal
+		if err = json.Unmarshal(data, &saved); err != nil {
+			return fmt.Errorf("invalid mesh resolver journal: %w", err)
+		}
+		if saved.Version != 1 || saved.Previous == "" || saved.Previous == f.stub {
+			return errors.New("invalid mesh resolver ownership journal")
+		}
+		p.previousResolver = saved.Previous
 	}
-	current, err := os.Readlink("/etc/resolv.conf")
+	current, err := os.Readlink(f.link)
 	if err != nil {
 		return err
 	}
-	if current != resolverStub {
+	if current != f.stub && current != p.previousResolver {
 		return errors.New("resolver ownership changed; refusing overwrite")
 	}
-	if err = replaceResolverLink(p.previousResolver); err != nil {
+	if current != p.previousResolver {
+		if err = replaceResolverLink(f.link, p.previousResolver); err != nil {
+			return err
+		}
+	}
+	// A prior rename may have succeeded while its directory sync failed.
+	// Confirm the restored link is durable before discarding its ownership.
+	if err = syncResolverDirectory(f.link); err != nil {
+		return err
+	}
+	if err = os.Remove(f.journal); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err = syncResolverDirectory(f.journal); err != nil {
 		return err
 	}
 	p.previousResolver = ""

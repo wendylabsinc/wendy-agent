@@ -366,6 +366,13 @@ func (w *DataTransferWorker) Run(ctx context.Context) {
 	if w.factory == nil || w.manager == nil {
 		return
 	}
+	// Uploads are optional. Report missing configuration once, even before
+	// enrollment, and leave sealed episodes queued in the quota-bounded store.
+	if w.ingestHost == "" {
+		w.logger.Info("data transfer worker: WENDY_DATA_INGEST_URL is not set; " +
+			"episode uploads are disabled and sealed episodes stay queued on the device")
+		return
+	}
 	if w.provisioningSvc != nil {
 		for {
 			if _, _, _, enrolled := w.provisioningSvc.ProvisioningInfo(); enrolled {
@@ -377,16 +384,6 @@ func (w *DataTransferWorker) Run(ctx context.Context) {
 				return
 			}
 		}
-	}
-
-	// No endpoint means no uploads. Said once, at error level, and then the
-	// worker stops rather than dialling a host that cannot serve it: sealed
-	// episodes stay queued on the device (bounded by the store's quota and its
-	// eviction order) until the endpoint is configured and the agent restarts.
-	if w.ingestHost == "" {
-		w.logger.Error("data transfer worker: WENDY_DATA_INGEST_URL is not set; " +
-			"episode uploads are disabled and sealed episodes stay queued on the device")
-		return
 	}
 
 	wait := w.wait

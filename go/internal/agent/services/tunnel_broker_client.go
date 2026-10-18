@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -17,6 +18,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -43,6 +45,9 @@ type TunnelBrokerClient struct {
 	keyPEM   string
 	chainPEM string
 	mtlsPort int
+
+	// sessions counts live tunnel sessions; they ride the presence connection.
+	sessions atomic.Int32
 }
 
 // NewTunnelBrokerClient serves the Cloud relay's presence leg for this device.
@@ -89,12 +94,20 @@ func (c *TunnelBrokerClient) Run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
+			moved := errors.Is(err, errBrokerPathMoved)
+			if moved {
+				// Not a failure, but still pause: the broker must finish
+				// dropping the old stream before the new one registers.
+				attempt = 0
+			}
 			backoff := time.Duration(math.Min(
 				float64(time.Second)*math.Pow(2, float64(attempt)),
 				float64(brokerMaxBackoff),
 			))
-			c.logger.Warn("broker connection failed, reconnecting",
-				zap.Error(err), zap.Duration("backoff", backoff))
+			if !moved {
+				c.logger.Warn("broker connection failed, reconnecting",
+					zap.Error(err), zap.Duration("backoff", backoff))
+			}
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -143,6 +156,10 @@ func (c *TunnelBrokerClient) runOnce(ctx context.Context) (retErr error) {
 
 	hbTicker := time.NewTicker(brokerHeartbeatInterval)
 	defer hbTicker.Stop()
+	pathTicker := time.NewTicker(brokerPathCheckInterval)
+	defer pathTicker.Stop()
+	var pathWatch brokerPathWatch
+	var lastHeartbeat time.Time
 
 	recvCh := make(chan *cloudpbv2.DialRequest, 8)
 	recvErr := make(chan error, 1)
@@ -167,7 +184,11 @@ func (c *TunnelBrokerClient) runOnce(ctx context.Context) (retErr error) {
 	for {
 		select {
 		case req := <-recvCh:
-			go c.handleDialRequest(ctx, client, req, requestMetadata)
+			c.sessions.Add(1)
+			go func() {
+				defer c.sessions.Add(-1)
+				c.handleDialRequest(ctx, client, req, requestMetadata)
+			}()
 		case err := <-recvErr:
 			if err == io.EOF {
 				return nil
@@ -177,6 +198,32 @@ func (c *TunnelBrokerClient) runOnce(ctx context.Context) (retErr error) {
 			if err := stream.Send(&cloudpbv2.AgentHeartbeat{}); err != nil {
 				return err
 			}
+			lastHeartbeat = time.Now()
+		case <-pathTicker.C:
+			p, _ := peer.FromContext(stream.Context())
+			preferred, moved := brokerPathMoved(p)
+			busy := func() bool {
+				return brokerBusy(c.sessions.Load(), len(recvCh), time.Since(lastHeartbeat))
+			}
+			if !pathWatch.shouldRedial(moved, busy()) {
+				continue
+			}
+			if !brokerPathReachableFn(ctx, c.url, dialOpts) {
+				if ctx.Err() != nil {
+					return nil
+				}
+				c.logger.Info("preferred network path does not reach the broker; keeping the current one",
+					zap.Stringer("current", p.LocalAddr), zap.Stringer("preferred", preferred))
+				pathWatch.unreachable()
+				continue
+			}
+			// The probe took time; a session may have arrived meanwhile.
+			if busy() {
+				continue
+			}
+			c.logger.Info("moving the broker connection to the preferred network path",
+				zap.Stringer("from", p.LocalAddr), zap.Stringer("to", preferred))
+			return errBrokerPathMoved
 		case <-ctx.Done():
 			return nil
 		}

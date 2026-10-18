@@ -26,14 +26,14 @@ import (
 const testOperatorTenant = "2558fd76-afc7-466e-9613-6b715296a526"
 const testOperatorSubject = "operator-subject"
 
-func TestOIDCLoginPKIIdentityEndpointPreservesDefaultAndSupportsTargets(t *testing.T) {
+func TestOIDCLoginPKIIdentityEndpointDefaultsToProductionAndSupportsTargets(t *testing.T) {
 	cmd := newAuthLoginCmd()
 	flag := cmd.Flags().Lookup("pki-identity-endpoint")
 	if flag == nil {
 		t.Fatal("pki-identity-endpoint flag is missing")
 	}
-	if got := flag.DefValue; got != defaultDevPKIIdentityEndpoint {
-		t.Fatalf("pki-identity-endpoint flag default = %q, want existing development default %q", got, defaultDevPKIIdentityEndpoint)
+	if got := flag.DefValue; got != defaultProdPKIIdentityEndpoint {
+		t.Fatalf("pki-identity-endpoint flag default = %q, want production default %q", got, defaultProdPKIIdentityEndpoint)
 	}
 	if productionCloudLoginTarget.identityEndpoint != defaultProdPKIIdentityEndpoint {
 		t.Fatalf("production identity endpoint = %q", productionCloudLoginTarget.identityEndpoint)

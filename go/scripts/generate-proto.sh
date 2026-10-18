@@ -108,6 +108,8 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/timesync_service.proto"
     "wendy/agent/services/v2/build_service.proto"
     "wendy/agent/services/v2/sensor_pairing_service.proto"
+    "wendy/agent/services/v2/unitree_service.proto"
+    "wendy/agent/services/v2/unitree_robot_service.proto"
     "wendy/agent/services/v2/sensor_service.proto"
     "wendy/agent/services/v2/tunnel_service.proto"
     "wendy/agent/services/v2/data_service.proto"
@@ -188,9 +190,13 @@ done
 # Pin (WDY-3458 round): wendycloud/v2/*.proto and wendy/options.proto are
 # service-protos master 09097e83 (merged #91); device_enrollment.proto is cloud #757 head
 # 5e3003e4 (cloud-proto/device_enrollment.proto), including enrollment hardware.
+# signed_request.proto is service-protos master 26ece19e (merged #118, WDY-3657);
+# relay_mcp.proto is service-protos master a41b4bac (merged #120, WDY-3675).
 # assets.proto is service-protos
-# c5220f7 (merged #96): GetAsset deletion details/expected_device_id guard
-# plus upstream asset hardware fields.
+# 33cfab5 (service-protos #115, additive signed-reset proof; unmerged):
+# GetAsset deletion details/expected_device_id guard, reset certificate binding
+# and Cloud authorization bytes, plus upstream asset hardware/OS fields.
+# Other protocol ownership and vendored source baselines are unchanged.
 # Re-pin: copy those files from
 # the new heads with `git show <sha>:<path>`, run `make proto`, and update the
 # SHAs here. wendy/options.proto (the signed_request method option) generates
@@ -199,6 +205,7 @@ CLOUD_V2_PKG="$MODULE/go/proto/gen/cloudpb/v2"
 CLOUD_V2_PROTOS=(
     "wendy/options.proto"
     "wendycloud/v2/signed_request.proto"
+    "wendycloud/v2/relay_mcp.proto"
     "wendycloud/v2/device_enrollment.proto"
     "wendycloud/v2/pki_admin.proto"
     "wendycloud/v2/apps.proto"

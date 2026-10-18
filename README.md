@@ -148,4 +148,4 @@ for supported tools. For ChatGPT Desktop, see the [ChatGPT guide](docs/guides/ch
 - [Tutorials](https://docs.wendy.dev/latest/guides/tutorials/) cover Python, Swift, Rust, C++, TypeScript, and more.
 - [Hardware access](https://docs.wendy.dev/latest/hardware/) covers cameras, audio, Bluetooth, and GPUs.
 - [Examples](Examples) include robot control, local AI, and web apps.
-- [Wendy Cloud](https://docs.wendy.dev/latest/cloud/) adds remote access and fleet management when you need it. Local development does not require a cloud account.
+- [Wendy Cloud](https://cloud.wendy.dev) adds remote access and fleet management when you need it. Local development does not require a cloud account.

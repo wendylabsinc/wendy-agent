@@ -3,6 +3,7 @@ package vm
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -43,6 +44,11 @@ func (s Spec) Binary() string {
 			return s.ESPEmulatorPath
 		}
 		return "esp-emu"
+	}
+	if runtime.GOOS == "windows" {
+		if path, err := FindQEMU(runtime.GOOS); err == nil {
+			return path
+		}
 	}
 	return "qemu-system-aarch64"
 }

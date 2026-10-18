@@ -9,7 +9,7 @@ This page mirrors the current public roadmap language for engineering and docs r
 
 ## Available Beta
 
-- **Wendy Cloud** — _beta_: fleet management over the internet. Devices enroll once, dial home to the cloud broker over mutual TLS, and are reachable by name from anywhere via `wendy cloud` and `wendy fleet` — enroll, discover, deploy, tunnel, stream telemetry. See [Cloud](/docs/cloud).
+- **Wendy Cloud** — _beta_: fleet management over the internet. Devices enroll once, dial home to the cloud broker over mutual TLS, and are reachable by name from anywhere via `wendy cloud` and `wendy fleet` — enroll, discover, deploy, tunnel, stream telemetry. See [Cloud](https://cloud.wendy.dev/login).
 - **Headless Mac** — _beta_: deploy native macOS apps to Apple Silicon Mac targets with [Headless Mac](/docs/installation/wendy-agent-macos). Apple Silicon only. Since the initial beta it has gained remote agent self-update, a LAN registry served over mTLS, app supervision and restart parity across agent restarts, and native gamepad entitlements. Beta limitations are documented in the macOS install guide.
 
 ## Available Preview

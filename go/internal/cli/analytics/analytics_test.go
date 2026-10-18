@@ -482,6 +482,22 @@ func TestDeliveryCallbackCanTrackAfterFlush(t *testing.T) {
 	}
 }
 
+func TestLoadOrCreateIDReadsExistingIdentityWithoutLock(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WENDY_CONFIG_DIR", dir)
+	const want = "69eedfb8-a7d5-43c5-b61d-3083caa38f63"
+	if err := os.WriteFile(filepath.Join(dir, "analytics_id"), []byte(want), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	// A directory at the lock path prevents lock acquisition on every platform.
+	if err := os.Mkdir(filepath.Join(dir, "analytics_id.lock"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := loadOrCreateID(); err != nil || id != want {
+		t.Fatalf("existing identity = %q, %v; want %q without a writable lock", id, err, want)
+	}
+}
+
 func TestLoadOrCreateIDConcurrentFirstLaunchesShareIdentity(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("WENDY_CONFIG_DIR", dir)
