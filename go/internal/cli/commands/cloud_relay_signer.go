@@ -78,9 +78,12 @@ func liteRelayOptions(ctx context.Context, auth *config.AuthConfig, renew bool) 
 func liteDeviceCAChain(auth *config.AuthConfig) liteclient.LiteDeviceCAChain {
 	pkiEndpoint, tenantID := auth.PKIEndpoint, auth.Certificates[0].TenantUUID()
 	return func(ctx context.Context) (string, error) {
-		return liteenroll.DiscoverLiteDeviceCAChain(ctx, pkiEndpoint, tenantID)
+		return discoverLiteDeviceCAChain(ctx, pkiEndpoint, tenantID)
 	}
 }
+
+// discoverLiteDeviceCAChain is replaced in tests.
+var discoverLiteDeviceCAChain = liteenroll.DiscoverLiteDeviceCAChain
 
 func configuredTunnelSigner(auth *config.AuthConfig, signer func(string, []byte) (func([]byte) ([]byte, error), error)) (func([]byte) ([]byte, error), error) {
 	if len(auth.Certificates) == 0 {

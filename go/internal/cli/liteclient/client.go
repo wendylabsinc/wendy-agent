@@ -1143,9 +1143,10 @@ func (c *WendyLiteClient) ResetEnrollment(deviceID, nonceHex string) error {
 // deviceTLSConfig verifies the device against chain and presents cert unchanged.
 // Callers supply the operator's own intermediates in cert; the device trust
 // bundle may belong to a different authority and must not be sent as that chain.
-// It is the one device verifier for relay, LAN and BLE. A non-nil lite is
-// called here, before dialing, so its fetch never runs inside the board's
-// handshake; a failure only matters for a board issued by the Lite Device CA.
+// It is the one device verifier for relay, LAN and BLE. A non-nil lite starts
+// here, before dialing, in its own goroutine under ctx; only a board issued by
+// the Lite Device CA waits for it, so a board under the session CA never waits
+// on PKI reachability.
 func deviceTLSConfig(ctx context.Context, cert tls.Certificate, chain, deviceID string, lite LiteDeviceCAChain) (*tls.Config, error) {
 	if len(cert.Certificate) == 0 {
 		return nil, fmt.Errorf("missing client certificate")
@@ -1180,11 +1181,19 @@ func deviceTLSConfig(ctx context.Context, cert tls.Certificate, chain, deviceID 
 		VerifyConnection:   verify,
 	}
 	if lite != nil {
-		chainPEM, err := lite(ctx)
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		type loaded struct {
+			chain string
+			err   error
 		}
-		addLiteDeviceTrust(cfg, cert, chain, deviceID, chainPEM, err)
+		result := make(chan loaded, 1)
+		go func() {
+			chainPEM, err := lite(ctx)
+			result <- loaded{chainPEM, err}
+		}()
+		addLiteDeviceTrust(cfg, cert, chain, deviceID, sync.OnceValues(func() (string, error) {
+			r := <-result
+			return r.chain, r.err
+		}))
 	}
 	return cfg, nil
 }

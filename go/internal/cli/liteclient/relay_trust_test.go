@@ -113,48 +113,72 @@ func TestRelayDeviceTrustFallbackChainsToSessionTrust(t *testing.T) {
 	}
 	full := pemCerts(liteCA, intermediate)
 
+	// waits marks the boards that reach the Lite branch; only those may wait
+	// for the fetch.
 	for _, tc := range []struct {
 		name      string
 		leaf      *x509.Certificate
 		fetched   string
 		lookupErr error
+		waits     bool
 		wantOK    bool
 	}{
 		{name: "existing authority", leaf: primary, fetched: full, wantOK: true},
 		{name: "existing authority, discovery fails", leaf: primary, lookupErr: errors.New("unavailable"), wantOK: true},
-		{name: "Lite CA chains to session trust", leaf: device, fetched: full, wantOK: true},
-		{name: "self-signed twin only", leaf: device, fetched: pemCerts(twin)},
-		{name: "Lite CA under a foreign root", leaf: device, fetched: pemCerts(strayLite, strayRoot)},
+		{name: "Lite CA chains to session trust", leaf: device, fetched: full, waits: true, wantOK: true},
+		{name: "self-signed twin only", leaf: device, fetched: pemCerts(twin), waits: true},
+		{name: "Lite CA under a foreign root", leaf: device, fetched: pemCerts(strayLite, strayRoot), waits: true},
 		{name: "wrong device", leaf: withPrincipal(strings.Replace(devicePrincipal, "441bf6804ff8", "other", 1)), fetched: full},
 		{name: "wrong tenant", leaf: withPrincipal(strings.Replace(devicePrincipal, "11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", 1)), fetched: full},
 		{name: "expired", leaf: expiredLeaf, fetched: full},
 		{name: "known issuer bad signature", leaf: broken(primary), fetched: full},
-		{name: "Lite issuer bad signature", leaf: broken(device), fetched: full},
-		{name: "discovery fails", leaf: device, lookupErr: errors.New("unavailable")},
-		{name: "malformed chain", leaf: device, fetched: "invalid"},
+		{name: "Lite issuer bad signature", leaf: broken(device), fetched: full, waits: true},
+		{name: "discovery fails", leaf: device, lookupErr: errors.New("unavailable"), waits: true},
+		{name: "malformed chain", leaf: device, fetched: "invalid", waits: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			calls := 0
+			started, release := make(chan struct{}), make(chan struct{})
 			cfg, err := deviceTLSConfig(ctx, operator, session, "441bf6804ff8", func(got context.Context) (string, error) {
-				calls++
 				if got != ctx {
-					t.Fatal("discovery lost the caller's context")
+					t.Error("discovery lost the caller's context")
 				}
+				close(started) // a second call panics
+				<-release
 				return tc.fetched, tc.lookupErr
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if calls != 1 {
-				t.Fatalf("discovery calls = %d before the handshake, want 1", calls)
+			// The fetch starts before dialing, and is still blocked.
+			select {
+			case <-started:
+			case <-ctx.Done():
+				t.Fatal("discovery did not start before the handshake")
 			}
 			// The board presents its leaf and the self-signed twin it was given.
-			// Verification itself never fetches.
-			err = cfg.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{tc.leaf, twin}})
-			if (err == nil) != tc.wantOK || calls != 1 {
-				t.Fatalf("verification = %v, discovery calls = %d; want accepted=%v, calls=1", err, calls, tc.wantOK)
+			verified := make(chan error, 1)
+			go func() {
+				verified <- cfg.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{tc.leaf, twin}})
+			}()
+			if tc.waits {
+				select {
+				case err := <-verified:
+					t.Fatalf("Lite board verified before the fetch finished: %v", err)
+				case <-time.After(50 * time.Millisecond):
+				}
+				close(release)
+			} else {
+				defer close(release)
+			}
+			select {
+			case err = <-verified:
+			case <-ctx.Done():
+				t.Fatal("verification waited on the Lite device CA fetch")
+			}
+			if (err == nil) != tc.wantOK {
+				t.Fatalf("verification = %v; want accepted=%v", err, tc.wantOK)
 			}
 		})
 	}

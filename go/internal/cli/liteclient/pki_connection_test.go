@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -92,9 +93,9 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 			if tc.lite != nil {
 				issuer, issuerKey, litePEM = tc.lite, tc.liteKey, pemCerts(tc.lite)
 			}
-			calls := 0
+			var calls atomic.Int32
 			lite := func(context.Context) (string, error) {
-				calls++
+				calls.Add(1)
 				return litePEM, nil
 			}
 			server, serverKey := issue(5, "board", tc.principal, false, issuer, issuerKey)
@@ -120,8 +121,9 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 			c := NewWendyLiteClient()
 			err = connect(c, listener.Addr().String(), client, chain, tc.deviceID, lite)
 			serverErr := <-completed
-			if calls != 1 {
-				t.Fatalf("Lite device CA chain loads = %d, want 1 before dialing", calls)
+			// Loading starts before dialing; a Lite-issued board needs its result.
+			if got := calls.Load(); got > 1 || (tc.lite != nil && got != 1) {
+				t.Fatalf("Lite device CA chain loads = %d, want at most 1 (1 for a Lite-issued board)", got)
 			}
 			if tc.wantHandshake {
 				// TLS succeeded with only the root on the server, proving the CLI sent

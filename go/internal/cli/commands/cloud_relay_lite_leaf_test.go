@@ -12,7 +12,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -113,17 +112,18 @@ func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
 		t.Fatal("missing lazy Lite device CA chain discovery")
 	}
 	// A later session switch must not redirect an in-flight device handshake's
-	// trust lookup. Cancellation proves the original valid target was selected
-	// without making a network request.
+	// trust lookup.
+	var gotEndpoint, gotTenant string
+	real := discoverLiteDeviceCAChain
+	discoverLiteDeviceCAChain = func(_ context.Context, endpoint, tenant string) (string, error) {
+		gotEndpoint, gotTenant = endpoint, tenant
+		return "", nil
+	}
+	t.Cleanup(func() { discoverLiteDeviceCAChain = real })
 	auth.PKIEndpoint = ""
 	auth.Certificates[0].PrincipalURI = "invalid"
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = options.DeviceTrustFallback(ctx)
-	var lookupErr *url.Error
-	wantEndpoint := "https://est.selected.example/.well-known/est/" + liteTestTenant + "/cacerts?chain_algorithm=ECDSA_P256&full_chain=true"
-	if !errors.Is(err, context.Canceled) || !errors.As(err, &lookupErr) || lookupErr.URL != wantEndpoint {
-		t.Fatalf("device trust discovery did not retain its selected PKI and tenant: %v", err)
+	if _, err := options.DeviceTrustFallback(context.Background()); err != nil || gotEndpoint != "https://identity.selected.example/v1/identity/certificate" || gotTenant != liteTestTenant {
+		t.Fatalf("device trust discovery = %q, %q, %v; want the selected PKI and tenant", gotEndpoint, gotTenant, err)
 	}
 }
 

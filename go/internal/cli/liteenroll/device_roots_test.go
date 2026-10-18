@@ -8,10 +8,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -84,22 +86,93 @@ func TestDiscoverLiteDeviceCAChainValidatesEndpointAndTenant(t *testing.T) {
 	}
 }
 
-// Each relay dial and its renew retry ask again; within the TTL they must not
-// refetch, and after it they must.
-func TestDiscoverLiteDeviceCAChainReusesAnswerWithinTTL(t *testing.T) {
+func fetchedLiteDeviceCAChain(chain string, err error, at time.Time) *liteDeviceCAChainFetch {
+	f := &liteDeviceCAChainFetch{done: make(chan struct{}), chain: chain, err: err, fetched: at}
+	close(f.done)
+	return f
+}
+
+// stubLiteDeviceCAChainFetch counts fetches for one key and restores the real
+// fetch and an empty cache afterwards.
+func stubLiteDeviceCAChainFetch(t *testing.T, fetch func() (string, error)) (key string, calls *atomic.Int32) {
+	t.Helper()
 	const endpoint = "https://identity.invalid"
-	key := endpoint + " " + tenant
+	key = endpoint + " " + tenant
+	calls = new(atomic.Int32)
+	real := fetchLiteDeviceCAChain
+	fetchLiteDeviceCAChain = func(_ context.Context, url string) (string, error) {
+		if want := "https://est.invalid/.well-known/est/" + tenant + "/cacerts?chain_algorithm=ECDSA_P256&full_chain=true"; url != want {
+			t.Errorf("discovery URL = %q, want %q", url, want)
+		}
+		calls.Add(1)
+		return fetch()
+	}
 	t.Cleanup(func() {
+		fetchLiteDeviceCAChain = real
 		liteDeviceCAChains.Lock()
 		delete(liteDeviceCAChains.byKey, key)
 		liteDeviceCAChains.Unlock()
 	})
-	liteDeviceCAChains.byKey[key] = cachedLiteDeviceCAChain{"cached", time.Now()}
-	if got, err := DiscoverLiteDeviceCAChain(context.Background(), endpoint, tenant); err != nil || got != "cached" {
-		t.Fatalf("within TTL = %q, %v; want the cached chain without a fetch", got, err)
+	return key, calls
+}
+
+// Each relay dial and its renew retry ask again; within the TTL they must not
+// refetch, and after it they must. A failure is reused only briefly.
+func TestDiscoverLiteDeviceCAChainCachesAnswersAndFailures(t *testing.T) {
+	key, calls := stubLiteDeviceCAChainFetch(t, func() (string, error) { return "fresh", nil })
+	offline := errors.New("offline")
+	for _, tc := range []struct {
+		name    string
+		entry   *liteDeviceCAChainFetch
+		want    string
+		wantErr error
+		fetches int32
+	}{
+		{"answer within TTL", fetchedLiteDeviceCAChain("cached", nil, time.Now()), "cached", nil, 0},
+		{"answer after TTL", fetchedLiteDeviceCAChain("cached", nil, time.Now().Add(-liteDeviceCAChainTTL)), "fresh", nil, 1},
+		{"failure within retry", fetchedLiteDeviceCAChain("", offline, time.Now()), "", offline, 0},
+		{"failure after retry", fetchedLiteDeviceCAChain("", offline, time.Now().Add(-liteDeviceCAChainRetry)), "fresh", nil, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls.Store(0)
+			liteDeviceCAChains.Lock()
+			liteDeviceCAChains.byKey[key] = tc.entry
+			liteDeviceCAChains.Unlock()
+			got, err := DiscoverLiteDeviceCAChain(context.Background(), "https://identity.invalid", tenant)
+			if got != tc.want || !errors.Is(err, tc.wantErr) || calls.Load() != tc.fetches {
+				t.Fatalf("got %q, %v after %d fetches; want %q, %v after %d", got, err, calls.Load(), tc.want, tc.wantErr, tc.fetches)
+			}
+		})
 	}
-	liteDeviceCAChains.byKey[key] = cachedLiteDeviceCAChain{"cached", time.Now().Add(-liteDeviceCAChainTTL)}
-	if _, err := DiscoverLiteDeviceCAChain(context.Background(), endpoint, tenant); err == nil {
-		t.Fatal("expired entry was reused instead of refetched")
+}
+
+// Concurrent connects share one in-flight fetch, and a caller that gives up
+// returns at once without cancelling it for the others.
+func TestDiscoverLiteDeviceCAChainSharesInFlightFetch(t *testing.T) {
+	release := make(chan struct{})
+	_, calls := stubLiteDeviceCAChainFetch(t, func() (string, error) {
+		<-release
+		return "shared", nil
+	})
+	gone, giveUp := context.WithCancel(context.Background())
+	giveUp()
+	if _, err := DiscoverLiteDeviceCAChain(gone, "https://identity.invalid", tenant); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled caller = %v, want context.Canceled", err)
+	}
+	results := make(chan string, 3)
+	for range 3 {
+		go func() {
+			got, _ := DiscoverLiteDeviceCAChain(context.Background(), "https://identity.invalid", tenant)
+			results <- got
+		}()
+	}
+	close(release)
+	for range 3 {
+		if got := <-results; got != "shared" {
+			t.Fatalf("waiter got %q, want the shared answer", got)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("fetches = %d, want 1 shared", calls.Load())
 	}
 }

@@ -110,9 +110,11 @@ rejects an identity that differs from the selected operator.
 
 The CLI verifies a P-256 device certificate through the tenant's Lite Device CA,
 which the tenant Intermediate signs with ML-DSA, up to the trust the ML-DSA login
-already holds, over Cloud, LAN and BLE alike. It fetches that CA chain from the
-selected PKI before connecting and reuses it for 15 minutes; if the fetch fails,
-only boards issued by the Lite Device CA are refused.
+already holds, over Cloud, LAN and BLE alike. It starts fetching that CA chain
+from the selected PKI as it connects, and only a board issued by the Lite Device
+CA waits for it; other boards never wait on PKI. The chain is reused for 15
+minutes, and a failed fetch for 30 seconds; if the fetch fails, only boards
+issued by the Lite Device CA are refused.
 A CA that does not chain to the session trust is refused, including the
 self-signed copy the board pins. The CLI checks the chain, validity and the exact
 device identity in your tenant. It does not check the device certificate's

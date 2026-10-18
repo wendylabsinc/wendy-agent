@@ -27,11 +27,14 @@ checked again before minting in case the board's capabilities changed. The board
 still verifies the complete issued certificate chain.
 
 For Cloud relay, LAN and BLE connections, the CLI loads the tenant's Lite Device
-CA chain (`cacerts?chain_algorithm=ECDSA_P256&full_chain=true`) before dialing,
-never inside the device handshake. It is used only for a matching P-256 device
+CA chain (`cacerts?chain_algorithm=ECDSA_P256&full_chain=true`) in the
+background, starting before dialing. Only a matching P-256 device certificate
+whose issuer is absent from the session bundle waits for it; a board under the
+session CA never waits on PKI. It is used only for a matching P-256 device
 certificate whose issuer is absent from the operator session's trust bundle.
 That chain is public CA material and only supplies intermediates: the device
 certificate must chain through the ML-DSA-signed Lite Device CA to the operator
 session's trust bundle. Fetched and peer-supplied certificates never become
-trust anchors. The chain is cached per PKI endpoint and tenant for 15 minutes. A
-failed fetch refuses only devices issued by the Lite Device CA.
+trust anchors. The chain is cached per PKI endpoint and tenant for 15 minutes,
+a failed fetch for 30 seconds, and concurrent connects share one in-flight
+fetch. A failed fetch refuses only devices issued by the Lite Device CA.

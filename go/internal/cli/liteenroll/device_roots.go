@@ -25,35 +25,62 @@ const chainAlgorithmHeader = "X-Wendy-Chain-Algorithm"
 // material: callers use it only as untrusted intermediates that must chain to
 // the operator session's trust bundle, never as trust anchors. Answers are
 // reused per PKI endpoint and tenant for liteDeviceCAChainTTL, so a re-signed
-// or revoked CA is picked up without a new login.
+// or revoked CA is picked up without a new login. A failure is reused for
+// liteDeviceCAChainRetry, so an offline LAN fails fast instead of re-waiting.
+// Concurrent callers share one in-flight fetch; each waits under its own ctx.
 func DiscoverLiteDeviceCAChain(ctx context.Context, pkiEndpoint, tenantID string) (string, error) {
-	// ponytail: one process-wide lock, held across the fetch; per-key locks if
-	// one process ever serves many tenants concurrently.
-	liteDeviceCAChains.Lock()
-	defer liteDeviceCAChains.Unlock()
 	key := pkiEndpoint + " " + tenantID
-	if cached, ok := liteDeviceCAChains.byKey[key]; ok && time.Since(cached.fetched) < liteDeviceCAChainTTL {
-		return cached.chain, nil
+	liteDeviceCAChains.Lock()
+	f, ok := liteDeviceCAChains.byKey[key]
+	if !ok || f.stale() {
+		f = &liteDeviceCAChainFetch{done: make(chan struct{})}
+		liteDeviceCAChains.byKey[key] = f
+		// Shared by every waiter, so one caller giving up must not cancel it;
+		// discovery's own timeout bounds it.
+		go func() {
+			f.chain, f.err = discoverLiteDeviceCAChainUncached(context.WithoutCancel(ctx), pkiEndpoint, tenantID)
+			f.fetched = time.Now()
+			close(f.done)
+		}()
 	}
-	chain, err := discoverLiteDeviceCAChainUncached(ctx, pkiEndpoint, tenantID)
-	if err != nil {
-		return "", err
+	liteDeviceCAChains.Unlock()
+	select {
+	case <-f.done:
+		return f.chain, f.err
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
-	liteDeviceCAChains.byKey[key] = cachedLiteDeviceCAChain{chain, time.Now()}
-	return chain, nil
 }
 
-const liteDeviceCAChainTTL = 15 * time.Minute
+const (
+	liteDeviceCAChainTTL   = 15 * time.Minute
+	liteDeviceCAChainRetry = 30 * time.Second
+)
 
-type cachedLiteDeviceCAChain struct {
+type liteDeviceCAChainFetch struct {
+	done    chan struct{} // closed once chain, err and fetched are set
 	chain   string
+	err     error
 	fetched time.Time
+}
+
+func (f *liteDeviceCAChainFetch) stale() bool {
+	select {
+	case <-f.done:
+	default:
+		return false // in flight
+	}
+	ttl := liteDeviceCAChainTTL
+	if f.err != nil {
+		ttl = liteDeviceCAChainRetry
+	}
+	return time.Since(f.fetched) >= ttl
 }
 
 var liteDeviceCAChains = struct {
 	sync.Mutex
-	byKey map[string]cachedLiteDeviceCAChain
-}{byKey: map[string]cachedLiteDeviceCAChain{}}
+	byKey map[string]*liteDeviceCAChainFetch
+}{byKey: map[string]*liteDeviceCAChainFetch{}}
 
 func discoverLiteDeviceCAChainUncached(ctx context.Context, pkiEndpoint, tenantID string) (string, error) {
 	id, err := uuid.Parse(tenantID)
@@ -65,6 +92,11 @@ func discoverLiteDeviceCAChainUncached(ctx context.Context, pkiEndpoint, tenantI
 		return "", fmt.Errorf("selected session has no PKI CA discovery endpoint")
 	}
 	endpoint := "https://" + host + "/.well-known/est/" + tenantID + "/cacerts?chain_algorithm=" + cloudrequest.EnrollmentChainP256 + "&full_chain=true"
+	return fetchLiteDeviceCAChain(ctx, endpoint)
+}
+
+// fetchLiteDeviceCAChain is replaced in tests.
+var fetchLiteDeviceCAChain = func(ctx context.Context, endpoint string) (string, error) {
 	return discoverLiteDeviceCAChain(ctx, http.DefaultClient, endpoint)
 }
 
