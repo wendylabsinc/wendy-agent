@@ -62,7 +62,10 @@ and the robot's supported velocity range. Go2 examples use 0.55 m/s forward
 because requests below 0.5 m/s are ignored on the tested hardware; do not reduce
 this blindly and then infer that control is working.
 
-Run motion in the simulator first when available. Before a physical motion test,
+Run motion in the simulator first when available. Without a connected robot, use
+an existing robot-profile simulator, and ask before creating one, as the
+[wendy](../wendy/SKILL.md) skill's *No device available* section describes.
+Before a physical motion test,
 establish the intended robot, bounded action, stop mechanism and operator
 authorization. Existing authorization for that exact test is sufficient. A
 deployment request alone does not authorize an autonomous roaming session.

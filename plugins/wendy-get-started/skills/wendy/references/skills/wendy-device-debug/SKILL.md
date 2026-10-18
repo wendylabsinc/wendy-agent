@@ -13,7 +13,11 @@ required.
 
 1. Capture the exact failing command, CLI version, MCP status and error output.
 2. Confirm the target with `device_list` or `wendy discover --json`. An empty
-   scan on new hardware routes to `wendy-device-install`.
+   scan on new hardware routes to `wendy-device-install`. While the device is
+   unreachable, a simulator can show whether the app builds, starts and serves
+   correctly, separating app defects from device faults; it cannot diagnose the
+   device itself. Choose one as the [wendy](../wendy/SKILL.md) skill's
+   *No device available* section describes.
 3. Follow [wendy-device-ops](../wendy-device-ops/SKILL.md) for device access and
    inspection of versions, connectivity, hardware and WiFi. Keep an explicit
    device selector throughout diagnosis. For Wendy Lite, check the reported
