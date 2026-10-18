@@ -681,7 +681,9 @@ func TestApplyTrustedKeysSeed_InstallsAndRequiresLocalAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	applyTrustedKeysSeed(zap.NewNop(), cfgDir, configPath)
+	if err := applyTrustedKeysSeed(zap.NewNop(), cfgDir, configPath); err != nil {
+		t.Fatal(err)
+	}
 
 	dst := filepath.Join(configPath, trustedKeysFile)
 	got, err := os.ReadFile(dst)
@@ -713,7 +715,9 @@ func TestApplyTrustedKeysSeed_NeverReplacesExistingKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	applyTrustedKeysSeed(zap.NewNop(), cfgDir, configPath)
+	if err := applyTrustedKeysSeed(zap.NewNop(), cfgDir, configPath); err != nil {
+		t.Fatal(err)
+	}
 
 	if got, _ := os.ReadFile(filepath.Join(configPath, trustedKeysFile)); !bytes.Equal(got, existing) {
 		t.Errorf("existing trusted keys replaced with %q", got)
@@ -724,8 +728,28 @@ func TestApplyTrustedKeysSeed_NeverReplacesExistingKeys(t *testing.T) {
 }
 
 func TestLocalAccessRequired_NoMarker(t *testing.T) {
-	applyTrustedKeysSeed(zap.NewNop(), t.TempDir(), t.TempDir()) // no seed: no-op
+	if err := applyTrustedKeysSeed(zap.NewNop(), t.TempDir(), t.TempDir()); err != nil { // no seed: no-op
+		t.Fatal(err)
+	}
 	if LocalAccessRequired(t.TempDir()) {
 		t.Error("LocalAccessRequired = true without a marker")
+	}
+}
+
+func TestApplyTrustedKeysSeed_FailsWhenTheSeedCannotBeInstalled(t *testing.T) {
+	cfgDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cfgDir, trustedKeysFile), []byte(`{"keys":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// configPath under a regular file: the config dir cannot be created.
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyTrustedKeysSeed(zap.NewNop(), cfgDir, filepath.Join(blocker, "wendy-agent")); err == nil {
+		t.Fatal("a seed that was not installed reported success")
+	}
+	if _, err := os.Stat(filepath.Join(cfgDir, trustedKeysFile)); err != nil {
+		t.Error("seed removed although it was not installed")
 	}
 }

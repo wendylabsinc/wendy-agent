@@ -773,7 +773,11 @@ func Apply(logger *zap.Logger, configPath string) {
 	applyWendyConf(logger, configDir)
 	applyPreProvisioning(logger, configDir, configPath)
 	applyClockFloor(logger, configDir, configPath)
-	applyTrustedKeysSeed(logger, configDir, configPath)
+	// A seed that cannot be installed must not leave this boot open: refuse
+	// to start, and systemd retries with the seed still in place.
+	if err := applyTrustedKeysSeed(logger, configDir, configPath); err != nil {
+		logger.Fatal("refusing to start: owner keys seeded at install could not be installed", zap.Error(err))
+	}
 	applyExtensions(logger, configDir)
 }
 
@@ -795,41 +799,39 @@ const (
 // owner to a device that has one. The seed is copied as-is rather than parsed
 // here: the agent refuses to start on a trusted-keys file it cannot use, and
 // with the marker set it also refuses without an owner key, so a bad seed
-// leaves the device closed, never open.
-func applyTrustedKeysSeed(logger *zap.Logger, cfgDir, configPath string) {
+// leaves the device closed, never open. An error means a seed is present but
+// not installed; the caller must not start.
+func applyTrustedKeysSeed(logger *zap.Logger, cfgDir, configPath string) error {
 	src := filepath.Join(cfgDir, trustedKeysFile)
 	data, err := os.ReadFile(src)
 	if os.IsNotExist(err) {
-		return
+		return nil
 	}
 	if err != nil {
-		logger.Error("configpartition: failed to read trusted keys seed", zap.Error(err))
-		return
+		return fmt.Errorf("reading %s: %w", src, err)
 	}
 	dst := filepath.Join(configPath, trustedKeysFile)
 	if _, err := os.Lstat(dst); err == nil {
 		logger.Warn("configpartition: device already has trusted keys; ignoring and removing the seed on the config partition")
 		os.Remove(src) //nolint:errcheck
-		return
+		return nil
 	}
 	if err := os.MkdirAll(configPath, 0o700); err != nil {
-		logger.Error("configpartition: failed to create config dir for trusted keys", zap.Error(err))
-		return
+		return err
 	}
 	// Marker first: a power cut before the keys land leaves a device that
 	// refuses to start without an owner, and the seed is retried next boot.
 	if err := atomicfile.Write(filepath.Join(configPath, localAccessMarker), []byte("required\n"), 0o600); err != nil {
-		logger.Error("configpartition: failed to record local access mode", zap.Error(err))
-		return
+		return fmt.Errorf("recording local access mode: %w", err)
 	}
 	if err := atomicfile.Write(dst, data, 0o600); err != nil {
-		logger.Error("configpartition: failed to install trusted keys", zap.Error(err))
-		return
+		return fmt.Errorf("installing trusted keys: %w", err)
 	}
 	if err := os.Remove(src); err != nil {
 		logger.Warn("configpartition: failed to remove trusted keys seed", zap.Error(err))
 	}
 	logger.Info("configpartition: installed owner keys seeded at install time; local access is required")
+	return nil
 }
 
 // LocalAccessRequired reports whether this device was installed with owner

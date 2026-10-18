@@ -60,6 +60,10 @@ func LoadOrCreate(path string) (crypto.Signer, error) {
 		tmp.Close() //nolint:errcheck
 		return nil, fmt.Errorf("writing local operator key: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close() //nolint:errcheck
+		return nil, fmt.Errorf("writing local operator key: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return nil, fmt.Errorf("writing local operator key: %w", err)
 	}

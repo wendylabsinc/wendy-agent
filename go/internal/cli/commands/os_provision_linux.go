@@ -34,7 +34,9 @@ func writeConfigPartition(d drive, agentBinary []byte, creds []wendyconf.WifiCre
 	if err != nil {
 		return fmt.Errorf("creating temp mount dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	// Remove, not RemoveAll: if the unmount below fails, tmpDir is still the
+	// partition, and a recursive delete would erase what was just written.
+	defer os.Remove(tmpDir) //nolint:errcheck
 
 	// vfat has no on-disk ownership; the kernel synthesizes each file's uid from
 	// the mounting process. Without uid=/gid=, sudo gives every file to root and
@@ -46,9 +48,14 @@ func writeConfigPartition(d drive, agentBinary []byte, creds []wendyconf.WifiCre
 	if out, err := mountCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("mounting config partition %s: %s: %w", partDev, strings.TrimSpace(string(out)), err)
 	}
-	defer exec.Command("sudo", "umount", tmpDir).Run() //nolint:errcheck
 
-	return writeConfigFiles(tmpDir, agentBinary, creds, deviceName, provisioningJSON, trustedKeys)
+	writeErr := writeConfigFiles(tmpDir, agentBinary, creds, deviceName, provisioningJSON, trustedKeys)
+	// The unmount flushes the FAT. A failed one can leave the writes, the
+	// owner-key seed among them, off the card, so it fails the provisioning.
+	if out, err := exec.Command("sudo", "umount", tmpDir).CombinedOutput(); err != nil && writeErr == nil {
+		return fmt.Errorf("unmounting config partition %s: %s: %w", partDev, strings.TrimSpace(string(out)), err)
+	}
+	return writeErr
 }
 
 func findConfigPartition(diskDev string) (string, error) {
