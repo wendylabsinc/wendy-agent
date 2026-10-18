@@ -23,8 +23,10 @@ func TestRouteProofStreamRejectsLegacyHello(t *testing.T) {
 	if !validStreamHelloVersion(&hello, self, peer, StreamProtocolVersion) {
 		t.Fatal("current route-proof stream rejected")
 	}
-	hello.Version = 1
-	if validStreamHelloVersion(&hello, self, peer, StreamProtocolVersion) {
-		t.Fatal("legacy stream without route-proof policy admitted")
+	for _, version := range []int{1, 2} {
+		hello.Version = version
+		if validStreamHelloVersion(&hello, self, peer, StreamProtocolVersion) {
+			t.Fatalf("legacy full-principal stream version %d admitted", version)
+		}
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
-	"time"
 )
 
 func TestControlBoundAndFraming(t *testing.T) {
@@ -26,7 +25,7 @@ func TestControlBoundAndFraming(t *testing.T) {
 
 func TestDirectorySyncBundleOnceAndMissingBundleRecovery(t *testing.T) {
 	source, chain, key, device, now := directoryFixture(t)
-	m := Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+	m := routeManifest(device, now)
 	w, err := SignManifest(m, chain, key, now)
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +72,7 @@ func TestDirectorySyncBundleOnceAndMissingBundleRecovery(t *testing.T) {
 // relayed as a hint.
 func TestSyncIdentityRequestIsPrincipalScoped(t *testing.T) {
 	source, chain, key, device, now := directoryFixture(t)
-	w, err := SignManifest(Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}, chain, key, now)
+	w, err := SignManifest(routeManifest(device, now), chain, key, now)
 	if err != nil {
 		t.Fatal(err)
 	}

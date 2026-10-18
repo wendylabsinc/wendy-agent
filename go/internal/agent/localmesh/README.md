@@ -125,15 +125,15 @@ restarts the supplicant or station Wi-Fi.
 An opt-in `"leafListen": "0.0.0.0:43024"` in `local-mesh.json` enables a
 separate listener for Wendy Lite endpoints. It can be enabled alone or alongside
 the other carriers. The leaf always initiates, regardless of UUID ordering.
-The existing `WMT1` TCP/QUIC carrier is unchanged. No downgrade or fallback
-between the two protocols is attempted.
+The existing TCP/QUIC carrier retains its `WMT1` framing and negotiates the
+version-3 mesh ALPN. No downgrade or fallback between the carriers is attempted.
 
-The leaf sends `WML2`, its 16-byte tenant UUID and its 16-byte device UUID.
+The leaf sends `WML3`, its 16-byte tenant UUID and its 16-byte device UUID.
 This 36-byte preface is untrusted. TLS 1.3 then verifies both enrolled device
 certificates and pins the complete expected principal, in the same tenant,
-using ALPN `wendy-local-mesh-leaf/2`. Tickets, resumption and 0-RTT are disabled.
+using ALPN `wendy-local-mesh-leaf/3`. Tickets, resumption and 0-RTT are disabled.
 The connection closes when either verified certificate chain expires. The
-ordinary length-prefixed JSON hello follows, with version 2, MTU 1320 and
+ordinary length-prefixed JSON hello follows, with version 3, MTU 1320 and
 datagram limit 1100. Subsequent frames contain a one-byte kind and four-byte
 big-endian payload length: kind 1 carries a control message including its
 existing four-byte JSON length; kind 2 carries a Babel or IP-fragment datagram.
@@ -214,18 +214,20 @@ restart; it is not a certificate identity.
 
 ## Route admission
 
-Every finite remote route requires a current version-2 manifest signed by the
-destination device. The signature covers its device UUID, exact Wendy Net /128,
-Babel origin router ID, and origin sequence number. The receiver verifies it with
-the certificate for the selected same-tenant device principal. An authenticated
+Every finite remote route requires a current version-3 manifest signed by the
+destination device. The manifest binds its full certificate principal to its exact
+Wendy Net /128, Babel origin router ID, and origin sequence number. An authenticated
 neighbour can relay that proof unchanged, but cannot sign for another device,
-advertise an aggregate, or advance another origin's sequence number. A version-1
-manifest provides directory presence only and never authorizes a route.
+advertise an aggregate, or advance another origin's sequence number. Version-1
+and version-2 manifests are rejected, including directory-only presence.
 
-Version 2 does not include the full principal in the signature input. If the same
-UUID and signing key are reused across tenants, a proof can be transferred between
-those principals by changing its envelope. Full-principal signature binding is
-required before relying on tenant isolation for identities that reuse both values.
+The signature preimage is the bytes `wendy-local-mesh/manifest/3` followed by a
+NUL byte, the canonical full principal's UTF-8 byte length as a four-byte
+big-endian unsigned integer, those principal bytes, and the exact JSON body
+bytes. Ed25519 signs this preimage directly; P-256 and RSA sign its SHA-256 hash.
+Binding the complete principal prevents a proof being relabeled into another
+tenant even when both tenants trust the same key and device UUID. The JSON body
+is not reserialized for verification.
 
 Nodes publish a 60-second lease every 20 seconds, capped at the identity's
 certificate expiry. Receivers reject leases longer than two minutes and issue
@@ -253,9 +255,9 @@ end-to-end application authentication still apply.
 
 Wendy Net router QUIC links require ALPN `wendy-net-router/2` and hello version
 2 with the explicit IP receive capability described below. BLE TLS streams use
-ALPN `wendy-local-mesh-ble/2-catalog-1-cert-1` and their independent hello version
-2, with no router IP capability.
-The opt-in leaf listener requires `wendy-local-mesh-leaf/2`.
+ALPN `wendy-local-mesh-ble/3-catalog-1-cert-1` and their independent hello version
+3, with no router IP capability.
+The opt-in leaf listener requires `wendy-local-mesh-leaf/3` and `WML3`.
 Upgrade each connected Wendy Net network together. This changes the internal
 Wendy Net wire contract, not public gRPC messages or application-session ALPNs.
 
@@ -331,7 +333,7 @@ chain; chain verification and principal pinning remain mandatory. WendyOS explic
 the upstream default remains16 KiB.
 
 Signed device manifests advertise name, agent port, revision and an absolute
-expiry. Version 2 also binds the signed route origin; application services use the
+expiry. Version 3 also binds the signed route origin; application services use the
 separate catalogue protocol.
 Every receiver verifies the origin's certificate and signature before relaying
 an accepted version to its other neighbours. Missing certificates cause a

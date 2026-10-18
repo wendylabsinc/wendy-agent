@@ -50,15 +50,15 @@ func TestStreamHelloDoesNotInheritRouterCapabilities(t *testing.T) {
 	if validStreamHelloVersion(&router, self, peer, StreamProtocolVersion) {
 		t.Fatal("stream accepted router receive capability")
 	}
-	// A later explicit leaf role can retain its own version without adopting
-	// router capability fields or changing this stream role's version.
+	// An explicit different stream role can retain its own version without
+	// adopting router capability fields or changing this role's version.
 	leaf := old
-	leaf.Version = 3
-	if !validStreamHelloVersion(&leaf, self, peer, 3) || validStreamHelloVersion(&leaf, self, peer, StreamProtocolVersion) {
+	leaf.Version = StreamProtocolVersion + 1
+	if !validStreamHelloVersion(&leaf, self, peer, leaf.Version) || validStreamHelloVersion(&leaf, self, peer, StreamProtocolVersion) {
 		t.Fatal("explicit role version not independent")
 	}
 	leaf.IPDatagram = WholeIPDatagramLimit
-	if validStreamHelloVersion(&leaf, self, peer, 3) {
+	if validStreamHelloVersion(&leaf, self, peer, leaf.Version) {
 		t.Fatal("leaf accepted router capability")
 	}
 }

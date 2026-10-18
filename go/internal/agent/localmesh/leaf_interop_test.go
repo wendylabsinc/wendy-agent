@@ -1,6 +1,7 @@
 package localmesh
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"net/netip"
@@ -81,6 +82,23 @@ func TestLeafCManifestInteroperability(t *testing.T) {
 	}
 	if changed, err := d.Accept(fixture.Manifest, now); err != nil || !changed {
 		t.Fatalf("Go rejected C signature: changed=%v err=%v", changed, err)
+	}
+	// The other tenant trusts a certificate with the same key and device UUID.
+	// Its derived /128 and the entire manifest body therefore also match. Only
+	// the signed full principal prevents relabeling the C-generated proof.
+	signer, err := x509.ParseECPrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCredentials := principalBoundCredentials(t, testPrincipal(testOtherTenant, device.UUID().String()), signer)
+	otherDirectory := principalBoundDirectory(t, otherCredentials, now)
+	relabelled := fixture.Manifest
+	relabelled.Principal = otherCredentials.Device.Principal()
+	if _, err := otherDirectory.Accept(relabelled, now); err == nil {
+		t.Fatal("accepted C proof relabeled to another tenant with the same key and UUID")
+	}
+	if len(otherDirectory.Snapshot(now)) != 0 || len(otherDirectory.RouteAuthorizations(now)) != 0 {
+		t.Fatal("relabeled C proof changed presence or routing")
 	}
 	var body Manifest
 	if err := json.Unmarshal(fixture.Manifest.Body, &body); err != nil {

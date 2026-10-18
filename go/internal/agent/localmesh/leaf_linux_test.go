@@ -22,7 +22,7 @@ import (
 
 func writeTestLeafPreface(conn net.Conn, device meshid.Device) error {
 	tenant, id := device.Tenant().UUID(), device.UUID()
-	data := append([]byte("WML2"), tenant[:]...)
+	data := append([]byte("WML3"), tenant[:]...)
 	return writeFull(conn, append(data, id[:]...))
 }
 
@@ -43,6 +43,7 @@ func TestLeafTLSRequiresExactPeerAndProtocol(t *testing.T) {
 		{"spoofed preface", other, leaf.Device, LeafALPN, tls.VersionTLS13, false, false},
 		{"foreign tenant", foreign, leaf.Device, LeafALPN, tls.VersionTLS13, false, false},
 		{"wrong ALPN", leaf, leaf.Device, StreamALPN, tls.VersionTLS13, false, false},
+		{"legacy ALPN", leaf, leaf.Device, "wendy-local-mesh-leaf/2", tls.VersionTLS13, false, false},
 		{"TLS 1.2", leaf, leaf.Device, LeafALPN, tls.VersionTLS12, false, false},
 		{"no certificate", leaf, leaf.Device, LeafALPN, tls.VersionTLS13, true, false},
 	} {
@@ -113,7 +114,7 @@ func TestLeafTLSRequiresExactPeerAndProtocol(t *testing.T) {
 func TestLeafPrefaceCannotUseFullNodeProtocolOrForeignTenant(t *testing.T) {
 	self, peer := testDevices(t)
 	for _, device := range []meshid.Device{peer, self, testDevice(t, testPrincipal(testOtherTenant, testDeviceBID))} {
-		for _, magic := range []string{"WML2", "WMT1"} {
+		for _, magic := range []string{"WML3", "WML2", "WMT1"} {
 			left, right := net.Pipe()
 			go func() {
 				tenant, id := device.Tenant().UUID(), device.UUID()
@@ -122,7 +123,7 @@ func TestLeafPrefaceCannotUseFullNodeProtocolOrForeignTenant(t *testing.T) {
 			}()
 			got, err := readLeafPreface(right, self)
 			_ = right.Close()
-			valid := device == peer && magic == "WML2"
+			valid := device == peer && magic == "WML3"
 			if (err == nil) != valid || (valid && got != peer) {
 				t.Fatalf("%s %s: %v", magic, device.Principal(), err)
 			}

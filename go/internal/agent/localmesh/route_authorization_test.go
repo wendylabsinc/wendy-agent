@@ -42,7 +42,7 @@ func rawRouteManifest(t *testing.T, m Manifest, device meshid.Device, key ed2551
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, _ := signingInput(key.Public(), body)
+	input, _ := signingInput(key.Public(), device.Principal(), body)
 	return SignedManifest{Principal: device.Principal(), Body: body, Signature: ed25519.Sign(key, input)}
 }
 
@@ -291,11 +291,11 @@ func TestRouteAuthorizationRequiresCurrentTrustAndVersion(t *testing.T) {
 	m := routeManifest(device, now)
 	legacy := m
 	legacy.Version, legacy.Route = 1, nil
-	if _, err := d.Accept(signRouteTestManifest(t, legacy, chain, key, now), now); err != nil {
-		t.Fatal(err)
+	if _, err := d.Accept(rawRouteManifest(t, legacy, device, key), now); err == nil {
+		t.Fatal("legacy directory advertisement accepted")
 	}
-	if len(d.Snapshot(now)) != 1 || len(d.RouteAuthorizations(now)) != 0 {
-		t.Fatal("legacy directory advertisement authorized routing")
+	if len(d.Snapshot(now)) != 0 || len(d.RouteAuthorizations(now)) != 0 {
+		t.Fatal("legacy directory advertisement changed presence or routing")
 	}
 	if len(authorizedOrigins(d.Snapshot(now), d.tenant)) != 0 {
 		t.Fatal("legacy verified snapshot authorized routing")

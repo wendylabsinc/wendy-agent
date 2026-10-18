@@ -53,7 +53,8 @@ func directoryFixture(t *testing.T) (*Directory, [][]byte, ed25519.PrivateKey, m
 
 func TestDirectoryOriginSignatureLeaseAndReplay(t *testing.T) {
 	d, chain, key, device, now := directoryFixture(t)
-	m := Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), Name: "Orin", AgentPort: 50052}
+	m := routeManifest(device, now)
+	m.Name = "Orin"
 	sign := func(m Manifest) SignedManifest {
 		t.Helper()
 		w, err := SignManifest(m, chain, key, now)
@@ -91,7 +92,7 @@ func TestDirectoryOriginSignatureLeaseAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, _ := signingInput(key.Public(), body)
+	input, _ := signingInput(key.Public(), device.Principal(), body)
 	if _, err = d.Accept(SignedManifest{Principal: device.Principal(), Body: body, Signature: ed25519.Sign(key, input)}, now); err == nil {
 		t.Fatal("advertisement for another device accepted")
 	}
@@ -122,7 +123,7 @@ func TestManifestTransportAndLimits(t *testing.T) {
 	_, chain, key, device, now := directoryFixture(t)
 	manifest := func(mutate func(*Manifest)) SignedManifest {
 		t.Helper()
-		m := Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+		m := routeManifest(device, now)
 		mutate(&m)
 		w, err := SignManifest(m, chain, key, now)
 		if err == nil {
@@ -141,7 +142,7 @@ func TestManifestTransportAndLimits(t *testing.T) {
 
 func TestManifestAllowsExplicitNilUUID(t *testing.T) {
 	now := time.Now()
-	m := Manifest{Version: 1, Device: uuid.Nil, Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+	m := routeManifest(testDevice(t, testPrincipal(testTenantUUID, uuid.Nil.String())), now)
 	if err := m.validate(now); err != nil {
 		t.Fatalf("nil UUID is still a UUID: %v", err)
 	}

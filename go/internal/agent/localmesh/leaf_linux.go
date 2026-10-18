@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	LeafALPN = "wendy-local-mesh-leaf/2"
+	LeafALPN = "wendy-local-mesh-leaf/3"
 	// LeafPort is the conventional, explicitly configured listener port.
 	LeafPort           = 43024
 	maxLeafConnections = 32
@@ -170,7 +170,7 @@ func readLeafPreface(conn net.Conn, self meshid.Device) (meshid.Device, error) {
 		return meshid.Device{}, err
 	}
 	tenant := self.Tenant().UUID()
-	if string(data[:4]) != "WML2" || !bytes.Equal(data[4:20], tenant[:]) {
+	if string(data[:4]) != "WML3" || !bytes.Equal(data[4:20], tenant[:]) {
 		return meshid.Device{}, errors.New("invalid leaf preface")
 	}
 	peer, err := meshid.ParseDevice(self.Tenant(), uuid.UUID(data[20:36]).String())

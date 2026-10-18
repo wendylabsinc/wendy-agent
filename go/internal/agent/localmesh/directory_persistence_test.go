@@ -12,7 +12,7 @@ func TestDirectoryWithdrawalSurvivesRestart(t *testing.T) {
 	if err := d.SetPersistence(nil, func(r []DirectoryReceipt) error { saved = append([]DirectoryReceipt(nil), r...); return nil }, now); err != nil {
 		t.Fatal(err)
 	}
-	m := Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+	m := routeManifest(device, now)
 	old, _ := SignManifest(m, chain, key, now)
 	if _, err := d.Accept(old, now); err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestDirectoryWithdrawalSurvivesRestart(t *testing.T) {
 func TestDirectoryPersistenceFailureDoesNotPublish(t *testing.T) {
 	d, chain, key, device, now := directoryFixture(t)
 	d.SetPersistence(nil, func([]DirectoryReceipt) error { return errors.New("disk unavailable") }, now)
-	m := Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+	m := routeManifest(device, now)
 	w, _ := SignManifest(m, chain, key, now)
 	if _, err := d.Accept(w, now); err == nil {
 		t.Fatal("storage failure ignored")
