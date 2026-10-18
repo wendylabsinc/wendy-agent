@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/netip"
 	"net/url"
+	"reflect"
 	"testing"
 	"time"
 
@@ -296,6 +297,9 @@ func TestRouteAuthorizationRequiresCurrentTrustAndVersion(t *testing.T) {
 	if len(d.Snapshot(now)) != 1 || len(d.RouteAuthorizations(now)) != 0 {
 		t.Fatal("legacy directory advertisement authorized routing")
 	}
+	if len(authorizedOrigins(d.Snapshot(now), d.tenant)) != 0 {
+		t.Fatal("legacy verified snapshot authorized routing")
+	}
 	m.Revision++
 	if _, err := d.Accept(signRouteTestManifest(t, m, chain, key, now), now); err != nil {
 		t.Fatal(err)
@@ -303,7 +307,13 @@ func TestRouteAuthorizationRequiresCurrentTrustAndVersion(t *testing.T) {
 	if !d.RouteAuthorizations(now)[*m.Route] {
 		t.Fatal("upgraded route missing")
 	}
+	if !authorizedOrigins(d.Snapshot(now), d.tenant)[*m.Route] {
+		t.Fatal("upgraded route missing from verified snapshot")
+	}
 	d.cache.verify = func([][]byte, time.Time) (Identity, error) { return Identity{}, errors.New("trust removed") }
+	if len(authorizedOrigins(d.Snapshot(now), d.tenant)) != 0 {
+		t.Fatal("snapshot authorization survived loss of certificate trust")
+	}
 	if len(d.RouteAuthorizations(now)) != 0 {
 		t.Fatal("authorization survived loss of certificate trust")
 	}
@@ -335,6 +345,9 @@ func TestRouteAuthorizationSeparatesAddressOwnershipFromRouterIDs(t *testing.T) 
 				t.Fatal(err)
 			}
 			got := d.RouteAuthorizations(now)
+			if fromSnapshot := authorizedOrigins(d.Snapshot(now), d.tenant); !reflect.DeepEqual(fromSnapshot, got) {
+				t.Fatalf("snapshot and route admission disagree about %s: %v / %v", collision, fromSnapshot, got)
+			}
 			if collision == "mesh address" {
 				if len(got) != 0 {
 					t.Fatalf("ambiguous address ownership authorized routes: %v", got)
@@ -352,6 +365,47 @@ func TestRouteAuthorizationSeparatesAddressOwnershipFromRouterIDs(t *testing.T) 
 			}
 			if !d.RouteAuthorizations(now)[*m.Route] {
 				t.Fatal("withdrawn conflicting claim still blocked valid owner")
+			}
+			if !authorizedOrigins(d.Snapshot(now), d.tenant)[*m.Route] {
+				t.Fatal("snapshot retained withdrawn conflicting address owner")
+			}
+		})
+	}
+}
+
+func TestVerifiedSnapshotAuthorizationExpiresWithLease(t *testing.T) {
+	d, chain, key, device, now := directoryFixture(t)
+	m := routeManifest(device, now)
+	m.Expires = now.Add(30 * time.Second).UnixMilli()
+	if _, err := d.Accept(signRouteTestManifest(t, m, chain, key, now), now); err != nil {
+		t.Fatal(err)
+	}
+	if !authorizedOrigins(d.Snapshot(now.Add(29*time.Second)), d.tenant)[*m.Route] {
+		t.Fatal("live verified lease missing")
+	}
+	if len(authorizedOrigins(d.Snapshot(now.Add(30*time.Second)), d.tenant)) != 0 {
+		t.Fatal("snapshot authorization survived lease expiry")
+	}
+	if len(authorizedOrigins(d.Snapshot(now.Add(10*time.Second)), d.tenant)) != 0 {
+		t.Fatal("clock rollback revived expired snapshot authorization")
+	}
+}
+
+func TestVerifiedSnapshotAuthorizationRequiresExactOrigin(t *testing.T) {
+	device := testDevice(t, testPrincipal(testTenantUUID, testDeviceAID))
+	for name, mutate := range map[string]func(*Manifest){
+		"aggregate":          func(m *Manifest) { m.Route.Prefix = netip.PrefixFrom(m.Route.Prefix.Addr(), 64).Masked() },
+		"zero router ID":     func(m *Manifest) { m.Route.RouterID = 0 },
+		"reserved router ID": func(m *Manifest) { m.Route.RouterID = ^babel.RouterID(0) },
+		"legacy":             func(m *Manifest) { m.Version = 1 },
+		"withdrawn":          func(m *Manifest) { m.Withdraw = true },
+		"missing origin":     func(m *Manifest) { m.Route = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := routeManifest(device, time.Now())
+			mutate(&m)
+			if len(authorizedOrigins([]Manifest{m}, device.Tenant())) != 0 {
+				t.Fatal("invalid origin admitted from snapshot")
 			}
 		})
 	}

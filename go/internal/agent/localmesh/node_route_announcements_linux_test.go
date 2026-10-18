@@ -208,3 +208,39 @@ func TestNodeRoutePublicationSnapshotOwnsRouteBinding(t *testing.T) {
 		t.Fatalf("caller mutated Directory's route proof through snapshot: %+v", got)
 	}
 }
+
+func TestNodeRefreshVerifiesEachIdentityOnce(t *testing.T) {
+	n := routePublicationNode(t)
+	if err := n.Persist(n.routing.Checkpoint()); err != nil {
+		t.Fatal(err)
+	}
+	_, peer := testCredentials(t)
+	now := time.Now()
+	if _, err := n.cache.Put(peer.Certificate.Certificate, now); err != nil {
+		t.Fatal(err)
+	}
+	m := routeManifest(peer.Device, now)
+	w, err := SignManifest(m, peer.Certificate.Certificate, peer.Signer, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.directory.Accept(w, now); err != nil {
+		t.Fatal(err)
+	}
+	// Count actual certificate-chain validations, not a fake verifier that
+	// merely returns a trusted principal. Both records use the real test CA.
+	verify := n.cache.verify
+	checks := 0
+	n.cache.verify = func(chain [][]byte, at time.Time) (Identity, error) {
+		checks++
+		return verify(chain, at)
+	}
+	n.refresh()
+	snapshot := n.Snapshot()
+	if checks != 2 || len(snapshot.Devices) != 2 || len(snapshot.RouteAuthorizations) != 2 {
+		t.Fatalf("refresh checked %d chains for %d devices and %d route origins", checks, len(snapshot.Devices), len(snapshot.RouteAuthorizations))
+	}
+	if !snapshot.RouteAuthorizations[*m.Route] || !snapshot.RouteAuthorizations[*n.advertisement.Route] {
+		t.Fatal("refresh did not derive both signed origins from its verified manifests")
+	}
+}

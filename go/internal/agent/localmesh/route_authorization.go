@@ -40,10 +40,7 @@ func (d *Directory) RouteAuthorizations(now time.Time) map[RouteOrigin]bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.expireLocked(now)
-	routes := make(map[RouteOrigin]bool)
-	owners := make(map[RouteOrigin]string)
-	prefixOwners := make(map[netip.Prefix]string)
-	conflicts := make(map[string]bool)
+	verified := make([]Manifest, 0, len(d.entries))
 	for principal, e := range d.entries {
 		m := e.manifest
 		if e.expired || m.Withdraw || m.Version != ManifestVersionRoute || m.Route == nil {
@@ -54,6 +51,29 @@ func (d *Directory) RouteAuthorizations(now time.Time) map[RouteOrigin]bool {
 		if _, ok := d.currentEntryChain(principal, e, now); !ok {
 			continue
 		}
+		verified = append(verified, m)
+	}
+	return authorizedOrigins(verified, d.tenant)
+}
+
+// authorizedOrigins derives route ownership from a freshly verified Directory
+// snapshot. The caller must have checked current identity trust and lease expiry
+// for every manifest. Keeping this projection pure lets node diagnostics reuse
+// that same verification without another full certificate-chain pass.
+func authorizedOrigins(verified []Manifest, tenant meshid.Tenant) map[RouteOrigin]bool {
+	routes := make(map[RouteOrigin]bool)
+	owners := make(map[RouteOrigin]string)
+	prefixOwners := make(map[netip.Prefix]string)
+	conflicts := make(map[string]bool)
+	for _, m := range verified {
+		if m.Withdraw || m.Version != ManifestVersionRoute || m.Route == nil {
+			continue
+		}
+		device := meshid.NewDevice(tenant, m.Device)
+		if !device.IsValid() || m.validateRoute(device) != nil {
+			continue
+		}
+		principal := device.Principal()
 		route := *m.Route
 		if owner, ok := prefixOwners[route.Prefix]; ok && owner != principal {
 			conflicts[owner], conflicts[principal] = true, true
