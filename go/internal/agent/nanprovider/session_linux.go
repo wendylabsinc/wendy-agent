@@ -574,5 +574,5 @@ func (p Provider) attachPeer(ctx context.Context, id meshid.Device, peer radioPe
 	defer conn.CloseWithError(0, "NAN path stopped")
 	peer.Lease.Progress()
 	peer.Lease.ObserveReady(func() { connected(true) })
-	return p.Node.AttachWithCost(localmesh.WithConnectionLease(ctx, peer.Lease), peer.Device, conn, NANLinkCost)
+	return p.Node.AttachWithCost(localmesh.WithConnectionLease(localmesh.WithCarrier(ctx, "nan"), peer.Lease), peer.Device, conn, NANLinkCost)
 }

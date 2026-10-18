@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WendyLocalMeshAdminService_ConfigureLocalMesh_FullMethodName = "/wendy.agent.services.v2.WendyLocalMeshAdminService/ConfigureLocalMesh"
-	WendyLocalMeshAdminService_GetLocalMeshStatus_FullMethodName = "/wendy.agent.services.v2.WendyLocalMeshAdminService/GetLocalMeshStatus"
+	WendyLocalMeshAdminService_ConfigureLocalMesh_FullMethodName   = "/wendy.agent.services.v2.WendyLocalMeshAdminService/ConfigureLocalMesh"
+	WendyLocalMeshAdminService_GetLocalMeshStatus_FullMethodName   = "/wendy.agent.services.v2.WendyLocalMeshAdminService/GetLocalMeshStatus"
+	WendyLocalMeshAdminService_GetLocalMeshTopology_FullMethodName = "/wendy.agent.services.v2.WendyLocalMeshAdminService/GetLocalMeshTopology"
 )
 
 // WendyLocalMeshAdminServiceClient is the client API for WendyLocalMeshAdminService service.
@@ -32,6 +33,8 @@ const (
 type WendyLocalMeshAdminServiceClient interface {
 	ConfigureLocalMesh(ctx context.Context, in *ConfigureLocalMeshRequest, opts ...grpc.CallOption) (*LocalMeshStatus, error)
 	GetLocalMeshStatus(ctx context.Context, in *GetLocalMeshStatusRequest, opts ...grpc.CallOption) (*LocalMeshStatus, error)
+	// Read-only local observations, authorized to a user in this device's tenant.
+	GetLocalMeshTopology(ctx context.Context, in *GetLocalMeshTopologyRequest, opts ...grpc.CallOption) (*LocalMeshTopology, error)
 }
 
 type wendyLocalMeshAdminServiceClient struct {
@@ -62,6 +65,16 @@ func (c *wendyLocalMeshAdminServiceClient) GetLocalMeshStatus(ctx context.Contex
 	return out, nil
 }
 
+func (c *wendyLocalMeshAdminServiceClient) GetLocalMeshTopology(ctx context.Context, in *GetLocalMeshTopologyRequest, opts ...grpc.CallOption) (*LocalMeshTopology, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LocalMeshTopology)
+	err := c.cc.Invoke(ctx, WendyLocalMeshAdminService_GetLocalMeshTopology_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WendyLocalMeshAdminServiceServer is the server API for WendyLocalMeshAdminService service.
 // All implementations must embed UnimplementedWendyLocalMeshAdminServiceServer
 // for forward compatibility.
@@ -71,6 +84,8 @@ func (c *wendyLocalMeshAdminServiceClient) GetLocalMeshStatus(ctx context.Contex
 type WendyLocalMeshAdminServiceServer interface {
 	ConfigureLocalMesh(context.Context, *ConfigureLocalMeshRequest) (*LocalMeshStatus, error)
 	GetLocalMeshStatus(context.Context, *GetLocalMeshStatusRequest) (*LocalMeshStatus, error)
+	// Read-only local observations, authorized to a user in this device's tenant.
+	GetLocalMeshTopology(context.Context, *GetLocalMeshTopologyRequest) (*LocalMeshTopology, error)
 	mustEmbedUnimplementedWendyLocalMeshAdminServiceServer()
 }
 
@@ -86,6 +101,9 @@ func (UnimplementedWendyLocalMeshAdminServiceServer) ConfigureLocalMesh(context.
 }
 func (UnimplementedWendyLocalMeshAdminServiceServer) GetLocalMeshStatus(context.Context, *GetLocalMeshStatusRequest) (*LocalMeshStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLocalMeshStatus not implemented")
+}
+func (UnimplementedWendyLocalMeshAdminServiceServer) GetLocalMeshTopology(context.Context, *GetLocalMeshTopologyRequest) (*LocalMeshTopology, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetLocalMeshTopology not implemented")
 }
 func (UnimplementedWendyLocalMeshAdminServiceServer) mustEmbedUnimplementedWendyLocalMeshAdminServiceServer() {
 }
@@ -145,6 +163,24 @@ func _WendyLocalMeshAdminService_GetLocalMeshStatus_Handler(srv interface{}, ctx
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WendyLocalMeshAdminService_GetLocalMeshTopology_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetLocalMeshTopologyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyLocalMeshAdminServiceServer).GetLocalMeshTopology(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyLocalMeshAdminService_GetLocalMeshTopology_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyLocalMeshAdminServiceServer).GetLocalMeshTopology(ctx, req.(*GetLocalMeshTopologyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WendyLocalMeshAdminService_ServiceDesc is the grpc.ServiceDesc for WendyLocalMeshAdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -159,6 +195,10 @@ var WendyLocalMeshAdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetLocalMeshStatus",
 			Handler:    _WendyLocalMeshAdminService_GetLocalMeshStatus_Handler,
+		},
+		{
+			MethodName: "GetLocalMeshTopology",
+			Handler:    _WendyLocalMeshAdminService_GetLocalMeshTopology_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -46,10 +46,24 @@ public enum Wendy_Agent_Services_V2_WendyLocalMeshAdminService: Sendable {
                 type: .unary
             )
         }
+        /// Namespace for "GetLocalMeshTopology" metadata.
+        public enum GetLocalMeshTopology: Sendable {
+            /// Request type for "GetLocalMeshTopology".
+            public typealias Input = Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest
+            /// Response type for "GetLocalMeshTopology".
+            public typealias Output = Wendy_Agent_Services_V2_LocalMeshTopology
+            /// Descriptor for "GetLocalMeshTopology".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v2.WendyLocalMeshAdminService"),
+                method: "GetLocalMeshTopology",
+                type: .unary
+            )
+        }
         /// Descriptors for all methods in the "wendy.agent.services.v2.WendyLocalMeshAdminService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             ConfigureLocalMesh.descriptor,
-            GetLocalMeshStatus.descriptor
+            GetLocalMeshStatus.descriptor,
+            GetLocalMeshTopology.descriptor
         ]
     }
 }
@@ -77,8 +91,8 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > User administration of an enrolled device's local mesh. Asset certificates
-    /// > cannot change carrier or Internet-sharing policy.
+    /// > User administration of an enrolled device's local mesh. Only a user in the
+    /// > device's tenant may change carrier or Internet-sharing policy.
     public protocol StreamingServiceProtocol: GRPCCore.RegistrableRPCService {
         /// Handle the "ConfigureLocalMesh" method.
         ///
@@ -107,6 +121,24 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService {
             request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V2_GetLocalMeshStatusRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V2_LocalMeshStatus>
+
+        /// Handle the "GetLocalMeshTopology" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Read-only local observations, authorized to a user in this device's tenant.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V2_LocalMeshTopology` messages.
+        func getLocalMeshTopology(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V2_LocalMeshTopology>
     }
 
     /// Service protocol for the "wendy.agent.services.v2.WendyLocalMeshAdminService" service.
@@ -119,8 +151,8 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > User administration of an enrolled device's local mesh. Asset certificates
-    /// > cannot change carrier or Internet-sharing policy.
+    /// > User administration of an enrolled device's local mesh. Only a user in the
+    /// > device's tenant may change carrier or Internet-sharing policy.
     public protocol ServiceProtocol: Wendy_Agent_Services_V2_WendyLocalMeshAdminService.StreamingServiceProtocol {
         /// Handle the "ConfigureLocalMesh" method.
         ///
@@ -149,6 +181,24 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService {
             request: GRPCCore.ServerRequest<Wendy_Agent_Services_V2_GetLocalMeshStatusRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V2_LocalMeshStatus>
+
+        /// Handle the "GetLocalMeshTopology" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Read-only local observations, authorized to a user in this device's tenant.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V2_LocalMeshTopology` message.
+        func getLocalMeshTopology(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V2_LocalMeshTopology>
     }
 
     /// Simple service protocol for the "wendy.agent.services.v2.WendyLocalMeshAdminService" service.
@@ -159,8 +209,8 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > User administration of an enrolled device's local mesh. Asset certificates
-    /// > cannot change carrier or Internet-sharing policy.
+    /// > User administration of an enrolled device's local mesh. Only a user in the
+    /// > device's tenant may change carrier or Internet-sharing policy.
     public protocol SimpleServiceProtocol: Wendy_Agent_Services_V2_WendyLocalMeshAdminService.ServiceProtocol {
         /// Handle the "ConfigureLocalMesh" method.
         ///
@@ -189,6 +239,24 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService {
             request: Wendy_Agent_Services_V2_GetLocalMeshStatusRequest,
             context: GRPCCore.ServerContext
         ) async throws -> Wendy_Agent_Services_V2_LocalMeshStatus
+
+        /// Handle the "GetLocalMeshTopology" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Read-only local observations, authorized to a user in this device's tenant.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendy_Agent_Services_V2_LocalMeshTopology` to respond with.
+        func getLocalMeshTopology(
+            request: Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendy_Agent_Services_V2_LocalMeshTopology
     }
 }
 
@@ -218,6 +286,17 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService.StreamingServicePro
                 )
             }
         )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V2_WendyLocalMeshAdminService.Method.GetLocalMeshTopology.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V2_LocalMeshTopology>(),
+            handler: { request, context in
+                try await self.getLocalMeshTopology(
+                    request: request,
+                    context: context
+                )
+            }
+        )
     }
 }
 
@@ -240,6 +319,17 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService.ServiceProtocol {
         context: GRPCCore.ServerContext
     ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V2_LocalMeshStatus> {
         let response = try await self.getLocalMeshStatus(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func getLocalMeshTopology(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V2_LocalMeshTopology> {
+        let response = try await self.getLocalMeshTopology(
             request: GRPCCore.ServerRequest(stream: request),
             context: context
         )
@@ -275,6 +365,19 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService.SimpleServiceProtoc
             metadata: [:]
         )
     }
+
+    public func getLocalMeshTopology(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V2_LocalMeshTopology> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V2_LocalMeshTopology>(
+            message: try await self.getLocalMeshTopology(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
 }
 
 // MARK: wendy.agent.services.v2.WendyLocalMeshAdminService (client)
@@ -288,8 +391,8 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > User administration of an enrolled device's local mesh. Asset certificates
-    /// > cannot change carrier or Internet-sharing policy.
+    /// > User administration of an enrolled device's local mesh. Only a user in the
+    /// > device's tenant may change carrier or Internet-sharing policy.
     public protocol ClientProtocol: Sendable {
         /// Call the "ConfigureLocalMesh" method.
         ///
@@ -328,6 +431,29 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService {
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V2_LocalMeshStatus>) async throws -> Result
         ) async throws -> Result where Result: Sendable
+
+        /// Call the "GetLocalMeshTopology" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Read-only local observations, authorized to a user in this device's tenant.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V2_LocalMeshTopology` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func getLocalMeshTopology<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V2_LocalMeshTopology>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V2_LocalMeshTopology>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
     }
 
     /// Generated client for the "wendy.agent.services.v2.WendyLocalMeshAdminService" service.
@@ -338,8 +464,8 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > User administration of an enrolled device's local mesh. Asset certificates
-    /// > cannot change carrier or Internet-sharing policy.
+    /// > User administration of an enrolled device's local mesh. Only a user in the
+    /// > device's tenant may change carrier or Internet-sharing policy.
     public struct Client<Transport>: ClientProtocol where Transport: GRPCCore.ClientTransport {
         private let client: GRPCCore.GRPCClient<Transport>
 
@@ -410,6 +536,40 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "GetLocalMeshTopology" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Read-only local observations, authorized to a user in this device's tenant.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V2_LocalMeshTopology` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func getLocalMeshTopology<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V2_LocalMeshTopology>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V2_LocalMeshTopology>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendy_Agent_Services_V2_WendyLocalMeshAdminService.Method.GetLocalMeshTopology.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -461,6 +621,35 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V2_GetLocalMeshStatusRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V2_LocalMeshStatus>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetLocalMeshTopology" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Read-only local observations, authorized to a user in this device's tenant.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getLocalMeshTopology<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V2_LocalMeshTopology>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.getLocalMeshTopology(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V2_LocalMeshTopology>(),
             options: options,
             onResponse: handleResponse
         )
@@ -522,6 +711,39 @@ extension Wendy_Agent_Services_V2_WendyLocalMeshAdminService.ClientProtocol {
             metadata: metadata
         )
         return try await self.getLocalMeshStatus(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetLocalMeshTopology" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Read-only local observations, authorized to a user in this device's tenant.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getLocalMeshTopology<Result>(
+        _ message: Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V2_LocalMeshTopology>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V2_GetLocalMeshTopologyRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.getLocalMeshTopology(
             request: request,
             options: options,
             onResponse: handleResponse

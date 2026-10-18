@@ -77,6 +77,14 @@ func TestLANInterfaceClassification(t *testing.T) {
 		if cost != tt.want || ok != tt.wantOK {
 			t.Errorf("%s Ethernet=%v WiFi=%v: got cost=%d ok=%v; want %d %v", tt.name, tt.eth, tt.wifi, cost, ok, tt.want, tt.wantOK)
 		}
+		_, transport, _ := classifyLANCarrier(tt.name, root, tt.eth, tt.wifi, managed)
+		wantTransport := ""
+		if tt.wantOK {
+			wantTransport = map[string]string{"eth0": "ethernet", "wlan0": "infrastructure-wifi"}[tt.name]
+		}
+		if transport != wantTransport {
+			t.Errorf("%s transport = %q, want %q", tt.name, transport, wantTransport)
+		}
 	}
 }
 

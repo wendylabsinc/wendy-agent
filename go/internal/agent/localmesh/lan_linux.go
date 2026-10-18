@@ -58,10 +58,11 @@ func (c LANConfig) allow(asset meshid.Device, cost uint16) bool {
 }
 
 type lanInterface struct {
-	iface net.Interface
-	ip    net.IP
-	net   *net.IPNet
-	cost  uint16
+	iface     net.Interface
+	ip        net.IP
+	net       *net.IPNet
+	cost      uint16
+	transport string
 }
 
 type lanClaims struct {
@@ -173,7 +174,7 @@ func scanLANInterfaces(ethernet, wifi bool) ([]lanInterface, error) {
 		if iface.Flags&(net.FlagUp|net.FlagRunning|net.FlagMulticast) != net.FlagUp|net.FlagRunning|net.FlagMulticast {
 			continue
 		}
-		cost, ok := classifyLANInterface(iface.Name, "/sys/class/net", ethernet, wifi, managedWiFi)
+		cost, transport, ok := classifyLANCarrier(iface.Name, "/sys/class/net", ethernet, wifi, managedWiFi)
 		if !ok {
 			continue
 		}
@@ -190,39 +191,44 @@ func scanLANInterfaces(ethernet, wifi bool) ([]lanInterface, error) {
 			if ip == nil || !ip.IsGlobalUnicast() || ip.IsLinkLocalUnicast() {
 				continue
 			}
-			result = append(result, lanInterface{iface: iface, ip: append(net.IP(nil), ip...), net: ipnet, cost: cost})
+			result = append(result, lanInterface{iface: iface, ip: append(net.IP(nil), ip...), net: ipnet, cost: cost, transport: transport})
 		}
 	}
 	return result, nil
 }
 
 func classifyLANInterface(name, sysfs string, ethernet, wifi bool, isManaged func(string) bool) (uint16, bool) {
+	cost, _, ok := classifyLANCarrier(name, sysfs, ethernet, wifi, isManaged)
+	return cost, ok
+}
+
+func classifyLANCarrier(name, sysfs string, ethernet, wifi bool, isManaged func(string) bool) (uint16, string, bool) {
 	base := filepath.Join(sysfs, name)
 	if _, err := os.Stat(filepath.Join(base, "wireless")); err == nil {
 		if wifi && isManaged(name) {
-			return WiFiLinkCost, true
+			return WiFiLinkCost, "infrastructure-wifi", true
 		}
-		return 0, false
+		return 0, "", false
 	}
 	if _, err := os.Stat(filepath.Join(base, "phy80211")); err == nil {
 		if wifi && isManaged(name) {
-			return WiFiLinkCost, true
+			return WiFiLinkCost, "infrastructure-wifi", true
 		}
-		return 0, false
+		return 0, "", false
 	}
 	// A device-backed ARPHRD_ETHER interface excludes veth, bridges, dummy,
 	// TUN and other virtual interfaces used by apps or mesh carriers.
 	if !ethernet {
-		return 0, false
+		return 0, "", false
 	}
 	kind, err := os.ReadFile(filepath.Join(base, "type"))
 	if err != nil || strings.TrimSpace(string(kind)) != "1" {
-		return 0, false
+		return 0, "", false
 	}
 	if _, err := os.Stat(filepath.Join(base, "device")); err != nil {
-		return 0, false
+		return 0, "", false
 	}
-	return EthernetLinkCost, true
+	return EthernetLinkCost, "ethernet", true
 }
 
 func managedWiFi(name string) bool {
@@ -643,7 +649,7 @@ func attachLAN(ctx context.Context, cfg LANConfig, selected lanInterface, asset 
 			}
 		}
 	}()
-	return cfg.Node.AttachWithCost(ctx, asset, conn, selected.cost)
+	return cfg.Node.AttachWithCost(WithCarrier(ctx, selected.transport), asset, conn, selected.cost)
 }
 
 func lanMeshHash(tenant meshid.Tenant) string {
