@@ -51,5 +51,9 @@ other endpoints.
 
 Validation covers timestamp framing and bounds, refusal of redirects and
 non-HTTPS URLs, cancellation, configuration validation and existing TLS and
-signed-leaf checks. The ARM64 agent builds. BLE operation with a physical ESP32
-still requires hardware validation.
+signed-leaf checks. The ARM64 agent builds. On 2026-10-18, an ESP32-S3 DevKit
+with 8 MB PSRAM authenticated over BLE to a Linux ARM64 router with no Wi-Fi
+credentials on the leaf. The router verified the leaf's signed route leases,
+and the leaf activated its IPv6 interface after the replay barrier. The operator
+confirmed the BLE mesh worked. ESP-NOW between physical boards and sustained
+radio throughput remain untested.
