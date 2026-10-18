@@ -144,10 +144,10 @@ func (c *l2capNetConn) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// Close waits out an in-flight Read, which takes at most recvChunkSeconds, so
-// the platform connection cannot be torn down while a reader is still inside
-// it. That is what matters on darwin, where wendy_ble_disconnect hands the
-// CoreBluetooth wrapper to ARC.
+// Close waits out an in-flight Read so the platform connection cannot be torn
+// down while a reader is still inside it. Reads poll in recvChunkSeconds
+// slices; on darwin Connection.Close also waits for a native write, which has
+// its own bounded timeout, before releasing the CoreBluetooth wrapper to ARC.
 //
 // Its idempotency is belt and braces these days — Connection.Close is
 // idempotent on both backends — but it costs a bool and keeps this type's own

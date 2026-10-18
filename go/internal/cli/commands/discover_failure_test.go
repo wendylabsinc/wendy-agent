@@ -329,6 +329,12 @@ func TestDiscoveryExplicitTLSAlertPrecedesTransportFailure(t *testing.T) {
 }
 
 func TestDiscoveryIdentityRecoveryUsesGoverningPin(t *testing.T) {
+	const wantPrincipal = "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/lite-test-board"
+	const gotPrincipal = "spiffe://wendy.sh/tenant/22222222-2222-4222-8222-222222222222/device/lite-test-board"
+	tenantMismatch := &certs.IdentityMismatchError{
+		WantAsset: "lite-test-board", GotAsset: "lite-test-board",
+		WantPrincipal: wantPrincipal, GotPrincipal: gotPrincipal,
+	}
 	for _, tc := range []struct {
 		name    string
 		err     error
@@ -338,6 +344,8 @@ func TestDiscoveryIdentityRecoveryUsesGoverningPin(t *testing.T) {
 		{"alias", identityRefusal("lab's board.local", &certs.IdentityMismatchError{WantOrg: 2, WantAsset: "344", GotOrg: 76, GotAsset: "472"}), []string{"asset 344 in organization 2", "asset 472 in organization 76"}, `wendy device unpin 'lab'\''s board.local'`},
 		{"SPKI store identity", spkiRefusal("192.0.2.1", &devicepin.PinMismatchError{Key: "urn:wendy:org:2:asset:344", Want: "sha256:old", Got: "sha256:new"}), []string{"sha256:old", "sha256:new"}, "wendy device unpin urn:wendy:org:2:asset:344"},
 		{"unknown key", &certs.IdentityMismatchError{WantOrg: 2, WantAsset: "344", GotOrg: 76, GotAsset: "472"}, []string{"asset 344 in organization 2", "asset 472 in organization 76"}, ""},
+		{"tenant mismatch with pin", identityRefusal("board.local", tenantMismatch), []string{wantPrincipal, gotPrincipal}, "wendy device unpin board.local"},
+		{"tenant mismatch without pin", tenantMismatch, []string{wantPrincipal, gotPrincipal}, ""},
 		{"control in key", identityRefusal("board\x1b.local", &certs.IdentityMismatchError{}), nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

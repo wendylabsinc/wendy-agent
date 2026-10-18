@@ -566,10 +566,14 @@ func identityRefusal(pinKey string, im *certs.IdentityMismatchError) error {
 	if im.GotAsset != "" {
 		got = fmt.Sprintf("asset %s in organization %s", im.GotAsset, orgLabel("", im.GotOrg))
 	}
+	details := fmt.Sprintf("Saved: asset %s in organization %s\nNow:   %s", im.WantAsset, orgLabel("", im.WantOrg), got)
+	if im.WantPrincipal != "" || im.GotPrincipal != "" {
+		details = im.Error()
+	}
 	return refuseDevicePin(devicePinDiagnostic{
 		hostname: pinKey,
 		heading:  fmt.Sprintf("Connection blocked: device %q identity changed.", pinKey),
-		details:  fmt.Sprintf("Saved: asset %s in organization %s\nNow:   %s", im.WantAsset, orgLabel("", im.WantOrg), got),
+		details:  details,
 	})
 }
 

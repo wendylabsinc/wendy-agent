@@ -428,10 +428,9 @@ func (l *directLink) closeTransport() error {
 		// taking writeMu waits for that writer to leave, so no write outlives
 		// close. Over TCP that breaks the Write (Go's netpoller wakes it). Over
 		// BLE it may not: on Linux L2CAPSend is a blocking write(2) that
-		// closing the fd does not interrupt, and on darwin it is an opaque C
-		// call; nor does tls's close_notify deadline help there, since the
-		// L2CAP stream ignores write deadlines. A BLE write stuck on a dead
-		// link can therefore still block close here.
+		// closing the fd does not interrupt. Darwin native writes have a
+		// fixed timeout. Neither implements tls's close_notify deadline,
+		// since the L2CAP stream ignores write deadlines.
 		err := l.conn.Close()
 		l.writeMu.Lock()
 		l.writeMu.Unlock() //nolint:staticcheck — barrier, not a critical section
