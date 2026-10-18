@@ -314,3 +314,28 @@ func TestRefreshCertsFailureLeavesOtherContextsUntouched(t *testing.T) {
 		t.Fatal("rotated refresh token of the current context was not persisted")
 	}
 }
+
+// TestRefreshCertsAllKeepsTheErrorChain pins the WDY-3864 review: --all joins
+// the per-context failures, so a Ctrl-C still reads as context_canceled.
+func TestRefreshCertsAllKeepsTheErrorChain(t *testing.T) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	cert := []config.CertificateInfo{{PemCertificate: "leaf"}}
+	if err := config.Save(&config.Config{CurrentContext: "acme", Auth: []config.AuthConfig{
+		{Name: "wendy", CloudGRPC: "wendy:443", Certificates: cert},
+		{Name: "acme", CloudGRPC: "acme:443", Certificates: cert},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	orig := refreshCertsForAuthFn
+	refreshCertsForAuthFn = func(context.Context, *config.AuthConfig) error { return context.Canceled }
+	t.Cleanup(func() { refreshCertsForAuthFn = orig })
+
+	err := refreshCerts(context.Background(), true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation lost from the chain: %v", err)
+	}
+	if class := ExecutionErrorClass(err); class != "context_canceled" {
+		t.Fatalf("error class = %q, want context_canceled", class)
+	}
+}

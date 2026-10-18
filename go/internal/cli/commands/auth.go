@@ -584,7 +584,7 @@ func refreshCerts(ctx context.Context, all bool) error {
 	}
 
 	refreshed := 0
-	var failed []string
+	var failed []error
 	var lastErr error
 	for _, auth := range targets {
 		auth.InvalidateCachedSecrets()
@@ -598,7 +598,7 @@ func refreshCerts(ctx context.Context, all bool) error {
 
 		if err := refreshCertsForAuthFn(ctx, auth); err != nil {
 			fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", label, err)))
-			failed = append(failed, auth.Name)
+			failed = append(failed, fmt.Errorf("context %q: %w", auth.Name, err))
 			lastErr = err
 			continue
 		}
@@ -614,7 +614,9 @@ func refreshCerts(ctx context.Context, all bool) error {
 	if all {
 		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshed %d of %d auth contexts.", refreshed, len(targets))))
 		if len(failed) > 0 {
-			return fmt.Errorf("failed to refresh %d auth context(s): %s", len(failed), strings.Join(failed, ", "))
+			// Keep each cause in the chain so errors.Is (e.g. context.Canceled
+			// after Ctrl-C) and the error class still see it.
+			return fmt.Errorf("failed to refresh %d auth context(s): %w", len(failed), errors.Join(failed...))
 		}
 	}
 	if refreshed == 0 {
@@ -628,39 +630,56 @@ func refreshCerts(ctx context.Context, all bool) error {
 	return nil
 }
 
-// authContextToUse names the stored context that holds the certificate for
-// org when refresh-certs would renew a different one, so recovery says to
-// switch first instead of spending the wrong session's refresh token
-// (WDY-3864). It returns "" when org is unknown or the current context holds it.
-func authContextToUse(org int32) string {
-	if org == 0 {
-		return ""
-	}
+// switchContextStep is the advice for a certificate rejected by a device in
+// org when renewing the current context would not fix it, so recovery says
+// what to do instead of spending the wrong session's refresh token
+// (WDY-3864). It names the stored context holding the org's certificate,
+// preferring the operator session over a legacy one as config.preferAuth
+// does. When org is unknown and several contexts hold certificates, it names
+// them all rather than guessing. It returns "" when renewing the current
+// context is the fix.
+func switchContextStep(org int32) string {
 	cfg, err := config.Load()
 	if err != nil {
 		return ""
 	}
 	current, _ := config.ResolveAuth(cfg, "", nil)
-	other := ""
-	for _, a := range cfg.Auth {
-		if len(a.Certificates) == 0 || a.Certificates[0].OrganizationID != int(org) {
+	var holder *config.AuthConfig
+	var names []string
+	for i := range cfg.Auth {
+		a := &cfg.Auth[i]
+		if len(a.Certificates) == 0 {
+			continue
+		}
+		name := a.Name
+		if current != nil && a.Name == current.Name {
+			name += " (current)"
+		}
+		names = append(names, name)
+		if org == 0 || a.Certificates[0].OrganizationID != int(org) {
 			continue
 		}
 		if current != nil && a.Name == current.Name {
 			return ""
 		}
-		if other == "" {
-			other = a.Name
+		if holder == nil || (holder.OAuthIssuer == "" && a.OAuthIssuer != "") {
+			holder = a
 		}
 	}
-	return other
+	if holder != nil {
+		return fmt.Sprintf("Run 'wendy auth use %s', then 'wendy auth refresh-certs', then retry.", holder.Name)
+	}
+	if org != 0 || len(names) == 0 || (len(names) == 1 && current != nil) {
+		return ""
+	}
+	return fmt.Sprintf("The device's organization is unknown, so its certificate may be held by any of these contexts: %s. Run 'wendy auth use <context>' for the device's organization if it is not the current one, then 'wendy auth refresh-certs', then retry.", strings.Join(names, ", "))
 }
 
-// refreshCertsStep is the advice for renewing a certificate held by
-// useContext ("" = the current context).
-func refreshCertsStep(useContext string) string {
-	if useContext != "" {
-		return fmt.Sprintf("Run 'wendy auth use %s', then 'wendy auth refresh-certs', then retry.", useContext)
+// refreshCertsStep is the advice for renewing a rejected certificate:
+// switchStep from switchContextStep, or a plain refresh of the current context.
+func refreshCertsStep(switchStep string) string {
+	if switchStep != "" {
+		return switchStep
 	}
 	return "Run 'wendy auth refresh-certs', then retry."
 }

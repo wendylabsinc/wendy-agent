@@ -48,7 +48,9 @@ Refreshing an OIDC session spends its refresh token, so a context you did not
 select is never touched. This holds for the "Refresh certificates and retry?"
 offer after a rejected device connection too: when the rejected certificate
 belongs to another context, the CLI names it and asks you to switch with
-`wendy auth use <context>` first instead of refreshing the current one.
+`wendy auth use <context>` first instead of refreshing the current one. When
+the device does not reveal its organization and several contexts hold
+certificates, the CLI lists them and refreshes none.
 
 ## The renew frontend
 

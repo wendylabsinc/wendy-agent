@@ -303,3 +303,42 @@ func TestConnectionRecoveryNeverRefreshesAnotherContextsCert(t *testing.T) {
 		t.Fatalf("current context holds the cert, want plain refresh advice: %v", cause)
 	}
 }
+
+// TestConnectionRecoveryNamesTheContextToSwitchTo pins the WDY-3864 review:
+// a legacy and an operator session holding the device's org name the operator
+// one, and an unknown device org with several contexts names them all instead
+// of renewing the current context.
+func TestConnectionRecoveryNamesTheContextToSwitchTo(t *testing.T) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	expired := func(org int) config.CertificateInfo {
+		return config.CertificateInfo{OrganizationID: org, PemCertificate: certPEM(t, time.Now().Add(-time.Hour))}
+	}
+	if err := config.Save(&config.Config{
+		CurrentContext: "acme",
+		Auth: []config.AuthConfig{
+			{Name: "acme", CloudGRPC: "acme:443", Certificates: []config.CertificateInfo{expired(1)}},
+			{Name: "legacy", CloudGRPC: "wendy:443", Certificates: []config.CertificateInfo{expired(2)}},
+			{Name: "operator", CloudGRPC: "wendy:443", OAuthIssuer: "https://auth.wendy.dev", Certificates: []config.CertificateInfo{expired(2)}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := switchContextStep(2); !strings.Contains(got, "wendy auth use operator") {
+		t.Fatalf("want the operator session, got %q", got)
+	}
+
+	isolateConnectionRecovery(t) // fails on any refresh prompt or refresh
+	all := []config.CertificateInfo{expired(1), expired(2), expired(2)}
+	cause := chooseRejectionError(context.Background(), 0, all, errors.New("remote error: tls: bad certificate"))
+	_, err := recoverAgentConnection(context.Background(), false, cause, func() (*grpcclient.AgentConnection, error) {
+		t.Fatal("retry without a refresh")
+		return nil, nil
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("cause lost: %v", err)
+	}
+	if !strings.Contains(err.Error(), "organization is unknown") || !strings.Contains(err.Error(), "acme (current), legacy, operator") {
+		t.Fatalf("want the candidate contexts named: %v", err)
+	}
+}
