@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,6 +106,10 @@ const (
 	mBLEWifi     = BLEMethodPrefix + "wifi_connect"
 )
 
+// testKeys maps a newKey SPKI to its private key, so leafWithKey can make a
+// real self-signed local operator certificate.
+var testKeys sync.Map
+
 func newKey(t *testing.T) []byte {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -115,10 +120,36 @@ func newKey(t *testing.T) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
+	testKeys.Store(string(der), k)
 	return der
 }
 
+// selfSignedLeaf is the shape of a local operator certificate, over a newKey key.
+func selfSignedLeaf(spki []byte) *x509.Certificate {
+	k, _ := testKeys.Load(string(spki))
+	key := k.(*ecdsa.PrivateKey)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Minute),
+		NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		panic(err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		panic(err)
+	}
+	return leaf
+}
+
+// leafWithKey is a certificate carrying spki: a real self-signed one when it
+// names no tenant (a local operator certificate), otherwise a literal for
+// the CA-issued shapes, whose chain the handshake has already verified.
 func leafWithKey(spki []byte, uris ...string) *x509.Certificate {
+	if len(uris) == 0 {
+		if _, ok := testKeys.Load(string(spki)); ok {
+			return selfSignedLeaf(spki)
+		}
+	}
 	leaf := buildLeaf(leafOptions{commonName: "operator"})
 	leaf.RawSubjectPublicKeyInfo = spki
 	for _, u := range uris {
@@ -321,5 +352,46 @@ func TestCloudEnrolledDisablesLocalKeys(t *testing.T) {
 	}
 	if _, err := a.Authorize(tenantCtx, mListKeys); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("tenant user keys RPC after unenroll = %v, want PermissionDenied", err)
+	}
+}
+
+// A certificate whose identity cannot be read is refused in every org mode:
+// it is never "no identity", which off/grace admit as a legacy certificate.
+func TestMalformedIdentityIsRefusedInEveryMode(t *testing.T) {
+	store, _ := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	for _, uri := range []string{
+		"spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/workload/x",
+		"urn:wendy:org:5:robot:1",
+	} {
+		leaf := leafWithKey(newKey(t), uri)
+		if _, _, err := certs.IdentityFromCert(leaf); err == nil {
+			t.Fatalf("%s: IdentityFromCert accepted it; the test needs an unreadable identity", uri)
+		}
+		for _, mode := range []OrgMode{OrgModeOff, OrgModeGrace, OrgModeStrict} {
+			a := Authorizer{Logger: zap.NewNop(), Listener: ListenerMTLS, Keys: store, Expected: certs.Scope{OrgID: 5}, OrgMode: mode}
+			if p, err := a.Authorize(ctxWithLeaf(leaf), mShell); status.Code(err) != codes.PermissionDenied {
+				t.Errorf("%s under %s = %v %v, want PermissionDenied", uri, mode, p.Kind, err)
+			}
+		}
+	}
+}
+
+// A trusted key in a certificate that is not self-signed (e.g. CA-issued with
+// no tenant, as BLE's chain-only handshake admits) never gets the key's role:
+// the same rule the mTLS handshake applies.
+func TestTrustedKeyNeedsSelfSignedCertificate(t *testing.T) {
+	store, _ := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	owner := newKey(t)
+	store.Add(owner, trustedkeys.RoleOwner, "", trustedkeys.AddedByInstall, time.Now())
+	notSelfSigned := buildLeaf(leafOptions{commonName: "operator"})
+	notSelfSigned.RawSubjectPublicKeyInfo = owner
+	for _, mode := range []OrgMode{OrgModeOff, OrgModeGrace, OrgModeStrict} {
+		a := Authorizer{Logger: zap.NewNop(), Listener: ListenerMTLS, Keys: store, Expected: certs.Scope{OrgID: 5}, OrgMode: mode}
+		if p, err := a.Authorize(ctxWithLeaf(notSelfSigned), mAddKey); status.Code(err) != codes.PermissionDenied {
+			t.Errorf("mode %s: not self-signed = %v %v, want PermissionDenied", mode, p.Kind, err)
+		}
+		if p, err := a.Authorize(ctxWithLeaf(leafWithKey(owner)), mAddKey); err != nil || p.Kind != KindLocalKey {
+			t.Errorf("mode %s: self-signed = %v %v, want local-key", mode, p.Kind, err)
+		}
 	}
 }

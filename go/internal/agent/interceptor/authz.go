@@ -3,6 +3,7 @@ package interceptor
 import (
 	"context"
 	"crypto/x509"
+	"slices"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/trustedkeys"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -167,14 +168,30 @@ func (a *Authorizer) identify(ctx context.Context) (Principal, error) {
 		return Principal{}, err
 	}
 	ident, hasIdent, identErr := certs.IdentityFromCert(leaf)
-	if identErr == nil && !hasIdent {
+	if identErr != nil {
+		// A malformed or unknown identity is refused in every org mode; it is
+		// never "no identity" (which grace/off admit as a legacy certificate).
+		a.Logger.Warn("rejected certificate with an unreadable identity",
+			zap.String("serial", leaf.SerialNumber.String()),
+			zap.String("remote", peerAddr(ctx)), zap.Error(identErr))
+		return Principal{}, status.Error(codes.PermissionDenied, "certificate identity could not be determined")
+	}
+	if !hasIdent {
 		// A certificate naming no tenant is a local operator when its key
 		// is trusted. A key never lifts a certificate that names a tenant
 		// into a local role, and a local key never carries a tenant identity
 		// (the handshake refuses self-issued certificates that name one).
 		role, fp := a.Keys.Lookup(leaf.RawSubjectPublicKeyInfo)
+		selfSigned := trustedkeys.SelfSigned(leaf)
 		if role != trustedkeys.RoleNone {
-			if !hasEKU(leaf, x509.ExtKeyUsageClientAuth) {
+			// Same rule as the handshake, on every listener (BLE verifies the
+			// chain only): a local operator certificate is self-signed.
+			if !selfSigned {
+				a.Logger.Warn("rejected trusted key in a certificate that is not self-signed",
+					zap.String("fingerprint", fp), zap.String("remote", peerAddr(ctx)))
+				return Principal{}, status.Error(codes.PermissionDenied, "local operator certificate must be self-signed")
+			}
+			if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
 				return Principal{}, status.Error(codes.Unauthenticated, "certificate is not valid for client authentication")
 			}
 			return Principal{Kind: KindLocalKey, Role: role, Fingerprint: fp}, nil
@@ -183,7 +200,7 @@ func (a *Authorizer) identify(ctx context.Context) (Principal, error) {
 		// has since been removed (live connection or resumed session). It
 		// must not fall through to the legacy no-tenant path that grace/off
 		// org modes allow.
-		if trustedkeys.SelfSigned(leaf) {
+		if selfSigned {
 			a.Logger.Warn("rejected self-signed certificate whose key is not trusted",
 				zap.String("fingerprint", fp), zap.String("remote", peerAddr(ctx)))
 			return Principal{}, status.Error(codes.PermissionDenied, "key is not trusted")
@@ -221,15 +238,6 @@ func peerLeaf(ctx context.Context) (*x509.Certificate, error) {
 	return tlsInfo.State.PeerCertificates[0], nil
 }
 
-func hasEKU(leaf *x509.Certificate, want x509.ExtKeyUsage) bool {
-	for _, eku := range leaf.ExtKeyUsage {
-		if eku == want {
-			return true
-		}
-	}
-	return false
-}
-
 // Unary is the unary form of Authorize.
 func (a *Authorizer) Unary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
@@ -258,14 +266,6 @@ type principalStream struct {
 }
 
 func (s *principalStream) Context() context.Context { return s.ctx }
-
-// ServerOptions installs the Authorizer as the first interceptor.
-func (a *Authorizer) ServerOptions() []grpc.ServerOption {
-	return []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(a.Unary()),
-		grpc.ChainStreamInterceptor(a.Stream()),
-	}
-}
 
 // Unmapped lists the methods served by srv that have no entry in the role
 // table. They are denied at runtime; the agent refuses to start with any, so

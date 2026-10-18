@@ -8,8 +8,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +28,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// testPrivKeys maps a testSPKI SPKI to its private key, for asLocalKey's
+// self-signed certificate.
+var testPrivKeys sync.Map
+
 func testSPKI(t *testing.T) []byte {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -36,6 +42,7 @@ func testSPKI(t *testing.T) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
+	testPrivKeys.Store(string(der), k)
 	return der
 }
 
@@ -43,12 +50,23 @@ func testSPKI(t *testing.T) []byte {
 // client certificate carrying spki.
 func asLocalKey(t *testing.T, store *trustedkeys.Store, spki []byte, method string) context.Context {
 	t.Helper()
-	leaf := &x509.Certificate{RawSubjectPublicKeyInfo: spki, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	k, _ := testPrivKeys.Load(string(spki))
+	key := k.(*ecdsa.PrivateKey)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Minute),
+		NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := peer.NewContext(context.Background(), &peer.Peer{
 		AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}}}})
 	authz := &interceptor.Authorizer{Logger: zap.NewNop(), Listener: interceptor.ListenerMTLS, Keys: store}
 	var got context.Context
-	_, err := authz.Unary()(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method}, func(ctx context.Context, _ any) (any, error) {
+	_, err = authz.Unary()(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method}, func(ctx context.Context, _ any) (any, error) {
 		got = ctx
 		return nil, nil
 	})
