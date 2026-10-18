@@ -108,7 +108,7 @@ func TestTicketScalingAudit(t *testing.T) {
 			}
 			entries := make([]item, 0, 600)
 			for peer := int32(1000); peer < 1150; peer++ {
-				for transport, alpn := range map[string]string{"ble-tls": "wendy-local-mesh-ble/1", LinkQUICSessionScope: LinkALPN, "app-quic": "wendy-app-mesh/1", "catalog-tls": "wendy-mesh-catalog/1"} {
+				for transport, alpn := range map[string]string{"ble-tls": "wendy-local-mesh-ble/2", LinkQUICSessionScope: LinkALPN, "app-quic": "wendy-app-mesh/1", "catalog-tls": "wendy-mesh-catalog/1"} {
 					cfg, e := creds.PeerTLSWithTickets(selectionDevice(int(peer)), alpn, transport)
 					if e != nil {
 						t.Fatal(e)

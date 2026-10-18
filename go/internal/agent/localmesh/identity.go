@@ -24,12 +24,11 @@ func ownedInterface(name string) bool {
 	return name == InterfaceName || strings.HasPrefix(name, peerInterfacePrefix)
 }
 
-// admittedPrefix permits individual wendy net device addresses only. Every node
-// originates a /128; accepting a broader prefix would let a peer attract traffic
-// for devices that have not advertised their own route. This pool/host boundary
-// does not authenticate the claimed origin of an otherwise valid device route.
+// admittedPrefix is only the structural boundary. Device announcements may
+// authorize their exact derived /128, never an aggregate. The node separately
+// requires a live signed origin/router-ID/sequence binding for every route.
 func admittedPrefix(p netip.Prefix) bool {
-	return p.Bits() == 128 && meshid.InMesh(p.Addr())
+	return meshid.InMesh(p.Addr()) && p.Bits() == 128
 }
 
 // instanceRouterID derives this instance's Babel router ID with the profile's

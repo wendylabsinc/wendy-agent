@@ -28,7 +28,11 @@ The lower device UUID initiates the connection. The listener checks the
 configured peer list, then QUIC mutual authentication pins the complete peer
 principal. The unauthenticated TCP preface is only an ordering/admission hint.
 The framed TCP carrier exists to simulate graph topologies; its head-of-line
-blocking makes it unsuitable as the final LAN or radio carrier. Production Ethernet and infrastructure Wi-Fi discovery uses native QUIC over
+blocking makes it unsuitable as the final LAN or radio carrier. Automatically discovered Ethernet, infrastructure WiFi, NAN and BLE attach
+to the same node through their own providers. The framed TCP carrier remains
+an optional way to configure test edges.
+
+Production Ethernet and infrastructure Wi-Fi discovery uses native QUIC over
 IPv4 UDP port 43023, bound to each eligible physical interface and local address.
 It never uses the simulator TCP adapter or falls back to TCP. LAN discovery
 advertises `_wendy-net._udp` with `protocol=quic-v1`, full device principal and
@@ -82,13 +86,43 @@ interface MAC when available, otherwise a tagged random value. Safety state
 persists it with the device principal and Babel feasibility history across
 restart; it is not a certificate identity.
 
-Each node originates only its own device /128. Admission accepts only /128s
-inside the device pool, refusing aggregates that could attract traffic for
-unannounced devices. At this stage an authenticated peer can still claim
-another device's /128: link authentication does not prove a relayed route's
-origin. The later signed-router-announcement stage supplies that protection.
-Babel feasibility, split horizon, loop prevention and bounded packet decoding
-apply independently.
+## Route admission
+
+Every finite remote route requires a current version-2 manifest signed by the
+destination device. The manifest binds its certificate principal to its exact
+wendy net /128, Babel origin router ID, and origin sequence number. An authenticated
+neighbour can relay that proof unchanged, but cannot sign for another device,
+advertise an aggregate, or advance another origin's sequence number. A version-1
+manifest provides directory presence only and never authorizes a route.
+
+Nodes publish a 60-second lease every 20 seconds, capped at the identity's
+certificate expiry. Receivers reject leases longer than two minutes and issue
+times more than five seconds in the future. The origin's persistent revision
+prevents rollback to an older announcement. A Babel sequence change is persisted
+and signed before its updates are sent. Proofs travel over the existing reliable
+control stream; Babel datagrams remain unchanged. If a datagram arrives first,
+it is dropped and periodic Babel updates repair the ordering.
+
+Admission checks both new updates and retained route candidates. Expiry,
+withdrawal, or loss of certificate trust removes eligibility; the one-second
+maintenance tick bounds expiry reconciliation while the event loop is running.
+An accepted lease has an in-process monotonic deadline, and observed expiry
+cannot be undone by replay. Timestamp validation when first receiving a proof
+and after process restart still requires reliable wall time. Conflicting address
+claims by different principals fail closed.
+Router IDs alone confer no authority over another device's address.
+
+These proofs authenticate the origin's address and recent authorization. They
+do not prove an honest path metric, current reachability, forwarding, or payload
+source authenticity. A relay can still drop traffic or replay a proof within its
+valid lease. Hop-local Babel retractions remain unchanged: they only remove that
+neighbour's candidate. Babel feasibility, split horizon, loop prevention, and
+end-to-end application authentication still apply.
+
+Wendy net links require hello version 2 and ALPN `wendy-local-mesh/2` (QUIC) or
+`wendy-local-mesh-ble/2` (BLE TLS). Old peers cannot join the new routing policy;
+upgrade each connected wendy net network together. This changes the internal wendy net wire
+contract, not public gRPC messages or application-session ALPNs.
 
 Manifest projection and synchronization require the exact currently admitted
 wire signature to verify under the principal's current cached certificate. A
@@ -162,7 +196,8 @@ chain; chain verification and principal pinning remain mandatory. WendyOS explic
 the upstream default remains16 KiB.
 
 Signed device manifests advertise name, agent port, revision and an absolute
-expiry. They describe presence, not application services or routing authority.
+expiry. Version 2 also binds the signed route origin; application services use the
+separate catalogue protocol.
 Every receiver verifies the origin's certificate and signature before relaying
 an accepted version to its other neighbours. Missing certificates cause a
 bounded pending record and an identity request to the sending neighbour.
@@ -233,7 +268,7 @@ metrics or proof of delivery.
 
 Application catalogue gossip uses the separate protocol described below; it
 should not be inferred from the device presence directory. Internet-sharing
-overlays and LAN service projection are integrated in subsequent stages.
+overlays and LAN service projection have their own policy and runtime layers.
 
 ## Verification
 

@@ -246,7 +246,7 @@ func (e *Engine) feasible(r *candidate) bool {
 	return s == nil || newer(r.seq, s.seq) || (r.seq == s.seq && r.advertised < s.metric)
 }
 func (e *Engine) metric(r *candidate) uint16 {
-	if e.cfg.AcceptRoute != nil && !e.cfg.AcceptRoute(r.id, r.prefix) {
+	if !e.acceptRouteUpdate(r.id, r.prefix, r.seq) {
 		return Infinity
 	}
 	return sum(r.advertised, e.cost(e.links[r.link]))
@@ -257,6 +257,11 @@ func (e *Engine) helloInterval(l *linkState) time.Duration {
 		return l.HelloInterval
 	}
 	return e.cfg.HelloInterval
+}
+
+func (e *Engine) acceptRouteUpdate(id RouterID, prefix netip.Prefix, seq uint16) bool {
+	return (e.cfg.AcceptRoute == nil || e.cfg.AcceptRoute(id, prefix)) &&
+		(e.cfg.AcceptRouteUpdate == nil || e.cfg.AcceptRouteUpdate(id, prefix, seq))
 }
 
 func (e *Engine) receive(l *linkState, m wireMessage) {
@@ -299,6 +304,9 @@ func (e *Engine) receive(l *linkState, m wireMessage) {
 }
 
 func (e *Engine) update(l *linkState, m wireMessage) {
+	// Retractions withdraw only this neighbour's candidate. They carry no
+	// authenticated origin claim and must remain usable after policy expiry.
+	// A neighbour can equally withdraw its path by closing the link.
 	if m.Wildcard {
 		for k, r := range e.routes {
 			if k.link == l.ID {
@@ -319,7 +327,7 @@ func (e *Engine) update(l *linkState, m wireMessage) {
 		e.counters.Rejected++
 		return
 	}
-	if e.cfg.AcceptRoute != nil && !e.cfg.AcceptRoute(RouterID(m.RouterID), m.Prefix) {
+	if !e.acceptRouteUpdate(RouterID(m.RouterID), m.Prefix, m.Seqno) {
 		e.counters.Rejected++
 		return
 	}

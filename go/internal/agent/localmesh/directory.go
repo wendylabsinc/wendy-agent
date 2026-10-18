@@ -24,21 +24,22 @@ const (
 	MaxManifestBytes = 32768
 	MaxLease         = 2 * time.Minute
 	manifestDomain   = "wendy-local-mesh/manifest/2\x00"
+	// ManifestVersionRoute binds a route origin to the signed device lease.
+	ManifestVersionRoute = 2
 )
 
-// Manifest is a device's own advertisement. It names the device by its UUID -
-// the same 16 bytes as the last ten bytes of its mesh address - and carries no
-// organization number, asset number, or origin proof: admission to the mesh is
-// the authenticated link, not this document.
+// Manifest is a device's own signed advertisement. Version 1 advertises directory
+// presence only; version 2 also authorizes one exact route origin for its lease.
 type Manifest struct {
 	Version int       `json:"version"`
 	Device  uuid.UUID `json:"device"`
 	// Revision is a persistently increasing origin counter, including restart.
 	Revision        uint64 `json:"revision"`
 	Issued, Expires int64
-	Name            string `json:"name"`
-	AgentPort       uint16 `json:"agentPort"`
-	Withdraw        bool   `json:"withdraw,omitempty"`
+	Name            string       `json:"name"`
+	AgentPort       uint16       `json:"agentPort"`
+	Withdraw        bool         `json:"withdraw,omitempty"`
+	Route           *RouteOrigin `json:"route,omitempty"`
 }
 
 // SignedManifest is a manifest plus the full device principal of the identity
@@ -66,10 +67,13 @@ func (m Manifest) validate(now time.Time) error {
 	if !expires.After(now) {
 		return ErrExpiredManifest
 	}
-	if m.Version != 1 || m.Revision == 0 ||
+	if (m.Version != 1 && m.Version != ManifestVersionRoute) || m.Revision == 0 ||
 		issued.After(now.Add(5*time.Second)) || !expires.After(issued) || expires.Sub(issued) > MaxLease ||
 		len(m.Name) > 255 || (!m.Withdraw && m.AgentPort == 0) {
 		return errors.New("invalid or expired wendy net manifest")
+	}
+	if (m.Version == 1 && m.Route != nil) || (m.Version == ManifestVersionRoute && m.Route == nil) {
+		return errors.New("manifest version does not match route authorization")
 	}
 	return nil
 }
@@ -106,6 +110,9 @@ func SignManifest(m Manifest, chain [][]byte, signer crypto.Signer, now time.Tim
 	if device.UUID() != m.Device {
 		return out, errors.New("manifest identity mismatch")
 	}
+	if err := m.validateRoute(device); err != nil {
+		return out, err
+	}
 	out.Principal = device.Principal()
 	body, err := json.Marshal(m)
 	if err != nil {
@@ -135,6 +142,10 @@ type directoryEntry struct {
 	// Tombstones and superseded versions live for a full maximum lease from
 	// admission, so removing a short-lived update cannot resurrect an older one.
 	retainUntil time.Time
+	// activeUntil retains now's monotonic clock reading when Accept receives one.
+	// A wall-clock rollback must not extend a lease already accepted in-process.
+	activeUntil time.Time
+	expired     bool
 }
 
 type Directory struct {
@@ -145,6 +156,9 @@ type Directory struct {
 	entries map[string]directoryEntry
 	history map[string]DirectoryReceipt
 	persist func([]DirectoryReceipt) error
+	// Keep observed wall time after replay tombstones are pruned. Otherwise a
+	// later clock rollback could make a discarded signed lease appear current.
+	wallHighWater time.Time
 }
 
 // DirectoryReceipt is durable replay protection, not cached presence.
@@ -221,6 +235,9 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 	if m.Device != device.UUID() {
 		return false, errors.New("manifest identity mismatch")
 	}
+	if err := m.validateRoute(device); err != nil {
+		return false, err
+	}
 	if time.UnixMilli(m.Expires).After(id.NotAfter) {
 		return false, ErrManifestOutlivesCertificate
 	}
@@ -235,6 +252,10 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 	hash := manifestHash(w.Body)
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.expireLocked(now)
+	if !time.UnixMilli(m.Expires).After(d.wallHighWater) {
+		return false, ErrExpiredManifest
+	}
 	for principal, e := range d.entries {
 		if !e.retainUntil.After(now) {
 			delete(d.entries, principal)
@@ -284,7 +305,13 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 	if _, ok := next[device.Principal()]; !ok && len(next) >= d.limit {
 		return false, errors.New("directory receipt capacity reached")
 	}
-	next[device.Principal()] = DirectoryReceipt{Device: device.Principal(), Revision: m.Revision, Hash: hash, Until: now.Add(MaxLease + 5*time.Second)}
+	receipt := DirectoryReceipt{Device: device.Principal(), Revision: m.Revision, Hash: hash, Until: d.wallHighWater.Add(MaxLease + 5*time.Second)}
+	if old, ok := next[device.Principal()]; ok && old.Revision == m.Revision && old.Hash == hash {
+		// Replaying the same record after restart restores only its original
+		// absolute lease and receipt lifetime, never a fresh lease.
+		receipt = old
+	}
+	next[device.Principal()] = receipt
 	if d.persist != nil {
 		all := make([]DirectoryReceipt, 0, len(next))
 		for _, r := range next {
@@ -296,6 +323,7 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 		}
 	}
 	d.history = next
+<<<<<<< HEAD
 	d.entries[device.Principal()] = directoryEntry{manifest: m, wire: w, hash: hash, signature: binding, retainUntil: now.Add(MaxLease + 5*time.Second)}
 	return true, nil
 }
@@ -372,6 +400,28 @@ func (d *Directory) currentEntryChain(principal string, e directoryEntry, now ti
 		return nil, false
 	}
 	return chain, true
+=======
+	d.entries[device.Principal()] = directoryEntry{
+		manifest: m, wire: w, hash: hash, retainUntil: receipt.Until,
+		activeUntil: now.Add(time.UnixMilli(m.Expires).Sub(d.wallHighWater)),
+	}
+	return true, nil
+}
+
+// expireLocked remembers observed wall time independently of tombstone retention
+// and monotonic lease deadlines. A rollback cannot revive a pruned signed lease.
+func (d *Directory) expireLocked(now time.Time) {
+	wallNow := now.Round(0)
+	if wallNow.After(d.wallHighWater) {
+		d.wallHighWater = wallNow
+	}
+	for principal, e := range d.entries {
+		if !e.expired && (!e.activeUntil.After(now) || !time.UnixMilli(e.manifest.Expires).After(d.wallHighWater)) {
+			e.expired = true
+			d.entries[principal] = e
+		}
+	}
+>>>>>>> 942431181 (mesh: authorize route origins with expiring device signatures)
 }
 
 func manifestHash(body []byte) string {
@@ -384,14 +434,19 @@ func manifestHash(body []byte) string {
 func (d *Directory) Snapshot(now time.Time) []Manifest {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.expireLocked(now)
 	out := []Manifest{}
 	for principal, e := range d.entries {
 		m := e.manifest
-		if m.Withdraw || !time.UnixMilli(m.Expires).After(now) {
+		if m.Withdraw || e.expired {
 			continue
 		}
 		if _, ok := d.currentEntryChain(principal, e, now); !ok {
 			continue
+		}
+		if m.Route != nil {
+			route := *m.Route
+			m.Route = &route
 		}
 		out = append(out, m)
 	}
@@ -404,9 +459,15 @@ func (d *Directory) Snapshot(now time.Time) []Manifest {
 func (d *Directory) Records(now time.Time) []SignedManifest {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.expireLocked(now)
 	out := []SignedManifest{}
+<<<<<<< HEAD
 	for principal, e := range d.entries {
 		if _, ok := d.currentEntryChain(principal, e, now); !ok {
+=======
+	for _, e := range d.entries {
+		if e.expired {
+>>>>>>> 942431181 (mesh: authorize route origins with expiring device signatures)
 			continue
 		}
 		w := e.wire

@@ -13,6 +13,7 @@ import (
 
 type routingRecorder struct {
 	calls     []string
+	routes    []babel.Route
 	datagrams []babel.Datagram
 	sent      []babel.Datagram
 	failure   string
@@ -25,7 +26,10 @@ func (r *routingRecorder) call(s string) error {
 	}
 	return nil
 }
-func (r *routingRecorder) Apply([]babel.Route) error      { return r.call("apply") }
+func (r *routingRecorder) Apply(routes []babel.Route) error {
+	r.routes = append([]babel.Route(nil), routes...)
+	return r.call("apply")
+}
 func (r *routingRecorder) Persist(babel.Checkpoint) error { return r.call("persist") }
 func (r *routingRecorder) Resume() error                  { return r.call("resume") }
 func (r *routingRecorder) Stop() error                    { return r.call("stop") }
@@ -53,9 +57,9 @@ func newMeshDevice(t *testing.T, principal string, macLast byte) meshDevice {
 	return meshDevice{device: device, prefix: netip.PrefixFrom(device.MeshAddress(), 128), routerID: routerID}
 }
 
-// meshConfig admits only individual device addresses in the wendy net pool.
-// The claimed origin router ID is not authenticated at this layer.
-func meshConfig(self meshDevice) babel.Config {
+// genericMeshConfig exercises the routing adapter without production origin
+// authorization. Signed-origin integration is covered in signed_route_routing_test.go.
+func genericMeshConfig(self meshDevice) babel.Config {
 	return babel.Config{
 		RouterID:       self.routerID,
 		HelloInterval:  time.Second,
@@ -69,7 +73,7 @@ func TestRoutingBarrierFailureStops(t *testing.T) {
 	for _, failure := range []string{"apply", "persist", "resume"} {
 		t.Run(failure, func(t *testing.T) {
 			io := &routingRecorder{failure: failure}
-			r, err := NewRouting(meshConfig(self), nil, io)
+			r, err := NewRouting(genericMeshConfig(self), nil, io)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +99,7 @@ func TestRoutingBarrierFailureStops(t *testing.T) {
 func TestRoutingPersistsBeforeResumeAndSend(t *testing.T) {
 	self := newMeshDevice(t, testPrincipal(testTenantUUID, testDeviceAID), 1)
 	io := &routingRecorder{}
-	r, _ := NewRouting(meshConfig(self), nil, io)
+	r, _ := NewRouting(genericMeshConfig(self), nil, io)
 	if err := r.Step(0, babel.Originate{Prefix: self.prefix}); err != nil {
 		t.Fatal(err)
 	}
@@ -219,15 +223,13 @@ func TestUsableMACExcludesUnusableAddresses(t *testing.T) {
 	}
 }
 
-// TestRouteAdmissionAcceptsPeerMeshRouteWithoutManifest is the Stage 3 rule: a
-// route to a mesh address advertised by a peer is installed on the strength of
-// the admitted link. No manifest, no signed origin claim and no address-allocation
-// proof is consulted anywhere in this test - there is no Directory in it at all.
-func TestRouteAdmissionAcceptsPeerMeshRouteWithoutManifest(t *testing.T) {
+// The generic routing adapter can run with no origin policy. Production Node
+// supplies the signed-origin policy and does not use this permissive fixture.
+func TestGenericRoutingAdapterAcceptsPeerMeshRoute(t *testing.T) {
 	self := newMeshDevice(t, testPrincipal(testTenantUUID, testDeviceAID), 1)
 	peer := newMeshDevice(t, testPrincipal(testTenantUUID, testDeviceBID), 2)
 	io := &routingRecorder{}
-	r, err := NewRouting(meshConfig(self), nil, io)
+	r, err := NewRouting(genericMeshConfig(self), nil, io)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,9 +255,9 @@ func TestRouteAdmissionAcceptsPeerMeshRouteWithoutManifest(t *testing.T) {
 	}
 }
 
-// Foreign prefixes and aggregates cannot become device reachability, even when
-// advertised over an admitted peer link.
-func TestRouteAdmissionRefusesPrefixesOutsideThePool(t *testing.T) {
+// The structural filter accepts only mesh host routes. Signed ownership is a
+// separate production policy applied after this boundary.
+func TestRouteAdmissionRefusesNonMeshHostPrefixes(t *testing.T) {
 	self := newMeshDevice(t, testPrincipal(testTenantUUID, testDeviceAID), 1)
 	peer := newMeshDevice(t, testPrincipal(testTenantUUID, testDeviceBID), 2)
 	for _, tc := range []struct {
@@ -264,16 +266,16 @@ func TestRouteAdmissionRefusesPrefixesOutsideThePool(t *testing.T) {
 	}{
 		{"prefix outside the wendy net pool", netip.MustParsePrefix("2001:db8:445::1/128")},
 		{"another ULA pool", netip.MustParsePrefix("fd00::445:1/128")},
-		{"the wendy net pool itself", netip.MustParsePrefix("fd45:b891:567f::/48")},
-		{"half the device pool", netip.MustParsePrefix("fd45:b891:567f::/49")},
-		{"an in-pool subnet", netip.MustParsePrefix("fd45:b891:567f:1::/64")},
-		{"two device addresses", netip.MustParsePrefix("fd45:b891:567f::/127")},
-		{"a block wider than the wendy net pool", netip.MustParsePrefix("fd45:b891:5600::/40")},
+		{"contained aggregate", netip.MustParsePrefix("fd45:b891:567f:1::/64")},
+		{"narrow aggregate", netip.MustParsePrefix("fd45:b891:567f::2/127")},
+		{"half the mesh pool", netip.MustParsePrefix("fd45:b891:567f::/49")},
+		{"the mesh pool itself", netip.MustParsePrefix("fd45:b891:567f::/48")},
+		{"a block wider than the mesh pool", netip.MustParsePrefix("fd45:b891:5600::/40")},
 		{"default route", netip.MustParsePrefix("::/0")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			io := &routingRecorder{}
-			r, err := NewRouting(meshConfig(self), nil, io)
+			r, err := NewRouting(genericMeshConfig(self), nil, io)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -288,8 +290,8 @@ func TestRouteAdmissionRefusesPrefixesOutsideThePool(t *testing.T) {
 	}
 }
 
-// TestAdmittedPrefixPoolBoundary checks the device address pool and host width.
-func TestAdmittedPrefixPoolBoundary(t *testing.T) {
+// The structural boundary permits exact device addresses only.
+func TestAdmittedPrefixRequiresMeshHostRoute(t *testing.T) {
 	for _, tc := range []struct {
 		prefix netip.Prefix
 		want   bool
@@ -297,6 +299,8 @@ func TestAdmittedPrefixPoolBoundary(t *testing.T) {
 		{netip.MustParsePrefix("fd45:b891:567f:4000:8000::445/128"), true},
 		{netip.MustParsePrefix("fd45:b891:567f:1::/64"), false},
 		{netip.MustParsePrefix("fd45:b891:567f::/49"), false},
+		{netip.MustParsePrefix("fd45:b891:567f::2/127"), false},
+		{netip.Prefix{}, false},
 		{netip.MustParsePrefix("fd45:b891:567f::/48"), false},
 		{netip.MustParsePrefix("fd45:b891:5600::/40"), false},
 		{netip.MustParsePrefix("fd00::445:1/128"), false},
@@ -355,7 +359,7 @@ func peerOriginate(t *testing.T, engine *babel.Engine, at time.Duration, prefix 
 // wire decoder still decide what is even parsed, before any policy runs.
 func TestRoutingIgnoresOversizedAndMalformedUpdates(t *testing.T) {
 	self := newMeshDevice(t, testPrincipal(testTenantUUID, testDeviceAID), 1)
-	r, err := NewRouting(meshConfig(self), nil, &routingRecorder{})
+	r, err := NewRouting(genericMeshConfig(self), nil, &routingRecorder{})
 	if err != nil {
 		t.Fatal(err)
 	}
