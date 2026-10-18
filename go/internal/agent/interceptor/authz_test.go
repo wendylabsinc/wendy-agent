@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"math/big"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -230,5 +231,44 @@ func TestAuthorizerReadsKeysPerCall(t *testing.T) {
 	}
 	if _, err := a.Authorize(ctx, mShell); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("operator after removal = %v, want PermissionDenied", err)
+	}
+}
+
+// A key removed while its holder keeps a connection (live or resumed) must not
+// fall through to the legacy no-tenant path that grace/off org modes admit.
+func TestRemovedKeyDoesNotFallBackToLegacyAccess(t *testing.T) {
+	store, _ := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	ownerKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	viewerKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	ownerSPKI, _ := x509.MarshalPKIXPublicKey(ownerKey.Public())
+	viewerSPKI, _ := x509.MarshalPKIXPublicKey(viewerKey.Public())
+	store.Add(ownerSPKI, trustedkeys.RoleOwner, "", trustedkeys.AddedByInstall, time.Now())
+	store.Add(viewerSPKI, trustedkeys.RoleViewer, "", trustedkeys.Fingerprint(ownerSPKI), time.Now())
+
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Minute),
+		NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, viewerKey.Public(), viewerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(der)
+	ctx := ctxWithLeaf(leaf)
+	if _, err := store.Remove(trustedkeys.Fingerprint(viewerSPKI)); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []OrgMode{OrgModeGrace, OrgModeOff} {
+		a := Authorizer{Logger: zap.NewNop(), Listener: ListenerMTLS, Keys: store, Expected: certs.Scope{OrgID: 5}, OrgMode: mode}
+		if _, err := a.Authorize(ctx, mShell); status.Code(err) != codes.PermissionDenied {
+			t.Errorf("mode %s: removed key = %v, want PermissionDenied", mode, err)
+		}
+	}
+}
+
+func TestSignerCertificatesHaveNoAccess(t *testing.T) {
+	store, _ := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	signer := leafWithKey(newKey(t), "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/signer/ci")
+	a := Authorizer{Logger: zap.NewNop(), Listener: ListenerMTLS, Keys: store, OrgMode: OrgModeOff}
+	if _, err := a.Authorize(ctxWithLeaf(signer), mVersion); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("signer certificate = %v, want PermissionDenied", err)
 	}
 }

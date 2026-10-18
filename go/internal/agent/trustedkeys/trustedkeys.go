@@ -102,6 +102,15 @@ type Store struct {
 	entries []Entry
 }
 
+// SelfSigned reports whether leaf is signed by its own key — the shape of a
+// local operator certificate. The mTLS listener accepts a local operator
+// certificate only when it is self-signed, so a self-signed certificate that
+// names no tenant and whose key is not (or no longer) trusted is refused
+// everywhere instead of being mistaken for a legacy CA-issued certificate.
+func SelfSigned(leaf *x509.Certificate) bool {
+	return leaf.CheckSignature(leaf.SignatureAlgorithm, leaf.RawTBSCertificate, leaf.Signature) == nil
+}
+
 // Fingerprint returns "sha256:<hex>" of a SubjectPublicKeyInfo DER.
 func Fingerprint(spki []byte) string {
 	sum := sha256.Sum256(spki)
@@ -149,6 +158,9 @@ func (s *Store) reload() error {
 	if fi.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("%s is writable by group or others (mode %#o); refusing to trust it", s.path, fi.Mode().Perm())
 	}
+	if err := checkOwner(fi); err != nil {
+		return fmt.Errorf("%s: %w", s.path, err)
+	}
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", s.path, err)
@@ -167,6 +179,9 @@ func parse(data []byte) ([]Entry, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("parsing trusted keys: %w", err)
+	}
+	if dec.More() {
+		return nil, errors.New("parsing trusted keys: trailing data after the JSON object")
 	}
 	seen := make(map[string]bool, len(f.Keys))
 	for i := range f.Keys {

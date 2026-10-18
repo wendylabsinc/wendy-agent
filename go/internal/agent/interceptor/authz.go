@@ -159,21 +159,38 @@ func (a *Authorizer) identify(ctx context.Context) (Principal, error) {
 		// is trusted. A key never lifts a certificate that names a tenant
 		// into a local role, and a local key never carries a tenant identity
 		// (the handshake refuses self-issued certificates that name one).
-		if role, fp := a.Keys.Lookup(leaf.RawSubjectPublicKeyInfo); role != trustedkeys.RoleNone {
+		role, fp := a.Keys.Lookup(leaf.RawSubjectPublicKeyInfo)
+		if role != trustedkeys.RoleNone {
 			if !hasEKU(leaf, x509.ExtKeyUsageClientAuth) {
 				return Principal{}, status.Error(codes.Unauthenticated, "certificate is not valid for client authentication")
 			}
 			return Principal{Kind: KindLocalKey, Role: role, Fingerprint: fp}, nil
+		}
+		// A self-signed certificate got here as a local operator whose key
+		// has since been removed (live connection or resumed session). It
+		// must not fall through to the legacy no-tenant path that grace/off
+		// org modes allow.
+		if trustedkeys.SelfSigned(leaf) {
+			a.Logger.Warn("rejected self-signed certificate whose key is not trusted",
+				zap.String("fingerprint", fp), zap.String("remote", peerAddr(ctx)))
+			return Principal{}, status.Error(codes.PermissionDenied, "key is not trusted")
 		}
 	}
 	if err := CheckMTLS(ctx, a.Logger, a.Expected, a.OrgMode); err != nil {
 		return Principal{}, err
 	}
 	fp := trustedkeys.Fingerprint(leaf.RawSubjectPublicKeyInfo)
-	if hasIdent && ident.EntityType == certs.EntityAsset {
+	switch {
+	case !hasIdent:
+		// Legacy certificate without a tenant, admitted by grace/off mode.
+		return Principal{Kind: KindTenantUser, Role: trustedkeys.RoleOperator, Fingerprint: fp}, nil
+	case ident.EntityType == certs.EntityUser:
+		return Principal{Kind: KindTenantUser, Role: trustedkeys.RoleOperator, Fingerprint: fp}, nil
+	case ident.EntityType == certs.EntityAsset:
 		return Principal{Kind: KindPeerDevice, Fingerprint: fp}, nil
+	default:
+		return Principal{}, status.Errorf(codes.PermissionDenied, "certificate entity type %q has no access to the agent", ident.EntityType)
 	}
-	return Principal{Kind: KindTenantUser, Role: trustedkeys.RoleOperator, Fingerprint: fp}, nil
 }
 
 func peerLeaf(ctx context.Context) (*x509.Certificate, error) {

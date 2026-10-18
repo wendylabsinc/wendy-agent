@@ -119,6 +119,7 @@ func TestUnusableFileIsAnError(t *testing.T) {
 		mode os.FileMode
 	}{
 		"not json":        {"{", 0o600},
+		"trailing data":   {`{"keys":[]} {"keys":[]}`, 0o600},
 		"unknown field":   {`{"keys":[],"allow_all":true}`, 0o600},
 		"bad role":        {`{"keys":[{"public_key":"` + pemOf(t) + `","role":"admin"}]}`, 0o600},
 		"bad key":         {`{"keys":[{"public_key":"nope","role":"owner"}]}`, 0o600},

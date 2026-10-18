@@ -1329,11 +1329,6 @@ func main() {
 	logger.Info("wendy-agent stopped")
 }
 
-// certNotBeforeFloor parses the device's own provisioning cert and returns its
-// NotBefore time to use as a lower bound on time.Now() during mTLS cert
-// verification. This lets the device accept legitimate client certs even when
-// the system clock has not yet been synchronised via NTP (e.g. after a power
-// cycle without WiFi). Returns a zero time.Time if the cert cannot be parsed.
 // checkLocalAccessMode validates WENDY_LOCAL_ACCESS: "" or "auto" (today's
 // behaviour unless a trusted-keys file is present) or "required" (no start
 // without an owner key). Any other value refuses to start: a setting meant to
@@ -1377,6 +1372,11 @@ func mustMapEveryMethod(logger *zap.Logger, srv *grpc.Server) {
 	}
 }
 
+// certNotBeforeFloor parses the device's own provisioning cert and returns its
+// NotBefore time to use as a lower bound on time.Now() during mTLS cert
+// verification. This lets the device accept legitimate client certs even when
+// the system clock has not yet been synchronised via NTP (e.g. after a power
+// cycle without WiFi). Returns a zero time.Time if the cert cannot be parsed.
 func certNotBeforeFloor(certPEM string) time.Time {
 	if certPEM == "" {
 		return time.Time{}

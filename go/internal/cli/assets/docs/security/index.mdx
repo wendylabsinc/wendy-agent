@@ -55,8 +55,8 @@ communication moves to mTLS on port 50052, and the plaintext port is shut down.
 
 A device can be operated without Wendy Cloud or pki-core. The device keeps a list of trusted
 operator public keys in `/etc/wendy-agent/trusted-keys.json` (mode `0600`). The CLI presents its
-own key pair in a certificate it signed itself; the agent accepts that certificate on the mTLS
-port when the key is on the list. There is no chain, issuer or network lookup. The agent logs the
+own key pair in a certificate signed by that same key; the agent accepts that certificate on the
+mTLS port when the key is on the list. There is no chain, issuer or network lookup. The agent logs the
 key's fingerprint (`sha256:` + hex SHA-256 of the public key) on every accepted handshake.
 
 Each key has one role:
@@ -73,7 +73,9 @@ Each key has one role:
   start if it serves an RPC without a role.
 - **Owners manage keys.** Only an owner key can add, list or remove keys. Every change is
   written to the agent log with the acting key's fingerprint. The last owner key cannot be
-  removed. If the last owner key is lost, reinstall the device.
+  removed. If the last owner key is lost, reinstall the device. A removed key is refused on its
+  next call and cannot resume a TLS session, but a shell or tunnel it already has open keeps
+  running until it closes.
 - **Local and cloud identities stay apart.** A self-issued certificate that names a tenant is
   refused. A cloud-issued certificate never gets owner rights, even when its key is also on the
   list: on an enrolled device, tenant operators get `operator`, and they can still unenroll the

@@ -273,3 +273,41 @@ func TestEnrolledDeviceKeepsChainPathBesideLocalKeys(t *testing.T) {
 		}
 	}
 }
+
+// Resumed sessions skip VerifyPeerCertificate but run VerifyConnection: a key
+// removed after the first handshake must not resume (the registry has no
+// per-request check), and a trusted key must sign its own certificate.
+func TestLocalOperatorRecheckedOnResumeAndMustBeSelfSigned(t *testing.T) {
+	keys, _ := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	owner, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	op, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	keys.Add(spkiOf(t, owner), trustedkeys.RoleOwner, "", trustedkeys.AddedByInstall, time.Now())
+	keys.Add(spkiOf(t, op), trustedkeys.RoleOperator, "", trustedkeys.AddedByInstall, time.Now())
+	registry := localOnlyServer(t, keys, true)
+
+	opLeaf, _ := x509.ParseCertificate(selfIssued(t, op, selfIssuedOpts{}).Certificate[0])
+	resumed := tls.ConnectionState{DidResume: true, PeerCertificates: []*x509.Certificate{opLeaf}}
+	if err := registry.VerifyConnection(resumed); err != nil {
+		t.Fatalf("resume with a trusted operator key: %v", err)
+	}
+	if _, err := keys.Remove(trustedkeys.Fingerprint(spkiOf(t, op))); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.VerifyConnection(resumed); err == nil {
+		t.Fatal("removed key resumed a registry session")
+	}
+
+	// The owner's key in a certificate signed by some other key.
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "x"},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, owner.Public(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := localOnlyServer(t, keys, false)
+	if err := server.VerifyPeerCertificate([][]byte{der}, nil); err == nil {
+		t.Fatal("accepted a trusted key in a certificate it did not sign")
+	}
+}

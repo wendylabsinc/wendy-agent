@@ -74,6 +74,11 @@ func newLocalOperatorTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Log
 			return fmt.Errorf("parsing client certificate: %w", err)
 		}
 		if role, fp, local := localOperator(leaf, keys); local {
+			if !trustedkeys.SelfSigned(leaf) {
+				err := errors.New("local operator certificate must be self-signed")
+				logCertRejection(logger, leaf, err, time.Now(), time.Now())
+				return err
+			}
 			if role < minRole {
 				err := fmt.Errorf("trusted key role %s cannot use this listener (needs %s)", role, minRole)
 				logCertRejection(logger, leaf, err, time.Now(), time.Now())
@@ -94,17 +99,30 @@ func newLocalOperatorTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Log
 		}
 		return chainVerify(rawCerts, chains)
 	}
-	if previous := cfg.VerifyConnection; previous != nil {
-		// The direct-PKI tenant-prefix check applies to chain certificates;
-		// a local operator certificate names no tenant by construction.
-		cfg.VerifyConnection = func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) > 0 {
-				if _, _, local := localOperator(cs.PeerCertificates[0], keys); local {
-					return nil
+	// VerifyConnection also runs on resumed sessions, where
+	// VerifyPeerCertificate does not: re-check the key so a removed (or
+	// demoted) key cannot resume, which matters for the registry, which has
+	// no per-request check. The direct-PKI tenant-prefix check (previous)
+	// applies to chain certificates; a local operator certificate names no
+	// tenant by construction.
+	previous := cfg.VerifyConnection
+	cfg.VerifyConnection = func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) > 0 {
+			leaf := cs.PeerCertificates[0]
+			if role, _, local := localOperator(leaf, keys); local {
+				if role < minRole {
+					return fmt.Errorf("trusted key role %s cannot use this listener (needs %s)", role, minRole)
 				}
+				return nil
 			}
+			if _, found, err := certs.IdentityFromCert(leaf); !found && err == nil && trustedkeys.SelfSigned(leaf) {
+				return errors.New("client certificate key is not trusted")
+			}
+		}
+		if previous != nil {
 			return previous(cs)
 		}
+		return nil
 	}
 	return cfg, nil
 }
