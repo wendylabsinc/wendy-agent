@@ -79,6 +79,10 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	if err != nil {
 		return err
 	}
+	trustedKeys, err := resolveTrustedKeysSeed(opts.PreEnroll.localAccess, os.Stdout)
+	if err != nil {
+		return err
+	}
 
 	if err := confirmOrinReady(opts); err != nil {
 		return err
@@ -161,7 +165,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 			if err != nil {
 				return false, err
 			}
-			if err := injectRecoveryConfig(filepath.Join(workspace, configRel), creds, name, provJSON, out, detail); err != nil {
+			if err := injectRecoveryConfig(filepath.Join(workspace, configRel), creds, name, provJSON, trustedKeys, out, detail); err != nil {
 				return false, err
 			}
 			flashPlan, err = t234.LoadXMLPlan(layoutPath, workspace, fp.Manifest.RootfsDevice)
@@ -365,7 +369,7 @@ func prepareT234Workspace(fp *flashpack.Flashpack) (workspace, layoutPath string
 	return workspace, filepath.Join(workspace, layoutRel), nil
 }
 
-func injectRecoveryConfig(imagePath string, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte, out io.Writer, detail func(string)) error {
+func injectRecoveryConfig(imagePath string, creds []wendyconf.WifiCredential, deviceName string, provJSON, trustedKeys []byte, out io.Writer, detail func(string)) error {
 	detail("downloading agent")
 	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
@@ -382,7 +386,7 @@ func injectRecoveryConfig(imagePath string, creds []wendyconf.WifiCredential, de
 	if err != nil {
 		return fmt.Errorf("reading config filesystem: %w", err)
 	}
-	return writeConfigFilesTo(fatWriter{fsys}, agentBinary, creds, deviceName, provJSON)
+	return writeConfigFilesTo(fatWriter{fsys}, agentBinary, creds, deviceName, provJSON, trustedKeys)
 }
 
 func t234RCMFiles(fp *flashpack.Flashpack) (order []string, memBCT, blob string, err error) {

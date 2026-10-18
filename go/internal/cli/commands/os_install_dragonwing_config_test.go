@@ -23,7 +23,7 @@ func buildTestConfigImage(t *testing.T, creds []wendyconf.WifiCredential, name s
 	if err != nil {
 		t.Fatalf("creating config image: %v", err)
 	}
-	if err := writeConfigFilesTo(fatWriter{fs}, []byte("\x7fELF-opaque"), creds, name, prov); err != nil {
+	if err := writeConfigFilesTo(fatWriter{fs}, []byte("\x7fELF-opaque"), creds, name, prov, nil); err != nil {
 		t.Fatalf("seeding config image: %v", err)
 	}
 	if err := d.Close(); err != nil {

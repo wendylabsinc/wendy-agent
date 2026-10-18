@@ -51,6 +51,10 @@ The install is refused if the target directory sits on a merged systemd-sysext o
 
 `wendy install` writes the latest stable arm64 agent binary to the config partition automatically after flashing. If this write fails, `wendy install` warns rather than aborting (unless WiFi, device-name, or pre-enroll provisioning was explicitly requested — then the install exits non-zero, see [wendy.conf](#wendyconf)) — the device still boots using the agent baked into the image and fetches updates after first boot.
 
+## Owner keys (`trusted-keys.json`)
+
+`wendy install` writes the public keys that will own the device to `trusted-keys.json`. On boot, the agent copies the file to `/etc/wendy-agent/trusted-keys.json` (`0600`), records that the device requires local access, and deletes the seed. If the device already has a trusted-keys file, the agent deletes the seed without using it, so writing this file to the partition cannot add an owner to a device that already has one. See [Your key is the device's first owner key](../clients/wendy-cli/commands/os/install.md#your-key-is-the-devices-first-owner-key).
+
 ## Driver add-ons (`extensions.json`)
 
 A file named `extensions.json` in `/config` seeds kernel driver add-ons at first boot,

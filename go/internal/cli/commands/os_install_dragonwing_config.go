@@ -82,7 +82,7 @@ func newConfigFS(path string, size int64, sectorSize int64) (*disk.Disk, filesys
 // its descriptor declares the partition with an empty filename — so unlike Thor
 // and Orin the host has to make one.
 func buildDragonwingConfigImage(dir string, plan *qdl.FlashPlan, agent []byte,
-	creds []wendyconf.WifiCredential, deviceName string, provJSON []byte) (string, error) {
+	creds []wendyconf.WifiCredential, deviceName string, provJSON, trustedKeys []byte) (string, error) {
 	declared, err := plan.Declared(dragonwingConfigLabel)
 	if err != nil {
 		return "", err
@@ -95,7 +95,7 @@ func buildDragonwingConfigImage(dir string, plan *qdl.FlashPlan, agent []byte,
 	if err != nil {
 		return "", err
 	}
-	if err := writeConfigFilesTo(fatWriter{fs}, agent, creds, deviceName, provJSON); err != nil {
+	if err := writeConfigFilesTo(fatWriter{fs}, agent, creds, deviceName, provJSON, trustedKeys); err != nil {
 		_ = d.Close()
 		return "", err
 	}

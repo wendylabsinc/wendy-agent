@@ -17,6 +17,9 @@ import (
 type preEnrollOptions struct {
 	mode      preEnrollMode
 	cloudGRPC string // --cloud-grpc: auth session to enroll with when several exist
+	// localAccess rides here because every image family already receives
+	// preOpts; it decides the owner keys seeded next to the enrollment.
+	localAccess localAccessOptions
 }
 
 // skipEnrollmentValue is the picker value for the explicit skip option.

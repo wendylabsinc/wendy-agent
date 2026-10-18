@@ -672,3 +672,60 @@ func TestUpdateOrgIDTXTRecord(t *testing.T) {
 		t.Fatalf("orgid record not replaced idempotently: %q", got2)
 	}
 }
+
+func TestApplyTrustedKeysSeed_InstallsAndRequiresLocalAccess(t *testing.T) {
+	cfgDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "wendy-agent")
+	seed := []byte(`{"keys":[]}` + "\n")
+	if err := os.WriteFile(filepath.Join(cfgDir, trustedKeysFile), seed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	applyTrustedKeysSeed(zap.NewNop(), cfgDir, configPath)
+
+	dst := filepath.Join(configPath, trustedKeysFile)
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("trusted keys not installed: %v", err)
+	}
+	if !bytes.Equal(got, seed) {
+		t.Errorf("installed %q, want %q", got, seed)
+	}
+	if fi, _ := os.Stat(dst); fi.Mode().Perm() != 0o600 {
+		t.Errorf("trusted keys mode %#o, want 0600", fi.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(cfgDir, trustedKeysFile)); !os.IsNotExist(err) {
+		t.Error("seed left on the config partition")
+	}
+	if !LocalAccessRequired(configPath) {
+		t.Error("LocalAccessRequired = false after a seed was installed")
+	}
+}
+
+func TestApplyTrustedKeysSeed_NeverReplacesExistingKeys(t *testing.T) {
+	cfgDir := t.TempDir()
+	configPath := t.TempDir()
+	existing := []byte(`{"keys":["existing"]}`)
+	if err := os.WriteFile(filepath.Join(configPath, trustedKeysFile), existing, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, trustedKeysFile), []byte(`{"keys":["attacker"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	applyTrustedKeysSeed(zap.NewNop(), cfgDir, configPath)
+
+	if got, _ := os.ReadFile(filepath.Join(configPath, trustedKeysFile)); !bytes.Equal(got, existing) {
+		t.Errorf("existing trusted keys replaced with %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(cfgDir, trustedKeysFile)); !os.IsNotExist(err) {
+		t.Error("ignored seed left on the config partition")
+	}
+}
+
+func TestLocalAccessRequired_NoMarker(t *testing.T) {
+	applyTrustedKeysSeed(zap.NewNop(), t.TempDir(), t.TempDir()) // no seed: no-op
+	if LocalAccessRequired(t.TempDir()) {
+		t.Error("LocalAccessRequired = true without a marker")
+	}
+}
