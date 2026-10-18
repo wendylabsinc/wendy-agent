@@ -2,12 +2,30 @@ package commands
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 )
+
+// The helper runs as root under sudo, where root's HOME holds no wendy config:
+// the root command's init must not create one there.
+func TestBmapWriteSkipsRootCommandInit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir consults this
+	t.Setenv("WENDY_CONFIG_DIR", "")
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"__bmap-write", "--device", filepath.Join(home, "missing"), "--bmap", "x.bmap"})
+	_ = cmd.Execute()
+	if _, err := os.Stat(filepath.Join(home, ".wendy")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("__bmap-write initialized wendy config in HOME (stat: %v)", err)
+	}
+}
 
 func TestDownloadBmap(t *testing.T) {
 	const body = `<bmap version="2.0"></bmap>`
