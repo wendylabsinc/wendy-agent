@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
-	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -59,28 +58,32 @@ func NewCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The identity's own chain must validate under current trust before this
-	// instance advertises anything.
-	if err := base.VerifyPeerCertificate(cert.Certificate, nil); err != nil {
-		return nil, err
-	}
 	signer, ok := cert.PrivateKey.(crypto.Signer)
 	if !ok {
 		return nil, errors.New("identity key cannot sign")
 	}
-	verifyChain, err := mtls.NewClientTLSConfig(certPEM, chainPEM, keyPEM, nil)
+	verifyChain, err := mtls.NewPeerCertificateVerifier(chainPEM, nil, time.Time{})
 	if err != nil {
 		return nil, err
 	}
-	trustChain, err := certs.ParseCertsFromPEM([]byte(chainPEM))
-	if err != nil {
+	// Mesh requires a verified issuer path for its own identity too. The
+	// general mTLS loopback shortcut must not extend an expired local issuer.
+	if _, err := verifyChain(cert.Certificate, time.Now()); err != nil {
 		return nil, err
 	}
 	verify := func(chain [][]byte, now time.Time) (Identity, error) {
 		if len(chain) == 0 || len(chain) > 16 {
 			return Identity{}, errors.New("invalid identity bundle")
 		}
-		if err := verifyChain.VerifyPeerCertificate(chain, nil); err != nil {
+		// Keep rejecting malformed bundle entries even when they are not
+		// needed by the selected path.
+		for _, der := range chain[1:] {
+			if _, err := x509.ParseCertificate(der); err != nil {
+				return Identity{}, err
+			}
+		}
+		expires, err := verifyChain(chain, now)
+		if err != nil {
 			return Identity{}, err
 		}
 		peerLeaf, err := x509.ParseCertificate(chain[0])
@@ -96,24 +99,6 @@ func NewCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
 		}
 		if now.Before(peerLeaf.NotBefore) || !now.Before(peerLeaf.NotAfter) {
 			return Identity{}, errors.New("wendy net identity is not currently valid")
-		}
-		expires := peerLeaf.NotAfter
-		// A peer may present an intermediate absent from our own enrollment
-		// bundle. Sessions and identity caches must end when that issuer expires,
-		// even if both leaf certificates and our local trust anchors live longer.
-		for _, der := range chain[1:] {
-			issuer, err := x509.ParseCertificate(der)
-			if err != nil {
-				return Identity{}, err
-			}
-			if issuer.NotAfter.Before(expires) {
-				expires = issuer.NotAfter
-			}
-		}
-		for _, certificate := range trustChain {
-			if certificate.NotAfter.Before(expires) {
-				expires = certificate.NotAfter
-			}
 		}
 		return Identity{Device: device, NotAfter: expires}, nil
 	}
