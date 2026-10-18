@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"crypto"
 	"errors"
 	"os"
 	"testing"
@@ -43,6 +44,9 @@ func TestMain(m *testing.M) {
 	// have it copied into deviceFlag by every test that executes the root
 	// command, and leak from there into later tests.
 	os.Unsetenv("WENDY_DEVICE")
+	// Ladder tests dial fake and unroutable endpoints; the local-operator rung
+	// would dial each of them again. Tests of that rung install a key.
+	localOperatorKeyFn = func() (crypto.Signer, error) { return nil, errors.New("no local operator key in tests") }
 	// The fake clouds these tests start are plaintext gRPC servers, so the
 	// package opts in to plaintext the same way a developer would against a
 	// local dev cloud. The TLS default itself is pinned in clouddefaults.

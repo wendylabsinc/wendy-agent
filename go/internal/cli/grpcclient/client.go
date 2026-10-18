@@ -84,6 +84,10 @@ type AgentConnection struct {
 	CertInfo       *config.CertificateInfo // cert used to establish mTLS; nil for plaintext
 	RegistryDialer func(context.Context, int) (net.Conn, error)
 	ExtraClosers   []io.Closer
+	// IsLocalOperator is true when the connection authenticated with the
+	// operator's local key against a device that is not cloud-enrolled
+	// (ConnectWithLocalKey). CertInfo is nil then.
+	IsLocalOperator bool
 	// Reconnect re-establishes a connection to the SAME device this connection
 	// targets, after the agent restarts. It is set for transports where the
 	// connection identity can't be re-derived from Host alone (e.g. the cloud
@@ -137,6 +141,12 @@ type AgentConnection struct {
 	// out of gRPC's handshake-failure string. nil for connections that never
 	// install the sink.
 	pinMismatch *atomic.Pointer[devicepin.PinMismatchError]
+	// notLocalDevice is set when a local-operator dial met a cloud-enrolled
+	// device (see NotLocalDevice). nil for every other connection.
+	notLocalDevice *atomic.Bool
+	// localDeviceVerified is set when a local-operator dial verified a
+	// local-only device's certificate (see LocalDeviceVerified).
+	localDeviceVerified *atomic.Bool
 	// tcpDial records failures before TCP connected, separately from TLS errors.
 	// nil when gRPC owns dialing, including HTTP CONNECT proxy transports.
 	tcpDial *agentTCPDialState
@@ -498,18 +508,7 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 		return nil, err
 	}
 
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-		grpc.WithInitialWindowSize(grpcInitialStreamWindow),
-		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
-		grpc.WithReadBufferSize(grpcReadBufferSize),
-		grpc.WithWriteBufferSize(grpcWriteBufferSize),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                grpcKeepaliveTime,
-			Timeout:             grpcKeepaliveTimeout,
-			PermitWithoutStream: false,
-		}),
-	}
+	opts := append(tunedDialOptions(), grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	dialOpts, tcpDial := agentTCPDialOptions(address)
 	opts = append(opts, dialOpts...)
 	conn, err := grpc.NewClient(grpcTarget(address), append(opts, extraOpts...)...)
@@ -528,6 +527,22 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 	ac.pinMismatch = pinMismatch
 	ac.tcpDial = tcpDial
 	return ac, nil
+}
+
+// tunedDialOptions are the window, buffer and keepalive settings every
+// authenticated device connection shares (see the constants above).
+func tunedDialOptions() []grpc.DialOption {
+	return []grpc.DialOption{
+		grpc.WithInitialWindowSize(grpcInitialStreamWindow),
+		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
+		grpc.WithReadBufferSize(grpcReadBufferSize),
+		grpc.WithWriteBufferSize(grpcWriteBufferSize),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                grpcKeepaliveTime,
+			Timeout:             grpcKeepaliveTimeout,
+			PermitWithoutStream: false,
+		}),
+	}
 }
 
 // grpcTarget converts a host:port address into a gRPC target string.

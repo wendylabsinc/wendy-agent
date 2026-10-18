@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
@@ -181,6 +182,36 @@ func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error
 		NotAfter:        notAfter,
 	}
 	if unchanged {
+		return nil
+	}
+	s.dirty[key] = true
+	return s.flush()
+}
+
+// LocalPinKey is the key a locally owned device's key is pinned under: the
+// name the user dials it by, since its certificate carries no identity.
+func LocalPinKey(name string) string {
+	return "local:" + strings.TrimSuffix(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), "."), ".local")
+}
+
+// CheckLocal pins the key of a device that is not cloud-enrolled (WDY-3882):
+// it serves a certificate self-signed over its device key, so the key is the
+// device's only identity. First use records it under LocalPinKey(name); a
+// later different key is always a PinMismatchError, since the device key
+// never rotates (it survives enrollment and unenrollment).
+func (s *Store) CheckLocal(name string, leaf *x509.Certificate) error {
+	key := LocalPinKey(name)
+	fingerprint := certs.SPKIFingerprint(leaf.RawSubjectPublicKeyInfo)
+	existing, pinned := s.devices[key]
+	if pinned && existing.SPKIFingerprint != fingerprint {
+		return &PinMismatchError{Key: key, DisplayName: name, Want: existing.SPKIFingerprint, Got: fingerprint}
+	}
+	s.devices[key] = PinnedDevice{
+		SPKIFingerprint: fingerprint,
+		DisplayName:     name,
+		LastSeen:        time.Now().UTC().Format(time.RFC3339),
+	}
+	if pinned {
 		return nil
 	}
 	s.dirty[key] = true
