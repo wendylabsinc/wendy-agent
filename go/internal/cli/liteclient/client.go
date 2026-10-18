@@ -181,9 +181,14 @@ func (c *WendyLiteClient) ConnectInsecureContext(ctx context.Context, address st
 }
 
 func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert tls.Certificate, rootCAs x509.CertPool) error {
+	return c.ConnectWithMutualAuthenticationContext(context.Background(), address, cert, rootCAs)
+}
+
+// ConnectWithMutualAuthenticationContext bounds the TCP, TLS, and WendyCom
+// handshakes by ctx.
+func (c *WendyLiteClient) ConnectWithMutualAuthenticationContext(ctx context.Context, address string, cert tls.Certificate, rootCAs x509.CertPool) error {
 	// Verify the certificate chain against our root CAs but skip hostname
 	// checking — devices on a local network don't have SANs.
-	var verifiedLeaf *x509.Certificate
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
 		MinVersion:         tls.VersionTLS12,
@@ -207,24 +212,10 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 			if _, err := certs[0].Verify(opts); err != nil {
 				return fmt.Errorf("server certificate verification failed: %w", err)
 			}
-			verifiedLeaf = certs[0]
 			return nil
 		},
 	}
-	conn, err := tls.Dial("tcp", address, tlsCfg)
-	if err != nil {
-		return fmt.Errorf("connect (mTLS): %w", err)
-	}
-	c.link = newDirectLink(conn)
-	err = c.handshake()
-	if err != nil {
-		c.link.close()
-		c.link = nil
-		return fmt.Errorf("handshake: %w", err)
-	}
-	c.peerCert = verifiedLeaf
-	c.startReadLoop()
-	return nil
+	return c.connectTLSContext(ctx, address, tlsCfg)
 }
 
 func (c *WendyLiteClient) ConnectToSerial(device string) error {
@@ -1198,6 +1189,12 @@ func (c *WendyLiteClient) ConnectWithPKIAuthenticationContext(ctx context.Contex
 	if err != nil {
 		return err
 	}
+	return c.connectTLSContext(ctx, address, cfg)
+}
+
+// connectTLSContext uses an already configured verifier for the TLS handshake,
+// then establishes WendyCom under the same cancellation context.
+func (c *WendyLiteClient) connectTLSContext(ctx context.Context, address string, cfg *tls.Config) error {
 	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 15 * time.Second}, Config: cfg}
 	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {

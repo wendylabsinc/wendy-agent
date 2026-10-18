@@ -360,7 +360,13 @@ public actor WendyAgent {
         // When enrolled, run mTLS on `port + 1`; otherwise plaintext on `port`.
         let certs = info.enrolled ? await provisioningService.provisioningCerts() : nil
 
-        var services: [any RegistrableRPCService] = [
+        // SECURITY: accepted risk, matching the Linux agent. Before enrollment
+        // the camera, like the other services here, is reachable without
+        // authentication by anyone who can reach the plaintext setup listener.
+        // A way to provision devices locally, so unenrolled devices can
+        // require a credential, is planned to replace this.
+        let videoService = VideoService()
+        let services: [any RegistrableRPCService] = [
             AgentService(
                 binarySHA256: self.runningExecutableSHA256,
                 updateLock: self.agentUpdateLock,
@@ -375,14 +381,8 @@ public actor WendyAgent {
             ProvisioningServiceV2(v1: provisioningService),
             TelemetryService(broadcaster: broadcaster),
             FileSyncService(appsBase: appsBase),
+            videoService,
         ]
-        let videoService = certs == nil ? nil : VideoService()
-        if let videoService {
-            // SECURITY: camera enumeration and live video are registered only on
-            // the mTLS server, whose ClientCertAuthorizer validates the caller's
-            // certificate chain and organization before dispatching any RPC.
-            services.append(videoService)
-        }
 
         let isMTLS = certs != nil
         let preferredPort = isMTLS ? self.configuration.port + 1 : self.configuration.port
@@ -419,8 +419,8 @@ public actor WendyAgent {
             self.startTunnelBroker(info: info, certs: certs, port: runtime.port)
         }
         // Management is already listening. USB restoration must not delay
-        // bringing up the authenticated management/tunnel endpoints.
-        if let videoService { await videoService.restoreCameraControls() }
+        // bringing up the management/tunnel endpoints.
+        await videoService.restoreCameraControls()
     }
 
     private func startMainServerTransport(

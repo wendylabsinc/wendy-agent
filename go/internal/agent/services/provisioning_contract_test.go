@@ -19,9 +19,14 @@ import (
 // contractStep is one row of Proto/conformance/agent-provisioning-v2, which the
 // Swift macOS agent's tests replay too.
 type contractStep struct {
-	Name     string          `json:"name"`
-	Method   string          `json:"method"`
-	Request  json.RawMessage `json:"request"`
+	Name              string                         `json:"name"`
+	Method            string                         `json:"method"`
+	Request           json.RawMessage                `json:"request"`
+	AgentExpectations map[string]contractExpectation `json:"agentExpectations"`
+	contractExpectation
+}
+
+type contractExpectation struct {
 	Code     codes.Code      `json:"code"`
 	Message  *string         `json:"message"`
 	Response json.RawMessage `json:"response"`
@@ -44,6 +49,14 @@ func TestProvisioningV2Contract(t *testing.T) {
 	ctx := context.Background()
 
 	for _, step := range contract.Steps {
+		expected := step.contractExpectation
+		if len(step.AgentExpectations) > 0 {
+			var ok bool
+			expected, ok = step.AgentExpectations["go"]
+			if !ok {
+				t.Fatalf("%s: missing Go agent expectation", step.Name)
+			}
+		}
 		var req, want proto.Message
 		var call func() (proto.Message, error)
 		switch step.Method {
@@ -79,13 +92,13 @@ func TestProvisioningV2Contract(t *testing.T) {
 
 		got, err := call()
 		st := status.Convert(err)
-		if st.Code() != step.Code || (step.Message != nil && st.Message() != *step.Message) {
-			t.Fatalf("%s: got %v %q, want %v %v", step.Name, st.Code(), st.Message(), step.Code, step.Message)
+		if st.Code() != expected.Code || (expected.Message != nil && st.Message() != *expected.Message) {
+			t.Fatalf("%s: got %v %q, want %v %v", step.Name, st.Code(), st.Message(), expected.Code, expected.Message)
 		}
-		if step.Response == nil {
+		if expected.Response == nil {
 			continue
 		}
-		if err := protojson.Unmarshal(step.Response, want); err != nil {
+		if err := protojson.Unmarshal(expected.Response, want); err != nil {
 			t.Fatalf("%s: response: %v", step.Name, err)
 		}
 		if !proto.Equal(got, want) {

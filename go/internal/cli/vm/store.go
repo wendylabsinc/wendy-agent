@@ -195,7 +195,7 @@ func (s *Store) CreateFromWithRobotProfileContext(ctx context.Context, name stri
 	}
 	// Grow, not preallocate: the image is sparse-extended so /data can be grown
 	// into the space on first boot without writing gigabytes now.
-	if err := disk.Truncate(diskBytes); err != nil {
+	if err := truncateSparse(disk, diskBytes); err != nil {
 		return fmt.Errorf("sizing disk: %w", err)
 	}
 
@@ -212,7 +212,7 @@ func (s *Store) CreateFromWithRobotProfileContext(ctx context.Context, name stri
 				retErr = fmt.Errorf("closing UEFI variable store: %w", cerr)
 			}
 		}()
-		if err := vars.Truncate(pflashBytes); err != nil {
+		if err := truncateSparse(vars, pflashBytes); err != nil {
 			return fmt.Errorf("sizing UEFI variable store: %w", err)
 		}
 	}

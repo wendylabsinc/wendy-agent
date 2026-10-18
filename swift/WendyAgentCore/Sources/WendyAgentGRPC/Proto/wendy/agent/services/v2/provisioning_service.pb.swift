@@ -115,8 +115,15 @@ public nonisolated struct Wendy_Agent_Services_V2_ProvisionedResponse: Sendable 
   /// Set for direct PKI enrollment; legacy numeric IDs remain unset.
   public var principalUri: String = String()
 
-  /// Absent/false on agents without Cloud-owned guarded reset and recovery.
+  /// Deprecated prerelease flag: clients that trusted it sent caller-serialized
+  /// deletion fields. Current Agents always report false so those clients stop
+  /// before Cloud mutation; clients gate only on cloud_authenticated_reset_supported.
   public var cloudUnenrollmentSupported: Bool = false
+
+  /// Distinguishes verified Cloud authorization from unsafe prerelease resets
+  /// that accepted caller-serialized deletion fields. Clients require this
+  /// before starting the UUID reset workflow; older Agents fail closed.
+  public var cloudAuthenticatedResetSupported: Bool = false
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -166,6 +173,11 @@ public nonisolated struct Wendy_Agent_Services_V2_UnprovisionRequest: Sendable {
 
   /// Serialized wendycloud.v2.DeletedAsset; exact tenant/device binding required.
   public var cloudDeletion: Data = Data()
+
+  /// Purpose-specific Cloud JWS from DeleteAsset. Agent obtains the key from
+  /// its enrolled Cloud's authenticated JWKS, not from this request. Must bind
+  /// the exact operator, installed identity, tombstone and signed deletion.
+  public var cloudResetAuthorization: Data = Data()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -383,7 +395,7 @@ nonisolated extension Wendy_Agent_Services_V2_NotProvisionedResponse: SwiftProto
 
 nonisolated extension Wendy_Agent_Services_V2_ProvisionedResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ProvisionedResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}cloud_host\0\u{3}organization_id\0\u{3}asset_id\0\u{3}principal_uri\0\u{3}cloud_unenrollment_supported\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}cloud_host\0\u{3}organization_id\0\u{3}asset_id\0\u{3}principal_uri\0\u{3}cloud_unenrollment_supported\0\u{3}cloud_authenticated_reset_supported\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -396,6 +408,7 @@ nonisolated extension Wendy_Agent_Services_V2_ProvisionedResponse: SwiftProtobuf
       case 3: try { try decoder.decodeSingularInt32Field(value: &self.assetID) }()
       case 4: try { try decoder.decodeSingularStringField(value: &self.principalUri) }()
       case 5: try { try decoder.decodeSingularBoolField(value: &self.cloudUnenrollmentSupported) }()
+      case 6: try { try decoder.decodeSingularBoolField(value: &self.cloudAuthenticatedResetSupported) }()
       default: break
       }
     }
@@ -417,6 +430,9 @@ nonisolated extension Wendy_Agent_Services_V2_ProvisionedResponse: SwiftProtobuf
     if self.cloudUnenrollmentSupported != false {
       try visitor.visitSingularBoolField(value: self.cloudUnenrollmentSupported, fieldNumber: 5)
     }
+    if self.cloudAuthenticatedResetSupported != false {
+      try visitor.visitSingularBoolField(value: self.cloudAuthenticatedResetSupported, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -426,6 +442,7 @@ nonisolated extension Wendy_Agent_Services_V2_ProvisionedResponse: SwiftProtobuf
     if lhs.assetID != rhs.assetID {return false}
     if lhs.principalUri != rhs.principalUri {return false}
     if lhs.cloudUnenrollmentSupported != rhs.cloudUnenrollmentSupported {return false}
+    if lhs.cloudAuthenticatedResetSupported != rhs.cloudAuthenticatedResetSupported {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -497,7 +514,7 @@ nonisolated extension Wendy_Agent_Services_V2_StartProvisioningResponse: SwiftPr
 
 nonisolated extension Wendy_Agent_Services_V2_UnprovisionRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".UnprovisionRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}expected_principal_uri\0\u{3}expected_certificate_sha256\0\u{3}revocation_proof\0\u{3}cloud_deletion\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}expected_principal_uri\0\u{3}expected_certificate_sha256\0\u{3}revocation_proof\0\u{3}cloud_deletion\0\u{3}cloud_reset_authorization\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -509,6 +526,7 @@ nonisolated extension Wendy_Agent_Services_V2_UnprovisionRequest: SwiftProtobuf.
       case 2: try { try decoder.decodeSingularStringField(value: &self.expectedCertificateSha256) }()
       case 3: try { try decoder.decodeSingularBytesField(value: &self.revocationProof) }()
       case 4: try { try decoder.decodeSingularBytesField(value: &self.cloudDeletion) }()
+      case 5: try { try decoder.decodeSingularBytesField(value: &self.cloudResetAuthorization) }()
       default: break
       }
     }
@@ -527,6 +545,9 @@ nonisolated extension Wendy_Agent_Services_V2_UnprovisionRequest: SwiftProtobuf.
     if !self.cloudDeletion.isEmpty {
       try visitor.visitSingularBytesField(value: self.cloudDeletion, fieldNumber: 4)
     }
+    if !self.cloudResetAuthorization.isEmpty {
+      try visitor.visitSingularBytesField(value: self.cloudResetAuthorization, fieldNumber: 5)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -535,6 +556,7 @@ nonisolated extension Wendy_Agent_Services_V2_UnprovisionRequest: SwiftProtobuf.
     if lhs.expectedCertificateSha256 != rhs.expectedCertificateSha256 {return false}
     if lhs.revocationProof != rhs.revocationProof {return false}
     if lhs.cloudDeletion != rhs.cloudDeletion {return false}
+    if lhs.cloudResetAuthorization != rhs.cloudResetAuthorization {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

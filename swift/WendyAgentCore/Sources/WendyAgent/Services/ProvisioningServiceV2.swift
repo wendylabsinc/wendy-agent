@@ -21,9 +21,10 @@ struct ProvisioningServiceV2: Wendy_Agent_Services_V2_WendyProvisioningService.S
             provisioned.organizationID = info.orgID
             provisioned.assetID = info.assetID
             provisioned.principalUri = info.principalURI
-            // Direct PKI reset stays disabled until Cloud authorization and
-            // durable device preparation exist (same as the Go agent).
+            // The Swift agent does not yet implement Cloud-authenticated reset
+            // and durable device preparation. Both capability flags stay false.
             provisioned.cloudUnenrollmentSupported = false
+            provisioned.cloudAuthenticatedResetSupported = false
             response.provisioned = provisioned
         } else {
             var notProvisioned = Wendy_Agent_Services_V2_NotProvisionedResponse()

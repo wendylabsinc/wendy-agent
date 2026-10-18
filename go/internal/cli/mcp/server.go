@@ -288,7 +288,11 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 		server.WithToolFilter(s.filterManifestTools),
 	)
 	srv.Use(s.relayManifestMiddleware, s.bindingMiddleware(srv))
-	if err := registerSkills(srv); err != nil {
+	catalog, err := s.skillCatalog()
+	if err != nil {
+		return nil, fmt.Errorf("loading MCP skills: %w", err)
+	}
+	if err := registerSkillCatalog(srv, catalog); err != nil {
 		return nil, err
 	}
 	s.registerToolGroups(srv)
@@ -336,7 +340,11 @@ func (s *mcpServer) Serve(ctx context.Context, policy *BindingPolicy, in io.Read
 	s.setBindingPolicy(policy)
 	s.relay = true
 	return s.run(ctx, func(srv *server.MCPServer) error {
-		return serveStdioStreams(ctx, srv, in, out)
+		catalog, err := s.skillCatalog()
+		if err != nil {
+			return err
+		}
+		return serveStdioStreamsWithSkills(ctx, srv, in, out, catalog)
 	})
 }
 
@@ -374,7 +382,7 @@ func (s *mcpServer) runStartupConnect(ctx context.Context) {
 }
 
 func errNotConnected() *mcpgo.CallToolResult {
-	return errResult(errCodeNotConnected, "no device connected — use device_connect first")
+	return errResult(errCodeNotConnected, "no device connected — call device_list, then device_connect with a returned device selector")
 }
 
 // grpcErrString unwraps a gRPC status error into a human-readable string.

@@ -10,14 +10,14 @@ import X509
 @testable import WendyAgentCore
 
 /// Replays Proto/conformance/agent-provisioning-v2/contract.json, which the Go
-/// agent's provisioning_contract_test.go replays too: the CLI's enrollment
-/// preflight and RPCs get the same answers from either agent.
+/// agent's provisioning_contract_test.go replays too. Enrollment and preflight
+/// answers are shared; reset refusals have explicit expectations for each agent.
 @Suite("Provisioning v2 contract")
 struct ProvisioningContractTests {
     private static let principal =
         "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/sim"
 
-    @Test("Swift agent answers exactly as the Go agent")
+    @Test("Swift agent follows the shared enrollment and explicit reset contract")
     func replay() async throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // WendyAgentTests
@@ -261,14 +261,20 @@ struct ProvisioningContractTests {
         _ call: (Request) async throws -> Response
     ) async throws {
         let name = step["name"] as? String ?? "?"
-        let code = step["code"] as? String ?? ""
+        let expected: [String: Any]
+        if let agentExpectations = step["agentExpectations"] as? [String: [String: Any]] {
+            expected = try #require(agentExpectations["swift"])
+        } else {
+            expected = step
+        }
+        let code = expected["code"] as? String ?? ""
         let request = try Request(
             jsonUTF8Data: JSONSerialization.data(withJSONObject: step["request"] ?? [String: Any]())
         )
         do {
             let got = try await call(request)
             #expect(code == "OK", "\(name): succeeded, want \(code)")
-            if let response = step["response"] {
+            if let response = expected["response"] {
                 let want = try Response(
                     jsonUTF8Data: JSONSerialization.data(withJSONObject: response)
                 )
@@ -276,7 +282,7 @@ struct ProvisioningContractTests {
             }
         } catch let error as RPCError {
             #expect(Self.codes[code] == error.code, "\(name): got \(error.code) \(error.message)")
-            if let message = step["message"] as? String {
+            if let message = expected["message"] as? String {
                 #expect(error.message == message, "\(name)")
             }
         }

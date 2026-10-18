@@ -13,7 +13,9 @@ on:
       - 'go.sum'
       - '.github/workflows/**'
       - '.github/actions/setup-go-ci/**'
+      - '.github/actions/release-priority/**'
       - '.github/scripts/**'
+      - '.github/ci-tests/host-sensor-loopback/**'
       - 'plugins/**'
       - 'scripts/sync-agent-skills.py'
       - 'scripts/package-chatgpt-plugin.py'
@@ -28,7 +30,9 @@ on:
       - 'go.sum'
       - '.github/workflows/**'
       - '.github/actions/setup-go-ci/**'
+      - '.github/actions/release-priority/**'
       - '.github/scripts/**'
+      - '.github/ci-tests/host-sensor-loopback/**'
       - 'plugins/**'
       - 'scripts/sync-agent-skills.py'
       - 'scripts/package-chatgpt-plugin.py'
@@ -138,6 +142,15 @@ jobs:
         working-directory: go
         run: go test ./cmd/wendy -run '^(TestInvocationAnalytics|TestEnablingAnalyticsReportsTheCurrentInvocation|TestHelpDoesNotCountAsProductUse)' -v -count=1 -timeout 120s
 
+      - name: Test Windows VM setup
+        working-directory: go
+        shell: pwsh
+        run: |
+          go test ./internal/cli/vm -run '^(TestCreateWindowsDiskAndVarsAreSparse|TestFindQEMUOnWindows|TestWindowsFirmwareFollowsQEMUInstallation|TestSpecUsesWindowsQEMUPath|TestBinaryIsTheAArch64SystemEmulator)$' -v -count=1 -timeout 120s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test ./internal/cli/commands -run '^(TestEnsureQEMUOnWindows|TestSimulatorWithoutDetachedSupport|TestDiscoverKeepsScanningWhenSimulatorNeedsForegroundStart|TestDiscoverSimulatorGuidanceFitsPopulatedTerminal|TestVMStorage|TestVMImageSpace|TestVMCreate)' -v -count=1 -timeout 120s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   # Preserve the existing required "Test" check after splitting its work.
   test:
     name: Test
@@ -229,3 +242,10 @@ jobs:
         run: bash .github/scripts/install-manifest-merge_test.sh
       - name: integration device selection tests
         run: python3 .github/scripts/integration-discover_test.py
+      - name: host sensor loopback CI tests
+        run: |
+          sh -n .github/ci-tests/host-sensor-loopback/check.sh
+          bash -n go/scripts/test-ci.sh
+          python3 .github/ci-tests/host-sensor-loopback/check_test.py
+      - name: release priority tests
+        run: node --test .github/scripts/release-priority.test.cjs

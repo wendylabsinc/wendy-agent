@@ -24,7 +24,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/pkicorepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -100,27 +99,10 @@ func invoke(ctx context.Context, conn grpc.ClientConnInterface, auth *config.Aut
 	if s == nil {
 		return fmt.Errorf("%s requires an operator certificate; run 'wendy auth login'", method)
 	}
-	// AAA §11.2: adopt an existing flow id unchanged. Registration and retries
-	// remain messages in that flow, not new origins. Match Cloud's existing
-	// CorrelationContext alphabet/64-byte bound; reject unsafe supplied values
-	// rather than sending a header that disagrees with the signed descriptor.
-	correlationID := ""
-	if md, ok := metadata.FromOutgoingContext(ctx); ok {
-		for _, value := range md.Get("x-correlation-id") {
-			if value != "" {
-				correlationID = value
-				break
-			}
-		}
-	}
-	if correlationID != "" {
-		if len(correlationID) > 64 || strings.IndexFunc(correlationID, func(r rune) bool {
-			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
-		}) >= 0 {
-			return fmt.Errorf("invalid supplied Cloud correlation id")
-		}
-	} else {
-		correlationID = uuid.NewString()
+	// Registration, retries and later calls adopt an existing operation ID.
+	correlationID, err := CorrelationID(ctx)
+	if err != nil {
+		return err
 	}
 	call := func(byKID bool) error {
 		signed, err := s.signRequest(method, req, byKID, correlationID)
@@ -357,8 +339,10 @@ func markChannel(signed *cloudpbv2.SignedRequest) {
 // Cloud's shared unenrollment path relays this operator authority to PKI.
 // The same leaf signs both artifacts; this never calls PKI or revokes locally.
 func (s *Signer) unenrollManagementRequest(deviceID string) ([]byte, error) {
-	device, err := uuid.Parse(deviceID)
-	if err != nil || device.String() != deviceID {
+	if deviceID == "" || len(deviceID) > 64 || strings.Trim(deviceID, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != "" {
+		return nil, fmt.Errorf("unenrollment requires an exact safe PKI device identity")
+	}
+	if device, err := uuid.Parse(deviceID); err == nil && device.String() != deviceID {
 		return nil, fmt.Errorf("unenrollment requires a canonical device UUID")
 	}
 	return s.principalRevocationManagementRequest(deviceID)
@@ -398,6 +382,10 @@ var signedResources = map[string]func(tenant string, req proto.Message) (string,
 	cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
 		in, ok := req.(*cloudpbv2.EnrollDeviceRequest)
 		return "org/" + tenant + "/device/" + in.GetDeviceId(), ok
+	},
+	cloudpbv2.AppService_UpsertApp_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.UpsertAppRequest)
+		return "org/" + in.GetOrganizationId() + "/app/" + in.GetId(), ok
 	},
 	// Ruled 2026-10-13 (WDY-3660); cloud's RequestSigning.md row follows.
 	cloudpbv2.RelayMcpService_OpenRelaySession_FullMethodName: func(tenant string, req proto.Message) (string, bool) {

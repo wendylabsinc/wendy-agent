@@ -8,7 +8,7 @@
     "groups"
   ],
   "redirectURIs": [
-    "https://mcp.dev.wendy.dev/auth/callback"
+    "https://mcp.wendy.dev/auth/callback"
   ],
   "requireConsent": true,
   "dpopBound": true,

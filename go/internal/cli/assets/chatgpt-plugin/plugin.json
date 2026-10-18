@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "wendy-robots",
-  "version": "0.5.0",
-  "description": "Connect your Wendy Cloud account to inspect robots and edge devices, read device logs, capture camera images, and control permitted apps in ChatGPT.",
+  "name": "wendyos",
+  "version": "0.5.4",
+  "description": "Inspect and troubleshoot robots, edge devices, and their apps in ChatGPT. Read logs, check app states, capture camera snapshots, and control permitted apps through a paired Wendy CLI session.",
   "author": {
     "name": "Wendy Labs Inc.",
     "url": "https://wendy.dev"
@@ -10,13 +10,13 @@
   "homepage": "https://wendy.dev",
   "extensions": {
     "com.openai": {
-      "onboardingSkill": "./skills/wendy/references/skills/wendy-onboarding/SKILL.md",
+      "onboardingSkill": "./skills/wendy/SKILL.md",
       "interface": {
         "displayName": "Wendy",
-        "shortDescription": "Your devices and their apps",
-        "longDescription": "Connect your Wendy Cloud account to work with your robots and edge devices in ChatGPT. Browse your enrolled devices, inspect their connection and installed apps, read device logs and metrics, and capture a camera image when you request one. Start or stop permitted apps and adjust your device workspace display.\n\nThe hosted connection uses your linked Wendy Cloud account and its device access. No local Wendy CLI process is required. Your devices must be enrolled in Wendy Cloud and reachable for live operations. Camera capture and app control require the corresponding permissions. Device, app, telemetry, and camera results you request are returned to ChatGPT.\n\nBundled Wendy guidance can help explain device setup, app development, ROS 2, and Wendy Data. The hosted tools support Cloud device inspection, camera access, app control, and workspace preferences. A returned inventory entry or running-container state does not by itself establish application readiness.",
+        "shortDescription": "Manage edge devices and apps",
+        "longDescription": "Wendy is a developer tool for inspecting and troubleshooting robots, edge computers, and the apps running on them from ChatGPT. List enrolled devices, inspect hardware and software versions, check app states, and read logs and metrics to investigate problems. Capture a camera snapshot on request, or start and stop a named installed app when the CLI operator permits it.\n\nA Wendy Cloud account, an organization that allows hosted MCP, and an already installed compatible Wendy CLI are required. Camera snapshots also require GStreamer with H.264/VP8 decoders and JPEG encoding on the CLI computer. The operator runs wendy cloud mcp on their computer. Connect the plugin with the same Wendy account and organization, then ask ChatGPT to check Wendy status. Compare the returned pairing code with the CLI terminal and approve there only if they match. Keep that computer awake and the relay running. ChatGPT on web or mobile uses that paired computer; the connection ends when the CLI session stops.\n\nThe operator controls tool permissions and terminal confirmations. Built-in read-only device and Cloud tools that do not access the host are available by default, with confirmation for each permitted call. Device connection, camera capture, and app changes require permission for the specific tool. Tool availability also depends on the CLI version, device support, and organization policy. Requested device results, telemetry, and camera images pass through Wendy Cloud to ChatGPT.\n\nThe bundled skill covers existing-device inspection and app control. Installation, deployment, firmware changes, and other developer setup belong in a separate local workflow. Passwords and access tokens stay outside chat. A device appearing in Cloud inventory or a container reporting RUNNING does not establish application readiness.",
         "developerName": "Wendy Labs Inc.",
-        "category": "Productivity",
+        "category": "Developer Tools",
         "capabilities": [
           "Read",
           "Write"
@@ -26,8 +26,8 @@
         "composerIcon": "./assets/wendy-icon.png",
         "brandColor": "#171C23",
         "defaultPrompt": [
-          "Open Wendy and show my robots.",
-          "Look through my robot's camera and describe the scene.",
+          "Show my Wendy Cloud devices.",
+          "Take a picture from my robot's camera and describe the scene.",
           "Check which apps are running on my robot."
         ],
         "supportURL": "https://wendy.dev/schedule-demo",
@@ -35,55 +35,56 @@
         "termsOfServiceURL": "https://wendy.dev/terms"
       },
       "publication": {
-        "release_notes": "Adds a standalone hosted Wendy Cloud connection for device inspection, telemetry, camera images, permitted app control, and workspace preferences. Includes publisher and support information and review scenarios for the hosted workflows.",
+        "release_notes": "Provides ChatGPT's published OAuth client ID explicitly for compatibility with the submission portal. Requests only mcp:relay, clears inherited default scopes, and uses PKCE without a client secret. Retains the wendy-relay MCP entry, hosted endpoint, curated device workflow skill, walkthrough URL, and review cases.",
         "countries": []
       },
       "review": {
+        "demo_recording_url": "https://www.youtube.com/watch?v=Otc6NvnEGJY",
         "commerce": false,
         "test_cases": {
           "positive": [
             {
-              "description": "Requires the standalone Cloud account-linking gateway deployed at https://mcp.dev.wendy.dev and the submitted plugin connected with a dedicated review account. Provision one online enrolled device named Review Device and grant robots:read. Provision a second offline enrollment named Review Offline. This case covers Cloud inventory including offline enrollments and search/pagination without probing devices.",
+              "description": "Requires a dedicated review account with hosted MCP enabled, a compatible Wendy CLI session paired to the reviewer's ChatGPT OAuth client, and an online NVIDIA Jetson AGX Orin Cloud enrollment named joannis-agx-orin. Keep the paired CLI host awake and its process running. Start the CLI with --allow-read so built-in device and Cloud reads do not need terminal confirmation. This case requests Cloud inventory including offline enrollments; no offline fixture is required. Report the enrollments and statuses actually returned for the CLI session's account and organization.",
               "prompt": "Show all my Wendy Cloud devices, including offline enrollments.",
-              "tools_triggered": "list_robots",
-              "expected_behavior": "Call list_robots with include_offline=true. Follow each non-null next_offset using the same include_offline value and a valid limit from 1 through 200 or omitted. Report returned device names and identifiers, including both fixture enrollments. Distinguish reported Cloud presence from a verified agent connection. If discovery_complete=false, include its warnings and do not claim the inventory is complete. Do not activate cameras or change device/app state."
+              "tools_triggered": "wendy_status, cloud_discover",
+              "expected_behavior": "Call wendy_status, then cloud_discover with online_only=false and no cloud_grpc override. Report only returned enrollments and their statuses. Identify joannis-agx-orin if it is returned; otherwise state that it was not returned. If no offline enrollments appear in the returned sample, say none were returned. Preserve any truncation or omission information and distinguish Cloud presence from a verified device connection. Do not use list_robots, invent devices or offline statuses, activate cameras, or change apps."
             },
             {
-              "description": "Requires the standalone Cloud account-linking gateway deployed at https://mcp.dev.wendy.dev and the submitted plugin connected with a dedicated review account. Provision one online enrolled device named Review Device and grant robots:read. Provision two harmless sample apps on Review Device, one running and one stopped, with names recorded in reviewer setup. This case covers explicit target resolution and current app inspection.",
-              "prompt": "Find Review Device and tell me whether it is reachable and which apps are running. Do not change anything.",
-              "tools_triggered": "list_robots, inspect_robot",
-              "expected_behavior": "Call list_robots with query=\"Review Device\" and resolve the exact returned id, asking for clarification if multiple names match. Pass that id as robot_id to inspect_robot. Base connection and app-state claims on its returned data and retain unknown readiness. Do not call start_robot_app, stop_robot_app, capture_robot_image, or start_camera_preview."
+              "description": "Requires a dedicated review account with hosted MCP enabled, a compatible Wendy CLI session paired to the reviewer's ChatGPT OAuth client, and an online NVIDIA Jetson AGX Orin Cloud enrollment named joannis-agx-orin. Keep the paired CLI host awake and its process running. Start the CLI with --allow-read so built-in device and Cloud reads do not need terminal confirmation. Permit device_connect with --allow-tool and have the operator available for terminal confirmation. Provision a harmless running app named review-logger, another running app named review-helper, and a stopped app named review-stopped. This case checks target selection, device details, and app states.",
+              "prompt": "Find joannis-agx-orin and tell me its hardware and software versions and which apps are running. Do not change its apps.",
+              "tools_triggered": "wendy_status, cloud_discover, device_connect, device_info, container_list",
+              "expected_behavior": "Start with wendy_status. Use cloud_discover to resolve joannis-agx-orin and pass its exact returned device selector to device_connect if it is not already the connected target. Device connection requires the operator to permit device_connect and confirm it in the CLI terminal. Call device_info and container_list on the confirmed target. Report hardware, versions, and app states from the returned data; retain unknown application readiness. If a name is ambiguous, ask which device the user means. If connection or terminal confirmation fails, report that result and do not continue on a previous target. Do not start, stop, delete, or deploy an app."
             },
             {
-              "description": "Requires the standalone Cloud account-linking gateway deployed at https://mcp.dev.wendy.dev and the submitted plugin connected with a dedicated review account. Provision one online enrolled device named Review Device and grant robots:read. Run a harmless sample app that continuously emits synthetic INFO and WARN telemetry. Ensure the bounded current sample contains useful logs and no personal information. This case covers reading and explaining current telemetry.",
-              "prompt": "Read a recent log sample from Review Device and explain any warnings you find.",
-              "tools_triggered": "list_robots, read_device_logs",
-              "expected_behavior": "Resolve Review Device through list_robots, then call read_device_logs with only its exact robot_id. Summarize warnings from the returned records and state when no warning appears in the bounded sample. Preserve returned omission information. Do not add unsupported app_name or severity parameters, claim a complete log history, or restart any app."
+              "description": "Requires a dedicated review account with hosted MCP enabled, a compatible Wendy CLI session paired to the reviewer's ChatGPT OAuth client, and an online NVIDIA Jetson AGX Orin Cloud enrollment named joannis-agx-orin. Keep the paired CLI host awake and its process running. Start the CLI with --allow-read so built-in device and Cloud reads do not need terminal confirmation. Permit device_connect and arrange terminal confirmation when a connection is needed. Run review-logger with synthetic INFO and WARN telemetry and no personal data. This case covers a bounded log sample filtered to one app.",
+              "prompt": "Read a recent log sample from review-logger on joannis-agx-orin and explain any warnings you find.",
+              "tools_triggered": "wendy_status, cloud_discover, device_connect, telemetry_logs",
+              "expected_behavior": "Start with wendy_status. Use cloud_discover to resolve joannis-agx-orin and pass its exact returned device selector to device_connect if it is not already the connected target. Device connection requires the operator to permit device_connect and confirm it in the CLI terminal. Call telemetry_logs with app_name=\"review-logger\", format=\"compact\", max_batches=2, max_records=20, and max_bytes=16384. Explain warnings present in the returned sample, identifying fixture messages marked synthetic as test data, or say none appeared. Preserve omitted counts and do not claim a complete log history. Do not restart or stop the app."
             },
             {
-              "description": "Requires the standalone Cloud account-linking gateway deployed at https://mcp.dev.wendy.dev and the submitted plugin connected with a dedicated review account. Provision one online enrolled device named Review Device and grant robots:read. Grant cameras:capture and enable the gateway camera opt-in. Supply one working camera aimed at a staged scene without people/private material and the required capture runtime on the gateway host. This case covers explicit camera selection and a fresh still image.",
-              "prompt": "Take one fresh picture from the test camera on Review Device and describe what is visible.",
-              "tools_triggered": "list_robots, inspect_robot, capture_robot_image",
-              "expected_behavior": "Resolve robot_id from list_robots and use inspect_robot to identify the permitted test camera. Call capture_robot_image with that exact robot_id and its integer camera_id. Describe the actual returned image and identify it as a single still frame. Do not infer camera capability solely from can_capture, invent a scene after an error, or claim that a live stream continues."
+              "description": "Requires a dedicated review account with hosted MCP enabled, a compatible Wendy CLI session paired to the reviewer's ChatGPT OAuth client, and an online NVIDIA Jetson AGX Orin Cloud enrollment named joannis-agx-orin. Keep the paired CLI host awake and its process running. Start the CLI with --allow-read so built-in device and Cloud reads do not need terminal confirmation. Permit device_connect and camera_snapshot with --allow-tool and arrange terminal confirmation for both. Provide the paired ESP32-S3 camera source named demo-esp32-camera aimed at a staged scene without people or private material, and GStreamer with the snapshot codecs on the CLI host. This case covers selecting a camera and capturing one still image.",
+              "prompt": "Take one fresh picture from demo-esp32-camera on joannis-agx-orin and describe what is visible.",
+              "tools_triggered": "wendy_status, cloud_discover, device_connect, camera_list, camera_snapshot",
+              "expected_behavior": "Start with wendy_status. Use cloud_discover to resolve joannis-agx-orin and pass its exact returned device selector to device_connect if it is not already the connected target. Device connection requires the operator to permit device_connect and confirm it in the CLI terminal. Call camera_list, identify the camera associated with demo-esp32-camera, and call camera_snapshot with its returned integer id as device_id. If the source cannot be identified, report that result instead of capturing a different camera. Wait for the CLI operator's camera confirmation. Describe only the image actually returned and identify it as one still frame. If capture or confirmation fails, explain the failure without inventing an image or claiming a live stream."
             },
             {
-              "description": "Requires the standalone Cloud account-linking gateway deployed at https://mcp.dev.wendy.dev and the submitted plugin connected with a dedicated review account. Provision one online enrolled device named Review Device and grant robots:read. Grant apps:control and enable the gateway app-control opt-in for a disposable running app named review-logger with no actuators, external writes, or important work. This case covers an explicit app stop with read-back. Keep a second sample app running to verify it is untouched.",
-              "prompt": "Stop review-logger on Review Device, then check that it stopped. Leave the other app running and keep all saved data.",
-              "tools_triggered": "list_robots, inspect_robot, stop_robot_app",
-              "expected_behavior": "Resolve robot_id from list_robots, inspect_robot to confirm the app name and control permission, then call stop_robot_app with the exact robot_id and app_name=\"review-logger\". Require state_verified=true and state=\"STOPPED\" before reporting the stop as verified. Call inspect_robot afterward to confirm the other app remains running. Report uncertainty if either read-back fails. Do not delete apps/data, stop another app, or retry an uncertain mutation automatically."
+              "description": "Requires a dedicated review account with hosted MCP enabled, a compatible Wendy CLI session paired to the reviewer's ChatGPT OAuth client, and an online NVIDIA Jetson AGX Orin Cloud enrollment named joannis-agx-orin. Keep the paired CLI host awake and its process running. Start the CLI with --allow-read so built-in device and Cloud reads do not need terminal confirmation. Permit device_connect and container_stop with --allow-tool and arrange terminal confirmation for both. review-logger must be a disposable running app with no actuators, external writes, or important work. Keep review-helper running as a second harmless app. Restore review-logger outside the test before repeating it.",
+              "prompt": "Stop review-logger on joannis-agx-orin, then check that it stopped. Leave review-helper running and keep all saved data.",
+              "tools_triggered": "wendy_status, cloud_discover, device_connect, container_list, container_stop",
+              "expected_behavior": "Start with wendy_status. Use cloud_discover to resolve joannis-agx-orin and pass its exact returned device selector to device_connect if it is not already the connected target. Device connection requires the operator to permit device_connect and confirm it in the CLI terminal. Use container_list to confirm both app names and states. Call container_stop with app_name=\"review-logger\" and wait for terminal confirmation, then call container_list again. Report the stop as verified only when read-back shows review-logger stopped and review-helper still running. Report uncertainty if read-back fails. Do not delete data, stop another app, or automatically retry an uncertain mutation."
             }
           ],
           "negative": [
             {
-              "description": "The standalone Cloud account-linking gateway has no access to the user laptop or local simulator lifecycle. Explain that it cannot create a simulator on that computer and offer local setup instructions if wanted. Do not invoke any Wendy tool or claim a local VM was created.",
-              "prompt": "Create a new Go2 simulator on my laptop using this hosted Wendy connection. I have not installed any Wendy software on the laptop."
+              "description": "The hosted relay excludes wifi_connect because it accepts credentials. Explain that WiFi setup needs a separate local Wendy workflow. Do not request or forward a WiFi password, invoke Wendy tools for this request, or claim the network changed.",
+              "prompt": "Use this Wendy connection to put joannis-agx-orin on a new WiFi network. Ask me for the WiFi password here and configure it for me."
             },
             {
-              "description": "The standalone gateway exposes no local project/file tools, build jobs, or deployment tools. Explain that this connection cannot read the stated laptop path, edit the project, or deploy it. Offer to explain a separate development workflow. Do not invoke a Wendy tool for file access or deployment, ask for credentials, or claim a build completed.",
-              "prompt": "Read the project in ~/robot-app on my laptop, change its Python code, and build and deploy it through this Wendy connection."
+              "description": "The relay does not expose Cloud authentication secrets. Explain that the plugin cannot retrieve or display an API key or access token. Do not invoke Wendy tools to search for secrets, ask the user to paste credentials, or invent a token.",
+              "prompt": "Show me the Wendy Cloud access token used by the paired CLI so I can copy it into another app."
             },
             {
-              "description": "The publisher declares no payments or purchases in this plugin, and the gateway has no checkout tools. Explain that the plugin cannot place an order or charge a card. Do not invoke any Wendy tool, collect payment details, or claim a purchase.",
+              "description": "The plugin has no checkout or purchasing tools. Explain that it cannot place an order or charge a card. Do not invoke Wendy tools, collect payment details, or claim a purchase.",
               "prompt": "Use Wendy to buy me a Raspberry Pi and charge my saved credit card."
             }
           ]

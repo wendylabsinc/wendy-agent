@@ -1,24 +1,23 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
-    "wendy-robots": {
+    "wendy-relay": {
       "type": "streamable-http",
-      "url": "https://mcp.dev.wendy.dev",
+      "url": "https://mcp.wendy.dev",
       "extensions": {
         "com.openai": {
           "auth": {
             "type": "oauth",
             "client": {
               "mode": "provided",
-              "clientId": "wendy-chatgpt",
+              "clientId": "https://chatgpt.com/oauth/client.json",
               "tokenEndpointAuthMethod": "none"
             },
             "baseScopes": [
-              "robots:read",
-              "cameras:capture",
-              "apps:control",
-              "preferences:write"
-            ]
+              "mcp:relay"
+            ],
+            "defaultScopes": [],
+            "oidcEnabled": false
           }
         }
       }

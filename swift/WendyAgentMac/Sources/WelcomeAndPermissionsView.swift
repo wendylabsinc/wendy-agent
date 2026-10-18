@@ -26,7 +26,7 @@ struct WelcomeAndPermissionsView: View {
             self.permissionsSection
 
             Toggle(
-                "Open Wendy Agent automatically when you log in",
+                "Open Wendy Agent at login and restart it if it stops",
                 isOn: Binding(
                     get: { self.welcomeAndPermissions.launchAtLoginEnabled },
                     set: { self.welcomeAndPermissions.setLaunchAtLoginEnabled($0) }

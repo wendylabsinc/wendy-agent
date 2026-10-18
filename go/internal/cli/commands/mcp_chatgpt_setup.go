@@ -31,7 +31,7 @@ func newMCPChatGPTSetupCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "chatgpt",
 		Short: "Set up Wendy in ChatGPT, starting without a device or Cloud account",
-		Long:  "Create a personal ChatGPT plugin marketplace. Local runs the scoped gateway on this computer. Hosted references an existing registered MCP app and needs no local CLI at runtime. Both creates separate local and hosted plugins. No device is required; simulator, project, host, and developer access are opt-in. This does not publish a plugin or deploy a hosted server.",
+		Long:  "Create a personal ChatGPT plugin marketplace. Local runs the scoped gateway on this computer. Hosted references an existing registered Wendy connection and requires that connection's setup and runtime. A CLI relay requires a signed-in, paired wendy cloud mcp process to stay running; a standalone Cloud gateway has its own server requirements. Both creates separate local and hosted plugins. No device is required; simulator, project, host, and developer access are opt-in. This does not publish a plugin or deploy a hosted server.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			o.developerChanged = cmd.Flags().Changed("developer-tools")
@@ -86,6 +86,10 @@ func printChatGPTSetupResult(out io.Writer, paths []string, connection string, d
 		fmt.Fprintln(out, muted.Render("Local devices and simulators do not require a Wendy Cloud account."))
 		fmt.Fprintln(out, muted.Render("No simulator was created and no device was connected."))
 	}
+	if connection != "local" {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, muted.Render("Hosted access uses the registered connection's setup and runtime. For a CLI relay, keep a signed-in, paired wendy cloud mcp process running."))
+	}
 	if developerEnabled {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Developer tools are enabled alongside the gateway. They have broader access and do not inherit the gateway's target or app restrictions.")
@@ -99,7 +103,7 @@ func setupChatGPT(home, binary string, o chatGPTSetupOptions) ([]string, error) 
 		return nil, fmt.Errorf("connection must be local, hosted, or both")
 	}
 	if o.connection != "local" && !registeredMCPAppID.MatchString(o.appID) {
-		return nil, fmt.Errorf("hosted access requires --app-id with the existing MCP app ID from ChatGPT Plugins; register your deployed gateway first")
+		return nil, fmt.Errorf("hosted access requires --app-id with the existing MCP app ID from ChatGPT Plugins; register your Wendy MCP connection first")
 	}
 	if o.connection == "local" && o.appID != "" {
 		return nil, fmt.Errorf("use --connection hosted or both with --app-id")
@@ -310,18 +314,21 @@ func writeChatGPTPackage(root, binary, policy string, hosted bool, o chatGPTSetu
 		presentation := extension["interface"].(map[string]any)
 		presentation["displayName"] = "Wendy Cloud"
 		presentation["shortDescription"] = "Your connected devices"
-		presentation["longDescription"] = "Get started with your connected robots and small computers in ChatGPT. Browse authorized devices, inspect their apps, read telemetry, and use permitted camera and app controls through the hosted connection. No local CLI is required. For laptop simulators or project files, choose the separate local desktop connection."
+		presentation["longDescription"] = "Use your existing registered Wendy connection to inspect authorized devices and apps, read telemetry, and use permitted camera and app controls. Complete that connection's setup and keep its runtime available. A CLI relay requires a signed-in, paired wendy cloud mcp process to stay running; a standalone Cloud gateway uses its configured server. For laptop simulators or project files, choose the separate local desktop connection."
+		presentation["defaultPrompt"] = []string{"Show my connected Wendy devices.", "Take a picture from my robot's camera and describe the scene.", "Check which apps are running on my robot."}
 		extension["apps"] = "./.app.json"
-		manifest["description"] = "Work with your connected devices in ChatGPT through a registered Wendy gateway. No local CLI is required."
+		manifest["description"] = "Work with your connected devices in ChatGPT through an existing registered Wendy connection. Requires that connection's setup and runtime, including a running paired CLI when it uses a relay."
 		if err := writeChatGPTJSON(filepath.Join(root, ".app.json"), map[string]any{"apps": map[string]any{"wendy-robots": map[string]any{"id": o.appID, "required": true}}}); err != nil {
 			return err
 		}
 	} else {
 		// The embedded manifest describes the public Cloud connection. Desktop
 		// setup exports a separate local connection with its own requirements.
+		manifest["name"] = "wendy-robots"
 		manifest["description"] = "Work with local robots, edge devices and simulators through the Wendy CLI in ChatGPT Desktop."
 		presentation := extension["interface"].(map[string]any)
 		presentation["longDescription"] = "Use the Wendy CLI on this computer to inspect approved devices, read telemetry, preview cameras and control permitted apps. Local access does not require a Wendy Cloud account. Add simulator, project and host permissions through wendy mcp setup chatgpt when needed. The local CLI process must remain available while ChatGPT uses this connection."
+		presentation["defaultPrompt"] = []string{"Open Wendy and show my robots.", "Look through my robot's camera and describe the scene.", "Check which apps are running on my robot."}
 		servers := map[string]any{}
 		if raw, err := os.ReadFile(filepath.Join(root, "mcp.json")); err == nil {
 			var existing struct {

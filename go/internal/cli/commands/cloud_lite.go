@@ -15,6 +15,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
@@ -27,6 +28,31 @@ const liteCloudOSType = "wendy-lite"
 
 func init() {
 	providers.CloudRelayDialer = dialLiteCloudRelay
+	providers.LiteIdentityResolver = localLiteIdentity
+}
+
+// localLiteIdentity uses the session's primary credential for LAN and BLE. The
+// separate Lite authority and cached P-256 leaf belong to the Cloud relay only.
+func localLiteIdentity(ctx context.Context, auth *config.AuthConfig) (config.CertificateInfo, string, error) {
+	if err := ctx.Err(); err != nil {
+		return config.CertificateInfo{}, "", err
+	}
+	if auth == nil || len(auth.Certificates) == 0 {
+		return config.CertificateInfo{}, "", fmt.Errorf("no operator certificate; run 'wendy auth login'")
+	}
+	if err := ensureFreshCertificateFn(ctx, auth); err != nil {
+		return config.CertificateInfo{}, "", fmt.Errorf("%w; run 'wendy auth login' for this context", err)
+	}
+	cert, err := cloudrelay.LiteOperatorIdentity(auth.Certificates[0])
+	if err != nil {
+		return config.CertificateInfo{}, "", err
+	}
+	// An explicit client-identity override must not replace device trust.
+	trust := auth.Certificates[0].PemCertificateChain
+	if trust == "" {
+		return config.CertificateInfo{}, "", fmt.Errorf("auth context has no device CA chain; run 'wendy auth login'")
+	}
+	return cert, trust, nil
 }
 
 // isLiteCloudAsset reports whether Cloud lists asset as a Wendy Lite board.

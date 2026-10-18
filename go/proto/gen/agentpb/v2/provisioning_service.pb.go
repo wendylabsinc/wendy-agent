@@ -213,10 +213,16 @@ type ProvisionedResponse struct {
 	AssetId        int32                  `protobuf:"varint,3,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
 	// Set for direct PKI enrollment; legacy numeric IDs remain unset.
 	PrincipalUri string `protobuf:"bytes,4,opt,name=principal_uri,json=principalUri,proto3" json:"principal_uri,omitempty"`
-	// Absent/false on agents without Cloud-owned guarded reset and recovery.
+	// Deprecated prerelease flag: clients that trusted it sent caller-serialized
+	// deletion fields. Current Agents always report false so those clients stop
+	// before Cloud mutation; clients gate only on cloud_authenticated_reset_supported.
 	CloudUnenrollmentSupported bool `protobuf:"varint,5,opt,name=cloud_unenrollment_supported,json=cloudUnenrollmentSupported,proto3" json:"cloud_unenrollment_supported,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// Distinguishes verified Cloud authorization from unsafe prerelease resets
+	// that accepted caller-serialized deletion fields. Clients require this
+	// before starting the UUID reset workflow; older Agents fail closed.
+	CloudAuthenticatedResetSupported bool `protobuf:"varint,6,opt,name=cloud_authenticated_reset_supported,json=cloudAuthenticatedResetSupported,proto3" json:"cloud_authenticated_reset_supported,omitempty"`
+	unknownFields                    protoimpl.UnknownFields
+	sizeCache                        protoimpl.SizeCache
 }
 
 func (x *ProvisionedResponse) Reset() {
@@ -280,6 +286,13 @@ func (x *ProvisionedResponse) GetPrincipalUri() string {
 func (x *ProvisionedResponse) GetCloudUnenrollmentSupported() bool {
 	if x != nil {
 		return x.CloudUnenrollmentSupported
+	}
+	return false
+}
+
+func (x *ProvisionedResponse) GetCloudAuthenticatedResetSupported() bool {
+	if x != nil {
+		return x.CloudAuthenticatedResetSupported
 	}
 	return false
 }
@@ -397,8 +410,12 @@ type UnprovisionRequest struct {
 	RevocationProof []byte `protobuf:"bytes,3,opt,name=revocation_proof,json=revocationProof,proto3" json:"revocation_proof,omitempty"`
 	// Serialized wendycloud.v2.DeletedAsset; exact tenant/device binding required.
 	CloudDeletion []byte `protobuf:"bytes,4,opt,name=cloud_deletion,json=cloudDeletion,proto3" json:"cloud_deletion,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Purpose-specific Cloud JWS from DeleteAsset. Agent obtains the key from
+	// its enrolled Cloud's authenticated JWKS, not from this request. Must bind
+	// the exact operator, installed identity, tombstone and signed deletion.
+	CloudResetAuthorization []byte `protobuf:"bytes,5,opt,name=cloud_reset_authorization,json=cloudResetAuthorization,proto3" json:"cloud_reset_authorization,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *UnprovisionRequest) Reset() {
@@ -455,6 +472,13 @@ func (x *UnprovisionRequest) GetRevocationProof() []byte {
 func (x *UnprovisionRequest) GetCloudDeletion() []byte {
 	if x != nil {
 		return x.CloudDeletion
+	}
+	return nil
+}
+
+func (x *UnprovisionRequest) GetCloudResetAuthorization() []byte {
+	if x != nil {
+		return x.CloudResetAuthorization
 	}
 	return nil
 }
@@ -750,26 +774,28 @@ const file_wendy_agent_services_v2_provisioning_service_proto_rawDesc = "" +
 	"\x19acme_enrollment_supported\x18\x01 \x01(\bH\x00R\x17acmeEnrollmentSupported\x88\x01\x01\x127\n" +
 	"\x17unenrollment_completion\x18\x02 \x01(\fR\x16unenrollmentCompletion\x12K\n" +
 	"\"acme_enrollment_unavailable_reason\x18\x03 \x01(\tR\x1facmeEnrollmentUnavailableReasonB\x1c\n" +
-	"\x1a_acme_enrollment_supported\"\xdf\x01\n" +
+	"\x1a_acme_enrollment_supported\"\xae\x02\n" +
 	"\x13ProvisionedResponse\x12\x1d\n" +
 	"\n" +
 	"cloud_host\x18\x01 \x01(\tR\tcloudHost\x12'\n" +
 	"\x0forganization_id\x18\x02 \x01(\x05R\x0eorganizationId\x12\x19\n" +
 	"\basset_id\x18\x03 \x01(\x05R\aassetId\x12#\n" +
 	"\rprincipal_uri\x18\x04 \x01(\tR\fprincipalUri\x12@\n" +
-	"\x1ccloud_unenrollment_supported\x18\x05 \x01(\bR\x1acloudUnenrollmentSupported\"\xa8\x01\n" +
+	"\x1ccloud_unenrollment_supported\x18\x05 \x01(\bR\x1acloudUnenrollmentSupported\x12M\n" +
+	"#cloud_authenticated_reset_supported\x18\x06 \x01(\bR cloudAuthenticatedResetSupported\"\xa8\x01\n" +
 	"\x18StartProvisioningRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\x05R\x0eorganizationId\x12)\n" +
 	"\x10enrollment_token\x18\x02 \x01(\tR\x0fenrollmentToken\x12\x1d\n" +
 	"\n" +
 	"cloud_host\x18\x03 \x01(\tR\tcloudHost\x12\x19\n" +
 	"\basset_id\x18\x04 \x01(\x05R\aassetId\"\x1b\n" +
-	"\x19StartProvisioningResponse\"\xdc\x01\n" +
+	"\x19StartProvisioningResponse\"\x98\x02\n" +
 	"\x12UnprovisionRequest\x124\n" +
 	"\x16expected_principal_uri\x18\x01 \x01(\tR\x14expectedPrincipalUri\x12>\n" +
 	"\x1bexpected_certificate_sha256\x18\x02 \x01(\tR\x19expectedCertificateSha256\x12)\n" +
 	"\x10revocation_proof\x18\x03 \x01(\fR\x0frevocationProof\x12%\n" +
-	"\x0ecloud_deletion\x18\x04 \x01(\fR\rcloudDeletion\"N\n" +
+	"\x0ecloud_deletion\x18\x04 \x01(\fR\rcloudDeletion\x12:\n" +
+	"\x19cloud_reset_authorization\x18\x05 \x01(\fR\x17cloudResetAuthorization\"N\n" +
 	"\x13UnprovisionResponse\x127\n" +
 	"\x17unenrollment_completion\x18\x01 \x01(\fR\x16unenrollmentCompletion\"\x94\x01\n" +
 	"\x1cRevokeACMECertificateRequest\x124\n" +

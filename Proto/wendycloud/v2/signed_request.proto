@@ -35,8 +35,10 @@ message SignedRequest {
   // (DeploymentService.CreateDeployment, ControlContainer), whose JWS is
   // forwarded verbatim to devices in PostboxEntry.request_jws.
   bytes signature = 3;
-  // pki-core tier-3 operations only: the operator's "management-request+jws",
-  // relayed verbatim as the fabric Envelope signed_artifact.
+  // The operator's "management-request+jws", relayed verbatim as the fabric
+  // Envelope signed_artifact. Required for pki-core tier-3 operations and for
+  // DeleteAsset on a PKI-bound device (op revoke_principal, same signing leaf).
+  // Other operations and unbound asset deletion leave this unset.
   optional bytes pki_management_request = 4;
   // The MCP channel the request came through (WDY-3657, docs/relay-mcp.md).
   // UNSPECIFIED = not MCP. Outside `signature`: client-asserted, as honest as
