@@ -120,6 +120,67 @@ interface, no application-owned NAN interface and the existing no-receive
 evidence. It remains limited to one attempt per provider run. Recovery never
 restarts the supplicant or station Wi-Fi.
 
+## Lite leaf carrier
+
+An opt-in `"leafListen": "0.0.0.0:43024"` in `local-mesh.json` enables a
+separate listener for Wendy Lite endpoints. It can be enabled alone or alongside
+the other carriers. The leaf always initiates, regardless of UUID ordering.
+The existing `WMT1` TCP/QUIC carrier is unchanged. No downgrade or fallback
+between the two protocols is attempted.
+
+The leaf sends `WML2`, its 16-byte tenant UUID and its 16-byte device UUID.
+This 36-byte preface is untrusted. TLS 1.3 then verifies both enrolled device
+certificates and pins the complete expected principal, in the same tenant,
+using ALPN `wendy-local-mesh-leaf/2`. Tickets, resumption and 0-RTT are disabled.
+The connection closes when either verified certificate chain expires. The
+ordinary length-prefixed JSON hello follows, with version 2, MTU 1320 and
+datagram limit 1100. Subsequent frames contain a one-byte kind and four-byte
+big-endian payload length: kind 1 carries a control message including its
+existing four-byte JSON length; kind 2 carries a Babel or IP-fragment datagram.
+Control messages retain the 64 KiB bound and IP packets the 1320-byte bound.
+
+The listener admits at most 32 pending or active connections, eight concurrent
+preface/TLS handshakes, and one active connection per authenticated leaf.
+Unauthenticated prefaces cannot reserve or replace a device's active session.
+The preface has a five-second deadline and the combined handshake an eight-second
+deadline. Cancellation closes connections and joins the routing/TUN workers.
+
+The Linux receive path limits a leaf to its own signed manifest, certificate
+bundle and exact derived /128 route. The shared verifier still checks signatures,
+revision, router ID, sequence number and lease expiry. Third-party announcements,
+aggregate routes, foreign next hops and wildcard retractions are rejected.
+Wildcard route requests and same-tenant identity lookups remain available for
+endpoint discovery. These checks use the same Babel decoder as the routing
+engine, including compressed prefixes and packet-local context.
+
+After transport reassembly, incoming IPv6 packets must carry the leaf's exact
+source ULA and a mesh destination. Outgoing packets must target that leaf's ULA.
+This first endpoint profile supports TCP, UDP and ICMPv6 without IPv6 extension
+headers. Its MTU is 1320, so endpoints must obey path MTU limits instead of
+emitting IPv6 fragments. The carrier fragments a valid full-size packet into
+at most two frames. Raw IPv4 and IP-in-IP sharing tunnels are refused, so this
+connection cannot serve as a transit path or use the built-in Internet-sharing
+data path. Application services can still proxy traffic.
+
+Leaf links do not implement catalogue relay. They are excluded from catalogue
+peer registration; service inventories, repair and freshness proofs use full-router
+neighbours only.
+
+This is a connection role. Current device certificates do not attest Lite
+hardware or prevent the same identity from implementing another enabled
+full-node carrier. The listener is configured explicitly; this change adds no
+public gRPC fields or automatic leaf discovery.
+
+`TestLeafRoutedEndpointIsolatedNamespace` verifies the configured TLS listener,
+signed route admission, full-MTU UDP and kernel ICMPv6 replies through the actual
+TUN/FIB, duplicate/source rejection and teardown. It runs inside an isolated
+Linux network namespace with NET_ADMIN and TUN. A container with read-only
+sysctls can supply the required IPv6 interface defaults and forwarding at
+creation; the router checks already-correct values without rewriting them.
+`TestLeafCManifestInteroperability` uses `WENDY_LITE_FIXTURE_TOOL` to verify the
+production C encoder/signer against the Go directory verifier, including integer
+precision, tampering, expiry and replay across restart.
+
 ## Identity and addressing
 
 The complete principal
@@ -190,6 +251,7 @@ Wendy Net router QUIC links require ALPN `wendy-net-router/2` and hello version
 2 with the explicit IP receive capability described below. BLE TLS streams use
 ALPN `wendy-local-mesh-ble/2-catalog-1-cert-1` and their independent hello version
 2, with no router IP capability.
+The opt-in leaf listener requires `wendy-local-mesh-leaf/2`.
 Upgrade each connected Wendy Net network together. This changes the internal
 Wendy Net wire contract, not public gRPC messages or application-session ALPNs.
 

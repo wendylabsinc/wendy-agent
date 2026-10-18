@@ -68,12 +68,22 @@ func streamWriteBudget(kind byte, size int) time.Duration {
 // OpenStreamHello binds a TLS byte stream to the expected mesh peer. The TLS
 // config must have pinned the enrolled peer certificate before this call.
 func OpenStreamHello(ctx context.Context, conn net.Conn, self, peer meshid.Device) error {
+	return OpenStreamHelloWithALPN(ctx, conn, self, peer, StreamALPN)
+}
+
+// OpenStreamHelloWithALPN binds the hello to one explicit carrier protocol.
+// Existing stream callers remain restricted to StreamALPN; leaf callers must
+// opt into LeafALPN and enforce their separate receive policy.
+func OpenStreamHelloWithALPN(ctx context.Context, conn net.Conn, self, peer meshid.Device, alpn string) error {
+	if alpn != StreamALPN && alpn != LeafALPN {
+		return errors.New("unsupported mesh stream protocol")
+	}
 	tlsConn, ok := conn.(*tls.Conn)
 	if !ok {
 		return errors.New("wendy net stream requires TLS")
 	}
 	state := tlsConn.ConnectionState()
-	if !state.HandshakeComplete || state.Version != tls.VersionTLS13 || state.NegotiatedProtocol != StreamALPN || len(state.PeerCertificates) == 0 {
+	if !state.HandshakeComplete || state.Version != tls.VersionTLS13 || state.NegotiatedProtocol != alpn || len(state.PeerCertificates) == 0 {
 		return errors.New("wendy net stream TLS is not authenticated")
 	}
 	if self.Principal() == peer.Principal() {
@@ -236,7 +246,11 @@ func (l *streamNodeLink) topTalker() (outKey talkerKey, outStat talkerStat, inKe
 }
 
 func newStreamNodeLink(conn net.Conn) *streamNodeLink {
-	l := &streamNodeLink{conn: conn, controls: make(chan ControlMessage, 128), packets: make(chan []byte, 128), routing: make(chan streamFrame, streamRoutingQueue), priority: make(chan streamFrame, streamPriorityQueue), fastIP: make(chan streamFrame, streamFastIPQueue), ip: make(chan streamFrame, streamIPQueue), ipPackets: newStreamIPSendQueue(), stop: make(chan struct{}), done: make(chan struct{}), diagIP: os.Getenv("WENDY_MESH_BLE_QUEUE_DIAG") == "1"}
+	return newBoundedStreamNodeLink(conn, 128)
+}
+
+func newBoundedStreamNodeLink(conn net.Conn, receiveCapacity int) *streamNodeLink {
+	l := &streamNodeLink{conn: conn, controls: make(chan ControlMessage, receiveCapacity), packets: make(chan []byte, receiveCapacity), routing: make(chan streamFrame, streamRoutingQueue), priority: make(chan streamFrame, streamPriorityQueue), fastIP: make(chan streamFrame, streamFastIPQueue), ip: make(chan streamFrame, streamIPQueue), ipPackets: newStreamIPSendQueue(), stop: make(chan struct{}), done: make(chan struct{}), diagIP: os.Getenv("WENDY_MESH_BLE_QUEUE_DIAG") == "1"}
 	go l.readLoop()
 	go l.writeLoop()
 	if l.diagIP {

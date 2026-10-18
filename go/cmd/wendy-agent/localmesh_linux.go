@@ -72,6 +72,9 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 		if cfg.Listen != "" || len(cfg.Peers) != 0 {
 			names = append(names, "TCP")
 		}
+		if cfg.LeafListen != "" {
+			names = append(names, "Leaf")
+		}
 		if cfg.NAN {
 			names = append(names, "NAN")
 		}
@@ -147,6 +150,9 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 		observe(node.Snapshot)
 		if cfg.Listen != "" || len(cfg.Peers) != 0 {
 			sharing.carriers.report(epoch, "TCP", localmesh.CarrierStatus{Ready: true})
+		}
+		if cfg.LeafListen != "" {
+			sharing.carriers.report(epoch, "Leaf", localmesh.CarrierStatus{Ready: true})
 		}
 		if err := catalog.Activate(runCtx, node.Credentials, node.Snapshot, vips, cfg.Ethernet, cfg.InfrastructureWiFi, node.ControlHub()); err != nil {
 			logger.Error("net service catalog unavailable", zap.Error(err))

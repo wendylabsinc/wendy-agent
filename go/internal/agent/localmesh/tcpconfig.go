@@ -20,6 +20,9 @@ type TCPConfig struct {
 	Peers  []TCPPeer `json:"peers"`
 	NAN    bool      `json:"nan,omitempty"`
 	BLE    bool      `json:"ble,omitempty"`
+	// LeafListen explicitly enables the separate TLS leaf carrier. It never
+	// changes the configured TCP/QUIC carrier or enables automatic fallback.
+	LeafListen string `json:"leafListen,omitempty"`
 
 	// devices holds the parsed peer identities, in the same order as Peers.
 	devices            []meshid.Device
@@ -83,11 +86,19 @@ func LoadTCPConfig(path string, self meshid.Device) (*TCPConfig, error) {
 		return nil, errors.New("wendy net config has trailing data")
 	}
 	if cfg.Listen == "" {
-		if (!cfg.NAN && !cfg.BLE && !cfg.Ethernet && !cfg.InfrastructureWiFi) || len(cfg.Peers) != 0 {
+		if (!cfg.NAN && !cfg.BLE && !cfg.Ethernet && !cfg.InfrastructureWiFi && cfg.LeafListen == "") || len(cfg.Peers) != 0 {
 			return nil, errors.New("listen is required for configured TCP peers; enable a carrier for discovery-only networking")
 		}
 	} else if err := validateTCPAddress(cfg.Listen, true); err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
+	}
+	if cfg.LeafListen != "" {
+		if err := validateTCPAddress(cfg.LeafListen, true); err != nil {
+			return nil, fmt.Errorf("leafListen: %w", err)
+		}
+		if cfg.LeafListen == cfg.Listen {
+			return nil, errors.New("leafListen must use a separate listener")
+		}
 	}
 	if len(cfg.Peers) > 64 {
 		return nil, errors.New("too many configured wendy net peers")

@@ -611,6 +611,12 @@ func sysctls(name string) error {
 		{"addr_gen_mode", "1", false},
 	} {
 		path := "/proc/sys/net/ipv6/conf/" + name + "/" + setting.name
+		// A namespace may preconfigure these defaults and mount sysctls
+		// read-only. Existing correct state needs no write; a differing or
+		// unreadable value still requires the normal successful update.
+		if current, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(current)) == setting.value {
+			continue
+		}
 		if err := os.WriteFile(path, []byte(setting.value+"\n"), 0o600); err != nil {
 			if setting.optional && errors.Is(err, os.ErrNotExist) {
 				continue

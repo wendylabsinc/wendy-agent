@@ -369,6 +369,13 @@ func (n *Node) handle(e nodeEvent) error {
 		if e.add.device.Principal() == n.Credentials.Device.Principal() {
 			return errors.New("self link")
 		}
+		if _, leaf := e.add.link.(*leafNodeLink); leaf {
+			for _, active := range n.peers {
+				if active.device == e.add.device {
+					return errors.New("leaf already has an active mesh link")
+				}
+			}
+		}
 		n.nextLink++
 		e.add.id = n.nextLink
 		tun, err := n.kernel.AddPeer(e.add.id, e.add.device)
@@ -379,16 +386,20 @@ func (n *Node) handle(e nodeEvent) error {
 		e.add.sync = NewSynchronizer(n.directory, n.cache)
 		n.peers[e.add.id] = e.add
 		p := e.add
-		n.controlHub.Add(ControlPeer{ID: p.id, Device: p.device}, func(ctx context.Context, data []byte) error {
-			select {
-			case p.catalog <- ControlMessage{Kind: "catalog", Catalog: data}:
-				return nil
-			case <-p.done:
-				return io.ErrClosedPipe
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}, func() { _ = p.link.Close() })
+		// The endpoint-only leaf protocol has no catalogue capability.
+		if _, leaf := p.link.(*leafNodeLink); !leaf {
+			n.controlHub.Add(ControlPeer{ID: p.id, Device: p.device}, func(ctx context.Context, data []byte) error {
+				select {
+				case p.catalog <- ControlMessage{Kind: "catalog", Catalog: data}:
+					return nil
+				case <-p.done:
+					return io.ErrClosedPipe
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}, func() { _ = p.link.Close() })
+		}
+
 		// Both ends derive the same complementary pair from the full UUIDs.
 		local, peer, err := meshid.LinkLocalAddresses(n.Credentials.Device, e.add.device)
 		if err != nil {
@@ -734,6 +745,9 @@ func (n *Node) readTUN(ctx context.Context, p *nodePeer) error {
 		if !validIP(packet) {
 			continue
 		}
+		if leaf, ok := p.link.(*leafNodeLink); ok && !leaf.admitsIP(packet, false) {
+			continue
+		}
 		n.gate.RLock()
 		allowed := !n.stopped && tunCarries(n, p.id, packet)
 		n.gate.RUnlock()
@@ -795,6 +809,9 @@ func (n *Node) readLink(ctx context.Context, p *nodePeer) error {
 			}
 			if packet == nil {
 				continue
+			}
+			if leaf, ok := p.link.(*leafNodeLink); ok && !leaf.admitsIP(packet, true) {
+				return errors.New("leaf sent an unauthorized IP packet")
 			}
 			switch packet[0] >> 4 {
 			case 4, 6:
