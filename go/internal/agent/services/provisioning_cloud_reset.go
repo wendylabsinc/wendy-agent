@@ -56,7 +56,7 @@ func (s *ProvisioningService) readProvisioningState() (*provisioningState, error
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return nil, err
 	}
-	if state.Unenrollment != nil && state.Unenrollment.Status == unenrollmentPending {
+	if state.LocalReset != nil || (state.Unenrollment != nil && state.Unenrollment.Status == unenrollmentPending) {
 		file, fileErr := os.Lstat(s.statePath())
 		directory, directoryErr := os.Stat(s.configPath)
 		if fileErr != nil || directoryErr != nil || !trustedResetStorage(file, directory) {
@@ -72,6 +72,9 @@ func (s *ProvisioningService) readProvisioningState() (*provisioningState, error
 // device identity: CLI receipt recovery separately anchors the historical leaf
 // to its configured roots before trusting a public status response.
 func validateUnenrollmentState(state *provisioningState) (*unenrollproof.Completion, error) {
+	if state.LocalReset != nil {
+		return nil, fmt.Errorf("local reset cannot carry Cloud completion evidence")
+	}
 	if state.Unenrollment == nil {
 		return nil, fmt.Errorf("reset authorization absent")
 	}
@@ -153,13 +156,16 @@ func (s *ProvisioningService) finishCloudReset() error {
 		Status: unenrollmentCompleted, Receipt: state.Unenrollment.Receipt,
 	}})
 }
-func (s *ProvisioningService) recoverCloudReset() error {
+func (s *ProvisioningService) recoverProvisioningReset() error {
 	state, err := s.readProvisioningState()
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	if state.LocalReset != nil {
+		return s.finishLocalReset()
 	}
 	if state.Unenrollment == nil {
 		return nil

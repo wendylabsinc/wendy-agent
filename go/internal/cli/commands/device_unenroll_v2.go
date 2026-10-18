@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -44,6 +45,8 @@ type v2AssetState struct {
 	Deleted *cloudpbv2.DeletedAsset
 }
 
+var errV2CloudAssetAbsent = errors.New("Cloud asset not found")
+
 // A status code or message alone is never deletion evidence.
 func v2AssetLookupResult(asset *cloudpbv2.Asset, err error) (*v2AssetState, error) {
 	if err == nil {
@@ -51,6 +54,12 @@ func v2AssetLookupResult(asset *cloudpbv2.Asset, err error) (*v2AssetState, erro
 	}
 	if status.Code(err) != codes.NotFound {
 		return nil, err
+	}
+	// An absent asset permits a separate, explicitly acknowledged local reset.
+	// It never proves Cloud deletion or certificate revocation. Unknown or
+	// malformed details are not an absence response and must not take this path.
+	if len(status.Convert(err).Proto().GetDetails()) == 0 {
+		return nil, fmt.Errorf("%w; no retained deletion proof: %w", errV2CloudAssetAbsent, err)
 	}
 	var deleted *cloudpbv2.DeletedAsset
 	for _, detail := range status.Convert(err).Details() {
@@ -206,10 +215,10 @@ func v2UnenrollCloudContext(ctx context.Context, auth *config.AuthConfig) (conte
 }
 
 func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, prov *agentpbv2.ProvisionedResponse, verifiedPeer *grpcpeer.Peer, override, assetOverride string, yes, checkOnly bool) error {
-	// SECURITY: only the authenticated-reset bit counts. CloudUnenrollmentSupported
-	// was advertised by prerelease Agents that trusted caller-supplied deletion
-	// fields, so it is ignored here, including for --check.
-	if !prov.GetCloudAuthenticatedResetSupported() {
+	// Prerelease CloudUnenrollmentSupported trusted caller-supplied deletion
+	// fields and never qualifies. Check the applicable reset capability again
+	// after lookup: Cloud proof and local absence recovery are separate modes.
+	if !prov.GetCloudAuthenticatedResetSupported() && !prov.GetLocalResetSupported() {
 		return fmt.Errorf("this Agent does not support Cloud-authenticated reset; update it with 'wendy device update' and retry; no mutation performed")
 	}
 	principal, err := certs.ParsePrincipal(prov.GetPrincipalUri())
@@ -255,16 +264,13 @@ func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, 
 			return fmt.Errorf("--asset-id requires a canonical UUID")
 		}
 	}
-	tlsInfo := verifiedPeer.AuthInfo.(credentials.TLSInfo)
-	leaf := tlsInfo.State.PeerCertificates[0]
-	issuers := append([]*x509.Certificate{}, tlsInfo.State.PeerCertificates[1:]...)
-	storedChain, _ := certs.ParseCertsFromPEM([]byte(auth.Certificates[0].PemCertificateChain))
-	issuers = append(issuers, storedChain...)
-	issuer, err := unenrollproof.Issuer(leaf, issuers)
-	if err != nil {
-		return err
+	tlsInfo, ok := verifiedPeer.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return fmt.Errorf("verified peer certificate unavailable; no mutation performed")
 	}
+	leaf := tlsInfo.State.PeerCertificates[0]
 	j.Serial = leaf.SerialNumber.Text(16)
+	var issuer *x509.Certificate
 	svc := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn)
 	ops := v2UnenrollOps{
 		lookup: func(ctx context.Context, id string) (*v2AssetState, error) {
@@ -317,9 +323,27 @@ func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 	reply, err := ops.lookup(ctx, j.AssetID)
 	if err != nil {
+		if errors.Is(err, errV2CloudAssetAbsent) {
+			if assetOverride != "" {
+				return fmt.Errorf("Cloud asset not found; cannot verify --asset-id against the device binding; retry without --asset-id to clear only the local enrollment")
+			}
+			return runV2LocalDeviceUnenroll(ctx, conn, prov, verifiedPeer, yes, checkOnly)
+		}
 		return fmt.Errorf("reading Cloud lifecycle (updated Cloud required): %w", err)
 	}
 	if _, err := v2UnenrollLifecycle(reply, &j); err != nil {
+		return err
+	}
+	if !prov.GetCloudAuthenticatedResetSupported() {
+		return fmt.Errorf("this Agent does not support Cloud-authenticated reset; update it with 'wendy device update' and retry; no mutation performed")
+	}
+	// Cloud cleanup still requires the installed leaf's issuer before mutation.
+	// An absent asset's local cleanup needs neither an issuer nor OCSP evidence.
+	issuers := append([]*x509.Certificate{}, tlsInfo.State.PeerCertificates[1:]...)
+	storedChain, _ := certs.ParseCertsFromPEM([]byte(auth.Certificates[0].PemCertificateChain))
+	issuers = append(issuers, storedChain...)
+	issuer, err = unenrollproof.Issuer(leaf, issuers)
+	if err != nil {
 		return err
 	}
 	if checkOnly {

@@ -43,6 +43,7 @@ type provisioningState struct {
 	PrincipalURI     string             `json:"principalURI,omitempty"`
 	ACMEDirectoryURL string             `json:"acmeDirectoryURL,omitempty"`
 	Unenrollment     *unenrollmentState `json:"unenrollment,omitempty"`
+	LocalReset       *localResetState   `json:"localReset,omitempty"`
 }
 
 // Public recovery evidence lives in the existing provisioning state, never
@@ -153,7 +154,7 @@ func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*tim
 	if len(clock) > 0 && clock[0] != nil {
 		svc.trustedTime = clock[0].FreshTime
 	}
-	svc.resetRecoveryErr = svc.recoverCloudReset()
+	svc.resetRecoveryErr = svc.recoverProvisioningReset()
 	if svc.resetRecoveryErr == nil {
 		svc.loadState()
 	}
@@ -418,6 +419,16 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 		return nil, status.Errorf(codes.Internal, "failed to delete provisioning state: %v", err)
 	}
 
+	before, cb := s.clearEnrollmentLocked()
+	locked = false
+	s.mu.Unlock()
+	notifyUnprovisioned(before, cb)
+	return &agentpb.UnprovisionResponse{}, nil
+}
+
+// clearEnrollmentLocked clears memory after durable credential cleanup. The
+// caller releases mu before invoking either returned callback.
+func (s *ProvisioningService) clearEnrollmentLocked() (BeforeUnprovisionedFunc, OnUnprovisionedFunc) {
 	// Zero the in-memory key before dropping the reference, then clear state.
 	for i := range s.keyPEM {
 		s.keyPEM[i] = 0
@@ -430,13 +441,14 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 	s.keyPEM = nil
 	s.certPEM = ""
 	s.chainPEM = ""
+	s.resetRecoveryErr = nil
 
 	s.logger.Info("Device unprovisioned; agent will restart into unprovisioned mode")
 
-	before, cb := s.BeforeUnprovisioned, s.OnUnprovisioned
-	locked = false
-	s.mu.Unlock()
+	return s.BeforeUnprovisioned, s.OnUnprovisioned
+}
 
+func notifyUnprovisioned(before BeforeUnprovisionedFunc, cb OnUnprovisionedFunc) {
 	if before != nil {
 		before()
 	}
@@ -450,8 +462,6 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 			cb()
 		}()
 	}
-
-	return &agentpb.UnprovisionResponse{}, nil
 }
 
 // clearStateFiles removes all on-disk provisioning artifacts: the state file,

@@ -47,9 +47,10 @@ func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.
 				PrincipalUri:   s.v1.principalURI,
 				// SECURITY: prerelease CLIs trusted CloudUnenrollmentSupported and
 				// sent caller-serialized deletion fields; keep it false so they stop
-				// before Cloud mutation. Only the authenticated-reset bit gates reset.
+				// before Cloud mutation. Only the authenticated-reset bit gates Cloud reset.
 				CloudUnenrollmentSupported:       false,
 				CloudAuthenticatedResetSupported: supportsTrustedResetStorage && s.v1.trustedTime != nil,
+				LocalResetSupported:              supportsTrustedResetStorage && s.v1.principalURI != "",
 			},
 		},
 	}, nil
@@ -68,6 +69,9 @@ func (s *ProvisioningServiceV2) StartProvisioning(ctx context.Context, req *agen
 }
 
 func (s *ProvisioningServiceV2) Unprovision(ctx context.Context, req *agentpbv2.UnprovisionRequest) (*agentpbv2.UnprovisionResponse, error) {
+	if req.GetLocalOnly() {
+		return s.localUnprovision(ctx, req)
+	}
 	s.v1.mu.Lock()
 	directPKI := s.v1.principalURI != ""
 	s.v1.mu.Unlock()

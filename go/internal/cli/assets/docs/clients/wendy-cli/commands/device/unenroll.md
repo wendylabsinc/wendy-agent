@@ -1,7 +1,9 @@
 # `wendy device unenroll`
 
-Removes a device's enrollment from Wendy Cloud. Cloud mode works when the device
-is offline or its firmware cannot run.
+Removes a device's enrollment from Wendy Cloud and clears its local credentials.
+If the Cloud asset is already absent, normal LAN unenrollment can clear the
+remaining local enrollment. Cloud mode works when the device is offline or its
+firmware cannot run and leaves local credentials intact.
 
 ## Usage
 
@@ -47,10 +49,34 @@ deletes the asset; the device then verifies Cloud's signed reset authorization
 and the certificate's revocation before erasing its credentials, and can enroll
 again with the same device ID. If any check fails, the device keeps its keys
 and the same command can be retried. Agents without Cloud-authenticated reset
-support are refused before any Cloud change; update them with
-`wendy device update` first. `--check` only verifies the Cloud binding and the
-Agent's support. Use `--cloud-only` when you intend to remove only the Cloud
-enrollment; this leaves local device credentials intact. See
+support are refused before any Cloud change.
+
+If Cloud returns `NotFound` with no retained deletion evidence, the same command
+defaults to clearing only the local enrollment over the LAN. It asks for
+confirmation, or accepts `--yes`. This requires an updated CLI and Go Agent,
+the Agent's `local_reset_supported` capability, an operator in the same tenant,
+and the exact authenticated device identity. Update the Agent with
+`wendy device update` first if it lacks support. The Swift Agent does not support
+this reset. No separate local-reset flag is needed.
+
+With `--json`, pass `--yes` to confirm local reset without an interactive prompt.
+
+The local reset removes credentials and saved Cloud connection state so the
+device can enroll again. It does not confirm Cloud deletion or certificate
+revocation. Authentication, permission and network failures stop the command,
+as do malformed or unrelated deletion details. Valid retained deletion evidence
+uses the normal Cloud flow. `--asset-id` requires a Cloud binding, so omit it
+when clearing an enrollment whose asset is absent.
+
+If the connection drops before the Agent acknowledges local reset, the command
+reports it as unconfirmed and retains the saved device identity pins. After
+verifying that your device reset, use `wendy device unpin <hostname-or-identity>`
+to clear its old pins before enrolling again. Local reset creates no Cloud
+completion receipt that a later command could use to confirm the lost reply.
+
+`--check` verifies the applicable Cloud or local reset path and the Agent's
+support without making changes. Use `--cloud-only` when you intend to remove
+only the Cloud enrollment; this leaves local device credentials intact. See
 [device unenrollment](../../../../device/unenrollment.mdx) and the
 [unenrollment compatibility requirements](./enroll.md#unenrollment-compatibility).
 
@@ -78,8 +104,8 @@ removal directly, without opening a device connection.
 | `--device` | Device selector. In cloud mode, accepts a cloud asset ID, name, or PKI device ID. |
 | `--cloud-only` | Remove the cloud enrollment without connecting to the device. Available on `wendy device unenroll`. |
 | `--cloud-grpc` | Cloud gRPC endpoint for the stored session used to remove the enrollment. |
-| `--asset-id` | Exact Cloud asset UUID for a WendyOS v2 device; must match its Cloud binding. Unavailable for cloud mode and Wendy Lite. |
-| `--check` | Verify the Cloud binding and the Agent's authenticated-reset support without changing anything. Unavailable for cloud mode and Wendy Lite. |
+| `--asset-id` | Exact Cloud asset UUID for a WendyOS v2 device; must match its Cloud binding. Refuses local reset if that binding is absent. Unavailable for cloud mode and Wendy Lite. |
+| `--check` | Verify the applicable Cloud or local reset path and Agent support without changing anything. Unavailable for cloud mode and Wendy Lite. |
 | `--yes` | Skip confirmation. Required when running non-interactively. |
 
 ## Related

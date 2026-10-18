@@ -1,21 +1,26 @@
 ---
-title: Cloud-owned device unenrollment
-description: Remove a UUID-enrolled device from Cloud and safely erase local credentials.
+title: UUID device unenrollment
+description: Remove a UUID-enrolled device from Cloud and erase its local credentials, including when its Cloud asset is already absent.
 ---
 
-# Cloud-owned device unenrollment
+# UUID device unenrollment
 
 `wendy device unenroll` uses the device's authenticated identity to select its
 cleanup path. Numeric Cloud v1 keeps its original local-reset-first, best-effort
 Cloud cleanup. UUID/direct PKI devices use Cloud revocation and retained deletion
-evidence before guarded local credential erasure; they never fall back to v1.
+evidence before guarded local credential erasure. If an authenticated Cloud
+lookup returns no asset and no retained deletion evidence, the command offers
+to clear the local enrollment over the LAN instead. This is the default behavior;
+no extra flag is needed. UUID devices never fall back to v1.
 
 ## UUID device flow
 
-1. Verify the direct LAN mTLS device identity and exact Cloud asset/tenant/device
-   binding. Compatible Cloud and Agent builds are required; the Agent must report
-   `cloud_authenticated_reset_supported`. The unsafe prerelease
-   `cloud_unenrollment_supported` flag is ignored; older Agents are refused before mutation.
+1. Verify the direct LAN mTLS device identity, the operator's tenant and the
+   device's saved Cloud endpoint. Query Cloud for that exact tenant and device.
+   An active asset or valid retained deletion evidence uses the following Cloud
+   flow, which requires `cloud_authenticated_reset_supported`. The prerelease
+   `cloud_unenrollment_supported` flag is ignored. A bare `NotFound` uses the
+   local reset described below, which requires `local_reset_supported`.
 2. Sign the exact Cloud deletion request with the operator certificate. Cloud
    enforces `device:delete`, revokes the device principal through PKI, then writes
    its retained deletion record and audit. PKI's existing revocation path supplies
@@ -35,9 +40,33 @@ evidence before guarded local credential erasure; they never fall back to v1.
    already succeeded.
 
 The UUID command has a three-minute total bound. `--check` is read-only: it checks
-Cloud binding and Agent capability, without revocation, deletion, reset, proof
-import or a CLI journal. `--asset-id` validates the selected UUID; it cannot
-redirect cleanup to another device.
+the applicable Cloud or local reset path and Agent capability, without revocation,
+deletion, reset, proof import or a CLI journal. `--asset-id` validates the selected
+UUID against Cloud's binding. It refuses a local reset when that binding is
+absent; omit it to use the device's authenticated identity.
+
+## When the Cloud asset is absent
+
+Run the same `wendy device unenroll` command from your laptop over the device's
+direct LAN mTLS connection. After an authenticated `GetAsset` returns `NotFound`
+with no details, the CLI asks to remove the local enrollment. `--yes` accepts
+that confirmation. The Agent must advertise `local_reset_supported`, and the
+operator must authenticate in the device's tenant. The reset request must match
+the installed device identity and certificate fingerprint.
+
+This removes the local enrollment credentials and saved Cloud connection state,
+so the device can enroll again. It does not revoke certificates or create Cloud
+deletion evidence. The command reports a local reset, without claiming that Cloud
+deleted the asset or revoked the old certificate.
+
+A valid retained `DeletedAsset` still uses the Cloud flow. Malformed, duplicate
+or unrelated error details cannot trigger a local reset. Authentication,
+permission, network and other lookup errors also stop the command. A Cloud
+tunnel or plaintext connection cannot authorize this reset.
+
+Update both the CLI and Go Agent before using this behavior. Older Agents that
+do not advertise local reset support refuse the operation. The Swift Agent does
+not support it.
 
 Removal-only unenrollment does not require fresh FIDO2/passkey step-up under AAA
 v0.22/v0.24. Yes/No and `--yes` confirm intent, not identity. Authentication,
@@ -53,13 +82,18 @@ current membership and ACLs with deny precedence, not freezing prior grants.
 
 ## Interrupted cleanup and lost replies
 
-Recovery uses the existing Agent `provisioning.json` only, with public signed
+Cloud reset recovery uses the existing Agent `provisioning.json` only, with public signed
 pending/completed evidence, originally authenticated Cloud key and public
 operator certificate. An ordinary restart verifies and resumes valid protected
 pending erasure without a network query; proof-less historical pending records
 remain blocked. Unprotected state, symlinks or writable directories cannot
 supply reset authority. Failures retain credentials or block incomplete reset.
 There is no additional Agent recovery file or durable CLI workflow journal.
+
+For a local reset, the Agent durably saves a separate pending state before
+removing credentials. Startup resumes that cleanup before serving an enrollment.
+This state cannot be used as Cloud deletion proof and produces no Cloud
+completion receipt.
 
 A completed receipt proves the prior principal's operation, not the current
 identity of the machine answering. The CLI anchors its historical certificate
