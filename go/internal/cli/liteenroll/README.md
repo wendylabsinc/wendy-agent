@@ -27,7 +27,10 @@ checked again before minting in case the board's capabilities changed. The board
 still verifies the complete issued certificate chain.
 
 For Cloud relays, a matching P-256 device certificate whose issuer is absent from
-the operator session's trust bundle triggers verified HTTPS discovery of that
-tenant's P-256 device roots. The CLI then repeats full device certificate and
-identity verification. A successful existing chain requires no discovery, and
-peer-supplied certificates never become trust anchors.
+the operator session's trust bundle triggers a fetch of the tenant's Lite Device
+CA chain (`cacerts?chain_algorithm=ECDSA_P256&full_chain=true`). That chain is
+public CA material and only supplies intermediates: the device certificate must
+chain through the ML-DSA-signed Lite Device CA to the operator session's trust
+bundle. Fetched and peer-supplied certificates never become trust anchors. The
+chain is cached per session for 15 minutes. A successful existing chain requires
+no fetch.

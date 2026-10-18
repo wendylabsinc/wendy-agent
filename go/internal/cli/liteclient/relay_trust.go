@@ -10,13 +10,16 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 )
 
-// addRelayDeviceTrustFallback keeps the normal verifier authoritative. A
-// separate tenant device CA is discovered only for a matching P-256 peer whose
-// issuer is absent from the selected session's existing trust bundle.
+// addRelayDeviceTrustFallback keeps the normal verifier authoritative. Only for
+// a matching P-256 peer whose issuer is absent from the selected session's trust
+// bundle does it load the tenant's Lite Device CA chain. That chain is public
+// and untrusted: the leaf must chain through it to the session's own trust
+// bundle, and nothing loaded becomes a trust anchor.
 func addRelayDeviceTrustFallback(ctx context.Context, cfg *tls.Config, operator tls.Certificate, chain, deviceID string, discover func(context.Context) (string, error)) {
 	if discover == nil {
 		return
@@ -54,14 +57,19 @@ func addRelayDeviceTrustFallback(ctx context.Context, cfg *tls.Config, operator 
 				return err
 			}
 		}
-		roots, discoverErr := discover(ctx)
+		lite, discoverErr := discover(ctx)
 		if discoverErr != nil {
-			return fmt.Errorf("discovering P-256 device trust: %w", discoverErr)
+			return fmt.Errorf("discovering Lite device CA chain: %w", discoverErr)
 		}
-		fallback, buildErr := deviceTLSConfig(operator, roots, deviceID)
-		if buildErr != nil {
-			return buildErr
+		intermediates, parseErr := certs.ParseCertsFromPEM([]byte(lite))
+		if parseErr != nil || len(intermediates) == 0 {
+			return fmt.Errorf("invalid Lite device CA chain")
 		}
-		return fallback.VerifyConnection(state)
+		intermediates = append(intermediates, state.PeerCertificates[1:]...)
+		now := time.Now()
+		if verifyErr := certs.VerifyPeerCertificateChain(leaf, intermediates, known, x509.ExtKeyUsageServerAuth, now, now); verifyErr != nil {
+			return fmt.Errorf("Lite device certificate does not chain to the session trust: %w", verifyErr)
+		}
+		return nil
 	}
 }

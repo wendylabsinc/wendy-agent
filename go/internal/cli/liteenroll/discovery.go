@@ -182,6 +182,26 @@ func discoveryRoots(body []byte, contentType string) ([]byte, error) {
 }
 
 func discoveryRootsForProfile(body []byte, contentType string, profile TrustProfile) ([]byte, error) {
+	certs, err := discoveryCertificates(body, contentType)
+	if err != nil {
+		return nil, err
+	}
+	var roots []byte
+	seen := map[string]bool{}
+	for _, cert := range certs {
+		if cert.IsCA && bytes.Equal(cert.RawIssuer, cert.RawSubject) && !seen[string(cert.Raw)] {
+			seen[string(cert.Raw)] = true
+			roots = append(roots, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})...)
+		}
+	}
+	if err := validateTrustBundleForProfile(roots, profile); err != nil {
+		return nil, fmt.Errorf("discovered device roots: %w", err)
+	}
+	return roots, nil
+}
+
+// discoveryCertificates parses a PEM or EST certs-only CMS cacerts body.
+func discoveryCertificates(body []byte, contentType string) ([]*x509.Certificate, error) {
 	var certs []*x509.Certificate
 	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("-----BEGIN CERTIFICATE-----")) {
 		if err := validateTrustBundle(body); err != nil {
@@ -241,16 +261,5 @@ func discoveryRootsForProfile(body []byte, contentType string, profile TrustProf
 			certs = append(certs, cert)
 		}
 	}
-	var roots []byte
-	seen := map[string]bool{}
-	for _, cert := range certs {
-		if cert.IsCA && bytes.Equal(cert.RawIssuer, cert.RawSubject) && !seen[string(cert.Raw)] {
-			seen[string(cert.Raw)] = true
-			roots = append(roots, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})...)
-		}
-	}
-	if err := validateTrustBundleForProfile(roots, profile); err != nil {
-		return nil, fmt.Errorf("discovered device roots: %w", err)
-	}
-	return roots, nil
+	return certs, nil
 }

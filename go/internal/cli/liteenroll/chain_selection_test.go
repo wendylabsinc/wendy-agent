@@ -138,9 +138,6 @@ func TestDiscoveryRequiresP256ConfirmationBeforeMint(t *testing.T) {
 			if !proto.Equal(cfg, before) {
 				t.Fatal("unconfirmed discovery published trust")
 			}
-			if _, err := discoverP256DeviceRoots(context.Background(), srv.Client(), srv.URL+"/cacerts"); err == nil {
-				t.Fatal("relay trusted an unconfirmed P-256 authority")
-			}
 		})
 	}
 }

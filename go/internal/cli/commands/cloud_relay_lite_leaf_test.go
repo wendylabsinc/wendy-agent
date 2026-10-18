@@ -110,7 +110,7 @@ func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
 		t.Fatalf("Lite request alg = %v, want ES256", alg)
 	}
 	if options.DeviceTrustFallback == nil {
-		t.Fatal("missing lazy P-256 device authority discovery")
+		t.Fatal("missing lazy Lite device CA chain discovery")
 	}
 	// A later session switch must not redirect an in-flight device handshake's
 	// trust lookup. Cancellation proves the original valid target was selected
@@ -121,7 +121,7 @@ func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
 	cancel()
 	_, err = options.DeviceTrustFallback(ctx)
 	var lookupErr *url.Error
-	wantEndpoint := "https://est.selected.example/.well-known/est/" + liteTestTenant + "/cacerts?chain_algorithm=ECDSA_P256"
+	wantEndpoint := "https://est.selected.example/.well-known/est/" + liteTestTenant + "/cacerts?chain_algorithm=ECDSA_P256&full_chain=true"
 	if !errors.Is(err, context.Canceled) || !errors.As(err, &lookupErr) || lookupErr.URL != wantEndpoint {
 		t.Fatalf("device trust discovery did not retain its selected PKI and tenant: %v", err)
 	}

@@ -106,10 +106,15 @@ with the login. `WENDY_LITE_OPERATOR_CERT` (leaf and CA chain, PEM) and
 `WENDY_LITE_OPERATOR_KEY` override it with a pki-core-issued pair; the CLI
 rejects an identity that differs from the selected operator.
 
-The CLI verifies P-256 device chains against the tenant's device authority fetched
-over verified HTTPS from the selected PKI. This lookup is needed only when the
-existing session trust does not cover the device's issuer. It remains separate
-from the Lite operator authority used to authenticate the CLI to the device.
+The CLI verifies a P-256 device certificate through the tenant's Lite Device CA,
+which the tenant Intermediate signs with ML-DSA, up to the trust the ML-DSA login
+already holds. It fetches that CA chain from the selected PKI only when the
+session trust does not cover the device's issuer, and reuses it for 15 minutes.
+A CA that does not chain to the session trust is refused, including the
+self-signed copy the board pins. The CLI checks the chain, validity and the exact
+device identity in your tenant. It does not check the device certificate's
+revocation status. This authority remains separate from the Lite operator authority used to
+authenticate the CLI to the device.
 
 The broker authenticates the device's initial mTLS control connection, requests an
 upgrade, and closes that TLS session without closing TCP. It then forwards opaque

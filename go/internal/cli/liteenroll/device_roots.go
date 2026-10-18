@@ -1,6 +1,7 @@
 package liteenroll
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -18,31 +19,32 @@ import (
 
 const chainAlgorithmHeader = "X-Wendy-Chain-Algorithm"
 
-// DiscoverP256DeviceRoots retrieves a tenant's Lite device authority from the
-// selected PKI over verified HTTPS. Peer-supplied certificates are never used
-// as trust anchors. Callers still verify the expected device identity and chain.
-func DiscoverP256DeviceRoots(ctx context.Context, pkiEndpoint, tenantID string) ([]byte, error) {
+// DiscoverLiteDeviceCAChain fetches the selected tenant's ML-DSA-signed Lite
+// Device CA with its tenant and customer Intermediates. This is public CA
+// material: callers use it only as untrusted intermediates that must chain to
+// the operator session's trust bundle, never as trust anchors.
+func DiscoverLiteDeviceCAChain(ctx context.Context, pkiEndpoint, tenantID string) (string, error) {
 	id, err := uuid.Parse(tenantID)
 	if err != nil || id.String() != tenantID || id == uuid.Nil {
-		return nil, fmt.Errorf("invalid tenant for Lite device CA discovery")
+		return "", fmt.Errorf("invalid tenant for Lite device CA discovery")
 	}
 	host := cloudenroll.PKISiblingHost(pkiEndpoint, "est")
 	if host == "" {
-		return nil, fmt.Errorf("selected session has no PKI CA discovery endpoint")
+		return "", fmt.Errorf("selected session has no PKI CA discovery endpoint")
 	}
-	endpoint := "https://" + host + "/.well-known/est/" + tenantID + "/cacerts?chain_algorithm=" + cloudrequest.EnrollmentChainP256
-	return discoverP256DeviceRoots(ctx, http.DefaultClient, endpoint)
+	endpoint := "https://" + host + "/.well-known/est/" + tenantID + "/cacerts?chain_algorithm=" + cloudrequest.EnrollmentChainP256 + "&full_chain=true"
+	return discoverLiteDeviceCAChain(ctx, http.DefaultClient, endpoint)
 }
 
-func discoverP256DeviceRoots(ctx context.Context, client *http.Client, endpoint string) ([]byte, error) {
+func discoverLiteDeviceCAChain(ctx context.Context, client *http.Client, endpoint string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	if req.URL.Scheme != "https" || req.URL.User != nil || req.URL.Fragment != "" {
-		return nil, fmt.Errorf("Lite device CA discovery requires HTTPS without credentials or fragment")
+		return "", fmt.Errorf("Lite device CA discovery requires HTTPS without credentials or fragment")
 	}
 	secureClient := *client
 	secureClient.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -50,23 +52,37 @@ func discoverP256DeviceRoots(ctx context.Context, client *http.Client, endpoint 
 	}
 	resp, err := secureClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("discovering P-256 device trust: %w", err)
+		return "", fmt.Errorf("discovering Lite device CA chain: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.TLS == nil || len(resp.TLS.VerifiedChains) == 0 {
-		return nil, fmt.Errorf("Lite device CA discovery HTTPS connection was not verified")
-	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Lite device CA discovery returned HTTP %d", resp.StatusCode)
+		return "", fmt.Errorf("Lite device CA discovery returned HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024+1))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	if len(body) > 128*1024 {
-		return nil, fmt.Errorf("Lite device CA discovery response too large")
+		return "", fmt.Errorf("Lite device CA discovery response too large")
 	}
-	return p256DiscoveryRoots(body, resp.Header)
+	certs, err := discoveryCertificates(body, resp.Header.Get("Content-Type"))
+	if err != nil {
+		return "", fmt.Errorf("discovering Lite device CA chain: %w", err)
+	}
+	var chain []byte
+	chained := false
+	for _, cert := range certs {
+		if !cert.IsCA {
+			continue
+		}
+		chained = chained || !bytes.Equal(cert.RawIssuer, cert.RawSubject)
+		chain = append(chain, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})...)
+	}
+	// A PKI without full_chain support answers with the self-signed twin only.
+	if !chained {
+		return "", fmt.Errorf("PKI did not return the platform-chained Lite device CA; update PKI to support full_chain")
+	}
+	return string(chain), nil
 }
 
 func p256DiscoveryRoots(body []byte, header http.Header) ([]byte, error) {
