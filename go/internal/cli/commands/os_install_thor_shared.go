@@ -56,6 +56,14 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 	// failure never surprises the user mid-flash (WDY-1843). On a successful sudo
 	// re-exec this replaces the process and does not return. Windows elevates
 	// only the driver helper via UAC if either USB stage needs a binding repair.
+	// The local key must be created as the invoking user: the sudo re-exec
+	// below only loads it (localkey refuses to create one under sudo, where it
+	// would be root's), from the same config dir (ensureThorRootAccess pins it).
+	if !preOpts.localAccess.noLocalKey {
+		if _, err := loadLocalKey(); err != nil {
+			return err
+		}
+	}
 	if err := ensureThorRootAccess(); err != nil {
 		return err
 	}
@@ -97,7 +105,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 	if err != nil {
 		return err
 	}
-	trustedKeys, err := resolveTrustedKeysSeed(preOpts.localAccess, os.Stdout)
+	trustedKeys, err := resolveTrustedKeysSeed(preOpts.localAccess, plan.version, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -236,6 +244,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 	}
 
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed WendyOS %s — power-cycle the Thor out of recovery to boot it. (press the right button once)", plan.version)))
+	printOwnerKeys(os.Stdout, trustedKeys)
 	printFirstBootVerification(thorDeviceType, plan.version)
 	return nil
 }
@@ -274,11 +283,16 @@ func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceN
 	// still provisions wifi/enrollment, falling back to the agent baked into the
 	// image.
 	detail("downloading agent")
+	// Without a downloaded agent the baked one boots; resolveTrustedKeysSeed
+	// already gated the image version.
 	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
 		fmt.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
 	} else {
 		detail("agent " + agentVer)
+		if err := checkSeedAgent(trustedKeys, agentVer); err != nil {
+			return err
+		}
 	}
 
 	d, err := diskfs.Open(img)

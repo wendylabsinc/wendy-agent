@@ -112,3 +112,18 @@ func TestInstallJobCommandsHaveNoInteractiveFallback(t *testing.T) {
 		t.Fatalf("status accepted path as job ID: %v", err)
 	}
 }
+
+func TestInstallJobsRefuseWithoutNoLocalKey(t *testing.T) {
+	if _, err := planInstallJob(context.Background(), onboarding.Options{DeviceType: "raspberry-pi-5"}); err != errInstallJobNoOwnerKey {
+		t.Fatalf("planInstallJob = %v, want the owner-key refusal", err)
+	}
+	// A job saved before the refusal existed is stopped by the worker.
+	j := &onboarding.Job{ID: "j", Options: onboarding.Options{DeviceType: "raspberry-pi-5"}, Plan: &onboarding.Plan{Method: "raw-media"}}
+	err := executeInstallJob(context.Background(), j, func(string, bool) error {
+		t.Fatal("refused job reached a checkpoint")
+		return nil
+	})
+	if err != errInstallJobNoOwnerKey {
+		t.Fatalf("executeInstallJob = %v, want the owner-key refusal", err)
+	}
+}

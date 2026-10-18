@@ -389,7 +389,7 @@ func installDragonwing(ctx context.Context, board dragonwingBoard, version strin
 	if err != nil {
 		return err
 	}
-	trustedKeys, err := resolveTrustedKeysSeed(preOpts.localAccess, os.Stdout)
+	trustedKeys, err := resolveTrustedKeysSeed(preOpts.localAccess, plan.version, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -456,7 +456,11 @@ func installDragonwing(ctx context.Context, board dragonwingBoard, version strin
 	}
 	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version),
 		run.steps(flashCtx), cancelFlash, logW)
-	return finishDragonwingFlash(os.Stdout, board, run.collected(), plan.version, err, failedID == stepFlashPartitions)
+	if err := finishDragonwingFlash(os.Stdout, board, run.collected(), plan.version, err, failedID == stepFlashPartitions); err != nil {
+		return err
+	}
+	printOwnerKeys(os.Stdout, trustedKeys)
+	return nil
 }
 
 // dragonwingFlashRun holds what the flash steps share: the closures fill
@@ -581,9 +585,16 @@ func planDragonwingFlash(seedDir, bundleDir, zerosPath string, creds []wendyconf
 		return nil, err
 	}
 
-	agent, agentWarning := resolveSeedAgent(out, detail)
+	agent, agentVer, agentWarning := resolveSeedAgent(out, detail)
 	if agentWarning != "" {
 		warn(agentWarning)
+	}
+	// Without a downloaded agent the baked one boots; resolveTrustedKeysSeed
+	// already gated the image version.
+	if len(agent) > 0 {
+		if err := checkSeedAgent(trustedKeys, agentVer); err != nil {
+			return nil, err
+		}
 	}
 	img, err := buildDragonwingConfigImage(seedDir, plan, agent, creds, deviceName, provJSON, trustedKeys)
 	if err == nil {

@@ -102,6 +102,10 @@ var linuxDesktopConfigLoad = config.Load
 // short-lived enrollment token and prints the pre-enrollment one-liner. It
 // never writes a drive or downloads an image.
 func installDesktop(ctx context.Context, preOpts preEnrollOptions, deviceName, machineLabel string) error {
+	if err := rejectLocalAccessFlags(preOpts.localAccess, machineLabel+" via agent.sh"); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, tui.WarningMessage(machineLabel+" installs (agent.sh) seed no owner key."))
 	interactive := isInteractiveTerminal()
 
 	cfg, err := linuxDesktopConfigLoad()

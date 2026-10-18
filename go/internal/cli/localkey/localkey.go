@@ -35,11 +35,20 @@ func Path() (string, error) {
 	return filepath.Join(dir, FileName), nil
 }
 
+// geteuid is a variable so tests can run as root.
+var geteuid = os.Geteuid
+
 // LoadOrCreate returns the key at path, generating it when absent.
 func LoadOrCreate(path string) (crypto.Signer, error) {
 	key, err := load(path)
 	if !errors.Is(err, os.ErrNotExist) {
 		return key, err
+	}
+	// Under sudo a new key would be root's: root-owned in the user's config
+	// dir, where their own CLI cannot read it, or under /root when sudo resets
+	// HOME, where their CLI never looks. Only the user may create it.
+	if uid := os.Getenv("SUDO_UID"); geteuid() == 0 && uid != "" && uid != "0" {
+		return nil, fmt.Errorf("%s does not exist and wendy is running under sudo; run wendy without sudo so the key is created as your user", path)
 	}
 	keyPEM, err := certs.GenerateMLDSAKeyPair()
 	if err != nil {

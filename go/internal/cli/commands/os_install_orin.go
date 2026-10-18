@@ -79,7 +79,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	if err != nil {
 		return err
 	}
-	trustedKeys, err := resolveTrustedKeysSeed(opts.PreEnroll.localAccess, os.Stdout)
+	trustedKeys, err := resolveTrustedKeysSeed(opts.PreEnroll.localAccess, opts.Version, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -249,6 +249,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 		return err
 	}
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Recovered %s %s with WendyOS %s; the Jetson will reboot after the final LUN is released.", opts.DeviceName, strings.ToUpper(opts.Storage), opts.Version)))
+	printOwnerKeys(os.Stdout, trustedKeys)
 	printFirstBootVerification(opts.DeviceType, opts.Version)
 	return nil
 }
@@ -371,11 +372,16 @@ func prepareT234Workspace(fp *flashpack.Flashpack) (workspace, layoutPath string
 
 func injectRecoveryConfig(imagePath string, creds []wendyconf.WifiCredential, deviceName string, provJSON, trustedKeys []byte, out io.Writer, detail func(string)) error {
 	detail("downloading agent")
+	// Without a downloaded agent the baked one boots; resolveTrustedKeysSeed
+	// already gated the image version.
 	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
 		fmt.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
 	} else {
 		detail("agent " + agentVer)
+		if err := checkSeedAgent(trustedKeys, agentVer); err != nil {
+			return err
+		}
 	}
 	d, err := diskfs.Open(imagePath)
 	if err != nil {

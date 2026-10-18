@@ -42,16 +42,16 @@ func writeDragonwingZeros(dir string) (string, error) {
 // network step in a flash, so an offline re-flash must still seed wifi and
 // enrollment. The warning it returns is for the caller to surface — a step's own
 // output only reaches the screen when that step fails.
-func resolveSeedAgent(out io.Writer, detail func(string)) ([]byte, string) {
+func resolveSeedAgent(out io.Writer, detail func(string)) (agent []byte, version, warning string) {
 	detail("downloading agent")
 	agent, version, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
 		// Written to out as well, so the flash log keeps it for a post-mortem.
 		fmt.Fprintf(out, "warning: could not download wendy-agent (%v)\n", err)
-		return nil, fmt.Sprintf("could not download wendy-agent (%v); the board keeps the agent baked into its image", err)
+		return nil, "", fmt.Sprintf("could not download wendy-agent (%v); the board keeps the agent baked into its image", err)
 	}
 	detail("agent " + version)
-	return agent, ""
+	return agent, version, ""
 }
 
 // newConfigFS creates and formats a bare FAT32 config image. The caller closes

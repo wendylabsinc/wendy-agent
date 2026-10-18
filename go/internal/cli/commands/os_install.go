@@ -129,8 +129,8 @@ Flags can be provided progressively — omitted values trigger interactive picke
 			}
 
 			if len(args) == 2 {
-				if localAccess.noLocalKey || len(localAccess.trustedKeyFiles) > 0 {
-					return usageErrorf("--no-local-key and --trusted-key need a manifest-backed install: positional [image] [drive] writes no config partition")
+				if err := rejectLocalAccessFlags(localAccess, "positional [image] [drive]"); err != nil {
+					return err
 				}
 				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("Positional [image] [drive] installs seed no owner key: until it is enrolled, the device accepts unauthenticated connections from anyone on its network."))
 				return runOSInstallDirect(cmd.Context(), args[0], args[1], force, yesOverwriteInternal)
@@ -600,6 +600,9 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	device := deviceMap[selected]
 
 	if device.IsESP32 {
+		if err := rejectLocalAccessFlags(preOpts.localAccess, "Wendy Lite firmware"); err != nil {
+			return err
+		}
 		return installESP32Firmware(ctx, nightly, device.ESP32Board, discovery.SerialPortInfo{}, wifi, deviceName, preOpts)
 	}
 	if storageOverride == "emmc" && selected != orinDeviceType {
@@ -936,7 +939,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	if err != nil {
 		return err
 	}
-	trustedKeys, err := resolveTrustedKeysSeed(preOpts.localAccess, os.Stdout)
+	trustedKeys, err := resolveTrustedKeysSeed(preOpts.localAccess, imgInfo.Version, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -1196,6 +1199,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	fmt.Printf("\nSuccessfully installed %s %s on %s.\n", device.Name, imgInfo.Version, targetDrive.Name)
 	fmt.Println("You can now insert the drive into your device and power it on.")
+	printOwnerKeys(os.Stdout, trustedKeys)
 	printFirstBootVerification(deviceKey, imgInfo.Version)
 	return nil
 }
@@ -2646,6 +2650,9 @@ func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceN
 		return fmt.Errorf("resolving agent binary: %w", err)
 	}
 	fmt.Printf("Using wendy-agent %s\n", agentVer)
+	if err := checkSeedAgent(trustedKeys, agentVer); err != nil {
+		return err
+	}
 
 	return writeConfigPartition(d, agentBinary, creds, deviceName, provisioningJSON, trustedKeys)
 }

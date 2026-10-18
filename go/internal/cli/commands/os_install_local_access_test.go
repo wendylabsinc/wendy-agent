@@ -2,10 +2,13 @@ package commands
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -68,7 +71,7 @@ func seedSPKI(t *testing.T, e trustedKeyEntry) []byte {
 func TestResolveTrustedKeysSeedSeedsTheLocalKeyAsOwner(t *testing.T) {
 	keyPath := useLocalKeyPath(t)
 	var out bytes.Buffer
-	data, err := resolveTrustedKeysSeed(localAccessOptions{}, &out)
+	data, err := buildTrustedKeysSeed(localAccessOptions{}, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,15 +94,77 @@ func TestResolveTrustedKeysSeedSeedsTheLocalKeyAsOwner(t *testing.T) {
 	if strings.Contains(string(data), "PRIVATE") {
 		t.Fatal("seed carries private key material")
 	}
-	if !strings.Contains(out.String(), "sha256:") {
-		t.Errorf("output does not name the owner key fingerprint: %q", out.String())
+	// The owner key is claimed only once the seed is on the medium.
+	if strings.Contains(out.String(), "Owner key") {
+		t.Errorf("building the seed already claims an owner key: %q", out.String())
+	}
+	out.Reset()
+	printOwnerKeys(&out, data)
+	sum := sha256.Sum256(want)
+	if line := "Owner key for the device: " + e.Label + " (sha256:" + hex.EncodeToString(sum[:]) + ")"; !strings.Contains(out.String(), line) {
+		t.Errorf("printOwnerKeys = %q, want %q", out.String(), line)
+	}
+}
+
+func TestCheckLocalKeyVersion(t *testing.T) {
+	for _, tc := range []struct {
+		got, min string
+		ok       bool
+	}{
+		{"0.20.0", "0.20.0", true},
+		{"v0.21.1", "0.20.0", true},
+		{"2026.10.20-120000", "2026.10.19-090000", true},
+		{"0.19.5", "0.20.0", false},
+		{"2026.10.18-115727", "2026.10.19-090000", false},
+		{"nightly-20261018T111855", "0.20.0", false}, // cannot be placed
+		{"", "0.20.0", false},
+		{"9.9.9", localKeyVersionUnset, false}, // floor not set: refuse all
+	} {
+		err := checkLocalKeyVersion("WendyOS", tc.got, tc.min)
+		if (err == nil) != tc.ok {
+			t.Errorf("checkLocalKeyVersion(%q, %q) = %v, want ok=%v", tc.got, tc.min, err, tc.ok)
+		}
+		if err != nil && (!strings.Contains(err.Error(), tc.min) || !strings.Contains(err.Error(), "--no-local-key")) {
+			t.Errorf("error %q does not name the minimum %q and --no-local-key", err, tc.min)
+		}
+	}
+}
+
+// Until the release is cut, every seeding install is refused before anything
+// is written, and --no-local-key is the only way through.
+func TestResolveTrustedKeysSeedRefusesUntilTheFloorIsSet(t *testing.T) {
+	useLocalKeyPath(t)
+	var out bytes.Buffer
+	if _, err := resolveTrustedKeysSeed(localAccessOptions{}, "0.19.5", &out); err == nil || !strings.Contains(err.Error(), minLocalKeyImageVersion) {
+		t.Fatalf("err = %v, want a refusal naming %s", err, minLocalKeyImageVersion)
+	}
+	if strings.Contains(out.String(), "Owner key") {
+		t.Errorf("a refused install claimed an owner key: %q", out.String())
+	}
+	if data, err := resolveTrustedKeysSeed(localAccessOptions{noLocalKey: true}, "0.19.5", &out); err != nil || data != nil {
+		t.Fatalf("--no-local-key = (%q, %v), want no seed and no error", data, err)
+	}
+	if err := checkSeedAgent([]byte("{}"), "2026.10.18-115727"); err == nil || !strings.Contains(err.Error(), minLocalKeyAgentVersion) {
+		t.Fatalf("checkSeedAgent = %v, want a refusal naming %s", err, minLocalKeyAgentVersion)
+	}
+	if err := checkSeedAgent(nil, "2026.10.18-115727"); err != nil {
+		t.Fatalf("checkSeedAgent without a seed = %v, want nil", err)
+	}
+}
+
+func TestDesktopInstallRejectsLocalAccessFlags(t *testing.T) {
+	for _, opts := range []localAccessOptions{{noLocalKey: true}, {trustedKeyFiles: []string{"ops.pub"}}} {
+		err := installDesktop(context.Background(), preEnrollOptions{mode: preEnrollSkip, localAccess: opts}, "", headlessMacMachineLabel)
+		if err == nil || !strings.Contains(err.Error(), "not supported on this install type") {
+			t.Errorf("installDesktop(%+v) = %v, want a refusal", opts, err)
+		}
 	}
 }
 
 func TestResolveTrustedKeysSeedAddsTrustedKeyFiles(t *testing.T) {
 	useLocalKeyPath(t)
 	ops, opsSPKI := writePublicKeyFile(t, "ops.pub")
-	data, err := resolveTrustedKeysSeed(localAccessOptions{trustedKeyFiles: []string{ops}}, &bytes.Buffer{})
+	data, err := buildTrustedKeysSeed(localAccessOptions{trustedKeyFiles: []string{ops}}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +178,7 @@ func TestResolveTrustedKeysSeedNoLocalKey(t *testing.T) {
 	keyPath := useLocalKeyPath(t)
 
 	var out bytes.Buffer
-	data, err := resolveTrustedKeysSeed(localAccessOptions{noLocalKey: true}, &out)
+	data, err := buildTrustedKeysSeed(localAccessOptions{noLocalKey: true}, &out)
 	if err != nil || data != nil {
 		t.Fatalf("got (%q, %v), want no seed", data, err)
 	}
@@ -125,7 +190,7 @@ func TestResolveTrustedKeysSeedNoLocalKey(t *testing.T) {
 	}
 
 	ops, _ := writePublicKeyFile(t, "ops.pub")
-	data, err = resolveTrustedKeysSeed(localAccessOptions{noLocalKey: true, trustedKeyFiles: []string{ops}}, &bytes.Buffer{})
+	data, err = buildTrustedKeysSeed(localAccessOptions{noLocalKey: true, trustedKeyFiles: []string{ops}}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +221,7 @@ func TestResolveTrustedKeysSeedRejectsBadKeyFiles(t *testing.T) {
 		"duplicate":   {ops, ops},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := resolveTrustedKeysSeed(localAccessOptions{trustedKeyFiles: files}, &bytes.Buffer{}); err == nil {
+			if _, err := buildTrustedKeysSeed(localAccessOptions{trustedKeyFiles: files}, &bytes.Buffer{}); err == nil {
 				t.Fatal("accepted")
 			}
 		})

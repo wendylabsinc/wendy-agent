@@ -191,6 +191,9 @@ Enable `setup`, call `os_install_plan`, and inspect media with `os_list_drives`
 when applicable. `os_install_start` creates a persistent job for a supported
 raw-media or Jetson developer-kit recovery installation. It records the exact
 published artifact and checksum and returns physical instructions without writing.
+Jobs cannot seed an owner key, so `os_install_start` refuses to start unless
+`no_local_key=true` (the user's explicit choice to install without one; the
+terminal `wendy install` seeds it).
 G1 PC2 keeps vendor Ubuntu; agent-only installation follows the plan's terminal
 instructions instead of an image job.
 
