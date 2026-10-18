@@ -46,7 +46,7 @@ func TestConnectWithTLSResumesAcrossConnections(t *testing.T) {
 
 	pki := newIntegrationPKI(t) // same generator as Task 7, PEM for client too
 	srv, err := mtls.NewServer(pki.serverCertPEM, pki.caPEM, pki.serverKeyPEM,
-		zap.NewNop(), time.Time{}, nil,
+		zap.NewNop(), time.Time{},
 		&interceptor.Authorizer{Logger: zap.NewNop(), Listener: interceptor.ListenerMTLS, OrgMode: interceptor.OrgModeOff})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)

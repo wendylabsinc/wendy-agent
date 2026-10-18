@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/agent/trustedkeys"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"go.uber.org/zap"
@@ -359,4 +360,28 @@ func TestCloudEnrolledRefusesLocalOperators(t *testing.T) {
 	if err := handshake(t, cfg, local); err != nil {
 		t.Fatalf("local key refused after unenroll: %v", err)
 	}
+}
+
+// NewServer accepts only an Authorizer that identifies callers by their
+// certificate: the admin-socket and pre-enroll ones hand out a fixed role.
+func TestNewServerRequiresCertificateAuthorizer(t *testing.T) {
+	keyPEM, _ := certs.GenerateKeyPair()
+	certPEM, err := SelfSignedCert(keyPEM, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, _ := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	for _, l := range []interceptor.Listener{interceptor.ListenerAdminSocket, interceptor.ListenerPreEnroll} {
+		if _, err := NewServer(certPEM, "", keyPEM, nil, time.Time{}, &interceptor.Authorizer{Logger: zap.NewNop(), Listener: l, Keys: keys}); err == nil {
+			t.Errorf("NewServer accepted listener %d", l)
+		}
+	}
+	if _, err := NewServer(certPEM, "", keyPEM, nil, time.Time{}, nil); err == nil {
+		t.Error("NewServer accepted a nil Authorizer")
+	}
+	srv, err := NewServer(certPEM, "", keyPEM, nil, time.Time{}, &interceptor.Authorizer{Logger: zap.NewNop(), Listener: interceptor.ListenerMTLS, Keys: keys})
+	if err != nil {
+		t.Fatalf("NewServer with an mTLS Authorizer: %v", err)
+	}
+	srv.Stop()
 }

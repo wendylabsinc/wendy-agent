@@ -824,7 +824,7 @@ func main() {
 
 		authz := &interceptor.Authorizer{Logger: logger, Listener: interceptor.ListenerMTLS,
 			Keys: trustedKeys, Expected: expectedScope, OrgMode: effectiveMode}
-		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor, trustedKeys, authz,
+		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor, authz,
 			// The Authorizer is embedded inside mtls.NewServer and runs before
 			// these caller-provided interceptors.
 			grpc.ChainUnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),

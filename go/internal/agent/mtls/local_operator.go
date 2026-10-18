@@ -1,7 +1,6 @@
 package mtls
 
 import (
-	"crypto"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -10,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/trustedkeys"
@@ -152,7 +152,7 @@ func localOperator(leaf *x509.Certificate, keys *trustedkeys.Store) (trustedkeys
 }
 
 func verifyLocalOperatorCert(leaf *x509.Certificate, notBeforeFloor, realNow time.Time) error {
-	if !hasClientAuthEKU(leaf) {
+	if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
 		return errors.New("certificate is not valid for client authentication")
 	}
 	effectiveNow := effectiveVerificationTime(realNow, notBeforeFloor, leaf.NotBefore)
@@ -162,26 +162,13 @@ func verifyLocalOperatorCert(leaf *x509.Certificate, notBeforeFloor, realNow tim
 	return checkRevocation(leaf)
 }
 
-func hasClientAuthEKU(leaf *x509.Certificate) bool {
-	for _, eku := range leaf.ExtKeyUsage {
-		if eku == x509.ExtKeyUsageClientAuth {
-			return true
-		}
-	}
-	return false
-}
-
 // SelfSignedCert makes the device's server certificate for a device that is
 // not enrolled, from its own key so the SPKI a client pins stays the same
 // after enrollment. Clients authenticate it by that pin, not by a chain.
 func SelfSignedCert(keyPEM string, now time.Time) (string, error) {
-	block, _ := pem.Decode([]byte(keyPEM))
-	if block == nil {
-		return "", errors.New("device key is not PEM")
-	}
-	key, err := parsePrivateKey(block.Bytes)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("parsing device key: %w", err)
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
 	if err != nil {
@@ -200,19 +187,4 @@ func SelfSignedCert(keyPEM string, now time.Time) (string, error) {
 		return "", fmt.Errorf("self-signing device certificate: %w", err)
 	}
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
-}
-
-func parsePrivateKey(der []byte) (crypto.Signer, error) {
-	if k, err := x509.ParseECPrivateKey(der); err == nil {
-		return k, nil
-	}
-	k, err := x509.ParsePKCS8PrivateKey(der)
-	if err != nil {
-		return nil, fmt.Errorf("parsing device key: %w", err)
-	}
-	signer, ok := k.(crypto.Signer)
-	if !ok {
-		return nil, fmt.Errorf("device key type %T cannot sign", k)
-	}
-	return signer, nil
 }

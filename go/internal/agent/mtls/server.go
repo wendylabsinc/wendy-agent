@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
-	"github.com/wendylabsinc/wendy/go/internal/agent/trustedkeys"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -104,13 +103,19 @@ func NewTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBefor
 // The Authorizer is always installed first — it cannot be omitted via
 // extraOpts — so no handler receives a call that has not passed the
 // method→role check. Callers may add further interceptors via extraOpts.
+// It must be an mTLS Authorizer, which identifies every caller by its
+// certificate; the trusted keys the handshake admits are authz.Keys, the same
+// store the per-call check reads.
 // logger may be nil; when provided, rejected client certificates are logged at WARN level.
-// notBeforeFloor and keys are forwarded to NewServerTLSConfig.
-func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFloor time.Time, keys *trustedkeys.Store, authz *interceptor.Authorizer, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
+// notBeforeFloor is forwarded to NewServerTLSConfig.
+func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFloor time.Time, authz *interceptor.Authorizer, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
 	if authz == nil {
 		return nil, errors.New("mtls: an Authorizer is required")
 	}
-	tlsConfig, err := NewServerTLSConfig(certPEM, chainPEM, keyPEM, logger, notBeforeFloor, keys)
+	if authz.Listener != interceptor.ListenerMTLS {
+		return nil, errors.New("mtls: the Authorizer must identify callers by certificate (ListenerMTLS)")
+	}
+	tlsConfig, err := NewServerTLSConfig(certPEM, chainPEM, keyPEM, logger, notBeforeFloor, authz.Keys)
 	if err != nil {
 		return nil, fmt.Errorf("creating TLS config: %w", err)
 	}
