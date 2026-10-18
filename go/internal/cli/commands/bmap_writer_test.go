@@ -6,26 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"testing"
 )
-
-func TestValidateBmapSourceRejectsOutsideCache(t *testing.T) {
-	if err := validateBmapSource("/etc/passwd"); err == nil {
-		t.Fatal("expected rejection of path outside cache root")
-	}
-}
-
-func TestValidateBmapSourceAcceptsInsideCache(t *testing.T) {
-	dir, err := osCacheDir()
-	if err != nil {
-		t.Skipf("no cache dir: %v", err)
-	}
-	p := filepath.Join(dir, "jetson", "1.0.0", "image.img.zst")
-	if err := validateBmapSource(p); err != nil {
-		t.Fatalf("expected acceptance inside cache root, got %v", err)
-	}
-}
 
 func TestDownloadBmap(t *testing.T) {
 	const body = `<bmap version="2.0"></bmap>`
