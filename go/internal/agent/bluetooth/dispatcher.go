@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"runtime"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -44,6 +45,15 @@ type Dispatcher struct {
 	container containerOps
 	hardware  hardwareOps
 	bluetooth bluetoothOps
+	// authorize is the agent's method→role check, called with
+	// interceptor.BLEMethodPrefix + the command's oneof field name. Nil
+	// denies every command.
+	authorize func(ctx context.Context, method string) error
+}
+
+// SetAuthorizer installs the method→role check every command passes first.
+func (d *Dispatcher) SetAuthorizer(authorize func(ctx context.Context, method string) error) {
+	d.authorize = authorize
 }
 
 func NewDispatcher(net networkOps, ctr containerOps, hw hardwareOps, bt bluetoothOps) *Dispatcher {
@@ -58,6 +68,9 @@ func NewDispatcher(net networkOps, ctr containerOps, hw hardwareOps, bt bluetoot
 // Dispatch routes cmd to the appropriate handler and returns a response.
 // It never returns nil.
 func (d *Dispatcher) Dispatch(ctx context.Context, cmd *agentpb.BluetoothCommand) *agentpb.BluetoothResponse {
+	if err := d.authorizeCommand(ctx, cmd); err != nil {
+		return errResp(err.Error())
+	}
 	switch c := cmd.Command.(type) {
 
 	// ── WiFi ──────────────────────────────────────────────────────────────────
@@ -104,6 +117,27 @@ func (d *Dispatcher) Dispatch(ctx context.Context, cmd *agentpb.BluetoothCommand
 	default:
 		return errResp("unknown command type")
 	}
+}
+
+// BLEMethod is the role-table name of cmd's command, "" when none is set.
+func BLEMethod(cmd *agentpb.BluetoothCommand) string {
+	m := cmd.ProtoReflect()
+	fd := m.WhichOneof(m.Descriptor().Oneofs().ByName("command"))
+	if fd == nil {
+		return ""
+	}
+	return interceptor.BLEMethodPrefix + string(fd.Name())
+}
+
+func (d *Dispatcher) authorizeCommand(ctx context.Context, cmd *agentpb.BluetoothCommand) error {
+	if d.authorize == nil {
+		return fmt.Errorf("command not permitted")
+	}
+	method := BLEMethod(cmd)
+	if method == "" {
+		return fmt.Errorf("unknown command type")
+	}
+	return d.authorize(ctx, method)
 }
 
 // ── WiFi handlers ─────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
+	"github.com/wendylabsinc/wendy/go/internal/agent/trustedkeys"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -99,17 +100,17 @@ func NewTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBefor
 	return cfg, nil
 }
 
-// NewServer creates a gRPC server with mTLS credentials.
-// The mTLS interceptors are always applied — they cannot be omitted via extraOpts.
-// This ensures no handler can accidentally receive an unauthenticated call regardless
-// of how the caller configures the server. Callers may add further interceptors via
-// extraOpts; those run after the mandatory mTLS check.
+// NewServer creates a gRPC server with mTLS credentials (NewServerTLSConfig).
+// The Authorizer is always installed first — it cannot be omitted via
+// extraOpts — so no handler receives a call that has not passed the
+// method→role check. Callers may add further interceptors via extraOpts.
 // logger may be nil; when provided, rejected client certificates are logged at WARN level.
-// notBeforeFloor is forwarded to NewTLSConfig; see its documentation for details.
-// expected and orgMode are forwarded to the mandatory mTLS interceptors, which
-// enforce tenant-equality between the connecting client cert and this device.
-func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFloor time.Time, expected certs.Scope, orgMode interceptor.OrgMode, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
-	tlsConfig, err := NewTLSConfig(certPEM, chainPEM, keyPEM, logger, notBeforeFloor)
+// notBeforeFloor and keys are forwarded to NewServerTLSConfig.
+func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFloor time.Time, keys *trustedkeys.Store, authz *interceptor.Authorizer, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
+	if authz == nil {
+		return nil, errors.New("mtls: an Authorizer is required")
+	}
+	tlsConfig, err := NewServerTLSConfig(certPEM, chainPEM, keyPEM, logger, notBeforeFloor, keys)
 	if err != nil {
 		return nil, fmt.Errorf("creating TLS config: %w", err)
 	}
@@ -119,8 +120,8 @@ func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFl
 		grpc.Creds(creds),
 		// mTLS interceptors are mandatory: they run before any caller-provided interceptors
 		// so that no handler can be reached without a verified client certificate.
-		grpc.ChainUnaryInterceptor(interceptor.UnaryMTLSInterceptor(logger, expected, orgMode)),
-		grpc.ChainStreamInterceptor(interceptor.StreamMTLSInterceptor(logger, expected, orgMode)),
+		grpc.ChainUnaryInterceptor(authz.Unary()),
+		grpc.ChainStreamInterceptor(authz.Stream()),
 		grpc.InitialWindowSize(8 * 1024 * 1024),
 		grpc.InitialConnWindowSize(16 * 1024 * 1024),
 		grpc.KeepaliveParams(keepalive.ServerParameters{

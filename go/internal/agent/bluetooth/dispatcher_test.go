@@ -90,7 +90,9 @@ func (m *mockBluetooth) Forget(_ context.Context, addr string) error {
 }
 
 func newTestDispatcher(net *mockNet, ctr *mockContainer, hw *mockHardware, bt *mockBluetooth) *bluetooth.Dispatcher {
-	return bluetooth.NewDispatcher(net, ctr, hw, bt)
+	d := bluetooth.NewDispatcher(net, ctr, hw, bt)
+	d.SetAuthorizer(func(context.Context, string) error { return nil })
+	return d
 }
 
 // ── WiFi tests ────────────────────────────────────────────────────────────────

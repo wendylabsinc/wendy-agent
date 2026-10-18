@@ -558,6 +558,11 @@ func (s *ProvisioningService) loadState() {
 	}
 }
 
+// DeviceKey returns the device's private key PEM, generating it on first use.
+// The self-signed server certificate of a not-yet-enrolled device uses it, so
+// the SPKI an operator pins is the one the device keeps after enrollment.
+func (s *ProvisioningService) DeviceKey() ([]byte, error) { return s.loadOrGenerateKey() }
+
 // loadOrGenerateKey returns the PEM-encoded private key for this device as []byte.
 // It reuses the key at {configPath}/device-key.pem if it exists, otherwise
 // generates a new one and persists it.

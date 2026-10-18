@@ -1,8 +1,15 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/trustedkeys"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -71,5 +78,38 @@ func TestEnvBytesRejectsBelowMinimum(t *testing.T) {
 	// An unset variable is not a misconfiguration; it is the default.
 	if got := envBytes(logger, "WENDY_TEST_BYTES_UNSET", fallback, 1); got != fallback {
 		t.Fatalf("an unset variable gave %d, want the %d default", got, fallback)
+	}
+}
+
+func TestCheckLocalAccessMode(t *testing.T) {
+	dir := t.TempDir()
+	absent, _ := trustedkeys.Open(filepath.Join(dir, "absent.json"))
+	withOperator, _ := trustedkeys.Open(filepath.Join(dir, "operator.json"))
+	withOwner, _ := trustedkeys.Open(filepath.Join(dir, "owner.json"))
+	for _, s := range []struct {
+		store *trustedkeys.Store
+		role  trustedkeys.Role
+	}{{withOperator, trustedkeys.RoleOperator}, {withOwner, trustedkeys.RoleOwner}} {
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		der, _ := x509.MarshalPKIXPublicKey(k.Public())
+		if _, err := s.store.Add(der, s.role, "", trustedkeys.AddedByInstall, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		mode    string
+		store   *trustedkeys.Store
+		wantErr bool
+	}{
+		{"", absent, false},
+		{"auto", absent, false},
+		{"required", absent, true},
+		{"required", withOperator, true},
+		{"required", withOwner, false},
+		{"on", withOwner, true}, // unknown values refuse, never fall back open
+	} {
+		if err := checkLocalAccessMode(tc.mode, tc.store); (err != nil) != tc.wantErr {
+			t.Errorf("checkLocalAccessMode(%q) = %v, wantErr %v", tc.mode, err, tc.wantErr)
+		}
 	}
 }

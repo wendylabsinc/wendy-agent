@@ -17,7 +17,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
@@ -47,7 +46,8 @@ func TestConnectWithTLSResumesAcrossConnections(t *testing.T) {
 
 	pki := newIntegrationPKI(t) // same generator as Task 7, PEM for client too
 	srv, err := mtls.NewServer(pki.serverCertPEM, pki.caPEM, pki.serverKeyPEM,
-		zap.NewNop(), time.Time{}, certs.Scope{}, interceptor.OrgModeOff)
+		zap.NewNop(), time.Time{}, nil,
+		&interceptor.Authorizer{Logger: zap.NewNop(), Listener: interceptor.ListenerMTLS, OrgMode: interceptor.OrgModeOff})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
