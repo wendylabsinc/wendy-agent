@@ -181,3 +181,45 @@ func TestDormantStoreTrustsNothingAndKeepsTheFile(t *testing.T) {
 		t.Fatalf("after unenroll role = %s, want owner", role)
 	}
 }
+
+// SetDormant serializes with writes: it waits for a write holding the store
+// lock, so a change in flight lands before the enrollment flip, and every
+// later write sees the store dormant.
+func TestSetDormantWaitsForWritesInFlight(t *testing.T) {
+	s, _ := Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	s.mu.Lock() // a mutate past its dormant re-check
+	flipped := make(chan struct{})
+	go func() {
+		s.SetDormant(true)
+		close(flipped)
+	}()
+	select {
+	case <-flipped:
+		t.Fatal("SetDormant did not wait for the write holding the lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	s.mu.Unlock()
+	<-flipped
+	if _, err := s.Add(newSPKI(t), RoleOwner, "", AddedByInstall, time.Now()); !errors.Is(err, ErrDormant) {
+		t.Fatalf("Add after the flip = %v, want ErrDormant", err)
+	}
+}
+
+// The fingerprint is computed once, on load and on Add, and equals the SPKI hash.
+func TestEntryFingerprintIsCached(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-keys.json")
+	s, _ := Open(path)
+	spki := newSPKI(t)
+	added, err := s.Add(spki, RoleOwner, "", AddedByInstall, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Fingerprint(spki)
+	if added.Fingerprint() != want || reopened.List()[0].Fingerprint() != want {
+		t.Fatalf("fingerprints %q / %q, want %q", added.Fingerprint(), reopened.List()[0].Fingerprint(), want)
+	}
+}

@@ -3,9 +3,7 @@
 package devicepin
 
 import (
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -157,7 +155,7 @@ func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error
 			}
 		}
 	}
-	fingerprint := spkiFingerprint(leaf)
+	fingerprint := certs.SPKIFingerprint(leaf.RawSubjectPublicKeyInfo)
 	notAfter := leaf.NotAfter.UTC().Format(time.RFC3339)
 
 	existing, pinned := s.devices[key]
@@ -277,9 +275,4 @@ func (s *Store) flush() error {
 	s.devices = merged
 	s.dirty = make(map[string]bool)
 	return nil
-}
-
-func spkiFingerprint(cert *x509.Certificate) string {
-	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
-	return "sha256:" + hex.EncodeToString(sum[:])
 }

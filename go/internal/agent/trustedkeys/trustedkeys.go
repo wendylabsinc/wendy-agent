@@ -15,9 +15,7 @@ package trustedkeys
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -28,6 +26,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 )
 
@@ -92,6 +91,7 @@ type Entry struct {
 
 	spki []byte
 	role Role
+	fp   string
 }
 
 // SPKI returns the SubjectPublicKeyInfo DER.
@@ -99,7 +99,7 @@ func (e Entry) SPKI() []byte { return e.spki }
 
 // Fingerprint is "sha256:" + hex SHA-256 of the SPKI DER — the same format as
 // the CLI's device pin store.
-func (e Entry) Fingerprint() string { return Fingerprint(e.spki) }
+func (e Entry) Fingerprint() string { return e.fp }
 
 type fileFormat struct {
 	Keys []Entry `json:"keys"`
@@ -115,8 +115,14 @@ type Store struct {
 }
 
 // SetDormant turns the local-operator path off (the device is cloud-enrolled)
-// or back on (unenrolled) and reports whether the state changed.
-func (s *Store) SetDormant(dormant bool) bool { return s.dormant.Swap(dormant) != dormant }
+// or back on (unenrolled) and reports whether the state changed. It takes the
+// write lock, so it serializes with mutate: a write in flight lands before the
+// flip, and every write after it sees the new state.
+func (s *Store) SetDormant(dormant bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dormant.Swap(dormant) != dormant
+}
 
 // Dormant reports whether the device is cloud-enrolled, so no local key is
 // trusted.
@@ -131,11 +137,9 @@ func SelfSigned(leaf *x509.Certificate) bool {
 	return leaf.CheckSignature(leaf.SignatureAlgorithm, leaf.RawTBSCertificate, leaf.Signature) == nil
 }
 
-// Fingerprint returns "sha256:<hex>" of a SubjectPublicKeyInfo DER.
-func Fingerprint(spki []byte) string {
-	sum := sha256.Sum256(spki)
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
+// Fingerprint returns "sha256:<hex>" of a SubjectPublicKeyInfo DER, the
+// CLI pin store's format (one shared helper).
+func Fingerprint(spki []byte) string { return certs.SPKIFingerprint(spki) }
 
 // ParsePublicKey accepts a SubjectPublicKeyInfo as PEM ("PUBLIC KEY") or DER
 // and returns the DER after checking it parses (ECDSA, Ed25519, RSA, ML-DSA).
@@ -219,7 +223,7 @@ func parse(data []byte) ([]Entry, error) {
 			return nil, fmt.Errorf("key %d: duplicate key %s", i, fp)
 		}
 		seen[fp] = true
-		e.spki, e.role = spki, role
+		e.spki, e.role, e.fp = spki, role, fp
 	}
 	return f.Keys, nil
 }
@@ -248,7 +252,7 @@ func (s *Store) Lookup(spki []byte) (Role, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, e := range s.entries {
-		if e.Fingerprint() == fp {
+		if e.fp == fp {
 			return e.role, fp
 		}
 	}
@@ -269,7 +273,7 @@ func (e Entry) EntryRole() Role { return e.role }
 // runs before it, so an owner removed in between must not still write.
 func actorIsOwner(entries []Entry, actor string) bool {
 	for _, e := range entries {
-		if e.Fingerprint() == actor {
+		if e.fp == actor {
 			return e.role == RoleOwner
 		}
 	}
@@ -293,7 +297,7 @@ func (s *Store) Add(spki []byte, role Role, label, addedBy string, now time.Time
 		}
 		fp := Fingerprint(spki)
 		for _, e := range entries {
-			if e.Fingerprint() == fp {
+			if e.fp == fp {
 				return nil, ErrAlreadyExists
 			}
 		}
@@ -305,6 +309,7 @@ func (s *Store) Add(spki []byte, role Role, label, addedBy string, now time.Time
 			AddedBy:   addedBy,
 			spki:      spki,
 			role:      role,
+			fp:        fp,
 		}
 		return append(entries, added), nil
 	})
@@ -327,7 +332,7 @@ func (s *Store) Remove(fingerprint, actor string) (Entry, error) {
 			if e.role == RoleOwner {
 				owners++
 			}
-			if e.Fingerprint() == fingerprint {
+			if e.fp == fingerprint {
 				idx = i
 			}
 		}
