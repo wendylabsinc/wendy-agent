@@ -2,10 +2,11 @@ package localmesh
 
 import (
 	"fmt"
-	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 // Only automatically discovered Ethernet and infrastructure Wi-Fi links
@@ -98,10 +99,10 @@ func (p *PeerSelection) HasLAN(asset meshid.Device) bool {
 	return false
 }
 
-// AllowLAN ranks direct LAN neighbors by their authenticated link cost, then
-// asset ID. A newly discovered wired peer may replace a Wi-Fi peer even when
-// all three LAN slots are occupied. Radio links do not consume these slots:
-// once the LAN link authenticates, AllowRadio sheds the excess radio link.
+// AllowLAN keeps every discovered LAN neighbor, preferring a cheaper carrier
+// only for the same principal. Ranking unrelated peers at both ends can form
+// a closed clique that permanently excludes another reachable device.
+// The LAN carrier separately bounds concurrent connections and handshakes.
 func (p *PeerSelection) AllowLAN(asset meshid.Device, cost uint16) bool {
 	if p == nil || p.snapshot == nil {
 		return true
@@ -109,44 +110,18 @@ func (p *PeerSelection) AllowLAN(asset meshid.Device, cost uint16) bool {
 	if asset == (meshid.Device{}) || cost == 0 || cost > MaxLANCost {
 		return false
 	}
-	best := map[meshid.Device]uint16{asset: cost}
 	for _, link := range p.snapshot().Links {
-		if link.Cost > MaxLANCost {
-			continue
-		}
 		if link.Device == asset && link.Cost < cost {
 			return false
 		}
-		if previous, ok := best[link.Device]; !ok || link.Cost < previous {
-			best[link.Device] = link.Cost
-		}
 	}
-	type ranked struct {
-		asset meshid.Device
-		cost  uint16
-	}
-	neighbors := make([]ranked, 0, len(best))
-	for peer, linkCost := range best {
-		neighbors = append(neighbors, ranked{peer, linkCost})
-	}
-	sort.Slice(neighbors, func(i, j int) bool {
-		if neighbors[i].cost != neighbors[j].cost {
-			return neighbors[i].cost < neighbors[j].cost
-		}
-		return meshid.Compare(neighbors[i].asset, neighbors[j].asset) < 0
-	})
-	for _, neighbor := range neighbors[:min(len(neighbors), 3)] {
-		if neighbor.asset == asset {
-			return true
-		}
-	}
-	return false
+	return true
 }
 
-// AllowRadio limits the mesh to three distinct peers where possible. When a
-// peer is already connected through the other radio, that second link is kept
-// only while there is no fresh, different candidate to fill an open slot.
-// This permits a two-device NAN+BLE pair to fail over automatically.
+// AllowRadio limits radio-only neighbors to three distinct principals. LAN
+// and configured TCP neighbors do not consume radio slots, so a populated
+// LAN can still connect to a different LAN through a radio-only neighbor.
+// A spare BLE link can provide failover while no other candidate needs it.
 func (p *PeerSelection) AllowRadio(asset meshid.Device, medium RadioMedium) bool {
 	allow, _ := p.AllowRadioReason(asset, medium)
 	return allow
@@ -165,9 +140,16 @@ func (p *PeerSelection) AllowRadioReason(asset meshid.Device, medium RadioMedium
 	}
 	s := p.snapshot()
 	connected := make(map[meshid.Device]bool, len(s.Links))
+	lan := make(map[meshid.Device]bool)
+	radio := make(map[meshid.Device]bool)
 	otherRadio := false
 	for _, link := range s.Links {
 		connected[link.Device] = true
+		if link.Cost <= MaxLANCost {
+			lan[link.Device] = true
+		} else if link.Cost >= 512 {
+			radio[link.Device] = true
+		}
 		if link.Device == asset && link.Cost <= MaxLANCost {
 			return false, fmt.Sprintf("lan-supersedes(cost=%d)", link.Cost)
 		}
@@ -175,44 +157,39 @@ func (p *PeerSelection) AllowRadioReason(asset meshid.Device, medium RadioMedium
 			otherRadio = true
 		}
 	}
-	if !connected[asset] && len(connected) >= 3 {
-		return false, fmt.Sprintf("peer-cap-no-slot(connected=%d)", len(connected))
+	for device := range lan {
+		delete(radio, device)
 	}
-	if len(connected) > 3 {
-		// Concurrent radio handshakes can briefly exceed the target. Keep
-		// verified LAN neighbors first, then the lowest-numbered radio peers
-		// until the active set converges to three distinct assets.
-		lan, radio := make([]meshid.Device, 0, len(connected)), make([]meshid.Device, 0, len(connected))
-		for candidate := range connected {
-			isLAN := false
-			for _, link := range s.Links {
-				if link.Device == candidate && link.Cost <= MaxLANCost {
-					isLAN = true
-					break
-				}
-			}
-			if isLAN {
-				lan = append(lan, candidate)
-			} else {
-				radio = append(radio, candidate)
-			}
+	if !radio[asset] && len(radio) >= 3 {
+		return false, fmt.Sprintf("peer-cap-no-slot(connected=%d)", len(radio))
+	}
+	if len(radio) > 3 {
+		// Concurrent radio handshakes can briefly exceed the hardware budget.
+		// Shed only excess radio-only neighbors, independently of LAN degree.
+		keep := make([]meshid.Device, 0, len(radio))
+		for candidate := range radio {
+			keep = append(keep, candidate)
 		}
-		sort.Slice(lan, func(i, j int) bool { return meshid.Compare(lan[i], lan[j]) < 0 })
-		sort.Slice(radio, func(i, j int) bool { return meshid.Compare(radio[i], radio[j]) < 0 })
-		keep := append(lan, radio...)
+		sort.Slice(keep, func(i, j int) bool { return meshid.Compare(keep[i], keep[j]) < 0 })
 		selected := false
 		for _, candidate := range keep[:3] {
 			selected = selected || candidate == asset
 		}
 		if !selected {
-			return false, fmt.Sprintf("convergence-not-selected(connected=%d)", len(connected))
+			return false, fmt.Sprintf("convergence-not-selected(connected=%d)", len(radio))
 		}
 	}
 	if !otherRadio {
 		return true, "first-radio"
 	}
-	if len(connected) >= 3 {
-		return false, fmt.Sprintf("second-radio-slots-full(connected=%d)", len(connected))
+	// Prefer NAN over BLE for the same principal. Both providers recheck this
+	// policy periodically: vetoing both duplicates would tear down every path
+	// to a retained neighbor. BLE is shed only after NAN is authenticated.
+	if medium == RadioNAN {
+		return true, "preferred-radio"
+	}
+	if len(radio) >= 3 {
+		return false, fmt.Sprintf("second-radio-slots-full(connected=%d)", len(radio))
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
