@@ -27,5 +27,13 @@ Run local regressions without a device or module loads:
 python3 .github/ci-tests/host-sensor-loopback/check_test.py
 ```
 
-The hardware integration workflow runs the registered test by default.
-The Go tests workflow runs the local shell and harness regressions.
+The test is registered in `go/scripts/test-ci.sh`'s `ALL_TESTS`. The hardware
+integration workflow uses that registry directly, so default qualification runs
+include this host check without a separate workflow test list. Candidate OS
+qualification runs it after installing and verifying the exact image under test.
+Updating the agent alone does not prove that a candidate image contains its
+required kernel modules.
+
+The Go tests workflow runs the local shell and harness regressions. Neither the
+local regressions nor an explicit skip on an unsupported platform proves the
+loopback contract on a supported physical board.

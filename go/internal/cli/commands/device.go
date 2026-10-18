@@ -245,7 +245,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			defer target.Close()
 
-			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch, npuVendor string
+			var agentVersion, binarySHA256, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch, npuVendor string
 			var diskUsedBytes, diskTotalBytes *int64
 			var memTotalBytes int64
 			var cpuCount uint32
@@ -291,6 +291,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					}
 				}
 				agentVersion = resp.GetVersion()
+				binarySHA256 = resp.GetBinarySha256()
 				osName = resp.GetOs()
 				osVersion = resp.GetOsVersion()
 				cpuArch = resp.GetCpuArchitecture()
@@ -368,6 +369,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					"deviceType":      deviceType,
 					"cliVersion":      version.Version,
 					"hasGpu":          hasGPU,
+				}
+				if binarySHA256 != "" {
+					out["binarySha256"] = binarySHA256
 				}
 				if organization != nil {
 					out["organization"] = nil

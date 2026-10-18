@@ -8,6 +8,7 @@ services:
         import platform, sys
         print(f"Hello from greeter!")
         print(f"Python {sys.version.split()[0]} on {platform.machine()}")
+        print("greeter: PASS")
 
   reporter:
     image: python:3.11-slim
@@ -18,3 +19,4 @@ services:
         import os, sys
         print(f"Hello from reporter!")
         print(f"PID {os.getpid()}, Python {sys.version.split()[0]}")
+        print("reporter: PASS")

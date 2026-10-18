@@ -134,6 +134,29 @@ func TestDeviceInfoUsesPersistedStatusAndConnectionVersion(t *testing.T) {
 	}
 }
 
+func TestDeviceInfoReportsRunningBinaryHash(t *testing.T) {
+	for _, hash := range []string{"", strings.Repeat("a", 64)} {
+		t.Run(hash, func(t *testing.T) {
+			client := &deviceInfoClient{updateStatus: func(context.Context, *agentpb.GetOSUpdateStatusRequest) (*agentpb.GetOSUpdateStatusResponse, error) {
+				return nil, status.Error(codes.Unimplemented, "legacy agent")
+			}}
+			version := &agentpb.GetAgentVersionResponse{Version: "candidate", Os: "linux", BinarySha256: hash}
+			out, err := runDeviceInfoWithClient(t, client, version, true, context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var data map[string]any
+			if err := json.Unmarshal([]byte(out), &data); err != nil {
+				t.Fatal(err)
+			}
+			got, present := data["binarySha256"]
+			if hash == "" && present || hash != "" && got != hash {
+				t.Fatalf("binarySha256 = %v (present %v), want %q: %s", got, present, hash, out)
+			}
+		})
+	}
+}
+
 func TestDeviceInfoOptionalStatusFailure(t *testing.T) {
 	for _, code := range []codes.Code{codes.Unimplemented, codes.Unavailable, codes.DeadlineExceeded} {
 		t.Run(code.String(), func(t *testing.T) {

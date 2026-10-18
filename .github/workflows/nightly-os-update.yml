@@ -31,6 +31,9 @@ concurrency:
 # under the logged-in user session, which does have that permission.
 # See integration-tests.yml for the same pattern with more context.
 
+env:
+  WENDY_SECRET_STORE: file
+
 jobs:
   release-priority:
     name: Check for stable releases
@@ -139,7 +142,7 @@ jobs:
       max-parallel: 1
       matrix:
         hostname: ${{ fromJson(needs.discover.outputs.matrix) }}
-    timeout-minutes: 60
+    timeout-minutes: 195
     permissions:
       contents: read
       actions: write  # Cancel the remaining device jobs after a deferral.
@@ -176,34 +179,36 @@ jobs:
         working-directory: go
         run: make build-cli
 
-      - name: Current version
-        id: version
+      - name: Update OS, install and verify nightly agent, and run tests
         if: steps.priority.outputs.allowed == 'true'
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no localhost"
-          WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH'"
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+          docker info >/dev/null
+          python3 - <<'PYREMOTE'
+          import os, pathlib, shlex, subprocess
+          root = pathlib.Path.cwd()
+          evidence = root / '.ci-nightly'
+          owner = '/'.join(os.environ[key] for key in ('GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'))
+          cli = str(root / 'go/bin/wendy')
+          args = ['python3', str(root / '.github/scripts/integration-lease.py'),
+                  '--wendy', cli, '--device', os.environ['DEVICE_HOSTNAME'], '--owner', owner,
+                  '--release-marker', str(evidence / 'lease-releasable'),
+                  '--command-timeout-seconds', '10200', '--',
+                  'python3', str(root / '.github/scripts/nightly-device-check.py'),
+                  '--wendy', cli, '--device', os.environ['DEVICE_HOSTNAME'], '--evidence', str(evidence)]
+          forwarded = ['PATH', 'DOCKER_HOST', 'RUNNER_OS']
+          env = ['env', 'WENDY_SECRET_STORE=file']
+          env += [key + '=' + os.environ[key] for key in forwarded if key in os.environ]
+          subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
+                          'localhost', shlex.join(env + args)], check=True)
+          PYREMOTE
 
-          INFO=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy device info --json --device '$DEVICE_HOSTNAME'" || true)
-          echo "$INFO" | jq '{osVersion, agentVersion: .version, deviceType}' || true
-          DEVICE_TYPE=$(echo "$INFO" | jq -r '.deviceType // ""' 2>/dev/null || true)
-          echo "device_type=$DEVICE_TYPE" >> "$GITHUB_OUTPUT"
-          if [[ -z "$DEVICE_TYPE" ]]; then
-            echo "No device type reported — skipping OS update."
-          fi
-
-      - name: Flash OS update, confirm online, and run template tests
-        if: steps.priority.outputs.allowed == 'true' && steps.version.outputs.device_type != ''
-        run: |
-          SSH="ssh -o StrictHostKeyChecking=no localhost"
-          WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH'"
-
-          # wendy os update blocks until the device reboots and comes back
-          # online, with a 5-minute internal timeout.
-          $SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy os update --device '$DEVICE_HOSTNAME'"
-
-          $SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy device info --json --device '$DEVICE_HOSTNAME'" \
-            | jq '{osVersion, agentVersion: .version}'
-
-          $SSH "$SSH_ENV && cd '$WORKDIR' && go/scripts/test-templates.sh -w ./go/bin/wendy -h '$DEVICE_HOSTNAME'"
+      - name: Preserve nightly verification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: nightly-device-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: .ci-nightly
+          include-hidden-files: true
+          if-no-files-found: warn

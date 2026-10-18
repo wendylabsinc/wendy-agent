@@ -1,11 +1,8 @@
 name: Build products and release
-# Nightly device updates yield to "Stable release · " runs (see
-# .github/scripts/release-priority.cjs). Releases that skip integration tests
-# never use the device runners, so they get a title nightly does not yield to.
+# Nightly device updates yield to "Stable release · " runs.
 run-name: >-
   ${{ github.event_name == 'workflow_dispatch' && inputs.publish &&
-  (inputs.skip_integration_tests && format('Stable release without integration tests · {0}', github.ref_name) ||
-  format('Stable release · {0}', github.ref_name)) || format('Build · {0}', github.ref_name) }}
+  format('Stable release · {0}', github.ref_name) || format('Build · {0}', github.ref_name) }}
 
 on:
   push:
@@ -23,16 +20,13 @@ on:
         description: "Publish artifacts and create a stable release"
         type: boolean
         default: false
-      skip_integration_tests:
-        description: "Skip macOS hardware integration tests"
-        type: boolean
-        default: false
 
-# Give each stable release its own group so pushes and later releases cannot
-# cancel it, even while it is queued. Non-release builds still supersede by ref.
+# Serialize stable promotion so an older run cannot overwrite a newer channel.
+# Preserve queued releases; ordinary push builds still supersede by ref.
 concurrency:
-  group: build-${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.run_id || github.ref }}
+  group: build-${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'stable-release' || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || !inputs.publish }}
+  queue: max
 
 # Add permissions needed for creating releases
 permissions:
@@ -972,7 +966,7 @@ jobs:
       needs.determine-version.outputs.is_prerelease == 'false' &&
       needs.package-linux.result == 'success' &&
       needs.test-templates.result == 'success' &&
-      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped')
+      needs.integration-tests.result == 'success'
     permissions:
       contents: read
       id-token: write
@@ -1029,11 +1023,14 @@ jobs:
     # below (though still listed in needs, so its artifact is available to
     # download): a failed or skipped macOS build must not block Linux agent
     # publishing. The download step tolerates a missing macOS zip.
-    needs: [determine-version, build, build-agent-macos-app]
+    needs: [determine-version, build, build-agent-macos-app, test-templates, integration-tests, release]
     if: |
       always() &&
       needs.determine-version.result == 'success' &&
       needs.build.result == 'success' &&
+      needs.test-templates.result == 'success' &&
+      (needs.determine-version.outputs.is_release != 'true' ||
+       (needs.integration-tests.result == 'success' && needs.release.result == 'success')) &&
       (github.event_name == 'push' ||
        (github.event_name == 'workflow_dispatch' && inputs.publish == true))
     permissions:
@@ -1079,11 +1076,12 @@ jobs:
   publish-install-scripts:
     name: Publish install scripts to GCS
     runs-on: ubuntu-latest
-    needs: [determine-version, build]
+    needs: [determine-version, build, release]
     if: |
       always() &&
       needs.determine-version.result == 'success' &&
       needs.build.result == 'success' &&
+      needs.release.result == 'success' &&
       (github.event_name == 'push' ||
        (github.event_name == 'workflow_dispatch' && inputs.publish == true))
     permissions:
@@ -1121,12 +1119,18 @@ jobs:
           done
 
   integration-tests:
-    name: Integration Tests (macOS, stable gate)
-    if: github.event_name == 'workflow_dispatch' && inputs.publish && !inputs.skip_integration_tests
+    name: Integration Tests (stable gate)
+    needs: [determine-version, build, build-cli-linux, build-go-macos]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/integration-tests.yml
     with:
-      platform: macos
+      platform: all
       jobs: integration
+      source_ref: ${{ github.sha }}
+      candidate_version: ${{ needs.determine-version.outputs.version }}
 
   release:
     name: Release
@@ -1144,7 +1148,7 @@ jobs:
       needs.package-windows.result == 'success' &&
       needs.test-templates.result == 'success' &&
       (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true)) &&
-      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped')
+      (needs.determine-version.outputs.is_release != 'true' || needs.integration-tests.result == 'success')
     steps:
       - name: Download artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1572,12 +1576,14 @@ jobs:
           iwr https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
 
       - name: Update Winget package
+        env:
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
           $version = "${{ needs.determine-version.outputs.version }}"
           $tag = "${{ needs.determine-version.outputs.tag_name }}"
           $base = "https://github.com/wendylabsinc/wendy-agent/releases/download/$tag"
-          $token = "${{ secrets.WINGET_GITHUB_TOKEN }}"
+          $token = $env:WINGET_GITHUB_TOKEN
           $amd64Url = "$base/wendy-cli-windows-amd64-$version.msi"
           $arm64Url = "$base/wendy-cli-windows-arm64-$version.msi"
 

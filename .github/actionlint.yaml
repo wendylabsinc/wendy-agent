@@ -11,6 +11,9 @@ self-hosted-runner:
 config-variables: null
 
 paths:
+  .github/workflows/build.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'
   .github/workflows/swift-e2e-tests.yml:
     ignore:
       # GitHub Actions supports this queue mode, but actionlint v1.7.12 only
