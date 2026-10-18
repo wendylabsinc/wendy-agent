@@ -78,6 +78,9 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 		if cfg.NAN {
 			names = append(names, "NAN")
 		}
+		if len(cfg.LeafBLEPeers) != 0 {
+			names = append(names, "Leaf BLE")
+		}
 		if cfg.BLE {
 			names = append(names, "BLE")
 		}
@@ -158,7 +161,7 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 			logger.Error("net service catalog unavailable", zap.Error(err))
 		}
 		sharing.Activate(runCtx, node)
-		if !cfg.NAN && !cfg.BLE && !cfg.Ethernet && !cfg.InfrastructureWiFi {
+		if !cfg.NAN && !cfg.BLE && !cfg.Ethernet && !cfg.InfrastructureWiFi && len(cfg.LeafBLEPeers) == 0 {
 			return
 		}
 		providerCtx, cancel := context.WithCancel(runCtx)
@@ -183,6 +186,12 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 				return provider.Run(ctx)
 			})
 		}
+		if len(cfg.LeafBLEPeers) != 0 {
+			start("Leaf BLE", func(ctx context.Context, status func(localmesh.CarrierStatus)) error {
+				return bleprovider.RunLeaves(ctx, node, cfg.LeafBLEPeers, cfg.LeafTimeURL, logger, status)
+			})
+		}
+
 		if cfg.BLE {
 			ble := bleprovider.Config{Credentials: node.Credentials, Node: node, Selection: selection, NetworkName: fmt.Sprintf("tenant:%s:default", node.Credentials.Device.Tenant()), Logger: logger}
 			start("BLE", func(ctx context.Context, status func(localmesh.CarrierStatus)) error {
