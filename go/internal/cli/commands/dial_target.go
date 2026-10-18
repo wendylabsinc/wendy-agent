@@ -602,29 +602,14 @@ func (e *noAuthenticatedEndpointError) Is(target error) bool {
 	return target == errNoAuthenticatedEndpoint
 }
 
-// blocksUnauthenticatedFallback reports whether err forbids reaching this device
-// over a transport that enforces nothing — today the picker's Bluetooth
-// fallback, where attemptBLEConnect sets no ExpectedIdentity and
-// enforceSelectedDevicePin is a no-op.
+// blocksUnauthenticatedFallback reports whether a failed LAN connection forbids
+// an unauthenticated transport fallback. Both identity refusal and absence of an
+// authenticated endpoint for a pinned host forbid that downgrade.
 //
-// BOTH refusals block it, for two different reasons, and keeping them distinct
-// error types is exactly why this predicate has to exist rather than the gate
-// matching one sentinel:
-//
-//   - errDeviceIdentityRefused: the wrong device answered. Reaching it over a
-//     second transport is the refusal undone.
-//   - errNoAuthenticatedEndpoint: nothing authenticated answered a host we hold
-//     a PIN for — meaning we have reached this device over mTLS before and know
-//     it authenticates. An unauthenticated BLE peer advertising its name is not
-//     evidence of being that device, and BLE checks nothing, so accepting one
-//     here would be the downgrade the pin exists to prevent. The error is
-//     raised only under target.pinned(), so an unpinned device that simply did
-//     not answer still gets its fallback — which is what that fallback is for.
-//
-// Splitting the sentinels is about what the user is TOLD (an unreachable device
-// must not be told its identity is suspect, nor handed an `unpin` command) and
-// about letting a caller tell the two facts apart. It is not licence to route a
-// pinned device onto an unauthenticated transport.
+// Enrolled agent BLE recovery is an authenticated exception for reachability
+// failures only. Its caller must preserve the selected pin and require the BLE
+// certificate to prove it. A true identity refusal remains terminal on every
+// transport. Legacy or unknown BLE endpoints do not qualify for the exception.
 func blocksUnauthenticatedFallback(err error) bool {
 	return errors.Is(err, errDeviceIdentityRefused) || errors.Is(err, errNoAuthenticatedEndpoint)
 }

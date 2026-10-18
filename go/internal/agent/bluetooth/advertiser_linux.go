@@ -4,55 +4,54 @@ package bluetooth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/agentinfo"
 	"go.uber.org/zap"
 )
 
 const (
-	wendyServiceUUID = "7565e9eb-4c20-4b67-9272-d708b397b631"
-	advObjectPath    = dbus.ObjectPath("/org/wendy/advertisement0")
-	bluezService     = "org.bluez"
-	advManagerIface  = "org.bluez.LEAdvertisingManager1"
-	advIface         = "org.bluez.LEAdvertisement1"
+	wendyServiceUUID     = agentinfo.ServiceUUID
+	advObjectPath        = dbus.ObjectPath("/org/wendy/advertisement0")
+	bluezService         = "org.bluez"
+	advManagerIface      = "org.bluez.LEAdvertisingManager1"
+	advIface             = "org.bluez.LEAdvertisement1"
+	bleDBusTimeout       = 5 * time.Second
+	bleRegisterTimeout   = 30 * time.Second
+	bleRegisterRetryWait = time.Second
 )
 
-// advertisingAdapterPath selects the BlueZ adapter to advertise on. If
-// WENDY_BT_ADAPTER is set, that path is trusted verbatim. Otherwise it
-// enumerates BlueZ's managed objects and returns the first adapter that
-// implements org.bluez.LEAdvertisingManager1 — the interface that exposes
-// RegisterAdvertisement.
-//
-// The default /org/bluez/hci0 is not always the advertising-capable
-// controller: the onboard radio can enumerate as a higher hciN, or a USB
-// dongle may be the only LE-capable adapter. Calling RegisterAdvertisement on
-// an adapter that lacks the interface surfaces as a confusing
-// "RegisterAdvertisement ... doesn't exist" D-Bus error, so discover the right
-// adapter up front and fail fast with a clear message when none supports it.
-func advertisingAdapterPath(conn *dbus.Conn) (string, error) {
-	if p := os.Getenv("WENDY_BT_ADAPTER"); p != "" {
-		return p, nil
-	}
-
-	managed, err := getManagedObjects(context.Background(), conn)
+func advertisingAdapterPath(ctx context.Context, conn *dbus.Conn) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, bleDBusTimeout)
+	defer cancel()
+	managed, err := getManagedObjects(ctx, conn)
 	if err != nil {
 		return "", err
 	}
+	return resolveAdvertisingAdapter(managed)
+}
 
+func resolveAdvertisingAdapter(managed managedObjects) (string, error) {
+	if p := os.Getenv("WENDY_BT_ADAPTER"); p != "" {
+		path := dbus.ObjectPath(p)
+		if !path.IsValid() || findAdvertisingAdapter(managedObjects{path: managed[path]}) == "" {
+			return "", fmt.Errorf("Bluetooth adapter %q must implement %s and %s", p, advManagerIface, gattManagerIface)
+		}
+		return p, nil
+	}
 	if p := findAdvertisingAdapter(managed); p != "" {
 		return p, nil
 	}
-	return "", fmt.Errorf("no bluetooth adapter implements %s (LE advertising unsupported)", advManagerIface)
+	return "", fmt.Errorf("no Bluetooth adapter implements both %s and %s", advManagerIface, gattManagerIface)
 }
 
-// findAdapterByInterface returns the path of the adapter implementing iface,
-// or "" if none do. When several adapters qualify it returns the
-// lexicographically lowest path so selection is stable across runs despite
-// Go's randomised map iteration order.
+// findAdapterByInterface selects a stable adapter despite map iteration order.
 func findAdapterByInterface(managed managedObjects, iface string) string {
 	var best string
 	for path, ifaces := range managed {
@@ -66,115 +65,228 @@ func findAdapterByInterface(managed managedObjects, iface string) string {
 	return best
 }
 
-// findAdvertisingAdapter returns the path of the adapter implementing
-// org.bluez.LEAdvertisingManager1, or "" if none do.
+// Discovery and its GATT metadata must be available on the same controller.
 func findAdvertisingAdapter(managed managedObjects) string {
-	return findAdapterByInterface(managed, advManagerIface)
+	eligible := make(managedObjects)
+	for path, ifaces := range managed {
+		if _, ok := ifaces[gattManagerIface]; ok {
+			eligible[path] = ifaces
+		}
+	}
+	return findAdapterByInterface(eligible, advManagerIface)
 }
 
-// advertisement implements org.bluez.LEAdvertisement1 on D-Bus.
 type advertisement struct{}
 
-// Release is called by BlueZ when the advertisement is unregistered.
-func (a *advertisement) Release() *dbus.Error { return nil }
+func (*advertisement) Release() *dbus.Error { return nil }
 
-func startAdvertising(ctx context.Context, logger *zap.Logger) error {
+func startAdvertising(ctx context.Context, logger *zap.Logger, info agentinfo.Info) (func() error, error) {
+	value, err := agentinfo.Encode(info)
+	if err != nil {
+		return nil, fmt.Errorf("encode agent BLE metadata: %w", err)
+	}
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
-		return fmt.Errorf("connect system bus: %w", err)
+		return nil, fmt.Errorf("connect system bus: %w", err)
 	}
-
-	hostname, _ := os.Hostname()
-	if hostname == "" {
-		hostname = "WendyOS"
+	// Before registration starts every failure closes this private connection,
+	// which also removes any exported objects or partially registered services.
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			_ = conn.Close()
+		}
+	}()
+	adapterPath, err := advertisingAdapterPath(ctx, conn)
+	if err != nil {
+		return nil, err
 	}
-
-	// Export the LEAdvertisement1 object.
+	// Subscribe before registration so a restart during startup cannot leave
+	// the endpoint registered only with the departed bluetoothd process.
+	ownerChanges := make(chan *dbus.Signal, 16)
+	conn.Signal(ownerChanges)
+	watchCtx, watchCancel := context.WithTimeout(ctx, bleDBusTimeout)
+	err = conn.AddMatchSignalContext(watchCtx,
+		dbus.WithMatchSender("org.freedesktop.DBus"),
+		dbus.WithMatchInterface("org.freedesktop.DBus"),
+		dbus.WithMatchMember("NameOwnerChanged"),
+		dbus.WithMatchArg(0, bluezService))
+	watchCancel()
+	if err != nil {
+		return nil, fmt.Errorf("watch bluetoothd restarts: %w", err)
+	}
+	if err := exportAgentInfo(conn, value); err != nil {
+		return nil, err
+	}
 	if err := conn.Export(&advertisement{}, advObjectPath, advIface); err != nil {
-		conn.Close()
-		return fmt.Errorf("export advertisement object: %w", err)
+		return nil, fmt.Errorf("export advertisement object: %w", err)
 	}
-
-	// Export properties via the prop subpackage.
-	// Note: "Discoverable" is intentionally omitted — it is not part of the core
-	// LEAdvertisement1 spec and causes registration failures on some BlueZ versions.
-	// Scanners discover the device via ServiceUUIDs regardless.
-	propsSpec := map[string]map[string]*prop.Prop{
+	// Discoverable is omitted for compatibility with older BlueZ versions.
+	props := prop.Map{
 		advIface: {
-			"Type":         {Value: "peripheral", Writable: false, Emit: prop.EmitFalse},
-			"ServiceUUIDs": {Value: []string{wendyServiceUUID}, Writable: false, Emit: prop.EmitFalse},
-			"LocalName":    {Value: hostname, Writable: false, Emit: prop.EmitFalse},
+			"Type":         {Value: "peripheral", Emit: prop.EmitFalse},
+			"ServiceUUIDs": {Value: []string{wendyServiceUUID}, Emit: prop.EmitFalse},
+			"LocalName":    {Value: info.Hostname, Emit: prop.EmitFalse},
 		},
 	}
-	if _, err := prop.Export(conn, advObjectPath, propsSpec); err != nil {
-		conn.Close()
-		return fmt.Errorf("export advertisement properties: %w", err)
+	if _, err := prop.Export(conn, advObjectPath, props); err != nil {
+		return nil, fmt.Errorf("export advertisement properties: %w", err)
 	}
-
-	adapterPath, err := advertisingAdapterPath(conn)
-	if err != nil {
-		conn.Close()
-		return err
-	}
-	hci := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
-
-	// Ensure the adapter is powered on before advertising.
-	if err := powerOnAdapter(ctx, conn, adapterPath); err != nil {
+	powerCtx, cancel := context.WithTimeout(ctx, bleDBusTimeout)
+	if err := powerOnAdapter(powerCtx, conn, adapterPath); err != nil {
 		logger.Warn("BLE adapter power-on failed", zap.Error(err))
 	}
+	cancel()
+	handedOff = true
+	cleanup, err := registerBLEPeripheral(ctx, logger, conn.Object(bluezService, dbus.ObjectPath(adapterPath)), conn.Close, ownerChanges)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("BLE advertisement and agent info registered",
+		zap.String("adapter", adapterPath), zap.String("uuid", wendyServiceUUID), zap.String("name", info.Hostname))
+	return cleanup, nil
+}
 
-	// Defensive unregister: if a previous run crashed without unregistering, the
-	// slot may still be held in BlueZ. Ignore the error — it just means it wasn't
-	// registered, which is the normal case.
-	hci.Call(advManagerIface+".UnregisterAdvertisement", 0, advObjectPath)
+type bleRegistrationObject interface {
+	CallWithContext(context.Context, string, dbus.Flags, ...any) *dbus.Call
+}
 
-	// Register advertisement with BlueZ. Retry for up to 30 seconds: BlueZ may
-	// need time to finish adapter initialisation after power-on, and some
-	// controllers need a moment to settle after clearing stale connections.
-	opts := map[string]dbus.Variant{}
-	var regErr error
-	for i := range 30 {
-		call := hci.Call(advManagerIface+".RegisterAdvertisement", 0, advObjectPath, opts)
-		if call.Err == nil {
-			regErr = nil
-			break
+// registerBLEPeripheral owns the bus once registration starts. Cleanup waits
+// for unregistration to finish, so a restart cannot race the old application.
+func registerBLEPeripheral(parent context.Context, logger *zap.Logger, hci bleRegistrationObject, closeBus func() error, ownerChanges <-chan *dbus.Signal) (func() error, error) {
+	ctx, cancel := context.WithCancel(parent)
+	appRegistered, advRegistered := false, false
+	var registrationMu sync.Mutex
+	var once sync.Once
+	var cleanupErr error
+	cleanup := func() error {
+		once.Do(func() {
+			cancel()
+			registrationMu.Lock()
+			defer registrationMu.Unlock()
+			if advRegistered {
+				cleanupErr = errors.Join(cleanupErr, unregisterBLEObject(hci, advManagerIface+".UnregisterAdvertisement", advObjectPath))
+			}
+			if appRegistered {
+				cleanupErr = errors.Join(cleanupErr, unregisterBLEObject(hci, gattManagerIface+".UnregisterApplication", gattApplicationPath))
+			}
+			cleanupErr = errors.Join(cleanupErr, closeBus())
+		})
+		return cleanupErr
+	}
+	register := func(restarting bool) error {
+		registrationMu.Lock()
+		defer registrationMu.Unlock()
+		registerCtx, registerCancel := context.WithTimeout(ctx, bleRegisterTimeout)
+		defer registerCancel()
+		if err := registerBLEObject(registerCtx, logger, hci, gattManagerIface+".RegisterApplication", gattApplicationPath, restarting); err != nil {
+			return err
 		}
-		regErr = call.Err
-		// Log the D-Bus error name on the first attempt so the operator can see
-		// the exact BlueZ error (e.g. org.bluez.Error.Failed vs NotPermitted).
-		if i == 0 {
-			if name, _, ok := dbusErrorInfo(call.Err); ok {
-				logger.Debug("BLE advertisement registration attempt failed",
-					zap.String("dbus_error", name),
-					zap.Error(call.Err))
+		appRegistered = true
+		if err := registerBLEObject(registerCtx, logger, hci, advManagerIface+".RegisterAdvertisement", advObjectPath, restarting); err != nil {
+			return err
+		}
+		advRegistered = true
+		return nil
+	}
+	if err := register(false); err != nil {
+		return nil, errors.Join(err, cleanup())
+	}
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		defer func() {
+			if err := cleanup(); err != nil {
+				logger.Warn("BLE advertisement cleanup failed", zap.Error(err))
+			}
+		}()
+		for ctx.Err() == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case signal, ok := <-ownerChanges:
+				if !ok {
+					return
+				}
+				owner, changed := bluezOwnerChange(signal)
+				if !changed {
+					continue
+				}
+				// Registrations belong to the departed daemon. Clear their
+				// state even when ownership changes without a vacant interval.
+				registrationMu.Lock()
+				appRegistered, advRegistered = false, false
+				registrationMu.Unlock()
+				if owner == "" {
+					continue
+				}
+				if err := register(true); err != nil {
+					if ctx.Err() == nil {
+						logger.Warn("BLE re-registration after bluetoothd restart failed", zap.Error(err))
+					}
+					continue
+				}
+				logger.Info("BLE advertisement and agent info restored after bluetoothd restart")
 			}
 		}
+	}()
+	return func() error {
+		err := cleanup()
+		<-watcherDone
+		return err
+	}, nil
+}
+
+func bluezOwnerChange(signal *dbus.Signal) (string, bool) {
+	if signal == nil || signal.Sender != "org.freedesktop.DBus" || signal.Name != "org.freedesktop.DBus.NameOwnerChanged" || len(signal.Body) != 3 {
+		return "", false
+	}
+	name, nameOK := signal.Body[0].(string)
+	oldOwner, oldOK := signal.Body[1].(string)
+	newOwner, newOK := signal.Body[2].(string)
+	return newOwner, nameOK && oldOK && newOK && name == bluezService && oldOwner != newOwner
+}
+
+func registerBLEObject(ctx context.Context, logger *zap.Logger, hci bleRegistrationObject, method string, path dbus.ObjectPath, allowExisting bool) error {
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%s: %w", method, err)
+		}
+		callCtx, cancel := context.WithTimeout(ctx, bleDBusTimeout)
+		err := hci.CallWithContext(callCtx, method, 0, path, map[string]dbus.Variant{}).Err
+		cancel()
+		if err == nil {
+			return nil
+		}
+		// A queued owner change may describe a restart that initial
+		// registration already survived. Our private bus owns this path.
+		if name, _, ok := dbusErrorInfo(err); allowExisting && ok && name == "org.bluez.Error.AlreadyExists" {
+			return nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%s: %w", method, err)
+		}
+		if attempt == 0 {
+			logger.Debug("BLE registration attempt failed", zap.String("method", method), zap.Error(err))
+		}
+		timer := time.NewTimer(bleRegisterRetryWait)
 		select {
 		case <-ctx.Done():
-			conn.Close()
-			return ctx.Err()
-		case <-time.After(time.Second):
+			timer.Stop()
+			return fmt.Errorf("%s: %w", method, errors.Join(ctx.Err(), err))
+		case <-timer.C:
 		}
 	}
-	if regErr != nil {
-		conn.Close()
-		return fmt.Errorf("register advertisement: %w", regErr)
-	}
+}
 
-	logger.Info("BLE advertisement registered",
-		zap.String("adapter", adapterPath),
-		zap.String("uuid", wendyServiceUUID),
-		zap.String("name", hostname))
-
-	// Wait for context cancellation, then unregister.
-	go func() {
-		<-ctx.Done()
-		if call := hci.Call(advManagerIface+".UnregisterAdvertisement", 0, advObjectPath); call.Err != nil {
-			logger.Warn("unregister advertisement failed", zap.Error(call.Err))
+func unregisterBLEObject(hci bleRegistrationObject, method string, path dbus.ObjectPath) error {
+	ctx, cancel := context.WithTimeout(context.Background(), bleDBusTimeout)
+	defer cancel()
+	if err := hci.CallWithContext(ctx, method, 0, path).Err; err != nil {
+		if name, _, ok := dbusErrorInfo(err); ok && name == "org.bluez.Error.DoesNotExist" {
+			return nil
 		}
-		conn.Close()
-		logger.Info("BLE advertisement unregistered")
-	}()
-
+		return fmt.Errorf("%s: %w", method, err)
+	}
 	return nil
 }

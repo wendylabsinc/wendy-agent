@@ -10,117 +10,205 @@
 package ble
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
+	"sync"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/central"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/protobuf/proto"
 )
 
-// agentReadTimeout bounds how long we wait for an agent reply. The BLE
-// net.Conn blocks indefinitely without a deadline — liteclient's read loop
-// needs that — and there is no higher-level timeout on this path, so the
-// deadline has to be set here.
-const agentReadTimeout = 30 * time.Second
+const (
+	agentCommandTimeout   = 60 * time.Second
+	agentHandshakeTimeout = 15 * time.Second
+	maxAgentFrameSize     = 65535
+)
 
-// DefaultL2CAPPSM is the PSM the WendyOS agent's L2CAP server listens on (see
-// agent/bluetooth/l2cap_server_linux.go, which must agree with this). It is the
-// fallback when discovery did not report the device's own PSM.
+// DefaultL2CAPPSM is the fallback PSM for agents without discovered metadata.
 const DefaultL2CAPPSM uint16 = 128
 
-// AgentClient communicates with a WendyOS agent over BLE L2CAP using
-// protobuf-framed messages (UInt16 BE length prefix) over mTLS.
+// AgentClient exchanges sequential protobuf frames over an authenticated BLE
+// stream. A failed exchange closes the stream, since it cannot safely associate
+// a delayed response with the next command.
 type AgentClient struct {
-	conn    *central.Connection
-	tlsConn *tls.Conn
+	conn      net.Conn
+	tlsConn   *tls.Conn
+	ctx       context.Context
+	exchange  chan struct{}
+	closeOnce sync.Once
+	identity  certs.WendyIdentity
 }
 
-// ConnectAgent establishes a BLE connection to a WendyOS device, opens the
-// L2CAP channel, and performs the mTLS handshake. tlsConfig must include a
-// client certificate issued by the same PKI as the agent's server certificate.
 func ConnectAgent(device *models.BluetoothDevice, tlsConfig *tls.Config) (*AgentClient, error) {
+	return ConnectAgentContext(context.Background(), device, tlsConfig)
+}
+
+// ConnectAgentContext bounds the link setup and TLS handshake. The context also
+// owns subsequent commands until Close, including writes stalled on BLE credits.
+func ConnectAgentContext(ctx context.Context, device *models.BluetoothDevice, tlsConfig *tls.Config) (*AgentClient, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	conn, err := central.Connect(device.Address, 10)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to %s: %w", device.DisplayName, err)
 	}
-
+	if err := ctx.Err(); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	psm := DefaultL2CAPPSM
 	if device.L2CAPPSM != 0 {
 		psm = device.L2CAPPSM
 	}
-
 	if err := conn.OpenL2CAP(psm, 10); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("opening L2CAP channel (PSM %d): %w", psm, err)
 	}
+	return connectAgentStream(ctx, central.NewL2CAPStream(conn), tlsConfig)
+}
 
-	tlsConn := tls.Client(central.NewL2CAPStream(conn), tlsConfig)
-	if err := tlsConn.Handshake(); err != nil {
-		conn.Close()
+// connectAgentStream keeps TLS and framing testable without a radio.
+func connectAgentStream(ctx context.Context, stream net.Conn, tlsConfig *tls.Config) (*AgentClient, error) {
+	client := &AgentClient{conn: stream, ctx: ctx, exchange: make(chan struct{}, 1)}
+	// Sending a TLS rejection alert can itself stall on BLE. Retain the
+	// verifier's identity refusal even if cancellation interrupts that alert.
+	var verificationErr error
+	tlsConfig = tlsConfig.Clone()
+	if verify := tlsConfig.VerifyConnection; verify != nil {
+		tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+			verificationErr = verify(state)
+			return verificationErr
+		}
+	}
+	client.tlsConn = tls.Client(stream, tlsConfig)
+	handshakeCtx, cancel := context.WithTimeout(ctx, agentHandshakeTimeout)
+	defer cancel()
+	stop := context.AfterFunc(handshakeCtx, client.Close)
+	defer stop()
+	deadline, _ := handshakeCtx.Deadline()
+	if err := stream.SetDeadline(deadline); err != nil {
+		client.Close()
+		return nil, err
+	}
+	if err := client.tlsConn.HandshakeContext(handshakeCtx); err != nil {
+		client.Close()
+		if verificationErr != nil {
+			err = verificationErr
+		}
 		return nil, fmt.Errorf("BLE mTLS handshake: %w", err)
 	}
-
-	return &AgentClient{conn: conn, tlsConn: tlsConn}, nil
+	if err := handshakeCtx.Err(); err != nil {
+		client.Close()
+		return nil, err
+	}
+	// Inspect identity only after the configured verifier and handshake accept it.
+	state := client.tlsConn.ConnectionState()
+	if len(state.PeerCertificates) > 0 {
+		client.identity, _, _ = certs.IdentityFromCert(state.PeerCertificates[0])
+	}
+	if client.identity.EntityType != certs.EntityAsset {
+		client.Close()
+		return nil, fmt.Errorf("BLE agent certificate has no device identity")
+	}
+	if err := stream.SetDeadline(time.Time{}); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
 }
 
-// Close disconnects the BLE connection.
-func (c *AgentClient) Close() {
-	c.tlsConn.Close()
+// ObservedServerIdentity returns the device identity accepted by the TLS verifier.
+func (c *AgentClient) ObservedServerIdentity() (certs.WendyIdentity, bool) {
+	return c.identity, c.identity.EntityType == certs.EntityAsset
 }
 
-// sendCommand serializes a BluetoothCommand, sends it over the mTLS stream
-// with a UInt16 BE length prefix, reads the response, and returns it.
+// Close closes the transport directly. TLS close_notify can itself block when a
+// peripheral has stopped accepting data, so it is inappropriate on this path.
+func (c *AgentClient) Close() { c.closeOnce.Do(func() { _ = c.conn.Close() }) }
+
 func (c *AgentClient) sendCommand(cmd *agentpb.BluetoothCommand) (*agentpb.BluetoothResponse, error) {
+	return c.sendCommandContext(c.ctx, cmd)
+}
+
+func (c *AgentClient) sendCommandContext(ctx context.Context, cmd *agentpb.BluetoothCommand) (resp *agentpb.BluetoothResponse, err error) {
+	ctx, cancel := context.WithTimeout(ctx, agentCommandTimeout)
+	defer cancel()
+	select {
+	case c.exchange <- struct{}{}:
+		defer func() { <-c.exchange }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	data, err := proto.Marshal(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling command: %w", err)
 	}
-
-	// Build length-prefixed frame: [UInt16 BE length] [protobuf data]
+	if len(data) == 0 || len(data) > maxAgentFrameSize {
+		return nil, fmt.Errorf("BLE command size %d outside 1..%d", len(data), maxAgentFrameSize)
+	}
+	stop := context.AfterFunc(ctx, c.Close)
+	defer stop()
+	exchangeComplete := false
+	defer func() {
+		if err != nil && !exchangeComplete {
+			c.Close()
+		}
+		if ctx.Err() != nil {
+			resp, err = nil, ctx.Err()
+		} else if deadline, ok := ctx.Deadline(); err != nil && ok && !time.Now().Before(deadline) {
+			// A socket deadline can fire before the context timer is scheduled.
+			// Both represent the same exhausted operation budget.
+			resp, err = nil, context.DeadlineExceeded
+		}
+	}()
+	deadline, _ := ctx.Deadline()
+	if err = c.conn.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	defer c.conn.SetDeadline(time.Time{}) //nolint:errcheck
 	frame := make([]byte, 2+len(data))
 	binary.BigEndian.PutUint16(frame[:2], uint16(len(data)))
 	copy(frame[2:], data)
-
-	if _, err := c.tlsConn.Write(frame); err != nil {
+	if _, err = c.tlsConn.Write(frame); err != nil {
 		return nil, fmt.Errorf("sending command: %w", err)
 	}
-
-	// Read the 2-byte length header, then the body. The deadline is per-read
-	// (reset between header and body) rather than one budget for the whole exchange:
-	// long-running commands must still begin replying within agentReadTimeout, and
-	// once a reply starts arriving the rest of it should follow promptly.
-	defer c.tlsConn.SetReadDeadline(time.Time{}) //nolint:errcheck
-
 	var header [2]byte
-	if err := c.tlsConn.SetReadDeadline(time.Now().Add(agentReadTimeout)); err != nil {
-		return nil, fmt.Errorf("setting response deadline: %w", err)
-	}
-	if _, err := io.ReadFull(c.tlsConn, header[:]); err != nil {
+	if _, err = io.ReadFull(c.tlsConn, header[:]); err != nil {
 		return nil, fmt.Errorf("reading response header: %w", err)
 	}
 	msgLen := binary.BigEndian.Uint16(header[:])
-	body := make([]byte, msgLen)
-	if err := c.tlsConn.SetReadDeadline(time.Now().Add(agentReadTimeout)); err != nil {
-		return nil, fmt.Errorf("setting response deadline: %w", err)
+	if msgLen == 0 {
+		return nil, fmt.Errorf("empty BLE response frame")
 	}
-	if _, err := io.ReadFull(c.tlsConn, body); err != nil {
+	body := make([]byte, msgLen)
+	if _, err = io.ReadFull(c.tlsConn, body); err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}
-
-	resp := &agentpb.BluetoothResponse{}
-	if err := proto.Unmarshal(body, resp); err != nil {
+	resp = &agentpb.BluetoothResponse{}
+	if err = proto.Unmarshal(body, resp); err != nil {
 		return nil, fmt.Errorf("unmarshaling response: %w", err)
 	}
-
+	if resp.Response == nil {
+		return nil, fmt.Errorf("BLE response contains no result")
+	}
+	// Application errors complete the exchange and leave the stream usable,
+	// for example when a user retries WiFi with a corrected password.
+	exchangeComplete = true
 	if errResp := resp.GetError(); errResp != nil {
 		return nil, fmt.Errorf("agent error: %s", errResp.GetMessage())
 	}
-
 	return resp, nil
 }
 

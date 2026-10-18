@@ -845,14 +845,33 @@ func main() {
 		}()
 	}
 
-	// Only called after provisioning so the cert is available.
+	var bleMu sync.Mutex
+	var blePeripheral *bluetooth.Peripheral
+	defer func() {
+		bleMu.Lock()
+		defer bleMu.Unlock()
+		if err := blePeripheral.Close(); err != nil {
+			logger.Warn("BLE shutdown failed", zap.Error(err))
+		}
+	}()
+	// Replace the listener and active sessions together when enrollment changes.
 	startBLEPeripheral := func(certPEM, chainPEM, keyPEM string) {
+		bleMu.Lock()
+		defer bleMu.Unlock()
+		if err := blePeripheral.Close(); err != nil {
+			logger.Warn("Previous BLE endpoint failed to stop", zap.Error(err))
+		}
+		blePeripheral = nil
 		tlsConfig, err := mtls.NewTLSConfig(certPEM, chainPEM, keyPEM, logger, certNotBeforeFloor(certPEM))
 		if err != nil {
 			logger.Error("Failed to build BLE TLS config", zap.Error(err))
 			return
 		}
-		bluetooth.StartBLEPeripheral(ctx, logger, bleDispatcher, tlsConfig)
+		expectedScope, _ := certs.ScopeFromCertPEM(certPEM)
+		blePeripheral, err = bluetooth.StartBLEPeripheral(ctx, logger, bleDispatcher, tlsConfig, expectedScope, orgMode)
+		if err != nil {
+			logger.Warn("BLE endpoint unavailable", zap.Error(err))
+		}
 	}
 
 	// Check if already provisioned and start mTLS server and tunnel broker if certificates exist.

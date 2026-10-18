@@ -5,275 +5,145 @@ package bluetooth
 import (
 	"context"
 	"crypto/tls"
-	"encoding/binary"
+	"errors"
 	"fmt"
-	"io"
 	"net"
+	"os"
+	"sync"
 	"time"
+	"unsafe"
 
-	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/agentinfo"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
-	"google.golang.org/protobuf/proto"
 )
 
-const (
-	wendyL2CAPPSM = 128
-	maxFrameSize  = 65536
-)
+// BT_SNDMTU is a uint16 socket option from linux/bluetooth.h. It is the
+// peer's negotiated maximum SDU size, not the controller's link-layer MTU.
+const btSendMTU = 12
 
-type l2capStreamConn struct {
-	fd   int
-	rbuf []byte // bytes remaining from the last received SDU
+func negotiatedSendMTU(fd int) (int, error) {
+	var mtu uint16
+	size := uint32(unsafe.Sizeof(mtu))
+	_, _, errno := unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(fd), unix.SOL_BLUETOOTH,
+		btSendMTU, uintptr(unsafe.Pointer(&mtu)), uintptr(unsafe.Pointer(&size)), 0)
+	if errno != 0 {
+		return 0, errno
+	}
+	if size != 2 || mtu == 0 {
+		return 0, fmt.Errorf("invalid negotiated L2CAP SDU size %d", mtu)
+	}
+	return int(mtu), nil
 }
 
-func (c *l2capStreamConn) Read(b []byte) (int, error) {
-	if len(c.rbuf) > 0 {
-		n := copy(b, c.rbuf)
-		c.rbuf = c.rbuf[n:]
-		return n, nil
-	}
-	msg := make([]byte, 65536)
-	n, err := unix.Read(c.fd, msg)
+// os.File, unlike net.FileConn, supports these nonblocking AF_BLUETOOTH
+// descriptors without interpreting their addresses. Its runtime poller handles
+// deadlines, EINTR and concurrent Close without reusing a closed descriptor.
+func newL2CAPStreamConn(fd int, addr unix.Sockaddr) (net.Conn, error) {
+	mtu, err := negotiatedSendMTU(fd)
 	if err != nil {
-		if err == unix.EAGAIN || err == unix.EWOULDBLOCK {
-			return 0, &net.OpError{Op: "read", Net: "l2cap", Err: &l2capTimeoutError{}}
-		}
-		return 0, &net.OpError{Op: "read", Net: "l2cap", Err: err}
-	}
-	if n == 0 {
-		return 0, io.EOF
-	}
-	copied := copy(b, msg[:n])
-	if copied < n {
-		c.rbuf = make([]byte, n-copied)
-		copy(c.rbuf, msg[copied:n])
-	}
-	return copied, nil
-}
-
-func (c *l2capStreamConn) Write(b []byte) (int, error) {
-	n, err := unix.Write(c.fd, b)
-	if err != nil {
-		return n, &net.OpError{Op: "write", Net: "l2cap", Err: err}
-	}
-	return n, nil
-}
-
-func (c *l2capStreamConn) Close() error { return unix.Close(c.fd) }
-
-func (c *l2capStreamConn) LocalAddr() net.Addr  { return l2capAddr("local") }
-func (c *l2capStreamConn) RemoteAddr() net.Addr { return l2capAddr("remote") }
-
-func (c *l2capStreamConn) SetDeadline(t time.Time) error {
-	re := c.SetReadDeadline(t)
-	we := c.SetWriteDeadline(t)
-	if re != nil {
-		return re
-	}
-	return we
-}
-
-func (c *l2capStreamConn) SetReadDeadline(t time.Time) error {
-	tv := l2capTimeval(t)
-	return unix.SetsockoptTimeval(c.fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
-}
-
-func (c *l2capStreamConn) SetWriteDeadline(t time.Time) error {
-	tv := l2capTimeval(t)
-	return unix.SetsockoptTimeval(c.fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
-}
-
-type l2capAddr string
-
-func (a l2capAddr) Network() string { return "l2cap" }
-func (a l2capAddr) String() string  { return string(a) }
-
-type l2capTimeoutError struct{}
-
-func (e *l2capTimeoutError) Error() string   { return "i/o timeout" }
-func (e *l2capTimeoutError) Timeout() bool   { return true }
-func (e *l2capTimeoutError) Temporary() bool { return true }
-
-// l2capTimeval converts an absolute deadline to a SO_RCVTIMEO/SO_SNDTIMEO
-// timeval. A zero time clears the timeout.
-func l2capTimeval(t time.Time) unix.Timeval {
-	if t.IsZero() {
-		return unix.Timeval{}
-	}
-	d := time.Until(t)
-	if d <= 0 {
-		return unix.Timeval{Sec: 0, Usec: 1}
-	}
-	return unix.NsecToTimeval(d.Nanoseconds())
-}
-
-// startL2CAPServer binds an LE CoC L2CAP socket and dispatches protobuf-framed
-// commands over mTLS. tlsConfig must be non-nil; the server refuses to start
-// without a provisioned certificate so the BLE channel is never open without auth.
-func startL2CAPServer(ctx context.Context, logger *zap.Logger, d *Dispatcher, tlsConfig *tls.Config) error {
-	if tlsConfig == nil {
-		return fmt.Errorf("BLE L2CAP server requires mTLS: device is not provisioned")
-	}
-
-	fd, err := unix.Socket(unix.AF_BLUETOOTH, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, unix.BTPROTO_L2CAP)
-	if err != nil {
-		return fmt.Errorf("l2cap socket: %w", err)
-	}
-
-	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
 		unix.Close(fd)
-		return fmt.Errorf("l2cap setsockopt: %w", err)
+		return nil, fmt.Errorf("read L2CAP send MTU: %w", err)
 	}
+	f := os.NewFile(uintptr(fd), "wendy-l2cap")
+	if f == nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("wrap L2CAP descriptor")
+	}
+	if err := f.SetDeadline(time.Time{}); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("L2CAP deadlines unavailable: %w", err)
+	}
+	remote := "remote"
+	if a, ok := addr.(*unix.SockaddrL2); ok {
+		b := a.Addr
+		remote = fmt.Sprintf("%02X:%02X:%02X:%02X:%02X:%02X", b[0], b[1], b[2], b[3], b[4], b[5])
+	}
+	return &packetStreamConn{packet: f, sendMTU: mtu, remote: l2capAddr(remote)}, nil
+}
 
-	// PSM=128 (0x0080) is the Wendy LE CoC PSM; AddrType=BDADDR_LE_PUBLIC tells
-	// BlueZ this is an LE CoC socket (not Classic BT).
-	sa := &unix.SockaddrL2{PSM: wendyL2CAPPSM, AddrType: unix.BDADDR_LE_PUBLIC}
+// startL2CAPServer returns a synchronous stop function. Closing the listener
+// precedes draining sessions so a new enrolled identity can safely bind its PSM.
+func startL2CAPServer(parent context.Context, logger *zap.Logger, d *Dispatcher, tlsConfig *tls.Config, expected certs.Scope, mode interceptor.OrgMode) (func() error, <-chan struct{}, error) {
+	fd, err := unix.Socket(unix.AF_BLUETOOTH, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, unix.BTPROTO_L2CAP)
+	if err != nil {
+		return nil, nil, fmt.Errorf("l2cap socket: %w", err)
+	}
+	sa := &unix.SockaddrL2{PSM: agentinfo.DefaultPSM, AddrType: unix.BDADDR_LE_PUBLIC}
 	if err := unix.Bind(fd, sa); err != nil {
 		unix.Close(fd)
-		return fmt.Errorf("l2cap bind: %w", err)
+		return nil, nil, fmt.Errorf("l2cap bind: %w", err)
 	}
-
-	if err := unix.Listen(fd, 8); err != nil {
+	if err := unix.Listen(fd, maxBLEConnections); err != nil {
 		unix.Close(fd)
-		return fmt.Errorf("l2cap listen: %w", err)
+		return nil, nil, fmt.Errorf("l2cap listen: %w", err)
 	}
-
-	logger.Info("BLE L2CAP server listening", zap.Uint16("psm", wendyL2CAPPSM))
-
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	var sessions sync.WaitGroup
+	slots := make(chan struct{}, maxBLEConnections)
 	go func() {
+		defer close(done)
+		defer cancel()
 		defer unix.Close(fd)
-		for {
+		for ctx.Err() == nil {
 			pfd := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-			n, err := unix.Poll(pfd, 1000)
-			if err != nil {
-				if err == unix.EINTR {
-					continue
-				}
-				logger.Error("l2cap poll error", zap.Error(err))
+			n, err := unix.Poll(pfd, 100)
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			if err != nil || pfd[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+				logger.Warn("BLE L2CAP listener stopped", zap.Error(err))
 				return
+			}
+			if n == 0 || ctx.Err() != nil {
+				continue
+			}
+			connFD, addr, err := unix.Accept4(fd, unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK)
+			if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) {
+				continue
+			}
+			if err != nil {
+				logger.Warn("BLE L2CAP accept failed", zap.Error(err))
+				continue
 			}
 			select {
-			case <-ctx.Done():
-				return
+			case slots <- struct{}{}:
 			default:
-			}
-			if n == 0 {
+				unix.Close(connFD)
 				continue
 			}
-
-			connFd, _, err := unix.Accept4(fd, unix.SOCK_CLOEXEC)
+			conn, err := newL2CAPStreamConn(connFD, addr)
 			if err != nil {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					logger.Warn("l2cap accept error", zap.Error(err))
-					continue
-				}
+				<-slots
+				logger.Warn("BLE L2CAP connection unavailable", zap.Error(err))
+				continue
 			}
-			go serveL2CAPConn(ctx, connFd, logger, d, tlsConfig)
+			sessions.Add(1)
+			go func() {
+				defer sessions.Done()
+				defer func() { <-slots }()
+				serveBLESession(ctx, conn, logger, d.Dispatch, tlsConfig, expected, mode, defaultBLESessionLimits)
+			}()
 		}
 	}()
-
-	return nil
-}
-
-func serveL2CAPConn(ctx context.Context, fd int, logger *zap.Logger, d *Dispatcher, tlsConfig *tls.Config) {
-	// Wrap the raw fd as a stream-like net.Conn for TLS.
-	// net.FileConn cannot be used here: it calls getsockname internally, which
-	// returns EAFNOSUPPORT for AF_BLUETOOTH sockets. l2capStreamConn bypasses
-	// that and also converts SEQPACKET message semantics to stream semantics by
-	// buffering received SDUs so TLS partial reads don't discard data.
-	rawConn := &l2capStreamConn{fd: fd}
-
-	tlsConn := tls.Server(rawConn, tlsConfig)
-	defer tlsConn.Close()
-
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		logger.Warn("BLE mTLS handshake failed", zap.Error(err))
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		// Re-check context every 30 s via a read deadline.
-		if err := tlsConn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
-			return
-		}
-
-		payload, err := readMessageFromConn(tlsConn)
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue
+	logger.Info("BLE L2CAP server listening", zap.Uint16("psm", agentinfo.DefaultPSM))
+	var once sync.Once
+	var stopErr error
+	return func() error {
+		once.Do(func() {
+			cancel()
+			<-done
+			drained := make(chan struct{})
+			go func() { sessions.Wait(); close(drained) }()
+			select {
+			case <-drained:
+			case <-time.After(5 * time.Second):
+				stopErr = fmt.Errorf("BLE handlers did not stop after cancellation")
 			}
-			return
-		}
-
-		if err := tlsConn.SetReadDeadline(time.Time{}); err != nil {
-			return
-		}
-
-		var cmd agentpb.BluetoothCommand
-		if err := proto.Unmarshal(payload, &cmd); err != nil {
-			writeErrFrameToConn(tlsConn, logger, "malformed protobuf")
-			return
-		}
-
-		resp := d.Dispatch(ctx, &cmd)
-		respBytes, err := proto.Marshal(resp)
-		if err != nil {
-			writeErrFrameToConn(tlsConn, logger, "marshal error")
-			return
-		}
-		if err := writeFrameToConn(tlsConn, respBytes); err != nil {
-			return
-		}
-	}
-}
-
-// readMessageFromConn reads one length-prefixed message from a stream reader.
-// The format is: 2-byte big-endian length | payload bytes.
-func readMessageFromConn(r io.Reader) ([]byte, error) {
-	var header [2]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
-		return nil, err
-	}
-	msgLen := binary.BigEndian.Uint16(header[:])
-	if msgLen == 0 {
-		return nil, fmt.Errorf("empty message")
-	}
-	if int(msgLen) > maxFrameSize-2 {
-		return nil, fmt.Errorf("message too large: %d bytes", msgLen)
-	}
-	body := make([]byte, msgLen)
-	if _, err := io.ReadFull(r, body); err != nil {
-		return nil, err
-	}
-	return body, nil
-}
-
-func writeFrameToConn(w io.Writer, data []byte) error {
-	if len(data) > maxFrameSize-2 {
-		return fmt.Errorf("frame too large: %d bytes", len(data))
-	}
-	frame := make([]byte, 2+len(data))
-	binary.BigEndian.PutUint16(frame[:2], uint16(len(data)))
-	copy(frame[2:], data)
-	_, err := w.Write(frame)
-	return err
-}
-
-func writeErrFrameToConn(w io.Writer, logger *zap.Logger, msg string) {
-	resp := errResp(msg)
-	if b, err := proto.Marshal(resp); err == nil {
-		if wErr := writeFrameToConn(w, b); wErr != nil {
-			logger.Debug("l2cap write error frame failed", zap.Error(wErr))
-		}
-	}
+		})
+		return stopErr
+	}, done, nil
 }

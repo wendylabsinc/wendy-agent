@@ -12,11 +12,13 @@ import "C"
 
 import (
 	"fmt"
+	"sync"
 	"unsafe"
 )
 
 type Connection struct {
 	handle C.WendyBLEConn
+	ioMu   sync.RWMutex
 }
 
 // Connect establishes a BLE connection to the peripheral identified by its UUID.
@@ -138,6 +140,11 @@ func (c *Connection) OpenL2CAP(psm uint16, timeoutSeconds int) error {
 
 // L2CAPSend sends data over the L2CAP channel.
 func (c *Connection) L2CAPSend(data []byte) error {
+	c.ioMu.RLock()
+	defer c.ioMu.RUnlock()
+	if c.handle == nil {
+		return fmt.Errorf("BLE connection is closed")
+	}
 	if len(data) == 0 {
 		return nil
 	}
@@ -151,6 +158,11 @@ func (c *Connection) L2CAPSend(data []byte) error {
 
 // L2CAPRecv receives data from the L2CAP channel.
 func (c *Connection) L2CAPRecv(timeoutSeconds int) ([]byte, error) {
+	c.ioMu.RLock()
+	defer c.ioMu.RUnlock()
+	if c.handle == nil {
+		return nil, fmt.Errorf("BLE connection is closed")
+	}
 	result := C.wendy_ble_l2cap_recv(c.handle, C.int(timeoutSeconds))
 	if result.error == C.WENDY_BLE_ERR_TIMEOUT {
 		// Distinguishable so a caller with no deadline of its own can retry.
@@ -188,6 +200,8 @@ func (c *Connection) ListServices() string {
 
 // Close disconnects and frees all BLE resources.
 func (c *Connection) Close() {
+	c.ioMu.Lock()
+	defer c.ioMu.Unlock()
 	if c.handle != nil {
 		C.wendy_ble_disconnect(c.handle)
 		c.handle = nil

@@ -28,6 +28,7 @@ import (
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/agentinfo"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
@@ -1536,18 +1537,20 @@ func connectPickedLANDevice(ctx context.Context, d *models.DiscoveredDevice, add
 	if err != nil {
 		// Neither refusal is "the LAN attempt failed", and the BLE half of this
 		// row is named by the same unauthenticated advertisement that named the
-		// LAN half. Falling back would reach a peer over a transport where
-		// nothing enforces the pin at all (attemptBLEConnect sets no
-		// ExpectedIdentity, and enforceSelectedDevicePin is a no-op for a
-		// Bluetooth selection) and report success. Typed, not text-matched: the
+		// LAN half. An identity refusal stops resolution even when a second
+		// transport is available. Typed, not text-matched: the
 		// wording of these refusals is not a contract, and a message rewrite
 		// must not silently reopen this.
 		if blocksUnauthenticatedFallback(err) {
-			return nil, err
+			// An unreachable pinned agent may recover through the enrolled BLE
+			// protocol, which enforces that same selected identity during TLS.
+			if !errors.Is(err, errNoAuthenticatedEndpoint) || !canRecoverOverAuthenticatedBLE(d) {
+				return nil, err
+			}
 		}
 		// LAN failed — fall back to BLE if available.
 		if d.Bluetooth != nil {
-			return &SelectedDevice{Bluetooth: d.Bluetooth}, nil
+			return selectedBLEDevice(d), nil
 		}
 		return nil, err
 	}
@@ -3200,42 +3203,240 @@ func findCertByOrgID(authEntries []config.AuthConfig, orgID int) *config.Certifi
 	return nil
 }
 
+const namedBLERecoveryTimeout = 15 * time.Second
+
+var discoverNamedBLEFn = discovery.DiscoverBluetoothContinuous
+
+// recoverNamedBLE selects only the requested device. Discovery fields choose a
+// candidate; the command's BLE handshake must still prove the retained pin.
+// Nil selection and error leave the original LAN failure unchanged.
+func recoverNamedBLE(ctx context.Context, cfg resolveConfig, pinKey string, expected *certs.WendyIdentity, cause error) (*SelectedDevice, error) {
+	if !cfg.includeBluetooth || cfg.enrollmentTrustRecovery || ctx.Err() != nil || stopConnectionRecovery(cause) ||
+		isTLSCertificateError(cause) || isExplicitTLSRejection(cause) || errors.Is(cause, errProvisionedAgentUnauthorized) {
+		return nil, nil
+	}
+	var networkErr net.Error
+	if !errors.Is(cause, errNoAuthenticatedEndpoint) && !errors.Is(cause, errDeviceUnreachable) && !isDeviceUnreachable(cause) && !errors.As(cause, &networkErr) {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, namedBLERecoveryTimeout)
+	defer cancel()
+	stream, err := discoverNamedBLEFn(ctx)
+	if err != nil {
+		return nil, nil
+	}
+	wantedHost := (models.BluetoothDevice{Hostname: pinKey}).HostKey()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, nil
+		case devices, ok := <-stream:
+			if !ok {
+				return nil, nil
+			}
+			for _, device := range devices {
+				if !validAgentBLERecoveryMetadata(device) {
+					continue
+				}
+				matches := wantedHost != "" && device.HostKey() == wantedHost
+				if !matches && expected != nil {
+					advertised, err := certs.ParseIdentityURN(device.Identity)
+					matches = err == nil && advertised.SameEntity(*expected)
+				}
+				if !matches {
+					continue
+				}
+				device.SelectedPinKey = pinKey
+				if expected != nil {
+					device.SelectedIdentity = expected.IdentityKey()
+				}
+				if _, err := bleExpectedIdentity(&device); err != nil {
+					return nil, err
+				}
+				return &SelectedDevice{Bluetooth: &device, PinKey: pinKey}, nil
+			}
+		}
+	}
+}
+
+func validAgentBLERecoveryMetadata(device models.BluetoothDevice) bool {
+	return (agentinfo.Info{
+		ProtocolVersion: device.ProtocolVersion, PSM: device.L2CAPPSM,
+		Identity: device.Identity, Hostname: device.Hostname,
+		Enrolled: device.Enrolled, Capabilities: device.Capabilities,
+	}).Validate() == nil
+}
+
+// blePinKey retains the selected LAN key across transport fallback.
+func blePinKey(device *models.BluetoothDevice) string {
+	if device.SelectedPinKey != "" {
+		return device.SelectedPinKey
+	}
+	return device.HostKey()
+}
+
+func bleExpectedIdentity(device *models.BluetoothDevice) (*certs.WendyIdentity, error) {
+	expected := expectedIdentityFor(blePinKey(device))
+	if device.SelectedIdentity != "" {
+		selected, err := certs.ParseIdentityURN(device.SelectedIdentity)
+		if err != nil || selected.EntityType != certs.EntityAsset {
+			return nil, refuseIdentity("Invalid saved Bluetooth selection identity")
+		}
+		expected = &selected
+	}
+	if device.Identity == "" {
+		if expected == nil {
+			return nil, fmt.Errorf("BLE device has no enrolled identity; update the agent before Bluetooth recovery")
+		}
+		return expected, nil
+	}
+	advertised, err := certs.ParsePrincipal(device.Identity)
+	if err != nil {
+		advertised, err = certs.ParseIdentityURN(device.Identity)
+	}
+	if err != nil || advertised.EntityType != certs.EntityAsset {
+		return nil, fmt.Errorf("BLE metadata contains an invalid device identity")
+	}
+	if expected != nil && advertised.Scope().Comparable(expected.Scope()) && !advertised.SameEntity(*expected) {
+		return nil, refuseIdentity("Bluetooth device %q advertises a different identity from its saved pin", blePinKey(device))
+	}
+	if expected != nil {
+		return expected, nil
+	}
+	return &advertised, nil
+}
+
+func verifyBLEMetadataIdentity(device *models.BluetoothDevice, verified certs.WendyIdentity) error {
+	if device.Identity == "" {
+		return nil
+	}
+	advertised, err := certs.ParsePrincipal(device.Identity)
+	if err != nil {
+		advertised, err = certs.ParseIdentityURN(device.Identity)
+	}
+	if err != nil || !verified.SameEntity(advertised) {
+		return refuseIdentity("Bluetooth device %q certificate does not match its advertised identity", blePinKey(device))
+	}
+	return nil
+}
+
+func canRecoverOverAuthenticatedBLE(d *models.DiscoveredDevice) bool {
+	if d.Bluetooth == nil || !d.Bluetooth.IsWendyAgent() || !d.Bluetooth.Enrolled || d.Bluetooth.ProtocolVersion != agentinfo.ProtocolVersion || d.Bluetooth.Identity == "" {
+		return false
+	}
+	_, err := bleExpectedIdentity(selectedBLEDevice(d).Bluetooth)
+	return err == nil
+}
+
+// selectedBLEDevice copies selection state without changing discovery metadata.
+func selectedBLEDevice(d *models.DiscoveredDevice) *SelectedDevice {
+	device := *d.Bluetooth
+	if d.LAN != nil {
+		device.SelectedPinKey = pinKeyForLANDevice(d.LAN)
+		if expected := expectedIdentityFor(device.SelectedPinKey); expected != nil {
+			device.SelectedIdentity = expected.IdentityKey()
+		}
+	}
+	return &SelectedDevice{Bluetooth: &device}
+}
+
 // attemptBLEConnect builds a TLS config and connects to device using the
 // given certificate info and pin store.
-func attemptBLEConnect(device *models.BluetoothDevice, cert config.CertificateInfo, pins certs.PinChecker) (*ble.AgentClient, error) {
+func attemptBLEConnect(ctx context.Context, device *models.BluetoothDevice, cert config.CertificateInfo, pins certs.PinChecker) (*ble.AgentClient, error) {
+	expected, err := bleExpectedIdentity(device)
+	if err != nil {
+		return nil, err
+	}
 	keyPEM, err := cert.PrivateKeyPEM()
 	if err != nil {
 		return nil, fmt.Errorf("loading client key: %w", err)
 	}
 	tlsCfg, err := ble.NewClientTLSConfig(cert.PemCertificate, keyPEM, certs.ServerVerifyOpts{
-		ChainPEM:      cert.PemCertificateChain,
-		ExpectedOrgID: int32(cert.OrganizationID),
-		PinStore:      pins,
+		ChainPEM:         cert.PemCertificateChain,
+		ExpectedOrgID:    int32(cert.OrganizationID),
+		PinStore:         pins,
+		ExpectedIdentity: expected,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("building BLE TLS config: %w", err)
 	}
-	return ble.ConnectAgent(device, tlsCfg)
+	client, err := ble.ConnectAgentContext(ctx, device, tlsCfg)
+	if err != nil {
+		return nil, err
+	}
+	identity, ok := client.ObservedServerIdentity()
+	if !ok {
+		client.Close()
+		return nil, fmt.Errorf("BLE peer did not prove a device identity")
+	}
+	if err := verifyBLEMetadataIdentity(device, identity); err != nil {
+		client.Close()
+		return nil, err
+	}
+	orgID := cert.OrganizationID
+	if identity.OrgID > 0 {
+		orgID = int(identity.OrgID)
+	}
+	if err := enforceDeviceIdentity(blePinKey(device), observedDeviceIdentity{
+		mTLS: true, orgID: orgID, assetID: identity.EntityID, principal: identity.Principal,
+	}); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+// preferredBLECredential uses the expected tenant to order credentials. This is
+// only credential selection; the handshake still enforces the device identity.
+func preferredBLECredential(expected certs.WendyIdentity, candidates []config.CertificateInfo) *config.CertificateInfo {
+	for i := range candidates {
+		if expected.TenantUUID != "" {
+			if candidates[i].TenantUUID() == expected.TenantUUID {
+				return &candidates[i]
+			}
+		} else if expected.OrgID > 0 && candidates[i].OrganizationID == int(expected.OrgID) {
+			return &candidates[i]
+		}
+	}
+	return nil
 }
 
 // connectBLEAgent connects to device via BLE mTLS, automatically retrying
 // with the matching cert if the device belongs to a different org than the
 // default auth session.
 func connectBLEAgent(device *models.BluetoothDevice) (*ble.AgentClient, error) {
+	return connectBLEAgentContext(context.Background(), device)
+}
+
+func connectBLEAgentContext(ctx context.Context, device *models.BluetoothDevice) (*ble.AgentClient, error) {
 	auth := loadCLIAuth()
 	if auth == nil || len(auth.Certificates) == 0 {
 		return nil, classifyCommandError(config.ErrNotLoggedIn, fmt.Errorf("not logged in; run 'wendy auth login' to authenticate"))
 	}
+	expected, err := bleExpectedIdentity(device)
+	if err != nil {
+		return nil, err
+	}
 	pins := openPinStore()
 	cert := auth.Certificates[0]
+	credentialScope := *expected
+	if credentialScope.TenantUUID == "" {
+		if advertised, err := certs.ParsePrincipal(device.Identity); err == nil {
+			credentialScope = advertised
+		}
+	}
+	candidates := preferValidCerts(append([]config.CertificateInfo{cert}, loadAllCLICerts()...), time.Now())
+	if preferred := preferredBLECredential(credentialScope, candidates); preferred != nil {
+		cert = *preferred
+	}
 
 	// Best-effort time sync before mTLS handshake — gives the device a chance
 	// to advance its clock before we attempt the TLS handshake.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	clitimesync.BroadcastTime(ctx) //nolint:errcheck
+	timeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	clitimesync.BroadcastTime(timeCtx) //nolint:errcheck
 	cancel()
 
-	client, err := attemptBLEConnect(device, cert, pins)
+	client, err := attemptBLEConnect(ctx, device, cert, pins)
 	if err == nil {
 		return client, nil
 	}
@@ -3254,7 +3455,7 @@ func connectBLEAgent(device *models.BluetoothDevice) (*ble.AgentClient, error) {
 	if alt == nil {
 		return nil, fmt.Errorf("device belongs to org %s; authenticate for that org with 'wendy auth login'", orgLabel("", mismatch.Got))
 	}
-	return attemptBLEConnect(device, *alt, pins)
+	return attemptBLEConnect(ctx, device, *alt, pins)
 }
 
 // resolveOption configures resolveTarget behaviour.
@@ -3537,6 +3738,10 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		// its retries and the pin check below all use it (see
 		// recheckDialPinKey).
 		pinKey := pinKeyForAddr(addr)
+		var bleExpected *certs.WendyIdentity
+		if cfg.includeBluetooth {
+			bleExpected = expectedIdentityFor(pinKey)
+		}
 		conn, brokerHit := (*grpcclient.AgentConnection)(nil), false
 		if !cfg.disableSessionBroker {
 			conn, brokerHit = connectPinnedSessionKeyed(ctx, addr, pinKey)
@@ -3571,6 +3776,18 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 					conn, err = recoverAgentConnection(ctx, cfg.nonInteractive, err, func() (*grpcclient.AgentConnection, error) {
 						return connectResolvedAgentKeyed(ctx, device, addr, pinKey, isDefault, provisionedMTLS)
 					})
+				}
+				if err != nil {
+					recovered, bleErr := recoverNamedBLE(ctx, cfg, pinKey, bleExpected, err)
+					if bleErr != nil {
+						return nil, bleErr
+					}
+					if recovered != nil {
+						if isDefault {
+							noteImplicitDevice(device, implicitDefaultDevice)
+						}
+						return recovered, nil
+					}
 				}
 				if err == nil {
 					// Continue with the same target's pin and version checks below.
@@ -4241,12 +4458,15 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 		})
 	}
 
-	// Continuous Bluetooth discovery — re-scan every 5 seconds.
+	// Stream agent sightings after their GATT metadata has been read.
 	if includeBluetooth {
 		go func() {
-			for {
-				bleDevices, err := discovery.DiscoverBluetooth(discoverCtx, true)
-				if err == nil && len(bleDevices) > 0 {
+			stream, err := discovery.DiscoverBluetoothContinuous(discoverCtx)
+			if err != nil {
+				return
+			}
+			for bleDevices := range stream {
+				if len(bleDevices) > 0 {
 					var items []tui.PickerItem
 					for i := range bleDevices {
 						connType := "BLE"
@@ -4275,12 +4495,6 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 						})
 					}
 					p.Send(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: items}})
-				}
-
-				select {
-				case <-discoverCtx.Done():
-					return
-				case <-time.After(5 * time.Second):
 				}
 			}
 		}()
@@ -4427,7 +4641,7 @@ func connectLocalPickerChoice(ctx context.Context, sel *tui.PickerItem, suppress
 			}
 			if addr == "" {
 				if d.Bluetooth != nil {
-					return &SelectedDevice{Bluetooth: d.Bluetooth}, nil
+					return selectedBLEDevice(d), nil
 				}
 				if err != nil {
 					return nil, err
