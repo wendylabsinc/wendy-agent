@@ -18,10 +18,10 @@ import (
 func isolateConnectionRecovery(t *testing.T) {
 	t.Helper()
 	oldBroadcast, oldWait, oldAttempted := broadcastTimeFn, waitForTimeProofFn, clockSkewSyncAttempted
-	oldInteractive, oldJSON, oldPrompt, oldRefresh := isInteractiveTerminalFn, jsonOutput, confirmFn, refreshAllCertsFn
+	oldInteractive, oldJSON, oldPrompt, oldRefresh := isInteractiveTerminalFn, jsonOutput, confirmFn, refreshCurrentCertsFn
 	t.Cleanup(func() {
 		broadcastTimeFn, waitForTimeProofFn, clockSkewSyncAttempted = oldBroadcast, oldWait, oldAttempted
-		isInteractiveTerminalFn, jsonOutput, confirmFn, refreshAllCertsFn = oldInteractive, oldJSON, oldPrompt, oldRefresh
+		isInteractiveTerminalFn, jsonOutput, confirmFn, refreshCurrentCertsFn = oldInteractive, oldJSON, oldPrompt, oldRefresh
 	})
 	clockSkewSyncAttempted = false
 	jsonOutput = false
@@ -29,7 +29,7 @@ func isolateConnectionRecovery(t *testing.T) {
 	waitForTimeProofFn = func(ctx context.Context) error { return ctx.Err() }
 	broadcastTimeFn = func(context.Context) error { t.Fatal("unexpected time broadcast"); return nil }
 	confirmFn = func(string) bool { t.Fatal("unexpected refresh prompt"); return false }
-	refreshAllCertsFn = func(context.Context) error { t.Fatal("unexpected certificate refresh"); return nil }
+	refreshCurrentCertsFn = func(context.Context) error { t.Fatal("unexpected certificate refresh"); return nil }
 }
 
 func TestConnectionClockRecoveryOutcomes(t *testing.T) {
@@ -130,7 +130,7 @@ func TestConnectionRecoveryOnlyRefreshesProvenClientProblems(t *testing.T) {
 			clockSkewSyncAttempted = true
 			prompts, refreshes, retries := 0, 0, 0
 			confirmFn = func(string) bool { prompts++; return true }
-			refreshAllCertsFn = func(context.Context) error { refreshes++; return nil }
+			refreshCurrentCertsFn = func(context.Context) error { refreshes++; return nil }
 			wantConn := &grpcclient.AgentConnection{Host: "expected-device"}
 			conn, err := recoverAgentConnection(context.Background(), false, tc.cause, func() (*grpcclient.AgentConnection, error) { retries++; return wantConn, nil })
 			if tc.wantRefresh {
@@ -182,10 +182,10 @@ func TestConnectionRecoveryGuardsAndCancellation(t *testing.T) {
 				return mode != "declined"
 			}
 			if mode == "refresh failed" {
-				refreshAllCertsFn = func(context.Context) error { return errors.New("cloud unavailable") }
+				refreshCurrentCertsFn = func(context.Context) error { return errors.New("cloud unavailable") }
 			}
 			if mode == "retry refused" {
-				refreshAllCertsFn = func(context.Context) error { return nil }
+				refreshCurrentCertsFn = func(context.Context) error { return nil }
 			}
 			_, err := recoverAgentConnection(context.Background(), mode == "noninteractive", cause, func() (*grpcclient.AgentConnection, error) {
 				if mode != "retry refused" {
@@ -225,7 +225,7 @@ func TestConnectionEntryPointsKeepRecoveryFailure(t *testing.T) {
 					expired := config.CertificateInfo{OrganizationID: 2, PemCertificate: certPEM(t, time.Now().Add(-time.Hour))}
 					cause = chooseRejectionError(context.Background(), 2, []config.CertificateInfo{expired}, errors.New("remote error: tls: bad certificate"))
 					confirmFn = func(string) bool { return true }
-					refreshAllCertsFn = func(context.Context) error { actions++; return nil }
+					refreshCurrentCertsFn = func(context.Context) error { actions++; return nil }
 				}
 				calls := 0
 				dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {

@@ -472,7 +472,12 @@ var confirmDefaultNoFn = func(question string) bool {
 	return err == nil && ok
 }
 
-var refreshAllCertsFn = refreshAllCerts
+// refreshCurrentCertsFn renews the current auth context only (WDY-3864);
+// stubbed in tests.
+var refreshCurrentCertsFn = func(ctx context.Context) error { return refreshCerts(ctx, false) }
+
+// refreshCertsForAuthFn renews one auth entry; stubbed in tests.
+var refreshCertsForAuthFn = refreshCertsForAuth
 
 // maxHandshakeTimeoutRetries bounds automatic retries of a direct device
 // connection that failed with a handshake-timeout-class error (see

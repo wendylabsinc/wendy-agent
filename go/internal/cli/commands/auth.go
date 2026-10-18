@@ -516,15 +516,18 @@ func newAuthLogoutCmd() *cobra.Command {
 }
 
 func newAuthRefreshCertsCmd() *cobra.Command {
-	return &cobra.Command{
+	var all bool
+	cmd := &cobra.Command{
 		Use:   "refresh-certs",
-		Short: "Refresh mTLS certificates",
-		Long:  "Generates a new key pair and CSR, then issues new certificates using existing credentials.",
+		Short: "Refresh mTLS certificates of the current auth context",
+		Long:  "Generates a new key pair and CSR, then issues new certificates using existing credentials. Only the current auth context (see 'wendy auth use') is refreshed unless --all asks for every stored context.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			err := refreshAllCerts(ctx)
-			if err == nil {
-				return nil
+			err := refreshCerts(ctx, all)
+			if err == nil || all {
+				// --all has no single session to log back into; each context's
+				// outcome is already printed.
+				return err
 			}
 			// An expired/absent session cannot be fixed by refreshing (there is no
 			// valid identity to refresh with) — offer to log in again instead, which
@@ -536,13 +539,18 @@ func newAuthRefreshCertsCmd() *cobra.Command {
 			return err
 		},
 	}
+	cmd.Flags().BoolVar(&all, "all", false, "Refresh every stored auth context")
+	return cmd
 }
 
-// refreshAllCerts re-issues certificates for every stored auth entry and
-// saves the updated config. It returns an error when not logged in or when
-// no entry could be refreshed, so callers that retry a connection afterwards
-// do not retry with the same stale certificates.
-func refreshAllCerts(ctx context.Context) error {
+// refreshCerts re-issues certificates and saves the updated config. It renews
+// the current context, or the only stored session; with all set it renews
+// every stored context, and one failing does not stop the rest. A context that was not selected is never touched: an OIDC refresh
+// consumes the session's rotating refresh token (WDY-3864). It returns an
+// error when nothing was refreshed, or under all when any context failed, so
+// callers that retry a connection afterwards do not retry with the same stale
+// certificates.
+func refreshCerts(ctx context.Context, all bool) error {
 	// OIDC certificate refresh consumes the same rotating token family as API
 	// refresh. Keep the lock through the final Save, including partial failures.
 	unlock, err := acquireAuthRefreshLock(ctx)
@@ -558,34 +566,57 @@ func refreshAllCerts(ctx context.Context) error {
 	if len(cfg.Auth) == 0 {
 		return fmt.Errorf("not logged in; run 'wendy auth login' first")
 	}
-	for i := range cfg.Auth {
-		cfg.Auth[i].InvalidateCachedSecrets()
+
+	var targets []*config.AuthConfig
+	switch {
+	case all:
+		for i := range cfg.Auth {
+			targets = append(targets, &cfg.Auth[i])
+		}
+	case len(cfg.Auth) == 1:
+		targets = append(targets, &cfg.Auth[0])
+	default:
+		a, ok := cfg.ContextByName(cfg.CurrentContext)
+		if !ok {
+			return fmt.Errorf("no current auth context; run 'wendy auth use <context>' or pass --all")
+		}
+		targets = append(targets, a)
 	}
 
 	refreshed := 0
+	var failed []string
 	var lastErr error
-	for i, auth := range cfg.Auth {
+	for _, auth := range targets {
+		auth.InvalidateCachedSecrets()
+		label := fmt.Sprintf("context %q (%s)", auth.Name, auth.CloudDashboard)
 		if len(auth.Certificates) == 0 {
-			fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", auth.CloudDashboard)))
+			fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", label)))
 			continue
 		}
 
-		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", auth.CloudDashboard)))
+		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", label)))
 
-		if err := refreshCertsForAuth(ctx, &cfg.Auth[i]); err != nil {
-			fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", auth.CloudDashboard, err)))
+		if err := refreshCertsForAuthFn(ctx, auth); err != nil {
+			fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", label, err)))
+			failed = append(failed, auth.Name)
 			lastErr = err
 			continue
 		}
 
 		refreshed++
-		fmt.Println(tui.SuccessMessage(fmt.Sprintf("Certificates refreshed for %s.", auth.CloudDashboard)))
+		fmt.Println(tui.SuccessMessage(fmt.Sprintf("Certificates refreshed for %s.", label)))
 	}
 
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
+	if all {
+		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshed %d of %d auth contexts.", refreshed, len(targets))))
+		if len(failed) > 0 {
+			return fmt.Errorf("failed to refresh %d auth context(s): %s", len(failed), strings.Join(failed, ", "))
+		}
+	}
 	if refreshed == 0 {
 		// Preserve the underlying failure (e.g. an unauthorized CertificateError)
 		// so the caller can detect an expired session and offer re-login.

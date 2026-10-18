@@ -493,7 +493,7 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite b
 		return fmt.Errorf("wendy-auth did not rotate the refresh token for pki-core enrollment")
 	}
 	// The old handle has already been consumed. Retain the rotated one even if
-	// a later validation or issuance step fails; refreshAllCerts persists this
+	// a later validation or issuance step fails; refreshCerts persists this
 	// mutation so the user's login is not stranded.
 	auth.RefreshToken = identityToken.RefreshToken
 	tokenVerifier, err := loadOIDCTokenVerifier(ctx, meta)

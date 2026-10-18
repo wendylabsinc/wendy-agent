@@ -11,6 +11,7 @@ import (
 	"errors"
 	"math/big"
 	"net/url"
+	"slices"
 	"testing"
 	"time"
 
@@ -192,5 +193,67 @@ func TestRefreshCertsForAuthDerivesTheRenewEndpoint(t *testing.T) {
 	}
 	if endpoint != "https://renew.dev.pki.wendy.sh/v1/renew" {
 		t.Fatalf("unexpected renewal endpoint %q", endpoint)
+	}
+}
+
+// TestRefreshCertsSelectsContexts pins WDY-3864: refresh-certs and connection
+// recovery renew only the current context, because renewing an OIDC session
+// consumes its rotating refresh token; --all is the only way to touch the rest.
+func TestRefreshCertsSelectsContexts(t *testing.T) {
+	tests := []struct {
+		name     string
+		current  string
+		all      bool
+		recovery bool
+		failing  string
+		want     []string
+		wantErr  bool
+	}{
+		{name: "default refreshes only the current context", current: "acme", want: []string{"acme"}},
+		{name: "connection recovery refreshes only the current context", current: "acme", recovery: true, want: []string{"acme"}},
+		{name: "no current context refuses to guess", wantErr: true},
+		{name: "--all iterates every context", current: "acme", all: true, want: []string{"wendy", "acme", "lab"}},
+		{name: "--all keeps going past a failure", current: "acme", all: true, failing: "wendy", want: []string{"wendy", "acme", "lab"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+			t.Setenv("WENDY_SECRET_STORE", "file")
+			cert := []config.CertificateInfo{{PemCertificate: "leaf"}}
+			if err := config.Save(&config.Config{
+				CurrentContext: tt.current,
+				Auth: []config.AuthConfig{
+					{Name: "wendy", CloudGRPC: "wendy:443", Certificates: cert},
+					{Name: "acme", CloudGRPC: "acme:443", Certificates: cert},
+					{Name: "lab", CloudGRPC: "lab:443", Certificates: cert},
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			var got []string
+			orig := refreshCertsForAuthFn
+			refreshCertsForAuthFn = func(_ context.Context, a *config.AuthConfig) error {
+				got = append(got, a.Name)
+				if a.Name == tt.failing {
+					return errors.New("invalid_grant")
+				}
+				return nil
+			}
+			t.Cleanup(func() { refreshCertsForAuthFn = orig })
+
+			var err error
+			if tt.recovery {
+				err = refreshCurrentCertsFn(context.Background())
+			} else {
+				err = refreshCerts(context.Background(), tt.all)
+			}
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("refresh error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("refreshed %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

@@ -130,7 +130,7 @@ func offerCertRefreshAndRetry(ctx context.Context, nonInteractive bool, cause er
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if err := refreshAllCertsFn(ctx); err != nil {
+	if err := refreshCurrentCertsFn(ctx); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
