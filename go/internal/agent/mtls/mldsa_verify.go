@@ -189,17 +189,44 @@ func effectiveVerificationTime(realNow, notBeforeFloor, certNotBefore time.Time)
 // so that certs issued at provisioning time are still accepted. Pass a zero
 // time.Time to disable the floor.
 func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certificate, logger *zap.Logger, notBeforeFloor time.Time) func([][]byte, [][]*x509.Certificate) error {
+	verify := buildPeerCertificateVerifier(caPool, caCerts, logger, notBeforeFloor)
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		_, err := verify(rawCerts, time.Now())
+		return err
+	}
+}
+
+// NewPeerCertificateVerifier verifies against configured CA trust and returns
+// the expiry of the path that actually verified. Unlike the general mTLS
+// loopback policy, the local leaf is not an independent trust anchor.
+// Each call verifies again at now; the result is not an authorization cache.
+func NewPeerCertificateVerifier(chainPEM string, logger *zap.Logger, notBeforeFloor time.Time) (func([][]byte, time.Time) (time.Time, error), error) {
+	if chainPEM == "" {
+		return nil, fmt.Errorf("CA chain PEM is required to verify client certificates; device may need to be re-provisioned")
+	}
+	caPool := x509.NewCertPool()
+	certs.AppendChainToPool(caPool, chainPEM)
+	caCerts, err := parseCertsFromPEM([]byte(chainPEM))
+	if err != nil {
+		return nil, fmt.Errorf("parsing chain PEM: %w", err)
+	}
+	if len(caCerts) == 0 {
+		return nil, fmt.Errorf("parsing chain PEM: no certificates found")
+	}
+	return buildPeerCertificateVerifier(caPool, caCerts, logger, notBeforeFloor), nil
+}
+
+func buildPeerCertificateVerifier(caPool *x509.CertPool, caCerts []*x509.Certificate, logger *zap.Logger, notBeforeFloor time.Time) func([][]byte, time.Time) (time.Time, error) {
+	return func(rawCerts [][]byte, realNow time.Time) (time.Time, error) {
 		if len(rawCerts) == 0 {
-			return fmt.Errorf("no client certificate presented")
+			return time.Time{}, fmt.Errorf("no client certificate presented")
 		}
 
 		leaf, err := x509.ParseCertificate(rawCerts[0])
 		if err != nil {
-			return fmt.Errorf("parsing client certificate: %w", err)
+			return time.Time{}, fmt.Errorf("parsing client certificate: %w", err)
 		}
 
-		realNow := time.Now()
 		effectiveNow := effectiveVerificationTime(realNow, notBeforeFloor, leaf.NotBefore)
 
 		// Pre-reject expired certs before any further processing. The floor must
@@ -211,7 +238,7 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 			// clock: pass realNow so the rejection log reflects the actual clock
 			// and never mistakes an expired cert for a clock-skew case.
 			logCertRejection(logger, leaf, expiredErr, realNow, realNow)
-			return expiredErr
+			return time.Time{}, expiredErr
 		}
 
 		// Build an intermediates pool from the rest of the chain presented by the client.
@@ -234,23 +261,39 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 			CurrentTime:   effectiveNow,
 		}
 		// Try standard Go verification first (handles RSA/ECDSA chains).
-		stdErr := func() error { _, e := leaf.Verify(opts); return e }()
+		paths, stdErr := leaf.Verify(opts)
+		var expires time.Time
 		if stdErr != nil {
 			// Only fall back to ML-DSA verification when the leaf cert uses an ML-DSA
 			// signature algorithm; for all other failures return the standard error.
 			sigOID, oidErr := certSigAlgOID(leaf)
 			if oidErr != nil {
 				logCertRejection(logger, leaf, stdErr, realNow, effectiveNow)
-				return stdErr
+				return time.Time{}, stdErr
 			}
 			if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
 				logCertRejection(logger, leaf, stdErr, realNow, effectiveNow)
-				return stdErr
+				return time.Time{}, stdErr
 			}
-			mldsaErr := certs.VerifyPeerCertificateChain(leaf, peerCAs, caCerts, x509.ExtKeyUsageClientAuth, realNow, effectiveNow)
+			var mldsaErr error
+			expires, mldsaErr = certs.VerifyPeerCertificateChainExpiry(leaf, peerCAs, caCerts, x509.ExtKeyUsageClientAuth, realNow, effectiveNow)
 			if mldsaErr != nil {
 				logCertRejection(logger, leaf, mldsaErr, realNow, effectiveNow)
-				return mldsaErr
+				return time.Time{}, mldsaErr
+			}
+		} else {
+			// Every returned path verified. Choose the path whose earliest
+			// certificate expiry is latest, without including unrelated input.
+			for _, path := range paths {
+				until := leaf.NotAfter
+				for _, certificate := range path {
+					if certificate.NotAfter.Before(until) {
+						until = certificate.NotAfter
+					}
+				}
+				if until.After(expires) {
+					expires = until
+				}
 			}
 		}
 
@@ -259,9 +302,9 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		// CA list and cannot be bypassed by either the standard or ML-DSA branch.
 		if revErr := checkRevocation(leaf); revErr != nil {
 			logCertRejection(logger, leaf, revErr, realNow, effectiveNow)
-			return revErr
+			return time.Time{}, revErr
 		}
-		return nil
+		return expires, nil
 	}
 }
 
