@@ -129,6 +129,15 @@ that identity. Cloud's `asset_id` carries the same certificate device UUID.
 Authenticate its full principal and tenant before using it as a network
 identity; a database field alone grants no authority.
 
+Each wendy net verifier may reuse successful certificate-path signature verification
+for up to one minute of monotonic time, within 256 entries and 8 MiB of certificate
+bytes. The key includes every presented DER entry, including unused issuers.
+Current leaf validity, the verified path's expiry, full principal and tenant, and
+the configured identity authorization callback still run on every lookup. The
+existing `checkRevocation` policy limits leaf validity windows; it does not query
+a dynamic Cloud revocation service. Clock rollback forces a fresh path check,
+failed checks are not cached, and new credentials or trust create a fresh cache.
+
 The ULA address contains `fd45:b891:567f::/48` followed by the last ten bytes of
 the device UUID. Each peer TUN carries the complementary `fe80::1` / `fe80::2`
 pair derived from full UUID ordering. The Babel router ID comes from a permanent
