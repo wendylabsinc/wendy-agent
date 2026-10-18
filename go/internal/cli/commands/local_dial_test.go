@@ -12,6 +12,7 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -45,16 +46,34 @@ func (localVersionAgent) GetAgentVersion(context.Context, *agentpb.GetAgentVersi
 // key, behind the default-deny Authorizer.
 func startLocalOnlyAgent(t *testing.T, owner crypto.Signer) string {
 	t.Helper()
+	return startLocalDevice(t, map[crypto.Signer]trustedkeys.Role{owner: trustedkeys.RoleOwner}).grpcAddr
+}
+
+type localDevice struct {
+	grpcAddr     string
+	registryPort int
+	keys         *trustedkeys.Store
+	deviceKeyPEM string
+}
+
+// startLocalDevice runs a device that is not enrolled, as #2366's agent
+// starts it: the mTLS gRPC listener and the image registry, both serving a
+// certificate self-signed over the same device key and admitting the given
+// trusted keys (the registry operator and above).
+func startLocalDevice(t *testing.T, trusted map[crypto.Signer]trustedkeys.Role) localDevice {
+	t.Helper()
 	keys, err := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	spki, err := localkey.PublicKeyDER(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := keys.Add(spki, trustedkeys.RoleOwner, "owner", trustedkeys.AddedByInstall, time.Now()); err != nil {
-		t.Fatal(err)
+	for key, role := range trusted {
+		spki, err := localkey.PublicKeyDER(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := keys.Add(spki, role, role.String(), trustedkeys.AddedByInstall, time.Now()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	deviceKeyPEM, err := certs.GenerateKeyPair()
 	if err != nil {
@@ -70,7 +89,31 @@ func startLocalOnlyAgent(t *testing.T, owner crypto.Signer) string {
 		t.Fatal(err)
 	}
 	agentpb.RegisterWendyAgentServiceServer(srv, localVersionAgent{})
-	return serveTest(t, srv)
+	dev := localDevice{grpcAddr: serveTest(t, srv), keys: keys, deviceKeyPEM: deviceKeyPEM}
+	dev.registryPort = startLocalRegistry(t, certPEM, deviceKeyPEM, keys)
+	return dev
+}
+
+// startLocalRegistry serves a stand-in registry (200 on /v2/) behind the
+// agent's own registry TLS (mtls.NewRegistryTLSConfig).
+func startLocalRegistry(t *testing.T, certPEM, keyPEM string, keys *trustedkeys.Store) int {
+	t.Helper()
+	cfg, err := mtls.NewRegistryTLSConfig(certPEM, "", keyPEM, nil, keys.Floor(), keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/" {
+			http.NotFound(w, r)
+		}
+	})}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { srv.Close() })
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // startEnrolledAgent serves a certificate naming a tenant identity, as a

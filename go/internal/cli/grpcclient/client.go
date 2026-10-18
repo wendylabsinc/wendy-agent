@@ -144,9 +144,9 @@ type AgentConnection struct {
 	// notLocalDevice is set when a local-operator dial met a cloud-enrolled
 	// device (see NotLocalDevice). nil for every other connection.
 	notLocalDevice *atomic.Bool
-	// localDeviceVerified is set when a local-operator dial verified a
-	// local-only device's certificate (see LocalDeviceVerified).
-	localDeviceVerified *atomic.Bool
+	// localDeviceVerified holds the device key a local-operator dial
+	// verified (see LocalDeviceKey).
+	localDeviceVerified *atomic.Pointer[[]byte]
 	// tcpDial records failures before TCP connected, separately from TLS errors.
 	// nil when gRPC owns dialing, including HTTP CONNECT proxy transports.
 	tcpDial *agentTCPDialState

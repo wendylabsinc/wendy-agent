@@ -31,6 +31,7 @@ The CLI tries your Wendy Cloud operator certificates first, then your local oper
 
 - A device that does not trust your key: the CLI prints your key's fingerprint and asks you to have an owner run `wendy device keys add`.
 - A cloud-enrolled device and no `wendy auth login` session: the CLI asks you to log in to the device's organization.
+- Image pushes (`wendy run`, `wendy build` with deploy) use the same credential as the connection. For a locally owned device the push goes through a loopback proxy in the CLI that holds the local key, so the key is never copied into BuildKit or another build tool; the device registry needs an `operator` or `owner` key.
 - The device key is pinned on first contact under the name you connect with. A different key later (a reinstall, or another device answering under that name) is refused; after a deliberate reinstall run `wendy device unpin <name>`.
 
 ## While the device is enrolled

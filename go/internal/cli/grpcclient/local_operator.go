@@ -34,7 +34,7 @@ func ConnectWithLocalKey(ctx context.Context, address string, key crypto.Signer,
 	if err != nil {
 		return nil, err
 	}
-	notLocal, localDevice := new(atomic.Bool), new(atomic.Bool)
+	notLocal, localDevice := new(atomic.Bool), new(atomic.Pointer[[]byte])
 	pinMismatch := new(atomic.Pointer[devicepin.PinMismatchError])
 	tlsCfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
@@ -62,7 +62,8 @@ func ConnectWithLocalKey(ctx context.Context, address string, key crypto.Signer,
 					return pm
 				}
 			}
-			localDevice.Store(true)
+			spki := leaf.RawSubjectPublicKeyInfo
+			localDevice.Store(&spki)
 			return nil
 		},
 	}
@@ -94,5 +95,18 @@ func (c *AgentConnection) NotLocalDevice() bool {
 // a local-only device (self-signed, no tenant, matching any pin): a refusal
 // after that is the device refusing the local key.
 func (c *AgentConnection) LocalDeviceVerified() bool {
-	return c != nil && c.localDeviceVerified != nil && c.localDeviceVerified.Load()
+	return c.LocalDeviceKey() != nil
+}
+
+// LocalDeviceKey is the SubjectPublicKeyInfo of the local-only device this
+// connection verified, nil before (or without) that. The device serves its
+// registry under the same key, so registry connections are bound to it.
+func (c *AgentConnection) LocalDeviceKey() []byte {
+	if c == nil || c.localDeviceVerified == nil {
+		return nil
+	}
+	if spki := c.localDeviceVerified.Load(); spki != nil {
+		return *spki
+	}
+	return nil
 }
