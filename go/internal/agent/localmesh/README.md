@@ -52,13 +52,41 @@ restart for the same full device principal.
 
 ## Route admission
 
-A peer admitted on a configured link advertises routes. A route is accepted
-when its prefix lies inside the mesh pool and is strictly narrower than the
-pool; the origin router ID is never consulted and no manifest is required for
-admission. Babel's own protocol validation, datagram size limits, feasibility,
-split-horizon and loop prevention still apply unchanged. The signed manifest
-authenticates the device that published a directory entry; it is not a routing
-credential.
+Every finite remote route requires a current version-2 manifest signed by the
+destination device. The manifest binds its certificate principal to its exact
+mesh /128, Babel origin router ID, and origin sequence number. An authenticated
+neighbour can relay that proof unchanged, but cannot sign for another device,
+advertise an aggregate, or advance another origin's sequence number. A version-1
+manifest provides directory presence only and never authorizes a route.
+
+Nodes publish a 60-second lease every 20 seconds, capped at the identity's
+certificate expiry. Receivers reject leases longer than two minutes and issue
+times more than five seconds in the future. The origin's persistent revision
+prevents rollback to an older announcement. A Babel sequence change is persisted
+and signed before its updates are sent. Proofs travel over the existing reliable
+control stream; Babel datagrams remain unchanged. If a datagram arrives first,
+it is dropped and periodic Babel updates repair the ordering.
+
+Admission checks both new updates and retained route candidates. Expiry,
+withdrawal, or loss of certificate trust removes eligibility; the one-second
+maintenance tick bounds expiry reconciliation while the event loop is running.
+An accepted lease has an in-process monotonic deadline, and observed expiry
+cannot be undone by replay. Timestamp validation when first receiving a proof
+and after process restart still requires reliable wall time. Conflicting address
+claims by different principals fail closed.
+Router IDs alone confer no authority over another device's address.
+
+These proofs authenticate the origin's address and recent authorization. They
+do not prove an honest path metric, current reachability, forwarding, or payload
+source authenticity. A relay can still drop traffic or replay a proof within its
+valid lease. Hop-local Babel retractions remain unchanged: they only remove that
+neighbour's candidate. Babel feasibility, split horizon, loop prevention, and
+end-to-end application authentication still apply.
+
+Mesh links require hello version 2 and ALPN `wendy-local-mesh/2` (QUIC) or
+`wendy-local-mesh-ble/2` (BLE TLS). Old peers cannot join the new routing policy;
+upgrade each connected mesh together. This changes the internal mesh wire
+contract, not public gRPC messages or application-session ALPNs.
 
 ## Payload path
 
@@ -117,6 +145,7 @@ local integration; namespace tests do not establish radio performance.
 Run from the WendyOS root:
 
 ```sh
+cd babel && go test -race ./... && cd ..
 go test -race ./go/internal/agent/localmesh ./go/internal/agent/meshsession ./go/internal/agent/meshingress
 go vet ./go/internal/agent/localmesh ./go/internal/agent/meshsession ./go/internal/agent/meshingress
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c ./go/internal/agent/localmesh -o /tmp/wendy-localmesh-arm64.test

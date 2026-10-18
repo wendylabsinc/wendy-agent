@@ -32,6 +32,18 @@ type Config struct {
 	// effect at the next Step. It must not call back into the engine. This is
 	// authorization policy, not cryptographic authentication of Babel updates.
 	AcceptRoute func(RouterID, netip.Prefix) bool `json:"-"`
+	// AcceptRouteUpdate optionally authorizes a remote origin/prefix/sequence
+	// tuple. It supplements AcceptRoute and is checked before a finite update changes
+	// candidate or feasibility state, and on selection at every Step. The caller
+	// supplies an immutable policy snapshot for each Step and schedules a Tick
+	// when its authorizations expire; NextDeadline cannot see policy deadlines.
+	// The callback must not call back into the engine.
+	// Nil preserves the base Babel profile. This hook does not authenticate
+	// metrics, next hops, or the willingness of a neighbour to forward traffic.
+	// Retractions remain hop-local: a peer may withdraw its own candidate without
+	// origin authorization, but cannot change another peer's candidate or source
+	// feasibility history. Locally originated routes do not use this hook.
+	AcceptRouteUpdate func(RouterID, netip.Prefix, uint16) bool `json:"-"`
 }
 
 type Link struct {

@@ -88,6 +88,7 @@ type Node struct {
 	gate            sync.RWMutex
 	paused, stopped bool
 	forwardRoutes   []babel.Route
+	routeOrigins    map[RouteOrigin]bool
 }
 
 func NewNode(parent context.Context, dir string, credentials *Credentials, name string, agentPort uint16) (*Node, error) {
@@ -120,7 +121,7 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 	}
 	ctx, cancel := context.WithCancel(parent)
 	n := &Node{Credentials: credentials, kernel: kernel, cache: cache, directory: directory, bundleHints: newBundleHintCache(), store: store, state: state, peers: map[babel.LinkID]*nodePeer{}, events: make(chan nodeEvent, 256), ctx: ctx, cancel: cancel, started: now,
-		advertisement: Manifest{Version: 1, Device: credentials.Device.UUID(), Name: name, AgentPort: agentPort}}
+		advertisement: Manifest{Version: ManifestVersionRoute, Device: credentials.Device.UUID(), Name: name, AgentPort: agentPort}}
 	ok := false
 	defer func() {
 		if !ok {
@@ -139,11 +140,13 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 	}, now); err != nil {
 		return nil, err
 	}
-	// The stored state pins the router ID for this device principal; a fresh
-	// instance uses the derivation. Admission is the authenticated link, so
-	// AcceptRoute never consults an origin router ID or a manifest.
+	// Neighbor authentication admits a link, not its routing claims. Every
+	// finite remote route needs the origin's current signed address/ID/sequence
+	// binding. step snapshots that policy before entering the Babel engine.
 	config := babel.Config{RouterID: babel.RouterID(state.RouterID), HelloInterval: time.Second, UpdateInterval: 4 * time.Second, AcceptRoute: func(_ babel.RouterID, prefix netip.Prefix) bool {
 		return admittedPrefix(prefix)
+	}, AcceptRouteUpdate: func(origin babel.RouterID, prefix netip.Prefix, seqno uint16) bool {
+		return n.routeOrigins[RouteOrigin{Prefix: prefix, RouterID: origin, Seqno: seqno}]
 	}}
 	n.routing, err = NewRouting(config, state.Babel, n)
 	if err != nil {
@@ -172,6 +175,12 @@ func (n *Node) Snapshot() NodeSnapshot {
 	}
 	out.Routes = append([]babel.Route(nil), v.Routes...)
 	out.Devices = append([]Manifest(nil), v.Devices...)
+	for i := range out.Devices {
+		if route := out.Devices[i].Route; route != nil {
+			copy := *route
+			out.Devices[i].Route = &copy
+		}
+	}
 	return out
 }
 
@@ -221,9 +230,6 @@ func (n *Node) Run() error {
 	if err := n.step(babel.Originate{Prefix: netip.PrefixFrom(n.Credentials.Device.MeshAddress(), 128)}); err != nil {
 		return err
 	}
-	if err := n.publish(); err != nil {
-		return err
-	}
 	timer := time.NewTimer(time.Millisecond)
 	defer timer.Stop()
 	maintenance := time.NewTicker(time.Second)
@@ -266,6 +272,9 @@ func (n *Node) Run() error {
 			if err := n.publish(); err != nil {
 				return err
 			}
+			if err := n.step(babel.Tick{}); err != nil {
+				return err
+			}
 		case <-reconcile.C:
 			for _, p := range n.peers {
 				n.queue(p, p.sync.Reconcile(time.Now()))
@@ -286,6 +295,7 @@ func (n *Node) Run() error {
 }
 
 func (n *Node) step(event babel.Event) error {
+	n.routeOrigins = n.directory.RouteAuthorizations(time.Now())
 	if err := n.routing.Step(time.Since(n.started), event); err != nil {
 		return errors.Join(babel.ErrStopped, err)
 	}
@@ -352,6 +362,12 @@ func (n *Node) handle(e nodeEvent) error {
 				}
 			}
 		}
+		// Reevaluate immediately when a proof arrives or is withdrawn. Routing
+		// updates can precede their reliable control message; periodic Babel
+		// updates repair that ordering without retaining unverified packets.
+		if len(changed) != 0 {
+			return n.step(babel.Tick{})
+		}
 		n.refresh()
 	}
 	return nil
@@ -382,9 +398,17 @@ func (n *Node) publish() error {
 	}
 	m := n.advertisement
 	now := time.Now()
+	if n.state.Babel == nil {
+		return errors.New("route announcement requires a persisted Babel checkpoint")
+	}
+	m.Route = &RouteOrigin{Prefix: netip.PrefixFrom(n.Credentials.Device.MeshAddress(), 128), RouterID: babel.RouterID(n.state.RouterID), Seqno: n.state.Babel.Seqno}
 	m.Revision = n.state.Revision
 	m.Issued = now.UnixMilli()
-	m.Expires = now.Add(time.Minute).UnixMilli()
+	_, identity, ok := n.cache.Get(principal, now)
+	if !ok {
+		return errors.New("route announcement identity expired")
+	}
+	m.Expires = min(now.Add(time.Minute).UnixMilli(), identity.NotAfter.UnixMilli())
 	w, err := SignManifest(m, n.Credentials.Certificate.Certificate, n.Credentials.Signer, now)
 	if err != nil {
 		return err
@@ -392,6 +416,7 @@ func (n *Node) publish() error {
 	if _, err = n.directory.Accept(w, now); err != nil {
 		return err
 	}
+	n.advertisement = m
 	for _, p := range n.peers {
 		n.queue(p, p.sync.Record(w, now))
 	}
@@ -666,7 +691,21 @@ func (n *Node) Apply(routes []babel.Route) error {
 	n.forwardRoutes = append([]babel.Route(nil), routes...)
 	return nil
 }
-func (n *Node) Persist(cp babel.Checkpoint) error { n.state.Babel = &cp; return n.store.Save(n.state) }
+func (n *Node) Persist(cp babel.Checkpoint) error {
+	next := n.state
+	next.Babel = &cp
+	if err := n.store.Save(next); err != nil {
+		return err
+	}
+	n.state = next
+	// A sequence request can advance our origin during any routing event.
+	// Sign the new sequence only after its checkpoint is durable, and queue
+	// its authorization before Routing releases the corresponding datagrams.
+	if n.advertisement.Route == nil || n.advertisement.Route.Seqno != cp.Seqno {
+		return n.publish()
+	}
+	return nil
+}
 func (n *Node) Resume() error {
 	if n.paused {
 		n.paused = false

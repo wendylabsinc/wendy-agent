@@ -64,7 +64,7 @@ func OpenControl(ctx context.Context, conn *quic.Conn, self, peer meshid.Device)
 	}()
 	deadline, _ := ctx.Deadline()
 	_ = stream.SetDeadline(deadline)
-	if err = WriteControl(stream, ControlMessage{Kind: "hello", Hello: &LinkHello{Version: 1, Device: self.UUID(), Peer: peer.UUID(), MTU: TunnelMTU, Datagram: DatagramLimit}}); err != nil {
+	if err = WriteControl(stream, ControlMessage{Kind: "hello", Hello: &LinkHello{Version: LinkProtocolVersion, Device: self.UUID(), Peer: peer.UUID(), MTU: TunnelMTU, Datagram: DatagramLimit}}); err != nil {
 		return nil, err
 	}
 	m, err := ReadControl(stream)
@@ -75,10 +75,14 @@ func OpenControl(ctx context.Context, conn *quic.Conn, self, peer meshid.Device)
 		return nil, errors.New("missing local-mesh hello")
 	}
 	h := m.Hello
-	if h.Version != 1 || h.Device != peer.UUID() || h.Peer != self.UUID() || h.MTU != TunnelMTU || h.Datagram != DatagramLimit {
+	if !validLinkHello(h, self, peer) {
 		return nil, errors.New("invalid local-mesh hello")
 	}
 	_ = stream.SetDeadline(time.Time{})
 	ok = true
 	return stream, nil
+}
+
+func validLinkHello(h *LinkHello, self, peer meshid.Device) bool {
+	return h != nil && h.Version == LinkProtocolVersion && h.Device == peer.UUID() && h.Peer == self.UUID() && h.MTU == TunnelMTU && h.Datagram == DatagramLimit
 }

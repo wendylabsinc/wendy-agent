@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -34,6 +35,24 @@ type lifecycleTestConfig struct {
 	Dir               string
 	Underlay, Address string
 	StopFile          string
+}
+
+// Child output can be inspected while os/exec is still copying into it.
+type lifecycleOutputBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lifecycleOutputBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lifecycleOutputBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // TestMeshLifecyclePeerProcess runs a real node until the parent asks it to
@@ -188,10 +207,10 @@ func TestMeshRouteLifecycleIsolatedNamespaces(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	var procs []*exec.Cmd
-	outputs := map[string]*bytes.Buffer{}
+	outputs := map[string]*lifecycleOutputBuffer{}
 	start := func(principal, namespace string) {
 		t.Helper()
-		buf := &bytes.Buffer{}
+		buf := &lifecycleOutputBuffer{}
 		outputs[principal] = buf
 		cmd := exec.CommandContext(ctx, "ip", "netns", "exec", namespace, binary, "-test.run", "^TestMeshLifecyclePeerProcess$", "-test.v")
 		cmd.Env = append(os.Environ(), "WENDY_LOCALMESH_LIFECYCLE_CONFIG="+configs[principal])

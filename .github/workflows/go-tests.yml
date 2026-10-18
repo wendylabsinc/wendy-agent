@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'go/**'
+      - 'babel/**'
       - 'third_party/quic-go/**'
       - 'web-client/mcp-app/**'
       - 'go/simulator/go2/go2_sim/**'
@@ -20,6 +21,7 @@ on:
   pull_request:
     paths:
       - 'go/**'
+      - 'babel/**'
       - 'third_party/quic-go/**'
       - 'web-client/mcp-app/**'
       - 'go/simulator/go2/go2_sim/**'
@@ -62,6 +64,10 @@ jobs:
         # -timeout is per package: internal/cli/commands alone took 115s of
         # the former 120s under -race on main (2026-10-06).
         run: go test -gcflags=all=-c=1 ./... -race -vet=off -count=1 -timeout 300s
+
+      - name: Check Babel route authorization and expiry
+        working-directory: babel
+        run: go test ./... -race -count=1 -timeout 120s
 
       - name: Check QUIC CRYPTO reassembly and bounded handshake allowance
         working-directory: third_party/quic-go

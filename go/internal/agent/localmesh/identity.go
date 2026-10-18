@@ -24,19 +24,11 @@ func ownedInterface(name string) bool {
 	return name == InterfaceName || strings.HasPrefix(name, peerInterfacePrefix)
 }
 
-// admittedPrefix is the whole of local-mesh route admission. A peer becomes
-// admitted by completing the mutually authenticated link handshake with a
-// verified device principal; every route it then advertises inside the managed
-// ULA pool is accepted on that admission, with no manifest, no signed origin
-// claim and no address-allocation proof behind it.
-//
-// The pool boundary is the policy: a prefix the pool cannot contain (a LAN, a
-// public block, a default) is not this mesh's to carry, and the pool itself is
-// not claimable by any single peer, because advertising it would attract every
-// device route in the tenant. Babel keeps doing protocol validation, feasibility
-// and split-horizon; this only answers "may this prefix be a mesh route".
+// admittedPrefix is only the structural boundary. Device announcements may
+// authorize their exact derived /128, never an aggregate. The node separately
+// requires a live signed origin/router-ID/sequence binding for every route.
 func admittedPrefix(p netip.Prefix) bool {
-	return meshid.InMesh(p.Addr()) && p.Bits() > meshid.MeshPrefix.Bits()
+	return meshid.InMesh(p.Addr()) && p.Bits() == 128
 }
 
 // instanceRouterID derives this instance's Babel router ID with the profile's

@@ -92,14 +92,35 @@ same addresses while neighbours retain old routes is NOT the documented safe res
 path. Merely choosing a new RouterID does not restore lost history for remote origins.
 
 No cryptographic authentication is implemented here. The optional `AcceptRoute`
-callback lets the embedding application authorize origin/prefix pairs on admission
-and selection; a policy change takes effect at the next `Step`. Nil preserves the
-unfiltered experimental profile. This callback must be deterministic for each
-event and must not re-enter the engine. The caller authenticates each link and
-supplies its own authorization policy before using this on an untrusted mesh. In particular, mTLS to
-a neighbour does not prove the origin of its relayed announcements. Do not claim
-protection against a malicious enrolled router or duplicate router IDs. Self-origin
-updates are ignored; identity collisions are not automatically resolved.
+callback authorizes remote origin/prefix pairs. `AcceptRouteUpdate` additionally
+authorizes the origin/prefix/sequence tuple, so an embedding application can bind
+finite updates to signed origin announcements. Both callbacks apply before an
+update changes candidate or feasibility state, and during candidate selection at
+every `Step`. A policy change therefore removes affected forwarding routes at the
+next `Step`, including a `Tick` without any incoming packet. The engine retains
+candidate and feasibility history, so renewed authorization may restore a candidate
+without another update if its route and neighbour timers still permit it.
+
+Nil callbacks preserve the unfiltered experimental profile. Callbacks must be
+deterministic for each event and must not re-enter the engine. The application
+must freeze the policy snapshot for the duration of each `Step` and schedule a
+`Tick` at authorization expiry; `NextDeadline` cannot see external policy deadlines.
+The callbacks do not apply to locally originated routes. The application owns
+local origination and must publish authorization for each local sequence before
+releasing advertisements that use it.
+
+Retractions remain hop-local. A neighbour may retract its own candidate, including
+with a wildcard retraction, without an origin authorization. This does not remove
+another neighbour's candidate or advance feasibility history. It is equivalent to
+the neighbour closing its link and allows prompt withdrawal after authorization
+expires. Signed origin announcements cannot guarantee that a neighbour will keep
+forwarding traffic, or authenticate a claimed metric or path.
+
+The caller authenticates each link and supplies its own authorization policy before
+using this on an untrusted mesh. In particular, mTLS to a neighbour does not prove
+the origin of its relayed announcements. Do not claim complete protection against
+a malicious enrolled router or duplicate router IDs. Self-origin updates are
+ignored; identity collisions are not automatically resolved.
 
 The UDP oracle verifies source port and scoped peer address, joins Babel multicast,
 and sets outbound hop limit to one. Production UDP adapters also own destination,
