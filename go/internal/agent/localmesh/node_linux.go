@@ -214,7 +214,7 @@ func (n *Node) refresh() {
 		}
 		return meshid.Compare(links[i].Device, links[j].Device) < 0
 	})
-	n.view.Store(&NodeSnapshot{Self: n.Credentials.Device, CapturedAt: now, Peers: len(n.peers), Links: links, Devices: devices, Routes: n.routing.Snapshot().Routes, RouteAuthorizations: n.directory.RouteAuthorizations(now)})
+	n.view.Store(&NodeSnapshot{Self: n.Credentials.Device, CapturedAt: now, Peers: len(n.peers), Links: links, Devices: devices, Routes: n.routing.Snapshot().Routes, RouteAuthorizations: authorizedOrigins(devices, n.Credentials.Device.Tenant())})
 }
 
 func (n *Node) Run() error {
