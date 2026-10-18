@@ -690,7 +690,7 @@ func TestMCPServeRefusesWhenRealmDisallowsMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WENDY_MCP_CHANNEL", "")
-	// `wendy mcp serve` and `wendy mcp gateway` both start here.
+	// `wendy mcp serve` starts here.
 	if err := enterLocalMCPChannel(); err == nil || !strings.Contains(err.Error(), "Allow MCP") {
 		t.Fatalf("enterLocalMCPChannel = %v, want the Allow MCP refusal", err)
 	}

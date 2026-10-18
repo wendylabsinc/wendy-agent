@@ -85,9 +85,6 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Build embedded MCP app
-        uses: ./.github/actions/build-mcp-app
-
       - name: Build CLI
         if: steps.priority.outputs.allowed == 'true'
         working-directory: go
@@ -167,9 +164,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-
-      - name: Build embedded MCP app
-        uses: ./.github/actions/build-mcp-app
 
       - name: Build CLI
         if: steps.priority.outputs.allowed == 'true'
