@@ -83,3 +83,23 @@ func TestDiscoverLiteDeviceCAChainValidatesEndpointAndTenant(t *testing.T) {
 		}
 	}
 }
+
+// Each relay dial and its renew retry ask again; within the TTL they must not
+// refetch, and after it they must.
+func TestDiscoverLiteDeviceCAChainReusesAnswerWithinTTL(t *testing.T) {
+	const endpoint = "https://identity.invalid"
+	key := endpoint + " " + tenant
+	t.Cleanup(func() {
+		liteDeviceCAChains.Lock()
+		delete(liteDeviceCAChains.byKey, key)
+		liteDeviceCAChains.Unlock()
+	})
+	liteDeviceCAChains.byKey[key] = cachedLiteDeviceCAChain{"cached", time.Now()}
+	if got, err := DiscoverLiteDeviceCAChain(context.Background(), endpoint, tenant); err != nil || got != "cached" {
+		t.Fatalf("within TTL = %q, %v; want the cached chain without a fetch", got, err)
+	}
+	liteDeviceCAChains.byKey[key] = cachedLiteDeviceCAChain{"cached", time.Now().Add(-liteDeviceCAChainTTL)}
+	if _, err := DiscoverLiteDeviceCAChain(context.Background(), endpoint, tenant); err == nil {
+		t.Fatal("expired entry was reused instead of refetched")
+	}
+}

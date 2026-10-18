@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
@@ -24,10 +23,6 @@ import (
 func tunnelPrincipalSigner(auth *config.AuthConfig) (func([]byte) ([]byte, error), error) {
 	return configuredTunnelSigner(auth, cloudrelay.PrincipalSigner)
 }
-
-// liteDeviceCAChainTTL bounds how long a session reuses the Lite Device CA chain,
-// so a re-signed or revoked CA is picked up without a new login.
-const liteDeviceCAChainTTL = 15 * time.Minute
 
 // liteRelayOptions never puts the ML-DSA primary on the Lite lane: it uses the
 // explicit WENDY_LITE_OPERATOR_* override, else the session's Lite leaf,
@@ -62,25 +57,7 @@ func liteRelayOptions(ctx context.Context, auth *config.AuthConfig, renew bool) 
 	if options.DeviceTrustChainPEM == "" {
 		return options, fmt.Errorf("selected Cloud session has no device CA chain; run 'wendy auth login'")
 	}
-	// Load the Lite Device CA chain only when the selected board needs it, once
-	// per session and TTL. Existing ML-DSA sessions keep their current trust path.
-	pkiEndpoint, tenantID := auth.PKIEndpoint, auth.Certificates[0].TenantUUID()
-	var mu sync.Mutex
-	var cached string
-	var fetched time.Time
-	options.DeviceTrustFallback = func(ctx context.Context) (string, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if cached != "" && time.Since(fetched) < liteDeviceCAChainTTL {
-			return cached, nil
-		}
-		chain, err := liteenroll.DiscoverLiteDeviceCAChain(ctx, pkiEndpoint, tenantID)
-		if err != nil {
-			return "", err
-		}
-		cached, fetched = chain, time.Now()
-		return chain, nil
-	}
+	options.DeviceTrustFallback = liteDeviceCAChain(auth)
 	key, err := cert.PrivateKeyPEM()
 	if err != nil {
 		return options, err
@@ -95,6 +72,16 @@ func liteRelayOptions(ctx context.Context, auth *config.AuthConfig, renew bool) 
 	options.OperatorIdentity = cert
 	return options, nil
 }
+
+// liteDeviceCAChain loads the selected tenant's Lite Device CA chain for the
+// relay, LAN and BLE verifiers; discovery caches it per PKI endpoint and tenant.
+func liteDeviceCAChain(auth *config.AuthConfig) liteclient.LiteDeviceCAChain {
+	pkiEndpoint, tenantID := auth.PKIEndpoint, auth.Certificates[0].TenantUUID()
+	return func(ctx context.Context) (string, error) {
+		return liteenroll.DiscoverLiteDeviceCAChain(ctx, pkiEndpoint, tenantID)
+	}
+}
+
 func configuredTunnelSigner(auth *config.AuthConfig, signer func(string, []byte) (func([]byte) ([]byte, error), error)) (func([]byte) ([]byte, error), error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("no operator certificate")

@@ -118,40 +118,43 @@ func TestRelayDeviceTrustFallbackChainsToSessionTrust(t *testing.T) {
 		leaf      *x509.Certificate
 		fetched   string
 		lookupErr error
-		wantCalls int
 		wantOK    bool
 	}{
 		{name: "existing authority", leaf: primary, fetched: full, wantOK: true},
-		{name: "Lite CA chains to session trust", leaf: device, fetched: full, wantCalls: 1, wantOK: true},
-		{name: "self-signed twin only", leaf: device, fetched: pemCerts(twin), wantCalls: 1},
-		{name: "Lite CA under a foreign root", leaf: device, fetched: pemCerts(strayLite, strayRoot), wantCalls: 1},
+		{name: "existing authority, discovery fails", leaf: primary, lookupErr: errors.New("unavailable"), wantOK: true},
+		{name: "Lite CA chains to session trust", leaf: device, fetched: full, wantOK: true},
+		{name: "self-signed twin only", leaf: device, fetched: pemCerts(twin)},
+		{name: "Lite CA under a foreign root", leaf: device, fetched: pemCerts(strayLite, strayRoot)},
 		{name: "wrong device", leaf: withPrincipal(strings.Replace(devicePrincipal, "441bf6804ff8", "other", 1)), fetched: full},
 		{name: "wrong tenant", leaf: withPrincipal(strings.Replace(devicePrincipal, "11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", 1)), fetched: full},
 		{name: "expired", leaf: expiredLeaf, fetched: full},
 		{name: "known issuer bad signature", leaf: broken(primary), fetched: full},
-		{name: "Lite issuer bad signature", leaf: broken(device), fetched: full, wantCalls: 1},
-		{name: "discovery fails", leaf: device, lookupErr: errors.New("unavailable"), wantCalls: 1},
-		{name: "malformed chain", leaf: device, fetched: "invalid", wantCalls: 1},
+		{name: "Lite issuer bad signature", leaf: broken(device), fetched: full},
+		{name: "discovery fails", leaf: device, lookupErr: errors.New("unavailable")},
+		{name: "malformed chain", leaf: device, fetched: "invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, err := deviceTLSConfig(operator, session, "441bf6804ff8")
-			if err != nil {
-				t.Fatal(err)
-			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			calls := 0
-			addRelayDeviceTrustFallback(ctx, cfg, operator, session, "441bf6804ff8", func(got context.Context) (string, error) {
+			cfg, err := deviceTLSConfig(ctx, operator, session, "441bf6804ff8", func(got context.Context) (string, error) {
 				calls++
 				if got != ctx {
-					t.Fatal("discovery lost the handshake context")
+					t.Fatal("discovery lost the caller's context")
 				}
 				return tc.fetched, tc.lookupErr
 			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("discovery calls = %d before the handshake, want 1", calls)
+			}
 			// The board presents its leaf and the self-signed twin it was given.
+			// Verification itself never fetches.
 			err = cfg.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{tc.leaf, twin}})
-			if (err == nil) != tc.wantOK || calls != tc.wantCalls {
-				t.Fatalf("verification = %v, discovery calls = %d; want accepted=%v, calls=%d", err, calls, tc.wantOK, tc.wantCalls)
+			if (err == nil) != tc.wantOK || calls != 1 {
+				t.Fatalf("verification = %v, discovery calls = %d; want accepted=%v, calls=1", err, calls, tc.wantOK)
 			}
 		})
 	}

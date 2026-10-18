@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,8 +23,39 @@ const chainAlgorithmHeader = "X-Wendy-Chain-Algorithm"
 // DiscoverLiteDeviceCAChain fetches the selected tenant's ML-DSA-signed Lite
 // Device CA with its tenant and customer Intermediates. This is public CA
 // material: callers use it only as untrusted intermediates that must chain to
-// the operator session's trust bundle, never as trust anchors.
+// the operator session's trust bundle, never as trust anchors. Answers are
+// reused per PKI endpoint and tenant for liteDeviceCAChainTTL, so a re-signed
+// or revoked CA is picked up without a new login.
 func DiscoverLiteDeviceCAChain(ctx context.Context, pkiEndpoint, tenantID string) (string, error) {
+	// ponytail: one process-wide lock, held across the fetch; per-key locks if
+	// one process ever serves many tenants concurrently.
+	liteDeviceCAChains.Lock()
+	defer liteDeviceCAChains.Unlock()
+	key := pkiEndpoint + " " + tenantID
+	if cached, ok := liteDeviceCAChains.byKey[key]; ok && time.Since(cached.fetched) < liteDeviceCAChainTTL {
+		return cached.chain, nil
+	}
+	chain, err := discoverLiteDeviceCAChainUncached(ctx, pkiEndpoint, tenantID)
+	if err != nil {
+		return "", err
+	}
+	liteDeviceCAChains.byKey[key] = cachedLiteDeviceCAChain{chain, time.Now()}
+	return chain, nil
+}
+
+const liteDeviceCAChainTTL = 15 * time.Minute
+
+type cachedLiteDeviceCAChain struct {
+	chain   string
+	fetched time.Time
+}
+
+var liteDeviceCAChains = struct {
+	sync.Mutex
+	byKey map[string]cachedLiteDeviceCAChain
+}{byKey: map[string]cachedLiteDeviceCAChain{}}
+
+func discoverLiteDeviceCAChainUncached(ctx context.Context, pkiEndpoint, tenantID string) (string, error) {
 	id, err := uuid.Parse(tenantID)
 	if err != nil || id.String() != tenantID || id == uuid.Nil {
 		return "", fmt.Errorf("invalid tenant for Lite device CA discovery")

@@ -15,15 +15,17 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 )
 
-// addRelayDeviceTrustFallback keeps the normal verifier authoritative. Only for
-// a matching P-256 peer whose issuer is absent from the selected session's trust
-// bundle does it load the tenant's Lite Device CA chain. That chain is public
-// and untrusted: the leaf must chain through it to the session's own trust
-// bundle, and nothing loaded becomes a trust anchor.
-func addRelayDeviceTrustFallback(ctx context.Context, cfg *tls.Config, operator tls.Certificate, chain, deviceID string, discover func(context.Context) (string, error)) {
-	if discover == nil {
-		return
-	}
+// LiteDeviceCAChain loads the selected tenant's Lite Device CA chain over
+// authenticated HTTPS. The chain is public and untrusted: it is used only as
+// intermediates that must chain to the session's trust bundle.
+type LiteDeviceCAChain func(context.Context) (string, error)
+
+// addLiteDeviceTrust keeps the normal verifier authoritative. Only for a
+// matching P-256 peer whose issuer is absent from the selected session's trust
+// bundle does it use the tenant's Lite Device CA chain, which the caller loaded
+// before dialing (lite, or the error loading it). The leaf must chain through
+// it to the session's own trust bundle; nothing loaded becomes a trust anchor.
+func addLiteDeviceTrust(cfg *tls.Config, operator tls.Certificate, chain, deviceID, lite string, liteErr error) {
 	verify := cfg.VerifyConnection
 	cfg.VerifyConnection = func(state tls.ConnectionState) error {
 		err := verify(state)
@@ -57,9 +59,8 @@ func addRelayDeviceTrustFallback(ctx context.Context, cfg *tls.Config, operator 
 				return err
 			}
 		}
-		lite, discoverErr := discover(ctx)
-		if discoverErr != nil {
-			return fmt.Errorf("discovering Lite device CA chain: %w", discoverErr)
+		if liteErr != nil {
+			return fmt.Errorf("discovering Lite device CA chain: %w", liteErr)
 		}
 		intermediates, parseErr := certs.ParseCertsFromPEM([]byte(lite))
 		if parseErr != nil || len(intermediates) == 0 {
