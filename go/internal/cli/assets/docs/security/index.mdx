@@ -80,17 +80,25 @@ Each key has one role:
   as root and can rewrite the trusted-keys file, so the owner/operator split protects against
   viewers and the network, not against an operator who escalates: these are basic protections
   by design.
+- **Cloud enrollment overrides local access.** While the device is enrolled with Wendy Cloud,
+  cloud is the only authority. Trusted keys are used nowhere: a local operator certificate is
+  refused at the handshake like any unknown certificate, and adding, listing or removing keys is
+  refused for every caller ("local operator keys are managed by cloud while enrolled") and
+  written to the agent log. There is no fallback to local keys of any kind. The trusted-keys file
+  stays on the device untouched, and Wendy Cloud never imports it: the operator who enrolled the
+  device already has access through cloud. After the device is unenrolled, the saved keys work
+  again. Tenant operators get `operator` and can unenroll the device because Wendy Cloud
+  authorizes the reset.
 - **Local and cloud identities stay apart.** A self-issued certificate that names a tenant is
-  refused. A cloud-issued certificate never gets owner rights, even when its key is also on the
-  list: on an enrolled device, tenant operators get `operator`, and they can still unenroll the
-  device because Wendy Cloud authorizes the reset. Other devices in the same tenant can only
-  open mesh connections and deliver builds. They get no operator rights.
+  refused, and a cloud-issued certificate never gets owner rights, even when its key is also on
+  the list. Other devices in the same tenant can only open mesh connections and deliver builds.
+  They get no operator rights.
 - **No open setup path.** When the trusted-keys file is present, the agent does not open the
   plaintext setup port, and the image registry stays off until at least one key is trusted.
   If the file cannot be read, has a bad entry, or other users can write to it, the agent
   refuses to start. A file that does not exist means there are no local operators, not that
   everyone is allowed. Set `WENDY_LOCAL_ACCESS=required` to also refuse to start without an
-  owner key.
+  owner key; an enrolled device starts regardless, because cloud is the authority.
 
 **Container isolation.** Apps run as non-root (`appuser`, UID 1000) inside containerd with a
 baseline seccomp profile, explicit capability grants, and entitlement-gated access to hardware,

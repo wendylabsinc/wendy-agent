@@ -18,6 +18,8 @@ import (
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	_ "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -89,6 +91,7 @@ func TestEveryAgentMethodHasARole(t *testing.T) {
 const (
 	mAddKey      = "/wendy.agent.services.v2.WendyTrustedKeysService/AddTrustedKey"
 	mListKeys    = "/wendy.agent.services.v2.WendyTrustedKeysService/ListTrustedKeys"
+	mRemoveKey   = "/wendy.agent.services.v2.WendyTrustedKeysService/RemoveTrustedKey"
 	mUnprovision = "/wendy.agent.services.v2.WendyProvisioningService/Unprovision"
 	mStartACME   = "/wendy.agent.services.v2.WendyProvisioningService/StartACMEProvisioning"
 	mShell       = "/wendy.agent.services.v1.WendyShellService/HostShell"
@@ -188,7 +191,7 @@ func TestAuthorizerRoleMatrix(t *testing.T) {
 		{"tenant user cannot manage keys", enrolledBox, ctxWithLeaf(tenantUser), mListKeys, codes.PermissionDenied, 0},
 		{"tenant cert with owner key is not local owner", enrolledBox, ctxWithLeaf(ownerKeyTenantCert), mAddKey, codes.PermissionDenied, 0},
 		{"other tenant refused", enrolledBox, ctxWithLeaf(otherTenant), mVersion, codes.PermissionDenied, 0},
-		{"local owner on enrolled box", enrolledBox, ctxWithLeaf(leafWithKey(ownerKey)), mAddKey, codes.OK, KindLocalKey},
+		{"local owner beside a tenant scope (store not dormant)", enrolledBox, ctxWithLeaf(leafWithKey(ownerKey)), mAddKey, codes.OK, KindLocalKey},
 		{"peer device may mesh dial", enrolledBox, ctxWithLeaf(peerDevice), mMeshDial, codes.OK, KindPeerDevice},
 		{"peer device may deliver a build", enrolledBox, ctxWithLeaf(peerDevice), mWriteChunks, codes.OK, KindPeerDevice},
 		{"peer device has no operator rights", enrolledBox, ctxWithLeaf(peerDevice), mShell, codes.PermissionDenied, 0},
@@ -270,5 +273,51 @@ func TestSignerCertificatesHaveNoAccess(t *testing.T) {
 	a := Authorizer{Logger: zap.NewNop(), Listener: ListenerMTLS, Keys: store, OrgMode: OrgModeOff}
 	if _, err := a.Authorize(ctxWithLeaf(signer), mVersion); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("signer certificate = %v, want PermissionDenied", err)
+	}
+}
+
+// Cloud-enrolled (store dormant): no caller is ever a local key, and every
+// trusted-keys RPC is refused for every caller and audited. Unenrolling
+// restores the local path.
+func TestCloudEnrolledDisablesLocalKeys(t *testing.T) {
+	store, _ := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	owner := newKey(t)
+	store.Add(owner, trustedkeys.RoleOwner, "", trustedkeys.AddedByInstall, time.Now())
+	store.SetDormant(true)
+	core, logs := observer.New(zapcore.InfoLevel)
+	a := Authorizer{Logger: zap.New(core), Listener: ListenerMTLS, Keys: store, Expected: certs.Scope{OrgID: 5}, OrgMode: OrgModeStrict}
+	socket := Authorizer{Logger: zap.New(core), Listener: ListenerAdminSocket, Keys: store}
+	ownerCtx := ctxWithLeaf(leafWithKey(owner))
+	tenantCtx := ctxWithLeaf(leafWithKey(newKey(t), "urn:wendy:org:5:user:alice"))
+
+	for _, m := range []string{mVersion, mShell, mAddKey} {
+		if _, err := a.Authorize(ownerCtx, m); status.Code(err) != codes.PermissionDenied {
+			t.Errorf("owner key while enrolled, %s = %v, want PermissionDenied", m, err)
+		}
+	}
+	for _, m := range []string{mAddKey, mListKeys, mRemoveKey} {
+		for name, call := range map[string]func() error{
+			"tenant user":  func() error { _, err := a.Authorize(tenantCtx, m); return err },
+			"admin socket": func() error { _, err := socket.Authorize(context.Background(), m); return err },
+		} {
+			err := call()
+			if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != LocalKeysManagedByCloud {
+				t.Errorf("%s %s while enrolled = %v, want FailedPrecondition %q", name, m, err, LocalKeysManagedByCloud)
+			}
+		}
+	}
+	if n := logs.FilterField(zap.String("reason", "cloud-enrolled")).FilterField(zap.String("audit", "trusted_keys")).Len(); n != 6 {
+		t.Errorf("audit rows = %d, want 6", n)
+	}
+	if p, err := a.Authorize(tenantCtx, mShell); err != nil || p.Kind != KindTenantUser {
+		t.Fatalf("tenant user while enrolled = %v %v, want tenant-user", p.Kind, err)
+	}
+
+	store.SetDormant(false)
+	if p, err := a.Authorize(ownerCtx, mAddKey); err != nil || p.Kind != KindLocalKey {
+		t.Fatalf("owner key after unenroll = %v %v, want local-key", p.Kind, err)
+	}
+	if _, err := a.Authorize(tenantCtx, mListKeys); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("tenant user keys RPC after unenroll = %v, want PermissionDenied", err)
 	}
 }

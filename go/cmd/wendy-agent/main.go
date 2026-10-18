@@ -480,11 +480,16 @@ func main() {
 	if err != nil {
 		logger.Fatal("refusing to start: trusted keys file is unusable", zap.Error(err))
 	}
+	// Cloud enrollment overrides local access: while enrolled the saved keys
+	// are used nowhere (no fallback) and cloud never imports them; they come
+	// back when the device is unenrolled.
+	_, _, _, enrolled := provisioningSvc.ProvisioningInfo()
+	localOperatorsAtBoot(logger, trustedKeys, enrolled)
 	if err := checkLocalAccessMode(os.Getenv("WENDY_LOCAL_ACCESS"), trustedKeys); err != nil {
 		logger.Fatal("refusing to start", zap.Error(err))
 	}
 	localAccess := trustedKeys.Present()
-	if localAccess {
+	if localAccess && !trustedKeys.Dormant() {
 		logger.Info("local access: trusted keys present; plaintext pre-enroll listener disabled",
 			zap.Int("keys", trustedKeys.Len()))
 	}
@@ -1098,6 +1103,10 @@ func main() {
 	// Set up the provisioning callback to start the mTLS server, shut down
 	// the plaintext server, and switch the registry to HTTPS.
 	provisioningSvc.OnProvisioned = func(certPEM, chainPEM string, keyData []byte) {
+		// First, before anything else: cloud is the authority from here on.
+		if trustedKeys.SetDormant(true) && trustedKeys.Present() {
+			logger.Info("local operators disabled: cloud-enrolled")
+		}
 		// Bind to the callback's authenticated leaf before exposing a new tenant.
 		unitreeScope, _ := certs.ScopeFromCertPEM(certPEM)
 		if err := unitreeSvc.Rebind(unitreePairingOwner(unitreeScope, true)); err != nil {
@@ -1167,6 +1176,9 @@ func main() {
 	// Revoke Unitree sessions and keys before Unprovision reports success.
 	// A failed clear is retried when the agent restarts unenrolled.
 	provisioningSvc.BeforeUnprovisioned = func() {
+		if trustedKeys.SetDormant(false) && trustedKeys.Present() {
+			logger.Info("local operators enabled: unenrolled")
+		}
 		if err := unitreeSvc.Rebind(unitree.PairingOwner{}); err != nil {
 			logger.Error("Clearing Unitree pairings during unprovisioning failed", zap.Error(err))
 		}
@@ -1329,15 +1341,31 @@ func main() {
 	logger.Info("wendy-agent stopped")
 }
 
+// localOperatorsAtBoot makes the saved keys dormant on a cloud-enrolled
+// device: cloud is the only authority while enrolled.
+func localOperatorsAtBoot(logger *zap.Logger, keys *trustedkeys.Store, enrolled bool) {
+	if !enrolled {
+		return
+	}
+	keys.SetDormant(true)
+	if keys.Present() {
+		logger.Info("local operators dormant (cloud-enrolled)")
+	}
+}
+
 // checkLocalAccessMode validates WENDY_LOCAL_ACCESS: "" or "auto" (today's
 // behaviour unless a trusted-keys file is present) or "required" (no start
-// without an owner key). Any other value refuses to start: a setting meant to
-// close the device must never silently leave it open.
+// without an owner key, unless cloud-enrolled: cloud is the authority then).
+// Any other value refuses to start: a setting meant to close the device must
+// never silently leave it open.
 func checkLocalAccessMode(mode string, keys *trustedkeys.Store) error {
 	switch mode {
 	case "", "auto":
 		return nil
 	case "required":
+		if keys.Dormant() {
+			return nil // cloud-enrolled: cloud is the authority
+		}
 		for _, e := range keys.List() {
 			if e.EntryRole() == trustedkeys.RoleOwner {
 				return nil

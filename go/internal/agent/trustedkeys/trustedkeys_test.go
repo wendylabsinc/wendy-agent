@@ -151,3 +151,33 @@ func pemOf(t *testing.T) string {
 	quoted, _ := json.Marshal(e.PublicKey)
 	return string(quoted[1 : len(quoted)-1])
 }
+
+// Cloud-enrolled: the saved keys stay on disk but trust nothing; unenrolling
+// brings them back unchanged.
+func TestDormantStoreTrustsNothingAndKeepsTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-keys.json")
+	s, _ := Open(path)
+	owner := newSPKI(t)
+	if _, err := s.Add(owner, RoleOwner, "", AddedByInstall, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	if !s.SetDormant(true) || s.SetDormant(true) {
+		t.Fatal("SetDormant must report only the transition")
+	}
+	if role, _ := s.Lookup(owner); role != RoleNone {
+		t.Fatalf("dormant store trusts the owner: role %s", role)
+	}
+	if !s.Floor().IsZero() {
+		t.Fatal("dormant store still floors the clock")
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) || !s.Present() {
+		t.Fatal("dormancy touched the keys file")
+	}
+	if !s.SetDormant(false) {
+		t.Fatal("unenroll transition not reported")
+	}
+	if role, _ := s.Lookup(owner); role != RoleOwner {
+		t.Fatalf("after unenroll role = %s, want owner", role)
+	}
+}

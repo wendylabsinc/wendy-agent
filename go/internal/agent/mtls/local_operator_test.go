@@ -20,6 +20,9 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/trustedkeys"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type selfIssuedOpts struct {
@@ -214,6 +217,8 @@ func TestSelfSignedCertUsesDeviceKey(t *testing.T) {
 // On an enrolled device the chain path keeps working beside local keys, and
 // the direct-PKI tenant gate lets a local operator certificate through while
 // still refusing everything else that names no tenant or a foreign one.
+// The store is not dormant here: this is the chain config with local keys
+// active, which a real device only runs between unenroll and its restart.
 func TestEnrolledDeviceKeepsChainPathBesideLocalKeys(t *testing.T) {
 	keys, _ := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
 	localKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -309,5 +314,49 @@ func TestLocalOperatorRecheckedOnResumeAndMustBeSelfSigned(t *testing.T) {
 	server := localOnlyServer(t, keys, false)
 	if err := server.VerifyPeerCertificate([][]byte{der}, nil); err == nil {
 		t.Fatal("accepted a trusted key in a certificate it did not sign")
+	}
+}
+
+// Cloud-enrolled (store dormant): a trusted local key is refused at the
+// handshake like any unknown certificate, logged once with its fingerprint;
+// tenant certificates are unaffected. Unenrolling admits the key again.
+func TestCloudEnrolledRefusesLocalOperators(t *testing.T) {
+	keys, _ := trustedkeys.Open(filepath.Join(t.TempDir(), "trusted-keys.json"))
+	localKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	keys.Add(spkiOf(t, localKey), trustedkeys.RoleOwner, "", trustedkeys.AddedByInstall, time.Now())
+	keys.SetDormant(true)
+
+	core, logs := observer.New(zapcore.InfoLevel)
+	ca, caKey, caPEM := testCAKeyPair(t)
+	devicePEM, deviceKeyPEM := testLeafCertificate(t, "device")
+	cfg, err := NewServerTLSConfig(devicePEM, caPEM, deviceKeyPEM, zap.New(core), time.Time{}, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := selfIssued(t, localKey, selfIssuedOpts{})
+	if err := handshake(t, cfg, local); err == nil {
+		t.Fatal("trusted local key accepted while cloud-enrolled")
+	}
+	refused := logs.FilterMessage("local operator certificate refused: cloud-enrolled").
+		FilterField(zap.String("fingerprint", trustedkeys.Fingerprint(spkiOf(t, localKey))))
+	if refused.Len() != 1 || logs.Len() != 1 {
+		t.Fatalf("log entries = %d (refusals with fingerprint %d), want exactly one", logs.Len(), refused.Len())
+	}
+	localLeaf, _ := x509.ParseCertificate(local.Certificate[0])
+	if err := cfg.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{localLeaf}}); err == nil {
+		t.Fatal("trusted local key resumed while cloud-enrolled")
+	}
+	if err := cfg.VerifyPeerCertificate([][]byte{testPeerLeafRaw(t, ca, caKey, "urn:wendy:org:7:user:alice")}, nil); err != nil {
+		t.Fatalf("tenant certificate refused while cloud-enrolled: %v", err)
+	}
+	// The local-only server keeps running briefly after enrollment, until
+	// the agent restarts: it must refuse too.
+	if err := handshake(t, localOnlyServer(t, keys, false), local); err == nil {
+		t.Fatal("local-only server accepted a local key while cloud-enrolled")
+	}
+
+	keys.SetDormant(false)
+	if err := handshake(t, cfg, local); err != nil {
+		t.Fatalf("local key refused after unenroll: %v", err)
 	}
 }

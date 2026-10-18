@@ -16,7 +16,9 @@ import (
 // TrustedKeysService is the owner-only management of the device's local
 // operator keys. The Authorizer admits only an owner authenticated by a
 // trusted key; every change is written to the audit log with the acting
-// key's fingerprint.
+// key's fingerprint. While the device is cloud-enrolled the Authorizer refuses
+// every call before it gets here (FailedPrecondition, audited): cloud manages
+// access then.
 type TrustedKeysService struct {
 	agentpbv2.UnimplementedWendyTrustedKeysServiceServer
 	logger *zap.Logger

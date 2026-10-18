@@ -86,11 +86,16 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	return p, ok
 }
 
+// LocalKeysManagedByCloud is the refusal of every trusted-keys RPC while
+// the device is cloud-enrolled.
+const LocalKeysManagedByCloud = "local operator keys are managed by cloud while enrolled"
+
 // Authorizer is the one method→role check every agent listener runs.
 type Authorizer struct {
 	Logger   *zap.Logger
 	Listener Listener
-	// Keys is the trusted-keys store; nil or empty means no local operators.
+	// Keys is the trusted-keys store; nil, empty or dormant (cloud-enrolled)
+	// means no local operators.
 	Keys *trustedkeys.Store
 	// Expected is the device's own tenant scope (zero when not enrolled) and
 	// OrgMode the tenant-equality mode, both for CA-issued certificates.
@@ -104,6 +109,18 @@ func (a *Authorizer) Authorize(ctx context.Context, fullMethod string) (Principa
 	p, err := a.identify(ctx)
 	if err != nil {
 		return Principal{}, err
+	}
+	if ownerKeyMethods[fullMethod] && a.Keys.Dormant() {
+		// Cloud-enrolled: cloud is the only authority, for every caller.
+		a.Logger.Warn("audit: trusted key management refused",
+			zap.String("audit", "trusted_keys"),
+			zap.String("action", "refused"),
+			zap.String("method", fullMethod),
+			zap.String("principal", p.Kind.String()),
+			zap.String("actor_fingerprint", p.Fingerprint),
+			zap.String("remote", peerAddr(ctx)),
+			zap.String("reason", "cloud-enrolled"))
+		return Principal{}, status.Error(codes.FailedPrecondition, LocalKeysManagedByCloud)
 	}
 	if !permitted(p, fullMethod) {
 		a.Logger.Warn("rejected RPC: caller lacks the required role",

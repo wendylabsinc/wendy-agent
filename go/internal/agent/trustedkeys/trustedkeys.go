@@ -5,6 +5,12 @@
 // owners add further keys. pki-core is not involved.
 //
 // An absent file means "no local operators", never "allow all".
+//
+// While the device is cloud-enrolled the store is dormant: the file stays on
+// disk untouched, but no key is trusted, so local operators can neither
+// connect nor manage keys. Cloud is the only authority then; there is no
+// fallback to local keys and cloud never imports them. Unenrolling makes the
+// saved keys usable again.
 package trustedkeys
 
 import (
@@ -18,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
@@ -101,7 +108,16 @@ type Store struct {
 	mu      sync.RWMutex
 	present bool
 	entries []Entry
+	dormant atomic.Bool
 }
+
+// SetDormant turns the local-operator path off (the device is cloud-enrolled)
+// or back on (unenrolled) and reports whether the state changed.
+func (s *Store) SetDormant(dormant bool) bool { return s.dormant.Swap(dormant) != dormant }
+
+// Dormant reports whether the device is cloud-enrolled, so no local key is
+// trusted.
+func (s *Store) Dormant() bool { return s != nil && s.dormant.Load() }
 
 // SelfSigned reports whether leaf is signed by its own key — the shape of a
 // local operator certificate. The mTLS listener accepts a local operator
@@ -220,10 +236,10 @@ func (s *Store) Len() int {
 }
 
 // Lookup returns the role of the key with this SPKI DER (RoleNone if it is not
-// trusted) and its fingerprint.
+// trusted, or the store is dormant) and its fingerprint.
 func (s *Store) Lookup(spki []byte) (Role, string) {
 	fp := Fingerprint(spki)
-	if s == nil {
+	if s == nil || s.dormant.Load() {
 		return RoleNone, fp
 	}
 	s.mu.RLock()
@@ -355,8 +371,12 @@ func (s *Store) mutate(fn func([]Entry) ([]Entry, error)) error {
 
 // Floor is the latest added_at: a lower bound for the device clock when
 // checking a local operator certificate's NotBefore on a device that has no
-// enrollment certificate to take a floor from (no RTC, offline).
+// enrollment certificate to take a floor from (no RTC, offline). Zero while
+// dormant.
 func (s *Store) Floor() time.Time {
+	if s.dormant.Load() {
+		return time.Time{}
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var floor time.Time

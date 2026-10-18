@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/trustedkeys"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestBrokerURLForCloudHost(t *testing.T) {
@@ -111,5 +114,40 @@ func TestCheckLocalAccessMode(t *testing.T) {
 		if err := checkLocalAccessMode(tc.mode, tc.store); (err != nil) != tc.wantErr {
 			t.Errorf("checkLocalAccessMode(%q) = %v, wantErr %v", tc.mode, err, tc.wantErr)
 		}
+	}
+}
+
+// Cloud-enrolled boot: saved keys go dormant with one log line, and
+// WENDY_LOCAL_ACCESS=required does not block the boot (cloud is the
+// authority). Unenrolled boot is unchanged.
+func TestLocalOperatorsAtBoot(t *testing.T) {
+	dir := t.TempDir()
+	open := func(name string) *trustedkeys.Store {
+		s, _ := trustedkeys.Open(filepath.Join(dir, name))
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		der, _ := x509.MarshalPKIXPublicKey(k.Public())
+		if _, err := s.Add(der, trustedkeys.RoleOperator, "", trustedkeys.AddedByInstall, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	core, logs := observer.New(zapcore.InfoLevel)
+	enrolled := open("enrolled.json")
+	localOperatorsAtBoot(zap.New(core), enrolled, true)
+	if !enrolled.Dormant() || logs.FilterMessage("local operators dormant (cloud-enrolled)").Len() != 1 {
+		t.Fatalf("enrolled boot: dormant=%v, log lines %d, want dormant and one line", enrolled.Dormant(), logs.Len())
+	}
+	if err := checkLocalAccessMode("required", enrolled); err != nil {
+		t.Fatalf("required + enrolled refused to boot: %v", err)
+	}
+
+	unenrolled := open("unenrolled.json")
+	localOperatorsAtBoot(zap.New(core), unenrolled, false)
+	if unenrolled.Dormant() || logs.Len() != 1 {
+		t.Fatal("unenrolled boot changed the local path")
+	}
+	if err := checkLocalAccessMode("required", unenrolled); err == nil {
+		t.Fatal("required without an owner key booted on an unenrolled device")
 	}
 }

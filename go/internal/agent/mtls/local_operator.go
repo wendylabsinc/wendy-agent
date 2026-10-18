@@ -73,6 +73,17 @@ func newLocalOperatorTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Log
 		if err != nil {
 			return fmt.Errorf("parsing client certificate: %w", err)
 		}
+		if keys.Dormant() && trustedkeys.SelfSigned(leaf) {
+			if _, found, err := certs.IdentityFromCert(leaf); !found && err == nil {
+				// Cloud-enrolled: refused like any unknown certificate, with
+				// no fallback to the saved keys.
+				if logger != nil {
+					logger.Warn("local operator certificate refused: cloud-enrolled",
+						zap.String("fingerprint", trustedkeys.Fingerprint(leaf.RawSubjectPublicKeyInfo)))
+				}
+				return errors.New("client certificate is not trusted")
+			}
+		}
 		if role, fp, local := localOperator(leaf, keys); local {
 			if !trustedkeys.SelfSigned(leaf) {
 				err := errors.New("local operator certificate must be self-signed")
