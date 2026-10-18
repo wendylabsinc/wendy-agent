@@ -236,8 +236,13 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 	if !device.IsValid() {
 		return nil, errors.New("wendy net kernel needs a device principal")
 	}
-	if err := reclaimMeshForwarding(); err != nil {
+	// Fail on missing IPv6 policy routing or TUN support before touching any
+	// owned forwarding, interfaces, rules or routes from a previous instance.
+	if err := preflightKernel(); err != nil {
 		return nil, err
+	}
+	if err := reclaimMeshForwarding(); err != nil {
+		return nil, kernelOperationError("reclaim mesh forwarding", "", err)
 	}
 	address := device.MeshAddress()
 	// An abrupt exit leaves the dummy link, its TUNs, their rules and the mesh
@@ -255,7 +260,7 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 	attrs.MTU = TunnelMTU
 	k := &Kernel{link: &netlink.Dummy{LinkAttrs: attrs}, peers: map[babel.LinkID]kernelPeer{}, device: device, address: net.IP(address.AsSlice())}
 	if err = netlink.LinkAdd(k.link); err != nil {
-		return nil, err
+		return nil, kernelOperationError("create dummy interface "+InterfaceName, kernelDummyRequirement, err)
 	}
 	ok := false
 	defer func() {
@@ -264,24 +269,24 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 		}
 	}()
 	if err = netlink.LinkSetAlias(k.link, interfaceOwner); err != nil {
-		return nil, err
+		return nil, kernelOperationError("mark dummy interface ownership", "", err)
 	}
 	// The host link is quiesced before it is raised: it carries only the
 	// device's own mesh address, never a router-advertised or SLAAC address.
 	if err = sysctls(InterfaceName); err != nil {
-		return nil, err
+		return nil, kernelOperationError("configure dummy interface IPv6", kernelIPv6Requirement, err)
 	}
 	if err = netlink.AddrAdd(k.link, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(address, 128)), Flags: unix.IFA_F_NOPREFIXROUTE | unix.IFA_F_NODAD}); err != nil {
-		return nil, err
+		return nil, kernelOperationError("assign dummy interface IPv6 address", kernelIPv6Requirement, err)
 	}
 	if err = netlink.LinkSetUp(k.link); err != nil {
-		return nil, err
+		return nil, kernelOperationError("bring up dummy interface", kernelDummyRequirement, err)
 	}
 	// A permanent unreachable default prevents this table from falling through
 	// to the host's ordinary uplink. A learnt route has a lower priority.
 	guard := netlink.Route{Table: RouteTable, Protocol: routeProtocol, Family: netlink.FAMILY_V6, Type: unix.RTN_UNREACHABLE, Priority: 32767, Dst: ipNet(netip.MustParsePrefix("::/0"))}
 	if err = netlink.RouteAdd(&guard); err != nil {
-		return nil, err
+		return nil, kernelOperationError("install IPv6 guard route in mesh table", kernelPolicyRequirement, err)
 	}
 	k.routes = append(k.routes, guard)
 	// Mesh traffic is looked up in this table only. Everything else keeps the
@@ -292,11 +297,11 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 	rule.Table = RouteTable
 	rule.Dst = ipNet(meshid.MeshPrefix)
 	if err = netlink.RuleAdd(rule); err != nil {
-		return nil, err
+		return nil, kernelOperationError("install IPv6 mesh policy rule", kernelPolicyRequirement, err)
 	}
 	k.rule = rule
 	if err = k.enableForwarding(); err != nil {
-		return nil, err
+		return nil, kernelOperationError("enable mesh forwarding", "", err)
 	}
 	ok = true
 	return k, nil
@@ -326,7 +331,7 @@ func (k *Kernel) AddPeer(id babel.LinkID, peer meshid.Device) (*os.File, error) 
 	attrs.Alias = interfaceOwner
 	tun := &netlink.Tuntap{LinkAttrs: attrs, Mode: netlink.TUNTAP_MODE_TUN, Flags: netlink.TUNTAP_NO_PI | netlink.TUNTAP_TUN_EXCL, Queues: 1, NonPersist: true}
 	if err = netlink.LinkAdd(tun); err != nil {
-		return nil, err
+		return nil, kernelOperationError("create peer TUN "+attrs.Name, kernelTUNRequirement, err)
 	}
 	ok := false
 	defer func() {
@@ -340,10 +345,10 @@ func (k *Kernel) AddPeer(id babel.LinkID, peer meshid.Device) (*os.File, error) 
 		return nil, errors.New("TUN did not return one queue")
 	}
 	if err = netlink.LinkSetAlias(tun, interfaceOwner); err != nil {
-		return nil, err
+		return nil, kernelOperationError("mark peer TUN ownership", "", err)
 	}
 	if err = netlink.LinkSetMTU(tun, TunnelMTU); err != nil {
-		return nil, err
+		return nil, kernelOperationError("configure peer TUN MTU", "", err)
 	}
 	// Babel owns addressing and routing on this point-to-point link. Never
 	// accept peer router advertisements or manufacture SLAAC, prefix or
@@ -354,17 +359,17 @@ func (k *Kernel) AddPeer(id babel.LinkID, peer meshid.Device) (*os.File, error) 
 	// accept_ra=0 already blocks every advertisement. The knobs that actually
 	// stop SLAAC, prefix assignment and solicitations stay mandatory.
 	if err = sysctls(attrs.Name); err != nil {
-		return nil, err
+		return nil, kernelOperationError("configure peer TUN IPv6", kernelIPv6Requirement, err)
 	}
 	if err = netlink.AddrAdd(tun, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(local, 64)), Flags: unix.IFA_F_NODAD}); err != nil {
-		return nil, err
+		return nil, kernelOperationError("assign peer TUN IPv6 link-local address", kernelIPv6Requirement, err)
 	}
 	// The device's own mesh address is the source for payload leaving this link.
 	if err = netlink.AddrAdd(tun, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(k.device.MeshAddress(), 128)), Flags: unix.IFA_F_NOPREFIXROUTE | unix.IFA_F_NODAD}); err != nil {
-		return nil, err
+		return nil, kernelOperationError("assign peer TUN IPv6 mesh address", kernelIPv6Requirement, err)
 	}
 	if err = netlink.LinkSetUp(tun); err != nil {
-		return nil, err
+		return nil, kernelOperationError("bring up peer TUN", kernelTUNRequirement, err)
 	}
 	rule := netlink.NewRule()
 	rule.Family = netlink.FAMILY_V6
@@ -372,7 +377,7 @@ func (k *Kernel) AddPeer(id babel.LinkID, peer meshid.Device) (*os.File, error) 
 	rule.Table = RouteTable
 	rule.IifName = attrs.Name
 	if err = netlink.RuleAdd(rule); err != nil {
-		return nil, err
+		return nil, kernelOperationError("install IPv6 peer policy rule", kernelPolicyRequirement, err)
 	}
 	k.peers[id] = kernelPeer{tun, tun.Fds[0], rule, peer}
 	ok = true
@@ -545,7 +550,7 @@ func sysctls(name string) error {
 func reclaimReservedState() error {
 	links, err := netlink.LinkList()
 	if err != nil {
-		return err
+		return kernelOperationError("inspect existing interfaces", "", err)
 	}
 	var ownedLinks []netlink.Link
 	for _, l := range links {
@@ -562,7 +567,7 @@ func reclaimReservedState() error {
 	}
 	rules, err := netlink.RuleList(netlink.FAMILY_ALL)
 	if err != nil {
-		return err
+		return kernelOperationError("inspect existing IP policy rules", "", err)
 	}
 	var ownedRules []netlink.Rule
 	for _, r := range rules {
@@ -582,7 +587,7 @@ func reclaimReservedState() error {
 	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
 		routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
 		if err != nil {
-			return err
+			return kernelOperationError(fmt.Sprintf("inspect route table %d for address family %d", RouteTable, family), "", err)
 		}
 		for _, r := range routes {
 			if r.Protocol != routeProtocol {
@@ -593,17 +598,17 @@ func reclaimReservedState() error {
 	}
 	for _, r := range ownedRules {
 		if err := netlink.RuleDel(&r); err != nil && !errors.Is(err, unix.ENOENT) {
-			return err
+			return kernelOperationError("reclaim owned IP policy rule", "", err)
 		}
 	}
 	for _, r := range ownedRoutes {
 		if err := netlink.RouteDel(&r); err != nil && !errors.Is(err, unix.ESRCH) {
-			return err
+			return kernelOperationError("reclaim owned wendy net route", "", err)
 		}
 	}
 	for _, l := range ownedLinks {
 		if err := netlink.LinkDel(l); err != nil && !errors.Is(err, unix.ENODEV) {
-			return err
+			return kernelOperationError("reclaim owned interface "+l.Attrs().Name, "", err)
 		}
 	}
 	return nil

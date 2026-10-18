@@ -57,6 +57,22 @@ removal, cancellation or listener/mDNS failure closes the worker's endpoint,
 pending handshakes and attached links before restart. Existing link costs,
 control stream, carrier DATAGRAM framing, Babel/TUN and MTU remain unchanged.
 
+Discovered Ethernet and infrastructure Wi-Fi neighbors are not ranked against
+unrelated principals. Every eligible LAN edge can authenticate, subject to the
+carrier's existing 64-connection/handshake resource bound. A cheaper link replaces
+a slower link only to the same principal. Capping every node's LAN degree by
+UUID rank can form a closed clique and permanently exclude another reachable
+device. Radio-only neighbors have a separate three-principal budget; LAN and
+configured TCP neighbors do not consume those slots. When shedding duplicate
+radios to the same principal, an authenticated NAN link is retained before BLE
+is removed.
+
+Before changing kernel networking state, the router checks actual IPv6 policy
+routing and TUN APIs. Setup failures identify the failed operation and relevant
+kernel requirements. Linux images need IPv6 policy tables, dummy interfaces and
+TUN support; container UDP interception additionally needs TPROXY support. An
+agent update cannot supply kernel features compiled out of an installed image.
+
 ## Wi-Fi Aware recovery
 
 Repeated failed data paths can trigger one retry of the router's private NAN
