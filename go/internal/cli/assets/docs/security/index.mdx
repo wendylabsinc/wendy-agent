@@ -76,6 +76,10 @@ Each key has one role:
   removed. If the last owner key is lost, reinstall the device. A removed key is refused on its
   next call and cannot resume a TLS session, but a shell or tunnel it already has open keeps
   running until it closes.
+- **Operators are trusted with root.** The `operator` role includes the host shell, which runs
+  as root and can rewrite the trusted-keys file, so the owner/operator split protects against
+  viewers and the network, not against an operator who escalates: these are basic protections
+  by design.
 - **Local and cloud identities stay apart.** A self-issued certificate that names a tenant is
   refused. A cloud-issued certificate never gets owner rights, even when its key is also on the
   list: on an enrolled device, tenant operators get `operator`, and they can still unenroll the
