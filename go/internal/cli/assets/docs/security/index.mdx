@@ -87,7 +87,8 @@ Each key has one role:
   written to the agent log. There is no fallback to local keys of any kind. The trusted-keys file
   stays on the device untouched, and Wendy Cloud never imports it: the operator who enrolled the
   device already has access through cloud. After the device is unenrolled, the saved keys work
-  again. Tenant operators get `operator` and can unenroll the device because Wendy Cloud
+  again. An enrolled device that has lost its enrollment key or certificate therefore has no
+  local recovery path, by design: reinstall it. Tenant operators get `operator` and can unenroll the device because Wendy Cloud
   authorizes the reset.
 - **Local and cloud identities stay apart.** A self-issued certificate that names a tenant is
   refused, and a cloud-issued certificate never gets owner rights, even when its key is also on

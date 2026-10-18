@@ -191,6 +191,8 @@ func TestAuthorizerRoleMatrix(t *testing.T) {
 		{"tenant user cannot manage keys", enrolledBox, ctxWithLeaf(tenantUser), mListKeys, codes.PermissionDenied, 0},
 		{"tenant cert with owner key is not local owner", enrolledBox, ctxWithLeaf(ownerKeyTenantCert), mAddKey, codes.PermissionDenied, 0},
 		{"other tenant refused", enrolledBox, ctxWithLeaf(otherTenant), mVersion, codes.PermissionDenied, 0},
+		// Store not dormant beside a tenant scope: on a real device only the
+		// ~0.5 s between unenroll and the agent restart.
 		{"local owner beside a tenant scope (store not dormant)", enrolledBox, ctxWithLeaf(leafWithKey(ownerKey)), mAddKey, codes.OK, KindLocalKey},
 		{"peer device may mesh dial", enrolledBox, ctxWithLeaf(peerDevice), mMeshDial, codes.OK, KindPeerDevice},
 		{"peer device may deliver a build", enrolledBox, ctxWithLeaf(peerDevice), mWriteChunks, codes.OK, KindPeerDevice},
@@ -286,7 +288,7 @@ func TestCloudEnrolledDisablesLocalKeys(t *testing.T) {
 	store.SetDormant(true)
 	core, logs := observer.New(zapcore.InfoLevel)
 	a := Authorizer{Logger: zap.New(core), Listener: ListenerMTLS, Keys: store, Expected: certs.Scope{OrgID: 5}, OrgMode: OrgModeStrict}
-	socket := Authorizer{Logger: zap.New(core), Listener: ListenerAdminSocket, Keys: store}
+	socket := Authorizer{Logger: zap.New(core), Listener: ListenerAdminSocket}
 	ownerCtx := ctxWithLeaf(leafWithKey(owner))
 	tenantCtx := ctxWithLeaf(leafWithKey(newKey(t), "urn:wendy:org:5:user:alice"))
 
@@ -296,18 +298,18 @@ func TestCloudEnrolledDisablesLocalKeys(t *testing.T) {
 		}
 	}
 	for _, m := range []string{mAddKey, mListKeys, mRemoveKey} {
-		for name, call := range map[string]func() error{
-			"tenant user":  func() error { _, err := a.Authorize(tenantCtx, m); return err },
-			"admin socket": func() error { _, err := socket.Authorize(context.Background(), m); return err },
-		} {
-			err := call()
-			if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != LocalKeysManagedByCloud {
-				t.Errorf("%s %s while enrolled = %v, want FailedPrecondition %q", name, m, err, LocalKeysManagedByCloud)
-			}
+		_, err := a.Authorize(tenantCtx, m)
+		if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != trustedkeys.ErrDormant.Error() {
+			t.Errorf("tenant user %s while enrolled = %v, want FailedPrecondition %q", m, err, trustedkeys.ErrDormant)
+		}
+		// The admin socket has no keys store in production (and does not
+		// serve the keys service): still refused.
+		if _, err := socket.Authorize(context.Background(), m); status.Code(err) != codes.PermissionDenied {
+			t.Errorf("admin socket %s while enrolled = %v, want PermissionDenied", m, err)
 		}
 	}
-	if n := logs.FilterField(zap.String("reason", "cloud-enrolled")).FilterField(zap.String("audit", "trusted_keys")).Len(); n != 6 {
-		t.Errorf("audit rows = %d, want 6", n)
+	if n := logs.FilterField(zap.String("reason", "cloud-enrolled")).FilterField(zap.String("audit", "trusted_keys")).Len(); n != 3 {
+		t.Errorf("audit rows = %d, want 3", n)
 	}
 	if p, err := a.Authorize(tenantCtx, mShell); err != nil || p.Kind != KindTenantUser {
 		t.Fatalf("tenant user while enrolled = %v %v, want tenant-user", p.Kind, err)

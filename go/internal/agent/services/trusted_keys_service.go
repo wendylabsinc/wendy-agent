@@ -83,6 +83,9 @@ func (s *TrustedKeysService) AddTrustedKey(ctx context.Context, req *agentpbv2.A
 	switch {
 	case errors.Is(err, trustedkeys.ErrAlreadyExists):
 		return nil, status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, trustedkeys.ErrDormant):
+		s.auditDormant(p, "add_refused", trustedkeys.Fingerprint(spki))
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, trustedkeys.ErrActorNotOwner):
 		s.logger.Warn("audit: trusted key add refused",
 			zap.String("audit", "trusted_keys"),
@@ -130,6 +133,9 @@ func (s *TrustedKeysService) RemoveTrustedKey(ctx context.Context, req *agentpbv
 			zap.String("fingerprint", req.GetFingerprint()),
 			zap.String("reason", "actor not owner"))
 		return nil, status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, trustedkeys.ErrDormant):
+		s.auditDormant(p, "remove_refused", req.GetFingerprint())
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, trustedkeys.ErrNotFound):
 		return nil, status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, trustedkeys.ErrLastOwner):
@@ -151,4 +157,15 @@ func (s *TrustedKeysService) RemoveTrustedKey(ctx context.Context, req *agentpbv
 		zap.String("role", removed.EntryRole().String()),
 		zap.String("label", removed.Label))
 	return &agentpbv2.RemoveTrustedKeyResponse{}, nil
+}
+
+// auditDormant records a change refused inside the store because the device
+// was enrolled after the call passed the Authorizer.
+func (s *TrustedKeysService) auditDormant(p interceptor.Principal, action, fingerprint string) {
+	s.logger.Warn("audit: trusted key change refused",
+		zap.String("audit", "trusted_keys"),
+		zap.String("action", action),
+		zap.String("actor_fingerprint", p.Fingerprint),
+		zap.String("fingerprint", fingerprint),
+		zap.String("reason", "cloud-enrolled"))
 }

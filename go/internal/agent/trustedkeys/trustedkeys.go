@@ -75,6 +75,9 @@ var (
 	ErrAlreadyExists = errors.New("key is already trusted")
 	ErrLastOwner     = errors.New("cannot remove the last owner key")
 	ErrActorNotOwner = errors.New("acting key is no longer a trusted owner")
+	// ErrDormant refuses every trusted-keys change while the device is
+	// cloud-enrolled.
+	ErrDormant = errors.New("local operator keys are managed by cloud while enrolled")
 )
 
 // Entry is one trusted key as stored on disk.
@@ -351,6 +354,11 @@ func (s *Store) mutate(fn func([]Entry) ([]Entry, error)) error {
 		return fmt.Errorf("locking trusted keys: %w", err)
 	}
 	defer release()
+	// Re-checked under the lock: a change that passed the Authorizer just
+	// before enrollment must not write.
+	if s.dormant.Load() {
+		return ErrDormant
+	}
 	if err := s.reload(); err != nil {
 		return err
 	}

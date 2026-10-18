@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -191,5 +192,40 @@ func TestTrustedKeysServiceRechecksActorInsideLock(t *testing.T) {
 	if _, err := svc.AddTrustedKey(loser, &agentpbv2.AddTrustedKeyRequest{
 		PublicKey: testSPKI(t), Role: agentpbv2.TrustedKeyRole_TRUSTED_KEY_ROLE_OWNER}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("add by a removed owner = %v, want PermissionDenied", err)
+	}
+}
+
+// An Add/Remove that passed the Authorizer just before the device enrolled
+// must not write: the store re-checks dormancy under its lock.
+func TestTrustedKeysServiceRefusesWritesAfterEnrollment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-keys.json")
+	store, err := trustedkeys.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, other := testSPKI(t), testSPKI(t)
+	store.Add(owner, trustedkeys.RoleOwner, "", trustedkeys.AddedByInstall, time.Now())
+	store.Add(other, trustedkeys.RoleViewer, "", trustedkeys.AddedByInstall, time.Now())
+	core, logs := observer.New(zapcore.InfoLevel)
+	svc := NewTrustedKeysService(zap.New(core), store)
+	addCtx := asLocalKey(t, store, owner, keysPrefix+"AddTrustedKey")
+	rmCtx := asLocalKey(t, store, owner, keysPrefix+"RemoveTrustedKey")
+	before, _ := os.ReadFile(path)
+
+	store.SetDormant(true) // enrollment lands between Authorize and the write
+	_, err = svc.AddTrustedKey(addCtx, &agentpbv2.AddTrustedKeyRequest{
+		PublicKey: testSPKI(t), Role: agentpbv2.TrustedKeyRole_TRUSTED_KEY_ROLE_OWNER})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("add after enrollment = %v, want FailedPrecondition", err)
+	}
+	_, err = svc.RemoveTrustedKey(rmCtx, &agentpbv2.RemoveTrustedKeyRequest{Fingerprint: trustedkeys.Fingerprint(other)})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("remove after enrollment = %v, want FailedPrecondition", err)
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatal("keys file written after enrollment")
+	}
+	if n := logs.FilterField(zap.String("reason", "cloud-enrolled")).Len(); n != 2 {
+		t.Fatalf("audit rows = %d, want 2", n)
 	}
 }
