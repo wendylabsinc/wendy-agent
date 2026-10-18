@@ -64,6 +64,9 @@ func TestChatGPTSetupStartsWithoutCloudDeviceOrDeveloperAccess(t *testing.T) {
 		t.Fatal("wrong gateway routing", gateway)
 	}
 	manifest := readChatGPTJSON(t, filepath.Join(root, "plugin.json"))
+	if manifest["name"] != filepath.Base(root) {
+		t.Fatal("desktop manifest identity must match its marketplace entry and directory", manifest["name"])
+	}
 	onboarding := manifest["extensions"].(map[string]any)["com.openai"].(map[string]any)["onboardingSkill"].(string)
 	if _, err := os.Stat(filepath.Join(root, onboarding)); err != nil {
 		t.Fatal("onboarding is unavailable without an MCP connection", err)

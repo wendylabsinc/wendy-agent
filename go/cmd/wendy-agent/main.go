@@ -1203,8 +1203,6 @@ func main() {
 	if v := os.Getenv("WENDY_DATA_INGEST_URL"); v != "" {
 		dataTransferWorker.SetIngestEndpoint(v)
 		logger.Info("data transfer worker: ingest endpoint", zap.String("url", v))
-	} else {
-		logger.Error("data transfer worker: WENDY_DATA_INGEST_URL is not set; episode uploads are disabled")
 	}
 	wg.Add(1)
 	go func() {

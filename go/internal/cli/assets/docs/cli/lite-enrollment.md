@@ -9,8 +9,7 @@ go build -o ./wendy ./cmd/wendy
 ./wendy cloud login --email YOU@YOUR_ORGANIZATION
 ./wendy cloud enroll-device \
   --device wendy-lite:/dev/cu.usbmodemXXXX \
-  --name lite-desk \
-  --broker-port 5055
+  --name lite-desk
 ```
 
 This is the same `cloud enroll-device` command used for WendyOS. The selected
@@ -81,11 +80,14 @@ on-device. The CLI reboots the board and waits for certificate installation.
 The CSR URL derives from the selected session's `PKIEndpoint`. The default time
 service is independent of that deployment.
 Self-hosted deployments can pass `--csr-url https://csr.example/v1/TENANT_UUID`
-and `--time-url https://time.example/v1/time`. For the development Cloud at
-`api.dev.wendy.sh`, the Lite broker defaults to `tunnel.dev.wendy.dev:5055`.
+and `--time-url https://time.example/v1/time`. Production Cloud sessions at
+`api.wendy.dev` or `api.wendy.sh` use `tunnel.wendy.dev:5055` for the Lite broker.
+Development sessions at `api.dev.wendy.sh` or `api.dev.wendy.dev` use
+`tunnel.dev.wendy.dev:5055`. Hosted Cloud sessions need no broker flags.
 The WendyOS devices hostname does not expose the Lite listener. Other Cloud
-endpoints retain their existing hostname selection, with port 5055 by default.
-Use `--broker-host` and `--broker-port` for a separately deployed Lite listener.
+endpoints retain their existing hostname selection,
+with port 5055 by default. Explicit `--broker-host` and `--broker-port` values
+are preserved for separately deployed Lite listeners.
 Use `--cloud-grpc` to select a particular Cloud endpoint/session.
 
 A reserved asset or uploaded configuration is not a successful enrollment.

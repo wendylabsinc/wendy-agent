@@ -383,6 +383,10 @@ var signedResources = map[string]func(tenant string, req proto.Message) (string,
 		in, ok := req.(*cloudpbv2.EnrollDeviceRequest)
 		return "org/" + tenant + "/device/" + in.GetDeviceId(), ok
 	},
+	cloudpbv2.AppService_UpsertApp_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.UpsertAppRequest)
+		return "org/" + in.GetOrganizationId() + "/app/" + in.GetId(), ok
+	},
 	// Ruled 2026-10-13 (WDY-3660); cloud's RequestSigning.md row follows.
 	cloudpbv2.RelayMcpService_OpenRelaySession_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
 		in, ok := req.(*cloudpbv2.OpenRelaySessionRequest)

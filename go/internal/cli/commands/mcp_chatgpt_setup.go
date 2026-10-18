@@ -324,6 +324,7 @@ func writeChatGPTPackage(root, binary, policy string, hosted bool, o chatGPTSetu
 	} else {
 		// The embedded manifest describes the public Cloud connection. Desktop
 		// setup exports a separate local connection with its own requirements.
+		manifest["name"] = "wendy-robots"
 		manifest["description"] = "Work with local robots, edge devices and simulators through the Wendy CLI in ChatGPT Desktop."
 		presentation := extension["interface"].(map[string]any)
 		presentation["longDescription"] = "Use the Wendy CLI on this computer to inspect approved devices, read telemetry, preview cameras and control permitted apps. Local access does not require a Wendy Cloud account. Add simulator, project and host permissions through wendy mcp setup chatgpt when needed. The local CLI process must remain available while ChatGPT uses this connection."
