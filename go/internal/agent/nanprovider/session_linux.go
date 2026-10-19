@@ -89,7 +89,7 @@ func (p Provider) Run(parent context.Context) error {
 			return err
 		}
 		defer func() {
-			if err := runHelper(context.Background(), "stop"); err != nil {
+			if err := runCleanupHelper("stop"); err != nil {
 				logger.Warn("NAN stop failed", zap.Error(err))
 			} else if err := clearSessionOwner(id); err != nil {
 				logger.Warn("NAN ownership marker removal failed", zap.Error(err))
@@ -122,7 +122,7 @@ func (p Provider) Run(parent context.Context) error {
 		return err
 	}
 	defer func() {
-		if err := runHelper(context.Background(), "ndi-remove", ndiName); err != nil {
+		if err := runCleanupHelper("ndi-remove", ndiName); err != nil {
 			logger.Warn("NAN NDI removal failed", zap.Error(err))
 		}
 	}()

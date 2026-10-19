@@ -138,12 +138,25 @@ type radioCommander interface{ command(string) (string, error) }
 func drainRadio(control radioCommander, events <-chan string, local, onlyPeer string, logger *zap.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	drainRadioContext(ctx, control, events, local, onlyPeer, logger)
+}
+
+func drainRadioContext(ctx context.Context, control radioCommander, events <-chan string, local, onlyPeer string, logger *zap.Logger) {
+	if ctx.Err() != nil {
+		return
+	}
 	status, err := control.command("NAN_STATUS")
 	if err != nil {
 		logger.Warn("NAN drain status failed", zap.Error(err))
 		return
 	}
 	for _, line := range strings.Split(status, "\n") {
+		// An unresponsive controller can time out even for a peer with no
+		// owned NDP. Do not multiply its per-command socket timeout across
+		// every discovered peer once the drain budget has elapsed.
+		if ctx.Err() != nil {
+			return
+		}
 		peer := fields(line)["peer"]
 		if _, err := net.ParseMAC(peer); err != nil || (onlyPeer != "" && onlyPeer != peer) {
 			continue

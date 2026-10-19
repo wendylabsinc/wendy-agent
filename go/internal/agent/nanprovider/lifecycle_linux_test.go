@@ -3,11 +3,35 @@
 package nanprovider
 
 import (
+	"context"
+	"errors"
 	"go.uber.org/zap"
 	"strings"
 	"testing"
 	"time"
 )
+
+type radioCommandFunc func(string) (string, error)
+
+func (f radioCommandFunc) command(cmd string) (string, error) { return f(cmd) }
+
+func TestDrainStopsInspectingPeersAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	queries := 0
+	control := radioCommandFunc(func(cmd string) (string, error) {
+		if cmd == "NAN_STATUS" {
+			return "peer=02:00:00:00:00:01\npeer=02:00:00:00:00:02\npeer=02:00:00:00:00:03", nil
+		}
+		queries++
+		cancel()
+		return "", errors.New("controller stopped responding")
+	})
+	drainRadioContext(ctx, control, nil, "02:00:00:00:00:04", "", zap.NewNop())
+	if queries != 1 {
+		t.Fatalf("canceled drain kept querying other peers: %d queries", queries)
+	}
+}
 
 func TestRadioHealthHasBoundedPendingAndFailure(t *testing.T) {
 	now := time.Now()

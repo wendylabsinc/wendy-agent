@@ -63,8 +63,10 @@ func runHelper(ctx context.Context, args ...string) error {
 	return err
 }
 
+const nanHelperTimeout = 20 * time.Second
+
 func helperOutput(ctx context.Context, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, nanHelperTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/sbin/wendyos-nan", args...)
 	cmd.Env = append(os.Environ(), "WENDYOS_NAN_NDI_IFACE="+ndiName)
