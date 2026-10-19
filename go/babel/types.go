@@ -177,7 +177,7 @@ func validPrefix(p netip.Prefix) bool {
 	return p.IsValid() && p == p.Masked() && !p.Addr().Is4In6() && p.Addr().Zone() == ""
 }
 
-// Appendix C: scoped, multicast and loopback destinations are not mesh routes.
+// Appendix C: scoped, multicast and loopback destinations are not wendy net routes.
 // Defaults remain valid even though their first address is unspecified.
 func routablePrefix(p netip.Prefix) bool {
 	a := p.Addr()

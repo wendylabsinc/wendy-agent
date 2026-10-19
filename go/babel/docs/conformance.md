@@ -79,10 +79,10 @@ separate concerns; kernel adapters cannot assume globally atomic route installat
 - Second independent implementation oracle (babeld is currently the only reference).
 - More mixed-daemon topologies, asymmetric metrics and origin/next-hop changes.
 - Measured 1,000-node *full host-route* workload (the initial 1,000-node test has
-  three origins, not 1,000). Do not generalize those results to every mesh workload.
+  three origins, not 1,000). Do not generalize those results to every wendy net workload.
 - Actual Android shared-library/JNI and iOS app/device lifecycle tests, stable ABI,
   suspend/resume policy and crash-safe checkpoint integration.
-- Authorization/filtering adapter before deployment on an untrusted mesh.
+- Authorization/filtering adapter before deployment on an untrusted wendy net network.
 
 These are reasons to label the library experimental, not reasons to couple it to
 the existing NAN backend prematurely.

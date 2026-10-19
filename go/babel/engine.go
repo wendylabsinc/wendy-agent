@@ -497,10 +497,13 @@ func (e *Engine) dump(id LinkID, explicit bool) {
 func centis(d time.Duration) uint16 { return uint16(d / (10 * time.Millisecond)) }
 
 func (e *Engine) request(sk sourceKey, seq uint16, targets []LinkID, from LinkID, hops uint8) {
-	if q := e.requests[sk]; q != nil && atLeast(q.message.Seqno, seq) {
+	q := e.requests[sk]
+	if q != nil && atLeast(q.message.Seqno, seq) {
 		return
 	}
-	if len(e.requests) >= e.cfg.MaxRequests {
+	// A newer request for an existing source replaces one entry; it needs no
+	// additional capacity and must still be able to make recovery progress.
+	if q == nil && len(e.requests) >= e.cfg.MaxRequests {
 		e.counters.Rejected++
 		return
 	}

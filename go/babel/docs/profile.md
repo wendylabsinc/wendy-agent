@@ -96,7 +96,7 @@ callback lets the embedding application authorize origin/prefix pairs on admissi
 and selection; a policy change takes effect at the next `Step`. Nil preserves the
 unfiltered experimental profile. This callback must be deterministic for each
 event and must not re-enter the engine. The caller authenticates each link and
-supplies its own authorization policy before using this on an untrusted mesh. In particular, mTLS to
+supplies its own authorization policy before using this on an untrusted wendy net network. In particular, mTLS to
 a neighbour does not prove the origin of its relayed announcements. Do not claim
 protection against a malicious enrolled router or duplicate router IDs. Self-origin
 updates are ignored; identity collisions are not automatically resolved.
