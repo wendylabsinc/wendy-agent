@@ -38,8 +38,9 @@ here, but this entry point runs only configured TCP links.
 The complete principal
 `spiffe://wendy.sh/tenant/<tenant-uuid>/device/<device-uuid>` identifies a device.
 Credentials, certificate caches, directory records and configured peers use
-that identity. A Cloud asset UUID is a database record ID; it does not derive a
-network address or router ID.
+that identity. Cloud's `asset_id` carries the same certificate device UUID.
+Authenticate its full principal and tenant before using it as a network
+identity; a database field alone grants no authority.
 
 The ULA address contains `fd45:b891:567f::/48` followed by the last ten bytes of
 the device UUID. Each peer TUN carries the complementary `fe80::1` / `fe80::2`

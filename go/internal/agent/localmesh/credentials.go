@@ -21,8 +21,9 @@ import (
 //
 // The mesh identity is the leaf's device principal
 // "spiffe://wendy.sh/tenant/<tenant-uuid>/device/<device-uuid>". Nothing here
-// carries an organization number, an asset number, or a hash of either: a Cloud
-// asset UUID is a database record ID and never a mesh identity.
+// carries an organization number, an asset number, or a hash of either. Cloud
+// uses the same device UUID for asset_id; certificate and tenant verification
+// still establish the complete authenticated principal.
 type Credentials struct {
 	Device         meshid.Device
 	Certificate    tls.Certificate
