@@ -33,7 +33,9 @@ func TestDiscoverSensorSourcesReturnsWhatThisDeviceSeesExceptItself(t *testing.T
 	const tenant = "11111111-2222-4333-8444-555555555555"
 	principal := certs.DeviceSPIFFEURI(tenant, "lite-441bf6804824")
 	sensors := []string{"sensors"}
-	browse := func(context.Context, time.Duration) ([]models.LANDevice, error) {
+	var exclude func(models.LANDevice) bool
+	browse := func(_ context.Context, _ time.Duration, ex func(models.LANDevice) bool) ([]models.LANDevice, error) {
+		exclude = ex
 		return []models.LANDevice{
 			{ID: "me", DisplayName: "self by asset", AssetID: 5, IPAddress: "10.0.0.99", Sensorlink: true, Caps: sensors},
 			{ID: "me2", DisplayName: "self by address", IPAddress: "10.0.0.2", Sensorlink: true, Caps: sensors},
@@ -64,6 +66,12 @@ func TestDiscoverSensorSourcesReturnsWhatThisDeviceSeesExceptItself(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The browse itself is told which sightings are this device, so they
+	// cannot end the scan before other sources answer.
+	if exclude == nil || !exclude(models.LANDevice{AssetID: 5}) || !exclude(models.LANDevice{IPAddress: "10.0.0.2"}) ||
+		exclude(models.LANDevice{ID: "hub", AssetID: 7, IPAddress: "10.0.0.7"}) {
+		t.Fatal("browse was not given this device's self-match")
+	}
 	var names []string
 	byID := map[string]*agentpbv2.DiscoveredSensorSource{}
 	for _, s := range resp.Sources {
@@ -89,7 +97,7 @@ func TestDiscoverSensorSourcesReturnsWhatThisDeviceSeesExceptItself(t *testing.T
 func TestDiscoverSensorSourcesBoundsTheScan(t *testing.T) {
 	var got time.Duration
 	calls := 0
-	browse := func(_ context.Context, timeout time.Duration) ([]models.LANDevice, error) {
+	browse := func(_ context.Context, timeout time.Duration, _ func(models.LANDevice) bool) ([]models.LANDevice, error) {
 		calls++
 		got = timeout
 		return nil, nil
@@ -134,7 +142,7 @@ func TestDiscoverSensorSourcesBoundsTheScan(t *testing.T) {
 
 func TestDiscoverSensorSourcesReportsCancellationAndFailures(t *testing.T) {
 	started := make(chan struct{})
-	svc := newDiscoveryTestService(t, func(ctx context.Context, _ time.Duration) ([]models.LANDevice, error) {
+	svc := newDiscoveryTestService(t, func(ctx context.Context, _ time.Duration, _ func(models.LANDevice) bool) ([]models.LANDevice, error) {
 		close(started)
 		<-ctx.Done()
 		// A browse cut short returns what it had; the client is gone anyway.
@@ -149,7 +157,7 @@ func TestDiscoverSensorSourcesReportsCancellationAndFailures(t *testing.T) {
 		t.Fatalf("err = %v, want Canceled", err)
 	}
 
-	svc = newDiscoveryTestService(t, func(context.Context, time.Duration) ([]models.LANDevice, error) {
+	svc = newDiscoveryTestService(t, func(context.Context, time.Duration, func(models.LANDevice) bool) ([]models.LANDevice, error) {
 		return nil, errors.New("avahi: bus closed")
 	}, services.SensorSourceSelf{})
 	_, err := svc.DiscoverSensorSources(context.Background(), &agentpbv2.DiscoverSensorSourcesRequest{})
@@ -161,7 +169,7 @@ func TestDiscoverSensorSourcesReportsCancellationAndFailures(t *testing.T) {
 func TestDiscoverSensorSourcesLimitsConcurrentScans(t *testing.T) {
 	var active, peak, scans atomic.Int32
 	release := make(chan struct{})
-	svc := newDiscoveryTestService(t, func(ctx context.Context, _ time.Duration) ([]models.LANDevice, error) {
+	svc := newDiscoveryTestService(t, func(ctx context.Context, _ time.Duration, _ func(models.LANDevice) bool) ([]models.LANDevice, error) {
 		n := active.Add(1)
 		defer active.Add(-1)
 		scans.Add(1)

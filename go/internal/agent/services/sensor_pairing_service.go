@@ -27,9 +27,9 @@ type StopPairingFunc func(mcusource.SensorPairing)
 type IsConnectedFunc func(mcusource.SensorPairing) bool
 
 // SensorSourceBrowseFunc browses this device's network for at most timeout
-// and returns the sensor sources it saw. discovery.DiscoverSensorSources is
-// the production implementation.
-type SensorSourceBrowseFunc func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
+// and returns the sensor sources it saw, leaving out the sightings exclude
+// matches. discovery.DiscoverSensorSources is the production implementation.
+type SensorSourceBrowseFunc func(ctx context.Context, timeout time.Duration, exclude func(models.LANDevice) bool) ([]models.LANDevice, error)
 
 // SensorSourceSelf identifies this device's own mDNS advertisement, so
 // DiscoverSensorSources never offers the device as a source for itself.
@@ -224,7 +224,11 @@ func (s *SensorPairingService) DiscoverSensorSources(ctx context.Context, req *a
 	if budget <= 0 {
 		return nil, status.Error(codes.DeadlineExceeded, "not enough time left to scan for sensor sources")
 	}
-	found, err := s.browse(ctx, budget)
+	self := s.self()
+	// The browse drops this device as it goes: its own advertisement is the
+	// first answer every browse here gets, and counting it would end the scan
+	// before other agents reply. The loop below still filters it out.
+	found, err := s.browse(ctx, budget, self.matches)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, status.FromContextError(ctxErr).Err()
 	}
@@ -232,7 +236,6 @@ func (s *SensorPairingService) DiscoverSensorSources(ctx context.Context, req *a
 		s.logger.Warn("sensor source discovery failed", zap.Error(err))
 		return nil, status.Error(codes.Internal, "sensor source discovery failed on this device")
 	}
-	self := s.self()
 	sources := make([]*agentpbv2.DiscoveredSensorSource, 0, len(found))
 	for _, d := range found {
 		if !d.Sensorlink || self.matches(d) {

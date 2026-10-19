@@ -85,18 +85,23 @@ func (h *sensorPairHandler) discoverSources(ctx context.Context) (devices []mode
 		return devices, true, err
 	}
 	if err != nil {
-		return nil, false, sensorDiscoveryError(err)
+		return nil, false, sensorDiscoveryError(ctx, err)
 	}
 	return sensorSourcesFromDevice(resp.GetSources()), false, nil
 }
 
-// sensorDiscoveryError maps a failed DiscoverSensorSources call to text for
-// the SensorLink tab, which prefixes it with "Discovery failed: ".
-func sensorDiscoveryError(err error) error {
+// sensorDiscoveryError maps a DiscoverSensorSources call that failed under ctx
+// to text for the SensorLink tab, which prefixes it with "Discovery failed: ".
+func sensorDiscoveryError(ctx context.Context, err error) error {
 	switch status.Code(err) {
 	case codes.Unavailable, codes.PermissionDenied:
 		return cleanRPCError(err)
 	case codes.DeadlineExceeded:
+		if ctx.Err() != nil {
+			// The tab's own deadline, which ListSensorPairings spends from
+			// too, ran out: the call may never have reached the device.
+			return errors.New("the device did not answer in time")
+		}
 		return errors.New("the device did not finish scanning its network in time")
 	}
 	return fmt.Errorf("the device could not scan its network: %s", userFacingGRPCError(err))

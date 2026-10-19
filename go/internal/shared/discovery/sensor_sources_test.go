@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // scriptedBackend emits svcs once, then stays browsing until ctx ends.
@@ -44,7 +47,7 @@ func TestDiscoverSensorSourcesMergesBothServicesAndKeepsOnlySensors(t *testing.T
 		liteService("blinky", "192.0.2.30", "en0", map[string]string{"id": "b1", "caps": "gpio"}),
 	))
 
-	got, err := DiscoverSensorSources(context.Background(), 300*time.Millisecond)
+	got, err := DiscoverSensorSources(context.Background(), 300*time.Millisecond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,14 +91,72 @@ func TestDiscoverSensorSourcesSurvivesWendyLiteFailureAndReportsCancellation(t *
 	useBrowseBackend(t, func(context.Context, string, func(MDNSService)) error {
 		return errors.New("browse failed")
 	})
-	got, err := DiscoverSensorSources(context.Background(), 300*time.Millisecond)
+	got, err := DiscoverSensorSources(context.Background(), 300*time.Millisecond, nil)
 	if err != nil || len(got) != 1 || got[0].ID != "hub" {
 		t.Fatalf("got %+v, %v; want the agent despite the Wendy Lite failure", got, err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := DiscoverSensorSources(ctx, time.Second); !errors.Is(err, context.Canceled) {
+	if _, err := DiscoverSensorSources(ctx, time.Second, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestDiscoverSensorSourcesExcludedSightingsDoNotEndTheScan(t *testing.T) {
+	shrinkDuration(t, &collectSettle, 50*time.Millisecond)
+	self := wendyService("self", "Self", "self.local", "192.0.2.1", 50052)
+	self.TXTRecords["caps"] = "sensors"
+	hub := wendyService("hub", "Hub", "hub.local", "192.0.2.10", 50052)
+	hub.TXTRecords["caps"] = "sensors"
+	useStreamSeams(t, func(ctx context.Context, _ string, emit func(MDNSService)) error {
+		// The device hears its own advertisement at once; another agent
+		// answers well after the settle period.
+		emit(self)
+		select {
+		case <-time.After(300 * time.Millisecond):
+			emit(hub)
+		case <-ctx.Done():
+		}
+		<-ctx.Done()
+		return nil
+	}, nil)
+	useBrowseBackend(t, scriptedBackend(
+		liteService("self-board", "192.0.2.1", "en0", map[string]string{"id": "b1", "caps": "sensors"}),
+	))
+	isSelf := func(d models.LANDevice) bool { return d.IPAddress == "192.0.2.1" }
+
+	got, err := DiscoverSensorSources(context.Background(), 2*time.Second, isSelf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, d := range got {
+		ids = append(ids, d.ID)
+	}
+	if !slices.Equal(ids, []string{"hub"}) {
+		t.Fatalf("sources = %v, want only hub: excluded sightings must neither be listed nor end the scan", ids)
+	}
+}
+
+func TestDiscoverSensorSourcesReportsABrowseThatFailed(t *testing.T) {
+	broken := func(context.Context, string, func(MDNSService)) error {
+		return errors.New("avahi: bus closed")
+	}
+	useStreamSeams(t, broken, nil)
+	useBrowseBackend(t, broken)
+	got, err := DiscoverSensorSources(context.Background(), 300*time.Millisecond, nil)
+	if err == nil || !strings.Contains(err.Error(), "avahi: bus closed") {
+		t.Fatalf("got %+v, %v; want the browse failure, not an empty network", got, err)
+	}
+
+	// The WendyOS browse still fails, but a board answered: it is listed and
+	// the failure is not reported.
+	useBrowseBackend(t, scriptedBackend(
+		liteService("cam", "192.0.2.20", "en0", map[string]string{"id": "cam", "caps": "sensors"}),
+	))
+	got, err = DiscoverSensorSources(context.Background(), 300*time.Millisecond, nil)
+	if err != nil || len(got) != 1 || got[0].ID != "cam" {
+		t.Fatalf("got %+v, %v; want the board without an error", got, err)
 	}
 }

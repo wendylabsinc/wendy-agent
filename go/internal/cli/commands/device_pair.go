@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -72,7 +71,7 @@ func orgAllowed(cliOrgs map[int32]bool, sourceOrg int32) error {
 // DiscoverSensorSources. Its results may name sources the device cannot
 // reach, so the tab labels them.
 func discoverLocalSensorSources(ctx context.Context) ([]models.DiscoveredDevice, error) {
-	lan, err := discovery.DiscoverSensorSources(ctx, 0)
+	lan, err := discovery.DiscoverSensorSources(ctx, 0, nil)
 	if err != nil {
 		return nil, fmt.Errorf("discovering devices: %w", err)
 	}
@@ -81,8 +80,8 @@ func discoverLocalSensorSources(ctx context.Context) ([]models.DiscoveredDevice,
 
 // sensorSourcesFromDevice maps a DiscoverSensorSources reply into the shape
 // the SensorLink tab consumes, exactly as if the device's sightings had been
-// found locally. The tenant and principal hints are rechecked the way
-// discovery.LANDeviceFromWendyLiteService checks them, so the tenant gate in
+// found locally. The tenant and principal hints are rechecked with the
+// helpers discovery.LANDeviceFromWendyLiteService uses, so the tenant gate in
 // sensorPairHandler.pair always compares the tenant the principal names.
 func sensorSourcesFromDevice(sources []*agentpbv2.DiscoveredSensorSource) []models.DiscoveredDevice {
 	lan := make([]models.LANDevice, 0, len(sources))
@@ -110,15 +109,9 @@ func sensorSourcesFromDevice(sources []*agentpbv2.DiscoveredSensorSource) []mode
 		if s.GetOrgId() > 0 {
 			d.OrgID = s.GetOrgId()
 		}
-		if tenant, err := uuid.Parse(s.GetTenantUuid()); err == nil && tenant.String() == s.GetTenantUuid() {
-			d.TenantUUID = s.GetTenantUuid()
-		}
-		if principal := s.GetPrincipalUri(); d.TenantUUID != "" {
-			identity, err := certs.ParseDevicePrincipal(principal)
-			if err == nil && identity.TenantUUID == d.TenantUUID &&
-				principal == certs.DeviceSPIFFEURI(identity.TenantUUID, identity.EntityID) {
-				d.PrincipalURI = principal
-			}
+		d.TenantUUID = discovery.CanonicalTenantUUID(s.GetTenantUuid())
+		if d.TenantUUID != "" && discovery.DevicePrincipalInTenant(s.GetPrincipalUri(), d.TenantUUID) {
+			d.PrincipalURI = s.GetPrincipalUri()
 		}
 		lan = append(lan, d)
 	}

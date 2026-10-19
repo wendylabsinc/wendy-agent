@@ -60,11 +60,7 @@ func LANDeviceFromWendyLiteService(svc MDNSService) models.LANDevice {
 	if dev.IPAddress != "" {
 		dev.Addresses = []string{dev.IPAddress}
 	}
-	if raw := svc.TXTRecords["tenant"]; raw != "" {
-		if tenant, err := uuid.Parse(raw); err == nil && tenant.String() == raw {
-			dev.TenantUUID = raw
-		}
-	}
+	dev.TenantUUID = CanonicalTenantUUID(svc.TXTRecords["tenant"])
 	if dev.TenantUUID != "" {
 		principal := svc.TXTRecords["principal"]
 		// Older Lite firmware advertises only its hardware ID. Enrollment uses
@@ -72,9 +68,7 @@ func LANDeviceFromWendyLiteService(svc MDNSService) models.LANDevice {
 		if principal == "" && svc.TXTRecords["id"] != "" && svc.TXTRecords["assetid"] == "" {
 			principal = certs.DeviceSPIFFEURI(dev.TenantUUID, "lite-"+strings.TrimPrefix(svc.TXTRecords["id"], "lite-"))
 		}
-		identity, err := certs.ParseDevicePrincipal(principal)
-		if err == nil && identity.TenantUUID == dev.TenantUUID &&
-			principal == certs.DeviceSPIFFEURI(identity.TenantUUID, identity.EntityID) {
+		if DevicePrincipalInTenant(principal, dev.TenantUUID) {
 			dev.PrincipalURI = principal
 		}
 	}
@@ -97,4 +91,21 @@ func LANDeviceFromWendyLiteService(svc MDNSService) models.LANDevice {
 	}
 	dev.Sensorlink = contains(dev.Caps, "sensors")
 	return dev
+}
+
+// CanonicalTenantUUID returns raw when it is a tenant UUID in canonical form
+// (lowercase and hyphenated), and "" otherwise.
+func CanonicalTenantUUID(raw string) string {
+	if tenant, err := uuid.Parse(raw); err == nil && tenant.String() == raw {
+		return raw
+	}
+	return ""
+}
+
+// DevicePrincipalInTenant reports whether principal is a PKI device principal
+// inside tenant. A source keeps a principal hint only when it passes, so a
+// tenant check on the source always compares the tenant its principal names.
+func DevicePrincipalInTenant(principal, tenant string) bool {
+	identity, err := certs.ParseDevicePrincipal(principal)
+	return err == nil && identity.TenantUUID == tenant
 }

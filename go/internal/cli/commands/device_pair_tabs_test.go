@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -583,6 +584,20 @@ func TestSensorPairDeviceDiscoveryErrorsAreNotReplacedByLocalScan(t *testing.T) 
 		if len(m.rows) != 1 || !strings.Contains(view, "Camera") {
 			t.Fatalf("%v: failed rescan dropped known sources: %s", tc.err, view)
 		}
+	}
+}
+
+// When the tab's own deadline runs out (ListSensorPairings spends from it
+// too), the device may never have seen the call, so the scan is not blamed.
+func TestSensorPairDiscoveryTimeoutOnThisSideBlamesTheWait(t *testing.T) {
+	client := &pairTestClient{}
+	h := pairTestHandler(client)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	h.ctx = ctx
+	msg := h.scan()().(sensorPairScanMsg)
+	if client.discoveries != 1 || msg.discoveryErr == nil || msg.discoveryErr.Error() != "the device did not answer in time" {
+		t.Fatalf("discoveries = %d, err = %v; want the wait blamed", client.discoveries, msg.discoveryErr)
 	}
 }
 
