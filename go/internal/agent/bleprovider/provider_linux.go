@@ -264,7 +264,10 @@ func Run(ctx context.Context, cfg Config) error {
 }
 
 func (r *runtime) acceptLoop(ctx context.Context, listener *l2Listener) error {
-	sem := make(chan struct{}, 8)
+	// A token covers the established link's lifetime too. The worker bound
+	// must accommodate the configured peer target, while retaining room for
+	// several pending handshakes when the target is small.
+	sem := make(chan struct{}, max(8, r.cfg.TargetPeers))
 	for ctx.Err() == nil {
 		conn, err := listener.Accept(ctx)
 		if err != nil {
