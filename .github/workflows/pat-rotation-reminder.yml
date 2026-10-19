@@ -8,7 +8,7 @@ on:
 jobs:
   check-rotation:
     name: Check WENDY_TEMPLATE_SYNC_TOKEN rotation
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=gate
     permissions:
       issues: write
     steps:

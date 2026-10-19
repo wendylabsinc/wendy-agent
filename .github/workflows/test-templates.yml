@@ -61,7 +61,7 @@ concurrency:
 jobs:
   generate-validate:
     name: Generate & Validate
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=go-test
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -317,7 +317,7 @@ jobs:
 
   summary:
     name: Template Test Summary
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=gate
     needs: [generate-validate, deploy-to-device]
     if: always()
     steps:

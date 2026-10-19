@@ -9,7 +9,7 @@ jobs:
   integration-test-review:
     name: Review integration test coverage
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: runs-on,runner=2cpu-linux-x64
+    runs-on: runs-on=${{ github.run_id }}/runner=gate
     permissions:
       contents: read
       pull-requests: write

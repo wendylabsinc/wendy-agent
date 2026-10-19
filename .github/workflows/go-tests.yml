@@ -52,7 +52,7 @@ permissions:
 jobs:
   unit-tests:
     name: Race tests
-    runs-on: runs-on,runner=2cpu-linux-x64
+    runs-on: runs-on=${{ github.run_id }}/runner=go-race
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -83,7 +83,7 @@ jobs:
 
   windows:
     name: Windows CLI
-    runs-on: runs-on,runner=2cpu-linux-x64
+    runs-on: runs-on=${{ github.run_id }}/runner=go-test
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -110,7 +110,7 @@ jobs:
 
   wasm:
     name: Browser WASM
-    runs-on: runs-on,runner=2cpu-linux-x64
+    runs-on: runs-on=${{ github.run_id }}/runner=go-test
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -182,7 +182,7 @@ jobs:
     name: Test
     if: ${{ always() }}
     needs: [unit-tests, windows, windows-telemetry, wasm, vet, agent-startup]
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=gate
     steps:
       - name: Check test results
         env:
@@ -202,7 +202,7 @@ jobs:
 
   agent-startup:
     name: Agent setup startup
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=go-test
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -217,7 +217,7 @@ jobs:
 
   vet:
     name: Vet
-    runs-on: runs-on,runner=2cpu-linux-x64
+    runs-on: runs-on=${{ github.run_id }}/runner=go-test
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -235,7 +235,7 @@ jobs:
 
   format:
     name: Format Check
-    runs-on: runs-on,runner=2cpu-linux-x64
+    runs-on: runs-on=${{ github.run_id }}/runner=gate
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -259,7 +259,7 @@ jobs:
 
   shell-tests:
     name: Install script tests
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=gate
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: shellcheck install scripts

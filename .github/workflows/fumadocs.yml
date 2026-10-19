@@ -45,7 +45,7 @@ concurrency:
 jobs:
   build:
     name: Build docs
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=pnpm
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     defaults:
       run:
@@ -256,7 +256,7 @@ jobs:
 
   deploy:
     name: Deploy docs
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=gate
     needs: build
     if: >-
       github.event_name == 'release' ||
@@ -508,7 +508,7 @@ jobs:
 
   comment-preview:
     name: Comment with docs preview URL
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=gate
     timeout-minutes: 5
     needs:
       - build

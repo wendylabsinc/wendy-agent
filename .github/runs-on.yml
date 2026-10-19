@@ -1,0 +1,46 @@
+# RunsOn runner classes (spec runs-on-cpu-fit-20261019), the same definitions
+# wendy-auth, pki-core and cloud carry. Workflows select one per job with
+# `runs-on=${{ github.run_id }}/runner=<name>`.
+#
+# AMD only, one thread per vCPU: the 8th-gen family first, 7th-gen as the
+# fallback when it has no capacity. Spot unless a reclaim would hurt (Pulumi:
+# a reclaim mid-`up` leaves a half-applied stack holding the state lock).
+runners:
+  gate: # aggregators, gofmt, shellcheck, review bots, gcloud uploads: mostly waiting
+    image: ubuntu24-full-x64
+    family: [c8a, c7a]
+    cpu: 2
+  pnpm: # docs site and screencast npm ci, tests, build
+    image: ubuntu24-full-x64
+    family: [c8a, c7a]
+    cpu: 4
+  go-race: # Go tests; -race uses 5-10x the memory
+    image: ubuntu24-full-x64
+    family: [m8a, m7a]
+    cpu: 4
+    ram: 16
+  go-test: # Go build/vet/test without -race, govulncheck, wasm
+    image: ubuntu24-full-x64
+    family: [c8a, c7a]
+    cpu: 8
+  swift: # swift build/test on Linux (unused in WendyOS: its Swift CI is macOS)
+    image: ubuntu24-full-x64
+    family: [m8a, m7a]
+    cpu: 8
+    ram: 32
+    disk: large
+  buildx: # docker build + test (ros2 inspector)
+    image: ubuntu24-full-x64
+    family: [c8a, c7a]
+    cpu: 4
+    disk: large
+  pulumi: # preview/up: mostly waiting, never on spot (unused in WendyOS)
+    # 16 GB, not the 8 GB the other repos use: these jobs compile a Go Pulumi
+    # program (the foundation preview, the prod/foundation `up`), which peaks
+    # near 8 GB cold; pki-core's deploy lost its 8 GB runner mid-preview for
+    # exactly that (pki-core #274).
+    image: ubuntu24-full-x64
+    family: [m8a, m7a]
+    cpu: 4
+    ram: 16
+    spot: false
