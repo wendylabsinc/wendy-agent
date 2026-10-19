@@ -89,3 +89,73 @@ func TestPersistDeviceUUIDLeavesANamedDevicesHostnameAlone(t *testing.T) {
 		t.Fatalf("named device got an explicit hostname: %v", err)
 	}
 }
+
+func TestPersistDeviceUUIDRefusesHostnameDirectoryBeforeChangingIdentity(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "etc/wendyos/device-uuid")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old-boot-identity\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "etc/wendy-agent/hostname"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cert := certWithURI(t, "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/019535d9-3df7-79fb-b466-fa907fa17f9e")
+	if err := persistDeviceUUID(root, t.TempDir(), cert); err == nil {
+		t.Fatal("changed identity without a usable hostname pin")
+	}
+	if got, _ := os.ReadFile(path); string(got) != "old-boot-identity\n" {
+		t.Fatalf("failed migration changed device UUID: %q", got)
+	}
+}
+
+func TestPersistDeviceUUIDPinsHostnameWhenNameFilesAreEmpty(t *testing.T) {
+	for _, name := range []string{"etc/wendy-agent/hostname", "etc/wendyos/device-name"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, name)
+			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			cert := certWithURI(t, "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/019535d9-3df7-79fb-b466-fa907fa17f9e")
+			if err := persistDeviceUUID(root, t.TempDir(), cert); err != nil {
+				t.Fatal(err)
+			}
+			hostname, _ := os.Hostname()
+			if got, _ := os.ReadFile(filepath.Join(root, "etc/wendy-agent/hostname")); strings.TrimSpace(string(got)) != hostname {
+				t.Fatalf("UUID change lost automatic hostname: %q", got)
+			}
+		})
+	}
+}
+
+func TestPersistDeviceUUIDKeepsPersistenceSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "persistent-uuid")
+	if err := os.WriteFile(target, []byte("old-id\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "etc/wendyos/device-uuid")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	const device = "019535d9-3df7-79fb-b466-fa907fa17f9e"
+	cert := certWithURI(t, "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/"+device)
+	if err := persistDeviceUUID(root, t.TempDir(), cert); err != nil {
+		t.Fatal(err)
+	}
+	if link, err := os.Readlink(path); err != nil || link != target {
+		t.Fatalf("persistence link replaced: %q, %v", link, err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != device+"\n" {
+		t.Fatalf("persistent UUID not updated: %q", got)
+	}
+}
