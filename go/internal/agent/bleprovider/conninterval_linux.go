@@ -182,8 +182,15 @@ func waitForLEUpdate(ctx context.Context, handle uint16, read func(context.Conte
 		if event.status != 0 {
 			return 0, &leUpdateCompletedError{status: event.status}
 		}
-		if event.interval != meshIntervalUnits || event.latency != 0 || event.timeout != meshTimeoutUnits {
-			return 0, fmt.Errorf("LE connection update differs from request: interval=%d latency=%d timeout=%d", event.interval, event.latency, event.timeout)
+		// Core Vol4 PartE 7.7.65.3 reports the parameters actually negotiated,
+		// which may differ from the request. Validate the LE ranges and the
+		// supervision constraint instead of requiring our preferred settings.
+		// In 10ms/1.25ms units, timeout > 2*(latency+1)*interval becomes
+		// 4*timeout > (latency+1)*interval; widen before multiplying.
+		if event.interval < 6 || event.interval > 3200 || event.latency > 499 ||
+			event.timeout < 10 || event.timeout > 3200 ||
+			4*uint32(event.timeout) <= (uint32(event.latency)+1)*uint32(event.interval) {
+			return 0, fmt.Errorf("LE connection update has invalid negotiated parameters: interval=%d latency=%d timeout=%d", event.interval, event.latency, event.timeout)
 		}
 		return time.Duration(event.interval) * 1250 * time.Microsecond, nil
 	}

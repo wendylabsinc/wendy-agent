@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -125,7 +126,7 @@ func TestLEUpdateRequiresMatchingHandleAndCompletion(t *testing.T) {
 	}{
 		{"command rejected", [][]byte{leConnectionUpdateCommand(0x0800), statusPacket(0x0c)}, "command status"},
 		{"update rejected", [][]byte{leConnectionUpdateCommand(0x0800), statusPacket(0), completePacket(0x0800, 12, 0, 800, 0x1f)}, "completed with status"},
-		{"unexpected interval", [][]byte{leConnectionUpdateCommand(0x0800), statusPacket(0), completePacket(0x0800, 36, 0, 800, 0)}, "differs from request"},
+		{"invalid interval", [][]byte{leConnectionUpdateCommand(0x0800), statusPacket(0), completePacket(0x0800, 0, 0, 800, 0)}, "invalid negotiated parameters"},
 		{"missing completion", [][]byte{leConnectionUpdateCommand(0x0800), statusPacket(0)}, "deadline exceeded"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,6 +148,41 @@ func TestLEUpdateRequiresMatchingHandleAndCompletion(t *testing.T) {
 	))
 	if err != nil || interval != 15*time.Millisecond {
 		t.Fatalf("other ACL's failed status affected this link: interval=%s err=%v", interval, err)
+	}
+}
+
+func TestLEUpdateUsesValidNegotiatedParameters(t *testing.T) {
+	// The controller reports the parameters actually negotiated with the peer;
+	// a successful procedure need not produce the exact requested values.
+	for _, tc := range []struct {
+		interval, latency, timeout uint16
+		valid                      bool
+	}{
+		{36, 0, 400, true},
+		{24, 4, 100, true},
+		{6, 0, 10, true},
+		{3200, 0, 3200, true},
+		{5, 0, 800, false},
+		{3201, 0, 800, false},
+		{12, 500, 3200, false},
+		{12, 0, 9, false},
+		{12, 0, 3201, false},
+		{40, 0, 10, false}, // timeout must exceed two connection intervals
+		{80, 4, 100, false},
+	} {
+		t.Run(fmt.Sprintf("%d-%d-%d", tc.interval, tc.latency, tc.timeout), func(t *testing.T) {
+			interval, err := waitForLEUpdate(context.Background(), 0x0800, eventReader(
+				leConnectionUpdateCommand(0x0800), statusPacket(0),
+				completePacket(0x0800, tc.interval, tc.latency, tc.timeout, 0),
+			))
+			if tc.valid {
+				if err != nil || interval != time.Duration(tc.interval)*1250*time.Microsecond {
+					t.Fatalf("negotiated interval=%s err=%v", interval, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "invalid negotiated parameters") {
+				t.Fatalf("invalid success accepted: interval=%s err=%v", interval, err)
+			}
+		})
 	}
 }
 
