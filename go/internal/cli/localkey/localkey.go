@@ -12,12 +12,17 @@ package localkey
 
 import (
 	"crypto"
+	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -106,4 +111,47 @@ func load(path string) (crypto.Signer, error) {
 // trusted-keys file stores and matches.
 func PublicKeyDER(key crypto.Signer) ([]byte, error) {
 	return x509.MarshalPKIXPublicKey(key.Public())
+}
+
+// Fingerprint is the key's "sha256:<hex>" SPKI fingerprint, the form the
+// device's trusted-keys file and `wendy device keys` print.
+func Fingerprint(key crypto.Signer) (string, error) {
+	der, err := PublicKeyDER(key)
+	if err != nil {
+		return "", err
+	}
+	return certs.SPKIFingerprint(der), nil
+}
+
+// certLifetime keeps a self-issued certificate short-lived: it is made fresh
+// for every connection, so it only has to outlive one session.
+const certLifetime = 24 * time.Hour
+
+// Certificate self-issues the client certificate a device's local-operator
+// listener accepts (agent mtls.NewServerTLSConfig): signed by key itself,
+// clientAuth EKU, a short validity window and no tenant identity (no URI SAN,
+// no sh/wendy CN), so the device matches it by key against its trusted keys.
+func Certificate(key crypto.Signer, now time.Time) (tls.Certificate, error) {
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "wendy-local-operator"},
+		// Allow for a device clock a little ahead of ours.
+		NotBefore:   now.Add(-5 * time.Minute),
+		NotAfter:    now.Add(certLifetime),
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("self-issuing local operator certificate: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
 }

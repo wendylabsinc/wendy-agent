@@ -253,6 +253,10 @@ func clearPinsGoverning(cfg *config.Config, pinKey string) []clearedPin {
 		identityKeys = append(identityKeys, key)
 	}
 
+	// A locally owned device's key is pinned under the name itself: its
+	// certificate carries no identity to file it under (WDY-3882).
+	identityKeys = append(identityKeys, devicepin.LocalPinKey(pinKey))
+
 	return append(cleared, removeSPKIPins(identityKeys)...)
 }
 

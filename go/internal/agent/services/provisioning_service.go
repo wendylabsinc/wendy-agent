@@ -119,6 +119,10 @@ type OnUnprovisionedFunc func()
 // revoked first. It cannot fail unprovisioning; implementations log errors.
 type BeforeUnprovisionedFunc func()
 
+// CanUnprovisionFunc refuses unprovisioning before any state changes, when
+// the device could not start again unenrolled.
+type CanUnprovisionFunc func() error
+
 // ProvisioningService implements agentpb.WendyProvisioningServiceServer.
 type ProvisioningService struct {
 	agentpb.UnimplementedWendyProvisioningServiceServer
@@ -141,6 +145,7 @@ type ProvisioningService struct {
 	OnProvisioned       OnProvisionedFunc
 	OnUnprovisioned     OnUnprovisionedFunc
 	BeforeUnprovisioned BeforeUnprovisionedFunc
+	CanUnprovision      CanUnprovisionFunc
 }
 
 func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*timesync.Manager) *ProvisioningService {
@@ -392,6 +397,9 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 	if !s.enrolled {
 		return nil, status.Error(codes.FailedPrecondition, "agent is not provisioned")
 	}
+	if err := s.canUnprovision(); err != nil {
+		return nil, err
+	}
 
 	if s.principalURI != "" {
 		if expectedPrincipal == "" || expectedPrincipal != s.principalURI {
@@ -452,6 +460,17 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 	}
 
 	return &agentpb.UnprovisionResponse{}, nil
+}
+
+func (s *ProvisioningService) canUnprovision() error {
+	if s.CanUnprovision == nil {
+		return nil
+	}
+	if err := s.CanUnprovision(); err != nil {
+		s.logger.Warn("Unprovisioning refused", zap.Error(err))
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return nil
 }
 
 // clearStateFiles removes all on-disk provisioning artifacts: the state file,
@@ -557,6 +576,11 @@ func (s *ProvisioningService) loadState() {
 		}
 	}
 }
+
+// DeviceKey returns the device's private key PEM, generating it on first use.
+// The self-signed server certificate of a not-yet-enrolled device uses it, so
+// the SPKI an operator pins is the one the device keeps after enrollment.
+func (s *ProvisioningService) DeviceKey() ([]byte, error) { return s.loadOrGenerateKey() }
 
 // loadOrGenerateKey returns the PEM-encoded private key for this device as []byte.
 // It reuses the key at {configPath}/device-key.pem if it exists, otherwise

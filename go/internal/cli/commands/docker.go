@@ -292,6 +292,11 @@ func appleContainerPushScheme(registryImage string) (string, error) {
 // authentication and verifies the CLI has the necessary certs.
 // Returns an error if the device is provisioned but no CLI certs are available.
 func requireRegistryAuth(ctx context.Context, conn *grpcclient.AgentConnection) error {
+	if conn.IsMTLS {
+		// The registry takes the credential the connection was made with.
+		_, err := registryTLSConfig(conn)
+		return err
+	}
 	resp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
 	if err != nil {
 		return nil // can't determine provisioning status; let the push fail naturally
@@ -2755,7 +2760,9 @@ func resolveRegistryForImageBuilder(ctx context.Context, conn *grpcclient.AgentC
 	switch normalized {
 	case imageBuilderDocker:
 		registryAddr, cleanup, dialErr, err = resolveRegistryForAgent(ctx, conn, port)
-		return registryAddr, cleanup, conn.IsMTLS, dialErr, err
+		// A local-operator device is reached through the TLS-terminating
+		// proxy, so BuildKit itself pushes plain HTTP to loopback.
+		return registryAddr, cleanup, conn.IsMTLS && !conn.IsLocalOperator, dialErr, err
 	case imageBuilderAppleContainer:
 		return resolveRegistryForAppleContainer(ctx, conn, port)
 	default:
@@ -2878,7 +2885,29 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 	var addr string
 	var stopProxy func()
 
-	if conn.RegistryDialer == nil {
+	if conn.IsLocalOperator {
+		// A locally owned device's registry takes the local operator key,
+		// which never goes into the BuildKit container: a loopback proxy
+		// terminates the device's TLS and BuildKit pushes plain HTTP to it.
+		tlsCfg, cfgErr := registryTLSConfig(conn)
+		if cfgErr != nil {
+			return "", nil, nil, cfgErr
+		}
+		target := net.JoinHostPort(conn.Host, strconv.Itoa(port))
+		proxy, proxyErr := startRegistryProxyWithDialer(context.Background(), registryProxyListenAddr, tlsDialerWith(tlsCfg, func(ctx context.Context) (net.Conn, error) {
+			return deviceLinkDialFn(ctx, target)
+		}), target)
+		if proxyErr != nil {
+			return "", nil, nil, fmt.Errorf("starting registry proxy: %w", proxyErr)
+		}
+		stopProxy = proxy.Close
+		dialErr = proxy.LastDialError
+		if runtime.GOOS == "linux" {
+			addr = fmt.Sprintf("127.0.0.1:%d", proxy.Port())
+		} else {
+			addr = fmt.Sprintf("host.docker.internal:%d", proxy.Port())
+		}
+	} else if conn.RegistryDialer == nil {
 		addr, stopProxy, dialErr, err = resolveRegistry(context.Background(), conn.Host, port)
 		if err != nil {
 			return "", nil, nil, err
@@ -2950,20 +2979,17 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 	}
 	if conn.RegistryDialer == nil {
 		if conn.IsMTLS {
-			// Provisioned LAN device: the registry speaks HTTPS with a cert signed
-			// by the Wendy Cloud Root CA, which is not in the macOS system keychain.
-			// Stand up a local HTTP reverse proxy that terminates TLS with mTLS so
-			// the Swift container plugin can push via plain HTTP on 127.0.0.1.
-			certInfo := loadCLICert()
-			if certInfo == nil {
-				return "", false, nil, nil, commandErrorf(errRegistryAuth, "mTLS connection but no CLI certificates available")
+			// Provisioned or locally owned LAN device: the registry speaks
+			// HTTPS with a cert no system trust store holds (Wendy CA, or the
+			// device's self-signed key). Stand up a local HTTP reverse proxy
+			// that terminates TLS with mTLS so the Swift container plugin can
+			// push via plain HTTP on 127.0.0.1.
+			tlsCfg, cfgErr := registryTLSConfig(conn)
+			if cfgErr != nil {
+				return "", false, nil, nil, cfgErr
 			}
 			target := net.JoinHostPort(conn.Host, strconv.Itoa(port))
-			keyPEM, keyErr := certInfo.PrivateKeyPEM()
-			if keyErr != nil {
-				return "", false, nil, nil, fmt.Errorf("loading client key: %w", keyErr)
-			}
-			proxy, proxyErr := startMTLSRegistryHTTPProxy(target, certInfo.PemCertificate, keyPEM, certInfo.PemCertificateChain)
+			proxy, proxyErr := startRegistryHTTPProxyTLS(target, tlsCfg)
 			if proxyErr != nil {
 				return "", false, nil, nil, fmt.Errorf("starting mTLS registry proxy for Swift: %w", proxyErr)
 			}
@@ -2987,19 +3013,11 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 		return conn.RegistryDialer(ctx, port)
 	}
 	if conn.IsMTLS {
-		certInfo := loadCLICert()
-		if certInfo == nil {
-			return "", false, nil, nil, commandErrorf(errRegistryAuth, "mTLS connection but no CLI certificates available")
+		tlsCfg, cfgErr := registryTLSConfig(conn)
+		if cfgErr != nil {
+			return "", false, nil, nil, cfgErr
 		}
-		keyPEM, keyErr := certInfo.PrivateKeyPEM()
-		if keyErr != nil {
-			return "", false, nil, nil, fmt.Errorf("loading client key: %w", keyErr)
-		}
-		tlsDial, tlsErr := tlsClientDialer(certInfo.PemCertificate, keyPEM, certInfo.PemCertificateChain, dial)
-		if tlsErr != nil {
-			return "", false, nil, nil, fmt.Errorf("preparing TLS dialer for tunneled registry: %w", tlsErr)
-		}
-		dial = tlsDial
+		dial = tlsDialerWith(tlsCfg, dial)
 	}
 
 	proxy, proxyErr := startRegistryProxyWithDialer(ctx, "127.0.0.1:0", dial)
@@ -3052,37 +3070,11 @@ func wendyRegistryServerVerifier(caPool *x509.CertPool) func(tls.ConnectionState
 // SAN — but the server chain is fully validated against the Wendy CA via
 // wendyRegistryServerVerifier, matching startMTLSRegistryHTTPProxy.
 func tlsClientDialer(certPEM, keyPEM, caPEM string, dial func(context.Context) (net.Conn, error)) (func(context.Context) (net.Conn, error), error) {
-	leafPEM, err := certs.LeafCertificatePEM(certPEM)
+	cfg, err := cloudRegistryTLSConfig(certPEM, keyPEM, caPEM)
 	if err != nil {
-		return nil, fmt.Errorf("extracting leaf certificate: %w", err)
+		return nil, err
 	}
-	tlsCert, err := tls.X509KeyPair([]byte(leafPEM), []byte(keyPEM))
-	if err != nil {
-		return nil, fmt.Errorf("loading client certificate: %w", err)
-	}
-	caPool := x509.NewCertPool()
-	if certs.AppendChainToPool(caPool, caPEM) == 0 {
-		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
-	}
-	tlsCfg := &tls.Config{
-		// Hostname check only; full chain validation happens in VerifyConnection.
-		InsecureSkipVerify: true, //nolint:gosec
-		MinVersion:         tls.VersionTLS12,
-		Certificates:       []tls.Certificate{tlsCert},
-		VerifyConnection:   wendyRegistryServerVerifier(caPool),
-	}
-	return func(ctx context.Context) (net.Conn, error) {
-		raw, dialErr := dial(ctx)
-		if dialErr != nil {
-			return nil, dialErr
-		}
-		tlsConn := tls.Client(raw, tlsCfg)
-		if hsErr := tlsConn.HandshakeContext(ctx); hsErr != nil {
-			raw.Close()
-			return nil, fmt.Errorf("TLS handshake with device registry: %w", hsErr)
-		}
-		return tlsConn, nil
-	}, nil
+	return tlsDialerWith(cfg, dial), nil
 }
 
 func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, dialErr func() error, err error) {
@@ -3209,19 +3201,17 @@ func (p *mtlsRegistryHTTPProxy) LastDialError() error {
 }
 
 func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsRegistryHTTPProxy, error) {
-	leafPEM, err := certs.LeafCertificatePEM(certPEM)
+	cfg, err := cloudRegistryTLSConfig(certPEM, keyPEM, caPEM)
 	if err != nil {
-		return nil, fmt.Errorf("extracting leaf cert: %w", err)
+		return nil, err
 	}
-	cert, err := tls.X509KeyPair([]byte(leafPEM), []byte(keyPEM))
-	if err != nil {
-		return nil, fmt.Errorf("parsing mTLS certificate: %w", err)
-	}
-	caPool := x509.NewCertPool()
-	if certs.AppendChainToPool(caPool, caPEM) == 0 {
-		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
-	}
+	return startRegistryHTTPProxyTLS(target, cfg)
+}
 
+// startRegistryHTTPProxyTLS serves plain HTTP on loopback and forwards each
+// request to the device registry at target over TLS with cfg (see
+// registryTLSConfig), for push tools that cannot do the device's mTLS.
+func startRegistryHTTPProxyTLS(target string, cfg *tls.Config) (*mtlsRegistryHTTPProxy, error) {
 	p := &mtlsRegistryHTTPProxy{}
 
 	rp := &httputil.ReverseProxy{
@@ -3234,16 +3224,9 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 				return deviceLinkDialFn(ctx, addr)
 			},
-			TLSClientConfig: &tls.Config{
-				Certificates: []tls.Certificate{cert},
-				// Skip hostname verification: device registry certs are signed by
-				// the Wendy CA but may not include the mDNS hostname as a SAN.
-				// VerifyConnection performs full chain validation against the Wendy
-				// CA instead.
-				InsecureSkipVerify: true, //nolint:gosec
-				MinVersion:         tls.VersionTLS12,
-				VerifyConnection:   wendyRegistryServerVerifier(caPool),
-			},
+			// Hostname verification is skipped: cfg authenticates the device
+			// in VerifyConnection (Wendy CA chain, or the verified device key).
+			TLSClientConfig: cfg,
 		},
 		// The default ErrorHandler logs "http: proxy error: dial tcp ...: connect:
 		// connection refused" straight to stderr for every failed request, which
@@ -3279,28 +3262,13 @@ func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy,
 	if certInfo == nil {
 		return nil, fmt.Errorf("no CLI certificates available")
 	}
-	leafPEM, err := certs.LeafCertificatePEM(certInfo.PemCertificate)
-	if err != nil {
-		return nil, fmt.Errorf("extracting leaf certificate: %w", err)
-	}
 	keyPEM, err := certInfo.PrivateKeyPEM()
 	if err != nil {
 		return nil, fmt.Errorf("loading client key: %w", err)
 	}
-	tlsCert, err := tls.X509KeyPair([]byte(leafPEM), []byte(keyPEM))
+	tlsCfg, err := cloudRegistryTLSConfig(certInfo.PemCertificate, keyPEM, certInfo.PemCertificateChain)
 	if err != nil {
-		return nil, fmt.Errorf("loading client certificate: %w", err)
-	}
-	caPool := x509.NewCertPool()
-	if certs.AppendChainToPool(caPool, certInfo.PemCertificateChain) == 0 {
-		return nil, fmt.Errorf("no valid CA certificates found in certInfo.PemCertificateChain")
-	}
-	tlsCfg := &tls.Config{
-		// Skip hostname verification; full chain validation happens in VerifyConnection.
-		InsecureSkipVerify: true, //nolint:gosec
-		MinVersion:         tls.VersionTLS12,
-		Certificates:       []tls.Certificate{tlsCert},
-		VerifyConnection:   wendyRegistryServerVerifier(caPool),
+		return nil, err
 	}
 	dialer := &tls.Dialer{Config: tlsCfg}
 	return startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(ctx context.Context) (net.Conn, error) {

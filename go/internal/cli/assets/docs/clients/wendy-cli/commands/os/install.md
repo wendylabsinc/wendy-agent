@@ -251,6 +251,7 @@ A WendyOS image install from the manifest (disk images, Jetson Orin and Thor rec
 - **Install types that seed nothing.** Positional `[image] [drive]` installs write no config partition and warn the same way. Linux Desktop and Headless Mac (`agent.sh`) and Wendy Lite firmware seed no owner key either. On all three, `--trusted-key` and `--no-local-key` are rejected as not supported on this install type. `wendy install jobs start` (and the MCP `os_install_start`) cannot seed a key and refuses to start without `--no-local-key`.
 - **On the device.** On first boot the agent moves the seed to `/etc/wendy-agent/trusted-keys.json` (`0600`) and from then on runs with `WENDY_LOCAL_ACCESS=required`. If a seed is present but cannot be installed, the agent refuses to start and systemd retries with the seed still in place. A `WENDY_LOCAL_ACCESS` value other than `required` in the device environment is overridden to `required` with a logged warning; a seeded device cannot opt out by environment variable. A seed found on a device that already has trusted keys is deleted unused.
 - **Recovery.** If you lose your key, another owner removes and re-adds you. Without another owner, reinstall the device.
+- **More operators later.** [`wendy device keys`](../device/keys.md) lists, adds and removes trusted keys with roles (owner, operator, viewer). Another operator prints their key with [`wendy auth local-key show`](../auth/local-key.md).
 
 ```sh
 wendy install --trusted-key ops-team.pub

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/netip"
 	"os"
@@ -2488,6 +2489,11 @@ type mtlsWalk struct {
 	// addresses actually dialled instead of asserting that "no endpoint
 	// answered" and leaving the user to guess where we looked.
 	attempts []mtlsAttemptError
+	// verifiedProbeErr is the probe failure of a candidate whose server
+	// certificate was VERIFIED (chain and org) before the probe failed for a
+	// reason other than our certificate. A device that proved itself over TLS
+	// is never offered the plaintext rung, whichever candidate it was.
+	verifiedProbeErr error
 }
 
 // primaryRejectedOurCert reports whether the PRIMARY candidate proved itself a
@@ -2594,6 +2600,9 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 			}
 			if w.tlsDebug {
 				fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
+			}
+			if _, verified := conn.ObservedServerIdentity(); verified && w.verifiedProbeErr == nil && !isCertRejectionError(cand, probeErr) {
+				w.verifiedProbeErr = mtlsAttemptError{addr: mtlsAddr, err: probeErr}
 			}
 			if conn.TCPDialError() != nil {
 				// The actual dial never reached TCP. Another credential cannot
@@ -2713,22 +2722,36 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 		if conn != nil {
 			return conn, nil, nil
 		}
-		if walk.primaryRejectedOurCert() {
-			// A genuine cross-org mismatch (device's org is one we hold no cert
-			// for) gets a clear, actionable message. A same-org failure (observed
-			// org is one we have, e.g. clock skew / stale cert) or no observed org
-			// falls through to the generic handshake-rejected error, which
-			// connectToAgent already post-processes with clock-skew and
-			// refresh-certs remedies.
-			cause := walk.primaryLastErr
-			if walk.primaryCertificateErr != nil {
-				cause = walk.primaryCertificateErr
-			}
-			return nil, cause, chooseRejectionError(ctx, walk.primaryObservedOrg, allCerts, cause)
+	}
+	// The local operator key: the credential of a device that is not
+	// cloud-enrolled. Tried after the cloud certificates, which an enrolled
+	// device requires and which a local-only device fails fast (its
+	// self-signed certificate chains to no CA we hold).
+	localConn, local, localRefusal := dialLocalOperatorFn(ctx, target, candidates)
+	if localConn != nil {
+		return localConn, nil, nil
+	}
+	if localRefusal != nil && !errors.Is(localRefusal, context.Canceled) && !errors.Is(localRefusal, context.DeadlineExceeded) {
+		return nil, walk.lastMTLSErr, localRefusal
+	}
+	if walk.primaryRejectedOurCert() {
+		// A genuine cross-org mismatch (device's org is one we hold no cert
+		// for) gets a clear, actionable message. A same-org failure (observed
+		// org is one we have, e.g. clock skew / stale cert) or no observed org
+		// falls through to the generic handshake-rejected error, which
+		// connectToAgent already post-processes with clock-skew and
+		// refresh-certs remedies.
+		cause := walk.primaryLastErr
+		if walk.primaryCertificateErr != nil {
+			cause = walk.primaryCertificateErr
 		}
+		return nil, cause, chooseRejectionError(ctx, walk.primaryObservedOrg, allCerts, cause)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, walk.lastMTLSErr, err
+	}
+	if refusal := localDialRefusal(target, local, len(walk.allCerts) > 0, walk.verifiedProbeErr); refusal != nil {
+		return nil, walk.lastMTLSErr, refusal
 	}
 	if target.pinned() {
 		// A host we have already reached over mTLS must never be reached
@@ -2752,9 +2775,15 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 	// first RPC — walking here would spend dials that cannot report which of them
 	// actually worked. The authenticated walk above is where reachability gets
 	// established; cacheFastPathReachable is what proves a plaintext one.
+	if local.keyErr != nil && !errors.Is(local.keyErr, fs.ErrNotExist) && !jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: the local operator key was not used: %v\n", local.keyErr)
+	}
 	conn, err := plaintextConnectFn(ctx, target.Addr)
 	return conn, walk.lastMTLSErr, err
 }
+
+// dialLocalOperatorFn is a seam over dialLocalOperator.
+var dialLocalOperatorFn = dialLocalOperator
 
 // dialAgentLadder is dialAgentLadderWithCerts with the CLI's stored certs
 // in config order — the shape every non-fast-path caller wants.

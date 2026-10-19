@@ -7,14 +7,24 @@ import (
 	"crypto/elliptic"
 	"crypto/mldsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"net/url"
 )
+
+// SPKIFingerprint returns "sha256:" + hex SHA-256 of a SubjectPublicKeyInfo
+// DER: the one key fingerprint format shared by the CLI's device pin store and
+// the agent's trusted-keys file.
+func SPKIFingerprint(spki []byte) string {
+	sum := sha256.Sum256(spki)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
 
 // GenerateKeyPair generates a new P-256 EC private key and returns it as a PEM-encoded string.
 func GenerateKeyPair() (privateKeyPEM string, err error) {

@@ -3,13 +3,12 @@
 package devicepin
 
 import (
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
@@ -157,7 +156,7 @@ func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error
 			}
 		}
 	}
-	fingerprint := spkiFingerprint(leaf)
+	fingerprint := certs.SPKIFingerprint(leaf.RawSubjectPublicKeyInfo)
 	notAfter := leaf.NotAfter.UTC().Format(time.RFC3339)
 
 	existing, pinned := s.devices[key]
@@ -183,6 +182,42 @@ func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error
 		NotAfter:        notAfter,
 	}
 	if unchanged {
+		return nil
+	}
+	s.dirty[key] = true
+	return s.flush()
+}
+
+// LocalPinKey is the key a locally owned device's key is pinned under: the
+// name the user dials it by, since its certificate carries no identity.
+func LocalPinKey(name string) string {
+	return "local:" + strings.TrimSuffix(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), "."), ".local")
+}
+
+// CheckLocal pins the key of a device that is not cloud-enrolled (WDY-3882):
+// it serves a certificate self-signed over its device key, so the key is the
+// device's only identity. names[0] is the name being dialled, the rest are
+// other names the device is known by; the key must match a pin under any of
+// them (a PinMismatchError naming the key that differs otherwise, since the
+// device key never rotates), and is recorded under names[0] on first use.
+func (s *Store) CheckLocal(names []string, leaf *x509.Certificate) error {
+	if len(names) == 0 {
+		return nil
+	}
+	fingerprint := certs.SPKIFingerprint(leaf.RawSubjectPublicKeyInfo)
+	for _, name := range names {
+		if existing, pinned := s.devices[LocalPinKey(name)]; pinned && existing.SPKIFingerprint != fingerprint {
+			return &PinMismatchError{Key: LocalPinKey(name), DisplayName: name, Want: existing.SPKIFingerprint, Got: fingerprint}
+		}
+	}
+	key := LocalPinKey(names[0])
+	_, pinned := s.devices[key]
+	s.devices[key] = PinnedDevice{
+		SPKIFingerprint: fingerprint,
+		DisplayName:     names[0],
+		LastSeen:        time.Now().UTC().Format(time.RFC3339),
+	}
+	if pinned {
 		return nil
 	}
 	s.dirty[key] = true
@@ -277,9 +312,4 @@ func (s *Store) flush() error {
 	s.devices = merged
 	s.dirty = make(map[string]bool)
 	return nil
-}
-
-func spkiFingerprint(cert *x509.Certificate) string {
-	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
-	return "sha256:" + hex.EncodeToString(sum[:])
 }

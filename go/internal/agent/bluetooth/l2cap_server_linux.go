@@ -14,6 +14,8 @@ import (
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -194,6 +196,9 @@ func serveL2CAPConn(ctx context.Context, fd int, logger *zap.Logger, d *Dispatch
 		logger.Warn("BLE mTLS handshake failed", zap.Error(err))
 		return
 	}
+	// Expose the TLS peer the way gRPC does so the dispatcher's method→role
+	// check identifies the caller exactly as on the mTLS listener.
+	ctx = peer.NewContext(ctx, &peer.Peer{AuthInfo: credentials.TLSInfo{State: tlsConn.ConnectionState()}})
 
 	for {
 		select {

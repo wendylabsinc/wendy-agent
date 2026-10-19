@@ -148,6 +148,9 @@ func (w *mtlsWalk) mergeCandidateResults(completed []*mtlsWalk) {
 		}
 		w.attempts = append(w.attempts, candidate.attempts...)
 		w.anyCertRejection = w.anyCertRejection || candidate.anyCertRejection
+		if w.verifiedProbeErr == nil {
+			w.verifiedProbeErr = candidate.verifiedProbeErr
+		}
 		if candidate.lastMTLSErr != nil {
 			w.lastMTLSErr = candidate.lastMTLSErr
 		}

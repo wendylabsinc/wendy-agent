@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/liteenroll"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -56,6 +57,7 @@ func liteRelayOptions(ctx context.Context, auth *config.AuthConfig, renew bool) 
 	if options.DeviceTrustChainPEM == "" {
 		return options, fmt.Errorf("selected Cloud session has no device CA chain; run 'wendy auth login'")
 	}
+	options.DeviceTrustFallback = liteDeviceCAChain(auth)
 	key, err := cert.PrivateKeyPEM()
 	if err != nil {
 		return options, err
@@ -70,6 +72,19 @@ func liteRelayOptions(ctx context.Context, auth *config.AuthConfig, renew bool) 
 	options.OperatorIdentity = cert
 	return options, nil
 }
+
+// liteDeviceCAChain loads the selected tenant's Lite Device CA chain for the
+// relay, LAN and BLE verifiers; discovery caches it per PKI endpoint and tenant.
+func liteDeviceCAChain(auth *config.AuthConfig) liteclient.LiteDeviceCAChain {
+	pkiEndpoint, tenantID := auth.PKIEndpoint, auth.Certificates[0].TenantUUID()
+	return func(ctx context.Context) (string, error) {
+		return discoverLiteDeviceCAChain(ctx, pkiEndpoint, tenantID)
+	}
+}
+
+// discoverLiteDeviceCAChain is replaced in tests.
+var discoverLiteDeviceCAChain = liteenroll.DiscoverLiteDeviceCAChain
+
 func configuredTunnelSigner(auth *config.AuthConfig, signer func(string, []byte) (func([]byte) ([]byte, error), error)) (func([]byte) ([]byte, error), error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("no operator certificate")
