@@ -121,7 +121,16 @@ func parseLEUpdateEvent(packet []byte, handle uint16) updateEvent {
 			return updateEvent{commandStatus: true, status: params[0]}
 		}
 	case hciLEMetaEvent:
-		if len(params) >= 10 && params[0] == leUpdateSubevent && binary.LittleEndian.Uint16(params[2:4]) == handle {
+		if len(params) >= 4 && params[0] == leUpdateSubevent && binary.LittleEndian.Uint16(params[2:4]) == handle {
+			// Core Vol4 PartE 4.5 permits failed completion events to omit
+			// optional values after the handle. Those values are not valid
+			// connection parameters when Status is nonzero.
+			if params[1] != 0 {
+				return updateEvent{complete: true, status: params[1]}
+			}
+			if len(params) < 10 {
+				return updateEvent{}
+			}
 			return updateEvent{complete: true, status: params[1], interval: binary.LittleEndian.Uint16(params[4:6]),
 				latency: binary.LittleEndian.Uint16(params[6:8]), timeout: binary.LittleEndian.Uint16(params[8:10])}
 		}
@@ -171,13 +180,22 @@ func waitForLEUpdate(ctx context.Context, handle uint16, read func(context.Conte
 			continue
 		}
 		if event.status != 0 {
-			return 0, fmt.Errorf("LE connection update completed with status %#x", event.status)
+			return 0, &leUpdateCompletedError{status: event.status}
 		}
 		if event.interval != meshIntervalUnits || event.latency != 0 || event.timeout != meshTimeoutUnits {
 			return 0, fmt.Errorf("LE connection update differs from request: interval=%d latency=%d timeout=%d", event.interval, event.latency, event.timeout)
 		}
 		return time.Duration(event.interval) * 1250 * time.Microsecond, nil
 	}
+}
+
+// A matched failed completion ends this submitted procedure. It differs from
+// a missing completion or a rejected command that may leave another procedure
+// active. The caller can retain the already established connection parameters.
+type leUpdateCompletedError struct{ status byte }
+
+func (e *leUpdateCompletedError) Error() string {
+	return fmt.Sprintf("LE connection update completed with status %#x", e.status)
 }
 
 func monitorPacket(packet []byte, hciIndex int) []byte {
@@ -209,9 +227,9 @@ func meshACLHandle(conn net.Conn) (uint16, error) {
 	return l2capACLHandle(packet.fd)
 }
 
-// Only errors proved to precede submission may use the existing connection
-// parameters. Even a rejected submitted command can mean another procedure
-// remains active, so all submitted failures abort this connection attempt.
+// A failure before submission leaves no update from this request in flight.
+// A matched failed completion has its own terminal error type; missing replies
+// and command rejection are kept separate because their outcome may be unclear.
 type leUpdateUnavailableError struct{ err error }
 
 func (e *leUpdateUnavailableError) Error() string {

@@ -33,7 +33,9 @@ func TestInitialTuneClassifiesSubmissionBoundary(t *testing.T) {
 		{name: "command disallowed", packets: [][]byte{leConnectionUpdateCommand(0), statusPacket(0x0c)}},
 		{name: "submitted unsupported", packets: [][]byte{leConnectionUpdateCommand(0), statusPacket(0x01)}},
 		{name: "accepted timeout", packets: [][]byte{leConnectionUpdateCommand(0), statusPacket(0)}},
-		{name: "completion rejected", packets: [][]byte{leConnectionUpdateCommand(0), statusPacket(0), completePacket(0, 12, 0, 800, 0x1f)}},
+		{name: "completion rejected", packets: [][]byte{leConnectionUpdateCommand(0), statusPacket(0), completePacket(0, 12, 0, 800, 0x1f)}, fallback: true},
+		{name: "invalid parameters rejected", packets: [][]byte{leConnectionUpdateCommand(0), statusPacket(0), completePacket(0, 36, 0, 400, 0x1e)}, fallback: true},
+		{name: "short failed completion", packets: [][]byte{leConnectionUpdateCommand(0), statusPacket(0), {hciEventPacket, hciLEMetaEvent, 4, leUpdateSubevent, 0x1e, 0, 0}}, fallback: true},
 		{name: "success", packets: [][]byte{leConnectionUpdateCommand(0), statusPacket(0), completePacket(0, 12, 0, 800, 0)}, success: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
