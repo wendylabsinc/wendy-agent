@@ -742,10 +742,16 @@
               "type": "string",
               "description": "ROS 2 distribution (e.g. humble, jazzy). Defaults to humble."
             },
+            "scope": {
+              "type": "string",
+              "enum": ["app", "device", "peripherals", "network"],
+              "description": "Who can see the app's ROS 2 topics. 'app': only this app (its own domain; no domainId). 'device' (default): every app on the device. 'peripherals': the device and hardware attached to it, such as a robot on a wired interface (CycloneDDS only). 'network': anything on the device's networks. 'device' and 'peripherals' need the host network."
+            },
             "discoveryScope": {
               "type": "string",
               "enum": ["app", "host"],
-              "description": "DDS discovery scope. 'app' (default) restricts discovery to the app group; 'host' permits discovery over the device host network."
+              "deprecated": true,
+              "description": "Deprecated: use scope. 'app' behaves as scope 'device', 'host' as scope 'network'."
             }
           }
         }

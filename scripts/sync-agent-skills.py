@@ -9,7 +9,6 @@ SOURCE = ROOT / "plugins/wendy-agentic-coding/skills"
 TARGET = ROOT / "go/internal/cli/assets/skills"
 GROUP = SOURCE.parent / "skill-group.json"
 MCP_TARGETS = [
-    ROOT / "plugins/wendy-chatgpt/skills/wendy",
     ROOT / "plugins/wendy-get-started/skills/wendy",
     ROOT / "plugins/wendyos/skills/wendy",
     ROOT / "go/internal/cli/assets/mcp-skills/wendy",
@@ -44,11 +43,20 @@ connection, and their first physical device or simulator. It also works before
 any Wendy MCP tools are connected. Do not assume the user knows Wendy or has
 installed its CLI.
 
-Inspect the available tools first. The CLI server uses `wendy_status` and
-`device_list`; the ChatGPT gateway uses `list_robots` and `inspect_robot`.
+Inspect the available tools first. The local CLI server uses `wendy_status` and
+`device_list`. The public hosted relay uses `wendy_status` and `cloud_discover`.
+It requires a signed-in CLI, pairing through `wendy cloud mcp`, and a running
+relay process. Its default policy permits built-in read-only device and Cloud
+tools that do not access the host, with confirmation for each call. `--allow-read`
+skips confirmation for those tools only. `device_connect` and local discovery
+through `device_list` require explicit `--allow-tool` permission and per-call
+terminal confirmation. `--allow-all` permits every supported relay tool and
+skips all per-call confirmations. `--auto-accept` controls ChatGPT pairing only.
+Local desktop gateways and separately configured standalone Cloud gateways use
+`list_robots` and `inspect_robot`.
 Use the connected server's tools and explicit target identifiers. Use CLI
-commands only when a local terminal is available. A skill cannot grant access
-or add tools missing from the server.
+commands only when a terminal on the intended computer is available. A skill
+cannot grant access or add tools missing from the server.
 
 """
     index += "".join(f"- [{name}](references/skills/{name}/SKILL.md)\n" for name in skills)
@@ -105,7 +113,13 @@ def main():
     for target in MCP_TARGETS:
         sync_files(bundle, target, args.check, differences)
     plugin_source = ROOT / "plugins/wendy-chatgpt"
-    plugin_files = {Path("plugin.json"): (plugin_source / "plugin.json").read_bytes()}
+    # The public plugin owns a curated skill independently of the local
+    # developer bundle. Embed that exact source without regenerating it.
+    public_skill = Path("skills/wendy/SKILL.md")
+    plugin_files = {
+        Path("plugin.json"): (plugin_source / "plugin.json").read_bytes(),
+        public_skill: (plugin_source / public_skill).read_bytes(),
+    }
     plugin_files.update({
         p.relative_to(plugin_source): p.read_bytes()
         for p in (plugin_source / "assets").rglob("*") if p.is_file()

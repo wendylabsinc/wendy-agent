@@ -104,6 +104,8 @@ var robotSandboxPort = (*vm.Store).EnsureRobotSandboxPort
 
 var pickSimulatorProfileFn = func() (string, error) {
 	return pickFromItems("Choose a simulator", []tui.PickerItem{
+		{Name: "Wendy Lite native ESP-IDF (ESP32-C6)", Description: "Native apps with OTA firmware slots", Value: vm.ProfileWendyLiteNative},
+		{Name: "Wendy Lite WASM (ESP32-C6)", Description: "Real firmware with emulated Wi-Fi; offers emulator installation", Value: vm.ProfileWendyLite},
 		{Name: "Generic WendyOS", Description: "An ordinary VM for application development", Value: "generic"},
 		{Name: "Unitree Go2", Description: "A walking virtual robot with ROS 2 and a MuJoCo sandbox", Value: "go2"},
 		{Name: "LeRobot SO-101 follower", Description: "A virtual six-joint arm with a MuJoCo sandbox", Value: vm.RobotKindSO101},
@@ -113,13 +115,30 @@ var pickSimulatorProfileFn = func() (string, error) {
 }
 
 func validateSimulatorProfile(kind string) error {
-	if kind != "generic" && kind != vm.RobotKindGo2 && kind != vm.RobotKindG1 && kind != vm.RobotKindRosmasterR2 && kind != vm.RobotKindSO101 {
-		return fmt.Errorf("unsupported simulator profile %q; choose generic, go2, g1, so101 or rosmaster-r2", kind)
+	if !vm.IsLiteProfile(kind) && kind != "generic" && kind != vm.RobotKindGo2 && kind != vm.RobotKindG1 && kind != vm.RobotKindRosmasterR2 && kind != vm.RobotKindSO101 {
+		return fmt.Errorf("unsupported simulator profile %q; choose generic, go2, g1, so101, rosmaster-r2, wendy-lite or wendy-lite-native", kind)
 	}
 	return nil
 }
 
 func attachSimulatorProfile(name, kind string) error {
+	if err := attachSimulatorProfileQuiet(name, kind); err != nil {
+		return err
+	}
+	if kind == "generic" {
+		return nil
+	}
+	runtime, err := robotRuntimeForKind(kind)
+	if err != nil {
+		return err
+	}
+	cliLogln("%s profile created. Run 'wendy vm robot start %s' or connect to vm:%s to build and start its robot runtime.", runtime.name, name, name)
+	return nil
+}
+
+// The tour continues directly into startup, so it does not need standalone
+// profile creation instructions.
+func attachSimulatorProfileQuiet(name, kind string) error {
 	if err := validateSimulatorProfile(kind); err != nil {
 		return err
 	}
@@ -147,11 +166,7 @@ func attachSimulatorProfile(name, kind string) error {
 	if _, exists := store.ReadMeta(name); !exists {
 		return fmt.Errorf("VM %q has no readable metadata", name)
 	}
-	if err := store.CreateRobotProfile(name, profile); err != nil {
-		return err
-	}
-	cliLogln("%s profile created. Run 'wendy vm robot start %s' or connect to vm:%s to build and start its robot runtime.", runtime.name, name, name)
-	return nil
+	return store.CreateRobotProfile(name, profile)
 }
 
 func simulatorResources(store *vm.Store, name string) (vmStartOptions, error) {
@@ -561,7 +576,11 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 	if _, err := userVMForConnection(conn); err != nil {
 		return err
 	}
-	cliLogln("Building and provisioning %s in %s (the first build downloads pinned assets and runtime dependencies)...", runtime.name, name)
+	if isRobotTour(ctx) {
+		cliLogln("Preparing the robot simulation. First setup can take a few minutes...")
+	} else {
+		cliLogln("Building and provisioning %s in %s (the first build downloads pinned assets and runtime dependencies)...", runtime.name, name)
+	}
 	err = runWithAgent(ctx, conn, source, cfg, runOptions{
 		managedRobot: true, buildType: "docker", builder: "docker", dockerfile: "Dockerfile",
 		detach: true, yes: true, restartUnlessStopped: true,
@@ -573,9 +592,11 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 	if err := waitForRobot(ctx, name, port, profile); err != nil {
 		return err
 	}
-	cliLogln("%s ready. Sandbox: %s", runtime.name, robotURL(port))
-	if err := browserOpen(robotURL(port)); err != nil {
-		cliLogln("Open %s in your browser to view the sandbox (auto-open failed: %v).", robotURL(port), err)
+	if !isRobotTour(ctx) {
+		cliLogln("%s ready. Sandbox: %s", runtime.name, robotURL(port))
+		if err := browserOpen(robotURL(port)); err != nil {
+			cliLogln("Open %s in your browser to view the sandbox (auto-open failed: %v).", robotURL(port), err)
+		}
 	}
 	return nil
 }
@@ -844,9 +865,10 @@ func runVMRobot(cmd *cobra.Command, action, name string) error {
 }
 
 // Resolve a declared ROS app onto the selected robot's bus in memory. The
-// source manifest remains unchanged. Host discovery is mapped to the isolated
-// guest bus; explicit conflicting domain, middleware or environment choices fail
-// before any image build or deployment.
+// source manifest remains unchanged. Every scope except app is mapped to the
+// isolated guest bus (scope device); scope app keeps the app to itself.
+// Explicit conflicting domain, middleware, or environment choices fail before
+// any image build or deployment.
 func prepareRobotAppConfig(conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, overrides []string) (*appconfig.AppConfig, error) {
 	if conn == nil || conn.SimulatorName == "" {
 		return cfg, nil
@@ -887,8 +909,12 @@ func normalizeRobotROSConfig(cfg *appconfig.AppConfig, overrides []string) (*app
 		if ros.ResolvedRMW() != "rmw_cyclonedds_cpp" {
 			return nil, nil, fmt.Errorf("%s: managed robot requires CycloneDDS", scope)
 		}
-		if ros.ResolvedDiscoveryScope() == "" {
-			return nil, nil, fmt.Errorf("%s: invalid ROS discovery scope", scope)
+		rosScope := ros.ResolvedScope()
+		if rosScope == "" {
+			return nil, nil, fmt.Errorf("%s: invalid ROS scope", scope)
+		}
+		if rosScope == appconfig.ROS2ScopeApp {
+			return nil, nil, fmt.Errorf("%s: ROS scope app keeps the app off the managed robot bus; use scope device or peripherals", scope)
 		}
 		for _, entry := range env {
 			key, value, _ := strings.Cut(entry, "=")
@@ -929,7 +955,7 @@ func normalizeRobotROSConfig(cfg *appconfig.AppConfig, overrides []string) (*app
 			entitlements = append(entitlements, appconfig.Entitlement{Type: appconfig.EntitlementNetwork, Mode: "host"})
 		}
 		domain := 0
-		return &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &domain, Distro: "humble", RMW: "rmw_cyclonedds_cpp", DiscoveryScope: "app"}}, entitlements, nil
+		return &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &domain, Distro: "humble", RMW: "rmw_cyclonedds_cpp", Scope: appconfig.ROS2ScopeDevice}}, entitlements, nil
 	}
 	var err error
 	if cfg.GetROS2Config() != nil {

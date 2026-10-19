@@ -105,15 +105,68 @@ func (s cloudDeviceSelector) auth(cfg *config.Config) (*config.AuthConfig, error
 		}
 	}
 	if s.TenantUUID != "" {
-		return nil, fmt.Errorf("no login for cloud %s tenant %s; log in to that tenant or choose another default", s.Endpoint, s.TenantUUID)
+		return nil, fmt.Errorf("no login for cloud %s tenant %s; log in to that tenant or choose another default", s.Endpoint, config.OrganizationLabel(s.Endpoint, s.TenantUUID))
 	}
-	return nil, fmt.Errorf("no login for cloud %s organization %d; log in to that organization or choose another default", s.Endpoint, s.OrgID)
+	return nil, fmt.Errorf("no login for cloud %s organization %s; log in to that organization or choose another default", s.Endpoint, orgLabel(s.Endpoint, s.OrgID))
 }
 
 var fetchDefaultCloudAssetsFn = fetchCloudAssets
 var connectDefaultCloudAssetFn = connectCloudAsset
 var fetchDefaultCloudAssetsV2Fn = fetchCloudAssetsV2
 var connectDefaultCloudAssetV2Fn = connectCloudAssetV2
+var refreshDefaultCloudCertificateFn = refreshCertsForAuth
+
+// A saved cloud selector resolves its own tenant session instead of going
+// through pickAuthEntry. Prepare that session before discovery or the lazy
+// tunnel dial can turn an expired certificate into an opaque PKI refusal.
+func prepareDefaultCloudCertificate(ctx context.Context, auth *config.AuthConfig) error {
+	if auth == nil || len(auth.Certificates) == 0 {
+		return nil
+	}
+	// Renewal saves the whole config, even for non-OAuth sessions. Serialize
+	// it with token rotation and reload before using or persisting credentials.
+	unlock, err := acquireAuthRefreshLock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := reloadOAuthSession(auth); err != nil {
+		return err
+	}
+	err = ensureFreshCertificateFn(ctx, auth)
+	if len(auth.Certificates) == 0 {
+		return err
+	}
+	// Preflight suppresses transport failures. The certificate can expire
+	// during that request, so check its current expiry even when err is nil.
+	notAfter, expiryErr := leafNotAfterFn(auth.Certificates[0].PemCertificate)
+	if expiryErr != nil {
+		return err
+	}
+	if timeNowFn().Before(notAfter) {
+		// Like pickAuthEntry, a refused renewal must not block a certificate
+		// that can still authorize the connection.
+		if err != nil {
+			reportStaleCertificate(err)
+		}
+		return nil
+	}
+	if err == nil {
+		err = errCertExpired
+	}
+	if auth.OAuthIssuer == "" || auth.ServiceAccount != "" {
+		return err
+	}
+	// Keep the lock while an OAuth refresh token obtains a new certificate
+	// after expiry, through persistence of any rotated token.
+	err = refreshDefaultCloudCertificateFn(ctx, auth)
+	// Issuance can fail after the refresh token rotates. Persist that token
+	// even on failure so the next attempt can still use the selected session.
+	if saveErr := persistOAuthSession(auth); err == nil {
+		err = saveErr
+	}
+	return err
+}
 
 func connectCloudDeviceSelector(ctx context.Context, selector cloudDeviceSelector) (*SelectedDevice, error) {
 	cfg, err := config.Load()
@@ -124,6 +177,9 @@ func connectCloudDeviceSelector(ctx context.Context, selector cloudDeviceSelecto
 	if err != nil {
 		return nil, err
 	}
+	if err := prepareDefaultCloudCertificate(ctx, auth); err != nil {
+		return nil, fmt.Errorf("preparing Cloud device certificate: %w", err)
+	}
 	if selector.TenantUUID != "" {
 		assets, err := fetchDefaultCloudAssetsV2Fn(ctx, auth, true)
 		if err != nil {
@@ -133,13 +189,16 @@ func connectCloudDeviceSelector(ctx context.Context, selector cloudDeviceSelecto
 			if asset.GetId() != selector.AssetUUID {
 				continue
 			}
+			if isLiteCloudAsset(asset) {
+				return cloudLiteSelectedDevice(auth, asset, selector.String())
+			}
 			conn, err := connectDefaultCloudAssetV2Fn(ctx, auth, asset, os.Getenv("WENDY_BROKER_URL"))
 			if err != nil {
 				return nil, err
 			}
 			return &SelectedDevice{Agent: conn, DefaultSelector: selector.String()}, nil
 		}
-		return nil, fmt.Errorf("cloud asset %s in tenant %s is offline or unavailable; choose another device with --device or 'wendy device set-default'", selector.AssetUUID, selector.TenantUUID)
+		return nil, fmt.Errorf("cloud asset %s in tenant %s is offline or unavailable; choose another device with --device or 'wendy device set-default'", selector.AssetUUID, config.OrganizationLabel(selector.Endpoint, selector.TenantUUID))
 	}
 	assets, err := fetchDefaultCloudAssetsFn(ctx, auth)
 	if err != nil {
@@ -155,7 +214,7 @@ func connectCloudDeviceSelector(ctx context.Context, selector cloudDeviceSelecto
 		}
 		return &SelectedDevice{Agent: conn, DefaultSelector: selector.String()}, nil
 	}
-	return nil, fmt.Errorf("cloud asset %d in organization %d is offline or unavailable; choose another device with --device or 'wendy device set-default'", selector.AssetID, selector.OrgID)
+	return nil, fmt.Errorf("cloud asset %d in organization %s is offline or unavailable; choose another device with --device or 'wendy device set-default'", selector.AssetID, orgLabel(selector.Endpoint, selector.OrgID))
 }
 
 // saveDefaultDevice records key as the default device ("" clears it), changing
@@ -236,7 +295,7 @@ func connectMCPDevice(ctx context.Context, device string) (*grpcclient.AgentConn
 			return nil, err
 		}
 		if matched {
-			return selected.Agent, nil
+			return selectedAgent(selected)
 		}
 		if err := rejectNumericDeviceName(device); err != nil {
 			return nil, err

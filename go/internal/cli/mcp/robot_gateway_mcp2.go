@@ -189,6 +189,7 @@ func (g *RobotGateway) handleGatewayMCP2(ctx context.Context, raw []byte, header
 				for _, item := range items {
 					if tool, ok := item.(map[string]any); ok {
 						delete(tool, "execution")
+						gatewayMirrorSecuritySchemes(tool)
 					}
 				}
 			}

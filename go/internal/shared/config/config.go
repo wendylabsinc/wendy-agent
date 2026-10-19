@@ -24,13 +24,19 @@ type Config struct {
 	// DefaultCloudGRPC is a pre-context auth-selection field, read once by
 	// ensureContexts to seed CurrentContext during migration and no longer
 	// written (see CurrentContext).
-	DefaultCloudGRPC   string `json:"defaultCloudGRPC,omitempty"`
-	LastCLIUpdateCheck string `json:"lastCLIUpdateCheck,omitempty"` // RFC3339
+	DefaultCloudGRPC     string `json:"defaultCloudGRPC,omitempty"`
+	LastCLIUpdateCheck   string `json:"lastCLIUpdateCheck,omitempty"`   // last successful check, RFC3339
+	LastCLIUpdateAttempt string `json:"lastCLIUpdateAttempt,omitempty"` // includes failed attempts, RFC3339
+	// LatestCLIRelease is independent of the checking process's version, so an
+	// older MCP process still knows to restart after the on-disk CLI is updated.
+	LatestCLIRelease   string `json:"latestCLIRelease,omitempty"`
 	AvailableCLIUpdate string `json:"availableCLIUpdate,omitempty"` // tag of a newer release, if any
 	// CLIUpdateNoticeShown is the AvailableCLIUpdate tag whose non-interactive
 	// update notice has already been printed, so scripts and agents see it
 	// once per release instead of after every command.
-	CLIUpdateNoticeShown string `json:"cliUpdateNoticeShown,omitempty"`
+	CLIUpdateNoticeShown   string `json:"cliUpdateNoticeShown,omitempty"`
+	CLIUpdatePromptVersion string `json:"cliUpdatePromptVersion,omitempty"`
+	CLIUpdatePromptedAt    string `json:"cliUpdatePromptedAt,omitempty"` // interactive reminder snooze, RFC3339
 	// LastMCPSetupVersion records the CLI version that last ran `wendy mcp
 	// setup`. It lets the root command detect when an upgrade should refresh
 	// the MCP server config and bundled skills. Empty means the user has never
@@ -99,6 +105,11 @@ type AuthConfig struct {
 	RefreshToken   string            `json:"refreshToken,omitempty"`
 	DPoPPrivateKey string            `json:"dpopPrivateKey,omitempty"`
 	Certificates   []CertificateInfo `json:"certificates,omitempty"`
+	// LiteCertificate is the session's P-256 Lite operator leaf (leaf first,
+	// then chain), issued over the ML-DSA session and used only on the Lite
+	// lane. LitePrivateKey is its key.
+	LiteCertificate string `json:"liteCertificate,omitempty"`
+	LitePrivateKey  string `json:"litePrivateKey,omitempty"`
 	// ServiceAccount is the wendy-auth service-account sub of a headless
 	// session. Its token is re-minted from DPoPPrivateKey; there is no
 	// refresh token.

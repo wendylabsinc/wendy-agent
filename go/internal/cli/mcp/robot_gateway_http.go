@@ -79,8 +79,8 @@ func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) stri
 		return nil, fmt.Errorf("HTTP requires http configuration and authentication")
 	}
 	u, err := url.Parse(cfg.ResourceURL)
-	if err != nil || u.Host == "" || u.Path != "/mcp" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return nil, fmt.Errorf("resource_url must be an absolute URL ending in /mcp")
+	if err != nil || u.Host == "" || (u.Path != "" && u.Path != "/" && u.Path != "/mcp") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.RawPath != "" {
+		return nil, fmt.Errorf("resource_url must be an absolute URL at the origin root or /mcp")
 	}
 	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1") && cfg.OAuth == nil && cfg.CloudLink == nil) {
 		return nil, fmt.Errorf("resource_url requires HTTPS except for local development tokens")
@@ -99,7 +99,15 @@ func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) stri
 		return nil, fmt.Errorf("configure exactly one HTTP authentication mode: oauth, cloud_link, or development_tokens")
 	}
 	origin := u.Scheme + "://" + u.Host
-	metadataURL := origin + "/.well-known/oauth-protected-resource/mcp"
+	mcpPath := u.Path
+	if mcpPath == "" {
+		mcpPath = "/"
+	}
+	metadataPath := "/.well-known/oauth-protected-resource"
+	if mcpPath != "/" {
+		metadataPath += mcpPath
+	}
+	metadataURL := origin + metadataPath
 	metadata := map[string]any{"resource": cfg.ResourceURL, "scopes_supported": robotGatewayScopes, "bearer_methods_supported": []string{"header"}}
 	var authenticate gatewayAuthenticate
 	if cfg.CloudLink != nil {
@@ -187,12 +195,12 @@ func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) stri
 			_, _ = io.WriteString(w, "ok\n")
 			return
 		}
-		if (cfg.OAuth != nil || cfg.CloudLink != nil) && (r.URL.Path == "/.well-known/oauth-protected-resource/mcp" || r.URL.Path == "/.well-known/oauth-protected-resource") && r.Method == http.MethodGet {
+		if (cfg.OAuth != nil || cfg.CloudLink != nil) && (r.URL.Path == metadataPath || r.URL.Path == "/.well-known/oauth-protected-resource") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(metadata)
 			return
 		}
-		if r.URL.Path != "/mcp" {
+		if r.URL.Path != mcpPath || r.URL.RawPath != "" {
 			http.NotFound(w, r)
 			return
 		}
@@ -279,6 +287,12 @@ func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) stri
 			} `json:"params"`
 		}
 		if json.Unmarshal(raw, &envelope) == nil {
+			if envelope.Method == "tools/list" {
+				response := &gatewayToolListWriter{ResponseWriter: w}
+				transport.ServeHTTP(response, r.WithContext(ctx))
+				response.finish()
+				return
+			}
 			if strings.HasPrefix(envelope.Method, "tasks/") && !g.hasScope(ctx, RobotEventsScope) {
 				http.Error(w, "event scope required", http.StatusForbidden)
 				return
