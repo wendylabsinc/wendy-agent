@@ -1,4 +1,11 @@
 name: Build products and release
+# Nightly device updates yield to "Stable release · " runs (see
+# .github/scripts/release-priority.cjs). Releases that skip integration tests
+# never use the device runners, so they get a title nightly does not yield to.
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && inputs.publish &&
+  (inputs.skip_integration_tests && format('Stable release without integration tests · {0}', github.ref_name) ||
+  format('Stable release · {0}', github.ref_name)) || format('Build · {0}', github.ref_name) }}
 
 on:
   push:
@@ -21,9 +28,11 @@ on:
         type: boolean
         default: false
 
+# Give each stable release its own group so pushes and later releases cannot
+# cancel it, even while it is queued. Non-release builds still supersede by ref.
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || !inputs.publish }}
 
 # Add permissions needed for creating releases
 permissions:
@@ -116,6 +125,10 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Build embedded MCP app
+        if: matrix.cmd == 'wendy'
+        uses: ./.github/actions/build-mcp-app
+
       - name: Build
         working-directory: go
         env:
@@ -148,7 +161,7 @@ jobs:
           subject-path: ${{ env.archive }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.archive }}
           path: ${{ env.archive }}
@@ -193,6 +206,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+
+      - name: Build embedded MCP app
+        uses: ./.github/actions/build-mcp-app
 
       - name: Install musl toolchain
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -263,7 +279,7 @@ jobs:
           subject-path: ${{ env.archive }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.archive }}
           path: ${{ env.archive }}
@@ -296,6 +312,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+
+      - name: Build embedded MCP app
+        uses: ./.github/actions/build-mcp-app
 
       - name: Install libusb
         run: |
@@ -337,7 +356,7 @@ jobs:
           subject-path: ${{ env.archive }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.archive }}
           path: ${{ env.archive }}
@@ -380,7 +399,7 @@ jobs:
           subject-path: ${{ env.archive }}
 
       - name: Upload runtime guest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wendy-macos-runtime-guest-arm64-${{ needs.determine-version.outputs.version }}
           path: ${{ env.archive }}
@@ -443,7 +462,7 @@ jobs:
         run: bash ./Scripts/Build.sh
 
       - name: Upload notarized app bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wendy-agent-macos-app-${{ needs.determine-version.outputs.version }}
           path: ${{ steps.build_wendy_agent_mac_app.outputs.app_path }}
@@ -451,7 +470,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload release zip
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ steps.build_wendy_agent_mac_app.outputs.artifact_name }}
           path: ${{ steps.build_wendy_agent_mac_app.outputs.artifact_path }}
@@ -501,7 +520,7 @@ jobs:
           scripts/generate-sbom.sh source "sboms/wendy-source-${VERSION}.spdx.json" --repo-root "$PWD"
 
       - name: Upload swift SBOM
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sbom-swift-${{ needs.determine-version.outputs.version }}
           path: sboms/wendy-swift-${{ needs.determine-version.outputs.version }}.spdx.json
@@ -509,7 +528,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload source SBOM
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sbom-source-${{ needs.determine-version.outputs.version }}
           path: sboms/wendy-source-${{ needs.determine-version.outputs.version }}.spdx.json
@@ -584,7 +603,7 @@ jobs:
           sbom-path: ${{ steps.sbom.outputs.sbom }}
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sbom-${{ matrix.artifact-name }}-${{ needs.determine-version.outputs.version }}
           path: ${{ steps.sbom.outputs.sbom }}
@@ -771,6 +790,7 @@ jobs:
             --config-files /etc/avahi/services/wendy-agent.service \
             --after-install packaging/linux/fpm/wendy-agent-postinstall.sh \
             --before-remove packaging/linux/fpm/wendy-agent-preremove.sh \
+            --rpm-posttrans packaging/linux/fpm/wendy-agent-posttrans.sh \
             -C pkgroot/wendy-agent \
             .
 
@@ -812,16 +832,17 @@ jobs:
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/usr/lib/systemd/system/wendy-agent.service" > /dev/null
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/etc/default/wendy-agent" > /dev/null
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/etc/avahi/services/wendy-agent.service" > /dev/null
+          rpm -qp --scripts "$WENDY_AGENT_RPM" | grep "^posttrans scriptlet" > /dev/null
 
       - name: Upload .deb packages
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: linux-packages-deb-${{ matrix.arch }}
           path: "*.deb"
           retention-days: 14
 
       - name: Upload .rpm packages
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: linux-packages-rpm-${{ matrix.arch }}
           path: "*.rpm"
@@ -896,7 +917,7 @@ jobs:
           subject-path: wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.zip
 
       - name: Upload signed zip
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.zip
           path: wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.zip
@@ -936,7 +957,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Upload MSI
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.msi
           path: "wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.msi"
@@ -1103,7 +1124,7 @@ jobs:
 
   integration-tests:
     name: Integration Tests (macOS, stable gate)
-    if: github.event_name != 'workflow_dispatch' || !inputs.skip_integration_tests
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && !inputs.skip_integration_tests
     uses: ./.github/workflows/integration-tests.yml
     with:
       platform: macos

@@ -2,10 +2,15 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
@@ -234,5 +239,73 @@ func TestDiscoverStillDefaultsToLocal(t *testing.T) {
 	}
 	if m.simStarted {
 		t.Error("the simulator poll started before its tab was ever shown")
+	}
+}
+
+func TestDiscoverKeepsScanningWhenSimulatorNeedsForegroundStart(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	saved := vmDetachSupportedFn
+	vmDetachSupportedFn = func() bool { return false }
+	t.Cleanup(func() { vmDetachSupportedFn = saved })
+	for _, existing := range [][]vm.Status{nil, {stoppedVM("sim", "test")}} {
+		m := newTestDiscoverTabsModel(0, 0)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = updated.(discoverTabsModel)
+		m, _ = discoverTabTo(t, m, devicePickerSimulatorTab)
+		m, _ = m.updateSimulator(simulatorVMsMsg{vms: existing})
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+		m = updated.(discoverTabsModel)
+		if m.action != devicePickerNoAction || m.cancelled || m.sim.createRequested() {
+			t.Fatal("unsupported simulator creation closed discovery")
+		}
+		name := nextSimulatorName(existing)
+		view := strings.Join(strings.Fields(ansi.Strip(m.View())), " ")
+		for _, want := range []string{"wendy vm create " + name + " --profile generic", "wendy vm start " + name, "separate terminal and keep it open", "Local app builds, managed robot simulators, and automatic port forwarding require macOS or Linux", "on Windows, run Wendy inside WSL2"} {
+			if !strings.Contains(view, want) {
+				t.Errorf("discovery view = %q, missing %q", view, want)
+			}
+		}
+		m, _ = discoverTabTo(t, m, devicePickerLocalTab)
+		if m.cancelled || !strings.Contains(m.View(), "Scanning for WendyOS devices") {
+			t.Fatal("nearby discovery did not remain available")
+		}
+	}
+}
+
+func TestDiscoverSimulatorGuidanceFitsPopulatedTerminal(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	saved := vmDetachSupportedFn
+	vmDetachSupportedFn = func() bool { return false }
+	t.Cleanup(func() { vmDetachSupportedFn = saved })
+	var existing []vm.Status
+	for i := range 30 {
+		existing = append(existing, stoppedVM(fmt.Sprintf("sim-%02d", i), "test"))
+	}
+	for _, size := range []tea.WindowSizeMsg{{Width: 80, Height: 24}, {Width: 60, Height: 20}} {
+		t.Run(fmt.Sprintf("%dx%d", size.Width, size.Height), func(t *testing.T) {
+			m := newTestDiscoverTabsModel(0, 0)
+			updated, _ := m.Update(size)
+			m = updated.(discoverTabsModel)
+			m, _ = discoverTabTo(t, m, devicePickerSimulatorTab)
+			m, _ = m.updateSimulator(simulatorVMsMsg{vms: existing})
+			m.sim.picker.FocusItem("vm:sim-29")
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+			m = updated.(discoverTabsModel)
+			view := ansi.Strip(m.View())
+			if height := lipgloss.Height(view); height > size.Height {
+				t.Errorf("view height = %d, terminal height = %d:\n%s", height, size.Height, view)
+			}
+			for _, line := range strings.Split(view, "\n") {
+				if width := lipgloss.Width(line); width > size.Width {
+					t.Errorf("view line width = %d, terminal width = %d: %q", width, size.Width, line)
+				}
+			}
+			text := strings.Join(strings.Fields(view), " ")
+			for _, want := range []string{"Nearby | Simulator | Cloud", "sim-29", simulatorForegroundHint("sim", true)} {
+				if !strings.Contains(text, want) {
+					t.Errorf("populated discovery view is missing %q:\n%s", want, view)
+				}
+			}
+		})
 	}
 }

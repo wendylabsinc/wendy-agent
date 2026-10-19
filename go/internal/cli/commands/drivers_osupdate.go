@@ -300,10 +300,10 @@ func awaitDriverApply(stream agentpbv2.WendyDriverService_InstallDriverClient) e
 // reportDriverAddonsAfterUpdate reports which add-ons survived the update. It
 // dials its own connection: the outcome is already decided, so failing to
 // connect here must cost nothing.
-func reportDriverAddonsAfterUpdate(ctx context.Context, host string) {
+func reportDriverAddonsAfterUpdate(ctx context.Context, prior *grpcclient.AgentConnection) {
 	callCtx, cancel := context.WithTimeout(ctx, driverListTimeout)
 	defer cancel()
-	conn, err := connectWithAutoTLS(callCtx, hostPort(host, defaultAgentPort))
+	conn, err := dialOSUpdateAgent(callCtx, prior)
 	if err != nil {
 		return
 	}

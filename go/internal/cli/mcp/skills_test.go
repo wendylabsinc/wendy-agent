@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"path"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -348,6 +350,38 @@ func TestGatewaySkillsRequireAuthentication(t *testing.T) {
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("unauthenticated %s returned %d", method, resp.StatusCode)
+		}
+	}
+}
+
+// Assistants that import the bundle (Codex, ChatGPT, Claude Code) learn tools
+// from its entry point. A tool added to a group or the gateway must be listed
+// there, or the skill silently falls behind the server.
+func TestBundledSkillListsEveryAdvertisedTool(t *testing.T) {
+	catalog, err := embeddedSkillCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := string(catalog.files[skillBaseURI+"SKILL.md"])
+	names := map[string]bool{}
+	for _, group := range toolGroups {
+		for _, name := range group {
+			names[name] = true
+		}
+	}
+	cfg := gatewayTestConfig()
+	cfg.StateDirectory = t.TempDir()
+	g, err := NewRobotGateway(cfg, func(context.Context, string) (*grpcclient.AgentConnection, error) { return nil, fmt.Errorf("offline") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range g.protocol.ListTools() {
+		names[name] = true
+	}
+	sorted := slices.Sorted(maps.Keys(names))
+	for _, name := range sorted {
+		if !strings.Contains(main, "`"+name+"`") && !strings.Contains(main, "`"+name+"(") {
+			t.Errorf("SKILL.md does not list MCP tool %s; add it to plugins/wendy-agentic-coding/skills/wendy/SKILL.md and run scripts/sync-agent-skills.py", name)
 		}
 	}
 }

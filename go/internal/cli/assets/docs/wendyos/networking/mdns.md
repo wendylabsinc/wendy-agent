@@ -34,6 +34,12 @@ Provisioning updates the port and may add `tls`, `assetid`, and `orgid`. Some
 service templates also contain an optional `fqdn` record. The agent preserves
 these records when it updates the hostname-derived TXT values.
 
+The agent also keeps a `wired` record listing the routable IPv4 addresses of
+its connected Ethernet ports, other than the address it takes on a camera port.
+It updates the record once a new list has held for two checks 10 seconds apart,
+or for about a minute when the new list drops an advertised address, and
+restarts Avahi only when the record changes.
+
 ## Boot-time mDNS Identity Update
 
 On every boot, `wendyos-identity.service` runs `update-mdns-uuid.sh` from
@@ -175,3 +181,4 @@ type MDNSService struct {
 | `fqdn` | Optional reverse-DNS name derived from the hostname when present in the service template | `sh.wendy.my-device` |
 | `wendyosdevice` | Device UUID (preferred over `id` when present) | `769dc651-4eb2-49f3-b9f6-3e473f15694a` |
 | `tls` | `"true"` when the device is provisioned and requires mTLS (port 50052) | `true` |
+| `wired` | Comma-separated IPv4 addresses of the device's connected Ethernet ports (at most 8); absent when none. Used only to choose a route, never to trust a device | `192.168.2.50` |

@@ -20,6 +20,10 @@ In an interactive terminal, enrollment first shows an organization picker for yo
 
 Before connecting to the device, enrollment checks your certificate and attempts renewal if it is nearing expiry. If it has already expired, an interactive OIDC session offers to sign in again and then continue enrollment using the same realm and Cloud endpoints. Legacy sessions, non-interactive runs, and `--json` runs stop with login instructions. You do not need to log out first.
 
+If a previously enrolled device no longer answers with an authenticated identity, interactive enrollment asks `Do you want to trust this device anyways? [y/N]`. Accept this after intentionally resetting or reflashing the selected device. Enter declines. Accepting retries the same device's addresses over plaintext for enrollment. The previous saved identity is cleared only after enrollment succeeds; a failed connection or enrollment keeps it intact.
+
+This prompt also applies to `wendy cloud enroll-device` and enrollment from the device picker. Non-interactive and `--json` runs keep the connection error. A certificate rejection or identity mismatch does not offer this fallback.
+
 › **Certificate identity:** The CSR submitted during provisioning always
 › includes the device's authoritative Wendy identity as a URI Subject
 › Alternative Name (`urn:wendy:org:‹org›:asset:‹assetID›`). When the
@@ -59,6 +63,16 @@ The command resolves the name as follows:
 
 If Cloud refuses the name — because it breaks the rule above, or because another device in the organization already holds it — it says so and stops. Nothing is minted on that path, so retrying with a different name costs nothing.
 
+## Device requirements
+
+Before anything is reserved in Cloud, enrollment asks the agent whether it can enroll directly with PKI. An agent that cannot says why, and the command stops there:
+
+```
+this device cannot enroll directly with PKI: "direct PKI enrollment needs macOS 26 or later to verify ML-DSA certificate chains; this Mac runs macOS 15.5" (no Cloud reservation made)
+```
+
+**Mac targets need macOS 26 or later.** Wendy's device certificates chain to ML-DSA (post-quantum) CAs, and the macOS agent can verify that chain only from macOS 26. On macOS 15 the Mac still runs apps with `wendy run`; update macOS to enroll it. An agent too old to report direct PKI enrollment at all stops with `update the agent before enrolling`.
+
 ## Flags
 
 | Flag | Default | Description |
@@ -82,9 +96,77 @@ Enroll with an explicit name:
 wendy device enroll --device 192.168.1.11 --name lab-pi-01
 ```
 
+## Unenrollment compatibility
+
+`wendy device unenroll` has separate paths. Numeric Cloud v1 identities retain the
+original local-reset-first, best-effort Cloud cleanup. UUID/direct PKI identities
+use Cloud-owned revocation and retained deletion evidence before guarded local
+credential erasure; they never fall back to numeric cleanup.
+
+The UUID candidate requires compatible Cloud and Agent versions. The Agent's
+`ProvisionedResponse.cloud_authenticated_reset_supported` capability must be
+`true`; the old prerelease `cloud_unenrollment_supported` flag is ignored (current
+Agents report it `false` so prerelease CLIs stop before Cloud changes). Agent independently verifies a
+purpose-specific Cloud signature using HTTPS keys from its saved enrollment
+Cloud, plus the exact operator signature against its actual mTLS peer. Before
+erasure it obtains fresh authenticated Roughtime and checks freshness/validity
+throughout that interval. This reset-only query does not discipline the clock or
+read/write a clock floor. Missing proof, unavailable time or failed checks retain
+credentials for retry even after Cloud unenrollment finishes.
+
+The macOS Swift Agent does not support this direct PKI reset workflow yet. It
+reports `cloud_authenticated_reset_supported=false`, so the CLI stops before
+Cloud changes. Direct PKI `Unprovision` requests retain the Mac's credentials.
+
+AAA v0.22 (retained in v0.24), §5.1/§7(4), excludes removal-only unenrollment
+from step-up. No browser/passkey confirmation is required for asset deletion,
+device-certificate revocation or device reset. Yes/No or `--yes` confirms intent,
+not identity; `device:delete`, the exact-body operator signature, retained deletion
+record, audit and SSF protections still apply.
+
+AAA applies at the Cloud/Auth/PKI interface, not as a wholesale migration of
+local CLI or Agent behavior. This command signs and authorizes Cloud deletion;
+local guarded erasure is not a new backend postbox implementation.
+
+Compatible Cloud and Agent builds are required. These source semantics do not
+claim deployed or live-reset acceptance.
+
+### UnprovisionRequest fields (direct PKI identities)
+
+| Field | Required for UUID/PKI | Contents |
+| --- | --- | --- |
+| `expected_principal_uri` | Yes | Exact enrolled SPIFFE principal URI. |
+| `expected_certificate_sha256` | Yes | SHA-256 hex of the installed leaf certificate. |
+| `revocation_proof` | Yes | Issuer-signed revoked OCSP evidence for that installed leaf. |
+| `cloud_deletion` | Yes | Exact serialized `wendycloud.v2.DeletedAsset` authenticated by Cloud's proof. |
+| `cloud_reset_authorization` | Yes | Purpose-specific Cloud JWS, issued after committed deletion/current authorization, binding the deletion and operator-signed request to the installed leaf. |
+
+A bare/zero-value request returns `FailedPrecondition`; numeric v1 identities
+continue accepting an empty request.
+
+The Agent RPCs `RevokeACMECertificate` and `CheckACMERevocation` are deprecated and
+unconditionally return `UNIMPLEMENTED` on Agents that include these changes.
+Cloud owns revocation through `DeleteAsset`; these RPCs are not an alternate path.
+
+The v2 command has a three-minute bound covering all phases. `--check` is
+read-only: it reads the Cloud binding and Agent capability but does not revoke,
+spend EAB credentials, reset, import proof or write a CLI journal.
+
+After durable guarded erasure, `NotProvisionedResponse.unenrollment_completion`
+contains a public device-signed receipt for the **prior** principal's operation,
+not proof of current device identity or reachability. Consumers must anchor its
+historical certificate to configured trust roots and independently re-establish
+Cloud key trust for v2 proof, never trust a remotely supplied public key.
+Protected local pending recovery retains its originally authenticated key in
+existing provisioning.json; historical proof-less pending records cannot erase
+keys. Remote v2 confirmation can fail when a retired historical key is no longer
+published. An Agent without prior guarded completion has no such receipt.
+
 ## Related
+
+- [Cloud-owned unenrollment](/docs/device/unenrollment) — operator flow, recovery and rollout limits.
 
 - [`wendy install` → Linux Desktop](../install.md) — mint a short-lived enrollment token and embed it in the `agent.sh` one-liner so the device self-enrolls on first startup, without needing a USB connection or a running agent.
 - [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.
 - `wendy cloud enroll-device` — alias for this command, reachable through the cloud tunnel.
-- `wendy device unenroll` — reverse enrollment and delete the device from Wendy Cloud.
+- `wendy device unenroll` — reverse enrollment and delete the device from Wendy Cloud, using the identity-specific paths and compatibility requirements above.

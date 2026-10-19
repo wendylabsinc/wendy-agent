@@ -111,11 +111,21 @@ var (
 
 // relogin signs in again to the cloud the stored session targets: a
 // service-account session re-mints its token, an OAuth session goes back
-// through its wendy-auth realm, and anything else (no session, or a legacy
-// one) uses the legacy dashboard flow.
+// through its wendy-auth realm, and a legacy session uses the dashboard flow.
+// With no stored session, login starts at the production Cloud's universal page.
 func relogin(ctx context.Context, auth *config.AuthConfig) error {
 	switch {
-	case auth != nil && auth.ServiceAccount != "":
+	case auth == nil:
+		return performOIDCLoginFn(ctx, oidcLoginOptions{
+			AuthorizationBase: defaultProdAuthBase,
+			ClientID:          "wendy-cli",
+			CloudResource:     defaultProdCloudResource,
+			IdentityResource:  defaultPKIIdentityResource,
+			IdentityEndpoint:  defaultProdPKIIdentityEndpoint,
+			CloudURL:          defaultProdCloudDashboard,
+			CloudGRPC:         defaultProdCloudGRPC,
+		})
+	case auth.ServiceAccount != "":
 		unlock, err := acquireAuthRefreshLock(ctx)
 		if err != nil {
 			return err
@@ -126,7 +136,7 @@ func relogin(ctx context.Context, auth *config.AuthConfig) error {
 			return err
 		}
 		return remintServiceAccountSession(ctx, &local)
-	case auth != nil && auth.OAuthIssuer != "":
+	case auth.OAuthIssuer != "":
 		return performOIDCLoginFn(ctx, oidcReloginOptions(auth))
 	}
 	dashboard, grpc := loginTargetsForAuth(auth)
@@ -135,7 +145,7 @@ func relogin(ctx context.Context, auth *config.AuthConfig) error {
 
 // oidcReloginOptions keeps the stored session's realm and deployment settings
 // for a fresh OIDC login. Sessions from before the PKI fields were stored get
-// the defaults the login command would apply.
+// the historical development PKI defaults.
 func oidcReloginOptions(auth *config.AuthConfig) oidcLoginOptions {
 	opts := oidcLoginOptions{
 		Issuer:           auth.OAuthIssuer,

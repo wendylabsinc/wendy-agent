@@ -84,13 +84,24 @@ wendy mcp serve --device <hostname>
 
 `--device` can also be written as `-d`. If omitted, the server attempts to use the configured default device.
 
+Only core tools are advertised at first. `--tool-groups` chooses the initial
+groups (`core`, `setup`, `simulator`, `hardware`, `robotics`, `observability`,
+`cloud` or `all`), and `wendy_tools` changes them while the server runs. Use
+`--tool-groups all` for a host that does not refresh its tool list.
+
 For a host not detected by `wendy mcp setup`, configure a stdio server named `wendy` with command `wendy` and args `["mcp", "serve"]`. Add `--device <hostname>` only when the user wants that MCP server pinned to one device.
 
 ## Verification
 
-Call `wendy_status` after restarting the host and inspect the actual tool list.
-The server reports its CLI version; changing the CLI on disk does not replace an
-already running MCP process. A skill mentioning a tool is not evidence that the
+Call `wendy_status` after restarting the host and inspect the actual tool list;
+`wendy_tools` with no arguments lists the enabled groups and their tools. If a
+tool returns `AUTH_REQUIRED`, or `wendy_status` reports `auth` as `logged_out` or
+`expired` and the task needs a Cloud device, call `auth_login` and show the user
+its link. Local simulators and LAN devices that are not Cloud-enrolled need no
+sign-in. The server reports its CLI version; changing the CLI on disk does
+not replace an already running MCP process. It also serves this skill bundle
+through the MCP skills extension, its guide as `wendy://guide`, and Wendy docs
+under `wendy://docs/`. A skill mentioning a tool is not evidence that the
 connected server exposes it. Setup installs the same end-user skill group for
 Codex and OpenCode under `~/.agents/skills`, and Claude Code under
 `~/.claude/skills`, including references. Internal engineering skills are

@@ -47,8 +47,8 @@ func TestContainerAnnotations_ReadOnlyNotDestructive(t *testing.T) {
 	if list.Tool.Annotations.DestructiveHint == nil || *list.Tool.Annotations.DestructiveHint {
 		t.Error("container_list (readOnly) must have DestructiveHint=false")
 	}
-	if list.Tool.Annotations.OpenWorldHint == nil || *list.Tool.Annotations.OpenWorldHint {
-		t.Error("container_list must have OpenWorldHint=false (localOnly)")
+	if list.Tool.Annotations.OpenWorldHint == nil || !*list.Tool.Annotations.OpenWorldHint {
+		t.Error("container_list reaches the device, so it must have OpenWorldHint=true")
 	}
 	del, ok := tools["container_delete"]
 	if !ok {

@@ -286,8 +286,9 @@ func (f *firstWriteHookWriter) Write(p []byte) (int, error) {
 // runBuildWithProgress runs build, rendering its buildx output as a clean live
 // step list (interactive) or concise per-step lines (non-interactive). When a
 // build fails and dumpRawOnFailure(err) is true, the useful step/cause/location
-// are printed and the detailed raw output is retained in a temporary log file
-// (never on cancellation). Setup-log chatter written to logw is retained in
+// are printed, the detailed raw output is retained in a temporary log file, and
+// the returned error names the failing step and its cause (never on
+// cancellation). Setup-log chatter written to logw is retained in
 // the same file, AND (WDY-2432) rendered live as a synthetic "preparing
 // buildx builder" step via newBuildSetupStepWriter, so a cold builder
 // bootstrap is visible rather than a silent gap until either it fails or
@@ -295,6 +296,9 @@ func (f *firstWriteHookWriter) Write(p []byte) (int, error) {
 // Callers whose failures can trigger a fallback rebuild (which would repeat
 // the same diagnostics) use the predicate to stay quiet in those cases.
 func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure func(error) bool, build func(context.Context, io.Writer, io.Writer) error) error {
+	if isRobotTour(ctx) {
+		title = "Building your robot app..."
+	}
 	start := time.Now()
 	raw := &boundedBuffer{max: maxRawBuildCapture}
 	var setupLog bytes.Buffer
@@ -305,6 +309,9 @@ func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure fu
 
 	if !buildProgressInteractive() || detachedJSONRun(ctx) {
 		emit, tally, stopHeartbeat := tui.NewBuildPlainRenderer(out)
+		if isRobotTour(ctx) {
+			emit = tourBuildEvents(emit)
+		}
 		parser := tui.NewBuildParser(emit)
 		buildStream := io.MultiWriter(parser, raw)
 		setupw, finishSetup := newBuildSetupStepWriter(emit, &setupLog)
@@ -315,11 +322,13 @@ func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure fu
 		stopHeartbeat()
 		if err != nil {
 			if ctx.Err() == nil && dumpRawOnFailure(err) {
-				renderBuildFailure(out, "", string(raw.Bytes())+setupLog.String(), err)
+				return renderBuildFailure(out, "", string(raw.Bytes())+setupLog.String(), err)
 			}
 			return err
 		}
-		printBuildSummary(out, tally(), time.Since(start))
+		if !isRobotTour(ctx) {
+			printBuildSummary(out, tally(), time.Since(start))
+		}
 		return nil
 	}
 
@@ -327,6 +336,9 @@ func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure fu
 	m := tui.NewBuildStepsModel(title)
 	prog := buildProgressProgram(m)
 	emit := func(e tui.BuildStepEvent) { prog.Send(tui.BuildStepMsg(e)) }
+	if isRobotTour(ctx) {
+		emit = tourBuildEvents(emit)
+	}
 	parser := tui.NewBuildParser(emit)
 	buildStream := io.MultiWriter(parser, raw)
 	setupw, finishSetup := newBuildSetupStepWriter(emit, &setupLog)
@@ -367,14 +379,38 @@ func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure fu
 	buildErr := <-buildErrC
 	if buildErr != nil {
 		if ctx.Err() == nil && dumpRawOnFailure(buildErr) {
-			renderBuildFailure(buildProgressOut, "", string(raw.Bytes())+setupLog.String(), buildErr)
+			return renderBuildFailure(buildProgressOut, "", string(raw.Bytes())+setupLog.String(), buildErr)
 		}
 		return buildErr
 	}
 	elapsed := time.Since(start)
-	printBuildSummary(buildProgressOut, fm.Tally(), elapsed)
-	maybeSuggestOptimizeAfterBuild(fm.Tally(), elapsed)
+	if !isRobotTour(ctx) {
+		printBuildSummary(buildProgressOut, fm.Tally(), elapsed)
+		maybeSuggestOptimizeAfterBuild(fm.Tally(), elapsed)
+	}
 	return nil
+}
+
+// Keep the tour's live build feedback to one row. Raw commands and setup logs
+// still reach the existing failure capture, but completed Dockerfile steps do
+// not each leave a line in the tour. Byte counters come from the build parser.
+func tourBuildEvents(emit func(tui.BuildStepEvent)) func(tui.BuildStepEvent) {
+	return func(e tui.BuildStepEvent) {
+		detail := "Building your robot app..."
+		switch e.Kind {
+		case tui.BuildVertexSetup:
+			detail = "Preparing the build..."
+		case tui.BuildVertexPull:
+			detail = "Downloading app files..."
+		case tui.BuildVertexExport:
+			detail = "Saving your robot app..."
+		}
+		emit(tui.BuildStepEvent{
+			ID: "tour-build", Kind: tui.BuildVertexSetup,
+			Display: "Robot app", Status: tui.BuildStepRunning,
+			Detail: detail, Bytes: e.Bytes,
+		})
+	}
 }
 
 func printBuildSummary(w io.Writer, t tui.BuildTally, d time.Duration) {

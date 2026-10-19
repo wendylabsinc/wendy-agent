@@ -94,6 +94,9 @@ func lanDeviceFromService(svc MDNSService) models.LANDevice {
 	if v, ok := svc.TXTRecords["devicetype"]; ok {
 		dev.DeviceType = v
 	}
+	if v, ok := svc.TXTRecords["wired"]; ok {
+		dev.WiredAddresses = ParseWiredTXT(v)
+	}
 	if v, ok := svc.TXTRecords["caps"]; ok {
 		for _, c := range strings.Split(v, ",") {
 			if c = strings.TrimSpace(c); c != "" {

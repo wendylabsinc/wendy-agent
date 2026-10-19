@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -53,9 +56,13 @@ const (
 	cameraV4L2Controls
 )
 
-// Swift serves camera listing, video and USB controls after enrollment, but
-// never serves network-camera management. Go agents can also report Darwin;
-// their camera service is available on the plaintext listener.
+// Swift serves camera listing, video and USB controls, enrolled or not, like
+// the Linux agent, but never serves network-camera management. Go agents can
+// also report Darwin; they take no Swift-specific path here.
+//
+// SECURITY: this preflight is guidance, not access control. Whether an
+// unenrolled device serves its camera is the agent's decision; both agents
+// currently accept that risk until devices can be provisioned locally.
 func cameraServicePreflight(ctx context.Context, conn *grpcclient.AgentConnection, action cameraAction) error {
 	if err := diagnosticContextError(ctx); err != nil {
 		return err
@@ -76,10 +83,6 @@ func cameraServicePreflight(ctx context.Context, conn *grpcclient.AgentConnectio
 		return fmt.Errorf("Custom camera dimensions and frame rates are not yet supported by Wendy Agent for Mac")
 	case cameraNetworkManagement:
 		return fmt.Errorf("network camera management is not supported by Wendy Agent for macOS")
-	case cameraCapture, cameraV4L2Controls:
-		if !conn.IsMTLS {
-			return fmt.Errorf("camera access on Wendy Agent for macOS requires enrollment; run 'wendy device enroll'")
-		}
 	}
 	return nil
 }
@@ -516,7 +519,7 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 
 	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Camera device ID, or SensorLink channel ID on Wendy Lite")
 	cmd.Flags().StringVar(&stableID, "stable-id", "",
-		"Camera stable ID from `camera list --json` — survives reboots and re-plugging")
+		"Camera stable `id` from 'camera list --json'; survives reboots and re-plugging")
 	cmd.Flags().Uint32Var(&width, "width", 0, "Frame width (0 = device default)")
 	cmd.Flags().Uint32Var(&height, "height", 0, "Frame height (0 = device default)")
 	cmd.Flags().Uint32Var(&fps, "fps", 0, "Framerate (0 = device default)")
@@ -671,13 +674,18 @@ func playCameraPipeline(ctx context.Context, pipeline []string, allowInstallProm
 		return err
 	}
 
+	stderr := &playerStderr{out: os.Stderr}
 	gst := exec.CommandContext(ctx, gstPath, pipeline...)
-	gst.Stderr = os.Stderr
+	gst.Stderr = stderr
+	// Wait copies stderr until every holder of the pipe has closed it, which
+	// includes helpers the player started (gst-plugin-scanner); bound that.
+	gst.WaitDelay = playerOutputDelay
 
-	stdin, err := gst.StdinPipe()
+	stdinPipe, err := gst.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("creating GStreamer stdin pipe: %w", err)
 	}
+	stdin := &playerInput{w: stdinPipe}
 
 	if err := gst.Start(); err != nil {
 		return fmt.Errorf("starting GStreamer: %w", err)
@@ -686,10 +694,11 @@ func playCameraPipeline(ctx context.Context, pipeline []string, allowInstallProm
 	var playerErr error
 	go func() {
 		playerErr = gst.Wait()
+		stderr.flush()
 		close(playerExited)
 	}()
 	defer func() {
-		stdin.Close()      //nolint:errcheck — signal EOF to GStreamer before killing
+		stdinPipe.Close()  //nolint:errcheck — signal EOF to GStreamer before killing
 		gst.Process.Kill() //nolint:errcheck
 		<-playerExited
 	}()
@@ -699,18 +708,131 @@ func playCameraPipeline(ctx context.Context, pipeline []string, allowInstallProm
 
 	select {
 	case err := <-done:
+		if err != nil && stdin.failed.Load() {
+			// Writing fails as soon as the player is gone, which can be
+			// noticed before its exit is. Report why it went instead.
+			select {
+			case <-playerExited:
+				return playerExitResult(ctx, playerErr, stderr)
+			case <-time.After(playerOutputDelay):
+			}
+		}
 		return err
 	case <-ctx.Done():
 		return nil
 	case <-playerExited:
-		if ctx.Err() != nil {
-			return nil
-		}
-		if playerErr != nil {
-			return fmt.Errorf("GStreamer exited: %w", playerErr)
-		}
+		return playerExitResult(ctx, playerErr, stderr)
+	}
+}
+
+// playerOutputDelay bounds how long playback waits, once the player has
+// exited, for the rest of its output and for its exit to be observed.
+const playerOutputDelay = time.Second
+
+// playerExitResult reports how the player process ended. Closing the player
+// window is how the viewer stops watching, so like Ctrl+C it is not a failure.
+func playerExitResult(ctx context.Context, err error, stderr *playerStderr) error {
+	if ctx.Err() != nil {
 		return nil
 	}
+	if stderr.closedWindow() {
+		cliLogln("Player window closed.")
+		return nil
+	}
+	// ErrWaitDelay alone means the player exited cleanly but a helper it
+	// started still held its stderr.
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+		return fmt.Errorf("GStreamer exited: %w", err)
+	}
+	return nil
+}
+
+// playerWindowClosedErrors are the errors GStreamer's video sinks post when
+// their window is closed: glimagesink (macOS, and some Linux desktops) says
+// "Quit requested"; xvimagesink, ximagesink and waylandsink on Linux and the
+// Direct3D sinks on Windows say "Output window was closed". gst-launch-1.0
+// prints the error as "ERROR: from element <path>: <message>" and exits with
+// the same status as for a real failure, so this text is the only way to tell
+// a closed window from a broken player.
+var playerWindowClosedErrors = []string{"Quit requested", "Output window was closed"}
+
+// isPlayerWindowClosedError reports whether a line of player output is the
+// error a video sink posts when its window is closed. Only the message is
+// matched: gst-launch-1.0 translates its "ERROR: from element" prefix.
+func isPlayerWindowClosedError(line string) bool {
+	line = strings.TrimRight(line, "\r\n")
+	for _, msg := range playerWindowClosedErrors {
+		if strings.HasSuffix(line, ": "+msg) {
+			return true
+		}
+	}
+	return false
+}
+
+// playerStderr forwards the player's stderr line by line, except for the
+// error report GStreamer prints after the window is closed: that report (the
+// error, its debug details and the shutdown that follows) describes the viewer
+// stopping, not a fault, and the CLI says so in a line of its own.
+type playerStderr struct {
+	out io.Writer
+
+	mu           sync.Mutex
+	partial      []byte
+	windowClosed bool
+}
+
+func (p *playerStderr) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.partial = append(p.partial, b...)
+	for {
+		i := bytes.IndexByte(p.partial, '\n')
+		if i < 0 {
+			break
+		}
+		p.forward(p.partial[:i+1])
+		p.partial = p.partial[i+1:]
+	}
+	return len(b), nil
+}
+
+// flush forwards a final line the player left unterminated.
+func (p *playerStderr) flush() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.partial) > 0 {
+		p.forward(p.partial)
+		p.partial = nil
+	}
+}
+
+func (p *playerStderr) forward(line []byte) {
+	if !p.windowClosed && isPlayerWindowClosedError(string(line)) {
+		p.windowClosed = true
+	}
+	if !p.windowClosed {
+		p.out.Write(line) //nolint:errcheck — losing the terminal must not stop playback
+	}
+}
+
+func (p *playerStderr) closedWindow() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.windowClosed
+}
+
+// playerInput is the player's stdin, remembering whether a write failed.
+type playerInput struct {
+	w      io.Writer
+	failed atomic.Bool
+}
+
+func (p *playerInput) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	if err != nil {
+		p.failed.Store(true)
+	}
+	return n, err
 }
 
 func feedGStreamer(ctx context.Context, stream videoStream, first *agentpb.VideoFrame, codec agentpb.VideoCodec, stdin io.Writer) error {

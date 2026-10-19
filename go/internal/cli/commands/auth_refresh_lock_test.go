@@ -234,7 +234,7 @@ func TestOAuthRefreshLockCancellation(t *testing.T) {
 	}
 	certCtx, cancelCert := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancelCert()
-	if err := refreshAllCerts(certCtx); !errors.Is(err, context.DeadlineExceeded) {
+	if err := refreshCerts(certCtx, false); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("certificate refresh must share the token-family lock: %v", err)
 	}
 }

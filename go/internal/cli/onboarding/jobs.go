@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 )
 
 const (
@@ -52,22 +53,23 @@ type Target struct {
 }
 
 type Job struct {
-	ID                string        `json:"id"`
-	State             string        `json:"state"`
-	Phase             string        `json:"phase"`
-	Options           Options       `json:"options"`
-	Plan              *Plan         `json:"plan"`
-	Target            *Target       `json:"target,omitempty"`
-	Instructions      []string      `json:"instructions"`
-	Error             string        `json:"error,omitempty"`
-	LogPath           string        `json:"log_path"`
-	StorePath         string        `json:"store_path"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
-	EraseAuthorizedAt *time.Time    `json:"erase_authorized_at,omitempty"`
-	WriteStartedAt    *time.Time    `json:"write_started_at,omitempty"`
-	WriteCompletedAt  *time.Time    `json:"write_completed_at,omitempty"`
-	Verification      *Verification `json:"verification,omitempty"`
+	AnalyticsAttemptID string        `json:"analytics_attempt_id,omitempty"`
+	ID                 string        `json:"id"`
+	State              string        `json:"state"`
+	Phase              string        `json:"phase"`
+	Options            Options       `json:"options"`
+	Plan               *Plan         `json:"plan"`
+	Target             *Target       `json:"target,omitempty"`
+	Instructions       []string      `json:"instructions"`
+	Error              string        `json:"error,omitempty"`
+	LogPath            string        `json:"log_path"`
+	StorePath          string        `json:"store_path"`
+	CreatedAt          time.Time     `json:"created_at"`
+	UpdatedAt          time.Time     `json:"updated_at"`
+	EraseAuthorizedAt  *time.Time    `json:"erase_authorized_at,omitempty"`
+	WriteStartedAt     *time.Time    `json:"write_started_at,omitempty"`
+	WriteCompletedAt   *time.Time    `json:"write_completed_at,omitempty"`
+	Verification       *Verification `json:"verification,omitempty"`
 }
 
 // JobHooks separate durable transitions from platform-specific probes and writes.
@@ -224,7 +226,7 @@ func (s JobStore) Start(ctx context.Context, opts StartOptions, h JobHooks) (*Jo
 	now := time.Now().UTC()
 	// Pin the resolved release and storage, not a mutable "latest" request.
 	opts.Options.Version, opts.Options.Storage = p.Version, p.Storage
-	j := &Job{ID: hex.EncodeToString(id), State: JobWaitingTarget, Phase: "connect_target", Options: opts.Options, Plan: p, StorePath: s.Root, CreatedAt: now}
+	j := &Job{AnalyticsAttemptID: analytics.AttemptID(ctx), ID: hex.EncodeToString(id), State: JobWaitingTarget, Phase: "connect_target", Options: opts.Options, Plan: p, StorePath: s.Root, CreatedAt: now}
 	j.LogPath = filepath.Join(s.Root, j.ID+".log")
 	j.Instructions = targetInstructions(p)
 	log, err := os.OpenFile(j.LogPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
@@ -353,6 +355,7 @@ func (s JobStore) Resume(ctx context.Context, opts ResumeOptions, h JobHooks) (*
 		if h.Verify == nil {
 			return nil, fmt.Errorf("installation verification unavailable")
 		}
+		ctx = analytics.WithAttemptID(ctx, j.AnalyticsAttemptID)
 		v, err := h.Verify(ctx, j, opts)
 		if err != nil {
 			return nil, err

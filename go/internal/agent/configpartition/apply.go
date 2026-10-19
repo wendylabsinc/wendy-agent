@@ -351,9 +351,19 @@ func applyDeviceName(logger *zap.Logger, name string) error {
 // Use the absolute path: exec.Command resolves binaries from the calling
 // process's PATH, not from cmd.Env, so bare "systemctl" would not be found.
 func restartAvahiDaemon(logger *zap.Logger, env []string) bool {
-	restart := exec.Command("/usr/bin/systemctl", "restart", "avahi-daemon")
+	// Discovery is best-effort: a stuck service manager must not keep the
+	// setup listener from serving or prevent enrollment from completing.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	restart := exec.CommandContext(ctx, "/usr/bin/systemctl", "restart", "avahi-daemon")
 	restart.Env = env
+	// Bound output-pipe cleanup too, in case a child inherits systemctl's
+	// stdout/stderr and survives cancellation of the command itself.
+	restart.WaitDelay = time.Second
 	if out, err := restart.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		logger.Warn("systemctl restart avahi-daemon failed", zap.Error(err), zap.String("output", string(out)))
 		return false
 	}
@@ -363,6 +373,9 @@ func restartAvahiDaemon(logger *zap.Logger, env []string) bool {
 // updateAvahiDeviceName rewrites the name/displayname/fqdn TXT records in the
 // avahi service file and reloads avahi-daemon so mDNS picks up the new name.
 func updateAvahiDeviceName(logger *zap.Logger, name string, env []string) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
 	const serviceFile = "/etc/avahi/services/wendyos-mdns.service"
 
 	data, err := os.ReadFile(serviceFile)
@@ -426,6 +439,9 @@ const defaultAvahiServiceDir = "/etc/avahi/services"
 // real. Left un-injected it prompts for polkit authorization on a developer
 // machine and blocks the package's tests for the length of that timeout.
 func updateAvahiService(logger *zap.Logger, serviceDir string, port int, tls bool, assetID, orgID int32, restartAvahi func() bool) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
 	entries, err := os.ReadDir(serviceDir)
 	if err != nil {
 		logger.Warn("Could not read avahi services dir", zap.String("path", serviceDir), zap.Error(err))
@@ -563,6 +579,9 @@ func updateOrgIDTXTRecord(block string, orgID int32) string {
 // independently of provisioning state. Consumer devices in this plan never
 // call it; it exists so the source-role wiring and the picker agree on the key.
 func UpdateAvahiSensorlink(logger *zap.Logger, on bool) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
 	entries, err := os.ReadDir(defaultAvahiServiceDir)
 	if err != nil {
 		logger.Warn("Could not read avahi services dir", zap.String("path", defaultAvahiServiceDir), zap.Error(err))
@@ -706,6 +725,8 @@ func applyPreProvisioning(logger *zap.Logger, cfgDir, configPath string) {
 		return
 	}
 
+	// Flashing is an explicit local reset. Valid first-boot provisioning may
+	// replace prior recovery state; it does not perform Cloud cleanup.
 	if err := services.WritePEMFiles(configPath, state.KeyPEM, state.CertPEM, state.ChainPEM); err != nil {
 		logger.Error("Failed to write PEM files from config partition",
 			zap.String("configPath", configPath), zap.Error(err))

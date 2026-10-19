@@ -18,7 +18,7 @@ import httpx
 import api_review
 import api_review_comment as comments
 from api_review_test import metadata, diff, decision, model_decision, HEAD_SHA, BASE_SHA, REPO
-from api_review_comment_test import result, bot_comment, MultipartGitHub, pull
+from api_review_comment_test import result, large_result, bot_comment, MultipartGitHub, pull
 
 
 class FullRunTests(unittest.TestCase):
@@ -128,7 +128,8 @@ class FullRunTests(unittest.TestCase):
                 self.assertEqual(source.mutations(), [])
                 expected_accepted = 9 if competing_claims else 10 if withdraw_prior else 11
                 self.assertIn(f'"accepted": {expected_accepted}', github.summary())
-            self.assertEqual(len(requests), 1 if failure == "initialization" else 2)
+            self.assertEqual(len(requests), 1 if failure == "initialization" else
+                             3 if failure in {"invalid", "malformed_json"} else 2)
             if failure:
                 self.assertEqual(code, 1)
                 self.assertEqual(output["status"], "incomplete")
@@ -199,6 +200,71 @@ class FullRunTests(unittest.TestCase):
                                        "stop_sequence": None,
                                        "content": [{"type": "text", "text": json.dumps(payload)}],
                                        "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+    def test_full_run_repairs_four_predecessors_and_publishes_oversized_history(self):
+        old = large_result()
+        for index in range(93, 100):
+            item = copy.deepcopy(old["decisions"][0])
+            item["title"] = f"Contract {index:03}: native launch command"
+            old["decisions"].append(item)
+        pages = comments.render_continuations(old, REPO)
+        initial = [bot_comment(body.replace("- [ ] Accept", "- [x] Accept"), index)
+                   for index, body in enumerate(pages, 11)]
+        initial.append(bot_comment(comments.render_primary(old, REPO, 1911,
+                                                          [item["id"] for item in initial]), 99))
+        prior = comments.authoritative_records(initial)
+        ids = [record["id"] for record in prior[:4]]
+        bad = {"matches": [{"current_index": 0, "prior_ids": ids,
+                            "relationship": "changed", "reason": "Combined contract changed."}]}
+        fixed = copy.deepcopy(bad)
+        fixed["matches"][0].update(relationship="ambiguous", reason="Multiple plausible predecessors.")
+        responses = [{"risk": "high", "decisions": [model_decision(title="Combined contract")]}, bad, fixed]
+        requests = []
+
+        def transport(request):
+            payload = json.loads(request.content)
+            requests.append(payload)
+            from anthropic.lib._parse._transform import transform_schema
+            schema = payload["output_config"]["format"]["schema"]
+            self.assertEqual(schema, transform_schema(copy.deepcopy(schema)))
+            if len(requests) > 1:
+                prompt = json.loads(payload["messages"][0]["content"])
+                self.assertNotIn("accepted", json.dumps(prompt).lower())
+                if len(requests) == 3:
+                    self.assertIn("prior_count=4", prompt["response_repair"]["validation_error"])
+            return self.message(responses[len(requests) - 1])
+
+        github = MultipartGitHub(initial)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            comments.fetch_state(REPO, 1911, directory / "prior.json", github)
+            (directory / "metadata.json").write_text(json.dumps(metadata(number=1911)))
+            (directory / "diff").write_bytes(diff())
+            args = argparse.Namespace(metadata=str(directory / "metadata.json"), diff=str(directory / "diff"),
+                                      previous=str(directory / "prior.json"), repo=REPO, pr_number=1911,
+                                      expected_head_sha=HEAD_SHA, expected_base_sha=BASE_SHA,
+                                      model="test-model", output=str(directory / "result.json"))
+            with httpx.Client(transport=httpx.MockTransport(transport)) as http:
+                client = anthropic.Anthropic(api_key="offline-fixture-key", http_client=http, max_retries=0)
+                with patch.object(anthropic, "Anthropic", return_value=client):
+                    self.assertEqual(api_review.command_review(args), 0)
+            output = json.loads((directory / "result.json").read_text())
+        self.assertTrue(comments.publish(output, REPO, 1911, HEAD_SHA, BASE_SHA, diff(), github))
+        records = comments.authoritative_records(github.comments)
+        current = [record for record in records if record["state"] != "withdrawn"]
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]["state"], "needs_re_review")
+        self.assertIsNone(current[0]["accepted_version"])
+        self.assertNotIn(current[0]["id"], {record["id"] for record in prior})
+        historical = {record["id"]: record for record in records if record["state"] == "withdrawn"}
+        self.assertEqual(len(historical), 100)
+        for record in prior:
+            for field in ("version", "accepted_version", "decision"):
+                self.assertEqual(historical[record["id"]][field], record[field])
+        self.assertGreater(len([item for item in github.comments if comments.part_index(item["body"]) > 0]), 1)
+        self.assertTrue(all(len(item["body"].encode()) <= comments.MAX_COMMENT_BYTES - comments.WARNING_RESERVE_BYTES
+                            for item in github.comments))
+        self.assertEqual(len(requests), 3)
 
     def test_complete_run_preserves_eleven_accepted_decisions(self):
         self.run_flow()
