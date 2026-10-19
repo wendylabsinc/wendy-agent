@@ -25,7 +25,61 @@ def read_jsonl(path):
     return records
 
 
+VALUE_FLAGS = {"sudo": frozenset({"-u", "-g", "-C", "-D", "-h", "-p", "-U", "-r", "-t"}),
+               "env": frozenset({"-u", "-C", "-S"})}
+
+
+def split_lines(command):
+    """Split on newlines outside quotes; a backslash-newline continues the line."""
+    lines, current, quote, i = [], [], None, 0
+    while i < len(command):
+        ch = command[i]
+        if ch == "\\" and quote != "'" and command[i + 1:i + 2] == "\n":
+            i += 2
+            continue
+        if ch == "\\" and quote != "'":
+            current.append(command[i:i + 2])
+            i += 2
+            continue
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\n":
+            lines.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    lines.append("".join(current))
+    return lines
+
+
+def drop_redirections(words):
+    kept, i = [], 0
+    while i < len(words):
+        word = words[i]
+        if set(word) <= set("<>&") and set(word) & set("<>"):
+            if kept and kept[-1] in ("0", "1", "2"):
+                kept.pop()
+            i += 2
+        elif set(word) <= set("()"):
+            i += 1
+        else:
+            kept.append(word)
+            i += 1
+    return kept
+
+
 def parse_wendy_invocations(command):
+    found = []
+    for line in split_lines(command):
+        found.extend(parse_line(line))
+    return found
+
+
+def parse_line(command):
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
@@ -42,13 +96,16 @@ def parse_wendy_invocations(command):
     segments.append(current)
     found = []
     for words in segments:
-        # A redirection ends the command's own words.
-        for i, word in enumerate(words):
-            if word and set(word) <= set("<>()"):
-                words = words[:i]
+        words = drop_redirections(words)
+        i, wrapper = 0, None
+        while i < len(words):
+            word = words[i]
+            if word in WRAPPERS:
+                wrapper = word
+            elif wrapper and word.startswith("-"):
+                i += word in VALUE_FLAGS.get(wrapper, ())
+            elif "=" not in word or word.startswith("="):
                 break
-        i = 0
-        while i < len(words) and (words[i] in WRAPPERS or ("=" in words[i] and not words[i].startswith("="))):
             i += 1
         if i >= len(words):
             continue

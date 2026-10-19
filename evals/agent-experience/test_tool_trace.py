@@ -51,6 +51,29 @@ class ToolTraceTests(unittest.TestCase):
         self.assertEqual(p('wendy a && wendy b; echo hi'), [["a"], ["b"]])
         self.assertEqual(t.cli_path(["--json", "--device=x", "run", "--device", "y", "app", "--detach", "z"]), ["run", "app"])
 
+    def test_redirections_never_contribute_arguments(self):
+        p = t.parse_wendy_invocations
+        self.assertEqual(p('wendy run 2>&1 | tee x'), [["run"]])
+        self.assertEqual(p('wendy run 2>/dev/null'), [["run"]])
+        self.assertEqual(p('wendy run &>log'), [["run"]])
+        self.assertEqual(p('wendy run --detach 2>/dev/null'), [["run", "--detach"]])
+        self.assertEqual(p('wendy run > out --detach'), [["run", "--detach"]])
+        self.assertEqual(p('wendy run >> out 2>> err < in'), [["run"]])
+        self.assertEqual(p('wendy run >&log'), [["run"]])
+
+    def test_wrapper_flags_are_skipped(self):
+        p = t.parse_wendy_invocations
+        self.assertEqual(p('sudo -u me wendy run'), [["run"]])
+        self.assertEqual(p('env -i PATH=/x wendy device list'), [["device", "list"]])
+        self.assertEqual(p('env -u FOO -S x wendy a'), [["a"]])
+        self.assertEqual(p('sudo -E wendy b'), [["b"]])
+
+    def test_newlines_separate_commands_outside_quotes(self):
+        p = t.parse_wendy_invocations
+        self.assertEqual(p('wendy a\nwendy b'), [["a"], ["b"]])
+        self.assertEqual(p('wendy a\\\n  --x\nwendy b'), [["a", "--x"], ["b"]])
+        self.assertEqual(p('echo "x\nwendy y"'), [])
+
     def test_proxy_and_wrapper_records_replace_transcript_channels(self):
         events = [{"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "1", "name": "mcp__wendy__x", "input": {}},
