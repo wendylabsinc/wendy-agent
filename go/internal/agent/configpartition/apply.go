@@ -21,6 +21,8 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/network"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
@@ -912,4 +914,78 @@ func linkNotReady(err error) bool {
 	var dnsErr *net.DNSError
 	var opErr *net.OpError
 	return errors.As(err, &dnsErr) || errors.As(err, &opErr)
+}
+
+// PersistDeviceUUID writes the enrolled certificate's device UUID to
+// /etc/wendyos/device-uuid and into the _wendyos._udp id= TXT record, so mDNS
+// advertises the same id the certificate proves (WDY-3919). It does not
+// restart avahi: call it before UpdateAvahiForProvisioning, which does. A
+// legacy asset certificate carries no device UUID and leaves both untouched.
+func PersistDeviceUUID(logger *zap.Logger, certPEM string) {
+	if err := persistDeviceUUID("/", defaultAvahiServiceDir, certPEM); err != nil {
+		logger.Warn("Could not persist the device UUID", zap.Error(err))
+	}
+}
+
+func persistDeviceUUID(root, serviceDir, certPEM string) error {
+	chain, err := certs.ParseCertsFromPEM([]byte(certPEM))
+	if err == nil && len(chain) == 0 {
+		err = errors.New("no certificate")
+	}
+	if err != nil {
+		return fmt.Errorf("parsing device certificate: %w", err)
+	}
+	device, err := meshid.DeviceFromCert(chain[0])
+	if err != nil {
+		return nil // legacy asset certificate: no device UUID to persist
+	}
+	id := device.UUID().String()
+	uuidPath := filepath.Join(root, "etc/wendyos/device-uuid")
+	if old, _ := os.ReadFile(uuidPath); strings.TrimSpace(string(old)) != id {
+		// generate-hostname.sh falls back to the device-uuid suffix when the
+		// device has no explicit hostname or device-name; pin the name it
+		// answers by now so the new UUID does not rename it at the next boot.
+		if err := pinCurrentHostname(root); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(uuidPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(uuidPath, []byte(id+"\n"), 0o644); err != nil {
+			return err
+		}
+	}
+
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+	entries, err := os.ReadDir(serviceDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		serviceFile := filepath.Join(serviceDir, e.Name())
+		data, err := os.ReadFile(serviceFile)
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".service") || err != nil || !strings.Contains(string(data), "_wendyos._udp") {
+			continue
+		}
+		return os.WriteFile(serviceFile, []byte(replaceTXTRecord(string(data), "id", id)), 0o644)
+	}
+	return nil
+}
+
+func pinCurrentHostname(root string) error {
+	explicit := filepath.Join(root, "etc/wendy-agent/hostname")
+	for _, named := range []string{explicit, filepath.Join(root, "etc/wendyos/device-name")} {
+		if _, err := os.Stat(named); err == nil {
+			return nil
+		}
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(explicit), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(explicit, []byte(hostname+"\n"), 0o644)
 }

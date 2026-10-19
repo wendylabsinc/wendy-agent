@@ -64,6 +64,15 @@ func EnrollmentConfig(auth *config.AuthConfig, deviceID, directoryURL string) (a
 	return cfg, nil
 }
 
+// maxMintAttempts bounds the device UUID collision guard: the first mint plus
+// three regenerations. A random UUID colliding even once is already rare.
+const maxMintAttempts = 4
+
+// errDeviceUUIDTaken is Cloud's pre-mint refusal of a device UUID that is
+// already in use, or whose wendy net address another identity claims, in ANY
+// tenant. Cloud names only the field, never the holder.
+var errDeviceUUIDTaken = errors.New("device UUID already in use")
+
 // MintEAB signs the operator enrollment request and relays it to Cloud's
 // DeviceEnrollmentService.EnrollDevice, returning cfg populated with the
 // once-only EAB credential and the registered asset id. The caller supplies
@@ -72,7 +81,24 @@ func EnrollmentConfig(auth *config.AuthConfig, deviceID, directoryURL string) (a
 // exactly what the live enroll does up to the agent step, so it also serves the
 // image pre-enroll bake. hw is the device's own hardware report (ReadHardware);
 // nil sends none, as the pre-enroll bake must, having no device to ask.
+//
+// The device UUID in cfg is the device's one identity: Cloud adopts it as the
+// asset id. When Cloud refuses it as taken, MintEAB mints a fresh UUID and
+// re-signs, at most maxMintAttempts times in all; a refused UUID is never
+// reused. The returned cfg carries the UUID Cloud accepted.
 func MintEAB(tokenCtx context.Context, cloudConn *grpc.ClientConn, auth *config.AuthConfig, cfg acmeenroll.Config, name string, hw *cloudpbv2.DeviceHardware) (acmeenroll.Config, string, error) {
+	for attempt := 1; ; attempt++ {
+		out, assetID, err := mintOnce(tokenCtx, cloudConn, auth, cfg, name, hw)
+		if !errors.Is(err, errDeviceUUIDTaken) || attempt == maxMintAttempts {
+			return out, assetID, err
+		}
+		if cfg, err = EnrollmentConfig(auth, uuid.NewString(), cfg.DirectoryURL); err != nil {
+			return cfg, "", err
+		}
+	}
+}
+
+func mintOnce(tokenCtx context.Context, cloudConn *grpc.ClientConn, auth *config.AuthConfig, cfg acmeenroll.Config, name string, hw *cloudpbv2.DeviceHardware) (acmeenroll.Config, string, error) {
 	artifact, err := cloudrequest.EnrollmentRequest(auth, cfg.DeviceID)
 	if err != nil {
 		return cfg, "", fmt.Errorf("signing enrollment request: %w", err)
@@ -87,15 +113,9 @@ func MintEAB(tokenCtx context.Context, cloudConn *grpc.ClientConn, auth *config.
 	case codes.Unimplemented:
 		return cfg, "", fmt.Errorf("this Cloud deployment does not support OIDC device enrollment; it needs DeviceEnrollmentService/EnrollDevice")
 	case codes.AlreadyExists:
-		if slices.Contains(trailer.Get(cloudrequest.CollidingFieldMetadataKey), "mesh_suffix") {
-			// The WENDY NET ADDRESS collision, told apart from a name or device_id
-			// duplicate by the trailer Cloud attaches: this device_id is fine,
-			// its LAST 10 BYTES -- the WendyOS wendy net address it implies -- are
-			// claimed by another identity, possibly in another tenant. Nothing
-			// was minted and a fresh device_id clears it, so it is typed for
-			// MintEABWithMeshRetry rather than flattened into the generic
-			// refusal below.
-			return cfg, "", &MeshSuffixCollision{Message: status.Convert(err).Message()}
+		field := trailer.Get(cloudrequest.CollidingFieldMetadataKey)
+		if slices.Contains(field, "device_id") || slices.Contains(field, "mesh_suffix") {
+			return cfg, "", fmt.Errorf("Cloud refused device UUID %s before minting anything: %w", cfg.DeviceID, errDeviceUUIDTaken)
 		}
 		// Cloud validates the name and its unique indexes BEFORE relaying to
 		// pki-core, so nothing was minted. Saying so is the point: the operator
@@ -115,50 +135,6 @@ func MintEAB(tokenCtx context.Context, cloudConn *grpc.ClientConn, auth *config.
 		return cfg, "", fmt.Errorf("Cloud returned invalid enrollment credentials: %w", err)
 	}
 	return cfg, credential.GetAssetId(), nil
-}
-
-// MeshSuffixCollision is Cloud's pre-mint refusal of a device UUID whose last
-// 10 bytes -- the WendyOS wendy net address derived from them -- another identity
-// already claims, in ANY tenant. It arrives before a credential is minted or
-// an asset row written, so the enrollment can be retried with a fresh identity
-// at no cost. The message names the colliding address; the trailer said which
-// field.
-type MeshSuffixCollision struct{ Message string }
-
-func (e *MeshSuffixCollision) Error() string { return e.Message }
-
-// MintEABWithMeshRetry wraps MintEAB with the bounded collision retry the
-// wendy net identity contract calls for: when Cloud refuses the wendy net address a
-// device UUID implies, mint a FRESH device UUID, re-sign the enrollment
-// request for it, and try again -- at most attempts times. Every substitution
-// is reported through notify: device_id is permanent, so it is never swapped
-// silently. Only the pre-mint refusal is retried; once Cloud has answered,
-// the asset exists and its name is reserved, and a new identity would orphan
-// that row.
-func MintEABWithMeshRetry(
-	tokenCtx context.Context,
-	cloudConn *grpc.ClientConn,
-	auth *config.AuthConfig,
-	cfg acmeenroll.Config,
-	name string,
-	hw *cloudpbv2.DeviceHardware,
-	attempts int,
-	notify func(format string, args ...any),
-) (acmeenroll.Config, string, error) {
-	for attempt := 0; ; attempt++ {
-		out, assetID, err := MintEAB(tokenCtx, cloudConn, auth, cfg, name, hw)
-		var collision *MeshSuffixCollision
-		if !errors.As(err, &collision) || attempt >= attempts {
-			return out, assetID, err
-		}
-		candidate, cfgErr := EnrollmentConfig(auth, uuid.NewString(), cfg.DirectoryURL)
-		if cfgErr != nil {
-			return cfg, "", fmt.Errorf("wendy net address collision and the retry identity was rejected: %w", cfgErr)
-		}
-		notify("device UUID %s collides with an existing wendy net address (%v); retrying with %s (%d/%d)",
-			cfg.DeviceID, collision, candidate.DeviceID, attempt+1, attempts)
-		cfg = candidate
-	}
 }
 
 // PKISiblingHost rewrites a pki-core identity frontend into a sibling frontend

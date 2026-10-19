@@ -8,7 +8,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"math/big"
 	"net"
 	"net/url"
@@ -81,20 +80,10 @@ func testEnrollmentConfig(t *testing.T, auth *config.AuthConfig, deviceID string
 	return cfg
 }
 
-// meshSuffix is the last 10 bytes of a canonical UUID -- the part of the
-// device identity WendyOS turns into a mesh address.
-func meshSuffix(t *testing.T, deviceID string) string {
-	t.Helper()
-	u, err := uuid.Parse(deviceID)
-	if err != nil {
-		t.Fatalf("device id %q is not a UUID: %v", deviceID, err)
-	}
-	return strings.ToLower(u.String())[24:]
-}
-
 // fakeEnrollment stands in for Cloud's DeviceEnrollmentService. collide
 // answers the field name Cloud would name in the wendy-colliding-field
-// trailer, or "" to accept the enrollment and mint the EAB.
+// trailer ("untagged" refuses with no trailer), or "" to accept the enrollment
+// and mint the EAB.
 type fakeEnrollment struct {
 	cloudpbv2.UnimplementedDeviceEnrollmentServiceServer
 	collide func(deviceID string) string
@@ -108,10 +97,12 @@ func (f *fakeEnrollment) EnrollDevice(ctx context.Context, envelope *cloudpbv2.S
 	}
 	f.seen = append(f.seen, req.GetDeviceId())
 	if field := f.collide(req.GetDeviceId()); field != "" {
-		if err := grpc.SetTrailer(ctx, metadata.Pairs("wendy-colliding-field", field)); err != nil {
-			return nil, err
+		if field != "untagged" {
+			if err := grpc.SetTrailer(ctx, metadata.Pairs("wendy-colliding-field", field)); err != nil {
+				return nil, err
+			}
 		}
-		return nil, status.Error(codes.AlreadyExists, "device_id: this device UUID's mesh address is already claimed")
+		return nil, status.Error(codes.AlreadyExists, "already in use")
 	}
 	return &cloudpbv2.EnrollDeviceResponse{
 		CredentialKind: "eab",
@@ -139,112 +130,91 @@ func dialFake(t *testing.T, fake *fakeEnrollment) *grpc.ClientConn {
 	return conn
 }
 
-func TestMintEABMeshRetrySubstitutesFreshUUIDOnCollision(t *testing.T) {
-	auth := testAuth(t)
-	original := uuid.NewString()
-	cfg := testEnrollmentConfig(t, auth, original)
+func TestMintEABRegeneratesTakenDeviceUUID(t *testing.T) {
+	for _, field := range []string{"device_id", "mesh_suffix"} {
+		t.Run(field, func(t *testing.T) {
+			auth := testAuth(t)
+			original := uuid.NewString()
+			cfg := testEnrollmentConfig(t, auth, original)
 
-	fake := &fakeEnrollment{collide: func(deviceID string) string {
-		if deviceID == original {
-			return "mesh_suffix"
-		}
-		return ""
-	}}
-	conn := dialFake(t, fake)
-
-	var notices []string
-	out, assetID, err := MintEABWithMeshRetry(context.Background(), conn, auth, cfg, "edge-one", nil, 3,
-		func(format string, args ...any) {
-			notices = append(notices, strings.TrimSpace(fmt.Sprintf(format, args...)))
+			fake := &fakeEnrollment{collide: func(deviceID string) string {
+				if deviceID == original {
+					return field
+				}
+				return ""
+			}}
+			out, assetID, err := MintEAB(context.Background(), dialFake(t, fake), auth, cfg, "edge-one", nil)
+			if err != nil {
+				t.Fatalf("mint after collision: %v", err)
+			}
+			if out.DeviceID == original {
+				t.Fatal("taken device UUID was reused")
+			}
+			if _, err := uuid.Parse(out.DeviceID); err != nil {
+				t.Fatalf("regenerated device id %q is not a UUID", out.DeviceID)
+			}
+			if out.DirectoryURL != cfg.DirectoryURL {
+				t.Fatalf("directory = %q, want %q", out.DirectoryURL, cfg.DirectoryURL)
+			}
+			if assetID != "11111111-2222-3333-4444-555555555555" {
+				t.Fatalf("asset id = %q", assetID)
+			}
+			if len(fake.seen) != 2 || fake.seen[0] != original || fake.seen[1] != out.DeviceID {
+				t.Fatalf("Cloud saw %v, want the original then the regenerated UUID", fake.seen)
+			}
 		})
-	if err != nil {
-		t.Fatalf("retry after collision: %v", err)
-	}
-	if out.DeviceID == original {
-		t.Fatalf("device UUID was not substituted after a mesh collision")
-	}
-	if _, err := uuid.Parse(out.DeviceID); err != nil {
-		t.Fatalf("substituted device id %q is not a UUID", out.DeviceID)
-	}
-	if meshSuffix(t, out.DeviceID) == meshSuffix(t, original) {
-		t.Fatalf("substitute %s carries the colliding suffix", out.DeviceID)
-	}
-	if assetID != "11111111-2222-3333-4444-555555555555" {
-		t.Fatalf("asset id = %q", assetID)
-	}
-	if len(fake.seen) != 2 || fake.seen[0] != original || fake.seen[1] != out.DeviceID {
-		t.Fatalf("Cloud saw %v, want the original then the substitute", fake.seen)
-	}
-	if len(notices) != 1 ||
-		!strings.Contains(notices[0], original) ||
-		!strings.Contains(notices[0], out.DeviceID) ||
-		!strings.Contains(notices[0], "(1/3)") {
-		t.Fatalf("substitution was not reported to the operator: %q", notices)
 	}
 }
 
-func TestMintEABMeshRetryIsBoundedAndReportsCollision(t *testing.T) {
+func TestMintEABCollisionRetryIsBoundedAndNeverReuses(t *testing.T) {
 	auth := testAuth(t)
 	cfg := testEnrollmentConfig(t, auth, uuid.NewString())
 
-	fake := &fakeEnrollment{collide: func(string) string { return "mesh_suffix" }}
-	conn := dialFake(t, fake)
-
-	notices := 0
-	_, _, err := MintEABWithMeshRetry(context.Background(), conn, auth, cfg, "edge-one", nil, 2,
-		func(string, ...any) { notices++ })
-	var collision *MeshSuffixCollision
-	if !errors.As(err, &collision) {
+	fake := &fakeEnrollment{collide: func(string) string { return "device_id" }}
+	_, _, err := MintEAB(context.Background(), dialFake(t, fake), auth, cfg, "edge-one", nil)
+	if !errors.Is(err, errDeviceUUIDTaken) {
 		t.Fatalf("exhausted retries must surface the collision, got %v", err)
 	}
-	if len(fake.seen) != 3 {
-		t.Fatalf("attempts = %d, want 3 (initial + 2 retries)", len(fake.seen))
-	}
-	if notices != 2 {
-		t.Fatalf("substitutions reported = %d, want 2", notices)
+	if len(fake.seen) != maxMintAttempts {
+		t.Fatalf("attempts = %d, want %d", len(fake.seen), maxMintAttempts)
 	}
 	seen := map[string]bool{}
 	for i, id := range fake.seen {
 		if seen[id] {
-			t.Fatalf("attempt %d reused device id %s; every attempt must carry a fresh UUID", i+1, id)
+			t.Fatalf("attempt %d reused device id %s", i+1, id)
 		}
 		seen[id] = true
 	}
 }
 
-func TestMintEABMeshRetryIgnoresOtherRefusals(t *testing.T) {
-	auth := testAuth(t)
-	cfg := testEnrollmentConfig(t, auth, uuid.NewString())
-
-	// A NAME collision is not a mesh collision: the name is reserved by the
-	// first attempt, so retrying with a new identity would orphan it. The
-	// refusal must surface untouched.
-	fake := &fakeEnrollment{collide: func(string) string { return "name" }}
-	conn := dialFake(t, fake)
-
-	_, _, err := MintEABWithMeshRetry(context.Background(), conn, auth, cfg, "edge-one", nil, 3,
-		func(string, ...any) { t.Fatal("a name collision must not trigger a mesh retry") })
-	var collision *MeshSuffixCollision
-	if errors.As(err, &collision) {
-		t.Fatal("name collision mistyped as a mesh collision")
-	}
-	if status.Code(err) != codes.AlreadyExists {
-		t.Fatalf("refusal was not surfaced: %v", err)
-	}
-	if len(fake.seen) != 1 {
-		t.Fatalf("Cloud saw %d enrollments, want 1", len(fake.seen))
+func TestMintEABDoesNotRegenerateOnOtherRefusals(t *testing.T) {
+	// A name duplicate carries no trailer (or "name"): a new UUID cannot clear
+	// it, so the refusal surfaces after one attempt.
+	for _, field := range []string{"name", "untagged"} {
+		t.Run(field, func(t *testing.T) {
+			auth := testAuth(t)
+			cfg := testEnrollmentConfig(t, auth, uuid.NewString())
+			fake := &fakeEnrollment{collide: func(string) string { return field }}
+			_, _, err := MintEAB(context.Background(), dialFake(t, fake), auth, cfg, "edge-one", nil)
+			if errors.Is(err, errDeviceUUIDTaken) {
+				t.Fatal("name refusal mistyped as a UUID collision")
+			}
+			if status.Code(err) != codes.AlreadyExists {
+				t.Fatalf("refusal was not surfaced: %v", err)
+			}
+			if len(fake.seen) != 1 {
+				t.Fatalf("Cloud saw %d enrollments, want 1", len(fake.seen))
+			}
+		})
 	}
 }
 
-func TestMintEABMeshRetryPassesCleanEnrollmentThrough(t *testing.T) {
+func TestMintEABPassesCleanEnrollmentThrough(t *testing.T) {
 	auth := testAuth(t)
 	cfg := testEnrollmentConfig(t, auth, uuid.NewString())
 
 	fake := &fakeEnrollment{collide: func(string) string { return "" }}
-	conn := dialFake(t, fake)
-
-	out, _, err := MintEABWithMeshRetry(context.Background(), conn, auth, cfg, "edge-one", nil, 3,
-		func(string, ...any) { t.Fatal("a clean enrollment must not notify") })
+	out, _, err := MintEAB(context.Background(), dialFake(t, fake), auth, cfg, "edge-one", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
