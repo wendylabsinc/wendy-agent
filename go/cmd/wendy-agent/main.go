@@ -724,19 +724,9 @@ func main() {
 	buildContextLocks := services.NewBuildContextLockSet()
 
 	registerAllServices := func(srv *grpc.Server) {
-		// MeshService's own-tenant check (assetIdentityFromContext / MeshDial)
-		// must reflect this device's *current* tenant, not a value captured once
-		// at process start: a live BLE-provisioning event updates
-		// provisioningSvc's state without restarting the agent, and a stale
-		// org (e.g. 0/unknown from an unprovisioned boot) would silently
-		// disable the check for the rest of the process's life. Read fresh
-		// here instead of caching a package-level meshSvc; registerAllServices
-		// runs at most once per concrete server (plaintext agentServer, the
-		// local control socket, and the mTLS server), so this is at most a
-		// handful of cheap constructions over the process lifetime, not a hot
-		// path. An unknown scope (never provisioned) intentionally matches the
-		// mTLS interceptor's grace behavior: MeshService skips the
-		// tenant-equality check rather than reject every caller.
+		// Each authenticated listener is created with the device's current tenant.
+		// The app RPC independently requires a same-tenant device principal and
+		// refuses admission when this agent has no enrolled tenant.
 		meshSvc := services.NewMeshService(logger, configPath, deviceScope(provisioningSvc))
 		meshSvc.SetIngressAuthorizer(meshIngress)
 		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{

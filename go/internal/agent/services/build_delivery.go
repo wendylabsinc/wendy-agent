@@ -103,7 +103,7 @@ const (
 type targetDialer func(ctx context.Context, target *agentpbv2.PushTarget) (*grpc.ClientConn, error)
 
 // meshTargetDialer reaches a target's agent the way the registry push reached
-// its registry: a byte stream from the peer dialer, LAN-direct or relayed,
+// its registry: a byte stream from the peer dialer, over LAN or Babel,
 // with mTLS on top pinned to the device the image was built for. The pin is
 // not optional — see BuildServiceOptions.PushTLS — and it holds for this hop
 // exactly as for the registry one, since the image content is the same.
@@ -124,12 +124,28 @@ func meshTargetDialer(peers PeerDialer, resolve func(string) (DeliveryTarget, er
 		if err != nil {
 			return nil, fmt.Errorf("loading delivery credentials: %w", err)
 		}
+		if tlsCfg == nil {
+			return nil, errors.New("missing delivery TLS credentials")
+		}
+		transportCredentials := credentials.NewTLS(tlsCfg)
 		return grpc.NewClient("passthrough:///build-target",
-			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-				conn, _, err := peers.DialTarget(ctx, resolved, port)
-				return conn, err
+			grpc.WithContextDialer(func(ctx context.Context, authority string) (net.Conn, error) {
+				raw, mode, err := peers.DialTarget(ctx, resolved, port)
+				if err != nil {
+					return nil, err
+				}
+				var info credentials.AuthInfo
+				secure, err := authenticateDelivery(ctx, peers, resolved, port, raw, mode, func(ctx context.Context, raw net.Conn) (net.Conn, error) {
+					conn, authenticated, err := transportCredentials.ClientHandshake(ctx, authority, raw)
+					info = authenticated
+					return conn, err
+				})
+				if err != nil {
+					return nil, err
+				}
+				return &deliveryAuthenticatedConn{Conn: secure, authInfo: info}, nil
 			}),
-			grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
+			grpc.WithTransportCredentials(&deliveryCredentials{TransportCredentials: transportCredentials}),
 			// The device unpacks the image after the last chunk lands, which can
 			// take minutes with nothing on the wire. Pings keep a relayed path
 			// from being torn down as idle meanwhile; the agent's server policy

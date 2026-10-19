@@ -185,15 +185,22 @@ func newPushProxy(dialer PeerDialer, target DeliveryTarget, registryPort uint16,
 		credential: credential,
 		assetUUID:  target.AssetUUID,
 		dial: func(ctx context.Context) (net.Conn, error) {
-			// The registry port has no Cloud service: clear the relay leg so a
-			// target that is unreachable over the direct mesh fails with a
-			// route error instead of a mislabeled relay attempt.
-			raw, _, derr := dialer.DialTarget(ctx, DeliveryTarget{Device: target.Device, AssetUUID: target.AssetUUID}, registryPort)
-			if derr != nil {
-				return nil, derr
+			if tlsCfg == nil {
+				return nil, errors.New("missing registry TLS credentials")
 			}
-			// The mesh carries bytes; the registry still speaks mTLS on top.
-			return tls.Client(raw, tlsCfg), nil
+			raw, mode, err := dialer.DialTarget(ctx, target, registryPort)
+			if err != nil {
+				return nil, err
+			}
+			// Authenticate before selecting the path: a TCP listener advertised on
+			// the LAN is only a candidate until it proves the target's principal.
+			return authenticateDelivery(ctx, dialer, target, registryPort, raw, mode, func(ctx context.Context, raw net.Conn) (net.Conn, error) {
+				secure := tls.Client(raw, tlsCfg)
+				if err := secure.HandshakeContext(ctx); err != nil {
+					return nil, err
+				}
+				return secure, nil
+			})
 		},
 	}, nil
 }

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -545,14 +546,33 @@ func TestMeshDialContextDialerDialsVerbatim(t *testing.T) {
 }
 
 func TestDialTargetRejectsMismatchedCloudUUIDBeforeDiscovery(t *testing.T) {
+	for _, routed := range []bool{false, true} {
+		t.Run(fmt.Sprint("routed=", routed), func(t *testing.T) {
+			d, probes := testDialer()
+			target := dialerTestTarget
+			target.AssetUUID = testAssetUUIDB
+			dial := d.DialTarget
+			if routed {
+				dial = d.DialRoutedTarget
+			}
+			if conn, _, err := dial(context.Background(), target, 8080); err == nil {
+				conn.Close()
+				t.Fatal("accepted a Cloud UUID that differs from the device principal")
+			}
+			if probes.lookups != 0 || probes.lanDials != 0 || probes.brokerDials != 0 {
+				t.Fatalf("mismatched identity reached a transport: %+v", probes)
+			}
+		})
+	}
+}
+
+func TestDialTargetRejectsAbsentDeviceBeforeDialing(t *testing.T) {
 	d, probes := testDialer()
-	target := dialerTestTarget
-	target.AssetUUID = testAssetUUIDB
-	if conn, _, err := d.DialTarget(context.Background(), target, 8080); err == nil {
-		conn.Close()
-		t.Fatal("accepted a Cloud UUID that differs from the device principal")
+	_, _, err := d.DialTarget(context.Background(), DeliveryTarget{}, 50052)
+	if err == nil || !strings.Contains(err.Error(), "invalid wendy net service target") {
+		t.Fatalf("absent target was not rejected at the identity boundary: %v", err)
 	}
 	if probes.lookups != 0 || probes.lanDials != 0 || probes.brokerDials != 0 {
-		t.Fatalf("mismatched identity reached a transport: %+v", probes)
+		t.Fatal("absent target triggered network discovery or dialing")
 	}
 }

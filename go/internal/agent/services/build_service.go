@@ -295,7 +295,7 @@ func onLocalAdminSocket(p *peer.Peer) bool {
 
 // userIdentityFromContext admits only a caller presenting a wendy USER
 // certificate, and returns that identity so the caller can name it in an audit
-// log. Mirrors MeshService.assetIdentityFromContext, which makes the opposite
+// log. Mirrors MeshService.deviceIdentityFromContext, which makes the opposite
 // demand: mesh dials are device-to-device, this is human-to-device.
 //
 // action names the operation being gated, so the refusal tells the caller what
