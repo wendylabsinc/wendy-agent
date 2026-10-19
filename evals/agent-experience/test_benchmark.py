@@ -258,7 +258,25 @@ class MetricsTests(unittest.TestCase):
             {"name": "plugin:wendy-agentic-coding:wendy", "status": "connected"}]}
         m = b.metrics("claude", [init, {"type": "result", "result": "x"}])
         self.assertEqual(b.extra_wendy_servers(m), ["plugin:wendy-agentic-coding:wendy"])
-        self.assertEqual(b.metrics("claude", [])["mcp_servers_observed"], [])
+        self.assertIsNone(b.metrics("claude", [])["mcp_servers_observed"])
+
+    def test_missing_init_event_is_unverified_not_clean(self):
+        self.assertIsNone(b.metrics("claude", [{"type": "result", "result": "x"}])["mcp_servers_observed"])
+        init = {"type": "system", "subtype": "init", "mcp_servers": []}
+        self.assertEqual(b.metrics("claude", [init])["mcp_servers_observed"], [])
+        with tempfile.TemporaryDirectory() as directory:
+            command = [sys.executable, "-c", "import json; print(json.dumps({'type':'result','result':'ok'}))"]
+            config = {"agents": {"fake": {"adapter": "claude", "model": "fixture", "command": command}},
+                      "targets": {"sim": {"kind": "simulator", "device": "vm:test"}}}
+            task = {"id": "fixture", "prompt": "p", "prepare": [sys.executable, "-c", "pass"],
+                    "verify": [sys.executable, "-c", "pass"], "cleanup": [sys.executable, "-c", "pass"]}
+            result = b.trial(config, "fake", "sim", task, Path(directory), sys.executable)
+            self.assertEqual(result["status"], "mcp_unverified")
+            self.assertFalse(result["success"])
+
+    def test_treatment_git_records_none_outside_a_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(b.treatment_git(Path(directory)), (None, None))
 
     def test_rescore_rebuilds_grades_without_touching_originals(self):
         with tempfile.TemporaryDirectory() as directory:

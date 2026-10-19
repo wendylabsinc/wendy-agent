@@ -200,7 +200,7 @@ def metrics(adapter, events):
             "tool_calls": len(tools), "permission_denials": len(denied) if adapter != "codex" else None,
             "reported_cost_usd": reported_cost, "reported_cost_kind": "client_estimate" if reported_cost is not None else None,
             "models_observed": sorted(models), "agent_completed": ended, "agent_errors": errors,
-            "final_text": "\n".join(text), "mcp_servers_observed": servers or [], "tool_trace": build_trace(adapter, events)}
+            "final_text": "\n".join(text), "mcp_servers_observed": servers if adapter == "claude" else [], "tool_trace": build_trace(adapter, events)}
 
 
 def estimate_cost(metric, prices):
@@ -324,8 +324,18 @@ def tree_sha256(path):
     return digest.hexdigest()
 
 
+def treatment_git(root):
+    """(HEAD revision, sha256 of `git diff HEAD`); None for each when git fails."""
+    def git(*args):
+        done = subprocess.run(["git", *args], cwd=root, capture_output=True)
+        return done.stdout if done.returncode == 0 else None
+    revision, diff = git("rev-parse", "HEAD"), git("diff", "HEAD")
+    return (revision.decode().strip() if revision is not None else None,
+            hashlib.sha256(diff).hexdigest() if diff is not None else None)
+
+
 def extra_wendy_servers(metric):
-    return [n for n in metric.get("mcp_servers_observed", []) if "wendy" in n.lower() and n != "wendy"]
+    return [n for n in metric.get("mcp_servers_observed") or [] if "wendy" in n.lower() and n != "wendy"]
 
 
 def stage_context(workspace, adapter, wendy, state_dir=None, treatment_root=ROOT):
@@ -574,8 +584,11 @@ def trial(config, agent_name, target_name, task, output, wendy, treatment_root=R
                 row["status"] = ("host_state_changed" if result.get("host_state_changed") else "no_progress"
                                  if result.get("no_progress") else "interrupted"
                                  if result["interrupted"] else "timeout" if result["timed_out"] else "failed")
-                if agent["adapter"] == "claude" and extra_wendy_servers(row["metrics"]):
-                    row["status"] = "mcp_contaminated"
+                if agent["adapter"] == "claude":
+                    if extra_wendy_servers(row["metrics"]):
+                        row["status"] = "mcp_contaminated"
+                    elif row["metrics"]["mcp_servers_observed"] is None:
+                        row["status"] = "mcp_unverified"
             if phase == "verify":
                 row["task_seconds"] += result["seconds"]
                 row["outcome_verified"] = result["exit_code"] == 0
@@ -584,7 +597,7 @@ def trial(config, agent_name, target_name, task, output, wendy, treatment_root=R
                                   and row["metrics"]["invalid_json_lines"] == 0
                                   and not row["stages"]["agent"].get("no_progress")
                                   and not row["stages"]["agent"].get("host_state_changed"))
-                if row["status"] == "mcp_contaminated":
+                if row["status"] in ("mcp_contaminated", "mcp_unverified"):
                     row["success"] = False
                 if row["success"]:
                     row["status"] = "passed"
@@ -750,6 +763,8 @@ def main():
     wendy = shutil.which(args.wendy or config.get("wendy", "wendy"))
     if not wendy:
         parser.error("Wendy executable not found")
+    if not (args.treatment_root / "plugins/wendy-agentic-coding/skills").is_dir():
+        parser.error("--treatment-root has no plugins/wendy-agentic-coding/skills directory")
     if config.get("isolate_device_state", True):
         require_state_isolation(wendy)
     output = args.output.resolve() / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6])
@@ -767,27 +782,27 @@ def main():
         shutil.copy2(file, source / file.name)
     if (HERE / "fixture_apps").exists():
         shutil.copytree(HERE / "fixture_apps", source / "fixture_apps", ignore=shutil.ignore_patterns("__pycache__"))
+    treatment_root = args.treatment_root.resolve()
     chat_source = source / "chat"
     chat_source.mkdir()
-    for file in (ROOT / "go/internal/cli/chat").glob("*.go"):
+    for file in (treatment_root / "go/internal/cli/chat").glob("*.go"):
         shutil.copy2(file, chat_source / file.name)
     config_source = source / "config"
     config_source.mkdir()
-    for file in (ROOT / "go/internal/shared/config").glob("*.go"):
+    for file in (treatment_root / "go/internal/shared/config").glob("*.go"):
         shutil.copy2(file, config_source / file.name)
-    treatment_root = args.treatment_root.resolve()
     run_process(["git", "diff", "--", "go/internal/cli/chat", "go/internal/shared/config"],
                 treatment_root, output / "candidate-diff", 15)
+    # "revision" identifies the runner checkout; snapshot["treatment"]["revision"] identifies the treatment.
     for name, argv in [("wendy", [wendy, "--version"]), ("revision", ["git", "rev-parse", "HEAD"])]:
         snapshot[name] = run_process(argv, ROOT, output / name, 15)
     for name in agents:
         argv = expand(config["agents"][name]["command"], {"wendy": wendy})
         snapshot[name + "_version"] = run_process([argv[0], "--version"], ROOT, output / (name + "-version"), 15)
-    git = lambda *a: subprocess.run(["git", *a], cwd=treatment_root, capture_output=True).stdout
+    revision, diff_sha256 = treatment_git(treatment_root)
     snapshot["argv"], snapshot["cwd"] = sys.argv, os.getcwd()
     snapshot["treatment"] = {"root": str(treatment_root),
-                             "revision": git("rev-parse", "HEAD").decode().strip(),
-                             "diff_sha256": hashlib.sha256(git("diff", "HEAD")).hexdigest(),
+                             "revision": revision, "diff_sha256": diff_sha256,
                              "skills_sha256": tree_sha256(treatment_root / "plugins/wendy-agentic-coding/skills")}
     dump(output / "manifest.json", snapshot)
     rows = []
@@ -808,6 +823,9 @@ def main():
         dump(output / "coverage.json", coverage_results(coverage, rows, agents, args.repetitions))
         if row["status"] == "mcp_contaminated":
             print("Another Wendy MCP server was loaded into Claude; stopping.")
+            break
+        if row["status"] == "mcp_unverified":
+            print("Claude reported no MCP server list; stopping because a second Wendy server can't be ruled out.")
             break
         if any(stage.get("interrupted") for stage in row["stages"].values()):
             print("Experiment interrupted; logs and cleanup result retained.")
