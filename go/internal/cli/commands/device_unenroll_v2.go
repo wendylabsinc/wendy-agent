@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudunenroll"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -76,7 +77,7 @@ type v2UnenrollOps struct {
 
 func checkV2UnenrollBinding(asset *cloudpbv2.Asset, j v2UnenrollProgress) error {
 	id, err := certs.ParsePrincipal(j.Principal)
-	if err != nil || id.EntityType != certs.EntityAsset || asset == nil || asset.GetId() != j.AssetID || asset.GetOrganizationId() != id.TenantUUID || asset.GetPkiDeviceName() != id.EntityID {
+	if err != nil || id.EntityType != certs.EntityAsset || asset == nil || asset.GetId() != j.AssetID || asset.GetOrganizationId() != id.TenantUUID || cloudunenroll.DeviceID(asset) != id.EntityID {
 		return fmt.Errorf("refusing cleanup: exact Cloud asset/tenant/PKI binding does not match the authenticated device")
 	}
 	return nil
