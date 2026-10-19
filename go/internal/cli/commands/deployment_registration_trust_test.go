@@ -186,3 +186,39 @@ func TestDeploymentEnrollmentSessionProxyRetainsPinnedIdentityAndTenant(t *testi
 		})
 	}
 }
+
+func TestDeploymentEnrollmentBindsLegacyClaimsBeforeConfigOrCloudAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		org, asset, operatorOrg int32
+		plaintext               bool
+	}{
+		{name: "another organization", org: 99, asset: 9, operatorOrg: 42},
+		{name: "another device", org: 42, asset: 10, operatorOrg: 42},
+		{name: "another connection operator", org: 42, asset: 9, operatorOrg: 99},
+		{name: "plaintext legacy enrollment", org: 42, asset: 9, plaintext: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			device := &agentpb.ProvisionedResponse{CloudHost: "cloud.example:443", OrganizationId: tc.org, AssetId: tc.asset}
+			srv := &deploymentV2Server{device: device}
+			var conn *grpcclient.AgentConnection
+			if tc.plaintext {
+				conn = deploymentTestConnection(t, srv, nil)
+			} else {
+				conn = deploymentTLSConnection(t, srv, nil, "urn:wendy:org:42:asset:9")
+			}
+			conn.CertInfo = &config.CertificateInfo{OrganizationID: int(tc.operatorOrg)}
+			loaded, cloudCalls := 0, 0
+			err := registerDeviceApps(context.Background(), deploymentProvisioningService{conn}, []string{"app"}, func() (*config.Config, error) {
+				loaded++
+				return &config.Config{Auth: []config.AuthConfig{{CloudGRPC: device.CloudHost, Certificates: []config.CertificateInfo{{OrganizationID: int(tc.org), UserID: "operator"}}}}}, nil
+			}, func(context.Context, *config.AuthConfig, *agentpb.ProvisionedResponse, []string) error {
+				cloudCalls++
+				return nil
+			})
+			if err == nil || loaded != 0 || cloudCalls != 0 {
+				t.Fatalf("unsafe legacy enrollment reached side effects: err=%v config=%d Cloud=%d", err, loaded, cloudCalls)
+			}
+		})
+	}
+}

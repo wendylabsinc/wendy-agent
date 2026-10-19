@@ -88,9 +88,9 @@ func MintEAB(tokenCtx context.Context, cloudConn *grpc.ClientConn, auth *config.
 		return cfg, "", fmt.Errorf("this Cloud deployment does not support OIDC device enrollment; it needs DeviceEnrollmentService/EnrollDevice")
 	case codes.AlreadyExists:
 		if slices.Contains(trailer.Get(cloudrequest.CollidingFieldMetadataKey), "mesh_suffix") {
-			// The MESH ADDRESS collision, told apart from a name or device_id
+			// The WENDY NET ADDRESS collision, told apart from a name or device_id
 			// duplicate by the trailer Cloud attaches: this device_id is fine,
-			// its LAST 10 BYTES -- the WendyOS mesh address it implies -- are
+			// its LAST 10 BYTES -- the WendyOS wendy net address it implies -- are
 			// claimed by another identity, possibly in another tenant. Nothing
 			// was minted and a fresh device_id clears it, so it is typed for
 			// MintEABWithMeshRetry rather than flattened into the generic
@@ -118,7 +118,7 @@ func MintEAB(tokenCtx context.Context, cloudConn *grpc.ClientConn, auth *config.
 }
 
 // MeshSuffixCollision is Cloud's pre-mint refusal of a device UUID whose last
-// 10 bytes -- the WendyOS mesh address derived from them -- another identity
+// 10 bytes -- the WendyOS wendy net address derived from them -- another identity
 // already claims, in ANY tenant. It arrives before a credential is minted or
 // an asset row written, so the enrollment can be retried with a fresh identity
 // at no cost. The message names the colliding address; the trailer said which
@@ -128,7 +128,7 @@ type MeshSuffixCollision struct{ Message string }
 func (e *MeshSuffixCollision) Error() string { return e.Message }
 
 // MintEABWithMeshRetry wraps MintEAB with the bounded collision retry the
-// mesh identity contract calls for: when Cloud refuses the mesh address a
+// wendy net identity contract calls for: when Cloud refuses the wendy net address a
 // device UUID implies, mint a FRESH device UUID, re-sign the enrollment
 // request for it, and try again -- at most attempts times. Every substitution
 // is reported through notify: device_id is permanent, so it is never swapped
@@ -153,9 +153,9 @@ func MintEABWithMeshRetry(
 		}
 		candidate, cfgErr := EnrollmentConfig(auth, uuid.NewString(), cfg.DirectoryURL)
 		if cfgErr != nil {
-			return cfg, "", fmt.Errorf("mesh address collision and the retry identity was rejected: %w", cfgErr)
+			return cfg, "", fmt.Errorf("wendy net address collision and the retry identity was rejected: %w", cfgErr)
 		}
-		notify("device UUID %s collides with an existing mesh address (%v); retrying with %s (%d/%d)",
+		notify("device UUID %s collides with an existing wendy net address (%v); retrying with %s (%d/%d)",
 			cfg.DeviceID, collision, candidate.DeviceID, attempt+1, attempts)
 		cfg = candidate
 	}

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
@@ -78,24 +79,42 @@ func validateDeploymentEnrollment(conn *grpcclient.AgentConnection, remote *peer
 		operatorTenant = conn.CertInfo.TenantUUID()
 	}
 	expectedPrincipal := ""
+	var verifiedIdentity certs.WendyIdentity
+	var hasVerifiedIdentity bool
 	if conn.IsSessionProxy {
 		// The owner-only local broker retains the original verified identity
 		// and the exact operator certificate used by its pinned upstream.
 		if conn.IsMTLS {
 			if identity, ok := conn.ObservedServerIdentity(); ok {
 				expectedPrincipal = identity.Principal
+				verifiedIdentity, hasVerifiedIdentity = identity, true
 			}
 		}
 	} else if remote != nil {
 		if info, ok := remote.AuthInfo.(credentials.TLSInfo); ok && info.State.HandshakeComplete && len(info.State.PeerCertificates) != 0 {
-			expectedPrincipal, _ = certs.TenantPrincipalFromCert(info.State.PeerCertificates[0])
+			var err error
+			verifiedIdentity, hasVerifiedIdentity, err = certs.IdentityFromCert(info.State.PeerCertificates[0])
+			if err != nil {
+				return fmt.Errorf("invalid authenticated device identity: %w", err)
+			}
+			expectedPrincipal = verifiedIdentity.Principal
 		}
 	}
 	if device.GetPrincipalUri() == "" {
 		if expectedPrincipal != "" || operatorTenant != "" {
 			return fmt.Errorf("Agent enrollment omits its authenticated Cloud principal")
 		}
-		return nil // Preserve numeric enrollment on legacy connections.
+		// A legacy response must be bound to its authenticated organization and
+		// device too, before it can select a stored operator session.
+		if !hasVerifiedIdentity || verifiedIdentity.OrgID <= 0 || verifiedIdentity.EntityType != certs.EntityAsset ||
+			device.GetOrganizationId() != verifiedIdentity.OrgID || device.GetAssetId() <= 0 ||
+			strconv.Itoa(int(device.GetAssetId())) != verifiedIdentity.EntityID {
+			return fmt.Errorf("Agent enrollment disagrees with its verified legacy device identity")
+		}
+		if conn.CertInfo != nil && conn.CertInfo.OrganizationID > 0 && int(device.GetOrganizationId()) != conn.CertInfo.OrganizationID {
+			return fmt.Errorf("Agent enrollment disagrees with the connection operator organization")
+		}
+		return nil
 	}
 	identity, err := certs.ParsePrincipal(device.GetPrincipalUri())
 	if err != nil || identity.EntityType != certs.EntityAsset || identity.TenantUUID == "" {
