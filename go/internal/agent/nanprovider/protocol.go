@@ -27,6 +27,7 @@ func parseEvent(raw string) (string, map[string]string) {
 	}
 	return fields[0], values
 }
+
 // decodePresence parses a NAN presence claim: "wendy-nan:2:<device-uuid>".
 // The claim is untrusted until the peer's enrolled certificate pins the full
 // device principal during the QUIC handshake.

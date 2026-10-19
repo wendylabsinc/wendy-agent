@@ -21,17 +21,21 @@ type ownedRule struct {
 // reserveNDI serializes this host's NAN provider and prevents network managers
 // from taking over its NDI before its private underlay address is configured.
 func reserveNDI(ctx context.Context) (func(), error) {
-	lock, err := os.OpenFile("/run/wendy-nan-provider.lock", os.O_CREATE|os.O_RDWR, 0600)
+	rules := []ownedRule{
+		{path: "/run/systemd/network/05-wendy-nan-provider.network", content: "# Wendy NAN provider v1\n[Match]\nName=wnanndi0\n[Link]\nUnmanaged=yes\n"},
+		{path: "/run/NetworkManager/conf.d/05-wendy-nan-provider.conf", content: "# Wendy NAN provider v1\n[device-wendy-nan-provider]\nmatch-device=interface-name:wnanndi0\nmanaged=0\n"},
+	}
+	return reserveNDIRules(ctx, "/run/wendy-nan-provider.lock", rules, reloadNetworkManagers)
+}
+
+func reserveNDIRules(ctx context.Context, lockPath string, rules []ownedRule, reload func(context.Context) error) (func(), error) {
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
 	if err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		lock.Close()
 		return nil, fmt.Errorf("NAN provider already running: %w", err)
-	}
-	rules := []ownedRule{
-		{path: "/run/systemd/network/05-wendy-nan-provider.network", content: "# Wendy NAN provider v1\n[Match]\nName=wnanndi0\n[Link]\nUnmanaged=yes\n"},
-		{path: "/run/NetworkManager/conf.d/05-wendy-nan-provider.conf", content: "# Wendy NAN provider v1\n[device-wendy-nan-provider]\nmatch-device=interface-name:wnanndi0\nmanaged=0\n"},
 	}
 	cleanup := func() {
 		for _, rule := range rules {
@@ -42,7 +46,7 @@ func reserveNDI(ctx context.Context) (func(), error) {
 				_ = os.Remove(rule.path)
 			}
 		}
-		_ = reloadNetworkManagers(context.Background())
+		_ = reload(context.Background())
 		_ = unix.Flock(int(lock.Fd()), unix.LOCK_UN)
 		_ = lock.Close()
 	}
@@ -69,14 +73,17 @@ func reserveNDI(ctx context.Context) (func(), error) {
 			return nil, createErr
 		}
 		rule.created = true
-		_, writeErr := file.WriteString(rule.content)
+		written, writeErr := file.WriteString(rule.content)
+		// Cleanup owns exactly the bytes this attempt wrote, including a short
+		// write. Keep preserving any rule changed by another host component.
+		rule.content = rule.content[:written]
 		err = errors.Join(writeErr, file.Close())
 		if err != nil {
 			cleanup()
 			return nil, err
 		}
 	}
-	if err = reloadNetworkManagers(ctx); err != nil {
+	if err = reload(ctx); err != nil {
 		cleanup()
 		return nil, err
 	}

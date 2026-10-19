@@ -16,7 +16,7 @@ var hostReloader = newReloader(exec.LookPath, func(ctx context.Context, path str
 	return exec.CommandContext(ctx, path, args...).CombinedOutput()
 })
 
-// Reload serializes the complete manager pair across NAN apps and the mesh
+// Reload serializes the complete manager pair across NAN apps and the wendy net
 // provider. systemd-networkd also reloads independently, so its specific busy
 // response is retried. A successful subsequent reload is required: an in-flight
 // reload may have read its rule files before our changes were written.

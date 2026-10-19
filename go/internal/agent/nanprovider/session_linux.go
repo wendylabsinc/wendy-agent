@@ -24,7 +24,7 @@ import (
 )
 
 // LinkNode is the common Babel node shared with configured TCP and other
-// carriers. AttachWithCost verifies the local-mesh hello after QUIC mutual TLS.
+// carriers. AttachWithCost verifies the wendy net hello after QUIC mutual TLS.
 type LinkNode interface {
 	AttachWithCost(context.Context, meshid.Device, *quic.Conn, uint16) error
 }
@@ -47,7 +47,7 @@ type Provider struct {
 
 func (p Provider) Run(parent context.Context) error {
 	if p.Credentials == nil || p.Node == nil {
-		return errors.New("NAN provider needs credentials and a local-mesh node")
+		return errors.New("NAN provider needs credentials and a wendy net node")
 	}
 	id := p.Credentials.Device
 	logger := p.Logger
@@ -259,10 +259,9 @@ func ownedNDIAddress(addrs []netlink.Addr, id meshid.Device) bool {
 }
 
 // underlayAddr derives the NAN underlay address from the last two bytes of
-// the device UUID. The NAN single-NDI model needs globally unique,
-// deterministic addresses inside the shared 10.89.0.0/16; the network and
-// broadcast addresses stay reserved, and a peer that would collide with this
-// host's own address is refused rather than aliased.
+// the device UUID. The NAN single-NDI model needs distinct addresses for this
+// host and its directly attached peers inside 10.89.0.0/16. Network/broadcast
+// addresses stay reserved, and peer admission refuses colliding UUID suffixes.
 func underlayAddr(id meshid.Device) (netip.Addr, error) {
 	u := id.UUID()
 	addr := netip.AddrFrom4([4]byte{10, 89, u[14], u[15]})

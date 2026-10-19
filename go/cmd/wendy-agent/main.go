@@ -992,7 +992,7 @@ func main() {
 			go func() {
 				defer wg.Done()
 				for ctx.Err() == nil {
-					err := runConfiguredMeshCarriers(ctx, configPath, localmesh.TCPIdentity{
+					err := runConfiguredNetCarriers(ctx, configPath, localmesh.TCPIdentity{
 						Name: name, AgentPort: uint16(mtlsPortNum),
 						Certificate: certPEM, Chain: chainPEM, Key: keyPEM,
 					}, logger, func(snapshot func() localmesh.NodeSnapshot) {

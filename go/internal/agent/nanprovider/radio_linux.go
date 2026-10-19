@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"go.uber.org/zap"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
+	"go.uber.org/zap"
 )
 
 const ndiName = "wnanndi0"
@@ -92,20 +92,44 @@ func validHandle(raw string) bool {
 	return err == nil && id > 0
 }
 
+const (
+	radioAttemptCooldown = 15 * time.Second
+	maxRadioAttempts     = 128
+)
+
+func expireRadioAttempts(attempts map[string]time.Time, now time.Time) {
+	for nmi, last := range attempts {
+		if now.Sub(last) >= radioAttemptCooldown {
+			delete(attempts, nmi)
+		}
+	}
+}
+
+func rememberRadioAttempt(attempts map[string]time.Time, nmi string, now time.Time) {
+	expireRadioAttempts(attempts, now)
+	// At capacity, shouldInitiate already prevents new requests. Do not retain
+	// unlimited cooldown entries even if incoming peers disconnect rapidly.
+	if _, exists := attempts[nmi]; exists || len(attempts) < maxRadioAttempts {
+		attempts[nmi] = now
+	}
+}
+
 // shouldInitiate reports whether this node must request the NDP: the device
 // with the lower UUID initiates each edge, so the higher one only listens.
 func shouldInitiate(self, peer meshid.Device, nmi string, active map[string]*radioLink, attempts map[string]time.Time, now time.Time) bool {
-	if meshid.Compare(self, peer) >= 0 || active[nmi] != nil || len(active) >= 3 {
+	expireRadioAttempts(attempts, now)
+	if meshid.Compare(self, peer) >= 0 || sameUnderlay(self, peer) ||
+		active[nmi] != nil || !shouldConnect(nmi, peer, active) || len(attempts) >= maxRadioAttempts {
 		return false
 	}
-	if last, ok := attempts[nmi]; ok && now.Sub(last) < 15*time.Second {
+	if last, ok := attempts[nmi]; ok && now.Sub(last) < radioAttemptCooldown {
 		return false
 	}
 	return true
 }
 
 func shouldAccept(self, peer meshid.Device, nmi string, active map[string]*radioLink) bool {
-	return meshid.Compare(peer, self) < 0 && (active[nmi] != nil || len(active) < 3)
+	return meshid.Compare(peer, self) < 0 && !sameUnderlay(self, peer) && shouldConnect(nmi, peer, active)
 }
 
 // sameUnderlay reports two distinct devices whose last UUID bytes collide,
@@ -118,10 +142,23 @@ func shouldConnect(nmi string, peer meshid.Device, active map[string]*radioLink)
 	if !validMAC(nmi) {
 		return false
 	}
-	if existing := active[nmi]; existing != nil {
-		return meshid.Compare(existing.peer.Device, peer) == 0
+	if _, err := underlayAddr(peer); err != nil {
+		return false
 	}
-	return len(active) < 3
+	for otherNMI, existing := range active {
+		if otherNMI == nmi {
+			if existing.peer.Device != peer {
+				return false
+			}
+			continue
+		}
+		// One NDI has one neighbour entry per address. A second NMI claiming
+		// that address/device must not replace an incumbent before TLS.
+		if sameUnderlay(existing.peer.Device, peer) {
+			return false
+		}
+	}
+	return active[nmi] != nil || len(active) < 3
 }
 
 func validMAC(raw string) bool {
@@ -129,9 +166,19 @@ func validMAC(raw string) bool {
 	return err == nil && len(mac) == 6
 }
 
-func connectedPeer(v map[string]string, local string, known map[string]meshid.Device, active map[string]*radioLink) (radioPeer, bool) {
+func connectedPeer(v map[string]string, local string, active map[string]*radioLink) (radioPeer, bool) {
 	nmi := v["peer"]
-	peer := known[nmi]
+	// CONNECTED must complete a request/response we admitted on our own NDI.
+	// Discovery SSI alone cannot create a worker or overwrite its identity.
+	link := active[nmi]
+	if link == nil {
+		return radioPeer{}, false
+	}
+	if (link.peer.ID != "" && link.peer.ID != v["ndp_id"]) ||
+		(link.peer.NDI != "" && link.peer.NDI != v["peer_ndi"]) {
+		return radioPeer{}, false
+	}
+	peer := link.peer.Device
 	if v["local_ndi"] != local || !shouldConnect(nmi, peer, active) || !validNDPID(v["ndp_id"]) || !validMAC(v["peer_ndi"]) {
 		return radioPeer{}, false
 	}
@@ -207,7 +254,6 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 		return fmt.Errorf("invalid NAN subscribe handle %q", sub)
 	}
 	defer control.command("NAN_CANCEL_SUBSCRIBE subscribe_id=" + sub)
-	known := map[string]meshid.Device{}
 	attempts := map[string]time.Time{}
 	active := map[string]*radioLink{}
 	lastProbe := time.Now()
@@ -234,6 +280,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 			}
 			continue
 		case <-ticker.C:
+			expireRadioAttempts(attempts, time.Now())
 			anyHealthy := false
 			for _, link := range active {
 				anyHealthy = anyHealthy || link.healthy
@@ -264,7 +311,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 				}
 				emit(radioPeer{Device: link.peer.Device, NMI: nmi, ID: link.peer.ID})
 				delete(active, nmi)
-				attempts[nmi] = time.Now()
+				rememberRadioAttempt(attempts, nmi, time.Now())
 			}
 			continue
 		case event, ok := <-rawEvents:
@@ -278,8 +325,8 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 			logger.Info("NAN lifecycle event", zap.String("event", strings.TrimSpace(raw)))
 		}
 		switch kind {
-		case "NAN-DISCOVERY-RESULT", "NAN-REPLIED":
-			if kind == "NAN-DISCOVERY-RESULT" && v["subscribe_id"] != sub {
+		case "NAN-DISCOVERY-RESULT":
+			if v["subscribe_id"] != sub {
 				continue
 			}
 			peer, err := decodePresence(ident.Tenant(), v["ssi"])
@@ -294,11 +341,10 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 			if !validMAC(nmi) {
 				continue
 			}
-			known[nmi] = peer
-			if kind != "NAN-DISCOVERY-RESULT" || !validHandle(v["publish_id"]) || !shouldInitiate(ident, peer, nmi, active, attempts, time.Now()) {
+			if !validHandle(v["publish_id"]) || !shouldInitiate(ident, peer, nmi, active, attempts, time.Now()) {
 				continue
 			}
-			attempts[nmi] = time.Now()
+			rememberRadioAttempt(attempts, nmi, time.Now())
 			if _, err = control.command(fmt.Sprintf("NAN_NDP_REQUEST handle=%s ndi=%s peer_nmi=%s peer_id=%s ssi=%s", sub, ndiName, nmi, v["publish_id"], ssi)); err == nil {
 				active[nmi] = &radioLink{peer: radioPeer{Device: peer, NMI: nmi}, since: time.Now()}
 			}
@@ -332,9 +378,8 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 				emit(radioPeer{Device: old.peer.Device, NMI: nmi, ID: old.peer.ID})
 				continue
 			}
-			known[nmi] = peer
 			if _, err = control.command(fmt.Sprintf("NAN_NDP_RESPONSE accept handle=%s ndi=%s peer_nmi=%s ndp_id=%s init_ndi=%s ssi=%s", pub, ndiName, nmi, v["ndp_id"], v["init_ndi"], ssi)); err == nil {
-				active[nmi] = &radioLink{peer: radioPeer{Device: peer, NMI: nmi}, since: time.Now()}
+				active[nmi] = &radioLink{peer: radioPeer{Device: peer, NMI: nmi, ID: v["ndp_id"]}, since: time.Now()}
 			}
 		case "NAN-NDP-COUNTER-REQUEST":
 			nmi := v["peer_nmi"]
@@ -354,7 +399,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 				logger.Info("NAN counter proposal confirmed", zap.String("peer", nmi), zap.String("ndp_id", v["ndp_id"]))
 			}
 		case "NAN-NDP-CONNECTED":
-			p, ok := connectedPeer(v, local, known, active)
+			p, ok := connectedPeer(v, local, active)
 			if !ok {
 				continue
 			}

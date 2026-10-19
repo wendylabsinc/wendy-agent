@@ -13,9 +13,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// runConfiguredMeshCarriers runs one Babel node for every enabled carrier.
+// runConfiguredNetCarriers runs one Babel node for every enabled carrier.
 // Its observer is cleared only after the radio provider has drained its links.
-func runConfiguredMeshCarriers(ctx context.Context, configDir string, id localmesh.TCPIdentity, logger *zap.Logger, observe func(func() localmesh.NodeSnapshot)) error {
+func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmesh.TCPIdentity, logger *zap.Logger, observe func(func() localmesh.NodeSnapshot)) error {
 	var stopNAN context.CancelFunc
 	var nanDone sync.WaitGroup
 	return localmesh.RunConfiguredWithNode(ctx, configDir, id, func(node *localmesh.Node, cfg *localmesh.TCPConfig) {

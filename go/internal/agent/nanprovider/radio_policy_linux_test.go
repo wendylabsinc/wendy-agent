@@ -87,13 +87,12 @@ func TestCapturedNDPEventsStayOnOwnedNDI(t *testing.T) {
 	const peerNDI = "e4:4a:e0:e7:6f:cd"
 	_, connected := parseEvent("<3>NAN-NDP-CONNECTED peer=" + peerNMI + " ndp_id=2 local_ndi=" + local + " peer_ndi=" + peerNDI + " interface_id=")
 	active := map[string]*radioLink{peerNMI: {peer: radioPeer{Device: testDevice(t, 460), NMI: peerNMI}}}
-	known := map[string]meshid.Device{peerNMI: testDevice(t, 460)}
-	p, ok := connectedPeer(connected, local, known, active)
+	p, ok := connectedPeer(connected, local, active)
 	if !ok || p.Device != testDevice(t, 460) || p.NDI != peerNDI || p.ID != "2" {
 		t.Fatalf("owned connected path rejected: %+v %v", p, ok)
 	}
 	connected["local_ndi"] = "02:00:00:00:00:99"
-	if _, ok := connectedPeer(connected, local, known, active); ok {
+	if _, ok := connectedPeer(connected, local, active); ok {
 		t.Fatal("foreign NDI path adopted")
 	}
 	connected["local_ndi"] = local
