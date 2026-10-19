@@ -15,11 +15,33 @@ const maxInventoryEntries = 1024
 // Every session exchanges its current identity-cache inventory before records.
 type inventoryMessage struct {
 	Message
-	Fingerprints []byte `json:"fingerprints,omitempty"`
+	Fingerprints []byte        `json:"fingerprints,omitempty"`
+	Request      *FreshRequest `json:"request,omitempty"`
+	Chunk        *FreshChunk   `json:"chunk,omitempty"`
 }
 
 func (m inventoryMessage) validate() error {
+	if m.Kind != "fresh-request" && m.Request != nil {
+		return errors.New("unexpected freshness request")
+	}
+	if m.Kind != "fresh-chunk" && m.Chunk != nil {
+		return errors.New("unexpected freshness chunk")
+	}
 	switch m.Kind {
+	case "fresh-request", "fresh-chunk":
+		if m.Record != nil || len(m.Bundle) != 0 || m.Principal != "" || len(m.Fingerprints) != 0 {
+			return errors.New("invalid freshness envelope")
+		}
+		if m.Kind == "fresh-request" {
+			if m.Request == nil || m.Chunk != nil {
+				return errors.New("missing freshness request")
+			}
+			return m.Request.validate()
+		}
+		if m.Chunk == nil || m.Request != nil {
+			return errors.New("missing freshness chunk")
+		}
+		return m.Chunk.validate()
 	case "identity-cache":
 		if m.Record != nil || len(m.Bundle) != 0 || m.Principal != "" || len(m.Fingerprints) == 0 || len(m.Fingerprints)%32 != 0 || len(m.Fingerprints) > inventoryChunkEntries*32 {
 			return errors.New("invalid catalog identity inventory")

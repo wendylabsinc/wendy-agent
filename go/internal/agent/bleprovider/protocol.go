@@ -16,7 +16,7 @@ import (
 const (
 	// ALPN is distinct from the QUIC carrier. A BLE link is a reliable byte
 	// stream and uses TLS directly, with no QUIC framing or second encryption.
-	ALPN = "wendy-local-mesh-ble/2"
+	ALPN = "wendy-local-mesh-ble/2-catalog-1"
 	// LinkCost keeps BLE available as a fallback while preferring TCP (256)
 	// and NAN (512) routes when they exist.
 	LinkCost           uint16 = 4096

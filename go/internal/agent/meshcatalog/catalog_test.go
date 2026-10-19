@@ -27,11 +27,13 @@ const (
 	p533 = "spiffe://wendy.sh/tenant/" + testTenantID + "/device/53333333-0000-4000-8000-000000000533"
 	p534 = "spiffe://wendy.sh/tenant/" + testTenantID + "/device/53444444-0000-4000-8000-000000000534"
 	p535 = "spiffe://wendy.sh/tenant/" + testTenantID + "/device/53555555-0000-4000-8000-000000000535"
+	p536 = "spiffe://wendy.sh/tenant/" + testTenantID + "/device/53666666-0000-4000-8000-000000000536"
 )
 
 type fixture struct {
 	now   time.Time
 	creds map[string]*localmesh.Credentials
+	chain string
 }
 
 func newFixture(t *testing.T) fixture {
@@ -54,7 +56,7 @@ func newFixture(t *testing.T) fixture {
 	}
 	chain := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))
 	creds := map[string]*localmesh.Credentials{}
-	for _, principal := range []string{p533, p534, p535} {
+	for _, principal := range []string{p533, p534, p535, p536} {
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			t.Fatal(err)
@@ -78,7 +80,7 @@ func newFixture(t *testing.T) fixture {
 			t.Fatal(err)
 		}
 	}
-	return fixture{now, creds}
+	return fixture{now, creds, chain}
 }
 
 func principalOf(t *testing.T, principal string) meshid.Device {

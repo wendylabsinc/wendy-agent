@@ -20,6 +20,7 @@ type ControlMessage struct {
 	Bundle    [][]byte        `json:"bundle,omitempty"`
 	Manifest  *SignedManifest `json:"manifest,omitempty"`
 	Principal string          `json:"principal,omitempty"`
+	Catalog   []byte          `json:"catalog,omitempty"`
 }
 
 func WriteControl(w io.Writer, m ControlMessage) error {
@@ -69,7 +70,14 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return m, err
 	}
+	if m.Kind != "catalog" && len(m.Catalog) != 0 {
+		return m, errors.New("unexpected catalogue payload")
+	}
 	switch m.Kind {
+	case "catalog":
+		if len(m.Catalog) == 0 || len(m.Catalog) > MaxCatalogFrame || m.Hello != nil || m.Manifest != nil || len(m.Bundle) != 0 || m.Principal != "" {
+			return m, errors.New("invalid catalogue frame")
+		}
 	case "hello":
 		if m.Hello == nil || len(m.Bundle) != 0 || m.Manifest != nil || m.Principal != "" {
 			return m, errors.New("invalid hello message")

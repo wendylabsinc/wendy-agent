@@ -254,9 +254,27 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 		if err != nil {
 			return nil, nil, err
 		}
+		s.noteReceived(*m.Record)
 		if ok {
 			changed = append(changed, cloneWire(*m.Record))
 		}
 	}
 	return replies, changed, nil
+}
+
+// Only called after Catalog.Accept has verified the artifact, including duplicates.
+// A supplier already possesses its exact body and signing certificate.
+func (s *Synchronizer) noteReceived(w SignedRecord) {
+	var r Record
+	if json.Unmarshal(w.Body, &r) != nil {
+		return
+	}
+	stamp := sentRecordStamp{r.Generation, sha256.Sum256(append([]byte(w.Fingerprint), w.Body...))}
+	if old, ok := s.sentRecords[r.Key]; !ok || old.generation < r.Generation || (old.generation == r.Generation && old.digest == stamp.digest) {
+		s.sentRecords[r.Key] = stamp
+	}
+	if len(s.sent) >= 1024 {
+		s.sent = make(map[string]bool)
+	}
+	s.sent[w.Fingerprint] = true
 }

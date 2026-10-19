@@ -110,8 +110,8 @@ valid lease. Hop-local Babel retractions remain unchanged: they only remove that
 neighbour's candidate. Babel feasibility, split horizon, loop prevention, and
 end-to-end application authentication still apply.
 
-Mesh links require hello version 2 and ALPN `wendy-local-mesh/2` (QUIC) or
-`wendy-local-mesh-ble/2` (BLE TLS). Old peers cannot join the new routing policy;
+Mesh links require hello version 2 and ALPN `wendy-local-mesh/2-catalog-1`
+(QUIC) or `wendy-local-mesh-ble/2-catalog-1` (BLE TLS). Old peers cannot join the new routing policy;
 upgrade each connected mesh together. This changes the internal mesh wire
 contract, not public gRPC messages or application-session ALPNs.
 
@@ -183,3 +183,48 @@ routes and forwarding. Run them only inside a disposable privileged container
 or namespace, never in a host or Jetson namespace. The container needs `--privileged`, `iproute2`, `iptables`, `iputils-ping`, and
 `/dev/net/tun`; the sharing suite also needs `dnsmasq` and IPv6 tunnel kernel
 support. Run it only in a disposable network namespace.
+
+## Neighbour service catalogue
+
+Service catalogue messages use the existing reliable neighbour control stream,
+not a TCP listener or a connection to each routed origin. The catalogue owns a
+synchronizer for each authenticated link incarnation. The node exposes a bounded
+ControlHub and never runs catalogue signature verification or disk writes in its
+routing event loop. Catalogue messages are split into 1 KiB fragments, with a
+64 KiB logical-message bound; the neighbour writer interleaves these fragments
+with urgent device control. Babel datagrams retain the carrier's existing path.
+
+Every neighbour exchanges its current certificate inventory and incremental
+service snapshot. Accepted origin signatures are preserved on relay. Verified
+supplier records seed per-link send stamps to prevent echoes. Failed queue
+admission does not consume a send stamp. The existing 15-second repair scan
+sends unqueued generations only. Certificate cache misses can be repaired through
+other neighbours with bounded, coalesced requests. Ordinary signed-record formats,
+service leases and device-directory renewal/repair intervals are unchanged.
+
+Projection readiness uses a fresh origin-signed inventory challenge instead of an
+origin TLS session. A route loss or process restart invalidates readiness. On
+route recovery, a random 256-bit nonce request follows neighbour control links
+towards the origin; the signed response follows bounded reverse-path state. The
+response binds mesh, full origin/requester principals, nonce, issue/expiry times,
+and a complete immutable inventory of the origin's durable per-service generation
+and body-hash receipts, including inactive keys. Responses are chunked, bounded to
+4 MiB each and 8 MiB retained assembly, and expire after 30 seconds. Generation
+fences persist before readiness becomes visible. Newer concurrent publications
+are preserved; old active bodies cannot bypass an inactive inventory fence, while
+signed withdrawal bodies remain relayable. Request, transfer and queue bounds
+limit work on malformed or non-responsive peers. No request creates a routed
+socket. These freshness requests occur on readiness recovery, not on each normal
+service renewal. An origin without a live route remains unprojected.
+
+The distinct ALPN requires upgrading connected neighbours together. The protocol
+is based on the version-2 manifest branch; integration with later principal-bound
+manifest/Lite work must retain that branch's stronger signature contract. Compact
+HAVE/WANT artifact dissemination is a separate follow-up; this change preserves
+full signed-record gossip and the existing certificate-inventory optimization.
+
+Run the native affected-package race checks and the opt-in
+`TestNeighbourCatalogueLinuxNamespaces` in a disposable privileged Linux container.
+The latter creates four real routers in separate network namespaces with only
+A-B, B-C and C-D links, checks multihop catalogue readiness and withdrawal after
+partition/heal, and asserts no catalogue TCP listener on port 43022.

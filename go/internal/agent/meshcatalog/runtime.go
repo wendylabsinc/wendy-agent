@@ -2,210 +2,111 @@ package meshcatalog
 
 import (
 	"context"
-	"crypto/tls"
+	"encoding/json"
 	"errors"
-	"fmt"
-	"net"
 	"net/netip"
 	"sync"
 	"time"
 
+	"github.com/wendylabsinc/WendyOS/babel"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
-const (
-	SyncPort = 43022
-	syncALPN = "wendy-mesh-catalog/1"
-)
-
-// Runtime synchronizes signed catalog records over authenticated routed mesh
-// sessions. Its only dependency on the mesh node is a read-only snapshot
-// callback, avoiding a localmesh -> meshcatalog import cycle. Records relay
-// hop by hop, so a device reachable only through neighbours still converges.
-// Run until the context is cancelled.
+// Runtime uses only the existing authenticated, link-local control channels.
+// There is no service catalogue listener, dialer, or end-to-end TLS session.
+// The Run goroutine owns peers and synchronization; projection queries use mu.
 type Runtime struct {
-	catalog                *Catalog
-	snapshot               func() localmesh.NodeSnapshot
-	mu                     sync.Mutex
-	peers                  map[meshid.Device]*catalogPeer
-	tickets                *localmesh.TicketStore
-	dialing                map[meshid.Device]bool
-	closed                 bool
-	onGatewayChange        func()
-	inventoryRetries       map[meshid.Device]inventoryRetry
-	inventoryOverflowUntil time.Time
-	// Tests can route the production outbound path through a real loopback listener.
-	dialPeer func(context.Context, netip.Addr, netip.Addr) (net.Conn, error)
-}
-
-type catalogPeer struct {
-	conn net.Conn
-	out  chan SignedRecord
-	// ready means an initial, ordered snapshot from this authenticated peer
-	// has been received and all missing origin identities were repaired.
-	ready bool
+	catalog         *Catalog
+	snapshot        func() localmesh.NodeSnapshot
+	mu              sync.Mutex
+	fresh           map[meshid.Device]bool
+	pendingFresh    map[meshid.Device]string
+	wake            chan struct{}
+	changes         chan SignedRecord
+	peers           map[babel.LinkID]*catalogPeer
+	requests        map[string]*freshRequestState
+	transfers       []*freshTransfer
+	identityRepairs map[string]*identityRepair
+	hub             *localmesh.ControlHub
+	onGatewayChange func()
 }
 
 func NewRuntime(catalog *Catalog, snapshot func() localmesh.NodeSnapshot) (*Runtime, error) {
 	if catalog == nil || snapshot == nil {
 		return nil, errors.New("missing mesh catalog runtime dependency")
 	}
-	return &Runtime{catalog: catalog, snapshot: snapshot, peers: map[meshid.Device]*catalogPeer{},
-		dialing: map[meshid.Device]bool{},
-		tickets: catalog.creds.ServerTicketStore("catalog", "catalog-tls")}, nil
+	return &Runtime{catalog: catalog, snapshot: snapshot, fresh: make(map[meshid.Device]bool), pendingFresh: make(map[meshid.Device]string), wake: make(chan struct{}, 1), changes: make(chan SignedRecord, 128), peers: make(map[babel.LinkID]*catalogPeer), requests: make(map[string]*freshRequestState)}, nil
 }
-
-// Broadcast schedules an admitted local or relayed record for all live peers.
-// Periodic full reconciliation repairs a full queue and any partition.
 func (r *Runtime) Broadcast(w SignedRecord) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, peer := range r.peers {
-		// Send expressions are evaluated even when select chooses default.
-		// Avoid copying a record that a full queue will drop. Broadcast is
-		// the only producer and holds mu; consumers can only free capacity.
-		if len(peer.out) == cap(peer.out) {
-			continue
-		}
-		select {
-		case peer.out <- cloneWire(w):
-		default:
-		}
+	select {
+	case r.changes <- cloneWire(w):
+	default: /* periodic reconciliation repairs unqueued publications */
 	}
 }
-
-func (r *Runtime) Run(ctx context.Context) error {
-	if ctx == nil {
-		return errors.New("missing mesh catalog context")
+func (r *Runtime) Run(ctx context.Context, hubs ...*localmesh.ControlHub) error {
+	if ctx == nil || len(hubs) != 1 || hubs[0] == nil {
+		return errors.New("catalogue requires neighbour control transport")
 	}
-	self := r.catalog.device.MeshAddress()
-	listenAddr := net.JoinHostPort(self.String(), fmt.Sprint(SyncPort))
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	var listener net.Listener
-	var err error
+	r.hub = hubs[0]
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	reconcile := time.NewTicker(15 * time.Second)
+	defer reconcile.Stop()
 	defer func() {
-		if listener != nil {
-			_ = listener.Close()
+		for _, p := range r.peers {
+			p.cancel()
 		}
 		r.mu.Lock()
-		r.closed = true
-		for _, peer := range r.peers {
-			_ = peer.conn.Close()
-		}
+		clear(r.fresh)
+		clear(r.pendingFresh)
 		r.mu.Unlock()
 	}()
 	for {
-		if listener == nil {
-			listener, err = net.Listen("tcp", listenAddr)
-			if err == nil {
-				go r.accept(ctx, listener)
-			}
+		r.syncPeers(ctx)
+		for _, p := range r.peers {
+			r.pump(p)
 		}
-		r.discover(ctx, time.Now())
+		r.pumpTransfers()
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ticker.C:
-		}
-	}
-}
-
-func (r *Runtime) accept(ctx context.Context, listener net.Listener) {
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		go r.inbound(ctx, conn)
-	}
-}
-
-func (r *Runtime) serverTLS() *tls.Config {
-	config := &tls.Config{
-		Certificates: []tls.Certificate{r.catalog.creds.Certificate},
-		MinVersion:   tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
-		ClientAuth: tls.RequireAnyClientCert,
-		NextProtos: []string{syncALPN},
-		VerifyConnection: func(state tls.ConnectionState) error {
-			chain := make([][]byte, 0, len(state.PeerCertificates))
-			for _, cert := range state.PeerCertificates {
-				chain = append(chain, cert.Raw)
+		case e := <-r.hub.Events():
+			r.syncPeers(ctx)
+			if len(e.Data) != 0 {
+				if p := r.peers[e.Peer.ID]; p != nil {
+					if err := r.receive(p, e.Data); err != nil {
+						r.hub.ClosePeer(p.id)
+					}
+				}
 			}
-			id, err := r.catalog.creds.Verify(chain, time.Now())
-			if err != nil {
-				return err
+		case w := <-r.changes:
+			r.broadcastExcept(w, 0)
+		case <-r.wake:
+		case <-tick.C:
+			r.checkFreshness(time.Now())
+		case <-reconcile.C:
+			for _, p := range r.peers {
+				if len(p.records) == 0 {
+					p.records = p.syncer.snapshotRecords(time.Now())
+				}
 			}
-			if meshid.Compare(id.Device, r.catalog.device) >= 0 {
-				return errors.New("unacceptable mesh catalog peer")
-			}
-			return nil
-		},
+		}
 	}
-	r.tickets.Configure(config)
-	return config
 }
-
-func (r *Runtime) inbound(ctx context.Context, raw net.Conn) {
-	defer raw.Close()
-	_ = raw.SetDeadline(time.Now().Add(8 * time.Second))
-	conn := tls.Server(raw, r.serverTLS())
-	if err := conn.HandshakeContext(ctx); err != nil {
-		return
+func (r *Runtime) signal() {
+	select {
+	case r.wake <- struct{}{}:
+	default:
 	}
-	state := conn.ConnectionState()
-	if !catalogALPN(state.NegotiatedProtocol) || len(state.PeerCertificates) == 0 {
-		return
-	}
-	chain := make([][]byte, 0, len(state.PeerCertificates))
-	for _, cert := range state.PeerCertificates {
-		chain = append(chain, cert.Raw)
-	}
-	id, err := r.catalog.creds.Verify(chain, time.Now())
-	if err != nil || meshid.Compare(id.Device, r.catalog.device) >= 0 {
-		return
-	}
-	remote, err := netip.ParseAddrPort(raw.RemoteAddr().String())
-	if err != nil {
-		return
-	}
-	if remote.Addr().Unmap() != id.Device.MeshAddress() || !r.eligible(id.Device, time.Now()) {
-		return
-	}
-	_ = conn.SetDeadline(time.Time{})
-	r.sessionInventory(ctx, id.Device, conn)
 }
-
-func (r *Runtime) discover(ctx context.Context, now time.Time) {
-	view := r.snapshot()
-	// Synchronize with reachable origins, including origins multiple hops away.
-	// Projection readiness belongs to the origin's fresh inventory session.
-	for _, manifest := range view.Devices {
-		device := meshid.NewDevice(r.catalog.device.Tenant(), manifest.Device)
-		if meshid.Compare(device, r.catalog.device) <= 0 || !eligibleSnapshot(view, device, now) {
-			continue
-		}
-		if _, allowed := r.inventoryAttempt(device, now); !allowed {
-			continue
-		}
-		r.mu.Lock()
-		_, connected := r.peers[device]
-		if !connected && !r.dialing[device] && !r.closed {
-			r.dialing[device] = true
-			go r.outbound(ctx, device)
-		}
-		r.mu.Unlock()
-	}
-	r.mu.Lock()
-	for device, peer := range r.peers {
-		if !eligibleSnapshot(view, device, now) {
-			_ = peer.conn.Close()
+func (r *Runtime) broadcastExcept(w SignedRecord, from babel.LinkID) {
+	for id, p := range r.peers {
+		if id != from && p.inventory.done {
+			r.sendRecord(p, w)
 		}
 	}
-	r.mu.Unlock()
 }
-
 func eligibleSnapshot(view localmesh.NodeSnapshot, device meshid.Device, now time.Time) bool {
 	manifestOK := false
 	for _, m := range view.Devices {
@@ -225,83 +126,70 @@ func eligibleSnapshot(view localmesh.NodeSnapshot, device meshid.Device, now tim
 	}
 	return false
 }
-
-func (r *Runtime) eligible(device meshid.Device, now time.Time) bool {
-	return eligibleSnapshot(r.snapshot(), device, now)
-}
-
-func catalogALPN(protocol string) bool { return protocol == syncALPN }
-
-// ProjectionReady is true only after a current route and a fresh, complete
-// anti-entropy snapshot from the service origin. Cached records alone can be
-// stale when the origin withdrew a service during a partition.
 func (r *Runtime) ProjectionReady(device meshid.Device) bool {
-	if !r.eligible(device, time.Now()) {
+	if !eligibleSnapshot(r.snapshot(), device, time.Now()) {
+		r.InvalidateProjection(device)
 		return false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	peer := r.peers[device]
-	return peer != nil && peer.ready
+	return r.fresh[device]
 }
-
-// InvalidateProjection forces a new snapshot after the origin's route was
-// observed down. Closing the old session also handles a brief cut shorter than
-// Runtime's periodic route scan, for which a previously completed snapshot
-// would otherwise still look current on heal.
 func (r *Runtime) InvalidateProjection(device meshid.Device) {
 	r.mu.Lock()
-	peer := r.peers[device]
-	if peer != nil {
-		peer.ready = false
-	}
+	delete(r.fresh, device)
+	delete(r.pendingFresh, device)
 	r.mu.Unlock()
-	if peer != nil {
-		_ = peer.conn.Close()
-	}
+	r.signal()
 }
-
-func (r *Runtime) outbound(ctx context.Context, device meshid.Device) {
-	defer func() { r.mu.Lock(); delete(r.dialing, device); r.mu.Unlock() }()
-	cold, allowed := r.reserveInventoryAttempt(device, time.Now())
-	if !allowed {
-		return
+func (r *Runtime) receive(p *catalogPeer, data []byte) error {
+	var m inventoryMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
 	}
-	handedOff := false
-	defer func() {
-		if cold && !handedOff {
-			r.inventoryFailed(device, true, time.Now())
+	if err := m.validate(); err != nil {
+		return err
+	}
+	if m.Kind == "fresh-request" || m.Kind == "fresh-chunk" {
+		return r.receiveFresh(p, m, time.Now())
+	}
+	if !p.inventory.done {
+		if err := p.inventory.receive(m); err != nil {
+			return err
 		}
-	}()
-	self := r.catalog.device.MeshAddress()
-	peer := device.MeshAddress()
-	conf, err := r.catalog.creds.PeerTLSWithTickets(device, syncALPN, "catalog-tls")
-	if err != nil {
-		return
+		if p.inventory.done {
+			p.syncer.useCurrentInventory(p.inventory)
+			p.records = p.syncer.snapshotRecords(time.Now())
+		}
+		return nil
 	}
-	// This unshipped protocol has one end state, including cache inventory.
-	conf.NextProtos = []string{syncALPN}
-	dialCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	dial := r.dialPeer
-	if dial == nil {
-		dial = func(ctx context.Context, self, peer netip.Addr) (net.Conn, error) {
-			dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IP(self.AsSlice())}}
-			return dialer.DialContext(ctx, "tcp6", net.JoinHostPort(peer.String(), fmt.Sprint(SyncPort)))
+	if m.Kind == "identity-cache" || m.Kind == "identity-cache-done" {
+		return errors.New("duplicate catalogue inventory")
+	}
+	replies, changed, err := p.syncer.Receive(m.Message, time.Now())
+	if err != nil {
+		return err
+	}
+	r.repairIdentityMessage(p, m.Message, time.Now())
+	if !r.queueMessages(p, replies) {
+		return errors.New("catalogue reply queue full")
+	}
+	if p.syncer.PendingIdentity() {
+		if p.pendingSince.IsZero() {
+			p.pendingSince = time.Now()
+		}
+	} else {
+		p.pendingSince = time.Time{}
+	}
+	for _, w := range changed {
+		// Receiving a verified copy proves this supplier has it, without an echo.
+		r.broadcastExcept(w, p.id)
+		if r.onGatewayChange != nil {
+			var record Record
+			if json.Unmarshal(w.Body, &record) == nil && IsGatewayOffer(record) {
+				r.onGatewayChange()
+			}
 		}
 	}
-	raw, err := dial(dialCtx, self, peer)
-	if err != nil {
-		return
-	}
-	defer raw.Close()
-	conn := tls.Client(raw, conf)
-	if err := conn.HandshakeContext(dialCtx); err != nil {
-		return
-	}
-	if conn.ConnectionState().NegotiatedProtocol != syncALPN || !r.eligible(device, time.Now()) {
-		return
-	}
-	handedOff = true
-	r.sessionInventoryReserved(ctx, device, conn, cold)
+	return nil
 }

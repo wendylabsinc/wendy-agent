@@ -33,6 +33,8 @@ type nodePeer struct {
 	link      nodeLink
 	tun       *os.File
 	control   chan ControlMessage
+	catalog   chan ControlMessage
+	done      chan struct{}
 	sync      *Synchronizer
 }
 
@@ -70,6 +72,7 @@ type nodeEvent struct {
 // authenticated QUIC connections and pass them to Attach; no NAN concepts appear
 // in routing or service synchronization. Parallel links have distinct LinkIDs.
 type Node struct {
+	controlHub      *ControlHub
 	Credentials     *Credentials
 	kernel          *Kernel
 	cache           *IdentityCache
@@ -121,7 +124,7 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	n := &Node{Credentials: credentials, kernel: kernel, cache: cache, directory: directory, bundleHints: newBundleHintCache(), store: store, state: state, peers: map[babel.LinkID]*nodePeer{}, events: make(chan nodeEvent, 256), ctx: ctx, cancel: cancel, started: now,
+	n := &Node{controlHub: NewControlHub(), Credentials: credentials, kernel: kernel, cache: cache, directory: directory, bundleHints: newBundleHintCache(), store: store, state: state, peers: map[babel.LinkID]*nodePeer{}, events: make(chan nodeEvent, 256), ctx: ctx, cancel: cancel, started: now,
 		advertisement: Manifest{Version: ManifestVersionRoute, Device: credentials.Device.UUID(), Name: name, AgentPort: agentPort}}
 	ok := false
 	defer func() {
@@ -160,6 +163,8 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 	ok = true
 	return n, nil
 }
+
+func (n *Node) ControlHub() *ControlHub { return n.controlHub }
 
 func (n *Node) Snapshot() NodeSnapshot {
 	v := n.view.Load()
@@ -221,6 +226,7 @@ func (n *Node) Run() error {
 	defer n.cancel()
 	defer func() {
 		_ = n.Stop()
+		n.controlHub.Close()
 		for _, p := range n.peers {
 			_ = p.link.Close()
 		}
@@ -327,6 +333,17 @@ func (n *Node) handle(e nodeEvent) error {
 		e.add.sync = NewSynchronizer(n.directory, n.cache)
 		e.add.sync.SeedKnownBundles(n.bundleHints.Known(e.add.device, time.Now()))
 		n.peers[e.add.id] = e.add
+		p := e.add
+		n.controlHub.Add(ControlPeer{ID: p.id, Device: p.device}, func(ctx context.Context, data []byte) error {
+			select {
+			case p.catalog <- ControlMessage{Kind: "catalog", Catalog: data}:
+				return nil
+			case <-p.done:
+				return io.ErrClosedPipe
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}, func() { _ = p.link.Close() })
 		// Both ends derive the same complementary pair from the full UUIDs.
 		local, peer, err := meshid.LinkLocalAddresses(n.Credentials.Device, e.add.device)
 		if err != nil {
@@ -346,6 +363,8 @@ func (n *Node) handle(e nodeEvent) error {
 		if err := n.step(babel.RemoveLink{ID: e.id}); err != nil {
 			return err
 		}
+		n.controlHub.Remove(e.id)
+		close(p.done)
 		delete(n.peers, e.id)
 		_ = n.kernel.RemovePeer(e.id)
 		n.refresh()
@@ -355,6 +374,12 @@ func (n *Node) handle(e nodeEvent) error {
 		return n.step(babel.Receive{ID: e.id, Packet: e.packet})
 	}
 	if e.control != nil {
+		if e.control.Kind == "catalog" {
+			if err := n.controlHub.Deliver(e.id, e.control.Catalog); err != nil {
+				_ = p.link.Close()
+			}
+			return nil
+		}
 		replies, changed, err := p.sync.Receive(*e.control, time.Now())
 		if err != nil {
 			_ = p.link.Close()
@@ -504,7 +529,7 @@ func (n *Node) attachLink(ctx context.Context, peer meshid.Device, cost uint16, 
 	if cost == 0 || cost == ^uint16(0) {
 		return errors.New("invalid local-mesh link cost")
 	}
-	p := &nodePeer{device: peer, cost: cost, transport: carrierName(ctx, "unknown"), link: link, control: make(chan ControlMessage, 128)}
+	p := &nodePeer{device: peer, cost: cost, transport: carrierName(ctx, "unknown"), link: link, control: make(chan ControlMessage, 128), catalog: make(chan ControlMessage, 16), done: make(chan struct{})}
 	if err := n.request(ctx, nodeEvent{add: p}); err != nil {
 		return err
 	}
@@ -522,17 +547,40 @@ func (n *Node) attachLink(ctx context.Context, peer meshid.Device, cost uint16, 
 	done := make(chan error, 4)
 	worker := func(f func() error) { wg.Add(1); go func() { defer wg.Done(); done <- f() }() }
 	worker(func() error {
+		// Route/device control has priority, with one catalogue frame after
+		// at most four control messages. No catalogue work runs on Node.Run.
+		urgent := 0
 		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case m := <-p.control:
-				if err := link.WriteControl(m); err != nil {
-					return err
+			var m ControlMessage
+			if urgent >= 4 {
+				select {
+				case m = <-p.catalog:
+					urgent = 0
+				default:
 				}
-				if m.Kind == "bundle" {
-					n.bundleHints.Written(p.device, m.Bundle, time.Now())
+			}
+			if m.Kind == "" && urgent < 4 {
+				select {
+				case m = <-p.control:
+					urgent++
+				default:
 				}
+			}
+			if m.Kind == "" {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case m = <-p.control:
+					urgent++
+				case m = <-p.catalog:
+					urgent = 0
+				}
+			}
+			if err := link.WriteControl(m); err != nil {
+				return err
+			}
+			if m.Kind == "bundle" {
+				n.bundleHints.Written(p.device, m.Bundle, time.Now())
 			}
 		}
 	})

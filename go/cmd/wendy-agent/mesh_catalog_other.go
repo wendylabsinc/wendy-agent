@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/meshcatalog"
 	"github.com/wendylabsinc/wendy/go/internal/agent/meshingress"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -18,7 +19,7 @@ type meshCatalogManager struct{}
 func newMeshCatalogManager(string, *meshingress.Registry, *zap.Logger) *meshCatalogManager {
 	return &meshCatalogManager{}
 }
-func (*meshCatalogManager) Activate(context.Context, *localmesh.Credentials, func() localmesh.NodeSnapshot, func(), bool, bool) error {
+func (*meshCatalogManager) Activate(context.Context, *localmesh.Credentials, func() localmesh.NodeSnapshot, *mesh.VIPTable, bool, bool, *localmesh.ControlHub) error {
 	return nil
 }
 func (*meshCatalogManager) Deactivate()                   {}

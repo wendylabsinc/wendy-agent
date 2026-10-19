@@ -74,7 +74,7 @@ func (m *meshCatalogManager) DisablePhysicalLANProjection() {
 	m.mu.Unlock()
 }
 
-func (m *meshCatalogManager) Activate(ctx context.Context, credentials *localmesh.Credentials, snapshot func() localmesh.NodeSnapshot, vips *mesh.VIPTable, ethernet, wifi bool) error {
+func (m *meshCatalogManager) Activate(ctx context.Context, credentials *localmesh.Credentials, snapshot func() localmesh.NodeSnapshot, vips *mesh.VIPTable, ethernet, wifi bool, hub *localmesh.ControlHub) error {
 	if credentials == nil || snapshot == nil {
 		return errors.New("mesh catalog requires a running node")
 	}
@@ -153,7 +153,7 @@ func (m *meshCatalogManager) Activate(ctx context.Context, credentials *localmes
 	m.mu.Unlock()
 	go func() {
 		defer close(a.done)
-		if err := runtime.Run(activeCtx); err != nil && activeCtx.Err() == nil {
+		if err := runtime.Run(activeCtx, hub); err != nil && activeCtx.Err() == nil {
 			m.logger.Error("mesh catalog synchronization stopped", zap.Error(err))
 		}
 	}()
@@ -244,10 +244,16 @@ func (m *meshCatalogManager) SetGatewayOffer(enable bool) error {
 		return errors.New("mesh catalog is not active")
 	}
 	if enable {
-		_, err := m.active.catalog.PublishGatewayOffer(time.Now())
+		w, err := m.active.catalog.PublishGatewayOffer(time.Now())
+		if err == nil {
+			m.active.runtime.Broadcast(w)
+		}
 		return err
 	}
-	_, err := m.active.catalog.WithdrawGatewayOffer(time.Now())
+	w, err := m.active.catalog.WithdrawGatewayOffer(time.Now())
+	if err == nil && len(w.Body) != 0 {
+		m.active.runtime.Broadcast(w)
+	}
 	return err
 }
 

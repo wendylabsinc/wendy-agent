@@ -1,6 +1,8 @@
 package meshcatalog
 
 import (
+	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"net/netip"
 	"testing"
 	"time"
@@ -45,4 +47,9 @@ func TestEligibleSnapshotRequiresSignedPresenceAndDeviceRoute(t *testing.T) {
 			}
 		})
 	}
+}
+func deviceForIndex(i int) meshid.Device {
+	principal := fmt.Sprintf("spiffe://wendy.sh/tenant/%s/device/%08x-0000-4000-8000-00000000%04x", testTenantID, i, i)
+	device, _ := meshid.DeviceFromPrincipal(principal)
+	return device
 }

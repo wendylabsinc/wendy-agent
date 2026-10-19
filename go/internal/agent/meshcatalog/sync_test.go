@@ -93,7 +93,11 @@ func TestSynchronizationRepairsReorderAndReconnect(t *testing.T) {
 		t.Fatalf("relay snapshot = %+v", got)
 	}
 	toA := NewSynchronizer(a, aCache)
-	for _, frame := range toB.Record(changed[0], f.now) {
+	fromBToA := NewSynchronizer(b, bCache)
+	if got := toB.Record(changed[0], f.now); len(got) != 0 {
+		t.Fatal("echoed record to its supplier")
+	}
+	for _, frame := range fromBToA.Record(changed[0], f.now) {
 		_, _, err = toA.Receive(frame, f.now)
 		if err != nil {
 			t.Fatal(err)
@@ -120,7 +124,7 @@ func TestSynchronizationRepairsReorderAndReconnect(t *testing.T) {
 	if len(changed) != 1 || len(b.Snapshot(f.now.Add(time.Second))) != 0 {
 		t.Fatal("withdrawal did not remove service")
 	}
-	for _, frame := range toB.Record(changed[0], f.now.Add(time.Second)) {
+	for _, frame := range fromBToA.Record(changed[0], f.now.Add(time.Second)) {
 		_, _, err = toA.Receive(frame, f.now.Add(time.Second))
 		if err != nil {
 			t.Fatal(err)

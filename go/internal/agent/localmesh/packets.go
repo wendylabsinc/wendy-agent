@@ -9,7 +9,7 @@ import (
 const (
 	// Version 2 requires signed, expiring route origins. Never negotiate the
 	// previous trust-every-neighbor routing policy as a fallback.
-	LinkALPN            = "wendy-local-mesh/2"
+	LinkALPN            = "wendy-local-mesh/2-catalog-1"
 	LinkProtocolVersion = 2
 	// Leave room for an IPv6 outer header around a minimum-size IPv6 packet.
 	// Carrier fragmentation remains at most two bounded datagrams per packet.

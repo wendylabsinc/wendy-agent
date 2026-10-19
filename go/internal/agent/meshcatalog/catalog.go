@@ -32,18 +32,19 @@ type storedRecord struct {
 // record visible. This prevents a restart from resurrecting a removed or
 // superseded service.
 type Catalog struct {
-	mu        sync.Mutex
-	mutation  sync.Mutex
-	mesh      string
-	device    meshid.Device
-	principal string
-	limit     int
-	creds     *localmesh.Credentials
-	cache     *localmesh.IdentityCache
-	authorize AuthorizePublication
-	persist   func([]Receipt) error
-	entries   map[Key]storedRecord
-	history   map[Key]Receipt
+	mu          sync.Mutex
+	mutation    sync.Mutex
+	mesh        string
+	device      meshid.Device
+	principal   string
+	limit       int
+	creds       *localmesh.Credentials
+	cache       *localmesh.IdentityCache
+	authorize   AuthorizePublication
+	persist     func([]Receipt) error
+	entries     map[Key]storedRecord
+	history     map[Key]Receipt
+	unavailable map[Key]uint64
 }
 
 func NewCatalog(mesh string, device meshid.Device, limit int, creds *localmesh.Credentials,
@@ -86,7 +87,7 @@ func NewCatalog(mesh string, device meshid.Device, limit int, creds *localmesh.C
 	}
 	return &Catalog{mesh: mesh, device: device, principal: principal, limit: limit, creds: creds,
 		cache: cache, authorize: authorize, persist: persist,
-		entries: make(map[Key]storedRecord), history: history}, nil
+		entries: make(map[Key]storedRecord), history: history, unavailable: make(map[Key]uint64)}, nil
 }
 
 func cloneWire(w SignedRecord) SignedRecord {
@@ -104,6 +105,11 @@ func (c *Catalog) prune(now time.Time) {
 	for key, receipt := range c.history {
 		if key.Device != c.principal && !receipt.Until.After(now) {
 			delete(c.history, key)
+		}
+	}
+	for key, floor := range c.unavailable {
+		if receipt, ok := c.history[key]; !ok || receipt.Generation > floor {
+			delete(c.unavailable, key)
 		}
 	}
 }
@@ -146,6 +152,9 @@ func (c *Catalog) Accept(w SignedRecord, now time.Time) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.prune(now)
+	if floor := c.unavailable[r.Key]; floor >= r.Generation && !r.Withdraw {
+		return false, ErrStale
+	}
 	if old, found := c.history[r.Key]; found {
 		if r.Generation < old.Generation {
 			return false, ErrStale
@@ -176,7 +185,11 @@ func (c *Catalog) Accept(w SignedRecord, now time.Time) (bool, error) {
 	for key, old := range c.history {
 		next[key] = old
 	}
-	until := now.Add(MaxLease + 10*time.Second)
+	retention := MaxLease
+	if IsGatewayOffer(r) {
+		retention = GatewayOfferLease
+	}
+	until := now.Add(retention + 10*time.Second)
 	if r.Key.Device == c.principal {
 		// A local generation must never be reused, even after a restart or
 		// a longer disconnect than the remote replay window.

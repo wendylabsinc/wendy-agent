@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	StreamALPN         = "wendy-local-mesh-ble/2"
+	StreamALPN         = "wendy-local-mesh-ble/2-catalog-1"
 	streamControl byte = 1
 	streamPacket  byte = 2
 	// A complete IP packet is queued internally, then split by the writer.

@@ -133,7 +133,7 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 		if cfg.Listen != "" || len(cfg.Peers) != 0 {
 			sharing.carriers.report(epoch, "TCP", localmesh.CarrierStatus{Ready: true})
 		}
-		if err := catalog.Activate(runCtx, node.Credentials, node.Snapshot, vips, cfg.Ethernet, cfg.InfrastructureWiFi); err != nil {
+		if err := catalog.Activate(runCtx, node.Credentials, node.Snapshot, vips, cfg.Ethernet, cfg.InfrastructureWiFi, node.ControlHub()); err != nil {
 			logger.Error("mesh service catalog unavailable", zap.Error(err))
 		}
 		sharing.Activate(runCtx, node)
