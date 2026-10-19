@@ -14,7 +14,8 @@ FALLBACK_RESULT = {"content": [{"type": "text", "text": "{}"}], "isError": False
 SCRUB_KEY = re.compile(r"(?i)serial|^mac(_?address)?$|^org(_?id)?$|asset(_?id)?|tenant|uuid|hostname")
 _MAC = re.compile(r"\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b")
 _UUID = re.compile(r"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b")
-_CLOUD = re.compile(r"cloud://\S+")
+_CLOUD = re.compile(r"cloud://[^\s\"'<>,}\]]+")
+_TOOL_NAME = re.compile(r"^[a-z0-9_]+$")
 
 
 def _validate(value, where):
@@ -39,6 +40,8 @@ def _read(path):
 
 
 def load_capture(canned_dir, set_name, tool):
+    if not isinstance(tool, str) or not _TOOL_NAME.match(tool):
+        return None
     return _read(Path(canned_dir) / set_name / f"{tool}.json")
 
 
@@ -88,6 +91,16 @@ def render(value, context):
     if isinstance(value, str):
         return PLACEHOLDER.sub(lambda m: _lookup(m.group(1), context), value)
     if isinstance(value, dict):
+        if value.get("type") == "text" and isinstance(value.get("text"), str):
+            try:
+                parsed = json.loads(value["text"])
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, (dict, list)):
+                # Render on the parsed value so substituted text gets proper JSON escaping.
+                out = {k: render(v, context) for k, v in value.items() if k != "text"}
+                out["text"] = json.dumps(render(parsed, context))
+                return out
         return {k: render(v, context) for k, v in value.items()}
     if isinstance(value, list):
         return [render(v, context) for v in value]
@@ -102,6 +115,8 @@ class CannedStore:
         self._latest = {}
 
     def reply(self, tool, arguments):
+        if not isinstance(tool, str) or not _TOOL_NAME.match(tool):
+            return json.loads(json.dumps(FALLBACK_RESULT)), False
         if tool not in self._captures:
             self._captures[tool] = load_capture(self.canned_dir, self.set_name, tool)
         capture = self._captures[tool]
@@ -138,6 +153,11 @@ def scrub(value):
 def _scrub_string(s):
     s = _CLOUD.sub("{{device}}", s)
     return _UUID.sub("00000000-0000-0000-0000-000000000000", _MAC.sub("02:00:00:00:00:00", s))
+
+
+def scrub_output(s):
+    """Scrub CLI stdout/stderr: parsed and re-serialized if JSON, else string-level."""
+    return _scrub_text(s)
 
 
 def _scrub_text(s):

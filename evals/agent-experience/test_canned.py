@@ -91,6 +91,72 @@ class CannedTests(unittest.TestCase):
         self.assertEqual(data["captured_with"]["device_kind"], "simulator")
         self.assertEqual(data["captured_with"]["wendy_version"], "fake-wendy 0.0.0")
 
+    def _fake_cli(self, out):
+        marker = self.root / "marker"
+        script = self.root / "fakewendy"
+        script.write_text("#!/bin/sh\necho \"$@\" >> %s\n[ \"$1\" = --version ] && { echo fake 1; exit 0; }\n"
+                          "echo '%s'\n" % (marker, out))
+        script.chmod(0o755)
+        return script, marker
+
+    def _cli_args(self, script, *extra):
+        return ["--wendy", str(script), "--device", "vm:t", "--set", "s", "--canned-dir", str(self.root),
+                *extra]
+
+    def test_cli_captures_keyed_on_full_subcommand_path(self):
+        script, _ = self._fake_cli("{}")
+        for words in (["device", "apps", "stop"], ["device", "apps", "list"]):
+            self.assertEqual(capture.main(self._cli_args(script, "--yes", "--cli", "--json", *words)), 0)
+        self.assertTrue((self.root / "s/cli/device-apps-stop.json").exists())
+        self.assertTrue((self.root / "s/cli/device-apps-list.json").exists())
+        got = canned.load_cli_capture(self.root, "s", ["device", "apps", "stop"])
+        self.assertEqual(got["argv_prefix"], ["device", "apps", "stop"])
+
+    def test_prefix_words_shortens_prefix(self):
+        script, _ = self._fake_cli("{}")
+        capture.main(self._cli_args(script, "--yes", "--prefix-words", "2", "--cli", "wifi", "connect", "Lab5G"))
+        self.assertEqual(json.loads((self.root / "s/cli/wifi-connect.json").read_text())["argv_prefix"],
+                         ["wifi", "connect"])
+
+    def test_cli_requires_yes_and_passes_device(self):
+        script, marker = self._fake_cli("{}")
+        self.assertEqual(capture.main(self._cli_args(script, "--cli", "device", "list")), 2)
+        self.assertNotIn("--device", marker.read_text())  # only --version ran
+        capture.main(self._cli_args(script, "--yes", "--cli", "device", "list"))
+        self.assertIn("--device vm:t device list", marker.read_text())
+
+    def test_unresolvable_wendy_exits_2_without_running_anything(self):
+        script, marker = self._fake_cli("{}")
+        args = ["--wendy", str(self.root / "missing"), "--device", "vm:t", "--set", "s",
+                "--canned-dir", str(self.root), "--yes", "--tool", "read_thing"]
+        self.assertEqual(capture.main(args), 2)
+        self.assertFalse(marker.exists())
+
+    def test_cli_json_output_scrubbed_and_valid(self):
+        out = json.dumps({"serial_number": "S1", "org_id": "o", "sel": "cloud://h:1/org/x/asset/y", "k": "v"})
+        script, _ = self._fake_cli(out)
+        capture.main(self._cli_args(script, "--yes", "--cli", "device", "list"))
+        stdout = json.loads((self.root / "s/cli/device-list.json").read_text())["stdout"]
+        parsed = json.loads(stdout)
+        self.assertEqual(parsed["serial_number"], "scrubbed")
+        self.assertEqual(parsed["org_id"], "scrubbed")
+        self.assertEqual(parsed["sel"], "{{device}}")
+        self.assertEqual(parsed["k"], "v")
+
+    def test_placeholder_values_are_json_escaped(self):
+        write(self.root, "s", "t", [text('{"ssid": "{{args.ssid}}"}')])
+        store = canned.CannedStore(self.root, "s", {})
+        result, _ = store.reply("t", {"ssid": 'a"b\\c'})
+        self.assertEqual(json.loads(result["content"][0]["text"])["ssid"], 'a"b\\c')
+
+    def test_tool_name_cannot_escape_canned_dir(self):
+        outside = self.root / "x.json"
+        outside.write_text(json.dumps({"tool": "x", "replies": [text("leak")]}))
+        (self.root / "s").mkdir()
+        self.assertIsNone(canned.load_capture(self.root, "s", "../x"))
+        self.assertEqual(canned.CannedStore(self.root, "s", {}).reply("../x", {}),
+                         (canned.FALLBACK_RESULT, False))
+
 
 if __name__ == "__main__":
     unittest.main()

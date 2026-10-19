@@ -7,8 +7,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from canned import scrub
+import shutil
+
+from canned import scrub, scrub_output
 from mcp_client import StdioMCP
+from tool_trace import cli_path
 
 DEFAULT_DIR = Path(__file__).resolve().parent / "canned"
 
@@ -30,7 +33,7 @@ def _sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def capture_mcp(args, canned_dir):
+def capture_mcp(args, canned_dir, provenance):
     argv = [args.wendy, "mcp", "serve", "--tool-groups", "all", "--device", args.device]
     with StdioMCP(argv, timeout=120) as mcp:
         mcp.initialize()
@@ -47,8 +50,7 @@ def capture_mcp(args, canned_dir):
     data = {"tool": args.tool, "replies": []}
     if path.is_file():
         data = json.loads(path.read_text())
-    data["captured_with"] = {"wendy_version": _version(args.wendy), "wendy_sha256": _sha256(args.wendy),
-                             "device_kind": device_kind(args.device)}
+    data["captured_with"] = provenance
     data["replies"].append(scrub(result))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
@@ -59,9 +61,18 @@ def capture_mcp(args, canned_dir):
 
 def capture_cli(args, canned_dir):
     words = args.cli
-    run = subprocess.run([args.wendy, *words], capture_output=True, text=True, timeout=120)
-    path = Path(canned_dir) / args.set / "cli" / ("-".join(words[:2]) + ".json")
-    data = {"argv_prefix": words[:2], "stdout": scrub(run.stdout), "stderr": scrub(run.stderr),
+    prefix = cli_path(words)
+    if args.prefix_words:
+        prefix = prefix[:args.prefix_words]
+    if not prefix:
+        print("no subcommand words found in --cli", file=sys.stderr)
+        return 2
+    if not args.yes:
+        print("CLI commands are not classified read-only; pass --yes to run it for real", file=sys.stderr)
+        return 2
+    run = subprocess.run([args.wendy, "--device", args.device, *words], capture_output=True, text=True, timeout=120)
+    path = Path(canned_dir) / args.set / "cli" / ("-".join(prefix) + ".json")
+    data = {"argv_prefix": prefix, "stdout": scrub_output(run.stdout), "stderr": scrub_output(run.stderr),
             "exit_code": run.returncode}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
@@ -76,14 +87,26 @@ def main(argv=None):
     p.add_argument("--set", required=True)
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--tool")
-    mode.add_argument("--cli", nargs="+", metavar="WORD")
+    mode.add_argument("--cli", nargs=argparse.REMAINDER, metavar="WORD")
     p.add_argument("--args")
     p.add_argument("--yes", action="store_true")
     p.add_argument("--canned-dir", default=str(DEFAULT_DIR))
+    p.add_argument("--prefix-words", type=int)
     args = p.parse_args(argv)
+    resolved = shutil.which(args.wendy)
+    if resolved is None:
+        print(f"cannot resolve --wendy {args.wendy}", file=sys.stderr)
+        return 2
+    args.wendy = resolved
+    try:
+        provenance = {"wendy_version": _version(resolved), "wendy_sha256": _sha256(resolved),
+                      "device_kind": device_kind(args.device)}
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"cannot inspect wendy binary: {e}", file=sys.stderr)
+        return 2
     if args.cli:
         return capture_cli(args, args.canned_dir)
-    return capture_mcp(args, args.canned_dir)
+    return capture_mcp(args, args.canned_dir, provenance)
 
 
 if __name__ == "__main__":
