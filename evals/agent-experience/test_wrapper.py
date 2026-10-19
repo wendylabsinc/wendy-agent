@@ -1,5 +1,7 @@
 import json
 import os
+import signal
+import time
 from pathlib import Path
 import stat
 import subprocess
@@ -16,6 +18,11 @@ FAKE = str(HERE / "fake_mcp_server.py")
 SAFE = [["device", "list"], ["docs"]]
 FAKE_REAL = """#!/bin/sh
 echo run > "$FAKE_MARKER"
+if [ -n "$FAKE_STDIN" ]; then
+  if [ -t 0 ]; then tty=tty; else tty=notty; fi
+  echo "$tty:$(cat)" > "$FAKE_STDIN"
+fi
+if [ -n "$FAKE_SLEEP" ]; then echo $$ > "$FAKE_SLEEP"; exec sleep 30; fi
 printf '{"argv":['
 sep=
 for a in "$@"; do printf '%s"%s"' "$sep" "$a"; sep=,; done
@@ -47,7 +54,7 @@ class WrapperTests(unittest.TestCase):
                     "shim": str(self.shim), **overrides}
         path = self.root / "scenario.json"
         path.write_text(json.dumps(scenario))
-        return {**os.environ, "WENDY_EVAL_SCENARIO": str(path), "FAKE_MARKER": str(self.marker),
+        return {**os.environ, "WENDY_EVAL_SCENARIO": str(path), "FAKE_MARKER": str(self.marker), "FAKE_SLEEP": "",
                 "PYTHONPATH": "/nonexistent"}
 
     def run_shim(self, *argv, **overrides):
@@ -131,6 +138,75 @@ class WrapperTests(unittest.TestCase):
                                 text=True, timeout=20)
         self.assertEqual(result.returncode, 2)
         self.assertIn("eval wrapper used outside a scenario", result.stderr)
+
+    def test_real_runs_get_no_stdin(self):
+        env = {**self.env(), "FAKE_STDIN": str(self.root / "stdin")}
+        result = subprocess.run([str(self.shim), "device", "list"], env=env, cwd="/",
+                                input="typed\n", capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "stdin").read_text().strip(), "notty:")
+
+    def test_canned_call_is_logged_even_if_stdout_is_closed(self):
+        self.capture(["wifi", "connect"], "connected\n", 3)
+        r, w = os.pipe()
+        os.close(r)
+        proc = subprocess.run([str(self.shim), "wifi", "connect", "X"], env=self.env(), cwd="/",
+                              stdout=w, stderr=subprocess.PIPE, text=True, timeout=20)
+        os.close(w)
+        self.assertEqual(proc.returncode, 3)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertEqual(self.records()[0]["exit_code"], 3)
+
+    def test_interrupted_real_run_is_logged(self):
+        sleeper = self.root / "pid"
+        env = self.env()
+        env["FAKE_SLEEP"] = str(sleeper)
+        proc = subprocess.Popen([str(self.shim), "device", "list"], env=env, cwd="/",
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(proc.kill)
+        deadline = time.time() + 10
+        while not (sleeper.exists() and sleeper.read_text().strip()) and time.time() < deadline:
+            time.sleep(0.05)
+        pid = int(sleeper.read_text())
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=10)
+        self.assertEqual(self.records()[0]["exit_code"], 143)
+        with self.assertRaises(OSError):
+            for _ in range(50):
+                os.kill(pid, 0)
+                time.sleep(0.1)
+            os.kill(pid, 0)
+
+    def test_internal_errors_stay_out_of_agent_output(self):
+        (self.root / "cli_safe.json").write_text("{not json")
+        result = self.run_shim("device", "list")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        self.assertFalse(self.marker.exists())
+        self.assertIn("error", self.records()[0])
+
+    def test_bad_config_fails_closed(self):
+        scenario = self.root / "scenario.json"
+        env = self.env()
+        scenario.write_text("{corrupt")
+        result = subprocess.run([str(self.shim), "device", "list"], env=env, capture_output=True,
+                                text=True, timeout=20)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(len(result.stderr.strip().splitlines()), 1)
+        result = self.run_shim("device", "list", real_wendy="fake-wendy")
+        self.assertEqual(result.returncode, 2)
+        link = self.root / "link"
+        link.symlink_to(self.shim)
+        self.assertEqual(self.run_shim("device", "list", real_wendy=str(link)).returncode, 2)
+        self.assertEqual(self.run_shim("device", "list", shim="").returncode, 2)
+        self.assertFalse(self.marker.exists())
+
+    def test_risky_shapes_never_run_real(self):
+        for argv in (["--device", "X", "wifi", "connect", "Lab5G"], ["wifi", "connect", "--help"],
+                     ["mcp", "setup"]):
+            result = self.run_shim(*argv)
+            self.assertEqual(result.returncode, 0, argv)
+            self.assertFalse(self.marker.exists(), argv)
+            self.assertIs(self.records()[-1]["canned"], True)
 
 
 if __name__ == "__main__":
