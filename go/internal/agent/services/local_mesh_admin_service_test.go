@@ -155,10 +155,18 @@ func TestLocalMeshAdminCanDisableLastCarrierWithoutTCPConfig(t *testing.T) {
 	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Ethernet: proto.Bool(true), InfrastructureWifi: proto.Bool(true)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(false), Ethernet: proto.Bool(false)}); err != nil {
+	disableOtherCarriers := &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(false), Ethernet: proto.Bool(false)}
+	if _, err := svc.ConfigureLocalMesh(ctx, disableOtherCarriers); err != nil {
 		t.Fatal(err)
 	}
 	carriers, err := localmesh.LoadTCPConfig(filepath.Join(dir, "local-mesh.json"), device)
+	if err != nil || carriers == nil || !carriers.InfrastructureWiFi || carriers.NAN || carriers.BLE || carriers.Ethernet {
+		t.Fatalf("partial update must preserve the remaining Wi-Fi carrier: %+v %v", carriers, err)
+	}
+	if _, err := svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{InfrastructureWifi: proto.Bool(false)}); err != nil {
+		t.Fatal(err)
+	}
+	carriers, err = localmesh.LoadTCPConfig(filepath.Join(dir, "local-mesh.json"), device)
 	if err != nil || carriers != nil {
 		t.Fatalf("carrier-only disabled state should remove opt-in file: %+v %v", carriers, err)
 	}
