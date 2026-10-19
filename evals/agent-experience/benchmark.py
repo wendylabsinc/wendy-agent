@@ -143,6 +143,7 @@ def metrics(adapter, events):
     reported_cost = None
     models = set()
     text = []
+    servers = None
     for index, event in enumerate(events):
         kind = event.get("type")
         if adapter == "codex":
@@ -157,6 +158,8 @@ def metrics(adapter, events):
                 usage.append(normalize_usage(event.get("usage")))
             errors += kind in ("turn.failed", "error")
         elif adapter == "claude":
+            if kind == "system" and event.get("subtype") == "init" and servers is None:
+                servers = [s.get("name", "") for s in event.get("mcp_servers") or [] if isinstance(s, dict)]
             if kind == "assistant":
                 message = event.get("message", {})
                 if message.get("model"):
@@ -197,7 +200,7 @@ def metrics(adapter, events):
             "tool_calls": len(tools), "permission_denials": len(denied) if adapter != "codex" else None,
             "reported_cost_usd": reported_cost, "reported_cost_kind": "client_estimate" if reported_cost is not None else None,
             "models_observed": sorted(models), "agent_completed": ended, "agent_errors": errors,
-            "final_text": "\n".join(text), "tool_trace": build_trace(adapter, events)}
+            "final_text": "\n".join(text), "mcp_servers_observed": servers or [], "tool_trace": build_trace(adapter, events)}
 
 
 def estimate_cost(metric, prices):
@@ -303,10 +306,32 @@ def rescore(results_dir, tasks, scenarios):
     return out
 
 
-def stage_context(workspace, adapter, wendy, state_dir=None):
+def stage_plugin(treatment_root, destination):
+    """Copy the plugin without its own MCP server, so a bare `wendy` from PATH is never loaded."""
+    shutil.copytree(Path(treatment_root) / "plugins/wendy-agentic-coding", destination)
+    manifest = destination / ".claude-plugin/plugin.json"
+    data = json.loads(manifest.read_text())
+    data.pop("mcpServers", None)
+    dump(manifest, data)
+    return destination
+
+
+def tree_sha256(path):
+    digest = hashlib.sha256()
+    path = Path(path)
+    for file in sorted((f for f in path.rglob("*") if f.is_file()), key=lambda f: f.relative_to(path).as_posix()):
+        digest.update(file.relative_to(path).as_posix().encode() + b"\0" + file.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def extra_wendy_servers(metric):
+    return [n for n in metric.get("mcp_servers_observed", []) if "wendy" in n.lower() and n != "wendy"]
+
+
+def stage_context(workspace, adapter, wendy, state_dir=None, treatment_root=ROOT):
     # The supplied Wendy skills are part of the treatment. The benchmark's task
     # definitions, verifier, previous runs, and parent repository are not copied.
-    skills = ROOT / "plugins/wendy-agentic-coding/skills"
+    skills = Path(treatment_root) / "plugins/wendy-agentic-coding/skills"
     if adapter == "codex":
         shutil.copytree(skills, workspace / ".agents/skills")
     if adapter == "claude":
@@ -468,14 +493,15 @@ def agent_timeout(config, task):
     return min(values)
 
 
-def trial(config, agent_name, target_name, task, output, wendy):
+def trial(config, agent_name, target_name, task, output, wendy, treatment_root=ROOT):
     agent, target = config["agents"][agent_name], config["targets"][target_name]
     ident = uuid.uuid4().hex[:12]
     directory = output / f"{agent_name}-{target_name}-{task['id']}-{ident}"
     directory.mkdir()
     workspace = Path(tempfile.mkdtemp(prefix="wendy-eval-"))
     state_dir = isolated_device_state(target) if config.get("isolate_device_state", True) else None
-    variables = {"root": ROOT, "here": HERE, "workspace": workspace, "wendy": wendy,
+    variables = {"root": ROOT, "here": HERE, "treatment_root": treatment_root, "plugin_dir": directory / "plugin",
+                 "workspace": workspace, "wendy": wendy,
                  "wendy_home": state_dir or Path.home() / ".wendy",
                  "wendy_build_cache": Path.home() / ".cache/wendy",
                  "docker_buildx_cache": Path(os.environ.get("DOCKER_CONFIG", Path.home() / ".docker")) / "buildx",
@@ -519,7 +545,9 @@ def trial(config, agent_name, target_name, task, output, wendy):
             row["stages"], ready = fixture_vm(config, variables, workspace, directory, env)
             if not ready:
                 return row
-        stage_context(workspace, agent["adapter"], wendy, state_dir)
+        stage_context(workspace, agent["adapter"], wendy, state_dir, treatment_root)
+        if agent["adapter"] == "claude":
+            stage_plugin(treatment_root, directory / "plugin")
         for phase in ("prepare", "agent", "verify"):
             if phase == "agent":
                 argv = expand(agent["command"], variables)
@@ -546,6 +574,8 @@ def trial(config, agent_name, target_name, task, output, wendy):
                 row["status"] = ("host_state_changed" if result.get("host_state_changed") else "no_progress"
                                  if result.get("no_progress") else "interrupted"
                                  if result["interrupted"] else "timeout" if result["timed_out"] else "failed")
+                if agent["adapter"] == "claude" and extra_wendy_servers(row["metrics"]):
+                    row["status"] = "mcp_contaminated"
             if phase == "verify":
                 row["task_seconds"] += result["seconds"]
                 row["outcome_verified"] = result["exit_code"] == 0
@@ -554,6 +584,8 @@ def trial(config, agent_name, target_name, task, output, wendy):
                                   and row["metrics"]["invalid_json_lines"] == 0
                                   and not row["stages"]["agent"].get("no_progress")
                                   and not row["stages"]["agent"].get("host_state_changed"))
+                if row["status"] == "mcp_contaminated":
+                    row["success"] = False
                 if row["success"]:
                     row["status"] = "passed"
     finally:
@@ -653,6 +685,8 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--output", type=Path, default=HERE / "results")
+    parser.add_argument("--treatment-root", type=Path, default=ROOT, help="Checkout whose skills and plugin the agents learn from.")
+    parser.add_argument("--wendy", help="Wendy binary; overrides config \"wendy\".")
     parser.add_argument("--execute", action="store_true", help="Run the plan. Without this flag, make no model or device calls.")
     parser.add_argument("--calibrate", action="store_true", help="Check built-in fixtures with reference solutions; no model calls.")
     parser.add_argument("--rescore", type=Path, metavar="DIR", help="Regrade a saved results directory from its logs; no model or device calls.")
@@ -701,6 +735,11 @@ def main():
             parser.error(f"pin a model for {name} in the config")
         if agent["adapter"] not in ("codex", "claude", "wendy"):
             parser.error(f"unknown adapter for {name}")
+        if agent["adapter"] == "claude":
+            command = agent["command"]
+            at = command.index("--plugin-dir") if "--plugin-dir" in command else -1
+            if at < 0 or at + 1 >= len(command) or command[at + 1] != "{plugin_dir}":
+                parser.error('Claude must load the staged plugin: use "--plugin-dir", "{plugin_dir}"')
     for name in {target for _, target, _ in plan}:
         target = config["targets"][name]
         if target["kind"] not in ("simulator", "cloud", "physical"):
@@ -708,7 +747,7 @@ def main():
         expected = {"cloud": "cloud://", "simulator": "vm:", "physical": ""}[target["kind"]]
         if not target.get("device") or not target["device"].startswith(expected) or "SET_" in target["device"]:
             parser.error(f"{name} requires an explicit {expected} selector")
-    wendy = shutil.which(config.get("wendy", "wendy"))
+    wendy = shutil.which(args.wendy or config.get("wendy", "wendy"))
     if not wendy:
         parser.error("Wendy executable not found")
     if config.get("isolate_device_state", True):
@@ -736,13 +775,20 @@ def main():
     config_source.mkdir()
     for file in (ROOT / "go/internal/shared/config").glob("*.go"):
         shutil.copy2(file, config_source / file.name)
+    treatment_root = args.treatment_root.resolve()
     run_process(["git", "diff", "--", "go/internal/cli/chat", "go/internal/shared/config"],
-                ROOT, output / "candidate-diff", 15)
+                treatment_root, output / "candidate-diff", 15)
     for name, argv in [("wendy", [wendy, "--version"]), ("revision", ["git", "rev-parse", "HEAD"])]:
         snapshot[name] = run_process(argv, ROOT, output / name, 15)
     for name in agents:
         argv = expand(config["agents"][name]["command"], {"wendy": wendy})
         snapshot[name + "_version"] = run_process([argv[0], "--version"], ROOT, output / (name + "-version"), 15)
+    git = lambda *a: subprocess.run(["git", *a], cwd=treatment_root, capture_output=True).stdout
+    snapshot["argv"], snapshot["cwd"] = sys.argv, os.getcwd()
+    snapshot["treatment"] = {"root": str(treatment_root),
+                             "revision": git("rev-parse", "HEAD").decode().strip(),
+                             "diff_sha256": hashlib.sha256(git("diff", "HEAD")).hexdigest(),
+                             "skills_sha256": tree_sha256(treatment_root / "plugins/wendy-agentic-coding/skills")}
     dump(output / "manifest.json", snapshot)
     rows = []
     spend = config.get("prior_spend_usd", 0)
@@ -754,12 +800,15 @@ def main():
             break
         print(f"[{i}/{len(plan)}] {agent} / {target} / {task['id']} "
               f"(agent limit {agent_timeout(config, task):g}s)", flush=True)
-        row = trial(config, agent, target, task, output, wendy)
+        row = trial(config, agent, target, task, output, wendy, treatment_root)
         rows.append(row)
         with (output / "results.jsonl").open("a") as f:
             f.write(json.dumps(row) + "\n")
         report(rows, output)
         dump(output / "coverage.json", coverage_results(coverage, rows, agents, args.repetitions))
+        if row["status"] == "mcp_contaminated":
+            print("Another Wendy MCP server was loaded into Claude; stopping.")
+            break
         if any(stage.get("interrupted") for stage in row["stages"].values()):
             print("Experiment interrupted; logs and cleanup result retained.")
             break

@@ -60,7 +60,7 @@
         "--allowedTools",
         "Bash,Read,Edit,Write,Glob,Grep,mcp__wendy__*",
         "--plugin-dir",
-        "{root}/plugins/wendy-agentic-coding",
+        "{plugin_dir}",
         "--strict-mcp-config",
         "--mcp-config",
         "{workspace}/mcp.json",

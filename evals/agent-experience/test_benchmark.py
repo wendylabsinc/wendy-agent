@@ -223,6 +223,43 @@ class MetricsTests(unittest.TestCase):
             self.assertFalse(result["metrics"]["usage_complete"])
             self.assertTrue(result["cleanup_ok"])
 
+    def test_staged_plugin_has_no_mcp_server_and_same_skills(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dest = Path(directory) / "plugin"
+            b.stage_plugin(b.ROOT, dest)
+            self.assertNotIn("mcpServers", json.loads((dest / ".claude-plugin/plugin.json").read_text()))
+            self.assertEqual(b.tree_sha256(dest / "skills"),
+                             b.tree_sha256(b.ROOT / "plugins/wendy-agentic-coding/skills"))
+
+    def test_tree_hash_changes_with_content_and_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a").mkdir()
+            (root / "a/f").write_text("x")
+            first = b.tree_sha256(root / "a")
+            (root / "a/f").write_text("y")
+            second = b.tree_sha256(root / "a")
+            (root / "a/f").rename(root / "a/g")
+            self.assertEqual(len({first, second, b.tree_sha256(root / "a")}), 3)
+
+    def test_skills_come_from_treatment_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            treatment, workspace = Path(directory, "t"), Path(directory, "w")
+            skill = treatment / "plugins/wendy-agentic-coding/skills/x"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("hi")
+            workspace.mkdir()
+            b.stage_context(workspace, "codex", "wendy", treatment_root=treatment)
+            self.assertEqual((workspace / ".agents/skills/x/SKILL.md").read_text(), "hi")
+
+    def test_extra_wendy_server_is_detected(self):
+        init = {"type": "system", "subtype": "init", "mcp_servers": [
+            {"name": "wendy", "status": "connected"},
+            {"name": "plugin:wendy-agentic-coding:wendy", "status": "connected"}]}
+        m = b.metrics("claude", [init, {"type": "result", "result": "x"}])
+        self.assertEqual(b.extra_wendy_servers(m), ["plugin:wendy-agentic-coding:wendy"])
+        self.assertEqual(b.metrics("claude", [])["mcp_servers_observed"], [])
+
     def test_rescore_rebuilds_grades_without_touching_originals(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
