@@ -77,8 +77,11 @@ func liteRelayOptions(ctx context.Context, auth *config.AuthConfig, renew bool) 
 // relay, LAN and BLE verifiers; discovery caches it per PKI endpoint and tenant.
 func liteDeviceCAChain(auth *config.AuthConfig) liteclient.LiteDeviceCAChain {
 	pkiEndpoint, tenantID := auth.PKIEndpoint, auth.Certificates[0].TenantUUID()
+	// Capture the test hook before a verifier starts background discovery, so
+	// later tests can replace it without racing an in-flight lookup.
+	discover := discoverLiteDeviceCAChain
 	return func(ctx context.Context) (string, error) {
-		return discoverLiteDeviceCAChain(ctx, pkiEndpoint, tenantID)
+		return discover(ctx, pkiEndpoint, tenantID)
 	}
 }
 
