@@ -103,9 +103,18 @@ func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, hardwareID 
 		return matches[0], nil
 	case 0:
 		return cloudDiscoveryDevice{}, fmt.Errorf("%w matches %q in the selected organization; use 'wendy cloud discover --all --json' to find its asset ID", errCloudEnrollmentNotFound, identity)
-	default:
-		return cloudDiscoveryDevice{}, fmt.Errorf("multiple cloud enrollments match %q; select the exact asset ID with --device", identity)
 	}
+	ids := make([]string, len(matches))
+	for i, device := range matches {
+		ids[i] = device.key
+	}
+	if hardwareID != "" {
+		// A reserved enrollment the board never completed leaves a second asset
+		// with its serial. The board does not report which one it holds, so
+		// refuse rather than guess, and let the operator remove the stale ones.
+		return cloudDiscoveryDevice{}, fmt.Errorf("multiple cloud enrollments (assets %s) carry board %q's hardware id; none was removed. Remove each with 'wendy device unenroll --cloud-only --device <asset-id>', then run 'wendy device unenroll' over USB again to clear the board", strings.Join(ids, ", "), hardwareID)
+	}
+	return cloudDiscoveryDevice{}, fmt.Errorf("multiple cloud enrollments (assets %s) match %q; select the exact asset ID with --device", strings.Join(ids, ", "), identity)
 }
 
 func runCloudDeviceUnenroll(cmd *cobra.Command, cloudGRPC, selector, hardwareID string, assumeYes bool) error {

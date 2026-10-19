@@ -564,6 +564,18 @@ func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
 			if err == nil {
 				t.Fatal("cloud failure accepted")
 			}
+			if failure == "ambiguous" {
+				// Two Lite assets with one serial: list both, change neither, and
+				// name the selector that works (USB mode's --device picks the board).
+				for _, want := range []string{liteTestAssetID, "fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "--cloud-only --device <asset-id>"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("ambiguity error lacks %q: %v", want, err)
+					}
+				}
+				if service.revokes.Load() != 0 || service.deletes.Load() != 0 {
+					t.Fatal("ambiguous serial removed a cloud enrollment")
+				}
+			}
 			if failure == "revoke" || failure == "delete" {
 				var result struct {
 					DeviceReset  bool   `json:"deviceReset"`
