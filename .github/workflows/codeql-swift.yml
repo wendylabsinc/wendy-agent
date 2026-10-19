@@ -1,0 +1,82 @@
+name: CodeQL Swift
+
+# CodeQL can analyze Swift only on macOS, and the organization shares five
+# concurrent hosted macOS jobs. Scanning every pull-request push queued
+# macOS work for hours (WDY-3931), so Swift is analyzed after it lands on main
+# and weekly for new queries. Pull requests run it only when this workflow
+# changes. Findings appear in code scanning after merge rather than on the PR.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'swift/**'
+      - 'Proto/**'
+      - '.github/workflows/codeql-swift.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/codeql-swift.yml'
+  schedule:
+    - cron: '43 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-swift-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  XCODE_VERSION: '26.3'
+
+jobs:
+  analyze:
+    name: Analyze (swift)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          languages: swift
+          build-mode: manual
+
+      # Build only the macOS agent, which contains WendyAgentCore, for one
+      # architecture. Package checkouts and build products stay outside the
+      # repository so dependency sources are not reported as our code.
+      - name: Build WendyAgentMac
+        working-directory: swift
+        env:
+          DERIVED_DATA_PATH: ${{ runner.temp }}/DerivedData
+          SOURCE_PACKAGES_DIR: ${{ runner.temp }}/SourcePackages
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -workspace WendyAgent.xcworkspace \
+            -scheme WendyAgentMac \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
+            -skipMacroValidation \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          category: /language:swift
