@@ -36,6 +36,20 @@ class GradeTests(unittest.TestCase):
         self.assertFalse(g.matches({"cli": "os"}, cli("osx")))
         self.assertTrue(g.matches({"cli": "wifi", "args_regex": "Lab5G"}, cli("wifi", "connect", "Lab5G")))
 
+    def test_help_lookups_never_match(self):
+        # Reading help is informational: it is neither the job done nor the wrong way to do it.
+        expect = {"right": [{"cli": "os update-status"}], "wrong": [{"cli": "os update", "block": True}]}
+        for argv in (["os", "update", "--help"], ["os", "update", "-h"], ["--device", "x", "os", "update", "--help"]):
+            entry = {"channel": "cli", "name": "os update", "arguments": argv}
+            with self.subTest(argv=argv):
+                self.assertFalse(g.matches({"cli": "os update"}, entry))
+                self.assertEqual(g.grade([entry], expect, "", True)["outcome"], "missed")
+        self.assertFalse(g.matches({"cli": "os update-status"}, cli("os", "update-status", "--help")))
+        # After "--" the words belong to the device-side command, not to wendy.
+        self.assertTrue(g.matches({"cli": "device shell"}, cli("device", "shell", "--", "nmcli", "--help")))
+        self.assertTrue(g.matches({"cli": "os update"}, cli("os", "update", "--help=false")))
+        self.assertEqual(g.grade([cli("os", "update")], expect, "", True)["outcome"], "wrong")
+
     def test_same_job_via_mcp_and_cli_is_right_once(self):
         expect = {"right": [{"tool": "run"}, {"cli": "run"}], "wrong": [{"shell": "\\b(docker|ssh)\\b"}]}
         trace = [mcp("run"), cli("run")]

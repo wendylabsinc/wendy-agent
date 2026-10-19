@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import uuid
 
 import benchmark as b
-from canned import load_capture
+from canned import load_capture, load_cli_capture
 from grading import grade, validate_expect
 from mcp_client import StdioMCP
 from retry_guard import RetryGuard
@@ -36,7 +36,7 @@ ENVIRONMENTS = ("simulator", "physical", "cloud")
 VM_PROFILES = ("generic", "go2", "g1")
 REQUIRED = ("id", "group", "environments", "prompt", "expect")
 DEFAULTS = {"timeout_seconds": 180, "max_tool_calls": 20, "canned": [], "captures": [], "allow_real": [],
-            "requires": [], "files": {}, "vm_profile": "generic"}
+            "requires": [], "files": {}, "vm_profile": "generic", "cli_canned": []}
 OPTIONAL = frozenset({"canned_set", "notes"})
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -62,6 +62,13 @@ def _check(condition, message):
 def _names(value, key):
     _check(isinstance(value, list) and all(isinstance(v, str) and v for v in value),
            f"{key} must be a list of names")
+
+
+def _cli_words(value):
+    # Each entry is a subcommand path, as tool_trace.cli_path reads it: plain words, no flags.
+    _check(isinstance(value, list) and all(
+        isinstance(words, list) and words and all(isinstance(w, str) and w and not w.startswith("-") for w in words)
+        for words in value), "cli_canned must be a list of subcommand word lists")
 
 
 def _relative(name):
@@ -94,6 +101,7 @@ def _scenario(item):
     _check(not isinstance(cap, bool) and isinstance(cap, int) and cap > 0, "max_tool_calls must be a positive integer")
     for key in ("canned", "captures", "allow_real", "requires"):
         _names(scenario[key], key)
+    _cli_words(scenario["cli_canned"])
     # Cloud scenarios need Cloud access, which only a cloud:// target has (target_capabilities).
     _check(scenario["group"] != "cloud" or "cloud" in scenario["requires"],
            'a cloud-group scenario must list "cloud" in requires')
@@ -146,9 +154,15 @@ def scenario_readiness(scenario, target, canned_dir):
             raise ValueError(f"scenario {scenario['id']}: invalid capture for {tool}: {error!r}") from None
         if not replies:
             uncaptured.append(tool)
-    if uncaptured:
-        return "canned replies not captured: " + ", ".join(uncaptured)
-    return None
+    reasons = ["canned replies not captured: " + ", ".join(uncaptured)] if uncaptured else []
+    try:
+        cli_missing = [" ".join(words) for words in scenario["cli_canned"]
+                       if load_cli_capture(canned_dir, scenario["canned_set"], words) is None]
+    except ValueError as error:
+        raise ValueError(f"scenario {scenario['id']}: invalid CLI capture: {error!r}") from None
+    if cli_missing:
+        reasons.append("CLI replies not captured: " + ", ".join(cli_missing))
+    return "; ".join(reasons) or None
 
 
 def scenario_coverage(scenarios, targets, selected, selected_targets, canned_dir):
@@ -477,7 +491,9 @@ def scenario_trial(config, agent_name, target_name, scenario, output, real_wendy
             "real_wendy": real_wendy, "tools": str(tools_path), "canned_dir": str(canned_dir),
             "canned_set": scenario["canned_set"], "canned": scenario["canned"], "allow_real": scenario["allow_real"],
             "block": [m for m in expect.get("right", []) + expect.get("wrong", []) if m.get("block") is True],
-            "context": {"device": device}, "proxy_log": str(proxy_log), "cli_log": str(cli_log),
+            "cli_canned": scenario["cli_canned"],
+            "context": {"device": device, "vm_name": run_vm["name"] if run_vm is not None else ""},
+            "proxy_log": str(proxy_log), "cli_log": str(cli_log),
             "cli_safe": str(CLI_SAFE), "shim": shim})
         env = private_env(state)
         env["WENDY_EVAL_SCENARIO"] = str(scenario_config)

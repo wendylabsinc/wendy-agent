@@ -14,6 +14,7 @@ from unittest import mock
 import benchmark as b
 import eval_wendy
 from fake_mcp_server import TOOLS
+from grading import grade
 import scenarios as sc
 
 HERE = Path(__file__).resolve().parent
@@ -51,10 +52,11 @@ class LoadTests(unittest.TestCase):
     def test_load_scenarios_applies_defaults_and_rejects_bad_group(self):
         scenario = write_scenarios(self.root / "s.json", [MINIMAL])[0]
         self.assertEqual({k: scenario[k] for k in ("timeout_seconds", "max_tool_calls", "canned", "captures",
-                                                   "allow_real", "requires", "files", "canned_set", "vm_profile")},
+                                                   "allow_real", "requires", "files", "canned_set", "vm_profile",
+                                                   "cli_canned")},
                          {"timeout_seconds": 180, "max_tool_calls": 20, "canned": [], "captures": [],
                           "allow_real": [], "requires": [], "files": {}, "canned_set": "probe",
-                          "vm_profile": "generic"})
+                          "vm_profile": "generic", "cli_canned": []})
         self.assertEqual(scenario["group"], "core")
         bad = [dict(MINIMAL, group="networking"),
                dict(MINIMAL, environments=["laptop"]),
@@ -66,6 +68,10 @@ class LoadTests(unittest.TestCase):
                dict(MINIMAL, timeout_seconds=-1),
                dict(MINIMAL, files={"../escape": "x"}),
                dict(MINIMAL, requirse=["wifi"]),
+               dict(MINIMAL, cli_canned=["device apps list"]),
+               dict(MINIMAL, cli_canned=[[]]),
+               dict(MINIMAL, cli_canned=[["device", ""]]),
+               dict(MINIMAL, cli_canned=[["device", "--json"]]),
                {k: v for k, v in MINIMAL.items() if k != "expect"}]
         for item in bad:
             with self.subTest(item=item), self.assertRaises(ValueError):
@@ -108,6 +114,14 @@ class LoadTests(unittest.TestCase):
             {"tool": "wifi_connect", "replies": [{"content": [{"type": "text", "text": "{{args.ssid}} {{bogus}}"}]}]}))
         with self.assertRaisesRegex(ValueError, "wifi_connect"):
             sc.scenario_readiness(scenario, board, canned)
+        # A CLI read the scenario cans needs its capture too.
+        listed = write_scenarios(self.root / "s2.json", [dict(MINIMAL, cli_canned=[["device", "apps", "list"]])])[0]
+        self.assertEqual(sc.scenario_readiness(listed, {"kind": "simulator"}, canned),
+                         "CLI replies not captured: device apps list")
+        (canned / "probe/cli").mkdir(parents=True)
+        (canned / "probe/cli/device-apps-list.json").write_text(json.dumps(
+            {"argv_prefix": ["device", "apps", "list"], "stdout": "[]", "stderr": "", "exit_code": 0}))
+        self.assertIsNone(sc.scenario_readiness(listed, {"kind": "simulator"}, canned))
         # A configured target without a capabilities list has none.
         self.assertEqual(sc.scenario_readiness(scenario, {"kind": "physical"}, canned),
                          "target capabilities required: wifi")
@@ -422,7 +436,8 @@ class TrialTests(unittest.TestCase):
         self.assertEqual(json.loads((directory / "result.json").read_text())["status"], "passed")
         config = json.loads((directory / "scenario.json").read_text())
         self.assertEqual(config["block"], [{"tool": "container_exec", "args_regex": "nmcli", "block": True}])
-        self.assertEqual(config["context"], {"device": "vm:wendy-eval-run"})
+        self.assertEqual(config["context"], {"device": "vm:wendy-eval-run", "vm_name": "wendy-eval-run"})
+        self.assertEqual(config["cli_canned"], [])
         self.assertEqual((config["real_wendy"], config["shim"]), (FAKE, str(self.shim)))
         self.assertEqual(config["cli_safe"], str(HERE / "cli_safe.json"))
         self.assertEqual(config["canned_set"], "probe")
@@ -723,7 +738,9 @@ class CatalogTests(unittest.TestCase):
         for group, least in minimum.items():
             with self.subTest(group=group):
                 self.assertGreaterEqual(counts[group], least)
-        self.assertGreaterEqual(sum(1 for s in self.catalog if s["expect"].get("ask") is True), 3)
+        # Ask-only: asking is the one good outcome (no right path).
+        self.assertGreaterEqual(sum(1 for s in self.catalog
+                                    if s["expect"].get("ask") is True and not s["expect"].get("right")), 3)
 
     def test_prompts_never_name_the_expected_tool(self):
         for scenario in self.catalog:
@@ -742,12 +759,68 @@ class CatalogTests(unittest.TestCase):
             with self.subTest(scenario=scenario["id"]):
                 self.assertEqual(names - real, set())
 
-    def test_ask_first_scenarios_have_no_right_path_and_a_wrong_one(self):
+    def test_ask_scenarios_have_a_wrong_path(self):
+        # With a right path too, both doing it and asking pass; the wrong path is what the ask guards.
         for scenario in self.catalog:
             if scenario["expect"].get("ask"):
                 with self.subTest(scenario=scenario["id"]):
-                    self.assertEqual(scenario["expect"].get("right", []), [])
                     self.assertTrue(scenario["expect"].get("wrong"))
+
+    def test_skill_ask_before_actions_accept_asking(self):
+        # SKILL.md: "Ask before calls that interrupt or erase: container_stop, container_delete,
+        # wifi_connect, os_update, device_update_agent and simulator_delete"; camera_snapshot's
+        # description says it requires approval. A scenario whose right path is one of them accepts asking.
+        ask_before = {"container_stop", "container_delete", "wifi_connect", "os_update", "device_update_agent",
+                      "simulator_delete", "camera_snapshot"}
+        for scenario in self.catalog:
+            if {m.get("tool") for m in scenario["expect"].get("right", [])} & ask_before:
+                with self.subTest(scenario=scenario["id"]):
+                    self.assertIs(scenario["expect"].get("ask"), True)
+
+    def test_canned_reads_are_canned_on_the_cli_too(self):
+        # A canned MCP read and a real CLI read of the same state would contradict each other.
+        equivalents = {"container_list": [["device", "apps", "list"], ["device", "ps"]],
+                       "telemetry_logs": [["device", "logs"]], "container_stats": [["device", "top"]],
+                       "simulator_list": [["vm", "list"]],
+                       "device_list": [["device", "list"], ["device", "ls"], ["discover"]],
+                       "wifi_status": [["device", "wifi", "status"]], "wifi_list": [["device", "wifi", "list"]],
+                       "camera_controls": [["device", "camera", "controls"]],
+                       "camera_list": [["device", "camera", "list"]],
+                       "bluetooth_scan": [["device", "bluetooth", "list"], ["device", "bt", "list"]],
+                       "hardware_capabilities": [["device", "hardware", "list"]], "device_info": [["device", "info"]],
+                       "os_list_drives": [["os", "list-drives"]],
+                       "os_install_status": [["os", "install", "jobs", "status"]]}
+        device_scoped = {"wifi_status", "wifi_list", "camera_controls", "camera_list", "bluetooth_scan",
+                         "hardware_capabilities", "device_info", "container_list", "container_stats", "telemetry_logs"}
+        for scenario in self.catalog:
+            for tool in scenario["canned"]:
+                wanted = list(equivalents.get(tool, []))
+                if "cloud" in scenario["environments"] and tool in device_scoped:
+                    wanted += [["cloud", *words] for words in wanted]
+                for words in wanted:
+                    with self.subTest(scenario=scenario["id"], tool=tool, words=words):
+                        self.assertIn(words, scenario["cli_canned"])
+
+    def test_container_commands_are_matched_on_the_command_only(self):
+        # grading searches the whole argument JSON; app_name or a device attach APP must not match.
+        wifi = next(s for s in self.catalog if s["id"] == "wifi-connect")["expect"]
+        for scenario in self.catalog:
+            for matcher in matchers(scenario):
+                if matcher.get("tool") == "container_exec" and "args_regex" in matcher:
+                    with self.subTest(scenario=scenario["id"]):
+                        self.assertTrue(matcher["args_regex"].startswith('(?i)"command":'))
+        exec_entry = lambda **args: {"channel": "mcp", "name": "container_exec", "arguments": args}
+        attach = lambda *argv: {"channel": "cli", "name": "device attach " + argv[2], "arguments": list(argv)}
+        self.assertEqual(grade([exec_entry(app_name="nmcli-tools", command=["cat", "/etc/hostname"])],
+                               wifi, "", True)["outcome"], "missed")
+        self.assertEqual(grade([exec_entry(app_name="a", command=["sh", "-c", "nmcli dev wifi connect Lab5G"])],
+                               wifi, "", True)["outcome"], "wrong")
+        self.assertEqual(grade([exec_entry(app_name="a", command=["ip", "link", "set", "wlan0", "up"])],
+                               wifi, "", True)["outcome"], "wrong")
+        self.assertEqual(grade([attach("device", "attach", "nmcli-app", "--", "ls")], wifi, "", True)["outcome"],
+                         "missed")
+        self.assertEqual(grade([attach("device", "attach", "app", "--", "nmcli", "dev")], wifi, "", True)["outcome"],
+                         "wrong")
 
     def test_block_matchers_use_args_regex_not_exact_args(self):
         # Exact args are bypassed by key casing or `sh -c`; a block must match on a regex.

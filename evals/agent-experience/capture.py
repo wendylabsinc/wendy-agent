@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -70,6 +71,28 @@ def capture_mcp(args, canned_dir, provenance):
     return 0
 
 
+def _run_cli(argv, interrupt_after=None):
+    """Run argv with no stdin, as the shim does. With interrupt_after, a command that streams until
+    Ctrl+C gets SIGINT after that many seconds and keeps what it printed."""
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True)
+    try:
+        stdout, stderr = proc.communicate(timeout=interrupt_after or 120)
+    except subprocess.TimeoutExpired:
+        if not interrupt_after:
+            proc.kill()
+            proc.communicate()
+            raise
+        proc.send_signal(signal.SIGINT)
+        try:
+            stdout, stderr = proc.communicate(timeout=15)  # retrying communicate keeps earlier output
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+    code = proc.returncode
+    return (code if code >= 0 else 128 - code), stdout, stderr
+
+
 def capture_cli(args, canned_dir):
     words = args.cli
     prefix = cli_path(words)
@@ -81,10 +104,15 @@ def capture_cli(args, canned_dir):
     if not args.yes:
         print("CLI commands are not classified read-only; pass --yes to run it for real", file=sys.stderr)
         return 2
-    run = subprocess.run([args.wendy, "--device", args.device, *words], capture_output=True, text=True, timeout=120)
+    try:
+        code, stdout, stderr = _run_cli([args.wendy, "--device", args.device, *words], args.interrupt_after)
+    except subprocess.TimeoutExpired:
+        print("the command did not exit within 120s; pass --interrupt-after for a streaming command",
+              file=sys.stderr)
+        return 1
     path = Path(canned_dir) / args.set / "cli" / ("-".join(prefix) + ".json")
-    data = {"argv_prefix": prefix, "stdout": scrub_output(run.stdout), "stderr": scrub_output(run.stderr),
-            "exit_code": run.returncode}
+    data = {"argv_prefix": prefix, "stdout": scrub_output(stdout), "stderr": scrub_output(stderr),
+            "exit_code": code}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
     print(path)
@@ -106,7 +134,17 @@ def main(argv=None):
     p.add_argument("--no-connect", action="store_true",
                    help="MCP mode: skip device_connect, for host-side tools (device_connect boots a stopped VM).")
     p.add_argument("--timeout", type=float, default=120, help="MCP mode: seconds to wait for each reply.")
+    p.add_argument("--interrupt-after", type=float, metavar="SECONDS",
+                   help="CLI mode: send SIGINT (Ctrl+C) after this long, for a command that streams until stopped.")
+    # Everything after --cli is the command's, "--" included (argparse's REMAINDER stops at "--").
+    argv = list(sys.argv[1:] if argv is None else argv)
+    cli_words = None
+    if "--cli" in argv:
+        at = argv.index("--cli")
+        argv, cli_words = argv[:at + 1], argv[at + 1:]
     args = p.parse_args(argv)
+    if cli_words is not None:
+        args.cli = cli_words
     resolved = shutil.which(args.wendy)
     if resolved is None:
         print(f"cannot resolve --wendy {args.wendy}", file=sys.stderr)
@@ -118,7 +156,7 @@ def main(argv=None):
     except (OSError, subprocess.SubprocessError) as e:
         print(f"cannot inspect wendy binary: {e}", file=sys.stderr)
         return 2
-    if args.cli:
+    if args.cli is not None:
         return capture_cli(args, args.canned_dir)
     return capture_mcp(args, args.canned_dir, provenance)
 

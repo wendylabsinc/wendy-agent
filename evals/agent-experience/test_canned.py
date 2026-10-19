@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -44,6 +45,14 @@ class CannedTests(unittest.TestCase):
         result, _ = store.reply("os_install_status", {"ssid": "Lab5G"})
         self.assertIn("J1", result["content"][0]["text"])
         self.assertIn("Lab5G", result["content"][0]["text"])
+
+    def test_vm_name_placeholder_renders_the_bare_simulator_name(self):
+        # The CLI says "Connecting to simulator NAME...", without the vm: prefix that {{device}} carries.
+        context = {"device": "vm:wendy-eval-1", "vm_name": "wendy-eval-1"}
+        self.assertEqual(canned.render("Connecting to simulator {{vm_name}}... {{device}}", context),
+                         "Connecting to simulator wendy-eval-1... vm:wendy-eval-1")
+        write(self.root, "s", "t", [text("{{vm_name}}")])
+        self.assertIsNotNone(canned.load_capture(self.root, "s", "t"))
 
     def test_missing_argument_renders_empty(self):
         self.assertEqual(canned.render("a{{args.nope}}b", {"args": {}}), "ab")
@@ -150,6 +159,48 @@ class CannedTests(unittest.TestCase):
         capture.main(self._cli_args(script, "--yes", "--prefix-words", "2", "--cli", "wifi", "connect", "Lab5G"))
         self.assertEqual(json.loads((self.root / "s/cli/wifi-connect.json").read_text())["argv_prefix"],
                          ["wifi", "connect"])
+
+    def test_streaming_cli_capture_is_interrupted_like_ctrl_c(self):
+        # `device telemetry-stream` and `ros2 hz` run until Ctrl+C; the capture keeps what they printed.
+        script = self.root / "streamer"
+        script.write_text("#!/bin/sh\n[ \"$1\" = --version ] && { echo fake 1; exit 0; }\n"
+                          "trap 'echo stopped >&2; exit 130' INT\necho sample-1\nwhile :; do sleep 0.1; done\n")
+        script.chmod(0o755)
+        start = time.monotonic()
+        code = capture.main(self._cli_args(script, "--yes", "--interrupt-after", "1", "--cli",
+                                           "device", "telemetry-stream", "--metrics"))
+        self.assertEqual(code, 0)
+        self.assertLess(time.monotonic() - start, 10)
+        data = json.loads((self.root / "s/cli/device-telemetry-stream.json").read_text())
+        self.assertEqual((data["stdout"], data["stderr"], data["exit_code"]), ("sample-1\n", "stopped\n", 130))
+
+    def test_cli_words_after_double_dash_reach_the_command(self):
+        # `device attach APP -- CMD` needs its "--"; everything after --cli belongs to the command.
+        script, marker = self._fake_cli("Python 3.12")
+        code = capture.main(self._cli_args(script, "--yes", "--prefix-words", "2", "--cli",
+                                           "device", "attach", "app", "--", "python3", "--version"))
+        self.assertEqual(code, 0)
+        self.assertIn("--device vm:t device attach app -- python3 --version", marker.read_text())
+        self.assertEqual(json.loads((self.root / "s/cli/device-attach.json").read_text())["argv_prefix"],
+                         ["device", "attach"])
+
+    def test_cli_capture_runs_without_stdin(self):
+        script = self.root / "stdin-check"
+        script.write_text("#!/bin/sh\n[ \"$1\" = --version ] && { echo fake 1; exit 0; }\n"
+                          "if [ -t 0 ]; then echo tty; else echo \"notty:$(cat)\"; fi\n")
+        script.chmod(0o755)
+        read, write = os.pipe()  # stdin that holds data, so an inherited stdin would show up
+        os.write(write, b"leak")
+        os.close(write)
+        saved = os.dup(0)
+        try:
+            os.dup2(read, 0)
+            capture.main(self._cli_args(script, "--yes", "--cli", "device", "list"))
+        finally:
+            os.dup2(saved, 0)
+            os.close(saved)
+            os.close(read)
+        self.assertEqual(json.loads((self.root / "s/cli/device-list.json").read_text())["stdout"], "notty:\n")
 
     def test_cli_requires_yes_and_passes_device(self):
         script, marker = self._fake_cli("{}")

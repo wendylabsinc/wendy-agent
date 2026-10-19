@@ -1,0 +1,9 @@
+{
+  "argv_prefix": [
+    "vm",
+    "list"
+  ],
+  "stdout": "[{\"name\": \"bench-sim\", \"state\": \"running\", \"address\": \"127.0.0.1:33775\", \"version\": \"0.19.5\", \"source\": \"release\", \"pid\": 275070}]",
+  "stderr": "",
+  "exit_code": 0
+}

@@ -6,6 +6,7 @@ OUTCOMES = ("right", "wrong", "missed", "asked")
 EXPECT_KEYS = {"right", "wrong", "ask"}
 MATCHER_KEYS = {"tool", "cli", "shell", "args", "args_regex", "agents", "block"}
 KINDS = ("tool", "cli", "shell")
+HELP_FLAGS = frozenset({"--help", "-h"})
 
 
 def validate_expect(expect):
@@ -42,6 +43,16 @@ def validate_expect(expect):
                         raise ValueError(f"invalid regex in {key}: {error}") from error
 
 
+def is_help(argv):
+    """True when a wendy argv asks for help: --help or -h before any "--" (later words are the remote command's)."""
+    for word in argv if isinstance(argv, list) else []:
+        if word == "--":
+            return False
+        if word in HELP_FLAGS:
+            return True
+    return False
+
+
 def _arg_ok(actual, want):
     return want in actual if isinstance(actual, list) else actual == want
 
@@ -58,7 +69,8 @@ def matches(matcher, entry, adapter=None):
             return False
         text = json.dumps(arguments, sort_keys=True)
     elif "cli" in matcher:
-        if channel != "cli" or name.split()[:len(matcher["cli"].split())] != matcher["cli"].split():
+        # A help lookup is informational, so it is neither a right nor a wrong path.
+        if channel != "cli" or is_help(arguments) or name.split()[:len(matcher["cli"].split())] != matcher["cli"].split():
             return False
         text = " ".join(arguments) if isinstance(arguments, list) else ""
     else:

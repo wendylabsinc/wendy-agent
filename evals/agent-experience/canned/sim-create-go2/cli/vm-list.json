@@ -1,0 +1,9 @@
+{
+  "argv_prefix": [
+    "vm",
+    "list"
+  ],
+  "stdout": "[]",
+  "stderr": "",
+  "exit_code": 0
+}

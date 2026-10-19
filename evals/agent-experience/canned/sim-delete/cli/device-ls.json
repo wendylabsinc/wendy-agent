@@ -1,0 +1,9 @@
+{
+  "argv_prefix": [
+    "device",
+    "ls"
+  ],
+  "stdout": "{\"usbDevices\": null, \"lanDevices\": null, \"bluetoothDevices\": null, \"ethernetDevices\": null}",
+  "stderr": "",
+  "exit_code": 0
+}

@@ -7,7 +7,7 @@ import json
 import re
 from pathlib import Path
 
-PLACEHOLDER = re.compile(r"\{\{(args\.[A-Za-z0-9_]+|reply\.[a-z0-9_]+\.[A-Za-z0-9_]+|device)\}\}")
+PLACEHOLDER = re.compile(r"\{\{(args\.[A-Za-z0-9_]+|reply\.[a-z0-9_]+\.[A-Za-z0-9_]+|device|vm_name)\}\}")
 _ANY_BRACES = re.compile(r"\{\{.*?\}\}", re.S)
 FALLBACK_RESULT = {"content": [{"type": "text", "text": "{}"}], "isError": False}
 
@@ -75,8 +75,8 @@ def _reply_value(reply, key):
 
 def _lookup(name, context):
     kind, _, rest = name.partition(".")
-    if kind == "device":
-        value = context.get("device")
+    if kind in ("device", "vm_name"):  # vm_name: the bare simulator name, as in "Connecting to simulator NAME..."
+        value = context.get(kind)
     elif kind == "args":
         value = (context.get("args") or {}).get(rest)
     else:

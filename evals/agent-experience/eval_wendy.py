@@ -2,8 +2,9 @@
 """The `wendy` shim for short tool-choice scenarios. It sits first on PATH and the prompt names it.
 
 `mcp serve` goes to the recording proxy; `chat` runs the real binary with its MCP command pointed
-back at the shim; every other subcommand is logged and runs for real only when it is on the
-read-only allowlist and no block matcher hits. Anything else is canned, with no visible error (D7).
+back at the shim; a --help lookup runs the real binary as a bare help request; every other
+subcommand is logged and runs for real only when it is on the read-only allowlist, not in the
+scenario's cli_canned, and no block matcher hits. Anything else is canned, with no visible error (D7).
 """
 import json
 import os
@@ -18,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))  # the shim runs python -E and may start in any directory
 
 import grading  # noqa: E402
-from canned import load_cli_capture  # noqa: E402
+from canned import load_cli_capture, render  # noqa: E402
 from mcp_proxy import run_proxy  # noqa: E402
 from tool_trace import cli_path  # noqa: E402
 
@@ -35,6 +36,28 @@ def cli_allowed(argv, safe):
         return True
     words = cli_path(argv)
     return any(words[:len(prefix)] == list(prefix) for prefix in safe if prefix)
+
+
+def help_request(argv):
+    """The real argv for a help lookup, or None when argv is not one.
+
+    Only the exact token --help before any "--" counts (later words are a device-side command's).
+    cobra answers it before any hook or RunE, but a value flag can swallow it (`os update
+    --artifact-url --help` runs the update), so the request is rebuilt from the command words alone.
+    Hidden "__" commands are never asked: some disable flag parsing, which hands --help to RunE.
+    """
+    head = argv[:argv.index("--")] if "--" in argv else argv
+    if "--help" not in head:
+        return None
+    words = cli_path(head)
+    if any(word.startswith("__") for word in words):
+        return None
+    return [*words, "--help"]
+
+
+def cli_canned(argv, prefixes):
+    words = cli_path(argv)
+    return any(isinstance(p, list) and p and words[:len(p)] == p for p in prefixes)
 
 
 def _blocked(argv, block):
@@ -126,14 +149,14 @@ def _run_real(real, argv, signals):
     return code if code >= 0 else 128 - code
 
 
-def _emit(capture):
+def _emit(capture, context):
     """Write the canned output; a closed stdout or stderr must not cost the exit code."""
     devnull = None
     for stream, fd, key in ((sys.stdout, 1, "stdout"), (sys.stderr, 2, "stderr")):
         if stream is None:
             continue
         try:
-            stream.write(capture.get(key) or "")
+            stream.write(render(capture.get(key) or "", context))
             stream.flush()
         except (OSError, ValueError, AttributeError):
             try:
@@ -161,20 +184,26 @@ def main(argv):
         os.execve(real, [real, *argv], {**os.environ, "WENDY_CHAT_MCP_COMMAND": scenario["shim"]})
     t = time.time()
     error = None
+    real_argv, extra = argv, {}
     try:
-        safe = json.loads(Path(scenario["cli_safe"]).read_text()).get("read_only") or []
-        run_real = cli_allowed(argv, safe) and not _blocked(argv, scenario.get("block") or [])
+        help_argv = help_request(argv)
+        if help_argv is not None:
+            run_real, real_argv, extra = True, help_argv, {"help": True}
+        else:
+            safe = json.loads(Path(scenario["cli_safe"]).read_text()).get("read_only") or []
+            run_real = (cli_allowed(argv, safe) and not cli_canned(argv, scenario.get("cli_canned") or [])
+                        and not _blocked(argv, scenario.get("block") or []))
     except Exception as exc:  # fail closed, and keep the text from the agent
         run_real, error = False, f"policy failed: {exc!r}"
     if run_real:
         code, signals = None, _Signals()
         signals.install()
         try:
-            code = _run_real(real, argv, signals)
+            code = _run_real(real, real_argv, signals)
         finally:
             try:
                 _log(scenario["cli_log"], {"argv": argv, "canned": False, "captured": None,
-                                           "exit_code": code, "t": t})
+                                           "exit_code": code, "t": t, **extra})
             finally:
                 signals.restore()
         return code
@@ -189,7 +218,8 @@ def main(argv):
         record["error"] = error
     _log(scenario["cli_log"], record)  # log first: a closed stdout can't lose the record
     if capture:
-        _emit(capture)
+        context = scenario.get("context") if isinstance(scenario.get("context"), dict) else {}
+        _emit(capture, context)
     return code
 
 

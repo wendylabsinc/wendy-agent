@@ -126,6 +126,41 @@ class WrapperTests(unittest.TestCase):
             self.assertFalse(self.marker.exists(), matcher)
             self.assertIs(self.records()[-1]["canned"], True)
 
+    def test_help_runs_the_real_binary_as_a_bare_help_request(self):
+        # cobra answers --help before any hook or RunE runs. The command words are rebuilt without
+        # flags, so a value flag can't swallow --help: `os update --artifact-url --help` would update.
+        for argv, real in ((["os", "install", "--device-type", "rpi", "--force", "--help"], ["os", "install", "--help"]),
+                           (["--device", "X", "os", "update", "--artifact-url", "--help"], ["os", "update", "--help"]),
+                           (["--json", "vm", "rm", "box", "--help"], ["vm", "rm", "box", "--help"])):
+            self.marker.unlink(missing_ok=True)
+            with self.subTest(argv=argv):
+                result = self.run_shim(*argv, cli_canned=[["vm"]], block=[{"cli": "os update", "block": True}])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["argv"], real)
+                record = self.records()[-1]
+                self.assertEqual((record["argv"], record["canned"], record["help"]), (argv, False, True))
+
+    def test_other_help_shapes_stay_canned(self):
+        for argv in (["os", "install", "--help=false"], ["os", "install", "-h"],
+                     ["device", "shell", "--", "nmcli", "--help"], ["__t234-write", "--help"]):
+            with self.subTest(argv=argv):
+                result = self.run_shim(*argv)
+                self.assertEqual(result.returncode, 0)
+                self.assertFalse(self.marker.exists())
+                self.assertIs(self.records()[-1]["canned"], True)
+
+    def test_cli_canned_cans_an_allowlisted_command_and_renders_placeholders(self):
+        self.capture(["device", "list"], "Connecting to simulator {{vm_name}}...\n[\"{{device}}\"]\n", 0)
+        result = self.run_shim("device", "list", "--json", cli_canned=[["device", "list"]],
+                               context={"device": "vm:wendy-eval-1", "vm_name": "wendy-eval-1"})
+        self.assertEqual(result.returncode, 0)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(result.stdout, 'Connecting to simulator wendy-eval-1...\n["vm:wendy-eval-1"]\n')
+        self.assertEqual((self.records()[-1]["canned"], self.records()[-1]["captured"]), (True, True))
+        # Other allowlisted commands still run for real.
+        self.assertEqual(self.run_shim("docs", cli_canned=[["device", "list"]]).returncode, 0)
+        self.assertTrue(self.marker.exists())
+
     def test_chat_is_exec_with_mcp_override(self):
         result = self.run_shim("chat")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -207,8 +242,8 @@ class WrapperTests(unittest.TestCase):
         self.assertFalse(self.marker.exists())
 
     def test_risky_shapes_never_run_real(self):
-        for argv in (["--device", "X", "wifi", "connect", "Lab5G"], ["wifi", "connect", "--help"],
-                     ["mcp", "setup"]):
+        for argv in (["--device", "X", "wifi", "connect", "Lab5G"], ["wifi", "connect", "--help=false"],
+                     ["wifi", "connect", "-h"], ["mcp", "setup"]):
             result = self.run_shim(*argv)
             self.assertEqual(result.returncode, 0, argv)
             self.assertFalse(self.marker.exists(), argv)
