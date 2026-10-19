@@ -170,6 +170,9 @@ It authenticates the gateway with `wendy-mesh-internet/1`; Cloud TLS remains end
 to end. See the companion firmware's signed-mesh-leaf documentation for the
 borrower configuration and hardware validation limits. The gateway allows a
 bounded 60-second mTLS handshake so certificate chains can cross a BLE link.
+Lite operator setup over the Cloud relay also permits 60 seconds in the CLI
+and companion firmware. Caller cancellation, certificate expiry and signed
+session-grant expiry still apply; the gateway does not terminate operator TLS.
 
 The BLE IP queue retains its 8 KiB cap and per-source fairness. Its minimum
 allows one full packet plus a short ACK for each of two senders, so an ACK
