@@ -27,28 +27,70 @@ needs a real device. The VM is for the software half of your project.
 
 QEMU, plus its ARM64 UEFI firmware:
 
-<Tabs items={['macOS', 'Debian / Ubuntu']} groupId="developer-machine-os" persist>
+<Tabs items={['macOS', 'Linux', 'Windows']} groupId="developer-machine-os" persist>
 <Tab value="macOS">
 ```sh
 brew install qemu
 ```
 </Tab>
-<Tab value="Debian / Ubuntu">
+<Tab value="Linux">
+On Debian or Ubuntu:
+
 ```sh
 sudo apt install qemu-system-arm qemu-efi-aarch64
 ```
+
+On Fedora:
+
+```sh
+sudo dnf install qemu-system-aarch64 edk2-aarch64
+```
+</Tab>
+<Tab value="Windows">
+```powershell
+winget install --id SoftwareFreedomConservancy.QEMU --exact --source winget
+```
+
+Wendy finds QEMU in `%ProgramFiles%\qemu` even when it is absent from `PATH`.
+The package includes ARM64 guest emulation and firmware for an x86_64 Windows
+PC. `qemu-system-aarch64` names the guest architecture, not a host requirement.
 </Tab>
 </Tabs>
 
-On macOS you can skip this: if QEMU is missing when you start a simulator,
-`wendy` offers to run `brew install qemu` for you.
+If QEMU or its firmware is missing, Wendy offers to install it through Homebrew
+on macOS, WinGet on Windows, or apt-get or dnf on Linux. On Linux the install runs
+`sudo`, so Wendy always asks first, even with `--yes`. Without an interactive
+terminal, use `wendy vm start <name> --yes` to accept installation on macOS or
+Windows, or run the package-manager command yourself.
 
-That is the only prerequisite. The image is downloaded the first time you need
-one and reused for every simulator afterwards.
+QEMU and its firmware are the VM prerequisites. To build and deploy an app, you
+also need a running container builder, such as Docker with Buildx. The image is
+downloaded the first time you need one and reused for every virtual device afterward.
+
+### Windows foreground VMs
+
+Native Windows supports a generic VM for device inspection while its console
+terminal stays open:
+
+```powershell
+wendy vm create dev --profile generic
+wendy vm start dev
+```
+
+In another terminal, run `wendy --device vm:dev device info`, or select the
+running VM in discovery. A stopped VM must be started in its own terminal.
+The Simulator tab's create key displays these instructions and keeps discovery
+open.
+
+Local app builds for a VM, background VMs, managed robot simulators, and automatic
+app-port forwarding require macOS or Linux. On Windows, run the Linux Wendy CLI,
+QEMU, and your container builder inside WSL2 for the quickstart's app-deployment
+workflow. Native Windows still uses slower software emulation for the ARM64 guest,
+so first boot can take several minutes.
 
 ## The short version
 
-You do not have to create or start anything by hand. With no `--device` and no
+On macOS and Linux, you do not have to create or start anything by hand. With no `--device` and no
 default device set, `wendy run` opens a picker with a **Simulator** tab:
 
 ```sh
@@ -67,6 +109,9 @@ The tab manages simulators without dropping to `wendy vm`:
 | `r` | Delete it, once it is stopped |
 | `d` | Save the highlighted simulator as the default device |
 | `x` | Clear the saved default device |
+
+On Windows, `c` in `wendy discover` displays the foreground VM commands and
+keeps discovery open. Run those commands in a separate terminal.
 
 The default uses the VM's name, so it still works when its forwarded port changes.
 Saving a default does not start the VM. Your next device command starts it when
@@ -104,7 +149,12 @@ The published image is downloaded and unpacked straight into the VM's disk. It
 is cached compressed, so a second VM starts from the cache rather than the
 network, and the raw multi-gigabyte image is never written twice. `--disk` sets
 the disk size and WendyOS expands `/data` into the extra room on first boot; the
-disk is sparse, so a 16 GiB VM only occupies what it uses. Container images live
+disk is sparse on supported filesystems, including NTFS on Windows, so the default
+16 GiB VM does not allocate the entire capacity at creation. Before downloading, Wendy
+prints the disk's path, virtual capacity, and available space on that volume.
+Allow space for the decompressed image, the cached download, and later disk
+growth. When the image's uncompressed size is known, Wendy checks that it fits
+before writing. Container images live
 on the root filesystem rather than `/data`, so a bigger disk does not give
 `wendy run` more room.
 
@@ -393,13 +443,18 @@ window before you do. Provision it promptly, or use a machine you do not share.
 | `--memory` | `4096` | Guest memory in MiB |
 | `--cpus` | `4` | Guest CPU count |
 | `--detach` / `-d` | off | Run in the background rather than on this terminal |
-| `--yes` / `-y` | off | Accept prompts, including installing QEMU |
+| `--yes` / `-y` | off | Accept prompts, including installing QEMU on macOS and Windows |
 
 ## Troubleshooting
 
+**`QEMU installation finished but qemu-system-aarch64.exe was not found on PATH or in %ProgramFiles%\qemu`.**
+Check that `%ProgramFiles%\qemu\qemu-system-aarch64.exe` exists. If QEMU is
+installed elsewhere, add that directory to `PATH` and open a new terminal.
+
 **`no ARM64 UEFI firmware found`** — QEMU is installed but its firmware is not.
-Reinstall it with the command under *What you'll need*; the error lists every
-path that was searched.
+Run `wendy vm start` in a terminal to have Wendy offer the install, or install it
+with the command under *What you'll need*. The error lists every path that was
+searched.
 
 **`host port already in use`** — something already holds 50051. Use `--port`.
 

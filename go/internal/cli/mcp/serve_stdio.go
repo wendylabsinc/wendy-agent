@@ -25,10 +25,18 @@ func serveStdioProcess(srv *server.MCPServer) error {
 // `wendy run` gets its graceful stop (stopRunOnCancel) instead of deploying for
 // a client that is gone; Listen returns once those calls have finished.
 func serveStdioStreams(ctx context.Context, srv *server.MCPServer, in io.Reader, out io.Writer) error {
+	catalog, err := embeddedSkillCatalog()
+	if err != nil {
+		return err
+	}
+	return serveStdioStreamsWithSkills(ctx, srv, in, out, catalog)
+}
+
+func serveStdioStreamsWithSkills(ctx context.Context, srv *server.MCPServer, in io.Reader, out io.Writer, catalog *skillCatalog) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	input := &cancelOnEOF{reader: in, cancel: cancel}
-	err := listenWithSkills(ctx, srv, input, out)
+	err := listenWithSkillCatalog(ctx, srv, input, out, catalog)
 	if input.closed.Load() && errors.Is(err, context.Canceled) {
 		return nil // the client disconnected
 	}

@@ -77,7 +77,7 @@ func selectEnrollmentAuth(cfg *config.Config, cloudGRPC string, interactive bool
 		}
 		desc := a.CloudGRPC
 		if len(a.Certificates) > 0 {
-			desc = fmt.Sprintf("org %d — %s", a.Certificates[0].OrganizationID, a.CloudGRPC)
+			desc = fmt.Sprintf("org %s — %s", config.OrganizationLabel(a.CloudGRPC, a.OrganizationKey()), a.CloudGRPC)
 		}
 		items = append(items, tui.PickerItem{Name: name, Description: desc, Value: strconv.Itoa(i)})
 	}

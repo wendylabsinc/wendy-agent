@@ -28,11 +28,12 @@ func interactiveErrorTerminal() bool {
 }
 
 // reportCommandResult tracks only interactive invocations, so scripts and
-// agents neither advance nor reset the person's streak. JSON invocations in
-// a terminal still count, but never include the hint.
+// agents neither advance nor reset the person's streak. Read-only diagnostic
+// and update checks must not create or change this cache either. JSON invocations
+// in a terminal still count, but never include the hint.
 func reportCommandResult(stderr io.Writer, err error, executed *cobra.Command, args []string, interactive bool) int {
 	showHint := false
-	if interactive {
+	if interactive && !isReadOnlyInvocation(executed) {
 		if dir, cacheErr := config.CacheDir(); cacheErr == nil {
 			showHint = recordSyntaxError(filepath.Join(dir, syntaxErrorCountFile), errorClass(err) == "cli_usage")
 		}

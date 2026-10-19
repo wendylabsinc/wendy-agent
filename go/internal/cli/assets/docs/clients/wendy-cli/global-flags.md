@@ -92,15 +92,21 @@ Commands that connect to a device this way print `Using device <name> from WENDY
 
 ## Automatic update notifications
 
-The Wendy CLI checks GitHub for a newer release in the background once every 24 hours. Because the HTTP call can take several seconds, the result is **persisted** to `~/.wendy/config.json` (field `availableCLIUpdate`) and displayed at the end of the **next** CLI command you run after the check completes.
+Ordinary commands check for a newer release in the background. A successful check
+is cached for 24 hours; a failed or cancelled check can retry after one hour.
 
-- **Interactive terminal:** The CLI prompts `Update now?` (default yes). Answering yes runs the upgrade automatically. Either way, the stored tag is cleared so the prompt does not repeat until the next check finds another update.
-- **Non-interactive / `--json` mode:** The notice is printed to stderr. No prompt is shown.
-- **macOS:** The upgrade command is `brew update && brew install wendy`. If the tap is untrusted, the CLI also suggests `brew trust wendylabsinc/tap`.
-- **Windows:** `winget upgrade WendyLabs.Wendy`.
-- **Linux:** `curl -fsSL https://install.wendy.dev/cli.sh | bash`.
+In an interactive terminal, the CLI prompts `Update now?` with Yes selected.
+Declining snoozes that release's prompt for 24 hours. Non-interactive and `--json`
+invocations print notices to stderr without prompting.
 
-> **Note:** The 24-hour cooldown between update checks depends on `~/.wendy/config.json` being writable. If the file cannot be saved, the background check runs on every CLI invocation.
+Accepted updates use the installation's owning package manager. For Homebrew
+stable, the commands are `brew update` and `brew upgrade wendylabsinc/tap/wendy`.
+See [`wendy update`](./commands/update.md#installation-methods) for supported
+methods, manual instructions, and verification after an update.
+
+CI, read-only checks, and completion helpers skip background reminders. Set
+`WENDY_NO_UPDATE_CHECK=1` to disable them for other commands. Explicit
+`wendy update` and `wendy update --check` still work.
 
 ## Automatic shell-completion prompt
 
@@ -123,6 +129,7 @@ Its state is persisted in `~/.wendy/config.json`:
 | `WENDY_APPSTORE_API` | Override the Wendy AppStore resolution API base URL used by `wendy app install` / `wendy device apps install`. Takes precedence over the built-in default; the `--api` flag takes precedence over this variable. |
 | `WENDY_BUILD_PROGRESS` | Override the progress format requested from `docker buildx` during image builds. Accepts `plain` or `rawjson` (case-insensitive); any other value is ignored. When unset, the CLI probes the installed buildx version once per run and picks `rawjson` for buildx 0.13 or newer, `plain` otherwise. `rawjson` is what supplies per-step byte counters and download rates, so forcing `plain` reduces build output to step names only. |
 | `WENDY_BUILDKIT_HOST` | Override the BuildKit endpoint used by `--builder buildkit`, for example `unix:///path/to/buildkitd.sock`. It takes precedence over `BUILDKIT_HOST`, Wendy's discovered `<Wendy cache>/runtime/buildkitd.sock`, and buildctl's normal local default. The daemon must use a containerd worker for `wendy build` image-store output. |
+| `WENDY_CLOUD_INSECURE` | Set to `true` (or `1`) to dial Wendy Cloud over plaintext gRPC instead of TLS. Only for a local development cloud that serves plaintext; every cloud dial is TLS otherwise, whatever the port. The CLI prints a warning naming the address on every plaintext dial, because session tokens and enrollment credentials then travel unencrypted. The agent honors the same variable for its own enrollment dial. |
 | `WENDY_DEVICE` | Target device for commands run without `--device`; takes precedence over the saved default device. Accepts the same values as `--device`. A blank value is ignored. |
 | `WENDY_STAGEFILE_BACKEND` | Select the Stagefile compiler backend when `--stagefile-backend` is not passed. Accepts `dockerfile` (default) or experimental direct `llb`; the command-line flag takes precedence. |
 | `WENDY_AGENT_SIGNATURE_PATH` | Path to a detached ML-DSA65 signature file for the agent update binary. When set, `wendy device update` includes the signature in the `UpdateAgent` RPC. Has no effect until a verification key is embedded in the agent. |

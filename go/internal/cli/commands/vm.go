@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
+	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
@@ -21,18 +21,18 @@ import (
 func newVMCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "vm",
-		Short: "Run WendyOS in a local ARM64 virtual machine",
+		Short: "Run local WendyOS and Wendy Lite simulators",
 		// Hidden because the simulator is meant to be reached through
 		// `wendy run`'s Simulator tab or --device sim, not administered by
 		// hand. The subcommands stay for debugging a VM that misbehaves.
 		Hidden: true,
 		Long: "Run a WendyOS ARM64 virtual machine on this computer, so you can " +
 			"develop and evaluate WendyOS without a Jetson or Raspberry Pi.\n\n" +
-			"Requires QEMU (" + qemuInstallHint() + "); on macOS it is offered " +
-			"automatically when missing.",
+			"Requires QEMU (" + qemuInstallHint() + "). When it is missing, Wendy " +
+			"offers to install it with Homebrew, WinGet, apt-get, or dnf.",
 	}
 	cmd.PersistentFlags().BoolVarP(&vmAssumeYes, "yes", "y", false,
-		"Accept prompts, including installing QEMU when it is missing")
+		"Accept prompts, including installing QEMU when it is missing (Linux still asks before running sudo)")
 	cmd.AddCommand(newVMCreateCmd(), newVMStartCmd(), newVMStopCmd(),
 		newVMLogsCmd(), newVMListCmd(), newVMRemoveCmd(), newVMRobotCmd())
 	return cmd
@@ -57,18 +57,32 @@ func newVMCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if vm.IsLiteProfile(selectedProfile) {
+				if nightly || prNumber != 0 || cmd.Flags().Changed("disk") {
+					return fmt.Errorf("wendy-lite does not use --nightly, --pr or --disk; supply a merged ESP32-C6 --image or use the stable firmware")
+				}
+				store, err := vm.NewStore()
+				if err != nil {
+					return err
+				}
+				info, err := createLiteSimulator(cmd.Context(), store, wendymcp.SimulatorCreateOptions{Name: name, Profile: selectedProfile, Image: image, Version: version})
+				if err == nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "Created Wendy Lite simulator %q. Connect with --device %s.\n", name, info.Device)
+				}
+				return err
+			}
 			if err := runVMCreate(cmd, name, image, version, diskGiB, nightly, prNumber); err != nil {
 				return err
 			}
 			return attachSimulatorProfile(name, selectedProfile)
 		},
 	}
-	cmd.Flags().StringVar(&image, "image", "", "Path to a local .wic disk image (default: download the published one)")
+	cmd.Flags().StringVar(&image, "image", "", "Local WendyOS disk image or merged ESP32-C6 firmware for wendy-lite or wendy-lite-native")
 	cmd.Flags().StringVar(&version, "version", "", "WendyOS version to download (default: latest)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use nightly/prerelease builds")
 	cmd.Flags().IntVar(&prNumber, "pr", 0, "Create from a pull request's build, so a change can be tried before it merges")
 	cmd.Flags().IntVar(&diskGiB, "disk", 16, "Disk size in GiB (the image is grown to this size)")
-	cmd.Flags().StringVar(&profile, "profile", "generic", "Simulator profile: generic, go2, g1 or rosmaster-r2 (provisioned on first connection)")
+	cmd.Flags().StringVar(&profile, "profile", "generic", "Simulator profile: generic, go2, g1, rosmaster-r2, wendy-lite or wendy-lite-native (provisioned on first connection)")
 	return cmd
 }
 
@@ -122,12 +136,19 @@ var promptVMCreateNameFn = func() (string, error) {
 // runVMCreate provisions a VM from a local image when one is named, and from the
 // published image otherwise.
 func runVMCreate(cmd *cobra.Command, name, image, version string, diskGiB int, nightly bool, pr int) error {
-	return createVM(cmd.OutOrStdout(), name, image, version, diskGiB, nightly, pr)
+	return createVMContext(cmd.Context(), cmd.OutOrStdout(), name, image, version, diskGiB, nightly, pr)
 }
 
 // createVM provisions a VM, writing progress to out. Split from the cobra
 // command so the simulator picker can provision one without a *cobra.Command.
 func createVM(out io.Writer, name, image, version string, diskGiB int, nightly bool, pr int) error {
+	return createVMContext(context.Background(), out, name, image, version, diskGiB, nightly, pr)
+}
+
+func createVMContext(ctx context.Context, out io.Writer, name, image, version string, diskGiB int, nightly bool, pr int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if image != "" && (version != "" || nightly || pr > 0) {
 		return fmt.Errorf("--image cannot be combined with --version, --nightly or --pr: a local image is already a specific build")
 	}
@@ -143,6 +164,11 @@ func createVM(out io.Writer, name, image, version string, diskGiB int, nightly b
 	if err := store.CheckCreatable(name); err != nil {
 		return err
 	}
+	diskBytes, err := vmDiskBytes(diskGiB)
+	if err != nil {
+		return err
+	}
+	reportVMStorage(out, store.DiskPath(name), diskBytes)
 
 	if pr > 0 {
 		// Booting an image is running it. A PR build comes from a contributor
@@ -154,10 +180,13 @@ func createVM(out io.Writer, name, image, version string, diskGiB int, nightly b
 	path, resolvedVersion := image, ""
 	if path == "" {
 		var cleanup func()
-		if path, resolvedVersion, cleanup, err = fetchPublishedVMImage(version, nightly, pr); err != nil {
+		if path, resolvedVersion, cleanup, err = fetchPublishedVMImageContext(ctx, version, nightly, pr); err != nil {
 			return err
 		}
 		defer cleanup()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// Published images and cached copies are compressed; sniff rather than trust
@@ -167,10 +196,13 @@ func createVM(out io.Writer, name, image, version string, diskGiB int, nightly b
 		return err
 	}
 	defer stream.Close()
+	if err := checkVMImageSpace(store.DiskPath(name), stream.uncompressedSize); err != nil {
+		return err
+	}
 
 	meta := vm.Meta{ImageVersion: resolvedVersion, ImageSource: vmImageSource(image, nightly, pr)}
-	if err := store.CreateFrom(name, stream, stream.uncompressedSize, int64(diskGiB)<<30, meta); err != nil {
-		return err
+	if err := store.CreateFromContext(ctx, name, stream, stream.uncompressedSize, diskBytes, meta); err != nil {
+		return vmStorageError(err, store.DiskPath(name), stream.uncompressedSize, diskBytes)
 	}
 	fmt.Fprintf(out, "Created VM %q. Start it with 'wendy vm start %s'.\n", name, name)
 	return nil
@@ -232,12 +264,26 @@ func resolveVMSpec(name string, o vmStartOptions) (vm.Spec, *vm.Store, error) {
 	if _, err := os.Stat(store.DiskPath(name)); err != nil {
 		return vm.Spec{}, nil, fmt.Errorf("no VM named %q; create one with 'wendy vm create %s'", name, name)
 	}
+	if meta, ok := store.ReadMeta(name); ok && vm.IsLiteProfile(meta.Profile) {
+		emulator, err := ensureESPEmulator(context.Background())
+		if err != nil {
+			return vm.Spec{}, nil, err
+		}
+		spec := vm.Spec{ESPEmulatorPath: emulator, Name: name, DiskPath: store.DiskPath(name), Profile: meta.Profile, Net: vm.NetConfig{Mode: netMode, AgentPort: o.hostPort}}
+		if _, err := spec.Args(); err != nil {
+			return vm.Spec{}, nil, err
+		}
+		if err := vm.CheckHostPort(o.hostPort); err != nil {
+			return vm.Spec{}, nil, err
+		}
+		return spec, store, nil
+	}
 	if err := ensureQEMUFn(context.Background()); err != nil {
 		return vm.Spec{}, nil, err
 	}
 
 	brew := vm.BrewPrefix()
-	firmware, err := vm.FindFirmware(runtime.GOOS, brew)
+	firmware, err := ensureQEMUFirmwareForHostOS(context.Background(), runtime.GOOS, brew)
 	if err != nil {
 		return vm.Spec{}, nil, err
 	}
@@ -315,7 +361,11 @@ func runVMStart(cmd *cobra.Command, name string, o vmStartOptions) error {
 			return err
 		}
 		fmt.Fprintf(out, "Started %s in the background (pid %d).\n", name, st.PID)
-		vmPrintReachability(out, name, spec.Net, o.hostPort)
+		if vm.IsLiteProfile(spec.Profile) {
+			fmt.Fprintf(out, "Reach it with 'wendy --device vm:%s device info'. Firmware uses a private virtual Wi-Fi network.\n", name)
+		} else {
+			vmPrintReachability(out, name, spec.Net, o.hostPort)
+		}
 		fmt.Fprintf(out, "Console: 'wendy vm logs %s'. Stop it with 'wendy vm stop %s'.\n", name, name)
 		return nil
 	}
@@ -435,9 +485,9 @@ var ensureQEMUFn = func(ctx context.Context) error {
 	return ensureQEMUForHostOS(ctx, runtime.GOOS)
 }
 
-// qemuLookPathFn resolves the emulator binary; indirected so tests can describe
+// findQEMUFn resolves the emulator binary; indirected so tests can describe
 // a host that does not have it.
-var qemuLookPathFn = exec.LookPath
+var findQEMUFn = vm.FindQEMU
 
 func newVMListCmd() *cobra.Command {
 	return &cobra.Command{
@@ -762,9 +812,13 @@ const (
 // it resolved to, which the caller records so a stopped VM still knows what it
 // is running.
 func fetchPublishedVMImage(version string, nightly bool, pr int) (string, string, func(), error) {
-	fetchMain := fetchMainManifest
+	return fetchPublishedVMImageContext(context.Background(), version, nightly, pr)
+}
+
+func fetchPublishedVMImageContext(ctx context.Context, version string, nightly bool, pr int) (string, string, func(), error) {
+	fetchMain := func() (*mainManifest, error) { return fetchMainManifestContext(ctx) }
 	if pr > 0 {
-		fetchMain = func() (*mainManifest, error) { return fetchPRMainManifest(pr) }
+		fetchMain = func() (*mainManifest, error) { return fetchPRMainManifestContext(ctx, pr) }
 	}
 	mm, err := fetchMain()
 	if err != nil {
@@ -793,7 +847,7 @@ func fetchPublishedVMImage(version string, nightly bool, pr int) (string, string
 		return "", "", nil, fmt.Errorf("no %s release published yet; retry with --nightly, or build one and pass --image", vmDeviceKey)
 	}
 
-	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	dm, err := fetchDeviceManifestContext(ctx, dev.ManifestPath)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -802,7 +856,7 @@ func fetchPublishedVMImage(version string, nightly bool, pr int) (string, string
 		return "", "", nil, err
 	}
 
-	path, cleanup, err := resolveVMImage(info)
+	path, cleanup, err := resolveVMImageContext(ctx, info)
 	return path, ver, cleanup, err
 }
 

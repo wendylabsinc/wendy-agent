@@ -4,14 +4,83 @@ The `AssetService` gRPC service manages the inventory of assets (devices, periph
 
 ## Proto package
 
-`wendycloud.v1` — defined in `Proto/cloud/assets.proto`. **This page documents
-the v1 service only.** A parallel `wendycloud.v2.AssetService`
+`wendycloud.v1` — defined in `Proto/cloud/assets.proto`. **The method reference
+below documents v1; the separate v2 notes describe device-binding recovery.**
+A parallel `wendycloud.v2.AssetService`
 (`Proto/wendycloud/v2/assets.proto`) exists, identifies assets and organizations
 by **string UUID** rather than `int32`, and adds `ListAssetsByApp` and
 `FilterAssets`. The CLI's OIDC path already calls v2 exclusively; legacy
 sessions still use the v1 service described here.
 
+## v2 device-binding and deletion evidence
+
+The following applies to `wendycloud.v2.AssetService` only; the methods below
+continue to describe numeric v1. Compatible v2 consumers can resolve the exact
+enrollment and recover deletion evidence without a local CLI journal.
+
+### v2 `GetAsset`
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `id` | `string` | Asset UUID; may be empty when both selectors below are supplied. |
+| `organization_id` | `optional string` | Exact tenant UUID; required with `device_id` when `id` is empty. |
+| `device_id` | `optional string` | Exact PKI device UUID; required with `organization_id` when `id` is empty. |
+
+An authorized active binding returns `Asset`. An authorized retained deletion
+returns `NOT_FOUND` with one typed `DeletedAsset` detail. Plain `NOT_FOUND`, wrong
+status, duplicate details, malformed UUID/timestamp or a changed binding are
+**not deletion proof**. These typed details are response data, not a separately
+signed Cloud tombstone artifact.
+
+| `DeletedAsset` field | Type | Meaning |
+|---|---|---|
+| `id` | `string` | Deleted asset UUID. |
+| `organization_id` | `string` | Owning tenant UUID. |
+| `device_id` | `string` | Device UUID bound to this asset. |
+| `deleted_at` | `google.protobuf.Timestamp` | Recorded deletion time. |
+
+### v2 `DeleteAsset`
+
+The optional string `expected_device_id` is a compare-and-delete guard: it must
+match the exact enrolled device binding when supplied. The Cloud-owned device
+unenrollment consumer supplies it rather than deleting an unchecked asset UUID.
+Cloud authorizes `device:delete`, revokes the exact device principal through PKI,
+then retains a tombstone and deletion audit. A failed revocation does not delete
+the active asset. Replayed deletion preserves the original actor/time/evidence.
+This operation alone is not proof that the device erased its local credentials.
+
+### Agent guarded-reset capability and completion receipt
+
+`ProvisionedResponse.cloud_unenrollment_supported` is `true` on Agents that
+implement Cloud-owned guarded reset and protected recovery; absent/`false` on
+older Agents means the CLI must not attempt guarded erasure. It does not promise
+that the system clock is correct. Before new authorization, the Agent checks
+operator-certificate validity and revocation-evidence freshness against the system
+clock, without a separate time-server query or clock-floor write.
+
+After durable local credential erasure, the Agent's `IsProvisioned` response
+contains `NotProvisionedResponse.unenrollment_completion`: public device-signed
+evidence for the **prior** principal's operation. It is absent if no guarded
+completion exists. This is an Agent field, not a Cloud `GetAsset` response.
+
+The receipt is not proof of current device identity or reachability. Consumers
+must anchor the historical certificate to configured roots, verify the exact
+principal/fingerprint/asset/tombstone and issuer-signed revocation evidence, and
+never treat plaintext transport or mDNS as identity proof. Embedded roots alone
+are not authority. A completion receipt does not replace current authorized
+Cloud lookup when reconciling retained deletion evidence.
+
+### v2 reported hardware facts
+
+Optional `Asset` fields `soc_compatible` (36), `serial_number` (37),
+`kernel_version` (38), `l4t_version` (39), and `gpu_arch` (40) describe reported
+hardware/software facts. Missing reports leave them absent. They are not device
+identity, permissions or authorization evidence. These self-reported facts
+correspond to values displayed by [`wendy device info`](../clients/wendy-cli/commands/device/info.md).
+
 ## Methods
+
+These method descriptions apply to numeric v1.
 
 ### `CreateAsset`
 
