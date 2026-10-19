@@ -73,19 +73,41 @@ func TestPersistDeviceUUIDWritesTheCertUUIDAndMDNSID(t *testing.T) {
 	}
 }
 
-func TestPersistDeviceUUIDLeavesANamedDevicesHostnameAlone(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "etc", "wendyos"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "etc", "wendyos", "device-name"), []byte("box-01\n"), 0o644); err != nil {
-		t.Fatal(err)
+func TestPersistDeviceUUIDPinsHostnameUnlessNamed(t *testing.T) {
+	hostname, _ := os.Hostname()
+	cases := []struct {
+		name, file, content string
+		wantPin             string // "" = explicit hostname file must stay as written
+	}{
+		{"device-name set", "etc/wendyos/device-name", "box-01\n", ""},
+		{"explicit hostname set", "etc/wendy-agent/hostname", "box-01\n", ""},
+		// generate-hostname.sh ignores an empty name file and would rename the device.
+		{"empty device-name", "etc/wendyos/device-name", "", hostname},
+		{"whitespace explicit hostname", "etc/wendy-agent/hostname", " \n", hostname},
 	}
 	cert := certWithURI(t, "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/019535d9-3df7-79fb-b466-fa907fa17f9e")
-	if err := persistDeviceUUID(dir, t.TempDir(), cert); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "etc", "wendy-agent", "hostname")); !os.IsNotExist(err) {
-		t.Fatalf("named device got an explicit hostname: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			named := filepath.Join(dir, tc.file)
+			if err := os.MkdirAll(filepath.Dir(named), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(named, []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := persistDeviceUUID(dir, t.TempDir(), cert); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "etc", "wendy-agent", "hostname"))
+			switch {
+			case tc.wantPin != "" && strings.TrimSpace(string(got)) != tc.wantPin:
+				t.Fatalf("hostname not pinned: %q", got)
+			case tc.wantPin == "" && tc.file != "etc/wendy-agent/hostname" && !os.IsNotExist(err):
+				t.Fatalf("named device got an explicit hostname: %q, %v", got, err)
+			case tc.wantPin == "" && tc.file == "etc/wendy-agent/hostname" && string(got) != tc.content:
+				t.Fatalf("explicit hostname rewritten: %q", got)
+			}
+		})
 	}
 }

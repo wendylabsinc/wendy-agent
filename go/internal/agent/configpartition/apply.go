@@ -976,7 +976,8 @@ func persistDeviceUUID(root, serviceDir, certPEM string) error {
 func pinCurrentHostname(root string) error {
 	explicit := filepath.Join(root, "etc/wendy-agent/hostname")
 	for _, named := range []string{explicit, filepath.Join(root, "etc/wendyos/device-name")} {
-		if _, err := os.Stat(named); err == nil {
+		// generate-hostname.sh skips an empty name file, so only content pins.
+		if data, err := os.ReadFile(named); err == nil && strings.TrimSpace(string(data)) != "" {
 			return nil
 		}
 	}
