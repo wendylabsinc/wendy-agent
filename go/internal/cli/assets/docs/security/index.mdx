@@ -64,8 +64,8 @@ Each key has one role:
 | Role | May |
 |------|-----|
 | `owner` | everything, including managing trusted keys, enrolling and unenrolling the device |
-| `operator` | everything a viewer may, plus apps and containers, builds, shell, tunnels, drivers, device settings, camera and audio settings, live camera and microphone streams (including the robot stream), data recording, ROS 2 and robot control, agent and OS updates |
-| `viewer` | reads only: device info, lists, status, logs and telemetry, the kernel log, audio levels, ROS 2 topic echo and bag downloads, recorded data downloads |
+| `operator` | everything a viewer may, plus apps and containers, builds, shell, tunnels, drivers, device settings, camera and audio settings, live camera and microphone streams, data recording, ROS 2 and robot control, agent and OS updates |
+| `viewer` | reads only: device info, lists, status, logs and telemetry, the kernel log, audio levels, ROS 2 topic echo and bag downloads, recorded data downloads, the robot state stream |
 
 A viewer may call exactly these (generated from the agent's role table; a test keeps this list
 in step with it):
@@ -91,6 +91,7 @@ in step with it):
 - `wendy.agent.services.v2.WendySensorPairingService`: ListSensorPairings
 - `wendy.agent.services.v2.WendyTelemetryService`: StreamLogs, StreamMetrics, StreamTraces
 - `wendy.agent.services.v2.WendyTimeSyncService`: GetClock
+- `wendy.agent.services.v2.WendyUnitreeRobotService`: Stream
 - `wendy.agent.services.v2.WendyUnitreeService`: DiscoverUnitreeRobots, ListUnitreePairings
 - `wendy.agent.services.v2.WendyWiFiService`: GetWiFiStatus, ListKnownWiFiNetworks, ListWiFiNetworks
 {/* viewer-methods:end */}

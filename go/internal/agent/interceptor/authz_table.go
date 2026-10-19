@@ -226,7 +226,7 @@ var methodRoles = map[string]trustedkeys.Role{
 
 	// v2 WendyUnitreeRobotService
 	"/wendy.agent.services.v2.WendyUnitreeRobotService/Command": operator,
-	"/wendy.agent.services.v2.WendyUnitreeRobotService/Stream":  operator,
+	"/wendy.agent.services.v2.WendyUnitreeRobotService/Stream":  viewer,
 
 	// v2 WendyUnitreeService
 	"/wendy.agent.services.v2.WendyUnitreeService/DiscoverUnitreeRobots": viewer,
