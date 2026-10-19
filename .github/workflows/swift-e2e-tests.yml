@@ -432,9 +432,9 @@ jobs:
     env:
       CLAUDE_CODE_VERSION: '2.1.199'
       # Slack posts go through the Wendy CI Slack app to the channel (ID or
-      # #name) in E2E_SLACK_CHANNEL. Only this flag, never the bot token, is
+      # #name) in FEED_E2E_SLACK_CHANNEL. Only this flag, never the bot token, is
       # in the job environment.
-      SLACK_READY: ${{ secrets.CI_SLACK_BOT_TOKEN != '' && vars.E2E_SLACK_CHANNEL != '' }}
+      SLACK_READY: ${{ secrets.CI_SLACK_BOT_TOKEN != '' && vars.FEED_E2E_SLACK_CHANNEL != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -608,7 +608,7 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || '' }}
-          SLACK_CHANNEL: ${{ vars.E2E_SLACK_CHANNEL || '' }}
+          SLACK_CHANNEL: ${{ vars.FEED_E2E_SLACK_CHANNEL || '' }}
         run: |
           set -euo pipefail
 
@@ -646,7 +646,7 @@ jobs:
             exit 0
           fi
           if [[ "${SLACK_READY}" != "true" ]]; then
-            echo "::warning::CI_SLACK_BOT_TOKEN or E2E_SLACK_CHANNEL is not configured; skipping Slack auth warning."
+            echo "::warning::CI_SLACK_BOT_TOKEN or FEED_E2E_SLACK_CHANNEL is not configured; skipping Slack auth warning."
             exit 0
           fi
 
@@ -893,7 +893,7 @@ jobs:
         if: ${{ always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}
         shell: bash
         env:
-          SLACK_CHANNEL: ${{ vars.E2E_SLACK_CHANNEL || '' }}
+          SLACK_CHANNEL: ${{ vars.FEED_E2E_SLACK_CHANNEL || '' }}
           REPORT_ARTIFACT_NAME: ${{ steps.e2e-run.outputs.run_artifact_id }}
           REPORT_ARTIFACT_URL: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
           DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
@@ -902,7 +902,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${SLACK_READY}" != "true" ]]; then
-            echo "::warning::CI_SLACK_BOT_TOKEN or E2E_SLACK_CHANNEL is not configured; skipping Slack notification."
+            echo "::warning::CI_SLACK_BOT_TOKEN or FEED_E2E_SLACK_CHANNEL is not configured; skipping Slack notification."
             exit 0
           fi
 
