@@ -4915,10 +4915,7 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 				case <-c.meshIngressStop:
 					return
 				}
-				fresh, err := ctr.Labels(c.withNamespace(context.Background()))
-				if err == nil {
-					c.rehydrateRunningMeshIngressAttempt(context.Background(), ctr, fresh, retries-1)
-				}
+				c.retryRunningMeshIngress(ctr, retries-1)
 			}()
 		} else {
 			c.logger.Error("wendy net ingress: exhausted inherited task port recovery attempts",

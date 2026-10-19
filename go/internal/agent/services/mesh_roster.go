@@ -162,12 +162,11 @@ func (r *MeshRoster) LookupDevice(device meshid.Device) (RosterEntry, bool) {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for _, entry := range r.byAsset {
-		if entry.hasDevice && entry.device == device {
-			return entry, true
-		}
+	entry, ok := r.byAsset[device.UUID().String()]
+	if !ok || !entry.hasDevice || entry.device != device {
+		return RosterEntry{}, false
 	}
-	return RosterEntry{}, false
+	return entry, true
 }
 
 // applyResponse rebuilds the cache from a roster response. Names that collide

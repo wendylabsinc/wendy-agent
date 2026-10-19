@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"go.uber.org/zap/zaptest"
 )
@@ -266,5 +267,32 @@ func TestRosterUnsupportedDevicePrincipalCannotEstablishTenant(t *testing.T) {
 	// No network request should be attempted without a supported mesh identity.
 	if err := r.Sync(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRosterLookupDeviceKeepsFullTenantBinding(t *testing.T) {
+	r := provisionedRoster(t)
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{Entries: []*cloudpbv2.MeshRosterEntry{{Name: "owner", AssetId: rosterDevice}}})
+	for _, tc := range []struct {
+		name, tenant, device string
+		want                 bool
+	}{
+		{"owner", rosterTenant, rosterDevice, true},
+		{"same UUID in another tenant", rosterOtherTenant, rosterDevice, false},
+		{"unknown device", rosterTenant, rosterDeviceB, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			device, err := meshid.DeviceFromPrincipal(certs.DeviceSPIFFEURI(tc.tenant, tc.device))
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry, ok := r.LookupDevice(device)
+			if ok != tc.want || ok && (entry.AssetUUID != rosterDevice || entry.device != device) {
+				t.Fatalf("LookupDevice(%s) = %+v,%v", device.Principal(), entry, ok)
+			}
+		})
+	}
+	if _, ok := r.LookupDevice(meshid.Device{}); ok {
+		t.Fatal("missing identity acquired a roster entry")
 	}
 }

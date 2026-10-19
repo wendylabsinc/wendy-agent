@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
@@ -46,5 +47,48 @@ func TestMeshIngressRecoveryHonorsStopDuringRetry(t *testing.T) {
 	client.rehydrateRunningMeshIngressAttempt(context.Background(), ctr, labels, 0)
 	if registry.Allowed(8080) {
 		t.Fatal("explicitly stopped task regained ingress")
+	}
+}
+
+type blockedIngressRetryContainer struct {
+	ingressRecoveryContainer
+	labels func(context.Context) (map[string]string, error)
+}
+
+func (c blockedIngressRetryContainer) Labels(ctx context.Context) (map[string]string, error) {
+	return c.labels(ctx)
+}
+
+func TestMeshIngressRecoveryCancelsBlockedRetryOnShutdown(t *testing.T) {
+	entered, cleanup := make(chan struct{}), make(chan struct{})
+	defer close(cleanup)
+	client := &Client{logger: zap.NewNop(), namespace: "wendy-test", meshIngressStop: make(chan struct{})}
+	ctr := blockedIngressRetryContainer{labels: func(ctx context.Context) (map[string]string, error) {
+		if _, bounded := ctx.Deadline(); !bounded {
+			t.Error("background recovery RPC has no deadline")
+		}
+		if ns, _ := namespaces.Namespace(ctx); ns != "wendy-test" {
+			t.Error("background recovery RPC lost its namespace")
+		}
+		close(entered)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-cleanup:
+			return nil, errors.New("test cleanup")
+		}
+	}}
+	done := make(chan struct{})
+	go func() { client.retryRunningMeshIngress(ctr, 0); close(done) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("retry did not start")
+	}
+	close(client.meshIngressStop)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("agent shutdown left its recovery RPC blocked")
 	}
 }
