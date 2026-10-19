@@ -74,6 +74,8 @@ def _load(path):
     real = scenario["real_wendy"]
     if not os.path.isabs(real):
         return None, "real_wendy must be an absolute path"
+    if not (os.path.isfile(real) and os.access(real, os.X_OK)):
+        return None, "real_wendy is not an executable file"
     if os.path.realpath(real) == os.path.realpath(scenario["shim"]):
         return None, "real_wendy points at the shim"
     return scenario, None
@@ -82,41 +84,66 @@ def _load(path):
 _SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
 
-def _run_real(real, argv):
-    """Run the real binary with no stdin, forwarding termination signals to it."""
-    child = subprocess.Popen([real, *argv], stdin=subprocess.DEVNULL)
+class _Signals:
+    """Forward termination signals to the real child, from before it exists until the record is written."""
 
-    def forward(signum, _frame):
+    def __init__(self):
+        self.child, self.pending, self.previous = None, [], {}
+
+    def install(self):
+        for sig in _SIGNALS:
+            old = signal.getsignal(sig)
+            if old != signal.SIG_IGN:  # nohup and background jobs keep their behavior
+                self.previous[sig] = signal.signal(sig, self._handle)
+
+    def _handle(self, signum, _frame):
+        if self.child is None:
+            self.pending.append(signum)
+        else:
+            self._send(signum)
+
+    def _send(self, signum):
         try:
-            child.send_signal(signum)
+            self.child.send_signal(signum)
         except OSError:
             pass
 
-    previous = {sig: signal.signal(sig, forward) for sig in _SIGNALS}
-    try:
-        while True:
-            try:
-                code = child.wait()
-                break
-            except KeyboardInterrupt:
-                continue
-    finally:
-        for sig, handler in previous.items():
+    def attach(self, child):
+        self.child = child
+        for signum in self.pending:
+            self._send(signum)
+
+    def restore(self):
+        for sig, handler in self.previous.items():
             signal.signal(sig, handler)
+
+
+def _run_real(real, argv, signals):
+    """Run the real binary with no stdin; the caller owns the signal handlers."""
+    child = subprocess.Popen([real, *argv], stdin=subprocess.DEVNULL)
+    signals.attach(child)
+    code = child.wait()
     return code if code >= 0 else 128 - code
 
 
 def _emit(capture):
     """Write the canned output; a closed stdout or stderr must not cost the exit code."""
-    for stream, key in ((sys.stdout, "stdout"), (sys.stderr, "stderr")):
+    devnull = None
+    for stream, fd, key in ((sys.stdout, 1, "stdout"), (sys.stderr, 2, "stderr")):
+        if stream is None:
+            continue
         try:
             stream.write(capture.get(key) or "")
             stream.flush()
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError):
             try:
-                os.dup2(os.open(os.devnull, os.O_WRONLY), stream.fileno())
-            except (OSError, ValueError):
+                if devnull is None:
+                    devnull = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(devnull, fd)
+            except OSError:
                 pass
+    if devnull is not None:
+        os.close(devnull)
 
 
 def main(argv):
@@ -140,12 +167,16 @@ def main(argv):
     except Exception as exc:  # fail closed, and keep the text from the agent
         run_real, error = False, f"policy failed: {exc!r}"
     if run_real:
-        code = None
+        code, signals = None, _Signals()
+        signals.install()
         try:
-            code = _run_real(real, argv)
+            code = _run_real(real, argv, signals)
         finally:
-            _log(scenario["cli_log"], {"argv": argv, "canned": False, "captured": None,
-                                       "exit_code": code, "t": t})
+            try:
+                _log(scenario["cli_log"], {"argv": argv, "canned": False, "captured": None,
+                                           "exit_code": code, "t": t})
+            finally:
+                signals.restore()
         return code
     capture = None
     try:

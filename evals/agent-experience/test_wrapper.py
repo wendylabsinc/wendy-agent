@@ -198,6 +198,12 @@ class WrapperTests(unittest.TestCase):
         link.symlink_to(self.shim)
         self.assertEqual(self.run_shim("device", "list", real_wendy=str(link)).returncode, 2)
         self.assertEqual(self.run_shim("device", "list", shim="").returncode, 2)
+        self.assertEqual(self.run_shim("device", "list", real_wendy=str(self.root / "missing")).returncode, 2)
+        plain = self.root / "plain"
+        plain.write_text("x")
+        plain.chmod(0o644)
+        self.assertEqual(self.run_shim("device", "list", real_wendy=str(plain)).returncode, 2)
+        self.assertEqual(self.run_shim("device", "list", real_wendy=str(self.root)).returncode, 2)
         self.assertFalse(self.marker.exists())
 
     def test_risky_shapes_never_run_real(self):
@@ -207,6 +213,35 @@ class WrapperTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, argv)
             self.assertFalse(self.marker.exists(), argv)
             self.assertIs(self.records()[-1]["canned"], True)
+
+    def test_closed_stdout_and_stderr_keep_canned_exit_code(self):
+        self.capture(["wifi", "connect"], "connected\n", 3)
+        script = 'exec "$0" wifi connect X >&- 2>&-'
+        proc = subprocess.run(["sh", "-c", script, str(self.shim)], env=self.env(), cwd="/", timeout=20)
+        self.assertEqual(proc.returncode, 3)
+        log = self.root / "errlog"
+        proc = subprocess.run(["sh", "-c", f'exec "$0" wifi connect X >&- 2>"{log}"', str(self.shim)],
+                              env=self.env(), cwd="/", timeout=20)
+        self.assertEqual(proc.returncode, 3)
+        self.assertNotIn("Traceback", log.read_text())
+
+    def test_ignored_sigterm_stays_ignored(self):
+        sleeper = self.root / "pid"
+        env = self.env()
+        env["FAKE_SLEEP"] = str(sleeper)
+        proc = subprocess.Popen(["sh", "-c", 'trap "" TERM; exec "$0" device list', str(self.shim)],
+                                env=env, cwd="/", stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(proc.kill)
+        deadline = time.time() + 10
+        while not (sleeper.exists() and sleeper.read_text().strip()) and time.time() < deadline:
+            time.sleep(0.05)
+        pid = int(sleeper.read_text())
+        proc.send_signal(signal.SIGTERM)
+        time.sleep(0.5)
+        self.assertIsNone(proc.poll())  # the shim did not take over a signal that was ignored
+        os.kill(pid, signal.SIGKILL)
+        proc.communicate(timeout=10)
+        self.assertEqual(self.records()[0]["exit_code"], 137)
 
 
 if __name__ == "__main__":
