@@ -173,28 +173,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
+    env:
+      # The Wendy CI Slack app's bot token (chat:write, chat:write.public).
+      SLACK_READY: ${{ secrets.CI_SLACK_BOT_TOKEN != '' && vars.CI_SLACK_CHANNEL_ID != '' }}
     steps:
+      - name: Skip without Slack configuration
+        if: env.SLACK_READY != 'true'
+        run: echo "::warning::CI_SLACK_BOT_TOKEN or CI_SLACK_CHANNEL_ID is not configured; skipping the Slack alarm."
+
       - name: Post to #ci
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.CI_SLACK_WEBHOOK_URL || '' }}
-          RESULT: ${{ needs.clean.result }}
-          RUNNER: ${{ needs.clean.outputs.runner || 'wendy-macos-26' }}
-          FREE_AFTER: ${{ needs.clean.outputs.free-after || needs.clean.outputs.free-before || 'unknown' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
-            echo "::warning::CI_SLACK_WEBHOOK_URL is not configured; skipping the Slack alarm."
-            exit 0
-          fi
-          case "$RESULT" in
-            failure) what="failed" ;;
-            *) what="did not finish ($RESULT)" ;;
-          esac
-          jq -n --arg text ":rotating_light: *Runner janitor ${what}* on \`${RUNNER}\`. Free disk: ${FREE_AFTER} GiB. <${RUN_URL}|View run>" \
-            '{text: $text}' > slack-payload.json
-          curl --fail --silent --show-error \
-            -X POST \
-            -H 'Content-type: application/json' \
-            --data @slack-payload.json \
-            "$SLACK_WEBHOOK_URL"
+        if: env.SLACK_READY == 'true'
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.CI_SLACK_BOT_TOKEN }}
+          errors: true
+          payload: |
+            channel: ${{ vars.CI_SLACK_CHANNEL_ID }}
+            text: ":rotating_light: *Runner janitor ${{ needs.clean.result == 'failure' && 'failed' || format('did not finish ({0})', needs.clean.result) }}* on `${{ needs.clean.outputs.runner || 'wendy-macos-26' }}`. Free disk: ${{ needs.clean.outputs.free-after || needs.clean.outputs.free-before || 'unknown' }} GiB. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
