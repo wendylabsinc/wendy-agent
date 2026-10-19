@@ -1,8 +1,10 @@
+from collections import Counter
 import contextlib
 import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -29,6 +31,8 @@ with StdioMCP([os.environ.get("WENDY_EVAL_SHIM", "wendy"), "mcp", "serve"], time
 print(json.dumps({{"type": "usage", "usage": {{"input_tokens": 10, "output_tokens": 2, "complete": True}}}}))
 print(json.dumps({{"type": "done", "text": "done"}}))
 """
+CATALOG = HERE / "scenarios.json"
+TOOL_GROUPS_GO = HERE.parents[1] / "go/internal/cli/mcp/tool_groups.go"
 MINIMAL = {"id": "probe", "group": "core", "environments": ["simulator"], "prompt": "Do it on {device}.",
            "expect": {"right": [{"tool": "write_thing"}]}}
 
@@ -693,6 +697,79 @@ class ExecuteTests(unittest.TestCase):
                 code, _ = self.main("--scenario", "probe", "--execute")
                 self.assertEqual(code[0], "exit")
                 self.assertIn("codex must", code[1])
+
+
+def go_tool_names():
+    text = TOOL_GROUPS_GO.read_text()
+    start = text.index("var toolGroups = map[string][]string{")
+    block = text[start:text.index("\n}\n", start)]
+    return set(re.findall(r'"([a-z0-9_]+)"', block))
+
+
+def matchers(scenario):
+    return [m for side in ("right", "wrong") for m in scenario["expect"].get(side, [])]
+
+
+class CatalogTests(unittest.TestCase):
+    """The shipped scenario set (scenarios.json) and its simulator captures."""
+
+    def setUp(self):
+        self.catalog = sc.load_scenarios(CATALOG)
+
+    def test_catalog_covers_every_group(self):
+        self.assertGreaterEqual(len(self.catalog), 40)
+        counts = Counter(s["group"] for s in self.catalog)
+        minimum = {"core": 8, "setup": 8, "simulator": 4, "hardware": 6, "robotics": 4, "observability": 5, "cloud": 4}
+        for group, least in minimum.items():
+            with self.subTest(group=group):
+                self.assertGreaterEqual(counts[group], least)
+        self.assertGreaterEqual(sum(1 for s in self.catalog if s["expect"].get("ask") is True), 3)
+
+    def test_prompts_never_name_the_expected_tool(self):
+        for scenario in self.catalog:
+            prompt = scenario["prompt"].lower()
+            for name in {m["tool"] for m in matchers(scenario) if "tool" in m}:
+                with self.subTest(scenario=scenario["id"], tool=name):
+                    self.assertNotIn(name, prompt)
+                    self.assertNotIn(name.replace("_", " "), prompt)
+
+    def test_catalog_names_only_real_tools(self):
+        real = go_tool_names()
+        self.assertIn("wifi_connect", real)  # the parse found the block
+        for scenario in self.catalog:
+            names = {m["tool"] for m in matchers(scenario) if "tool" in m}
+            names |= set(scenario["canned"]) | set(scenario["captures"]) | set(scenario["allow_real"])
+            with self.subTest(scenario=scenario["id"]):
+                self.assertEqual(names - real, set())
+
+    def test_ask_first_scenarios_have_no_right_path_and_a_wrong_one(self):
+        for scenario in self.catalog:
+            if scenario["expect"].get("ask"):
+                with self.subTest(scenario=scenario["id"]):
+                    self.assertEqual(scenario["expect"].get("right", []), [])
+                    self.assertTrue(scenario["expect"].get("wrong"))
+
+    def test_block_matchers_use_args_regex_not_exact_args(self):
+        # Exact args are bypassed by key casing or `sh -c`; a block must match on a regex.
+        for scenario in self.catalog:
+            for matcher in matchers(scenario):
+                if matcher.get("block"):
+                    with self.subTest(scenario=scenario["id"], matcher=matcher):
+                        self.assertNotIn("args", matcher)
+
+    def test_hardware_scenarios_run_only_on_a_board(self):
+        # The simulator has no wifi, bluetooth, camera or Cloud access (target_capabilities).
+        for scenario in self.catalog:
+            if scenario["group"] in ("hardware", "cloud") or scenario["requires"]:
+                with self.subTest(scenario=scenario["id"]):
+                    self.assertNotIn("simulator", scenario["environments"])
+
+    def test_every_simulator_scenario_is_captured(self):
+        simulator = {"kind": "simulator", "capabilities": []}
+        for scenario in self.catalog:
+            if "simulator" in scenario["environments"]:
+                with self.subTest(scenario=scenario["id"]):
+                    self.assertIsNone(sc.scenario_readiness(scenario, simulator, sc.CANNED))
 
 
 if __name__ == "__main__":
