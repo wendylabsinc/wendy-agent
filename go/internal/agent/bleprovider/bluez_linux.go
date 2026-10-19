@@ -69,6 +69,15 @@ func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, networkNa
 		if !ok {
 			continue
 		}
+		// Raw CoC sockets bypass Device1.Connect. Respect the local BlueZ
+		// block policy before consuming a dial slot, even while advertisements
+		// from that radio continue to arrive.
+		if policy, present := props["Blocked"]; present {
+			blocked, valid := policy.Value().(bool)
+			if !valid || blocked {
+				continue
+			}
+		}
 		address, ok := variantString(props["Address"])
 		if !ok {
 			continue

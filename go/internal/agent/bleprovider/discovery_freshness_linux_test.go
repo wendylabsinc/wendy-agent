@@ -40,6 +40,37 @@ func meshDeviceProps(uuid string, raw []byte) map[string]dbus.Variant {
 	}
 }
 
+func TestFreshAdvertisementHonorsCurrentBlueZBlockPolicy(t *testing.T) {
+	serviceUUID := ServiceUUID(testTenant)
+	adv, _ := NewAdvertisement(lowDevice, "field", DefaultPSM)
+	raw, _ := adv.MarshalBinary()
+	path := dbus.ObjectPath("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01")
+	props := meshDeviceProps(serviceUUID, raw)
+	props["Blocked"] = dbus.MakeVariant(false)
+	objects := managedObjects{path: {deviceInterface: props}}
+	tracker := newAdvertisementFreshness("/org/bluez/hci0", serviceUUID, "field", selfFixture)
+	base := time.Unix(1_000, 0)
+	tracker.observe(path, props, base)
+	if peers, _ := tracker.candidates(objects, base); len(peers) != 1 {
+		t.Fatal("unblocked live advertisement was not eligible")
+	}
+	// A later local policy change overrides the still-fresh radio signal.
+	// Advertisements can keep arriving from a blocked device.
+	props["Blocked"] = dbus.MakeVariant(true)
+	tracker.observe(path, meshDeviceProps(serviceUUID, raw), base.Add(time.Second))
+	if peers, updates := tracker.candidates(objects, base.Add(time.Second)); len(peers) != 0 || len(updates) != 0 {
+		t.Fatalf("blocked radio consumed discovery/dial capacity: peers=%v updates=%v", peers, updates)
+	}
+	props["Blocked"] = dbus.MakeVariant(false)
+	if peers, _ := tracker.candidates(objects, base.Add(2*time.Second)); len(peers) != 1 {
+		t.Fatal("unblocking discarded a recent valid advertisement")
+	}
+	props["Blocked"] = dbus.MakeVariant("false")
+	if peers, _ := tracker.candidates(objects, base.Add(2*time.Second)); len(peers) != 0 {
+		t.Fatal("malformed local policy admitted a radio")
+	}
+}
+
 func TestBlueZCachedServiceDataNeedsLiveAdvertisement(t *testing.T) {
 	serviceUUID := ServiceUUID(testTenant)
 	adv, _ := NewAdvertisement(lowDevice, "field", DefaultPSM)
