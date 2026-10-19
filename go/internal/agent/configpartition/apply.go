@@ -21,6 +21,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/network"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
@@ -951,7 +952,7 @@ func persistDeviceUUID(root, serviceDir, certPEM string) error {
 		if err := os.MkdirAll(filepath.Dir(uuidPath), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(uuidPath, []byte(id+"\n"), 0o644); err != nil {
+		if err := writeDeviceIdentityFile(uuidPath, []byte(id+"\n")); err != nil {
 			return err
 		}
 	}
@@ -968,7 +969,7 @@ func persistDeviceUUID(root, serviceDir, certPEM string) error {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".service") || err != nil || !strings.Contains(string(data), "_wendyos._udp") {
 			continue
 		}
-		return os.WriteFile(serviceFile, []byte(replaceTXTRecord(string(data), "id", id)), 0o644)
+		return writeDeviceIdentityFile(serviceFile, []byte(replaceTXTRecord(string(data), "id", id)))
 	}
 	return nil
 }
@@ -976,8 +977,23 @@ func persistDeviceUUID(root, serviceDir, certPEM string) error {
 func pinCurrentHostname(root string) error {
 	explicit := filepath.Join(root, "etc/wendy-agent/hostname")
 	for _, named := range []string{explicit, filepath.Join(root, "etc/wendyos/device-name")} {
-		// generate-hostname.sh skips an empty name file, so only content pins.
-		if data, err := os.ReadFile(named); err == nil && strings.TrimSpace(string(data)) != "" {
+		info, err := os.Stat(named)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("hostname source %s is not a regular file", named)
+		}
+		data, err := os.ReadFile(named)
+		if err != nil {
+			return err
+		}
+		// The boot script ignores empty name files and derives a name from the
+		// UUID instead. Merely finding the file does not preserve that name.
+		if strings.TrimSpace(string(data)) != "" {
 			return nil
 		}
 	}
@@ -988,5 +1004,18 @@ func pinCurrentHostname(root string) error {
 	if err := os.MkdirAll(filepath.Dir(explicit), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(explicit, []byte(hostname+"\n"), 0o644)
+	return writeDeviceIdentityFile(explicit, []byte(hostname+"\n"))
+}
+
+// Keep persistence links intact and make the hostname pin durable before the
+// device UUID changes. A torn hostname/UUID/XML write must not survive a reboot.
+func writeDeviceIdentityFile(path string, data []byte) error {
+	target, err := atomicfile.ResolveWritePath(path)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return err
+	}
+	return atomicfile.Write(target, data, 0644)
 }

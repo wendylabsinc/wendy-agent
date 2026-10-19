@@ -166,10 +166,10 @@ var File_wendycloud_v2_mesh_proto protoreflect.FileDescriptor
 const file_wendycloud_v2_mesh_proto_rawDesc = "" +
 	"\n" +
 	"\x18wendycloud/v2/mesh.proto\x12\rwendycloud.v2\"\x16\n" +
-	"\x14GetMeshRosterRequest\"@\n" +
+	"\x14GetMeshRosterRequest\"S\n" +
 	"\x0fMeshRosterEntry\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n" +
-	"\basset_id\x18\x02 \x01(\tR\aassetId\"l\n" +
+	"\basset_id\x18\x02 \x01(\tR\aassetIdJ\x04\b\x03\x10\x04R\vdevice_uuid\"l\n" +
 	"\x15GetMeshRosterResponse\x12\x19\n" +
 	"\borg_slug\x18\x01 \x01(\tR\aorgSlug\x128\n" +
 	"\aentries\x18\x02 \x03(\v2\x1e.wendycloud.v2.MeshRosterEntryR\aentries2o\n" +
