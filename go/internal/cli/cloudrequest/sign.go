@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +24,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/pkicorepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -99,27 +99,10 @@ func invoke(ctx context.Context, conn grpc.ClientConnInterface, auth *config.Aut
 	if s == nil {
 		return fmt.Errorf("%s requires an operator certificate; run 'wendy auth login'", method)
 	}
-	// AAA §11.2: adopt an existing flow id unchanged. Registration and retries
-	// remain messages in that flow, not new origins. Match Cloud's existing
-	// CorrelationContext alphabet/64-byte bound; reject unsafe supplied values
-	// rather than sending a header that disagrees with the signed descriptor.
-	correlationID := ""
-	if md, ok := metadata.FromOutgoingContext(ctx); ok {
-		for _, value := range md.Get("x-correlation-id") {
-			if value != "" {
-				correlationID = value
-				break
-			}
-		}
-	}
-	if correlationID != "" {
-		if len(correlationID) > 64 || strings.IndexFunc(correlationID, func(r rune) bool {
-			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
-		}) >= 0 {
-			return fmt.Errorf("invalid supplied Cloud correlation id")
-		}
-	} else {
-		correlationID = uuid.NewString()
+	// Registration, retries and later calls adopt an existing operation ID.
+	correlationID, err := CorrelationID(ctx)
+	if err != nil {
+		return err
 	}
 	call := func(byKID bool) error {
 		signed, err := s.signRequest(method, req, byKID, correlationID)
@@ -319,14 +302,47 @@ func (s *Signer) signRequest(method string, req proto.Message, byKID bool, corre
 			signed.PkiManagementRequest = management
 		}
 	}
+	markChannel(signed)
 	return signed, nil
+}
+
+// The MCP channel marker of this process and of the CLI children its tools
+// start, set by SetChannel and read by markChannel.
+const (
+	channelEnv        = "WENDY_MCP_CHANNEL"
+	mcpClientIDEnv    = "WENDY_MCP_CLIENT_ID"
+	relaySessionIDEnv = "WENDY_MCP_RELAY_SESSION_ID"
+)
+
+// SetChannel marks every later signed Cloud call of this process, and of the
+// CLI children it starts, as made through an MCP channel (Relay MCP contract,
+// docs/relay-mcp.md): MCP_LOCAL for `wendy mcp serve`, HOSTED_MCP with the web
+// client's OAuth client_id and the relay session for `wendy cloud mcp`. The
+// marker is outside the signature; a modified client can omit it.
+func SetChannel(channel cloudpbv2.RequestChannel, mcpClientID, relaySessionID string) error {
+	for _, kv := range [][2]string{{mcpClientIDEnv, mcpClientID}, {relaySessionIDEnv, relaySessionID}, {channelEnv, channel.String()}} {
+		if err := os.Setenv(kv[0], kv[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func markChannel(signed *cloudpbv2.SignedRequest) {
+	signed.Channel = cloudpbv2.RequestChannel(cloudpbv2.RequestChannel_value[os.Getenv(channelEnv)])
+	if signed.Channel == cloudpbv2.RequestChannel_REQUEST_CHANNEL_HOSTED_MCP {
+		signed.McpClientId = os.Getenv(mcpClientIDEnv)
+		signed.RelaySessionId = os.Getenv(relaySessionIDEnv)
+	}
 }
 
 // Cloud's shared unenrollment path relays this operator authority to PKI.
 // The same leaf signs both artifacts; this never calls PKI or revokes locally.
 func (s *Signer) unenrollManagementRequest(deviceID string) ([]byte, error) {
-	device, err := uuid.Parse(deviceID)
-	if err != nil || device.String() != deviceID {
+	if deviceID == "" || len(deviceID) > 64 || strings.Trim(deviceID, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != "" {
+		return nil, fmt.Errorf("unenrollment requires an exact safe PKI device identity")
+	}
+	if device, err := uuid.Parse(deviceID); err == nil && device.String() != deviceID {
 		return nil, fmt.Errorf("unenrollment requires a canonical device UUID")
 	}
 	return s.principalRevocationManagementRequest(deviceID)
@@ -366,6 +382,15 @@ var signedResources = map[string]func(tenant string, req proto.Message) (string,
 	cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
 		in, ok := req.(*cloudpbv2.EnrollDeviceRequest)
 		return "org/" + tenant + "/device/" + in.GetDeviceId(), ok
+	},
+	cloudpbv2.AppService_UpsertApp_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.UpsertAppRequest)
+		return "org/" + in.GetOrganizationId() + "/app/" + in.GetId(), ok
+	},
+	// Ruled 2026-10-13 (WDY-3660); cloud's RequestSigning.md row follows.
+	cloudpbv2.RelayMcpService_OpenRelaySession_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.OpenRelaySessionRequest)
+		return "org/" + in.GetOrganizationId() + "/relay-session", ok
 	},
 	cloudpbv2.AssetService_DeleteAsset_FullMethodName: func(_ string, req proto.Message) (string, bool) {
 		in, ok := req.(*cloudpbv2.DeleteAssetRequest)
@@ -435,8 +460,19 @@ func EnrollmentRequest(auth *config.AuthConfig, deviceID string) ([]byte, error)
 
 // EnrollmentRequestForClass binds the operator authorization to a device tier.
 func EnrollmentRequestForClass(auth *config.AuthConfig, deviceID, deviceClass string) ([]byte, error) {
+	return EnrollmentRequestForChain(auth, deviceID, deviceClass, "")
+}
+
+// EnrollmentChainP256 selects the PKI's P-256 device authority for constrained
+// devices. The operator signature binds this choice alongside the device tier.
+const EnrollmentChainP256 = "ECDSA_P256"
+
+func EnrollmentRequestForChain(auth *config.AuthConfig, deviceID, deviceClass, chainAlgorithm string) ([]byte, error) {
 	if deviceClass != "A" && deviceClass != "B" && deviceClass != "C" {
 		return nil, fmt.Errorf("invalid device class %q", deviceClass)
+	}
+	if chainAlgorithm != "" && (deviceClass != "C" || chainAlgorithm != EnrollmentChainP256) {
+		return nil, fmt.Errorf("P-256 certificate chains are supported only for Class C enrollment")
 	}
 	s, err := newSigner(auth)
 	if err != nil {
@@ -446,10 +482,14 @@ func EnrollmentRequestForClass(auth *config.AuthConfig, deviceID, deviceClass st
 		return nil, fmt.Errorf("device enrollment requires an operator certificate")
 	}
 	now := s.now().Unix()
-	payload, err := canonicalJSON(map[string]any{
+	claims := map[string]any{
 		"tenant": s.tenantUUID, "device_id": deviceID, "device_class": deviceClass,
 		"iat": now, "exp": now + 300, "jti": uuid.NewString(),
-	})
+	}
+	if chainAlgorithm != "" {
+		claims["chain_algorithm"] = chainAlgorithm
+	}
+	payload, err := canonicalJSON(claims)
 	if err != nil {
 		return nil, err
 	}

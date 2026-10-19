@@ -61,7 +61,8 @@ func (s *mcpServer) cliUpdateMiddleware() server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 			result, err := next(ctx, req)
-			if err != nil || result == nil || ctx.Err() != nil {
+			// A hosted chat is not the place for CLI upgrade steps (store policy).
+			if err != nil || result == nil || ctx.Err() != nil || s.relay {
 				return result, err
 			}
 			info := s.cliUpdateStatus()

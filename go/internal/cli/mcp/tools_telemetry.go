@@ -35,7 +35,7 @@ func (s *mcpServer) registerTelemetryTools(srv *server.MCPServer) {
 	}
 	logsOpts = append(logsOpts, telemetryOptions()...)
 	logsOpts = append(logsOpts, readOnly()...)
-	logsOpts = append(logsOpts, localOnly()...)
+	logsOpts = append(logsOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("telemetry_logs", logsOpts...), s.handleTelemetryLogs)
 
 	metricsOpts := []mcpgo.ToolOption{
@@ -53,7 +53,7 @@ func (s *mcpServer) registerTelemetryTools(srv *server.MCPServer) {
 	}
 	metricsOpts = append(metricsOpts, telemetryOptions()...)
 	metricsOpts = append(metricsOpts, readOnly()...)
-	metricsOpts = append(metricsOpts, localOnly()...)
+	metricsOpts = append(metricsOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("telemetry_metrics", metricsOpts...), s.handleTelemetryMetrics)
 
 	tracesOpts := []mcpgo.ToolOption{
@@ -70,7 +70,7 @@ func (s *mcpServer) registerTelemetryTools(srv *server.MCPServer) {
 	}
 	tracesOpts = append(tracesOpts, telemetryOptions()...)
 	tracesOpts = append(tracesOpts, readOnly()...)
-	tracesOpts = append(tracesOpts, localOnly()...)
+	tracesOpts = append(tracesOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("telemetry_traces", tracesOpts...), s.handleTelemetryTraces)
 }
 

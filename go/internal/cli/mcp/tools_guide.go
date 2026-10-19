@@ -25,9 +25,33 @@ Call wendy_status first — it tells you whether you are connected and what to d
 
 ## Connecting to a device
 
-1. device_list lists configured and online cloud devices; scan=true adds LAN discovery.
+1. device_list lists configured devices, local simulators and online cloud devices; scan=true adds LAN discovery.
 2. device_connect(device="...") accepts the returned device selector, host:port, or vm:name.
 3. run(project_path="...") deploys to the connected target. An explicit device overrides it.
+
+## No device available
+
+Do not stop at "this needs a device" when a simulator can run the check. A local
+simulator runs the same WendyOS image, agent, containerd and entitlements as
+hardware. It can verify builds, deploys, container state, logs, telemetry and
+HTTP endpoints, and its robot profiles (go2, g1, rosmaster-r2) simulate a robot
+and its sensors.
+
+1. device_list returns each existing simulator as a "simulator" row with a vm:NAME
+   selector. device_connect(device="vm:NAME") boots a stopped one; starting an
+   existing simulator needs no approval. Prefer a generic one unless the task
+   needs a robot profile.
+2. If none exists, ask the user before creating one: simulator_create (simulator
+   group) downloads an image of a few hundred MB, and the first boot can take
+   minutes. Then connect to the returned vm:NAME.
+3. Tell the user which simulator you started, and report results as
+   verified on the simulator, naming its selector. Stop or delete it only when
+   they ask.
+
+A simulator has no physical camera, microphone, speaker, Bluetooth adapter, GPU,
+GPIO or USB devices, and cannot show OS installation, real network conditions,
+hardware performance or physical motion. Those checks still need a device; name
+the ones that remain unverified.
 
 ## Tool groups
 

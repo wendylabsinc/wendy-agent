@@ -3,6 +3,7 @@ package liteclient
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -135,6 +136,14 @@ const relayTestAssetID = "0b6f7a52-5d1e-4c3b-9a8e-2f4d6c8b1a3e"
 
 func relayPKI(t *testing.T, principal string, trusted bool) (tls.Certificate, string, *tls.Config) {
 	t.Helper()
+	cert, chain, cfg, _, _ := relayPKIWithCA(t, principal, trusted)
+	return cert, chain, cfg
+}
+
+// relayPKIWithCA also returns the session's issuing CA and key, so a test can
+// hang a Lite Device CA under the trust the session already holds.
+func relayPKIWithCA(t *testing.T, principal string, trusted bool) (tls.Certificate, string, *tls.Config, *x509.Certificate, *ecdsa.PrivateKey) {
+	t.Helper()
 	root, key := issueRelayCertificate(t, 1, "root", "", true, nil, nil)
 	intermediate, ik := issueRelayCertificate(t, 2, "operator CA", "", true, root, key)
 	operator, ok := issueRelayCertificate(t, 3, "operator", "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/operator/alice", false, intermediate, ik)
@@ -145,23 +154,42 @@ func relayPKI(t *testing.T, principal string, trusted bool) (tls.Certificate, st
 		root, key = issueRelayCertificate(t, 4, "untrusted", "", true, nil, nil)
 	}
 	device, dk := issueRelayCertificate(t, 5, "device", principal, false, root, key)
-	return tls.Certificate{Certificate: [][]byte{operator.Raw, intermediate.Raw}, PrivateKey: ok}, chain, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{device.Raw}, PrivateKey: dk}}, ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert}
+	return tls.Certificate{Certificate: [][]byte{operator.Raw, intermediate.Raw}, PrivateKey: ok}, chain, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{device.Raw}, PrivateKey: dk}}, ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert}, intermediate, ik
 }
 
 const devicePrincipal = "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/lite-441bf6804ff8"
 
 func TestConnectViaRelayMTLS(t *testing.T) {
 	for _, tc := range []struct {
-		name, principal string
-		trusted, accept bool
+		name, principal           string
+		trusted, accept, fallback bool
 	}{
-		{"matching device", devicePrincipal, true, true},
-		{"wrong device", strings.Replace(devicePrincipal, "441bf6804ff8", "000000000000", 1), true, false},
-		{"wrong tenant", strings.Replace(devicePrincipal, "11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", 1), true, false},
-		{"untrusted issuer", devicePrincipal, false, false},
+		{"matching device", devicePrincipal, true, true, false},
+		{"wrong device", strings.Replace(devicePrincipal, "441bf6804ff8", "000000000000", 1), true, false, false},
+		{"wrong tenant", strings.Replace(devicePrincipal, "11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", 1), true, false, false},
+		{"untrusted issuer", devicePrincipal, false, false, false},
+		{"Lite CA under session trust", devicePrincipal, false, true, true},
+		{"self-signed Lite authority", devicePrincipal, false, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cert, chain, cfg := relayPKI(t, tc.principal, tc.trusted)
+			cert, chain, cfg, sessionCA, sessionKey := relayPKIWithCA(t, tc.principal, tc.trusted)
+			options := testRelayOptions(t, cert)
+			fallbackCalls := 0
+			if tc.fallback {
+				// Accepted only when the Lite CA chains to the session's trust;
+				// a self-signed authority is never an anchor.
+				parent, parentKey := sessionCA, sessionKey
+				if !tc.accept {
+					parent, parentKey = nil, nil
+				}
+				lite, key := issueRelayCertificate(t, 10, "Lite Device CA", "", true, parent, parentKey)
+				device, deviceKey := issueRelayCertificate(t, 11, "device", tc.principal, false, lite, key)
+				cfg.Certificates = []tls.Certificate{{Certificate: [][]byte{device.Raw}, PrivateKey: deviceKey}}
+				options.DeviceTrustFallback = func(context.Context) (string, error) {
+					fallbackCalls++
+					return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: lite.Raw})), nil
+				}
+			}
 			relay := newFakeRelay()
 			verified := make(chan error, 1)
 			relay.device = func(raw net.Conn) {
@@ -201,7 +229,7 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 			ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer session"), 10*time.Second)
 			defer cancel()
 			c := NewWendyLiteClient()
-			err := c.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions(t, cert))
+			err := c.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", options)
 			if tc.accept {
 				if err != nil {
 					t.Fatal(err)
@@ -217,6 +245,9 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 				}
 			} else if err == nil || !strings.Contains(err.Error(), "device mTLS") {
 				t.Fatalf("untrusted device accepted: %v", err)
+			}
+			if tc.fallback && fallbackCalls != 1 {
+				t.Fatalf("device authority discovery calls = %d, want 1", fallbackCalls)
 			}
 			open := <-relay.opens
 			if open.assetID != relayTestAssetID || len(open.authorization) != 1 || open.authorization[0] != "Bearer session" {

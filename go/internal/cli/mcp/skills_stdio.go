@@ -17,6 +17,10 @@ func listenWithSkills(ctx context.Context, srv *server.MCPServer, in io.Reader, 
 	if err != nil {
 		return err
 	}
+	return listenWithSkillCatalog(ctx, srv, in, out, catalog)
+}
+
+func listenWithSkillCatalog(ctx context.Context, srv *server.MCPServer, in io.Reader, out io.Writer, catalog *skillCatalog) error {
 	writer := &skillStdioWriter{out: out}
 	reader := &skillStdioReader{ctx: ctx, in: bufio.NewReader(in), out: writer, catalog: catalog}
 	return server.NewStdioServer(srv).Listen(ctx, reader, writer)

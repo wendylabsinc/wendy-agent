@@ -18,12 +18,45 @@ import (
 func newDevicePowerModeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "power-mode",
-		Short: "Show the NVIDIA Jetson power mode and the modes the device offers",
-		Long: "Shows the power mode (nvpmodel) a Jetson device is in and the modes it offers. " +
-			"Modes are the device's own names and IDs (for example MAXN or MODE_30W); use " +
-			"'wendy device power-mode set' to switch. Devices that are not a Jetson report " +
-			"that power modes are not supported.",
+		Short: "Show and set the NVIDIA Jetson power mode",
+		Long: "Interactively shows the power mode (nvpmodel) a Jetson device is in and the modes it " +
+			"offers, and lets you pick one to set. Modes are the device's own names and IDs (for " +
+			"example MAXN or MODE_30W). Without an interactive terminal, or with --json, it prints " +
+			"the same information as 'list'. Use 'list', 'get' and 'set' for explicit, " +
+			"non-interactive commands. Devices that are not a Jetson report that power modes are " +
+			"not supported.",
+		Example: "  wendy device power-mode\n" +
+			"  wendy device power-mode list\n" +
+			"  wendy device power-mode get\n" +
+			"  wendy device power-mode set MAXN",
 		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if jsonOutput || !isInteractiveTerminal() {
+				return runPowerModeList(cmd)
+			}
+			return runPowerModeInteractive(cmd)
+		},
+	}
+	cmd.AddCommand(newDevicePowerModeListCmd(), newDevicePowerModeGetCmd(), newDevicePowerModeSetCmd())
+	return cmd
+}
+
+func newDevicePowerModeListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List the power modes the device offers and the current one",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPowerModeList(cmd)
+		},
+	}
+}
+
+func newDevicePowerModeGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get",
+		Short: "Print the current power mode",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx)
@@ -31,11 +64,19 @@ func newDevicePowerModeCmd() *cobra.Command {
 				return err
 			}
 			defer conn.Close()
-			return runPowerModeShow(ctx, conn.AgentService, os.Stdout, jsonOutput)
+			return runPowerModeGet(ctx, conn.AgentService, os.Stdout, jsonOutput)
 		},
 	}
-	cmd.AddCommand(newDevicePowerModeSetCmd())
-	return cmd
+}
+
+func runPowerModeList(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	conn, err := connectToAgent(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return runPowerModeShow(ctx, conn.AgentService, os.Stdout, jsonOutput)
 }
 
 func newDevicePowerModeSetCmd() *cobra.Command {
@@ -136,6 +177,19 @@ func runPowerModeShow(ctx context.Context, client agentpb.WendyAgentServiceClien
 	return nil
 }
 
+// runPowerModeGet prints only the current mode: "NAME (id)", or {"current": ...}.
+func runPowerModeGet(ctx context.Context, client agentpb.WendyAgentServiceClient, out io.Writer, asJSON bool) error {
+	resp, err := client.GetPowerMode(ctx, &agentpb.GetPowerModeRequest{})
+	if err != nil {
+		return powerModeRPCError("reading the power mode", err)
+	}
+	if asJSON {
+		return writeJSON(out, map[string]any{"current": powerModeJSON(resp.GetCurrent())})
+	}
+	_, err = fmt.Fprintln(out, powerModeLabel(resp.GetCurrent()))
+	return err
+}
+
 func joinNotes(notes []string) string {
 	s := notes[0]
 	for _, n := range notes[1:] {
@@ -144,26 +198,37 @@ func joinNotes(notes []string) string {
 	return s
 }
 
-// runPowerModeSet switches the mode. The first call never reboots: for a mode
-// that needs a reboot the agent only reports it, and nothing is changed (a
-// declined nvpmodel prompt records nothing). Only a confirmed second call, which
-// sets the mode and reboots at once, changes the device.
-func runPowerModeSet(ctx context.Context, client agentpb.WendyAgentServiceClient, mode string, assumeYes, interactive bool, out io.Writer, asJSON bool) error {
+// powerModeSetOutcome is what a set attempt ended in.
+type powerModeSetOutcome struct {
+	resp *agentpb.SetPowerModeResponse
+	// aborted is set when the user declined the reboot: nothing was changed.
+	aborted bool
+}
+
+// rebooting reports that the device is restarting into the new mode.
+func (o powerModeSetOutcome) rebooting() bool {
+	return !o.aborted && o.resp.GetRebootScheduled()
+}
+
+// setPowerMode switches the mode. The first call never reboots: for a mode that
+// needs a reboot the agent only reports it, and nothing is changed (a declined
+// nvpmodel prompt records nothing). Only a confirmed second call, which sets the
+// mode and reboots at once, changes the device.
+func setPowerMode(ctx context.Context, client agentpb.WendyAgentServiceClient, mode string, assumeYes, interactive bool, out io.Writer) (powerModeSetOutcome, error) {
 	resp, err := client.SetPowerMode(ctx, &agentpb.SetPowerModeRequest{Mode: mode})
 	if err != nil {
-		return powerModeRPCError("setting the power mode", err)
+		return powerModeSetOutcome{}, powerModeRPCError("setting the power mode", err)
 	}
 	label := powerModeLabel(resp.GetMode())
 
 	if resp.GetRebootRequired() {
 		if !assumeYes {
 			if !interactive {
-				return fmt.Errorf("power mode %s needs a reboot and was not set; pass --yes to set it and reboot the device", label)
+				return powerModeSetOutcome{}, fmt.Errorf("power mode %s needs a reboot and was not set; pass --yes to set it and reboot the device", label)
 			}
 			fmt.Fprintf(out, "Power mode %s only takes effect after a reboot.\n", tui.Value(label))
 			if !confirmDefaultNoFn(fmt.Sprintf("Set %s and reboot the device now?", label)) {
-				fmt.Fprintln(out, "Aborted. The power mode is unchanged.")
-				return nil
+				return powerModeSetOutcome{resp: resp, aborted: true}, nil
 			}
 		}
 		resp, err = client.SetPowerMode(ctx, &agentpb.SetPowerModeRequest{Mode: mode, Reboot: true})
@@ -173,10 +238,19 @@ func runPowerModeSet(ctx context.Context, client agentpb.WendyAgentServiceClient
 			err = nil
 		}
 		if err != nil {
-			return powerModeRPCError("setting the power mode", err)
+			return powerModeSetOutcome{}, powerModeRPCError("setting the power mode", err)
 		}
 	}
+	return powerModeSetOutcome{resp: resp}, nil
+}
 
+func printPowerModeSet(out io.Writer, o powerModeSetOutcome, asJSON bool) error {
+	if o.aborted {
+		_, err := fmt.Fprintln(out, "Aborted. The power mode is unchanged.")
+		return err
+	}
+	resp := o.resp
+	label := powerModeLabel(resp.GetMode())
 	if asJSON {
 		return writeJSON(out, map[string]any{
 			"mode":            powerModeJSON(resp.GetMode()),
@@ -186,9 +260,17 @@ func runPowerModeSet(ctx context.Context, client agentpb.WendyAgentServiceClient
 	}
 	if resp.GetRebootScheduled() {
 		fmt.Fprintf(out, "Power mode %s set; the device is rebooting now.\n", tui.Value(label))
-		fmt.Fprintln(out, "Run 'wendy device power-mode' once it is back to check.")
+		fmt.Fprintln(out, "Run 'wendy device power-mode get' once it is back to check.")
 	} else {
 		fmt.Fprintf(out, "Power mode set to %s.\n", tui.Value(label))
 	}
 	return nil
+}
+
+func runPowerModeSet(ctx context.Context, client agentpb.WendyAgentServiceClient, mode string, assumeYes, interactive bool, out io.Writer, asJSON bool) error {
+	o, err := setPowerMode(ctx, client, mode, assumeYes, interactive, out)
+	if err != nil {
+		return err
+	}
+	return printPowerModeSet(out, o, asJSON)
 }

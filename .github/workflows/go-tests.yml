@@ -7,28 +7,40 @@ on:
     paths:
       - 'go/**'
       - 'web-client/mcp-app/**'
+      - 'web-client/package.json'
+      - 'web-client/scripts/build-wasm.mjs'
       - 'go/simulator/go2/go2_sim/**'
       - 'Proto/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/**'
       - '.github/actions/setup-go-ci/**'
+      - '.github/actions/release-priority/**'
       - '.github/scripts/**'
+      - '.github/ci-tests/host-sensor-loopback/**'
       - 'plugins/**'
       - 'scripts/sync-agent-skills.py'
+      - 'scripts/package-chatgpt-plugin.py'
+      - 'scripts/test-package-chatgpt-plugin.py'
   pull_request:
     paths:
       - 'go/**'
       - 'web-client/mcp-app/**'
+      - 'web-client/package.json'
+      - 'web-client/scripts/build-wasm.mjs'
       - 'go/simulator/go2/go2_sim/**'
       - 'Proto/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/**'
       - '.github/actions/setup-go-ci/**'
+      - '.github/actions/release-priority/**'
       - '.github/scripts/**'
+      - '.github/ci-tests/host-sensor-loopback/**'
       - 'plugins/**'
       - 'scripts/sync-agent-skills.py'
+      - 'scripts/package-chatgpt-plugin.py'
+      - 'scripts/test-package-chatgpt-plugin.py'
 
 concurrency:
   group: go-tests-${{ github.event.pull_request.number || github.ref }}
@@ -64,6 +76,11 @@ jobs:
       - name: Check runtime skill packaging
         run: python3 scripts/sync-agent-skills.py --check
 
+      - name: Check public ChatGPT package
+        run: |
+          python3 scripts/test-package-chatgpt-plugin.py
+          python3 scripts/package-chatgpt-plugin.py --check
+
   windows:
     name: Windows CLI
     runs-on: runs-on,runner=2cpu-linux-x64
@@ -90,6 +107,28 @@ jobs:
         run: |
           go build ./internal/cli/... ./cmd/wendy/
           go test -c -o /dev/null ./internal/cli/commands
+
+  wasm:
+    name: Browser WASM
+    runs-on: runs-on,runner=2cpu-linux-x64
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go and Node
+        uses: ./.github/actions/setup-go-ci
+        with:
+          cache-name: wasm
+
+      - name: Build browser WASM assets
+        run: npm --prefix web-client run build:wasm
+
+      - name: Run WASM tests in Node
+        env:
+          GOOS: js
+          GOARCH: wasm
+          CGO_ENABLED: '0'
+        run: go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./go/cmd/wendy-web ./go/internal/cli/browserauth ./go/internal/shared/flock -count=1 -timeout 120s
 
   windows-telemetry:
     name: Windows telemetry
@@ -129,11 +168,20 @@ jobs:
         working-directory: go
         run: go test ./cmd/wendy -run '^(TestInvocationAnalytics|TestEnablingAnalyticsReportsTheCurrentInvocation|TestHelpDoesNotCountAsProductUse)' -v -count=1 -timeout 120s
 
+      - name: Test Windows VM setup
+        working-directory: go
+        shell: pwsh
+        run: |
+          go test ./internal/cli/vm -run '^(TestCreateWindowsDiskAndVarsAreSparse|TestFindQEMUOnWindows|TestWindowsFirmwareFollowsQEMUInstallation|TestSpecUsesWindowsQEMUPath|TestBinaryIsTheAArch64SystemEmulator)$' -v -count=1 -timeout 120s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test ./internal/cli/commands -run '^(TestEnsureQEMUOnWindows|TestSimulatorWithoutDetachedSupport|TestDiscoverKeepsScanningWhenSimulatorNeedsForegroundStart|TestDiscoverSimulatorGuidanceFitsPopulatedTerminal|TestVMStorage|TestVMImageSpace|TestVMCreate)' -v -count=1 -timeout 120s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   # Preserve the existing required "Test" check after splitting its work.
   test:
     name: Test
     if: ${{ always() }}
-    needs: [unit-tests, windows, windows-telemetry, vet, agent-startup]
+    needs: [unit-tests, windows, windows-telemetry, wasm, vet, agent-startup]
     runs-on: ubuntu-latest
     steps:
       - name: Check test results
@@ -141,12 +189,14 @@ jobs:
           RACE_RESULT: ${{ needs.unit-tests.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
           WINDOWS_TELEMETRY_RESULT: ${{ needs.windows-telemetry.result }}
+          WASM_RESULT: ${{ needs.wasm.result }}
           VET_RESULT: ${{ needs.vet.result }}
           STARTUP_RESULT: ${{ needs.agent-startup.result }}
         run: |
           test "$RACE_RESULT" = success
           test "$WINDOWS_RESULT" = success
           test "$WINDOWS_TELEMETRY_RESULT" = success
+          test "$WASM_RESULT" = success
           test "$VET_RESULT" = success
           test "$STARTUP_RESULT" = success
 
@@ -220,3 +270,10 @@ jobs:
         run: bash .github/scripts/install-manifest-merge_test.sh
       - name: integration device selection tests
         run: python3 .github/scripts/integration-discover_test.py
+      - name: host sensor loopback CI tests
+        run: |
+          sh -n .github/ci-tests/host-sensor-loopback/check.sh
+          bash -n go/scripts/test-ci.sh
+          python3 .github/ci-tests/host-sensor-loopback/check_test.py
+      - name: release priority tests
+        run: node --test .github/scripts/release-priority.test.cjs

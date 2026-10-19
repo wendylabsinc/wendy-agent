@@ -18,28 +18,30 @@ import (
 // hears when one of the watched classes appears. Nothing is recorded or
 // uploaded, and watches end with the session.
 func (s *mcpServer) registerWatchTools(srv *server.MCPServer) {
-	add := func(name string, handler server.ToolHandlerFunc, opts ...mcpgo.ToolOption) {
-		opts = append(opts, localOnly()...)
+	// world is openWorld for tools that reach the device and localOnly for
+	// those that read this session's watches.
+	add := func(name string, world []mcpgo.ToolOption, handler server.ToolHandlerFunc, opts ...mcpgo.ToolOption) {
+		opts = append(opts, world...)
 		srv.AddTool(mcpgo.NewTool(name, opts...), handler)
 	}
-	add("watch_sources", s.handleWatchSources, append([]mcpgo.ToolOption{
+	add("watch_sources", openWorld(), s.handleWatchSources, append([]mcpgo.ToolOption{
 		mcpgo.WithDescription("List what a camera watch can use: healthy cameras on the connected device (id, name), the detectors watches can run (id, model, class labels), and free watch slots. Call before watch_start."),
 	}, readOnly()...)...)
-	add("watch_start", s.handleWatchStart, append([]mcpgo.ToolOption{
+	add("watch_start", openWorld(), s.handleWatchStart, append([]mcpgo.ToolOption{
 		mcpgo.WithDescription("Watch a camera on the connected device for some classes of object, for example a person at the door. A detector runs on the device and this session is notified when a watched class appears; nothing is recorded or uploaded. At most two watches run per session, and they end when the session ends. Returns when the watch is READY, ERROR or ENDED, or after 30 s while it is still PREPARING: a first watch on a device installs the detector, which takes minutes. ENDED means the device connection changed during the start."),
 		mcpgo.WithString("camera", mcpgo.Description("Camera id from watch_sources"), mcpgo.Required()),
 		mcpgo.WithArray("classes", mcpgo.Description(`1-10 class labels from one detector's labels in watch_sources, for example ["person"]`), mcpgo.Required(), mcpgo.WithStringItems(), mcpgo.MinItems(1), mcpgo.MaxItems(10)),
 		mcpgo.WithNumber("min_confidence", mcpgo.Description("Minimum detection score, 0.3 to 0.95; default 0.5"), mcpgo.Min(0.3), mcpgo.Max(0.95)),
 		mcpgo.WithString("label", mcpgo.Description(`Short name shown to the user, for example "front door"; default the camera's name`), mcpgo.MaxLength(64)),
 	}, mutating()...)...)
-	add("watch_list", s.handleWatchList, append([]mcpgo.ToolOption{
+	add("watch_list", localOnly(), s.handleWatchList, append([]mcpgo.ToolOption{
 		mcpgo.WithDescription("List this session's camera watches with state, classes and last event time, including recently ended ones and why they ended."),
 	}, readOnly()...)...)
-	add("watch_stop", s.handleWatchStop, append([]mcpgo.ToolOption{
+	add("watch_stop", openWorld(), s.handleWatchStop, append([]mcpgo.ToolOption{
 		mcpgo.WithDescription("Stop a camera watch and remove its detector from the device."),
 		mcpgo.WithString("watch_id", mcpgo.Description("Watch id from watch_start or watch_list"), mcpgo.Required()),
 	}, append(mutating(), idempotent()...)...)...)
-	add("watch_events", s.handleWatchEvents, append([]mcpgo.ToolOption{
+	add("watch_events", localOnly(), s.handleWatchEvents, append([]mcpgo.ToolOption{
 		mcpgo.WithDescription("Read a watch's events after a sequence number from its buffer of the last 100, with its current state. Pass the previous result's next_sequence as after_sequence: otherwise every call returns the same buffered events at once instead of waiting. wait_seconds waits for the next event. For clients that do not show this server's watch notifications."),
 		mcpgo.WithString("watch_id", mcpgo.Description("Watch id from watch_start or watch_list"), mcpgo.Required()),
 		mcpgo.WithNumber("after_sequence", mcpgo.Description("Return events after this sequence number: the previous result's next_sequence; default 0 (all buffered)"), mcpgo.Min(0)),

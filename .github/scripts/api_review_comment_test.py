@@ -524,6 +524,53 @@ class MultipartTests(unittest.TestCase):
         comments.append(bot_comment(root, 99))
         return comments
 
+    def history_comments(self):
+        previous = large_result()
+        for index in range(93, 100):
+            item = copy.deepcopy(previous["decisions"][0])
+            item["title"] = f"Contract {index:03}: native launch command"
+            previous["decisions"].append(item)
+        return self.previous_comments(previous)
+
+    def test_withdrawn_history_spans_comments_without_losing_identity_or_acceptance(self):
+        comments = self.history_comments()
+        for comment in comments:
+            comment["body"] = comment["body"].replace("- [ ] Accept", "- [x] Accept")
+        prior = review.authoritative_records(comments)
+        self.assertGreater(len("\n".join(review.withdrawn_lines(prior)).encode()),
+                           review.MAX_COMMENT_BYTES - review.WARNING_RESERVE_BYTES)
+        data = result()
+        github = MultipartGitHub(comments)
+        self.assertTrue(self.publish(data, github))
+        records = review.authoritative_records(github.comments)
+        historical = [record for record in records if record["state"] == "withdrawn"]
+        self.assertEqual({record["id"] for record in historical}, {record["id"] for record in prior})
+        for record in historical:
+            original = next(item for item in prior if item["id"] == record["id"])
+            for field in ("version", "accepted_version", "decision"):
+                self.assertEqual(record[field], original[field])
+        self.assertEqual(len(records), len(prior) + 1)
+        for comment in github.comments:
+            self.assertLessEqual(len(comment["body"].encode()),
+                                 review.MAX_COMMENT_BYTES - review.WARNING_RESERVE_BYTES)
+            self.assertEqual(comment["body"].count("<details>"), comment["body"].count("</details>"))
+        # History-only reviews and subsequent reruns must also remain lossless.
+        self.assertTrue(self.publish({**data, "decisions": []}, github))
+        self.assertEqual(len(review.authoritative_records(github.comments)), len(prior) + 1)
+        self.assertTrue(self.publish(data, github))
+        self.assertEqual(len(review.authoritative_records(github.comments)), len(prior) + 1)
+
+    def test_history_page_failure_preserves_old_authoritative_state(self):
+        comments = self.history_comments()
+        comments[0]["body"] = comments[0]["body"].replace("- [ ] Accept", "- [x] Accept", 1)
+        prior = review.authoritative_records(comments)
+        github = MultipartGitHub(comments, fail_body_write=2)
+        self.assertFalse(self.publish(result(), github))
+        self.assertEqual(review.authoritative_records(github.comments), prior)
+        self.assertFalse(any(method == "DELETE" for method, _, _ in github.mutations()))
+        self.assertIn("Could not publish every", next(comment["body"] for comment in github.comments
+                                                      if review.part_index(comment["body"]) == 0))
+
     def test_93_long_decisions_are_complete_bounded_and_published_before_primary(self):
         data = large_result()
         with self.assertRaises(ValueError):

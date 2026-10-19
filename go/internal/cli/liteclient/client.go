@@ -181,9 +181,14 @@ func (c *WendyLiteClient) ConnectInsecureContext(ctx context.Context, address st
 }
 
 func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert tls.Certificate, rootCAs x509.CertPool) error {
+	return c.ConnectWithMutualAuthenticationContext(context.Background(), address, cert, rootCAs)
+}
+
+// ConnectWithMutualAuthenticationContext bounds the TCP, TLS, and WendyCom
+// handshakes by ctx.
+func (c *WendyLiteClient) ConnectWithMutualAuthenticationContext(ctx context.Context, address string, cert tls.Certificate, rootCAs x509.CertPool) error {
 	// Verify the certificate chain against our root CAs but skip hostname
 	// checking — devices on a local network don't have SANs.
-	var verifiedLeaf *x509.Certificate
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
 		MinVersion:         tls.VersionTLS12,
@@ -207,24 +212,10 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 			if _, err := certs[0].Verify(opts); err != nil {
 				return fmt.Errorf("server certificate verification failed: %w", err)
 			}
-			verifiedLeaf = certs[0]
 			return nil
 		},
 	}
-	conn, err := tls.Dial("tcp", address, tlsCfg)
-	if err != nil {
-		return fmt.Errorf("connect (mTLS): %w", err)
-	}
-	c.link = newDirectLink(conn)
-	err = c.handshake()
-	if err != nil {
-		c.link.close()
-		c.link = nil
-		return fmt.Errorf("handshake: %w", err)
-	}
-	c.peerCert = verifiedLeaf
-	c.startReadLoop()
-	return nil
+	return c.connectTLSContext(ctx, address, tlsCfg)
 }
 
 func (c *WendyLiteClient) ConnectToSerial(device string) error {
@@ -286,7 +277,7 @@ func (c *WendyLiteClient) handshakeSerialContext(ctx context.Context, link *dire
 // This method owns cc on every path, including invalid local credentials.
 func (c *WendyLiteClient) ConnectViaRelay(ctx context.Context, cc *grpc.ClientConn, assetID string,
 	cert tls.Certificate, deviceTrustChain, deviceID string, options RelayOptions) error {
-	cfg, err := deviceTLSConfig(cert, deviceTrustChain, deviceID)
+	cfg, err := deviceTLSConfig(ctx, cert, deviceTrustChain, deviceID, options.DeviceTrustFallback)
 	if err != nil {
 		cc.Close()
 		return err
@@ -295,9 +286,9 @@ func (c *WendyLiteClient) ConnectViaRelay(ctx context.Context, cc *grpc.ClientCo
 	if err != nil {
 		return err
 	}
-	conn := tls.Client(raw, cfg)
 	handshakeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	conn := tls.Client(raw, cfg)
 	if err := conn.HandshakeContext(handshakeCtx); err != nil {
 		raw.Close()
 		return fmt.Errorf("device mTLS over relay: %w", err)
@@ -1152,7 +1143,11 @@ func (c *WendyLiteClient) ResetEnrollment(deviceID, nonceHex string) error {
 // deviceTLSConfig verifies the device against chain and presents cert unchanged.
 // Callers supply the operator's own intermediates in cert; the device trust
 // bundle may belong to a different authority and must not be sent as that chain.
-func deviceTLSConfig(cert tls.Certificate, chain, deviceID string) (*tls.Config, error) {
+// It is the one device verifier for relay, LAN and BLE. A non-nil lite starts
+// here, before dialing, in its own goroutine under ctx; only a board issued by
+// the Lite Device CA waits for it, so a board under the session CA never waits
+// on PKI reachability.
+func deviceTLSConfig(ctx context.Context, cert tls.Certificate, chain, deviceID string, lite LiteDeviceCAChain) (*tls.Config, error) {
 	if len(cert.Certificate) == 0 {
 		return nil, fmt.Errorf("missing client certificate")
 	}
@@ -1181,23 +1176,45 @@ func deviceTLSConfig(cert tls.Certificate, chain, deviceID string) (*tls.Config,
 	if err != nil {
 		return nil, err
 	}
-	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert},
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert},
 		InsecureSkipVerify: true, // Verification and device identity checks are performed below.
 		VerifyConnection:   verify,
-	}, nil
+	}
+	if lite != nil {
+		type loaded struct {
+			chain string
+			err   error
+		}
+		result := make(chan loaded, 1)
+		go func() {
+			chainPEM, err := lite(ctx)
+			result <- loaded{chainPEM, err}
+		}()
+		addLiteDeviceTrust(cfg, cert, chain, deviceID, sync.OnceValues(func() (string, error) {
+			r := <-result
+			return r.chain, r.err
+		}))
+	}
+	return cfg, nil
 }
 
-func (c *WendyLiteClient) ConnectWithPKIAuthentication(address string, cert tls.Certificate, chain, deviceID string) error {
-	return c.ConnectWithPKIAuthenticationContext(context.Background(), address, cert, chain, deviceID)
+func (c *WendyLiteClient) ConnectWithPKIAuthentication(address string, cert tls.Certificate, chain, deviceID string, lite LiteDeviceCAChain) error {
+	return c.ConnectWithPKIAuthenticationContext(context.Background(), address, cert, chain, deviceID, lite)
 }
 
 // ConnectWithPKIAuthenticationContext bounds connection establishment and both
-// the TLS and WendyCom handshakes by ctx.
-func (c *WendyLiteClient) ConnectWithPKIAuthenticationContext(ctx context.Context, address string, cert tls.Certificate, chain, deviceID string) error {
-	cfg, err := deviceTLSConfig(cert, chain, deviceID)
+// the TLS and WendyCom handshakes by ctx. lite may be nil (see deviceTLSConfig).
+func (c *WendyLiteClient) ConnectWithPKIAuthenticationContext(ctx context.Context, address string, cert tls.Certificate, chain, deviceID string, lite LiteDeviceCAChain) error {
+	cfg, err := deviceTLSConfig(ctx, cert, chain, deviceID, lite)
 	if err != nil {
 		return err
 	}
+	return c.connectTLSContext(ctx, address, cfg)
+}
+
+// connectTLSContext uses an already configured verifier for the TLS handshake,
+// then establishes WendyCom under the same cancellation context.
+func (c *WendyLiteClient) connectTLSContext(ctx context.Context, address string, cfg *tls.Config) error {
 	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 15 * time.Second}, Config: cfg}
 	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {

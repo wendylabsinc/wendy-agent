@@ -351,12 +351,13 @@ func loadOrCreateID() (string, error) {
 	}
 
 	idPath := filepath.Join(dir, "analytics_id")
-	if id, err := readAnalyticsID(idPath); err != nil || id != "" {
-		return id, err
+	if id, err := readAnalyticsID(idPath); err == nil && id != "" {
+		return id, nil
 	}
 
 	// Concurrent first launches must share one identity. Readers of an existing
-	// ID need no writable lock file; creation rechecks after obtaining the lock.
+	// ID need no writable lock file. Recheck failed reads after the writer exits:
+	// Windows can report a sharing violation while it renames the new ID.
 	release, err := flock.Acquire(filepath.Join(dir, "analytics_id.lock"), 5*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("locking analytics ID: %w", err)
