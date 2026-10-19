@@ -1,0 +1,105 @@
+name: Prepare integration candidate
+description: Use the release archives when supplied, otherwise build a stamped candidate from this checkout.
+inputs:
+  version:
+    description: Release artifact version from this workflow run
+    default: ''
+  agents:
+    description: Prepare Linux agent candidates as well as the host CLI
+    default: 'true'
+outputs:
+  cli:
+    value: ${{ github.workspace }}/go/bin/wendy
+  agents:
+    value: ${{ github.workspace }}/.ci-candidate/agents
+  sha:
+    value: ${{ steps.identity.outputs.sha }}
+runs:
+  using: composite
+  steps:
+    - id: identity
+      shell: bash
+      env:
+        CANDIDATE_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        if [[ -n "$CANDIDATE_VERSION" && ! "$CANDIDATE_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          echo 'Invalid candidate version' >&2
+          exit 1
+        fi
+        echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        mkdir -p go/bin .ci-candidate/cli .ci-candidate/agents
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          macOS-ARM64) platform=darwin-arm64 ;;
+          Linux-X64) platform=linux-amd64 ;;
+          *) echo "Unsupported CI host: $RUNNER_OS-$RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+        echo "platform=$platform" >> "$GITHUB_OUTPUT"
+    - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      if: inputs.version == ''
+      with:
+        go-version-file: go.mod
+        cache: false
+    - name: Native build dependencies
+      if: inputs.version == ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "$RUNNER_OS" == macOS ]]; then
+          echo /opt/homebrew/bin >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:$PATH"
+          command -v pkg-config >/dev/null || brew install pkg-config
+          pkg-config --exists libusb-1.0 || brew install libusb
+        else
+          if ! pkg-config --exists libusb-1.0; then
+            sudo apt-get update
+            sudo apt-get install -y pkg-config libusb-1.0-0-dev
+          fi
+        fi
+    - uses: ./.github/actions/build-mcp-app
+      if: inputs.version == ''
+    - name: Build stamped source candidate
+      if: inputs.version == ''
+      shell: bash
+      env:
+        CANDIDATE_SHA: ${{ steps.identity.outputs.sha }}
+        BUILD_AGENTS: ${{ inputs.agents }}
+      run: |
+        set -euo pipefail
+        VERSION="ci-$CANDIDATE_SHA" go/scripts/build-wendy.sh bin/wendy
+        if [[ "$BUILD_AGENTS" == true ]]; then
+          make -C go VERSION="ci-$CANDIDATE_SHA" build-agent-linux-amd64 build-agent-linux-arm64
+          cp go/bin/wendy-agent-linux-amd64 go/bin/wendy-agent-linux-arm64 .ci-candidate/agents/
+        fi
+    - name: Download candidate CLI archive
+      if: inputs.version != ''
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      with:
+        name: wendy-cli-${{ steps.identity.outputs.platform }}-${{ inputs.version }}.tar.gz
+        path: .ci-candidate/cli
+    - name: Read packaged CLI
+      if: inputs.version != ''
+      shell: bash
+      env:
+        CANDIDATE_PLATFORM: ${{ steps.identity.outputs.platform }}
+      run: |
+        python3 - <<'PY'
+        import os, pathlib, tarfile
+        archives = list(pathlib.Path('.ci-candidate/cli').glob('*.tar.gz'))
+        if len(archives) != 1:
+            raise SystemExit('Expected exactly one candidate CLI archive')
+        with tarfile.open(archives[0]) as archive:
+            member = archive.getmember('wendy-cli-' + os.environ['CANDIDATE_PLATFORM'] + '/wendy')
+            if not member.isfile():
+                raise SystemExit('Packaged CLI must be a regular file')
+            output = pathlib.Path('go/bin/wendy')
+            output.write_bytes(archive.extractfile(member).read())
+            output.chmod(0o755)
+        PY
+    - name: Download candidate agent archives
+      if: inputs.version != '' && inputs.agents == 'true'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      with:
+        pattern: wendy-agent-linux-*-${{ inputs.version }}.tar.gz
+        merge-multiple: true
+        path: .ci-candidate/agents

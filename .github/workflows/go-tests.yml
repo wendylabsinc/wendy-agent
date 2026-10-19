@@ -16,6 +16,7 @@ on:
       - '.github/workflows/**'
       - '.github/actions/setup-go-ci/**'
       - '.github/actions/release-priority/**'
+      - '.github/actions/integration-candidate/**'
       - '.github/scripts/**'
       - '.github/ci-tests/host-sensor-loopback/**'
       - 'plugins/**'
@@ -35,6 +36,7 @@ on:
       - '.github/workflows/**'
       - '.github/actions/setup-go-ci/**'
       - '.github/actions/release-priority/**'
+      - '.github/actions/integration-candidate/**'
       - '.github/scripts/**'
       - '.github/ci-tests/host-sensor-loopback/**'
       - 'plugins/**'
@@ -268,8 +270,22 @@ jobs:
         run: bash .github/scripts/install-scripts_test.sh
       - name: manifest merge tests
         run: bash .github/scripts/install-manifest-merge_test.sh
+      - name: Install workflow test dependency
+        run: |
+          python3 -m venv "$RUNNER_TEMP/rack-tests"
+          "$RUNNER_TEMP/rack-tests/bin/pip" install PyYAML==6.0.2
+          echo "$RUNNER_TEMP/rack-tests/bin" >> "$GITHUB_PATH"
       - name: integration device selection tests
-        run: python3 .github/scripts/integration-discover_test.py
+        run: |
+          python3 .github/scripts/integration-discover_test.py
+          python3 .github/scripts/integration-prepare-agent_test.py
+          python3 .github/scripts/integration-prepare-os_test.py
+          python3 .github/scripts/integration-harness_test.py
+          python3 .github/scripts/integration-results_test.py
+          python3 .github/scripts/integration-lease_test.py
+          python3 .github/scripts/nightly-device-check_test.py
+          python3 .github/scripts/integration-run_test.py
+          python3 .github/scripts/integration-workflow_test.py
       - name: host sensor loopback CI tests
         run: |
           sh -n .github/ci-tests/host-sensor-loopback/check.sh

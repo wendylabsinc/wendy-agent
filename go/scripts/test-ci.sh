@@ -1,10 +1,18 @@
 #!/bin/bash
+# Test callbacks are invoked indirectly through run_test.
+# shellcheck disable=SC2329
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$REPO_DIR/.." && pwd)"
 TESTS_DIR="$REPO_ROOT/.github/ci-tests"
+CLEANUP_RECEIPT="${WENDY_CI_CLEANUP_RECEIPT:-}"
+# Never let an earlier invocation certify this run's cleanup, including a run
+# that fails before argument parsing or trap installation.
+if [[ -n "$CLEANUP_RECEIPT" ]]; then
+    rm -f -- "$CLEANUP_RECEIPT" || exit 1
+fi
 
 usage() {
     cat <<EOF
@@ -38,9 +46,7 @@ Tests:
   python-multiservice       Multi-service wendy.json: parallel build + dep-order creation
   python-servicename        Single service with serviceName: verifies WENDY_HOSTNAME/WENDY_APP_GROUP env injection (WDY-878)
   python-env                Verify top-level wendy.json env reaches the container, incl. \${VAR} expansion (WDY-2040)
-                            Skipped for now: needs an agent carrying RunContainerLayersRequest.env.
   python-env-flag           Verify 'wendy run --env' overrides wendy.json env per key (WDY-2040)
-                            Skipped for now, same agent requirement as python-env.
   python-multiservice-env   Verify app-level env is the per-service default and a service overrides it per key (WDY-2040)
   python-device-top         Deploy a long-running app and verify 'wendy device top --json' reports it (device top)
   compose-hello             docker-compose multi-service deployment with build: Dockerfiles
@@ -58,6 +64,12 @@ Options:
   -w, --wendy PATH      Path to wendy binary (default: wendy on PATH)
   -t, --test NAME       Run only the named test (can be repeated)
   --help                Show this help message
+
+Environment:
+  WENDY_CI_LOG_DIR                  Directory for complete per-test logs
+  WENDY_CI_COMMAND_TIMEOUT_SECONDS  Build/run deadline (default: 900)
+  WENDY_CI_CONTROL_TIMEOUT_SECONDS  Device query/cleanup deadline (default: 30)
+  WENDY_CI_CLEANUP_RECEIPT          Optional receipt written after verified cleanup
 
 Examples:
   $(basename "$0")                                  # auto-discover, all tests
@@ -103,24 +115,135 @@ RESET="\033[0m"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
+TEST_SEQUENCE=0
+LOG_DIR="${WENDY_CI_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/wendy-ci-logs.XXXXXX")}"
+mkdir -p "$LOG_DIR" || exit 1
+echo "Full test logs: $LOG_DIR"
+
+# Keep a build or broken streaming RPC from consuming the whole rack job. A
+# separate process group lets the deadline terminate the CLI and its builders.
+ci_command() {
+    local deadline="$1"; shift
+    python3 - "$deadline" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout = float(sys.argv[1])
+if timeout <= 0:
+    raise SystemExit("CI command timeout must be positive")
+command = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, start_new_session=True)
+
+def forward(signum, _frame=None):
+    try:
+        os.killpg(command.pid, signum)
+    except ProcessLookupError:
+        pass
+
+def stop():
+    forward(signal.SIGTERM)
+    try:
+        command.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    forward(signal.SIGKILL)
+    command.wait()
+
+def interrupted(signum, _frame):
+    stop()
+    sys.exit(128 + signum)
+
+signal.signal(signal.SIGTERM, interrupted)
+signal.signal(signal.SIGINT, interrupted)
+try:
+    result = command.wait(timeout=timeout)
+except subprocess.TimeoutExpired:
+    print(f"Timed out after {timeout:g}s: {sys.argv[2]}", file=sys.stderr, flush=True)
+    stop()
+    result = 124
+# Descendants may still hold the output pipe after the CLI has exited.
+forward(signal.SIGKILL)
+sys.exit(result if result >= 0 else 128 - result)
+PY
+}
+
+wendy_cli() {
+    ci_command "${WENDY_CI_COMMAND_TIMEOUT_SECONDS:-900}" "$WENDY" "$@"
+}
+
+wendy_control() {
+    ci_command "${WENDY_CI_CONTROL_TIMEOUT_SECONDS:-30}" "$WENDY" "$@"
+}
 
 run_test() {
     local name="$1"
     shift
     printf "  %-50s " "$name"
-    local output
-    output=$("$@" 2>&1)
+    local logfile
+    ((TEST_SEQUENCE++))
+    logfile="$LOG_DIR/$(printf '%03d' "$TEST_SEQUENCE")-$(printf '%s' "$name" | tr -c 'A-Za-z0-9_.-' '_').log"
+    "$@" >"$logfile" 2>&1
     local rc=$?
     if [[ $rc -eq 0 ]]; then
         echo -e "${GREEN}PASS${RESET}"
         ((PASS_COUNT++))
     else
         echo -e "${RED}FAIL${RESET} (exit $rc)"
-        echo "    Output: $(echo "$output" | tail -10)"
+        tail -10 "$logfile"
+        echo "    Full log: $logfile"
         ((FAIL_COUNT++))
     fi
-    return $rc
+    return "$rc"
 }
+
+PENDING_APPS=()
+CURRENT_APP_INDEX=""
+DISCOVER_STDERR=""
+
+cleanup_app() {
+    local app_id="$1" listing
+    listing=$(wendy_control device apps list --device "$HOSTNAME" --json) || return 1
+    jq -e 'type == "array"' <<<"$listing" >/dev/null || return 1
+    if jq -e --arg app "$app_id" 'any(.name == $app)' <<<"$listing" >/dev/null; then
+        wendy_control device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup || return 1
+        listing=$(wendy_control device apps list --device "$HOSTNAME" --json) || return 1
+        if ! jq -e --arg app "$app_id" 'type == "array" and all(.name != $app)' <<<"$listing" >/dev/null; then
+            echo "App $app_id remains after cleanup; the device needs inspection"
+            return 1
+        fi
+    fi
+}
+
+finish_current_app() {
+    if [[ -n "$CURRENT_APP_INDEX" ]]; then
+        if run_test "cleanup ${PENDING_APPS[$CURRENT_APP_INDEX]}" cleanup_app "${PENDING_APPS[$CURRENT_APP_INDEX]}"; then
+            unset 'PENDING_APPS[CURRENT_APP_INDEX]'
+        fi
+        CURRENT_APP_INDEX=""
+    fi
+}
+
+finish_ci() {
+    local rc=$? index cleanup_ok=true interrupted=false
+    [[ "$rc" -ne 130 && "$rc" -ne 143 ]] || interrupted=true
+    trap - EXIT INT TERM
+    for index in "${!PENDING_APPS[@]}"; do
+        if ! run_test "cleanup ${PENDING_APPS[$index]}" cleanup_app "${PENDING_APPS[$index]}"; then
+            rc=1
+            cleanup_ok=false
+        fi
+    done
+    [[ -z "$DISCOVER_STDERR" ]] || rm -f "$DISCOVER_STDERR"
+    if [[ "$cleanup_ok" == true && "$interrupted" == false && -n "$CLEANUP_RECEIPT" ]]; then
+        printf '{"cleanupVerified":true}\n' >"$CLEANUP_RECEIPT" || rc=1
+    fi
+    exit "$rc"
+}
+
+trap finish_ci EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # A per-run docker-container builder is shared by every integration fixture.
 # Retry one failed OCI export because self-hosted runners occasionally lose a
@@ -137,7 +260,7 @@ prepare_ci_oci_retry() {
         <<<"$output"; then
         local builder="${WENDY_BUILDX_BUILDER}-oci"
         echo "    BuildKit daemon failed; recreating disposable CI builder $builder and retrying once"
-        docker buildx rm "$builder" --force >/dev/null 2>&1 || true
+        ci_command "${WENDY_CI_CONTROL_TIMEOUT_SECONDS:-30}" docker buildx rm "$builder" --force >/dev/null 2>&1 || true
         return 0
     fi
 
@@ -149,43 +272,65 @@ prepare_ci_oci_retry() {
 }
 
 # ── Container verdict ────────────────────────────────────────────────
-# An attached `wendy run` exits 0 whatever the container did, so its exit code
-# only tells us the deploy worked. Every standard test asserts inside the app
-# and signals failure by exiting non-zero, so read that verdict back from the
-# device instead (WDY-2171).
+# Require both a successful CLI command and an independently observed app
+# result. Grouped services currently expose state but no individual exit code,
+# so their stopped state must also be accompanied by each fixture's verdict.
 
 # app_id_for_test prints the appId a test directory declares.
 app_id_for_test() {
-    jq -r '.appId // empty' "$1/wendy.json" 2>/dev/null
+    if [[ -f "$1/wendy.json" ]]; then
+        jq -r '.appId // empty' "$1/wendy.json" 2>/dev/null
+    else
+        # These Compose-only fixtures use the directory as their group ID.
+        case "$(basename "$1")" in
+            compose-hello|compose-images) basename "$1" ;;
+        esac
+    fi
 }
 
-# container_exit_code prints the exit code the device recorded for an app, or
-# nothing when the app is absent or still running.
-container_exit_code() {
-    local app_id="$1"
-    "$WENDY" device apps list --device "$HOSTNAME" --json 2>/dev/null |
-        jq -r --arg app "$app_id" '
-            .[]? | select(.name == $app)
-                 | select(.runningState != "RUNNING")
-                 | .exitCode // empty'
-}
-
-# assert_container_verdict decides whether the app's own assertions passed.
-# Preferred signal is the exit code the device recorded, polled briefly because
-# the state can lag the attached stream. Apps deployed under a serviceName
-# report no exit code (their services[] entry carries only a runningState), so
-# those fall back to the app's printed verdict.
 assert_container_verdict() {
-    local app_id="$1" out="$2" code="" state=""
+    local app_id="$1" out="$2" code="" state="" snapshot="" listing="" service
+    shift 2
     for _ in 1 2 3 4 5 6; do
-        code=$(container_exit_code "$app_id")
-        [[ -n "$code" ]] && break
-        sleep 1
+        listing=$(wendy_control device apps list --device "$HOSTNAME" --json) || return 1
+        snapshot=$(jq -ce --arg app "$app_id" '
+            [.[] | select(.name == $app)] |
+            if length == 1 then .[0] else error("expected exactly one deployed app") end
+        ' <<<"$listing") || return 1
+        state=$(jq -r '.runningState // empty' <<<"$snapshot")
+        if jq -e '([.runningState] + [.services[]?.runningState]) | any(. == "CRASH_LOOPING")' <<<"$snapshot" >/dev/null; then
+            echo "App $app_id reports a crash: $snapshot"
+            return 1
+        fi
+        if jq -e '.runningState == "STOPPED" and ([.services[]?.runningState] | all(. == "STOPPED"))' <<<"$snapshot" >/dev/null; then
+            break
+        fi
+        sleep "${WENDY_CI_POLL_INTERVAL_SECONDS:-1}"
     done
-
-    state=$("$WENDY" device apps list --device "$HOSTNAME" --json 2>/dev/null |
-        jq -r --arg app "$app_id" '.[]? | select(.name == $app) | .runningState // empty')
-
+    if ! jq -e '.runningState == "STOPPED" and ([.services[]?.runningState] | all(. == "STOPPED"))' <<<"$snapshot" >/dev/null; then
+        echo "App $app_id did not finish (runningState=$state): $snapshot"
+        return 1
+    fi
+    if [[ $# -gt 0 ]]; then
+        local expected actual
+        expected=$(printf '%s\n' "$@" | sort)
+        actual=$(jq -r '.services[]?.name' <<<"$snapshot" | sort)
+        if [[ "$actual" != "$expected" ]]; then
+            echo "App $app_id services differ: expected [$expected], got [$actual]"
+            return 1
+        fi
+        for service in "$@"; do
+            if ! grep -qE "(^|[[:space:]])${service}: PASS([[:space:]]|$)" <<<"$out"; then
+                echo "Missing successful verdict for service $service"
+                return 1
+            fi
+        done
+    fi
+    if grep -qE '(^|[^[:alnum:]_])(FAIL|Traceback)(:|[[:space:]]|$)' <<<"$out"; then
+        echo "App $app_id printed a failure verdict"
+        return 1
+    fi
+    code=$(jq -r '.exitCode // empty' <<<"$snapshot")
     if [[ -n "$code" ]]; then
         if [[ "$code" != "0" ]]; then
             echo "App $app_id exited $code (runningState=$state) - its assertions failed"
@@ -194,18 +339,7 @@ assert_container_verdict() {
         return 0
     fi
 
-    if [[ -z "$state" ]]; then
-        echo "Device does not report app $app_id at all; the deploy cannot be verified"
-        return 1
-    fi
-
-    # No exit code available: require a printed PASS verdict and nothing that
-    # looks like a failure.
-    if grep -qE "^(FAIL|Traceback)" <<<"$out"; then
-        echo "App $app_id printed a failure verdict (runningState=$state)"
-        return 1
-    fi
-    if ! grep -q "PASS" <<<"$out"; then
+    if ! grep -qE '(^|[[:space:]])PASS([[:space:]:]|$)' <<<"$out"; then
         echo "App $app_id reports no exit code (runningState=$state) and printed no PASS verdict"
         return 1
     fi
@@ -224,16 +358,16 @@ run_container_test() {
         # --no-restart stops the agent restarting a test app that has done its
         # job and exited, which otherwise churns the recorded state (a
         # short-lived app reads back as CRASH_LOOPING).
-        out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --no-restart "$@" 2>&1)
+        out=$(wendy_cli run --device "$HOSTNAME" --prefix "$test_dir" --no-restart "$@" 2>&1)
         rc=$?
         if [[ $rc -ne 0 ]] && prepare_ci_oci_retry "$out"; then
             echo "$out"
-            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --no-restart "$@" 2>&1)
+            out=$(wendy_cli run --device "$HOSTNAME" --prefix "$test_dir" --no-restart "$@" 2>&1)
             rc=$?
         fi
         echo "$out"
         if [[ $rc -ne 0 ]]; then
-            return $rc
+            return "$rc"
         fi
         if [[ -z "$app_id" ]]; then
             echo "Could not read appId from $test_dir/wendy.json; cannot verify the app's verdict"
@@ -242,6 +376,68 @@ run_container_test() {
         assert_container_verdict "$app_id" "$out"
     }
     run_test "$test_name" container_test_passes "$@"
+}
+
+run_service_test() {
+    local test_name="$1" test_dir="$2" expected_services="$3" app_id
+    shift 3
+    app_id=$(app_id_for_test "$test_dir")
+    service_test_passes() {
+        local out rc
+        local services=()
+        IFS=',' read -ra services <<<"$expected_services"
+        out=$(wendy_cli run --device "$HOSTNAME" --prefix "$test_dir" --no-restart "$@" 2>&1)
+        rc=$?
+        echo "$out"
+        [[ $rc -eq 0 ]] || return "$rc"
+        assert_container_verdict "$app_id" "$out" "${services[@]}"
+    }
+    run_test "$test_name" service_test_passes "$@"
+}
+
+otel_port_closed() {
+    # A failed DNS lookup or unreachable rack must never prove isolation.
+    # Device info can be public during setup; app listing proves authenticated
+    # access to the running agent before a failed port connection can count.
+    local listing
+    listing=$(wendy_control device apps list --device "$HOSTNAME" --json) || return 1
+    jq -e 'type == "array"' <<<"$listing" >/dev/null || return 1
+    python3 - "$HOSTNAME" "$1" <<'PY'
+import errno
+import signal
+import socket
+import sys
+
+class ProbeDeadline(RuntimeError):
+    pass
+
+def deadline(_signum, _frame):
+    raise ProbeDeadline("OTEL probe exceeded its 15s deadline")
+
+signal.signal(signal.SIGALRM, deadline)
+signal.alarm(15)
+host, port = sys.argv[1], int(sys.argv[2])
+try:
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not addresses:
+        raise RuntimeError("no addresses resolved")
+    for family, kind, proto, _, address in addresses:
+        with socket.socket(family, kind, proto) as probe:
+            probe.settimeout(3)
+            try:
+                probe.connect(address)
+            except (ConnectionRefusedError, TimeoutError):
+                continue
+            except OSError as error:
+                if error.errno in (errno.ECONNREFUSED, errno.ETIMEDOUT):
+                    continue
+                raise
+            raise RuntimeError(f"OTEL port {port} accepts network connections at {address}")
+except (OSError, RuntimeError) as error:
+    print(f"Could not verify OTEL isolation: {error}", file=sys.stderr)
+    sys.exit(1)
+print(f"OTEL port {port} refused or timed out on a reachable device")
+PY
 }
 
 skip_test() {
@@ -281,8 +477,7 @@ echo ""
 if [[ -z "$HOSTNAME" ]]; then
     echo -e "${BOLD}==> Auto-discovering device...${RESET}"
     DISCOVER_STDERR=$(mktemp -t wendy-discover-stderr.XXXXXX)
-    trap 'rm -f "$DISCOVER_STDERR"' EXIT
-    DISCOVER_JSON=$("$WENDY" discover --json --timeout 5s 2>"$DISCOVER_STDERR")
+    DISCOVER_JSON=$(wendy_control discover --json --timeout 5s 2>"$DISCOVER_STDERR")
     cat "$DISCOVER_STDERR" >&2 || true
     DISCOVERED_HOST=$(echo "$DISCOVER_JSON" | jq -r '.lanDevices[0].hostname // empty' 2>/dev/null)
     if [[ -z "$DISCOVERED_HOST" ]]; then
@@ -303,7 +498,11 @@ echo ""
 # agent is otherwise indistinguishable in the log from a product bug. The whole
 # suite's verdict is only meaningful against a known agent, so identify it.
 
-VERSION_JSON=$("$WENDY" device info --json --device "$HOSTNAME" 2>/dev/null || true)
+VERSION_JSON=$(wendy_control device info --json --device "$HOSTNAME") || exit 1
+if ! jq -e 'type == "object"' <<<"$VERSION_JSON" >/dev/null; then
+    echo "ERROR: device info did not return a JSON object" >&2
+    exit 1
+fi
 
 # device_field prints a field of VERSION_JSON, or its fallback when the field is
 # absent, null, or the empty string — a device reporting no deviceType at all is
@@ -455,6 +654,7 @@ echo ""
 # ── Test loop ────────────────────────────────────────────────────────
 
 for test_name in "${TESTS[@]}"; do
+    finish_current_app
     test_dir="$TESTS_DIR/$test_name"
 
     # This checks the device host through authenticated mTLS, not a container's
@@ -503,25 +703,19 @@ for test_name in "${TESTS[@]}"; do
         continue
     fi
 
-    # These two deploy over the chunk-diff path, which carries env only on an
-    # agent built with RunContainerLayersRequest.env (WDY-2040). An older agent
-    # ignores the field and starts the container without the env, and no CLI
-    # change can work around that — so the result would say "product bug" when
-    # it means "stale agent". Delete this block once the CI devices run an
-    # agent carrying the field. python-multiservice-env is deliberately not
-    # gated: it deploys over the registry path, which has carried env since
-    # WDY-1268, so it still covers the app-level/per-service merge.
-    if [[ "$test_name" == "python-env" || "$test_name" == "python-env-flag" ]]; then
-        skip_test "$test_name" "needs an agent with chunk-diff env support (WDY-2040); device has $(device_field version 'unknown')"
-        continue
+    app_id=$(app_id_for_test "$test_dir")
+    if [[ -n "$app_id" ]]; then
+        CURRENT_APP_INDEX="${#PENDING_APPS[@]}"
+        PENDING_APPS[CURRENT_APP_INDEX]="$app_id"
+        if ! run_test "prepare $test_name" cleanup_app "$app_id"; then
+            continue
+        fi
     fi
 
     # ── Security: OTEL ports must not be reachable from the network ──────
     if [[ "$test_name" == "otel-localhost-only" ]]; then
-        otel_grpc_closed() { ! nc -z -w 3 "$HOSTNAME" 4317 2>/dev/null; }
-        otel_http_closed() { ! nc -z -w 3 "$HOSTNAME" 4318 2>/dev/null; }
-        run_test "otel-localhost-only (gRPC 4317 not reachable)" otel_grpc_closed
-        run_test "otel-localhost-only (HTTP 4318 not reachable)" otel_http_closed
+        run_test "otel-localhost-only (gRPC 4317 not reachable)" otel_port_closed 4317
+        run_test "otel-localhost-only (HTTP 4318 not reachable)" otel_port_closed 4318
         continue
     fi
 
@@ -530,17 +724,15 @@ for test_name in "${TESTS[@]}"; do
         echo -e "${BOLD}── $test_name${RESET}"
 
         # 1. Full multi-service deploy: both services build & run.
-        run_test "python-multiservice (all services)" \
-            "$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --deploy
+        run_service_test "python-multiservice (all services)" "$test_dir" db,api
 
         # 2. --service filtering: deploy only 'api' (and its dep 'db').
-        run_test "python-multiservice (--service api)" \
-            "$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --deploy --service api
+        run_service_test "python-multiservice (--service api)" "$test_dir" db,api --service api
 
         # 3. --service with unknown name must fail with a clear error.
         unknown_service_fails() {
             local out
-            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --deploy --service ghost 2>&1)
+            out=$(wendy_cli run --device "$HOSTNAME" --prefix "$test_dir" --deploy --service ghost 2>&1)
             local rc=$?
             if [[ $rc -ne 0 ]] && echo "$out" | grep -qi "ghost"; then
                 return 0
@@ -557,8 +749,7 @@ for test_name in "${TESTS[@]}"; do
     # Deploys two services: 'db' inherits the app-level memory limit (256Mi),
     # 'api' overrides it to 128Mi while inheriting pids. Each service asserts
     # its own cgroup limits and prints "<svc>: PASS" / "<svc>: FAIL". We read
-    # back the logs (bounded by a background reader) and require both PASS lines
-    # with no FAIL.
+    # both stopped service states and their PASS lines with no FAIL.
     if [[ "$test_name" == "python-multiservice-resources" ]]; then
         app_id="sh.wendy.ci.python-multiservice-resources"
 
@@ -567,18 +758,8 @@ for test_name in "${TESTS[@]}"; do
         # would exist to read (WDY-2171). Attached mode streams both services'
         # stdout, and per-service exit codes are not reported by the device, so
         # assert on the verdict lines.
-        per_service_limits_enforced() {
-            local out
-            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --no-restart 2>&1)
-            echo "$out"
-            if grep -qE "(db|api): FAIL" <<<"$out"; then
-                return 1
-            fi
-            grep -q "db: PASS" <<<"$out" && grep -q "api: PASS" <<<"$out"
-        }
-        run_test "python-multiservice-resources (per-service limits)" per_service_limits_enforced
+        run_service_test "python-multiservice-resources (per-service limits)" "$test_dir" db,api
 
-        "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
         continue
     fi
 
@@ -594,18 +775,8 @@ for test_name in "${TESTS[@]}"; do
     if [[ "$test_name" == "python-multiservice-env" ]]; then
         app_id="sh.wendy.ci.python-multiservice-env"
 
-        per_service_env_applied() {
-            local out
-            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" 2>&1)
-            echo "$out"
-            if grep -q "alpha: FAIL" <<<"$out" || grep -q "beta: FAIL" <<<"$out"; then
-                return 1
-            fi
-            grep -q "alpha: PASS" <<<"$out" && grep -q "beta: PASS" <<<"$out"
-        }
-        run_test "$test_name" per_service_env_applied
+        run_service_test "$test_name" "$test_dir" alpha,beta
 
-        "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
         continue
     fi
 
@@ -617,14 +788,14 @@ for test_name in "${TESTS[@]}"; do
         app_id="sh.wendy.ci.python-device-top"
 
         run_test "python-device-top (deploy)" \
-            "$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --detach
+            wendy_cli run --device "$HOSTNAME" --prefix "$test_dir" --detach
 
         device_top_snapshot() {
             # stderr stays out of the jq input: in JSON mode it can carry
             # notices, progress, or the error envelope.
             local out err rc errf
             errf=$(mktemp)
-            out=$("$WENDY" device top --device "$HOSTNAME" --json 2>"$errf")
+            out=$(wendy_control device top --device "$HOSTNAME" --json 2>"$errf")
             rc=$?
             err=$(cat "$errf"); rm -f "$errf"
             if [[ $rc -ne 0 ]]; then
@@ -644,7 +815,6 @@ for test_name in "${TESTS[@]}"; do
         }
         run_test "python-device-top (snapshot reports host + container)" device_top_snapshot
 
-        "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
         continue
     fi
 
@@ -658,10 +828,10 @@ for test_name in "${TESTS[@]}"; do
         app_id="sh.wendy.ci.swift-start-detach"
 
         run_test "swift-start-detach (deploy, not started)" \
-            "$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --deploy
+            wendy_cli run --device "$HOSTNAME" --prefix "$test_dir" --deploy
 
         detach_start_reaches_running() {
-            if ! "$WENDY" device apps start "$app_id" --device "$HOSTNAME" --detach; then
+            if ! wendy_control device apps start "$app_id" --device "$HOSTNAME" --detach; then
                 echo "apps start --detach returned non-zero"
                 return 1
             fi
@@ -670,7 +840,7 @@ for test_name in "${TESTS[@]}"; do
             for _ in 1 2 3 4 5; do
                 # stderr stays out of the jq input (notices, error envelope),
                 # but is kept for the failure message.
-                out=$("$WENDY" device apps list --device "$HOSTNAME" --json 2>"$errf")
+                out=$(wendy_control device apps list --device "$HOSTNAME" --json 2>"$errf")
                 if echo "$out" | jq -e --arg a "$app_id" \
                     '(.[] | select(.name==$a) | .runningState) == "RUNNING"' >/dev/null 2>&1; then
                     rm -f "$errf"
@@ -685,7 +855,7 @@ for test_name in "${TESTS[@]}"; do
         run_test "swift-start-detach (detached start reaches RUNNING)" detach_start_reaches_running
 
         detach_start_missing_app_fails() {
-            if "$WENDY" device apps start sh.wendy.ci.does-not-exist --device "$HOSTNAME" --detach >/dev/null 2>&1; then
+            if wendy_control device apps start sh.wendy.ci.does-not-exist --device "$HOSTNAME" --detach >/dev/null 2>&1; then
                 echo "apps start --detach of a nonexistent app unexpectedly reported success"
                 return 1
             fi
@@ -693,35 +863,29 @@ for test_name in "${TESTS[@]}"; do
         }
         run_test "swift-start-detach (missing app start fails)" detach_start_missing_app_fails
 
-        "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
         continue
     fi
 
     # ── env tests ────────────────────────────────────────────────────────
-    # An attached `wendy run` exits 0 even when the container exits non-zero,
-    # so assert on the app's own verdict line instead of the exit code.
     if [[ "$test_name" == python-env* ]]; then
-        env_test_passes() {
-            local out
-            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" "$@" 2>&1)
-            echo "$out"
-            grep -q '^PASS:' <<<"$out"
-        }
         if [[ "$test_name" == "python-env-flag" ]]; then
             # The overrides are the thing under test, so the runner supplies
             # them: wendy.json sets CI_ENV_LEVEL=info and the flag must win,
             # CI_ENV_REGION must survive, CI_ENV_ONLY_FLAG is flag-only.
-            run_test "$test_name" env_test_passes --env CI_ENV_LEVEL=debug --env CI_ENV_ONLY_FLAG=1
+            run_container_test "$test_name" "$test_dir" --env CI_ENV_LEVEL=debug --env CI_ENV_ONLY_FLAG=1
         else
-            run_test "$test_name" env_test_passes
+            run_container_test "$test_name" "$test_dir"
         fi
         continue
     fi
 
     # ── compose tests ────────────────────────────────────────────────────
     if [[ "$test_name" == compose-* ]]; then
-        run_test "$test_name" \
-            "$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --detach
+        if [[ "$test_name" == "compose-companion" ]]; then
+            run_service_test "$test_name" "$test_dir" greeter
+        else
+            run_service_test "$test_name" "$test_dir" greeter,reporter
+        fi
         continue
     fi
 
@@ -734,6 +898,7 @@ for test_name in "${TESTS[@]}"; do
         run_container_test "$test_name" "$test_dir"
     fi
 done
+finish_current_app
 
 # ── Summary ──────────────────────────────────────────────────────────
 

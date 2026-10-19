@@ -4,161 +4,164 @@ on:
   workflow_dispatch:
     inputs:
       hostname:
-        description: 'Device hostname (empty = auto-discover via mDNS)'
-        required: false
+        description: 'Device hostname (empty = required rack matrix)'
         default: ''
       tests:
-        description: 'Comma-separated test names (empty = all applicable)'
-        required: false
+        description: 'Comma-separated tests (empty = every applicable fixture)'
         default: ''
       jobs:
-        description: 'Jobs to run: all, discover, integration (default: all)'
-        required: false
+        description: 'all, discover, or integration'
         default: 'all'
       platform:
-        description: 'Platform to run integration tests on: all, macos, linux (default: all)'
-        required: false
+        description: 'all, macos, or linux'
         default: 'all'
   workflow_call:
     inputs:
       hostname:
         type: string
-        required: false
         default: ''
       tests:
         type: string
-        required: false
         default: ''
       jobs:
         type: string
-        required: false
         default: 'all'
       platform:
         type: string
-        required: false
         default: 'all'
+      source_ref:
+        description: Exact WendyOS source revision, required for external callers
+        type: string
+        default: ''
+      candidate_version:
+        description: Exact CLI and agent archive version in this workflow run
+        type: string
+        default: ''
+      os_candidate_version:
+        type: string
+        default: ''
+      os_candidate_sha:
+        type: string
+        default: ''
+      os_candidate_repository:
+        type: string
+        default: ''
+      os_candidate_run_id:
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
-# The self-hosted macOS runners execute as a LaunchAgent, whose session cannot
-# authorize the login Keychain: security(1) exits 152 ("Unable to obtain
-# authorization for this operation") for every read, so a dehydrated credential
-# is unreadable here. Keep this runner's credentials inline in config.json
-# instead. Covers steps that run the CLI directly; commands sent through
-# `ssh localhost` start a fresh session and export it again themselves.
 env:
   WENDY_SECRET_STORE: file
 
 jobs:
   discover:
-    name: Discover (${{ matrix.runner.name }})
-    if: inputs.jobs == 'all' || inputs.jobs == 'discover' || inputs.jobs == 'integration'
+    name: Discover (macOS)
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, '${{ matrix.runner.os }}', '${{ matrix.runner.arch }}', '${{ matrix.runner.wendy_label }}']
-    timeout-minutes: 10
+      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
+    timeout-minutes: 15
     outputs:
-      matrix: ${{ steps.explicit.outputs.matrix || steps.scan.outputs.matrix || '[]' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner:
-          - { name: macOS, os: macOS, arch: ARM64, wendy_label: wendy-macos-26 }
+      matrix: ${{ steps.scan.outputs.matrix }}
+      source_sha: ${{ steps.candidate.outputs.sha }}
     steps:
-      - name: Resolve explicit device
-        id: explicit
-        if: inputs.hostname != ''
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: wendylabsinc/wendyos
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Validate qualification inputs
         env:
-          INPUT_HOSTNAME: ${{ inputs.hostname }}
+          INPUT_JOBS: ${{ inputs.jobs }}
+          INPUT_PLATFORM: ${{ inputs.platform }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          OS_VERSION: ${{ inputs.os_candidate_version }}
+          OS_SHA: ${{ inputs.os_candidate_sha }}
+          OS_REPO: ${{ inputs.os_candidate_repository }}
+          OS_RUN: ${{ inputs.os_candidate_run_id }}
+          INPUT_HOST: ${{ inputs.hostname }}
+          INPUT_TESTS: ${{ inputs.tests }}
         run: |
           set -euo pipefail
-          hostname="$INPUT_HOSTNAME"
-          validate_device_hostname() {
-            local value="$1"
-            if [[ -z "$value" || ${#value} -gt 253 ]]; then
-              return 1
-            fi
-            if [[ "$value" == *:* ]]; then
-              [[ "$value" =~ ^[0-9A-Fa-f:.]+$ ]]
-            else
-              [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$ ]]
-            fi
-          }
-          if ! validate_device_hostname "$hostname"; then
-            echo "ERROR: invalid device hostname: $hostname" >&2
+          [[ "$INPUT_JOBS" =~ ^(all|discover|integration)$ ]]
+          [[ "$INPUT_PLATFORM" =~ ^(all|macos|linux)$ ]]
+          repository_lower="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$repository_lower" != wendylabsinc/wendyos && ! "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'External callers must pin source_ref to a WendyOS commit' >&2
             exit 1
           fi
-          # Match test-ci.sh normalization for bare mDNS hostnames.
-          if [[ "$hostname" != *.local && "$hostname" != *.* && "$hostname" != *:* ]]; then
-            hostname="${hostname}.local"
+          if [[ -n "$OS_VERSION$OS_SHA$OS_REPO$OS_RUN" ]]; then
+            [[ "$OS_VERSION" =~ ^[A-Za-z0-9._-]+$ && "$OS_SHA" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$OS_REPO" == "$GITHUB_REPOSITORY" && "$OS_RUN" == "$GITHUB_RUN_ID" ]]
+            [[ -z "$INPUT_HOST$INPUT_TESTS" && "$INPUT_JOBS" != discover ]]
           fi
-          matrix=$(jq -cn --arg h "$hostname" '[$h]')
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "Using explicit device: $hostname"
-
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
-
-      - name: Set up Go
-        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: ./.github/actions/integration-candidate
+        id: candidate
         with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Build embedded MCP app
-        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
-        uses: ./.github/actions/build-mcp-app
-
-      - name: Prepare macOS build dependencies
-        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
-        run: |
-          set -euo pipefail
-          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
-          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          missing=()
-          if ! command -v pkg-config >/dev/null 2>&1; then
-            missing+=(pkg-config)
-          fi
-          if ! pkg-config --exists libusb-1.0 >/dev/null 2>&1; then
-            missing+=(libusb)
-          fi
-          if [ "${#missing[@]}" -gt 0 ]; then
-            brew install "${missing[@]}"
-          fi
-
-      - name: Build CLI
-        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
-        working-directory: go
-        run: make build-cli
-
-      - name: Run wendy discover
+          version: ${{ inputs.candidate_version }}
+          agents: 'false'
+      - name: Download exact OS candidate metadata
+        if: inputs.os_candidate_version != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: manifest-entry-*
+          merge-multiple: true
+          path: .ci-os-candidate
+      - name: Resolve and probe rack
         id: scan
-        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
         env:
           INPUT_HOSTNAME: ${{ inputs.hostname }}
           INPUT_JOBS: ${{ inputs.jobs }}
+          OS_VERSION: ${{ inputs.os_candidate_version }}
+          OS_SHA: ${{ inputs.os_candidate_sha }}
         run: |
           set -euo pipefail
-          # Use the same SSH login session as the integration jobs for macOS
-          # Local Network permission and the runner's file-backed credentials.
-          args=(python3 "$PWD/.github/scripts/integration-discover.py"
-                --wendy "$PWD/go/bin/wendy")
-          if [[ -z "$INPUT_HOSTNAME" && "$INPUT_JOBS" != discover ]]; then
-            args+=(--require-platforms)
-          fi
-          printf -v remote_command '%q ' env WENDY_SECRET_STORE=file "${args[@]}"
-          MATRIX=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=no localhost "$remote_command")
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-            {
-              echo "### Accessible integration devices"
-              echo
-              echo "$MATRIX" | jq -r '.[] | "- " + .'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          mkdir -p .ci-evidence/discovery
+          # Shell quoting is explicit: ssh joins arguments before remote parsing.
+          python3 - <<'PYREMOTE'
+          import json, os, pathlib, re, shlex, subprocess
+          root = pathlib.Path.cwd()
+          cli = str(root / 'go/bin/wendy')
+          def remote(args):
+              return subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
+                                     'localhost', shlex.join(['env', 'WENDY_SECRET_STORE=file', *args])],
+                                    check=True, stdout=subprocess.PIPE, text=True, timeout=600).stdout
+          host = os.environ['INPUT_HOSTNAME']
+          if host:
+              if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]{0,252}', host):
+                  raise SystemExit('Invalid device hostname')
+              if '.' not in host and ':' not in host:
+                  host += '.local'
+              matrix = json.dumps([host])
+          else:
+              args = ['python3', str(root / '.github/scripts/integration-discover.py'), '--wendy', cli,
+                      '--evidence', str(root / '.ci-evidence/discovery/inventory.json')]
+              if os.environ['INPUT_JOBS'] != 'discover':
+                  args.append('--require-platforms')
+                  if os.environ['OS_VERSION']:
+                      args.append('--defer-runtime-coverage')
+              matrix = remote(args).strip()
+          if os.environ['OS_VERSION']:
+              matrix = remote(['python3', str(root / '.github/scripts/integration-prepare-os.py'),
+                  '--wendy', cli, '--metadata-dir', str(root / '.ci-os-candidate'),
+                  '--expected-version', os.environ['OS_VERSION'], '--expected-commit', os.environ['OS_SHA'],
+                  '--plan', '--devices-json', matrix,
+                  '--evidence', str(root / '.ci-evidence/discovery/os-plan.json')]).strip()
+          hosts = json.loads(matrix)
+          if not hosts and os.environ['INPUT_JOBS'] != 'discover':
+              raise SystemExit('No qualified rack devices')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('matrix=' + json.dumps(hosts) + '\n')
+          PYREMOTE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: hardware-discovery-${{ github.run_attempt }}
+          path: .ci-evidence/discovery
+          include-hidden-files: true
+          if-no-files-found: warn
 
   integration-test-macos:
     name: Integration (macOS → ${{ matrix.hostname }})
@@ -174,153 +177,91 @@ jobs:
       group: device-${{ matrix.hostname }}
       cancel-in-progress: false
       queue: max
-    timeout-minutes: 60
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
         hostname: ${{ fromJson(needs.discover.outputs.matrix) }}
-    env:
-      INPUT_HOSTNAME: ${{ matrix.hostname }}
-      INPUT_TESTS: ${{ inputs.tests }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Build embedded MCP app
-        uses: ./.github/actions/build-mcp-app
-
-      - name: Prepare macOS build dependencies
+          repository: wendylabsinc/wendyos
+          ref: ${{ needs.discover.outputs.source_sha }}
+      - uses: ./.github/actions/integration-candidate
+        id: candidate
+        with:
+          version: ${{ inputs.candidate_version }}
+      - name: Download exact OS candidate metadata
+        if: inputs.os_candidate_version != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: manifest-entry-*
+          merge-multiple: true
+          path: .ci-os-candidate
+      - name: Require runner prerequisites
+        env:
+          INPUT_TESTS: ${{ inputs.tests }}
         run: |
           set -euo pipefail
-          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
-          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          missing=()
-          if ! command -v pkg-config >/dev/null 2>&1; then
-            missing+=(pkg-config)
-          fi
-          if ! pkg-config --exists libusb-1.0 >/dev/null 2>&1; then
-            missing+=(libusb)
-          fi
-          if [ "${#missing[@]}" -gt 0 ]; then
-            brew install "${missing[@]}"
-          fi
-
-      - name: Build CLI
-        working-directory: go
-        run: make build-cli
-
-      - name: Prepare Docker
-        id: prepare-docker
-        run: |
-          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          DOCKER_READY=false
-          if docker info >/dev/null 2>&1; then
-            echo "Docker already available"
-            DOCKER_READY=true
-          elif [ -d "/Applications/Docker.app" ]; then
-            echo "Starting Docker Desktop..."
-            open -a Docker
-            for attempt in $(seq 1 30); do
-              echo "Waiting for Docker Desktop ($attempt/30)..."
-              if docker info >/dev/null 2>&1; then DOCKER_READY=true; break; fi
-              sleep 5
-            done
-          elif command -v colima >/dev/null 2>&1; then
-            echo "Starting Colima..."
-            colima start
-            until docker info >/dev/null 2>&1; do sleep 2; done
-            DOCKER_READY=true
-          else
-            echo "WARNING: Neither Docker Desktop nor Colima found; integration tests will be skipped"
-          fi
-          echo "docker_ready=$DOCKER_READY" >> "$GITHUB_OUTPUT"
-
-      - name: Run integration tests
-        if: steps.prepare-docker.outputs.docker_ready == 'true'
-        run: |
-          # All wendy CLI calls below run via SSH to localhost rather than
-          # directly. The self-hosted runner runs as a macOS LaunchAgent which
-          # does not hold the Local Network TCC permission that macOS requires
-          # for mDNS (.local) resolution and link-local connections. An SSH
-          # session to localhost runs under the logged-in user, which has that
-          # permission. See nightly-os-update.yml for the same pattern.
-          WORKDIR="$(pwd)"
-          SSH=(ssh -o StrictHostKeyChecking=no localhost)
-
-          TEST_ARGS=(-w "$WORKDIR/go/bin/wendy")
-
-          if [[ -n "$INPUT_TESTS" ]]; then
-            HAS_TESTS=false
-            IFS=',' read -ra TEST_ARRAY <<< "$INPUT_TESTS"
-            for t in "${TEST_ARRAY[@]}"; do
-              t="$(echo "$t" | xargs)"
-              if [[ ! "$t" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-                echo "ERROR: invalid test name: $t" >&2
-                exit 1
-              fi
-              TEST_ARGS+=(-t "$t")
-              HAS_TESTS=true
-            done
-            if [[ "$HAS_TESTS" == false ]]; then
-              echo "No applicable tests requested, skipping."
-              exit 0
-            fi
-          else
-            for t in swift-hello swift-start-detach swift-network swift-bluetooth swift-resources python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-audio python-notifications python-no-notifications python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-no-kexec-module python-network-host-admin python-no-net-admin python-resources python-multiservice python-multiservice-resources python-servicename python-env python-env-flag python-multiservice-env python-device-top otel-localhost-only; do
-              TEST_ARGS+=(-t "$t")
-            done
-          fi
-          # No else branch: with no -t the harness runs its own ALL_TESTS, so a
-          # newly added test cannot be registered there and silently never run.
-
-          builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
-          BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
-          BUILDER="${BUILDER:0:128}"
-          # Wendy appends -oci to WENDY_BUILDX_BUILDER for chunk-diff exports.
-          # Remove that actual builder too; cleaning only the unsuffixed name
-          # leaked one buildkitd container per integration run until the runner
-          # exhausted memory.
-          cleanup_builders() {
-            docker buildx rm "${BUILDER}-oci" --force 2>/dev/null || true
-            docker buildx rm "$BUILDER" --force 2>/dev/null || true
-          }
-          cleanup_builders
-          trap cleanup_builders EXIT
-
-          echo "==> Starting tests on $INPUT_HOSTNAME (builder: $BUILDER)"
-          # DOCKER_HOST is often unset here. ssh re-joins its arguments into one
-          # string for the remote shell, so an empty argument disappears and every
-          # positional after it shifts down — which silently handed test-ci.sh a
-          # nonsense argument list. Send a sentinel instead of an empty word; it
-          # must contain no shell metacharacters, since the remote shell parses
-          # that string.
-          if "${SSH[@]}" bash -s -- "$WORKDIR" "$BUILDER" "${DOCKER_HOST:-__unset__}" "$INPUT_HOSTNAME" "${TEST_ARGS[@]}" <<'REMOTE'
-          set -euo pipefail
-          WORKDIR="$1"; shift
-          BUILDER="$1"; shift
-          DOCKER_HOST_VALUE="$1"; shift
-          [[ "$DOCKER_HOST_VALUE" == "__unset__" ]] && DOCKER_HOST_VALUE=""
-          HOSTNAME="$1"; shift
           export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
-          export DOCKER_HOST="$DOCKER_HOST_VALUE"
-          export WENDY_BUILDX_BUILDER="$BUILDER"
-          # ssh starts a fresh session, so the workflow-level env does not reach
-          # here — see the note on WENDY_SECRET_STORE at the top of this file.
-          export WENDY_SECRET_STORE=file
-          cd "$WORKDIR"
-          exec go/scripts/test-ci.sh "$@" -h "$HOSTNAME"
-          REMOTE
-          then
-            exit 0
-          else
-            exit $?
+          docker info >/dev/null
+          command -v python3
+          command -v jq
+          if [[ "$RUNNER_OS" == macOS && -z "$INPUT_TESTS" ]]; then
+            command -v swiftly || { echo 'Required Swift toolchain is missing' >&2; exit 1; }
           fi
+      - name: Install candidate and run hardware tests
+        env:
+          INPUT_HOSTNAME: ${{ matrix.hostname }}
+          INPUT_TESTS: ${{ inputs.tests }}
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          SOURCE_SHA: ${{ needs.discover.outputs.source_sha }}
+          OS_VERSION: ${{ inputs.os_candidate_version }}
+          OS_SHA: ${{ inputs.os_candidate_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+          builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
+          export WENDY_BUILDX_BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
+          cleanup_builders() {
+            docker buildx rm "${WENDY_BUILDX_BUILDER}-oci" --force 2>/dev/null || true
+            docker buildx rm "$WENDY_BUILDX_BUILDER" --force 2>/dev/null || true
+          }
+          trap cleanup_builders EXIT
+          cleanup_builders
+          python3 - <<'PYREMOTE'
+          import os, pathlib, shlex, subprocess
+          root = pathlib.Path.cwd()
+          marker = str(root / '.ci-evidence/device/lease-releasable')
+          args = ['python3', str(root / '.github/scripts/integration-run.py'),
+                  '--wendy', str(root / 'go/bin/wendy'), '--device', os.environ['INPUT_HOSTNAME'],
+                  '--agents', str(root / '.ci-candidate/agents'), '--source-sha', os.environ['SOURCE_SHA'],
+                  '--version', os.environ['CANDIDATE_VERSION'], '--tests', os.environ['INPUT_TESTS'],
+                  '--evidence', str(root / '.ci-evidence/device'), '--release-marker', marker]
+          if os.environ['OS_VERSION']:
+              args += ['--os-metadata', str(root / '.ci-os-candidate'),
+                       '--os-version', os.environ['OS_VERSION'], '--os-sha', os.environ['OS_SHA']]
+          owner = '/'.join(os.environ[key] for key in ('GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'))
+          args = ['python3', str(root / '.github/scripts/integration-lease.py'),
+                  '--wendy', str(root / 'go/bin/wendy'), '--device', os.environ['INPUT_HOSTNAME'],
+                  '--owner', owner, '--release-marker', marker, '--'] + args
+          if os.environ['RUNNER_OS'] == 'macOS':
+              forwarded = ['PATH', 'DOCKER_HOST', 'WENDY_BUILDX_BUILDER', 'RUNNER_OS']
+              env = ['env', 'WENDY_SECRET_STORE=file']
+              env += [key + '=' + os.environ[key] for key in forwarded if key in os.environ]
+              args = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
+                      'localhost', shlex.join(env + args)]
+          subprocess.run(args, check=True)
+          PYREMOTE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: hardware-result-macos-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: .ci-evidence/device
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
   integration-test-linux:
     name: Integration (Linux → ${{ matrix.hostname }})
@@ -331,104 +272,139 @@ jobs:
       (inputs.platform == 'all' || inputs.platform == 'linux')
     runs-on:
       group: wendy-developer
-      labels: [self-hosted, Linux]
+      labels: [self-hosted, Linux, X64]
     concurrency:
       group: device-${{ matrix.hostname }}
       cancel-in-progress: false
       queue: max
-    timeout-minutes: 60
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
         hostname: ${{ fromJson(needs.discover.outputs.matrix) }}
-    env:
-      INPUT_HOSTNAME: ${{ matrix.hostname }}
-      INPUT_TESTS: ${{ inputs.tests }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Build embedded MCP app
-        uses: ./.github/actions/build-mcp-app
-
-      # The Linux CLI links libusb via cgo (Thor flashing), so the self-hosted
-      # runner needs the dev headers before `make build-cli`.
-      - name: Prepare Linux build dependencies
+          repository: wendylabsinc/wendyos
+          ref: ${{ needs.discover.outputs.source_sha }}
+      - uses: ./.github/actions/integration-candidate
+        id: candidate
+        with:
+          version: ${{ inputs.candidate_version }}
+      - name: Download exact OS candidate metadata
+        if: inputs.os_candidate_version != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: manifest-entry-*
+          merge-multiple: true
+          path: .ci-os-candidate
+      - name: Require runner prerequisites
+        env:
+          INPUT_TESTS: ${{ inputs.tests }}
         run: |
           set -euo pipefail
-          if ! pkg-config --exists libusb-1.0 2>/dev/null; then
-            sudo apt-get update && sudo apt-get install -y pkg-config libusb-1.0-0-dev
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+          docker info >/dev/null
+          command -v python3
+          command -v jq
+          if [[ "$RUNNER_OS" == macOS && -z "$INPUT_TESTS" ]]; then
+            command -v swiftly || { echo 'Required Swift toolchain is missing' >&2; exit 1; }
           fi
-
-      - name: Build CLI
-        working-directory: go
-        run: make build-cli
-
-      - name: Prepare Docker
-        id: prepare-docker
-        run: |
-          DOCKER_READY=false
-          if docker info >/dev/null 2>&1; then
-            echo "Docker already available"
-            DOCKER_READY=true
-          else
-            echo "WARNING: Docker not available; integration tests will be skipped"
-          fi
-          echo "docker_ready=$DOCKER_READY" >> "$GITHUB_OUTPUT"
-
-      - name: Run integration tests
-        if: steps.prepare-docker.outputs.docker_ready == 'true'
+      - name: Install candidate and run hardware tests
         env:
-          # The harness launches the CLI as subprocesses; keep the token scoped to
-          # this integration step so release checks inherit it without SSH forwarding.
+          INPUT_HOSTNAME: ${{ matrix.hostname }}
+          INPUT_TESTS: ${{ inputs.tests }}
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          SOURCE_SHA: ${{ needs.discover.outputs.source_sha }}
+          OS_VERSION: ${{ inputs.os_candidate_version }}
+          OS_SHA: ${{ inputs.os_candidate_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          WORKDIR="$(pwd)"
-
-          TEST_ARGS=(-w "$WORKDIR/go/bin/wendy")
-
-          if [[ -n "$INPUT_TESTS" ]]; then
-            HAS_TESTS=false
-            IFS=',' read -ra TEST_ARRAY <<< "$INPUT_TESTS"
-            for t in "${TEST_ARRAY[@]}"; do
-              t="$(echo "$t" | xargs)"
-              if [[ ! "$t" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-                echo "ERROR: invalid test name: $t" >&2
-                exit 1
-              fi
-              TEST_ARGS+=(-t "$t")
-              HAS_TESTS=true
-            done
-            if [[ "$HAS_TESTS" == false ]]; then
-              echo "No applicable tests requested, skipping."
-              exit 0
-            fi
-          else
-            for t in python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-audio python-notifications python-no-notifications python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-no-kexec-module python-network-host-admin python-no-net-admin python-resources python-multiservice python-multiservice-resources python-servicename python-env python-env-flag python-multiservice-env python-device-top otel-localhost-only; do
-              TEST_ARGS+=(-t "$t")
-            done
-          fi
-          # No else branch: with no -t the harness runs its own ALL_TESTS and
-          # skips the Swift tests itself when the host has no Swift toolchain.
-          # Keeping a second copy of the list here is how a registered test came
-          # to never run in CI.
-
-          builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
-          BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
-          BUILDER="${BUILDER:0:128}"
-          # The CLI creates ${BUILDER}-oci for chunk-diff exports; clean both
-          # names so a buildkitd container is not leaked after every CI run.
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+          builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
+          export WENDY_BUILDX_BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
           cleanup_builders() {
-            docker buildx rm "${BUILDER}-oci" --force 2>/dev/null || true
-            docker buildx rm "$BUILDER" --force 2>/dev/null || true
+            docker buildx rm "${WENDY_BUILDX_BUILDER}-oci" --force 2>/dev/null || true
+            docker buildx rm "$WENDY_BUILDX_BUILDER" --force 2>/dev/null || true
           }
-          cleanup_builders
           trap cleanup_builders EXIT
+          cleanup_builders
+          python3 - <<'PYREMOTE'
+          import os, pathlib, shlex, subprocess
+          root = pathlib.Path.cwd()
+          marker = str(root / '.ci-evidence/device/lease-releasable')
+          args = ['python3', str(root / '.github/scripts/integration-run.py'),
+                  '--wendy', str(root / 'go/bin/wendy'), '--device', os.environ['INPUT_HOSTNAME'],
+                  '--agents', str(root / '.ci-candidate/agents'), '--source-sha', os.environ['SOURCE_SHA'],
+                  '--version', os.environ['CANDIDATE_VERSION'], '--tests', os.environ['INPUT_TESTS'],
+                  '--evidence', str(root / '.ci-evidence/device'), '--release-marker', marker]
+          if os.environ['OS_VERSION']:
+              args += ['--os-metadata', str(root / '.ci-os-candidate'),
+                       '--os-version', os.environ['OS_VERSION'], '--os-sha', os.environ['OS_SHA']]
+          owner = '/'.join(os.environ[key] for key in ('GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'))
+          args = ['python3', str(root / '.github/scripts/integration-lease.py'),
+                  '--wendy', str(root / 'go/bin/wendy'), '--device', os.environ['INPUT_HOSTNAME'],
+                  '--owner', owner, '--release-marker', marker, '--'] + args
+          if os.environ['RUNNER_OS'] == 'macOS':
+              forwarded = ['PATH', 'DOCKER_HOST', 'WENDY_BUILDX_BUILDER', 'RUNNER_OS']
+              env = ['env', 'WENDY_SECRET_STORE=file']
+              env += [key + '=' + os.environ[key] for key in forwarded if key in os.environ]
+              args = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
+                      'localhost', shlex.join(env + args)]
+          subprocess.run(args, check=True)
+          PYREMOTE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: hardware-result-linux-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: .ci-evidence/device
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
-          echo "==> Starting tests on $INPUT_HOSTNAME (builder: $BUILDER)"
-          WENDY_BUILDX_BUILDER="$BUILDER" go/scripts/test-ci.sh "${TEST_ARGS[@]}" -h "$INPUT_HOSTNAME"
+  qualification:
+    name: Hardware qualification
+    needs: [discover, integration-test-macos, integration-test-linux]
+    if: always() && inputs.jobs != 'discover'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful selected jobs
+        env:
+          DISCOVER_RESULT: ${{ needs.discover.result }}
+          MACOS_RESULT: ${{ needs.integration-test-macos.result }}
+          LINUX_RESULT: ${{ needs.integration-test-linux.result }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          [[ "$DISCOVER_RESULT" == success ]]
+          if [[ "$PLATFORM" != linux ]]; then [[ "$MACOS_RESULT" == success ]]; fi
+          if [[ "$PLATFORM" != macos ]]; then [[ "$LINUX_RESULT" == success ]]; fi
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: wendylabsinc/wendyos
+          ref: ${{ needs.discover.outputs.source_sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: hardware-result-*-${{ github.run_attempt }}
+          path: .ci-results
+      - name: Verify complete candidate coverage
+        env:
+          HOSTS: ${{ needs.discover.outputs.matrix }}
+          PLATFORM: ${{ inputs.platform }}
+          SOURCE_SHA: ${{ needs.discover.outputs.source_sha }}
+          INPUT_HOSTNAME: ${{ inputs.hostname }}
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          OS_VERSION: ${{ inputs.os_candidate_version }}
+          OS_SHA: ${{ inputs.os_candidate_sha }}
+        run: |
+          set -euo pipefail
+          case "$PLATFORM" in
+            macos) platforms=macOS ;;
+            linux) platforms=Linux ;;
+            all) platforms=macOS,Linux ;;
+          esac
+          args=(--results .ci-results --hosts "$HOSTS" --platforms "$platforms" --source-sha "$SOURCE_SHA")
+          [[ -n "$INPUT_HOSTNAME" ]] || args+=(--require-matrix)
+          python3 .github/scripts/integration-results.py "${args[@]}" --candidate-version "$CANDIDATE_VERSION" --os-version "$OS_VERSION" --os-sha "$OS_SHA"

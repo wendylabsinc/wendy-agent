@@ -237,7 +237,7 @@ jobs:
       group: device-${{ matrix.hostname }}
       cancel-in-progress: false
       queue: max
-    timeout-minutes: 30
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
@@ -280,7 +280,8 @@ jobs:
       - name: Run template tests with deploy
         working-directory: go
         run: |
-          ARGS=(-w ./bin/wendy -h "$INPUT_HOSTNAME")
+          set -euo pipefail
+          ARGS=(-w "$PWD/bin/wendy" -h "$INPUT_HOSTNAME")
 
           if [[ -n "$INPUT_TEMPLATES_BRANCH" && "$INPUT_TEMPLATES_BRANCH" != "main" ]]; then
             ARGS+=(--templates-branch "$INPUT_TEMPLATES_BRANCH")
@@ -308,7 +309,23 @@ jobs:
           cleanup_builders
           trap cleanup_builders EXIT
 
-          WENDY_BUILDX_BUILDER="$BUILDER" scripts/test-templates.sh "${ARGS[@]}"
+          export WENDY_BUILDX_BUILDER="$BUILDER"
+          python3 - "${ARGS[@]}" <<'PYREMOTE'
+          import os, pathlib, shlex, subprocess, sys
+          root = pathlib.Path.cwd().parent
+          owner = '/'.join(os.environ[key] for key in ('GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'))
+          args = ['python3', str(root / '.github/scripts/integration-lease.py'),
+                  '--wendy', str(root / 'go/bin/wendy'), '--device', os.environ['INPUT_HOSTNAME'],
+                  '--owner', owner, '--command-timeout-seconds', '1800', '--',
+                  'bash', str(root / 'go/scripts/test-templates.sh'), *sys.argv[1:]]
+          if os.environ['RUNNER_OS'] == 'macOS':
+              forwarded = ['PATH', 'DOCKER_HOST', 'WENDY_BUILDX_BUILDER', 'RUNNER_OS']
+              env = ['env', 'WENDY_SECRET_STORE=file']
+              env += [key + '=' + os.environ[key] for key in forwarded if key in os.environ]
+              args = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
+                      'localhost', shlex.join(env + args)]
+          subprocess.run(args, check=True)
+          PYREMOTE
 
       - name: Cleanup
         if: always()
