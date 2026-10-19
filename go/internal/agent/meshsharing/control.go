@@ -16,9 +16,12 @@ import (
 )
 
 const (
-	leaseControlPort       = 18867
-	leaseControlALPN       = "wendy-mesh-internet/1"
-	leaseHeartbeat         = byte(1)
+	leaseControlPort = 18867
+	leaseControlALPN = "wendy-mesh-internet/1"
+	leaseHeartbeat   = byte(1)
+	// Certificate chains can take tens of seconds over a BLE mesh leaf.
+	// Bound unauthenticated work while allowing the radio and TCP retries.
+	leaseHandshakeTimeout  = 60 * time.Second
 	leaseHeartbeatInterval = 10 * time.Second
 	leaseHeartbeatTimeout  = 30 * time.Second
 	maxLeaseConnections    = 128
@@ -157,7 +160,7 @@ func serveGatewayLease(ctx context.Context, creds *localmesh.Credentials, backen
 	defer raw.Close()
 	stop := context.AfterFunc(ctx, func() { raw.Close() })
 	defer stop()
-	raw.SetDeadline(time.Now().Add(8 * time.Second))
+	raw.SetDeadline(time.Now().Add(leaseHandshakeTimeout))
 	conn := tls.Server(raw, controlTLS(creds))
 	if conn.HandshakeContext(ctx) != nil {
 		return nil

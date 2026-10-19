@@ -815,3 +815,32 @@ func TestStreamIPQueueNewInitialFlightBehindExistingFlowReplies(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamIPQueueRetainsNextSenderDuringSlowPacketWrite(t *testing.T) {
+	q := newStreamIPSendQueue()
+	q.recordWrite(TunnelMTU, 700*time.Millisecond)
+	now := time.Now()
+	if !q.enqueue(1, queueTestIP(TunnelMTU, 1), now) || !q.enqueue(2, queueTestIP(TunnelMTU, 2), now) {
+		t.Fatal("queue refused bounded competing senders")
+	}
+	served := 0
+	first, ok := q.pop(now, &served)
+	if !ok {
+		t.Fatal("first sender missing")
+	}
+	second, ok := q.pop(now.Add(700*time.Millisecond), &served)
+	if !ok || second.source == first.source {
+		t.Fatal("waiting sender expired during one BLE packet write")
+	}
+}
+
+func TestStreamIPQueueBoundsAgeForStalledCarrier(t *testing.T) {
+	q := newStreamIPSendQueue()
+	q.recordWrite(TunnelMTU, 10*time.Second)
+	now := time.Now()
+	q.enqueue(1, queueTestIP(TunnelMTU, 1), now)
+	served := 0
+	if _, ok := q.pop(now.Add(5*time.Second), &served); ok {
+		t.Fatal("stalled carrier retained stale IP traffic beyond the bound")
+	}
+}

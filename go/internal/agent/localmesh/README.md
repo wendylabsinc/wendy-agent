@@ -168,7 +168,15 @@ lease and enforces the exact assigned inner address in its tunnel firewall.
 Lite's optional Cloud borrower uses this path for automatic Internet fallback.
 It authenticates the gateway with `wendy-mesh-internet/1`; Cloud TLS remains end
 to end. See the companion firmware's signed-mesh-leaf documentation for the
-borrower configuration and hardware validation limits.
+borrower configuration and hardware validation limits. The gateway allows a
+bounded 60-second mTLS handshake so certificate chains can cross a BLE link.
+
+The BLE IP queue retains its byte and per-source fairness bounds. Packet age
+allows the bounded queue plus one active packet to drain at the observed rate,
+capped at five seconds; before a rate sample it allows two seconds. A faster
+socket write raises the drain estimate by at most 25% so it cannot immediately
+expire another sender's waiting packet. This prevents a queued TCP segment from
+expiring while the previous segment is still being serialized on a slow radio.
 
 The leaf protocol exchanges complete currently verified certificate bundles,
 including replies to identity lookups. Certificate descriptors and chunk requests

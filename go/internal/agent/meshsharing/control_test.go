@@ -269,3 +269,42 @@ func TestGatewayLeasePolicyWithdrawalClosesIdleControl(t *testing.T) {
 		t.Fatal("withdrawn control session skipped revoke")
 	}
 }
+
+// A mesh leaf may need more than the LAN's old eight-second allowance just
+// to transmit certificates. Delay the client without weakening mTLS or grants.
+func TestGatewayLeaseSlowRadioHandshake(t *testing.T) {
+	makeCreds := controlTestCredentials(t)
+	client := makeCreds(controlTestTenant, controlTestClient)
+	gateway := makeCreds(controlTestTenant, controlTestGateway)
+	backend := newControlBackend()
+	stop, raw, done := controlPipe(t, gateway, client, backend, client.Device)
+	time.Sleep(9 * time.Second)
+	if backend.grants.Load() != 0 {
+		t.Fatal("lease granted before authentication")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	secure, lease, err := negotiateGatewayLease(ctx, client, gateway.Device, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secure.Close()
+	if !lease.valid() {
+		t.Fatal("invalid lease")
+	}
+	if backend.grants.Load() != 1 {
+		t.Fatal("authenticated leaf received no lease")
+	}
+	stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not close the lease")
+	}
+	if <-backend.revoked != client.Device {
+		t.Fatal("wrong revoked identity")
+	}
+}
