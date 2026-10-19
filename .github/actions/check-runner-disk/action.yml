@@ -20,8 +20,12 @@ runs:
         MIN_FREE_GIB: ${{ inputs.min-free-gib }}
       run: |
         set -euo pipefail
+        # A non-numeric value would make the comparison below an arithmetic
+        # error, which `if` treats as false and so lets the job through.
+        [[ "$MIN_FREE_GIB" =~ ^[0-9]+$ ]] || { echo "::error::min-free-gib must be a whole number of GiB, got '${MIN_FREE_GIB}'."; exit 1; }
         df -h "$GITHUB_WORKSPACE"
         free_kib=$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')
+        [[ "$free_kib" =~ ^[0-9]+$ ]] || { echo "::error::Could not read free disk space for $GITHUB_WORKSPACE."; exit 1; }
         free_gib=$((free_kib / 1024 / 1024))
         echo "Free: ${free_gib} GiB (minimum ${MIN_FREE_GIB} GiB)"
         if ((free_gib < MIN_FREE_GIB)); then
