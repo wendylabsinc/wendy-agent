@@ -129,7 +129,11 @@ The CLI verifies device server certificates on all mTLS connections (BLE, LAN gR
 
 ### Device-to-device peer verification (UUID pin)
 
-When one device dials another by its device UUID, the agent runs `VerifyPeerDevice` after the chain check. The peer leaf must carry exactly one tenant SPIFFE device principal (`spiffe://wendy.sh/tenant/<tenant-uuid>/device/<device-uuid>`), its tenant must equal the calling device's own tenant, and its device UUID must equal the roster entry for the dialed name. There is no grace mode: a calling device with no tenant identity of its own refuses every device peer. The dialed address is a routing hint only and is not part of the check. The mesh data plane still dials peers by their legacy asset id with the asset-id pin; it moves to this rule when it addresses peers by device UUID (WDY-3923).
+When one device dials another by its device UUID, the agent runs `VerifyPeerDevice` after the chain check. The peer leaf must carry exactly one tenant SPIFFE device principal (`spiffe://wendy.sh/tenant/<tenant-uuid>/device/<device-uuid>`), its tenant must equal the calling device's own tenant, and its device UUID must equal the roster entry for the dialed name. There is no grace mode: a calling device with no tenant identity of its own refuses every device peer. The dialed address is a routing hint only and is not part of the check. `NewClientTLSConfigExpectingPeer` selects this strict rule whenever the peer identifier is a UUID.
+
+A legacy asset-ID string selects the older asset pin: the certificate must identify the expected asset, and its scope must match the calling device's own scope when that scope is known. Only this legacy path permits an unknown calling scope; it still requires the exact asset identity and a valid certificate chain.
+
+The wendy net data plane still dials peers by their legacy asset ID with the asset pin at this stage; it moves to the UUID rule when it addresses peers by device UUID (WDY-3923).
 
 ## Device identity pinning (default device)
 

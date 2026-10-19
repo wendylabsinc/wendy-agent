@@ -67,6 +67,14 @@ If UUID or device-name files are not yet present, the script retries for up to
 10 seconds to handle ordering races. After updating the file it calls
 `avahi-daemon --reload` if the daemon is already running.
 
+Enrollment also updates identity before the next boot: when loading
+pre-provisioned credentials or completing live re-enrollment, the agent writes
+the certificate's device UUID to `/etc/wendyos/device-uuid` and the service's
+`id=` TXT record before restarting Avahi. A legacy asset certificate carries
+no device UUID and leaves these records unchanged. See
+[Pre-provisioning](../config-partition.md#pre-provisioning-provisioningjson)
+for hostname preservation.
+
 `wendy device rename` persists the operator-selected hostname in
 `/etc/wendy-agent/hostname` and updates the Avahi records at rename time; it
 does not overwrite the generated `/etc/wendyos/device-name`. Consequently, the
