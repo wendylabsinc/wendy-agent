@@ -46,9 +46,13 @@ func (r *Runtime) syncPeers(ctx context.Context) {
 				case <-peerCtx.Done():
 					return
 				case data := <-p.out:
-					sendCtx, stop := context.WithTimeout(peerCtx, min(45*time.Second, 8*time.Second+time.Duration((len(data)+1023)/1024)*2*time.Second))
-					err := r.hub.Send(sendCtx, p.id, data)
-					stop()
+					// This waits for room in the neighbour's bounded control queue,
+					// shared with routing and application traffic. Queue delay is
+					// not a failed link: the transport bounds physical writes and
+					// peerCtx cancels on disconnect or runtime shutdown. Finish
+					// every message in order rather than timing out halfway and
+					// closing the shared authenticated connection.
+					err := r.hub.Send(peerCtx, p.id, data)
 					p.queued.Add(-int64(len(data)))
 					r.signal()
 					if err != nil {
