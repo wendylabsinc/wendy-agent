@@ -223,6 +223,28 @@ class MetricsTests(unittest.TestCase):
             self.assertFalse(result["metrics"]["usage_complete"])
             self.assertTrue(result["cleanup_ok"])
 
+    def test_rescore_rebuilds_grades_without_touching_originals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            dump = lambda f, v: f.write_text(json.dumps(v))
+            dump(path / "manifest.json", {"config": {"agents": {"c": {"adapter": "claude"}}}})
+            attempt = path / "c-sim-deploy-http-1"
+            attempt.mkdir()
+            events = [{"type": "assistant", "message": {"content": [
+                          {"type": "tool_use", "id": "1", "name": "mcp__wendy__run", "input": {}}]}},
+                      {"type": "result", "result": "done"}]
+            (attempt / "agent.stdout").write_text("\n".join(json.dumps(e) for e in events) + "\n")
+            dump(attempt / "result.json", {"task": "deploy-http", "agent": "c", "target": "sim",
+                                           "metrics": {}, "status": "failed", "success": True, "task_seconds": 1.0, "tool_choice": None})
+            before = (attempt / "result.json").read_bytes()
+            tasks = [{"id": "deploy-http", "expect": {"right": [{"tool": "run"}], "wrong": []}}]
+            out = b.rescore(path, tasks, [])
+            self.assertEqual(out.parent, path)
+            rows = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
+            self.assertEqual(rows[0]["tool_choice"]["outcome"], "right")
+            self.assertEqual((attempt / "result.json").read_bytes(), before)
+            self.assertTrue((out / "summary.json").exists() and (out / "summary.md").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

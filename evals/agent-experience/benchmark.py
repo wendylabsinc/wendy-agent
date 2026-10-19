@@ -21,7 +21,7 @@ import uuid
 
 from retry_guard import RetryGuard
 from grading import OUTCOMES, grade
-from tool_trace import build_trace
+from tool_trace import build_trace, read_jsonl
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -269,6 +269,34 @@ def report(rows, output):
                      f"{fmt(row['estimated_usd_per_success_including_failures'])} | "
                      f"{choice_cell(row['tool_choice'])} |")
     (output / "summary.md").write_text("\n".join(lines) + "\n")
+
+
+def rescore(results_dir, tasks, scenarios):
+    # Regrade saved attempts from their logs; originals are never modified and nothing is executed.
+    agents = json.loads((results_dir / "manifest.json").read_text())["config"]["agents"]
+    expects = {t["id"]: t for t in (*tasks, *scenarios)}
+    out = results_dir / ("rescored-" + time.strftime("%Y%m%d-%H%M%S"))
+    out.mkdir()
+    rows = []
+    for path in sorted(results_dir.glob("*/result.json")):
+        row, directory = json.loads(path.read_text()), path.parent
+        adapter = agents[row["agent"]]["adapter"]
+        events, _ = read_events(directory / "agent.stdout")
+        extra = {k: read_jsonl(directory / f"{f}.jsonl") if (directory / f"{f}.jsonl").exists() else None
+                 for k, f in (("proxy_records", "proxy"), ("cli_records", "cli"))}
+        row["metrics"] = {**row.get("metrics", {}), **metrics(adapter, events)}
+        row["metrics"]["tool_trace"] = build_trace(adapter, events, **extra)
+        item = expects.get(row["task"], {})
+        scenario = row.get("kind") == "scenario"
+        row["tool_choice"] = (grade(row["metrics"]["tool_trace"], item["expect"], row["metrics"]["final_text"],
+                                    row["metrics"]["agent_completed"], group=row.get("group") if scenario else None,
+                                    adapter=adapter) if item.get("expect") else None)
+        if scenario:
+            row["success"] = bool(row["tool_choice"]) and row["tool_choice"]["outcome"] in ("right", "asked")
+        rows.append(row)
+    (out / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    report(rows, out)
+    return out
 
 
 def stage_context(workspace, adapter, wendy, state_dir=None):
@@ -623,7 +651,13 @@ def main():
     parser.add_argument("--output", type=Path, default=HERE / "results")
     parser.add_argument("--execute", action="store_true", help="Run the plan. Without this flag, make no model or device calls.")
     parser.add_argument("--calibrate", action="store_true", help="Check built-in fixtures with reference solutions; no model calls.")
+    parser.add_argument("--rescore", type=Path, metavar="DIR", help="Regrade a saved results directory from its logs; no model or device calls.")
     args = parser.parse_args()
+    if args.rescore:
+        if args.execute:
+            parser.error("--rescore cannot be combined with --execute")
+        print(rescore(args.rescore.resolve(), json.loads(args.tasks.read_text()), []))
+        return 0
     config = json.loads(args.config.read_text())
     tasks = json.loads(args.tasks.read_text())
     if args.repetitions < 1 or (args.limit is not None and args.limit < 1):
