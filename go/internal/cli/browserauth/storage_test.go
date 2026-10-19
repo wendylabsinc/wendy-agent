@@ -3,7 +3,11 @@ package browserauth
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/mldsa"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -143,5 +147,24 @@ func TestPlaintextSignInMovesIntoWrappedStorage(t *testing.T) {
 	// A wrapped record cannot be read back by a store that cannot unwrap it.
 	if _, err := (&Session{Client: s.Client, Store: &memoryStore{raw: store.raw}}).Restore(context.Background()); err == nil {
 		t.Fatal("restored a version 2 record without its wrapped key")
+	}
+}
+
+// No downgrade: the store unwraps every seed as ML-DSA-65, so a key of any
+// other kind is refused rather than wrapped.
+func TestWrappedStorageRefusesAKeyThatIsNotMLDSA65(t *testing.T) {
+	mldsa44, err := mldsa.GenerateKey(mldsa.MLDSA44())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, key := range map[string]crypto.Signer{"ML-DSA-44": mldsa44, "P-256": p256} {
+		store := &wrappedStore{}
+		if err := saveWrapped(store, savedSession{Version: 1}, key); err == nil || store.seed != nil || store.raw != nil {
+			t.Fatalf("%s key was wrapped", name)
+		}
 	}
 }
