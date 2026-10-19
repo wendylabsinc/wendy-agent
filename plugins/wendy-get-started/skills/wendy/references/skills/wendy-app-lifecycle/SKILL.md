@@ -10,46 +10,6 @@ Use this for normal operator/developer workflows around Wendy apps, not only deb
 For sensor episodes, event-triggered campaigns, or durable application recording
 streams, use `wendy-data`. Deploying an app does not deploy its campaign YAML.
 
-## ChatGPT plugin development loop
-
-When using the ChatGPT gateway, work through its tools without assuming a local
-terminal. The gateway exposes different tools from `wendy mcp serve`.
-
-1. For a simulator, use `simulator_list`, create only if needed, then
-   `simulator_start`. Refresh `list_robots` to resolve its exact `robot_id`.
-   Use `simulator_viewer` for a robot profile and inspect camera output when
-   available. A `vm:<name>` selector is not a gateway `robot_id`.
-2. Call `list_workspaces` and choose an approved workspace whose `robot_ids`
-   includes the selected target. `can_read_files` and `can_write_files` report
-   local file permissions. Missing permissions require operator configuration;
-   do not substitute an arbitrary path or another target.
-3. Use `list_workspace_files` and `read_workspace_file` to inspect the project.
-   Author or edit code with `write_workspace_file`, using the read's SHA-256 as
-   `expected_sha256`, or `"missing"` for a new file. Re-read on a revision conflict.
-   Create app configuration and build inputs along with source. Each file must
-   be UTF-8 text of at most 256 KiB within the approved directory.
-4. Validate with `validate_device_project(workspace_id, robot_id)`. Resolve its
-   findings before building. Compatibility reported as unknown stays unknown.
-5. Call `start_device_deployment` with those exact IDs and a fresh stable
-   `request_id`. Keep the returned job ID and poll `get_deployment_job`. Reuse the
-   request ID after an uncertain response, not for a new build of edited code.
-   `cancel_deployment_job` cancels the build/deploy command; it may leave an app
-   already running on the target. For several targets, `plan_fleet_deployment`
-   freezes the target set; deploy one canary, inspect it, then deploy each
-   remaining target explicitly. There is no automatic fan-out or rollback.
-6. Check `inspect_robot`, `read_device_logs`, and actual app or robot output.
-   `start_robot_app` and `stop_robot_app` control permitted apps; starting may
-   restart one, so do not retry an uncertain result automatically.
-   `open_robot_app` opens a running app's declared HTTP UI. The gateway's
-   `completed` deployment status and `RUNNING` app state do not prove readiness.
-
-Local file tools require an approved workspace, local stdio, and `projects:read`
-or `projects:write`. Deployment independently needs `apps:deploy`. A workspace's
-`allow_simulators` opt-in permits its use on running local simulators; configured
-physical or VM targets use its explicit `robots` list and subject grants. A
-remote HTTP connection cannot edit unshared laptop files. Explain a missing
-local connection or workspace grant when the tools cannot perform the task.
-
 ## Core rule for coding agents
 
 Avoid Bubble Tea pickers and dashboards unless the user explicitly wants an interactive terminal UI. Coding agents should generally use:
