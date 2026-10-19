@@ -78,6 +78,13 @@ func jwsHeader(t *testing.T, jws []byte) map[string]any {
 }
 
 func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
+	var gotEndpoint, gotTenant string
+	real := discoverLiteDeviceCAChain
+	discoverLiteDeviceCAChain = func(_ context.Context, endpoint, tenant string) (string, error) {
+		gotEndpoint, gotTenant = endpoint, tenant
+		return "", nil
+	}
+	t.Cleanup(func() { discoverLiteDeviceCAChain = real })
 	t.Setenv("WENDY_LITE_OPERATOR_CERT", "")
 	t.Setenv("WENDY_LITE_OPERATOR_KEY", "")
 	auth := liteTestAuth("cloud.example:443")
@@ -113,17 +120,32 @@ func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
 	}
 	// A later session switch must not redirect an in-flight device handshake's
 	// trust lookup.
-	var gotEndpoint, gotTenant string
-	real := discoverLiteDeviceCAChain
-	discoverLiteDeviceCAChain = func(_ context.Context, endpoint, tenant string) (string, error) {
-		gotEndpoint, gotTenant = endpoint, tenant
-		return "", nil
-	}
-	t.Cleanup(func() { discoverLiteDeviceCAChain = real })
 	auth.PKIEndpoint = ""
 	auth.Certificates[0].PrincipalURI = "invalid"
 	if _, err := options.DeviceTrustFallback(context.Background()); err != nil || gotEndpoint != "https://identity.selected.example/v1/identity/certificate" || gotTenant != liteTestTenant {
 		t.Fatalf("device trust discovery = %q, %q, %v; want the selected PKI and tenant", gotEndpoint, gotTenant, err)
+	}
+}
+
+// A verifier may start discovery after another test has replaced or restored
+// the hook. It must keep the discovery function selected when it was created.
+func TestLiteDeviceCAChainKeepsSelectedDiscovery(t *testing.T) {
+	real := discoverLiteDeviceCAChain
+	t.Cleanup(func() { discoverLiteDeviceCAChain = real })
+	discoverLiteDeviceCAChain = func(context.Context, string, string) (string, error) {
+		return "selected device CA chain", nil
+	}
+	lookup := liteDeviceCAChain(liteTestAuth("cloud.example:443"))
+	discoverLiteDeviceCAChain = func(context.Context, string, string) (string, error) {
+		return "replacement device CA chain", nil
+	}
+	result := make(chan string, 1)
+	go func() {
+		chain, _ := lookup(context.Background())
+		result <- chain
+	}()
+	if got := <-result; got != "selected device CA chain" {
+		t.Fatalf("device CA chain = %q; want the selected discovery function", got)
 	}
 }
 
