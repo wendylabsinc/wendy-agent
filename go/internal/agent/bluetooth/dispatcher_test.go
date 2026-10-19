@@ -3,31 +3,56 @@ package bluetooth_test
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/bluetooth"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/protobuf/proto"
 )
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
 type mockNet struct {
-	networks  []*agentpb.ListWiFiNetworksResponse_WiFiNetwork
-	connected bool
-	ssid      string
-	err       error
+	networks       []*agentpb.ListWiFiNetworksResponse_WiFiNetwork
+	knownNetworks  []*agentpb.ListKnownWiFiNetworksResponse_KnownWiFiNetwork
+	connectRequest *agentpb.ConnectToWiFiRequest
+	connected      bool
+	ssid           string
+	prioritySSID   string
+	priority       int32
+	order          []string
+	forgotten      string
+	err            error
 }
 
 func (m *mockNet) ListWiFiNetworks(_ context.Context) ([]*agentpb.ListWiFiNetworksResponse_WiFiNetwork, error) {
 	return m.networks, m.err
 }
-func (m *mockNet) ConnectToWiFi(_ context.Context, _ *agentpb.ConnectToWiFiRequest) error {
+func (m *mockNet) ConnectToWiFi(_ context.Context, req *agentpb.ConnectToWiFiRequest) error {
+	m.connectRequest = req
 	return m.err
 }
 func (m *mockNet) GetWiFiStatus(_ context.Context) (bool, string, error) {
 	return m.connected, m.ssid, m.err
 }
 func (m *mockNet) DisconnectWiFi(_ context.Context) error { return m.err }
+func (m *mockNet) ListKnownWiFiNetworks(_ context.Context) ([]*agentpb.ListKnownWiFiNetworksResponse_KnownWiFiNetwork, error) {
+	return m.knownNetworks, m.err
+}
+func (m *mockNet) SetWiFiNetworkPriority(_ context.Context, ssid string, priority int32) error {
+	m.prioritySSID, m.priority = ssid, priority
+	return m.err
+}
+func (m *mockNet) ReorderKnownWiFiNetworks(_ context.Context, order []string) error {
+	m.order = order
+	return m.err
+}
+func (m *mockNet) ForgetWiFiNetwork(_ context.Context, ssid string) error {
+	m.forgotten = ssid
+	return m.err
+}
 
 type mockContainer struct {
 	containers []*agentpb.AppContainer
@@ -97,7 +122,16 @@ func newTestDispatcher(net *mockNet, ctr *mockContainer, hw *mockHardware, bt *m
 
 func TestDispatch_WifiList(t *testing.T) {
 	net := &mockNet{networks: []*agentpb.ListWiFiNetworksResponse_WiFiNetwork{
-		{Ssid: "MyNet"},
+		{
+			Ssid:           "MyNet",
+			SignalStrength: proto.Int32(81),
+			Security:       agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_WPA3_SAE,
+			IsKnown:        true,
+			IsConnected:    true,
+			Priority:       proto.Int32(0),
+			RssiDbm:        proto.Int32(-56),
+		},
+		{Ssid: "NoSignal"},
 	}}
 	d := newTestDispatcher(net, nil, nil, nil)
 	resp := d.Dispatch(context.Background(), &agentpb.BluetoothCommand{
@@ -107,8 +141,20 @@ func TestDispatch_WifiList(t *testing.T) {
 	if wl == nil {
 		t.Fatal("expected WifiListResponse, got nil")
 	}
-	if len(wl.GetNetworks()) != 1 || wl.GetNetworks()[0].GetSsid() != "MyNet" {
-		t.Errorf("unexpected networks: %v", wl.GetNetworks())
+	want := &agentpb.WifiListResponse{Networks: []*agentpb.WifiNetworkInfo{
+		{
+			Ssid:           "MyNet",
+			SignalStrength: proto.Int32(81),
+			Security:       agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_WPA3_SAE,
+			IsKnown:        true,
+			IsConnected:    true,
+			Priority:       proto.Int32(0),
+			RssiDbm:        proto.Int32(-56),
+		},
+		{Ssid: "NoSignal"},
+	}}
+	if !proto.Equal(wl, want) {
+		t.Errorf("WiFi scan metadata = %v, want %v", wl, want)
 	}
 }
 
@@ -123,18 +169,31 @@ func TestDispatch_WifiList_NilManager(t *testing.T) {
 }
 
 func TestDispatch_WifiConnect(t *testing.T) {
-	net := &mockNet{}
-	d := newTestDispatcher(net, nil, nil, nil)
-	resp := d.Dispatch(context.Background(), &agentpb.BluetoothCommand{
-		Command: &agentpb.BluetoothCommand_WifiConnect{
-			WifiConnect: &agentpb.WifiConnectCommand{Ssid: "net", Password: "pass"},
-		},
-	})
-	if resp.GetWifiConnect() == nil {
-		t.Fatal("expected WifiConnectResponse")
-	}
-	if !resp.GetWifiConnect().GetSuccess() {
-		t.Error("expected success=true")
+	for _, tt := range []struct {
+		name     string
+		security *agentpb.WiFiSecurityType
+		hidden   *bool
+	}{
+		{name: "autodetect"},
+		{name: "hidden WPA3", security: agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_WPA3_SAE.Enum(), hidden: proto.Bool(true)},
+		{name: "visible open", security: agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_OPEN.Enum(), hidden: proto.Bool(false)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			net := &mockNet{}
+			d := newTestDispatcher(net, nil, nil, nil)
+			resp := d.Dispatch(context.Background(), &agentpb.BluetoothCommand{
+				Command: &agentpb.BluetoothCommand_WifiConnect{
+					WifiConnect: &agentpb.WifiConnectCommand{Ssid: "net", Password: "pass", Security: tt.security, Hidden: tt.hidden},
+				},
+			})
+			if !resp.GetWifiConnect().GetSuccess() {
+				t.Fatalf("expected successful WifiConnectResponse, got %v", resp)
+			}
+			want := &agentpb.ConnectToWiFiRequest{Ssid: "net", Password: "pass", Security: tt.security, Hidden: tt.hidden}
+			if !proto.Equal(net.connectRequest, want) {
+				t.Errorf("WiFi connect options = %v, want %v", net.connectRequest, want)
+			}
+		})
 	}
 }
 
@@ -164,6 +223,88 @@ func TestDispatch_WifiDisconnect(t *testing.T) {
 	}
 	if !resp.GetWifiDisconnect().GetSuccess() {
 		t.Error("expected success=true")
+	}
+}
+
+func TestDispatch_WifiKnownList(t *testing.T) {
+	net := &mockNet{knownNetworks: []*agentpb.ListKnownWiFiNetworksResponse_KnownWiFiNetwork{
+		{Ssid: "Home", Uuid: "home-profile", Priority: 10, Security: agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_WPA3_SAE},
+		{Ssid: "Guest", Uuid: "guest-profile", Priority: -1, Security: agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_OPEN},
+	}}
+	resp := newTestDispatcher(net, nil, nil, nil).Dispatch(context.Background(), &agentpb.BluetoothCommand{
+		Command: &agentpb.BluetoothCommand_WifiKnownList{WifiKnownList: &agentpb.WifiKnownListCommand{}},
+	})
+	want := &agentpb.WifiKnownListResponse{Networks: []*agentpb.KnownWifiNetworkInfo{
+		{Ssid: "Home", Uuid: "home-profile", Priority: 10, Security: agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_WPA3_SAE},
+		{Ssid: "Guest", Uuid: "guest-profile", Priority: -1, Security: agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_OPEN},
+	}}
+	if !proto.Equal(resp.GetWifiKnownList(), want) {
+		t.Errorf("known WiFi profiles = %v, want %v", resp, want)
+	}
+}
+
+func TestDispatch_WifiSetPriority(t *testing.T) {
+	net := &mockNet{}
+	resp := newTestDispatcher(net, nil, nil, nil).Dispatch(context.Background(), &agentpb.BluetoothCommand{
+		Command: &agentpb.BluetoothCommand_WifiSetPriority{
+			WifiSetPriority: &agentpb.WifiSetPriorityCommand{Ssid: "Home", Priority: -10},
+		},
+	})
+	if !resp.GetWifiSetPriority().GetSuccess() || net.prioritySSID != "Home" || net.priority != -10 {
+		t.Errorf("set priority: response=%v SSID=%q priority=%d", resp, net.prioritySSID, net.priority)
+	}
+}
+
+func TestDispatch_WifiReorder(t *testing.T) {
+	net := &mockNet{}
+	order := []string{"Home", "Guest"}
+	resp := newTestDispatcher(net, nil, nil, nil).Dispatch(context.Background(), &agentpb.BluetoothCommand{
+		Command: &agentpb.BluetoothCommand_WifiReorder{WifiReorder: &agentpb.WifiReorderCommand{OrderSsids: order}},
+	})
+	if !resp.GetWifiReorder().GetSuccess() || !slices.Equal(net.order, order) {
+		t.Errorf("reorder: response=%v order=%v", resp, net.order)
+	}
+}
+
+func TestDispatch_WifiForget(t *testing.T) {
+	net := &mockNet{}
+	resp := newTestDispatcher(net, nil, nil, nil).Dispatch(context.Background(), &agentpb.BluetoothCommand{
+		Command: &agentpb.BluetoothCommand_WifiForget{WifiForget: &agentpb.WifiForgetCommand{Ssid: "Guest"}},
+	})
+	if !resp.GetWifiForget().GetSuccess() || net.forgotten != "Guest" {
+		t.Errorf("forget: response=%v SSID=%q", resp, net.forgotten)
+	}
+}
+
+func TestDispatch_WifiErrors(t *testing.T) {
+	commands := map[string]*agentpb.BluetoothCommand{
+		"list":         {Command: &agentpb.BluetoothCommand_WifiList{WifiList: &agentpb.WifiListCommand{}}},
+		"connect":      {Command: &agentpb.BluetoothCommand_WifiConnect{WifiConnect: &agentpb.WifiConnectCommand{Ssid: "Home"}}},
+		"status":       {Command: &agentpb.BluetoothCommand_WifiStatus{WifiStatus: &agentpb.WifiStatusCommand{}}},
+		"disconnect":   {Command: &agentpb.BluetoothCommand_WifiDisconnect{WifiDisconnect: &agentpb.WifiDisconnectCommand{}}},
+		"known list":   {Command: &agentpb.BluetoothCommand_WifiKnownList{WifiKnownList: &agentpb.WifiKnownListCommand{}}},
+		"set priority": {Command: &agentpb.BluetoothCommand_WifiSetPriority{WifiSetPriority: &agentpb.WifiSetPriorityCommand{Ssid: "Home", Priority: 5}}},
+		"reorder":      {Command: &agentpb.BluetoothCommand_WifiReorder{WifiReorder: &agentpb.WifiReorderCommand{OrderSsids: []string{"Home"}}}},
+		"forget":       {Command: &agentpb.BluetoothCommand_WifiForget{WifiForget: &agentpb.WifiForgetCommand{Ssid: "Home"}}},
+	}
+	for name, cmd := range commands {
+		t.Run(name, func(t *testing.T) {
+			for _, tt := range []struct {
+				name string
+				net  *mockNet
+				want string
+			}{
+				{name: "unavailable", want: "network manager unavailable"},
+				{name: "operation failed", net: &mockNet{err: errors.New("WiFi operation failed")}, want: "WiFi operation failed"},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					resp := newTestDispatcher(tt.net, nil, nil, nil).Dispatch(context.Background(), cmd)
+					if resp.GetError().GetMessage() != tt.want {
+						t.Errorf("response = %v, want error %q", resp, tt.want)
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -335,8 +476,10 @@ func TestDispatch_BluetoothForget(t *testing.T) {
 
 func TestDispatch_UnknownCommand(t *testing.T) {
 	d := newTestDispatcher(nil, nil, nil, nil)
-	resp := d.Dispatch(context.Background(), &agentpb.BluetoothCommand{})
-	if resp.GetError() == nil {
-		t.Fatal("expected error response for unknown command")
+	for _, cmd := range []*agentpb.BluetoothCommand{nil, {}} {
+		resp := d.Dispatch(context.Background(), cmd)
+		if resp.GetError() == nil {
+			t.Fatal("expected error response for unknown command")
+		}
 	}
 }

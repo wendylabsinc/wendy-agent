@@ -21,10 +21,10 @@ agent protocol clients, their UUIDs, PSMs and framing. **Adding a Wendy identifi
 one of them would be the first sign of it. (`WENDY_BT_ADAPTER`, the controller override `bluez`
 honors, is the single deliberate exception — it has to match the name the agent already reads.)
 
-There is one Wendy file at the root of this directory: `lite_info.go`, the Wendy Lite GATT info
-service. It lives here rather than with its siblings in `cli/ble` because `shared/discovery` reads a
-board's L2CAP PSM from it, and a `shared/` package importing a `cli/` one is an upward edge. It is
-outside `central/` and `scan/` for the reason above, and nothing else should join it.
+The root package contains `lite_info.go` and `agent_info.go`, the GATT metadata readers
+used by `shared/discovery`. The `agentinfo` subpackage defines the agent metadata format
+shared with its BlueZ GATT server. These Wendy-specific definitions stay outside
+`central/` and `scan/`; command clients remain in `cli/ble`.
 
 **This package must never import `shared/discovery`**, which imports it.
 
@@ -160,7 +160,8 @@ returned conn closes the underlying BLE connection.
 * **With no read deadline set, `Read` blocks indefinitely**, as `net.Conn` requires. The 2 s slice is
   polling granularity, not a timeout callers see. With a deadline it returns a `net.Error` whose
   `Timeout()` is true, which is what stops `crypto/tls` treating a deadline as a broken connection.
-  Write deadlines are ignored.
+  An expired write deadline closes the transport to interrupt a stalled send.
+  Callers must reconnect after an interrupted write.
 * `Close` takes the same lock `Read` holds across `L2CAPRecv`, so it waits out an in-flight read (at
   most 2 s). That matters on macOS, where `wendy_ble_disconnect` hands the CoreBluetooth wrapper to
   ARC while a blocked reader still holds a bare pointer to it. Its idempotency flag is now belt and

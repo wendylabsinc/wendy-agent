@@ -677,8 +677,8 @@ func TestPickerLadderRefusalDoesNotFallBackToBluetooth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("an unreachable LAN half must still fall back to BLE, got %v", err)
 		}
-		if sel == nil || sel.Bluetooth != ble {
-			t.Fatalf("selection = %+v, want the row's Bluetooth half", sel)
+		if sel == nil || sel.Bluetooth == nil || sel.Bluetooth.DisplayName != ble.DisplayName || sel.Bluetooth.SelectedPinKey != pinKeyForLANDevice(lan) {
+			t.Fatalf("selection = %+v, want the row's Bluetooth half with its LAN pin key", sel)
 		}
 	})
 }

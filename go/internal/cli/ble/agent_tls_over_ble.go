@@ -19,7 +19,7 @@ import (
 // fail to parse; no TLS hostname over L2CAP); opts.PinStore and chain
 // verification are handled by the VerifyConnection callback.
 func NewClientTLSConfig(certPEM, keyPEM string, opts certs.ServerVerifyOpts) (*tls.Config, error) {
-	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	cert, err := certs.TLSKeyPair(certPEM, opts.ChainPEM, keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("loading BLE client certificate: %w", err)
 	}

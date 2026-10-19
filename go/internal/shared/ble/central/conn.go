@@ -71,11 +71,16 @@ func NewL2CAPStream(c *Connection) net.Conn {
 }
 
 type l2capNetConn struct {
-	conn         *Connection
-	buf          []byte     // leftover from a previous L2CAPRecv
-	readDeadline time.Time  // zero means no deadline; owned by the single reader
-	recvMu       sync.Mutex // held across L2CAPRecv so Close can't free under it
-	closed       atomic.Bool
+	conn            *Connection
+	buf             []byte    // leftover from a previous L2CAPRecv
+	readDeadline    time.Time // zero means no deadline; guarded by deadlineMu
+	deadlineMu      sync.Mutex
+	writeTimer      *time.Timer
+	writeDeadline   time.Time
+	writeActive     bool
+	writeGeneration uint64
+	recvMu          sync.Mutex // held across L2CAPRecv so Close can't free under it
+	closed          atomic.Bool
 }
 
 // Read blocks until data arrives, the deadline expires, or the channel closes.
@@ -91,8 +96,11 @@ func (c *l2capNetConn) Read(b []byte) (int, error) {
 
 	for {
 		chunk := recvChunkSeconds
-		if !c.readDeadline.IsZero() {
-			remaining := time.Until(c.readDeadline)
+		c.deadlineMu.Lock()
+		deadline := c.readDeadline
+		c.deadlineMu.Unlock()
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
 			if remaining <= 0 {
 				return 0, &timeoutErr{}
 			}
@@ -138,6 +146,26 @@ func (c *l2capNetConn) recv(chunkSeconds int) ([]byte, error) {
 }
 
 func (c *l2capNetConn) Write(b []byte) (int, error) {
+	if c.closed.Load() {
+		return 0, net.ErrClosed
+	}
+	c.deadlineMu.Lock()
+	if !c.writeDeadline.IsZero() && !time.Now().Before(c.writeDeadline) {
+		c.deadlineMu.Unlock()
+		return 0, &timeoutErr{}
+	}
+	c.writeActive = true
+	c.armWriteDeadline()
+	c.deadlineMu.Unlock()
+	defer func() {
+		c.deadlineMu.Lock()
+		c.writeActive = false
+		c.writeGeneration++
+		if c.writeTimer != nil {
+			c.writeTimer.Stop()
+		}
+		c.deadlineMu.Unlock()
+	}()
 	if err := c.conn.L2CAPSend(b); err != nil {
 		return 0, err
 	}
@@ -156,27 +184,70 @@ func (c *l2capNetConn) Close() error {
 	if c.closed.Swap(true) {
 		return nil
 	}
+	c.deadlineMu.Lock()
+	if c.writeTimer != nil {
+		c.writeTimer.Stop()
+	}
+	c.deadlineMu.Unlock()
+	c.closeTransport()
+	return nil
+}
+
+func (c *l2capNetConn) closeTransport() {
 	c.recvMu.Lock()
 	defer c.recvMu.Unlock()
 	c.conn.Close()
-	return nil
 }
 
 func (c *l2capNetConn) LocalAddr() net.Addr  { return bleNetAddr{} }
 func (c *l2capNetConn) RemoteAddr() net.Addr { return bleNetAddr{} }
 
-// WARNING: SetDeadline only ever bounds reads — see SetWriteDeadline.
+// A write deadline closes the channel because neither platform can resume a
+// partially written TLS record safely. Callers must reconnect after a timeout.
 func (c *l2capNetConn) SetDeadline(t time.Time) error {
+	if err := c.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return c.SetWriteDeadline(t)
+}
+func (c *l2capNetConn) SetReadDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
 	c.readDeadline = t
 	return nil
 }
-func (c *l2capNetConn) SetReadDeadline(t time.Time) error {
-	c.readDeadline = t
+func (c *l2capNetConn) SetWriteDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+	if c.writeTimer != nil {
+		c.writeTimer.Stop()
+	}
+	c.writeDeadline = t
+	c.armWriteDeadline()
 	return nil
 }
 
-// WARNING: SetWriteDeadline is currently not implemented and is a no-op.
-func (c *l2capNetConn) SetWriteDeadline(_ time.Time) error { return nil }
+// armWriteDeadline runs under deadlineMu. A generation check prevents a timer
+// that already fired from closing a connection after its deadline was reset.
+func (c *l2capNetConn) armWriteDeadline() {
+	c.writeGeneration++
+	generation := c.writeGeneration
+	if c.writeActive && !c.writeDeadline.IsZero() && !c.closed.Load() {
+		c.writeTimer = time.AfterFunc(time.Until(c.writeDeadline), func() {
+			c.expireWrite(generation)
+		})
+	}
+}
+
+func (c *l2capNetConn) expireWrite(generation uint64) {
+	c.deadlineMu.Lock()
+	if generation != c.writeGeneration || !c.writeActive || c.closed.Swap(true) {
+		c.deadlineMu.Unlock()
+		return
+	}
+	c.deadlineMu.Unlock()
+	c.closeTransport()
+}
 
 // bleNetAddr is a minimal net.Addr for the BLE transport.
 type bleNetAddr struct{}

@@ -1,15 +1,6 @@
-// Package ble is the one Wendy-specific resident of internal/shared/ble, whose
-// central and scan subpackages are otherwise free of Wendy identifiers.
-//
-// It lives here rather than in internal/cli/ble — where the rest of the Wendy
-// protocol layer is — for one reason: internal/shared/discovery reads a Lite
-// board's info service to learn its L2CAP PSM, and a shared package importing a
-// cli one is an upward edge. Nothing else about it wants to be shared, so keep
-// this package to the info service and let internal/cli/ble own the rest.
-//
-// internal/cli/ble is also named ble. No file currently needs both, and none
-// should have to; a future one must alias.
-//
+// Package ble reads Wendy device discovery metadata. Agent and Lite GATT info
+// readers live here because shared/discovery needs them; command clients live
+// in internal/cli/ble. The central and scan subpackages remain device-neutral.
 // This package must never import internal/shared/discovery, which imports it.
 package ble
 

@@ -29,3 +29,19 @@ convention rather than a property of BLE, which is why neither lives in `shared/
 
 Prefer the PSM a board publishes over the default: `ble.ReadLiteInfo` reads it over GATT, and the
 fallback exists only for platforms or devices that cannot answer.
+
+## Enrolled agent recovery
+
+`ConnectAgentContext` carries the command context through the TLS handshake and
+subsequent exchanges. The handshake has a 15-second budget. A command has one
+60-second budget covering its wait for the exchange lock, write, response header,
+and response body. Requests are serialized because this protocol has no request
+IDs. Empty or oversized outgoing frames are rejected before writing. A failed
+exchange closes the connection so a delayed reply cannot become the next
+command's response.
+
+The CLI verifies the selected device's stored identity during TLS and checks that
+the authenticated certificate also matches its GATT identity hint. Metadata never
+replaces a saved pin. `ObservedServerIdentity` exposes the accepted certificate
+identity for the Wi-Fi command's LAN handoff. LAN candidates must authenticate that
+same identity, with no plaintext fallback.

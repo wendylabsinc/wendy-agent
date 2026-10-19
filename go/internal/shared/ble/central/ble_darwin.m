@@ -38,6 +38,17 @@ static BOOL wendyBLECopyOut(const void *bytes, NSUInteger n, uint8_t **outData, 
     return YES;
 }
 
+// Per-write completion prevents a stopped run-loop thread from trapping a Go
+// caller in performSelector(waitUntilDone:YES).
+@interface WendyBLEWriteRequest : NSObject
+@property (strong) NSData *data;
+@property (strong) NSDate *deadline;
+@property (strong) dispatch_semaphore_t done;
+@property BOOL success;
+@end
+@implementation WendyBLEWriteRequest
+@end
+
 // ── WendyBLEConnection ──────────────────────────────────────────────
 // Manages a single connection to a BLE peripheral including GATT and L2CAP.
 
@@ -93,9 +104,7 @@ static BOOL wendyBLECopyOut(const void *bytes, NSUInteger n, uint8_t **outData, 
 @property BOOL l2capIORunning;
 @property BOOL l2capOutputReady; // YES once outputStream fires NSStreamEventHasSpaceAvailable
 
-// Write dispatch: wendy_ble_l2cap_send uses performSelector:onThread:waitUntilDone:YES
-// so writes always happen on the I/O thread that owns the stream's run loop.
-@property NSInteger l2capWriteResult;
+
 
 // Target peripheral UUID for scanning
 @property (strong) NSString *targetUUID;
@@ -333,9 +342,29 @@ didOpenL2CAPChannel:(CBL2CAPChannel *)channel
     }
 }
 
-// Performs a single write on the I/O thread, called via performSelector:onThread:waitUntilDone:YES.
-- (void)performL2CAPWrite:(NSData *)data {
-    self.l2capWriteResult = [self.l2capChannel.outputStream write:data.bytes maxLength:data.length];
+// NSOutputStream may accept only a prefix. Keep the remainder until writable,
+// pumping this stream's owning run loop, with one deadline for the whole write.
+- (void)performL2CAPWrite:(WendyBLEWriteRequest *)request {
+    NSUInteger written = 0;
+    NSRunLoop *loop = [NSRunLoop currentRunLoop];
+    while (written < request.data.length && self.connected && self.l2capIORunning && !self.l2capError) {
+        if ([request.deadline timeIntervalSinceNow] <= 0) break;
+        NSOutputStream *stream = self.l2capChannel.outputStream;
+        if (![stream hasSpaceAvailable]) {
+            [loop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            continue;
+        }
+        NSInteger n = [stream write:(const uint8_t *)request.data.bytes + written
+                          maxLength:request.data.length - written];
+        if (n < 0) break;
+        if (n == 0) {
+            [loop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            continue;
+        }
+        written += (NSUInteger)n;
+    }
+    request.success = written == request.data.length;
+    dispatch_semaphore_signal(request.done);
 }
 
 // ── NSStreamDelegate (both L2CAP streams) ───────────────────────────
@@ -599,16 +628,17 @@ WendyBLEError wendy_ble_l2cap_send(WendyBLEConn handle, const uint8_t *data, int
     WendyBLEConnection *conn = (__bridge WendyBLEConnection *)handle;
     if (!conn.connected || !conn.l2capChannel || !conn.l2capIORunning) return WENDY_BLE_ERR_DISCONNECTED;
 
-    // Dispatch the write to the I/O thread that owns the output stream's run loop.
-    // CBL2CAP NSOutputStream writes must come from the owning run loop thread;
-    // calling write:maxLength: from any other thread returns -1.
-    NSData *writeData = [NSData dataWithBytes:data length:length];
+    WendyBLEWriteRequest *request = [[WendyBLEWriteRequest alloc] init];
+    request.data = [NSData dataWithBytes:data length:length];
+    request.deadline = [NSDate dateWithTimeIntervalSinceNow:10.0];
+    request.done = dispatch_semaphore_create(0);
     [conn performSelector:@selector(performL2CAPWrite:)
                  onThread:conn.l2capIOThread
-               withObject:writeData
-            waitUntilDone:YES];
-
-    if (conn.l2capWriteResult < 0) return WENDY_BLE_ERR_WRITE_FAILED;
+               withObject:request
+            waitUntilDone:NO];
+    long result = dispatch_semaphore_wait(request.done,
+        dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+    if (result != 0 || !request.success) return WENDY_BLE_ERR_WRITE_FAILED;
     return WENDY_BLE_OK;
 }
 

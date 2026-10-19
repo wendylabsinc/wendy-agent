@@ -66,7 +66,7 @@ func runWifiInteractive(cmd *cobra.Command) error {
 		}
 	}
 
-	client, err := newWifiClient(target)
+	client, err := newWifiClientContext(ctx, target)
 	if err != nil {
 		return err
 	}
@@ -157,9 +157,13 @@ type wifiClient struct {
 }
 
 func newWifiClient(target *SelectedDevice) (*wifiClient, error) {
+	return newWifiClientContext(context.Background(), target)
+}
+
+func newWifiClientContext(ctx context.Context, target *SelectedDevice) (*wifiClient, error) {
 	switch {
 	case target.Bluetooth != nil && target.Bluetooth.IsWendyAgent():
-		client, err := connectBLEAgent(target.Bluetooth)
+		client, err := connectBLEAgentContext(ctx, target.Bluetooth)
 		if err != nil {
 			return nil, fmt.Errorf("connecting to %s: %w", target.Bluetooth.DisplayName, err)
 		}
@@ -291,7 +295,7 @@ func newWifiListCmd() *cobra.Command {
 				return wifiListFromHost()
 			}
 
-			client, err := newWifiClient(target)
+			client, err := newWifiClientContext(ctx, target)
 			if err != nil {
 				return err
 			}
@@ -440,7 +444,7 @@ func runWifiConnect(cmd *cobra.Command, target *SelectedDevice, ssid, password s
 		return wifiConnectViaBLELite(target.Bluetooth, ssid, password)
 	}
 
-	client, err := newWifiClient(target)
+	client, err := newWifiClientContext(ctx, target)
 	if err != nil {
 		return err
 	}
@@ -453,6 +457,15 @@ func runWifiConnect(cmd *cobra.Command, target *SelectedDevice, ssid, password s
 		return err
 	}
 	cliSuccess("Connected to %s", ssid)
+	if client.ble != nil {
+		cliLogln("Waiting for the same device over LAN...")
+		if err := handoffWiFiBLE(ctx, client); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			cliNotice("WiFi connected; LAN access was not confirmed: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -469,7 +482,7 @@ func newWifiStatusCmd() *cobra.Command {
 			defer target.Close()
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
-				return wifiStatusViaBLEAgent(target.Bluetooth)
+				return wifiStatusViaBLEAgent(ctx, target.Bluetooth)
 			}
 			if target.Bluetooth != nil {
 				return wifiStatusViaBLELite(target.Bluetooth)
@@ -526,7 +539,7 @@ func newWifiDisconnectCmd() *cobra.Command {
 				}
 			}
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
-				return wifiDisconnectViaBLEAgent(target.Bluetooth)
+				return wifiDisconnectViaBLEAgent(ctx, target.Bluetooth)
 			}
 			if target.Bluetooth != nil {
 				return wifiDisconnectViaBLELite(target.Bluetooth)
@@ -580,7 +593,7 @@ Examples:
 			}
 			defer target.Close()
 
-			client, err := newWifiClient(target)
+			client, err := newWifiClientContext(ctx, target)
 			if err != nil {
 				return err
 			}
@@ -634,7 +647,7 @@ func newWifiForgetCmd() *cobra.Command {
 			}
 			defer target.Close()
 
-			client, err := newWifiClient(target)
+			client, err := newWifiClientContext(ctx, target)
 			if err != nil {
 				return err
 			}
@@ -742,7 +755,7 @@ func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error
 		}()
 
 	case target.Bluetooth != nil || target.Agent != nil:
-		client, err := newWifiClient(target)
+		client, err := newWifiClientContext(ctx, target)
 		if err != nil {
 			return "", err
 		}
@@ -843,9 +856,9 @@ func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error
 
 // ── BLE WendyOS Agent / Lite helpers retained for status/disconnect ──
 
-func wifiStatusViaBLEAgent(device *models.BluetoothDevice) error {
+func wifiStatusViaBLEAgent(ctx context.Context, device *models.BluetoothDevice) error {
 	cliLogln("Connecting to %s via Bluetooth...", device.DisplayName)
-	client, err := connectBLEAgent(device)
+	client, err := connectBLEAgentContext(ctx, device)
 	if err != nil {
 		return err
 	}
@@ -876,9 +889,9 @@ func wifiStatusViaBLEAgent(device *models.BluetoothDevice) error {
 	return nil
 }
 
-func wifiDisconnectViaBLEAgent(device *models.BluetoothDevice) error {
+func wifiDisconnectViaBLEAgent(ctx context.Context, device *models.BluetoothDevice) error {
 	cliLogln("Connecting to %s via Bluetooth...", device.DisplayName)
-	client, err := connectBLEAgent(device)
+	client, err := connectBLEAgentContext(ctx, device)
 	if err != nil {
 		return err
 	}

@@ -131,17 +131,27 @@ func (d LANDevice) HostKey() string {
 
 // BluetoothDevice represents a Bluetooth-discovered Wendy device.
 type BluetoothDevice struct {
-	ID              string `json:"id"`
-	DisplayName     string `json:"displayName"`
-	Name            string `json:"name,omitempty"`
-	Address         string `json:"address"`
-	RSSI            int    `json:"rssi"`
-	IsWendyDevice   bool   `json:"isWendyDevice"`
-	AgentVersion    string `json:"agentVersion,omitempty"`
-	OS              string `json:"os,omitempty"`
-	OSVersion       string `json:"osVersion,omitempty"`
-	CPUArchitecture string `json:"cpuArchitecture,omitempty"`
-	L2CAPPSM        uint16 `json:"l2capPSM,omitempty"`
+	// Discovery fields are untrusted until the TLS peer proves its identity.
+	Identity        string   `json:"identity,omitempty"`
+	Hostname        string   `json:"hostname,omitempty"`
+	ProtocolVersion uint16   `json:"protocolVersion,omitempty"`
+	Capabilities    []string `json:"capabilities,omitempty"`
+	Enrolled        bool     `json:"enrolled,omitempty"`
+	// Selection fields preserve the user's LAN pin across BLE fallback. They
+	// are set locally and never accepted from discovery metadata.
+	SelectedPinKey   string `json:"-"`
+	SelectedIdentity string `json:"-"`
+	ID               string `json:"id"`
+	DisplayName      string `json:"displayName"`
+	Name             string `json:"name,omitempty"`
+	Address          string `json:"address"`
+	RSSI             int    `json:"rssi"`
+	IsWendyDevice    bool   `json:"isWendyDevice"`
+	AgentVersion     string `json:"agentVersion,omitempty"`
+	OS               string `json:"os,omitempty"`
+	OSVersion        string `json:"osVersion,omitempty"`
+	CPUArchitecture  string `json:"cpuArchitecture,omitempty"`
+	L2CAPPSM         uint16 `json:"l2capPSM,omitempty"`
 }
 
 // IsWendyAgent returns true if this device supports the WendyOS agent
@@ -150,12 +160,13 @@ func (d BluetoothDevice) IsWendyAgent() bool {
 	return d.L2CAPPSM > 0
 }
 
-// HostKey returns this device's stable cross-transport identity derived from the
-// advertised BLE local name, which WendyOS sets to the raw os.Hostname(). It
-// matches LANDevice.HostKey for the same physical device. Empty when no usable
-// name was advertised (e.g. the "WendyOS Device" fallback normalizes to a value
-// that simply won't match any LAN hostname, leaving the device as its own row).
+// HostKey returns the normalized hostname from GATT metadata, falling back to
+// the advertised name for older devices. It is an untrusted lookup key shared
+// with LAN discovery, never proof of identity.
 func (d BluetoothDevice) HostKey() string {
+	if d.Hostname != "" {
+		return normalizeHostKey(d.Hostname)
+	}
 	return normalizeHostKey(d.DisplayName)
 }
 

@@ -716,7 +716,7 @@ func newAppsStopCmd() *cobra.Command {
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 				cliLogln("Connecting to %s via Bluetooth...", target.Bluetooth.DisplayName)
-				bleClient, bleErr := connectBLEAgent(target.Bluetooth)
+				bleClient, bleErr := connectBLEAgentContext(ctx, target.Bluetooth)
 				if bleErr != nil {
 					return bleErr
 				}
@@ -829,7 +829,7 @@ func newAppsRemoveCmd() *cobra.Command {
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 				cliLogln("Connecting to %s via Bluetooth...", target.Bluetooth.DisplayName)
-				bleClient, bleErr := connectBLEAgent(target.Bluetooth)
+				bleClient, bleErr := connectBLEAgentContext(ctx, target.Bluetooth)
 				if bleErr != nil {
 					return bleErr
 				}
@@ -938,7 +938,7 @@ func sortRunningFirst[T any](items []T, state func(T) string) {
 
 func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 	if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
-		bleClient, err := connectBLEAgent(target.Bluetooth)
+		bleClient, err := connectBLEAgentContext(ctx, target.Bluetooth)
 		if err != nil {
 			return nil, err
 		}
