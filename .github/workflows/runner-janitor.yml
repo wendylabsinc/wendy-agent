@@ -174,12 +174,13 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     env:
-      # The Wendy CI Slack app's bot token (chat:write, chat:write.public).
-      SLACK_READY: ${{ secrets.CI_SLACK_BOT_TOKEN != '' && vars.CI_SLACK_CHANNEL_ID != '' }}
+      # The Wendy CI Slack app's bot token (chat:write, chat:write.public) and
+      # the channel ID from the organization variable SLACK_CHANNEL_CI.
+      SLACK_READY: ${{ secrets.CI_SLACK_BOT_TOKEN != '' && vars.SLACK_CHANNEL_CI != '' }}
     steps:
       - name: Skip without Slack configuration
         if: env.SLACK_READY != 'true'
-        run: echo "::warning::CI_SLACK_BOT_TOKEN or CI_SLACK_CHANNEL_ID is not configured; skipping the Slack alarm."
+        run: echo "::warning::CI_SLACK_BOT_TOKEN or SLACK_CHANNEL_CI is not configured; skipping the Slack alarm."
 
       - name: Post to #ci
         if: env.SLACK_READY == 'true'
@@ -189,5 +190,5 @@ jobs:
           token: ${{ secrets.CI_SLACK_BOT_TOKEN }}
           errors: true
           payload: |
-            channel: ${{ vars.CI_SLACK_CHANNEL_ID }}
+            channel: ${{ vars.SLACK_CHANNEL_CI }}
             text: ":rotating_light: *Runner janitor ${{ needs.clean.result == 'failure' && 'failed' || format('did not finish ({0})', needs.clean.result) }}* on `${{ needs.clean.outputs.runner || 'wendy-macos-26' }}`. Free disk: ${{ needs.clean.outputs.free-after || needs.clean.outputs.free-before || 'unknown' }} GiB. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
