@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -135,7 +136,7 @@ func TestStreamIPQueueExpiresBeforeWritingAndCountsDrops(t *testing.T) {
 	q.enqueue(1, queueTestIP(1200, 1), now)
 	q.enqueue(2, queueTestIP(100, 2), now)
 	served := 0
-	if _, ok := q.pop(now.Add(streamIPSlowQueueAge), &served); ok {
+	if _, ok := q.pop(now.Add(streamIPMaxQueueAge), &served); ok {
 		t.Fatal("expired packet escaped to L2CAP writer")
 	}
 	stats := q.snapshot()
@@ -215,7 +216,7 @@ func TestStreamIPQueueKeepsTwoFullSizeSourcesAtSlowRate(t *testing.T) {
 			}
 		}
 	}
-	if stats := q.snapshot(); stats.AgeLimitMS != 50 || stats.MaxDequeuedWaitMS > 50 || stats.Bytes != 0 {
+	if stats := q.snapshot(); stats.AgeLimitMS < 270 || stats.AgeLimitMS > 300 || stats.MaxDequeuedWaitMS > 20 || stats.Bytes != 0 {
 		t.Fatalf("slow-link sojourn/byte bound lost: %+v", stats)
 	}
 }
@@ -277,16 +278,16 @@ func TestStreamLinkSendsWaitingSourceThroughFullSizeFlood(t *testing.T) {
 
 func TestStreamIPQueueAdaptsAgeToObservedWriteRate(t *testing.T) {
 	q := newStreamIPSendQueue()
-	if got := q.snapshot().AgeLimitMS; got != 50 {
+	if got := q.snapshot().AgeLimitMS; got != uint64(streamIPInitialQueueAge.Milliseconds()) {
 		t.Fatalf("initial age limit = %d ms", got)
 	}
 	q.recordWrite(1280, 50*time.Millisecond)
-	if got := q.snapshot().AgeLimitMS; got != 150 {
+	if got := q.snapshot().AgeLimitMS; got < 240 || got > 250 {
 		t.Fatalf("fast age limit = %d ms", got)
 	}
 	q.recordWrite(1280, 400*time.Millisecond)
-	if got := q.snapshot().AgeLimitMS; got != 50 {
-		t.Fatalf("slow rate did not tighten queue age: %d ms", got)
+	if got := q.snapshot().AgeLimitMS; got < 1200 || got > 1300 {
+		t.Fatalf("slow rate did not allow the bounded queue to drain: %d ms", got)
 	}
 }
 
@@ -355,6 +356,68 @@ func TestStreamIPQueueReservesBulkCapacityDuringFastFlood(t *testing.T) {
 	}
 }
 
+func TestStreamIPQueueDeliversWaitingFlightsAfterSlowWrite(t *testing.T) {
+	for _, measured := range []bool{false, true} {
+		t.Run(fmt.Sprintf("measured-%t", measured), func(t *testing.T) {
+			a, b := net.Pipe()
+			gate := &firstWriteGate{Conn: a, entered: make(chan struct{}), release: make(chan struct{})}
+			link := newStreamNodeLink(gate)
+			defer link.Close()
+			defer b.Close()
+			defer func() {
+				select {
+				case <-gate.release:
+				default:
+					close(gate.release)
+				}
+			}()
+			if measured {
+				link.ipPackets.recordWrite(TunnelMTU, 400*time.Millisecond)
+			}
+			packets := [][]byte{queueTestIP(TunnelMTU, 9), queueTestAppUDP(1248, 1, 49200, AppSessionPort), queueTestIP(TunnelMTU, 2)}
+			if err := link.SendIP(1, packets[0]); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-gate.entered:
+			case <-time.After(time.Second):
+				t.Fatal("first packet did not reach writer")
+			}
+			for i := 1; i < len(packets); i++ {
+				if err := link.SendIP(uint32(i+1), packets[i]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Physical Pi writes take hundreds of milliseconds. Neither waiting
+			// sender has had a transmission opportunity while this write is held.
+			time.Sleep(300 * time.Millisecond)
+			close(gate.release)
+			var assembler IPAssembler
+			seen := make(map[uint32]bool)
+			for len(seen) < len(packets) {
+				kind, frame := readStreamTestFrame(t, b)
+				if kind != streamPacket {
+					t.Fatalf("wire kind = %d", kind)
+				}
+				packet, err := assembler.Receive(frame, time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if packet != nil {
+					id := binary.BigEndian.Uint32(frame[1:5])
+					if id < 1 || id > 3 || seen[id] || !bytes.Equal(packet, packets[id-1]) {
+						t.Fatalf("packet lost, duplicated or changed: id=%d", id)
+					}
+					seen[id] = true
+				}
+			}
+			if stats := link.ipPackets.snapshot(); stats.DroppedExpired != 0 || stats.DroppedCapacity != 0 || stats.Bytes != 0 {
+				t.Fatalf("uncontended bounded flights were discarded: %+v", stats)
+			}
+		})
+	}
+}
+
 func TestStreamIPQueueNeverEmitsAnOrphanFragment(t *testing.T) {
 	a, b := net.Pipe()
 	gate := &firstWriteGate{Conn: a, entered: make(chan struct{}), release: make(chan struct{})}
@@ -375,9 +438,14 @@ func TestStreamIPQueueNeverEmitsAnOrphanFragment(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The first packet has begun and must finish intact. Every other packet
-	// must expire whole before its first fragment enters the byte stream.
-	time.Sleep(streamIPSlowQueueAge + 50*time.Millisecond)
+	// The first packet has begun and must finish intact. Make every waiting
+	// packet older than even the maximum age, without delaying the active
+	// write or depending on how quickly the machine schedules it.
+	link.ipPackets.mu.Lock()
+	for i := range link.ipPackets.pending {
+		link.ipPackets.pending[i].queued = time.Now().Add(-streamIPMaxQueueAge)
+	}
+	link.ipPackets.mu.Unlock()
 	close(gate.release)
 	var assembler IPAssembler
 	for i := 0; i < 2; i++ {

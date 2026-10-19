@@ -19,6 +19,8 @@ const (
 	streamIPFullPacketBytes  = TunnelMTU + 2*(fragmentHeader+5)
 	streamIPMinByteBudget    = 2 * streamIPFullPacketBytes
 	streamIPSourceByteBudget = streamIPByteBudget / 2
+	streamIPInitialQueueAge  = 2 * time.Second
+	streamIPMaxQueueAge      = 5 * time.Second
 	streamIPSlowQueueAge     = 50 * time.Millisecond
 	streamIPMidQueueAge      = 150 * time.Millisecond
 	streamIPFastQueueAge     = 200 * time.Millisecond
@@ -221,19 +223,31 @@ func (q *streamIPSendQueue) expire(now time.Time) {
 }
 
 func (q *streamIPSendQueue) queueAgeLimit() time.Duration {
+	// Before the first write completes there is no drain-rate estimate. The
+	// conservative startup bound applies; the two-packet byte
+	// cap still bounds memory and latency behind the active packet.
+	if q.writeRateBytesPerSec == 0 {
+		return streamIPInitialQueueAge
+	}
+	// A waiting packet needs an opportunity to follow the active packet and
+	// the bounded queue ahead of it. At low BLE rates even one packet can
+	// take hundreds of milliseconds, exceeding the former 50ms age limit.
+	service := time.Duration(q.byteBudget()+streamIPFullPacketBytes) * time.Second / time.Duration(q.writeRateBytesPerSec)
+	var floor time.Duration
 	switch {
 	case q.writeRateBytesPerSec >= 50*1024:
-		return streamIPFastQueueAge
+		floor = streamIPFastQueueAge
 	case q.writeRateBytesPerSec >= 16*1024:
-		return streamIPMidQueueAge
+		floor = streamIPMidQueueAge
 	default:
-		return streamIPSlowQueueAge
+		floor = streamIPSlowQueueAge
 	}
+	return min(streamIPMaxQueueAge, max(floor, service))
 }
 
 // Write completion is only a proxy for RF drain because the CoC socket can
 // buffer data. The small socket send buffer forces backpressure early. A slow
-// sample reduces the age limit immediately; faster samples rise gradually.
+// sample reduces the byte budget immediately; faster samples rise gradually.
 func (q *streamIPSendQueue) recordWrite(bytes int, elapsed time.Duration) {
 	if elapsed <= 0 {
 		return
@@ -245,7 +259,10 @@ func (q *streamIPSendQueue) recordWrite(bytes int, elapsed time.Duration) {
 	} else if rate < q.writeRateBytesPerSec {
 		q.writeRateBytesPerSec = rate
 	} else {
-		q.writeRateBytesPerSec = (3*q.writeRateBytesPerSec + rate) / 4
+		// A write fitting in the socket buffer can complete almost instantly
+		// even on a slow radio. Do not let one such sample erase the measured
+		// service time and expire another sender's already waiting packet.
+		q.writeRateBytesPerSec = min(rate, q.writeRateBytesPerSec+max(1, q.writeRateBytesPerSec/4))
 	}
 	q.expire(time.Now())
 	for q.stats.Bytes > q.byteBudget() || q.fastBytes() > q.fastByteBudget() {
