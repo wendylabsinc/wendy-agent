@@ -49,11 +49,28 @@ func (e *Engine) Checkpoint() Checkpoint {
 		}
 		return 0
 	})
-	// Every currently selected prefix may still point at us after a crash.
-	// Restore these as drops until a new feasible route is selected or held down.
-	for _, r := range e.routeSnapshot() {
-		c.Drops = append(c.Drops, r.Prefix)
+	// Neighbours may still point at us for selected prefixes or prefixes already
+	// being suppressed. Include drops even before the first Step after Restore.
+	// Deduplicate because selected unreachable routes also appear in e.drops.
+	prefixes := make(map[netip.Prefix]struct{}, len(e.drops)+len(e.selected))
+	for p := range e.drops {
+		prefixes[p] = struct{}{}
 	}
+	for p := range e.selected {
+		prefixes[p] = struct{}{}
+	}
+	for p := range prefixes {
+		c.Drops = append(c.Drops, p)
+	}
+	slices.SortFunc(c.Drops, func(a, b netip.Prefix) int {
+		if a == b {
+			return 0
+		}
+		if prefixLess(a, b) {
+			return -1
+		}
+		return 1
+	})
 	return c
 }
 

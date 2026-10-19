@@ -37,7 +37,9 @@ The mobile facade does not itself enable iOS background networking or VPN privil
 
 ## Development
 
-Run from this directory, not the parent module:
+Run from `go/babel`, not the parent module. The Go Tests workflow explicitly
+runs this nested module's race tests and vet, and requires their success in the
+aggregate Test check:
 
 ```sh
 go test -race ./...

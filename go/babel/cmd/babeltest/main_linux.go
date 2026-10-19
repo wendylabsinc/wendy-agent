@@ -20,7 +20,7 @@ import (
 	"time"
 	"unsafe"
 
-	babel "github.com/wendylabsinc/WendyOS/babel"
+	babel "github.com/wendylabsinc/WendyOS/go/babel"
 )
 
 type list []string

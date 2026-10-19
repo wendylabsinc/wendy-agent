@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	babel "github.com/wendylabsinc/WendyOS/babel"
+	babel "github.com/wendylabsinc/WendyOS/go/babel"
 )
 
 type Engine struct {

@@ -31,11 +31,11 @@ every SHOULD and MAY. Full clause-level review remains a stable-release gate.
 | §3.5.2 positive saturating additive metric | sum, metric | TestSerialArithmetic and independent shortest paths |
 | §3.5.3 unknown retraction ignored | update | Withdrawal scenarios; selected infeasible route unselected, not ignored |
 | §3.5.3 route expiry then flush | expire | Long-running simulations; stale-route recovery |
-| §3.5.4 no covering-prefix fallback | drops, Effects.Routes | TestOverlappingDefaultHoldDown; commit contract |
+| §3.5.4 no covering-prefix fallback | drops, Effects.Routes | TestOverlappingDefaultHoldDown, TestRepeatedRestartDoesNotLoopThroughDefault; commit contract |
 | §3.6 finite feasible selection; no seqno preference | selectRoutes | Small-graph tests, fuzz; equal-cost stickiness only |
 | §3.7.1 periodic selected advertisements | timers/dump | Loss/rejoin tests and real babeld |
 | §3.7.2 urgent origin change, bounded repeats | update/selectRoutes/timers | Multiple-origin simulations; broader timed-clause audit still needed |
-| §3.7.3 FD update before finite sends; no reset on retraction | advertise | Feasibility and restart checkpoint tests |
+| §3.7.3 FD update before finite sends; no reset on retraction | advertise | Feasibility and restart checkpoint tests, including TestCheckpointPreservesDropsAcrossRepeatedRestores |
 | §3.7.4 split horizon conditions | advertise | Explicit symmetric point-to-point profile; request replies bypass |
 | §3.8.1.1 exact requests answered even if absent | receive/advertise | TestUnknownPrefixRequestRetractsAndAcks |
 | §3.8.1.1 wildcard rate limit SHOULD | per-link lastDump | Bounded dump interval; broader abuse tests pending |

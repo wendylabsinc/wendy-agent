@@ -22,10 +22,10 @@ docker run --rm \
   golang:1.26.6-bookworm sh -c \
   'cp -a /source/. /build/ && cd /build && make -j4 && ./babeld -V'
 docker build -t wendy-babel-oracle:20260911 \
-  -f WendyOS/babel/internal/oracle/Dockerfile WendyOS/babel/internal/oracle
+  -f WendyOS/go/babel/internal/oracle/Dockerfile WendyOS/go/babel/internal/oracle
 mkdir -p nan/babel-artifacts/interop
 docker run --rm --network none --privileged \
-  -v "$PWD/WendyOS/babel:/module:ro" \
+  -v "$PWD/WendyOS/go/babel:/module:ro" \
   -v wendy-babel-oracle:/reference:ro \
   -v "$PWD/nan/babel-artifacts/interop:/artifacts" \
   -v wendy-babel-gocache:/root/.cache/go-build \

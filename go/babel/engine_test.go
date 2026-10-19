@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wendylabsinc/WendyOS/babel/internal/wire"
+	"github.com/wendylabsinc/WendyOS/go/babel/internal/wire"
 )
 
 func newTestEngine(t testing.TB, id RouterID) *Engine {

@@ -16,7 +16,7 @@ import (
 	"runtime/cgo"
 	"unsafe"
 
-	"github.com/wendylabsinc/WendyOS/babel/mobile"
+	"github.com/wendylabsinc/WendyOS/go/babel/mobile"
 )
 
 //export BabelNew

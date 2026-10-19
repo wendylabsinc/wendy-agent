@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"time"
 
-	babel "github.com/wendylabsinc/WendyOS/babel"
+	babel "github.com/wendylabsinc/WendyOS/go/babel"
 )
 
 type Endpoint struct {

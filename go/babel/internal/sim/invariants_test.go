@@ -1,7 +1,7 @@
 package sim
 
 import (
-	babel "github.com/wendylabsinc/WendyOS/babel"
+	babel "github.com/wendylabsinc/WendyOS/go/babel"
 	"testing"
 )
 

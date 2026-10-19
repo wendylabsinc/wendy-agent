@@ -5,7 +5,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/wendylabsinc/WendyOS/babel/internal/wire"
+	"github.com/wendylabsinc/WendyOS/go/babel/internal/wire"
 )
 
 type wireMessage = wire.Message

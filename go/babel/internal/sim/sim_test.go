@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	babel "github.com/wendylabsinc/WendyOS/babel"
+	babel "github.com/wendylabsinc/WendyOS/go/babel"
 )
 
 func prefix(n int) netip.Prefix { return netip.MustParsePrefix(fmt.Sprintf("fd00::%x/128", n+1)) }
