@@ -655,6 +655,7 @@ jobs:
           if [[ "${auth_mode}" == "none" ]]; then
             fallback_note="No ANTHROPIC_API_KEY fallback configured either; the AI review was skipped."
           fi
+          # SECURITY: this job runs on GitHub-hosted ubuntu-24.04 (a fresh VM per job), and the payload holds only the channel and public run metadata.
           slack_payload="${RUNNER_TEMP}/slack-auth-warning.json"
           jq -n \
             --arg channel "${SLACK_CHANNEL}" \
@@ -945,6 +946,7 @@ jobs:
               ;;
           esac
 
+          # SECURITY: this job runs on GitHub-hosted ubuntu-24.04 (a fresh VM per job), and the payload holds only the channel and public run metadata.
           slack_payload="${RUNNER_TEMP}/slack-review.json"
           jq -n \
             --arg channel "${SLACK_CHANNEL}" \
