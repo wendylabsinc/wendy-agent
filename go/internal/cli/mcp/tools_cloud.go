@@ -28,7 +28,6 @@ import (
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -176,7 +175,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("cloud_ping", pingOpts...), s.handleCloudPing)
 
 	runOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Build and deploy a local project to device or the connected target. Returns status and build-log tail. Check container_list and telemetry_logs for application readiness."),
+		mcpgo.WithDescription("Build and deploy a local project to device or the connected target, replacing a running app of the same name. Returns status and build-log tail. Check container_list and telemetry_logs for application readiness."),
 		mcpgo.WithString("project_path", mcpgo.Required(), mcpgo.Description("Project directory to build and deploy")),
 		mcpgo.WithString("device", mcpgo.Description("device selector from device_list (host:port, vm:NAME, or a cloud:// selector); omit to reuse the connection")),
 		mcpgo.WithString("build_type", mcpgo.Enum("docker", "compose", "swift", "python"), mcpgo.Description("Build system; omit for automatic detection")),
@@ -186,7 +185,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithInteger("timeout_seconds", mcpgo.Min(1), mcpgo.Max(3600), mcpgo.DefaultNumber(300), mcpgo.Description("Command timeout")),
 		mcpgo.WithInteger("max_bytes", mcpgo.Min(1), mcpgo.Max(1000000), mcpgo.DefaultNumber(16384), mcpgo.Description("Build-log tail byte limit")),
 	}
-	runOpts = append(runOpts, mutating()...)
+	runOpts = append(runOpts, destructive()...)
 	runOpts = append(runOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("run", runOpts...), s.handleRun)
 }
@@ -202,6 +201,7 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
+	s.minimizeCloudRows(out)
 	return okListBounded("devices", out, intParam(req, "max_bytes", 100000)), nil
 }
 
@@ -234,6 +234,19 @@ func discoverCloudDevices(ctx context.Context, auth *config.AuthConfig, filter s
 		}
 	}
 	return out, nil
+}
+
+// minimizeCloudRows drops ids a hosted chat does not need: the device
+// selector already carries them (store policy: response minimization).
+func (s *mcpServer) minimizeCloudRows(rows []map[string]any) {
+	if !s.relay {
+		return
+	}
+	for _, row := range rows {
+		for _, k := range []string{"id", "device_id", "organization_id", "created_at_unix_ns"} {
+			delete(row, k)
+		}
+	}
 }
 
 func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -521,12 +534,27 @@ func cloudErrResult(err error) *mcpgo.CallToolResult {
 func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 	// MCP is non-interactive: pass a nil picker so resolution stops at the
 	// persisted default (or errors when several sessions remain ambiguous).
-	auth, err := config.ResolveAuth(s.currentConfig(), cloudGRPC, nil)
+	var auth *config.AuthConfig
+	var err error
+	if p := s.bindingPolicy(); p != nil {
+		// A relay-fed run uses the session it started with; the binding
+		// middleware has refused any cloud_grpc naming another.
+		auth, err = p.session(s.currentConfig())
+	} else {
+		auth, err = config.ResolveAuth(s.currentConfig(), cloudGRPC, nil)
+	}
 	if errors.Is(err, config.ErrNotLoggedIn) {
 		return nil, &cloudResolveErr{code: errCodeAuthRequired, msg: "not signed in to Wendy Cloud; call auth_login and show the user the link (or run 'wendy auth login' in a terminal)"}
 	}
 	if errors.Is(err, config.ErrMultipleSessions) {
 		return nil, &cloudResolveErr{code: errCodeMultipleSessions, msg: "multiple auth sessions exist; pass cloud_grpc to select one, or set a default with 'wendy auth use'"}
+	}
+	if err == nil {
+		// Per call too: the startup check saw one session, and a refreshed
+		// token may carry a changed realm setting.
+		if err := RealmAllowsMCP(auth); err != nil {
+			return nil, &cloudResolveErr{code: errCodeDenied, msg: err.Error()}
+		}
 	}
 	return auth, err
 }
@@ -817,27 +845,11 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
-	var transport grpc.DialOption
-	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
-		certInfo := auth.Certificates[0]
-		keyPEM, err := certInfo.PrivateKeyPEM()
-		if err != nil {
-			return nil, fmt.Errorf("loading client key: %w", err)
-		}
-		tlsCfg, err := certs.LoadTLSConfig(
-			certInfo.PemCertificate,
-			certInfo.PemCertificateChain,
-			keyPEM,
-			"",
-		)
-		if err != nil {
-			return nil, fmt.Errorf("loading TLS config: %w", err)
-		}
-		transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
-	} else {
-		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
+	creds, err := clouddefaults.CloudTransportCredentials(auth.CloudGRPC, &auth.Certificates[0])
+	if err != nil {
+		return nil, err
 	}
-	dialOptions := []grpc.DialOption{transport}
+	dialOptions := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
 	// Per-RPC DPoP proof for a cnf-bound token; nil for unbound sessions. The
 	// MCP provider uses the stored token without refreshing (WDY-3107).
 	dialOptions = append(dialOptions, cloudrequest.DPoPDialOptions(auth, mcpDPoPTokenProvider(auth))...)

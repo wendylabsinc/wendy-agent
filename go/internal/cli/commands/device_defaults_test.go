@@ -321,6 +321,162 @@ func TestCloudV2DefaultPreservesTenantAndAssetAcrossRename(t *testing.T) {
 	}
 }
 
+func TestCloudSelectorRenewsSelectedCertificateBeforeDiscovery(t *testing.T) {
+	const tenant = "8a53be77-2a69-464f-8f73-83643fe0beaa"
+	const assetID = "7791d76e-a942-4a8e-b582-063d063b5623"
+	auth := config.AuthConfig{CloudGRPC: "cloud.example:443", Certificates: []config.CertificateInfo{{
+		PrincipalURI: "spiffe://wendy.sh/tenant/" + tenant + "/operator/test", PemCertificate: "expiring",
+	}}}
+	other := auth
+	other.Certificates = []config.CertificateInfo{{PrincipalURI: "spiffe://wendy.sh/tenant/ed6e09f3-d287-450b-a053-e4554f3c70ed/operator/test", PemCertificate: "other"}}
+	setTempConfig(t, &config.Config{Auth: []config.AuthConfig{other, auth}})
+	t.Setenv(renewEndpointEnv, "https://renew.example/v1/renew")
+	oldExpiry, oldRenew := leafNotAfterFn, renewViaPKICore
+	oldFetch, oldConnect := fetchDefaultCloudAssetsV2Fn, connectDefaultCloudAssetV2Fn
+	t.Cleanup(func() {
+		leafNotAfterFn, renewViaPKICore = oldExpiry, oldRenew
+		fetchDefaultCloudAssetsV2Fn, connectDefaultCloudAssetV2Fn = oldFetch, oldConnect
+	})
+	leafNotAfterFn = func(string) (time.Time, error) { return time.Now().Add(time.Minute), nil }
+	renewed := false
+	renewViaPKICore = func(_ context.Context, _ string, selected *config.AuthConfig) (string, string, string, error) {
+		if selected.Certificates[0].TenantUUID() != tenant {
+			t.Fatal("renewed a different tenant's certificate")
+		}
+		renewed = true
+		return "renewed", "chain", "key", nil
+	}
+	fetchDefaultCloudAssetsV2Fn = func(_ context.Context, selected *config.AuthConfig, _ bool) ([]*cloudpbv2.Asset, error) {
+		if !renewed || selected.Certificates[0].PemCertificate != "renewed" {
+			t.Fatal("discovered assets before renewing the selected certificate")
+		}
+		return []*cloudpbv2.Asset{{Id: assetID}}, nil
+	}
+	connectDefaultCloudAssetV2Fn = func(_ context.Context, selected *config.AuthConfig, _ *cloudpbv2.Asset, _ string) (*grpcclient.AgentConnection, error) {
+		if selected.Certificates[0].PemCertificate != "renewed" {
+			t.Fatal("opened tunnel with the old certificate")
+		}
+		return &grpcclient.AgentConnection{}, nil
+	}
+	if _, err := connectCloudDeviceSelector(context.Background(), cloudDeviceSelector{Endpoint: auth.CloudGRPC, TenantUUID: tenant, AssetUUID: assetID}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil || cfg.Auth[0].Certificates[0].PemCertificate != "other" || cfg.Auth[1].Certificates[0].PemCertificate != "renewed" {
+		t.Fatalf("renewal changed the wrong stored session: %v", err)
+	}
+}
+
+func TestCloudSelectorRefreshesExpiredOAuthCertificate(t *testing.T) {
+	const tenant = "8a53be77-2a69-464f-8f73-83643fe0beaa"
+	const assetID = "7791d76e-a942-4a8e-b582-063d063b5623"
+	refused := errors.New("identity issuance refused")
+	for _, refreshErr := range []error{nil, refused} {
+		t.Run(fmt.Sprint(refreshErr), func(t *testing.T) {
+			auth := config.AuthConfig{CloudGRPC: "cloud.example:443", OAuthIssuer: "https://auth.example", RefreshToken: "original", Certificates: []config.CertificateInfo{{
+				PrincipalURI: "spiffe://wendy.sh/tenant/" + tenant + "/operator/test", PemCertificate: "expired",
+			}}}
+			other := auth
+			other.Certificates = []config.CertificateInfo{{PrincipalURI: "spiffe://wendy.sh/tenant/ed6e09f3-d287-450b-a053-e4554f3c70ed/operator/test", PemCertificate: "other"}}
+			setTempConfig(t, &config.Config{Auth: []config.AuthConfig{other, auth}})
+			oldExpiry, oldRefresh := leafNotAfterFn, refreshDefaultCloudCertificateFn
+			oldFetch, oldConnect := fetchDefaultCloudAssetsV2Fn, connectDefaultCloudAssetV2Fn
+			t.Cleanup(func() {
+				leafNotAfterFn, refreshDefaultCloudCertificateFn = oldExpiry, oldRefresh
+				fetchDefaultCloudAssetsV2Fn, connectDefaultCloudAssetV2Fn = oldFetch, oldConnect
+			})
+			leafNotAfterFn = func(string) (time.Time, error) { return time.Now().Add(-time.Hour), nil }
+			refreshDefaultCloudCertificateFn = func(_ context.Context, selected *config.AuthConfig) error {
+				if selected.Certificates[0].TenantUUID() != tenant {
+					t.Fatal("refreshed a different tenant's session")
+				}
+				selected.RefreshToken = "rotated"
+				if refreshErr == nil {
+					selected.Certificates[0].PemCertificate = "fresh"
+				}
+				return refreshErr
+			}
+			discovered, connected := false, false
+			fetchDefaultCloudAssetsV2Fn = func(_ context.Context, selected *config.AuthConfig, _ bool) ([]*cloudpbv2.Asset, error) {
+				discovered = true
+				if selected.Certificates[0].PemCertificate != "fresh" {
+					t.Fatal("discovered assets with an expired certificate")
+				}
+				return []*cloudpbv2.Asset{{Id: assetID}}, nil
+			}
+			connectDefaultCloudAssetV2Fn = func(_ context.Context, selected *config.AuthConfig, _ *cloudpbv2.Asset, _ string) (*grpcclient.AgentConnection, error) {
+				connected = true
+				if selected.Certificates[0].PemCertificate != "fresh" {
+					t.Fatal("opened tunnel with an expired certificate")
+				}
+				return &grpcclient.AgentConnection{}, nil
+			}
+			_, err := connectCloudDeviceSelector(context.Background(), cloudDeviceSelector{Endpoint: auth.CloudGRPC, TenantUUID: tenant, AssetUUID: assetID})
+			if refreshErr == nil {
+				if err != nil || !discovered || !connected {
+					t.Fatalf("fresh session did not reach the device: %v", err)
+				}
+			} else if !errors.Is(err, refused) || discovered || connected {
+				t.Fatalf("refresh failure was obscured by discovery/tunnel: %v, discovered=%v, connected=%v", err, discovered, connected)
+			}
+			cfg, err := config.Load()
+			if err != nil || cfg.Auth[0].RefreshToken != "original" || cfg.Auth[1].RefreshToken != "rotated" {
+				t.Fatalf("rotated token was lost or persisted to the wrong session: %v", err)
+			}
+		})
+	}
+}
+
+func TestCloudSelectorKeepsValidCertificateWhenRenewalRefused(t *testing.T) {
+	for _, refusal := range []renewUnavailableError{
+		{reason: "renewal service unavailable"},
+		{reason: "renewal budget exhausted", needsFreshCert: true},
+	} {
+		t.Run(refusal.reason, func(t *testing.T) {
+			auth := pickerAuth(7)
+			auth.OAuthIssuer = "https://auth.example"
+			auth.Certificates[0].PemCertificate = "still-valid"
+			setTempConfig(t, &config.Config{Auth: []config.AuthConfig{*auth}})
+			t.Setenv(renewEndpointEnv, "https://renew.example/v1/renew")
+			oldExpiry, oldRenew := leafNotAfterFn, renewViaPKICore
+			oldFetch, oldConnect := fetchDefaultCloudAssetsFn, connectDefaultCloudAssetFn
+			oldRefresh := refreshDefaultCloudCertificateFn
+			t.Cleanup(func() {
+				leafNotAfterFn, renewViaPKICore = oldExpiry, oldRenew
+				fetchDefaultCloudAssetsFn, connectDefaultCloudAssetFn = oldFetch, oldConnect
+				refreshDefaultCloudCertificateFn = oldRefresh
+			})
+			leafNotAfterFn = func(string) (time.Time, error) { return time.Now().Add(time.Minute), nil }
+			renewViaPKICore = func(context.Context, string, *config.AuthConfig) (string, string, string, error) {
+				return "", "", "", refusal
+			}
+			refreshDefaultCloudCertificateFn = func(context.Context, *config.AuthConfig) error {
+				t.Fatal("reissued a certificate that remains valid")
+				return nil
+			}
+			fetchDefaultCloudAssetsFn = func(context.Context, *config.AuthConfig) ([]*cloudpb.Asset, error) {
+				return []*cloudpb.Asset{{Id: 42}}, nil
+			}
+			connected := false
+			connectDefaultCloudAssetFn = func(_ context.Context, selected *config.AuthConfig, _ *cloudpb.Asset, _ string) (*grpcclient.AgentConnection, error) {
+				connected = true
+				if selected.Certificates[0].PemCertificate != "still-valid" {
+					t.Fatal("discarded the valid certificate after a renewal refusal")
+				}
+				return &grpcclient.AgentConnection{}, nil
+			}
+			warning := captureStderr(t, func() {
+				if _, err := connectCloudDeviceSelector(context.Background(), cloudDeviceSelector{Endpoint: auth.CloudGRPC, OrgID: 7, AssetID: 42}); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if !connected || !strings.Contains(strings.ToLower(warning), refusal.reason) {
+				t.Fatalf("renewal refusal did not warn and continue: connected=%v, warning=%q", connected, warning)
+			}
+		})
+	}
+}
+
 // Two agent sessions setting defaults while a third process updates another
 // field: without the config lock, saveDefaultDevice writes back the snapshot it
 // loaded and reverts the other writers.

@@ -30,6 +30,66 @@ func TestPickerFailedDefaultSavePreservesMarker(t *testing.T) {
 	}
 }
 
+func TestPickerWrappedFlashResizesTableAfterActions(t *testing.T) {
+	message := strings.Repeat("Follow the setup instructions and keep the terminal open. ", 4) + "Use WSL2 for managed robots."
+	for _, action := range []string{"copy", "create", "enroll", "stop"} {
+		t.Run(action, func(t *testing.T) {
+			m := NewPickerWithTitle("Simulators")
+			m.OnCopyItem = func(PickerItem) string { return message }
+			m.OnCreateItem = func() (string, bool) { return message, false }
+			m.OnEnrollItem = func(PickerItem) (string, bool) { return message, false }
+			m.OnStopItem = func(PickerItem) (string, bool) { return message, false }
+			var items []PickerItem
+			for i := range 30 {
+				items = append(items, PickerItem{Name: fmt.Sprintf("sim-%02d", i)})
+			}
+			update := func(msg tea.Msg) tea.Cmd {
+				updated, cmd := m.Update(msg)
+				m = updated.(PickerModel)
+				return cmd
+			}
+			update(tea.WindowSizeMsg{Width: 60, Height: 20})
+			update(PickerSetMsg{Items: items})
+			update(PickerDoneMsg{})
+			m.FocusItem("sim-20")
+			initialHeight := m.table.Height()
+			key := tea.KeyMsg{Type: tea.KeyEnter}
+			switch action {
+			case "create":
+				key = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}}
+			case "enroll":
+				key = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}}
+			case "stop":
+				update(key)
+				cmd := update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+				if m.flashMessage != "" || m.table.Height() != initialHeight || cmd == nil {
+					t.Fatal("starting stop did not clear the flash and restore the table height")
+				}
+				update(cmd())
+			}
+			if action != "stop" {
+				update(key)
+			}
+			if m.table.Height() >= initialHeight {
+				t.Fatal("action did not reserve space for its wrapped flash")
+			}
+			update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			update(tea.WindowSizeMsg{Width: 60, Height: 20})
+			view := ansi.Strip(m.View())
+			if m.table.Height() >= initialHeight || lipgloss.Height(view) > 20 {
+				t.Fatalf("wrapped flash did not fit the terminal:\n%s", view)
+			}
+			if !strings.Contains(strings.Join(strings.Fields(view), " "), message) || !strings.Contains(view, "sim-20") {
+				t.Fatalf("recovery message or selected item hidden:\n%s", view)
+			}
+			update(tea.KeyMsg{Type: tea.KeyDown})
+			if m.flashMessage != "" || m.table.Height() != initialHeight || m.currentCursorKey() != "sim-21" {
+				t.Fatal("navigation did not clear the flash and restore the table height")
+			}
+		})
+	}
+}
+
 func TestPickerModel_SelectsFromTable(t *testing.T) {
 	m := NewPickerWithTitle("Select a WiFi network")
 

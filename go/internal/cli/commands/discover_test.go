@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -919,5 +920,33 @@ func TestDiscoverCmdHasNoAllFlag(t *testing.T) {
 	cmd := newDiscoverCmd()
 	if flag := cmd.Flags().Lookup("all"); flag != nil {
 		t.Fatal("discover should no longer define an --all flag")
+	}
+}
+
+// The first event for a row may come from the cache; a later live one carries
+// the device's current cable record.
+func TestMergePickerItemRefreshesTheCableRecord(t *testing.T) {
+	cached := models.LANDevice{ID: "pi", Hostname: "pi.local", IPAddress: "192.168.2.216"}
+	existing := lanPickerItem(cached, false, tui.ProbeOK)
+	live := cached
+	live.WiredAddresses = []string{"192.168.2.50"}
+
+	mergePickerItem(&existing, lanPickerItem(live, false, tui.ProbeOK))
+
+	if got := existing.Value.(*pickerEntry).mergedDevice.LAN.WiredAddresses; !slices.Equal(got, []string{"192.168.2.50"}) {
+		t.Errorf("WiredAddresses = %v after a live event, want [192.168.2.50]", got)
+	}
+}
+
+// Rows merge by hostname, so a second device using the same name must not lend
+// this row its cable.
+func TestMergePickerItemTakesNoCableFromAnotherDevice(t *testing.T) {
+	existing := lanPickerItem(models.LANDevice{ID: "pi-a", Hostname: "pi.local", IPAddress: "192.168.2.216"}, false, tui.ProbeOK)
+	other := models.LANDevice{ID: "pi-b", Hostname: "pi.local", IPAddress: "10.0.0.50", WiredAddresses: []string{"10.0.0.50"}}
+
+	mergePickerItem(&existing, lanPickerItem(other, false, tui.ProbeOK))
+
+	if got := existing.Value.(*pickerEntry).mergedDevice.LAN.WiredAddresses; got != nil {
+		t.Errorf("WiredAddresses = %v from another device, want nil", got)
 	}
 }

@@ -56,6 +56,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -288,7 +289,7 @@ func main() {
 	shellSvc := services.NewShellService(logger, hostexec.New())
 	audioSvc := services.NewAudioService(logger)
 
-	provisioningSvc := services.NewProvisioningService(logger, configPath)
+	provisioningSvc := services.NewProvisioningService(logger, configPath, timesyncMgr)
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
@@ -442,13 +443,30 @@ func main() {
 	// Let `wendy device audio list` name mounted Loopback capture subdevices
 	// after the remote source they carry, instead of a generic "plughw:2,1".
 	audioSvc.SetSensorLinkNaming(audioLoop.Mounts, sensorStore.NameFor)
+	audioSvc.SetSensorLinkPrincipalNaming(sensorStore.NameForKey)
 	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, ros2camera.NewFrameWriter, audioLoop)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
-	sensorAgentOrgID := func() int32 {
-		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
-		return orgID
+	sensorAgentScope := func() certs.Scope {
+		certPEM, _, _ := mcuIdentity()
+		scope, _ := certs.ScopeFromCertPEM(certPEM)
+		_, scope.OrgID, _, _ = provisioningSvc.ProvisioningInfo()
+		return scope
 	}
-	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentOrgID, sensorRunner.Start, sensorRunner.Stop, sensorSup.IsConnected)
+	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentScope, sensorRunner.Start, sensorRunner.StopPairing, sensorSup.IsPairingConnected)
+	// `device pair` lists sources from this device's network, so this device
+	// must not offer itself. Its asset ID is read per request because
+	// enrollment can assign one while the agent runs.
+	sensorSvc.SetSourceDiscovery(nil, func() services.SensorSourceSelf {
+		_, _, assetID, _ := provisioningSvc.ProvisioningInfo()
+		return services.LocalSensorSourceSelf(assetID)
+	})
+	_, _, _, unitreeEnrolled := provisioningSvc.ProvisioningInfo()
+	unitreeSvc := services.NewUnitreeService(ctx, filepath.Join(configPath, "unitree-pairings.json"), unitreePairingOwner(deviceScope(provisioningSvc), unitreeEnrolled))
+	defer unitreeSvc.Close()
+	unitreeRobotSvc := services.NewUnitreeRobotService(unitreeSvc)
+	if err := unitreeSvc.Restore(); err != nil {
+		logger.Warn("loading Unitree pairings failed", zap.Error(err))
+	}
 	// Boot-resume: every previously paired source reconnects on its own —
 	// addr == "" tells the runner to resolve the source's current LAN address
 	// by asset id rather than trusting a possibly-stale one from disk.
@@ -777,6 +795,11 @@ func main() {
 
 		// Register all services on the mTLS server.
 		registerAllServices(srv)
+		// Robot pairing transfers keys and initiates LAN connections. Keep the
+		// service off the plaintext provisioning listener, even though its
+		// handlers also reject unauthenticated transports.
+		agentpbv2.RegisterWendyUnitreeServiceServer(srv, unitreeSvc)
+		agentpbv2.RegisterWendyUnitreeRobotServiceServer(srv, unitreeRobotSvc)
 
 		// WendyShellService opens an interactive *host* root shell. It is
 		// deliberately registered ONLY here, on the mTLS server, so it is
@@ -905,6 +928,13 @@ func main() {
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
 
+	// Advertise the device's Ethernet addresses so hosts can prefer the cable.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		services.RunWiredAdvertisement(ctx, logger)
+	}()
+
 	// Start the embedded dev container registry (Linux only, best-effort).
 	// If already provisioned, start immediately with HTTPS; otherwise HTTP until provisioned.
 	if runtime.GOOS == "linux" && ctrdErr == nil {
@@ -974,6 +1004,8 @@ func main() {
 			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
 		)
 		registerAllServices(localSocketServer)
+		agentpbv2.RegisterWendyUnitreeServiceServer(localSocketServer, unitreeSvc)
+		agentpbv2.RegisterWendyUnitreeRobotServiceServer(localSocketServer, unitreeRobotSvc)
 
 		// oci.AdminAgentSocketHostPath is the single source of truth for this
 		// path: the admin entitlement bind-mounts its parent directory into
@@ -1001,6 +1033,11 @@ func main() {
 	// Set up the provisioning callback to start the mTLS server, shut down
 	// the plaintext server, and switch the registry to HTTPS.
 	provisioningSvc.OnProvisioned = func(certPEM, chainPEM string, keyData []byte) {
+		// Bind to the callback's authenticated leaf before exposing a new tenant.
+		unitreeScope, _ := certs.ScopeFromCertPEM(certPEM)
+		if err := unitreeSvc.Rebind(unitreePairingOwner(unitreeScope, true)); err != nil {
+			logger.Error("Clearing previous enrollment's Unitree pairings failed", zap.Error(err))
+		}
 		defer func() {
 			for i := range keyData {
 				keyData[i] = 0
@@ -1048,6 +1085,13 @@ func main() {
 	// plaintext port and exit so systemd restarts the agent into unprovisioned
 	// mode. A clean restart is simpler and more reliable than tearing down the
 	// mTLS server, tunnel broker, BLE peripheral, and HTTPS registry in place.
+	// Revoke Unitree sessions and keys before Unprovision reports success.
+	// A failed clear is retried when the agent restarts unenrolled.
+	provisioningSvc.BeforeUnprovisioned = func() {
+		if err := unitreeSvc.Rebind(unitree.PairingOwner{}); err != nil {
+			logger.Error("Clearing Unitree pairings during unprovisioning failed", zap.Error(err))
+		}
+	}
 	provisioningSvc.OnUnprovisioned = func() {
 		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
 		logger.Info("Device unprovisioned — restarting agent into unprovisioned mode")
@@ -1166,8 +1210,6 @@ func main() {
 	if v := os.Getenv("WENDY_DATA_INGEST_URL"); v != "" {
 		dataTransferWorker.SetIngestEndpoint(v)
 		logger.Info("data transfer worker: ingest endpoint", zap.String("url", v))
-	} else {
-		logger.Error("data transfer worker: WENDY_DATA_INGEST_URL is not set; episode uploads are disabled")
 	}
 	wg.Add(1)
 	go func() {
@@ -1253,6 +1295,15 @@ func deviceScope(provisioningSvc *services.ProvisioningService) certs.Scope {
 	// "unidentified" — the same grace the mTLS interceptor applies.
 	_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
 	return certs.Scope{OrgID: orgID}
+}
+
+// unitreePairingOwner keeps locally created pairings separate from enrolled
+// tenants. Unknown enrolled identities fail closed rather than adopt local keys.
+func unitreePairingOwner(scope certs.Scope, enrolled bool) unitree.PairingOwner {
+	if scope.Known() {
+		return unitree.PairingOwner{TenantUUID: scope.TenantUUID, OrgID: scope.OrgID}
+	}
+	return unitree.PairingOwner{Local: !enrolled}
 }
 
 // ensureCNIBinDir (re)creates agentcontainerd.CNIBinDir with "bridge" and

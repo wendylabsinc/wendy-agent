@@ -356,7 +356,11 @@ func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.
 		if len(auth.Certificates) > 0 {
 			certOrgID = int32(auth.Certificates[0].OrganizationID)
 		}
-		return OrgResolution{ID: certOrgID, Name: fmt.Sprintf("org %d", certOrgID)}, nil
+		name := cachedCloudOrganizationName(auth)
+		if name == "" {
+			name = fmt.Sprintf("org %d", certOrgID)
+		}
+		return OrgResolution{ID: certOrgID, Name: name}, nil
 	}
 
 	if len(orgs) == 0 {
@@ -411,10 +415,10 @@ func nonInteractiveOrgErr(orgs []*cloudpb.Organization, defaultOrgID int32) erro
 		if i > 0 {
 			avail += ", "
 		}
-		avail += fmt.Sprintf("%d (%s)", o.GetId(), o.GetName())
+		avail += fmt.Sprintf("%s (%d)", o.GetName(), o.GetId())
 	}
 	if defaultOrgID != 0 {
-		return fmt.Errorf("default organization %d is not one of your organizations [%s]; pass --org <id> (where supported) or set a valid default with 'wendy auth list-orgs' in an interactive terminal", defaultOrgID, avail)
+		return fmt.Errorf("default organization %s is not one of your organizations [%s]; pass --org <id> (where supported) or set a valid default with 'wendy auth list-orgs' in an interactive terminal", orgLabel("", defaultOrgID), avail)
 	}
 	return fmt.Errorf("cannot select an organization non-interactively: your account belongs to multiple organizations [%s]; pass --org <id> (where supported) or set a default with 'wendy auth list-orgs' in an interactive terminal", avail)
 }

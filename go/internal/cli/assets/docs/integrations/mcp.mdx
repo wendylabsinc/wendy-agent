@@ -43,6 +43,18 @@ per MCP session, including sessions where a terminal already printed the notice.
 The notice preserves the tool's result and error state. Run the supplied update
 command, then restart the Wendy MCP server to load the new version and tools.
 
+## Organization setting and web chats
+
+`wendy mcp serve` refuses to start, and its cloud tools refuse calls, when your
+organization has turned off Allow MCP. Signed cloud calls it makes are marked as
+coming through a local MCP client.
+
+To use Wendy from ChatGPT or Claude on the web, run
+[`wendy cloud mcp`](/docs/advanced/clients/wendy-cli/commands/cloud/mcp) and pair the chat
+with the code it prints. The chat gets these tools through your CLI session,
+read-only unless you allow more, and asks you before every call that changes
+state.
+
 ## Enable specialist tools
 
 Call `wendy_tools` with `{"groups":["robotics"]}` to expose ROS inspection tools.
@@ -68,7 +80,8 @@ app-provided tools remain visible. Restart the MCP process after upgrading the C
 
 ## Sign in
 
-Most devices need a signed-in Wendy Cloud session. `wendy_status` reports `auth`
+Cloud devices, and LAN devices enrolled in Wendy Cloud, need a signed-in Wendy
+Cloud session; local simulators and unenrolled LAN devices do not. `wendy_status` reports `auth`
 as `logged_in`, `pending`, `expired`, or `logged_out`. Call `auth_login` to sign
 in without a terminal: it returns a link to show the user, opens it in the
 browser on a desktop session, and finishes in the background (up to five
@@ -87,6 +100,12 @@ Calling `auth_login` again starts a fresh link.
 `device_connect` or `run`. Cloud selectors pin the endpoint, organization or
 tenant, and device identity. `vm:name` selects an existing local simulator and
 starts it if needed. `run` without `device` uses the current connection's target.
+
+On `wendy mcp serve`, `device_list` also returns each local simulator as a
+`simulator` row with its `vm:name` selector, state and profile. With no physical
+device available, an agent can connect to one of those for checks that need no
+physical hardware. Creating a new simulator downloads an image, so agents ask the
+user before calling `simulator_create`.
 
 `run(start=false)` creates the container without starting it. Starting or
 restarting a container may interrupt its current task. Use `telemetry_logs` for

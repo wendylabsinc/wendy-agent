@@ -2,11 +2,11 @@
 package commands
 
 import (
+	"context"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/permission"
@@ -25,7 +25,7 @@ var (
 
 func NewRootCmd() *cobra.Command {
 	// firstRun records whether this invocation showed the first-run analytics
-	// notice in PreRunE, so PostRunE can avoid stacking another prompt on top.
+	// notice during initialization, so FinishInvocation avoids another prompt.
 	var firstRun bool
 
 	root := &cobra.Command{
@@ -67,11 +67,8 @@ func NewRootCmd() *cobra.Command {
 			}
 			premark("  prerun: config.Load")
 
-			firstRun = analytics.Init(cfg)
+			firstRun = initializeCommandAnalytics(cmd, cfg, true)
 			premark("  prerun: analytics.Init")
-			if firstRun {
-				showFirstRunNotice(cmd, cfg)
-			}
 
 			// Under sudo with the user's HOME (the Thor flash's re-exec, or
 			// `sudo wendy` on macOS), leave the housekeeping below to the
@@ -95,8 +92,11 @@ func NewRootCmd() *cobra.Command {
 			}
 
 			// mcp serve owns a cancellable periodic checker for its lifetime.
-			if cmd.CommandPath() != "wendy mcp serve" && dueCLIUpdateCheck(cfg) {
-				scheduleCLIUpdateCheck()
+			if cmd.CommandPath() != "wendy mcp serve" && cmd.Name() != cobra.ShellCompRequestCmd && !backgroundCLIUpdatesDisabled() && !strings.HasPrefix(cmd.CommandPath(), "wendy completion") {
+				cmd.SetContext(context.WithValue(cmd.Context(), cliUpdateNoticeEligible{}, true))
+				if dueCLIUpdateCheck(cfg) {
+					scheduleCLIUpdateCheck()
+				}
 			}
 			premark("  prerun: dueCLIUpdateCheck")
 
@@ -114,14 +114,9 @@ func NewRootCmd() *cobra.Command {
 				return nil
 			}
 
-			// Surface any pending CLI-update notice first. If it showed a prompt,
-			// don't stack the completion prompt on top of it this invocation.
-			updateShown, err := notifyCLIUpdate(cmd)
-			if err != nil {
-				return err
-			}
-
-			maybePromptInstallCompletions(cmd, firstRun, updateShown)
+			// Defer optional prompts until main has recorded the command's
+			// outcome. Leaving a prompt must not hide work that already finished.
+			cmd.SetContext(context.WithValue(cmd.Context(), postCommandFirstRun{}, firstRun))
 			return nil
 		},
 	}
@@ -176,6 +171,10 @@ func NewRootCmd() *cobra.Command {
 	analyticsCmd.GroupID = "settings"
 	cacheCmd := newCacheCmd()
 	cacheCmd.GroupID = "settings"
+	updateCmd := newCLIUpdateCmd()
+	updateCmd.GroupID = "settings"
+	doctorCmd := newDoctorCmd()
+	doctorCmd.GroupID = "settings"
 	docsCmd := newDocsCmd()
 	docsCmd.GroupID = "settings"
 	tourCmd := newTourCmd()
@@ -285,6 +284,8 @@ func NewRootCmd() *cobra.Command {
 		analyticsCmd,
 		cacheCmd,
 		docsCmd,
+		doctorCmd,
+		updateCmd,
 		tourCmd,
 		// Hidden
 		agentCmd,

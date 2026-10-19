@@ -2,6 +2,7 @@ package tui
 
 import (
 	"math/rand"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -53,6 +54,9 @@ func SetRunningCommand(path string) { runningCommand.Store(path) }
 
 // newHintRotator builds a rotator over ProgressHints with a random first hint.
 func newHintRotator() hintRotator {
+	if os.Getenv("WENDY_NO_PROGRESS_HINTS") == "1" {
+		return hintRotator{}
+	}
 	running, _ := runningCommand.Load().(string)
 	r := hintRotator{hints: hintsBesides(ProgressHints, running)}
 	if len(r.hints) > 0 {
