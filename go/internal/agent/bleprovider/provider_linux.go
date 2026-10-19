@@ -106,14 +106,6 @@ func (r *runtime) release(device meshid.Device) {
 		r.nextAttempt[device] = now.Add(5 * time.Second)
 	}
 }
-func (r *runtime) shouldDial(device meshid.Device) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	now := time.Now()
-	r.expirePeerRetries(now)
-	_, active := r.active[device]
-	return !active && len(r.active) < r.cfg.TargetPeers && len(r.nextAttempt) < maxPeerRetryHistory && !now.Before(r.nextAttempt[device])
-}
 
 // A truncated hint cannot reserve a device identity. Reserve an address until
 // TLS authenticates its complete principal, then claim that principal normally.
@@ -520,20 +512,10 @@ func (r *runtime) dialLink(ctx context.Context, peer candidate) {
 	raw, err := dial(dialCtx, peer.address, peer.addressType, peer.psm)
 	cancel()
 	if err != nil {
-		// A timed-out socket connect can leave a controller attempt pending.
-		// The management command resolves the LE address on this adapter and
-		// aborts that peer's pending kernel hci_conn. Device1.Disconnect does
-		// not reliably cancel raw L2CAP socket connects in BT_CONNECT state.
-		if shouldCancelPendingACL(err, ctx.Err(), r.hciIndex) {
-			abortCtx, stopAbort := context.WithTimeout(ctx, 3*time.Second)
-			abortErr := disconnectLEPeer(abortCtx, r.hciIndex, peer.address, peer.addressType)
-			stopAbort()
-			if abortErr != nil {
-				r.cfg.Logger.Warn("BLE timed-out peer ACL cancel failed", zap.String("radio", peer.address), zap.Error(abortErr))
-			} else {
-				r.cfg.Logger.Info("BLE timed-out peer ACL cancel acknowledged", zap.String("radio", peer.address))
-			}
-		}
+		// dialL2CAP closes its failed socket. A peer-level management abort
+		// would also disconnect unrelated profiles sharing an established ACL,
+		// including when only this new CoC's setup has timed out. Leave shared
+		// ACL lifetime and pending-connection teardown to the kernel.
 		r.cfg.Logger.Debug("BLE CoC dial failed", zap.String("radio", peer.address), zap.Error(err))
 		return
 	}
@@ -627,13 +609,9 @@ func (r *runtime) handshakeOutbound(ctx context.Context, secure *tls.Conn) (time
 	return time.Since(started), err
 }
 
-func shouldCancelPendingACL(dialErr, providerErr error, hciIndex int) bool {
-	return errors.Is(dialErr, context.DeadlineExceeded) && providerErr == nil && hciIndex >= 0
-}
-
-// The inbound peer's TLS deadline remains ten seconds from acceptance.
-// Initial tuning consumes at most four seconds of that existing budget;
-// no post-authentication update can race its stream-hello deadline.
+// Bound initial tuning before TLS firstflight so controller procedures cannot
+// consume the peer's entire handshake budget. No post-authentication update
+// races the stream-hello deadline at this boundary.
 const meshInitialTuneBudget = 4 * time.Second
 
 func tuneMeshBeforeTLS(ctx context.Context, tune func(context.Context) (time.Duration, error)) (time.Duration, bool, error) {

@@ -31,7 +31,8 @@ func TestRuntimeRetryHistoryBoundsAndExpires(t *testing.T) {
 	for device := range r.nextAttempt {
 		r.nextAttempt[device] = time.Now().Add(-time.Second)
 	}
-	if !r.shouldDial(lowFixture) || len(r.nextAttempt) != 0 {
+	peer := candidate{hint: deviceHint(lowDevice), address: "02:00:00:00:00:01", addressType: "public", psm: DefaultPSM}
+	if !r.claimCandidate(peer) || len(r.nextAttempt) != 0 {
 		t.Fatalf("expired cooldowns block a new peer or remain retained: %d", len(r.nextAttempt))
 	}
 }

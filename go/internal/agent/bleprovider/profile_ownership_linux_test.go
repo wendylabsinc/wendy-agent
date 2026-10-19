@@ -23,7 +23,7 @@ func (d *foreignProfileDevice) Disconnect() *dbus.Error {
 }
 
 func TestFailedOwnCoCDoesNotDisconnectOtherDeviceProfiles(t *testing.T) {
-	for _, stage := range []string{"dial", "TLS"} {
+	for _, stage := range []string{"dial", "deadline", "TLS"} {
 		t.Run(stage, func(t *testing.T) {
 			_, connect := privateAdvertisementBus(t)
 			bluez, provider := connect(), connect()
@@ -42,6 +42,9 @@ func TestFailedOwnCoCDoesNotDisconnectOtherDeviceProfiles(t *testing.T) {
 			r.dialCoC = func(context.Context, string, string, uint16) (net.Conn, error) {
 				if stage == "dial" {
 					return nil, errors.New("own CoC refused")
+				}
+				if stage == "deadline" {
+					return nil, context.DeadlineExceeded
 				}
 				peer, local := packetPair(t)
 				_ = peer.Close() // Complete CoC setup, then fail TLS immediately.
