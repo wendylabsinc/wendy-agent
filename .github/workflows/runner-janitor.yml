@@ -58,7 +58,7 @@ jobs:
     env:
       DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
       WENDY_BUILD_CACHE_MAX_BYTES: '32212254720' # 30 GiB, as in the device jobs
-      SHARED_BUILDER_MAX_BYTES: '10737418240' # 10 GiB per shared builder
+      SHARED_BUILDER_MAX_GB: '10' # per shared builder
     # Each task appends one line to $RUNNER_TEMP/janitor-findings.txt for the
     # run summary and the #feed-janitor report.
     steps:
@@ -112,13 +112,13 @@ jobs:
               sizes+=("$builder ${before:-?}")
             else
               docker buildx prune --builder "$builder" \
-                --max-used-space "$SHARED_BUILDER_MAX_BYTES" --force
+                --max-used-space "${SHARED_BUILDER_MAX_GB}gb" --force
               sizes+=("$builder ${before:-?} → $(size "$builder")")
             fi
           done
           if ((${#sizes[@]})); then
             joined=$(printf '%s, ' "${sizes[@]}")
-            echo "• Shared builder caches (cap 10 GiB): ${joined%, }" >> "$RUNNER_TEMP/janitor-findings.txt"
+            echo "• Shared builder caches (cap ${SHARED_BUILDER_MAX_GB} GB): ${joined%, }" >> "$RUNNER_TEMP/janitor-findings.txt"
           fi
 
       - name: Remove dangling Docker images
