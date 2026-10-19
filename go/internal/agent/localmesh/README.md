@@ -171,7 +171,9 @@ to end. See the companion firmware's signed-mesh-leaf documentation for the
 borrower configuration and hardware validation limits. The gateway allows a
 bounded 60-second mTLS handshake so certificate chains can cross a BLE link.
 
-The BLE IP queue retains its byte and per-source fairness bounds. Packet age
+The BLE IP queue retains its 8 KiB cap and per-source fairness. Its minimum
+allows one full packet plus a short ACK for each of two senders, so an ACK
+does not evict its own waiting data packet. Packet age
 allows the bounded queue plus one active packet to drain at the observed rate,
 capped at five seconds; before a rate sample it allows two seconds. A faster
 socket write raises the drain estimate by at most 25% so it cannot immediately

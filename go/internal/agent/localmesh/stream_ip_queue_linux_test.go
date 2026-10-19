@@ -965,3 +965,28 @@ func TestStreamIPQueueBufferedACKDoesNotEraseSlowRate(t *testing.T) {
 		t.Fatal("instant buffered ACK expired the next slow full-size write")
 	}
 }
+
+func TestStreamIPQueueKeepsDataWhileSendingTCPACKs(t *testing.T) {
+	q := newStreamIPSendQueue()
+	now := time.Now()
+	for source := byte(1); source <= 2; source++ {
+		q.enqueue(uint32(source), queueTestTCP(TunnelMTU, source, 1000), now)
+		ack := queueTestTCP(60, source, 1000)
+		ack[53] = 0x10
+		q.enqueue(uint32(source)+10, ack, now)
+	}
+	served := 0
+	seen := map[uint32]bool{}
+	for {
+		p, ok := q.pop(now, &served)
+		if !ok {
+			break
+		}
+		seen[p.sequence] = true
+	}
+	for _, id := range []uint32{1, 2, 11, 12} {
+		if !seen[id] {
+			t.Fatalf("two TCP senders could not retain their full packets and ACKs: missing=%d seen=%v", id, seen)
+		}
+	}
+}
