@@ -262,13 +262,19 @@ func (n *Node) Run() error {
 			if err := n.step(babel.Tick{}); err != nil {
 				return err
 			}
+			// Continue an unfinished repair pass as the bounded control queue
+			// drains. This uses the existing maintenance tick, not a new scan
+			// interval, and stops once the pass completes.
+			for _, p := range n.peers {
+				n.continueReconcilePeer(p, time.Now())
+			}
 		case <-renew.C:
 			if err := n.publish(); err != nil {
 				return err
 			}
 		case <-reconcile.C:
 			for _, p := range n.peers {
-				n.queue(p, p.sync.Reconcile(time.Now()))
+				n.reconcilePeer(p, time.Now())
 			}
 		case event := <-n.events:
 			err := n.handle(event)
@@ -319,7 +325,7 @@ func (n *Node) handle(e nodeEvent) error {
 		if err = n.step(babel.AddLink{Link: babel.Link{ID: e.add.id, Local: local, Peer: peer, Cost: e.add.cost, MaxPacket: DatagramLimit - 1}}); err != nil {
 			return err
 		}
-		n.queue(e.add, e.add.sync.Reconcile(time.Now()))
+		n.reconcilePeer(e.add, time.Now())
 		return nil
 	}
 	p := n.peers[e.id]
@@ -355,6 +361,14 @@ func (n *Node) handle(e nodeEvent) error {
 		n.refresh()
 	}
 	return nil
+}
+
+func (n *Node) reconcilePeer(p *nodePeer, now time.Time) {
+	n.queue(p, p.sync.ReconcileBounded(now, cap(p.control)-len(p.control)))
+}
+
+func (n *Node) continueReconcilePeer(p *nodePeer, now time.Time) {
+	n.queue(p, p.sync.ContinueReconcile(now, cap(p.control)-len(p.control)))
 }
 
 func (n *Node) queue(p *nodePeer, messages []ControlMessage) {

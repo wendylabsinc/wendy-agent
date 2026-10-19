@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sort"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
@@ -109,6 +110,10 @@ type Synchronizer struct {
 	cache     *IdentityCache
 	sent      map[string]bool
 	pending   map[string]SignedManifest
+	// A repair pass resumes after the last admitted principal, rather than
+	// repeatedly filling a bounded neighbour queue with its sorted prefix.
+	reconcileAfter     string
+	reconcileRemaining int
 }
 
 func NewSynchronizer(d *Directory, c *IdentityCache) *Synchronizer {
@@ -127,12 +132,28 @@ func (s *Synchronizer) SeedKnownBundles(fingerprints []string) {
 }
 
 func (s *Synchronizer) Record(w SignedManifest, now time.Time) []ControlMessage {
-	var out []ControlMessage
+	messages, _ := s.recordBounded(w, now, 2)
+	return messages
+}
+
+// The bundle hint is consumed only if the complete record fits. A caller must
+// reserve this many queue slots before sending the returned messages.
+func (s *Synchronizer) recordBounded(w SignedManifest, now time.Time, slots int) ([]ControlMessage, bool) {
 	chain, _, ok := s.cache.Get(w.Principal, now)
 	if !ok {
-		return nil
+		return nil, true
 	}
-	if fp := Fingerprint(chain); !s.sent[fp] {
+	fp := Fingerprint(chain)
+	bundleNeeded := !s.sent[fp]
+	needed := 1
+	if bundleNeeded {
+		needed++
+	}
+	if needed > slots {
+		return nil, false
+	}
+	var out []ControlMessage
+	if bundleNeeded {
 		if len(s.sent) >= 1024 {
 			s.sent = map[string]bool{}
 		}
@@ -141,13 +162,51 @@ func (s *Synchronizer) Record(w SignedManifest, now time.Time) []ControlMessage 
 	}
 	w.Body = append(json.RawMessage(nil), w.Body...)
 	w.Signature = append([]byte(nil), w.Signature...)
-	return append(out, ControlMessage{Kind: "manifest", Manifest: &w})
+	return append(out, ControlMessage{Kind: "manifest", Manifest: &w}), true
 }
 
 func (s *Synchronizer) Reconcile(now time.Time) []ControlMessage {
 	var out []ControlMessage
 	for _, w := range s.directory.Records(now) {
 		out = append(out, s.Record(w, now)...)
+	}
+	return out
+}
+
+// ReconcileBounded starts a repair pass using only the caller's free queue
+// slots. ContinueReconcile drains the rest without restarting or resending the
+// already admitted prefix. The normal repair interval may start a new pass;
+// keeping the cursor ensures progress even if a slow link has not finished.
+func (s *Synchronizer) ReconcileBounded(now time.Time, slots int) []ControlMessage {
+	records := s.directory.Records(now)
+	s.reconcileRemaining = len(records)
+	return s.reconcileBatch(records, now, slots)
+}
+
+func (s *Synchronizer) ContinueReconcile(now time.Time, slots int) []ControlMessage {
+	if s.reconcileRemaining == 0 || slots <= 0 {
+		return nil
+	}
+	return s.reconcileBatch(s.directory.Records(now), now, slots)
+}
+
+func (s *Synchronizer) reconcileBatch(records []SignedManifest, now time.Time, slots int) []ControlMessage {
+	s.reconcileRemaining = min(s.reconcileRemaining, len(records))
+	if s.reconcileRemaining == 0 || slots <= 0 {
+		return nil
+	}
+	start := sort.Search(len(records), func(i int) bool { return records[i].Principal > s.reconcileAfter })
+	var out []ControlMessage
+	for i := 0; s.reconcileRemaining > 0 && slots > 0; i++ {
+		w := records[(start+i)%len(records)]
+		messages, fits := s.recordBounded(w, now, slots)
+		if !fits {
+			break
+		}
+		out = append(out, messages...)
+		slots -= len(messages)
+		s.reconcileRemaining--
+		s.reconcileAfter = w.Principal
 	}
 	return out
 }

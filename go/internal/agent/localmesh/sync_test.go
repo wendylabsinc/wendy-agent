@@ -105,3 +105,25 @@ func TestSyncIdentityRequestIsPrincipalScoped(t *testing.T) {
 		t.Fatal("manifest from another tenant relayed without error")
 	}
 }
+
+func TestBoundedReconcileDoesNotConsumeUnqueuedBundleHint(t *testing.T) {
+	source, chain, key, device, now := directoryFixture(t)
+	w, err := SignManifest(Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}, chain, key, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Accept(w, now); err != nil {
+		t.Fatal(err)
+	}
+	sender := NewSynchronizer(source, source.cache)
+	if got := sender.ReconcileBounded(now, 1); len(got) != 0 {
+		t.Fatal("split a bundle and its manifest across an insufficient queue budget")
+	}
+	got := sender.ContinueReconcile(now, 2)
+	if len(got) != 2 || got[0].Kind != "bundle" || got[1].Kind != "manifest" {
+		t.Fatalf("unqueued bundle was suppressed: %#v", got)
+	}
+	if got := sender.ContinueReconcile(now, 2); len(got) != 0 {
+		t.Fatal("finished repair pass repeated records")
+	}
+}

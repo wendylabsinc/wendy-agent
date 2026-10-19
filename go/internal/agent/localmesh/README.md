@@ -77,7 +77,10 @@ limits. A cache hit is not a trust grant. Per-peer hints avoid resending bundles
 already written, and an explicit request repairs a receiver that lost its cache.
 
 Changed records are pushed immediately; duplicate revisions do not renew their
-expiry. Reconciliation sends live records periodically to repair reconnects.
+expiry. Reconciliation sends live records periodically to repair reconnects. A repair
+pass uses only free control-queue slots and resumes from its last admitted
+principal on the existing maintenance tick; it stops when the pass completes.
+Insufficient queue space does not consume a bundle hint.
 The node currently signs a fresh presence manifest every 20 seconds, with a
 one-minute lease; receivers allow at most two minutes. Reconciliation runs every
 30 seconds. These intervals are separate from Babel's one-second
