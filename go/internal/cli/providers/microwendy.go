@@ -745,6 +745,15 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		if err := client.ResetTargetDevice(true, 30*time.Second); err != nil {
 			return fmt.Errorf("device reset: %w", err)
 		}
+		// Serial Close sends the leave-protocol escape. Sending it immediately
+		// after REBOOT can discard that command before the device handles it.
+		// Give the peer time to reset before closing the host transport.
+		select {
+		case <-client.Done():
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		if err := client.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: close: %v\n", err)
 		}
