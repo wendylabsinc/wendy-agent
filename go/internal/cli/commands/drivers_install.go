@@ -17,8 +17,8 @@ import (
 )
 
 // resolveDriver finds a driver for the running kernel in the selected catalog.
-func resolveDriver(deviceType, osVersion, kernel, name string, source driverManifestOptions) (extensionEntry, error) {
-	exts, err := driverExtensionsForChannelFn(deviceType, osVersion, source.nightly, source.pr)
+func resolveDriver(ctx context.Context, deviceType, osVersion, kernel, name string, source driverManifestOptions) (extensionEntry, error) {
+	exts, err := driverExtensionsForChannelFn(ctx, deviceType, osVersion, source.nightly, source.pr)
 	if err != nil {
 		return extensionEntry{}, err
 	}
@@ -93,9 +93,10 @@ func newDriversInstallCmd() *cobra.Command {
 		Use:   "install <name>",
 		Short: "Install a driver add-on from the registry, or a local .raw with --file",
 		Long: "With --file, streams a local .raw driver add-on to the device. Without it, resolves\n" +
-			"<name> against the release manifest for the device's OS + kernel. Either way the add-on\n" +
-			"is verified (sha256 + signature) before it is applied. <name> is the extension name and\n" +
-			"must match the .raw's embedded extension-release, or the device refuses to merge it.",
+			"<name> for the device's kernel against the manifest for its OS version, or the latest\n" +
+			"nightly with --nightly, or a PR build with --pr. Either way the add-on is verified\n" +
+			"(sha256 + signature) before it is applied. <name> is the extension name and must\n" +
+			"match the .raw's embedded extension-release, or the device refuses to merge it.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -162,7 +163,7 @@ func newDriversInstallCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				e, err := resolveDriver(deviceType, dl.GetBaseVersion(), dl.GetKernelVersion(), name, source)
+				e, err := resolveDriver(ctx, deviceType, dl.GetBaseVersion(), dl.GetKernelVersion(), name, source)
 				if err != nil {
 					return err
 				}

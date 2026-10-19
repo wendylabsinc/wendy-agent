@@ -27,14 +27,20 @@ func newDriversCmd() *cobra.Command {
 		Aliases: []string{"driver"},
 		Short:   "Manage kernel driver add-ons on the target device",
 		Long: "Interactively select a driver to install, reinstall, or remove. With --json or\n" +
-			"without an interactive terminal, lists installed drivers. Use list --available\n" +
-			"to list published drivers, and install or remove for explicit actions.",
+			"without an interactive terminal, lists installed drivers and rejects --nightly\n" +
+			"and --pr. Use list --available to list published drivers, and install or remove\n" +
+			"for explicit actions.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := source.validate(cmd); err != nil {
 				return err
 			}
 			if jsonOutput || !isInteractiveTerminal() {
+				// The installed list is the same whatever the catalog, so a channel
+				// flag here would be silently dropped.
+				if source.nightly || source.pr > 0 {
+					return usageErrorf("--nightly and --pr need the interactive picker; with --json or without a terminal, use list --available")
+				}
 				return runDriversList(cmd.Context(), false, source)
 			}
 			return runDriversInteractive(cmd.Context(), source)
@@ -139,7 +145,7 @@ func newDriversListCmd() *cobra.Command {
 			return runDriversList(cmd.Context(), available, source)
 		},
 	}
-	cmd.Flags().BoolVar(&available, "available", false, "List drivers published in the registry for this device's OS + kernel")
+	cmd.Flags().BoolVar(&available, "available", false, "List drivers published in the registry for this device's kernel (from its OS version, or --nightly / --pr)")
 	source.addFlags(cmd)
 	return cmd
 }
@@ -171,7 +177,7 @@ func renderAvailableDrivers(ctx context.Context, target *SelectedDevice, source 
 		return err
 	}
 	osVersion, kernel := dl.GetBaseVersion(), dl.GetKernelVersion()
-	exts, err := driverExtensionsForChannelFn(deviceType, osVersion, source.nightly, source.pr)
+	exts, err := driverExtensionsForChannelFn(ctx, deviceType, osVersion, source.nightly, source.pr)
 	if err != nil {
 		return err
 	}

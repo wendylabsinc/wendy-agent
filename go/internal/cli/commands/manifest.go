@@ -129,23 +129,23 @@ type extensionEntry struct {
 // driverExtensionsFor returns the add-ons the manifest publishes for a device.
 // It preserves exact OS-version resolution for callers staging drivers for OTA.
 func driverExtensionsFor(deviceType, osVersion string, pr int) ([]extensionEntry, error) {
-	return driverExtensionsForChannel(deviceType, osVersion, false, pr)
+	return driverExtensionsForChannel(context.Background(), deviceType, osVersion, false, pr)
 }
 
 // driverExtensionsForChannel resolves the device's OS version by default, the
 // latest nightly with nightly=true, or a PR's own version ("pr-<N>"). Callers
 // still filter by the device's kernel, and the agent verifies the image before
 // applying it.
-func driverExtensionsForChannel(deviceType, osVersion string, nightly bool, pr int) ([]extensionEntry, error) {
+func driverExtensionsForChannel(ctx context.Context, deviceType, osVersion string, nightly bool, pr int) ([]extensionEntry, error) {
 	if nightly && pr > 0 {
 		return nil, fmt.Errorf("--nightly and --pr cannot be combined")
 	}
 	var main *mainManifest
 	var err error
 	if pr > 0 {
-		main, err = fetchPRMainManifest(pr)
+		main, err = fetchPRMainManifestContext(ctx, pr)
 	} else {
-		main, err = fetchMainManifest()
+		main, err = fetchMainManifestContext(ctx)
 	}
 	if err != nil {
 		return nil, err
@@ -164,7 +164,7 @@ func driverExtensionsForChannel(deviceType, osVersion string, nightly bool, pr i
 			return nil, fmt.Errorf("no nightly version available for %s", deviceType)
 		}
 	}
-	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	dm, err := fetchDeviceManifestContext(ctx, dev.ManifestPath)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -115,7 +116,7 @@ func TestDriverExtensionsForChannel(t *testing.T) {
 			if tt.legacy {
 				exts, err = driverExtensionsFor(device, tt.osVersion, tt.pr)
 			} else {
-				exts, err = driverExtensionsForChannel(device, tt.osVersion, tt.nightly, tt.pr)
+				exts, err = driverExtensionsForChannel(context.Background(), device, tt.osVersion, tt.nightly, tt.pr)
 			}
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {

@@ -32,9 +32,10 @@ func runDriversInteractive(ctx context.Context, source driverManifestOptions) er
 	if err != nil {
 		return err
 	}
-	exts, err := driverExtensionsForChannelFn(deviceType, dl.GetBaseVersion(), source.nightly, source.pr)
+	exts, err := driverExtensionsForChannelFn(ctx, deviceType, dl.GetBaseVersion(), source.nightly, source.pr)
 	if err != nil {
-		if len(dl.GetInstalled()) == 0 {
+		// An interrupt ends the command rather than reading as an outage.
+		if len(dl.GetInstalled()) == 0 || ctx.Err() != nil {
 			return err
 		}
 		// A registry outage must not prevent removal of an installed add-on.
@@ -42,7 +43,7 @@ func runDriversInteractive(ctx context.Context, source driverManifestOptions) er
 		cliLogln("Installed drivers can still be removed.")
 		exts = nil
 	}
-	return runDriversScreen(ctx, target.Agent.DriverService, dl, exts)
+	return runDriversScreen(ctx, target.Agent.DriverService, dl, exts, source)
 }
 
 // driverPickerItems includes installed-only drivers so local, stale and
@@ -61,7 +62,7 @@ func driverPickerItems(dl *agentpbv2.ListDriversResponse, exts []extensionEntry)
 			continue
 		}
 		rows[d.GetName()] = tui.PickerItem{
-			Name: d.GetName(), Type: state, Parameters: strings.Join(d.GetModulesLoad(), ", "),
+			Name: d.GetName(), Type: state, AgentVersion: d.GetVersion(), Parameters: strings.Join(d.GetModulesLoad(), ", "),
 			Value: d.GetName(), Hint: "Select to manage this installed driver.",
 		}
 	}
@@ -70,14 +71,18 @@ func driverPickerItems(dl *agentpbv2.ListDriversResponse, exts []extensionEntry)
 			continue
 		}
 		row, installed := rows[e.Name]
-		if !installed {
-			row = tui.PickerItem{Name: e.Name, Type: "available", Value: e.Name}
-		}
-		row.AgentVersion = e.Version
-		row.Parameters = strings.Join(e.ModulesLoad, ", ")
-		row.Hint = "Select to install this driver."
 		if installed {
+			// The row keeps what the device runs; the published build is what
+			// Reinstall would apply.
 			row.Hint = "Select to reinstall or remove this driver."
+			if e.Version != "" {
+				row.Hint = fmt.Sprintf("Published %s. %s", e.Version, row.Hint)
+			}
+		} else {
+			row = tui.PickerItem{
+				Name: e.Name, Type: "available", AgentVersion: e.Version, Parameters: strings.Join(e.ModulesLoad, ", "),
+				Value: e.Name, Hint: "Select to install this driver.",
+			}
 		}
 		rows[e.Name] = row
 	}
@@ -89,13 +94,13 @@ func driverPickerItems(dl *agentpbv2.ListDriversResponse, exts []extensionEntry)
 	return items
 }
 
-func runDriversScreen(ctx context.Context, client agentpbv2.WendyDriverServiceClient, dl *agentpbv2.ListDriversResponse, exts []extensionEntry) error {
+func runDriversScreen(ctx context.Context, client agentpbv2.WendyDriverServiceClient, dl *agentpbv2.ListDriversResponse, exts []extensionEntry, source driverManifestOptions) error {
 	items := driverPickerItems(dl, exts)
 	if len(items) == 0 {
 		cliLogln("No driver add-ons installed or published for this kernel.")
 		return nil
 	}
-	name, err := pickDriverFn(fmt.Sprintf("Drivers: OS %s, kernel %s", dl.GetBaseVersion(), dl.GetKernelVersion()), items)
+	name, err := pickDriverFn(fmt.Sprintf("Drivers: %s, kernel %s", source.label(dl.GetBaseVersion()), dl.GetKernelVersion()), items)
 	if err != nil {
 		return err
 	}

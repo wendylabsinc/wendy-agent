@@ -26,7 +26,8 @@ wendy device drivers remove wendyos-hello --force
 Without a subcommand, `drivers` opens a picker showing installed drivers and published
 drivers compatible with the running kernel. Select a driver, then choose an action.
 Removal asks for confirmation. With `--json` or without an interactive terminal, the
-bare command lists installed drivers instead.
+bare command lists installed drivers instead and rejects `--nightly` and `--pr`; use
+`list --available` to read a catalog from a script.
 
 By default, published drivers come from the device's current OS version.
 `--nightly` selects the latest nightly build, while `--pr <number>` selects a PR build.

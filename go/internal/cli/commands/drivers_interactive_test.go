@@ -90,6 +90,33 @@ func TestDriverPickerItemsIncludeInstalledAndCompatiblePublished(t *testing.T) {
 	}
 }
 
+// An installed row describes what the device runs; showing the published build's
+// version there would read as already installed and hide that Reinstall upgrades.
+func TestDriverPickerItemsShowInstalledVersion(t *testing.T) {
+	dl := &agentpbv2.ListDriversResponse{
+		KernelVersion: "6.19.0",
+		Installed: []*agentpbv2.InstalledDriver{
+			{Name: "acme-nic", Version: "0.17.0", KernelVersion: "6.19.0", ModulesLoad: []string{"nic_v17"}, Loaded: true},
+			{Name: "local-only", Version: "1.2.3", KernelVersion: "6.19.0"},
+		},
+	}
+	exts := []extensionEntry{{Name: "acme-nic", Version: "0.18.0-nightly.2", KernelVersion: "6.19.0", ModulesLoad: []string{"nic_nightly"}}}
+	items := driverPickerItems(dl, exts)
+	if len(items) != 2 {
+		t.Fatalf("items = %+v, want acme-nic and local-only", items)
+	}
+	upgradable, local := items[0], items[1]
+	if upgradable.Type != "loaded" || upgradable.AgentVersion != "0.17.0" || upgradable.Parameters != "nic_v17" {
+		t.Errorf("installed row = status %q, version %q, modules %q; want loaded, 0.17.0, nic_v17", upgradable.Type, upgradable.AgentVersion, upgradable.Parameters)
+	}
+	if !strings.Contains(upgradable.Hint, "0.18.0-nightly.2") {
+		t.Errorf("installed row hint = %q, want the published version Reinstall would apply", upgradable.Hint)
+	}
+	if local.AgentVersion != "1.2.3" {
+		t.Errorf("installed-only row version = %q, want 1.2.3", local.AgentVersion)
+	}
+}
+
 func TestDriversScreenInstallPreservesPublishedSpec(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -133,7 +160,7 @@ func TestDriversScreenInstallPreservesPublishedSpec(t *testing.T) {
 			client := &driverScreenClient{fakeDriverClient: fakeDriverClient{installs: &installs}}
 			dl := &agentpbv2.ListDriversResponse{BaseVersion: "0.20.0", KernelVersion: "6.19.0", Installed: tc.installed}
 			ext := extensionEntry{Name: "acme-nic", Version: "0.20.0-nightly", KernelVersion: "6.19.0", Path: "images/nightly/acme-nic.raw", SHA256: "published-digest", Signature: "AQID", ModulesLoad: []string{"nic", "helper"}}
-			if err := runDriversScreen(context.Background(), client, dl, []extensionEntry{ext}); err != nil {
+			if err := runDriversScreen(context.Background(), client, dl, []extensionEntry{ext}, driverManifestOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if len(installs) != 1 || len(installs[0].specs) != 1 || len(client.removals) != 0 {
@@ -193,7 +220,7 @@ func TestDriversScreenRemoveAndCancellation(t *testing.T) {
 			var installs []*fakeInstallStream
 			client := &driverScreenClient{fakeDriverClient: fakeDriverClient{installs: &installs}}
 			dl := &agentpbv2.ListDriversResponse{KernelVersion: "6.19.0", Installed: []*agentpbv2.InstalledDriver{{Name: "local-only", Unreadable: true}}}
-			err := runDriversScreen(context.Background(), client, dl, nil)
+			err := runDriversScreen(context.Background(), client, dl, nil, driverManifestOptions{})
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("runDriversScreen error = %v, want %v", err, tc.wantErr)
 			}
@@ -219,7 +246,7 @@ func TestDriversScreenEmptySkipsPicker(t *testing.T) {
 	var installs []*fakeInstallStream
 	client := &driverScreenClient{fakeDriverClient: fakeDriverClient{installs: &installs}}
 	dl := &agentpbv2.ListDriversResponse{KernelVersion: "6.19.0"}
-	if err := runDriversScreen(context.Background(), client, dl, []extensionEntry{{Name: "wrong-kernel", KernelVersion: "6.20.0"}}); err != nil {
+	if err := runDriversScreen(context.Background(), client, dl, []extensionEntry{{Name: "wrong-kernel", KernelVersion: "6.20.0"}}, driverManifestOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(installs) != 0 || len(client.removals) != 0 {
@@ -303,7 +330,7 @@ func TestDriversInteractiveCatalogFailure(t *testing.T) {
 				}}, nil
 			}
 			catalogErr := errors.New("registry unavailable")
-			driverExtensionsForChannelFn = func(device, version string, nightly bool, pr int) ([]extensionEntry, error) {
+			driverExtensionsForChannelFn = func(_ context.Context, device, version string, nightly bool, pr int) ([]extensionEntry, error) {
 				if device != deviceType || version != "0.20.0" || !nightly || pr != 0 {
 					t.Errorf("catalog coordinates = %q, %q, nightly=%v, pr=%d", device, version, nightly, pr)
 				}
@@ -334,6 +361,48 @@ func TestDriversInteractiveCatalogFailure(t *testing.T) {
 			}
 			if len(installs) != 0 {
 				t.Fatal("catalog failure installed a driver")
+			}
+		})
+	}
+}
+
+// A nightly or PR catalog offers builds the device's OS never shipped, so the
+// picker must say where its Install versions come from.
+func TestDriversInteractiveTitleNamesCatalog(t *testing.T) {
+	for _, tc := range []struct {
+		source driverManifestOptions
+		want   string
+	}{
+		{source: driverManifestOptions{}, want: "OS 0.20.0"},
+		{source: driverManifestOptions{nightly: true}, want: "latest nightly"},
+		{source: driverManifestOptions{pr: 123}, want: "PR 123"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			preserveDriverScreenHooks(t)
+			oldResolve, oldCatalog := resolveDriversTargetFn, driverExtensionsForChannelFn
+			t.Cleanup(func() {
+				resolveDriversTargetFn, driverExtensionsForChannelFn = oldResolve, oldCatalog
+			})
+			deviceType := "raspberry-pi-5"
+			resolveDriversTargetFn = func(context.Context, ...resolveOption) (*SelectedDevice, error) {
+				return &SelectedDevice{Agent: &grpcclient.AgentConnection{
+					AgentService:  &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{DeviceType: &deviceType}},
+					DriverService: fakeDriverClient{list: &agentpbv2.ListDriversResponse{BaseVersion: "0.20.0", KernelVersion: "6.19.0"}},
+				}}, nil
+			}
+			driverExtensionsForChannelFn = func(context.Context, string, string, bool, int) ([]extensionEntry, error) {
+				return []extensionEntry{{Name: "acme-nic", Version: "0.21.0-nightly.4", KernelVersion: "6.19.0"}}, nil
+			}
+			var title string
+			pickDriverFn = func(got string, _ []tui.PickerItem) (string, error) {
+				title = got
+				return "", ErrUserCancelled
+			}
+			if err := runDriversInteractive(context.Background(), tc.source); !errors.Is(err, ErrUserCancelled) {
+				t.Fatalf("runDriversInteractive error = %v, want the picker's cancellation", err)
+			}
+			if !strings.Contains(title, tc.want) || !strings.Contains(title, "6.19.0") {
+				t.Errorf("picker title = %q, want catalog %q and kernel 6.19.0", title, tc.want)
 			}
 		})
 	}
