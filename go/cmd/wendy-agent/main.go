@@ -453,6 +453,13 @@ func main() {
 		return scope
 	}
 	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentScope, sensorRunner.Start, sensorRunner.StopPairing, sensorSup.IsPairingConnected)
+	// `device pair` lists sources from this device's network, so this device
+	// must not offer itself. Its asset ID is read per request because
+	// enrollment can assign one while the agent runs.
+	sensorSvc.SetSourceDiscovery(nil, func() services.SensorSourceSelf {
+		_, _, assetID, _ := provisioningSvc.ProvisioningInfo()
+		return services.LocalSensorSourceSelf(assetID)
+	})
 	_, _, _, unitreeEnrolled := provisioningSvc.ProvisioningInfo()
 	unitreeSvc := services.NewUnitreeService(ctx, filepath.Join(configPath, "unitree-pairings.json"), unitreePairingOwner(deviceScope(provisioningSvc), unitreeEnrolled))
 	defer unitreeSvc.Close()

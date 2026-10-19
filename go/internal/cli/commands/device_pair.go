@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -64,38 +65,57 @@ func orgAllowed(cliOrgs map[int32]bool, sourceOrg int32) error {
 	return fmt.Errorf("device is in organization %s, but you are logged in to %s; pairing is only allowed within an organization you belong to", orgLabel("", sourceOrg), yours)
 }
 
-// discoverWendyLiteSensorSources browses _wendy-lite._tcp and returns every
-// sighting as a models.LANDevice. discovery.Discover never finds these
-// boards, since it only browses _wendyos._udp.
-func discoverWendyLiteSensorSources(ctx context.Context) ([]models.LANDevice, error) {
-	svcs, err := discovery.BrowseMDNSServices(ctx, discovery.WendyLiteServiceType, 0)
-	if err != nil {
-		return nil, err
-	}
-	devices := make([]models.LANDevice, 0, len(svcs))
-	for _, svc := range svcs {
-		devices = append(devices, discovery.LANDeviceFromWendyLiteService(svc))
-	}
-	return devices, nil
-}
-
-// discoverSensorSources runs LAN discovery and returns the merged device list
-// for the caller to filter down to sensor sources. WendyOS agents
-// (_wendyos._udp) and Wendy Lite boards (_wendy-lite._tcp) are two separate
-// mDNS services, so Wendy Lite is browsed and merged in alongside the main
-// LAN scan; a failure to browse it is non-fatal (the picker just shows
-// whatever it found among WendyOS agents).
-func discoverSensorSources(ctx context.Context) ([]models.DiscoveredDevice, error) {
-	collection, err := discovery.Discover(ctx, discovery.DiscoveryOptions{
-		Types: []models.InterfaceType{models.InterfaceLAN},
-	})
+// discoverLocalSensorSources scans this computer's network for sensor sources:
+// WendyOS agents (_wendyos._udp) and Wendy Lite boards (_wendy-lite._tcp). The
+// SensorLink tab uses it only when the device's agent predates
+// DiscoverSensorSources. Its results may name sources the device cannot
+// reach, so the tab labels them.
+func discoverLocalSensorSources(ctx context.Context) ([]models.DiscoveredDevice, error) {
+	lan, err := discovery.DiscoverSensorSources(ctx, 0, nil)
 	if err != nil {
 		return nil, fmt.Errorf("discovering devices: %w", err)
 	}
-	if liteDevices, err := discoverWendyLiteSensorSources(ctx); err == nil {
-		collection.LANDevices = append(collection.LANDevices, liteDevices...)
+	return (&models.DevicesCollection{LANDevices: lan}).MergedDevices(), nil
+}
+
+// sensorSourcesFromDevice maps a DiscoverSensorSources reply into the shape
+// the SensorLink tab consumes, exactly as if the device's sightings had been
+// found locally. The tenant and principal hints are rechecked with the
+// helpers discovery.LANDeviceFromWendyLiteService uses, so the tenant gate in
+// sensorPairHandler.pair always compares the tenant the principal names.
+func sensorSourcesFromDevice(sources []*agentpbv2.DiscoveredSensorSource) []models.DiscoveredDevice {
+	lan := make([]models.LANDevice, 0, len(sources))
+	for _, s := range sources {
+		if s == nil {
+			continue
+		}
+		d := models.LANDevice{
+			ID:            s.GetId(),
+			DisplayName:   s.GetDisplayName(),
+			Hostname:      s.GetHostname(),
+			IPAddress:     s.GetIpAddress(),
+			Addresses:     s.GetAddresses(),
+			Port:          int(s.GetPort()),
+			IsMTLS:        s.GetIsMtls(),
+			Caps:          s.GetCaps(),
+			WendyLite:     s.GetWendyLite(),
+			InterfaceType: string(models.InterfaceLAN),
+			IsWendyDevice: true,
+		}
+		d.Sensorlink = slices.Contains(d.Caps, "sensors")
+		if s.GetAssetId() > 0 {
+			d.AssetID = s.GetAssetId()
+		}
+		if s.GetOrgId() > 0 {
+			d.OrgID = s.GetOrgId()
+		}
+		d.TenantUUID = discovery.CanonicalTenantUUID(s.GetTenantUuid())
+		if d.TenantUUID != "" && discovery.DevicePrincipalInTenant(s.GetPrincipalUri(), d.TenantUUID) {
+			d.PrincipalURI = s.GetPrincipalUri()
+		}
+		lan = append(lan, d)
 	}
-	return collection.MergedDevices(), nil
+	return (&models.DevicesCollection{LANDevices: lan}).MergedDevices()
 }
 
 // runPicker shows an interactive picker over items and returns the selection,
@@ -184,7 +204,7 @@ func newDevicePairCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pair",
 		Short: "Pair or forget Bluetooth, SensorLink, IP cameras, and Unitree robots",
-		Long:  "Discover, pair, and forget devices in the Bluetooth, SensorLink, IP Cameras, and Unitree tabs. Bluetooth, IP cameras, and Unitree Go2 robots are discovered on the selected WendyOS device's network; SensorLink discovers sources on your local network. Unitree login retrieves your robot's key, which the selected WendyOS device stores and uses to connect. Use --ip to enter a robot's IPv4 address. SensorLink devices must be in an organization you belong to.",
+		Long:  "Discover, pair, and forget devices in the Bluetooth, SensorLink, IP Cameras, and Unitree tabs. Bluetooth, SensorLink sources, IP cameras, and Unitree Go2 robots are discovered on the selected WendyOS device's network, so you can pair from anywhere; if the device's agent is too old to scan for SensorLink sources, that tab scans your local network instead and says so. Unitree login retrieves your robot's key, which the selected WendyOS device stores and uses to connect. Use --ip to enter a robot's IPv4 address. SensorLink devices must be in an organization you belong to.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("ip") {
@@ -228,7 +248,7 @@ func newDevicePairCmd() *cobra.Command {
 				&btTUIHandler{ctx: pairCtx, agent: conn.AgentService},
 				&sensorPairHandler{
 					ctx: pairCtx, client: conn.SensorPairingService,
-					discover: discoverSensorSources, orgIDs: cliOrgIDs, tenantIDs: cliTenantIDs,
+					discoverLocal: discoverLocalSensorSources, orgIDs: cliOrgIDs, tenantIDs: cliTenantIDs,
 					name: name, sensors: sensors,
 				},
 				&cameraPairHandler{ctx: pairCtx, client: conn.VideoService, preflight: func(ctx context.Context) error {
