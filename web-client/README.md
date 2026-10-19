@@ -165,9 +165,17 @@ The WASM worker follows the CLI's flow:
 - A CSR and operator certificate from `identity.dev.pki.wendy.sh`.
 - Refresh-token rotation to the Cloud API resource, then paginated v2 device discovery.
 
-The worker saves the private key, certificates, profile, and refresh token in
-IndexedDB for this browser origin. Reloading or reopening the browser restores
-the same certificate, and expired access tokens are refreshed. These credentials
+The worker saves the certificates, profile, and refresh token in IndexedDB for
+this browser origin, and the operator key the way the Wendy console does: its
+ML-DSA-65 seed, AES-GCM-encrypted under a non-extractable WebCrypto key stored
+beside it, with the tenant and operator as additional data so a seed moved into
+another operator's record does not decrypt. The seed is decrypted only inside
+the worker on restore, crosses into the WASM module as bytes that are zeroed
+once copied, and is never a JS string. This protects the key at rest, not
+against script running in this origin, which can call the same decrypt. A
+record saved before this held the key in plaintext; the first restore rewraps it
+and removes the plaintext. Reloading or reopening the browser restores the same
+certificate, and expired access tokens are refreshed. These credentials
 are not sent to the UI thread or stored in localStorage. The
 same-origin `/api/wendy-auth` proxy forwards only allowlisted Wendy auth/PKI
 requests and Cloud grant signing keys; tokens and public CSRs pass through it, but private keys do not.
@@ -238,6 +246,7 @@ sign-in requirement. It does not pretend to be signed in or substitute fake data
 go test -race ./go/internal/cli/browserauth
 node go/experiments/wasmgrpc/auth-worker.mjs
 node web-client/tests/credential-store.test.mjs
+GOOS=js GOARCH=wasm go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./go/cmd/wendy-web ./go/internal/cli/browserauth
 node --experimental-strip-types web-client/tests/telemetry.test.mjs
 node --experimental-strip-types --test web-client/tests/auth-proxy.test.mjs
 

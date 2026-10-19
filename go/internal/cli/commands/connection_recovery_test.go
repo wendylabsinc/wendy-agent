@@ -18,10 +18,10 @@ import (
 func isolateConnectionRecovery(t *testing.T) {
 	t.Helper()
 	oldBroadcast, oldWait, oldAttempted := broadcastTimeFn, waitForTimeProofFn, clockSkewSyncAttempted
-	oldInteractive, oldJSON, oldPrompt, oldRefresh := isInteractiveTerminalFn, jsonOutput, confirmFn, refreshAllCertsFn
+	oldInteractive, oldJSON, oldPrompt, oldRefresh := isInteractiveTerminalFn, jsonOutput, confirmFn, refreshCurrentCertsFn
 	t.Cleanup(func() {
 		broadcastTimeFn, waitForTimeProofFn, clockSkewSyncAttempted = oldBroadcast, oldWait, oldAttempted
-		isInteractiveTerminalFn, jsonOutput, confirmFn, refreshAllCertsFn = oldInteractive, oldJSON, oldPrompt, oldRefresh
+		isInteractiveTerminalFn, jsonOutput, confirmFn, refreshCurrentCertsFn = oldInteractive, oldJSON, oldPrompt, oldRefresh
 	})
 	clockSkewSyncAttempted = false
 	jsonOutput = false
@@ -29,7 +29,7 @@ func isolateConnectionRecovery(t *testing.T) {
 	waitForTimeProofFn = func(ctx context.Context) error { return ctx.Err() }
 	broadcastTimeFn = func(context.Context) error { t.Fatal("unexpected time broadcast"); return nil }
 	confirmFn = func(string) bool { t.Fatal("unexpected refresh prompt"); return false }
-	refreshAllCertsFn = func(context.Context) error { t.Fatal("unexpected certificate refresh"); return nil }
+	refreshCurrentCertsFn = func(context.Context) error { t.Fatal("unexpected certificate refresh"); return nil }
 }
 
 func TestConnectionClockRecoveryOutcomes(t *testing.T) {
@@ -130,7 +130,7 @@ func TestConnectionRecoveryOnlyRefreshesProvenClientProblems(t *testing.T) {
 			clockSkewSyncAttempted = true
 			prompts, refreshes, retries := 0, 0, 0
 			confirmFn = func(string) bool { prompts++; return true }
-			refreshAllCertsFn = func(context.Context) error { refreshes++; return nil }
+			refreshCurrentCertsFn = func(context.Context) error { refreshes++; return nil }
 			wantConn := &grpcclient.AgentConnection{Host: "expected-device"}
 			conn, err := recoverAgentConnection(context.Background(), false, tc.cause, func() (*grpcclient.AgentConnection, error) { retries++; return wantConn, nil })
 			if tc.wantRefresh {
@@ -182,10 +182,10 @@ func TestConnectionRecoveryGuardsAndCancellation(t *testing.T) {
 				return mode != "declined"
 			}
 			if mode == "refresh failed" {
-				refreshAllCertsFn = func(context.Context) error { return errors.New("cloud unavailable") }
+				refreshCurrentCertsFn = func(context.Context) error { return errors.New("cloud unavailable") }
 			}
 			if mode == "retry refused" {
-				refreshAllCertsFn = func(context.Context) error { return nil }
+				refreshCurrentCertsFn = func(context.Context) error { return nil }
 			}
 			_, err := recoverAgentConnection(context.Background(), mode == "noninteractive", cause, func() (*grpcclient.AgentConnection, error) {
 				if mode != "retry refused" {
@@ -225,7 +225,7 @@ func TestConnectionEntryPointsKeepRecoveryFailure(t *testing.T) {
 					expired := config.CertificateInfo{OrganizationID: 2, PemCertificate: certPEM(t, time.Now().Add(-time.Hour))}
 					cause = chooseRejectionError(context.Background(), 2, []config.CertificateInfo{expired}, errors.New("remote error: tls: bad certificate"))
 					confirmFn = func(string) bool { return true }
-					refreshAllCertsFn = func(context.Context) error { actions++; return nil }
+					refreshCurrentCertsFn = func(context.Context) error { actions++; return nil }
 				}
 				calls := 0
 				dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
@@ -254,5 +254,91 @@ func TestConnectionEntryPointsKeepRecoveryFailure(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestConnectionRecoveryNeverRefreshesAnotherContextsCert pins WDY-3864: when
+// the rejected certificate for the device's org belongs to a context other than
+// the current one, recovery must not renew the current context (that spends its
+// refresh token and cannot fix the dial); it says which context to switch to.
+func TestConnectionRecoveryNeverRefreshesAnotherContextsCert(t *testing.T) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	expired := config.CertificateInfo{OrganizationID: 2, PemCertificate: certPEM(t, time.Now().Add(-time.Hour))}
+	current := config.CertificateInfo{OrganizationID: 1, PemCertificate: certPEM(t, time.Now().Add(time.Hour))}
+	if err := config.Save(&config.Config{
+		CurrentContext: "acme",
+		Auth: []config.AuthConfig{
+			{Name: "acme", CloudGRPC: "acme:443", Certificates: []config.CertificateInfo{current}},
+			{Name: "wendy", CloudGRPC: "wendy:443", Certificates: []config.CertificateInfo{expired}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	isolateConnectionRecovery(t) // fails on any refresh prompt or refresh
+	cause := chooseRejectionError(context.Background(), 2, []config.CertificateInfo{current, expired}, errors.New("remote error: tls: bad certificate"))
+	_, err := recoverAgentConnection(context.Background(), false, cause, func() (*grpcclient.AgentConnection, error) {
+		t.Fatal("retry without a usable certificate")
+		return nil, nil
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("cause lost: %v", err)
+	}
+	if !strings.Contains(err.Error(), "wendy auth use wendy") {
+		t.Fatalf("missing switch-context guidance: %v", err)
+	}
+
+	// The same org held by the current context keeps the plain advice.
+	if err := config.Save(&config.Config{
+		CurrentContext: "wendy",
+		Auth: []config.AuthConfig{
+			{Name: "acme", CloudGRPC: "acme:443", Certificates: []config.CertificateInfo{current}},
+			{Name: "wendy", CloudGRPC: "wendy:443", Certificates: []config.CertificateInfo{expired}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cause = chooseRejectionError(context.Background(), 2, []config.CertificateInfo{current, expired}, errors.New("remote error: tls: bad certificate"))
+	if strings.Contains(cause.Error(), "wendy auth use") || !strings.Contains(cause.Error(), "wendy auth refresh-certs") {
+		t.Fatalf("current context holds the cert, want plain refresh advice: %v", cause)
+	}
+}
+
+// TestConnectionRecoveryNamesTheContextToSwitchTo pins the WDY-3864 review:
+// a legacy and an operator session holding the device's org name the operator
+// one, and an unknown device org with several contexts names them all instead
+// of renewing the current context.
+func TestConnectionRecoveryNamesTheContextToSwitchTo(t *testing.T) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	expired := func(org int) config.CertificateInfo {
+		return config.CertificateInfo{OrganizationID: org, PemCertificate: certPEM(t, time.Now().Add(-time.Hour))}
+	}
+	if err := config.Save(&config.Config{
+		CurrentContext: "acme",
+		Auth: []config.AuthConfig{
+			{Name: "acme", CloudGRPC: "acme:443", Certificates: []config.CertificateInfo{expired(1)}},
+			{Name: "legacy", CloudGRPC: "wendy:443", Certificates: []config.CertificateInfo{expired(2)}},
+			{Name: "operator", CloudGRPC: "wendy:443", OAuthIssuer: "https://auth.wendy.dev", Certificates: []config.CertificateInfo{expired(2)}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := switchContextStep(2); !strings.Contains(got, "wendy auth use operator") {
+		t.Fatalf("want the operator session, got %q", got)
+	}
+
+	isolateConnectionRecovery(t) // fails on any refresh prompt or refresh
+	all := []config.CertificateInfo{expired(1), expired(2), expired(2)}
+	cause := chooseRejectionError(context.Background(), 0, all, errors.New("remote error: tls: bad certificate"))
+	_, err := recoverAgentConnection(context.Background(), false, cause, func() (*grpcclient.AgentConnection, error) {
+		t.Fatal("retry without a refresh")
+		return nil, nil
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("cause lost: %v", err)
+	}
+	if !strings.Contains(err.Error(), "organization is unknown") || !strings.Contains(err.Error(), "acme (current), legacy, operator") {
+		t.Fatalf("want the candidate contexts named: %v", err)
 	}
 }

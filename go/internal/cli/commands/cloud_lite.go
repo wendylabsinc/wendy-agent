@@ -29,10 +29,11 @@ const liteCloudOSType = "wendy-lite"
 func init() {
 	providers.CloudRelayDialer = dialLiteCloudRelay
 	providers.LiteIdentityResolver = localLiteIdentity
+	providers.LiteDeviceCAChainResolver = liteDeviceCAChain
 }
 
 // localLiteIdentity uses the session's primary credential for LAN and BLE. The
-// separate Lite authority and cached P-256 leaf belong to the Cloud relay only.
+// P-256 Lite operator leaf belongs to the Cloud relay only.
 func localLiteIdentity(ctx context.Context, auth *config.AuthConfig) (config.CertificateInfo, string, error) {
 	if err := ctx.Err(); err != nil {
 		return config.CertificateInfo{}, "", err
