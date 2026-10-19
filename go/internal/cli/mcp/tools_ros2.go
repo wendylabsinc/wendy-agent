@@ -175,6 +175,14 @@ func (opts ros2Options) addScope(env map[string]any) {
 	}
 }
 
+// ros2DeadlinePassed reports whether ctx's deadline has passed by the clock.
+// A busy machine can run a context's timer late, so ctx.Err() may still be nil
+// when a peer has already ended the stream at the deadline.
+func ros2DeadlinePassed(ctx context.Context) bool {
+	deadline, ok := ctx.Deadline()
+	return ok && !time.Now().Before(deadline)
+}
+
 func ros2Error(err error) *mcpgo.CallToolResult {
 	code, message := codeFromGRPC(err), grpcErrString(err)
 	if status.Code(err) == codes.Unimplemented {
@@ -376,9 +384,10 @@ func (s *mcpServer) handleROS2Stream(parent context.Context, req mcpgo.CallToolR
 			case parent.Err() != nil:
 				env["stop_reason"] = "cancelled"
 				err = parent.Err()
-			case ctx.Err() == context.DeadlineExceeded || status.Code(recvErr) == codes.DeadlineExceeded:
-				// The peer can report the propagated RPC deadline before the
-				// local context timer fires. Both end the observation window.
+			case ctx.Err() == context.DeadlineExceeded || status.Code(recvErr) == codes.DeadlineExceeded || ros2DeadlinePassed(ctx):
+				// The peer can report the propagated RPC deadline, or end the
+				// stream at it, before the local context timer fires. All of
+				// these end the observation window.
 				env["stop_reason"] = "time_limit"
 			case recvErr == io.EOF:
 				env["stop_reason"] = "end_of_stream"

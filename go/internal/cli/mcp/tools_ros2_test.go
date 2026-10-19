@@ -282,6 +282,27 @@ func TestROS2StreamDeadlineAndCallerCancellation(t *testing.T) {
 	}
 }
 
+// lateTimerContext has a deadline that has passed but, like a context whose
+// timer has not run yet, does not report it through Err.
+type lateTimerContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c lateTimerContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+func TestROS2DeadlinePassedBeforeTimerFires(t *testing.T) {
+	late := lateTimerContext{Context: context.Background(), deadline: time.Now().Add(-time.Millisecond)}
+	if late.Err() != nil || !ros2DeadlinePassed(late) {
+		t.Fatal("a deadline in the past should count as passed before the timer marks the context done")
+	}
+	future, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	if ros2DeadlinePassed(future) || ros2DeadlinePassed(context.Background()) {
+		t.Fatal("a future or missing deadline should not count as passed")
+	}
+}
+
 func TestROS2HzUsesDeviceMeasurements(t *testing.T) {
 	s := ros2TestServer(t, &fakeROS2Server{hz: func(req *agentpbv2.MonitorROS2HzRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2HzSample]) error {
 		return stream.Send(&agentpbv2.ROS2HzSample{Hz: 20, MinDelta: 0.04, MaxDelta: 0.06, StdDev: 0.002, Window: 100})

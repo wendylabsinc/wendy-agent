@@ -160,7 +160,7 @@ func (s *mcpServer) handleLidarSummary(parent context.Context, req mcpgo.CallToo
 			switch {
 			case parent.Err() != nil:
 				env["stop_reason"], err = "cancelled", parent.Err()
-			case status.Code(recvErr) == codes.DeadlineExceeded || ctx.Err() == context.DeadlineExceeded:
+			case status.Code(recvErr) == codes.DeadlineExceeded || ctx.Err() == context.DeadlineExceeded || ros2DeadlinePassed(ctx):
 				env["stop_reason"] = "time_limit"
 			case recvErr == io.EOF:
 				env["stop_reason"] = "end_of_stream"
