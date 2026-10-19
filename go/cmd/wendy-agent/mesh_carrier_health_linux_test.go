@@ -25,7 +25,7 @@ func TestCarrierStartupFailureAndConfigurationRemoval(t *testing.T) {
 	sharing := &meshSharingManager{}
 	// Missing enrollment cert fails before any kernel/network mutation.
 	for range 2 {
-		err := runConfiguredMeshCarriers(context.Background(), dir, localmesh.TCPIdentity{}, zap.NewNop(), nil, nil, sharing, nil)
+		err := runConfiguredNetCarriers(context.Background(), dir, localmesh.TCPIdentity{}, zap.NewNop(), nil, nil, sharing, nil)
 		if err == nil {
 			t.Fatal("invalid identity was accepted")
 		}
@@ -37,7 +37,7 @@ func TestCarrierStartupFailureAndConfigurationRemoval(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := runConfiguredMeshCarriers(context.Background(), dir, localmesh.TCPIdentity{}, zap.NewNop(), nil, nil, sharing, nil); err != nil {
+	if err := runConfiguredNetCarriers(context.Background(), dir, localmesh.TCPIdentity{}, zap.NewNop(), nil, nil, sharing, nil); err != nil {
 		t.Fatal(err)
 	}
 	if state := sharing.Status(); state.Available || state.State != "" {
@@ -55,7 +55,7 @@ func TestParticipationOverridesEnabledCarriersBeforeIdentityOrNetwork(t *testing
 	sharing := &meshSharingManager{}
 	// No policy file means participation off, even with explicit carriers and
 	// invalid credentials. There must be no attempt at identity/network setup.
-	if err := runConfiguredMeshCarriers(context.Background(), dir, localmesh.TCPIdentity{}, zap.NewNop(), nil, nil, sharing, nil); err != nil {
+	if err := runConfiguredNetCarriers(context.Background(), dir, localmesh.TCPIdentity{}, zap.NewNop(), nil, nil, sharing, nil); err != nil {
 		t.Fatal(err)
 	}
 	if state := sharing.Status(); state.State != "disabled" || state.AuthenticatedPeers != 0 {
