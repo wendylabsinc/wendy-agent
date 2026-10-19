@@ -20,6 +20,10 @@ func RunLeaves(ctx context.Context, node *localmesh.Node, peers []localmesh.Leaf
 	if len(peers) == 0 || len(peers) > 8 {
 		return fmt.Errorf("configure 1..8 BLE leaves")
 	}
+	local, err := leafAdapterAddress(ctx)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	var workers sync.WaitGroup
 	defer workers.Wait()
@@ -34,7 +38,7 @@ func RunLeaves(ctx context.Context, node *localmesh.Node, peers []localmesh.Leaf
 			defer workers.Done()
 			for ctx.Err() == nil {
 				dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-				conn, err := dialL2CAP(dialCtx, config.Address, config.AddressType, config.PSM)
+				conn, err := dialL2CAP(dialCtx, local, config.Address, config.AddressType, config.PSM)
 				cancel()
 				if err == nil {
 					err = node.ServeLeafRadio(ctx, peer, conn, timeURL)
@@ -63,4 +67,22 @@ func RunLeaves(ctx context.Context, node *localmesh.Node, peers []localmesh.Leaf
 	}
 	<-ctx.Done()
 	return nil
+}
+
+// Leaf sockets also bind a concrete local controller. The leaf PSM is a remote
+// endpoint; the local dynamic-PSM bind uses the selected adapter's identity.
+func leafAdapterAddress(ctx context.Context) (l2addr, error) {
+	query, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	bus, closeTransport, err := connectProviderBus(query)
+	if err != nil {
+		return l2addr{}, err
+	}
+	stop := guardProviderBusShutdown(query, 0, closeTransport)
+	defer func() { _ = closeTransport(); _ = bus.Close(); stop() }()
+	adapter, err := selectAdapter(query, bus, "")
+	if err != nil {
+		return l2addr{}, err
+	}
+	return adapterL2Address(query, bus, adapter, DefaultPSM)
 }

@@ -18,7 +18,7 @@ func (o *adapterBindingObjects) GetManagedObjects() (managedObjects, *dbus.Error
 }
 
 func TestSelectedAdapterSuppliesBothLocalSocketBindings(t *testing.T) {
-	_, connect := privateAdvertisementBus(t)
+	address, connect := privateAdvertisementBus(t)
 	bluez, client := connect(), connect()
 	objects := managedObjects{}
 	for _, adapter := range []struct {
@@ -61,5 +61,10 @@ func TestSelectedAdapterSuppliesBothLocalSocketBindings(t *testing.T) {
 		if _, err := localL2SocketAddress(invalid, 0); err == nil {
 			t.Fatal("invalid selected identity silently fell back to any adapter")
 		}
+	}
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", address)
+	leafLocal, err := leafAdapterAddress(ctx)
+	if err != nil || leafLocal.Address != "02:00:00:00:00:01" || leafLocal.Type != btAddrLEPublic {
+		t.Fatalf("leaf did not resolve the default adapter identity: %+v: %v", leafLocal, err)
 	}
 }
