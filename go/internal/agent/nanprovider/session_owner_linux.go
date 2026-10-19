@@ -118,6 +118,10 @@ func markSessionOwner(id meshid.Device, socket socketIdentity) error {
 }
 
 func markOwner(path string, id meshid.Device, socket socketIdentity) error {
+	return writeOwnerFile(path, ownerContents(id, socket))
+}
+
+func writeOwnerFile(path, contents string) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".wendy-nan-owner-")
 	if err != nil {
 		return err
@@ -127,7 +131,7 @@ func markOwner(path string, id meshid.Device, socket socketIdentity) error {
 		file.Close()
 		return err
 	}
-	if _, err := file.WriteString(ownerContents(id, socket)); err != nil {
+	if _, err := file.WriteString(contents); err != nil {
 		file.Close()
 		return err
 	}

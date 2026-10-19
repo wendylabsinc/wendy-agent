@@ -17,6 +17,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 )
 
 const ndiName = "wnanndi0"
@@ -48,9 +49,12 @@ func (c *radioControl) command(cmd string) (string, error) {
 		return "", err
 	}
 	buf := make([]byte, 8192)
-	n, err := c.conn.Read(buf)
+	n, _, flags, _, err := c.conn.ReadMsgUnix(buf, nil)
 	if err != nil {
 		return "", err
+	}
+	if flags&unix.MSG_TRUNC != 0 {
+		return "", fmt.Errorf("supplicant reply exceeds %d bytes", len(buf))
 	}
 	reply := strings.TrimSpace(string(buf[:n]))
 	if strings.HasPrefix(reply, "FAIL") || reply == "UNKNOWN COMMAND" {
@@ -240,22 +244,20 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 	local := iface.HardwareAddr.String()
 	defer drainRadio(control, rawEvents, local, "", logger)
 	ssi := hex.EncodeToString([]byte("wendy-nan:2:" + ident.UUID().String()))
-	pub, err := control.command("NAN_PUBLISH service_name=wendy.mesh.v1 sync=1 data_path=1 ttl=0 ssi=" + ssi)
+	socket, err := nanControlSocketIdentity()
 	if err != nil {
 		return err
 	}
-	if !validHandle(pub) {
-		return fmt.Errorf("invalid NAN publish handle %q", pub)
-	}
-	defer control.command("NAN_CANCEL_PUBLISH publish_id=" + pub)
-	sub, err := control.command("NAN_SUBSCRIBE service_name=wendy.mesh.v1 sync=1 ttl=0 ssi=" + ssi)
+	discovery, err := startDiscovery(control, discoveryOwnerPath, ident, socket, ssi)
 	if err != nil {
 		return err
 	}
-	if !validHandle(sub) {
-		return fmt.Errorf("invalid NAN subscribe handle %q", sub)
-	}
-	defer control.command("NAN_CANCEL_SUBSCRIBE subscribe_id=" + sub)
+	defer func() {
+		if err := discovery.release(); err != nil {
+			logger.Warn("NAN discovery cleanup failed", zap.Error(err))
+		}
+	}()
+	pub, sub := discovery.publish, discovery.sub
 	attempts := map[string]time.Time{}
 	active := map[string]*radioLink{}
 	lastProbe := time.Now()

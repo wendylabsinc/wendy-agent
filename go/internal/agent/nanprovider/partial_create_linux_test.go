@@ -116,7 +116,7 @@ func checkPartialCreateCleanup(t *testing.T, cancelAfterCreate bool, externalSta
 	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
 		t.Skip("disposable privileged container only")
 	}
-	protected := []string{partialCreateHelper, nanControlPath, sessionOwnerPath, "/run/wendy-nan-provider.lock", "/run/systemd/network/05-wendy-nan-provider.network", "/run/NetworkManager/conf.d/05-wendy-nan-provider.conf"}
+	protected := []string{partialCreateHelper, nanControlPath, sessionOwnerPath, "/run/wendy-nan-provider.lock", "/run/systemd/network/05-wendy-nan-provider.network", "/run/NetworkManager/conf.d/05-wendy-nan-provider.conf", discoveryOwnerPath}
 	for _, path := range protected {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Skipf("preserve pre-existing host state: %s", path)
