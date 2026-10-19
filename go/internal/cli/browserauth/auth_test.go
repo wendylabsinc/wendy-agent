@@ -264,8 +264,11 @@ func TestBeginRealmDiscovery(t *testing.T) {
 		{name: "system realm", email: "user@example.test", lookup: map[string]string{"loginURL": "/realms/system/account/login"}, want: universal, hint: "user@example.test"},
 		{name: "pinned realm", email: "user@example.test", lookup: map[string]string{"realm": "acme", "loginURL": "/realms/acme/account/login"}, want: testIssuer + "/authorize?"},
 		{name: "caller realm", issuer: testIssuer, want: testIssuer + "/authorize?"},
-		{name: "caller realm skips lookup", email: "user@example.test", issuer: testIssuer, want: testIssuer + "/authorize?"},
+		{name: "upper-case system realm", email: "user@example.test", lookup: map[string]string{"realm": "SYSTEM"}, want: universal, hint: "user@example.test"},
+		{name: "caller realm skips lookup", email: "user@example.test", issuer: testIssuer, want: testIssuer + "/authorize?", hint: "user@example.test"},
 		{name: "caller system realm", issuer: AuthBase + "/realms/system"},
+		{name: "caller upper-case system realm", issuer: AuthBase + "/realms/SYSTEM"},
+		{name: "caller escaped system realm", issuer: AuthBase + "/realms/%73ystem"},
 		{name: "caller foreign issuer", issuer: "https://auth.example.test/realms/acme"},
 		{name: "caller issuer path", issuer: testIssuer + "/protocol"},
 	} {

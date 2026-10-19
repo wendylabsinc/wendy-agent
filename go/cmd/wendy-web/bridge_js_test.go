@@ -142,4 +142,24 @@ func TestCredentialAndSignUseEachOrganizationsSavedOperator(t *testing.T) {
 	if _, err = call("sign", tenantA, []byte("x")); err == nil {
 		t.Fatal("signed after signing out of every organization")
 	}
+
+	// A stale or tampered slot: B's slot holds A's record and key. A valid
+	// sign-in to A must not sign for B.
+	a = saveOperator(t, authority, issuer, tenantA)
+	if err = selectOrg(org{Tenant: tenantA}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := browserCredentialStore{}.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = (browserCredentialStore{}).SaveWrapped(record, a.key.Bytes(), "operator-key:"+tenantB+":operator-test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = call("sign", tenantB, []byte("x")); err == nil || err.Error() != "Sign in with Wendy first" {
+		t.Fatalf("signed for B with the record in B's slot that belongs to A: %v", err)
+	}
+	if _, err = call("credential", tenantB, nil); err == nil {
+		t.Fatal("returned A's credential for B")
+	}
 }

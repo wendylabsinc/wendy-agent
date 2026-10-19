@@ -517,6 +517,8 @@ jobs:
           cp web-client/public/{wendy.wasm.gz,wasm_exec.js,wendy-worker.js,wendy-credentials.js} wendy-web/
           cd wendy-web
           {
+            # Rebuilding the pin needs the same toolchain; sha256sum -c skips this line.
+            echo "# built with $(go version)"
             sha256sum wendy.wasm.gz wasm_exec.js wendy-worker.js wendy-credentials.js
             echo "$(gunzip -c wendy.wasm.gz | sha256sum | cut -d' ' -f1)  wendy.wasm"
           } > MANIFEST

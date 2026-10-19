@@ -247,7 +247,9 @@ the worker, `wendy-credentials.js`, `wasm_exec.js`, `wendy.wasm.gz` and a
 `MANIFEST` of sha256 sums. Serve the files from one directory on the page's own
 origin and start `new Worker("<dir>/wendy-worker.js?sha256=<hex>")`, with the
 MANIFEST's `wendy.wasm` line (the decompressed module) as the pin. A mismatch
-posts `{fatal: "sha256 mismatch"}` and nothing runs.
+posts `{fatal: "sha256 mismatch"}` and nothing runs. MANIFEST's first line
+names the Go toolchain; `npm run build:wasm` with that toolchain at the
+release commit reproduces the pin.
 
 | Call | Params | Result |
 |---|---|---|
