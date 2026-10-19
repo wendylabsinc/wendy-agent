@@ -22,15 +22,23 @@ def validate_expect(expect):
                 raise ValueError(f"unknown matcher keys in {matcher!r}")
             if sum(k in matcher for k in KINDS) != 1:
                 raise ValueError(f"matcher needs exactly one of tool, cli, shell: {matcher!r}")
-            if "args" in matcher and not isinstance(matcher["args"], dict):
-                raise ValueError("args must be an object")
-            if "agents" in matcher and not isinstance(matcher["agents"], list):
-                raise ValueError("agents must be a list")
+            kind = next(k for k in KINDS if k in matcher)
+            if not isinstance(matcher[kind], str):
+                raise ValueError(f"{kind} must be a string: {matcher!r}")
+            if "args" in matcher and (kind != "tool" or not isinstance(matcher["args"], dict)):
+                raise ValueError(f"args must be an object and is only for tool matchers: {matcher!r}")
+            if "args_regex" in matcher and (kind == "shell" or not isinstance(matcher["args_regex"], str)):
+                raise ValueError(f"args_regex must be a string and is not for shell matchers: {matcher!r}")
+            if "agents" in matcher and not (isinstance(matcher["agents"], list)
+                                            and all(isinstance(a, str) for a in matcher["agents"])):
+                raise ValueError(f"agents must be a list of strings: {matcher!r}")
+            if "block" in matcher and not isinstance(matcher["block"], bool):
+                raise ValueError(f"block must be a boolean: {matcher!r}")
             for key in ("shell", "args_regex"):
                 if key in matcher:
                     try:
                         re.compile(matcher[key])
-                    except (re.error, TypeError) as error:
+                    except re.error as error:
                         raise ValueError(f"invalid regex in {key}: {error}") from error
 
 

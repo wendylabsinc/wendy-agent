@@ -73,6 +73,35 @@ class GradeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 g.validate_expect(bad)
 
+    def test_validate_expect_rejects_silent_typos(self):
+        for bad in ({"right": [{"tool": 1}]}, {"right": [{"cli": ["run"]}]}, {"wrong": [{"shell": 5}]},
+                    {"right": [{"tool": "a", "agents": "claude"}]}, {"right": [{"tool": "a", "agents": [1]}]},
+                    {"right": [{"tool": "a", "block": "yes"}]},
+                    {"right": [{"cli": "run", "args": {"a": 1}}]}, {"wrong": [{"shell": "x", "args": {}}]},
+                    {"right": [{"tool": "a", "args": ["x"]}]},
+                    {"wrong": [{"shell": "x", "args_regex": "y"}]}, {"right": [{"tool": "a", "args_regex": 3}]}):
+            with self.assertRaises(ValueError, msg=bad):
+                g.validate_expect(bad)
+        g.validate_expect({"right": [{"tool": "a", "agents": ["claude"], "block": True}]})
+
+    def test_compose_app_shell_wrong_rules(self):
+        import json
+        from pathlib import Path
+        tasks = json.loads((Path(__file__).parent / "tasks.json").read_text())
+        wrong = next(t for t in tasks if t["id"] == "compose-app")["expect"]["wrong"]
+        hit = lambda c: any(g.matches(m, shell(c)) for m in wrong)
+        for ok in ("cat docker-compose.yml", "docker compose up -d", "grep -r docker ."):
+            self.assertFalse(hit(ok), ok)
+        for bad in ("ssh root@10.0.0.5 'docker ps'", "cd x && scp a b:", "docker -H tcp://10.0.0.5:2375 ps"):
+            self.assertTrue(hit(bad), bad)
+
+    def test_stop_and_start_have_cli_matchers(self):
+        import json
+        from pathlib import Path
+        tasks = {t["id"]: t for t in json.loads((Path(__file__).parent / "tasks.json").read_text())}
+        self.assertIn({"cli": "device apps stop"}, tasks["stop-app"]["expect"]["right"])
+        self.assertIn({"cli": "device apps start"}, tasks["start-app"]["expect"]["right"])
+
 
 if __name__ == "__main__":
     unittest.main()

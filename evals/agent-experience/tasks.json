@@ -64,7 +64,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -134,7 +137,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -204,7 +210,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -267,11 +276,17 @@
       "right": [
         {
           "tool": "container_stop"
+        },
+        {
+          "cli": "device apps stop"
         }
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -398,11 +413,17 @@
       "right": [
         {
           "tool": "container_start"
+        },
+        {
+          "cli": "device apps start"
         }
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -472,7 +493,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -724,7 +748,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -800,7 +827,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -876,7 +906,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -1066,7 +1099,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -1139,7 +1175,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -1212,7 +1251,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
@@ -1285,7 +1327,10 @@
       ],
       "wrong": [
         {
-          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
         }
       ]
     }
