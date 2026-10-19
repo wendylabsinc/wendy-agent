@@ -178,9 +178,10 @@ after its DHCP guards pass. If another DHCP server or an uplink address appears,
 the camera server stops.
 
 After an agent restart, an enabled port reuses its existing camera subnet after
-checking for a competing DHCP server. Conflicting IPv4 configuration is reported
-as blocked. Unexpired DHCP leases survive restarts, keeping existing cameras'
-addresses reserved. Lease-storage failures are shown in status. If restoring a
+checking for a competing DHCP server. Conflicting IPv4 or non-link-local IPv6
+configuration is reported as blocked. Unexpired DHCP leases survive restarts,
+keeping existing cameras' addresses reserved. Lease-storage failures are shown
+in status. If restoring a
 missing camera address fails, status shows the failure and the agent retries.
 Renaming a port stops its camera DHCP service when the
 change is detected; enable the new interface name explicitly to resume.

@@ -17,8 +17,9 @@ import (
 // A new, unconfigured link becomes eligible only when all of these hold:
 //
 //  1. It has carrier and is administratively up.
-//  2. It holds no IPv4 address of its own, which is what excludes the uplink.
+//  2. It holds no IPv4 or non-link-local IPv6 configuration of its own.
 //  3. A DHCP DISCOVER was seen on it that nothing answered within a timeout.
+//  4. Its address configuration was inspected successfully.
 //
 // LinkManager also restores explicitly enabled links with an exact retained
 // camera server address, after observing for a competing DHCP server.
@@ -61,22 +62,27 @@ const LeaseWindow = 12 * time.Hour
 
 // Interface is the subset of a network interface the decision needs.
 type Interface struct {
-	Name         string
-	Index        int // kernel identity; names can change while sockets remain bound
-	MAC          net.HardwareAddr
-	Carrier      bool
-	Up           bool
-	HasIPv4      bool
-	IPv4s        []net.IP
-	IPv4Networks []net.IPNet
-	Loopback     bool
-	PointToPo    bool // point-to-point, e.g. a tunnel; never a camera link
+	Name          string
+	Index         int // kernel identity; names can change while sockets remain bound
+	MAC           net.HardwareAddr
+	Carrier       bool
+	Up            bool
+	HasIPv4       bool
+	HasIPv6Config bool // non-link-local unicast IPv6 configuration
+	AddressError  string
+	IPv4s         []net.IP
+	IPv4Networks  []net.IPNet
+	Loopback      bool
+	PointToPo     bool // point-to-point, e.g. a tunnel; never a camera link
 }
 
 // configuredCameraSegment recognizes the exact server address and prefix, not
 // an arbitrary address in 10.98/16. Saved operator permission is checked by the
 // caller before this configuration is used to resume DHCP.
 func (i Interface) configuredCameraSegment() (CameraSegment, bool) {
+	if i.HasIPv6Config || i.AddressError != "" {
+		return CameraSegment{}, false
+	}
 	if len(i.IPv4s) != 1 || len(i.IPv4Networks) != 1 {
 		return CameraSegment{}, false
 	}
@@ -108,6 +114,9 @@ func (i Interface) HasAddress(ip net.IP) bool {
 // or the exact camera address and prefix. Another address or a changed prefix
 // belongs to another configuration and must stop camera DHCP.
 func (i Interface) conflictsWithCameraSegment(seg CameraSegment) bool {
+	if i.HasIPv6Config {
+		return true
+	}
 	if !i.HasIPv4 && len(i.IPv4s) == 0 && len(i.IPv4Networks) == 0 {
 		return false
 	}
@@ -138,7 +147,7 @@ func (i Interface) Eligible() bool {
 	}
 	// An interface with an address is either the uplink or already configured by
 	// something that knows better than us.
-	if i.HasIPv4 {
+	if i.HasIPv4 || i.HasIPv6Config || i.AddressError != "" {
 		return false
 	}
 	// Wireless interfaces are never a directly-cabled camera, and claiming one
@@ -175,26 +184,13 @@ type linkDecision struct {
 type LinkGuard struct {
 	mu sync.Mutex
 	by map[string]*linkDecision
-
-	// serverIDs are addresses this agent serves from. An OFFER carrying one of
-	// them is our own and must not disqualify the link.
-	serverIDs map[string]bool
 }
 
 // NewLinkGuard returns an empty guard.
 func NewLinkGuard() *LinkGuard {
 	return &LinkGuard{
-		by:        make(map[string]*linkDecision),
-		serverIDs: make(map[string]bool),
+		by: make(map[string]*linkDecision),
 	}
-}
-
-// RegisterServerID records an address the agent serves from, so its own offers are
-// not mistaken for a competing server.
-func (g *LinkGuard) RegisterServerID(ip net.IP) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.serverIDs[ip.String()] = true
 }
 
 // State returns the current decision for a link.
@@ -217,7 +213,8 @@ func (g *LinkGuard) decision(link string) *linkDecision {
 // Observe feeds a DHCP packet seen on a link into the decision.
 //
 // A DISCOVER starts the clock. An OFFER or ACK from another server stops the
-// agent from ever serving here. Our own offers are ignored.
+// agent from ever serving here. The packet watcher filters outgoing replies
+// before they reach this guard; a matching server address is not identity.
 func (g *LinkGuard) Observe(link string, p *Packet, now time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -237,10 +234,8 @@ func (g *LinkGuard) Observe(link string, p *Packet, now time.Time) {
 			d.pendingXID = p.XID
 		}
 	case Offer, Ack, Nak:
-		// A reply we did not send means another DHCP server owns this link.
-		if p.ServerID != nil && g.serverIDs[p.ServerID.String()] {
-			return
-		}
+		// Every incoming reply means another DHCP server owns this link,
+		// including one that conflicts with our own server address.
 		d.state = LinkDisqualified
 		d.pendingSince = time.Time{}
 	}
@@ -364,32 +359,45 @@ func (s CameraSegment) CIDR() string {
 // InterfacesFrom converts Go's interface list into the decision input. sysfs
 // supplies carrier, which net.Interface does not expose.
 func InterfacesFrom(ifaces []net.Interface, carrier func(name string) bool) []Interface {
+	return interfacesFrom(ifaces, carrier, func(iface net.Interface) ([]net.Addr, error) { return iface.Addrs() })
+}
+
+func interfacesFrom(ifaces []net.Interface, carrier func(string) bool, addresses func(net.Interface) ([]net.Addr, error)) []Interface {
 	out := make([]Interface, 0, len(ifaces))
 	for _, iface := range ifaces {
-		addrs, err := iface.Addrs()
+		addrs, err := addresses(iface)
 		var ipv4s []net.IP
 		var ipv4Networks []net.IPNet
+		var ipv6Config bool
+		var addressError string
+		if err != nil {
+			addressError = err.Error()
+		}
 		if err == nil {
 			for _, addr := range addrs {
 				if ipnet, ok := addr.(*net.IPNet); ok {
 					if v4 := ipnet.IP.To4(); v4 != nil {
 						ipv4s = append(ipv4s, v4)
 						ipv4Networks = append(ipv4Networks, *ipnet)
+					} else if ipnet.IP.IsGlobalUnicast() {
+						ipv6Config = true
 					}
 				}
 			}
 		}
 		out = append(out, Interface{
-			Name:         iface.Name,
-			Index:        iface.Index,
-			MAC:          iface.HardwareAddr,
-			Carrier:      carrier(iface.Name),
-			Up:           iface.Flags&net.FlagUp != 0,
-			HasIPv4:      len(ipv4s) > 0,
-			IPv4s:        ipv4s,
-			IPv4Networks: ipv4Networks,
-			Loopback:     iface.Flags&net.FlagLoopback != 0,
-			PointToPo:    iface.Flags&net.FlagPointToPoint != 0,
+			Name:          iface.Name,
+			Index:         iface.Index,
+			MAC:           iface.HardwareAddr,
+			Carrier:       carrier(iface.Name),
+			Up:            iface.Flags&net.FlagUp != 0,
+			HasIPv4:       len(ipv4s) > 0,
+			HasIPv6Config: ipv6Config,
+			AddressError:  addressError,
+			IPv4s:         ipv4s,
+			IPv4Networks:  ipv4Networks,
+			Loopback:      iface.Flags&net.FlagLoopback != 0,
+			PointToPo:     iface.Flags&net.FlagPointToPoint != 0,
 		})
 	}
 	return out

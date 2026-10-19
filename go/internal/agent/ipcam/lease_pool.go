@@ -161,6 +161,12 @@ func (p *LeasePool) Leases() map[string]net.IP {
 // Release persists removal before making the address reusable. A failed write
 // retains the reservation; losing capacity temporarily is safer than a conflict.
 func (p *LeasePool) Release(mac net.HardwareAddr) error {
+	return p.release(mac, nil)
+}
+
+// A network RELEASE must match the current address as well as the client.
+// An old RELEASE must not remove a newer binding for the same MAC.
+func (p *LeasePool) release(mac net.HardwareAddr, requested net.IP) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now, err := p.now()
@@ -169,7 +175,8 @@ func (p *LeasePool) Release(mac net.HardwareAddr) error {
 	}
 	p.expireLocked(now)
 	key := mac.String()
-	if _, exists := p.byMAC[key]; !exists {
+	addr := p.byMAC[key]
+	if addr == nil || (requested != nil && !addr.Equal(requested)) {
 		return nil
 	}
 	if p.save != nil {
@@ -178,6 +185,34 @@ func (p *LeasePool) Release(mac net.HardwareAddr) error {
 		}
 	}
 	p.removeLocked(key)
+	return nil
+}
+
+// A DECLINE reports an address conflict, not an available address (RFC 2131
+// section 4.3.3). Retain the conflict for one lease window, including across
+// restarts. Keep the in-memory quarantine even if saving fails: the server
+// stops on that error, and any later allocation retries persisting it.
+func (p *LeasePool) decline(mac net.HardwareAddr, requested net.IP) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now, err := p.now()
+	if err != nil {
+		return fmt.Errorf("reading DHCP lease clock: %w", err)
+	}
+	p.expireLocked(now)
+	key := mac.String()
+	addr := p.byMAC[key]
+	if requested == nil || addr == nil || !addr.Equal(requested) {
+		return nil
+	}
+	p.removeLocked(key)
+	p.quarantined[addr.String()] = now + LeaseWindow
+	p.byAddr[addr.String()] = ""
+	if p.save != nil {
+		if err := p.save(p.recordsLocked("")); err != nil {
+			return fmt.Errorf("saving camera DHCP address conflict: %w", err)
+		}
+	}
 	return nil
 }
 

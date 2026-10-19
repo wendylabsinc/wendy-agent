@@ -142,6 +142,15 @@ func (m *LinkManager) scanOnce(ctx context.Context) {
 		return
 	}
 	m.reconcileInterfaces(ifaces)
+	for _, iface := range ifaces {
+		if iface.AddressError != "" {
+			// An unknown address on any port can hide an overlapping subnet.
+			// Retain existing claims, but do not allocate or restore addresses
+			// until the complete interface snapshot can be inspected again.
+			m.logger.Debug("cannot inspect interface addresses", zap.String("link", iface.Name), zap.String("error", iface.AddressError))
+			return
+		}
+	}
 
 	for _, iface := range ifaces {
 		// A claimed link carries our own address by design, so it necessarily
@@ -162,7 +171,7 @@ func (m *LinkManager) scanOnce(ctx context.Context) {
 				continue
 			}
 			if iface.conflictsWithCameraSegment(seg) {
-				m.logger.Warn("camera link has conflicting IPv4 configuration; stopping DHCP",
+				m.logger.Warn("camera link has conflicting IP configuration; stopping DHCP",
 					zap.String("link", iface.Name))
 				m.guard.Disqualify(iface.Name)
 				m.withdrawDisqualifiedClaim(iface.Name)
@@ -505,7 +514,6 @@ func (m *LinkManager) claim(ctx context.Context, iface Interface, preferred *Cam
 	}
 	m.stop[link] = cancel
 	m.mu.Unlock()
-	m.guard.RegisterServerID(seg.ServerIP)
 	if m.guard.State(link) == LinkDisqualified {
 		m.withdrawDisqualifiedClaim(link)
 		return

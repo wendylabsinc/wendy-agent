@@ -243,6 +243,26 @@ func requestLease(req *Packet, serverIP net.IP, pool *LeasePool) (MessageType, n
 	}
 }
 
+// endClientLease accepts only messages naming this server and the client's
+// exact reservation. Other servers' RELEASE/DECLINE messages cannot alter it.
+func endClientLease(req *Packet, serverIP net.IP, pool *LeasePool) error {
+	if !req.ServerID.Equal(serverIP) {
+		return nil
+	}
+	switch req.Type {
+	case Release:
+		if req.CIAddr.To4() != nil && !req.CIAddr.IsUnspecified() {
+			return pool.release(req.CHAddr, req.CIAddr)
+		}
+	case Decline:
+		if req.RequestedIP.To4() != nil && !req.RequestedIP.IsUnspecified() &&
+			(req.CIAddr.To4() == nil || req.CIAddr.IsUnspecified()) {
+			return pool.decline(req.CHAddr, req.RequestedIP)
+		}
+	}
+	return nil
+}
+
 // BuildReply encodes an OFFER, ACK, or NAK for the given request.
 func BuildReply(req *Packet, kind MessageType, cfg ReplyConfig) []byte {
 	buf := make([]byte, dhcpMinLen)

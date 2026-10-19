@@ -11,7 +11,8 @@ wendy device camera dhcp disable eth1
 Use `--device <device>` to select the WendyOS device and `--json` for structured
 status. Enable only a dedicated wired camera port. The agent rejects an enable
 request for a wireless, loopback, or missing interface, or one with conflicting
-IPv4 configuration.
+IPv4 or non-link-local IPv6 configuration. IPv6 link-local addresses are normal
+on an otherwise unconfigured camera link and do not prevent DHCP.
 Enabled means permission to serve: the 15-second link scan and existing
 unanswered-request and competing-server guards still control activation.
 Status reports saved permission separately from serving, degraded, waiting, blocked,
@@ -25,6 +26,8 @@ recorded in the camera registry. An addressless port follows normal allocation;
 other addresses or prefixes are reported as conflicting configuration. Allocation
 excludes subnets overlapping any IPv4 network configured on another port,
 including blocked or disabled ports and ports with multiple addresses.
+An address-inspection failure is reported as unknown and prevents new subnet
+claims or address restoration until a complete interface snapshot is available.
 
 Each subnet also has an agent-managed `camera-dhcp-leases-10.98.x.1.json`
 file beside the configuration. MAC/IP reservations and their expiries are
@@ -46,6 +49,12 @@ request is rejected; an unknown client checking a cached lease gets no reply
 and must discover an offer before obtaining a new address. Requests selecting
 another server are ignored.
 
+A camera's DECLINE reports that its offered address is already in use. The
+agent reserves that address without an owner for one lease window (12 hours),
+persists the conflict and offers a different address. A later restart preserves
+the reservation. RELEASE and DECLINE messages must identify this server and the
+client's exact current binding; messages for another server cannot remove it.
+
 When upgrading from an agent without lease files, known camera addresses are
 reserved for one lease window (12 hours) on the first use of that subnet. This
 migration is persisted once; loading the camera registry on later restarts does
@@ -66,6 +75,9 @@ status reports it, and the next scan stops DHCP without replacing the new prefix
 The watcher detects competing DHCP replies and cancels serving without waiting
 for configuration or lease storage I/O. Address cleanup is serialized with
 scans, and watcher-generation checks reject callbacks from renamed ports.
+Locally transmitted packets are filtered by the kernel's packet direction.
+An incoming reply from another server still stops serving when it advertises
+the same server address as this agent.
 Scans also finish pending withdrawals if the watcher exits before its queued
 cleanup runs.
 

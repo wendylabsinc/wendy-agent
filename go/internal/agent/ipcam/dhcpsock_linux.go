@@ -88,6 +88,12 @@ func watchDHCP(ctx context.Context, link string, onPacket func(*Packet)) error {
 	if err != nil {
 		return fmt.Errorf("opening packet socket for %s: %w", link, err)
 	}
+	// Ignore replies by kernel packet direction, not by the DHCP server IP:
+	// another host may use the same camera subnet and server address as us.
+	if err := unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_IGNORE_OUTGOING, 1); err != nil {
+		unix.Close(fd) //nolint:errcheck
+		return fmt.Errorf("filtering outgoing DHCP packets on %s: %w", link, err)
+	}
 	if err := unix.Bind(fd, &unix.SockaddrLinklayer{
 		Protocol: htons(unix.ETH_P_IP),
 		Ifindex:  iface.Index,
@@ -211,7 +217,7 @@ func serveDHCP(ctx context.Context, link string, seg CameraSegment, pool *LeaseP
 		case Request:
 			kind, addr, err = requestLease(req, seg.ServerIP, pool)
 		case Release, Decline:
-			if err := pool.Release(req.CHAddr); err != nil {
+			if err := endClientLease(req, seg.ServerIP, pool); err != nil {
 				return err
 			}
 			continue
