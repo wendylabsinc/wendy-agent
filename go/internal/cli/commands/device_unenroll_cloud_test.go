@@ -199,6 +199,17 @@ func unenrollTestCloudDevice(id, name, hardwareID string) cloudDiscoveryDevice {
 	return cloudDiscoveryDevice{cloudAssetMetadata: asset, v2: asset, key: id}
 }
 
+// liteAssetShapes are one board's asset before and after cloud #873: first a
+// random asset id with the device UUID as pki_device_name, then the UUID as
+// the asset id with no pki_device_name.
+func liteAssetShapes(deviceUUID, hardwareID string) map[string]*cloudpbv2.Asset {
+	old := unenrollTestCloudDevice("6fab25c6-01d3-4840-abcc-9d47259069a4", "desk", hardwareID).v2
+	old.PkiDeviceName = proto.String(deviceUUID)
+	current := unenrollTestCloudDevice(deviceUUID, "desk", hardwareID).v2
+	current.PkiDeviceName = nil
+	return map[string]*cloudpbv2.Asset{"pre-873": old, "post-873": current}
+}
+
 func TestUnenrollResolutionUsesExactIdentity(t *testing.T) {
 	first := unenrollTestCloudDevice(liteTestAssetID, "renamed-board", "441bf6804824")
 	second := unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "441bf6804824", "0a0b0c0d0e0f")
@@ -275,6 +286,7 @@ type unenrollConfirmationServer struct {
 	revokes       atomic.Int32
 	deletes       atomic.Int32
 	deletedID     atomic.Value
+	expectedID    atomic.Value
 	online        atomic.Bool
 	computeFilter atomic.Bool
 }
@@ -320,6 +332,7 @@ func (s *unenrollConfirmationServer) DeleteAsset(_ context.Context, req *cloudpb
 	var deleted cloudpbv2.DeleteAssetRequest
 	if err := proto.Unmarshal(req.GetPayload(), &deleted); err == nil {
 		s.deletedID.Store(deleted.GetId())
+		s.expectedID.Store(deleted.GetExpectedDeviceId())
 	}
 	return &cloudpbv2.DeleteAssetResponse{Success: true}, s.deleteErr
 }
@@ -611,6 +624,31 @@ func TestCloudOnlyLiteUnenrollExplainsUSBRecovery(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Connect this Lite board over USB and run 'wendy device unenroll'") {
 		t.Fatalf("missing Lite recovery instructions: %q", output.String())
+	}
+}
+
+func TestCloudUnenrollWithResetMatchesTheDeviceUUIDInBothAssetShapes(t *testing.T) {
+	const board, hardwareID = "00000000-0000-4000-8000-441bf6804824", "441bf6804824"
+	for name, asset := range liteAssetShapes(board, hardwareID) {
+		t.Run(name, func(t *testing.T) {
+			preserveCloudUnenrollmentHooks(t)
+			// The stale asset shares the serial, so only the UUID match finds the board.
+			service := &unenrollConfirmationServer{
+				asset:       asset,
+				extraAssets: []*cloudpbv2.Asset{unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "desk", hardwareID).v2},
+			}
+			startUnenrollResetServer(t, service)
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			resets := 0
+			if err := runCloudDeviceUnenrollWithReset(cmd, "", hardwareID, board, true, func() error { resets++; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if resets != 1 || service.deletes.Load() != 1 || service.deletedID.Load() != asset.GetId() || service.expectedID.Load() != board {
+				t.Fatalf("reset=%d deletes=%d deleted=%v expected=%v, want asset %s device %s", resets, service.deletes.Load(), service.deletedID.Load(), service.expectedID.Load(), asset.GetId(), board)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,6 @@
 # Lite grant fixture
 
-`vector.json` is copied verbatim from service-protos commit `f74e61ec6a683adba9b3763ce6e94211c4358885`
+`vector.json` is copied verbatim from service-protos commit `01dc3732087d01e223e22faab0289f703318ac43`
 (PR #138, WDY-3919), `conformance/lite-relay/vector.json`. It contains the complete grant, public key,
 fields and public deterministic test seed as hex. These are test credentials.
 The record uses the WLG3 `293 + key-ID length` encoding, a UUID device principal

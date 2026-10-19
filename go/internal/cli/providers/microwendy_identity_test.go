@@ -375,6 +375,7 @@ func TestLiteBLEResolvesTheEnrolledDeviceIDFromCloud(t *testing.T) {
 	t.Cleanup(func() { LiteBoardIdentityResolver = previous })
 	for _, tc := range []struct {
 		name, advertised string
+		tenant           string
 		lookupErr        error
 		wantLookup       bool
 		want             string
@@ -382,6 +383,8 @@ func TestLiteBLEResolvesTheEnrolledDeviceIDFromCloud(t *testing.T) {
 		{name: "cloud match", wantLookup: true, want: "operator refresh refused"},
 		{name: "cloud refusal", lookupErr: errors.New("no enrollment carries its hardware id"), wantLookup: true, want: "no enrollment carries its hardware id"},
 		{name: "advertised id preferred", advertised: enrolled, want: "operator refresh refused"},
+		// No session holds the principal's tenant: refuse without asking Cloud.
+		{name: "advertised foreign tenant", advertised: enrolled, tenant: "33333333-3333-4333-8333-333333333333", want: "no operator login matches the device's advertised tenant"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			looked := false
@@ -393,7 +396,7 @@ func TestLiteBLEResolvesTheEnrolledDeviceIDFromCloud(t *testing.T) {
 				return localLiteTenant, enrolled, tc.lookupErr
 			}
 			LiteIdentityResolver = func(_ context.Context, auth *config.AuthConfig) (config.CertificateInfo, string, error) {
-				if tc.lookupErr != nil {
+				if tc.lookupErr != nil || tc.tenant != "" {
 					t.Fatal("resolved an operator identity for a board it cannot pin")
 				}
 				if auth.Name != "work" {
@@ -401,8 +404,8 @@ func TestLiteBLEResolvesTheEnrolledDeviceIDFromCloud(t *testing.T) {
 				}
 				return config.CertificateInfo{}, "", errors.New("operator refresh refused")
 			}
-			tenant := ""
-			if tc.advertised != "" {
+			tenant := tc.tenant
+			if tc.advertised != "" && tenant == "" {
 				tenant = localLiteTenant
 			}
 			_, err := (&MicroWendyProvider{}).connectClient(context.Background(), models.ExternalDevice{

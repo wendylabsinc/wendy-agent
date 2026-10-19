@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudunenroll"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
@@ -64,8 +65,8 @@ func resolveLiteBoardIdentity(ctx context.Context, hardwareID string) (string, s
 	}
 	var ids []string
 	for _, asset := range assets {
-		if isLiteBoardAsset(asset.v2, hardwareID) && asset.v2.GetPkiDeviceName() != "" {
-			ids = append(ids, asset.v2.GetPkiDeviceName())
+		if id := cloudunenroll.DeviceID(asset.v2); isLiteBoardAsset(asset.v2, hardwareID) && id != "" {
+			ids = append(ids, id)
 		}
 	}
 	const noAdvert = "this board's firmware does not advertise its enrolled device ID over BLE"
@@ -141,7 +142,7 @@ func cloudLiteSelectedDevice(auth *config.AuthConfig, asset *cloudpbv2.Asset, se
 				"assetId":  asset.GetId(),
 				"cloud":    auth.CloudGRPC,
 				"tenantId": auth.Certificates[0].TenantUUID(),
-				"deviceId": asset.GetPkiDeviceName(),
+				"deviceId": cloudunenroll.DeviceID(asset),
 			},
 			IsWendyDevice:   true,
 			OS:              asset.GetOsType(),

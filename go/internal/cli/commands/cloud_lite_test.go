@@ -574,6 +574,8 @@ func TestLiteBLEResolvesBoardIdentityBySerial(t *testing.T) {
 		{name: "zero", assets: []*cloudpbv2.Asset{unenrollTestCloudDevice(second, "desk", "0a0b0c0d0e0f").v2}, want: "or enroll the board"},
 		{name: "many", assets: []*cloudpbv2.Asset{board, unenrollTestCloudDevice(second, "desk", hardwareID).v2}, want: "remove the extra ones"},
 		{name: "not Lite", assets: []*cloudpbv2.Asset{{Id: second, PkiDeviceName: proto.String(second), OsType: proto.String("wendyos"), SerialNumber: proto.String(hardwareID), OrganizationId: testOperatorTenant}}, want: "or enroll the board"},
+		{name: "pre-873 shape", assets: []*cloudpbv2.Asset{liteAssetShapes(liteTestAssetID, hardwareID)["pre-873"]}},
+		{name: "post-873 shape", assets: []*cloudpbv2.Asset{liteAssetShapes(liteTestAssetID, hardwareID)["post-873"]}},
 		{name: "offline", listErr: errors.New("cloud down"), want: "sign in to Wendy Cloud to resolve this board's identity"},
 		{name: "signed out", noAuth: true, want: "sign in to Wendy Cloud to resolve this board's identity"},
 	} {

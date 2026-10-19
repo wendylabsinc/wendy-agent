@@ -89,7 +89,7 @@ func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, hardwareID 
 	}
 	var matches []cloudDiscoveryDevice
 	for _, device := range devices {
-		identityMatch := device.v2 != nil && device.v2.GetPkiDeviceName() == identity
+		identityMatch := device.v2 != nil && cloudunenroll.DeviceID(device.v2) == identity
 		if hardwareID != "" {
 			identityMatch = isLiteBoardAsset(device.v2, hardwareID)
 		}
@@ -122,7 +122,7 @@ func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, hardwareID 
 // stale assets that share the board's serial are left alone.
 func resolveEnrolledLiteDevice(devices []cloudDiscoveryDevice, enrolledDeviceID string) (cloudDiscoveryDevice, error) {
 	for _, device := range devices {
-		if device.v2 != nil && isLiteCloudAsset(device.v2) && device.v2.GetPkiDeviceName() == enrolledDeviceID {
+		if device.v2 != nil && isLiteCloudAsset(device.v2) && cloudunenroll.DeviceID(device.v2) == enrolledDeviceID {
 			return device, nil
 		}
 	}
@@ -256,7 +256,7 @@ func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, har
 		if device.v2.GetOrganizationId() != auth.Certificates[0].TenantUUID() {
 			return fmt.Errorf("cloud asset does not belong to the selected organization")
 		}
-		if device.v2.GetPkiDeviceName() == "" {
+		if cloudunenroll.DeviceID(device.v2) == "" {
 			return fmt.Errorf("asset %s has no device enrollment binding", device.key)
 		}
 	}
