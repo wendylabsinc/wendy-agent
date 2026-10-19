@@ -309,7 +309,8 @@ jobs:
           # positional after it shifts down — which silently handed test-ci.sh a
           # nonsense argument list. Send a sentinel instead of an empty word; it
           # must contain no shell metacharacters, since the remote shell parses
-          # that string. The cache cap is a plain number for the same reason.
+          # that string. The cache cap must be a plain number for the same reason.
+          [[ "$WENDY_BUILD_CACHE_MAX_BYTES" =~ ^[0-9]+$ ]] || { echo "::error::WENDY_BUILD_CACHE_MAX_BYTES must be a whole number of bytes."; exit 1; }
           if "${SSH[@]}" env "WENDY_BUILD_CACHE_MAX_BYTES=$WENDY_BUILD_CACHE_MAX_BYTES" bash -s -- "$WORKDIR" "$BUILDER" "${DOCKER_HOST:-__unset__}" "$INPUT_HOSTNAME" "${TEST_ARGS[@]}" <<'REMOTE'
           set -euo pipefail
           WORKDIR="$1"; shift

@@ -196,6 +196,8 @@ jobs:
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
           SSH_ENV="export PATH='$PATH' WENDY_BUILD_CACHE_MAX_BYTES='$WENDY_BUILD_CACHE_MAX_BYTES'"
+          # The remote shell parses this string, so the cache cap must be a plain number.
+          [[ "$WENDY_BUILD_CACHE_MAX_BYTES" =~ ^[0-9]+$ ]] || { echo "::error::WENDY_BUILD_CACHE_MAX_BYTES must be a whole number of bytes."; exit 1; }
 
           INFO=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy device info --json --device '$DEVICE_HOSTNAME'" || true)
           echo "$INFO" | jq '{osVersion, agentVersion: .version, deviceType}' || true
@@ -211,6 +213,8 @@ jobs:
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
           SSH_ENV="export PATH='$PATH' WENDY_BUILD_CACHE_MAX_BYTES='$WENDY_BUILD_CACHE_MAX_BYTES'"
+          # The remote shell parses this string, so the cache cap must be a plain number.
+          [[ "$WENDY_BUILD_CACHE_MAX_BYTES" =~ ^[0-9]+$ ]] || { echo "::error::WENDY_BUILD_CACHE_MAX_BYTES must be a whole number of bytes."; exit 1; }
 
           # wendy os update blocks until the device reboots and comes back
           # online, with a 5-minute internal timeout.
