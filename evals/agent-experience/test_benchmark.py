@@ -235,7 +235,7 @@ class MetricsTests(unittest.TestCase):
                       {"type": "result", "result": "done"}]
             (attempt / "agent.stdout").write_text("\n".join(json.dumps(e) for e in events) + "\n")
             dump(attempt / "result.json", {"task": "deploy-http", "agent": "c", "target": "sim",
-                                           "metrics": {}, "status": "failed", "success": True, "task_seconds": 1.0, "tool_choice": None})
+                                           "metrics": {"tokens": None, "usage_complete": False}, "status": "failed", "success": True, "task_seconds": 1.0, "tool_choice": None})
             before = (attempt / "result.json").read_bytes()
             tasks = [{"id": "deploy-http", "expect": {"right": [{"tool": "run"}], "wrong": []}}]
             out = b.rescore(path, tasks, [])
@@ -244,6 +244,57 @@ class MetricsTests(unittest.TestCase):
             self.assertEqual(rows[0]["tool_choice"]["outcome"], "right")
             self.assertEqual((attempt / "result.json").read_bytes(), before)
             self.assertTrue((out / "summary.json").exists() and (out / "summary.md").exists())
+
+    def _rescore_dir(self, path):
+        dump = lambda f, v: f.write_text(json.dumps(v))
+        dump(path / "manifest.json", {"config": {"agents": {"c": {"adapter": "claude"}}}})
+        def attempt(name, **extra):
+            d = path / name
+            d.mkdir()
+            dump(d / "result.json", {"task": "t", "agent": "c", "target": "sim", "metrics": {"tokens": None, "usage_complete": False},
+                                     "status": "failed", "success": True, "task_seconds": 1.0, "tool_choice": None, **extra})
+            return d
+        return attempt
+
+    @staticmethod
+    def _stdout(directory):
+        events = [{"type": "assistant", "message": {"content": [
+                      {"type": "tool_use", "id": "1", "name": "mcp__wendy__run", "input": {}}]}},
+                  {"type": "result", "result": "done", "usage": {"input_tokens": 5, "output_tokens": 7}}]
+        (directory / "agent.stdout").write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+    def test_rescore_keeps_saved_accounting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            d = self._rescore_dir(path)("a")
+            self._stdout(d)
+            out = b.rescore(path, [{"id": "t", "expect": {"right": [{"tool": "run"}], "wrong": []}}], [])
+            row = json.loads((out / "results.jsonl").read_text().splitlines()[0])
+            self.assertIs(row["metrics"]["usage_complete"], False)
+            self.assertIsNone(row["metrics"]["tokens"])
+            self.assertEqual(row["tool_choice"]["outcome"], "right")
+
+    def test_rescore_carries_unreadable_attempts_through(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            make = self._rescore_dir(path)
+            self._stdout(make("a"))
+            make("b", tool_choice={"outcome": "wrong"})
+            make("c", agent="ghost")
+            out = b.rescore(path, [{"id": "t", "expect": {"right": [{"tool": "run"}], "wrong": []}}], [])
+            rows = {json.loads(l)["tool_choice"] and json.loads(l)["agent"] + json.loads(l)["tool_choice"]["outcome"]
+                    for l in (out / "results.jsonl").read_text().splitlines()}
+            self.assertEqual(rows, {"cright", "cwrong", None})
+
+    def test_rescore_looks_up_expect_by_kind(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            self._stdout(self._rescore_dir(path)("a"))
+            tasks = [{"id": "t", "expect": {"right": [{"tool": "run"}], "wrong": []}}]
+            scenarios = [{"id": "t", "expect": {"right": [{"tool": "other"}], "wrong": []}}]
+            out = b.rescore(path, tasks, scenarios)
+            row = json.loads((out / "results.jsonl").read_text().splitlines()[0])
+            self.assertEqual(row["tool_choice"]["outcome"], "right")
 
 
 if __name__ == "__main__":

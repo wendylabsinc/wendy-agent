@@ -273,24 +273,28 @@ def report(rows, output):
 
 def rescore(results_dir, tasks, scenarios):
     # Regrade saved attempts from their logs; originals are never modified and nothing is executed.
+    # Only metrics.tool_trace and tool_choice change: saved accounting (tokens, usage_complete, cost) is kept.
     agents = json.loads((results_dir / "manifest.json").read_text())["config"]["agents"]
-    expects = {t["id"]: t for t in (*tasks, *scenarios)}
+    expects = {False: {t["id"]: t for t in tasks}, True: {s["id"]: s for s in scenarios}}
     out = results_dir / ("rescored-" + time.strftime("%Y%m%d-%H%M%S"))
     out.mkdir()
     rows = []
     for path in sorted(results_dir.glob("*/result.json")):
         row, directory = json.loads(path.read_text()), path.parent
-        adapter = agents[row["agent"]]["adapter"]
+        adapter = agents.get(row.get("agent"), {}).get("adapter")
+        if adapter is None or not (directory / "agent.stdout").exists() or not isinstance(row.get("metrics"), dict):
+            rows.append(row)
+            continue
         events, _ = read_events(directory / "agent.stdout")
         extra = {k: read_jsonl(directory / f"{f}.jsonl") if (directory / f"{f}.jsonl").exists() else None
                  for k, f in (("proxy_records", "proxy"), ("cli_records", "cli"))}
-        row["metrics"] = {**row.get("metrics", {}), **metrics(adapter, events)}
-        row["metrics"]["tool_trace"] = build_trace(adapter, events, **extra)
-        item = expects.get(row["task"], {})
+        live = metrics(adapter, events)
+        row["metrics"]["tool_trace"] = trace = build_trace(adapter, events, **extra)
         scenario = row.get("kind") == "scenario"
-        row["tool_choice"] = (grade(row["metrics"]["tool_trace"], item["expect"], row["metrics"]["final_text"],
-                                    row["metrics"]["agent_completed"], group=row.get("group") if scenario else None,
-                                    adapter=adapter) if item.get("expect") else None)
+        item = expects[scenario].get(row.get("task"), {})
+        row["tool_choice"] = (grade(trace, item["expect"], live["final_text"], live["agent_completed"],
+                                    group=row.get("group") if scenario else None, adapter=adapter)
+                              if item.get("expect") else None)
         if scenario:
             row["success"] = bool(row["tool_choice"]) and row["tool_choice"]["outcome"] in ("right", "asked")
         rows.append(row)
