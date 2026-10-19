@@ -4,10 +4,10 @@
 
 The public package connects to the Wendy CLI relay at `https://mcp.wendy.dev`
 using Streamable HTTP and the `mcp:relay` OAuth scope. The public MCP entry is
-`wendy-relay`. For submission-portal compatibility, its OAuth configuration
-provides ChatGPT's published client ID, `https://chatgpt.com/oauth/client.json`,
-explicitly with token authentication `none`. Wendy still resolves and validates
-that client metadata and requires PKCE. No client secret is packaged. Empty
+`wendy-relay`. Its OAuth configuration declares the documented CIMD client form,
+`client.mode: cimd`, with no client ID or credentials. Wendy resolves and
+validates ChatGPT's client metadata document and requires PKCE. No client secret
+is packaged. Empty
 default scopes and disabled OIDC prevent unrelated login scopes from being added.
 A signed-in, compatible CLI must run on a computer while ChatGPT uses
 the plugin. Connect with the same Wendy account and organization, then ask

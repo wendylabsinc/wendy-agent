@@ -63,25 +63,40 @@ func TestConfigUsesSelectedPKI(t *testing.T) {
 }
 func TestConfigDefaultsLiteBrokerForSelectedCloud(t *testing.T) {
 	auth := authFixture(t)
-	for _, tc := range []struct{ cloud, override, want string }{
-		{"api.dev.wendy.sh:443", "", "tunnel.dev.wendy.dev"},
-		{"https://api.dev.wendy.sh", "", "tunnel.dev.wendy.dev"},
-		{"api.dev.wendy.dev:443", "", "tunnel.dev.wendy.dev"},
-		{"https://api.wendy.sh", "", "devices.wendy.sh"},
-		{"api.wendy.dev:443", "", "devices.wendy.dev"},
-		{"https://cloud.example:9443", "", "cloud.example"},
-		{"api.dev.wendy.sh:443", "broker.example", "broker.example"},
-		{"api.dev.wendy.sh:443", "devices.dev.wendy.sh", "devices.dev.wendy.sh"},
-		{"", "broker.example", "broker.example"},
+	for _, tc := range []struct {
+		cloud, override, want string
+		port                  uint32
+	}{
+		{"api.dev.wendy.sh", "", "tunnel.dev.wendy.dev", 5055},
+		{"api.dev.wendy.dev", "", "tunnel.dev.wendy.dev", 5055},
+		{"api.wendy.sh", "", "tunnel.wendy.dev", 5055},
+		{"api.wendy.dev", "", "tunnel.wendy.dev", 5055},
+		{"api.dev.wendy.sh:443", "", "tunnel.dev.wendy.dev", 5055},
+		{"https://api.dev.wendy.sh", "", "tunnel.dev.wendy.dev", 5055},
+		{"api.dev.wendy.dev:443", "", "tunnel.dev.wendy.dev", 5055},
+		{"https://api.dev.wendy.dev", "", "tunnel.dev.wendy.dev", 5055},
+		{"https://api.wendy.sh", "", "tunnel.wendy.dev", 5055},
+		{"api.wendy.sh:443", "", "tunnel.wendy.dev", 5055},
+		{"api.wendy.dev:443", "", "tunnel.wendy.dev", 5055},
+		{"https://api.wendy.dev", "", "tunnel.wendy.dev", 5055},
+		{"https://cloud.example:9443", "", "cloud.example", 5055},
+		{"api.dev.wendy.sh:443", "broker.example", "broker.example", 5055},
+		{"api.dev.wendy.sh:443", "devices.dev.wendy.sh", "devices.dev.wendy.sh", 5055},
+		{"api.wendy.dev:443", "broker.example", "broker.example", 9443},
+		{"api.wendy.dev:443", "devices.wendy.dev", "devices.wendy.dev", 5055},
+		{"api.wendy.sh:443", "devices.wendy.sh", "devices.wendy.sh", 5055},
+		{"api.wendy.dev:443", "", "tunnel.wendy.dev", 9443},
+		{"https://cloud.example:9443", "", "cloud.example", 7443},
+		{"", "broker.example", "broker.example", 5055},
 	} {
 		t.Run(tc.cloud+"/"+tc.override, func(t *testing.T) {
 			auth.CloudGRPC = tc.cloud
-			cfg, err := Config(auth, "lite-test", "", "https://tsa.local/time", tc.override, 5055)
+			cfg, err := Config(auth, "lite-test", "", "https://tsa.local/time", tc.override, tc.port)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.BrokerHost != tc.want || cfg.BrokerPort != 5055 {
-				t.Fatalf("broker = %s:%d, want %s:5055", cfg.BrokerHost, cfg.BrokerPort, tc.want)
+			if cfg.BrokerHost != tc.want || cfg.BrokerPort != tc.port {
+				t.Fatalf("broker = %s:%d, want %s:%d", cfg.BrokerHost, cfg.BrokerPort, tc.want, tc.port)
 			}
 		})
 	}
@@ -207,7 +222,7 @@ func TestMintTierCCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &fakeEnrollment{reply: &cloudpb.EnrollDeviceResponse{CredentialKind: "enrollment_token", TokenValue: "single-use-test", AssetId: "42", ExpiresAt: time.Now().Add(4 * time.Minute).Format(time.RFC3339)}}
-	asset, err := Mint(context.Background(), f, auth, cfg, "lite-test", nil)
+	asset, err := Mint(context.Background(), f, auth, cfg, "lite-test", nil, TrustProfile{})
 	if err != nil || asset != "42" || cfg.Token != "single-use-test" {
 		t.Fatalf("mint: %s %v", asset, err)
 	}
@@ -220,7 +235,7 @@ func TestMintTierCCredential(t *testing.T) {
 	}, func() { f.reply.ExpiresAt = time.Now().Add(time.Minute).Format(time.RFC3339); f.reply.TokenValue = "" }} {
 		mutate()
 		cfg.Token = ""
-		if asset, err := Mint(context.Background(), f, auth, cfg, "lite-test", nil); err == nil || cfg.Token != "" || asset != "42" {
+		if asset, err := Mint(context.Background(), f, auth, cfg, "lite-test", nil, TrustProfile{}); err == nil || cfg.Token != "" || asset != "42" {
 			t.Fatal("invalid credential accepted")
 		}
 	}
@@ -244,7 +259,7 @@ func TestMintIncludesLiteHardwareInSignedRequest(t *testing.T) {
 			}
 			before := proto.Clone(tc.hardware)
 			f := &fakeEnrollment{reply: &cloudpb.EnrollDeviceResponse{CredentialKind: "enrollment_token", TokenValue: "single-use-test", AssetId: "42", ExpiresAt: time.Now().Add(4 * time.Minute).Format(time.RFC3339)}}
-			if _, err := Mint(context.Background(), f, auth, cfg, "lite-test", tc.hardware); err != nil {
+			if _, err := Mint(context.Background(), f, auth, cfg, "lite-test", tc.hardware, TrustProfile{}); err != nil {
 				t.Fatal(err)
 			}
 			if !proto.Equal(f.request.GetHardware(), tc.want) {

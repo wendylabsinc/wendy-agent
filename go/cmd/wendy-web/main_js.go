@@ -468,22 +468,24 @@ func (authProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // IndexedDB operations execute inside this worker, never in the UI thread.
+// The operator key crosses into JS only as a Uint8Array for WebCrypto to wrap
+// or unwrap, and is zeroed on both sides once copied; never as a string.
 type browserCredentialStore struct{}
 
-func storageCall(method string, args ...any) (string, error) {
+func storageCall(method string, args ...any) (js.Value, error) {
 	store := js.Global().Get("wendyCredentials")
 	if store.IsUndefined() {
-		return "", errors.New("Browser credential storage is unavailable")
+		return js.Undefined(), errors.New("Browser credential storage is unavailable")
 	}
 	type result struct {
-		value string
+		value js.Value
 		err   error
 	}
 	done := make(chan result, 1)
 	success := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		value := ""
-		if len(args) > 0 && args[0].Type() == js.TypeString {
-			value = args[0].String()
+		value := js.Undefined()
+		if len(args) > 0 {
+			value = args[0]
 		}
 		done <- result{value: value}
 		return nil
@@ -500,11 +502,35 @@ func storageCall(method string, args ...any) (string, error) {
 }
 func (browserCredentialStore) Load() ([]byte, error) {
 	value, err := storageCall("load")
-	return []byte(value), err
+	if err != nil || value.Type() != js.TypeString {
+		return nil, err
+	}
+	return []byte(value.String()), nil
 }
-func (browserCredentialStore) Save(value []byte) error {
-	_, err := storageCall("save", string(value))
+
+// Save would put the key into JS as part of a string; Session uses SaveWrapped.
+func (browserCredentialStore) Save([]byte) error {
+	return errors.New("The operator key must be saved wrapped")
+}
+func (browserCredentialStore) SaveWrapped(session, seed []byte, aad string) error {
+	buf := js.Global().Get("Uint8Array").New(len(seed))
+	js.CopyBytesToJS(buf, seed)
+	defer buf.Call("fill", 0)
+	_, err := storageCall("saveWrapped", string(session), buf, aad)
 	return err
+}
+func (browserCredentialStore) LoadKey(aad string) ([]byte, error) {
+	value, err := storageCall("loadKey", aad)
+	if err != nil {
+		return nil, err
+	}
+	if !value.InstanceOf(js.Global().Get("Uint8Array")) {
+		return nil, errors.New("Browser returned no operator key")
+	}
+	defer value.Call("fill", 0)
+	seed := make([]byte, value.Length())
+	js.CopyBytesToGo(seed, value)
+	return seed, nil
 }
 func (browserCredentialStore) Clear() error { _, err := storageCall("clear"); return err }
 

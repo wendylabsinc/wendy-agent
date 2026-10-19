@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "wendyos",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Inspect and troubleshoot robots, edge devices, and their apps in ChatGPT. Read logs, check app states, capture camera snapshots, and control permitted apps through a paired Wendy CLI session.",
   "author": {
     "name": "Wendy Labs Inc.",
@@ -35,7 +35,7 @@
         "termsOfServiceURL": "https://wendy.dev/terms"
       },
       "publication": {
-        "release_notes": "Provides ChatGPT's published OAuth client ID explicitly for compatibility with the submission portal. Requests only mcp:relay, clears inherited default scopes, and uses PKCE without a client secret. Retains the wendy-relay MCP entry, hosted endpoint, curated device workflow skill, walkthrough URL, and review cases.",
+        "release_notes": "Declares the CIMD OAuth client form per OpenAI's OAuth configuration reference; no other change.",
         "countries": []
       },
       "review": {

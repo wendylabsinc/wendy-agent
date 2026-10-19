@@ -934,6 +934,11 @@ var CloudRelayDialer func(ctx context.Context, device models.ExternalDevice, ren
 // The commands package owns credential persistence and installs this hook.
 var LiteIdentityResolver func(ctx context.Context, auth *config.AuthConfig) (config.CertificateInfo, string, error)
 
+// LiteDeviceCAChainResolver returns the session tenant's Lite Device CA chain
+// loader, so LAN and BLE verify Lite-issued boards like the Cloud relay does.
+// The commands package installs it; nil leaves only the session's trust.
+var LiteDeviceCAChainResolver func(auth *config.AuthConfig) liteclient.LiteDeviceCAChain
+
 // connectClient opens a WendyLiteClient connection to the device over serial,
 // LAN or BLE (with mTLS when the device advertises it), or through the Wendy
 // Cloud relay. The caller must Close the client.
@@ -964,14 +969,14 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 				return nil, err
 			}
 			if legacy != nil {
-				if err := connectWithLegacyCLIIdentities(ctx, legacy.orgID, func(cert tls.Certificate, chain string) error {
+				if err := connectWithLegacyCLIIdentities(ctx, legacy.orgID, func(cert tls.Certificate, chain string, _ liteclient.LiteDeviceCAChain) error {
 					return client.ConnectWithLegacyAuthenticationContext(ctx, addr, cert, chain, legacy.orgID, legacy.assetID)
 				}); err != nil {
 					return nil, err
 				}
 				return client, nil
 			}
-			if err := connectWithCLIIdentities(ctx, device.ConnectionInfo["tenantId"], func(cert tls.Certificate, chain string) error {
+			if err := connectWithCLIIdentities(ctx, device.ConnectionInfo["tenantId"], func(cert tls.Certificate, chain string, lite liteclient.LiteDeviceCAChain) error {
 				if tenant := device.ConnectionInfo["tenantId"]; tenant != "" {
 					leaf, err := x509.ParseCertificate(cert.Certificate[0])
 					if err != nil {
@@ -985,7 +990,7 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 						return fmt.Errorf("client identity does not match advertised PKI tenant; sign in to the board's organization with wendy auth login --email <email>")
 					}
 				}
-				return client.ConnectWithPKIAuthenticationContext(ctx, addr, cert, chain, device.ConnectionInfo["deviceId"])
+				return client.ConnectWithPKIAuthenticationContext(ctx, addr, cert, chain, device.ConnectionInfo["deviceId"], lite)
 			}); err != nil {
 				return nil, err
 			}
@@ -1004,8 +1009,8 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 		psm64, _ := strconv.ParseUint(device.ConnectionInfo["psm"], 10, 16)
 		psm := uint16(psm64)
 		if device.ConnectionInfo["mtls"] == "true" {
-			if err := connectWithCLIIdentities(ctx, device.ConnectionInfo["tenantId"], func(cert tls.Certificate, chain string) error {
-				return client.ConnectViaBLEWithPKIAuthenticationContext(ctx, address, psm, cert, chain, device.ConnectionInfo["deviceId"])
+			if err := connectWithCLIIdentities(ctx, device.ConnectionInfo["tenantId"], func(cert tls.Certificate, chain string, lite liteclient.LiteDeviceCAChain) error {
+				return client.ConnectViaBLEWithPKIAuthenticationContext(ctx, address, psm, cert, chain, device.ConnectionInfo["deviceId"], lite)
 			}); err != nil {
 				return nil, err
 			}
@@ -1103,19 +1108,19 @@ func legacyLiteIdentity(device models.ExternalDevice) (*liteLegacyIdentity, erro
 
 // connectWithCLIIdentities tries eligible operator sessions until one connects.
 // The resolver retains the tenant credential and handles certificate renewal;
-// the separate Cloud relay authority is not used for direct connections.
-func connectWithCLIIdentities(ctx context.Context, advertisedTenant string, connect func(cert tls.Certificate, chain string) error) error {
+// tenant sessions also get the Lite Device CA chain loader the relay uses.
+func connectWithCLIIdentities(ctx context.Context, advertisedTenant string, connect func(cert tls.Certificate, chain string, lite liteclient.LiteDeviceCAChain) error) error {
 	return connectWithScopedCLIIdentities(ctx, advertisedTenant, 0, connect)
 }
 
-func connectWithLegacyCLIIdentities(ctx context.Context, orgID int32, connect func(cert tls.Certificate, chain string) error) error {
+func connectWithLegacyCLIIdentities(ctx context.Context, orgID int32, connect func(cert tls.Certificate, chain string, lite liteclient.LiteDeviceCAChain) error) error {
 	if orgID <= 0 {
 		return fmt.Errorf("legacy Wendy Lite connection requires an organization ID")
 	}
 	return connectWithScopedCLIIdentities(ctx, "", orgID, connect)
 }
 
-func connectWithScopedCLIIdentities(ctx context.Context, advertisedTenant string, legacyOrg int32, connect func(cert tls.Certificate, chain string) error) error {
+func connectWithScopedCLIIdentities(ctx context.Context, advertisedTenant string, legacyOrg int32, connect func(cert tls.Certificate, chain string, lite liteclient.LiteDeviceCAChain) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1180,7 +1185,11 @@ func connectWithScopedCLIIdentities(ctx context.Context, advertisedTenant string
 			connectErrs = append(connectErrs, fmt.Errorf("context %q: parsing Lite mTLS certificate: %w", name, err))
 			continue
 		}
-		if err := connect(cert, deviceTrust); err != nil {
+		var lite liteclient.LiteDeviceCAChain
+		if legacyOrg == 0 && LiteDeviceCAChainResolver != nil {
+			lite = LiteDeviceCAChainResolver(auth)
+		}
+		if err := connect(cert, deviceTrust, lite); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

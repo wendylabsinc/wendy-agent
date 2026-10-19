@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,22 +29,16 @@ import (
 )
 
 // Config resolves PKI endpoints and the Lite relay hostname from the selected
-// session. The dev Lite relay has separate TCP ingress from the WendyOS listener.
+// session. The Lite relay has separate TCP ingress from the WendyOS listener.
 func Config(auth *config.AuthConfig, deviceID, csrURL, timeURL, brokerHost string, brokerPort uint32) (*litepb.WendyConfEnrollment, error) {
 	if auth == nil || len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("enrollment requires a PKI operator session; run 'wendy cloud login'")
 	}
 	if brokerHost == "" {
-		endpoint, err := cloudrelay.DeviceEndpoint(auth.CloudGRPC, "")
+		var err error
+		brokerHost, err = cloudrelay.LiteBrokerHost(auth.CloudGRPC)
 		if err != nil {
 			return nil, fmt.Errorf("derive WendyCom broker hostname; pass --broker-host: %w", err)
-		}
-		brokerHost, _, err = net.SplitHostPort(endpoint)
-		if err != nil {
-			return nil, fmt.Errorf("derive WendyCom broker hostname; pass --broker-host: %w", err)
-		}
-		if brokerHost == "devices.dev.wendy.sh" || brokerHost == "api.dev.wendy.dev" {
-			brokerHost = "tunnel.dev.wendy.dev"
 		}
 	}
 	principal, err := certs.ParsePrincipal(auth.Certificates[0].PrincipalURI)
@@ -90,8 +83,13 @@ func Config(auth *config.AuthConfig, deviceID, csrURL, timeURL, brokerHost strin
 }
 
 // Mint obtains the single-use credential after Cloud reserves the device asset.
-func Mint(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, cfg *litepb.WendyConfEnrollment, name string, hardware *cloudpb.DeviceHardware) (string, error) {
-	artifact, err := cloudrequest.EnrollmentRequestForClass(auth, cfg.DeviceId, "C")
+func Mint(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, cfg *litepb.WendyConfEnrollment, name string, hardware *cloudpb.DeviceHardware, profile TrustProfile) (string, error) {
+	if !cfg.ProvisionTrust {
+		// Firmware-pinned roots cannot trust a newly selected authority until
+		// its roots have been provisioned over USB.
+		profile = profile.WithExistingDeviceIssuer()
+	}
+	artifact, err := cloudrequest.EnrollmentRequestForChain(auth, cfg.DeviceId, "C", profile.chainAlgorithm())
 	if err != nil {
 		return "", err
 	}

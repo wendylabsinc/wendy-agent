@@ -108,6 +108,9 @@ var errTLSHandshakeRejected = errors.New("TLS handshake rejected by device")
 type tlsHandshakeRejectedError struct {
 	cause         error
 	refreshReason string
+	// switchStep, when set, is the advice to follow instead of renewing the
+	// current auth context, which would not fix this rejection (WDY-3864).
+	switchStep string
 }
 
 func newTLSHandshakeRejectedError(cause error) error {
@@ -282,7 +285,7 @@ func chooseRejectionError(ctx context.Context, observedDeviceOrg int32, allCerts
 			cause:    cause,
 		}
 	}
-	rejection := tlsHandshakeRejectedError{cause: cause}
+	rejection := tlsHandshakeRejectedError{cause: cause, switchStep: switchContextStep(observedDeviceOrg)}
 	if isTLSCertificateError(cause) {
 		rejection.refreshReason = expiredClientCertificateReason(observedDeviceOrg, allCerts, time.Now())
 	}
@@ -472,7 +475,12 @@ var confirmDefaultNoFn = func(question string) bool {
 	return err == nil && ok
 }
 
-var refreshAllCertsFn = refreshAllCerts
+// refreshCurrentCertsFn renews the current auth context only (WDY-3864);
+// stubbed in tests.
+var refreshCurrentCertsFn = func(ctx context.Context) error { return refreshCerts(ctx, false) }
+
+// refreshCertsForAuthFn renews one auth entry; stubbed in tests.
+var refreshCertsForAuthFn = refreshCertsForAuth
 
 // maxHandshakeTimeoutRetries bounds automatic retries of a direct device
 // connection that failed with a handshake-timeout-class error (see
@@ -1182,6 +1190,11 @@ func connectResolvedAgentKeyed(ctx context.Context, hostname, addr, pinKey strin
 // an interactive device picker is presented (unless running in --json mode).
 func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.AgentConnection, error) {
 	conn, err := connectToAgentInner(ctx, opts...)
+	if err != nil {
+		if cloudConn, cloudErr, attempted := connectUnresolvedCloudName(ctx, deviceFlag, err, opts...); attempted {
+			conn, err = cloudConn, cloudErr
+		}
+	}
 	if err == nil {
 		noteEnvDevice("")
 	}
@@ -3394,6 +3407,18 @@ func ExcludeProviders(keys ...string) resolveOption {
 // device, so the clock fix applies to info, run, deploy, ros2 bag, etc.
 func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice, error) {
 	sel, err := resolveTargetInner(ctx, opts...)
+	if err != nil {
+		device := resolveOptionsDevice(opts)
+		if device == "" {
+			device = deviceFlag
+		}
+		if conn, cloudErr, attempted := connectUnresolvedCloudName(ctx, device, err, opts...); attempted {
+			err = cloudErr
+			if err == nil {
+				sel = &SelectedDevice{Agent: conn}
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

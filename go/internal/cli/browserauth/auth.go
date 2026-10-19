@@ -147,7 +147,10 @@ func (s *Session) Begin(ctx context.Context, email, redirect string) (string, er
 	if e != nil || u.User != nil || u.Path != "/auth/callback" || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && u.Host == "localhost:5173")) {
 		return "", errors.New("Invalid browser callback")
 	}
-	issuer := s.settings().AuthBase + "/realms/system"
+	// Like `wendy auth login`: with no pinned realm the browser starts at the
+	// realm-less universal page and the realm arrives as the callback issuer.
+	// The system realm is never a login target.
+	issuer := ""
 	if email != "" {
 		body, _ := json.Marshal(map[string]string{"email": email})
 		b, r, e := s.request(ctx, "POST", s.settings().AuthBase+"/api/login/realm", string(body), map[string]string{"Content-Type": "application/json"})
@@ -159,18 +162,29 @@ func (s *Session) Begin(ctx context.Context, email, redirect string) (string, er
 		}
 		var out struct {
 			LoginURL string `json:"loginURL"`
+			Realm    string `json:"realm"`
+			State    string `json:"state"`
 		}
 		if e = json.Unmarshal(b, &out); e != nil {
 			return "", e
 		}
-		issuer, e = s.issuerFromRealmLoginURL(out.LoginURL)
-		if e != nil {
-			return "", e
+		if out.Realm != "" {
+			out.LoginURL = "/realms/" + out.Realm
+		}
+		if out.State != "unknown" && out.LoginURL != "" {
+			if issuer, e = s.issuerFromRealmLoginURL(out.LoginURL); e != nil {
+				return "", e
+			}
+		}
+		if issuer == s.settings().AuthBase+"/realms/system" {
+			issuer = ""
 		}
 	}
-	m, e := s.discover(ctx, issuer)
-	if e != nil {
-		return "", e
+	m := metadata{Authorize: s.settings().AuthBase + "/authorize"}
+	if issuer != "" {
+		if m, e = s.discover(ctx, issuer); e != nil {
+			return "", e
+		}
 	}
 	private, e := certs.GenerateMLDSAKeyPair()
 	if e != nil {
@@ -192,6 +206,9 @@ func (s *Session) Begin(ctx context.Context, email, redirect string) (string, er
 	s.certificate = config.CertificateInfo{}
 	challenge := sha256.Sum256([]byte(s.verifier))
 	q := url.Values{"response_type": {"code"}, "client_id": {s.settings().ClientID}, "redirect_uri": {redirect}, "scope": {"openid email profile groups"}, "resource": {s.settings().IdentityResource}, "state": {s.state}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"}}
+	if issuer == "" && email != "" {
+		q.Set("login_hint", email)
+	}
 	return m.Authorize + "?" + strings.ReplaceAll(q.Encode(), "+", "%20"), nil
 }
 func (s *Session) exchange(ctx context.Context, form url.Values) (token, error) {
@@ -239,8 +256,11 @@ func (s *Session) Complete(ctx context.Context, code, state, issuer string) (Pro
 		return Profile{}, errors.New("Login expired; start sign-in again")
 	}
 	s.state = "" // Consume before network access, including failed code exchanges.
-	if issuer != s.meta.Issuer {
+	if s.meta.Issuer != "" && issuer != s.meta.Issuer {
 		return Profile{}, errors.New("Authentication issuer changed; start sign-in again")
+	}
+	if s.meta.Issuer == "" && (!s.validIssuer(issuer) || issuer == s.settings().AuthBase+"/realms/system") {
+		return Profile{}, errors.New("Sign-in did not identify a valid organization realm; start sign-in again")
 	}
 	if code == "" {
 		return Profile{}, errors.New("No authorization code received")

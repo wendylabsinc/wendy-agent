@@ -63,6 +63,16 @@ The command resolves the name as follows:
 
 If Cloud refuses the name — because it breaks the rule above, or because another device in the organization already holds it — it says so and stops. Nothing is minted on that path, so retrying with a different name costs nothing.
 
+## Device requirements
+
+Before anything is reserved in Cloud, enrollment asks the agent whether it can enroll directly with PKI. An agent that cannot says why, and the command stops there:
+
+```
+this device cannot enroll directly with PKI: "direct PKI enrollment needs macOS 26 or later to verify ML-DSA certificate chains; this Mac runs macOS 15.5" (no Cloud reservation made)
+```
+
+**Mac targets need macOS 26 or later.** Wendy's device certificates chain to ML-DSA (post-quantum) CAs, and the macOS agent can verify that chain only from macOS 26. On macOS 15 the Mac still runs apps with `wendy run`; update macOS to enroll it. An agent too old to report direct PKI enrollment at all stops with `update the agent before enrolling`.
+
 ## Flags
 
 | Flag | Default | Description |
@@ -103,6 +113,10 @@ erasure it obtains fresh authenticated Roughtime and checks freshness/validity
 throughout that interval. This reset-only query does not discipline the clock or
 read/write a clock floor. Missing proof, unavailable time or failed checks retain
 credentials for retry even after Cloud unenrollment finishes.
+
+The macOS Swift Agent does not support this direct PKI reset workflow yet. It
+reports `cloud_authenticated_reset_supported=false`, so the CLI stops before
+Cloud changes. Direct PKI `Unprovision` requests retain the Mac's credentials.
 
 AAA v0.22 (retained in v0.24), §5.1/§7(4), excludes removal-only unenrollment
 from step-up. No browser/passkey confirmation is required for asset deletion,

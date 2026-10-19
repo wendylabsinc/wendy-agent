@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,8 +16,12 @@ import (
 )
 
 func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
+	listDesc := "List configured devices, local simulators (vm:NAME; device_connect boots a stopped one) and online cloud devices; scan=true adds LAN discovery. Pass a returned device selector to device_connect or run. Cloud and simulator failures appear as warnings. On Linux, a USB-C-tethered device the host can't reach until a person approves a one-time setup appears as a usb warning: relay its instructions to the user."
+	if s.relay {
+		listDesc = "List configured and online cloud devices; scan=true adds LAN discovery. Pass a returned device selector to device_connect or run. Cloud failures appear as warnings. On Linux, a USB-C-tethered device the host can't reach until a person approves a one-time setup appears as a usb warning: relay its instructions to the user."
+	}
 	listOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("List configured and online cloud devices; scan=true adds LAN discovery. Pass a returned device selector to device_connect or run. Cloud failures appear as warnings. On Linux, a USB-C-tethered device the host can't reach until a person approves a one-time setup appears as a usb warning: relay its instructions to the user."),
+		mcpgo.WithDescription(listDesc),
 		mcpgo.WithBoolean("scan", mcpgo.Description("If true, run a live mDNS scan (3 s) in addition to returning configured devices")),
 		mcpgo.WithString("cloud_grpc", mcpgo.Description("Cloud gRPC endpoint to use (optional when a default auth session is selected via 'wendy auth use')")),
 		mcpgo.WithInteger("max_bytes", mcpgo.Min(1), mcpgo.Max(1000000), mcpgo.DefaultNumber(16384), mcpgo.Description("JSON byte limit; complete devices retained with omitted count")),
@@ -112,14 +117,22 @@ func (s *mcpServer) handleDeviceList(ctx context.Context, req mcpgo.CallToolRequ
 		}
 	}
 
+	simulators, simulatorErr := s.listSimulatorDevices(ctx)
 	cloud := <-cloudResults
 	devices = append(devices, cloud.devices...)
+	devices = append(devices, simulators...)
 	out := map[string]any{}
 	var warnings []map[string]any
 	if cloud.err != nil {
 		warnings = append(warnings, map[string]any{
 			"source":  "cloud",
 			"message": fmt.Sprintf("Cloud discovery unavailable: %s", cloud.err),
+		})
+	}
+	if simulatorErr != nil {
+		warnings = append(warnings, map[string]any{
+			"source":  "simulator",
+			"message": fmt.Sprintf("Simulator listing unavailable: %s", simulatorErr),
 		})
 	}
 	if s.usbSetupNoticeFn != nil {
@@ -131,6 +144,44 @@ func (s *mcpServer) handleDeviceList(ctx context.Context, req mcpgo.CallToolRequ
 		out["warnings"] = warnings
 	}
 	return okRowsBounded("devices", devices, out, maxBytes, len(devices)), nil
+}
+
+// hostSimulators reports whether this server manages VMs on its own host: not
+// from inside a device container, and not for a hosted relay chat, whose
+// device_list is the reviewed one.
+func (s *mcpServer) hostSimulators() bool {
+	return s.simulators.List != nil && !s.relay && os.Getenv("WENDY_AGENT_SOCKET") == ""
+}
+
+// listSimulatorDevices returns the host's VMs as device_list rows. Their
+// vm:NAME selector boots a stopped VM on connect but never creates one.
+func (s *mcpServer) listSimulatorDevices(ctx context.Context) ([]map[string]any, error) {
+	if !s.hostSimulators() {
+		return nil, nil
+	}
+	simulators, err := s.simulators.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]map[string]any, 0, len(simulators))
+	for _, sim := range simulators {
+		row := map[string]any{
+			"device":  sim.Device,
+			"address": sim.Device,
+			"name":    sim.Name,
+			"type":    "simulator",
+			"source":  "simulator",
+			"state":   sim.State,
+		}
+		if sim.Profile != "" {
+			row["profile"] = sim.Profile
+		}
+		if sim.Error != "" {
+			row["error"] = sim.Error
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 func (s *mcpServer) listCloudDevices(ctx context.Context, cloudGRPC string) ([]map[string]any, error) {

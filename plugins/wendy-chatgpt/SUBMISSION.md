@@ -13,14 +13,16 @@ Issuer discovery is available at
 `https://auth.wendy.dev/.well-known/oauth-authorization-server/relay`.
 It advertises authorization at `https://auth.wendy.dev/authorize`, token
 exchange at `https://auth.wendy.dev/relay/token`, PKCE S256, and client metadata
-discovery. Version 0.5.4 names ChatGPT's published URL client explicitly using
-`client.mode: provided`, `clientId: https://chatgpt.com/oauth/client.json`, and
-`tokenEndpointAuthMethod: none`. Wendy still validates the metadata for this
-client identity and requires PKCE. The package requests
-`baseScopes: ["mcp:relay"]`, `defaultScopes: []`, and `oidcEnabled: false`.
-This configuration attempts to address the submission portal's pre-defined-client
-validation error. The 0.5.4 Connect attempt still reports a missing client ID;
-successful portal save and token exchange remain unverified.
+discovery. Version 0.5.5 declares the documented CIMD client form,
+`client: {"mode": "cimd"}`, with no client ID or credentials, per OpenAI's
+[OAuth configuration reference](https://developers.openai.com/plugins/build/plugins#oauth-configuration-reference).
+Wendy validates ChatGPT's client metadata document and requires PKCE. The
+package requests `baseScopes: ["mcp:relay"]`, `defaultScopes: []`, and
+`oidcEnabled: false`. Successful portal save and token exchange remain
+unverified.
+
+2026-10-18: 0.5.5 returns `auth.client` to `{"mode": "cimd"}`; the portal
+rejected the 0.5.4 explicit provided client and the omitted-client candidate.
 
 Do not use the standalone gateway's `wendy-chatgpt` client or its
 `robots:read`, `cameras:capture`, `apps:control`, and `preferences:write` scopes

@@ -102,6 +102,22 @@ func TestTeleopWireCommandsWithFixturePeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
+	// Validation can finish before SCTP acknowledges the validation response.
+	// Wait for those bytes to drain before exercising Move's backlog guard.
+	drained := make(chan struct{}, 1)
+	c.channel.OnBufferedAmountLow(func() {
+		select {
+		case drained <- struct{}{}:
+		default:
+		}
+	})
+	for c.channel.BufferedAmount() != 0 {
+		select {
+		case <-drained:
+		case <-ctx.Done():
+			t.Fatal("validation response did not drain from command channel")
+		}
+	}
 	if err = c.Move(ctx, .1, -.05, .2); err != nil {
 		t.Fatal(err)
 	}
