@@ -13,7 +13,11 @@ required.
 
 1. Capture the exact failing command, CLI version, MCP status and error output.
 2. Confirm the target with `device_list` or `wendy discover --json`. An empty
-   scan on new hardware routes to `wendy-device-install`.
+   scan on new hardware routes to `wendy-device-install`. While the device is
+   unreachable, a simulator can show whether the app builds, starts and serves
+   correctly, separating app defects from device faults; it cannot diagnose the
+   device itself. Choose one as the [wendy](../wendy/SKILL.md) skill's
+   *No device available* section describes.
 3. Follow [wendy-device-ops](../wendy-device-ops/SKILL.md) for device access and
    inspection of versions, connectivity, hardware and WiFi. Keep an explicit
    device selector throughout diagnosis. For Wendy Lite, check the reported
@@ -22,6 +26,12 @@ required.
    dependencies, architecture, entitlements, environment and startup logs.
 5. Use `wendy-app-lifecycle` to inspect app state and logs. A successful deploy
    or running container is not a health check. Probe the app's actual output.
+   With MCP, `container_list` shows `termination_reason` (for example
+   `ENTITLEMENT_DENIED`) and `telemetry_logs` returns app logs. Enable
+   `observability` for `app_inspect` (service states, recorded exit, recent
+   errors) and `device_os_logs` (kernel messages such as driver, USB or
+   out-of-memory events). The `diagnose_container` prompt follows these steps.
+   Read `wendy://diagnostics` when an expected MCP tool is missing.
 6. For robot sensor, DDS or stop behavior, follow `wendy-robot-deploy` and keep
    physical motion stopped during diagnosis.
 

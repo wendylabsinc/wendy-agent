@@ -16,6 +16,18 @@ import (
 
 func simulatorBackend() wendymcp.SimulatorBackend {
 	b := newSimulatorBackend(vm.NewStore, fetchMCPSimulatorImage)
+	b.Start = func(ctx context.Context, name string) (*wendymcp.SimulatorInfo, error) {
+		picked, err := connectSimulatorChoice(ctx, &simulatorChoice{Name: name}, true)
+		if err != nil {
+			return nil, err
+		}
+		defer picked.Close()
+		store, err := vm.NewStore()
+		if err != nil {
+			return nil, err
+		}
+		return readMCPSimulator(store, name)
+	}
 	b.UpdateAgent = updateMCPSimulatorAgent
 	b.Viewer = func(ctx context.Context, name string) (*wendymcp.SimulatorViewer, error) {
 		if err := vm.ValidName(name); err != nil {
@@ -130,6 +142,10 @@ func readMCPSimulator(store *vm.Store, name string) (*wendymcp.SimulatorInfo, er
 		info.State = "unknown"
 		return info, nil
 	}
+	if vm.IsLiteProfile(st.Meta.Profile) {
+		info.Profile = st.Meta.Profile
+		return info, nil
+	}
 	profile, exists, err := store.ReadRobotProfile(name)
 	if err != nil {
 		info.Error = err.Error()
@@ -146,6 +162,13 @@ func createMCPSimulator(ctx context.Context, store *vm.Store, opts wendymcp.Simu
 		return nil, err
 	}
 	if err := store.CheckCreatable(opts.Name); err != nil {
+		return nil, err
+	}
+	if vm.IsLiteProfile(opts.Profile) {
+		return createLiteSimulator(ctx, store, opts)
+	}
+	diskBytes, err := vmDiskBytes(opts.DiskGiB)
+	if err != nil {
 		return nil, err
 	}
 	var profile *vm.RobotProfile
@@ -183,10 +206,13 @@ func createMCPSimulator(ctx context.Context, store *vm.Store, opts wendymcp.Simu
 		return nil, err
 	}
 	defer stream.Close()
+	if err := checkVMImageSpace(store.DiskPath(opts.Name), stream.uncompressedSize); err != nil {
+		return nil, err
+	}
 	meta := vm.Meta{ImageVersion: version, ImageSource: source}
 	reader := simulatorContextReader{ctx: ctx, reader: stream}
-	if err := store.CreateFromWithRobotProfile(opts.Name, reader, stream.uncompressedSize, int64(opts.DiskGiB)<<30, meta, profile); err != nil {
-		return nil, err
+	if err := store.CreateFromWithRobotProfile(opts.Name, reader, stream.uncompressedSize, diskBytes, meta, profile); err != nil {
+		return nil, vmStorageError(err, store.DiskPath(opts.Name), stream.uncompressedSize, diskBytes)
 	}
 	return readMCPSimulator(store, opts.Name)
 }
@@ -227,6 +253,11 @@ func fetchMCPSimulatorImage(ctx context.Context, version string) (string, string
 }
 
 func downloadMCPSimulatorImage(ctx context.Context, dir, url string) (path string, retErr error) {
+	return downloadMCPSimulatorImageWithLimit(ctx, dir, url, 0)
+}
+
+// A positive maxBytes bounds both the declared response size and streamed data.
+func downloadMCPSimulatorImageWithLimit(ctx context.Context, dir, url string, maxBytes int64) (path string, retErr error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -239,6 +270,9 @@ func downloadMCPSimulatorImage(ctx context.Context, dir, url string) (path strin
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("simulator image download returned HTTP %d", resp.StatusCode)
+	}
+	if maxBytes > 0 && resp.ContentLength > maxBytes {
+		return "", fmt.Errorf("simulator image Content-Length %d exceeds download limit of %d bytes", resp.ContentLength, maxBytes)
 	}
 	f, err := os.CreateTemp(dir, "simulator-*.image")
 	if err != nil {
@@ -254,7 +288,20 @@ func downloadMCPSimulatorImage(ctx context.Context, dir, url string) (path strin
 			path = ""
 		}
 	}()
-	_, err = io.Copy(f, simulatorContextReader{ctx: ctx, reader: resp.Body})
+	reader := simulatorContextReader{ctx: ctx, reader: resp.Body}
+	if maxBytes > 0 {
+		if _, err := io.Copy(f, io.LimitReader(reader, maxBytes)); err != nil {
+			return path, err
+		}
+		// Probe without writing another byte, including for chunked responses.
+		if n, err := io.CopyN(io.Discard, reader, 1); n != 0 {
+			return path, fmt.Errorf("simulator image exceeds download limit of %d bytes", maxBytes)
+		} else if err != io.EOF {
+			return path, err
+		}
+		return path, nil
+	}
+	_, err = io.Copy(f, reader)
 	return path, err
 }
 

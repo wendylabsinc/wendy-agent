@@ -91,8 +91,8 @@ func TestROS2ToolsReadOnlyAndDisconnected(t *testing.T) {
 	}
 	for name, tool := range srv.ListTools() {
 		a := tool.Tool.Annotations
-		if a.ReadOnlyHint == nil || !*a.ReadOnlyHint || a.DestructiveHint == nil || *a.DestructiveHint || a.OpenWorldHint == nil || *a.OpenWorldHint {
-			t.Errorf("%s must be read-only and closed-world: %+v", name, a)
+		if a.ReadOnlyHint == nil || !*a.ReadOnlyHint || a.DestructiveHint == nil || *a.DestructiveHint || a.OpenWorldHint == nil || !*a.OpenWorldHint {
+			t.Errorf("%s must be read-only and open-world (it reaches the device): %+v", name, a)
 		}
 		result := ros2Call(t, s, context.Background(), name, map[string]any{"topic": "/lidar"})
 		if !result.IsError || structuredMap(t, result)["error_code"] != string(errCodeNotConnected) {

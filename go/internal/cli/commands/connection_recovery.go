@@ -67,10 +67,23 @@ func certificateRefreshReason(err error) string {
 func isCertRefreshableError(err error) bool { return certificateRefreshReason(err) != "" }
 
 func tlsRecoveryMessage(err error) string {
+	message := "TLS authentication failed. A wrong device clock or incompatible credentials may be responsible."
 	if reason := certificateRefreshReason(err); reason != "" {
-		return "TLS authentication failed. " + reason + "\n  Run 'wendy auth refresh-certs', then retry."
+		message = "TLS authentication failed. " + reason
 	}
-	return "TLS authentication failed. A wrong device clock or incompatible credentials may be responsible.\n  If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.\n  For connection details rerun with WENDY_TLS_DEBUG=1."
+	return message + "\n  " + strings.Join(tlsRecoveryNextSteps(err), "\n  ")
+}
+
+func tlsRecoveryNextSteps(err error) []string {
+	if certificateRefreshReason(err) != "" {
+		var rejection tlsHandshakeRejectedError
+		errors.As(err, &rejection)
+		return []string{refreshCertsStep(rejection.switchStep)}
+	}
+	return []string{
+		"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.",
+		"For connection details rerun with WENDY_TLS_DEBUG=1.",
+	}
 }
 
 func stopConnectionRecovery(err error) bool {
@@ -113,13 +126,21 @@ func offerCertRefreshAndRetry(ctx context.Context, nonInteractive bool, cause er
 		return nil, cause
 	}
 	fmt.Fprintln(os.Stderr, reason)
+	// Renewing the current context cannot fix a certificate another context
+	// holds, or one whose context is unknown, and would spend its refresh
+	// token (WDY-3864).
+	var rejection tlsHandshakeRejectedError
+	if errors.As(cause, &rejection) && rejection.switchStep != "" {
+		fmt.Fprintln(os.Stderr, rejection.switchStep)
+		return nil, cause
+	}
 	if !confirmFn("Refresh certificates and retry?") {
 		return nil, cause
 	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if err := refreshAllCertsFn(ctx); err != nil {
+	if err := refreshCurrentCertsFn(ctx); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}

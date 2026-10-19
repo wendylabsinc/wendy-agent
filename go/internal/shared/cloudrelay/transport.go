@@ -35,6 +35,25 @@ func DeviceEndpoint(cloud, override string) (string, error) {
 	}
 	return net.JoinHostPort(host, port), nil
 }
+
+// LiteBrokerHost selects the Lite device relay hostname for a Cloud endpoint.
+// Its TLS port is configured independently from the Cloud API port.
+func LiteBrokerHost(cloud string) (string, error) {
+	t, err := target(cloud)
+	if err != nil {
+		return "", err
+	}
+	host, _, _ := net.SplitHostPort(t)
+	switch host {
+	case "api.wendy.sh", "api.wendy.dev":
+		return "tunnel.wendy.dev", nil
+	case "api.dev.wendy.sh", "api.dev.wendy.dev":
+		return "tunnel.dev.wendy.dev", nil
+	default:
+		return host, nil
+	}
+}
+
 func Issuer(cloud, override string) (string, error) {
 	if override != "" {
 		u, e := url.Parse(override)

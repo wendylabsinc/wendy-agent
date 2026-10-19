@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "wendy-agentic-coding",
-  "description": "Wendy CLI setup, device installation and first-boot checks, template apps, explicit deployment targets, ROS 2 and robot verification workflows.",
-  "version": "0.6.2",
+  "description": "Build, deploy, and debug apps on robots and edge devices running WendyOS (NVIDIA Jetson, Raspberry Pi, and more). Claude can set up the Wendy CLI, install a device, create an app from a template, deploy it, read its logs, and capture sensor data with Wendy Data.",
+  "version": "0.6.3",
   "author": {
     "name": "Wendy Labs",
     "url": "https://github.com/wendylabsinc"
@@ -14,6 +14,8 @@
     "wendy",
     "wendyos",
     "wendy-json",
+    "wendy-data",
+    "data-campaigns",
     "entitlements",
     "build-run",
     "device-ops",
@@ -24,6 +26,12 @@
   ],
   "skills": "./skills/",
   "commands": "./commands/",
+  "mcpServers": {
+    "wendy": {
+      "command": "wendy",
+      "args": ["mcp", "serve"]
+    }
+  },
   "hooks": {
     "SessionStart": [
       {

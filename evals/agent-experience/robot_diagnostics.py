@@ -138,7 +138,7 @@ def prepare(args):
     Path("settings.json").write_text(json.dumps(settings, indent=2))
     manifest = json.loads(Path("wendy.json").read_text())
     manifest["frameworks"] = {"ros2": {"distro": "humble", "rmw": "rmw_cyclonedds_cpp",
-                                       "domainId": 0, "discoveryScope": "host"}}
+                                       "domainId": 0, "scope": "network"}}
     Path("wendy.json").write_text(json.dumps(manifest, indent=2))
     Path("Dockerfile").write_text('FROM ros:humble-ros-base\nRUN apt-get update && apt-get install -y --no-install-recommends ros-humble-rclpy ros-humble-nav-msgs ros-humble-rmw-cyclonedds-cpp && rm -rf /var/lib/apt/lists/*\nWORKDIR /app\nCOPY app.py settings.json ./\nCMD ["python3","-u","app.py"]\n')
     f.cli(args, "run", "--yes", "--detach", "--no-restart", "--device", args.device, timeout=900)
