@@ -5,10 +5,39 @@ package bleprovider
 import (
 	"context"
 	"errors"
+	goruntime "runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestTLSAdmissionConcurrentZeroValue(t *testing.T) {
+	var gate tlsHandshakeAdmission
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	var active atomic.Int32
+	for range 32 {
+		workers.Go(func() {
+			<-start
+			_, _, err := gate.run(ctx, 5*time.Second, time.Second, func(context.Context) error {
+				if active.Add(1) != 1 {
+					t.Error("concurrent first uses bypassed adapter admission")
+				}
+				goruntime.Gosched()
+				active.Add(-1)
+				return nil
+			})
+			if err != nil {
+				t.Errorf("first-use handshake: %v", err)
+			}
+		})
+	}
+	close(start)
+	workers.Wait()
+}
 
 func TestTLSAdmissionSerializesBothDirectionsAndStartsDeadlineAfterAdmission(t *testing.T) {
 	gate := newTLSHandshakeAdmission()

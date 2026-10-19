@@ -17,7 +17,9 @@ import (
 
 type recoveryTestNode struct{ links []localmesh.PeerLink }
 
-func (*recoveryTestNode) AttachStream(context.Context, meshid.Device, net.Conn, uint16) error { return nil }
+func (*recoveryTestNode) AttachStream(context.Context, meshid.Device, net.Conn, uint16) error {
+	return nil
+}
 func (n *recoveryTestNode) Snapshot() localmesh.NodeSnapshot {
 	return localmesh.NodeSnapshot{Links: n.links}
 }

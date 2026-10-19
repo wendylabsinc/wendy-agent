@@ -5,6 +5,7 @@ package bleprovider
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -23,7 +24,10 @@ const (
 // Wendy CoCs use it, so their large TLS flights cannot all compete for the
 // same controller's limited airtime at once. It is released before the
 // long-lived mesh stream is attached.
-type tlsHandshakeAdmission struct{ slot chan struct{} }
+type tlsHandshakeAdmission struct {
+	once sync.Once
+	slot chan struct{}
+}
 
 func newTLSHandshakeAdmission() tlsHandshakeAdmission {
 	return tlsHandshakeAdmission{slot: make(chan struct{}, 1)}
@@ -32,9 +36,11 @@ func newTLSHandshakeAdmission() tlsHandshakeAdmission {
 func (g *tlsHandshakeAdmission) run(ctx context.Context, waitBudget, handshakeBudget time.Duration, handshake func(context.Context) error) (wait, duration time.Duration, err error) {
 	// Zero value stays usable: struct-literal runtimes in tests never call
 	// the constructor, and a nil slot would block admission forever.
-	if g.slot == nil {
-		g.slot = make(chan struct{}, 1)
-	}
+	g.once.Do(func() {
+		if g.slot == nil {
+			g.slot = make(chan struct{}, 1)
+		}
+	})
 	started := time.Now()
 	waitCtx, stopWaiting := context.WithTimeout(ctx, waitBudget)
 	defer stopWaiting()

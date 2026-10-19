@@ -19,6 +19,7 @@ import (
 // was heard recently. DuplicateData=true in our discovery filter makes BlueZ
 // emit PropertiesChanged for each received ServiceData advertisement.
 const advertisementFreshnessTTL = 15 * time.Second
+const maxFreshAdvertisements = 256
 
 type freshAdvertisement struct {
 	data    []byte
@@ -66,9 +67,19 @@ func (f *advertisementFreshness) observe(path dbus.ObjectPath, props map[string]
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Limit churn between cache polls too. A rotating advertiser must not
+	// allocate an unbounded set of radio addresses during the freshness TTL.
+	for priorPath, entry := range f.seen {
+		if at.Before(entry.seen) || at.Sub(entry.seen) >= advertisementFreshnessTTL {
+			delete(f.seen, priorPath)
+		}
+	}
 	device := meshid.NewDevice(f.self.Tenant(), adv.Device)
 	if meshid.Compare(device, f.self) >= 0 {
 		delete(f.seen, path)
+		return
+	}
+	if _, exists := f.seen[path]; !exists && len(f.seen) >= maxFreshAdvertisements {
 		return
 	}
 	raw, _ := adv.MarshalBinary()

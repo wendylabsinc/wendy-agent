@@ -78,17 +78,36 @@ func (r *runtime) claim(device meshid.Device) bool {
 	r.active[device] = struct{}{}
 	return true
 }
+
+const maxPeerRetryHistory = 128
+
+// Caller holds mu. Discovery claims can rotate through arbitrary identities;
+// completed attempts must not accumulate for the provider's entire lifetime.
+func (r *runtime) expirePeerRetries(now time.Time) {
+	for device, until := range r.nextAttempt {
+		if !now.Before(until) {
+			delete(r.nextAttempt, device)
+		}
+	}
+}
+
 func (r *runtime) release(device meshid.Device) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.active, device)
-	r.nextAttempt[device] = time.Now().Add(5 * time.Second)
+	now := time.Now()
+	r.expirePeerRetries(now)
+	if _, exists := r.nextAttempt[device]; exists || len(r.nextAttempt) < maxPeerRetryHistory {
+		r.nextAttempt[device] = now.Add(5 * time.Second)
+	}
 }
 func (r *runtime) shouldDial(device meshid.Device) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := time.Now()
+	r.expirePeerRetries(now)
 	_, active := r.active[device]
-	return !active && len(r.active) < r.cfg.TargetPeers && !time.Now().Before(r.nextAttempt[device])
+	return !active && len(r.active) < r.cfg.TargetPeers && len(r.nextAttempt) < maxPeerRetryHistory && !now.Before(r.nextAttempt[device])
 }
 
 // Run advertises, scans, listens for CoC channels, and initiates channels to

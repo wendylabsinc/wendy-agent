@@ -5,6 +5,7 @@ package bleprovider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -14,6 +15,26 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
+
+func TestRuntimeRetryHistoryBoundsAndExpires(t *testing.T) {
+	r := &runtime{cfg: Config{TargetPeers: 3}, active: map[meshid.Device]struct{}{}, nextAttempt: map[meshid.Device]time.Time{}}
+	for i := range 4096 {
+		device := fixtureDevice(fmt.Sprintf("00000000-0000-4000-8000-%012x", i))
+		if !r.claim(device) {
+			t.Fatal("released peer consumed active capacity")
+		}
+		r.release(device)
+	}
+	if len(r.nextAttempt) > 128 {
+		t.Fatalf("retry history retained %d distinct peers", len(r.nextAttempt))
+	}
+	for device := range r.nextAttempt {
+		r.nextAttempt[device] = time.Now().Add(-time.Second)
+	}
+	if !r.shouldDial(lowFixture) || len(r.nextAttempt) != 0 {
+		t.Fatalf("expired cooldowns block a new peer or remain retained: %d", len(r.nextAttempt))
+	}
+}
 
 func TestCandidatesRequireMatchingServiceDataAndLowerDevice(t *testing.T) {
 	uuid := ServiceUUID(testTenant)

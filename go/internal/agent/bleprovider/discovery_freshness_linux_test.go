@@ -3,6 +3,7 @@
 package bleprovider
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,26 @@ import (
 	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
+
+func TestAdvertisementFreshnessBoundsChurnAndExpiresBeforeAdmission(t *testing.T) {
+	serviceUUID := ServiceUUID(testTenant)
+	adv, _ := NewAdvertisement(lowDevice, "field", DefaultPSM)
+	raw, _ := adv.MarshalBinary()
+	tracker := newAdvertisementFreshness("/org/bluez/hci0", serviceUUID, "field", selfFixture)
+	base := time.Unix(1_000, 0)
+	for i := range 4096 {
+		path := dbus.ObjectPath(fmt.Sprintf("/org/bluez/hci0/dev_%012x", i))
+		tracker.observe(path, meshDeviceProps(serviceUUID, raw), base)
+	}
+	if len(tracker.seen) > 256 {
+		t.Fatalf("discovery history retained %d radio addresses", len(tracker.seen))
+	}
+	path := dbus.ObjectPath("/org/bluez/hci0/dev_NEW")
+	tracker.observe(path, meshDeviceProps(serviceUUID, raw), base.Add(advertisementFreshnessTTL))
+	if _, ok := tracker.seen[path]; !ok || len(tracker.seen) != 1 {
+		t.Fatalf("expired entries prevented fresh admission or remained retained: %d", len(tracker.seen))
+	}
+}
 
 func meshDeviceProps(uuid string, raw []byte) map[string]dbus.Variant {
 	return map[string]dbus.Variant{
