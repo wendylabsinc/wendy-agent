@@ -175,7 +175,7 @@ type MDNSService struct {
 
 | Key | Value | Example |
 |---|---|---|
-| `id` | Device UUID (from `/etc/wendyos/device-uuid`) | `550e8400-e29b-41d4-a716-446655440000` |
+| `id` | Device UUID (from `/etc/wendyos/device-uuid`; once enrolled, the UUID in the device certificate) | `550e8400-e29b-41d4-a716-446655440000` |
 | `name` | Slug device name (from `/etc/wendyos/device-name`) | `my-device` |
 | `displayname` | Title-cased device name | `My Device` |
 | `fqdn` | Optional reverse-DNS name derived from the hostname when present in the service template | `sh.wendy.my-device` |

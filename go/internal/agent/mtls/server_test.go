@@ -313,15 +313,19 @@ func testCAKeyPair(t *testing.T) (cert *x509.Certificate, key *ecdsa.PrivateKey,
 // URI (the wendy org/entity identity format certs.IdentityFromCert parses),
 // returning the raw DER bytes as they would appear in tls.ConnectionState's
 // PeerCertificates during a real handshake.
-func testPeerLeafRaw(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, urn string) []byte {
+func testPeerLeafRaw(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, urn string, extra ...string) []byte {
 	t.Helper()
 	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generating leaf key: %v", err)
 	}
-	u, err := url.Parse(urn)
-	if err != nil {
-		t.Fatalf("parsing urn %q: %v", urn, err)
+	var uris []*url.URL
+	for _, raw := range append([]string{urn}, extra...) {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parsing urn %q: %v", raw, err)
+		}
+		uris = append(uris, u)
 	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
@@ -330,7 +334,7 @@ func testPeerLeafRaw(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		URIs:         []*url.URL{u},
+		URIs:         uris,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, ca, &leafKey.PublicKey, caKey)
 	if err != nil {
@@ -397,6 +401,66 @@ func TestNewClientTLSConfigExpectingPeerPinsIdentity(t *testing.T) {
 			t.Fatal("expected rejection for a leaf signed by an untrusted CA, got nil")
 		}
 	})
+}
+
+// TestVerifyPeerDevice covers the device-to-device rule (WDY-3919): one id,
+// the cert's device UUID, matched against the roster entry for the dialed
+// name, in the caller's own tenant.
+func TestVerifyPeerDevice(t *testing.T) {
+	const (
+		tenant      = "2558fd76-afc7-466e-9613-6b715296a526"
+		otherTenant = "7d1f3f0e-9c1b-4f43-8f3a-0f1e2d3c4b5a"
+		device      = "019535d9-3df7-79fb-b466-fa907fa17f9e"
+		otherDevice = "019535d9-3df7-79fb-b466-fa907fa17f9f"
+	)
+	ca, caKey, _ := testCAKeyPair(t)
+	spiffe := func(tenant, kind, id string) string {
+		return "spiffe://wendy.sh/tenant/" + tenant + "/" + kind + "/" + id
+	}
+	for _, tc := range []struct {
+		name   string
+		uris   []string
+		own    string
+		accept bool
+	}{
+		{"the roster's device in the caller's tenant", []string{spiffe(tenant, "device", device)}, tenant, true},
+		{"another device UUID", []string{spiffe(tenant, "device", otherDevice)}, tenant, false},
+		{"the same UUID in another tenant", []string{spiffe(otherTenant, "device", device)}, tenant, false},
+		{"an operator, not a device", []string{spiffe(tenant, "operator", device)}, tenant, false},
+		{"two device SANs", []string{spiffe(tenant, "device", device), spiffe(tenant, "device", otherDevice)}, tenant, false},
+		{"a legacy asset URN", []string{"urn:wendy:org:7:asset:" + device}, tenant, false},
+		{"a caller with no tenant identity", []string{spiffe(tenant, "device", device)}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			leaf, err := x509.ParseCertificate(testPeerLeafRaw(t, ca, caKey, tc.uris[0], tc.uris[1:]...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = VerifyPeerDevice(leaf, tc.own, device)
+			if tc.accept && err != nil {
+				t.Fatalf("refused: %v", err)
+			}
+			if !tc.accept && err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+}
+
+// A UUID pin takes the device rule, which has no own-tenant grace: a caller
+// with a legacy (tenantless) leaf cannot verify a device peer.
+func TestNewClientTLSConfigExpectingPeerAppliesDeviceRuleToUUIDs(t *testing.T) {
+	ca, caKey, chainPEM := testCAKeyPair(t)
+	ownCertPEM, ownKeyPEM := testLeafCertificate(t, "sh/wendy/7/1")
+	const device = "019535d9-3df7-79fb-b466-fa907fa17f9e"
+	cfg, err := NewClientTLSConfigExpectingPeer(ownCertPEM, chainPEM, ownKeyPEM, nil, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := testPeerLeafRaw(t, ca, caKey, "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/"+device)
+	if err := cfg.VerifyPeerCertificate([][]byte{leaf}, nil); err == nil {
+		t.Fatal("device peer accepted without a tenant to compare")
+	}
 }
 
 func TestNewTLSConfigServesNormalizedIssuerChain(t *testing.T) {

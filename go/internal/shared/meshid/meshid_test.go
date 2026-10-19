@@ -263,17 +263,7 @@ func TestInMeshBoundary(t *testing.T) {
 	}
 }
 
-func TestAssetStaysSeparate(t *testing.T) {
-	a, err := ParseAsset("019535d9-3df7-79fb-b466-fa907fa17f9e")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.String() != "019535d9-3df7-79fb-b466-fa907fa17f9e" {
-		t.Errorf("asset round-trip = %s", a.String())
-	}
-	if _, err := ParseAsset("42"); err == nil {
-		t.Error("numeric asset id accepted; Cloud v2 assets are UUIDs")
-	}
+func TestParseTenantRequiresCanonicalForm(t *testing.T) {
 	if _, err := ParseTenant("UPPER"); err == nil {
 		t.Error("non-canonical tenant accepted")
 	}

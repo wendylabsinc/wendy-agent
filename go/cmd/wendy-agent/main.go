@@ -917,6 +917,7 @@ func main() {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
 		_, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
+		configpartition.PersistDeviceUUID(logger, certPEM)
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
@@ -1063,6 +1064,7 @@ func main() {
 				logger.Warn("mesh roster resync after provisioning failed", zap.Error(err))
 			}
 		}()
+		configpartition.PersistDeviceUUID(logger, certPEM)
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 		if agentServer != nil {

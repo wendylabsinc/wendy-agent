@@ -7,9 +7,9 @@
 // bytes, verbatim — no hashing, packing, bit removal, or UUID-version-specific
 // transformation, and no hash fallback for non-UUID identities.
 //
-// A Cloud asset UUID is a database record ID for asset-targeted RPCs. It is
-// not a wendy net identity. The distinct types here exist so asset and device
-// UUIDs cannot be interchanged by accident.
+// The device UUID is the device's ONE id: Cloud adopts it as the asset id, the
+// roster carries it once, and peers are verified against it. There is no
+// separate asset id type.
 package meshid
 
 import (
@@ -218,20 +218,3 @@ func LinkLocalAddresses(self, peer Device) (netip.Addr, netip.Addr, error) {
 		return linkLocalUpper, linkLocalLower, nil
 	}
 }
-
-// Asset is a Cloud database record ID used for asset-targeted RPCs,
-// deployments, and relay authorization. It is deliberately a distinct type
-// from Device: an asset UUID is never a wendy net address input or a pin key.
-type Asset struct{ id uuid.UUID }
-
-// ParseAsset parses a canonical Cloud asset UUID.
-func ParseAsset(text string) (Asset, error) {
-	id, err := parseCanonical(text)
-	if err != nil {
-		return Asset{}, fmt.Errorf("asset UUID: %w", err)
-	}
-	return Asset{id}, nil
-}
-
-func (a Asset) UUID() uuid.UUID { return a.id }
-func (a Asset) String() string  { return a.id.String() }
