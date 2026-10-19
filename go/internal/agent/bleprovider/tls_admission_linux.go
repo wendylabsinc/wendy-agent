@@ -20,10 +20,11 @@ const (
 	meshTLSHandshakeTimeout = 15 * time.Second
 )
 
-// One gate belongs to one BLE adapter runtime. Both accepted and outgoing
-// Wendy CoCs use it, so their large TLS flights cannot all compete for the
-// same controller's limited airtime at once. It is released before the
-// long-lived mesh stream is attached.
+// One gate belongs to one BLE adapter runtime's accepted CoCs. Outgoing setup
+// holds dialSlot from before socket creation through authentication, so it
+// cannot queue a remote inbound flight before reserving its own setup slot.
+// Separate admission allows progress when peers dial each other concurrently;
+// at most one inbound and one outbound handshake use the adapter at a time.
 type tlsHandshakeAdmission struct {
 	once sync.Once
 	slot chan struct{}

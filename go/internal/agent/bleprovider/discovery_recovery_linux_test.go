@@ -39,7 +39,7 @@ func TestDiscoveryRecoveryRequiresSilenceAndMissingPeers(t *testing.T) {
 	}
 	first := base.Add(discoverySilenceLimit)
 	if !recovery.restartDue(first, true) {
-		t.Fatal("did not restart after mesh advertisement silence")
+		t.Fatal("did not restart after wendy net advertisement silence")
 	}
 	if recovery.restartDue(first.Add(discoveryRestartPeriod-time.Nanosecond), true) {
 		t.Fatal("restarted again before cooldown")

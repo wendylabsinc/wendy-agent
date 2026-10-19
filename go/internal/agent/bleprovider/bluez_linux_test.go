@@ -36,6 +36,51 @@ func TestRuntimeRetryHistoryBoundsAndExpires(t *testing.T) {
 	}
 }
 
+func TestCandidateAdmissionKeepsEqualHintsDistinctAndBoundsRetries(t *testing.T) {
+	r := &runtime{cfg: Config{TargetPeers: 2}, active: map[meshid.Device]struct{}{}, nextAttempt: map[meshid.Device]time.Time{}}
+	peer := func(i int) candidate {
+		return candidate{hint: deviceHint(lowDevice), addressType: "public", address: fmt.Sprintf("02:00:00:%02X:%02X:%02X", i>>16&255, i>>8&255, i&255)}
+	}
+	first, second := peer(1), peer(2)
+	if !r.claimCandidate(first) || !r.claimCandidate(second) || r.claimCandidate(peer(3)) {
+		t.Fatal("equal hints were merged or pending setup exceeded capacity")
+	}
+	r.releaseCandidate(first)
+	r.releaseCandidate(second)
+	if r.claimCandidate(first) {
+		t.Fatal("released radio bypassed its retry cooldown")
+	}
+	for i := 3; i < 4096; i++ {
+		p := peer(i)
+		if r.claimCandidate(p) {
+			r.releaseCandidate(p)
+		}
+	}
+	if len(r.pending) != 0 || len(r.radioRetry) > maxPeerRetryHistory {
+		t.Fatalf("pending=%d retry history=%d", len(r.pending), len(r.radioRetry))
+	}
+	for key := range r.radioRetry {
+		r.radioRetry[key] = time.Now().Add(-time.Second)
+	}
+	if !r.claimCandidate(peer(4096)) || len(r.radioRetry) != 0 {
+		t.Fatal("expired radio attempts prevented a new candidate")
+	}
+	r.releaseCandidate(peer(4096))
+	r.known[first.key()] = lowFixture
+	r.active[lowFixture] = struct{}{}
+	if r.claimCandidate(first) {
+		t.Fatal("known active principal was dialed again")
+	}
+	delete(r.active, lowFixture)
+	first.hint[0]++
+	if !r.claimCandidate(first) {
+		t.Fatal("changed discovery hint could not start fresh authentication")
+	}
+	if _, exists := r.known[first.key()]; exists {
+		t.Fatal("changed radio hint retained a previous principal pin")
+	}
+}
+
 func TestCandidatesRequireMatchingServiceDataAndLowerDevice(t *testing.T) {
 	uuid := ServiceUUID(testTenant)
 	otherUUID := ServiceUUID(otherTenant)
@@ -56,11 +101,11 @@ func TestCandidatesRequireMatchingServiceDataAndLowerDevice(t *testing.T) {
 		"/org/bluez/hci1/dev_D": {deviceInterface: props("AA:BB:CC:DD:EE:04", "public", uuid, raw)},
 	}
 	got := candidates(objects, "/org/bluez/hci0", uuid, "field", selfFixture)
-	if len(got) != 1 || got[0].device != lowFixture || got[0].address != "AA:BB:CC:DD:EE:01" || got[0].path != "/org/bluez/hci0/dev_A" {
+	if len(got) != 1 || got[0].hint != deviceHint(lowDevice) || got[0].address != "AA:BB:CC:DD:EE:01" || got[0].path != "/org/bluez/hci0/dev_A" {
 		t.Fatalf("candidates = %+v", got)
 	}
-	if got = candidates(objects, "/org/bluez/hci0", uuid, "field", lowFixture); len(got) != 0 {
-		t.Fatalf("higher/equal device dialed: %+v", got)
+	if got = candidates(objects, "/org/bluez/hci0", uuid, "field", lowFixture); len(got) != 1 {
+		t.Fatalf("equal hint must reach authentication: %+v", got)
 	}
 }
 

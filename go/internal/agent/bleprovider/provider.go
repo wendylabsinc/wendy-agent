@@ -21,7 +21,7 @@ type StreamNode interface {
 type Config struct {
 	Credentials *localmesh.Credentials
 	Node        StreamNode
-	MeshName    string
+	NetworkName string
 	PSM         uint16 // zero selects DefaultPSM
 	TargetPeers int    // zero selects DefaultTargetPeers
 	AdapterPath string // empty selects the first advertising-capable BlueZ adapter
@@ -29,8 +29,8 @@ type Config struct {
 }
 
 func (c *Config) defaults() error {
-	if c.Credentials == nil || c.Node == nil || c.MeshName == "" {
-		return errors.New("BLE requires Wendy credentials, a stream node, and a mesh name")
+	if c.Credentials == nil || c.Node == nil || c.NetworkName == "" {
+		return errors.New("BLE requires Wendy credentials, a stream node, and a wendy net name")
 	}
 	if c.PSM == 0 {
 		c.PSM = DefaultPSM

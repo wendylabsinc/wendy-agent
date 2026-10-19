@@ -23,7 +23,7 @@ const (
 	deviceInterface        = "org.bluez.Device1"
 	advertManagerInterface = "org.bluez.LEAdvertisingManager1"
 	advertInterface        = "org.bluez.LEAdvertisement1"
-	advertPath             = dbus.ObjectPath("/org/wendy/mesh/advertisement")
+	advertPath             = dbus.ObjectPath("/org/wendy/net/advertisement")
 )
 
 var errBlueZOwnerChanged = errors.New("BlueZ service owner changed")
@@ -53,14 +53,14 @@ func verifyBlueZOwner(expected, current string) error {
 type managedObjects map[dbus.ObjectPath]map[string]map[string]dbus.Variant
 
 type candidate struct {
-	device               meshid.Device
+	hint                 [4]byte
 	address, addressType string
 	path                 dbus.ObjectPath
 	psm                  uint16
 }
 
-func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, meshName string, self meshid.Device) []candidate {
-	peers := make(map[meshid.Device]candidate)
+func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, networkName string, self meshid.Device) []candidate {
+	peers := make(map[string]candidate)
 	for path, ifaces := range objects {
 		if !strings.HasPrefix(string(path), string(adapter)+"/dev_") {
 			continue
@@ -77,28 +77,28 @@ func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, meshName 
 		if !ok {
 			continue
 		}
-		adv, ok := matchingServiceData(serviceData(props["ServiceData"]), uuid, meshName)
+		adv, ok := matchingServiceData(serviceData(props["ServiceData"]), uuid, networkName)
 		if !ok {
 			continue
 		}
-		device := meshid.NewDevice(self.Tenant(), adv.Device)
-		if meshid.Compare(device, self) >= 0 {
+		if !mayDial(adv.DeviceHint, self) {
 			continue
 		}
 		if _, _, err := parseAddress(address, kind, adv.PSM); err != nil {
 			continue
 		}
-		if prior, exists := peers[device]; !exists || address < prior.address {
-			peers[device] = candidate{device: device, address: address, addressType: kind, path: path, psm: adv.PSM}
-		}
+		key := kind + ":" + strings.ToUpper(address)
+		peers[key] = candidate{hint: adv.DeviceHint, address: address, addressType: kind, path: path, psm: adv.PSM}
 	}
 	out := make([]candidate, 0, len(peers))
 	for _, p := range peers {
 		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool { return meshid.Compare(out[i].device, out[j].device) < 0 })
+	sort.Slice(out, func(i, j int) bool { return out[i].key() < out[j].key() })
 	return out
 }
+
+func (p candidate) key() string { return p.addressType + ":" + strings.ToUpper(p.address) }
 
 func variantString(v dbus.Variant) (string, bool) {
 	s, ok := v.Value().(string)
@@ -149,6 +149,20 @@ func selectAdapter(ctx context.Context, bus *dbus.Conn, requested string) (dbus.
 		}
 	}
 	return "", errors.New("no BlueZ adapter supports both LE advertising and discovery")
+}
+
+func adapterL2Address(ctx context.Context, bus *dbus.Conn, adapter dbus.ObjectPath, psm uint16) (l2addr, error) {
+	var properties map[string]dbus.Variant
+	if err := bus.Object(bluezName, adapter).CallWithContext(ctx, "org.freedesktop.DBus.Properties.GetAll", 0, adapterInterface).Store(&properties); err != nil {
+		return l2addr{}, fmt.Errorf("BLE adapter identity: %w", err)
+	}
+	address, _ := variantString(properties["Address"])
+	kind, _ := variantString(properties["AddressType"])
+	local, mac, err := parseAddress(address, kind, psm)
+	if err != nil || mac == ([6]byte{}) {
+		return l2addr{}, fmt.Errorf("BLE adapter %s has invalid identity address %q/%q", adapter, address, kind)
+	}
+	return local, nil
 }
 
 type advertisement struct{}

@@ -33,12 +33,12 @@ func mustFixtureTenant(text string) meshid.Tenant {
 }
 
 func TestAdvertisementRoundTripAndMeshIsolation(t *testing.T) {
-	uuid := ServiceUUID(testTenant)
-	if uuid != testTenant.String() {
-		t.Fatalf("uuid = %s", uuid)
+	serviceUUID := ServiceUUID(testTenant)
+	if serviceUUID != testTenant.String() {
+		t.Fatalf("uuid = %s", serviceUUID)
 	}
 	other, _ := meshid.ParseTenant("11111111-1111-4111-8111-111111111111")
-	if ServiceUUID(other) == uuid {
+	if ServiceUUID(other) == serviceUUID {
 		t.Fatal("tenants share a UUID")
 	}
 	a, err := NewAdvertisement(testDevice, "production.mesh", DefaultPSM)
@@ -52,6 +52,9 @@ func TestAdvertisementRoundTripAndMeshIsolation(t *testing.T) {
 	if len(raw) != AdvertisementSize {
 		t.Fatalf("size %d", len(raw))
 	}
+	if total := 3 + 2 + 16 + len(raw); total > 31 {
+		t.Fatalf("legacy advertisement needs %d bytes including flags and ServiceData framing", total)
+	}
 	got, err := ParseAdvertisement(raw, "production.mesh")
 	if err != nil || got != a {
 		t.Fatalf("decoded %+v: %v", got, err)
@@ -63,16 +66,19 @@ func TestAdvertisementRoundTripAndMeshIsolation(t *testing.T) {
 		t.Fatal("accepted truncation")
 	}
 	bad := bytes.Clone(raw)
-	bad[20], bad[21] = 0, 1
+	bad[8], bad[9] = 0, 1
 	if _, err := ParseAdvertisement(bad, "production.mesh"); err == nil {
 		t.Fatal("accepted non-LE PSM")
 	}
-	bad = bytes.Clone(raw)
-	for i := range bad[:16] {
-		bad[i] = 0
+	// A zero prefix is valid; it does not imply a nil complete UUID.
+	zeroPrefix := uuid.MustParse("00000000-1234-4000-8000-000000000001")
+	zero, err := NewAdvertisement(zeroPrefix, "production.mesh", DefaultPSM)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := ParseAdvertisement(bad, "production.mesh"); err == nil {
-		t.Fatal("accepted nil device UUID")
+	raw, _ = zero.MarshalBinary()
+	if _, err := ParseAdvertisement(raw, "production.mesh"); err != nil {
+		t.Fatal(err)
 	}
 }
 

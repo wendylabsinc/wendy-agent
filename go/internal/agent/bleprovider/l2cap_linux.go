@@ -119,13 +119,24 @@ type l2Listener struct {
 	fdMu      sync.RWMutex
 	fd        int
 	psm       uint16
+	local     l2addr
 	closed    atomic.Bool
 	closeOnce sync.Once
 }
 
-func listenL2CAP(psm uint16) (*l2Listener, error) {
-	if !ValidPSM(psm) {
-		return nil, errors.New("invalid LE PSM")
+func localL2SocketAddress(local l2addr, psm uint16) (*unix.SockaddrL2, error) {
+	kind := map[uint8]string{btAddrLEPublic: "public", btAddrLERandom: "random"}[local.Type]
+	_, address, err := parseAddress(local.Address, kind, local.PSM)
+	if err != nil || address == ([6]byte{}) || (psm != 0 && psm != local.PSM) {
+		return nil, errors.New("invalid selected BLE adapter address or PSM")
+	}
+	return &unix.SockaddrL2{Addr: address, AddrType: local.Type, PSM: psm}, nil
+}
+
+func listenL2CAP(local l2addr) (*l2Listener, error) {
+	address, err := localL2SocketAddress(local, local.PSM)
+	if err != nil {
+		return nil, err
 	}
 	fd, err := newL2Socket()
 	if err != nil {
@@ -137,14 +148,14 @@ func listenL2CAP(psm uint16) (*l2Listener, error) {
 			_ = unix.Close(fd)
 		}
 	}()
-	if err = unix.Bind(fd, &unix.SockaddrL2{PSM: psm, AddrType: btAddrLEPublic}); err != nil {
-		return nil, fmt.Errorf("L2CAP bind PSM %d: %w", psm, err)
+	if err = unix.Bind(fd, address); err != nil {
+		return nil, fmt.Errorf("L2CAP bind %s: %w", local, err)
 	}
 	if err = unix.Listen(fd, 8); err != nil {
 		return nil, fmt.Errorf("L2CAP listen: %w", err)
 	}
 	good = true
-	return &l2Listener{fd: fd, psm: psm}, nil
+	return &l2Listener{fd: fd, psm: local.PSM, local: local}, nil
 }
 
 func (l *l2Listener) Accept(ctx context.Context) (net.Conn, error) {
@@ -176,7 +187,7 @@ func (l *l2Listener) Accept(ctx context.Context) (net.Conn, error) {
 		if peer, ok := sa.(*unix.SockaddrL2); ok {
 			remote = acceptedL2Addr(peer, l.psm)
 		}
-		return newPacketConn(fd, l2addr{Address: "any", Type: btAddrLEPublic, PSM: l.psm}, remote), nil
+		return newPacketConn(fd, l.local, remote), nil
 	}
 }
 
@@ -191,8 +202,12 @@ func (l *l2Listener) Close() error {
 	return err
 }
 
-func dialL2CAP(ctx context.Context, address, addressType string, psm uint16) (net.Conn, error) {
+func dialL2CAP(ctx context.Context, local l2addr, address, addressType string, psm uint16) (net.Conn, error) {
 	remote, mac, err := parseAddress(address, addressType, psm)
+	if err != nil {
+		return nil, err
+	}
+	source, err := localL2SocketAddress(local, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +224,7 @@ func dialL2CAP(ctx context.Context, address, addressType string, psm uint16) (ne
 	// Linux selects LE credit-based mode from the local address type and PSM
 	// before connect. A zero-PSM LE bind allocates a local dynamic PSM; without
 	// it the socket stays in basic mode and sends TLS without CoC SDU framing.
-	if err = unix.Bind(fd, &unix.SockaddrL2{AddrType: btAddrLEPublic}); err != nil {
+	if err = unix.Bind(fd, source); err != nil {
 		return nil, fmt.Errorf("L2CAP bind outbound LE socket: %w", err)
 	}
 	err = unix.Connect(fd, &unix.SockaddrL2{PSM: psm, Addr: mac, AddrType: remote.Type})
@@ -229,7 +244,7 @@ func dialL2CAP(ctx context.Context, address, addressType string, psm uint16) (ne
 		}
 	}
 	good = true
-	return newPacketConn(fd, l2addr{Address: "local", Type: btAddrLEPublic, PSM: psm}, remote), nil
+	return newPacketConn(fd, local, remote), nil
 }
 
 // x/sys/unix v0.47.0 reverses canonical SockaddrL2.Addr bytes on

@@ -8,5 +8,5 @@ import (
 )
 
 func Run(context.Context, Config) error {
-	return errors.New("BLE local-mesh carrier requires Linux and BlueZ")
+	return errors.New("BLE wendy net carrier requires Linux and BlueZ")
 }

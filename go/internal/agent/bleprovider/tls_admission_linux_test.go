@@ -39,7 +39,7 @@ func TestTLSAdmissionConcurrentZeroValue(t *testing.T) {
 	workers.Wait()
 }
 
-func TestTLSAdmissionSerializesBothDirectionsAndStartsDeadlineAfterAdmission(t *testing.T) {
+func TestTLSAdmissionSerializesAcceptedHandshakesAndStartsDeadlineAfterAdmission(t *testing.T) {
 	gate := newTLSHandshakeAdmission()
 	firstEntered := make(chan struct{})
 	releaseFirst := make(chan struct{})

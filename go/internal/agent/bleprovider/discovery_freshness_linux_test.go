@@ -11,7 +11,6 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/google/uuid"
-	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 func TestAdvertisementFreshnessBoundsChurnAndExpiresBeforeAdmission(t *testing.T) {
@@ -63,7 +62,7 @@ func TestBlueZCachedServiceDataNeedsLiveAdvertisement(t *testing.T) {
 	check(base, 0) // A legacy advertisement or connection can update RSSI.
 	tracker.handle(&dbus.Signal{Name: "org.freedesktop.DBus.Properties.PropertiesChanged", Path: path, Body: []any{deviceInterface, map[string]dbus.Variant{"ServiceData": props["ServiceData"]}, []string{}}}, base)
 	peers, updates := tracker.candidates(objects, base)
-	if len(peers) != 1 || len(updates) != 1 || updates[0] != lowFixture {
+	if len(peers) != 1 || len(updates) != 1 || updates[0] != path {
 		t.Fatalf("live advertisement peers=%+v seen updates=%v", peers, updates)
 	}
 	peers, updates = tracker.candidates(objects, base.Add(time.Second))
@@ -106,18 +105,18 @@ func TestAdvertisementFreshnessTracksLiveMeshAmongOtherAdvertisements(t *testing
 	other, _ := NewAdvertisement(low2, "field", DefaultPSM)
 	otherRaw, _ := other.MarshalBinary()
 	objects[path][deviceInterface] = meshDeviceProps(serviceUUID, otherRaw)
-	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].device != lowFixture {
+	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].hint != deviceHint(lowDevice) {
 		t.Fatalf("cached payload replaced live identity: %+v", got)
 	}
 	changed(path, meshDeviceProps(serviceUUID, otherRaw))
-	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].device != meshid.NewDevice(testTenant, low2) {
+	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].hint != deviceHint(low2) {
 		t.Fatalf("new live identity rejected: %+v", got)
 	}
 	legacy := dbus.MakeVariant(map[string]dbus.Variant{"0000180f-0000-1000-8000-00805f9b34fb": dbus.MakeVariant([]byte{1})})
 	objects[path][deviceInterface]["ServiceData"] = legacy
 	tracker.handle(&dbus.Signal{Name: "org.freedesktop.DBus.Properties.PropertiesChanged", Path: path, Body: []any{deviceInterface, map[string]dbus.Variant{"ServiceData": legacy}, []string{}}}, base)
 	tracker.handle(&dbus.Signal{Name: "org.freedesktop.DBus.Properties.PropertiesChanged", Path: path, Body: []any{deviceInterface, map[string]dbus.Variant{}, []string{"ServiceData"}}}, base)
-	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].device != meshid.NewDevice(testTenant, low2) {
+	if got, _ := tracker.candidates(objects, base); len(got) != 1 || got[0].hint != deviceHint(low2) {
 		t.Fatalf("concurrent legacy advertisement hid recent mesh advert: %+v", got)
 	}
 	if got, _ := tracker.candidates(objects, base.Add(advertisementFreshnessTTL)); len(got) != 0 {
@@ -162,7 +161,7 @@ func TestAdvertisementSignalsAndScansConcurrent(t *testing.T) {
 		}
 	}()
 	wg.Wait()
-	if got, _ := tracker.candidates(objects, at); len(got) != 1 || got[0].device != lowFixture {
+	if got, _ := tracker.candidates(objects, at); len(got) != 1 || got[0].hint != deviceHint(lowDevice) {
 		t.Fatalf("concurrent advertisement lost: %+v", got)
 	}
 }
