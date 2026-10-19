@@ -385,7 +385,7 @@ func TestProxyLogsStructuredFieldsOnSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entry := waitForLogEntry(t, logs, "mesh connection")
+	entry := waitForLogEntry(t, logs, "wendy net connection")
 	ctxMap := entry.ContextMap()
 	if ctxMap["mesh.peer"] != device.UUID().String() {
 		t.Fatalf("mesh.peer = %v, want the device UUID %s", ctxMap["mesh.peer"], device.UUID())
@@ -405,7 +405,7 @@ func TestProxyLogsStructuredFieldsOnSuccess(t *testing.T) {
 
 // TestProxyLogsStructuredFieldsOnDialFailure proves a failed dial gets its
 // own structured warning (mesh.peer/mesh.mode/mesh.port + the error) rather
-// than the success-shaped "mesh connection" log with mesh.result=error —
+// than the success-shaped "wendy net connection" log with mesh.result=error —
 // the dialer already recorded the mesh.connections error metric, so this log
 // is the only per-attempt signal for the dashboard.
 func TestProxyLogsStructuredFieldsOnDialFailure(t *testing.T) {
@@ -430,7 +430,7 @@ func TestProxyLogsStructuredFieldsOnDialFailure(t *testing.T) {
 	}
 	defer conn.Close()
 
-	entry := waitForLogEntry(t, logs, "mesh connection failed")
+	entry := waitForLogEntry(t, logs, "wendy net connection failed")
 	ctxMap := entry.ContextMap()
 	if ctxMap["mesh.peer"] != device.UUID().String() {
 		t.Fatalf("mesh.peer = %v, want the device UUID %s", ctxMap["mesh.peer"], device.UUID())

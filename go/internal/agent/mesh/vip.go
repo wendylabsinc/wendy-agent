@@ -13,10 +13,12 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -29,7 +31,7 @@ var meshPrefix = netip.MustParsePrefix(DefaultServiceCIDR)
 
 // ErrExhausted reports that the table has no unallocated, unretired host
 // address left in its CIDR. Callers wrap it with the table's own context.
-var ErrExhausted = errors.New("mesh: VIP pool exhausted")
+var ErrExhausted = errors.New("wendy net: VIP pool exhausted")
 
 // vipTableVersion is the on-disk schema version of the VIP table file.
 const vipTableVersion = 1
@@ -69,7 +71,7 @@ func OpenVIPTable(path string) (*VIPTable, error) {
 func openVIPTable(path string, prefix netip.Prefix) (*VIPTable, error) {
 	capacity := usableHosts(prefix)
 	if capacity < 1 {
-		return nil, fmt.Errorf("mesh: service CIDR %s has no usable host addresses", prefix)
+		return nil, fmt.Errorf("wendy net: service CIDR %s has no usable host addresses", prefix)
 	}
 	t := &VIPTable{
 		path:     path,
@@ -83,6 +85,18 @@ func openVIPTable(path string, prefix netip.Prefix) (*VIPTable, error) {
 	if err := t.load(); err != nil {
 		return nil, err
 	}
+	// A previous process may have reported a directory-sync failure after its
+	// rename became visible. Make this loaded snapshot durable before any VIP
+	// can be handed out from it, including through a read-only lookup.
+	if runtime.GOOS != "windows" {
+		dir, err := os.Open(filepath.Dir(path))
+		if err != nil {
+			return nil, fmt.Errorf("wendy net VIP table directory: %w", err)
+		}
+		if err := errors.Join(dir.Sync(), dir.Close()); err != nil {
+			return nil, fmt.Errorf("sync wendy net VIP table directory: %w", err)
+		}
+	}
 	return t, nil
 }
 
@@ -94,6 +108,9 @@ func (t *VIPTable) CIDR() netip.Prefix { return t.prefix }
 // a DIFFERENT tenant, that entry is retired (its VIP is never reused) and a
 // fresh VIP is allocated. Errors wrap ErrExhausted when the pool is full.
 func (t *VIPTable) Allocate(device meshid.Device) (netip.Addr, error) {
+	if !device.IsValid() {
+		return netip.Addr{}, errors.New("wendy net VIP allocation requires a device principal")
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -120,8 +137,9 @@ func (t *VIPTable) Allocate(device meshid.Device) (netip.Addr, error) {
 	t.owner[vip] = id
 
 	if err := t.persist(); err != nil {
-		// Keep memory and disk identical: a VIP the agent cannot prove it
-		// persisted is a VIP it must not hand out.
+		// Never hand out a failed allocation; retain the previous assignments
+		// and cursor for retry. A post-rename sync failure may leave an unissued
+		// reservation on disk, which opening the table makes durable before use.
 		t.cursor = previousCursor
 		delete(t.entries, id)
 		delete(t.owner, vip)
@@ -137,6 +155,9 @@ func (t *VIPTable) Allocate(device meshid.Device) (netip.Addr, error) {
 
 // Lookup returns an already-allocated VIP without allocating.
 func (t *VIPTable) Lookup(device meshid.Device) (netip.Addr, bool) {
+	if !device.IsValid() {
+		return netip.Addr{}, false
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	e, ok := t.entries[device.UUID()]
@@ -152,11 +173,11 @@ func (t *VIPTable) Device(vip netip.Addr) (meshid.Device, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if _, ok := t.indexOfVIP(vip); !ok {
-		return meshid.Device{}, fmt.Errorf("mesh: %s is outside the mesh service CIDR %s", vip, t.prefix)
+		return meshid.Device{}, fmt.Errorf("wendy net: %s is outside the wendy net service CIDR %s", vip, t.prefix)
 	}
 	id, ok := t.owner[vip]
 	if !ok {
-		return meshid.Device{}, fmt.Errorf("mesh: %s is not an allocated mesh VIP", vip)
+		return meshid.Device{}, fmt.Errorf("wendy net: %s is not an allocated wendy net VIP", vip)
 	}
 	e := t.entries[id]
 	// The entry was validated on load/insert, so this cannot fail.
@@ -166,6 +187,9 @@ func (t *VIPTable) Device(vip netip.Addr) (meshid.Device, error) {
 // RetireTenant drops every entry whose tenant differs from tenant; retired
 // VIPs are never re-allocated.
 func (t *VIPTable) RetireTenant(tenant meshid.Tenant) error {
+	if !tenant.IsValid() {
+		return errors.New("wendy net VIP retirement requires a tenant identity")
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -281,12 +305,12 @@ func (t *VIPTable) load() error {
 	b, err := os.ReadFile(t.path)
 	if errors.Is(err, os.ErrNotExist) {
 		if _, statErr := os.Stat(filepath.Dir(t.path)); statErr != nil {
-			return fmt.Errorf("mesh: VIP table directory %s: %w", filepath.Dir(t.path), statErr)
+			return fmt.Errorf("wendy net: VIP table directory %s: %w", filepath.Dir(t.path), statErr)
 		}
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("mesh: VIP table %s: %w", t.path, err)
+		return fmt.Errorf("wendy net: VIP table %s: %w", t.path, err)
 	}
 
 	var f vipTableFile
@@ -346,13 +370,12 @@ func (t *VIPTable) load() error {
 }
 
 func (t *VIPTable) corrupt(format string, args ...any) error {
-	return fmt.Errorf("mesh: VIP table %s is corrupt: "+format, append([]any{t.path}, args...)...)
+	return fmt.Errorf("wendy net: VIP table %s is corrupt: "+format, append([]any{t.path}, args...)...)
 }
 
-// persist writes the whole table atomically: a temp file in the same directory
-// is fsynced, then renamed over path, so a crash mid-write leaves either the
-// old table or the new one, never a truncated file. Entries are written in
-// sorted order for determinism.
+// persist writes the whole table with a durable atomic replacement, including
+// the containing directory: a VIP must survive power loss once DNS returns it.
+// Entries are written in sorted order for determinism.
 func (t *VIPTable) persist() error {
 	f := vipTableFile{
 		Version: vipTableVersion,
@@ -386,29 +409,12 @@ func (t *VIPTable) persist() error {
 
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
-		return fmt.Errorf("mesh: VIP table %s: encode: %w", t.path, err)
+		return fmt.Errorf("wendy net: VIP table %s: encode: %w", t.path, err)
 	}
 	b = append(b, '\n')
 
-	tmp, err := os.CreateTemp(filepath.Dir(t.path), ".mesh-vips-*")
-	if err != nil {
-		return fmt.Errorf("mesh: VIP table %s: %w", t.path, err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once the rename has landed
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return fmt.Errorf("mesh: VIP table %s: write: %w", t.path, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("mesh: VIP table %s: sync: %w", t.path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("mesh: VIP table %s: close: %w", t.path, err)
-	}
-	if err := os.Rename(tmpName, t.path); err != nil {
-		return fmt.Errorf("mesh: VIP table %s: rename: %w", t.path, err)
+	if err := atomicfile.Write(t.path, b, 0600); err != nil {
+		return fmt.Errorf("wendy net VIP table %s: persist: %w", t.path, err)
 	}
 	return nil
 }

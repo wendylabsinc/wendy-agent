@@ -593,14 +593,14 @@ func TestFleetDeliveryReport_CountsFailures(t *testing.T) {
 	names := map[string]string{"00000000-0000-4000-8000-000000000001": "ccr1", "00000000-0000-4000-8000-000000000002": "ccr2", "00000000-0000-4000-8000-000000000003": "theta"}
 	lines, failed := fleetDeliveryReport([]*agentpbv2.DeliveryResult{
 		{AssetUuid: "00000000-0000-4000-8000-000000000001", Delivered: true},
-		{AssetUuid: "00000000-0000-4000-8000-000000000002", Delivered: false, Error: "mesh dial failed"},
+		{AssetUuid: "00000000-0000-4000-8000-000000000002", Delivered: false, Error: "wendy net dial failed"},
 		{AssetUuid: "00000000-0000-4000-8000-000000000003", Delivered: true},
 	}, names)
 	if failed != 1 {
 		t.Fatalf("failed = %d, want 1", failed)
 	}
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"ccr1", "ccr2", "theta", "mesh dial failed", "FAILED"} {
+	for _, want := range []string{"ccr1", "ccr2", "theta", "wendy net dial failed", "FAILED"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("report missing %q; got:\n%s", want, joined)
 		}

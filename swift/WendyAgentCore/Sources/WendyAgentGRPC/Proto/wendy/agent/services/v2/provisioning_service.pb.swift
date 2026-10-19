@@ -125,11 +125,9 @@ public nonisolated struct Wendy_Agent_Services_V2_ProvisionedResponse: Sendable 
   /// before starting the UUID reset workflow; older Agents fail closed.
   public var cloudAuthenticatedResetSupported: Bool = false
 
-  /// The device's Cloud asset UUID, canonical lowercase text. Enrollment
-  /// returns it but the agent does not persist it; the roster entry whose
-  /// device_uuid matches this device's leaf principal is the runtime source,
-  /// so it is empty until the roster has synced. Mesh-keyed callers (build
-  /// delivery) address devices by this, not by the numeric asset id.
+  /// The certificate's device UUID, also used as Cloud's asset UUID.
+  /// Available immediately after enrollment, without a Cloud roster refresh.
+  /// Empty for a legacy identity that has no UUID device principal.
   public var assetUuid: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()

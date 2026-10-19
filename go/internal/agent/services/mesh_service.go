@@ -77,7 +77,7 @@ func (s *MeshService) MeshDial(stream agentpbv2.WendyMeshService_MeshDialServer)
 		return err
 	}
 	if s.meshDisabled() {
-		return status.Error(codes.PermissionDenied, "mesh is disabled on this device")
+		return status.Error(codes.PermissionDenied, "wendy net is disabled on this device")
 	}
 	first, err := stream.Recv()
 	if err != nil {
@@ -91,7 +91,7 @@ func (s *MeshService) MeshDial(stream agentpbv2.WendyMeshService_MeshDialServer)
 		return status.Errorf(codes.InvalidArgument, "invalid port %d", open.Port)
 	}
 	if s.ingress == nil {
-		return status.Error(codes.PermissionDenied, "mesh ingress port is not published by a running app")
+		return status.Error(codes.PermissionDenied, "wendy net ingress port is not published by a running app")
 	}
 	// Same SSRF stance as the broker path (tunnel_broker_client.go:207-213):
 	// only local services are reachable.
@@ -100,12 +100,12 @@ func (s *MeshService) MeshDial(stream agentpbv2.WendyMeshService_MeshDialServer)
 	})
 	if err != nil {
 		if errors.Is(err, meshingress.ErrPortDenied) {
-			return status.Error(codes.PermissionDenied, "mesh ingress port is not published by a running app")
+			return status.Error(codes.PermissionDenied, "wendy net ingress port is not published by a running app")
 		}
 		return status.Errorf(codes.Unavailable, "dialing local port %d: %v", open.Port, err)
 	}
 	defer conn.Close()
-	s.logger.Info("mesh dial accepted",
+	s.logger.Info("wendy net dial accepted",
 		zap.Int32("caller_org", ident.OrgID),
 		zap.String("caller_asset", ident.EntityID),
 		zap.Uint32("port", open.Port))
@@ -126,25 +126,25 @@ func (s *MeshService) MeshDial(stream agentpbv2.WendyMeshService_MeshDialServer)
 func (s *MeshService) assetIdentityFromContext(ctx context.Context) (certs.WendyIdentity, error) {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
-		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "mesh dial requires mTLS")
+		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "wendy net dial requires mTLS")
 	}
 	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
 	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
-		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "mesh dial requires a client certificate")
+		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "wendy net dial requires a client certificate")
 	}
 	ident, found, err := certs.IdentityFromCert(tlsInfo.State.PeerCertificates[0])
 	if err != nil || !found {
 		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "client certificate carries no wendy identity")
 	}
 	if ident.EntityType != certs.EntityAsset {
-		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "mesh dial requires an asset certificate")
+		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "wendy net dial requires an asset certificate")
 	}
 	// An unknown expectedScope means this device could not identify itself
 	// (main.go forces mTLS enforcement off for the same reason): there is
 	// nothing meaningful to compare against, so skip the check rather than
 	// reject every caller. Still requires the asset check above.
 	if s.expectedScope.Known() && !ident.Scope().Matches(s.expectedScope) {
-		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "mesh dial requires a same-tenant asset certificate")
+		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "wendy net dial requires a same-tenant asset certificate")
 	}
 	return ident, nil
 }

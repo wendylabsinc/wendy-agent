@@ -78,7 +78,7 @@ func TestAppRouteSwitchServerProcess(t *testing.T) {
 
 // A route-selected egress filter models Node.readTUN's production forwarding
 // gate: packets forced onto the former, still-live link must not leave there.
-// Only the destination /32 changes; both peers' VIPs and UDP tuples stay stable.
+// Only the destination /128 changes; both peers' mesh addresses and UDP tuples stay stable.
 func TestPooledAppSurvivesSameAddressRouteSwitch(t *testing.T) {
 	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
 		t.Skip("requires disposable privileged Linux container")
@@ -90,6 +90,8 @@ func TestPooledAppSurvivesSameAddressRouteSwitch(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 	}
+	a, b, _, chain := fixtureCredentialExpiryWithChain(t, time.Now().Add(time.Hour), time.Now().Add(time.Hour))
+	clientAddress, serverAddress := a.Device.MeshAddress().String(), b.Device.MeshAddress().String()
 	ns := fmt.Sprintf("app-reply-%d", os.Getpid())
 	run("ip", "netns", "add", ns)
 	defer exec.Command("ip", "netns", "del", ns).Run()
@@ -100,23 +102,16 @@ func TestPooledAppSurvivesSameAddressRouteSwitch(t *testing.T) {
 		run("ip", "link", "add", c, "type", "veth", "peer", "name", s)
 		defer exec.Command("ip", "link", "del", c).Run()
 		run("ip", "link", "set", s, "netns", ns)
-		run("ip", "addr", "add", "10.88.1.189/32", "dev", c)
+		run("ip", "-6", "addr", "add", clientAddress+"/128", "dev", c, "nodad")
 		run("ip", "link", "set", c, "up")
-		run("ip", "-n", ns, "addr", "add", "10.88.1.204/32", "dev", s)
+		run("ip", "-n", ns, "-6", "addr", "add", serverAddress+"/128", "dev", s, "nodad")
 		run("ip", "-n", ns, "link", "set", s, "up")
 	}
-	for _, scope := range []string{"all", "default", "arcold", "arcnew"} {
-		run("sysctl", "-qw", "net.ipv4.conf."+scope+".rp_filter=0")
-	}
-	for _, scope := range []string{"all", "default", "arsold", "arsnew"} {
-		run("ip", "netns", "exec", ns, "sysctl", "-qw", "net.ipv4.conf."+scope+".rp_filter=0")
-	}
 	switchRoute := func(suffix string) {
-		run("ip", "route", "replace", "10.88.1.204/32", "dev", "arc"+suffix, "src", "10.88.1.189")
-		run("ip", "-n", ns, "route", "replace", "10.88.1.189/32", "dev", "ars"+suffix, "src", "10.88.1.204")
+		run("ip", "-6", "route", "replace", serverAddress+"/128", "dev", "arc"+suffix, "src", clientAddress)
+		run("ip", "-n", ns, "-6", "route", "replace", clientAddress+"/128", "dev", "ars"+suffix, "src", serverAddress)
 	}
 	switchRoute("old")
-	a, b, _, chain := fixtureCredentialExpiryWithChain(t, time.Now().Add(time.Hour), time.Now().Add(time.Hour))
 	var certs []byte
 	for _, der := range b.Certificate.Certificate {
 		certs = append(certs, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
@@ -157,7 +152,7 @@ func TestPooledAppSurvivesSameAddressRouteSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	endpoint := netip.MustParseAddrPort("10.88.1.204:43021")
+	endpoint := netip.AddrPortFrom(b.Device.MeshAddress(), Port)
 	exchange := func(c *Client) (*pooledSession, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 		defer cancel()
@@ -186,7 +181,7 @@ func TestPooledAppSurvivesSameAddressRouteSwitch(t *testing.T) {
 	}
 	t.Log("initial stream succeeded")
 	switchRoute("new")
-	run("ip", "netns", "exec", ns, "iptables", "-A", "OUTPUT", "-o", "arsold", "-p", "udp", "--sport", "43021", "-j", "DROP")
+	run("ip", "netns", "exec", ns, "ip6tables", "-A", "OUTPUT", "-o", "arsold", "-p", "udp", "--sport", "43021", "-j", "DROP")
 	after, pooledErr := exchange(client)
 	fresh, err := NewClient(a)
 	if err != nil {
@@ -194,8 +189,8 @@ func TestPooledAppSurvivesSameAddressRouteSwitch(t *testing.T) {
 	}
 	defer fresh.Close()
 	_, freshErr := exchange(fresh)
-	out, _ := exec.Command("ip", "netns", "exec", ns, "iptables", "-nvxL", "OUTPUT").CombinedOutput()
-	t.Logf("retained interface old; switched /32 route; egress proof: %s", out)
+	out, _ := exec.Command("ip", "netns", "exec", ns, "ip6tables", "-nvxL", "OUTPUT").CombinedOutput()
+	t.Logf("retained interface old; switched /128 route; egress proof: %s", out)
 	t.Logf("same connection error=%v; fresh connection error=%v", pooledErr, freshErr)
 	if freshErr != nil {
 		t.Fatal("fresh connection", freshErr)

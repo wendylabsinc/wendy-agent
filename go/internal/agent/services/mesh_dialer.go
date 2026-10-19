@@ -168,7 +168,7 @@ func (d *MeshDialer) dialLocalMesh(ctx context.Context, device meshid.Device, po
 func (d *MeshDialer) dialLocalApp(ctx context.Context, dial func(context.Context, uint16) (net.Conn, error), port uint16, record func(result string, durMs float64)) (net.Conn, string, error) {
 	started := d.now()
 	var conn net.Conn
-	err := errors.New("local mesh app ingress is unavailable")
+	err := errors.New("wendy net app ingress is unavailable")
 	if dial != nil {
 		conn, err = dial(ctx, port)
 	}
@@ -268,7 +268,7 @@ func (d *MeshDialer) DialDevice(ctx context.Context, device meshid.Device, port 
 func (d *MeshDialer) DialTarget(ctx context.Context, target DeliveryTarget, port uint16) (net.Conn, string, error) {
 	device := target.Device
 	if device.Principal() == "" || port == 0 {
-		return nil, "", errors.New("invalid mesh service target")
+		return nil, "", errors.New("invalid wendy net service target")
 	}
 	if target.AssetUUID != "" {
 		if target.AssetUUID != device.UUID().String() {
@@ -300,7 +300,7 @@ func (d *MeshDialer) DialTarget(ctx context.Context, target DeliveryTarget, port
 	dial := d.serviceDial
 	d.mu.Unlock()
 	if dial == nil {
-		return nil, "", fmt.Errorf("mesh: no LAN or Babel route to %s; Cloud does not authorize device-originated relays", device.Principal())
+		return nil, "", fmt.Errorf("wendy net: no LAN or Babel route to %s; Cloud does not authorize device-originated relays", device.Principal())
 	}
 	started := d.now()
 	conn, err := dial(ctx, device, port)
@@ -374,7 +374,7 @@ func (d *MeshDialer) discoverOnLAN(ctx context.Context, device meshid.Device) (s
 			}
 		}
 		if isLoopback {
-			d.logger.Warn("mesh: ignoring loopback address in LAN discovery result",
+			d.logger.Warn("wendy net: ignoring loopback address in LAN discovery result",
 				zap.String("peer", device.Principal()), zap.String("ip", dev.IPAddress))
 			continue
 		}

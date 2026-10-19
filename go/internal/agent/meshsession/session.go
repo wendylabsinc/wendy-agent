@@ -23,8 +23,8 @@ const ALPN = "wendy-app-mesh/1"
 const Port = 43021
 const appSessionSetupTimeout = 60 * time.Second
 
-var ErrNoRoute = errors.New("no authenticated local mesh route")
-var ErrDenied = errors.New("mesh app ingress denied")
+var ErrNoRoute = errors.New("no authenticated local wendy net route")
+var ErrDenied = errors.New("wendy net app ingress denied")
 
 // Authorizer admits only ingress ports belonging to running mesh-mode apps
 // and holds authorization until the loopback connection has been opened.
@@ -68,7 +68,7 @@ func Resolve(snapshot localmesh.NodeSnapshot, target meshid.Device) (netip.AddrP
 // answering at peer's address with any other identity fails the handshake.
 func Dial(ctx context.Context, credentials *localmesh.Credentials, peer meshid.Device, address netip.AddrPort, port uint16) (net.Conn, error) {
 	if credentials == nil || port == 0 || address.Port() == 0 {
-		return nil, errors.New("invalid mesh app dial")
+		return nil, errors.New("invalid wendy net app dial")
 	}
 	cfg, err := credentials.PeerTLSWithTickets(peer, ALPN, "app-quic")
 	if err != nil {
@@ -76,7 +76,7 @@ func Dial(ctx context.Context, credentials *localmesh.Credentials, peer meshid.D
 	}
 	conn, err := quic.DialAddr(ctx, address.String(), cfg, quicConfig())
 	if err != nil {
-		return nil, fmt.Errorf("mesh app QUIC dial: %w", err)
+		return nil, fmt.Errorf("wendy net app QUIC dial: %w", err)
 	}
 	ok := false
 	defer func() {
@@ -95,7 +95,7 @@ func Dial(ctx context.Context, credentials *localmesh.Credentials, peer meshid.D
 func requestPort(ctx context.Context, conn *quic.Conn, port uint16) (*quic.Stream, error) {
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("mesh app stream open: %w", err)
+		return nil, fmt.Errorf("wendy net app stream open: %w", err)
 	}
 	ok := false
 	defer func() {
@@ -107,18 +107,46 @@ func requestPort(ctx context.Context, conn *quic.Conn, port uint16) (*quic.Strea
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = stream.SetDeadline(deadline)
 	}
+	// Stream I/O has no context parameter. A caller may cancel without a
+	// deadline, or before its deadline expires, while the peer withholds its ACK.
+	// Wake that I/O, and join the callback before handing the stream to its owner
+	// so a completed dial continues to outlive its setup context.
+	cancellationDone := make(chan struct{})
+	stopCancellation := context.AfterFunc(ctx, func() {
+		_ = stream.SetDeadline(time.Now())
+		close(cancellationDone)
+	})
+	var cancellationJoined sync.Once
+	joinCancellation := func() {
+		cancellationJoined.Do(func() {
+			if !stopCancellation() {
+				<-cancellationDone
+			}
+		})
+	}
+	defer joinCancellation()
 	var hello [6]byte
 	copy(hello[:4], "WAS1")
 	binary.BigEndian.PutUint16(hello[4:], port)
 	if _, err = stream.Write(hello[:]); err != nil {
-		return nil, fmt.Errorf("mesh app port request: %w", err)
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return nil, fmt.Errorf("wendy net app port request: %w", err)
 	}
 	var ack [1]byte
 	if _, err = io.ReadFull(stream, ack[:]); err != nil {
-		return nil, fmt.Errorf("mesh app port ACK: %w", err)
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return nil, fmt.Errorf("wendy net app port ACK: %w", err)
 	}
 	if ack[0] != 1 {
 		return nil, ErrDenied
+	}
+	joinCancellation()
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	_ = stream.SetDeadline(time.Time{})
 	ok = true
@@ -139,7 +167,7 @@ type Server struct {
 
 func NewServer(credentials *localmesh.Credentials, authorizer Authorizer) (*Server, error) {
 	if credentials == nil || authorizer == nil {
-		return nil, errors.New("missing mesh app credentials or authorizer")
+		return nil, errors.New("missing wendy net app credentials or authorizer")
 	}
 	return &Server{credentials: credentials, authorizer: authorizer, tickets: localmesh.NewTicketStore()}, nil
 }
@@ -161,7 +189,7 @@ func (s *Server) TLSConfig() *tls.Config {
 			// so the only thing that can vouch for it is the authenticated
 			// principal. Same tenant, different device, and never self.
 			if identity.Device.Tenant() != s.credentials.Device.Tenant() || identity.Device == s.credentials.Device {
-				return errors.New("mesh app peer is not another device in this tenant")
+				return errors.New("wendy net app peer is not another device in this tenant")
 			}
 			return nil
 		}}

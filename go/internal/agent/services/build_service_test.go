@@ -902,7 +902,7 @@ func TestBuildAndDeliver_RecoveryCannotBecomeAFalseFailure(t *testing.T) {
 
 func TestClassifyBuildAndDeliveryResult(t *testing.T) {
 	buildFailure := errors.New("Dockerfile failed")
-	proxyFailure := errors.New("mesh connection failed")
+	proxyFailure := errors.New("wendy net connection failed")
 
 	buildErr, deliveryErr := classifyBuildAndDeliveryResult(buildFailure, nil)
 	if !errors.Is(buildErr, buildFailure) || deliveryErr != nil {

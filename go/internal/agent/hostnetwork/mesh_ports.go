@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/google/shlex"
 )
 
 // EnableRouteLocalnet turns on net.ipv4.conf.<bridge>.route_localnet for the
@@ -41,7 +43,7 @@ const MeshPortsChainName = "WENDY-MESH-PORTS"
 // The agent reconciles ingress while containerd and other startup services
 // may also update iptables. Wait a bounded five seconds for xtables.lock;
 // callers still fail closed if the lock cannot be acquired.
-func meshPortsIPTables(args ...string) ([]byte, error) {
+var meshPortsIPTables = func(args ...string) ([]byte, error) {
 	return exec.Command("iptables", append([]string{"-w", "5"}, args...)...).CombinedOutput()
 }
 
@@ -133,28 +135,24 @@ func meshPortMasqueradeArgs(containerIP string, containerPort uint16) []string {
 // "dial tcp 127.0.0.1:9090: connect: no route to host" pointing at a
 // long-gone bridge IP even though the CURRENT container's own forward had
 // just been installed correctly).
-// requireSubstr, when non-empty, must also appear in the rule line — used so
-// a flush of the shared, not-fully-owned POSTROUTING chain only ever touches
-// rules carrying our own exact MASQUERADE signature (127.0.0.1 + MASQUERADE),
-// never an unrelated rule some other app happens to have installed against
-// the same port number. The fully-owned MeshPortsChainName flush passes ""
-// since every rule in that chain is already known to be ours.
-func flushStaleRulesForPort(chain string, port uint16, requireSubstr string) error {
+// containerIP restricts cleanup in the shared POSTROUTING chain to the exact
+// TCP hairpin signature this code installs. Empty means the dedicated Wendy
+// ingress chain, where an exact host-port match identifies stale forwards.
+func flushStaleRulesForPort(chain string, port uint16, containerIP string) error {
 	out, err := meshPortsIPTables("-t", "nat", "-S", chain)
 	if err != nil {
 		return fmt.Errorf("iptables -t nat -S %s: %w (%s)", chain, err, strings.TrimSpace(string(out)))
 	}
-	dportSuffix := "--dport " + strconv.Itoa(int(port))
 	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.Contains(line, dportSuffix) {
+		fields, err := shlex.Split(line)
+		if err != nil {
+			return fmt.Errorf("parsing iptables rule in %s: %w", chain, err)
+		}
+		if len(fields) < 2 || fields[0] != "-A" || fields[1] != chain ||
+			ingressRuleOption(fields, "--dport") != strconv.Itoa(int(port)) {
 			continue
 		}
-		if requireSubstr != "" && !strings.Contains(line, requireSubstr) {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 || fields[0] != "-A" {
+		if containerIP != "" && !ownedIngressMasquerade(fields, containerIP, port) {
 			continue
 		}
 		fields[0] = "-D"
@@ -164,6 +162,44 @@ func flushStaleRulesForPort(chain string, port uint16, requireSubstr string) err
 		}
 	}
 	return nil
+}
+
+func ingressRuleOption(fields []string, flag string) string {
+	for i := 2; i+1 < len(fields); i++ {
+		if fields[i] == flag {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+func ownedIngressMasquerade(fields []string, containerIP string, port uint16) bool {
+	want := map[string]string{"-s": "127.0.0.1/32", "-d": containerIP + "/32", "-p": "tcp",
+		"--dport": strconv.Itoa(int(port)), "-j": "MASQUERADE"}
+	seen := make(map[string]bool)
+	for i := 2; i < len(fields); i += 2 {
+		if i+1 >= len(fields) {
+			return false
+		}
+		flag, value := fields[i], fields[i+1]
+		if seen[flag] {
+			return false
+		}
+		seen[flag] = true
+		if flag == "-m" && value == "tcp" {
+			continue
+		}
+		expected, ok := want[flag]
+		if !ok || value != expected {
+			return false
+		}
+	}
+	for flag := range want {
+		if !seen[flag] {
+			return false
+		}
+	}
+	return true
 }
 
 // AddIngressPortForward idempotently installs the DNAT rule that lets
@@ -180,7 +216,7 @@ func AddIngressPortForward(hostPort uint16, containerIP string, containerPort ui
 	// A different app may publish the same container port behind a different
 	// host port. Its hairpin rule must remain in place. Only clear a stale
 	// rule for this exact container IP and port.
-	if err := flushStaleRulesForPort("POSTROUTING", containerPort, "-d "+containerIP+"/32"); err != nil {
+	if err := flushStaleRulesForPort("POSTROUTING", containerPort, containerIP); err != nil {
 		return fmt.Errorf("flushing stale ingress masquerades for port %d: %w", containerPort, err)
 	}
 

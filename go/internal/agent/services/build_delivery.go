@@ -110,7 +110,7 @@ type targetDialer func(ctx context.Context, target *agentpbv2.PushTarget) (*grpc
 func meshTargetDialer(peers PeerDialer, resolve func(string) (DeliveryTarget, error), pushTLS func(meshid.Device) (*tls.Config, error), defaultPort uint16) targetDialer {
 	return func(ctx context.Context, target *agentpbv2.PushTarget) (*grpc.ClientConn, error) {
 		if peers == nil || pushTLS == nil {
-			return nil, errors.New("this build host has no mesh dialer or client certificate")
+			return nil, errors.New("this build host has no wendy net dialer or client certificate")
 		}
 		port, err := deliveryTargetAgentPort(target, defaultPort)
 		if err != nil {
@@ -412,7 +412,7 @@ func (s *BuildService) deliverByChunksOnce(ctx context.Context, rep *deliveryRep
 	assetUUID := target.GetAssetUuid()
 	cc, err := s.dialTarget(ctx, target)
 	if err != nil {
-		return &transientDeliveryError{fmt.Errorf("reaching device %s over the mesh: %w", assetUUID, err)}
+		return &transientDeliveryError{fmt.Errorf("reaching device %s over the wendy net: %w", assetUUID, err)}
 	}
 	defer cc.Close()
 	cs := agentpb.NewWendyContainerServiceClient(cc)

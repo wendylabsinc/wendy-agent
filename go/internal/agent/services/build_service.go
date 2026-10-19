@@ -125,11 +125,10 @@ type BuildServiceOptions struct {
 	ContextLocks *BuildContextLockSet
 	// Peers dials another device in this org to deliver the finished image.
 	Peers PeerDialer
-	// ResolveTarget maps a canonical Cloud asset UUID to the mesh identity to
-	// dial. Only this tenant's roster can turn "which asset" into "which
-	// device", and the TLS pin below is only as good as that lookup: an asset
-	// that is not in the roster has no dialable identity and delivery must
-	// refuse it, not guess.
+	// ResolveTarget requires the canonical device UUID to be present in this
+	// tenant's Cloud roster and returns its full device principal. Cloud's
+	// asset UUID is that same device UUID; the lookup remains the build host's
+	// membership gate. A target absent from the roster must be refused.
 	ResolveTarget func(assetUUID string) (DeliveryTarget, error)
 	// PushTLS supplies the TLS config for the delivery hop, PINNED to the
 	// resolved device it is meant to reach.
@@ -489,7 +488,7 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 		seen[t.GetAssetUuid()] = struct{}{}
 	}
 	if s.peers == nil {
-		return status.Error(codes.FailedPrecondition, "this build host has no mesh dialer and cannot deliver an image to another device")
+		return status.Error(codes.FailedPrecondition, "this build host has no wendy net dialer and cannot deliver an image to another device")
 	}
 	// The role can be enabled on a host whose buildkitd was never installed, or
 	// has since stopped. GetBuildCapabilities reports that, but a preflight the

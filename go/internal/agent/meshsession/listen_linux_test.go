@@ -30,20 +30,20 @@ func TestAppListenerBeforeVIPAndAddressRecreation(t *testing.T) {
 		t.Fatal("lost native UDP optimizations")
 	}
 	endpoint := udp.LocalAddr().(*net.UDPAddr)
-	if endpoint.IP.String() != "10.88.1.204" {
-		t.Fatalf("not own IPv4 VIP: %s", endpoint)
+	if endpoint.IP.String() != credentials.Device.MeshAddress().String() {
+		t.Fatalf("not own IPv6 mesh address: %s", endpoint)
 	}
 	raw, _ := udp.SyscallConn()
 	checkOption := func(option, want int) {
 		t.Helper()
 		var got int
 		var sockErr error
-		err := raw.Control(func(fd uintptr) { got, sockErr = unix.GetsockoptInt(int(fd), unix.IPPROTO_IP, option) })
+		err := raw.Control(func(fd uintptr) { got, sockErr = unix.GetsockoptInt(int(fd), unix.IPPROTO_IPV6, option) })
 		if err != nil || sockErr != nil || got != want {
 			t.Fatalf("option %d = %d want%d: %v/%v", option, got, want, err, sockErr)
 		}
 	}
-	checkOption(unix.IP_FREEBIND, 1)
+	checkOption(unix.IPV6_FREEBIND, 1)
 	run := func(args ...string) {
 		t.Helper()
 		out, err := exec.Command("ip", args...).CombinedOutput()
@@ -55,7 +55,7 @@ func TestAppListenerBeforeVIPAndAddressRecreation(t *testing.T) {
 	for generation := 0; generation < 2; generation++ {
 		run("link", "add", "appvip", "type", "dummy")
 		defer exec.Command("ip", "link", "del", "appvip").Run()
-		run("addr", "add", "10.88.1.204/32", "dev", "appvip")
+		run("-6", "addr", "add", credentials.Device.MeshAddress().String()+"/128", "dev", "appvip", "nodad")
 		run("link", "set", "appvip", "up")
 		run("link", "set", "lo", "up")
 		iface, _ := net.InterfaceByName("appvip")
@@ -63,7 +63,7 @@ func TestAppListenerBeforeVIPAndAddressRecreation(t *testing.T) {
 			t.Fatal("interface not recreated")
 		}
 		previous = iface.Index
-		client, err := net.DialUDP("udp4", nil, endpoint)
+		client, err := net.DialUDP("udp6", nil, endpoint)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -94,8 +94,8 @@ func TestAppListenerBeforeVIPAndAddressRecreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkOption(unix.IP_PKTINFO, 0) // exact-bound native UDP must not cache an ingress device
-	checkOption(unix.IP_RECVTOS, 1) // native ECN setup remains enabled
+	checkOption(unix.IPV6_RECVPKTINFO, 0) // exact-bound native UDP must not cache an ingress device
+	checkOption(unix.IPV6_RECVTCLASS, 1)  // native ECN setup remains enabled
 	listener.Close()
 }
 

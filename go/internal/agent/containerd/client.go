@@ -1600,7 +1600,7 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 		if resolvPath, err := writeMeshResolvConf(appID); err == nil {
 			localoci.InjectResolvMount(spec, resolvPath)
 		} else {
-			c.logger.Warn("bridge/mesh: resolv.conf setup failed; container keeps image resolv.conf",
+			c.logger.Warn("bridge/wendy net: resolv.conf setup failed; container keeps image resolv.conf",
 				zap.String("app_id", appID), zap.Error(err))
 		}
 	}
@@ -2539,7 +2539,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		if isolation == "isolated" {
 			if ent, ok := findMeshEntitlement(entitlements); ok {
 				if err := c.applyMeshIngressPorts(appName, appID, reusedNetworkSandbox.ip, ent.Ports); err != nil {
-					return nil, failStartedTask(fmt.Errorf("mesh ingress setup failed for reused sandbox %q: %w", appName, err))
+					return nil, failStartedTask(fmt.Errorf("wendy net ingress setup failed for reused sandbox %q: %w", appName, err))
 				}
 			}
 		}
@@ -2697,15 +2697,15 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 			// apps without that entitlement (including bridge-mode apps).
 			if isolation == "isolated" {
 				if meshErr := c.applyMeshEgress(entitlements, appName, appID, netnsPath, ip); meshErr != nil {
-					c.logger.Error("mesh egress setup failed; failing container start",
+					c.logger.Error("wendy net egress setup failed; failing container start",
 						zap.String("app_id", appID), zap.Error(meshErr))
-					return nil, failStartedTask(fmt.Errorf("mesh egress setup failed for app %q: %w", appID, meshErr))
+					return nil, failStartedTask(fmt.Errorf("wendy net egress setup failed for app %q: %w", appID, meshErr))
 				}
 				if _, meshApp := findMeshEntitlement(entitlements); meshApp {
 					// Agent restarts leave the task and CNI namespace alive. Persist
 					// the ADD result so CHECK can prove it before ingress recovery.
 					if err := writeNetworkSandboxResult(appName, cniResult); err != nil {
-						return nil, failStartedTask(fmt.Errorf("persisting mesh CNI proof for %q: %w", appName, err))
+						return nil, failStartedTask(fmt.Errorf("persisting wendy net CNI proof for %q: %w", appName, err))
 					}
 				}
 			}
@@ -4768,12 +4768,14 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 		if info.Labels[labelKeyStoppedByUser] == "true" {
 			continue // user stopped it on purpose — stay down across reboot
 		}
+		// An agent restart does not stop this task. Restore its authorized
+		// ingress even when its policy forbids restarting it after an exit.
+		if running {
+			c.rehydrateRunningMeshIngress(ctx, ctr, info.Labels)
+		}
 		policy, maxRetries := parseRestartPolicyLabel(info.Labels[labelKeyRestartPolicy])
 		if policy == "no" {
 			continue // opted out of auto-restart (e.g. wendy run --no-restart)
-		}
-		if running {
-			c.rehydrateRunningMeshIngress(ctx, ctr, info.Labels)
 		}
 		result = append(result, services.BootContainer{
 			Name:          ctr.ID(),
@@ -4794,8 +4796,16 @@ func (c *Client) rehydrateRunningMeshIngress(ctx context.Context, ctr containerd
 }
 
 func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr containerd.Container, labels map[string]string, retries int) {
+	// Retry timers start with Background, so every entry must restore the
+	// containerd namespace before loading or checking its inherited task.
+	ctx = c.withNamespace(ctx)
 	unlockNetwork := c.lockNetworkOperation(ctr.ID())
 	defer unlockNetwork()
+	// A retry reloads labels after its delay. Honor a stop that happened since
+	// the initial boot snapshot even if stopping the task itself failed.
+	if labels[labelKeyStoppedByUser] == "true" {
+		return
+	}
 	if c.meshIngress == nil || labels[labelKeyIsolation] != "isolated" {
 		return
 	}
@@ -4829,7 +4839,7 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 	}
 	result, err := readNetworkSandboxResult(ctr.ID())
 	if err != nil {
-		c.logger.Warn("mesh ingress: no CNI proof for inherited task; ports remain denied",
+		c.logger.Warn("wendy net ingress: no CNI proof for inherited task; ports remain denied",
 			zap.String("container_id", ctr.ID()), zap.Error(err))
 		return
 	}
@@ -4839,23 +4849,23 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 	}
 	ip, err := verifiedMeshResultIP(result, subnet)
 	if err != nil {
-		c.logger.Warn("mesh ingress: inherited task failed network verification; ports remain denied",
+		c.logger.Warn("wendy net ingress: inherited task failed network verification; ports remain denied",
 			zap.String("container_id", ctr.ID()), zap.Error(err))
 		return
 	}
 	if !networkNamespaceHasIP(path, ip) {
-		c.logger.Warn("mesh ingress: inherited task has no matching live network address; ports remain denied",
+		c.logger.Warn("wendy net ingress: inherited task has no matching live network address; ports remain denied",
 			zap.String("container_id", ctr.ID()), zap.String("ip", ip))
 		return
 	}
 	checkResult, err := meshCheckResultForTask(result, networkSandboxPath(ctr.ID()), path)
 	if err != nil {
-		c.logger.Warn("mesh ingress: inherited task has invalid CNI sandbox proof; ports remain denied",
+		c.logger.Warn("wendy net ingress: inherited task has invalid CNI sandbox proof; ports remain denied",
 			zap.String("container_id", ctr.ID()), zap.Error(err))
 		return
 	}
 	if err := c.CNICheck(ctx, appID, ctr.ID(), path, checkResult); err != nil {
-		c.logger.Warn("mesh ingress: inherited task failed CNI CHECK; ports remain denied",
+		c.logger.Warn("wendy net ingress: inherited task failed CNI CHECK; ports remain denied",
 			zap.String("container_id", ctr.ID()), zap.Error(err))
 		return
 	}
@@ -4873,7 +4883,7 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 	exitCh, err := task.Wait(waitCtx)
 	if err != nil {
 		cancelWait()
-		c.logger.Warn("mesh ingress: cannot watch inherited task exit; ports remain denied",
+		c.logger.Warn("wendy net ingress: cannot watch inherited task exit; ports remain denied",
 			zap.String("container_id", ctr.ID()), zap.Error(err))
 		return
 	}
@@ -4881,7 +4891,7 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 	if err := c.applyMeshIngressPorts(ctr.ID(), appID, ip, ent.Ports); err != nil {
 		cancelWait()
 		c.releaseMeshIngressRun(ctr.ID(), run)
-		c.logger.Warn("mesh ingress: could not rehydrate inherited task ports",
+		c.logger.Warn("wendy net ingress: could not rehydrate inherited task ports",
 			zap.String("container_id", ctr.ID()), zap.Error(err))
 		return
 	}
@@ -4895,7 +4905,7 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 		cancelWait()
 		c.releaseMeshIngressRun(ctr.ID(), run)
 		if retries > 0 {
-			c.logger.Warn("mesh ingress: port forward unavailable; scheduling task recheck",
+			c.logger.Warn("wendy net ingress: port forward unavailable; scheduling task recheck",
 				zap.String("container_id", ctr.ID()), zap.Uint16("port", pm.Host), zap.Int("retries_left", retries))
 			go func() {
 				timer := time.NewTimer(5 * time.Second)
@@ -4911,7 +4921,7 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 				}
 			}()
 		} else {
-			c.logger.Error("mesh ingress: exhausted inherited task port recovery attempts",
+			c.logger.Error("wendy net ingress: exhausted inherited task port recovery attempts",
 				zap.String("container_id", ctr.ID()), zap.Uint16("port", pm.Host))
 		}
 		return
@@ -4921,6 +4931,11 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 		cancelWait()
 		c.releaseMeshIngressRun(ctr.ID(), run)
 		return
+	}
+	// The previous agent owned this listener. Surviving CNI routes and port
+	// forwards do not restore device-name or upstream DNS for the live task.
+	if gateway, err := meshGateway(appID); err == nil {
+		c.ensureMeshDNS(ctr.ID(), gateway)
 	}
 	go func() {
 		defer cancelWait()

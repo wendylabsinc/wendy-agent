@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-var ErrPortDenied = errors.New("mesh ingress port is not published by a running app")
+var ErrPortDenied = errors.New("wendy net ingress port is not published by a running app")
 
 // Registry is an in-memory authorization table. Each host port has at most
 // one container owner, and an owner can publish several ports. The zero value
@@ -67,7 +67,7 @@ func (r *Registry) DialAuthorized(port uint16, dial func() (net.Conn, error)) (n
 		return conn, err
 	}
 	if conn == nil {
-		return nil, errors.New("mesh ingress dial returned no connection")
+		return nil, errors.New("wendy net ingress dial returned no connection")
 	}
 	owned := &authorizedConn{Conn: conn, registry: r, owner: r.byPort[port], done: make(chan struct{})}
 	r.flowMu.Lock()
@@ -111,7 +111,7 @@ func (c *authorizedConn) CloseWrite() error {
 	if half, ok := c.Conn.(interface{ CloseWrite() error }); ok {
 		return half.CloseWrite()
 	}
-	return errors.New("mesh ingress connection does not support half-close")
+	return errors.New("wendy net ingress connection does not support half-close")
 }
 
 // CheckAvailable rejects a port already owned by another container. Callers
@@ -119,10 +119,10 @@ func (c *authorizedConn) CloseWrite() error {
 // the check so a caller that forgets that rule still fails closed.
 func (r *Registry) CheckAvailable(containerID string, port uint16) error {
 	if r == nil {
-		return fmt.Errorf("mesh ingress registry is unavailable")
+		return fmt.Errorf("wendy net ingress registry is unavailable")
 	}
 	if containerID == "" || port == 0 {
-		return fmt.Errorf("mesh ingress needs a container ID and nonzero host port")
+		return fmt.Errorf("wendy net ingress needs a container ID and nonzero host port")
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -133,10 +133,10 @@ func (r *Registry) CheckAvailable(containerID string, port uint16) error {
 // matching host port forward. Repeating a claim by the same owner is safe.
 func (r *Registry) Claim(containerID string, port uint16) error {
 	if r == nil {
-		return fmt.Errorf("mesh ingress registry is unavailable")
+		return fmt.Errorf("wendy net ingress registry is unavailable")
 	}
 	if containerID == "" || port == 0 {
-		return fmt.Errorf("mesh ingress needs a container ID and nonzero host port")
+		return fmt.Errorf("wendy net ingress needs a container ID and nonzero host port")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -157,7 +157,7 @@ func (r *Registry) Claim(containerID string, port uint16) error {
 
 func checkOwner(owner, containerID string, port uint16) error {
 	if owner != "" && owner != containerID {
-		return fmt.Errorf("mesh ingress host port %d is already published by container %q", port, owner)
+		return fmt.Errorf("wendy net ingress host port %d is already published by container %q", port, owner)
 	}
 	return nil
 }

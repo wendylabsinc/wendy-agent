@@ -52,7 +52,7 @@ type pooledSession struct {
 
 func NewClient(credentials *localmesh.Credentials) (*Client, error) {
 	if credentials == nil {
-		return nil, errors.New("missing mesh app credentials")
+		return nil, errors.New("missing wendy net app credentials")
 	}
 	c := &Client{credentials: credentials, peers: make(map[meshid.Device]*pooledSession), stop: make(chan struct{}), done: make(chan struct{}),
 		dial: func(ctx context.Context, endpoint netip.AddrPort, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
@@ -88,7 +88,7 @@ func (c *Client) reap() {
 		}
 		c.mu.Unlock()
 		for _, conn := range stale {
-			_ = conn.CloseWithError(0, "mesh app session idle")
+			_ = conn.CloseWithError(0, "wendy net app session idle")
 		}
 	}
 }
@@ -111,7 +111,7 @@ func (c *Client) Close() error {
 	c.peers = make(map[meshid.Device]*pooledSession)
 	c.mu.Unlock()
 	for _, conn := range conns {
-		_ = conn.CloseWithError(0, "mesh app client stopped")
+		_ = conn.CloseWithError(0, "wendy net app client stopped")
 	}
 	<-c.done
 	return nil
@@ -129,7 +129,7 @@ func (c *Client) Invalidate(peer meshid.Device) {
 	conn := c.invalidateLocked(peer)
 	c.mu.Unlock()
 	if conn != nil {
-		_ = conn.CloseWithError(0, "mesh app route withdrawn")
+		_ = conn.CloseWithError(0, "wendy net app route withdrawn")
 	}
 }
 
@@ -152,7 +152,7 @@ func (c *Client) PruneRoutes(snapshot localmesh.NodeSnapshot) {
 	}
 	c.mu.Unlock()
 	for _, conn := range stale {
-		_ = conn.CloseWithError(0, "mesh app route withdrawn")
+		_ = conn.CloseWithError(0, "wendy net app route withdrawn")
 	}
 }
 
@@ -180,7 +180,7 @@ func (c *Client) Dial(ctx context.Context, peer meshid.Device, address netip.Add
 // ACK.
 func (c *Client) DialWithRetryCheck(ctx context.Context, peer meshid.Device, address netip.AddrPort, port uint16, retryCheck func() error) (net.Conn, error) {
 	if c == nil || port == 0 || !address.IsValid() || address.Port() == 0 {
-		return nil, errors.New("invalid pooled mesh app dial")
+		return nil, errors.New("invalid pooled wendy net app dial")
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		entry, reused, err := c.acquire(ctx, peer, address)
@@ -267,7 +267,7 @@ func (c *Client) acquire(ctx context.Context, peer meshid.Device, address netip.
 		c.peers[peer] = newEntry
 		c.mu.Unlock()
 		if oldConn != nil {
-			_ = oldConn.CloseWithError(0, "mesh app session replaced")
+			_ = oldConn.CloseWithError(0, "wendy net app session replaced")
 		}
 		cfg, err := c.credentials.PeerTLSWithTickets(peer, ALPN, "app-quic")
 		var conn *quic.Conn
@@ -290,10 +290,10 @@ func (c *Client) acquire(ctx context.Context, peer meshid.Device, address netip.
 		c.mu.Unlock()
 		if !valid {
 			if conn != nil {
-				_ = conn.CloseWithError(0, "mesh app session replaced")
+				_ = conn.CloseWithError(0, "wendy net app session replaced")
 			}
 			if err != nil {
-				return nil, false, fmt.Errorf("mesh app QUIC dial: %w", err)
+				return nil, false, fmt.Errorf("wendy net app QUIC dial: %w", err)
 			}
 			return nil, false, net.ErrClosed
 		}
@@ -308,7 +308,7 @@ func (c *Client) release(entry *pooledSession) {
 	closeConn := entry.retired && entry.active == 0
 	c.mu.Unlock()
 	if closeConn && entry.conn != nil {
-		_ = entry.conn.CloseWithError(0, "mesh app session retired")
+		_ = entry.conn.CloseWithError(0, "wendy net app session retired")
 	}
 }
 
@@ -321,6 +321,6 @@ func (c *Client) retire(peer meshid.Device, entry *pooledSession) {
 	closeConn := entry.active == 0
 	c.mu.Unlock()
 	if closeConn && entry.conn != nil {
-		_ = entry.conn.CloseWithError(0, "mesh app session failed")
+		_ = entry.conn.CloseWithError(0, "wendy net app session failed")
 	}
 }

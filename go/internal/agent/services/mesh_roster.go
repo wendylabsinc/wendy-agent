@@ -83,12 +83,12 @@ func (r *MeshRoster) loadIdentity() {
 	}
 	leaves, err := certs.ParseCertsFromPEM([]byte(r.certPEM))
 	if err != nil || len(leaves) == 0 {
-		r.logger.Warn("mesh roster: device certificate could not be read; sync stays disabled until provisioning completes", zap.Error(err))
+		r.logger.Warn("wendy net roster: device certificate could not be read; sync stays disabled until provisioning completes", zap.Error(err))
 		return
 	}
 	identity, found, err := certs.IdentityFromCert(leaves[0])
 	if err != nil {
-		r.logger.Warn("mesh roster: device certificate identity could not be parsed; sync stays disabled until provisioning completes", zap.Error(err))
+		r.logger.Warn("wendy net roster: device certificate identity could not be parsed; sync stays disabled until provisioning completes", zap.Error(err))
 		return
 	}
 	if !found {
@@ -100,7 +100,7 @@ func (r *MeshRoster) loadIdentity() {
 	}
 	tenant, err := meshid.ParseTenant(identity.TenantUUID)
 	if err != nil {
-		r.logger.Warn("mesh roster: certificate tenant UUID is not canonical; roster entries will not be dialable", zap.Error(err))
+		r.logger.Warn("wendy net roster: certificate tenant UUID is not canonical; roster entries will not be dialable", zap.Error(err))
 		return
 	}
 	r.tenant, r.hasTenant = tenant, true
@@ -247,7 +247,7 @@ func (r *MeshRoster) Sync(ctx context.Context) error {
 		// authenticate a roster call with, so don't dial at all — this is
 		// expected before enrollment (and briefly during BLE first-boot
 		// provisioning) and would otherwise just fail the RPC every tick.
-		r.logger.Debug("mesh roster: skipping sync, device identity not provisioned")
+		r.logger.Debug("wendy net roster: skipping sync, device identity not provisioned")
 		return nil
 	}
 
@@ -276,7 +276,7 @@ func (r *MeshRoster) Sync(ctx context.Context) error {
 // good contents so a transient cloud outage never breaks LAN-cached names.
 func (r *MeshRoster) RunSync(ctx context.Context, interval time.Duration) {
 	if err := r.Sync(ctx); err != nil {
-		r.logger.Warn("mesh roster initial sync failed", zap.Error(err))
+		r.logger.Warn("wendy net roster initial sync failed", zap.Error(err))
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -286,7 +286,7 @@ func (r *MeshRoster) RunSync(ctx context.Context, interval time.Duration) {
 			return
 		case <-t.C:
 			if err := r.Sync(ctx); err != nil {
-				r.logger.Warn("mesh roster sync failed", zap.Error(err))
+				r.logger.Warn("wendy net roster sync failed", zap.Error(err))
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -67,10 +68,14 @@ type DNSServer struct {
 }
 
 type gatewayListener struct {
-	refs int
-	srv  *dns.Server
-	addr string
+	closing chan struct{}
+	refs    int
+	srv     *dns.Server
+	addr    string
 }
+
+// The shutdown seam lets lifecycle tests hold a real in-flight DNS request.
+var shutdownDNSGateway = (*dns.Server).Shutdown
 
 func NewDNSServer(logger *zap.Logger, upstream string) *DNSServer {
 	return &DNSServer{
@@ -108,25 +113,51 @@ func (s *DNSServer) SetMeshIdentity(tenant meshid.Tenant, vips *VIPTable) {
 // EnsureListener binds a UDP DNS listener on gatewayIP (idempotent,
 // refcounted). Callers pair every EnsureListener with a ReleaseListener.
 func (s *DNSServer) EnsureListener(gatewayIP string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if l, ok := s.listeners[gatewayIP]; ok {
-		l.refs++
+	for {
+		s.mu.Lock()
+		if l, ok := s.listeners[gatewayIP]; ok {
+			if l.closing != nil {
+				done := l.closing
+				s.mu.Unlock()
+				<-done
+				continue // The old socket is closed; this acquisition can bind again.
+			}
+			l.refs++
+			s.mu.Unlock()
+			return nil
+		}
+		pc, err := net.ListenPacket("udp", net.JoinHostPort(gatewayIP, strconv.Itoa(s.port)))
+		if err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("wendy net DNS: listen %s: %w", gatewayIP, err)
+		}
+		started, ended := make(chan struct{}), make(chan error, 1)
+		srv := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(s.handle),
+			NotifyStartedFunc: func() { close(started) }}
+		go func() {
+			err := srv.ActivateAndServe()
+			ended <- err
+			if err != nil {
+				s.logger.Warn("wendy net DNS listener exited", zap.String("gateway", gatewayIP), zap.Error(err))
+			}
+		}()
+		// Shutdown before ActivateAndServe starts returns "server not started"
+		// without closing its socket. Do not publish a reference until ready.
+		select {
+		case <-started:
+		case err := <-ended:
+			_ = pc.Close()
+			s.mu.Unlock()
+			if err == nil {
+				err = errors.New("DNS listener exited before startup")
+			}
+			return fmt.Errorf("wendy net DNS: start %s: %w", gatewayIP, err)
+		}
+		s.listeners[gatewayIP] = &gatewayListener{refs: 1, srv: srv, addr: pc.LocalAddr().String()}
+		s.mu.Unlock()
+		s.logger.Info("wendy net DNS listening", zap.String("addr", pc.LocalAddr().String()))
 		return nil
 	}
-	pc, err := net.ListenPacket("udp", net.JoinHostPort(gatewayIP, strconv.Itoa(s.port)))
-	if err != nil {
-		return fmt.Errorf("mesh dns: listen %s: %w", gatewayIP, err)
-	}
-	srv := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(s.handle)}
-	go func() {
-		if err := srv.ActivateAndServe(); err != nil {
-			s.logger.Warn("mesh dns listener exited", zap.String("gateway", gatewayIP), zap.Error(err))
-		}
-	}()
-	s.listeners[gatewayIP] = &gatewayListener{refs: 1, srv: srv, addr: pc.LocalAddr().String()}
-	s.logger.Info("mesh dns listening", zap.String("addr", pc.LocalAddr().String()))
-	return nil
 }
 
 // ReleaseListener drops one reference; the listener shuts down when the last
@@ -134,19 +165,29 @@ func (s *DNSServer) EnsureListener(gatewayIP string) error {
 // a no-op.
 func (s *DNSServer) ReleaseListener(gatewayIP string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	l, ok := s.listeners[gatewayIP]
-	if !ok {
+	if !ok || l.closing != nil {
+		s.mu.Unlock()
 		return
 	}
 	l.refs--
 	if l.refs > 0 {
+		s.mu.Unlock()
 		return
 	}
-	delete(s.listeners, gatewayIP)
-	if err := l.srv.Shutdown(); err != nil {
-		s.logger.Warn("mesh dns shutdown", zap.String("gateway", gatewayIP), zap.Error(err))
+	l.closing = make(chan struct{})
+	s.mu.Unlock()
+	// Shutdown drains handlers, which also take s.mu. Keep a per-gateway
+	// closing entry so new acquisitions wait for the socket without blocking
+	// those handlers or other gateways behind the global state mutex.
+	if err := shutdownDNSGateway(l.srv); err != nil {
+		s.logger.Warn("wendy net DNS shutdown", zap.String("gateway", gatewayIP), zap.Error(err))
 	}
+	_ = l.srv.PacketConn.Close()
+	s.mu.Lock()
+	delete(s.listeners, gatewayIP)
+	close(l.closing)
+	s.mu.Unlock()
 }
 
 // listenerAddr returns the bound address for a gateway, or "" if not
@@ -232,7 +273,7 @@ func (s *DNSServer) answerFriendly(w dns.ResponseWriter, r *dns.Msg, q dns.Quest
 func (s *DNSServer) answerAllocated(w dns.ResponseWriter, r *dns.Msg, q dns.Question, vips *VIPTable, device meshid.Device) {
 	vip, err := vips.Allocate(device)
 	if err != nil {
-		s.logger.Warn("mesh dns: VIP allocation failed",
+		s.logger.Warn("wendy net DNS: VIP allocation failed",
 			zap.String("mesh.device", device.UUID().String()),
 			zap.String("mesh.name", q.Name),
 			zap.Error(err))

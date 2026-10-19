@@ -12,12 +12,16 @@ import (
 	"strconv"
 	"strings"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -197,7 +201,7 @@ func checkChunkDeliverySupported(host string, resp *agentpbv2.GetBuildCapabiliti
 	if mode == chunkingForce {
 		return fmt.Errorf("build host %s predates chunked delivery, so --chunking=force cannot be honoured there; update its agent (wendy device update --device %s)", host, host)
 	}
-	return fmt.Errorf("build host %s predates chunked delivery, which remote builds need: its registry fallback cannot reach the device over the mesh, so the build would succeed and the delivery fail; update its agent (wendy device update --device %s), or pass --chunking=off to attempt the registry route anyway", host, host)
+	return fmt.Errorf("build host %s predates chunked delivery, which remote builds need: its registry fallback cannot reach the device over the wendy net, so the build would succeed and the delivery fail; update its agent (wendy device update --device %s), or pass --chunking=off to attempt the registry route anyway", host, host)
 }
 
 // buildChunkingMode carries --chunking to the build host, so the flag means the
@@ -655,16 +659,21 @@ func targetPushTarget(ctx context.Context, target *grpcclient.AgentConnection, r
 // to the one device (a service group) that should resolve that once rather than
 // re-querying the device's mesh identity, OS and port per image.
 func targetPushTargetBase(ctx context.Context, target *grpcclient.AgentConnection) (*agentpbv2.PushTarget, error) {
-	resp, err := agentpbv2.NewWendyProvisioningServiceClient(target.Conn).IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{})
+	var remote peer.Peer
+	resp, err := agentpbv2.NewWendyProvisioningServiceClient(target.Conn).IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{}, grpc.Peer(&remote))
 	if err != nil {
-		return nil, fmt.Errorf("determining the target device's mesh identity: %w", err)
+		return nil, fmt.Errorf("determining the target device's wendy net identity: %w", err)
 	}
 	prov, ok := resp.GetResponseType().(*agentpbv2.IsProvisionedResponse_Provisioned)
 	if !ok {
 		return nil, fmt.Errorf("the target device is not enrolled, so a build host cannot reach its registry; run 'wendy device enroll' for the target or omit --build-host")
 	}
 	if _, err := meshid.ParseDeviceUUID(prov.Provisioned.GetAssetUuid()); err != nil {
-		return nil, fmt.Errorf("the target's Cloud asset UUID is unavailable; wait for its mesh roster to sync: %w", err)
+		return nil, fmt.Errorf("the target agent does not report a certificate device UUID; update and enroll it before remote delivery: %w", err)
+	}
+	device, err := verifiedBuildDeliveryDevice(target, &remote, prov.Provisioned)
+	if err != nil {
+		return nil, err
 	}
 	agentOS, err := targetAgentOS(ctx, target)
 	if err != nil {
@@ -675,10 +684,39 @@ func targetPushTargetBase(ctx context.Context, target *grpcclient.AgentConnectio
 		return nil, fmt.Errorf("determining the target device's agent port: %w", err)
 	}
 	return &agentpbv2.PushTarget{
-		AssetUuid:    prov.Provisioned.GetAssetUuid(),
+		AssetUuid:    device.UUID().String(),
 		RegistryPort: uint32(registryPort(agentOS)),
 		AgentPort:    agentPort,
 	}, nil
+}
+
+// verifiedBuildDeliveryDevice binds the destination to the peer the CLI
+// actually reached before sending its UUID to a build host. The RPC response
+// cannot redirect delivery to another device, even in the same tenant.
+func verifiedBuildDeliveryDevice(conn *grpcclient.AgentConnection, remote *peer.Peer, reported *agentpbv2.ProvisionedResponse) (meshid.Device, error) {
+	identity, verified := conn.ObservedServerIdentity()
+	if !verified && remote != nil {
+		if info, ok := remote.AuthInfo.(credentials.TLSInfo); ok && info.State.HandshakeComplete && len(info.State.PeerCertificates) != 0 {
+			var err error
+			identity, verified, err = certs.IdentityFromCert(info.State.PeerCertificates[0])
+			if err != nil {
+				return meshid.Device{}, fmt.Errorf("invalid authenticated delivery target: %w", err)
+			}
+		}
+	}
+	device, err := meshid.DeviceFromPrincipal(identity.Principal)
+	if !verified || err != nil {
+		return meshid.Device{}, errors.New("authenticated device UUID unavailable for remote delivery")
+	}
+	if reported.GetPrincipalUri() != device.Principal() || reported.GetAssetUuid() != device.UUID().String() {
+		return meshid.Device{}, errors.New("delivery target enrollment disagrees with its authenticated device")
+	}
+	if conn.CertInfo != nil {
+		if tenant := conn.CertInfo.TenantUUID(); tenant != "" && tenant != device.Tenant().String() {
+			return meshid.Device{}, errors.New("delivery target is outside the connection operator's tenant")
+		}
+	}
+	return device, nil
 }
 
 // appRepository is the image name a single-service app's remote build pushes

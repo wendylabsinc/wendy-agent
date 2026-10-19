@@ -247,19 +247,19 @@ func main() {
 	// must still work even if this fails (non-Linux dev host, missing
 	// iptables binary, insufficient privileges, etc).
 	if err := hostnetwork.InitMeshChain(); err != nil {
-		logger.Warn("failed to init mesh chain", zap.Error(err))
+		logger.Warn("failed to init wendy net chain", zap.Error(err))
 	}
 	// Same non-fatal treatment for the NAT chain that redirects mesh VIP
 	// traffic to the local mesh proxy (started below, once cert material is
 	// in scope).
 	if err := hostnetwork.InitMeshNATChain(); err != nil {
-		logger.Warn("failed to init mesh nat chain", zap.Error(err))
+		logger.Warn("failed to init wendy net nat chain", zap.Error(err))
 	}
 	// Same non-fatal treatment for the nat-table chain that forwards the
 	// agent's own loopback MeshDial dial into a meshed container's published
 	// port (see hostnetwork.MeshPortsChainName).
 	if err := hostnetwork.InitMeshPortsChain(); err != nil {
-		logger.Warn("failed to init mesh ports chain", zap.Error(err))
+		logger.Warn("failed to init wendy net ports chain", zap.Error(err))
 	}
 
 	// Populate the CNI bin dir with symlinks back at this binary so isolated
@@ -747,21 +747,20 @@ func main() {
 			// Legacy fallback for a CLI that does not put each target's actual
 			// mTLS agent port in PushTarget.
 			TargetAgentPort: uint16(mtlsPortNum),
-			// A PushTarget names a Cloud asset; only this tenant's roster can
-			// say which mesh device that asset is. Read fresh per build: the
-			// roster syncs on its own schedule and enrollment can re-provision
-			// the tenant while the agent runs.
+			// The Cloud asset UUID is the device UUID. Still require membership
+			// in this tenant's roster before delivery. Read fresh per build:
+			// roster sync and enrollment can change membership while running.
 			ResolveTarget: func(assetUUID string) (services.DeliveryTarget, error) {
 				if meshRoster == nil {
-					return services.DeliveryTarget{}, fmt.Errorf("this agent has no mesh roster yet; cannot resolve asset %s", assetUUID)
+					return services.DeliveryTarget{}, fmt.Errorf("this agent has no wendy net roster yet; cannot resolve asset %s", assetUUID)
 				}
 				entry, ok := meshRoster.LookupAsset(assetUUID)
 				if !ok {
-					return services.DeliveryTarget{}, fmt.Errorf("asset %s is not in this tenant's mesh roster", assetUUID)
+					return services.DeliveryTarget{}, fmt.Errorf("asset %s is not in this tenant's wendy net roster", assetUUID)
 				}
 				device, ok := entry.Device()
 				if !ok {
-					return services.DeliveryTarget{}, fmt.Errorf("asset %s has no mesh device identity", assetUUID)
+					return services.DeliveryTarget{}, fmt.Errorf("asset %s has no wendy net device identity", assetUUID)
 				}
 				return services.DeliveryTarget{Device: device, AssetUUID: entry.AssetUUID}, nil
 			},
@@ -952,13 +951,13 @@ func main() {
 		}
 		credentials, err := localmesh.NewCredentials(certPEM, chainPEM, keyPEM)
 		if err != nil {
-			logger.Error("local mesh identity unavailable", zap.Error(err))
+			logger.Error("wendy net identity unavailable", zap.Error(err))
 			return
 		}
 		localMeshStart.Do(func() {
 			appClient, err := meshsession.NewClient(credentials)
 			if err != nil {
-				logger.Error("mesh app client unavailable", zap.Error(err))
+				logger.Error("wendy net app client unavailable", zap.Error(err))
 				return
 			}
 			localMeshMu.Lock()
@@ -988,13 +987,13 @@ func main() {
 			}()
 			sessionServer, err := meshsession.NewServer(credentials, meshIngress)
 			if err != nil {
-				logger.Error("mesh app session unavailable", zap.Error(err))
+				logger.Error("wendy net app session unavailable", zap.Error(err))
 			} else {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
 					if err := sessionServer.Run(ctx, fmt.Sprintf(":%d", meshsession.Port)); err != nil && ctx.Err() == nil {
-						logger.Error("mesh app session stopped", zap.Error(err))
+						logger.Error("wendy net app session stopped", zap.Error(err))
 					}
 				}()
 			}
@@ -1087,10 +1086,10 @@ func main() {
 	// — recycled VIPs would hijack live flows pinned to their old owners.
 	meshVIPs, vipErr := mesh.OpenVIPTable(filepath.Join(configPath, "mesh-vips.json"))
 	if vipErr != nil {
-		logger.Error("mesh: VIP table could not be opened; mesh name answers and proxy dialing are disabled", zap.Error(vipErr))
+		logger.Error("wendy net: VIP table could not be opened; wendy net name answers and proxy dialing are disabled", zap.Error(vipErr))
 	} else {
 		stats := meshVIPs.Stats()
-		logger.Info("mesh: VIP table loaded", zap.Int("allocated", stats.Allocated), zap.Int("retired", stats.Retired), zap.Int("capacity", stats.Capacity))
+		logger.Info("wendy net: VIP table loaded", zap.Int("allocated", stats.Allocated), zap.Int("retired", stats.Retired), zap.Int("capacity", stats.Capacity))
 	}
 	meshDialer.SetLocalServiceDialer(func(dialCtx context.Context, peer meshid.Device, port uint16) (net.Conn, error) {
 		localMeshMu.RLock()
@@ -1117,7 +1116,7 @@ func main() {
 	// cannot reach a loopback-only listener. It accepts only mesh VIP targets;
 	// the application dialer still enforces device-principal admission.
 	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
-		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))
+		logger.Warn("wendy net proxy failed to start; wendy net egress disabled", zap.Error(err))
 	}
 
 	// Hybrid friendly-name resolver: <devicename>.<org-slug>.cloud.wendy.dev.
@@ -1127,7 +1126,6 @@ func main() {
 	// fails closed (logged, retried) until the device is provisioned, rather
 	// than never starting at all.
 	meshRoster = services.NewMeshRoster(logger, cloudGRPCURLForCloudHost(cloudHost), certPEM, keyPEM, chainPEM)
-	provisioningSvcV2.SetRoster(meshRoster)
 	meshBrowse := func(ctx context.Context) ([]models.LANDevice, error) {
 		col, err := discovery.Discover(ctx, discovery.DiscoveryOptions{
 			Types:   []models.InterfaceType{models.InterfaceLAN},
@@ -1312,7 +1310,7 @@ func main() {
 		if newTenant, ok := meshRoster.OwnTenant(); ok && meshVIPs != nil {
 			if meshTenant != (meshid.Tenant{}) && newTenant != meshTenant {
 				if err := meshVIPs.RetireTenant(newTenant); err != nil {
-					logger.Warn("mesh: retiring VIPs outside the new tenant failed", zap.Error(err))
+					logger.Warn("wendy net: retiring VIPs outside the new tenant failed", zap.Error(err))
 				}
 			}
 			meshTenant = newTenant
@@ -1325,7 +1323,7 @@ func main() {
 			sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
 			if err := meshRoster.Sync(sctx); err != nil {
-				logger.Warn("mesh roster resync after provisioning failed", zap.Error(err))
+				logger.Warn("wendy net roster resync after provisioning failed", zap.Error(err))
 			}
 		}()
 		configpartition.PersistDeviceUUID(logger, certPEM)
@@ -1606,7 +1604,7 @@ func deviceIdentity(provisioningSvc *services.ProvisioningService) (meshid.Tenan
 func advertiseProvisionedMeshIdentity(logger *zap.Logger, mtlsPort int, provisioningSvc *services.ProvisioningService) {
 	_, device := deviceIdentity(provisioningSvc)
 	if device == (meshid.Device{}) {
-		logger.Warn("Provisioned certificate carries no tenant SPIFFE principal; mesh advertisement not updated")
+		logger.Warn("Provisioned certificate carries no tenant SPIFFE principal; wendy net advertisement not updated")
 		return
 	}
 	configpartition.UpdateAvahiForProvisioning(logger, mtlsPort, device.Principal())

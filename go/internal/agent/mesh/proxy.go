@@ -103,16 +103,16 @@ func (p *Proxy) handleConn(conn net.Conn) {
 	}
 	dst, err := p.origDst(tcp)
 	if err != nil {
-		p.logger.Warn("mesh proxy: original destination unavailable", zap.Error(err))
+		p.logger.Warn("wendy net proxy: original destination unavailable", zap.Error(err))
 		return
 	}
 	if p.vips == nil {
-		p.logger.Warn("mesh proxy: no VIP table configured", zap.String("dst", dst.String()))
+		p.logger.Warn("wendy net proxy: no VIP table configured", zap.String("dst", dst.String()))
 		return
 	}
 	device, err := p.vips.Device(dst.Addr())
 	if err != nil {
-		p.logger.Warn("mesh proxy: destination is not a mesh VIP", zap.String("dst", dst.String()), zap.Error(err))
+		p.logger.Warn("wendy net proxy: destination is not a wendy net VIP", zap.String("dst", dst.String()), zap.Error(err))
 		return
 	}
 	peerID := device.UUID().String()
@@ -124,7 +124,7 @@ func (p *Proxy) handleConn(conn net.Conn) {
 		// The dialer already recorded the mesh.connections/dial.duration_ms
 		// error metric for this attempt; this log is the per-connection
 		// signal (dashboard filters on the wendy.mesh scope).
-		p.logger.Warn("mesh connection failed",
+		p.logger.Warn("wendy net connection failed",
 			zap.String("mesh.peer", peerID),
 			zap.String("mesh.mode", mode),
 			zap.Uint32("mesh.port", uint32(dst.Port())),
@@ -138,7 +138,7 @@ func (p *Proxy) handleConn(conn net.Conn) {
 		p.metrics.RecordBytes(device, "tx", tx)
 		p.metrics.RecordBytes(device, "rx", rx)
 	}
-	p.logger.Info("mesh connection",
+	p.logger.Info("wendy net connection",
 		zap.String("mesh.peer", peerID),
 		zap.String("mesh.mode", mode),
 		zap.Uint32("mesh.port", uint32(dst.Port())),

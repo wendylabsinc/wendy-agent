@@ -211,7 +211,7 @@ func TestDNSExhaustionIsNXDOMAIN(t *testing.T) {
 	if rcode != dns.RcodeNameError || ip != "" {
 		t.Fatalf("exhausted pool: got rcode=%d ip=%q, want NXDOMAIN with no answer", rcode, ip)
 	}
-	entries := logs.FilterMessage("mesh dns: VIP allocation failed").All()
+	entries := logs.FilterMessage("wendy net DNS: VIP allocation failed").All()
 	if len(entries) == 0 {
 		t.Fatalf("exhaustion produced no warn log: %+v", logs.All())
 	}

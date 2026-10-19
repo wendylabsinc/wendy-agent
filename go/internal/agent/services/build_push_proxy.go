@@ -281,7 +281,7 @@ func (p *pushProxy) serve(ctx context.Context) {
 				consumed, total = attempt.consumed.bytes(), attempt.total
 			}
 			p.recordError(annotateDeliveryFailure(
-				fmt.Errorf("reaching device %s's registry over the mesh: %w", p.assetUUID, err),
+				fmt.Errorf("reaching device %s's registry over the wendy net: %w", p.assetUUID, err),
 				consumed, total))
 			w.WriteHeader(http.StatusBadGateway)
 		},

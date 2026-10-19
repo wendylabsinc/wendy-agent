@@ -133,6 +133,7 @@ message DockerfileBuild {
 message PushTarget {
   // Field 1 was the numeric org-scoped asset id; Cloud v2 assets are UUIDs.
   reserved 1;
+  reserved "asset_id";
   // The target device's Cloud asset UUID, canonical lowercase text.
   string asset_uuid = 5;
   uint32 registry_port = 2;
@@ -248,6 +249,7 @@ message BuildImageResult {
 message DeliveryResult {
   // Field 1 was the numeric org-scoped asset id; Cloud v2 assets are UUIDs.
   reserved 1;
+  reserved "asset_id";
   // The delivered-to device's Cloud asset UUID, canonical lowercase text —
   // the same value the PushTarget carried.
   string asset_uuid = 4;

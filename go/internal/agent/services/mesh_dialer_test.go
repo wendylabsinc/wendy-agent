@@ -101,7 +101,7 @@ func TestDialDeviceBrokerOnlyWhenNoLANPeer(t *testing.T) {
 // TestDialDeviceErrorModeIsEmpty proves that on total dial failure (both LAN
 // and broker fail, or broker fails when LAN was never tried) the mode return
 // is the zero value, matching the mesh.PeerDialer contract Proxy relies on
-// when labeling its "mesh connection failed" log.
+// when labeling its "wendy net connection failed" log.
 func TestDialDeviceErrorModeIsEmpty(t *testing.T) {
 	d, p := testDialer()
 	p.lanAddr = ""

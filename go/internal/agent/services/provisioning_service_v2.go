@@ -2,8 +2,8 @@ package services
 
 import (
 	"context"
+
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
-	"sync/atomic"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -15,28 +15,21 @@ import (
 // delegating to the v1 ProvisioningService.
 type ProvisioningServiceV2 struct {
 	agentpbv2.UnimplementedWendyProvisioningServiceServer
-	v1     *ProvisioningService
-	roster atomic.Pointer[MeshRoster]
+	v1 *ProvisioningService
 }
 
 func NewProvisioningServiceV2(v1 *ProvisioningService) *ProvisioningServiceV2 {
 	return &ProvisioningServiceV2{v1: v1}
 }
 
-// SetRoster supplies the authenticated asset/device mapping after startup.
-func (s *ProvisioningServiceV2) SetRoster(roster *MeshRoster) { s.roster.Store(roster) }
-
+// assetUUID is this certificate's device UUID under the sole-ID contract.
+// Reporting one's own identity requires no Cloud inventory or network access.
 func (s *ProvisioningServiceV2) assetUUID(principal string) string {
-	roster := s.roster.Load()
 	device, err := meshid.DeviceFromPrincipal(principal)
-	if roster == nil || err != nil {
+	if err != nil {
 		return ""
 	}
-	entry, ok := roster.LookupDevice(device)
-	if !ok {
-		return ""
-	}
-	return entry.AssetUUID
+	return device.UUID().String()
 }
 
 func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.IsProvisionedRequest) (*agentpbv2.IsProvisionedResponse, error) {
