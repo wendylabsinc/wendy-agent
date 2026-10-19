@@ -222,13 +222,22 @@ func TestSteadyIntervalRelaxUses45ms(t *testing.T) {
 	if err != nil || interval != 45*time.Millisecond {
 		t.Fatalf("steady update interval=%s err=%v, want 45ms", interval, err)
 	}
-	// A 15 ms completion must NOT satisfy a steady request (and vice versa):
-	// the verifier binds to the requested units.
-	if _, err := waitForLEUpdate(context.Background(), 0x0800, meshSteadyIntervalUnits, eventReader(
+	// The submitted command must request the steady interval, but the
+	// successful completion reports whatever the peer actually negotiated.
+	interval, err = waitForLEUpdate(context.Background(), 0x0800, meshSteadyIntervalUnits, eventReader(
 		leConnectionUpdateCommand(0x0800, meshSteadyIntervalUnits),
 		statusPacket(0),
 		completePacket(0x0800, 12, 0, 400, 0),
-	)); err == nil {
-		t.Fatal("15 ms completion accepted for steady request")
+	))
+	if err != nil || interval != 15*time.Millisecond {
+		t.Fatalf("negotiated interval=%s err=%v, want 15ms", interval, err)
+	}
+	_, err = waitForLEUpdate(context.Background(), 0x0800, meshSteadyIntervalUnits, eventReader(
+		leConnectionUpdateCommand(0x0800, meshIntervalUnits),
+		statusPacket(0),
+		completePacket(0x0800, 36, 0, 400, 0),
+	))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("another request's completion accepted: %v", err)
 	}
 }
