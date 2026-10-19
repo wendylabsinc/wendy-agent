@@ -159,7 +159,7 @@ func (g *RobotGateway) registerLifecycleTools() {
 	for _, name := range []string{"get_deployment_job", "cancel_deployment_job"} {
 		behavior := readOnly()
 		if name == "cancel_deployment_job" {
-			behavior = mutating()
+			behavior = destructive()
 		}
 		g.protocol.AddTool(gatewayTool(name, "Read or cancel your deployment job. Cancellation may leave an already deployed app running; inspect before retrying.", behavior, mcpgo.WithString("job_id", mcpgo.Required(), mcpgo.MaxLength(64))), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 			if !g.hasScope(ctx, RobotDeployScope) {

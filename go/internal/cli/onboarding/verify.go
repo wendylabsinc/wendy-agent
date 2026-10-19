@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -90,6 +91,9 @@ func Verify(ctx context.Context, opts VerifyOptions, connect func(context.Contex
 		out.Problems = append(out.Problems, "cloud enrollment is not verified")
 	}
 	out.Verified = len(out.Problems) == 0
+	if out.Verified {
+		analytics.TrackStage(ctx, "device_boot_verified", "wendy install verify", "completed", "", map[string]string{"step": "first_boot", "device_reachable": "true"})
+	}
 	return out, nil
 }
 

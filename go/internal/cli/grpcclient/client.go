@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/linklocal"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tlscache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -51,6 +54,11 @@ const (
 	// normally adjacent. Bound reuse so long-running watch/build sessions still
 	// refresh mutable fields such as interfaces and disk usage.
 	agentVersionCacheTTL = 10 * time.Second
+
+	// Limit the initial TCP probe independently of the TLS handshake budget.
+	// Allow a lost SYN to be retransmitted before treating the route as dead.
+	// Once TCP succeeds, reconnects retain gRPC's normal connection budget.
+	agentTCPDialTimeout = 2 * time.Second
 )
 
 // tlsDebugWriter is where WENDY_TLS_DEBUG resumption logging is written.
@@ -94,6 +102,7 @@ type AgentConnection struct {
 	TimeSyncService      agentpbv2.WendyTimeSyncServiceClient
 	BuildService         agentpbv2.WendyBuildServiceClient
 	SensorPairingService agentpbv2.WendySensorPairingServiceClient
+	UnitreeService       agentpbv2.WendyUnitreeServiceClient
 	RobotArmService      agentpbv2.WendyRobotArmServiceClient
 	DriverService        agentpbv2.WendyDriverServiceClient
 	DataService          agentpbv2.DataServiceClient
@@ -129,6 +138,70 @@ type AgentConnection struct {
 	// out of gRPC's handshake-failure string. nil for connections that never
 	// install the sink.
 	pinMismatch *atomic.Pointer[devicepin.PinMismatchError]
+	// tcpDial records failures before TCP connected, separately from TLS errors.
+	// nil when gRPC owns dialing, including HTTP CONNECT proxy transports.
+	tcpDial *agentTCPDialState
+}
+
+type agentTCPDialState struct {
+	mu        sync.Mutex
+	connected bool
+	err       error
+}
+
+// TCPDialError reports an actual TCP dial failure only if this connection has
+// never reached the endpoint. Once TCP succeeds, a later TLS or RPC failure
+// must not cause callers to discard the remaining operator certificates.
+// A nil result also covers a dial still in progress and gRPC-managed proxies.
+func (c *AgentConnection) TCPDialError() error {
+	if c == nil || c.tcpDial == nil {
+		return nil
+	}
+	c.tcpDial.mu.Lock()
+	defer c.tcpDial.mu.Unlock()
+	return c.tcpDial.err
+}
+
+func boundedAgentTCPDialer(dial func(context.Context, string) (net.Conn, error)) (func(context.Context, string) (net.Conn, error), *agentTCPDialState) {
+	state := new(agentTCPDialState)
+	return func(ctx context.Context, addr string) (net.Conn, error) {
+		state.mu.Lock()
+		connected := state.connected
+		state.mu.Unlock()
+		if !connected {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, agentTCPDialTimeout)
+			defer cancel()
+		}
+		conn, err := dial(ctx, addr)
+		state.mu.Lock()
+		if err == nil {
+			state.connected = true
+			state.err = nil
+		} else if !state.connected {
+			state.err = err
+		}
+		state.mu.Unlock()
+		return conn, err
+	}, state
+}
+
+// agentProxyFromEnvironment matches gRPC's HTTPS proxy selection. Tests replace
+// it because net/http caches the process's proxy environment on first use.
+var agentProxyFromEnvironment = http.ProxyFromEnvironment
+
+func agentTCPDialOptions(address string) ([]grpc.DialOption, *agentTCPDialState) {
+	host, _, _ := net.SplitHostPort(address)
+	if !linklocal.IsIPv4LinkLocal(host) {
+		proxy, err := agentProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "https", Host: address}})
+		if proxy != nil || err != nil {
+			// A custom dialer disables gRPC's proxy resolver. Leave configured
+			// proxies, including invalid proxy settings, to its existing path.
+			return nil, nil
+		}
+	}
+	dial, state := boundedAgentTCPDialer(linkLocalDialFn)
+	return []grpc.DialOption{grpc.WithContextDialer(dial)}, state
 }
 
 type agentVersionCacheEntry struct {
@@ -216,8 +289,7 @@ func identityMismatchSink(dst *atomic.Pointer[certs.IdentityMismatchError]) func
 }
 
 func Connect(ctx context.Context, address string) (*AgentConnection, error) {
-	conn, err := grpc.NewClient(
-		grpcTarget(address),
+	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithInitialWindowSize(grpcInitialStreamWindow),
 		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
@@ -228,7 +300,9 @@ func Connect(ctx context.Context, address string) (*AgentConnection, error) {
 			Timeout:             grpcKeepaliveTimeout,
 			PermitWithoutStream: false,
 		}),
-	)
+	}
+	opts = append(opts, linkLocalDialOpts(address)...)
+	conn, err := grpc.NewClient(grpcTarget(address), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to agent at %s: %w", address, err)
 	}
@@ -437,6 +511,8 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 			PermitWithoutStream: false,
 		}),
 	}
+	dialOpts, tcpDial := agentTCPDialOptions(address)
+	opts = append(opts, dialOpts...)
 	conn, err := grpc.NewClient(grpcTarget(address), append(opts, extraOpts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to agent at %s with TLS: %w", address, err)
@@ -451,6 +527,7 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 	ac.observedServerIdentity = observedIdentity
 	ac.identityMismatch = mismatch
 	ac.pinMismatch = pinMismatch
+	ac.tcpDial = tcpDial
 	return ac, nil
 }
 
@@ -594,6 +671,7 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 		TimeSyncService:      agentpbv2.NewWendyTimeSyncServiceClient(conn),
 		BuildService:         agentpbv2.NewWendyBuildServiceClient(conn),
 		SensorPairingService: agentpbv2.NewWendySensorPairingServiceClient(conn),
+		UnitreeService:       agentpbv2.NewWendyUnitreeServiceClient(conn),
 		RobotArmService:      agentpbv2.NewWendyRobotArmServiceClient(conn),
 		DriverService:        agentpbv2.NewWendyDriverServiceClient(conn),
 		DataService:          agentpbv2.NewDataServiceClient(conn),
@@ -602,4 +680,18 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 
 func NewFromConn(conn *grpc.ClientConn) *AgentConnection {
 	return newAgentConnection(conn)
+}
+
+// linkLocalDialFn is a seam over linklocal.Dial for tests.
+var linkLocalDialFn = linklocal.Dial
+
+// linkLocalDialOpts sends IPv4 link-local targets through linklocal.Dial; other
+// targets keep gRPC's default dialer and its proxy support.
+func linkLocalDialOpts(address string) []grpc.DialOption {
+	if host, _, err := net.SplitHostPort(address); err != nil || !linklocal.IsIPv4LinkLocal(host) {
+		return nil
+	}
+	return []grpc.DialOption{grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
+		return linkLocalDialFn(ctx, addr)
+	})}
 }

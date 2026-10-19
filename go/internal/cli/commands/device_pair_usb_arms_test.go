@@ -110,6 +110,8 @@ func TestUSBArmTabConfirmationRoutingAndOfflineForget(t *testing.T) {
 	if duplicate != nil {
 		t.Fatal("duplicate bind while busy")
 	}
+	// Tab passes Unitree on the way back to Bluetooth.
+	m, _ = pairUpdate(m, tea.KeyMsg{Type: tea.KeyTab})
 	m, _ = pairUpdate(m, tea.KeyMsg{Type: tea.KeyTab})
 	m, refresh := pairUpdate(m, cmd())
 	if client.bound == nil || m.active != pairBluetoothTab || refresh == nil {
@@ -117,6 +119,7 @@ func TestUSBArmTabConfirmationRoutingAndOfflineForget(t *testing.T) {
 	}
 	client.devices = []*pb.RobotArm{{Id: "usb-1", Name: "Offline arm", Model: "so101", Configured: true, ConnectionStatus: "disconnected"}}
 	m, _ = pairUpdate(m, refresh())
+	m, _ = pairUpdate(m, tea.KeyMsg{Type: tea.KeyShiftTab})
 	m, _ = pairUpdate(m, tea.KeyMsg{Type: tea.KeyShiftTab})
 	// Returning starts a fresh scan; complete it before interacting.
 	m, _ = pairUpdate(m, pairTabMsg{tab: pairArmTab, msg: armPairScanMsg{devices: client.devices}})

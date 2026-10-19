@@ -13,6 +13,7 @@ const (
 	pairSensorLinkTab
 	pairCameraTab
 	pairArmTab
+	pairUnitreeTab
 	pairTabCount
 )
 
@@ -27,6 +28,7 @@ type devicePairModel struct {
 	bluetooth bttable.Model
 	sensor    sensorPairModel
 	camera    cameraPairModel
+	unitree   unitreePairModel
 	arm       armPairModel
 	active    pairTab
 	started   [pairTabCount]bool
@@ -34,11 +36,16 @@ type devicePairModel struct {
 	done      bool
 }
 
-func newDevicePairModel(bt bttable.Handler, sensor *sensorPairHandler, camera *cameraPairHandler) devicePairModel {
+func newDevicePairModel(bt bttable.Handler, sensor *sensorPairHandler, camera *cameraPairHandler, unitree ...*unitreePairHandler) devicePairModel {
+	var unitreeHandler *unitreePairHandler
+	if len(unitree) > 0 {
+		unitreeHandler = unitree[0]
+	}
 	return devicePairModel{
 		bluetooth: bttable.NewModel(nil).WithHandler(bt),
 		sensor:    newSensorPairModel(sensor),
 		camera:    newCameraPairModel(camera),
+		unitree:   newUnitreePairModel(unitreeHandler),
 		arm:       newArmPairModel(nil),
 	}
 }
@@ -67,6 +74,9 @@ func (m devicePairModel) Init() tea.Cmd {
 	if m.active == pairArmTab {
 		return tagPairCmd(m.arm.Init(), pairArmTab)
 	}
+	if m.active == pairUnitreeTab {
+		return tagPairCmd(m.unitree.Init(), pairUnitreeTab)
+	}
 	if m.active == pairCameraTab {
 		return tagPairCmd(m.camera.Init(), pairCameraTab)
 	}
@@ -80,6 +90,11 @@ func (m devicePairModel) updateTab(tab pairTab, msg tea.Msg) (devicePairModel, t
 	if tab == pairArmTab {
 		updated, cmd := m.arm.Update(msg)
 		m.arm = updated.(armPairModel)
+		return m, tagPairCmd(cmd, tab)
+	}
+	if tab == pairUnitreeTab {
+		updated, cmd := m.unitree.Update(msg)
+		m.unitree = updated.(unitreePairModel)
 		return m, tagPairCmd(cmd, tab)
 	}
 	if tab == pairCameraTab {
@@ -106,12 +121,13 @@ func (m devicePairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		msg.Height = max(1, msg.Height-2)
-		var btCmd, sensorCmd, cameraCmd, armCmd tea.Cmd
+		var btCmd, sensorCmd, cameraCmd, unitreeCmd, armCmd tea.Cmd
 		m, btCmd = m.updateTab(pairBluetoothTab, msg)
 		m, sensorCmd = m.updateTab(pairSensorLinkTab, msg)
 		m, cameraCmd = m.updateTab(pairCameraTab, msg)
+		m, unitreeCmd = m.updateTab(pairUnitreeTab, msg)
 		m, armCmd = m.updateTab(pairArmTab, msg)
-		return m, tea.Batch(btCmd, sensorCmd, cameraCmd, armCmd)
+		return m, tea.Batch(btCmd, sensorCmd, cameraCmd, unitreeCmd, armCmd)
 	case tea.KeyMsg:
 		if m.active == pairArmTab && m.arm.confirming && msg.String() != "ctrl+c" {
 			return m.updateTab(pairArmTab, msg)
@@ -121,8 +137,13 @@ func (m devicePairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.active == pairCameraTab && m.camera.editing && msg.String() != "ctrl+c" {
 			return m.updateTab(pairCameraTab, msg)
 		}
+		if m.active == pairUnitreeTab && m.unitree.form != unitreeNoForm && msg.String() != "ctrl+c" {
+			return m.updateTab(pairUnitreeTab, msg)
+		}
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
+			m.unitree.clearForm()
+			m.unitree.account = nil
 			m.done = true
 			return m, tea.Quit
 		case "tab", "shift+tab":
@@ -148,7 +169,7 @@ func (m devicePairModel) View() string {
 	if m.done {
 		return ""
 	}
-	labels := []string{"Bluetooth", "SensorLink", "IP Cameras", "USB Arms"}
+	labels := []string{"Bluetooth", "SensorLink", "IP Cameras", "USB Arms", "Unitree"}
 	header := ""
 	for i, label := range labels {
 		if i > 0 {
@@ -160,7 +181,7 @@ func (m devicePairModel) View() string {
 		}
 		header += style.Render(label)
 	}
-	if (!m.camera.editing || m.active != pairCameraTab) && (!m.arm.confirming || m.active != pairArmTab) {
+	if !(m.camera.editing && m.active == pairCameraTab) && !(m.unitree.form != unitreeNoForm && m.active == pairUnitreeTab) && !(m.arm.confirming && m.active == pairArmTab) {
 		header += devicePickerTabInactive.Render("  (tab switch)")
 	}
 	if m.width > 0 {
@@ -171,6 +192,8 @@ func (m devicePairModel) View() string {
 		body = m.sensor.View()
 	} else if m.active == pairCameraTab {
 		body = m.camera.View()
+	} else if m.active == pairUnitreeTab {
+		body = m.unitree.View()
 	} else if m.active == pairArmTab {
 		body = m.arm.View()
 	}

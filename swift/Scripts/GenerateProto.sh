@@ -35,6 +35,7 @@ swift package --allow-writing-to-package-directory generate-grpc-code-from-proto
     "$PROTO_DIR/wendy/agent/services/v1/wendy_agent_v1_file_sync_service.proto" \
     "$PROTO_DIR/wendy/lite/sensorlink.proto" \
     "$PROTO_DIR/wendy/agent/services/v2/sensor_service.proto" \
+    "$PROTO_DIR/wendy/agent/services/v2/provisioning_service.proto" \
     "$PROTO_DIR/wendy/agent/services/v2/robot_arm_service.proto"
 
 # The Mac agent is the video server; it doesn't need generated client or

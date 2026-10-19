@@ -52,7 +52,15 @@ attachments changed. `--force` skips prompts, not target selection, privileges o
 the separate internal-drive protection. Never add `--yes-overwrite-internal` to
 work around an unexplained refusal.
 
-Execute the returned argument array through the host terminal using `wendy install`.
+Through MCP, supported image installs run as a saved job. `os_install_start`
+returns a `job_id` and physical instructions without erasing anything. After the
+user completes them, `os_install_resume(job_id=...)` probes the hardware and
+returns a target fingerprint. Resume with that exact `target_id` and
+`confirm_erase=true` only once the user authorizes that target. Poll
+`os_install_status`; jobs survive MCP restarts. If it returns a terminal command
+for elevation, give it to the user rather than collecting a password.
+
+Otherwise, execute the returned argument array through the host terminal using `wendy install`.
 Keep its output visible for flash stages and errors. Elevation, recovery buttons,
 power cycling and cable changes may need the user. Do not run the interactive
 `wendy tour` in an agent pipe, or apply a short tool timeout to an ongoing flash.

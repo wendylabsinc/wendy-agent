@@ -409,6 +409,7 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.OnCopyItem != nil {
 					m.flashMessage = m.OnCopyItem(item)
 					m.flashIsError = false
+					m.refreshTable()
 					return m, nil
 				}
 				m.selected = &item
@@ -453,6 +454,7 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				flash, quit := m.OnCreateItem()
 				m.flashMessage = flash
 				m.flashIsError = false
+				m.refreshTable()
 				if quit {
 					return m, tea.Quit
 				}
@@ -465,6 +467,7 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					item, stop := visible[idx], m.OnStopItem
 					m.stoppingName = item.Name
 					m.flashMessage = ""
+					m.refreshTable()
 					return m, func() tea.Msg {
 						flash, isError := stop(item)
 						return pickerStopResultMsg{flash: flash, isError: isError}
@@ -479,6 +482,7 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					flash, quit := m.OnEnrollItem(visible[idx])
 					m.flashMessage = flash
 					m.flashIsError = false
+					m.refreshTable()
 					if quit {
 						return m, tea.Quit
 					}
@@ -583,8 +587,9 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.snapCursorToSelectable(dir)
 			// Clear any flash message when the user navigates.
-			if m.table.Cursor() != prev {
+			if m.table.Cursor() != prev && m.flashMessage != "" {
 				m.flashMessage = ""
+				m.refreshTable()
 			}
 			return m, cmd
 		}
@@ -727,6 +732,11 @@ func (m PickerModel) View() string {
 		return sb.String()
 	}
 
+	selectedHint := ""
+	if hint := m.selectedHint(); hint != "" {
+		selectedHint = WrapHint("  "+hint, m.width)
+	}
+
 	sb.WriteString(colorizeSectionHeaders(ColorizeProbeGlyphs(m.tableView()), m.sectionLabels()) + "\n")
 
 	if m.stoppingName != "" {
@@ -737,7 +747,7 @@ func (m PickerModel) View() string {
 		if m.flashIsError {
 			style = lipgloss.NewStyle().Foreground(lipgloss.Color("#ef4444"))
 		}
-		sb.WriteString(m.viewLine(style.Render("  "+m.flashMessage)) + "\n")
+		sb.WriteString(m.viewLine(style.Render(WrapHint("  "+m.flashMessage, m.width))) + "\n")
 	}
 
 	if m.deviceLegend {
@@ -752,11 +762,11 @@ func (m PickerModel) View() string {
 		sb.WriteString("\n" + m.viewLine(pickerScanning.Render("  Scanning for more results...")) + "\n")
 	}
 
-	if hint := m.selectedHint(); hint != "" {
+	if selectedHint != "" {
 		if !m.scanning {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(m.viewLine(pickerHint.Render("  "+hint)) + "\n")
+		sb.WriteString(pickerHint.Render(selectedHint) + "\n")
 	}
 
 	return sb.String()
@@ -1124,7 +1134,14 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 	}
 
 	m.table.SetWidth(PickerTableWidth(m.table.Columns()))
-	m.table.SetHeight(PickerTableHeight(len(rows), m.height))
+	height := m.height
+	if hintHeight := PickerHintHeight(visible, m.width, "  "); height > 0 && hintHeight > 0 {
+		height = max(1, height-hintHeight-2)
+	}
+	if height > 0 && m.flashMessage != "" {
+		height = max(1, height-lipgloss.Height(WrapHint("  "+m.flashMessage, m.width)))
+	}
+	m.table.SetHeight(PickerTableHeight(len(rows), height))
 }
 
 func pickerItemKey(item PickerItem) string {
@@ -1407,4 +1424,17 @@ func (m PickerModel) tableViewportWidth() int {
 		return width
 	}
 	return PickerTableWidth(m.table.Columns())
+}
+
+// PickerHintHeight reserves enough space for any visible row's hint. Keeping
+// that reservation stable while navigating lets rendering and cursor movement
+// share one viewport, including when adjacent rows have different hint lengths.
+func PickerHintHeight(items []PickerItem, width int, prefix string) int {
+	height := 0
+	for _, item := range items {
+		if hint := strings.TrimSpace(item.Hint); hint != "" {
+			height = max(height, lipgloss.Height(WrapHint(prefix+hint, width)))
+		}
+	}
+	return height
 }

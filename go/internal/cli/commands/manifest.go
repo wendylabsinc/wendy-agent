@@ -127,16 +127,25 @@ type extensionEntry struct {
 }
 
 // driverExtensionsFor returns the add-ons the manifest publishes for a device.
-// pr>0 resolves a per-PR manifest keyed by the PR's own version ("pr-<N>"), not a
-// device VERSION_ID; the on-device extension-release check still rejects an add-on
-// built for a different OS version.
+// It preserves exact OS-version resolution for callers staging drivers for OTA.
 func driverExtensionsFor(deviceType, osVersion string, pr int) ([]extensionEntry, error) {
+	return driverExtensionsForChannel(context.Background(), deviceType, osVersion, false, pr)
+}
+
+// driverExtensionsForChannel resolves the device's OS version by default, the
+// latest nightly with nightly=true, or a PR's own version ("pr-<N>"). Callers
+// still filter by the device's kernel, and the agent verifies the image before
+// applying it.
+func driverExtensionsForChannel(ctx context.Context, deviceType, osVersion string, nightly bool, pr int) ([]extensionEntry, error) {
+	if nightly && pr > 0 {
+		return nil, fmt.Errorf("--nightly and --pr cannot be combined")
+	}
 	var main *mainManifest
 	var err error
 	if pr > 0 {
-		main, err = fetchPRMainManifest(pr)
+		main, err = fetchPRMainManifestContext(ctx, pr)
 	} else {
-		main, err = fetchMainManifest()
+		main, err = fetchMainManifestContext(ctx)
 	}
 	if err != nil {
 		return nil, err
@@ -145,13 +154,19 @@ func driverExtensionsFor(deviceType, osVersion string, pr int) ([]extensionEntry
 	if !ok || dev.ManifestPath == "" {
 		return nil, fmt.Errorf("device type %q not found in the manifest", deviceType)
 	}
-	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	version := osVersion
+	switch {
+	case pr > 0:
+		version = prDeviceVersion(dev)
+	case nightly:
+		version = dev.LatestNightly
+		if version == "" {
+			return nil, fmt.Errorf("no nightly version available for %s", deviceType)
+		}
+	}
+	dm, err := fetchDeviceManifestContext(ctx, dev.ManifestPath)
 	if err != nil {
 		return nil, err
-	}
-	version := osVersion
-	if pr > 0 {
-		version = prDeviceVersion(dev)
 	}
 	v, ok := dm.Versions[version]
 	if !ok {
@@ -292,9 +307,17 @@ func prBasePath(pr int) string {
 // fetchPRMainManifest fetches the per-PR master manifest written by the
 // wendyos-builder publish-pr job.
 func fetchPRMainManifest(pr int) (*mainManifest, error) {
+	return fetchPRMainManifestContext(context.Background(), pr)
+}
+
+func fetchPRMainManifestContext(ctx context.Context, pr int) (*mainManifest, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	url := gcsBaseURL + "/" + prBasePath(pr) + "manifests/master.json"
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching PR %d manifest: %w: %w", pr, ErrManifestUnreachable, err)
 	}
@@ -755,9 +778,17 @@ type firmwareVersionInfo struct {
 }
 
 func fetchFirmwareManifest(path string) (*firmwareManifest, error) {
+	return fetchFirmwareManifestContext(context.Background(), path)
+}
+
+func fetchFirmwareManifestContext(ctx context.Context, path string) (*firmwareManifest, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	url := gcsBaseURL + "/" + path
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching firmware manifest: %w", err)
 	}
@@ -783,6 +814,7 @@ func getFirmwareInfo(fm *firmwareManifest, ver string) (*imageInfo, error) {
 	return &imageInfo{
 		DownloadURL: gcsBaseURL + "/" + v.Path,
 		ImageSize:   v.SizeBytes,
+		Checksum:    v.Checksum,
 		Version:     ver,
 	}, nil
 }

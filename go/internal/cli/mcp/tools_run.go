@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 )
 
 // Explicit selectors override the session. Never let a child choose a different
@@ -208,6 +209,7 @@ func executeRunCommand(ctx context.Context, args []string, target commandTarget,
 	cmd := exec.Command(bin, args...)
 	configureRunProcess(cmd)
 	cmd.Env = runChildEnvironment(os.Environ(), target)
+	cmd.Env = append(cmd.Env, "WENDY_TELEMETRY_ATTEMPT_ID="+analytics.AttemptID(ctx), "WENDY_TELEMETRY_ENTRYPOINT=mcp")
 	// Bound pipe cleanup if a descendant build process outlives the CLI.
 	cmd.WaitDelay = 2 * time.Second
 	tail := &runTail{limit: limit}

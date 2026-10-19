@@ -15,11 +15,12 @@ NET_PROXY_BUNDLE_ID="sh.wendy.WendyAgentMac.NetProxy"
 NET_PROXY_PATH="$APP_PATH/Contents/Library/SystemExtensions/${NET_PROXY_BUNDLE_ID}.systemextension"
 HOST_PROFILE="$APP_PATH/Contents/embedded.provisionprofile"
 NET_PROXY_PROFILE="$NET_PROXY_PATH/Contents/embedded.provisionprofile"
+LAUNCH_AGENT_PLIST="$APP_PATH/Contents/Library/LaunchAgents/${HOST_BUNDLE_ID}.plist"
 VALIDATOR="$SCRIPT_DIR/ValidateMacProvisioning.py"
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-for required_path in "$APP_PATH" "$NET_PROXY_PATH" "$HOST_PROFILE" "$NET_PROXY_PROFILE"; do
+for required_path in "$APP_PATH" "$NET_PROXY_PATH" "$HOST_PROFILE" "$NET_PROXY_PROFILE" "$LAUNCH_AGENT_PLIST"; do
   if [[ ! -e "$required_path" ]]; then
     echo "Missing required macOS release path: $required_path" >&2
     exit 1
@@ -34,6 +35,17 @@ if [[ "$HOST_ACTUAL_BUNDLE_ID" != "$HOST_BUNDLE_ID" ]]; then
 fi
 if [[ "$NET_PROXY_ACTUAL_BUNDLE_ID" != "$NET_PROXY_BUNDLE_ID" ]]; then
   echo "Unexpected NetProxy bundle identifier: $NET_PROXY_ACTUAL_BUNDLE_ID" >&2
+  exit 1
+fi
+
+LAUNCH_AGENT_LABEL=$(/usr/libexec/PlistBuddy -c 'Print :Label' "$LAUNCH_AGENT_PLIST")
+LAUNCH_AGENT_PROGRAM=$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$LAUNCH_AGENT_PLIST")
+if [[ "$LAUNCH_AGENT_LABEL" != "$HOST_BUNDLE_ID" ]]; then
+  echo "Unexpected launch agent label: $LAUNCH_AGENT_LABEL" >&2
+  exit 1
+fi
+if [[ ! -x "$APP_PATH/$LAUNCH_AGENT_PROGRAM" ]]; then
+  echo "Launch agent program is not an executable in the bundle: $LAUNCH_AGENT_PROGRAM" >&2
   exit 1
 fi
 

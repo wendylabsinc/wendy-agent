@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -20,6 +21,10 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
+// Generate before direct go build/test commands; Make and CI do this automatically.
+//
+//go:generate npm --prefix ../../../../web-client/mcp-app ci --no-audit --no-fund
+//go:generate npm --prefix ../../../../web-client/mcp-app run build
 //go:embed desktop_app.html
 var robotPanelHTML string
 
@@ -71,6 +76,9 @@ type RobotGateway struct {
 	connectApp        func(context.Context, context.Context, *grpcclient.AgentConnection, string) (appMCPClient, error)
 	discover          GatewayCloudDiscoverFunc
 	cloudLink         *cloudlink.Manager
+	// Hosted workspace preferences are transient and account-scoped. The
+	// settings mutex protects this map; only Cloud login state is persisted.
+	workspacePreferences map[string]map[string]any
 }
 
 func NewRobotGateway(cfg RobotGatewayConfig, connect ConnectFunc, options ...RobotGatewayOption) (*RobotGateway, error) {
@@ -143,6 +151,15 @@ func NewRobotGateway(cfg RobotGatewayConfig, connect ConnectFunc, options ...Rob
 		}
 	}
 	meta := map[string]any{"ui": map[string]any{"csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{"data:", "blob:"}}}, "openai/ui": map[string]any{"availableDisplayModes": []string{"fullscreen"}, "preferredDisplayMode": "fullscreen"}}
+	// Submitted UI plugins need their own origin. Use the configured HTTPS
+	// gateway origin, never a request Host or a forwarded header.
+	uiDomain := ""
+	if cfg.HTTP != nil {
+		if u, err := url.Parse(cfg.HTTP.ResourceURL); err == nil && u.Scheme == "https" && u.Host != "" {
+			uiDomain = u.Scheme + "://" + u.Host
+			meta["ui"].(map[string]any)["domain"] = uiDomain
+		}
+	}
 	if cfg.AllowSimulators || cfg.AllowHostOperations {
 		meta["ui"].(map[string]any)["csp"].(map[string]any)["connectDomains"] = []string{"http://127.0.0.1:*"}
 	}
@@ -157,6 +174,9 @@ func NewRobotGateway(cfg RobotGatewayConfig, connect ConnectFunc, options ...Rob
 	// Old descriptors may retain an old tool scope. Never run a new bundle under
 	// their cached URI or issue newer helper calls from these compatibility views.
 	legacyMeta := map[string]any{"ui": map[string]any{"csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{}}}}
+	if uiDomain != "" {
+		legacyMeta["ui"].(map[string]any)["domain"] = uiDomain
+	}
 	for _, uri := range []string{"ui://wendy/robot-v1.html", "ui://wendy/device-workspace-v2.html", "ui://wendy/device-workspace-v3.html"} {
 		legacy := mcpgo.NewResource(uri, "Wendy devices", mcpgo.WithMIMEType("text/html;profile=mcp-app"))
 		legacy.Meta = mcpgo.NewMetaFromMap(legacyMeta)
@@ -192,6 +212,9 @@ func (g *RobotGateway) CloseCloudLink() {
 	if g.cloudLink != nil {
 		g.cloudLink.Close()
 	}
+	gatewaySettingsMu.Lock()
+	g.workspacePreferences = nil
+	gatewaySettingsMu.Unlock()
 }
 
 func (g *RobotGateway) grant(ctx context.Context) (*GatewayGrant, gatewayPrincipal) {
@@ -318,7 +341,7 @@ func (g *RobotGateway) filterTools(ctx context.Context, tools []mcpgo.Tool) []mc
 			// mcp-go preserves extension fields in _meta. Advertise the scope
 			// through the documented compatibility field without mutating the
 			// shared descriptor or claiming OAuth for a private stdio pilot.
-			if g.cfg.HTTP != nil && g.cfg.HTTP.OAuth != nil {
+			if g.cfg.HTTP != nil && (g.cfg.HTTP.OAuth != nil || g.cfg.HTTP.CloudLink != nil) {
 				meta := map[string]any{}
 				if t.Meta != nil {
 					for k, v := range t.Meta.AdditionalFields {
@@ -340,9 +363,12 @@ func (g *RobotGateway) filterTools(ctx context.Context, tools []mcpgo.Tool) []mc
 
 func gatewayTool(name, description string, behavior []mcpgo.ToolOption, props ...mcpgo.ToolOption) mcpgo.Tool {
 	opts := append([]mcpgo.ToolOption{mcpgo.WithDescription(description)}, behavior...)
+	// Gateway targets are a bounded authorized inventory, even over a network.
+	// Tools that also access a public catalog must explicitly override this.
 	opts = append(opts, localOnly()...)
 	opts = append(opts, props...)
 	t := mcpgo.NewTool(name, opts...)
+	t.RawOutputSchema = gatewayOutputSchema(name)
 	t.Meta = mcpgo.NewMetaFromMap(map[string]any{"ui": map[string]any{"visibility": []string{"model", "app"}}, "openai/widgetAccessible": true})
 	return t
 }

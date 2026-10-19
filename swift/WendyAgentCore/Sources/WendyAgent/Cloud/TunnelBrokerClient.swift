@@ -240,15 +240,12 @@ struct TunnelBrokerClient: Sendable {
                 TLSConfig.CertificateSource.bytes(Array(config.chainPEM.utf8), format: .pem)
             ])
 
-        // Hostname verification is scoped to the broker kind, not disabled
-        // wholesale — important now that the client presents a cert (mTLS): a
-        // device must not authenticate itself to the wrong endpoint. The cloud
-        // broker (`:443`) has a real DNS name matching its WebPKI cert, so verify
-        // it fully. A self-hosted/LAN broker's cert carries a `localhost` CN that
-        // won't match the dialed host, so only there do we skip hostname checks
-        // (the device-CA trust root still authenticates the peer).
-        let serverVerification: TLSConfig.CertificateVerification =
-            isCloudBroker ? .fullVerification : .noHostnameVerification
+        // Hostname verification applies to every broker, whatever the port
+        // (WDY-3756): a trusted root alone is not broker identity, and the
+        // device presents its cert (mTLS), so it must never authenticate itself
+        // to the wrong endpoint. A self-hosted/LAN broker's cert must therefore
+        // carry a DNS SAN for the broker host name the agent dials.
+        let serverVerification: TLSConfig.CertificateVerification = .fullVerification
 
         // Present the device's ECDSA leaf certificate (mTLS phase 1). Today's
         // broker runs NoClientCert and never sends a CertificateRequest, so this
