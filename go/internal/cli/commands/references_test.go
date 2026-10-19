@@ -20,11 +20,6 @@ import (
 // the CLI does not have. Matching invocations are not checked.
 var cliReferenceAllowlist = map[string]string{
 	"wendy cloud mcp' with --allow-tool": "prose quotes the command as 'wendy cloud mcp', so the closing quote stops command parsing at cloud; --allow-tool and --allow-all are wendy cloud mcp flags",
-	// Stale: `project entitlements add` has no --mode flag and adds network or
-	// bluetooth without a mode. The fix changes the skill's instructions (set
-	// mode in wendy.json instead), so it waits for a maintainer's review.
-	"wendy project entitlements add network --mode":   "stale, awaiting review: entitlements add has no --mode flag",
-	"wendy project entitlements add bluetooth --mode": "stale, awaiting review: entitlements add has no --mode flag",
 }
 
 var invocationStartPattern = regexp.MustCompile("(?:^|[\\s(`\"'])wendy\\s+")
@@ -141,6 +136,33 @@ func rootSubcommandNames(root *cobra.Command) map[string]bool {
 	return names
 }
 
+// cliProblem is a command or flag an invocation names that the CLI lacks.
+type cliProblem struct{ name, kind string }
+
+// cliProblems resolves an invocation against the command tree. A word left
+// over under a command that has subcommands is an unknown subcommand, which
+// root.Find alone does not report (it returns the parent).
+func cliProblems(root *cobra.Command, inv cliInvocation) []cliProblem {
+	path := append([]string{"wendy"}, inv.words...)
+	cmd, rest, err := root.Find(inv.words)
+	if err != nil {
+		return []cliProblem{{strings.Join(path, " "), "command"}}
+	}
+	if len(rest) > 0 && cmd.HasSubCommands() {
+		return []cliProblem{{strings.Join(path[:len(path)-len(rest)+1], " "), "command"}}
+	}
+	// Cobra adds --help (and --version on the root) when it runs a command.
+	cmd.InitDefaultHelpFlag()
+	cmd.InitDefaultVersionFlag()
+	var problems []cliProblem
+	for _, flag := range inv.flags {
+		if flag != "" && cmd.Flags().Lookup(flag) == nil && cmd.InheritedFlags().Lookup(flag) == nil && root.PersistentFlags().Lookup(flag) == nil {
+			problems = append(problems, cliProblem{strings.Join(path, " ") + " --" + flag, "flag"})
+		}
+	}
+	return problems
+}
+
 func allowlistedInvocation(text string) bool {
 	for key := range cliReferenceAllowlist {
 		if strings.Contains(text, key) {
@@ -169,27 +191,34 @@ func TestAgentFacingTextNamesOnlyRealCLIFlags(t *testing.T) {
 				continue
 			}
 			checked++
-			command := strings.Join(append([]string{"wendy"}, inv.words...), " ")
-			cmd, _, err := root.Find(inv.words)
-			if err != nil {
-				report(command, "command")
-				continue
-			}
-			// Cobra adds --help (and --version on the root) when it runs a command.
-			cmd.InitDefaultHelpFlag()
-			cmd.InitDefaultVersionFlag()
-			for _, flag := range inv.flags {
-				if flag == "" {
-					continue
-				}
-				if cmd.Flags().Lookup(flag) == nil && cmd.InheritedFlags().Lookup(flag) == nil && root.PersistentFlags().Lookup(flag) == nil {
-					report(command+" --"+flag, "flag")
-				}
+			for _, problem := range cliProblems(root, inv) {
+				report(problem.name, problem.kind)
 			}
 		}
 	}
 	if checked == 0 {
 		t.Fatal("found no wendy invocations in agent-facing text; the parser is broken")
+	}
+}
+
+func TestAgentFacingTextCLICheckReportsUnknownCommandsAndFlags(t *testing.T) {
+	root := NewRootCmd()
+	for text, want := range map[string][]cliProblem{
+		"`wendy device apps list --device x`":         nil,
+		"`wendy --json device logs --app a --tail 5`": nil,
+		"`wendy run --help`":                          nil,
+		"`wendy device bogus`":                        {{"wendy device bogus", "command"}},
+		"`wendy device bogus list --device x`":        {{"wendy device bogus", "command"}},
+		"`wendy bogus`":                               {{"wendy bogus", "command"}},
+		"`wendy run --bogus`":                         {{"wendy run --bogus", "flag"}},
+	} {
+		invocations := cliInvocations(text, root)
+		if len(invocations) != 1 {
+			t.Fatalf("%s: found %d invocations, want 1", text, len(invocations))
+		}
+		if got := cliProblems(root, invocations[0]); !slices.Equal(got, want) {
+			t.Errorf("%s: problems %v, want %v", text, got, want)
+		}
 	}
 }
 
