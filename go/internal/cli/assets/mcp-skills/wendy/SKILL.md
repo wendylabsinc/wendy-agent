@@ -259,9 +259,10 @@ choice when several apply; see `wendy-app-lifecycle`.
 
 Apps declare the device access they need in `wendy.json`, and the container is
 set up with only those permissions. Add one with
-`wendy project entitlements add <type>` (modes are chosen at an interactive
-prompt; there is no `--mode` flag). See `references/wendy.json.md` for every
-entitlement and `wendy-entitlements` for choosing them.
+`wendy project entitlements add <type>` (it adds the entitlement without a mode
+and has no `--mode` flag; set the mode in `wendy.json`). See
+`references/wendy.json.md` for every entitlement and `wendy-entitlements` for
+choosing them.
 
 ### Common Entitlements
 
