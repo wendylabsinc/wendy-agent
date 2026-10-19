@@ -118,14 +118,17 @@ func (p Provider) Run(parent context.Context) error {
 	if err := runHelper(ctx, "schedule-default"); err != nil {
 		return err
 	}
-	if err := runHelper(ctx, "ndi-create", ndiName); err != nil {
-		return err
-	}
+	// The exclusive reservation and initial reclaim have established that this
+	// private interface is unused. A helper can create it and then fail (or be
+	// canceled) before returning, so arm cleanup before invoking interface_add.
 	defer func() {
 		if err := runCleanupHelper("ndi-remove", ndiName); err != nil {
 			logger.Warn("NAN NDI removal failed", zap.Error(err))
 		}
 	}()
+	if err := runHelper(ctx, "ndi-create", ndiName); err != nil {
+		return err
+	}
 	ndi, err := netlink.LinkByName(ndiName)
 	if err != nil {
 		return err
