@@ -137,7 +137,7 @@ func (s *Session) discover(ctx context.Context, issuer string) (metadata, error)
 	}
 	return m, nil
 }
-func (s *Session) Begin(ctx context.Context, email, redirect string) (string, error) {
+func (s *Session) Begin(ctx context.Context, email, issuer, redirect string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.settings().Validate(); err != nil {
@@ -149,9 +149,12 @@ func (s *Session) Begin(ctx context.Context, email, redirect string) (string, er
 	}
 	// Like `wendy auth login`: with no pinned realm the browser starts at the
 	// realm-less universal page and the realm arrives as the callback issuer.
-	// The system realm is never a login target.
-	issuer := ""
-	if email != "" {
+	// The system realm is never a login target. A caller-pinned issuer is held
+	// to the same rules as one from the email lookup.
+	if issuer != "" && (!s.validIssuer(issuer) || issuer == s.settings().AuthBase+"/realms/system") {
+		return "", errors.New("Sign-in did not identify a valid organization realm")
+	}
+	if issuer == "" && email != "" {
 		body, _ := json.Marshal(map[string]string{"email": email})
 		b, r, e := s.request(ctx, "POST", s.settings().AuthBase+"/api/login/realm", string(body), map[string]string{"Content-Type": "application/json"})
 		if e != nil {

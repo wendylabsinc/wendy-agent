@@ -101,6 +101,7 @@ func (b *bridge) handle(r request) (any, error) {
 	if r.Method == "init" {
 		// A deployment's page pins its services. They are called directly, so
 		// the dev dashboard's same-origin auth proxy is not involved.
+		// SECURITY: the page is this worker's origin and trust domain: it picks the worker script, and saved sign-ins live in its IndexedDB, so a hostile page needs no init to misuse them. Validate holds the services to HTTPS and fixed paths; a host allowlist would break self-hosted deployments. Records from another auth host do not restore (issuer check), and init runs once.
 		var settings browserauth.Settings
 		if err := json.Unmarshal(r.Params, &settings); err != nil {
 			return nil, err
@@ -117,6 +118,7 @@ func (b *bridge) handle(r request) (any, error) {
 		b.auth = &browserauth.Session{Settings: &settings, Client: &http.Client{}, Store: browserCredentialStore{}}
 		return true, nil
 	}
+	// SECURITY: signing raw bytes is the approved console design (sem, 2026-10-19 22:55): the console builds its JWS, DPoP and management-request inputs, which verifiers check byte for byte, so no prefix can be added. Only same-origin script reaches this worker; it can use the key, never export it.
 	if r.Method == "credential" || r.Method == "sign" {
 		var p org
 		if len(r.Params) > 0 {
@@ -258,7 +260,7 @@ func (b *bridge) handle(r request) (any, error) {
 			}
 			return true, nil
 		case "auth-begin":
-			return b.auth.Begin(ctx, p.Email, p.Redirect)
+			return b.auth.Begin(ctx, p.Email, p.Issuer, p.Redirect)
 		case "auth-complete":
 			return b.auth.Complete(ctx, p.Code, p.State, p.Issuer)
 		}

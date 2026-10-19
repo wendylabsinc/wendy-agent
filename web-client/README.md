@@ -252,7 +252,8 @@ posts `{fatal: "sha256 mismatch"}` and nothing runs.
 | Call | Params | Result |
 |---|---|---|
 | `init` | `browserauth.Settings` JSON | `true`; once, before sign-in. Services are then called directly, not through `/api/wendy-auth` |
-| `auth-begin` / `auth-complete` | as the login component | authorize URL / profile |
+| `auth-begin` | `{redirect, email?, issuer?}`; `issuer` pins an organization's realm | authorize URL |
+| `auth-complete` | `{code, state, issuer}` | profile |
 | `auth-restore` | `{tenant?, subject?}` | that organization's profile, or `null` |
 | `credential` | `{tenant?}` | `{profile, algorithm, chainDER, accessToken, publicJWK}`; refreshes a token with under a minute left |
 | `sign` | `{tenant?, bytes: Uint8Array}` | `{signature: Uint8Array}` with the operator key |
