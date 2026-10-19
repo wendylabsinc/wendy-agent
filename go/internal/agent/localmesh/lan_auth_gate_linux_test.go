@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"net"
 	"os"
 	"os/exec"
