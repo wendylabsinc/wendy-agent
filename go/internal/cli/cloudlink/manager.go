@@ -110,7 +110,7 @@ func New(config Config, resource string, getenv func(string) string) (*Manager, 
 		return nil, err
 	}
 	u, err := url.Parse(resource)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "/mcp" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+	if err != nil || u.Scheme != "https" || u.Host == "" || (u.Path != "" && u.Path != "/" && u.Path != "/mcp") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.RawPath != "" {
 		return nil, errors.New("Cloud link resource must be an HTTPS MCP URL")
 	}
 	aad, _ := json.Marshal(struct {
@@ -144,7 +144,7 @@ func New(config Config, resource string, getenv func(string) string) (*Manager, 
 		}
 	}
 	m.newSession = func(store browserauth.CredentialStore) cloudSession {
-		return &browserauth.Session{Settings: &m.config.Services, Store: store, Client: m.http}
+		return &browserauth.Session{Settings: &m.config.Services, Store: store, Client: m.http, RequireHostedMCPPolicy: true}
 	}
 	m.dial = func(ctx context.Context, target string) (net.Conn, error) {
 		host, _, err := net.SplitHostPort(target)

@@ -52,6 +52,32 @@ func TestDocsTopics_IncludesROS2(t *testing.T) {
 	}
 }
 
+func TestDocsTopics_IncludesWendyData(t *testing.T) {
+	topics, err := docsTopics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, topic := range topics {
+		if topic.Path == "data.mdx" {
+			found = true
+			if topic.Title == "" {
+				t.Fatal("Wendy Data guide has no title")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Wendy Data guide is not embedded for offline use")
+	}
+	var out bytes.Buffer
+	if err := printDocsTopic(&out, topics, "data"); err != nil {
+		t.Fatalf("Wendy Data guide does not resolve: %v", err)
+	}
+	if !strings.Contains(out.String(), docsBaseURL+"/data") {
+		t.Fatal("data did not resolve to the public Wendy Data guide")
+	}
+}
+
 func TestDocSlug(t *testing.T) {
 	cases := map[string]string{
 		"integrations/ros2.mdx":      "ros2",

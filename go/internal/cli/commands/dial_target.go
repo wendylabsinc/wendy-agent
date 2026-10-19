@@ -246,6 +246,9 @@ func runningVMOnLoopbackPort(port int) (string, bool) {
 	}
 	match := ""
 	for _, st := range statuses {
+		if vm.IsLiteProfile(st.Meta.Profile) {
+			continue
+		}
 		if !st.Running || st.State.NetMode != vm.NetUser || st.State.AgentPort == 0 {
 			continue
 		}
@@ -272,6 +275,9 @@ func runningVMAgentPort(name string) (int, bool) {
 		return 0, false
 	}
 	for _, st := range statuses {
+		if vm.IsLiteProfile(st.Meta.Profile) {
+			continue
+		}
 		if st.Name == name && st.Running && st.State.NetMode == vm.NetUser && st.State.AgentPort != 0 {
 			return st.State.AgentPort, true
 		}
@@ -558,12 +564,12 @@ func refuseIdentity(format string, args ...any) *deviceIdentityRefusalError {
 func identityRefusal(pinKey string, im *certs.IdentityMismatchError) error {
 	got := "no wendy identity"
 	if im.GotAsset != "" {
-		got = fmt.Sprintf("asset %s in organization %d", im.GotAsset, im.GotOrg)
+		got = fmt.Sprintf("asset %s in organization %s", im.GotAsset, orgLabel("", im.GotOrg))
 	}
 	return refuseDevicePin(devicePinDiagnostic{
 		hostname: pinKey,
 		heading:  fmt.Sprintf("Connection blocked: device %q identity changed.", pinKey),
-		details:  fmt.Sprintf("Saved: asset %s in organization %d\nNow:   %s", im.WantAsset, im.WantOrg, got),
+		details:  fmt.Sprintf("Saved: asset %s in organization %s\nNow:   %s", im.WantAsset, orgLabel("", im.WantOrg), got),
 	})
 }
 
@@ -580,9 +586,15 @@ func identityRefusal(pinKey string, im *certs.IdentityMismatchError) error {
 // population that needs it.
 var errNoAuthenticatedEndpoint = errors.New("no authenticated endpoint answered")
 
-// noAuthenticatedEndpointError carries the full user-facing text while staying
-// recognisable to errors.Is, mirroring deviceIdentityRefusalError.
-type noAuthenticatedEndpointError struct{ msg string }
+// noAuthenticatedEndpointError retains the failed target for enrollment's
+// explicit trust prompt. Other callers use its diagnostic and errors.Is marker.
+type noAuthenticatedEndpointError struct {
+	msg        string
+	pinKey     string
+	pinnedKey  string
+	candidates []string
+	certSeen   bool
+}
 
 func (e *noAuthenticatedEndpointError) Error() string { return e.msg }
 
@@ -636,7 +648,7 @@ func blocksUnauthenticatedFallback(err error) bool {
 // fact that made the original report take hours to diagnose.
 // certSeen must be true when ANY address rejected our certificate, so the
 // message never claims nothing was compared when something was.
-func pinnedHostNoAuthenticatedEndpointError(pinKey string, candidates []string, attempts []mtlsAttemptError, certSeen bool) error {
+func pinnedHostNoAuthenticatedEndpointError(pinKey string, candidates []string, attempts []mtlsAttemptError, certSeen bool) *noAuthenticatedEndpointError {
 	var where string
 	if tried := describeDialAttempts(attempts); len(tried) > 0 {
 		where = fmt.Sprintf("at any address it resolves to: %s (each tried on both its plaintext and mTLS port)",
@@ -655,11 +667,15 @@ func pinnedHostNoAuthenticatedEndpointError(pinKey string, candidates []string, 
 		diagnosis = "The pin is intact; one address did present a certificate that was refused, so check the certificate diagnostics above as well as reachability"
 	}
 	v4, v6 := addrFamilyCounts(candidates)
-	return &noAuthenticatedEndpointError{msg: fmt.Sprintf(
-		"device %q is pinned to an enrolled identity and no authenticated endpoint answered %s. "+
-			"%s — unpinning the device is not the fix. "+
-			"Tried %s; if the device is only reachable over one address family, check that its agent is listening and that stale DNS/mDNS records are not holding the CLI to an address the device no longer has.",
-		pinKey, where, diagnosis, describeAddrFamilies(v4, v6))}
+	return &noAuthenticatedEndpointError{
+		pinKey: pinKey, pinnedKey: pinKey,
+		candidates: append([]string(nil), candidates...), certSeen: certSeen,
+		msg: fmt.Sprintf(
+			"device %q is pinned to an enrolled identity and no authenticated endpoint answered %s. "+
+				"%s — unpinning the device is not the fix. "+
+				"Tried %s; if the device is only reachable over one address family, check that its agent is listening and that stale DNS/mDNS records are not holding the CLI to an address the device no longer has.",
+			pinKey, where, diagnosis, describeAddrFamilies(v4, v6)),
+	}
 }
 
 // describeDialAttempts renders one entry per ADDRESS tried, in the order tried,

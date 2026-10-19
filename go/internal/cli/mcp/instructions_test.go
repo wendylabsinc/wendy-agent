@@ -88,6 +88,14 @@ func TestServerInstructionsShape(t *testing.T) {
 			t.Errorf("instructions do not mention %q", want)
 		}
 	}
+	// Claude Code loads only this text at session start: an agent without
+	// hardware must learn here that a listed simulator is a target, and that
+	// creating one is the user's decision.
+	for _, want := range []string{"listed simulator rather than skip on-device checks", "ask the user before creating one"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("instructions do not mention %q", want)
+		}
+	}
 }
 
 // Names the instructions use that are deliberately not tools: run arguments
@@ -137,6 +145,21 @@ func TestGuideDescribesConnectedTargetRun(t *testing.T) {
 	}
 }
 
+// Without this section an agent with no hardware either stops at "this needs a
+// device" or overclaims a simulator run as a hardware result.
+func TestGuideSendsMissingHardwareToSimulators(t *testing.T) {
+	_, section, ok := strings.Cut(guideText, "## No device available")
+	if !ok {
+		t.Fatal("guide has no section for working without a device")
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	for _, want := range []string{`device_connect(device="vm:NAME")`, "simulator_create", "ask the user before creating", "camera", "GPU", "verified on the simulator"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("guide simulator section is missing %q", want)
+		}
+	}
+}
+
 func TestGuideListsEveryErrorCode(t *testing.T) {
 	_, section, _ := strings.Cut(guideText, "## Result shape & error codes")
 	section, _, _ = strings.Cut(section, "\n## ")
@@ -153,5 +176,31 @@ func TestServerInstructionsSendAuthRequiredToAuthLogin(t *testing.T) {
 	}
 	if !strings.Contains(guideText, "auth_login") {
 		t.Fatal("guide must mention auth_login")
+	}
+}
+
+// The relay channel answers initialize with relayInstructions: no shell,
+// tool-group or CLI update text for a hosted chat.
+func TestServeUsesRelayInstructions(t *testing.T) {
+	var out strings.Builder
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}` + "\n")
+	if err := New(&config.Config{}, nil).Serve(context.Background(), &BindingPolicy{}, in, &out); err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Result struct {
+			Instructions string `json:"instructions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &decoded); err != nil {
+		t.Fatalf("%v: %q", err, out.String())
+	}
+	if decoded.Result.Instructions != relayInstructions {
+		t.Fatalf("relay initialize instructions = %q, want relayInstructions", decoded.Result.Instructions)
+	}
+	for _, banned := range []string{"wendy_tools", "shell", "update"} {
+		if strings.Contains(relayInstructions, banned) {
+			t.Errorf("relayInstructions mention %q", banned)
+		}
 	}
 }

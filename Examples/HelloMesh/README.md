@@ -89,7 +89,7 @@ app's built-in defaults.)
 
 ```bash
 wendy cloud discover --json   # the "id" field per device
-# or the cloud dashboard (dashboard.wendy.dev)
+# or the cloud dashboard (https://cloud.wendy.dev)
 ```
 
 Logs on each node look like:

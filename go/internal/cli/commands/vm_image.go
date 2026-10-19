@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +29,19 @@ func resolveVMImageIn(dir string, info *imageInfo) (string, func(), error) {
 	return resolveVMImageWith(dir, info, downloadVMImage, verifyVMImage)
 }
 
+func resolveVMImageContext(ctx context.Context, info *imageInfo) (string, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
+	dir, err := osCacheDir()
+	if err != nil {
+		return "", nil, err
+	}
+	return resolveVMImageWith(dir, info,
+		func(info *imageInfo) (string, error) { return downloadImageContext(ctx, info) },
+		func(path, digest string) error { return verifyVMImageContext(ctx, path, digest) })
+}
+
 // The MCP path supplies cancellable, noninteractive download and verification
 // functions without changing the CLI's process-wide test seams.
 func resolveVMImageWith(dir string, info *imageInfo, download func(*imageInfo) (string, error), verify func(string, string) error) (string, func(), error) {
@@ -42,8 +57,12 @@ func resolveVMImageWith(dir string, info *imageInfo, download func(*imageInfo) (
 		}
 	}
 	cached := filepath.Join(dir, "vm-sha256-"+digest+".image")
-	if digest != "" && verify(cached, digest) == nil {
-		return cached, func() {}, nil
+	if digest != "" {
+		if err := verify(cached, digest); err == nil {
+			return cached, func() {}, nil
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", nil, err
+		}
 	}
 	tmp, err := download(&artifact)
 	if err != nil {
@@ -72,13 +91,20 @@ func resolveVMImageWith(dir string, info *imageInfo, download func(*imageInfo) (
 }
 
 func verifyVMImage(path, digest string) error {
+	return verifyVMImageContext(context.Background(), path, digest)
+}
+
+func verifyVMImageContext(ctx context.Context, path, digest string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, simulatorContextReader{ctx: ctx, reader: f}); err != nil {
 		return err
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != digest {

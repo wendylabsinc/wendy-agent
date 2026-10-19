@@ -38,7 +38,7 @@ func (g *RobotGateway) registerWorkspaceFileTools() {
 			opts = append(opts, mcpgo.WithInteger("offset", mcpgo.Min(0), mcpgo.Max(10000), mcpgo.DefaultNumber(0)))
 		}
 		if name == "write_workspace_file" {
-			behavior = mutating()
+			behavior = destructive()
 			description = "Create or replace a UTF-8 project file within an approved local workspace, up to 256 KiB. Requires projects:write. Supply expected_sha256 from read_workspace_file, or 'missing' to create a new file. A stale revision fails without writing. Creates parent directories. Does not build or deploy; validate then use start_device_deployment with an explicit robot_id."
 			opts = append(opts, mcpgo.WithString("content", mcpgo.Required()), mcpgo.WithString("expected_sha256", mcpgo.Required(), mcpgo.MaxLength(64)))
 		}

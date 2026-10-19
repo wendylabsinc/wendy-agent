@@ -10,6 +10,7 @@
 		B00000000000000000000010 /* WendyAgentCore in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000011 /* WendyAgentCore */; };
 		C00000000000000000000023 /* WendyAgentCore in Frameworks */ = {isa = PBXBuildFile; productRef = C00000000000000000000022 /* WendyAgentCore */; };
 		C00000000000000000000025 /* sh.wendy.WendyAgentMac.NetProxy.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = C00000000000000000000020 /* sh.wendy.WendyAgentMac.NetProxy.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D00000000000000000000003 /* sh.wendy.WendyAgentMac.plist in Embed Launch Agents */ = {isa = PBXBuildFile; fileRef = D00000000000000000000002 /* sh.wendy.WendyAgentMac.plist */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -34,11 +35,23 @@
 			name = "Embed System Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D00000000000000000000004 /* Embed Launch Agents */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LaunchAgents;
+			dstSubfolderSpec = 1;
+			files = (
+				D00000000000000000000003 /* sh.wendy.WendyAgentMac.plist in Embed Launch Agents */,
+			);
+			name = "Embed Launch Agents";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		B00000000000000000000004 /* WendyAgentMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WendyAgentMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C00000000000000000000020 /* sh.wendy.WendyAgentMac.NetProxy.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = sh.wendy.WendyAgentMac.NetProxy.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
+		D00000000000000000000002 /* sh.wendy.WendyAgentMac.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = sh.wendy.WendyAgentMac.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -142,6 +155,7 @@
 				B00000000000000000000013 /* Assets */,
 				B373D0972F9B594D00C31493 /* Configuration */,
 				B00000000000000000000014 /* Design */,
+				D00000000000000000000001 /* LaunchAgents */,
 				B00000000000000000000007 /* Products */,
 				B36D0EDB2F8FE8C70070FEB2 /* Resources */,
 				B00000000000000000000005 /* Sources */,
@@ -159,6 +173,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		D00000000000000000000001 /* LaunchAgents */ = {
+			isa = PBXGroup;
+			children = (
+				D00000000000000000000002 /* sh.wendy.WendyAgentMac.plist */,
+			);
+			path = LaunchAgents;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -170,6 +192,7 @@
 				B00000000000000000000001 /* Frameworks */,
 				B00000000000000000000002 /* Resources */,
 				C00000000000000000000026 /* Embed System Extensions */,
+				D00000000000000000000004 /* Embed Launch Agents */,
 			);
 			buildRules = (
 			);

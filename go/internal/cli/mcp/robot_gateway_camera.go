@@ -43,9 +43,10 @@ func (g *RobotGateway) registerCameraPreviewTools() {
 		} else {
 			opts = append(opts, mcpgo.WithString("preview_id", mcpgo.Required(), mcpgo.MaxLength(64)))
 			description = "Stop your camera preview and release its capture subscription."
+			behavior = destructive()
 			if name == "read_camera_preview" {
 				description = "Read the latest frame of your active camera preview. Renews the viewer lease. Image bytes are UI-only metadata."
-				behavior = readOnly()
+				behavior = mutating()
 				opts = append(opts, mcpgo.WithInteger("after_sequence", mcpgo.Description("Last frame sequence received. Omits image bytes when no newer frame is available."), mcpgo.Min(0), mcpgo.Max(9007199254740991)))
 			}
 		}

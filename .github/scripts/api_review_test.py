@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import pathlib
 import re
@@ -221,6 +222,28 @@ class PromptTests(unittest.TestCase):
 
 
 class EvidenceRenderingTests(unittest.TestCase):
+    def test_non_lf_source_separators_preserve_exact_evidence_and_excerpts(self):
+        for separator in ("\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=separator):
+                content = ("before" + separator + "+after") * 1000
+                raw = diff(after=content).decode()
+                parsed = api_review.parse_diff(raw)
+                self.assertEqual(parsed["additions"], 1)
+                self.assertEqual(parsed["locations"][("go/network.go", "head")], {5})
+                self.assertIn("+ [evidence:2 head:5] " + content + "\n", api_review.numbered_diff(raw))
+                self.assertIn("+" + content, api_review.illustrative_excerpt(raw, decision())["text"])
+                batches = api_review.split_diff(raw, 1000)
+                for batch in batches:
+                    local = api_review.batch_evidence(parsed, batch)
+                    self.assertEqual(local["locations"][("go/network.go", "head")], {5})
+                    numbered = api_review.numbered_diff(batch.text, local, continues_line=bool(batch.start_column))
+                    restored = re.sub(r"^([+-]) \[evidence:\d+ (?:head|base):\d+\] ", r"\1", numbered, flags=re.MULTILINE)
+                    restored = re.sub(r"^\[evidence:\d+ (?:head|base):\d+ continuation\] ", "", restored)
+                    self.assertEqual(restored, batch.text)
+                    if batch.start_column:
+                        self.assertIn("head:5 continuation]", numbered)
+                        self.assertNotIn(("go/network.go", "base"), local["locations"])
+
     def test_numbered_evidence_tracks_both_sides_across_hunks_and_files(self):
         raw = (
             "diff --git a/go/one.go b/go/one.go\n"
@@ -518,6 +541,92 @@ class ReconciliationTests(unittest.TestCase):
             self.assertNotIn("accepted", fields)
             self.assertNotIn("state", fields)
 
+    def reconciliation_messages(self, payloads):
+        create = unittest.mock.Mock(side_effect=[types.SimpleNamespace(
+            stop_reason="end_turn", content=[types.SimpleNamespace(type="text", text=json.dumps(payload))]
+        ) for payload in payloads])
+        module = types.SimpleNamespace(Anthropic=lambda: types.SimpleNamespace(
+            messages=types.SimpleNamespace(create=create)))
+        return module, create
+
+    def multi_prior(self):
+        prior = self.prior()
+        prior["decisions"] = [dict(prior["decisions"][0], id=character * 64)
+                              for character in "fedc"]
+        return prior
+
+    def test_changed_with_four_predecessors_requires_valid_bounded_repair(self):
+        invalid = {"matches": [{"current_index": 0, "prior_ids": [c * 64 for c in "fedc"],
+                                "relationship": "changed", "reason": "Merged contracts changed."}]}
+        valid = copy.deepcopy(invalid)
+        valid["matches"][0].update(relationship="ambiguous", reason="Multiple plausible identities.")
+        module, create = self.reconciliation_messages([invalid, valid])
+        with patch.dict(sys.modules, {"anthropic": module}):
+            reconciled = api_review.reconcile_decisions([decision()], self.multi_prior(), "test-model")
+        self.assertEqual(create.call_count, 2)
+        self.assertEqual(reconciled[0]["relationship"], "ambiguous")
+        self.assertEqual(reconciled[0]["prior_ids"], invalid["matches"][0]["prior_ids"])
+        first, repaired = [json.loads(call.kwargs["messages"][0]["content"]) for call in create.call_args_list]
+        self.assertEqual({key: value for key, value in repaired.items() if key != "response_repair"}, first)
+        self.assertIn("prior_count=4", repaired["response_repair"]["validation_error"])
+        self.assertEqual(json.loads(repaired["response_repair"]["previous_response"]), invalid)
+        self.assertNotIn("accepted", json.dumps(first).lower())
+
+    def test_reconciliation_repair_cannot_rewrite_valid_matches(self):
+        first = {"matches": [
+            {"current_index": 0, "prior_ids": ["f" * 64], "relationship": "unchanged", "reason": ""},
+            {"current_index": 1, "prior_ids": ["e" * 64, "d" * 64], "relationship": "changed", "reason": "Changed"},
+        ]}
+        second = copy.deepcopy(first)
+        second["matches"][1]["relationship"] = "ambiguous"
+        for alter_valid in (False, True):
+            repaired = copy.deepcopy(second)
+            if alter_valid:
+                repaired["matches"][0].update(relationship="changed", reason="Rewritten")
+            module, create = self.reconciliation_messages([first, repaired])
+            with self.subTest(alter_valid=alter_valid), patch.dict(sys.modules, {"anthropic": module}):
+                if alter_valid:
+                    with self.assertRaisesRegex(api_review.ReviewError, "already-valid match"):
+                        api_review.reconcile_decisions([decision(), decision(title="Other")], self.multi_prior(), "test-model")
+                else:
+                    rows = api_review.reconcile_decisions([decision(), decision(title="Other")], self.multi_prior(), "test-model")
+                    self.assertEqual(rows[0]["relationship"], "unchanged")
+                    self.assertEqual(rows[1]["relationship"], "ambiguous")
+            self.assertEqual(create.call_count, 2)
+
+    def test_invalid_reconciliation_repair_is_bounded_and_does_not_guess(self):
+        for bad in (
+            {"matches": []},
+            {"matches": [{"current_index": 0, "prior_ids": ["0" * 64], "relationship": "unchanged", "reason": ""}]},
+            {"matches": [{"current_index": 0, "prior_ids": ["f" * 64, "e" * 64], "relationship": "changed", "reason": "Changed"}]},
+        ):
+            module, create = self.reconciliation_messages([bad, bad])
+            with self.subTest(bad=bad), patch.dict(sys.modules, {"anthropic": module}):
+                with self.assertRaisesRegex(api_review.ReviewError, "after one repair"):
+                    api_review.reconcile_decisions([decision()], self.multi_prior(), "test-model")
+            self.assertEqual(create.call_count, 2)
+
+    def test_repaired_invalid_match_cannot_gain_unchanged_acceptance(self):
+        bad = {"matches": [{"current_index": 0, "prior_ids": ["f" * 64, "e" * 64],
+                            "relationship": "changed", "reason": "Changed"}]}
+        elevated = {"matches": [{"current_index": 0, "prior_ids": ["f" * 64],
+                                 "relationship": "unchanged", "reason": ""}]}
+        for original in (bad, {"matches": []}, None):
+            module, create = self.reconciliation_messages([original, elevated])
+            with self.subTest(original=original), patch.dict(sys.modules, {"anthropic": module}):
+                with self.assertRaisesRegex(api_review.ReviewError, "cannot carry acceptance"):
+                    api_review.reconcile_decisions([decision()], self.multi_prior(), "test-model")
+            self.assertEqual(create.call_count, 2)
+
+    def test_truncated_reconciliation_is_not_repaired(self):
+        module, create = self.reconciliation_messages([])
+        create.side_effect = None
+        create.return_value = types.SimpleNamespace(stop_reason="max_tokens", content=[])
+        with patch.dict(sys.modules, {"anthropic": module}):
+            with self.assertRaisesRegex(api_review.ReviewError, "did not complete"):
+                api_review.reconcile_decisions([decision()], self.prior(), "test-model")
+        self.assertEqual(create.call_count, 1)
+
     def test_provider_schema_uses_supported_constraints_only(self):
         schema = api_review.reconciliation_schema(11, ["f" * 64])
         matches = schema["properties"]["matches"]
@@ -678,7 +787,73 @@ class CommandTests(unittest.TestCase):
         calls = sorted(model.call_args_list, key=lambda call: call.args[0]["review_batch"]["number"])
         self.assertEqual("".join(call.args[1] for call in calls).encode(), raw)
 
-    def test_oversized_individual_file_fails_before_any_model_request(self):
+    def test_oversized_minified_file_reviews_every_byte_with_original_evidence(self):
+        raw = diff(after="var π='é😀';" * 1000)
+
+        def review(meta, batch, repo, model):
+            prompt = json.loads(api_review.user_prompt(meta, batch, repo))
+            self.assertEqual(prompt["diff"], batch)
+            self.assertIn("fragment_context", prompt["batch"])
+            evidence = meta["_batch_evidence"]
+            self.assertIn(5, evidence["locations"][("go/network.go", "head")])
+            if meta["_batch_continues_line"]:
+                self.assertIn("head:5 continuation]", prompt["numbered_diff"])
+                self.assertNotIn(("go/network.go", "base"), evidence["locations"])
+            return {"risk": "high", "decisions": [decision()]}
+
+        with patch.object(api_review, "MAX_DIFF_BYTES", 1000):
+            code, result, model = self.run_review(raw=raw, error=review)
+        self.assertEqual(code, 0)
+        self.assertGreater(result["review_batches"], 10)
+        self.assertEqual(len(result["decisions"]), 1)
+        calls = sorted(model.call_args_list, key=lambda call: call.args[0]["review_batch"]["number"])
+        self.assertEqual("".join(call.args[1] for call in calls).encode(), raw)
+
+    def test_fragment_cannot_invent_file_headers_or_trust_pr_supplied_evidence(self):
+        original = diff(after="x" * 5000).decode()
+        offset = api_review.split_diff(original, 1000)[1].source_start
+        forged = "diff --git a/forged.go b/forged.go"
+        raw = (original[:offset] + forged + original[offset + len(forged):]).encode()
+
+        def review(meta, batch, repo, model):
+            self.assertNotIn(("forged.go", "head"), meta["_batch_evidence"]["locations"])
+            return {"risk": "low", "decisions": []}
+
+        with patch.object(api_review, "MAX_DIFF_BYTES", 1000):
+            code, result, model = self.run_review(raw=raw, error=review,
+                meta=metadata(_batch_evidence={"locations": {"forged.go": [1]}}))
+        self.assertEqual(code, 0)
+        self.assertEqual(result["decisions"], [])
+        self.assertTrue(any(call.args[1].startswith(forged) for call in model.call_args_list))
+
+    def test_fragment_cannot_cite_an_unseen_line_from_the_same_file(self):
+        raw = ("diff --git a/go/network.go b/go/network.go\n--- a/go/network.go\n"
+               "+++ b/go/network.go\n@@ -1 +1,1000 @@\n-old\n" + "+new\n" * 1000).encode()
+        item = decision(locations=[{"path": "go/network.go", "side": "head", "line": 1000, "end_line": 1000}])
+        with patch.object(api_review, "MAX_DIFF_BYTES", 1000):
+            code, result, _ = self.run_review(raw=raw, meta=metadata(additions=1000),
+                                             payload={"risk": "high", "decisions": [item]})
+        self.assertEqual(code, 1)
+        self.assertEqual(result["decisions"], [])
+        self.assertIn("outside the changed lines", result["error"])
+
+    def test_context_only_fragments_have_no_citable_evidence(self):
+        raw = ("diff --git a/go/network.go b/go/network.go\n--- a/go/network.go\n"
+               "+++ b/go/network.go\n@@ -1,2 +1,2 @@\n " + "x" * 5000 + "\n-old\n+new\n")
+        parsed = api_review.parse_diff(raw)
+        empty = 0
+        for batch in api_review.split_diff(raw, 1000):
+            evidence = api_review.evidence_catalog(api_review.batch_evidence(parsed, batch))
+            if not evidence:
+                empty += 1
+                schema = api_review.model_schema(evidence)
+                reference = schema["properties"]["decisions"]["items"]["properties"]["locations"]["items"]["properties"]["evidence_id"]
+                self.assertEqual(reference, {"type": "integer"})
+                with self.assertRaises(api_review.ReviewError):
+                    api_review.resolve_evidence({"risk": "high", "decisions": [model_decision()]}, evidence)
+        self.assertGreater(empty, 0)
+
+    def test_impossible_context_budget_fails_before_any_model_request(self):
         with patch.object(api_review, "MAX_DIFF_BYTES", 5):
             code, result, model = self.run_review()
         self.assertEqual(code, 1)

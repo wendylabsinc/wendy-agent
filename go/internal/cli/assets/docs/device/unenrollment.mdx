@@ -1,0 +1,86 @@
+---
+title: Cloud-owned device unenrollment
+description: Remove a UUID-enrolled device from Cloud and safely erase local credentials.
+---
+
+# Cloud-owned device unenrollment
+
+`wendy device unenroll` uses the device's authenticated identity to select its
+cleanup path. Numeric Cloud v1 keeps its original local-reset-first, best-effort
+Cloud cleanup. UUID/direct PKI devices use Cloud revocation and retained deletion
+evidence before guarded local credential erasure; they never fall back to v1.
+
+## UUID device flow
+
+1. Verify the direct LAN mTLS device identity and exact Cloud asset/tenant/device
+   binding. Compatible Cloud and Agent builds are required; the Agent must report
+   `cloud_authenticated_reset_supported`. The unsafe prerelease
+   `cloud_unenrollment_supported` flag is ignored; older Agents are refused before mutation.
+2. Sign the exact Cloud deletion request with the operator certificate. Cloud
+   enforces `device:delete`, revokes the device principal through PKI, then writes
+   its retained deletion record and audit. PKI's existing revocation path supplies
+   the SSF credential-change signal.
+3. Verify the exact typed Cloud deletion evidence and issuer-signed revoked OCSP
+   evidence for the installed device leaf. Plain `NotFound` is not deletion proof.
+4. Obtain fresh purpose-specific Cloud JWS by replaying deletion with the exact
+   device guard and installed-leaf SHA-256. Cloud rechecks current authorization
+   without changing the original tombstone actor/time.
+5. Relay that proof through existing Agent Unprovision. Agent independently
+   verifies HTTPS Cloud keys from its saved enrollment Cloud, purpose/issuer,
+   bindings and the exact operator signature against its actual mTLS peer, and
+   obtains fresh signed Roughtime before persisting public proof and removing keys. Certificate validity and
+   revocation freshness must hold throughout the authenticated interval. This
+   reset-only query does not change the system clock or read/write a clock floor.
+   If signed time is unavailable, keys stay intact for retry even if Cloud deletion
+   already succeeded.
+
+The UUID command has a three-minute total bound. `--check` is read-only: it checks
+Cloud binding and Agent capability, without revocation, deletion, reset, proof
+import or a CLI journal. `--asset-id` validates the selected UUID; it cannot
+redirect cleanup to another device.
+
+Removal-only unenrollment does not require fresh FIDO2/passkey step-up under AAA
+v0.22/v0.24. Yes/No and `--yes` confirm intent, not identity. Authentication,
+exact-body signing, Cloud authorization and evidence verification still apply.
+AAA governs the affected Cloud/Auth/PKI interface, not a wholesale backend
+migration of local consumer behavior.
+
+Older clients missing the same-operator PKI revocation request are refused for
+Cloud-bound deletion with an upgrade-required explanation. This scoped
+compatibility exception does not change numeric-v1 unenrollment. Cloud preserves
+private pre-deletion site/tag authorization selectors for recovery, evaluating
+current membership and ACLs with deny precedence, not freezing prior grants.
+
+## Interrupted cleanup and lost replies
+
+Recovery uses the existing Agent `provisioning.json` only, with public signed
+pending/completed evidence, originally authenticated Cloud key and public
+operator certificate. An ordinary restart verifies and resumes valid protected
+pending erasure without a network query; proof-less historical pending records
+remain blocked. Unprotected state, symlinks or writable directories cannot
+supply reset authority. Failures retain credentials or block incomplete reset.
+There is no additional Agent recovery file or durable CLI workflow journal.
+
+A completed receipt proves the prior principal's operation, not the current
+identity of the machine answering. The CLI anchors its historical certificate
+to configured roots and compares its binding to current authorized Cloud
+retention evidence, independently fetching trusted Cloud keys for v2 proof.
+A retired unpublished historical key can prevent remote confirmation; it does
+not prevent local protected recovery. Plaintext/mDNS identity is not trusted
+and does not change pins.
+
+A valid first-boot provisioning after flashing may replace prior local recovery.
+Flashing does not revoke the old certificate or delete its Cloud asset: that
+cleanup is separate. Cloud can unenroll an unreachable device, but cannot prove
+or perform local erasure while it is offline.
+
+## References and rollout
+
+- [CLI enrollment and required reset fields](/docs/clients/wendy-cli/commands/device/enroll)
+- [Cloud asset lifecycle interface](/docs/cloud/assets-api)
+- [PKI and retired revocation RPCs](/docs/pki)
+- [Config partition](/docs/wendyos/config-partition)
+- [Internal protocol reference](https://github.com/wendylabsinc/WendyOS/blob/kb.v2-device-unenroll/go/docs/v2-device-unenrollment.md)
+
+These are source semantics, not a claim that compatible builds are deployed or
+that a live device reset has been accepted.
