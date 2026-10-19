@@ -125,6 +125,30 @@ func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
 	}
 }
 
+// A verifier may start discovery after its caller replaces the local discovery
+// function. It must keep the function selected when it was created.
+func TestLiteDeviceCAChainKeepsSelectedDiscovery(t *testing.T) {
+	discover := func(context.Context, string, string) (string, error) {
+		return "selected device CA chain", nil
+	}
+	lookup := liteDeviceCAChainVia(liteTestAuth("cloud.example:443"), discover)
+	discover = func(context.Context, string, string) (string, error) {
+		return "replacement device CA chain", nil
+	}
+	replacement := liteDeviceCAChainVia(liteTestAuth("cloud.example:443"), discover)
+	if got, err := replacement(context.Background()); err != nil || got != "replacement device CA chain" {
+		t.Fatalf("replacement device CA chain = %q, %v; want the replacement discovery function", got, err)
+	}
+	result := make(chan string, 1)
+	go func() {
+		chain, _ := lookup(context.Background())
+		result <- chain
+	}()
+	if got := <-result; got != "selected device CA chain" {
+		t.Fatalf("device CA chain = %q; want the selected discovery function", got)
+	}
+}
+
 // Without a usable Lite leaf the CLI requests one; it never presents the
 // primary. A non-OIDC session cannot request, so the request path errors.
 func TestLiteRelayOptionsRequestInsteadOfFallingBack(t *testing.T) {
