@@ -6,7 +6,6 @@ on:
     branches: [main]
     paths:
       - 'go/**'
-      - 'web-client/mcp-app/**'
       - 'web-client/public/**'
       - 'web-client/package.json'
       - 'web-client/scripts/build-wasm.mjs'
@@ -27,7 +26,6 @@ on:
   pull_request:
     paths:
       - 'go/**'
-      - 'web-client/mcp-app/**'
       - 'web-client/public/**'
       - 'web-client/package.json'
       - 'web-client/scripts/build-wasm.mjs'
@@ -148,19 +146,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-
-      - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-
-      - name: Generate embedded MCP app
-        shell: pwsh
-        run: |
-          npm --prefix web-client/mcp-app ci --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm --prefix web-client/mcp-app run build
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Native execution covers Windows identity files and process shutdown.
       # Delivery tests redirect requests to local HTTP receivers.

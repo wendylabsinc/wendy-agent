@@ -455,7 +455,12 @@ func main() {
 	// after the remote source they carry, instead of a generic "plughw:2,1".
 	audioSvc.SetSensorLinkNaming(audioLoop.Mounts, sensorStore.NameFor)
 	audioSvc.SetSensorLinkPrincipalNaming(sensorStore.NameForKey)
-	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, ros2camera.NewFrameWriter, audioLoop)
+	// The camera hub takes SensorLink frames from this feed instead of reading
+	// them back from their v4l2loopback node, which serves one reader at a time
+	// and so would lock out any app that opens the camera directly.
+	sensorFrames := services.NewSensorFrameFeed()
+	videoSvc.SetSensorFrameFeed(sensorFrames)
+	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, sensorFrames.WrapWriters(ros2camera.NewFrameWriter), audioLoop)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
 	sensorAgentScope := func() certs.Scope {
 		certPEM, _, _ := mcuIdentity()
