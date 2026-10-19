@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/mdns"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 )
 
@@ -92,7 +93,7 @@ func TestLANPeerProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	ip := net.IPv4(10, 201, 0, 1)
-	if cfg.Identity.Asset == 460 {
+	if lanIdentityDevice(t, cfg.Identity) == lanDevice(t, 460) {
 		ip = net.IPv4(10, 201, 0, 2)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -116,7 +117,7 @@ func TestLANPeerProcess(t *testing.T) {
 								return nil, err
 							}
 							wifiIP := net.IPv4(10, 202, 0, 1)
-							if cfg.Identity.Asset == 460 {
+							if lanIdentityDevice(t, cfg.Identity) == lanDevice(t, 460) {
 								wifiIP = net.IPv4(10, 202, 0, 2)
 							}
 							result = append(result, lanInterface{iface: *wifiIface, ip: wifiIP, net: &net.IPNet{IP: net.IPv4(10, 202, 0, 0), Mask: net.CIDRMask(30, 32)}, cost: WiFiLinkCost})
@@ -138,18 +139,18 @@ func TestLANPeerProcess(t *testing.T) {
 		deadline := time.Now().Add(25 * time.Second)
 		for time.Now().Before(deadline) {
 			links := node.Snapshot().Links
-			if len(links) == 1 && links[0].Asset == map[bool]int32{true: 445, false: 460}[cfg.Identity.Asset == 460] && links[0].Cost == cost {
+			if len(links) == 1 && links[0].Device == map[bool]meshid.Device{true: lanDevice(t, 445), false: lanDevice(t, 460)}[lanIdentityDevice(t, cfg.Identity) == lanDevice(t, 460)] && links[0].Cost == cost {
 				return
 			}
 			time.Sleep(150 * time.Millisecond)
 		}
 		t.Fatalf("LAN link did not settle to cost %d: %+v", cost, node.Snapshot().Links)
 	}
-	if cfg.Identity.Asset == 460 {
+	if lanIdentityDevice(t, cfg.Identity) == lanDevice(t, 460) {
 		var listener net.Listener
 		deadline := time.Now().Add(8 * time.Second)
 		for time.Now().Before(deadline) {
-			listener, err = net.Listen("tcp", "10.88.1.204:18080")
+			listener, err = net.Listen("tcp", net.JoinHostPort(lanDevice(t, 460).MeshAddress().String(), "18080"))
 			if err == nil {
 				break
 			}
@@ -196,7 +197,7 @@ func TestLANPeerProcess(t *testing.T) {
 			deadline := time.Now().Add(15 * time.Second)
 			for time.Now().Before(deadline) {
 				client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
-				response, err := client.Get("http://10.88.1.204:18080/")
+				response, err := client.Get("http://" + net.JoinHostPort(lanDevice(t, 460).MeshAddress().String(), "18080") + "/")
 				if err == nil {
 					body, readErr := io.ReadAll(response.Body)
 					response.Body.Close()
@@ -269,8 +270,8 @@ func testLANPairNamespaces(t *testing.T, dual bool) {
 	}
 	dir := t.TempDir()
 	disableFile := filepath.Join(dir, "ethernet-disabled")
-	configs := map[int32]string{}
-	testCredentialsWithPEM(t, func(asset int32, cert, chain, key string) {
+	configs := map[meshid.Device]string{}
+	testCredentialsWithPEM(t, func(asset meshid.Device, cert, chain, key string) {
 		configDir := filepath.Join(dir, fmt.Sprint(asset))
 		if err := os.MkdirAll(configDir, 0700); err != nil {
 			t.Fatal(err)
@@ -278,8 +279,8 @@ func testLANPairNamespaces(t *testing.T, dual bool) {
 		if err := os.WriteFile(filepath.Join(configDir, tcpConfigName), []byte("{\"ethernet\":true}"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		processData, _ := json.Marshal(lanProcessConfig{Identity: TCPIdentity{Org: 64, Asset: asset, Name: "lan-test", AgentPort: 50052, Certificate: cert, Chain: chain, Key: key}, Dir: configDir, Dual: dual, DisableFile: disableFile})
-		path := filepath.Join(dir, fmt.Sprintf("%d.json", asset))
+		processData, _ := json.Marshal(lanProcessConfig{Identity: TCPIdentity{Name: "lan-test", AgentPort: 50052, Certificate: cert, Chain: chain, Key: key}, Dir: configDir, Dual: dual, DisableFile: disableFile})
+		path := filepath.Join(dir, fmt.Sprintf("%s.json", asset.UUID()))
 		if err := os.WriteFile(path, processData, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -292,14 +293,14 @@ func testLANPairNamespaces(t *testing.T, dual bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
 	server := exec.CommandContext(ctx, "ip", "netns", "exec", names[1], binary, "-test.run", "^TestLANPeerProcess$", "-test.v")
-	server.Env = append(os.Environ(), "WENDY_LOCALMESH_LAN_TEST_CONFIG="+configs[460])
+	server.Env = append(os.Environ(), "WENDY_LOCALMESH_LAN_TEST_CONFIG="+configs[lanDevice(t, 460)])
 	var serverOutput bytes.Buffer
 	server.Stdout, server.Stderr = &serverOutput, &serverOutput
 	if err := server.Start(); err != nil {
 		t.Fatal(err)
 	}
 	client := exec.CommandContext(ctx, "ip", "netns", "exec", names[0], binary, "-test.run", "^TestLANPeerProcess$", "-test.v")
-	client.Env = append(os.Environ(), "WENDY_LOCALMESH_LAN_TEST_CONFIG="+configs[445])
+	client.Env = append(os.Environ(), "WENDY_LOCALMESH_LAN_TEST_CONFIG="+configs[lanDevice(t, 445)])
 	out, clientErr := client.CombinedOutput()
 	serverErr := server.Wait()
 	if clientErr != nil || serverErr != nil {
@@ -311,27 +312,37 @@ func testLANPairNamespaces(t *testing.T, dual bool) {
 }
 
 func TestLANAdvertisementFilters(t *testing.T) {
-	base := mdns.ServiceEntry{
-		Port:       LANPort,
-		AddrV4:     net.IPv4(192, 168, 2, 3),
-		InfoFields: []string{"org=64", "asset=460", "mesh=" + lanMeshHash(64)},
-	}
-	if asset, ip, ok := parseLANEntry(&base, 64, 445); !ok || asset != 460 || !ip.Equal(base.AddrV4) {
-		t.Fatalf("valid entry rejected: asset=%d ip=%v ok=%v", asset, ip, ok)
+	self, peer := lanDevice(t, 445), lanDevice(t, 460)
+	base := mdns.ServiceEntry{Port: LANPort, AddrV4: net.IPv4(192, 168, 2, 3), InfoFields: []string{"principal=" + peer.Principal(), "mesh=" + lanMeshHash(self.Tenant())}}
+	if device, ip, ok := parseLANEntry(&base, self); !ok || device != peer || !ip.Equal(base.AddrV4) {
+		t.Fatalf("valid entry rejected: %v %v", device, ok)
 	}
 	for _, mutate := range []func(*mdns.ServiceEntry){
 		func(e *mdns.ServiceEntry) { e.Port++ },
 		func(e *mdns.ServiceEntry) { e.AddrV4 = net.IPv4(127, 0, 0, 1) },
-		func(e *mdns.ServiceEntry) { e.InfoFields[0] = "org=65" },
-		func(e *mdns.ServiceEntry) { e.InfoFields[1] = "asset=444" },
-		func(e *mdns.ServiceEntry) { e.InfoFields[2] = "mesh=wrong" },
-		func(e *mdns.ServiceEntry) { e.InfoFields = append(e.InfoFields, "asset=461") },
+		func(e *mdns.ServiceEntry) {
+			e.InfoFields[0] = "principal=" + testPrincipal(testOtherTenant, testDeviceBID)
+		},
+		func(e *mdns.ServiceEntry) { e.InfoFields[0] = "principal=" + self.Principal() },
+		func(e *mdns.ServiceEntry) { e.InfoFields[1] = "mesh=wrong" },
+		func(e *mdns.ServiceEntry) { e.InfoFields = append(e.InfoFields, "principal="+peer.Principal()) },
 	} {
 		entry := base
 		entry.InfoFields = append([]string(nil), base.InfoFields...)
 		mutate(&entry)
-		if _, _, ok := parseLANEntry(&entry, 64, 445); ok {
+		if _, _, ok := parseLANEntry(&entry, self); ok {
 			t.Fatalf("invalid entry accepted: %+v", entry)
 		}
 	}
+}
+func lanDevice(t *testing.T, number int) meshid.Device {
+	return testDevice(t, testPrincipal(testTenantUUID, fmt.Sprintf("2b1c0000-0000-4000-8000-%012d", number)))
+}
+func lanIdentityDevice(t *testing.T, identity TCPIdentity) meshid.Device {
+	t.Helper()
+	c, err := NewCredentials(identity.Certificate, identity.Chain, identity.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c.Device
 }

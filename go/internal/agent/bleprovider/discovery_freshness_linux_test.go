@@ -11,6 +11,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 )
 
 func TestAdvertisementFreshnessBoundsChurnAndExpiresBeforeAdmission(t *testing.T) {

@@ -17,10 +17,11 @@ import (
 	"time"
 
 	quic "github.com/quic-go/quic-go"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
-// Test-only gate: asset 445 owns a valid org 64 certificate but claims asset
-// 444 in the unauthenticated TCP preface. The server must never admit the link.
+// The device-445 fixture has a valid tenant certificate but claims device 444
+// in the unauthenticated TCP preface. The server must never admit the link.
 func TestLANAuthGatePeer(t *testing.T) {
 	path := os.Getenv("WENDY_LAN_AUTH_GATE_CONFIG")
 	if path == "" {
@@ -36,7 +37,7 @@ func TestLANAuthGatePeer(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if cfg.Identity.Asset == 460 {
+	if lanIdentityDevice(t, cfg.Identity) == lanDevice(t, 460) {
 		iface, err := net.InterfaceByName("wllan0")
 		if err != nil {
 			t.Fatal(err)
@@ -72,7 +73,7 @@ func TestLANAuthGatePeer(t *testing.T) {
 		}
 		return
 	}
-	creds, err := NewCredentials(cfg.Identity.Org, cfg.Identity.Asset, cfg.Identity.Certificate, cfg.Identity.Chain, cfg.Identity.Key)
+	creds, err := NewCredentials(cfg.Identity.Certificate, cfg.Identity.Chain, cfg.Identity.Key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestLANAuthGatePeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tcp.Close()
-	if err := writeTCPPreface(tcp, 64, 444); err != nil {
+	if err := writeTCPPreface(tcp, lanDevice(t, 444)); err != nil {
 		t.Fatal(err)
 	}
 	pc, err := NewTCPPacketConn(tcp)
@@ -97,7 +98,7 @@ func TestLANAuthGatePeer(t *testing.T) {
 	}
 	transport := &quic.Transport{Conn: pc}
 	defer transport.Close()
-	tlsConfig, err := creds.PeerTLS(460)
+	tlsConfig, err := creds.PeerTLS(lanDevice(t, 460))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +107,7 @@ func TestLANAuthGatePeer(t *testing.T) {
 	conn, err := transport.Dial(handshake, pc.RemoteAddr(), tlsConfig, QUICConfig())
 	if err == nil {
 		defer conn.CloseWithError(0, "gate done")
-		_, err = OpenControl(handshake, conn, 64, 445, 460)
+		_, err = OpenControl(handshake, conn, lanDevice(t, 445), lanDevice(t, 460))
 	}
 	if err == nil || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("spoofed preface was not promptly rejected: %v", err)
@@ -136,8 +137,8 @@ func TestLANRejectsSpoofedPrefaceGate(t *testing.T) {
 		run("-n", name, "link", "set", "lo", "up")
 	}
 	dir := t.TempDir()
-	configs := map[int32]string{}
-	testCredentialsWithPEM(t, func(asset int32, cert, chain, key string) {
+	configs := map[meshid.Device]string{}
+	testCredentialsWithPEM(t, func(asset meshid.Device, cert, chain, key string) {
 		configDir := filepath.Join(dir, fmt.Sprint(asset))
 		if err := os.MkdirAll(configDir, 0700); err != nil {
 			t.Fatal(err)
@@ -145,8 +146,8 @@ func TestLANRejectsSpoofedPrefaceGate(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(configDir, tcpConfigName), []byte("{\"ethernet\":true}"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		processData, _ := json.Marshal(lanProcessConfig{Identity: TCPIdentity{Org: 64, Asset: asset, Name: "auth-gate", AgentPort: 50052, Certificate: cert, Chain: chain, Key: key}, Dir: configDir})
-		path := filepath.Join(dir, fmt.Sprintf("%d.json", asset))
+		processData, _ := json.Marshal(lanProcessConfig{Identity: TCPIdentity{Name: "auth-gate", AgentPort: 50052, Certificate: cert, Chain: chain, Key: key}, Dir: configDir})
+		path := filepath.Join(dir, fmt.Sprintf("%s.json", asset.UUID()))
 		if err := os.WriteFile(path, processData, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -159,14 +160,14 @@ func TestLANRejectsSpoofedPrefaceGate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	server := exec.CommandContext(ctx, "ip", "netns", "exec", nameB, binary, "-test.run", "^TestLANAuthGatePeer$", "-test.v")
-	server.Env = append(os.Environ(), "WENDY_LAN_AUTH_GATE_CONFIG="+configs[460])
+	server.Env = append(os.Environ(), "WENDY_LAN_AUTH_GATE_CONFIG="+configs[lanDevice(t, 460)])
 	var serverOutput bytes.Buffer
 	server.Stdout, server.Stderr = &serverOutput, &serverOutput
 	if err := server.Start(); err != nil {
 		t.Fatal(err)
 	}
 	client := exec.CommandContext(ctx, "ip", "netns", "exec", nameA, binary, "-test.run", "^TestLANAuthGatePeer$", "-test.v")
-	client.Env = append(os.Environ(), "WENDY_LAN_AUTH_GATE_CONFIG="+configs[445])
+	client.Env = append(os.Environ(), "WENDY_LAN_AUTH_GATE_CONFIG="+configs[lanDevice(t, 445)])
 	out, clientErr := client.CombinedOutput()
 	serverErr := server.Wait()
 	if clientErr != nil || serverErr != nil {
