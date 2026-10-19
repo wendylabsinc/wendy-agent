@@ -1,0 +1,85 @@
+"""Grade the tool choice in a trace against a task's `expect` block."""
+import json
+import re
+
+OUTCOMES = ("right", "wrong", "missed", "asked")
+EXPECT_KEYS = {"right", "wrong", "ask"}
+MATCHER_KEYS = {"tool", "cli", "shell", "args", "args_regex", "agents", "block"}
+KINDS = ("tool", "cli", "shell")
+
+
+def validate_expect(expect):
+    if not isinstance(expect, dict) or set(expect) - EXPECT_KEYS:
+        raise ValueError(f"expect keys must be within {sorted(EXPECT_KEYS)}")
+    if not isinstance(expect.get("ask", False), bool):
+        raise ValueError("expect.ask must be a boolean")
+    for side in ("right", "wrong"):
+        matchers = expect.get(side, [])
+        if not isinstance(matchers, list):
+            raise ValueError(f"expect.{side} must be a list")
+        for matcher in matchers:
+            if not isinstance(matcher, dict) or set(matcher) - MATCHER_KEYS:
+                raise ValueError(f"unknown matcher keys in {matcher!r}")
+            if sum(k in matcher for k in KINDS) != 1:
+                raise ValueError(f"matcher needs exactly one of tool, cli, shell: {matcher!r}")
+            if "args" in matcher and not isinstance(matcher["args"], dict):
+                raise ValueError("args must be an object")
+            if "agents" in matcher and not isinstance(matcher["agents"], list):
+                raise ValueError("agents must be a list")
+            for key in ("shell", "args_regex"):
+                if key in matcher:
+                    try:
+                        re.compile(matcher[key])
+                    except (re.error, TypeError) as error:
+                        raise ValueError(f"invalid regex in {key}: {error}") from error
+
+
+def _arg_ok(actual, want):
+    return want in actual if isinstance(actual, list) else actual == want
+
+
+def matches(matcher, entry, adapter=None):
+    if "agents" in matcher and adapter not in matcher["agents"]:
+        return False
+    channel, name, arguments = entry.get("channel"), entry.get("name") or "", entry.get("arguments")
+    if "tool" in matcher:
+        if channel != "mcp" or name != matcher["tool"]:
+            return False
+        arguments = arguments if isinstance(arguments, dict) else {}
+        if any(k not in arguments or not _arg_ok(arguments[k], v) for k, v in matcher.get("args", {}).items()):
+            return False
+        text = json.dumps(arguments, sort_keys=True)
+    elif "cli" in matcher:
+        if channel != "cli" or name.split()[:len(matcher["cli"].split())] != matcher["cli"].split():
+            return False
+        text = " ".join(arguments) if isinstance(arguments, list) else ""
+    else:
+        return channel == "shell" and re.search(matcher["shell"], arguments if isinstance(arguments, str) else "") is not None
+    return "args_regex" not in matcher or re.search(matcher["args_regex"], text) is not None
+
+
+def _first(matchers, trace, adapter):
+    for i, matcher in enumerate(matchers):
+        for j, entry in enumerate(trace):
+            if matches(matcher, entry, adapter):
+                return i, j
+    return None
+
+
+def grade(trace, expect, final_text, agent_completed, group=None, adapter=None):
+    result = {"outcome": "missed", "rule": None, "entry": None, "hidden_group": False}
+    for side in ("wrong", "right"):
+        hit = _first(expect.get(side, []), trace, adapter)
+        if hit:
+            result.update(outcome=side, rule=f"{side}[{hit[0]}]", entry=hit[1])
+            return result
+    if expect.get("ask") and agent_completed and "?" in (final_text or ""):
+        result["outcome"] = "asked"
+        return result
+    if adapter in ("claude", "codex") and group and group != "core":
+        enabled = any(e.get("channel") == "mcp" and e.get("name") == "wendy_tools"
+                      and isinstance(e.get("arguments"), dict)
+                      and {group, "all"} & set(e["arguments"].get("groups") or [])
+                      for e in trace)
+        result["hidden_group"] = not enabled
+    return result

@@ -180,6 +180,26 @@ class MetricsTests(unittest.TestCase):
         rows.append(row(False, complete=False))
         self.assertIsNone(b.summary(rows)[0]["tokens_per_success_including_failures"])
 
+    def test_summary_counts_tool_choice_and_medians(self):
+        def row(outcome, tokens, seconds):
+            return {"agent": "a", "target": "sim", "task": "deploy", "status": "failed", "success": False,
+                    "task_seconds": 10, "tool_choice": {"outcome": outcome} if outcome else None,
+                    "stages": {"agent": {"seconds": seconds}},
+                    "metrics": {"usage_complete": True, "tokens": {"input_tokens": tokens, "output_tokens": 10}}}
+        result = b.summary([row("right", 90, 5), row("wrong", 190, 9), row(None, 290, 7)])[0]
+        self.assertEqual(result["tool_choice"], {"right": 1, "wrong": 1, "missed": 0, "asked": 0, "ungraded": 1})
+        self.assertEqual(result["median_tokens_per_attempt"], 200)
+        self.assertEqual(result["median_agent_seconds"], 7)
+
+    def test_every_builtin_task_has_valid_expect(self):
+        import grading
+        tasks = json.loads((Path(__file__).parent / "tasks.json").read_text())
+        for task in tasks:
+            if task.get("fixture") == "builtin":
+                with self.subTest(task=task["id"]):
+                    self.assertIn("expect", task)
+                    grading.validate_expect(task["expect"])
+
     def test_timeout_retains_partial_logs(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)

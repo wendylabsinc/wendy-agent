@@ -20,6 +20,7 @@ import time
 import uuid
 
 from retry_guard import RetryGuard
+from grading import OUTCOMES, grade
 from tool_trace import build_trace
 
 HERE = Path(__file__).resolve().parent
@@ -228,6 +229,9 @@ def summary(rows):
         costs = [r["metrics"].get("estimated_cost_usd") if r["metrics"].get("estimated_cost_usd") is not None
                  else r["metrics"].get("reported_cost_usd") for r in eligible]
         all_costs = bool(costs) and all(isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in costs)
+        choice = {k: sum((r.get("tool_choice") or {}).get("outcome") == k for r in eligible) for k in OUTCOMES}
+        choice["ungraded"] = sum(not r.get("tool_choice") for r in eligible)
+        agent_seconds = [r["stages"]["agent"]["seconds"] for r in eligible if "seconds" in r.get("stages", {}).get("agent", {})]
         output.append({"agent": agent, "target": target, "task": task,
                        "attempts": len(eligible), "setup_errors": len(trials) - len(eligible),
                        "successes": len(passed), "unassisted_success_rate": len(passed) / len(eligible) if eligible else None,
@@ -237,24 +241,33 @@ def summary(rows):
                        "tokens_per_success_including_failures": sum(token_values) / len(passed) if passed and all_usage else None,
                        "estimated_usd_per_attempt": statistics.mean(costs) if all_costs else None,
                        "estimated_usd_per_success_including_failures": sum(costs) / len(passed) if passed and all_costs else None,
+                       "tool_choice": choice,
+                       "median_tokens_per_attempt": statistics.median(token_values) if all_usage else None,
+                       "median_agent_seconds": statistics.median(agent_seconds) if agent_seconds else None,
                        "usage_complete_attempts": len(token_values),
                        "timeouts": sum(r["status"] == "timeout" for r in eligible),
                        "cleanup_errors": sum(not r.get("cleanup_ok", True) for r in trials)})
     return output
 
 
+def choice_cell(choice):
+    cell = "/".join(str(choice[k]) for k in ("right", "wrong", "missed", "asked"))
+    return cell + (f" (+{choice['ungraded']} ungraded)" if choice["ungraded"] else "")
+
+
 def report(rows, output):
     data = summary(rows)
     dump(output / "summary.json", data)
-    lines = ["| Agent | Target | Task | Unassisted passes | Median seconds | Tokens / attempt | Tokens / success incl. failures | Estimated $ / success |",
-             "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    lines = ["| Agent | Target | Task | Unassisted passes | Median seconds | Tokens / attempt | Tokens / success incl. failures | Estimated $ / success | Tool choice R/W/M/A |",
+             "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     def fmt(value):
         return "unknown" if value is None else f"{value:,.1f}"
     for row in data:
         lines.append(f"| {row['agent']} | {row['target']} | {row['task']} | {row['successes']}/{row['attempts']} | "
                      f"{fmt(row['median_success_seconds'])} | {fmt(row['mean_tokens_per_attempt'])} | "
                      f"{fmt(row['tokens_per_success_including_failures'])} | "
-                     f"{fmt(row['estimated_usd_per_success_including_failures'])} |")
+                     f"{fmt(row['estimated_usd_per_success_including_failures'])} | "
+                     f"{choice_cell(row['tool_choice'])} |")
     (output / "summary.md").write_text("\n".join(lines) + "\n")
 
 
@@ -495,6 +508,9 @@ def trial(config, agent_name, target_name, task, output, wendy):
                 row["metrics"]["usage_complete"] &= not result["timed_out"] and not result["interrupted"] and not result.get("host_state_changed") and not result.get("no_progress") and invalid == 0
                 row["metrics"]["estimated_cost_usd"] = estimate_cost(row["metrics"], agent.get("prices_per_million"))
                 row["task_seconds"] = result["seconds"]
+                row["tool_choice"] = (grade(row["metrics"]["tool_trace"], task["expect"], row["metrics"]["final_text"],
+                                            row["metrics"]["agent_completed"], adapter=agent["adapter"])
+                                      if task.get("expect") else None)
                 row["status"] = ("host_state_changed" if result.get("host_state_changed") else "no_progress"
                                  if result.get("no_progress") else "interrupted"
                                  if result["interrupted"] else "timeout" if result["timed_out"] else "failed")

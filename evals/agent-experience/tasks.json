@@ -52,7 +52,22 @@
       "--port",
       "{port}"
     ],
-    "fixture": "builtin"
+    "fixture": "builtin",
+    "expect": {
+      "right": [
+        {
+          "tool": "run"
+        },
+        {
+          "cli": "run"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "repair-startup",
@@ -107,7 +122,22 @@
       "--port",
       "{port}"
     ],
-    "fixture": "builtin"
+    "fixture": "builtin",
+    "expect": {
+      "right": [
+        {
+          "tool": "run"
+        },
+        {
+          "cli": "run"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "update-http",
@@ -162,7 +192,22 @@
       "--port",
       "{port}"
     ],
-    "fixture": "builtin"
+    "fixture": "builtin",
+    "expect": {
+      "right": [
+        {
+          "tool": "run"
+        },
+        {
+          "cli": "run"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "stop-app",
@@ -217,7 +262,19 @@
       "--port",
       "{port}"
     ],
-    "fixture": "builtin"
+    "fixture": "builtin",
+    "expect": {
+      "right": [
+        {
+          "tool": "container_stop"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "create-simulator",
@@ -271,7 +328,17 @@
       "{port}"
     ],
     "fixture": "builtin",
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "simulator_create"
+        },
+        {
+          "cli": "vm create"
+        }
+      ]
+    }
   },
   {
     "id": "start-app",
@@ -326,7 +393,19 @@
       "{run_id}",
       "--port",
       "{port}"
-    ]
+    ],
+    "expect": {
+      "right": [
+        {
+          "tool": "container_start"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "compose-app",
@@ -381,7 +460,22 @@
       "{run_id}",
       "--port",
       "{port}"
-    ]
+    ],
+    "expect": {
+      "right": [
+        {
+          "tool": "run"
+        },
+        {
+          "cli": "run"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "create-go2-simulator",
@@ -435,7 +529,17 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "simulator_create"
+        },
+        {
+          "cli": "vm create"
+        }
+      ]
+    }
   },
   {
     "id": "create-g1-simulator",
@@ -489,7 +593,17 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "simulator_create"
+        },
+        {
+          "cli": "vm create"
+        }
+      ]
+    }
   },
   {
     "id": "install-physical",
@@ -601,7 +715,19 @@
       "{run_id}",
       "--port",
       "{port}"
-    ]
+    ],
+    "expect": {
+      "right": [
+        {
+          "tool": "telemetry_logs"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "debug-otel-metrics",
@@ -665,7 +791,19 @@
       "{run_id}",
       "--port",
       "{port}"
-    ]
+    ],
+    "expect": {
+      "right": [
+        {
+          "tool": "telemetry_metrics"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "debug-otel-traces",
@@ -729,7 +867,19 @@
       "{run_id}",
       "--port",
       "{port}"
-    ]
+    ],
+    "expect": {
+      "right": [
+        {
+          "tool": "telemetry_traces"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "debug-ros2",
@@ -904,7 +1054,22 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "ros2_topics"
+        },
+        {
+          "tool": "ros2_topic_info"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "repair-go2-camera",
@@ -962,7 +1127,22 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "camera_list"
+        },
+        {
+          "tool": "camera_snapshot"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "debug-g1-ros2",
@@ -1020,7 +1200,22 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "ros2_topics"
+        },
+        {
+          "tool": "ros2_topic_info"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   },
   {
     "id": "repair-g1-camera",
@@ -1078,6 +1273,21 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "camera_list"
+        },
+        {
+          "tool": "camera_snapshot"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "\\b(ssh|scp|docker|kubectl)\\b"
+        }
+      ]
+    }
   }
 ]
