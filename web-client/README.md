@@ -256,7 +256,7 @@ release commit reproduces the pin.
 | `init` | `browserauth.Settings` JSON | `true`; once, before sign-in. Services are then called directly, not through `/api/wendy-auth` |
 | `auth-begin` | `{redirect, email?, issuer?}`; `issuer` pins an organization's realm | authorize URL |
 | `auth-complete` | `{code, state, issuer}` | profile |
-| `auth-restore` | `{tenant?, subject?}` | that organization's profile, or `null` |
+| `auth-restore` | `{tenant?, subject?, refresh?}` | that organization's profile, or `null`; `refresh: true` always rotates the refresh token once and fails the restore if that exchange fails |
 | `credential` | `{tenant?}` | `{profile, algorithm, chainDER, accessToken, publicJWK}`; refreshes a token with under a minute left |
 | `sign` | `{tenant?, bytes: Uint8Array}` | `{signature: Uint8Array}` with the operator key |
 | `auth-signout` | `{tenant?}` | `true`; no tenant signs out of every organization |

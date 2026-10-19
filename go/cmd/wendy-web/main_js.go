@@ -233,6 +233,7 @@ func (b *bridge) handle(r request) (any, error) {
 			Code     string `json:"code"`
 			State    string `json:"state"`
 			Issuer   string `json:"issuer"`
+			Refresh  bool   `json:"refresh"`
 			org
 		}
 		if err := json.Unmarshal(r.Params, &p); err != nil {
@@ -246,6 +247,9 @@ func (b *bridge) handle(r request) (any, error) {
 				if err := selectOrg(p.org); err != nil {
 					return nil, err
 				}
+			}
+			if p.Refresh {
+				return b.auth.RestoreRotated(ctx)
 			}
 			return b.auth.Restore(ctx)
 		case "auth-signout":
