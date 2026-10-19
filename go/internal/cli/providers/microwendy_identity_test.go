@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -340,7 +341,81 @@ func TestLiteLANPinsTheAdvertisedEnrolledDeviceID(t *testing.T) {
 	}
 }
 
-func TestLiteBLERefusesPKIWithoutEnrolledDeviceID(t *testing.T) {
+func TestLiteBLEPinsTheAdvertisedPrincipal(t *testing.T) {
+	const device = "00000000-0000-4000-8000-441bf6804ff8"
+	for _, tc := range []struct{ name, principal, tenant, want string }{
+		{"enrolled board", "spiffe://wendy.sh/tenant/" + localLiteTenant + "/device/" + device, localLiteTenant, device},
+		{"older firmware or unenrolled", "", "", ""},
+		{"operator principal", localLiteOperator, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := (&MicroWendyProvider{}).bleExternalDevice(discovery.BLELiteDevice{
+				Address: "invalid",
+				Info:    ble.LiteInfo{PSM: 129, DeviceID: "441bf6804ff8", MTLSEnabled: true, Principal: tc.principal},
+			})
+			if row.ConnectionInfo["enrolledDeviceId"] != tc.want || row.ConnectionInfo["tenantId"] != tc.tenant {
+				t.Fatalf("pin = %q/%q, want %q/%q", row.ConnectionInfo["tenantId"], row.ConnectionInfo["enrolledDeviceId"], tc.tenant, tc.want)
+			}
+			if row.ConnectionInfo["deviceId"] != "441bf6804ff8" {
+				t.Fatal("the hardware id no longer keys the picker row")
+			}
+		})
+	}
+}
+
+func TestLiteBLEResolvesTheEnrolledDeviceIDFromCloud(t *testing.T) {
+	const enrolled = "00000000-0000-4000-8000-441bf6804ff8"
+	primary := localLiteTestCertificate(t, localLiteOperator, true)
+	other := localLiteTestCertificate(t, strings.Replace(localLiteOperator, localLiteTenant, "22222222-2222-4222-8222-222222222222", 1), true)
+	localLiteTestSessions(t,
+		config.AuthConfig{Name: "other", Certificates: []config.CertificateInfo{other}},
+		config.AuthConfig{Name: "work", Certificates: []config.CertificateInfo{primary}},
+	)
+	previous := LiteBoardIdentityResolver
+	t.Cleanup(func() { LiteBoardIdentityResolver = previous })
+	for _, tc := range []struct {
+		name, advertised string
+		lookupErr        error
+		wantLookup       bool
+		want             string
+	}{
+		{name: "cloud match", wantLookup: true, want: "operator refresh refused"},
+		{name: "cloud refusal", lookupErr: errors.New("no enrollment carries its hardware id"), wantLookup: true, want: "no enrollment carries its hardware id"},
+		{name: "advertised id preferred", advertised: enrolled, want: "operator refresh refused"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			looked := false
+			LiteBoardIdentityResolver = func(_ context.Context, hardwareID string) (string, string, error) {
+				looked = true
+				if hardwareID != "441bf6804ff8" {
+					t.Fatalf("looked up %q, not the advertised hardware id", hardwareID)
+				}
+				return localLiteTenant, enrolled, tc.lookupErr
+			}
+			LiteIdentityResolver = func(_ context.Context, auth *config.AuthConfig) (config.CertificateInfo, string, error) {
+				if tc.lookupErr != nil {
+					t.Fatal("resolved an operator identity for a board it cannot pin")
+				}
+				if auth.Name != "work" {
+					t.Fatal("the session was not selected by the resolved tenant")
+				}
+				return config.CertificateInfo{}, "", errors.New("operator refresh refused")
+			}
+			tenant := ""
+			if tc.advertised != "" {
+				tenant = localLiteTenant
+			}
+			_, err := (&MicroWendyProvider{}).connectClient(context.Background(), models.ExternalDevice{
+				ConnectionInfo: map[string]string{"type": "BLE", "mtls": "true", "address": "invalid", "deviceId": "441bf6804ff8", "enrolledDeviceId": tc.advertised, "tenantId": tenant},
+			})
+			if looked != tc.wantLookup || err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("lookup=%v err=%v", looked, err)
+			}
+		})
+	}
+}
+
+func TestLiteLANRefusesPKIWithoutAdvertisedPrincipal(t *testing.T) {
 	previous := LiteIdentityResolver
 	t.Cleanup(func() { LiteIdentityResolver = previous })
 	LiteIdentityResolver = func(context.Context, *config.AuthConfig) (config.CertificateInfo, string, error) {
@@ -348,9 +423,9 @@ func TestLiteBLERefusesPKIWithoutEnrolledDeviceID(t *testing.T) {
 		return config.CertificateInfo{}, "", nil
 	}
 	_, err := (&MicroWendyProvider{}).connectClient(context.Background(), models.ExternalDevice{
-		ConnectionInfo: map[string]string{"type": "BLE", "mtls": "true", "address": "invalid", "deviceId": "441bf6804ff8", "tenantId": localLiteTenant},
+		ConnectionInfo: map[string]string{"type": "LAN", "mtls": "true", "ip": "192.0.2.1", "port": "5054", "deviceId": "441bf6804ff8", "tenantId": localLiteTenant},
 	})
-	if err == nil || !strings.Contains(err.Error(), "does not advertise its enrolled device ID over BLE") {
-		t.Fatalf("BLE PKI without an enrolled id: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "mDNS principal=") {
+		t.Fatalf("LAN PKI without principal=: %v", err)
 	}
 }

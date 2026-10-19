@@ -558,3 +558,43 @@ func relayGrantFixture() ([]byte, error) {
 	}
 	return hex.DecodeString(vector.Record)
 }
+
+func TestLiteBLEResolvesBoardIdentityBySerial(t *testing.T) {
+	const hardwareID = "441bf6804824"
+	const second = "fc741e8b-4098-4830-bfa5-3f35c1aa0e60"
+	board := unenrollTestCloudDevice(liteTestAssetID, "desk", hardwareID).v2
+	for _, tc := range []struct {
+		name    string
+		assets  []*cloudpbv2.Asset
+		listErr error
+		noAuth  bool
+		want    string
+	}{
+		{name: "one", assets: []*cloudpbv2.Asset{board, unenrollTestCloudDevice(second, "desk", "0a0b0c0d0e0f").v2}},
+		{name: "zero", assets: []*cloudpbv2.Asset{unenrollTestCloudDevice(second, "desk", "0a0b0c0d0e0f").v2}, want: "or enroll the board"},
+		{name: "many", assets: []*cloudpbv2.Asset{board, unenrollTestCloudDevice(second, "desk", hardwareID).v2}, want: "remove the extra ones"},
+		{name: "not Lite", assets: []*cloudpbv2.Asset{{Id: second, PkiDeviceName: proto.String(second), OsType: proto.String("wendyos"), SerialNumber: proto.String(hardwareID), OrganizationId: testOperatorTenant}}, want: "or enroll the board"},
+		{name: "offline", listErr: errors.New("cloud down"), want: "sign in to Wendy Cloud to resolve this board's identity"},
+		{name: "signed out", noAuth: true, want: "sign in to Wendy Cloud to resolve this board's identity"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preserveCloudUnenrollmentHooks(t)
+			startUnenrollResetServer(t, &unenrollConfirmationServer{extraAssets: tc.assets, listErr: tc.listErr})
+			if tc.noAuth {
+				resolveCloudUnenrollAuthFn = func(string, string) (*config.AuthConfig, string, error) {
+					return nil, "", errors.New("not signed in")
+				}
+			}
+			tenant, deviceID, err := resolveLiteBoardIdentity(context.Background(), hardwareID)
+			if tc.want == "" {
+				if err != nil || tenant != testOperatorTenant || deviceID != liteTestAssetID {
+					t.Fatalf("resolved %q/%q, %v", tenant, deviceID, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) || deviceID != "" {
+				t.Fatalf("want refusal %q, got %q, %v", tc.want, deviceID, err)
+			}
+		})
+	}
+}

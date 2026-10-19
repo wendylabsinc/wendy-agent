@@ -91,7 +91,7 @@ func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, hardwareID 
 	for _, device := range devices {
 		identityMatch := device.v2 != nil && device.v2.GetPkiDeviceName() == identity
 		if hardwareID != "" {
-			identityMatch = device.v2 != nil && device.v2.GetOsType() == "wendy-lite" && device.v2.GetSerialNumber() == hardwareID
+			identityMatch = isLiteBoardAsset(device.v2, hardwareID)
 		}
 		nameMatch := hardwareID == "" && strings.EqualFold(device.GetName(), selector)
 		if identityMatch || nameMatch {

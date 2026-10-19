@@ -42,9 +42,13 @@ type protocolVersion struct {
 }
 
 type DeviceIdentity struct {
+	// ID is the hardware id (factory MAC), recorded as the asset serial number.
 	ID          string
 	Name        string
 	DisplayName string
+	// EnrolledDeviceID is the enrolled device UUID; empty when unenrolled or on
+	// firmware that predates it.
+	EnrolledDeviceID string
 }
 
 type DeviceInfo struct {
@@ -598,7 +602,7 @@ func (c *WendyLiteClient) GetDeviceIdentity(timeout time.Duration) (*DeviceIdent
 	if di == nil {
 		return nil, fmt.Errorf("device returned no identity")
 	}
-	return &DeviceIdentity{ID: di.GetId(), Name: di.GetName(), DisplayName: di.GetDisplayName()}, nil
+	return &DeviceIdentity{ID: di.GetId(), Name: di.GetName(), DisplayName: di.GetDisplayName(), EnrolledDeviceID: di.GetEnrolledDeviceId()}, nil
 }
 
 func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, error) {
