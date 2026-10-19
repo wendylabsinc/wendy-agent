@@ -43,7 +43,7 @@ on:
         required: false
         default: ''
     secrets:
-      WENDY_E2E_SLACK_WEBHOOK_URL:
+      CI_SLACK_BOT_TOKEN:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
@@ -431,6 +431,10 @@ jobs:
     timeout-minutes: 60
     env:
       CLAUDE_CODE_VERSION: '2.1.199'
+      # Slack posts go through the Wendy CI Slack app to the channel (ID or
+      # #name) in E2E_SLACK_CHANNEL. Only this flag, never the bot token, is
+      # in the job environment.
+      SLACK_READY: ${{ secrets.CI_SLACK_BOT_TOKEN != '' && vars.E2E_SLACK_CHANNEL != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -604,7 +608,7 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || '' }}
-          SLACK_WEBHOOK_URL: ${{ secrets.WENDY_E2E_SLACK_WEBHOOK_URL || '' }}
+          SLACK_CHANNEL: ${{ vars.E2E_SLACK_CHANNEL || '' }}
         run: |
           set -euo pipefail
 
@@ -641,8 +645,8 @@ jobs:
           if [[ "${auth_mode}" == "subscription" ]]; then
             exit 0
           fi
-          if [[ -z "${SLACK_WEBHOOK_URL}" ]]; then
-            echo "WENDY_E2E_SLACK_WEBHOOK_URL is not configured; skipping Slack auth warning."
+          if [[ "${SLACK_READY}" != "true" ]]; then
+            echo "::warning::CI_SLACK_BOT_TOKEN or E2E_SLACK_CHANNEL is not configured; skipping Slack auth warning."
             exit 0
           fi
 
@@ -651,11 +655,14 @@ jobs:
           if [[ "${auth_mode}" == "none" ]]; then
             fallback_note="No ANTHROPIC_API_KEY fallback configured either; the AI review was skipped."
           fi
+          slack_payload="${RUNNER_TEMP}/slack-auth-warning.json"
           jq -n \
+            --arg channel "${SLACK_CHANNEL}" \
             --arg reason "${failure_reason}" \
             --arg fallback "${fallback_note}" \
             --arg run_url "${run_url}" \
             '{
+              channel: $channel,
               attachments: [
                 {
                   color: "#f59e0b",
@@ -693,12 +700,21 @@ jobs:
                 }
               ]
             }' \
-            | curl --fail --silent --show-error \
-                -X POST \
-                -H 'Content-type: application/json' \
-                --data @- \
-                "${SLACK_WEBHOOK_URL}" \
-            || echo "::warning::Failed to post the Slack auth warning."
+            > "${slack_payload}"
+          echo "slack_payload=${slack_payload}" >> "$GITHUB_OUTPUT"
+
+      - name: Post AI review auth warning to Slack
+        if: steps.review-auth.outputs.slack_payload != ''
+        # A failed warning post must not fail the analysis.
+        continue-on-error: true
+        # SECURITY: the tag v4.0.0 resolves to exactly this commit (verified with the GitHub API on 2026-10-19).
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: chat.postMessage
+          # SECURITY: deliberate - the shared Wendy CI token (chat:write, chat:write.public; it cannot read channels) replaces the webhook with the same reach as before: fork PRs get no secrets, and same-repo PR authors could already read any secret by editing this workflow.
+          token: ${{ secrets.CI_SLACK_BOT_TOKEN }}
+          errors: true
+          payload-file-path: ${{ steps.review-auth.outputs.slack_payload }}
 
       - name: Verify AI review harness
         shell: bash
@@ -872,11 +888,12 @@ jobs:
               body,
             });
 
-      - name: Post Swift E2E Slack Review
+      - name: Build Swift E2E Slack Review
+        id: slack-review
         if: ${{ always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}
         shell: bash
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.WENDY_E2E_SLACK_WEBHOOK_URL || '' }}
+          SLACK_CHANNEL: ${{ vars.E2E_SLACK_CHANNEL || '' }}
           REPORT_ARTIFACT_NAME: ${{ steps.e2e-run.outputs.run_artifact_id }}
           REPORT_ARTIFACT_URL: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
           DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
@@ -884,8 +901,8 @@ jobs:
           E2E_RESULT: ${{ contains(needs.*.result, 'failure') && 'failure' || contains(needs.*.result, 'cancelled') && 'cancelled' || 'success' }}
         run: |
           set -euo pipefail
-          if [[ -z "${SLACK_WEBHOOK_URL}" ]]; then
-            echo "WENDY_E2E_SLACK_WEBHOOK_URL is not configured; skipping Slack notification."
+          if [[ "${SLACK_READY}" != "true" ]]; then
+            echo "::warning::CI_SLACK_BOT_TOKEN or E2E_SLACK_CHANNEL is not configured; skipping Slack notification."
             exit 0
           fi
 
@@ -928,7 +945,9 @@ jobs:
               ;;
           esac
 
+          slack_payload="${RUNNER_TEMP}/slack-review.json"
           jq -n \
+            --arg channel "${SLACK_CHANNEL}" \
             --arg color "${status_color}" \
             --arg title "${status_emoji} ${status_title}" \
             --arg mode "${review_mode}" \
@@ -942,6 +961,7 @@ jobs:
             --arg artifact_url "${artifact_url}" \
             --arg artifact_name "${artifact_name}" \
             '{
+              channel: $channel,
               attachments: [
                 {
                   color: $color,
@@ -1020,9 +1040,14 @@ jobs:
                 }
               ]
             }' \
-            > slack-payload.json
-          curl --fail --silent --show-error \
-            -X POST \
-            -H 'Content-type: application/json' \
-            --data @slack-payload.json \
-            "${SLACK_WEBHOOK_URL}"
+            > "${slack_payload}"
+          echo "payload=${slack_payload}" >> "$GITHUB_OUTPUT"
+
+      - name: Post Swift E2E Slack Review
+        if: ${{ always() && steps.slack-review.outputs.payload != '' }}
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.CI_SLACK_BOT_TOKEN }}
+          errors: true
+          payload-file-path: ${{ steps.slack-review.outputs.payload }}
