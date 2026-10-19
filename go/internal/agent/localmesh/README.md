@@ -183,6 +183,9 @@ At overflow, TCP data keeps its earliest queued segment within the same flow,
 including lease-pool IPv4-in-IPv6 traffic. Earlier retransmissions may replace
 later data; other flows and senders retain the existing queue limits and
 scheduling policy.
+The stream writer gives directory/Babel the first turn, then alternates with
+waiting IP packets. A proof backlog cannot monopolize the writer, and all
+fragments of an admitted IP packet are still written together.
 
 The leaf protocol exchanges complete currently verified certificate bundles,
 including replies to identity lookups. Certificate descriptors and chunk requests
