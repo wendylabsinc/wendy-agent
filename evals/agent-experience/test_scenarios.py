@@ -131,11 +131,48 @@ class LoadTests(unittest.TestCase):
                                   and c["category"] != "camera"]}
         self.assertEqual(sc.detect_capabilities({"structuredContent": wired}), [])
         synonyms = {"capabilities": [{"category": "WiFi"}, {"category": "wlan"}, {"category": "Bluetooth"},
-                                     {"category": "cameras"}, {"category": "audio", "device_path": "bluez_output.02_00"}]}
+                                     {"category": "cameras", "properties": {"transport": "usb"}},
+                                     {"category": "audio", "device_path": "bluez_output.02_00"}]}
         self.assertEqual(sc.detect_capabilities({"structuredContent": synonyms}), ["bluetooth", "camera", "wifi"])
         for junk in ({}, {"isError": True, "content": [{"type": "text", "text": "not connected"}]},
                      {"structuredContent": {"capabilities": None}}, {"structuredContent": {"capabilities": ["x"]}}):
             self.assertEqual(sc.detect_capabilities(junk), [])
+
+
+    def test_detect_capabilities_ignores_codec_and_isp_nodes(self):
+        # A camera-less Pi 4 still has V4L2 m2m nodes in the camera category (discoverer.go discoverCamera).
+        def node(video, driver, transport):
+            return {"category": "camera", "device_path": f"/dev/{video}", "description": f"{driver} ({video})",
+                    "properties": {"transport": transport, "driver": driver}}
+        pi = [node("video10", "bcm2835-codec", "unknown"), node("video13", "bcm2835-isp", "unknown"),
+              node("video14", "bcm2835-isp", "csi"), node("video31", "BCM2835-ISP", "csi"),
+              node("video20", "pispbe", "csi"), node("video19", "rpi-hevc-dec", "csi"),
+              node("video0", "some-bridge", "unknown"),
+              {"category": "camera", "device_path": "/dev/video1", "description": "no properties"}]
+        self.assertEqual(sc.detect_capabilities({"structuredContent": {"capabilities": pi}}), [])
+        for camera in (node("video0", "uvcvideo", "usb"), node("video0", "unicam", "csi"),
+                       {"category": "camera", "properties": {"transport": "csi"}}):
+            with self.subTest(camera=camera):
+                self.assertEqual(sc.detect_capabilities({"structuredContent": {"capabilities": pi + [camera]}}),
+                                 ["camera"])
+
+    def test_cloud_capability_comes_only_from_a_cloud_selector(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"HOME": directory}):
+            cloud, _ = sc.detect_board(FAKE, sc.board_target("cloud://h:443/org/1/asset/2"), timeout=10)
+            lan, _ = sc.detect_board(FAKE, sc.board_target("192.0.2.10:50051"), timeout=10)
+        self.assertEqual((cloud, lan), (["cloud"], []))
+        cloudy = write_scenarios(self.root / "s.json", [dict(
+            MINIMAL, group="cloud", environments=["simulator", "physical", "cloud"], requires=["cloud"])])[0]
+        canned = self.root / "canned"
+        board = dict(sc.board_target("cloud://h:443/org/1/asset/2"), capabilities=cloud)
+        self.assertIsNone(sc.scenario_readiness(cloudy, board, canned))
+        self.assertIsNone(sc.scenario_readiness(
+            cloudy, {"kind": "cloud", "device": "cloud://h:443/org/1/asset/2", "capabilities": []}, canned))
+        for target in ({"kind": "simulator", "device": "vm:x", "capabilities": ["cloud"]},
+                       {"kind": "physical", "device": "192.0.2.1:50051", "capabilities": ["cloud"]},
+                       dict(sc.board_target("192.0.2.10:50051"), capabilities=lan)):
+            with self.subTest(target=target):
+                self.assertEqual(sc.scenario_readiness(cloudy, target, canned), "target capabilities required: cloud")
 
 
 class GuardTests(unittest.TestCase):
@@ -145,8 +182,8 @@ class GuardTests(unittest.TestCase):
             self.assertIsNone(sc.ToolCapGuard(proxy, cli, 1)())
             proxy.write_text('{"tool": "a"}\n{"tool": "b"}\n{"tool": "c", "argu')
             cli.write_text('{"argv": ["device", "list"]}\n')
-            self.assertEqual(sc.ToolCapGuard(proxy, cli, 3)(), {"kind": "tool_call_cap", "calls": 3, "limit": 3})
-            self.assertIsNone(sc.ToolCapGuard(proxy, cli, 4)())
+            self.assertEqual(sc.ToolCapGuard(proxy, cli, 2)(), {"kind": "tool_call_cap", "calls": 3, "limit": 2})
+            self.assertIsNone(sc.ToolCapGuard(proxy, cli, 3)())
 
     def test_first_reason_returns_the_first_guard_that_fires(self):
         calls = []
@@ -231,6 +268,28 @@ class StateTests(unittest.TestCase):
             self.assertFalse(Path(run_vm["state"]).exists())
             with self.assertRaises(ValueError):
                 sc.prepare_run_vm({}, "/x/wendy", output, "go3")
+
+    def test_prepare_run_vm_removes_a_vm_whose_creation_raises(self):
+        created, removed, registered = [], [], []
+        def fixture_vm(config, variables, workspace, directory, env):
+            created.append(variables["vm_name"])
+            raise RuntimeError("start failed after create")
+        def remove(variables, workspace, directory, env):
+            removed.append(variables["vm_name"])
+            return {"exit_code": 0, "seconds": 0}
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(b, "fixture_vm", side_effect=fixture_vm), \
+                mock.patch.object(b, "remove_fixture_vm", side_effect=remove):
+            with self.assertRaises(RuntimeError):
+                sc.prepare_run_vm({}, "/x/wendy", Path(directory), "generic")
+            self.assertEqual(removed, created)
+            with self.assertRaises(RuntimeError):
+                sc.prepare_run_vm({}, "/x/wendy", Path(directory), "generic", register=registered.append)
+            self.assertEqual(len(removed), 1)  # an owner that registered the VM removes it
+            self.assertEqual(registered[0]["name"], created[1])
+            self.assertIs(registered[0]["ready"], False)
+            sc.remove_run_vm(registered[0], "/x/wendy", Path(directory))
+            self.assertFalse(Path(registered[0]["state"]).exists())
 
     def test_detect_board_reads_capabilities_in_a_throwaway_state(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -389,12 +448,31 @@ class TrialTests(unittest.TestCase):
         self.assertIs(row["cleanup_ok"], False)
 
     def test_tool_call_cap_stops_attempt_with_unknown_usage(self):
-        row, _ = self.run_trial(self.config(), self.scenario(max_tool_calls=2), env={"FAKE_AGENT_HANG": "1"})
-        self.assertEqual(row["stages"]["agent"]["no_progress"], {"kind": "tool_call_cap", "calls": 2, "limit": 2})
+        row, _ = self.run_trial(self.config(), self.scenario(max_tool_calls=1), env={"FAKE_AGENT_HANG": "1"})
+        self.assertEqual(row["stages"]["agent"]["no_progress"], {"kind": "tool_call_cap", "calls": 2, "limit": 1})
         self.assertLess(row["stages"]["agent"]["seconds"], 20)
         self.assertIs(row["metrics"]["usage_complete"], False)
         self.assertEqual(row["tool_choice"]["outcome"], "right")
         self.assertIs(row["cleanup_ok"], True)
+
+    def test_exactly_max_tool_calls_finishes_naturally(self):
+        row, _ = self.run_trial(self.config(), self.scenario(max_tool_calls=2))
+        self.assertNotIn("no_progress", row["stages"]["agent"])
+        self.assertIs(row["metrics"]["usage_complete"], True)
+        self.assertEqual(row["status"], "passed")
+
+    def test_exception_mid_attempt_still_discards_state_and_moves_logs(self):
+        config = dict(self.config(), max_agent_seconds=0)  # agent_timeout raises after the state exists
+        before = temp_dirs()
+        with mock.patch.dict(os.environ, {"WENDY_EVAL_SHIM": str(self.shim)}), \
+                mock.patch.object(sc, "vm_snapshot", return_value=[]), self.assertRaises(ValueError):
+            sc.scenario_trial(config, "fake", "sim", self.scenario(), self.output, FAKE, self.shim, self.run_vm,
+                              self.root / "tools.json", self.canned)
+        self.assertEqual(temp_dirs() - before, set())
+        directory = next(self.output.glob("fake-sim-probe-*"))
+        self.assertEqual(json.loads((directory / "result.json").read_text())["status"], "setup_error")
+        self.assertTrue((directory / "proxy.jsonl").exists() and (directory / "cli.jsonl").exists())
+        shutil.rmtree(json.loads((directory / "result.json").read_text())["workspace"], True)
 
     def test_claude_attempts_get_the_same_mcp_server_checks(self):
         init = {"type": "system", "subtype": "init", "mcp_servers": [
@@ -429,6 +507,10 @@ class TrialTests(unittest.TestCase):
         self.forget(row)
         vm_home, scenario_config, home, wendy = json.loads(row["metrics"]["final_text"])
         self.assertEqual((vm_home, scenario_config, wendy), (home, "", sys.executable))
+
+
+def temp_dirs():
+    return {p for pattern in ("we-state-*", "we-log-*") for p in Path("/tmp").glob(pattern)}
 
 
 def rescored_outcome(output, config, scenarios):
@@ -477,6 +559,11 @@ class MainTests(unittest.TestCase):
                                      "reason": "capabilities not checked (add --execute)"}])
         self.assertIn("Plan only: 0 trials", text)
 
+    def test_device_requires_scenario(self):
+        with self.assertRaises(SystemExit):
+            self.main("--device", "192.0.2.10:50051")
+        self.assertIn("--device needs --scenario", self.err.getvalue())
+
     def test_device_conflicts_with_a_configured_board(self):
         config = json.loads(self.config.read_text())
         config["targets"]["board"] = {"kind": "physical", "device": "192.0.2.1:50051"}
@@ -509,7 +596,13 @@ class ExecuteTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.run_state, True)
         (self.run_state / "vms").mkdir()
 
-    def main(self, *argv, failures=(), capabilities=("wifi",)):
+    def remove(self, run_vm, *rest):
+        self.calls["remove"].append(run_vm["name"])
+        if Path(run_vm["state"]) != self.run_state:
+            shutil.rmtree(run_vm["state"], True)
+        return {"exit_code": 0}
+
+    def main(self, *argv, failures=(), capabilities=("wifi",), real_prepare=False):
         path = self.root / "config.json"
         path.write_text(json.dumps(self.config))
         run_vm = {"state": self.run_state, "name": "wendy-eval-run", "device": "vm:wendy-eval-run",
@@ -521,10 +614,9 @@ class ExecuteTests(unittest.TestCase):
                 mock.patch.object(b, "require_state_isolation"), \
                 mock.patch("preflight.check_host", return_value=list(failures)), \
                 mock.patch.object(sc, "detect_board", return_value=(list(capabilities), {"capabilities": capabilities})), \
-                mock.patch.object(sc, "prepare_run_vm",
-                                  side_effect=lambda *a: self.calls["prepare"].append(a[3]) or run_vm), \
-                mock.patch.object(sc, "remove_run_vm",
-                                  side_effect=lambda *a: self.calls["remove"].append(a[0]["name"]) or {"exit_code": 0}), \
+                mock.patch.object(sc, "prepare_run_vm", side_effect=(
+                    sc.prepare_run_vm if real_prepare else lambda *a, **k: self.calls["prepare"].append(a[3]) or run_vm)), \
+                mock.patch.object(sc, "remove_run_vm", side_effect=self.remove), \
                 mock.patch.object(sc, "vm_snapshot", return_value=[]), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             try:
@@ -552,6 +644,15 @@ class ExecuteTests(unittest.TestCase):
         self.assertTrue((output / "bin/wendy").exists() and (output / "tools.json").exists())
         coverage = json.loads((output / "coverage.json").read_text())
         self.assertEqual({(c["task"], c["status"]) for c in coverage}, {("probe", "ready"), ("wifi", "ready")})
+
+    def test_interrupted_run_vm_preparation_still_removes_the_vm(self):
+        def fixture_vm(config, variables, workspace, directory, env):
+            self.calls["prepare"].append(variables["vm_name"])  # the VM exists from here on
+            raise KeyboardInterrupt
+        with mock.patch.object(b, "fixture_vm", side_effect=fixture_vm), self.assertRaises(KeyboardInterrupt):
+            self.main("--scenario", "probe", "--repetitions", "1", "--execute", real_prepare=True)
+        self.assertEqual(len(self.calls["prepare"]), 1)
+        self.assertEqual(self.calls["remove"], self.calls["prepare"])
 
     def test_unsafe_host_refuses_before_any_vm_or_board_call(self):
         code, text = self.main("--scenario", "all", "--device", "192.0.2.10:50051", "--execute",

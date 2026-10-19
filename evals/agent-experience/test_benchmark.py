@@ -357,6 +357,29 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(b.charge(1.0, {"metrics": {"estimated_cost_usd": None, "reported_cost_usd": .5}}, {}),
                          (1.5, True))
 
+    def test_rescore_scenario_rows_follow_the_live_success_rule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            make = self._rescore_dir(path)
+            init = {"type": "system", "subtype": "init", "mcp_servers": [{"name": "wendy"}]}
+            agent = {"exit_code": 0, "timed_out": False, "interrupted": False, "seconds": 1.0}
+            def attempt(name, events, proxy, **saved):
+                d = make(name, kind="scenario", group="core", task="s", stages={"agent": agent}, **saved)
+                (d / "agent.stdout").write_text("".join(json.dumps(e) + "\n" for e in events))
+                (d / "proxy.jsonl").write_text("".join(json.dumps(r) + "\n" for r in proxy))
+                (d / "cli.jsonl").write_text("")
+            done = {"type": "result", "result": "done"}
+            attempt("unverified", [done], [{"tool": "run"}], status="mcp_unverified", success=False)
+            attempt("regraded-wrong", [init, done], [{"tool": "container_exec", "arguments": {"command": ["nmcli"]}}],
+                    status="passed", success=True)
+            attempt("regraded-right", [init, done], [{"tool": "run"}], status="failed", success=False)
+            scenarios = [{"id": "s", "expect": {"right": [{"tool": "run"}], "wrong": [{"tool": "container_exec"}]}}]
+            out = b.rescore(path, [], scenarios)
+            rows = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
+            got = sorted((r["tool_choice"]["outcome"], r["success"], r["status"]) for r in rows)
+            self.assertEqual(got, [("right", False, "mcp_unverified"), ("right", True, "passed"),
+                                   ("wrong", False, "failed")])
+
     def test_rescore_looks_up_expect_by_kind(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)

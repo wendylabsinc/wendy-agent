@@ -38,8 +38,6 @@ REQUIRED = ("id", "group", "environments", "prompt", "expect")
 DEFAULTS = {"timeout_seconds": 180, "max_tool_calls": 20, "canned": [], "captures": [], "allow_real": [],
             "requires": [], "files": {}, "vm_profile": "generic"}
 OPTIONAL = frozenset({"canned_set", "notes"})
-# An attempt that ends this way never counts as a success, whatever its tool choice.
-NOT_SUCCESS = frozenset({"mcp_contaminated", "mcp_unverified", "host_state_changed", "interrupted"})
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 # The agent's hardware discoverer (go/internal/agent/hardware/discoverer.go, ListHardwareCapabilities)
@@ -48,6 +46,12 @@ _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 CATEGORY_TAGS = {"camera": "camera", "cameras": "camera",
                  "wifi": "wifi", "wi-fi": "wifi", "wlan": "wifi", "wireless": "wifi",
                  "bluetooth": "bluetooth", "bt": "bluetooth"}
+# discoverCamera lists every /dev/video* node, V4L2 memory-to-memory codecs and ISPs included. These
+# driver prefixes are never a camera: go/internal/agent/camera/transport.go nonCameraDriverPrefixes
+# (bcm2835-isp, bcm2835-codec), plus the Pi 5 ISP back end and HEVC decoder, which that list lacks and
+# whose device-tree node would make Classify call them CSI.
+NON_CAMERA_DRIVERS = ("bcm2835-isp", "bcm2835-codec", "pispbe", "rpi-hevc-dec")
+CAMERA_TRANSPORTS = frozenset({"usb", "csi"})
 
 
 def _check(condition, message):
@@ -121,7 +125,7 @@ def scenario_readiness(scenario, target, canned_dir):
     """
     required = set(scenario["requires"])
     if required:
-        capabilities = target.get("capabilities", [])  # None: not read yet, as for a --device board
+        capabilities = target_capabilities(target)
         if capabilities is None:
             return "capabilities not checked (add --execute)"
         missing = sorted(required - set(capabilities))
@@ -160,6 +164,21 @@ def scenario_coverage(scenarios, targets, selected, selected_targets, canned_dir
     return coverage
 
 
+def target_capabilities(target):
+    """The target's capability tags, or None when a board's are still unread.
+
+    "cloud" (Cloud access) comes only from a cloud:// selector, never from a list: a LAN board or the
+    simulator never has it.
+    """
+    capabilities = target.get("capabilities", [])
+    if capabilities is None:
+        return None
+    tags = set(capabilities) - {"cloud"}
+    if target.get("kind") == "cloud" and str(target.get("device") or "").startswith("cloud://"):
+        tags.add("cloud")
+    return tags
+
+
 def board_target(selector):
     return {"kind": "cloud" if selector.startswith("cloud://") else "physical", "device": selector,
             "capabilities": None, "fixtures": {}, "cache_state": "spare board named with --device"}
@@ -186,8 +205,8 @@ def _capability_payload(result):
 def detect_capabilities(result):
     """Map a hardware_capabilities result to the tags scenarios require: wifi, bluetooth, camera.
 
-    The agent reports no wifi or bluetooth category, so those come from evidence inside other
-    categories: a network interface named wl* (the kernel's wlanN and systemd's wlp*/wlx* names
+    A camera counts only on a usb or csi transport and not on a codec/ISP driver. The agent reports
+    no wifi or bluetooth category, so those come from evidence inside other categories: a network interface named wl* (the kernel's wlanN and systemd's wlp*/wlx* names
     for WLAN), a USB device whose product says Bluetooth, or a PipeWire bluez_* audio node.
     """
     if not isinstance(result, dict) or result.get("isError") is True:
@@ -200,7 +219,10 @@ def detect_capabilities(result):
         category = str(cap.get("category") or "").strip().lower()
         path, description = str(cap.get("device_path") or ""), str(cap.get("description") or "")
         interface = os.path.basename(path) or (description.split() or [""])[0]
-        if category in CATEGORY_TAGS:
+        if CATEGORY_TAGS.get(category) == "camera":
+            if _is_camera(cap):
+                tags.add("camera")
+        elif category in CATEGORY_TAGS:
             tags.add(CATEGORY_TAGS[category])
         elif category == "network" and interface.startswith("wl"):
             tags.add("wifi")
@@ -209,6 +231,13 @@ def detect_capabilities(result):
         elif category == "audio" and path.startswith("bluez_"):
             tags.add("bluetooth")
     return sorted(tags)
+
+
+def _is_camera(cap):
+    properties = cap.get("properties") if isinstance(cap.get("properties"), dict) else {}
+    driver = str(properties.get("driver") or "").lower()
+    return (str(properties.get("transport") or "").lower() in CAMERA_TRANSPORTS
+            and not driver.startswith(NON_CAMERA_DRIVERS))
 
 
 def private_env(state):
@@ -228,8 +257,11 @@ def detect_board(wendy, target, timeout=120):
             evidence["hardware_capabilities"] = mcp.call("hardware_capabilities", {})
         if evidence["hardware_capabilities"].get("isError"):
             return None, evidence
-        evidence["capabilities"] = detect_capabilities(evidence["hardware_capabilities"])
-        return evidence["capabilities"], evidence
+        tags = detect_capabilities(evidence["hardware_capabilities"])
+        if target["device"].startswith("cloud://"):
+            tags = sorted(set(tags) | {"cloud"})  # connected through Wendy Cloud, so Cloud access works
+        evidence["capabilities"] = tags
+        return tags, evidence
     except (OSError, RuntimeError, TimeoutError, ValueError) as error:
         evidence["error"] = repr(error)
         return None, evidence
@@ -238,7 +270,7 @@ def detect_board(wendy, target, timeout=120):
 
 
 class ToolCapGuard:
-    """A run_process progress guard: stop once the proxy and wrapper logs hold `limit` calls."""
+    """A run_process progress guard: stop once the proxy and wrapper logs hold more than `limit` calls."""
 
     def __init__(self, proxy_log, cli_log, limit):
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
@@ -252,7 +284,7 @@ class ToolCapGuard:
                 calls += len(read_jsonl(path))
             except OSError:
                 pass  # not written yet
-        return {"kind": "tool_call_cap", "calls": calls, "limit": self.limit} if calls >= self.limit else None
+        return {"kind": "tool_call_cap", "calls": calls, "limit": self.limit} if calls > self.limit else None
 
 
 def first_reason(*guards):
@@ -302,19 +334,31 @@ def _robot_vm(wendy, name, profile, directory, env):
     return stages, True
 
 
-def prepare_run_vm(config, wendy, output, profile):
-    """Create the run's shared VM for one profile, in its own private state (never the host's ~/.wendy)."""
+def prepare_run_vm(config, wendy, output, profile, register=None):
+    """Create the run's shared VM for one profile, in its own private state (never the host's ~/.wendy).
+
+    `register(run_vm)` is called before anything is created, so its caller can remove the VM even if
+    preparation is interrupted; without it, a failure here removes the VM before re-raising.
+    """
     if profile not in VM_PROFILES:
         raise ValueError(f"unknown vm_profile {profile!r}")
+    directory = _run_vm_dir(output, profile)
     state = b.isolated_device_state({"kind": "simulator"})
     name = "wendy-eval-" + uuid.uuid4().hex[:12]
-    directory, env = _run_vm_dir(output, profile), private_env(state)
-    if profile == "generic":
-        stages, ready = b.fixture_vm(config, {"wendy": wendy, "vm_name": name}, directory, directory, env)
-    else:
-        stages, ready = _robot_vm(wendy, name, profile, directory, env)
-    run_vm = {"state": state, "name": name, "device": "vm:" + name, "profile": profile,
-              "stages": stages, "ready": ready}
+    run_vm = {"state": state, "name": name, "device": "vm:" + name, "profile": profile, "stages": {}, "ready": False}
+    if register is not None:
+        register(run_vm)
+    try:
+        env = private_env(state)
+        if profile == "generic":
+            stages, ready = b.fixture_vm(config, {"wendy": wendy, "vm_name": name}, directory, directory, env)
+        else:
+            stages, ready = _robot_vm(wendy, name, profile, directory, env)
+    except BaseException:
+        if register is None:
+            remove_run_vm(run_vm, wendy, output)
+        raise
+    run_vm.update(stages=stages, ready=ready)
     b.dump(directory / "prepare.json", {**run_vm, "state": str(state)})
     return run_vm
 
@@ -382,56 +426,59 @@ def scenario_trial(config, agent_name, target_name, scenario, output, real_wendy
     directory = Path(output) / f"{agent_name}-{target_name}-{scenario['id']}-{ident}"
     directory.mkdir()
     workspace = Path(tempfile.mkdtemp(prefix="wendy-eval-"))
-    # The logs start outside the results tree: Codex's sandboxed shell may write only to its
-    # workspace, its added dirs and /tmp, and the wrapper logs from inside that shell.
-    logs = Path(tempfile.mkdtemp(prefix="we-log-", dir=_tmp_root()))
-    proxy_log, cli_log = logs / "proxy.jsonl", logs / "cli.jsonl"
-    proxy_log.touch()
-    cli_log.touch()  # empty logs mean no calls, so transcript MCP and CLI entries never stand in for them
-    state = attempt_state(target, run_vm)
     device = run_vm["device"] if run_vm is not None else target["device"]
     scenario_config = directory / "scenario.json"
-    variables = {"root": b.ROOT, "here": HERE, "treatment_root": treatment_root, "plugin_dir": directory / "plugin",
-                 "workspace": workspace, "wendy": shim, "wendy_home": state,
-                 "wendy_vm_home": run_vm["state"] if run_vm is not None else state,
-                 "scenario_config": scenario_config,
-                 "wendy_build_cache": Path.home() / ".cache/wendy",
-                 "docker_buildx_cache": Path(os.environ.get("DOCKER_CONFIG", Path.home() / ".docker")) / "buildx",
-                 "wendy_cache": (Path.home() / "Library/Caches/wendy" if sys.platform == "darwin" else
-                                 Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "wendy"),
-                 "device": device, "run_id": ident, "app_id": f"dev.wendy.eval.{ident}",
-                 "vm_name": run_vm["name"] if run_vm is not None else f"wendy-eval-{ident}",
-                 "port": config.get("port", 18765), "model": agent["model"],
-                 "evidence_dir": directory, "agent_events": directory / "agent.stdout",
-                 "target_config": directory / "target.json"}
-    b.dump(directory / "target.json", target)
-    prompt = b.expand(scenario["prompt"], variables)
-    prompt += f"\nThe Wendy executable for this environment is {shim}. Use that absolute path for Wendy CLI commands."
-    if config.get("environment_context"):
-        prompt += "\n" + b.expand(config["environment_context"], variables)
-    prompt += (f"\nWendy device/cloud configuration and its VM store are isolated at {state} "
-               "through WENDY_CONFIG_DIR. Preserve that environment setting. Do not change the host's ~/.wendy configuration or identity pins.")
-    variables["prompt"] = prompt
     row = {"id": ident, "kind": "scenario", "agent": agent_name, "target": target_name, "task": scenario["id"],
            "group": scenario["group"], "target_config": target, "model_requested": agent["model"],
            "workspace": str(workspace), "device_state_isolated": True, "device_selector": device,
-           "agent_timeout_seconds": b.agent_timeout(config, scenario), "max_tool_calls": scenario["max_tool_calls"],
+           "agent_timeout_seconds": None, "max_tool_calls": scenario["max_tool_calls"],
            "human_messages_after_start": 0, "human_approvals": 0, "success": False,
            "status": "setup_error", "task_seconds": 0, "metrics": {}, "stages": {}, "tool_choice": None}
-    b.dump(directory / "task.json", {**scenario, "prompt": prompt})
-    (directory / "prompt.txt").write_text(prompt + "\n")
-    expect = scenario["expect"]
-    b.dump(scenario_config, {
-        "real_wendy": real_wendy, "tools": str(tools_path), "canned_dir": str(canned_dir),
-        "canned_set": scenario["canned_set"], "canned": scenario["canned"], "allow_real": scenario["allow_real"],
-        "block": [m for m in expect.get("right", []) + expect.get("wrong", []) if m.get("block") is True],
-        "context": {"device": device}, "proxy_log": str(proxy_log), "cli_log": str(cli_log),
-        "cli_safe": str(CLI_SAFE), "shim": shim})
-    env = private_env(state)
-    env["WENDY_EVAL_SCENARIO"] = str(scenario_config)
-    env["PATH"] = str(Path(shim).parent) + os.pathsep + env.get("PATH", "")
-    before = None
+    state = logs = before = None
     try:
+        # Everything that holds credentials or evidence is created in here, so the finally always
+        # discards the state (and any copied Cloud auth) and keeps the logs.
+        # The logs start outside the results tree: Codex's sandboxed shell may write only to its
+        # workspace, its added dirs and /tmp, and the wrapper logs from inside that shell.
+        logs = Path(tempfile.mkdtemp(prefix="we-log-", dir=_tmp_root()))
+        proxy_log, cli_log = logs / "proxy.jsonl", logs / "cli.jsonl"
+        proxy_log.touch()
+        cli_log.touch()  # empty logs mean no calls, so transcript MCP and CLI entries never stand in for them
+        state = attempt_state(target, run_vm)
+        row["agent_timeout_seconds"] = b.agent_timeout(config, scenario)
+        variables = {"root": b.ROOT, "here": HERE, "treatment_root": treatment_root,
+                     "plugin_dir": directory / "plugin", "workspace": workspace, "wendy": shim, "wendy_home": state,
+                     "wendy_vm_home": run_vm["state"] if run_vm is not None else state,
+                     "scenario_config": scenario_config,
+                     "wendy_build_cache": Path.home() / ".cache/wendy",
+                     "docker_buildx_cache": Path(os.environ.get("DOCKER_CONFIG", Path.home() / ".docker")) / "buildx",
+                     "wendy_cache": (Path.home() / "Library/Caches/wendy" if sys.platform == "darwin" else
+                                     Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "wendy"),
+                     "device": device, "run_id": ident, "app_id": f"dev.wendy.eval.{ident}",
+                     "vm_name": run_vm["name"] if run_vm is not None else f"wendy-eval-{ident}",
+                     "port": config.get("port", 18765), "model": agent["model"],
+                     "evidence_dir": directory, "agent_events": directory / "agent.stdout",
+                     "target_config": directory / "target.json"}
+        b.dump(directory / "target.json", target)
+        prompt = b.expand(scenario["prompt"], variables)
+        prompt += f"\nThe Wendy executable for this environment is {shim}. Use that absolute path for Wendy CLI commands."
+        if config.get("environment_context"):
+            prompt += "\n" + b.expand(config["environment_context"], variables)
+        prompt += (f"\nWendy device/cloud configuration and its VM store are isolated at {state} "
+                   "through WENDY_CONFIG_DIR. Preserve that environment setting. Do not change the host's ~/.wendy configuration or identity pins.")
+        variables["prompt"] = prompt
+        b.dump(directory / "task.json", {**scenario, "prompt": prompt})
+        (directory / "prompt.txt").write_text(prompt + "\n")
+        expect = scenario["expect"]
+        b.dump(scenario_config, {
+            "real_wendy": real_wendy, "tools": str(tools_path), "canned_dir": str(canned_dir),
+            "canned_set": scenario["canned_set"], "canned": scenario["canned"], "allow_real": scenario["allow_real"],
+            "block": [m for m in expect.get("right", []) + expect.get("wrong", []) if m.get("block") is True],
+            "context": {"device": device}, "proxy_log": str(proxy_log), "cli_log": str(cli_log),
+            "cli_safe": str(CLI_SAFE), "shim": shim})
+        env = private_env(state)
+        env["WENDY_EVAL_SCENARIO"] = str(scenario_config)
+        env["PATH"] = str(Path(shim).parent) + os.pathsep + env.get("PATH", "")
         try:
             before = _target_snapshot(real_wendy, device, target, run_vm)
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
@@ -457,10 +504,7 @@ def scenario_trial(config, agent_name, target_name, scenario, output, real_wendy
         row["task_seconds"] = result["seconds"]
         row["tool_choice"] = grade(trace, expect, row["metrics"]["final_text"], row["metrics"]["agent_completed"],
                                    group=scenario["group"], adapter=adapter)
-        row["status"] = b.mcp_status(adapter, row["metrics"]) or b.attempt_status(result)
-        row["success"] = row["tool_choice"]["outcome"] in ("right", "asked") and row["status"] not in NOT_SUCCESS
-        if row["success"]:
-            row["status"] = "passed"
+        row["status"], row["success"] = b.scenario_verdict(adapter, row["metrics"], result, row["tool_choice"])
     finally:
         if before is not None:
             # The shared VM or board must be back in its prepared state; anything else stops the run.
@@ -471,13 +515,17 @@ def scenario_trial(config, agent_name, target_name, scenario, output, real_wendy
                 row["stages"]["reset"] = {"exit_code": 1, "before": before,
                                           "error": f"reading the target after the attempt: {error}"}
         row["cleanup_ok"] = row["stages"].get("reset", {}).get("exit_code") == 0
-        b.discard_device_state(state, row["cleanup_ok"])  # unlinks the shared store; the VM stays
-        if not row["cleanup_ok"]:
-            row["device_state_retained"] = str(state)
-        for path in (proxy_log, cli_log):
-            if path.exists():
-                shutil.move(str(path), str(directory / path.name))
-        shutil.rmtree(logs, ignore_errors=True)
+        if state is not None:
+            b.discard_device_state(state, row["cleanup_ok"])  # unlinks the shared store; the VM stays
+            if state.exists() and not any(state.iterdir()):
+                state.rmdir()  # nothing of this attempt's own is worth keeping
+            if state.exists():
+                row["device_state_retained"] = str(state)
+        if logs is not None:
+            for path in (logs / "proxy.jsonl", logs / "cli.jsonl"):
+                if path.exists():
+                    shutil.move(str(path), str(directory / path.name))
+            shutil.rmtree(logs, ignore_errors=True)
         b.dump(directory / "result.json", row)
         # Keep the workspace for diagnosis; it contains only this attempt's files.
     return row

@@ -300,8 +300,9 @@ def rescore(results_dir, tasks, scenarios):
         row["tool_choice"] = (grade(trace, item["expect"], live["final_text"], live["agent_completed"],
                                     group=row.get("group") if scenario else None, adapter=adapter)
                               if item.get("expect") else None)
-        if scenario:
-            row["success"] = bool(row["tool_choice"]) and row["tool_choice"]["outcome"] in ("right", "asked")
+        agent = row.get("stages", {}).get("agent")
+        if scenario and isinstance(agent, dict):
+            row["status"], row["success"] = scenario_verdict(adapter, live, agent, row["tool_choice"])
         rows.append(row)
     (out / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     report(rows, out)
@@ -549,6 +550,17 @@ def mcp_status(adapter, metric):
     return None
 
 
+# A scenario attempt that ends this way never counts as a success, whatever its tool choice.
+SCENARIO_NOT_SUCCESS = frozenset({"mcp_contaminated", "mcp_unverified", "host_state_changed", "interrupted"})
+
+
+def scenario_verdict(adapter, metric, result, tool_choice):
+    """(status, success) of a scenario attempt; the live run and --rescore both use this."""
+    status = mcp_status(adapter, metric) or attempt_status(result)
+    success = bool(tool_choice) and tool_choice.get("outcome") in ("right", "asked") and status not in SCENARIO_NOT_SUCCESS
+    return ("passed" if success else status), success
+
+
 def charge(spend, row, config):
     """Return (new spend, whether to continue). Unknown cost stops end-to-end runs; scenarios pay a reserve."""
     cost = row["metrics"].get("estimated_cost_usd")
@@ -750,7 +762,7 @@ def main():
                         help="Short tool-choice scenario to run; 'all' selects every scenario. Without --task, no end-to-end tasks run.")
     parser.add_argument("--scenarios", type=Path, help="Scenario file (default: scenarios.json next to this script).")
     parser.add_argument("--device", metavar="SELECTOR",
-                        help="Spare board for hardware scenarios (host:port or cloud://...), added as target \"board\".")
+                        help="Spare board for hardware scenarios (host:port or cloud://...), added as target \"board\"; needs --scenario.")
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--limit", type=int)
@@ -781,6 +793,8 @@ def main():
     if args.repetitions < 1 or (args.limit is not None and args.limit < 1):
         parser.error("repetitions and limit must be positive")
     if args.device:
+        if not args.scenario:
+            parser.error("--device needs --scenario: the spare board is for short scenarios only")
         if "board" in config["targets"]:
             parser.error('the config already has a target named "board"; select it with --target board instead of --device')
         if args.device.startswith("vm:"):
@@ -973,7 +987,9 @@ def main():
         try:
             for profile in profiles:
                 print(f"Preparing the shared {profile} VM (unscored)", flush=True)
-                run_vms[profile] = sc.prepare_run_vm(config, wendy, output, profile)
+                # Registered before anything is created, so an interrupt mid-preparation still removes it.
+                run_vms[profile] = sc.prepare_run_vm(config, wendy, output, profile,
+                                                     register=lambda vm, p=profile: run_vms.__setitem__(p, vm))
                 if not run_vms[profile]["ready"]:
                     print(f"Preparing the shared {profile} VM failed; see {output / ('run-vm-' + profile)}.")
                     remove_run_vms()
