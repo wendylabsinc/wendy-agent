@@ -75,6 +75,33 @@ func TestWendyStatus_AuthExpired(t *testing.T) {
 	}
 }
 
+// Signing in only reaches Cloud devices. A signed-out status that says "sign
+// in first" makes an agent stop and wait for a sign-in that a simulator or an
+// unenrolled LAN device never needed.
+func TestWendyStatus_SignedOutDoesNotGateLocalTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{"logged out", &config.Config{}},
+		{"expired", authConfigWith(authTestCertPEM(t, time.Now().Add(-time.Hour)))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(tc.cfg, nil)
+			s.SetSimulatorBackend(SimulatorBackend{List: func(context.Context) ([]SimulatorInfo, error) { return nil, nil }})
+			next := statusOf(t, s)["suggested_next_step"].(string)
+			if !strings.HasPrefix(next, "Call device_list") || strings.Contains(next, "devices need a signed-in session") {
+				t.Errorf("signed-out next step gates discovery on a sign-in: %s", next)
+			}
+			for _, want := range []string{"Local simulators and LAN devices that are not Cloud-enrolled need no sign-in", "auth_login"} {
+				if !strings.Contains(next, want) {
+					t.Errorf("signed-out next step does not mention %q: %s", want, next)
+				}
+			}
+		})
+	}
+}
+
 func TestWendyStatus_AuthLoggedInWhenAnySessionValid(t *testing.T) {
 	expired := authTestCertPEM(t, time.Now().Add(-time.Hour))
 	valid := authTestCertPEM(t, time.Now().Add(24*time.Hour))

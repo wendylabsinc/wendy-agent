@@ -84,7 +84,7 @@ func Remove(ctx context.Context, conn grpc.ClientConnInterface, auth *config.Aut
 	}
 	deleted := &cloudpb.DeleteAssetResponse{}
 	if err := cloudrequest.Invoke(ctx, conn, auth, cloudpb.AssetService_DeleteAsset_FullMethodName,
-		&cloudpb.DeleteAssetRequest{Id: assetID}, deleted); err != nil {
+		&cloudpb.DeleteAssetRequest{Id: assetID, ExpectedDeviceId: &deviceID}, deleted); err != nil {
 		return result, fmt.Errorf("deleting cloud asset: %w", err)
 	}
 	if !deleted.GetSuccess() {

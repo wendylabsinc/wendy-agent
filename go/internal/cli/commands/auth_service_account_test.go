@@ -49,15 +49,16 @@ func decodeJWSPart(t *testing.T, part string) map[string]any {
 // contract: discovery, the jwt-bearer assertion grant, and key enrollment.
 // It verifies every assertion against pub, the key "registered" for the SA.
 type fakeSAAuth struct {
-	server *httptest.Server
-	issuer string
-	pub    *mldsa.PublicKey
-	mints  atomic.Int32
+	server   *httptest.Server
+	issuer   string
+	resource string
+	pub      *mldsa.PublicKey
+	mints    atomic.Int32
 }
 
 func newFakeSAAuth(t *testing.T, pub *mldsa.PublicKey) *fakeSAAuth {
 	t.Helper()
-	f := &fakeSAAuth{pub: pub}
+	f := &fakeSAAuth{pub: pub, resource: defaultDevCloudResource}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /realms/acme/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -77,8 +78,8 @@ func newFakeSAAuth(t *testing.T, pub *mldsa.PublicKey) *fakeSAAuth {
 			t.Error("assertion grant must not send client_id")
 		}
 		resource := r.Form.Get("resource")
-		if resource != defaultDevCloudResource {
-			t.Errorf("resource = %q", resource)
+		if resource != f.resource {
+			t.Errorf("resource = %q, want %q", resource, f.resource)
 		}
 		kid := f.verifyAssertion(t, r.Form.Get("assertion"))
 		f.mints.Add(1)
@@ -285,6 +286,67 @@ func TestPerformServiceAccountLoginHeadless(t *testing.T) {
 	}
 }
 
+func TestAuthLoginServiceAccountTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		keyEnv bool
+		target cloudLoginTarget
+	}{
+		{name: "key file defaults to production", target: productionCloudLoginTarget},
+		{name: "environment key defaults to production", keyEnv: true, target: productionCloudLoginTarget},
+		{name: "explicit production", args: []string{"--production"}, target: productionCloudLoginTarget},
+		{name: "explicit development", args: []string{"--development"}, target: developmentCloudLoginTarget},
+		{
+			name: "custom endpoints", args: []string{"--cloud", "https://cloud.example", "--cloud-grpc", "api.example:443", "--resource", "https://cloud.example/api"},
+			target: cloudLoginTarget{cloudDashboard: "https://cloud.example", cloudGRPC: "api.example:443", cloudResource: "https://cloud.example/api"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+			t.Setenv(serviceAccountKeyEnv, "")
+			stubNonInteractive(t)
+			stubHumanPresent(t, false)
+			opened := stubOpenBrowser(t)
+			f := newFakeSAAuth(t, nil)
+			keyFile, pub := newTestSAKeyFile(t, f.issuer)
+			f.pub, f.resource = pub, tc.target.cloudResource
+			args := append([]string{}, tc.args...)
+			if tc.keyEnv {
+				t.Setenv(serviceAccountKeyEnv, string(keyFile))
+			} else {
+				keyPath := filepath.Join(t.TempDir(), "service-account.json")
+				if err := os.WriteFile(keyPath, keyFile, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "--service-account", keyPath)
+			}
+			cmd := newAuthLoginCmd()
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			cmd.SetArgs(args)
+			captureStdout(t, func() {
+				if err := cmd.Execute(); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if urls := opened(); len(urls) != 0 {
+				t.Fatalf("headless login opened a browser: %v", urls)
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.Auth) != 1 {
+				t.Fatalf("stored %d sessions, want 1", len(cfg.Auth))
+			}
+			auth := cfg.Auth[0]
+			if auth.CloudDashboard != tc.target.cloudDashboard || auth.CloudGRPC != tc.target.cloudGRPC || auth.OAuthResource != tc.target.cloudResource || auth.ServiceAccount != testSASubject {
+				t.Fatalf("stored session has unexpected target or account: %+v", auth)
+			}
+		})
+	}
+}
+
 // No refresh token exists for a service account: an expired session is
 // renewed by minting a new assertion with the stored key.
 func TestEnsureOAuthAccessTokenRemintsServiceAccount(t *testing.T) {
@@ -400,9 +462,28 @@ func TestReloginDispatchesOnStoredSession(t *testing.T) {
 		return nil
 	}
 
-	t.Run("no session uses the legacy default", func(t *testing.T) {
+	t.Run("no session uses production OIDC", func(t *testing.T) {
 		legacyCalls, oidcCalls = 0, 0
 		if err := relogin(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+		if legacyCalls != 0 || oidcCalls != 1 {
+			t.Fatalf("legacy=%d oidc=%d", legacyCalls, oidcCalls)
+		}
+		want := oidcLoginOptions{
+			AuthorizationBase: defaultProdAuthBase, ClientID: "wendy-cli", CloudResource: defaultProdCloudResource,
+			IdentityResource: defaultPKIIdentityResource, IdentityEndpoint: defaultProdPKIIdentityEndpoint,
+			CloudURL: defaultProdCloudDashboard, CloudGRPC: defaultProdCloudGRPC,
+		}
+		if gotOIDC != want {
+			t.Fatalf("OIDC options = %+v, want %+v", gotOIDC, want)
+		}
+	})
+
+	t.Run("legacy session keeps its dashboard flow", func(t *testing.T) {
+		legacyCalls, oidcCalls = 0, 0
+		auth := &config.AuthConfig{CloudDashboard: defaultCloudDashboard, CloudGRPC: defaultCloudGRPC}
+		if err := relogin(context.Background(), auth); err != nil {
 			t.Fatal(err)
 		}
 		if legacyCalls != 1 || oidcCalls != 0 {

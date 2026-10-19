@@ -22,7 +22,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("List all containers on the connected device"),
 	}
 	listOpts = append(listOpts, readOnly()...)
-	listOpts = append(listOpts, localOnly()...)
+	listOpts = append(listOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("container_list", listOpts...), s.handleContainerList)
 
 	startOpts := []mcpgo.ToolOption{
@@ -39,11 +39,11 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 		),
 	}
 	startOpts = append(startOpts, destructive()...)
-	startOpts = append(startOpts, localOnly()...)
+	startOpts = append(startOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("container_start", startOpts...), s.handleContainerStart)
 
 	stopOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Stop a running container"),
+		mcpgo.WithDescription("Stop a running container. Interrupts whatever task it is running."),
 		mcpgo.WithString("app_name",
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to stop"),
@@ -51,7 +51,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 	}
 	stopOpts = append(stopOpts, destructive()...)
 	stopOpts = append(stopOpts, idempotent()...)
-	stopOpts = append(stopOpts, localOnly()...)
+	stopOpts = append(stopOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("container_stop", stopOpts...), s.handleContainerStop)
 
 	deleteOpts := []mcpgo.ToolOption{
@@ -69,14 +69,14 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 	}
 	deleteOpts = append(deleteOpts, destructive()...)
 	deleteOpts = append(deleteOpts, idempotent()...)
-	deleteOpts = append(deleteOpts, localOnly()...)
+	deleteOpts = append(deleteOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("container_delete", deleteOpts...), s.handleContainerDelete)
 
 	statsOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Get memory and storage stats for all containers"),
 	}
 	statsOpts = append(statsOpts, readOnly()...)
-	statsOpts = append(statsOpts, localOnly()...)
+	statsOpts = append(statsOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("container_stats", statsOpts...), s.handleContainerStats)
 
 	attachOpts := []mcpgo.ToolOption{
@@ -96,7 +96,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 		),
 	}
 	attachOpts = append(attachOpts, destructive()...)
-	attachOpts = append(attachOpts, localOnly()...)
+	attachOpts = append(attachOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("container_attach", attachOpts...), s.handleContainerAttach)
 
 	execOpts := []mcpgo.ToolOption{
@@ -107,7 +107,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 		mcpgo.WithInteger("max_bytes", mcpgo.Min(1), mcpgo.Max(1000000), mcpgo.Description("Maximum combined stdout/stderr bytes retained, default 100000; excess output is drained until exit or timeout")),
 	}
 	execOpts = append(execOpts, destructive()...)
-	execOpts = append(execOpts, localOnly()...)
+	execOpts = append(execOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("container_exec", execOpts...), s.handleContainerExec)
 }
 

@@ -36,7 +36,7 @@ func TestCloudInventoryTenantAndOfflineFilter(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s, _ := setup(t, nil)
-			if _, err := s.Complete(context.Background(), "valid-code", s.state, s.meta.Issuer); err != nil {
+			if _, err := s.Complete(context.Background(), "valid-code", s.state, testIssuer); err != nil {
 				t.Fatal(err)
 			}
 			listener := bufconn.Listen(1 << 20)

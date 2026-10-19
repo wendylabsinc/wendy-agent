@@ -105,6 +105,8 @@ LAN discovery uses mDNS (also known as Bonjour on macOS or Avahi on Linux) to fi
 
 When mDNS returns both IPv4 and IPv6 addresses for the same device, the CLI prefers the IPv4 address, because a device's IPv6 address often rotates and goes stale between deploys. IPv6 is used only as a fallback when no IPv4 address is available.
 
+A device on both Ethernet and Wi-Fi advertises its Ethernet addresses in the `wired` TXT record. When one of them is on this computer's network, answers mDNS as the device, and this computer reaches it at least as well as the address it would otherwise use, the CLI connects over Ethernet first; the other addresses remain the fallback. A direct USB link still comes first.
+
 ## Troubleshooting LAN Discovery
 
 If your WendyOS device doesn't appear when connected to the same network:

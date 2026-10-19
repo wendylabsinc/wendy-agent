@@ -2,12 +2,9 @@ package timesync
 
 import (
 	"encoding/binary"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 )
 
 const clockFloorFile = "clock_floor"
@@ -40,43 +37,6 @@ func readFloor(configPath string) (floor, refused time.Time) {
 		return time.Time{}, t
 	}
 	return t, time.Time{}
-}
-
-// advanceVerifiedFloor persists an authenticated lower bound. The caller must
-// serialize updates and obtain t from verified evidence, never from time.Now.
-// Unlike install-time WriteFloor, ordinary sync cannot replace a newer floor.
-func advanceVerifiedFloor(configPath string, t time.Time) error {
-	if configPath == "" || t.Before(floorMin) || t.After(floorMax) {
-		return fmt.Errorf("timesync: invalid verified clock floor")
-	}
-	path := filepath.Join(configPath, clockFloorFile)
-	info, err := os.Lstat(path)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("timesync: reading floor metadata: %w", err)
-	}
-	if err == nil {
-		if !info.Mode().IsRegular() || info.Size() != 8 {
-			return fmt.Errorf("timesync: existing clock floor is not a regular timestamp file")
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("timesync: reading clock floor: %w", err)
-		}
-		if len(data) != 8 {
-			return fmt.Errorf("timesync: incomplete clock floor")
-		}
-		old := time.Unix(int64(binary.BigEndian.Uint64(data)), 0) //nolint:gosec — range-checked below
-		if old.Before(floorMin) || old.After(floorMax) {
-			return fmt.Errorf("timesync: existing clock floor is implausible")
-		}
-		if t.Unix() <= old.Unix() {
-			return nil
-		}
-	}
-	if err := atomicfile.Write(path, FloorBytes(t), 0o644); err != nil {
-		return fmt.Errorf("timesync: writing floor update: %w", err)
-	}
-	return nil
 }
 
 // FloorBytes encodes t as the 8-byte big-endian clock_floor payload.

@@ -49,6 +49,7 @@ func useStreamSeams(t *testing.T, backend func(context.Context, string, func(MDN
 	t.Helper()
 	origBackend, origLoad := lanBackendFn, cacheLoadFn
 	t.Cleanup(func() { lanBackendFn, cacheLoadFn = origBackend, origLoad })
+	useCables(t, nil, nil) // no test asks a real network
 	if backend != nil {
 		lanBackendFn = backend
 	}

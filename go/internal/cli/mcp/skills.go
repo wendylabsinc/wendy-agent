@@ -41,11 +41,24 @@ type skillCatalog struct {
 
 // The catalog and its bytes are immutable for the lifetime of the binary.
 var embeddedSkillCatalog = sync.OnceValues(buildSkillCatalog)
+var embeddedHostedSkillCatalog = sync.OnceValues(func() (*skillCatalog, error) {
+	return buildSkillCatalogFromRoot("chatgpt-plugin/skills/wendy")
+})
+
+func (s *mcpServer) skillCatalog() (*skillCatalog, error) {
+	if s.relay {
+		return embeddedHostedSkillCatalog()
+	}
+	return embeddedSkillCatalog()
+}
 
 // The sync script packages the end-user group as one skill to fit OpenAI's
 // five-skill import limit. Read only that generated bundle, never user files.
 func buildSkillCatalog() (*skillCatalog, error) {
-	const root = "mcp-skills/wendy"
+	return buildSkillCatalogFromRoot("mcp-skills/wendy")
+}
+
+func buildSkillCatalogFromRoot(root string) (*skillCatalog, error) {
 	main, err := assets.FS.ReadFile(root + "/SKILL.md")
 	if err != nil {
 		return nil, err
@@ -143,6 +156,10 @@ func registerSkills(srv *server.MCPServer) error {
 	if err != nil {
 		return fmt.Errorf("loading MCP skills: %w", err)
 	}
+	return registerSkillCatalog(srv, catalog)
+}
+
+func registerSkillCatalog(srv *server.MCPServer, catalog *skillCatalog) error {
 	hooks := srv.GetHooks()
 	if hooks == nil {
 		hooks = &server.Hooks{}
