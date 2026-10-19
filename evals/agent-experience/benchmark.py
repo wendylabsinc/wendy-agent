@@ -20,6 +20,7 @@ import time
 import uuid
 
 from retry_guard import RetryGuard
+from tool_trace import build_trace
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -195,7 +196,7 @@ def metrics(adapter, events):
             "tool_calls": len(tools), "permission_denials": len(denied) if adapter != "codex" else None,
             "reported_cost_usd": reported_cost, "reported_cost_kind": "client_estimate" if reported_cost is not None else None,
             "models_observed": sorted(models), "agent_completed": ended, "agent_errors": errors,
-            "final_text": "\n".join(text)}
+            "final_text": "\n".join(text), "tool_trace": build_trace(adapter, events)}
 
 
 def estimate_cost(metric, prices):
