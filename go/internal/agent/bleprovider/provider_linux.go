@@ -634,8 +634,14 @@ func (r *runtime) discoveredCandidates(objects managedObjects, at time.Time) []c
 		r.discovery.observed(at)
 	}
 	if r.cfg.Selection != nil {
-		for _, device := range newlySeen {
-			r.cfg.Selection.Seen(device, localmesh.RadioBLE)
+		for _, path := range newlySeen {
+			for _, peer := range peers {
+				if peer.path == path {
+					if device, ok := r.knownCandidate(peer); ok {
+						r.cfg.Selection.Seen(device, localmesh.RadioBLE)
+					}
+				}
+			}
 		}
 	}
 	return peers
