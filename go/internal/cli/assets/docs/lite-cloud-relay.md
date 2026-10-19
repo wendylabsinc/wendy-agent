@@ -34,9 +34,7 @@ and upgrade hash. The WLG3 record has `293 + key-ID length` bytes and
 includes the grant ID, correlation ID, device URI hash, operator public-key hash,
 request hash and attestation hash. The device URI (`.../device/<uuid>`) is the
 record's only device identifier: the device UUID is also its cloud asset ID.
-While Cloud still issues the retiring WLG2 (the same record plus a 16-byte asset
-UUID, `309 + key-ID length` bytes), the CLI accepts both; the magic decides.
-Older, shorter WLG2 records are rejected.
+The CLI accepts WLG3 only; any WLG2 record is rejected.
 The grant must be presented within its signed window of at most 60 seconds.
 That window is separate from the session's 1800-second limit, which is also
 bounded by both endpoint certificates' expiry.

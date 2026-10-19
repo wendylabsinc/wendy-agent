@@ -33,7 +33,7 @@ message WendyComRelayPayload {
 }
 
 message WendyComRelayGrant {
-  // Exact signed WLG3 record (WLG2 while retiring), including signature. No JWS
+  // Exact signed WLG3 record, including signature. No JWS
   // or JSON wrapping.
   bytes record = 1;
 }

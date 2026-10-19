@@ -125,7 +125,7 @@ func (x *WendyComRelayPayload) GetBytes() []byte {
 
 type WendyComRelayGrant struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Exact signed WLG3 record (WLG2 while retiring), including signature. No JWS
+	// Exact signed WLG3 record, including signature. No JWS
 	// or JSON wrapping.
 	Record        []byte `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields

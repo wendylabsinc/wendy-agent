@@ -356,7 +356,7 @@ func TestLiteGrantFramingKeyIDBounds(t *testing.T) {
 	}
 }
 
-func TestLiteGrantFramingAcceptsWLG3AndRetiringWLG2(t *testing.T) {
+func TestLiteGrantFramingAcceptsOnlyWLG3(t *testing.T) {
 	wlg3, err := relayGrantFixture()
 	if err != nil {
 		t.Fatal(err)
@@ -372,15 +372,13 @@ func TestLiteGrantFramingAcceptsWLG3AndRetiringWLG2(t *testing.T) {
 	if string(wlg3[:4]) != "WLG3" || string(wlg2[:4]) != "WLG2" {
 		t.Fatal("fixtures carry the wrong magic")
 	}
-	for name, grant := range map[string][]byte{"WLG3": wlg3, "WLG2": wlg2} {
-		if !validLiteGrantRecord(grant) {
-			t.Errorf("rejected the %s conformance record", name)
-		}
+	if !validLiteGrantRecord(wlg3) {
+		t.Error("rejected the WLG3 conformance record")
 	}
-	// The magic decides the layout; either record under the other magic is misframed.
+	// No dual-accept window: a real WLG2 record, or WLG3 bytes under its magic, is refused.
 	relabel := func(grant []byte, magic string) []byte { return append([]byte(magic), grant[4:]...) }
-	if validLiteGrantRecord(relabel(wlg3, "WLG2")) || validLiteGrantRecord(relabel(wlg2, "WLG3")) {
-		t.Error("accepted a record framed under the other magic")
+	if validLiteGrantRecord(wlg2) || validLiteGrantRecord(relabel(wlg3, "WLG2")) || validLiteGrantRecord(relabel(wlg2, "WLG3")) {
+		t.Error("accepted a WLG2 or misframed record")
 	}
 }
 

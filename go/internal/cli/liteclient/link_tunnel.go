@@ -150,22 +150,12 @@ func openRelayConn(ctx context.Context, cc *grpc.ClientConn, assetID string, opt
 }
 
 // A Cloud WLG3 record carries timestamps, three UUIDs, five SHA-256 hashes
-// and a raw P-256 signature after its key ID; the retiring WLG2 adds a 16-byte
-// asset UUID. The magic, not the length, tells them apart: the lengths overlap
-// across key-ID sizes. This checks framing only; the device verifies the
-// signature and bindings before acknowledging WLA2.
+// and a raw P-256 signature after its key ID. WLG2 is no longer accepted. This
+// checks framing only; the device verifies the signature and bindings before
+// acknowledging WLA2.
 func validLiteGrantRecord(grant []byte) bool {
-	const wlg3Size = 4 + 1 + 2*8 + 3*16 + 5*32 + 64
-	var fixedSize int
-	switch string(grant[:min(4, len(grant))]) {
-	case "WLG3":
-		fixedSize = wlg3Size
-	case "WLG2":
-		fixedSize = wlg3Size + 16
-	default:
-		return false
-	}
-	if len(grant) < fixedSize+1 || len(grant) > fixedSize+128 {
+	const fixedSize = 4 + 1 + 2*8 + 3*16 + 5*32 + 64
+	if string(grant[:min(4, len(grant))]) != "WLG3" || len(grant) < fixedSize+1 || len(grant) > fixedSize+128 {
 		return false
 	}
 	kidLen := int(grant[4])
