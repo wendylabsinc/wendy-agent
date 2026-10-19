@@ -95,7 +95,7 @@ func TestPKILANHandshakeCancellation(t *testing.T) {
 	defer cancel()
 	completed := make(chan error, 1)
 	go func() {
-		completed <- NewWendyLiteClient().ConnectWithPKIAuthenticationContext(ctx, listener.Addr().String(), cert, chain, "441bf6804ff8", nil)
+		completed <- NewWendyLiteClient().ConnectWithPKIAuthenticationContext(ctx, listener.Addr().String(), cert, chain, "00000000-0000-4000-8000-441bf6804ff8", nil)
 	}()
 	conn, err := listener.Accept()
 	if err != nil {

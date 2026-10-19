@@ -159,21 +159,28 @@ func (p *MicroWendyProvider) mdnsExternalDevice(svc discovery.MDNSService) model
 	if displayName == "" {
 		displayName = svc.Hostname
 	}
+	// The PKI pin target is the device id in the principal an enrolled board
+	// advertises. id= is its hardware id (picker dedup), never its device id.
+	var enrolledDeviceID string
+	if identity, err := certs.ParseDevicePrincipal(discovery.LANDeviceFromWendyLiteService(svc).PrincipalURI); err == nil {
+		enrolledDeviceID = identity.EntityID
+	}
 	return models.ExternalDevice{
 		ID:          fmt.Sprintf("wendy-lite:%s", svc.Hostname),
 		DisplayName: displayName,
 		ProviderKey: p.Key(),
 		ConnectionInfo: map[string]string{
-			"type":     "LAN",
-			"deviceId": deviceId,
-			"name":     svc.TXTRecords["name"],
-			"hostname": svc.Hostname,
-			"ip":       svc.IPAddress,
-			"port":     fmt.Sprintf("%d", svc.Port),
-			"mtls":     fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
-			"tenantId": svc.TXTRecords["tenant"],
-			"orgId":    svc.TXTRecords["orgid"],
-			"assetId":  svc.TXTRecords["assetid"],
+			"type":             "LAN",
+			"deviceId":         deviceId,
+			"name":             svc.TXTRecords["name"],
+			"hostname":         svc.Hostname,
+			"ip":               svc.IPAddress,
+			"port":             fmt.Sprintf("%d", svc.Port),
+			"mtls":             fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
+			"tenantId":         svc.TXTRecords["tenant"],
+			"orgId":            svc.TXTRecords["orgid"],
+			"assetId":          svc.TXTRecords["assetid"],
+			"enrolledDeviceId": enrolledDeviceID,
 		},
 		IsWendyDevice: true,
 	}
@@ -990,7 +997,7 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 						return fmt.Errorf("client identity does not match advertised PKI tenant; sign in to the board's organization with wendy auth login --email <email>")
 					}
 				}
-				return client.ConnectWithPKIAuthenticationContext(ctx, addr, cert, chain, device.ConnectionInfo["deviceId"], lite)
+				return client.ConnectWithPKIAuthenticationContext(ctx, addr, cert, chain, device.ConnectionInfo["enrolledDeviceId"], lite)
 			}); err != nil {
 				return nil, err
 			}
@@ -1009,8 +1016,13 @@ func (p *MicroWendyProvider) connectClient(ctx context.Context, device models.Ex
 		psm64, _ := strconv.ParseUint(device.ConnectionInfo["psm"], 10, 16)
 		psm := uint16(psm64)
 		if device.ConnectionInfo["mtls"] == "true" {
+			// The BLE info service carries only the hardware id, never the
+			// enrolled device id the board's certificate names.
+			if device.ConnectionInfo["enrolledDeviceId"] == "" {
+				return nil, fmt.Errorf("this board's firmware does not advertise its enrolled device ID over BLE; connect over LAN, USB or Wendy Cloud")
+			}
 			if err := connectWithCLIIdentities(ctx, device.ConnectionInfo["tenantId"], func(cert tls.Certificate, chain string, lite liteclient.LiteDeviceCAChain) error {
-				return client.ConnectViaBLEWithPKIAuthenticationContext(ctx, address, psm, cert, chain, device.ConnectionInfo["deviceId"], lite)
+				return client.ConnectViaBLEWithPKIAuthenticationContext(ctx, address, psm, cert, chain, device.ConnectionInfo["enrolledDeviceId"], lite)
 			}); err != nil {
 				return nil, err
 			}

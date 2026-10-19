@@ -33,7 +33,7 @@ func (f *principalCloud) Invoke(ctx context.Context, method string, args, reply 
 func TestPrincipalRevocationSignsExactLiteIdentityAndFreshRetry(t *testing.T) {
 	auth, key, der := testAuth(t)
 	conn := &principalCloud{fakeCloud: &fakeCloud{t: t, refuse: []error{status.Error(codes.PermissionDenied, "kid unknown")}}}
-	count, err := RevokePrincipalCertificates(context.Background(), conn, auth, "lite-441bf6804824")
+	count, err := RevokePrincipalCertificates(context.Background(), conn, auth, "00000000-0000-4000-8000-441bf6804824")
 	if err != nil || count != 3 || len(conn.requests) != 2 {
 		t.Fatalf("revocation = %d, %v, %d attempts", count, err, len(conn.requests))
 	}
@@ -69,7 +69,7 @@ func TestPrincipalRevocationSignsExactLiteIdentityAndFreshRetry(t *testing.T) {
 		if err := json.Unmarshal(payload, &claims); err != nil {
 			t.Fatal(err)
 		}
-		if claims.Op != "revoke_principal" || claims.Tenant != testTenant || claims.Principal != "spiffe://wendy.sh/tenant/"+testTenant+"/device/lite-441bf6804824" || claims.Exp-claims.Iat != 30 {
+		if claims.Op != "revoke_principal" || claims.Tenant != testTenant || claims.Principal != "spiffe://wendy.sh/tenant/"+testTenant+"/device/00000000-0000-4000-8000-441bf6804824" || claims.Exp-claims.Iat != 30 {
 			t.Fatalf("wrong management authority: %s", payload)
 		}
 		if _, err := uuid.Parse(claims.JTI); err != nil || seen[claims.JTI] {

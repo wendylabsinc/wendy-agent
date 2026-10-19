@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteenroll"
@@ -99,7 +100,7 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if err != nil {
 		return err
 	}
-	cfg, err := liteenroll.Config(auth, "lite-"+identity.ID, opts.csrURL, opts.timeURL, opts.brokerHost, opts.brokerPort)
+	cfg, err := liteenroll.Config(auth, uuid.NewString(), opts.csrURL, opts.timeURL, opts.brokerHost, opts.brokerPort)
 	if err != nil {
 		return err
 	}
@@ -160,7 +161,9 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 		return err
 	}
 	mintCtx, cancel := context.WithTimeout(cloudCtx, 30*time.Second)
-	hardware := &cloudpb.DeviceHardware{}
+	// The hardware id is metadata only: it lets USB unenroll find this
+	// board's asset, whose id is the minted UUID.
+	hardware := &cloudpb.DeviceHardware{SerialNumber: proto.String(identity.ID)}
 	if target.OSVersion != "" {
 		hardware.OsVersion = proto.String(target.OSVersion)
 	}

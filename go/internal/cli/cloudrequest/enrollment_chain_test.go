@@ -12,7 +12,7 @@ func TestEnrollmentRequestBindsCertificateChain(t *testing.T) {
 	auth, key, _ := testAuth(t)
 	for _, algorithm := range []string{"", EnrollmentChainP256} {
 		t.Run(algorithm, func(t *testing.T) {
-			jws, err := EnrollmentRequestForChain(auth, "lite-test", "C", algorithm)
+			jws, err := EnrollmentRequestForChain(auth, "00000000-0000-4000-8000-00000000aaaa", "C", algorithm)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -49,7 +49,7 @@ func TestEnrollmentRequestBindsCertificateChain(t *testing.T) {
 	for _, tc := range []struct{ class, algorithm string }{
 		{"A", EnrollmentChainP256}, {"B", EnrollmentChainP256}, {"C", "ML_DSA_65"}, {"C", "rsa"},
 	} {
-		if _, err := EnrollmentRequestForChain(auth, "lite-test", tc.class, tc.algorithm); err == nil {
+		if _, err := EnrollmentRequestForChain(auth, "00000000-0000-4000-8000-00000000aaaa", tc.class, tc.algorithm); err == nil {
 			t.Fatalf("accepted class %s with chain %s", tc.class, tc.algorithm)
 		}
 	}

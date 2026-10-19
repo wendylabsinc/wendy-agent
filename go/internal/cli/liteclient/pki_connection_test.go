@@ -58,7 +58,7 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 	for _, uri := range []string{"", "urn:wendy:org:2:user:42", "spiffe://wendy.sh/tenant/" + tenant + "/device/other"} {
 		leaf, key := issue(6, "unscoped", uri, false, root, rootKey)
 		c := NewWendyLiteClient()
-		err := connect(c, "invalid:0", tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: key}, chain, "441bf6804ff8", nil)
+		err := connect(c, "invalid:0", tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: key}, chain, "00000000-0000-4000-8000-441bf6804ff8", nil)
 		if err == nil || !strings.Contains(err.Error(), "tenant-scoped operator") {
 			t.Fatalf("identity %q must be rejected before dialing: %v", uri, err)
 		}
@@ -66,7 +66,7 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 	// The Lite Device CA is a sibling under the session's root, absent from chain.
 	liteCA, liteKey := issue(7, "Lite Device CA", "", true, root, rootKey)
 	selfSignedLite, selfSignedLiteKey := issue(8, "Lite Device CA", "", true, nil, nil)
-	const matching = "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-441bf6804ff8"
+	const matching = "spiffe://wendy.sh/tenant/" + tenant + "/device/00000000-0000-4000-8000-441bf6804ff8"
 	for _, tc := range []struct {
 		name, principal, deviceID string
 		trusted                   bool
@@ -74,13 +74,12 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 		liteKey                   *ecdsa.PrivateKey
 		wantHandshake             bool
 	}{
-		{"matching device", matching, "441bf6804ff8", true, nil, nil, true},
-		{"prefixed device ID", matching, "lite-441bf6804ff8", true, nil, nil, true},
-		{"different device", "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-000000000000", "441bf6804ff8", true, nil, nil, false},
-		{"different tenant", "spiffe://wendy.sh/tenant/33333333-3333-4333-8333-333333333333/device/lite-441bf6804ff8", "441bf6804ff8", true, nil, nil, false},
-		{"untrusted issuer", matching, "441bf6804ff8", false, nil, nil, false},
-		{"Lite CA under session trust", matching, "441bf6804ff8", false, liteCA, liteKey, true},
-		{"self-signed Lite CA", matching, "441bf6804ff8", false, selfSignedLite, selfSignedLiteKey, false},
+		{"matching device", matching, "00000000-0000-4000-8000-441bf6804ff8", true, nil, nil, true},
+		{"different device", "spiffe://wendy.sh/tenant/" + tenant + "/device/00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-441bf6804ff8", true, nil, nil, false},
+		{"different tenant", "spiffe://wendy.sh/tenant/33333333-3333-4333-8333-333333333333/device/00000000-0000-4000-8000-441bf6804ff8", "00000000-0000-4000-8000-441bf6804ff8", true, nil, nil, false},
+		{"untrusted issuer", matching, "00000000-0000-4000-8000-441bf6804ff8", false, nil, nil, false},
+		{"Lite CA under session trust", matching, "00000000-0000-4000-8000-441bf6804ff8", false, liteCA, liteKey, true},
+		{"self-signed Lite CA", matching, "00000000-0000-4000-8000-441bf6804ff8", false, selfSignedLite, selfSignedLiteKey, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issuer, issuerKey := root, rootKey

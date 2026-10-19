@@ -95,12 +95,12 @@ func TestLiteUnenrollResetsAfterCloudCleanup(t *testing.T) {
 			cmd.SetContext(context.Background())
 			called := false
 			wantErr := errors.New("cloud unenrollment result")
-			unenrollLiteCloudFn = func(gotCmd *cobra.Command, cloudGRPC, deviceID string, assumeYes bool, reset func() error) error {
+			unenrollLiteCloudFn = func(gotCmd *cobra.Command, cloudGRPC, hardwareID string, assumeYes bool, reset func() error) error {
 				called = true
 				if device.closed {
 					t.Fatal("device connection closed before reset")
 				}
-				if gotCmd != cmd || cloudGRPC != "cloud.example:443" || deviceID != "lite-441bf6804824" || !assumeYes {
+				if gotCmd != cmd || cloudGRPC != "cloud.example:443" || hardwareID != "441bf6804824" || !assumeYes {
 					t.Fatal("wrong cloud unenrollment arguments")
 				}
 				device.calls = append(device.calls, "cloud")

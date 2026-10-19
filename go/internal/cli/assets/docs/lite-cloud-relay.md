@@ -26,13 +26,17 @@ new one once and retries. Service-account sessions cannot use this lane.
 `WENDY_LITE_OPERATOR_CERT` and `WENDY_LITE_OPERATOR_KEY` still override the Lite
 leaf with a PEM leaf plus chain and its key, for the same principal.
 
-The broker returns a compact P-256 WLG2 grant after pki-core verifies the operator
+The broker returns a compact P-256 WLG3 grant after pki-core verifies the operator
 request. The CLI then completes inner mTLS with the intended device, sends the
 grant as its first application data, and waits for WLA2 before WendyCom. The
 device verifies the signature, identities, authenticated operator key, session
-and upgrade hash. The current WLG2 record has `309 + key-ID length` bytes and
-includes the grant ID, correlation ID, asset ID, operator public-key hash,
-request hash and attestation hash. Older, shorter WLG2 records are rejected.
+and upgrade hash. The WLG3 record has `293 + key-ID length` bytes and
+includes the grant ID, correlation ID, device URI hash, operator public-key hash,
+request hash and attestation hash. The device URI (`.../device/<uuid>`) is the
+record's only device identifier: the device UUID is also its cloud asset ID.
+While Cloud still issues the retiring WLG2 (the same record plus a 16-byte asset
+UUID, `309 + key-ID length` bytes), the CLI accepts both; the magic decides.
+Older, shorter WLG2 records are rejected.
 The grant must be presented within its signed window of at most 60 seconds.
 That window is separate from the session's 1800-second limit, which is also
 bounded by both endpoint certificates' expiry.

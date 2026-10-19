@@ -128,7 +128,7 @@ func TestRelayDeviceTrustFallbackChainsToSessionTrust(t *testing.T) {
 		{name: "Lite CA chains to session trust", leaf: device, fetched: full, waits: true, wantOK: true},
 		{name: "self-signed twin only", leaf: device, fetched: pemCerts(twin), waits: true},
 		{name: "Lite CA under a foreign root", leaf: device, fetched: pemCerts(strayLite, strayRoot), waits: true},
-		{name: "wrong device", leaf: withPrincipal(strings.Replace(devicePrincipal, "441bf6804ff8", "other", 1)), fetched: full},
+		{name: "wrong device", leaf: withPrincipal(strings.Replace(devicePrincipal, "00000000-0000-4000-8000-441bf6804ff8", "other", 1)), fetched: full},
 		{name: "wrong tenant", leaf: withPrincipal(strings.Replace(devicePrincipal, "11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", 1)), fetched: full},
 		{name: "expired", leaf: expiredLeaf, fetched: full},
 		{name: "known issuer bad signature", leaf: broken(primary), fetched: full},
@@ -140,7 +140,7 @@ func TestRelayDeviceTrustFallbackChainsToSessionTrust(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			started, release := make(chan struct{}), make(chan struct{})
-			cfg, err := deviceTLSConfig(ctx, operator, session, "441bf6804ff8", func(got context.Context) (string, error) {
+			cfg, err := deviceTLSConfig(ctx, operator, session, "00000000-0000-4000-8000-441bf6804ff8", func(got context.Context) (string, error) {
 				if got != ctx {
 					t.Error("discovery lost the caller's context")
 				}

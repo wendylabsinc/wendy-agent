@@ -134,21 +134,17 @@ This requires the coordinated firmware and broker update in
 
 ## Remove an old enrollment
 
-A Lite board's PKI device ID is `lite-` followed by its hardware ID, such as
-`lite-441bf6804824`. Renaming the board does not release that ID from an existing
-cloud asset. Remove the old enrollment before enrolling the same board again.
+A Lite board's device ID is a UUID the CLI mints at enrollment, exactly as for
+other devices; it is also the board's cloud asset ID. The board's hardware ID is
+kept only as the asset's serial number, so a USB-connected board can find its
+asset. A board still holding an issued identity cannot enroll again: remove the
+old enrollment first. A re-enrolled board is a new device with a new UUID.
 
 Use cloud unenrollment when the board is offline or its firmware is corrupt:
 
 ```sh
 wendy cloud discover --all --json
 wendy cloud device unenroll --device <asset-uuid-or-name>
-```
-
-The selector also accepts the PKI device ID reported by an enrollment conflict:
-
-```sh
-wendy cloud device unenroll --device lite-441bf6804824
 ```
 
 The equivalent device command is:
@@ -163,7 +159,8 @@ release its device ID. Add `--yes` when running non-interactively. Use
 `--cloud-grpc` to select another cloud endpoint/session.
 
 For a USB-connected board, the normal device command checks firmware reset
-support, reads its hardware ID and removes the matching cloud enrollment. It then
+support, reads its hardware ID and removes the Lite asset whose serial number
+matches it. It then
 clears the local enrollment and reboots the board:
 
 ```sh

@@ -70,10 +70,12 @@ var resolveCloudUnenrollAuthFn = resolveCloudUnenrollAuth
 
 var errCloudEnrollmentNotFound = errors.New("no cloud enrollment")
 
-// Match a local Lite board only by its hardware-derived PKI identity. An
-// enrolled name may differ from the name still stored on the board.
-func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, deviceID string) (cloudDiscoveryDevice, error) {
-	identity := deviceID
+// Match a local Lite board only by the hardware id it reported at enrollment,
+// which its asset keeps as the serial number; its device id is a minted UUID
+// the board does not report. An enrolled name may differ from the name still
+// stored on the board.
+func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, hardwareID string) (cloudDiscoveryDevice, error) {
+	identity := hardwareID
 	if identity == "" {
 		if selector == "" {
 			return resolveCloudDiscoveryDevice(devices, selector)
@@ -88,7 +90,10 @@ func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, deviceID st
 	var matches []cloudDiscoveryDevice
 	for _, device := range devices {
 		identityMatch := device.v2 != nil && device.v2.GetPkiDeviceName() == identity
-		nameMatch := deviceID == "" && strings.EqualFold(device.GetName(), selector)
+		if hardwareID != "" {
+			identityMatch = device.v2 != nil && device.v2.GetOsType() == "wendy-lite" && device.v2.GetSerialNumber() == hardwareID
+		}
+		nameMatch := hardwareID == "" && strings.EqualFold(device.GetName(), selector)
 		if identityMatch || nameMatch {
 			matches = append(matches, device)
 		}
@@ -103,17 +108,17 @@ func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, deviceID st
 	}
 }
 
-func runCloudDeviceUnenroll(cmd *cobra.Command, cloudGRPC, selector, deviceID string, assumeYes bool) error {
-	return runCloudDeviceUnenrollAndReset(cmd, cloudGRPC, selector, deviceID, assumeYes, nil)
+func runCloudDeviceUnenroll(cmd *cobra.Command, cloudGRPC, selector, hardwareID string, assumeYes bool) error {
+	return runCloudDeviceUnenrollAndReset(cmd, cloudGRPC, selector, hardwareID, assumeYes, nil)
 }
 
 // Local recovery may clear an identity after a previous cloud-only removal.
 // Its absence must be established by a complete, authenticated asset inventory.
-func runCloudDeviceUnenrollWithReset(cmd *cobra.Command, cloudGRPC, deviceID string, assumeYes bool, reset func() error) error {
-	if deviceID == "" || reset == nil {
-		return fmt.Errorf("local unenrollment requires a device identity and reset operation")
+func runCloudDeviceUnenrollWithReset(cmd *cobra.Command, cloudGRPC, hardwareID string, assumeYes bool, reset func() error) error {
+	if hardwareID == "" || reset == nil {
+		return fmt.Errorf("local unenrollment requires the board's hardware id and reset operation")
 	}
-	return runCloudDeviceUnenrollAndReset(cmd, cloudGRPC, "", deviceID, assumeYes, reset)
+	return runCloudDeviceUnenrollAndReset(cmd, cloudGRPC, "", hardwareID, assumeYes, reset)
 }
 
 func fetchUnenrollAssets(ctx context.Context, client cloudpbv2.AssetServiceClient, tenant string) ([]cloudDiscoveryDevice, error) {
@@ -163,7 +168,7 @@ func fetchUnenrollAssets(ctx context.Context, client cloudpbv2.AssetServiceClien
 	}
 }
 
-func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, deviceID string, assumeYes bool, reset func() error) error {
+func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, hardwareID string, assumeYes bool, reset func() error) error {
 	if cfg, ok := cloudDeviceConfigFromContext(cmd.Context()); ok && cloudGRPC == "" {
 		cloudGRPC = cfg.CloudGRPC
 	}
@@ -196,7 +201,7 @@ func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, dev
 		if err != nil {
 			return err
 		}
-		device, err = resolveUnenrollDevice(devices, "", deviceID)
+		device, err = resolveUnenrollDevice(devices, "", hardwareID)
 		if errors.Is(err, errCloudEnrollmentNotFound) {
 			assetAbsent = true
 		} else if err != nil {
@@ -215,7 +220,7 @@ func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, dev
 		if err != nil {
 			return err
 		}
-		device, err = resolveUnenrollDevice(devices, selector, deviceID)
+		device, err = resolveUnenrollDevice(devices, selector, hardwareID)
 		if err != nil {
 			return err
 		}
@@ -231,12 +236,12 @@ func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, dev
 	if !assumeYes {
 		if !isInteractiveTerminal() {
 			if reset != nil {
-				return fmt.Errorf("unenroll is destructive; pass --yes to confirm removing the enrollment for %q in %s and clearing its local identity", deviceID, auth.CloudGRPC)
+				return fmt.Errorf("unenroll is destructive; pass --yes to confirm removing the enrollment for board %q in %s and clearing its local identity", hardwareID, auth.CloudGRPC)
 			}
 			return fmt.Errorf("unenroll is destructive; pass --yes to confirm removing %q (asset %s) from %s", device.GetName(), device.key, auth.CloudGRPC)
 		}
 		if assetAbsent {
-			fmt.Fprintf(cmd.OutOrStdout(), "No cloud enrollment for %q exists in the selected organization in %s. This will clear the connected board's stored enrollment identity. WiFi settings and apps will be preserved.\n", deviceID, auth.CloudGRPC)
+			fmt.Fprintf(cmd.OutOrStdout(), "No cloud enrollment for board %q exists in the selected organization in %s. This will clear the connected board's stored enrollment identity. WiFi settings and apps will be preserved.\n", hardwareID, auth.CloudGRPC)
 		} else if reset != nil {
 			fmt.Fprintf(cmd.OutOrStdout(), "This will revoke the cloud enrollment for %q (asset %s) in %s, delete its asset record, then clear the connected board's stored enrollment identity. WiFi settings and apps will be preserved.\n", device.GetName(), device.key, auth.CloudGRPC)
 		} else {
@@ -271,7 +276,7 @@ func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, dev
 			out["cloudError"] = err.Error()
 		}
 		if reset != nil {
-			out["deviceId"] = deviceID
+			out["hardwareId"] = hardwareID
 			out["assetAlreadyAbsent"] = assetAbsent
 		}
 		if resetErr != nil {
@@ -282,13 +287,13 @@ func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, dev
 		}
 	} else if err == nil {
 		if assetAbsent {
-			fmt.Fprintf(cmd.OutOrStdout(), "No cloud enrollment for %q exists in the selected organization in %s.\n", deviceID, auth.CloudGRPC)
+			fmt.Fprintf(cmd.OutOrStdout(), "No cloud enrollment for %q exists in the selected organization in %s.\n", hardwareID, auth.CloudGRPC)
 		} else {
 			fmt.Fprintf(cmd.OutOrStdout(), "Unenrolled %s: revoked %d certificate(s) and %d enrollment credential(s), and deleted cloud asset %s.\n", device.GetName(), result.CertificatesRevoked, result.CredentialsRevoked, device.key)
 		}
 		if deviceReset {
 			fmt.Fprintln(cmd.OutOrStdout(), "Cleared the board's enrollment identity. WiFi settings and apps were preserved. Run 'wendy device enroll' to enroll again.")
-		} else if reset == nil && device.v2 != nil && strings.HasPrefix(device.v2.GetPkiDeviceName(), "lite-") {
+		} else if reset == nil && device.v2 != nil && device.v2.GetOsType() == "wendy-lite" {
 			fmt.Fprintln(cmd.OutOrStdout(), "The device was not reset. Connect this Lite board over USB and run 'wendy device unenroll' to clear its stored identity before enrolling again.")
 		} else if reset == nil {
 			fmt.Fprintln(cmd.OutOrStdout(), "The device was not reset. If it still holds an issued identity, clear it through device recovery before enrolling again.")

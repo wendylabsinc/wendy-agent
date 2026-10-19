@@ -367,7 +367,7 @@ func TestMergedDevices_Empty(t *testing.T) {
 
 func TestMergedDevices_CopiesPKITenant(t *testing.T) {
 	const tenant = "11111111-2222-4333-8444-555555555555"
-	const principal = "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-board-a"
+	const principal = "spiffe://wendy.sh/tenant/" + tenant + "/device/00000000-0000-4000-8000-0000000b0a2d"
 	c := DevicesCollection{LANDevices: []LANDevice{{
 		ID: "board-a", TenantUUID: tenant, PrincipalURI: principal, IsMTLS: true, WendyLite: true, Sensorlink: true,
 	}}}

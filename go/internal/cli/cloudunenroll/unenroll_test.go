@@ -27,7 +27,7 @@ import (
 const (
 	testTenant  = "2558fd76-afc7-466e-9613-6b715296a526"
 	testAsset   = "6fab25c6-01d3-4840-abcc-9d47259069a4"
-	testDevice  = "lite-441bf6804824"
+	testDevice  = "00000000-0000-4000-8000-441bf6804824"
 	firstToken  = "ccf9d7eb-f72e-483a-a6d7-deed7169e322"
 	secondToken = "793c38e2-986d-48b9-a368-d028f15da784"
 	testEAB     = "f3594820-3f90-4810-aa93-3e27fc747b2c"

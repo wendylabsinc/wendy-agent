@@ -84,7 +84,7 @@ func TestAddAndListSensorPairing(t *testing.T) {
 
 func TestSensorPairingPrincipalAuthorization(t *testing.T) {
 	const tenant = "11111111-2222-4333-8444-555555555555"
-	principal := certs.DeviceSPIFFEURI(tenant, "lite-board")
+	principal := certs.DeviceSPIFFEURI(tenant, "00000000-0000-4000-8000-0000000b0a2d")
 	store := mcusource.NewPairingStore(filepath.Join(t.TempDir(), "p.json"))
 	var started, stopped mcusource.SensorPairing
 	svc := services.NewSensorPairingService(zap.NewNop(), store, func() certs.Scope { return certs.Scope{TenantUUID: tenant} },
@@ -95,7 +95,7 @@ func TestSensorPairingPrincipalAuthorization(t *testing.T) {
 		transport string
 		code      codes.Code
 	}{
-		{certs.DeviceSPIFFEURI("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "lite-board"), 0, "wendycom", codes.PermissionDenied},
+		{certs.DeviceSPIFFEURI("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "00000000-0000-4000-8000-0000000b0a2d"), 0, "wendycom", codes.PermissionDenied},
 		{principal, 7, "wendycom", codes.InvalidArgument},
 		{principal, 0, "grpc", codes.InvalidArgument},
 		{"spiffe://wendy.sh/tenant/" + tenant + "/operator/user", 0, "wendycom", codes.InvalidArgument},

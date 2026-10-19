@@ -2213,7 +2213,7 @@ func TestExternalProviderPickerItem(t *testing.T) {
 			ProviderKey:     "wendy-lite",
 			AgentVersion:    "1.2.3",
 			CPUArchitecture: "riscv",
-			ConnectionInfo:  map[string]string{"type": "LAN", "ip": "10.0.0.9", "deviceId": "lite-board-1"},
+			ConnectionInfo:  map[string]string{"type": "LAN", "ip": "10.0.0.9", "deviceId": "0a1b2c3d4e5f"},
 		}
 		item := externalProviderPickerItem(prov, &dev)
 
@@ -2271,7 +2271,7 @@ func TestExternalProviderPickerItem(t *testing.T) {
 			DisplayName: "Lite Board",
 			ProviderKey: "wendy-lite",
 			ConnectionInfo: map[string]string{
-				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "name": "lite-board", "deviceId": "lite-board-1",
+				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "name": "lite-board", "deviceId": "0a1b2c3d4e5f",
 			},
 		}
 		item := externalProviderPickerItem(prov, &dev)
@@ -2334,19 +2334,19 @@ func TestExternalProviderPickerItem(t *testing.T) {
 		}{
 			{
 				name: "LAN board that is not enrolled",
-				info: map[string]string{"type": "LAN", "ip": "10.0.0.9", "deviceId": "lite-board-1", "mtls": "false"},
+				info: map[string]string{"type": "LAN", "ip": "10.0.0.9", "deviceId": "0a1b2c3d4e5f", "mtls": "false"},
 				want: true,
 			},
 			{
 				name: "LAN board that is enrolled",
-				info: map[string]string{"type": "LAN", "ip": "10.0.0.9", "deviceId": "lite-board-1", "mtls": "true"},
+				info: map[string]string{"type": "LAN", "ip": "10.0.0.9", "deviceId": "0a1b2c3d4e5f", "mtls": "true"},
 				want: false,
 			},
 			// Serial carries no mtls key at all, so an absent key must not be
 			// read as an unsecured connection (an `!= "true"` test would).
 			{
 				name: "USB board reports no mtls at all",
-				info: map[string]string{"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "deviceId": "lite-board-1"},
+				info: map[string]string{"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "deviceId": "0a1b2c3d4e5f"},
 				want: false,
 			},
 			{
@@ -2379,7 +2379,7 @@ func TestExternalProviderPickerItem(t *testing.T) {
 			DisplayName: "Lite Board",
 			ProviderKey: "wendy-lite",
 			ConnectionInfo: map[string]string{
-				"type": "LAN", "ip": "10.0.0.9", "deviceId": "lite-board-1", "mtls": "false",
+				"type": "LAN", "ip": "10.0.0.9", "deviceId": "0a1b2c3d4e5f", "mtls": "false",
 			},
 		}
 		usb := models.ExternalDevice{
@@ -2387,7 +2387,7 @@ func TestExternalProviderPickerItem(t *testing.T) {
 			DisplayName: "Lite Board",
 			ProviderKey: "wendy-lite",
 			ConnectionInfo: map[string]string{
-				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "deviceId": "lite-board-1",
+				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "deviceId": "0a1b2c3d4e5f",
 			},
 		}
 

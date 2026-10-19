@@ -66,12 +66,9 @@ func LANDeviceFromWendyLiteService(svc MDNSService) models.LANDevice {
 		}
 	}
 	if dev.TenantUUID != "" {
+		// An enrolled board advertises its principal; id= is its hardware id,
+		// never its device id.
 		principal := svc.TXTRecords["principal"]
-		// Older Lite firmware advertises only its hardware ID. Enrollment uses
-		// lite-<hardware ID>; this hint is still pinned against the TLS leaf.
-		if principal == "" && svc.TXTRecords["id"] != "" && svc.TXTRecords["assetid"] == "" {
-			principal = certs.DeviceSPIFFEURI(dev.TenantUUID, "lite-"+strings.TrimPrefix(svc.TXTRecords["id"], "lite-"))
-		}
 		identity, err := certs.ParseDevicePrincipal(principal)
 		if err == nil && identity.TenantUUID == dev.TenantUUID &&
 			principal == certs.DeviceSPIFFEURI(identity.TenantUUID, identity.EntityID) {

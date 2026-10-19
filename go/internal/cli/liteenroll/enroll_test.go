@@ -8,8 +8,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -19,15 +22,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudenroll"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
 const tenant = "2558fd76-afc7-466e-9613-6b715296a526"
+
+// testDeviceID is a CLI-minted device UUID: a Lite board's one id.
+const testDeviceID = "6f1c2d3e-4a5b-4c6d-8e7f-901234567890"
 
 func authFixture(t *testing.T) *config.AuthConfig {
 	t.Helper()
@@ -49,14 +58,14 @@ func authFixture(t *testing.T) *config.AuthConfig {
 }
 func TestConfigUsesSelectedPKI(t *testing.T) {
 	auth := authFixture(t)
-	cfg, err := Config(auth, "lite-test", "", "https://tsa.local/time", "broker.dev.example", 5055)
+	cfg, err := Config(auth, testDeviceID, "", "https://tsa.local/time", "broker.dev.example", 5055)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.CsrUrl != "https://csr.dev.pki.wendy.sh/v1/"+tenant || cfg.TimeUrl != "https://tsa.local/time" {
 		t.Fatalf("unexpected endpoint derivation: %v", cfg)
 	}
-	cfg, err = Config(auth, "lite-test", "https://csr.local:8443/v1/"+tenant, "https://tsa.local/time", "broker.local", 9443)
+	cfg, err = Config(auth, testDeviceID, "https://csr.local:8443/v1/"+tenant, "https://tsa.local/time", "broker.local", 9443)
 	if err != nil || cfg.BrokerPort != 9443 {
 		t.Fatalf("self-hosted config: %v %v", cfg, err)
 	}
@@ -91,7 +100,7 @@ func TestConfigDefaultsLiteBrokerForSelectedCloud(t *testing.T) {
 	} {
 		t.Run(tc.cloud+"/"+tc.override, func(t *testing.T) {
 			auth.CloudGRPC = tc.cloud
-			cfg, err := Config(auth, "lite-test", "", "https://tsa.local/time", tc.override, tc.port)
+			cfg, err := Config(auth, testDeviceID, "", "https://tsa.local/time", tc.override, tc.port)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -101,7 +110,7 @@ func TestConfigDefaultsLiteBrokerForSelectedCloud(t *testing.T) {
 		})
 	}
 	auth.CloudGRPC = ""
-	if _, err := Config(auth, "lite-test", "", "https://tsa.local/time", "", 5055); err == nil {
+	if _, err := Config(auth, testDeviceID, "", "https://tsa.local/time", "", 5055); err == nil {
 		t.Fatal("accepted missing Cloud endpoint and broker override")
 	}
 }
@@ -109,7 +118,7 @@ func TestConfigDefaultsLiteBrokerForSelectedCloud(t *testing.T) {
 func TestConfigRejectsUnsafeEndpointsAndIdentity(t *testing.T) {
 	auth := authFixture(t)
 	for _, csr := range []string{"http://csr.local/v1/" + tenant, "https://user@csr.local/v1/" + tenant, "https://csr.local/v1/other", "https://csr.local/v1/" + tenant + "?x=y"} {
-		if _, err := Config(auth, "lite-test", csr, "https://tsa.local/time", "broker", 5055); err == nil {
+		if _, err := Config(auth, testDeviceID, csr, "https://tsa.local/time", "broker", 5055); err == nil {
 			t.Errorf("accepted %q", csr)
 		}
 	}
@@ -119,7 +128,7 @@ func TestConfigRejectsUnsafeEndpointsAndIdentity(t *testing.T) {
 		}
 	}
 	auth.Certificates[0].PrincipalURI = "spiffe://wendy.sh/tenant/" + tenant + "/device/other"
-	if _, err := Config(auth, "lite-test", "", "https://tsa.local/time", "broker", 5055); err == nil {
+	if _, err := Config(auth, testDeviceID, "", "https://tsa.local/time", "broker", 5055); err == nil {
 		t.Fatal("device identity authorized enrollment")
 	}
 }
@@ -191,13 +200,18 @@ func TestSignedTimeRejectsRedirectOversizeAndBadNonce(t *testing.T) {
 	}
 }
 
+// fakeEnrollment stands in for Cloud's EnrollDevice. collide, when set,
+// answers the wendy-colliding-field Cloud would name for a device UUID
+// ("untagged" refuses with no trailer), or "" to accept it.
 type fakeEnrollment struct {
 	grpc.ClientConnInterface
 	reply   *cloudpb.EnrollDeviceResponse
 	request *cloudpb.EnrollDeviceRequest
+	collide func(deviceID string) string
+	seen    []string
 }
 
-func (f *fakeEnrollment) Invoke(_ context.Context, method string, args, reply any, _ ...grpc.CallOption) error {
+func (f *fakeEnrollment) Invoke(_ context.Context, method string, args, reply any, opts ...grpc.CallOption) error {
 	if method == cloudpb.OperatorSessionService_RegisterOperatorLeaf_FullMethodName {
 		return status.Error(codes.Unimplemented, "registration unavailable")
 	}
@@ -212,17 +226,28 @@ func (f *fakeEnrollment) Invoke(_ context.Context, method string, args, reply an
 	if err := proto.Unmarshal(signed.GetPayload(), f.request); err != nil {
 		return err
 	}
+	f.seen = append(f.seen, f.request.GetDeviceId())
+	if field := ""; f.collide != nil {
+		if field = f.collide(f.request.GetDeviceId()); field != "" {
+			for _, opt := range opts {
+				if trailer, ok := opt.(grpc.TrailerCallOption); ok && field != "untagged" {
+					*trailer.TrailerAddr = metadata.Pairs("wendy-colliding-field", field)
+				}
+			}
+			return status.Error(codes.AlreadyExists, "already in use")
+		}
+	}
 	proto.Merge(reply.(*cloudpb.EnrollDeviceResponse), f.reply)
 	return nil
 }
 func TestMintTierCCredential(t *testing.T) {
 	auth := authFixture(t)
-	cfg, err := Config(auth, "lite-test", "", "https://tsa.local/time", "broker", 5055)
+	cfg, err := Config(auth, testDeviceID, "", "https://tsa.local/time", "broker", 5055)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f := &fakeEnrollment{reply: &cloudpb.EnrollDeviceResponse{CredentialKind: "enrollment_token", TokenValue: "single-use-test", AssetId: "42", ExpiresAt: time.Now().Add(4 * time.Minute).Format(time.RFC3339)}}
-	asset, err := Mint(context.Background(), f, auth, cfg, "lite-test", nil, TrustProfile{})
+	asset, err := Mint(context.Background(), f, auth, cfg, "desk-board", nil, TrustProfile{})
 	if err != nil || asset != "42" || cfg.Token != "single-use-test" {
 		t.Fatalf("mint: %s %v", asset, err)
 	}
@@ -235,9 +260,110 @@ func TestMintTierCCredential(t *testing.T) {
 	}, func() { f.reply.ExpiresAt = time.Now().Add(time.Minute).Format(time.RFC3339); f.reply.TokenValue = "" }} {
 		mutate()
 		cfg.Token = ""
-		if asset, err := Mint(context.Background(), f, auth, cfg, "lite-test", nil, TrustProfile{}); err == nil || cfg.Token != "" || asset != "42" {
+		if asset, err := Mint(context.Background(), f, auth, cfg, "desk-board", nil, TrustProfile{}); err == nil || cfg.Token != "" || asset != "42" {
 			t.Fatal("invalid credential accepted")
 		}
+	}
+}
+
+func validTierCReply() *cloudpb.EnrollDeviceResponse {
+	return &cloudpb.EnrollDeviceResponse{CredentialKind: "enrollment_token", TokenValue: "single-use-test", AssetId: "42", ExpiresAt: time.Now().Add(4 * time.Minute).Format(time.RFC3339)}
+}
+
+// signedDeviceID reads device_id from the operator-signed enrollment JWS.
+func signedDeviceID(t *testing.T, jws []byte) string {
+	t.Helper()
+	parts := strings.Split(string(jws), ".")
+	if len(parts) != 3 {
+		t.Fatal("enrollment request is not a compact JWS")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal(err)
+	}
+	return claims.DeviceID
+}
+
+func TestMintRegeneratesTakenLiteDeviceUUID(t *testing.T) {
+	for _, field := range []string{"device_id", "mesh_suffix"} {
+		t.Run(field, func(t *testing.T) {
+			auth := authFixture(t)
+			cfg, err := Config(auth, testDeviceID, "", "https://tsa.local/time", "broker", 5055)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &fakeEnrollment{reply: validTierCReply(), collide: func(id string) string {
+				if id == testDeviceID {
+					return field
+				}
+				return ""
+			}}
+			asset, err := Mint(context.Background(), f, auth, cfg, "desk-board", nil, TrustProfile{})
+			if err != nil || asset != "42" || cfg.Token != "single-use-test" {
+				t.Fatalf("mint after collision: %s %v", asset, err)
+			}
+			if id, err := uuid.Parse(cfg.DeviceId); err != nil || id.String() != cfg.DeviceId || cfg.DeviceId == testDeviceID {
+				t.Fatalf("delivered device id %q is not a fresh canonical UUID", cfg.DeviceId)
+			}
+			if len(f.seen) != 2 || f.seen[0] != testDeviceID || f.seen[1] != cfg.DeviceId {
+				t.Fatalf("Cloud saw %v, want the original then the delivered UUID", f.seen)
+			}
+			if got := signedDeviceID(t, f.request.GetEnrollmentRequestJws()); got != cfg.DeviceId {
+				t.Fatalf("operator signed device_id %q, want the regenerated %q", got, cfg.DeviceId)
+			}
+		})
+	}
+}
+
+func TestMintLiteCollisionRetryIsBoundedAndNeverReuses(t *testing.T) {
+	auth := authFixture(t)
+	cfg, err := Config(auth, testDeviceID, "", "https://tsa.local/time", "broker", 5055)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeEnrollment{reply: validTierCReply(), collide: func(string) string { return "device_id" }}
+	if _, err := Mint(context.Background(), f, auth, cfg, "desk-board", nil, TrustProfile{}); !errors.Is(err, cloudenroll.ErrDeviceUUIDTaken) {
+		t.Fatalf("exhausted retries must surface the collision, got %v", err)
+	}
+	// The bound is the shared guard's: the first mint plus three regenerations.
+	if len(f.seen) != 4 {
+		t.Fatalf("attempts = %d, want 4", len(f.seen))
+	}
+	seen := map[string]bool{}
+	for _, id := range f.seen {
+		if seen[id] {
+			t.Fatalf("reused device id %s", id)
+		}
+		seen[id] = true
+	}
+	if cfg.Token != "" {
+		t.Fatal("a refused enrollment left a credential")
+	}
+}
+
+func TestMintLiteDoesNotRegenerateOnNameRefusal(t *testing.T) {
+	for _, field := range []string{"name", "untagged"} {
+		t.Run(field, func(t *testing.T) {
+			auth := authFixture(t)
+			cfg, err := Config(auth, testDeviceID, "", "https://tsa.local/time", "broker", 5055)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &fakeEnrollment{reply: validTierCReply(), collide: func(string) string { return field }}
+			_, err = Mint(context.Background(), f, auth, cfg, "desk-board", nil, TrustProfile{})
+			if errors.Is(err, cloudenroll.ErrDeviceUUIDTaken) || status.Code(err) != codes.AlreadyExists {
+				t.Fatalf("name refusal must surface as-is, got %v", err)
+			}
+			if len(f.seen) != 1 || cfg.DeviceId != testDeviceID {
+				t.Fatalf("name refusal regenerated the UUID: saw %v", f.seen)
+			}
+		})
 	}
 }
 
@@ -253,13 +379,13 @@ func TestMintIncludesLiteHardwareInSignedRequest(t *testing.T) {
 		{"canonical Lite type", &cloudpb.DeviceHardware{Os: proto.String("other")}, &cloudpb.DeviceHardware{Os: proto.String("wendy-lite")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, err := Config(auth, "lite-test", "", "https://tsa.local/time", "broker", 5055)
+			cfg, err := Config(auth, testDeviceID, "", "https://tsa.local/time", "broker", 5055)
 			if err != nil {
 				t.Fatal(err)
 			}
 			before := proto.Clone(tc.hardware)
 			f := &fakeEnrollment{reply: &cloudpb.EnrollDeviceResponse{CredentialKind: "enrollment_token", TokenValue: "single-use-test", AssetId: "42", ExpiresAt: time.Now().Add(4 * time.Minute).Format(time.RFC3339)}}
-			if _, err := Mint(context.Background(), f, auth, cfg, "lite-test", tc.hardware, TrustProfile{}); err != nil {
+			if _, err := Mint(context.Background(), f, auth, cfg, "desk-board", tc.hardware, TrustProfile{}); err != nil {
 				t.Fatal(err)
 			}
 			if !proto.Equal(f.request.GetHardware(), tc.want) {
@@ -274,7 +400,7 @@ func TestMintIncludesLiteHardwareInSignedRequest(t *testing.T) {
 
 func TestConfigRequiresRFC3161Time(t *testing.T) {
 	for _, endpoint := range []string{"roughtime", "http://tsa.local/time"} {
-		if _, err := Config(authFixture(t), "lite-test", "", endpoint, "broker", 5055); err == nil {
+		if _, err := Config(authFixture(t), testDeviceID, "", endpoint, "broker", 5055); err == nil {
 			t.Fatalf("accepted unsupported time endpoint %q", endpoint)
 		}
 	}
@@ -288,7 +414,7 @@ func TestConfigDefaultsSignedTimeAndPreservesOverride(t *testing.T) {
 		{"custom", "https://tsa.example:8443/time", "https://tsa.example:8443/time"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, err := Config(auth, "lite-test", "", tc.endpoint, "broker", 5055)
+			cfg, err := Config(auth, testDeviceID, "", tc.endpoint, "broker", 5055)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -296,5 +422,13 @@ func TestConfigDefaultsSignedTimeAndPreservesOverride(t *testing.T) {
 				t.Fatalf("time endpoint = %q, want %q", cfg.TimeUrl, tc.want)
 			}
 		})
+	}
+}
+
+func TestConfigRefusesNonUUIDDeviceID(t *testing.T) {
+	for _, id := range []string{"lite-441bf6804824", "441bf6804824", strings.ToUpper(testDeviceID), "{" + testDeviceID + "}"} {
+		if _, err := Config(authFixture(t), id, "", "https://tsa.local/time", "broker", 5055); err == nil {
+			t.Errorf("accepted non-canonical device id %q", id)
+		}
 	}
 }

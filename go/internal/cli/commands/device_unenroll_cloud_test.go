@@ -138,10 +138,10 @@ func TestUnenrollCommandDispatchesSelectedLite(t *testing.T) {
 		return &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824"}}, nil
 	}
 	called := false
-	unenrollLiteCloudFn = func(_ *cobra.Command, _, deviceID string, assumeYes bool, reset func() error) error {
+	unenrollLiteCloudFn = func(_ *cobra.Command, _, hardwareID string, assumeYes bool, reset func() error) error {
 		called = true
-		if deviceID != "lite-441bf6804824" || !assumeYes {
-			t.Fatalf("Lite dispatch lost identity or confirmation: %q %v", deviceID, assumeYes)
+		if hardwareID != "441bf6804824" || !assumeYes {
+			t.Fatalf("Lite dispatch lost hardware id or confirmation: %q %v", hardwareID, assumeYes)
 		}
 		return nil
 	}
@@ -192,20 +192,21 @@ func TestUnenrollCommandUsesSelectedCloudAssetWithoutProvisioning(t *testing.T) 
 	}
 }
 
-func unenrollTestCloudDevice(id, name, identity string) cloudDiscoveryDevice {
-	asset := &cloudpbv2.Asset{Id: id, Name: name, PkiDeviceName: proto.String(identity), OrganizationId: testOperatorTenant}
+// unenrollTestCloudDevice is a Lite asset: its one id is the asset UUID, and
+// the board's hardware id is kept only as its serial number.
+func unenrollTestCloudDevice(id, name, hardwareID string) cloudDiscoveryDevice {
+	asset := &cloudpbv2.Asset{Id: id, Name: name, PkiDeviceName: proto.String(id), OsType: proto.String("wendy-lite"), SerialNumber: proto.String(hardwareID), OrganizationId: testOperatorTenant}
 	return cloudDiscoveryDevice{cloudAssetMetadata: asset, v2: asset, key: id}
 }
 
 func TestUnenrollResolutionUsesExactIdentity(t *testing.T) {
-	first := unenrollTestCloudDevice(liteTestAssetID, "renamed-board", "lite-441bf6804824")
-	second := unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "lite-441bf6804824", "lite-other")
+	first := unenrollTestCloudDevice(liteTestAssetID, "renamed-board", "441bf6804824")
+	second := unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "441bf6804824", "0a0b0c0d0e0f")
 	devices := []cloudDiscoveryDevice{first, second}
 	for _, tc := range []struct{ name, selector, deviceID, want string }{
-		{name: "local hardware wins over name", selector: second.GetName(), deviceID: "lite-441bf6804824", want: first.key},
+		{name: "local hardware wins over name", selector: second.GetName(), deviceID: "441bf6804824", want: first.key},
 		{name: "exact UUID", selector: first.key, want: first.key},
 		{name: "cloud name", selector: "RENAMED-BOARD", want: first.key},
-		{name: "PKI ID fallback", selector: "lite-other", want: second.key},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := resolveUnenrollDevice(devices, tc.selector, tc.deviceID)
@@ -214,20 +215,27 @@ func TestUnenrollResolutionUsesExactIdentity(t *testing.T) {
 			}
 		})
 	}
-	if _, err := resolveUnenrollDevice(devices, second.GetName(), ""); err == nil {
-		t.Fatal("cloud name matching another device's identity was accepted")
+	// A name selector never matches a serial number: only a USB board's own
+	// hardware id does.
+	if got, err := resolveUnenrollDevice(devices, second.GetName(), ""); err != nil || got.key != second.key {
+		t.Fatalf("cloud name equal to another board's hardware id resolved %q err=%v, want %q", got.key, err, second.key)
 	}
-	if _, err := resolveUnenrollDevice(devices, first.GetName(), "lite-missing"); err == nil {
+	if _, err := resolveUnenrollDevice(devices, first.GetName(), "ffffffffffff"); err == nil {
 		t.Fatal("missing local hardware identity fell back to a cloud name")
 	}
-	if _, err := resolveUnenrollDevice(devices, "", "LITE-441BF6804824"); err == nil {
+	if _, err := resolveUnenrollDevice(devices, "", "441BF6804824"); err == nil {
 		t.Fatal("hardware identity match ignored case")
 	}
-	duplicateIdentity := unenrollTestCloudDevice("other-id", "other-name", "lite-441bf6804824")
-	if _, err := resolveUnenrollDevice(append(devices, duplicateIdentity), "", "lite-441bf6804824"); err == nil || !strings.Contains(err.Error(), "multiple cloud enrollments") {
+	duplicateIdentity := unenrollTestCloudDevice("other-id", "other-name", "441bf6804824")
+	if _, err := resolveUnenrollDevice(append(devices, duplicateIdentity), "", "441bf6804824"); err == nil || !strings.Contains(err.Error(), "multiple cloud enrollments") {
 		t.Fatalf("ambiguous identity accepted: %v", err)
 	}
-	duplicateName := unenrollTestCloudDevice("other-id", "renamed-board", "lite-third")
+	compute := unenrollTestCloudDevice("other-id", "edge", "441bf6804824")
+	compute.v2.OsType = proto.String("wendyos")
+	if got, err := resolveUnenrollDevice(append(devices, compute), "", "441bf6804824"); err != nil || got.key != first.key {
+		t.Fatalf("a non-Lite asset's serial number matched the Lite board: %q %v", got.key, err)
+	}
+	duplicateName := unenrollTestCloudDevice("other-id", "renamed-board", "0c0c0c0c0c0c")
 	if _, err := resolveUnenrollDevice(append(devices, duplicateName), "renamed-board", ""); err == nil {
 		t.Fatal("ambiguous cloud name accepted")
 	}
@@ -330,7 +338,7 @@ func TestCloudUnenrollConfirmsBeforeMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "offline-board", "lite-441bf6804824").v2}
+	server := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "offline-board", "441bf6804824").v2}
 	grpcServer := grpc.NewServer()
 	cloudpbv2.RegisterAssetServiceServer(grpcServer, server)
 	go grpcServer.Serve(listener)
@@ -405,7 +413,7 @@ func TestCloudUnenrollWithResetConfirmsBeforeMutation(t *testing.T) {
 			preserveCloudUnenrollmentHooks(t)
 			service := &unenrollConfirmationServer{}
 			if !tc.absent {
-				service.asset = unenrollTestCloudDevice(liteTestAssetID, "desk", "lite-441bf6804824").v2
+				service.asset = unenrollTestCloudDevice(liteTestAssetID, "desk", "441bf6804824").v2
 			}
 			startUnenrollResetServer(t, service)
 			isInteractiveTerminalFn = func() bool { return tc.interactive }
@@ -414,7 +422,7 @@ func TestCloudUnenrollWithResetConfirmsBeforeMutation(t *testing.T) {
 			cmd.SetContext(context.Background())
 			var output bytes.Buffer
 			cmd.SetOut(&output)
-			err := runCloudDeviceUnenrollWithReset(cmd, "", "lite-441bf6804824", false, func() error {
+			err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", false, func() error {
 				t.Fatal("board reset without confirmation")
 				return nil
 			})
@@ -453,10 +461,10 @@ func TestCloudUnenrollWithResetOrdersCleanupAndReportsRecovery(t *testing.T) {
 			// A different board with the same name must not become the target
 			// when this board's hardware identity is absent.
 			service := &unenrollConfirmationServer{pageSize: 1, extraAssets: []*cloudpbv2.Asset{
-				unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "desk", "lite-other").v2,
+				unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "desk", "0a0b0c0d0e0f").v2,
 			}}
 			if !tc.absent {
-				service.asset = unenrollTestCloudDevice(liteTestAssetID, "desk", "lite-441bf6804824").v2
+				service.asset = unenrollTestCloudDevice(liteTestAssetID, "desk", "441bf6804824").v2
 			}
 			startUnenrollResetServer(t, service)
 			jsonOutput = tc.asJSON
@@ -466,7 +474,7 @@ func TestCloudUnenrollWithResetOrdersCleanupAndReportsRecovery(t *testing.T) {
 			cmd.SetOut(&output)
 			resets := 0
 			resetErr := errors.New("USB disconnected")
-			err := runCloudDeviceUnenrollWithReset(cmd, "", "lite-441bf6804824", true, func() error {
+			err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", true, func() error {
 				resets++
 				if tc.absent {
 					if service.revokes.Load() != 0 || service.deletes.Load() != 0 {
@@ -520,7 +528,7 @@ func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
 	for _, failure := range []string{"auth", "list", "incomplete list", "later page failure", "revoke", "delete", "ambiguous", "wrong organization"} {
 		t.Run(failure, func(t *testing.T) {
 			preserveCloudUnenrollmentHooks(t)
-			service := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "desk", "lite-441bf6804824").v2}
+			service := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "desk", "441bf6804824").v2}
 			startUnenrollResetServer(t, service)
 			cloudErr := status.Error(codes.Unavailable, "injected cloud failure")
 			switch failure {
@@ -534,13 +542,13 @@ func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
 				if failure == "later page failure" {
 					service.lastPageErr = cloudErr
 				}
-				service.extraAssets = []*cloudpbv2.Asset{unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "another", "lite-other").v2}
+				service.extraAssets = []*cloudpbv2.Asset{unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "another", "0a0b0c0d0e0f").v2}
 			case "revoke":
 				service.revokeErr = cloudErr
 			case "delete":
 				service.deleteErr = cloudErr
 			case "ambiguous":
-				service.extraAssets = []*cloudpbv2.Asset{unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "another", "lite-441bf6804824").v2}
+				service.extraAssets = []*cloudpbv2.Asset{unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "another", "441bf6804824").v2}
 			case "wrong organization":
 				service.asset.OrganizationId = "another-organization"
 			}
@@ -549,7 +557,7 @@ func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
 			cmd.SetContext(context.Background())
 			var output bytes.Buffer
 			cmd.SetOut(&output)
-			err := runCloudDeviceUnenrollWithReset(cmd, "", "lite-441bf6804824", true, func() error {
+			err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", true, func() error {
 				t.Fatal("board reset after cloud failure")
 				return nil
 			})
@@ -575,7 +583,7 @@ func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
 
 func TestCloudOnlyLiteUnenrollExplainsUSBRecovery(t *testing.T) {
 	preserveCloudUnenrollmentHooks(t)
-	service := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "desk", "lite-441bf6804824").v2}
+	service := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "desk", "441bf6804824").v2}
 	startUnenrollResetServer(t, service)
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
