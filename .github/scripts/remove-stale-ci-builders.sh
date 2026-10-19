@@ -9,6 +9,9 @@
 #
 # Only run this on a runner that executes one job at a time: any per-run
 # builder present before the job creates its own then belongs to a finished job.
+# SECURITY: a GitHub Actions runner process runs one job at a time, and the Mac
+# hosts one runner (wendy-developer-macos-26-01). A second runner sharing its
+# Docker daemon would break this; remove the call from macOS jobs before adding one.
 # Best effort: never fail the job, including when there is nothing to remove.
 # DRY_RUN=true only lists what would be removed.
 set -u
