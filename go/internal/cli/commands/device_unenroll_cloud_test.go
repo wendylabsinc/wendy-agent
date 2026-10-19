@@ -138,7 +138,7 @@ func TestUnenrollCommandDispatchesSelectedLite(t *testing.T) {
 		return &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824"}}, nil
 	}
 	called := false
-	unenrollLiteCloudFn = func(_ *cobra.Command, _, hardwareID string, assumeYes bool, reset func() error) error {
+	unenrollLiteCloudFn = func(_ *cobra.Command, _, hardwareID, _ string, assumeYes bool, reset func() error) error {
 		called = true
 		if hardwareID != "441bf6804824" || !assumeYes {
 			t.Fatalf("Lite dispatch lost hardware id or confirmation: %q %v", hardwareID, assumeYes)
@@ -274,6 +274,7 @@ type unenrollConfirmationServer struct {
 	gets          atomic.Int32
 	revokes       atomic.Int32
 	deletes       atomic.Int32
+	deletedID     atomic.Value
 	online        atomic.Bool
 	computeFilter atomic.Bool
 }
@@ -314,8 +315,12 @@ func (s *unenrollConfirmationServer) ListAssets(req *cloudpbv2.ListAssetsRequest
 	return nil
 }
 
-func (s *unenrollConfirmationServer) DeleteAsset(context.Context, *cloudpbv2.SignedRequest) (*cloudpbv2.DeleteAssetResponse, error) {
+func (s *unenrollConfirmationServer) DeleteAsset(_ context.Context, req *cloudpbv2.SignedRequest) (*cloudpbv2.DeleteAssetResponse, error) {
 	s.deletes.Add(1)
+	var deleted cloudpbv2.DeleteAssetRequest
+	if err := proto.Unmarshal(req.GetPayload(), &deleted); err == nil {
+		s.deletedID.Store(deleted.GetId())
+	}
 	return &cloudpbv2.DeleteAssetResponse{Success: true}, s.deleteErr
 }
 
@@ -422,7 +427,7 @@ func TestCloudUnenrollWithResetConfirmsBeforeMutation(t *testing.T) {
 			cmd.SetContext(context.Background())
 			var output bytes.Buffer
 			cmd.SetOut(&output)
-			err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", false, func() error {
+			err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", "", false, func() error {
 				t.Fatal("board reset without confirmation")
 				return nil
 			})
@@ -474,7 +479,7 @@ func TestCloudUnenrollWithResetOrdersCleanupAndReportsRecovery(t *testing.T) {
 			cmd.SetOut(&output)
 			resets := 0
 			resetErr := errors.New("USB disconnected")
-			err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", true, func() error {
+			err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", "", true, func() error {
 				resets++
 				if tc.absent {
 					if service.revokes.Load() != 0 || service.deletes.Load() != 0 {
@@ -557,7 +562,7 @@ func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
 			cmd.SetContext(context.Background())
 			var output bytes.Buffer
 			cmd.SetOut(&output)
-			err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", true, func() error {
+			err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", "", true, func() error {
 				t.Fatal("board reset after cloud failure")
 				return nil
 			})
@@ -606,5 +611,35 @@ func TestCloudOnlyLiteUnenrollExplainsUSBRecovery(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Connect this Lite board over USB and run 'wendy device unenroll'") {
 		t.Fatalf("missing Lite recovery instructions: %q", output.String())
+	}
+}
+
+func TestCloudUnenrollWithResetUsesTheBoardsEnrolledDeviceID(t *testing.T) {
+	preserveCloudUnenrollmentHooks(t)
+	// A reserved enrollment the board never completed shares its serial. The
+	// firmware's enrolled UUID picks the real one instead of refusing.
+	const stale = "fc741e8b-4098-4830-bfa5-3f35c1aa0e60"
+	service := &unenrollConfirmationServer{
+		asset:       unenrollTestCloudDevice(liteTestAssetID, "desk", "441bf6804824").v2,
+		extraAssets: []*cloudpbv2.Asset{unenrollTestCloudDevice(stale, "desk", "441bf6804824").v2},
+	}
+	startUnenrollResetServer(t, service)
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	resets := 0
+	if err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", liteTestAssetID, true, func() error { resets++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if resets != 1 || service.deletes.Load() != 1 || service.deletedID.Load() != liteTestAssetID {
+		t.Fatalf("reset=%d deletes=%d deleted=%v, want %s", resets, service.deletes.Load(), service.deletedID.Load(), liteTestAssetID)
+	}
+	// Older firmware reports no UUID: the shared serial is still ambiguous.
+	err := runCloudDeviceUnenrollWithReset(cmd, "", "441bf6804824", "", true, func() error {
+		t.Fatal("reset an ambiguous board")
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "multiple cloud enrollments") {
+		t.Fatalf("serial fallback lost its ambiguity refusal: %v", err)
 	}
 }

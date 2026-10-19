@@ -54,10 +54,11 @@ func runLiteDeviceUnenroll(cmd *cobra.Command, target models.ExternalDevice, clo
 		return fmt.Errorf("this Wendy Lite firmware cannot clear its enrollment identity; update the firmware over USB before unenrolling, or use --cloud-only to revoke cloud access while keeping the local identity")
 	}
 
-	// Find the asset by the hardware id enrollment recorded as its serial
-	// number. Discovery names and serial paths are not cloud identifiers, and a
-	// failed enrollment may not yet have issued a certificate for this device.
-	return unenrollLiteCloudFn(cmd, cloudGRPC, identity.ID, assumeYes, func() error {
+	// Find the asset by the device UUID the board reports, or on older firmware
+	// by the hardware id enrollment recorded as its serial number. Discovery
+	// names and serial paths are not cloud identifiers, and a failed enrollment
+	// may not yet have issued a certificate for this device.
+	return unenrollLiteCloudFn(cmd, cloudGRPC, identity.ID, identity.EnrolledDeviceID, assumeYes, func() error {
 		if err := cmd.Context().Err(); err != nil {
 			return err
 		}

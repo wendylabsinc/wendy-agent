@@ -172,9 +172,10 @@ release its device ID. Add `--yes` when running non-interactively. Use
 `--cloud-grpc` to select another cloud endpoint/session.
 
 For a USB-connected board, the normal device command checks firmware reset
-support, reads its hardware ID and removes the Lite asset whose serial number
-matches it. It then
-clears the local enrollment and reboots the board:
+support and removes the Lite asset whose device UUID the board reports. Older
+firmware reports only its hardware ID, so the command removes the Lite asset
+whose serial number matches it, and refuses when several assets share that
+serial. It then clears the local enrollment and reboots the board:
 
 ```sh
 wendy device unenroll --device wendy-lite:/dev/cu.usbmodemXXXX

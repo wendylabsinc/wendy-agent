@@ -84,7 +84,7 @@ func TestLiteUnenrollResetsAfterCloudCleanup(t *testing.T) {
 	for _, mode := range []string{"success", "cancel", "cloud failure"} {
 		t.Run(mode, func(t *testing.T) {
 			target := liteUnenrollUSBTarget()
-			device := &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824", Name: "old-name"}}
+			device := &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824", Name: "old-name", EnrolledDeviceID: liteTestAssetID}}
 			connectLiteUnenrollmentFn = func(got models.ExternalDevice) (liteUnenrollmentDevice, error) {
 				if !reflect.DeepEqual(got, target) {
 					t.Fatalf("connected to %v, want %v", got, target)
@@ -95,12 +95,12 @@ func TestLiteUnenrollResetsAfterCloudCleanup(t *testing.T) {
 			cmd.SetContext(context.Background())
 			called := false
 			wantErr := errors.New("cloud unenrollment result")
-			unenrollLiteCloudFn = func(gotCmd *cobra.Command, cloudGRPC, hardwareID string, assumeYes bool, reset func() error) error {
+			unenrollLiteCloudFn = func(gotCmd *cobra.Command, cloudGRPC, hardwareID, enrolledDeviceID string, assumeYes bool, reset func() error) error {
 				called = true
 				if device.closed {
 					t.Fatal("device connection closed before reset")
 				}
-				if gotCmd != cmd || cloudGRPC != "cloud.example:443" || hardwareID != "441bf6804824" || !assumeYes {
+				if gotCmd != cmd || cloudGRPC != "cloud.example:443" || hardwareID != "441bf6804824" || enrolledDeviceID != liteTestAssetID || !assumeYes {
 					t.Fatal("wrong cloud unenrollment arguments")
 				}
 				device.calls = append(device.calls, "cloud")
@@ -154,7 +154,7 @@ func TestLiteUnenrollRequiresUsableIdentity(t *testing.T) {
 				}
 				return device, nil
 			}
-			unenrollLiteCloudFn = func(*cobra.Command, string, string, bool, func() error) error {
+			unenrollLiteCloudFn = func(*cobra.Command, string, string, string, bool, func() error) error {
 				t.Fatal("attempted cloud removal without the device identity")
 				return nil
 			}
@@ -178,7 +178,7 @@ func TestLiteUnenrollPreservesCloudConfirmation(t *testing.T) {
 		return &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824"}}, nil
 	}
 	called := false
-	unenrollLiteCloudFn = func(_ *cobra.Command, cloudGRPC, deviceID string, assumeYes bool, _ func() error) error {
+	unenrollLiteCloudFn = func(_ *cobra.Command, cloudGRPC, deviceID, _ string, assumeYes bool, _ func() error) error {
 		called = true
 		if assumeYes || cloudGRPC != "" {
 			t.Fatal("local Lite path bypassed confirmation or changed the selected cloud")
@@ -210,7 +210,7 @@ func TestLiteUnenrollPreflightPreservesCloud(t *testing.T) {
 				}
 				return device, nil
 			}
-			unenrollLiteCloudFn = func(*cobra.Command, string, string, bool, func() error) error {
+			unenrollLiteCloudFn = func(*cobra.Command, string, string, string, bool, func() error) error {
 				t.Fatal("preflight failure removed the cloud enrollment")
 				return nil
 			}
@@ -247,7 +247,7 @@ func TestLiteUnenrollChecksResetAndReboot(t *testing.T) {
 				wantCalls += ",verify,reboot"
 			}
 			connectLiteUnenrollmentFn = func(models.ExternalDevice) (liteUnenrollmentDevice, error) { return device, nil }
-			unenrollLiteCloudFn = func(_ *cobra.Command, _, _ string, _ bool, reset func() error) error { return reset() }
+			unenrollLiteCloudFn = func(_ *cobra.Command, _, _, _ string, _ bool, reset func() error) error { return reset() }
 			cmd := &cobra.Command{}
 			cmd.SetContext(context.Background())
 			if err := runLiteDeviceUnenroll(cmd, liteUnenrollUSBTarget(), "", true); err == nil {
