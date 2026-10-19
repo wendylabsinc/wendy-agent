@@ -199,17 +199,17 @@ func NewClientTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger) (*
 // the normal chain check first, then requires the peer leaf to carry a tenant
 // SPIFFE device principal equal to want.
 //
-// This device's own principal is read off certPEM rather than passed in: the
-// invariant a mesh dial enforces is "a device in the tenant I am in", so a
+// The caller's tenant is read off certPEM rather than passed in. The
+// invariant is "a device in the tenant I am in", so a
 // want naming a foreign tenant is rejected even if some CA-signed leaf
-// somewhere matches it. A device whose own leaf carries no device principal
-// cannot establish this tenant boundary and is refused.
+// somewhere matches it. A caller without a tenant identity is refused;
+// a valid operator credential can establish the same tenant boundary.
 func NewClientTLSConfigExpectingDevice(certPEM, chainPEM, keyPEM string, logger *zap.Logger, want meshid.Device) (*tls.Config, error) {
 	base, err := NewClientTLSConfig(certPEM, chainPEM, keyPEM, logger)
 	if err != nil {
 		return nil, err
 	}
-	ownDevice, haveOwnDevice := ownDeviceFromCertPEM(certPEM)
+	ownScope, haveOwnScope := certs.ScopeFromCertPEM(certPEM)
 	chainVerify := base.VerifyPeerCertificate
 	pinnedVerify := func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		if err := chainVerify(rawCerts, verifiedChains); err != nil {
@@ -222,13 +222,13 @@ func NewClientTLSConfigExpectingDevice(certPEM, chainPEM, keyPEM string, logger 
 		if err != nil {
 			return fmt.Errorf("mtls: parsing peer certificate: %w", err)
 		}
-		if !haveOwnDevice {
-			return errors.New("mtls: this device has no tenant device identity")
+		if !haveOwnScope || ownScope.TenantUUID == "" {
+			return errors.New("mtls: caller has no tenant identity")
 		}
-		if want.Tenant() != ownDevice.Tenant() {
-			return fmt.Errorf("mtls: expected peer %s outside own tenant %s", want.Principal(), ownDevice.Tenant())
+		if want.Tenant().String() != ownScope.TenantUUID {
+			return fmt.Errorf("mtls: expected peer %s outside own tenant %s", want.Principal(), ownScope.TenantUUID)
 		}
-		if err := VerifyPeerDevice(leaf, ownDevice.Tenant().String(), want.UUID().String()); err != nil {
+		if err := VerifyPeerDevice(leaf, ownScope.TenantUUID, want.UUID().String()); err != nil {
 			return err
 		}
 		return nil
@@ -315,21 +315,6 @@ func applyPeerPin(base *tls.Config, pinnedVerify func(rawCerts [][]byte, verifie
 		}
 		return pinnedVerify(rawCerts, nil)
 	}
-}
-
-// ownDeviceFromCertPEM reads this device's mesh principal off its own leaf.
-// A credential with no device principal (legacy asset/user cert) reports
-// ok=false so a device pin fails closed.
-func ownDeviceFromCertPEM(certPEM string) (meshid.Device, bool) {
-	chain, err := certs.ParseCertsFromPEM([]byte(certPEM))
-	if err != nil || len(chain) == 0 {
-		return meshid.Device{}, false
-	}
-	device, err := meshid.DeviceFromCert(chain[0])
-	if err != nil {
-		return meshid.Device{}, false
-	}
-	return device, true
 }
 
 // VerifyPeerDevice is the device-to-device rule, applied after the chain check

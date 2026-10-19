@@ -559,3 +559,22 @@ func TestNewTLSConfigServesNormalizedIssuerChain(t *testing.T) {
 		}
 	}
 }
+
+func TestDevicePinUsesCallerTenantForOperatorCredentials(t *testing.T) {
+	const tenant = "11111111-1111-4111-8111-111111111111"
+	const device = "33333333-3333-4333-8333-333333333333"
+	ca, caKey, chainPEM := testCAKeyPair(t)
+	ownCert, ownKey := testDeviceLeafPEM(t, "spiffe://wendy.sh/tenant/"+tenant+"/operator/test-operator")
+	want, err := meshid.ParseDevice(mustTenant(t, tenant), device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := NewClientTLSConfigExpectingDevice(ownCert, chainPEM, ownKey, nil, want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := testPeerLeafRaw(t, ca, caKey, "spiffe://wendy.sh/tenant/"+tenant+"/device/"+device)
+	if err := cfg.VerifyPeerCertificate([][]byte{peer}, nil); err != nil {
+		t.Fatalf("same-tenant operator could not pin a device: %v", err)
+	}
+}
