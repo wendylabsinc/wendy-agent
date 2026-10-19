@@ -26,16 +26,21 @@ def _run(argv, env, timeout):
     return done
 
 
+SHELL_TIMEOUT = 10
+SUDO_TIMEOUT = 5
+NETWORK_TIMEOUT = 10
+
+
 def login_shell_paths(env):
     names = list(SHELLS)
-    own = os.path.basename(env.get("SHELL") or "")
+    shell = env.get("SHELL") or ""
+    own = os.path.basename(shell)
     if own and own not in names:
         names.append(own)
+    own_exact = os.path.isabs(shell) and os.path.isfile(shell) and os.access(shell, os.X_OK)
     result = {}
     for name in names:
-        exe = _which(name, env)
-        if exe is None and name == own and os.access(env["SHELL"], os.X_OK):
-            exe = env["SHELL"]
+        exe = shell if own_exact and name == own else _which(name, env)
         if exe is None:
             # a standard shell that isn't installed is fine; the user's own shell must be readable
             if name == own:
@@ -45,21 +50,21 @@ def login_shell_paths(env):
             argv = [exe, "-l", "-c", "string join : $PATH"]
         else:
             argv = [exe, "-l", "-c", 'printf %s "$PATH"']
-        done = _run(argv, env, 10)
-        if done is None or done.returncode != 0:
-            result[name] = None
-        else:
-            result[name] = done.stdout.strip()
+        done = _run(argv, env, SHELL_TIMEOUT)
+        lines = [] if done is None or done.returncode != 0 else \
+            [ln for ln in done.stdout.splitlines() if ln.strip()]
+        # profiles may print banners; the PATH is the last line
+        result[name] = lines[-1].strip() if lines else None
     return result
 
 
-def stray_wendy(path_values, shim, home, known_paths):
+def stray_wendy(path_values, shim, home, known_paths, cwd=None):
     shim_real = os.path.realpath(shim)
     candidates = []
     for value in path_values:
         for directory in value.split(os.pathsep):
-            if directory:
-                candidates.append(os.path.join(directory, "wendy"))
+            # an empty PATH element means the current directory
+            candidates.append(os.path.join(directory or cwd or os.getcwd(), "wendy"))
     for known in known_paths:
         if known == "~" or known.startswith("~/"):
             known = str(Path(home) / known[2:])
@@ -77,32 +82,36 @@ def stray_wendy(path_values, shim, home, known_paths):
 def passwordless_sudo(env):
     if _which("sudo", env) is None:
         return False
-    done = _run(["sudo", "-n", "true"], env, 5)
+    done = _run(["sudo", "-n", "true"], env, SUDO_TIMEOUT)
     return done is not None and done.returncode == 0
 
 
 def network_rights(env):
     if sys.platform == "darwin":
-        done = _run(["id", "-Gn"], env, 5)
-        if done is not None and "admin" in done.stdout.split():
-            return "admin group"
-        return None
+        done = _run(["id", "-Gn"], env, SUDO_TIMEOUT)
+        if done is None or done.returncode != 0:
+            return "id -Gn failed"
+        return "admin group" if "admin" in done.stdout.split() else None
     if _which("nmcli", env) is None:
         return None
-    done = _run(["nmcli", "-t", "-f", "PERMISSION,VALUE", "general", "permissions"], env, 10)
-    if done is None:
-        return None
+    done = _run(["nmcli", "-t", "-f", "PERMISSION,VALUE", "general", "permissions"],
+                env, NETWORK_TIMEOUT)
+    if done is None or done.returncode != 0:
+        return "nmcli general permissions failed"
     values = {}
     for line in done.stdout.splitlines():
         key, _, value = line.rpartition(":")
-        values[key] = value.strip()
+        if key:
+            values[key] = value.strip()
+    if not values:
+        return "nmcli general permissions failed"
     for permission in NETWORK_PERMISSIONS:
         if values.get(permission) == "yes":
             return permission
     return None
 
 
-def check_host(shim, env, home=None, known_paths=KNOWN_INSTALL_PATHS):
+def check_host(shim, env, home=None, known_paths=KNOWN_INSTALL_PATHS, cwd=None):
     home = Path(home) if home else Path(env.get("HOME") or os.path.expanduser("~"))
     failures = []
     paths = login_shell_paths(env)
@@ -112,7 +121,7 @@ def check_host(shim, env, home=None, known_paths=KNOWN_INSTALL_PATHS):
             failures.append(f"could not read the login PATH of {name}; fix that shell or remove it")
         else:
             values.append(value)
-    for path in stray_wendy(values, shim, home, known_paths):
+    for path in stray_wendy(values, shim, home, known_paths, cwd):
         failures.append(f"another wendy is reachable at {path}; run as an account that can't see it")
     if passwordless_sudo(env):
         failures.append("sudo works without a password; use an account without passwordless sudo")
