@@ -1,0 +1,588 @@
+import contextlib
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+import benchmark as b
+import eval_wendy
+from fake_mcp_server import TOOLS
+import scenarios as sc
+
+HERE = Path(__file__).resolve().parent
+FAKE = str(HERE / "fake_mcp_server.py")
+CAPTURED = {"content": [{"type": "text", "text": "wrote it"}], "isError": False}
+AGENT = """import json, os, sys
+sys.path.insert(0, {here!r})
+from mcp_client import StdioMCP
+with StdioMCP([os.environ.get("WENDY_EVAL_SHIM", "wendy"), "mcp", "serve"], timeout=20) as mcp:
+    mcp.initialize()
+    mcp.call("write_thing", {{"path": "x"}})
+    mcp.call("read_thing", {{}})
+    if os.environ.get("FAKE_AGENT_HANG"):
+        import time; time.sleep(30)
+print(json.dumps({{"type": "usage", "usage": {{"input_tokens": 10, "output_tokens": 2, "complete": True}}}}))
+print(json.dumps({{"type": "done", "text": "done"}}))
+"""
+MINIMAL = {"id": "probe", "group": "core", "environments": ["simulator"], "prompt": "Do it on {device}.",
+           "expect": {"right": [{"tool": "write_thing"}]}}
+
+
+def write_scenarios(path, items):
+    path.write_text(json.dumps(items))
+    return sc.load_scenarios(path)
+
+
+class LoadTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def test_load_scenarios_applies_defaults_and_rejects_bad_group(self):
+        scenario = write_scenarios(self.root / "s.json", [MINIMAL])[0]
+        self.assertEqual({k: scenario[k] for k in ("timeout_seconds", "max_tool_calls", "canned", "captures",
+                                                   "allow_real", "requires", "files", "canned_set", "vm_profile")},
+                         {"timeout_seconds": 180, "max_tool_calls": 20, "canned": [], "captures": [],
+                          "allow_real": [], "requires": [], "files": {}, "canned_set": "probe",
+                          "vm_profile": "generic"})
+        self.assertEqual(scenario["group"], "core")
+        bad = [dict(MINIMAL, group="networking"),
+               dict(MINIMAL, environments=["laptop"]),
+               dict(MINIMAL, environments=[]),
+               dict(MINIMAL, expect={"right": [{"tool": "run", "bogus": 1}]}),
+               dict(MINIMAL, prompt=""),
+               dict(MINIMAL, vm_profile="go3"),
+               dict(MINIMAL, max_tool_calls=0),
+               dict(MINIMAL, timeout_seconds=-1),
+               dict(MINIMAL, files={"../escape": "x"}),
+               dict(MINIMAL, requirse=["wifi"]),
+               {k: v for k, v in MINIMAL.items() if k != "expect"}]
+        for item in bad:
+            with self.subTest(item=item), self.assertRaises(ValueError):
+                write_scenarios(self.root / "s.json", [item])
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            write_scenarios(self.root / "s.json", [MINIMAL, MINIMAL])
+        self.assertEqual(set(sc.GROUPS), {"core", "setup", "simulator", "hardware", "robotics",
+                                         "observability", "cloud"})
+
+    def test_readiness_reports_missing_captures_and_capabilities(self):
+        scenario = write_scenarios(self.root / "s.json", [dict(
+            MINIMAL, environments=["physical"], requires=["wifi"], captures=["write_thing", "wifi_connect"])])[0]
+        canned = self.root / "canned"
+        board = sc.board_target("192.0.2.10:50051")
+        self.assertEqual(sc.scenario_readiness(scenario, board, canned), "capabilities not checked (add --execute)")
+        board["capabilities"] = ["camera"]
+        self.assertEqual(sc.scenario_readiness(scenario, board, canned), "target capabilities required: wifi")
+        board["capabilities"] = ["camera", "wifi"]
+        self.assertEqual(sc.scenario_readiness(scenario, board, canned),
+                         "canned replies not captured: write_thing, wifi_connect")
+        (canned / "probe").mkdir(parents=True)
+        (canned / "probe/write_thing.json").write_text(json.dumps({"tool": "write_thing", "replies": [CAPTURED]}))
+        self.assertEqual(sc.scenario_readiness(scenario, board, canned), "canned replies not captured: wifi_connect")
+        (canned / "probe/wifi_connect.json").write_text(json.dumps({"tool": "wifi_connect", "replies": []}))
+        self.assertEqual(sc.scenario_readiness(scenario, board, canned), "canned replies not captured: wifi_connect")
+        (canned / "probe/wifi_connect.json").write_text(json.dumps({"tool": "wifi_connect", "replies": [CAPTURED]}))
+        self.assertIsNone(sc.scenario_readiness(scenario, board, canned))
+        # A capture that would fail mid-attempt fails before the run instead.
+        (canned / "probe/wifi_connect.json").write_text(json.dumps(
+            {"tool": "wifi_connect", "replies": [{"content": [{"type": "text", "text": "{{args.ssid}} {{bogus}}"}]}]}))
+        with self.assertRaisesRegex(ValueError, "wifi_connect"):
+            sc.scenario_readiness(scenario, board, canned)
+        # A configured target without a capabilities list has none.
+        self.assertEqual(sc.scenario_readiness(scenario, {"kind": "physical"}, canned),
+                         "target capabilities required: wifi")
+        # Capabilities only matter when a scenario requires some.
+        plain = write_scenarios(self.root / "s.json", [MINIMAL])[0]
+        self.assertIsNone(sc.scenario_readiness(plain, sc.board_target("192.0.2.10:50051"), canned))
+
+    def test_board_target_kind_from_selector(self):
+        self.assertEqual(sc.board_target("192.0.2.10:50051"),
+                         {"kind": "physical", "device": "192.0.2.10:50051", "capabilities": None, "fixtures": {},
+                          "cache_state": "spare board named with --device"})
+        self.assertEqual(sc.board_target("cloud://h:443/org/1/asset/2")["kind"], "cloud")
+        self.assertEqual(sc.board_target("cloud://h:443/org/1/asset/2")["device"], "cloud://h:443/org/1/asset/2")
+
+    def test_detect_capabilities_maps_sample_output(self):
+        # Shape and categories as the agent's hardware discoverer and the MCP tool emit them.
+        payload = {"capabilities": [
+            {"category": "gpu", "device_path": "/dev/dri/card0", "description": "Broadcom GPU v3d",
+             "properties": {"vendor": "Broadcom", "driver": "v3d"}},
+            {"category": "usb", "device_path": "/sys/bus/usb/devices/1-1", "description": "USB2.0 Hub (2109:3431)"},
+            {"category": "usb", "device_path": "/sys/bus/usb/devices/1-1.3",
+             "description": "Bluetooth Radio (0bda:b00c)"},
+            {"category": "i2c", "device_path": "/dev/i2c-1", "description": "I2C bus 1"},
+            {"category": "camera", "device_path": "/dev/video0", "description": "unicam (video0)",
+             "properties": {"transport": "csi"}},
+            {"category": "audio", "device_path": "alsa_output.platform-hdmi", "description": "HDMI"},
+            {"category": "network", "device_path": "/sys/class/net/eth0", "description": "eth0 (up)"},
+            {"category": "network", "device_path": "/sys/class/net/wlan0", "description": "wlan0 (up)"},
+            {"category": "storage", "device_path": "/dev/mmcblk0", "description": "mmcblk0"}]}
+        result = {"content": [{"type": "text", "text": json.dumps(payload)}], "structuredContent": payload}
+        self.assertEqual(sc.detect_capabilities(result), ["bluetooth", "camera", "wifi"])
+        self.assertEqual(sc.detect_capabilities({"content": result["content"]}), ["bluetooth", "camera", "wifi"])
+        wired = {"capabilities": [c for c in payload["capabilities"]
+                                  if "wlan" not in c["device_path"] and "Bluetooth" not in c["description"]
+                                  and c["category"] != "camera"]}
+        self.assertEqual(sc.detect_capabilities({"structuredContent": wired}), [])
+        synonyms = {"capabilities": [{"category": "WiFi"}, {"category": "wlan"}, {"category": "Bluetooth"},
+                                     {"category": "cameras"}, {"category": "audio", "device_path": "bluez_output.02_00"}]}
+        self.assertEqual(sc.detect_capabilities({"structuredContent": synonyms}), ["bluetooth", "camera", "wifi"])
+        for junk in ({}, {"isError": True, "content": [{"type": "text", "text": "not connected"}]},
+                     {"structuredContent": {"capabilities": None}}, {"structuredContent": {"capabilities": ["x"]}}):
+            self.assertEqual(sc.detect_capabilities(junk), [])
+
+
+class GuardTests(unittest.TestCase):
+    def test_tool_cap_guard_counts_both_logs_and_tolerates_partial_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proxy, cli = Path(directory, "proxy.jsonl"), Path(directory, "cli.jsonl")
+            self.assertIsNone(sc.ToolCapGuard(proxy, cli, 1)())
+            proxy.write_text('{"tool": "a"}\n{"tool": "b"}\n{"tool": "c", "argu')
+            cli.write_text('{"argv": ["device", "list"]}\n')
+            self.assertEqual(sc.ToolCapGuard(proxy, cli, 3)(), {"kind": "tool_call_cap", "calls": 3, "limit": 3})
+            self.assertIsNone(sc.ToolCapGuard(proxy, cli, 4)())
+
+    def test_first_reason_returns_the_first_guard_that_fires(self):
+        calls = []
+        def guard(value):
+            def check():
+                calls.append(value)
+                return value
+            return check
+        self.assertEqual(sc.first_reason(guard(None), guard({"kind": "a"}), guard({"kind": "b"}))(), {"kind": "a"})
+        self.assertEqual(calls, [None, {"kind": "a"}])
+        self.assertIsNone(sc.first_reason(guard(None))())
+
+
+class StateTests(unittest.TestCase):
+    def test_attempt_state_links_shared_vm_store_and_discard_keeps_it(self):
+        run_state = b.isolated_device_state({"kind": "simulator"})
+        self.addCleanup(shutil.rmtree, run_state, True)
+        (run_state / "vms/wendy-eval-run").mkdir(parents=True)
+        (run_state / "vms/wendy-eval-run/disk.img").write_text("shared disk")
+        run_vm = {"state": run_state, "name": "wendy-eval-run", "device": "vm:wendy-eval-run"}
+        for cleanup_ok in (True, False):
+            with self.subTest(cleanup_ok=cleanup_ok):
+                state = sc.attempt_state({"kind": "simulator"}, run_vm)
+                self.addCleanup(shutil.rmtree, state, True)
+                self.assertNotEqual(state, run_state)
+                self.assertTrue((state / "vms").is_symlink())
+                self.assertEqual((state / "vms").resolve(), (run_state / "vms").resolve())
+                self.assertNotIn("devicePins", json.loads((state / "config.json").read_text()))
+                b.discard_device_state(state, cleanup_ok)
+                self.assertEqual(state.exists(), not cleanup_ok)
+                if not cleanup_ok:
+                    self.assertEqual(list(state.iterdir()), [])
+                self.assertEqual((run_state / "vms/wendy-eval-run/disk.img").read_text(), "shared disk")
+        with self.assertRaises(ValueError):
+            sc.scenario_trial({"agents": {"a": {"adapter": "wendy"}}, "targets": {"sim": {"kind": "simulator"}}},
+                              "a", "sim", {}, Path("/nonexistent"), FAKE, FAKE, None, None, None)
+        board = sc.attempt_state(sc.board_target("192.0.2.10:50051"), None)
+        self.addCleanup(shutil.rmtree, board, True)
+        self.assertFalse((board / "vms").exists())
+
+    def test_vm_snapshot_is_sorted_name_version_state(self):
+        apps = [{"name": "b", "version": "2", "runningState": "STOPPED", "httpPort": 80},
+                {"name": "a", "version": "1", "runningState": "RUNNING", "failureCount": 3}]
+        done = mock.Mock(returncode=0, stdout=json.dumps(apps), stderr="")
+        with mock.patch.object(sc.subprocess, "run", return_value=done) as run:
+            snapshot = sc.vm_snapshot("/x/wendy", "vm:run", {"WENDY_CONFIG_DIR": "/tmp/s"})
+        self.assertEqual(snapshot, [{"name": "a", "version": "1", "state": "RUNNING"},
+                                    {"name": "b", "version": "2", "state": "STOPPED"}])
+        self.assertEqual(run.call_args.args[0], ["/x/wendy", "--json", "--device", "vm:run", "device", "apps", "list"])
+        self.assertEqual(run.call_args.kwargs["env"], {"WENDY_CONFIG_DIR": "/tmp/s"})
+        failed = mock.Mock(returncode=1, stdout="", stderr="unreachable")
+        with mock.patch.object(sc.subprocess, "run", return_value=failed), self.assertRaises(RuntimeError):
+            sc.vm_snapshot("/x/wendy", "vm:run", {})
+
+    def test_run_vm_lives_in_private_state_never_host_wendy(self):
+        seen = {}
+        def fixture_vm(config, variables, workspace, directory, env):
+            seen.update(variables=variables, env=env, directory=directory)
+            (Path(env["WENDY_CONFIG_DIR"]) / "vms" / variables["vm_name"]).mkdir(parents=True)
+            return {"vm-create": {"exit_code": 0}}, True
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            with mock.patch.object(b, "fixture_vm", side_effect=fixture_vm):
+                run_vm = sc.prepare_run_vm({"agent_binary": "/x/agent"}, "/x/wendy", output, "generic")
+            self.addCleanup(shutil.rmtree, run_vm["state"], True)
+            self.assertTrue(run_vm["ready"])
+            self.assertRegex(run_vm["name"], r"^wendy-eval-[0-9a-f]{12}$")
+            self.assertEqual(run_vm["device"], "vm:" + run_vm["name"])
+            self.assertEqual(seen["env"]["WENDY_CONFIG_DIR"], str(run_vm["state"]))
+            self.assertEqual(seen["env"]["WENDY_SECRET_STORE"], "file")
+            self.assertNotEqual(Path(run_vm["state"]).resolve(), (Path.home() / ".wendy").resolve())
+            self.assertEqual(seen["variables"], {"wendy": "/x/wendy", "vm_name": run_vm["name"]})
+            self.assertEqual(seen["directory"].parent, output)
+            removed = {}
+            def remove(variables, workspace, directory, env):
+                removed.update(variables=variables, env=env)
+                return {"exit_code": 0, "seconds": 0}
+            with mock.patch.object(b, "remove_fixture_vm", side_effect=remove):
+                result = sc.remove_run_vm(run_vm, "/x/wendy", output)
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(removed["env"]["WENDY_CONFIG_DIR"], str(run_vm["state"]))
+            self.assertFalse(Path(run_vm["state"]).exists())
+            with self.assertRaises(ValueError):
+                sc.prepare_run_vm({}, "/x/wendy", output, "go3")
+
+    def test_detect_board_reads_capabilities_in_a_throwaway_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log, states = Path(directory, "fake.jsonl"), []
+            real_state = b.isolated_device_state
+            def isolated(target):
+                states.append(real_state(target))
+                return states[-1]
+            with mock.patch.dict(os.environ, {"HOME": directory, "FAKE_MCP_LOG": str(log)}), \
+                    mock.patch.object(b, "isolated_device_state", side_effect=isolated):
+                capabilities, evidence = sc.detect_board(FAKE, sc.board_target("192.0.2.10:50051"), timeout=10)
+            self.assertEqual(capabilities, [])  # the fake has no hardware
+            calls = [json.loads(line)["params"] for line in log.read_text().splitlines()
+                     if json.loads(line).get("method") == "tools/call"]
+            self.assertEqual(calls, [{"name": "device_connect", "arguments": {"device": "192.0.2.10:50051"}},
+                                     {"name": "hardware_capabilities", "arguments": {}}])
+            self.assertEqual(evidence["capabilities"], [])
+            self.assertFalse(states[0].exists())
+            missing = sc.detect_board(str(Path(directory, "no-such-wendy")), sc.board_target("192.0.2.10:50051"))
+            self.assertIsNone(missing[0])
+            self.assertIn("error", missing[1])
+
+    def test_robot_run_vm_reuses_robot_diagnostics_commands(self):
+        calls = []
+        def run_process(argv, cwd, prefix, timeout, env=None, *rest):
+            calls.append((argv, timeout, env["WENDY_CONFIG_DIR"]))
+            return {"exit_code": 0, "seconds": 0}
+        verified = []
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(b, "run_process", side_effect=run_process), \
+                mock.patch.object(sc.robot_fixtures, "verify", side_effect=lambda args, cli: verified.append(args)):
+            run_vm = sc.prepare_run_vm({}, "/x/wendy", Path(directory), "go2")
+            self.addCleanup(shutil.rmtree, run_vm["state"], True)
+        self.assertTrue(run_vm["ready"])
+        import robot_diagnostics
+        expected = robot_diagnostics.robot_vm_commands("/x/wendy", run_vm["name"], "go2",
+                                                       str(b.ROOT / "go/bin/wendy-agent-linux-arm64"), 1)
+        self.assertEqual([argv[:3] for argv, _, _ in calls], [argv[:3] for _, argv, _ in expected])
+        self.assertIn("--profile", calls[0][0])
+        self.assertEqual({state for _, _, state in calls}, {str(run_vm["state"])})
+        self.assertEqual(verified[0].task, "create-go2-simulator")
+        self.assertEqual(verified[0].vm_name, run_vm["name"])
+
+
+class TrialTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        (self.root / "tools.json").write_text(json.dumps(TOOLS))
+        self.canned = self.root / "canned"
+        (self.canned / "probe").mkdir(parents=True)
+        (self.canned / "probe/write_thing.json").write_text(json.dumps(
+            {"tool": "write_thing", "captured_with": {}, "replies": [CAPTURED]}))
+        (self.root / "bin").mkdir()
+        self.shim = eval_wendy.write_shim(self.root / "bin")
+        self.agent = self.root / "agent.py"
+        self.agent.write_text(AGENT.format(here=str(HERE)))
+        self.run_state = b.isolated_device_state({"kind": "simulator"})
+        self.addCleanup(shutil.rmtree, self.run_state, True)
+        (self.run_state / "vms/wendy-eval-run").mkdir(parents=True)
+        self.run_vm = {"state": self.run_state, "name": "wendy-eval-run", "device": "vm:wendy-eval-run",
+                       "stages": {}, "ready": True}
+        self.output = self.root / "out"
+        self.output.mkdir()
+
+    def config(self, command=None, adapter="wendy"):
+        return {"agents": {"fake": {"adapter": adapter, "model": "fixture",
+                                    "command": command or [sys.executable, str(self.agent)]}},
+                "targets": {"sim": {"kind": "simulator", "device": "vm:pilot", "capabilities": []}}}
+
+    def scenario(self, **extra):
+        item = dict(MINIMAL, captures=["write_thing"], files={"notes/device.txt": "device {device}"},
+                    timeout_seconds=60, **extra)
+        item["expect"] = {"right": [{"tool": "write_thing"}],
+                          "wrong": [{"tool": "container_exec", "args_regex": "nmcli", "block": True},
+                                    {"cli": "wifi connect"}]}
+        return write_scenarios(self.root / "scenarios.json", [item])[0]
+
+    def run_trial(self, config, scenario, snapshots=([],), env=None):
+        side_effect = [list(s) for s in snapshots] if len(snapshots) > 1 else None
+        patch = mock.patch.object(sc, "vm_snapshot", side_effect=side_effect,
+                                  return_value=list(snapshots[0]) if side_effect is None else None)
+        with patch as snapshot, mock.patch.dict(os.environ, {"WENDY_EVAL_SHIM": str(self.shim), **(env or {})}):
+            row = sc.scenario_trial(config, "fake", "sim", scenario, self.output, FAKE, self.shim, self.run_vm,
+                                    self.root / "tools.json", self.canned)
+        self.forget(row)
+        return row, snapshot
+
+    def forget(self, row):
+        # Workspaces and states kept after a failed reset are evidence in a real run, litter here.
+        for key in ("workspace", "device_state_retained"):
+            if row.get(key):
+                self.addCleanup(shutil.rmtree, row[key], True)
+
+    def attempt_dir(self, row):
+        return next(self.output.glob(f"*-{row['id']}"))
+
+    def test_scenario_trial_with_fake_agent_grades_from_proxy_log(self):
+        apps = [{"name": "dev.wendy.example", "version": "1", "state": "RUNNING"}]
+        row, snapshot = self.run_trial(self.config(), self.scenario(), snapshots=(apps,))
+        self.assertEqual(row["tool_choice"]["outcome"], "right", row)
+        trace = row["metrics"]["tool_trace"]
+        write = next(e for e in trace if e["name"] == "write_thing")
+        self.assertIs(write["canned"], True)
+        self.assertIs(write["captured"], True)
+        self.assertEqual(write["source"], "proxy")
+        self.assertIs(next(e for e in trace if e["name"] == "read_thing")["canned"], False)
+        self.assertIs(row["success"], True)
+        self.assertEqual(row["status"], "passed")
+        self.assertIs(row["cleanup_ok"], True)
+        self.assertEqual((row["kind"], row["group"], row["task"]), ("scenario", "core", "probe"))
+        self.assertIs(row["metrics"]["usage_complete"], True)
+        self.assertEqual(row["device_selector"], "vm:wendy-eval-run")
+        directory = self.attempt_dir(row)
+        self.assertEqual(json.loads((directory / "result.json").read_text())["status"], "passed")
+        config = json.loads((directory / "scenario.json").read_text())
+        self.assertEqual(config["block"], [{"tool": "container_exec", "args_regex": "nmcli", "block": True}])
+        self.assertEqual(config["context"], {"device": "vm:wendy-eval-run"})
+        self.assertEqual((config["real_wendy"], config["shim"]), (FAKE, str(self.shim)))
+        self.assertEqual(config["cli_safe"], str(HERE / "cli_safe.json"))
+        self.assertEqual(config["canned_set"], "probe")
+        records = [json.loads(line) for line in (directory / "proxy.jsonl").read_text().splitlines()]
+        self.assertEqual([r["tool"] for r in records], ["write_thing", "read_thing"])
+        self.assertTrue((directory / "cli.jsonl").exists())
+        prompt = (directory / "prompt.txt").read_text()
+        self.assertIn("Do it on vm:wendy-eval-run.", prompt)
+        self.assertIn(str(self.shim), prompt)
+        self.assertEqual((Path(row["workspace"]) / "notes/device.txt").read_text(), "device vm:wendy-eval-run")
+        # The reset check reads the shared VM through the runner's own state with the real binary.
+        self.assertEqual(snapshot.call_count, 2)
+        wendy, device, env = snapshot.call_args.args
+        self.assertEqual((wendy, device, env["WENDY_CONFIG_DIR"]), (FAKE, "vm:wendy-eval-run", str(self.run_state)))
+        self.assertTrue((self.run_state / "vms/wendy-eval-run").is_dir())
+        self.assertEqual(rescored_outcome(self.output, self.config(), [self.scenario()]), "right")
+
+    def test_reset_mismatch_fails_cleanup_and_keeps_shared_vm(self):
+        command = [sys.executable, "-c", "import json; print(json.dumps({'type': 'done', 'text': 'ok'}))"]
+        row, _ = self.run_trial(self.config(command), self.scenario(),
+                                snapshots=([], [{"name": "stray", "version": "1", "state": "RUNNING"}]))
+        self.assertEqual(row["tool_choice"]["outcome"], "missed")
+        self.assertIs(row["success"], False)
+        self.assertEqual(row["status"], "failed")
+        self.assertIs(row["cleanup_ok"], False)
+        self.assertTrue((self.run_state / "vms/wendy-eval-run").is_dir())
+
+    def test_unreachable_target_before_the_attempt_is_a_setup_error(self):
+        command = [sys.executable, "-c", "raise SystemExit('agent must not run')"]
+        with mock.patch.dict(os.environ, {"WENDY_EVAL_SHIM": str(self.shim)}), \
+                mock.patch.object(sc, "vm_snapshot", side_effect=RuntimeError("unreachable")):
+            row = sc.scenario_trial(self.config(command), "fake", "sim", self.scenario(), self.output, FAKE,
+                                    self.shim, self.run_vm, self.root / "tools.json", self.canned)
+        self.forget(row)
+        self.assertEqual(row["status"], "setup_error")
+        self.assertNotIn("agent", row["stages"])
+        self.assertIs(row["cleanup_ok"], False)
+
+    def test_tool_call_cap_stops_attempt_with_unknown_usage(self):
+        row, _ = self.run_trial(self.config(), self.scenario(max_tool_calls=2), env={"FAKE_AGENT_HANG": "1"})
+        self.assertEqual(row["stages"]["agent"]["no_progress"], {"kind": "tool_call_cap", "calls": 2, "limit": 2})
+        self.assertLess(row["stages"]["agent"]["seconds"], 20)
+        self.assertIs(row["metrics"]["usage_complete"], False)
+        self.assertEqual(row["tool_choice"]["outcome"], "right")
+        self.assertIs(row["cleanup_ok"], True)
+
+    def test_claude_attempts_get_the_same_mcp_server_checks(self):
+        init = {"type": "system", "subtype": "init", "mcp_servers": [
+            {"name": "wendy"}, {"name": "plugin:wendy-agentic-coding:wendy"}]}
+        for events, status in (([{"type": "result", "result": "ok"}], "mcp_unverified"),
+                               ([init, {"type": "result", "result": "ok"}], "mcp_contaminated")):
+            with self.subTest(status=status):
+                code = "import json\n" + "".join(f"print(json.dumps({e!r}))\n" for e in events)
+                command = [sys.executable, "-c", code, "--plugin-dir", "{plugin_dir}"]
+                row, _ = self.run_trial(self.config(command, adapter="claude"), self.scenario())
+                self.assertEqual(row["status"], status)
+                self.assertIs(row["success"], False)
+                directory = self.attempt_dir(row)
+                self.assertNotIn("mcpServers", json.loads((directory / "plugin/.claude-plugin/plugin.json").read_text()))
+                server = json.loads((Path(row["workspace"]) / "mcp.json").read_text())["mcpServers"]["wendy"]
+                self.assertEqual(server["command"], str(self.shim))
+                self.assertEqual(server["env"]["WENDY_EVAL_SCENARIO"], str(directory / "scenario.json"))
+
+
+    def test_shared_command_templates_expand_in_scenarios_and_tasks(self):
+        code = "import json,sys; print(json.dumps({'type': 'done', 'text': json.dumps(sys.argv[1:])}))"
+        command = [sys.executable, "-c", code, "{wendy_vm_home}", "{scenario_config}", "{wendy_home}", "{wendy}"]
+        row, _ = self.run_trial(self.config(command), self.scenario())
+        directory = self.attempt_dir(row)
+        vm_home, scenario_config, home, wendy = json.loads(row["metrics"]["final_text"])
+        self.assertEqual((vm_home, scenario_config, wendy),
+                         (str(self.run_state), str(directory / "scenario.json"), str(self.shim)))
+        self.assertNotEqual(home, str(self.run_state))
+        task = {"id": "t", "prompt": "p", "prepare": [sys.executable, "-c", "pass"],
+                "verify": [sys.executable, "-c", "pass"], "cleanup": [sys.executable, "-c", "pass"]}
+        row = b.trial(self.config(command), "fake", "sim", task, self.output, sys.executable)
+        self.forget(row)
+        vm_home, scenario_config, home, wendy = json.loads(row["metrics"]["final_text"])
+        self.assertEqual((vm_home, scenario_config, wendy), (home, "", sys.executable))
+
+
+def rescored_outcome(output, config, scenarios):
+    b.dump(output / "manifest.json", {"config": config})
+    out = b.rescore(output, [], scenarios)
+    return json.loads((out / "results.jsonl").read_text().splitlines()[0])["tool_choice"]["outcome"]
+
+
+class MainTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        config = json.loads((HERE / "config.example.json").read_text())
+        self.config = self.root / "config.json"
+        self.config.write_text(json.dumps(config))
+        self.scenarios = self.root / "scenarios.json"
+        self.scenarios.write_text(json.dumps([
+            MINIMAL, dict(MINIMAL, id="wifi", group="setup", environments=["physical", "cloud"], requires=["wifi"])]))
+
+    def main(self, *argv):
+        out, self.err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", ["benchmark.py", "--config", str(self.config),
+                                             "--scenarios", str(self.scenarios), *argv]), \
+                mock.patch("subprocess.Popen", side_effect=AssertionError("plan-only must not run anything")), \
+                mock.patch("subprocess.run", side_effect=AssertionError("plan-only must not run anything")), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(self.err):
+            code = b.main()
+        return code, out.getvalue()
+
+    def test_plan_only_lists_scenarios_on_simulators_without_calls(self):
+        code, text = self.main("--scenario", "all", "--repetitions", "1")
+        self.assertEqual(code, 0)
+        coverage = json.loads(text[:text.index("\n}\n") + 2])["coverage"]
+        self.assertEqual({(c["task"], c["target"], c["status"]) for c in coverage},
+                         {("probe", "simulator", "ready"), ("wifi", None, "unconfigured")})
+        self.assertTrue(all(c["kind"] == "scenario" for c in coverage))
+        self.assertIn('"kind": "scenario"', text)
+        self.assertIn("Plan only: 3 trials", text)
+
+    def test_device_adds_board_target_whose_capabilities_wait_for_execute(self):
+        code, text = self.main("--scenario", "wifi", "--device", "192.0.2.10:50051", "--repetitions", "1")
+        self.assertEqual(code, 0)
+        coverage = json.loads(text[:text.index("\n}\n") + 2])["coverage"]
+        self.assertEqual(coverage, [{"task": "wifi", "kind": "scenario", "target": "board", "status": "unconfigured",
+                                     "reason": "capabilities not checked (add --execute)"}])
+        self.assertIn("Plan only: 0 trials", text)
+
+    def test_device_conflicts_with_a_configured_board(self):
+        config = json.loads(self.config.read_text())
+        config["targets"]["board"] = {"kind": "physical", "device": "192.0.2.1:50051"}
+        self.config.write_text(json.dumps(config))
+        with self.assertRaises(SystemExit):
+            self.main("--scenario", "all", "--device", "192.0.2.10:50051")
+        self.assertIn('already has a target named "board"', self.err.getvalue())
+        del config["targets"]["board"]
+        self.config.write_text(json.dumps(config))
+        with self.assertRaises(SystemExit):
+            self.main("--scenario", "all", "--device", "vm:pretend-board")
+        self.assertIn("a vm: selector is a simulator", self.err.getvalue())
+
+
+class ExecuteTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        agent = self.root / "agent.py"
+        agent.write_text(AGENT.format(here=str(HERE)))
+        self.config = {"wendy": FAKE, "budget_usd": 10, "scenario_reserve_usd": .5,
+                       "agents": {"fake": {"adapter": "wendy", "model": "fixture",
+                                           "command": [sys.executable, str(agent)]}},
+                       "targets": {"simulator": {"kind": "simulator", "device": "vm:pilot", "capabilities": []}}}
+        self.scenarios = self.root / "scenarios.json"
+        self.scenarios.write_text(json.dumps([
+            MINIMAL, dict(MINIMAL, id="wifi", group="setup", environments=["physical"], requires=["wifi"])]))
+        self.run_state = b.isolated_device_state({"kind": "simulator"})
+        self.addCleanup(shutil.rmtree, self.run_state, True)
+        (self.run_state / "vms").mkdir()
+
+    def main(self, *argv, failures=(), capabilities=("wifi",)):
+        path = self.root / "config.json"
+        path.write_text(json.dumps(self.config))
+        run_vm = {"state": self.run_state, "name": "wendy-eval-run", "device": "vm:wendy-eval-run",
+                  "profile": "generic", "stages": {}, "ready": True}
+        out, err = io.StringIO(), io.StringIO()
+        self.calls = {"prepare": [], "remove": []}
+        with mock.patch.object(sys, "argv", ["benchmark.py", "--config", str(path), "--scenarios", str(self.scenarios),
+                                             "--output", str(self.root / "results"), "--wendy", FAKE, *argv]), \
+                mock.patch.object(b, "require_state_isolation"), \
+                mock.patch("preflight.check_host", return_value=list(failures)), \
+                mock.patch.object(sc, "detect_board", return_value=(list(capabilities), {"capabilities": capabilities})), \
+                mock.patch.object(sc, "prepare_run_vm",
+                                  side_effect=lambda *a: self.calls["prepare"].append(a[3]) or run_vm), \
+                mock.patch.object(sc, "remove_run_vm",
+                                  side_effect=lambda *a: self.calls["remove"].append(a[0]["name"]) or {"exit_code": 0}), \
+                mock.patch.object(sc, "vm_snapshot", return_value=[]), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = b.main()
+            except SystemExit as exit:
+                code = ("exit", err.getvalue())
+        return code, out.getvalue()
+
+    def test_execute_runs_scenarios_on_shared_vm_and_board_then_removes_the_vm(self):
+        code, text = self.main("--scenario", "all", "--device", "192.0.2.10:50051", "--repetitions", "1", "--execute")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.calls, {"prepare": ["generic"], "remove": ["wendy-eval-run"]})
+        output = next((self.root / "results").iterdir())
+        rows = [json.loads(line) for line in (output / "results.jsonl").read_text().splitlines()]
+        for row in rows:
+            self.addCleanup(shutil.rmtree, row["workspace"], True)
+        self.assertEqual(sorted((r["task"], r["target"], r["device_selector"]) for r in rows),
+                         [("probe", "simulator", "vm:wendy-eval-run"), ("wifi", "board", "192.0.2.10:50051")])
+        self.assertTrue(all(r["kind"] == "scenario" and r["success"] for r in rows))
+        self.assertEqual(text.count("Usage unknown; charged the scenario reserve of $0.50."), 2)
+        manifest = json.loads((output / "manifest.json").read_text())
+        self.assertEqual(manifest["scenarios_sha256"], b.hashlib.sha256(self.scenarios.read_bytes()).hexdigest())
+        self.assertEqual(manifest["config"]["targets"]["board"]["capabilities"], ["wifi"])
+        self.assertEqual(manifest["run_vms"], {"generic": {"name": "wendy-eval-run", "device": "vm:wendy-eval-run"}})
+        self.assertTrue((output / "bin/wendy").exists() and (output / "tools.json").exists())
+        coverage = json.loads((output / "coverage.json").read_text())
+        self.assertEqual({(c["task"], c["status"]) for c in coverage}, {("probe", "ready"), ("wifi", "ready")})
+
+    def test_unsafe_host_refuses_before_any_vm_or_board_call(self):
+        code, text = self.main("--scenario", "all", "--device", "192.0.2.10:50051", "--execute",
+                               failures=["another wendy is reachable at /usr/bin/wendy"])
+        self.assertEqual(code, 2)
+        self.assertIn("Host check failed: another wendy is reachable at /usr/bin/wendy", text)
+        self.assertEqual(self.calls, {"prepare": [], "remove": []})
+
+    def test_budget_reserve_stops_scenarios(self):
+        self.config["budget_usd"] = .7
+        code, text = self.main("--scenario", "probe", "--repetitions", "3", "--execute")
+        output = next((self.root / "results").iterdir())
+        rows = (output / "results.jsonl").read_text().splitlines()
+        self.addCleanup(shutil.rmtree, json.loads(rows[0])["workspace"], True)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("Stopping at the configured budget reserve.", text)
+        self.assertEqual(code, 1)
+        self.assertEqual(self.calls["remove"], ["wendy-eval-run"])
+
+    def test_codex_template_must_carry_the_scenario_and_vm_store(self):
+        codex = json.loads((HERE / "config.example.json").read_text())["agents"]["codex"]
+        self.config["agents"] = {"codex": dict(codex, model="pinned")}
+        code, _ = self.main("--scenario", "probe", "--execute", "--wendy", str(self.root / "missing"))
+        self.assertIn("Wendy executable not found", code[1])
+        for dropped in ('mcp_servers.wendy.env.WENDY_EVAL_SCENARIO="{scenario_config}"', "{wendy_vm_home}"):
+            with self.subTest(dropped=dropped):
+                self.config["agents"]["codex"]["command"] = [a for a in codex["command"] if a != dropped]
+                code, _ = self.main("--scenario", "probe", "--execute")
+                self.assertEqual(code[0], "exit")
+                self.assertIn("codex must", code[1])
+
+
+if __name__ == "__main__":
+    unittest.main()

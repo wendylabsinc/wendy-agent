@@ -341,6 +341,22 @@ class MetricsTests(unittest.TestCase):
                     for l in (out / "results.jsonl").read_text().splitlines()}
             self.assertEqual(rows, {"cright", "cwrong", None})
 
+    def test_unknown_usage_charges_scenario_reserve_and_continues(self):
+        import contextlib
+        import io
+        unknown = {"estimated_cost_usd": None, "reported_cost_usd": None}
+        scenario_row_unknown = {"kind": "scenario", "metrics": dict(unknown)}
+        task_row_unknown = {"metrics": dict(unknown)}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(b.charge(1.0, scenario_row_unknown, {"scenario_reserve_usd": .5}), (1.5, True))
+            self.assertEqual(b.charge(1.0, scenario_row_unknown, {}), (1.5, True))
+            self.assertEqual(b.charge(1.0, task_row_unknown, {}), (1.0, False))
+        self.assertIn("Usage unknown; charged the scenario reserve of $0.50.", out.getvalue())
+        self.assertEqual(b.charge(1.0, {"kind": "scenario", "metrics": {"estimated_cost_usd": .25}}, {}), (1.25, True))
+        self.assertEqual(b.charge(1.0, {"metrics": {"estimated_cost_usd": None, "reported_cost_usd": .5}}, {}),
+                         (1.5, True))
+
     def test_rescore_looks_up_expect_by_kind(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)

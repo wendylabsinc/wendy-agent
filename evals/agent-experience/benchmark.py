@@ -221,9 +221,10 @@ def estimate_cost(metric, prices):
 def summary(rows):
     groups = collections.defaultdict(list)
     for row in rows:
-        groups[(row["agent"], row["target"], row["task"])].append(row)
+        # A scenario may share an id with an end-to-end task; keep them apart.
+        groups[(row["agent"], row["target"], row["task"], row.get("kind", "task"))].append(row)
     output = []
-    for (agent, target, task), trials in sorted(groups.items()):
+    for (agent, target, task, kind), trials in sorted(groups.items()):
         eligible = [r for r in trials if r["status"] != "setup_error"]
         passed = [r for r in eligible if r["success"]]
         times = sorted(r["task_seconds"] for r in passed)
@@ -236,7 +237,7 @@ def summary(rows):
         choice = {k: sum((r.get("tool_choice") or {}).get("outcome") == k for r in eligible) for k in OUTCOMES}
         choice["ungraded"] = sum(not r.get("tool_choice") for r in eligible)
         agent_seconds = [r["stages"]["agent"]["seconds"] for r in eligible if "seconds" in r.get("stages", {}).get("agent", {})]
-        output.append({"agent": agent, "target": target, "task": task,
+        output.append({"agent": agent, "target": target, "task": task, "kind": kind,
                        "attempts": len(eligible), "setup_errors": len(trials) - len(eligible),
                        "successes": len(passed), "unassisted_success_rate": len(passed) / len(eligible) if eligible else None,
                        "median_success_seconds": statistics.median(times) if times else None,
@@ -339,7 +340,7 @@ def extra_wendy_servers(metric):
     return [n for n in metric.get("mcp_servers_observed") or [] if "wendy" in n.lower() and n != "wendy"]
 
 
-def stage_context(workspace, adapter, wendy, state_dir=None, treatment_root=ROOT):
+def stage_context(workspace, adapter, wendy, state_dir=None, treatment_root=ROOT, server_env=None):
     # The supplied Wendy skills are part of the treatment. The benchmark's task
     # definitions, verifier, previous runs, and parent repository are not copied.
     skills = Path(treatment_root) / "plugins/wendy-agentic-coding/skills"
@@ -347,8 +348,10 @@ def stage_context(workspace, adapter, wendy, state_dir=None, treatment_root=ROOT
         shutil.copytree(skills, workspace / ".agents/skills")
     if adapter == "claude":
         server = {"command": wendy, "args": ["mcp", "serve"]}
-        if state_dir is not None:
-            server["env"] = {"WENDY_CONFIG_DIR": str(state_dir), "WENDY_SECRET_STORE": "file"}
+        env = {"WENDY_CONFIG_DIR": str(state_dir), "WENDY_SECRET_STORE": "file"} if state_dir is not None else {}
+        env.update(server_env or {})
+        if env:
+            server["env"] = env
         dump(workspace / "mcp.json", {"mcpServers": {"wendy": server}})
 
 
@@ -469,7 +472,8 @@ def task_for_target(task, target):
     if fixture.get("prompt_context"):
         task["prompt"] += "\n" + fixture["prompt_context"]
     required = set(task.get("requires", []))
-    missing = required - set(target.get("capabilities", []))
+    # A --device board has capabilities None until they are read during --execute.
+    missing = required - set(target.get("capabilities") or [])
     if missing:
         return task, "target capabilities required: " + ", ".join(sorted(missing))
     return task, None
@@ -497,8 +501,8 @@ def coverage_results(coverage, rows, agents, repetitions):
         entry = dict(entry)
         entry["agents"] = {}
         for agent in agents:
-            matching = [r for r in rows if (r["agent"], r["target"], r["task"]) ==
-                        (agent, entry["target"], entry["task"])]
+            matching = [r for r in rows if (r["agent"], r["target"], r["task"], r.get("kind", "task")) ==
+                        (agent, entry["target"], entry["task"], entry.get("kind", "task"))]
             attempts = [r for r in matching if r["status"] != "setup_error"]
             entry["agents"][agent] = {"attempts": len(attempts), "passed": sum(r["success"] for r in attempts),
                                       "setup_errors": len(matching) - len(attempts),
@@ -514,6 +518,49 @@ def agent_timeout(config, task):
     if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in values):
         raise ValueError("agent time limits must be finite positive numbers")
     return min(values)
+
+
+def agent_metrics(adapter, stdout, result, prices):
+    """Metrics for one agent stage; usage cut short by any stop is unknown, never partial."""
+    events, invalid = read_events(stdout)
+    metric = metrics(adapter, events)
+    metric["invalid_json_lines"] = invalid
+    metric["usage_complete"] &= (not result["timed_out"] and not result["interrupted"]
+                                 and not result.get("host_state_changed") and not result.get("no_progress")
+                                 and invalid == 0)
+    metric["estimated_cost_usd"] = estimate_cost(metric, prices)
+    return metric, events
+
+
+def attempt_status(result):
+    return ("host_state_changed" if result.get("host_state_changed") else "no_progress"
+            if result.get("no_progress") else "interrupted"
+            if result["interrupted"] else "timeout" if result["timed_out"] else "failed")
+
+
+def mcp_status(adapter, metric):
+    """Claude must show exactly one Wendy server, the one the runner configured."""
+    if adapter != "claude":
+        return None
+    if extra_wendy_servers(metric):
+        return "mcp_contaminated"
+    if metric["mcp_servers_observed"] is None:
+        return "mcp_unverified"
+    return None
+
+
+def charge(spend, row, config):
+    """Return (new spend, whether to continue). Unknown cost stops end-to-end runs; scenarios pay a reserve."""
+    cost = row["metrics"].get("estimated_cost_usd")
+    if cost is None:
+        cost = row["metrics"].get("reported_cost_usd")
+    if cost is not None:
+        return spend + cost, True
+    if row.get("kind") == "scenario":
+        reserve = config.get("scenario_reserve_usd", .5)
+        print(f"Usage unknown; charged the scenario reserve of ${reserve:.2f}.")
+        return spend + reserve, True
+    return spend, False
 
 
 def trial(config, agent_name, target_name, task, output, wendy, treatment_root=ROOT):
@@ -533,6 +580,8 @@ def trial(config, agent_name, target_name, task, output, wendy, treatment_root=R
                  "device": target["device"], "run_id": ident, "app_id": f"dev.wendy.eval.{ident}",
                  "vm_name": f"wendy-eval-{ident}", "port": config.get("port", 18765),
                  "model": agent["model"]}
+    # Command templates shared with short scenarios; there they name the shared VM store and scenario file.
+    variables.update(wendy_vm_home=variables["wendy_home"], scenario_config="")
     private_vm = needs_fixture_vm(task, target, state_dir)
     if private_vm or (target["kind"] == "simulator" and task.get("owns_vm")):
         variables["device"] = "vm:" + variables["vm_name"]
@@ -585,23 +634,13 @@ def trial(config, agent_name, target_name, task, output, wendy, treatment_root=R
             if phase == "prepare" and result["exit_code"] != 0:
                 return row
             if phase == "agent":
-                events, invalid = read_events(directory / "agent.stdout")
-                row["metrics"] = metrics(agent["adapter"], events)
-                row["metrics"]["invalid_json_lines"] = invalid
-                row["metrics"]["usage_complete"] &= not result["timed_out"] and not result["interrupted"] and not result.get("host_state_changed") and not result.get("no_progress") and invalid == 0
-                row["metrics"]["estimated_cost_usd"] = estimate_cost(row["metrics"], agent.get("prices_per_million"))
+                row["metrics"], _ = agent_metrics(agent["adapter"], directory / "agent.stdout", result,
+                                                  agent.get("prices_per_million"))
                 row["task_seconds"] = result["seconds"]
                 row["tool_choice"] = (grade(row["metrics"]["tool_trace"], task["expect"], row["metrics"]["final_text"],
                                             row["metrics"]["agent_completed"], adapter=agent["adapter"])
                                       if task.get("expect") else None)
-                row["status"] = ("host_state_changed" if result.get("host_state_changed") else "no_progress"
-                                 if result.get("no_progress") else "interrupted"
-                                 if result["interrupted"] else "timeout" if result["timed_out"] else "failed")
-                if agent["adapter"] == "claude":
-                    if extra_wendy_servers(row["metrics"]):
-                        row["status"] = "mcp_contaminated"
-                    elif row["metrics"]["mcp_servers_observed"] is None:
-                        row["status"] = "mcp_unverified"
+                row["status"] = mcp_status(agent["adapter"], row["metrics"]) or attempt_status(result)
             if phase == "verify":
                 row["task_seconds"] += result["seconds"]
                 row["outcome_verified"] = result["exit_code"] == 0
@@ -707,6 +746,11 @@ def main():
     parser.add_argument("--agent", action="append")
     parser.add_argument("--target", action="append")
     parser.add_argument("--task", action="append")
+    parser.add_argument("--scenario", action="append", metavar="ID",
+                        help="Short tool-choice scenario to run; 'all' selects every scenario. Without --task, no end-to-end tasks run.")
+    parser.add_argument("--scenarios", type=Path, help="Scenario file (default: scenarios.json next to this script).")
+    parser.add_argument("--device", metavar="SELECTOR",
+                        help="Spare board for hardware scenarios (host:port or cloud://...), added as target \"board\".")
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--limit", type=int)
@@ -717,43 +761,94 @@ def main():
     parser.add_argument("--calibrate", action="store_true", help="Check built-in fixtures with reference solutions; no model calls.")
     parser.add_argument("--rescore", type=Path, metavar="DIR", help="Regrade a saved results directory from its logs; no model or device calls.")
     args = parser.parse_args()
+    import scenarios as sc  # imported here: scenarios.py imports this module
+    scenario_file = args.scenarios or HERE / "scenarios.json"
+
+    def load_scenarios():
+        try:
+            return sc.load_scenarios(scenario_file)
+        except (OSError, ValueError) as error:
+            parser.error(f"cannot load scenarios from {scenario_file}: {error}")
+
     if args.rescore:
         if args.execute:
             parser.error("--rescore cannot be combined with --execute")
-        print(rescore(args.rescore.resolve(), json.loads(args.tasks.read_text()), []))
+        known = load_scenarios() if args.scenarios or scenario_file.exists() else []
+        print(rescore(args.rescore.resolve(), json.loads(args.tasks.read_text()), known))
         return 0
     config = json.loads(args.config.read_text())
     tasks = json.loads(args.tasks.read_text())
     if args.repetitions < 1 or (args.limit is not None and args.limit < 1):
         parser.error("repetitions and limit must be positive")
+    if args.device:
+        if "board" in config["targets"]:
+            parser.error('the config already has a target named "board"; select it with --target board instead of --device')
+        if args.device.startswith("vm:"):
+            parser.error("--device names a spare board; a vm: selector is a simulator, which is never used as a board")
+        config["targets"]["board"] = sc.board_target(args.device)
+    scenarios = []
+    if args.scenario:
+        if args.calibrate:
+            parser.error("--calibrate checks end-to-end fixtures and can't run scenarios")
+        scenarios = load_scenarios()
     agents = args.agent or list(config["agents"])
-    targets = args.target or list(config["targets"])
-    selected_tasks = args.task or [t["id"] for t in tasks]
+    if args.target:
+        targets = args.target
+    elif args.scenario:
+        targets = [name for name, t in config["targets"].items() if t.get("kind") == "simulator"]
+        targets += ["board"] if args.device else []
+    else:
+        targets = list(config["targets"])
+    selected_tasks = args.task or ([] if args.scenario else [t["id"] for t in tasks])
+    scenario_ids = [s["id"] for s in scenarios]
+    selected_scenarios = scenario_ids if "all" in (args.scenario or []) else args.scenario or []
     for selected, available in ((agents, config["agents"]), (targets, config["targets"]),
-                                (selected_tasks, [t["id"] for t in tasks])):
+                                (selected_tasks, [t["id"] for t in tasks]), (selected_scenarios, scenario_ids)):
         if any(name not in available for name in selected):
             parser.error("unknown selection: " + str(selected))
     if args.calibrate:
         return calibrate(config, [t for t in tasks if t["id"] in selected_tasks], targets, args)
     # Validate guard settings before creating workspaces or copying credentials.
     RetryGuard(args.output / "validation-only", config.get("syntax_error_limit", 3))
-    coverage = plan_coverage(tasks, config["targets"], selected_tasks, targets)
-    print(json.dumps({"coverage": coverage}, indent=2))
-    plan = [(agent, target, task_for_target(task, config["targets"][target])[0])
-            for _ in range(args.repetitions) for task in tasks
-            if task["id"] in selected_tasks for target in targets
-            if config["targets"][target]["kind"] in task["environments"]
-            if task_for_target(task, config["targets"][target])[1] is None for agent in agents]
-    random.Random(args.seed).shuffle(plan)
-    if args.limit:
-        plan = plan[:args.limit]
-    print(json.dumps([{"agent": a, "target": t, "task": s["id"],
-                       "agent_timeout_seconds": agent_timeout(config, s),
-                       "syntax_error_limit": config.get("syntax_error_limit", 3)} for a, t, s in plan], indent=2))
+
+    def plan_all():
+        try:
+            covered = sc.scenario_coverage(scenarios, config["targets"], selected_scenarios, targets, sc.CANNED)
+        except ValueError as error:  # a capture that would fail mid-attempt
+            parser.error(str(error))
+        coverage = plan_coverage(tasks, config["targets"], selected_tasks, targets) + covered
+        ready = {(c["task"], c["target"]) for c in covered if c["status"] == "ready"}
+        plan = [("task", agent, target, task_for_target(task, config["targets"][target])[0])
+                for _ in range(args.repetitions) for task in tasks
+                if task["id"] in selected_tasks for target in targets
+                if config["targets"][target]["kind"] in task["environments"]
+                if task_for_target(task, config["targets"][target])[1] is None for agent in agents]
+        plan += [("scenario", agent, target, scenario)
+                 for _ in range(args.repetitions) for scenario in scenarios
+                 if scenario["id"] in selected_scenarios for target in targets
+                 if (scenario["id"], target) in ready for agent in agents]
+        random.Random(args.seed).shuffle(plan)
+        if args.limit:
+            plan = plan[:args.limit]
+        print(json.dumps({"coverage": coverage}, indent=2))
+        print(json.dumps([{"agent": a, "target": t, "task": s["id"], **({"kind": "scenario"} if k == "scenario" else {}),
+                           "agent_timeout_seconds": agent_timeout(config, s),
+                           "syntax_error_limit": config.get("syntax_error_limit", 3),
+                           **({"max_tool_calls": s["max_tool_calls"]} if k == "scenario" else {})}
+                          for k, a, t, s in plan], indent=2))
+        return coverage, plan
+
+    coverage, plan = plan_all()
     if not args.execute:
         print(f"Plan only: {len(plan)} trials. Add --execute to run.")
         return 0
-    if not plan:
+    # A board's capabilities (null, as for --device) are read only under --execute; until then its
+    # hardware scenarios wait.
+    detect = [name for name in targets if config["targets"][name]["kind"] in ("physical", "cloud")
+              and "capabilities" in config["targets"][name] and config["targets"][name]["capabilities"] is None
+              and any(config["targets"][name]["kind"] in s["environments"]
+                      for s in scenarios if s["id"] in selected_scenarios)]
+    if not plan and not detect:
         parser.error("no runnable trials; configure the fixtures reported above")
     for name in agents:
         agent = config["agents"][name]
@@ -766,20 +861,31 @@ def main():
             at = command.index("--plugin-dir") if "--plugin-dir" in command else -1
             if at < 0 or at + 1 >= len(command) or command[at + 1] != "{plugin_dir}":
                 parser.error('Claude must load the staged plugin: use "--plugin-dir", "{plugin_dir}"')
-    for name in {target for _, target, _ in plan}:
+        if agent["adapter"] == "codex" and selected_scenarios:
+            # Codex starts MCP servers with a cleared environment and runs its shell in a sandbox.
+            if not any("WENDY_EVAL_SCENARIO" in arg for arg in agent["command"]):
+                parser.error(f'{name} must pass the scenario to its MCP server: add "-c", '
+                             '"mcp_servers.wendy.env.WENDY_EVAL_SCENARIO=\\"{scenario_config}\\"" to its command')
+            if "{wendy_vm_home}" not in agent["command"]:
+                parser.error(f'{name} must be able to use the shared VM store: add "--add-dir", "{{wendy_vm_home}}" to its command')
+    for name in {target for _, _, target, _ in plan} | set(detect):
         target = config["targets"][name]
         if target["kind"] not in ("simulator", "cloud", "physical"):
             parser.error(f"unknown environment for {name}")
         expected = {"cloud": "cloud://", "simulator": "vm:", "physical": ""}[target["kind"]]
         if not target.get("device") or not target["device"].startswith(expected) or "SET_" in target["device"]:
             parser.error(f"{name} requires an explicit {expected} selector")
+    reserve = config.get("scenario_reserve_usd", .5)
+    if isinstance(reserve, bool) or not isinstance(reserve, (int, float)) or not math.isfinite(reserve) or reserve < 0:
+        parser.error("scenario_reserve_usd must be a finite nonnegative number")
     wendy = shutil.which(args.wendy or config.get("wendy", "wendy"))
     if not wendy:
         parser.error("Wendy executable not found")
+    wendy = os.path.abspath(wendy)
     if not (args.treatment_root / "plugins/wendy-agentic-coding/skills").is_dir():
         parser.error("--treatment-root has no plugins/wendy-agentic-coding/skills directory")
-    if config.get("isolate_device_state", True):
-        require_state_isolation(wendy)
+    if config.get("isolate_device_state", True) or selected_scenarios:
+        require_state_isolation(wendy)  # scenarios always use private state
     output = args.output.resolve() / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6])
     output.mkdir(parents=True)
     dump(output / "coverage.json", coverage_results(coverage, [], agents, args.repetitions))
@@ -789,6 +895,8 @@ def main():
     snapshot["runner_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     snapshot["fixtures_sha256"] = hashlib.sha256((HERE / "fixtures.py").read_bytes()).hexdigest()
     snapshot["wendy_binary_sha256"] = hashlib.sha256(Path(wendy).read_bytes()).hexdigest()
+    snapshot["scenarios"] = scenarios
+    snapshot["scenarios_sha256"] = hashlib.sha256(scenario_file.read_bytes()).hexdigest() if args.scenario else None
     source = output / "source"
     source.mkdir()
     for file in HERE.glob("*.py"):
@@ -820,44 +928,102 @@ def main():
     snapshot["treatment"] = {"root": str(treatment_root),
                              "revision": revision, "diff_sha256": diff_sha256,
                              "skills_sha256": tree_sha256(treatment_root / "plugins/wendy-agentic-coding/skills")}
-    dump(output / "manifest.json", snapshot)
-    rows = []
     spend = config.get("prior_spend_usd", 0)
     if not isinstance(spend, (int, float)) or not math.isfinite(spend) or spend < 0:
         parser.error("prior_spend_usd must be a finite nonnegative number")
-    for i, (agent, target, task) in enumerate(plan, 1):
-        if spend + config.get("trial_reserve_usd", 15) > config.get("budget_usd", 100):
-            print("Stopping at the configured budget reserve.")
-            break
-        print(f"[{i}/{len(plan)}] {agent} / {target} / {task['id']} "
-              f"(agent limit {agent_timeout(config, task):g}s)", flush=True)
-        row = trial(config, agent, target, task, output, wendy, treatment_root)
-        rows.append(row)
-        with (output / "results.jsonl").open("a") as f:
-            f.write(json.dumps(row) + "\n")
-        report(rows, output)
-        dump(output / "coverage.json", coverage_results(coverage, rows, agents, args.repetitions))
-        if row["status"] == "mcp_contaminated":
-            print("Another Wendy MCP server was loaded into Claude; stopping.")
-            break
-        if row["status"] == "mcp_unverified":
-            print("Claude reported no MCP server list; stopping because a second Wendy server can't be ruled out.")
-            break
-        if any(stage.get("interrupted") for stage in row["stages"].values()):
-            print("Experiment interrupted; logs and cleanup result retained.")
-            break
-        if row["status"] != "setup_error":
-            cost = row["metrics"].get("estimated_cost_usd")
-            if cost is None:
-                cost = row["metrics"].get("reported_cost_usd")
-            if cost is None:
-                print("Usage cost is unknown. Stopping before spending on another trial.")
+    run_vms, shim = {}, None
+
+    def remove_run_vms():
+        removed = {profile: sc.remove_run_vm(run_vm, wendy, output) for profile, run_vm in run_vms.items()}
+        dump(output / "run_vms.json", {p: {"name": v["name"], "ready": v["ready"], "removal": removed[p]}
+                                       for p, v in run_vms.items()})
+        for profile, result in removed.items():
+            if result.get("exit_code") != 0:
+                print(f"Removing the shared {profile} VM failed; its state is kept at {result.get('device_state_retained')}.")
+        run_vms.clear()
+
+    if selected_scenarios:
+        import eval_wendy
+        import preflight
+        (output / "bin").mkdir()
+        shim = eval_wendy.write_shim(output / "bin")
+        failures = preflight.check_host(shim, dict(os.environ, PATH=str(shim.parent) + os.pathsep + os.environ.get("PATH", "")))
+        if failures:
+            for failure in failures:
+                print(f"Host check failed: {failure}")
+            print("Short scenarios run only on a host where the shim is the only reachable wendy.")
+            return 2
+        for name in detect:
+            board = config["targets"][name]
+            capabilities, evidence = sc.detect_board(wendy, board)
+            dump(output / f"capabilities-{name}.json", evidence)
+            if capabilities is None:
+                print(f"Could not read the capabilities of {name} ({board['device']}); see {output / f'capabilities-{name}.json'}.")
+                return 2
+            board["capabilities"] = capabilities
+            print(f"{name} capabilities: {', '.join(capabilities) or 'none of wifi, bluetooth, camera'}")
+        if detect:
+            coverage, plan = plan_all()
+            dump(output / "coverage.json", coverage_results(coverage, [], agents, args.repetitions))
+            if not plan:
+                print("No runnable trials; configure the fixtures reported above.")
+                return 1
+        profiles = sorted({s["vm_profile"] for kind, _, target, s in plan
+                           if kind == "scenario" and config["targets"][target]["kind"] == "simulator"})
+        try:
+            for profile in profiles:
+                print(f"Preparing the shared {profile} VM (unscored)", flush=True)
+                run_vms[profile] = sc.prepare_run_vm(config, wendy, output, profile)
+                if not run_vms[profile]["ready"]:
+                    print(f"Preparing the shared {profile} VM failed; see {output / ('run-vm-' + profile)}.")
+                    remove_run_vms()
+                    return 1
+        except BaseException:
+            remove_run_vms()
+            raise
+    snapshot["run_vms"] = {p: {"name": v["name"], "device": v["device"]} for p, v in run_vms.items()}
+    dump(output / "manifest.json", snapshot)
+    rows = []
+    try:
+        for i, (kind, agent, target, task) in enumerate(plan, 1):
+            reserve = config.get("scenario_reserve_usd", .5) if kind == "scenario" else config.get("trial_reserve_usd", 15)
+            if spend + reserve > config.get("budget_usd", 100):
+                print("Stopping at the configured budget reserve.")
                 break
-            spend += cost
-        print(f"  {row['status']} ({row['task_seconds']:.1f}s)", flush=True)
-        if not row["cleanup_ok"]:
-            print("Cleanup failed. Stopping before another trial can inherit this state.")
-            break
+            print(f"[{i}/{len(plan)}] {agent} / {target} / {task['id']} "
+                  f"({'scenario, ' if kind == 'scenario' else ''}agent limit {agent_timeout(config, task):g}s)", flush=True)
+            if kind == "scenario":
+                run_vm = run_vms.get(task["vm_profile"]) if config["targets"][target]["kind"] == "simulator" else None
+                row = sc.scenario_trial(config, agent, target, task, output, wendy, shim, run_vm,
+                                        output / "tools.json", sc.CANNED, treatment_root)
+            else:
+                row = trial(config, agent, target, task, output, wendy, treatment_root)
+            rows.append(row)
+            with (output / "results.jsonl").open("a") as f:
+                f.write(json.dumps(row) + "\n")
+            report(rows, output)
+            dump(output / "coverage.json", coverage_results(coverage, rows, agents, args.repetitions))
+            if row["status"] == "mcp_contaminated":
+                print("Another Wendy MCP server was loaded into Claude; stopping.")
+                break
+            if row["status"] == "mcp_unverified":
+                print("Claude reported no MCP server list; stopping because a second Wendy server can't be ruled out.")
+                break
+            if any(stage.get("interrupted") for stage in row["stages"].values()):
+                print("Experiment interrupted; logs and cleanup result retained.")
+                break
+            if row["status"] != "setup_error":
+                spend, keep_going = charge(spend, row, config)
+                if not keep_going:
+                    print("Usage cost is unknown. Stopping before spending on another trial.")
+                    break
+            print(f"  {row['status']} ({row['task_seconds']:.1f}s)", flush=True)
+            if not row["cleanup_ok"]:
+                print("Cleanup failed. Stopping before another trial can inherit this state.")
+                break
+    finally:
+        if run_vms:
+            remove_run_vms()
     print(f"Results: {output / 'summary.md'}")
     configured = all(entry["status"] == "ready" for entry in coverage)
     return 0 if configured and len(rows) == len(plan) and all(r["success"] and r["cleanup_ok"] for r in rows) else 1
