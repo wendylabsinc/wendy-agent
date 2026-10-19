@@ -844,3 +844,124 @@ func TestStreamIPQueueBoundsAgeForStalledCarrier(t *testing.T) {
 		t.Fatal("stalled carrier retained stale IP traffic beyond the bound")
 	}
 }
+
+// A TCP flight arrives at the router much faster than BLE can serialize it.
+// Replacing its oldest queued segment with each later segment creates a hole
+// at the receiver and turns every flight into an RTO-driven retransmission.
+func queueTestTCP(size int, source byte, sequence uint32) []byte {
+	p := queueTestIP(size, source)
+	p[6] = 6
+	binary.BigEndian.PutUint16(p[40:42], 18867)
+	binary.BigEndian.PutUint16(p[42:44], 60000)
+	binary.BigEndian.PutUint32(p[44:48], sequence)
+	p[52] = 5 << 4
+	p[53] = 0x18
+	return p
+}
+
+func TestStreamIPQueueKeepsTCPFlightPrefix(t *testing.T) {
+	q := newStreamIPSendQueue()
+	now := time.Now()
+	q.enqueue(1, queueTestTCP(1320, 1, 1000), now)
+	q.enqueue(2, queueTestIP(1320, 2), now)
+	for i := uint32(1); i < 5; i++ {
+		q.enqueue(i+2, queueTestTCP(1320, 1, 1000+i*1260), now)
+	}
+	served := 0
+	first, ok := q.pop(now, &served)
+	if !ok || first.sequence != 1 {
+		t.Fatalf("TCP flight lost its first waiting segment: id=%d ok=%v", first.sequence, ok)
+	}
+	second, ok := q.pop(now, &served)
+	if !ok || second.sequence != 2 {
+		t.Fatal("TCP flight displaced another sender")
+	}
+}
+
+func TestStreamIPQueueAllowsEarlierTCPRetransmission(t *testing.T) {
+	q := newStreamIPSendQueue()
+	now := time.Now()
+	q.enqueue(1, queueTestTCP(1320, 1, 2260), now)
+	if !q.enqueue(2, queueTestTCP(1320, 1, 1000), now) {
+		t.Fatal("lost earlier TCP retransmission")
+	}
+	served := 0
+	p, ok := q.pop(now, &served)
+	if !ok || p.sequence != 2 {
+		t.Fatal("did not preserve the earlier retransmission")
+	}
+}
+
+func TestTCPQueueOrderingIsScopedAndWrapSafe(t *testing.T) {
+	first := queueTestTCP(1320, 1, ^uint32(0)-500)
+	next := queueTestTCP(1320, 1, 759)
+	if !tcpQueuedBefore(first, next) || tcpQueuedBefore(next, first) {
+		t.Fatal("TCP sequence wrap reversed queue order")
+	}
+	different := append([]byte(nil), next...)
+	different[43]++
+	if tcpQueuedBefore(first, different) {
+		t.Fatal("different TCP port shared ordering")
+	}
+	different = append([]byte(nil), next...)
+	different[39]++
+	if tcpQueuedBefore(first, different) {
+		t.Fatal("different destination shared ordering")
+	}
+	ack := next[:60]
+	if tcpQueuedBefore(first, ack) {
+		t.Fatal("pure ACK was held behind queued data")
+	}
+	malformed := append([]byte(nil), next...)
+	malformed[52] = 0
+	if tcpQueuedBefore(first, malformed) {
+		t.Fatal("invalid TCP header was classified")
+	}
+	extension := append([]byte(nil), next...)
+	extension[6] = 44
+	if tcpQueuedBefore(first, extension) {
+		t.Fatal("fragment was classified as whole TCP")
+	}
+}
+
+func TestTCPQueueOrderingTracksInnerLeaseFlow(t *testing.T) {
+	wrap := func(sequence uint32) []byte {
+		tcp := queueTestTCP(1280, 1, sequence)
+		p := queueTestIP(1300, 1)
+		p[6], p[40], p[49] = 4, 0x45, 6
+		binary.BigEndian.PutUint16(p[42:44], 1260)
+		copy(p[52:60], []byte{10, 88, 0, 2, 8, 8, 8, 8})
+		copy(p[60:], tcp[40:])
+		return p
+	}
+	first, next := wrap(1000), wrap(2260)
+	if !tcpQueuedBefore(first, next) {
+		t.Fatal("lease TCP lost ordering")
+	}
+	next[59]++
+	if tcpQueuedBefore(first, next) {
+		t.Fatal("different Internet destination shared ordering")
+	}
+	next = wrap(2260)
+	next[46] = 0x20
+	if tcpQueuedBefore(first, next) {
+		t.Fatal("fragmented inner packet was classified")
+	}
+	next = wrap(2260)
+	next[40] = 0x46
+	if tcpQueuedBefore(first, next) {
+		t.Fatal("IPv4 options were classified as base TCP")
+	}
+}
+
+func TestStreamIPQueueBufferedACKDoesNotEraseSlowRate(t *testing.T) {
+	q := newStreamIPSendQueue()
+	q.recordWrite(1320, 700*time.Millisecond)
+	now := time.Now()
+	q.enqueue(1, queueTestTCP(1320, 1, 1000), now)
+	q.recordWrite(60, time.Microsecond)
+	served := 0
+	if p, ok := q.pop(now.Add(700*time.Millisecond), &served); !ok || p.sequence != 1 {
+		t.Fatal("instant buffered ACK expired the next slow full-size write")
+	}
+}

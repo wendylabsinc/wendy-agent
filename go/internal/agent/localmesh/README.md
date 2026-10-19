@@ -177,6 +177,10 @@ capped at five seconds; before a rate sample it allows two seconds. A faster
 socket write raises the drain estimate by at most 25% so it cannot immediately
 expire another sender's waiting packet. This prevents a queued TCP segment from
 expiring while the previous segment is still being serialized on a slow radio.
+At overflow, TCP data keeps its earliest queued segment within the same flow,
+including lease-pool IPv4-in-IPv6 traffic. Earlier retransmissions may replace
+later data; other flows and senders retain the existing queue limits and
+scheduling policy.
 
 The leaf protocol exchanges complete currently verified certificate bundles,
 including replies to identity lookups. Certificate descriptors and chunk requests

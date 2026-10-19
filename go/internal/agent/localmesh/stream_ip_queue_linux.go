@@ -72,6 +72,14 @@ func (q *streamIPSendQueue) enqueue(sequence uint32, data []byte, now time.Time)
 			q.mu.Unlock()
 			return false
 		}
+		// Preserve the earliest waiting data in a TCP flow. Replacing it
+		// with a later segment creates a receive hole on every burst. An
+		// earlier retransmission may still replace later queued data.
+		if tcpQueuedBefore(q.pending[victim].data, p.data) {
+			q.stats.DroppedCapacity++
+			q.mu.Unlock()
+			return false
+		}
 		q.remove(victim)
 		q.stats.DroppedCapacity++
 	}
@@ -85,6 +93,44 @@ func (q *streamIPSendQueue) enqueue(sequence uint32, data []byte, now time.Time)
 	default:
 	}
 	return true
+}
+
+// tcpQueueSegment classifies only complete TCP data segments with base IP
+// headers. This is a queue hint, never an admission or authorization check.
+// IPv4-in-IPv6 is used by authenticated Internet leases; keep its inner flow
+// tuple so unrelated Cloud connections do not share sequence ordering.
+func tcpQueueSegment(packet []byte) (key [45]byte, sequence uint32, ok bool) {
+	if len(packet) < 60 || packet[0]>>4 != 6 {
+		return
+	}
+	copy(key[:32], packet[8:40])
+	key[32] = packet[6]
+	offset := 40
+	switch packet[6] {
+	case 6:
+	case 4:
+		if len(packet) < 80 || packet[40] != 0x45 || packet[49] != 6 ||
+			int(binary.BigEndian.Uint16(packet[42:44])) != len(packet)-40 ||
+			binary.BigEndian.Uint16(packet[46:48])&0xbfff != 0 {
+			return
+		}
+		copy(key[33:41], packet[52:60])
+		offset = 60
+	default:
+		return
+	}
+	header := int(packet[offset+12]>>4) * 4
+	if header < 20 || offset+header >= len(packet) {
+		return
+	}
+	copy(key[41:], packet[offset:offset+4])
+	return key, binary.BigEndian.Uint32(packet[offset+4 : offset+8]), true
+}
+
+func tcpQueuedBefore(queued, incoming []byte) bool {
+	oldKey, oldSeq, oldOK := tcpQueueSegment(queued)
+	newKey, newSeq, newOK := tcpQueueSegment(incoming)
+	return oldOK && newOK && oldKey == newKey && int32(newSeq-oldSeq) > 0
 }
 
 func (q *streamIPSendQueue) byteBudget() int {
