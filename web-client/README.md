@@ -239,6 +239,29 @@ Hosted Cloud discovery additionally needs a trusted WSS Cloud relay and its
 configuration in the worker. Until these exist, the hosted UI explains the local
 sign-in requirement. It does not pretend to be signed in or substitute fake data.
 
+## Embedding the signer
+
+Other Wendy pages (the Cloud console) run this worker to sign in and sign
+with the operator key. Each release publishes `wendy-web-<version>.tar.gz`:
+the worker, `wendy-credentials.js`, `wasm_exec.js`, `wendy.wasm.gz` and a
+`MANIFEST` of sha256 sums. Serve the files from one directory on the page's own
+origin and start `new Worker("<dir>/wendy-worker.js?sha256=<hex>")`, with the
+MANIFEST's `wendy.wasm` line (the decompressed module) as the pin. A mismatch
+posts `{fatal: "sha256 mismatch"}` and nothing runs.
+
+| Call | Params | Result |
+|---|---|---|
+| `init` | `browserauth.Settings` JSON | `true`; once, before sign-in. Services are then called directly, not through `/api/wendy-auth` |
+| `auth-begin` / `auth-complete` | as the login component | authorize URL / profile |
+| `auth-restore` | `{tenant?, subject?}` | that organization's profile, or `null` |
+| `credential` | `{tenant?}` | `{profile, algorithm, chainDER, accessToken, publicJWK}`; refreshes a token with under a minute left |
+| `sign` | `{tenant?, bytes: Uint8Array}` | `{signature: Uint8Array}` with the operator key |
+| `auth-signout` | `{tenant?}` | `true`; no tenant signs out of every organization |
+
+Each organization keeps its own saved sign-in, keyed by tenant and operator.
+The operator key never leaves the worker. Cloud device sessions still require
+the local browser relay.
+
 ## Validation
 
 ```sh
@@ -246,6 +269,7 @@ sign-in requirement. It does not pretend to be signed in or substitute fake data
 go test -race ./go/internal/cli/browserauth
 node go/experiments/wasmgrpc/auth-worker.mjs
 node web-client/tests/credential-store.test.mjs
+node web-client/tests/wendy-web-bridge.test.mjs   # after npm run build:wasm
 GOOS=js GOARCH=wasm go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./go/cmd/wendy-web ./go/internal/cli/browserauth
 node --experimental-strip-types web-client/tests/telemetry.test.mjs
 node --experimental-strip-types --test web-client/tests/auth-proxy.test.mjs

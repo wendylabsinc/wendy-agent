@@ -6,10 +6,13 @@ package main
 
 import (
 	"context"
+	"crypto/mldsa"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
-	"github.com/wendylabsinc/wendy/go/internal/cli/browserauth"
 	"io"
 	"net"
 	"net/http"
@@ -21,8 +24,11 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/wendylabsinc/wendy/go/internal/cli/browserauth"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -31,10 +37,16 @@ type request struct {
 	ID     int             `json:"id"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
+	// bytes is the request's second argument: data to sign, as a Uint8Array.
+	bytes []byte
 }
+
+// signature is returned to the page as a Uint8Array, never as a string.
+type signature []byte
 
 type bridge struct {
 	auth            *browserauth.Session
+	initialized     bool
 	mu              sync.Mutex
 	conn            *grpcclient.AgentConnection
 	life            context.Context
@@ -55,16 +67,24 @@ func main() {
 	_ = os.Setenv("WENDY_TLS_SESSION_STORE", "off")
 	b := &bridge{auth: &browserauth.Session{Client: &http.Client{Transport: authProxyTransport{}}, Store: browserCredentialStore{}}}
 	callback := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		if len(args) != 1 {
+		if len(args) < 1 || len(args) > 2 {
 			return nil
 		}
 		var r request
 		if json.Unmarshal([]byte(args[0].String()), &r) != nil {
 			return nil
 		}
+		if len(args) == 2 && args[1].InstanceOf(js.Global().Get("Uint8Array")) {
+			r.bytes = make([]byte, args[1].Length())
+			js.CopyBytesToGo(r.bytes, args[1])
+		}
 		go func() {
 			value, err := b.handle(r)
-			if err != nil {
+			if sig, ok := value.(signature); ok && err == nil {
+				buf := js.Global().Get("Uint8Array").New(len(sig))
+				js.CopyBytesToJS(buf, sig)
+				js.Global().Call("postMessage", js.ValueOf(map[string]any{"id": r.ID, "result": map[string]any{"signature": buf}}))
+			} else if err != nil {
 				send(map[string]any{"id": r.ID, "error": err.Error()})
 			} else {
 				send(map[string]any{"id": r.ID, "result": value})
@@ -78,6 +98,65 @@ func main() {
 }
 
 func (b *bridge) handle(r request) (any, error) {
+	if r.Method == "init" {
+		// A deployment's page pins its services. They are called directly, so
+		// the dev dashboard's same-origin auth proxy is not involved.
+		var settings browserauth.Settings
+		if err := json.Unmarshal(r.Params, &settings); err != nil {
+			return nil, err
+		}
+		if err := settings.Validate(); err != nil {
+			return nil, err
+		}
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.initialized {
+			return nil, errors.New("The Wendy client is already initialized")
+		}
+		b.initialized = true
+		b.auth = &browserauth.Session{Settings: &settings, Client: &http.Client{}, Store: browserCredentialStore{}}
+		return true, nil
+	}
+	if r.Method == "credential" || r.Method == "sign" {
+		var p org
+		if len(r.Params) > 0 {
+			if err := json.Unmarshal(r.Params, &p); err != nil {
+				return nil, err
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
+		if r.Method == "sign" {
+			if len(r.bytes) == 0 {
+				return nil, errors.New("Nothing to sign")
+			}
+			_, key, err := b.operator(ctx, p, false)
+			if err != nil {
+				return nil, err
+			}
+			sig, err := key.Sign(rand.Reader, r.bytes, &mldsa.Options{})
+			return signature(sig), err
+		}
+		saved, key, err := b.operator(ctx, p, true)
+		if err != nil {
+			return nil, err
+		}
+		jwk, alg, err := cloudrequest.OperatorPublicJWK(key)
+		if err != nil {
+			return nil, err
+		}
+		chain := [][]byte{}
+		for _, raw := range []string{saved.Certificate.PemCertificate, saved.Certificate.PemCertificateChain} {
+			for rest := []byte(raw); ; {
+				var block *pem.Block
+				if block, rest = pem.Decode(rest); block == nil {
+					break
+				}
+				chain = append(chain, block.Bytes)
+			}
+		}
+		return map[string]any{"profile": saved.Profile, "algorithm": alg, "chainDER": chain, "accessToken": saved.Tokens.Access, "publicJWK": jwk}, nil
+	}
 	if strings.HasPrefix(r.Method, "shell-") {
 		return nil, errors.New("Shell access is disabled in the browser client")
 	}
@@ -152,6 +231,7 @@ func (b *bridge) handle(r request) (any, error) {
 			Code     string `json:"code"`
 			State    string `json:"state"`
 			Issuer   string `json:"issuer"`
+			org
 		}
 		if err := json.Unmarshal(r.Params, &p); err != nil {
 			return nil, err
@@ -160,9 +240,23 @@ func (b *bridge) handle(r request) (any, error) {
 		defer cancel()
 		switch r.Method {
 		case "auth-restore":
+			if p.Tenant != "" {
+				if err := selectOrg(p.org); err != nil {
+					return nil, err
+				}
+			}
 			return b.auth.Restore(ctx)
 		case "auth-signout":
-			return true, b.auth.SignOut()
+			// With no tenant, every organization signs out.
+			if p.Tenant == "" || p.Tenant == b.auth.Profile().Tenant {
+				if err := b.auth.SignOut(); err != nil {
+					return nil, err
+				}
+			}
+			if _, err := storageCall("forget", p.Tenant); err != nil {
+				return nil, fmt.Errorf("Could not remove saved sign-in: %w", err)
+			}
+			return true, nil
 		case "auth-begin":
 			return b.auth.Begin(ctx, p.Email, p.Redirect)
 		case "auth-complete":
@@ -533,6 +627,97 @@ func (browserCredentialStore) LoadKey(aad string) ([]byte, error) {
 	return seed, nil
 }
 func (browserCredentialStore) Clear() error { _, err := storageCall("clear"); return err }
+
+// org names one organization's saved sign-in. Tenant alone selects the most
+// recent operator signed in to it.
+type org struct {
+	Tenant  string `json:"tenant"`
+	Subject string `json:"subject"`
+}
+
+func selectOrg(o org) error {
+	if o.Tenant == "" || strings.Contains(o.Tenant, ":") || strings.Contains(o.Subject, ":") {
+		return errors.New("Invalid organization")
+	}
+	_, err := storageCall("select", o.Tenant, o.Subject)
+	return err
+}
+
+// savedRecord reads the fields of browserauth's saved session that the page's
+// own signer needs. browserauth writes it; the shell only reads it.
+type savedRecord struct {
+	Certificate config.CertificateInfo `json:"certificate"`
+	Tokens      struct {
+		Access string `json:"access_token"`
+	} `json:"tokens"`
+	Profile browserauth.Profile `json:"profile"`
+}
+
+// operator returns the selected organization's saved sign-in and its operator
+// key. The first use in this worker, a change of organization, and (when fresh
+// is set) a cloud token with under a minute left all go through Restore, which
+// validates the record and refreshes the token. The seed is never returned.
+func (b *bridge) operator(ctx context.Context, o org, fresh bool) (savedRecord, *mldsa.PrivateKey, error) {
+	current := b.auth.Profile()
+	if o.Tenant != "" && (o.Tenant != current.Tenant || o.Subject != "" && o.Subject != current.Subject) {
+		if err := selectOrg(o); err != nil {
+			return savedRecord{}, nil, err
+		}
+	}
+	load := func() (savedRecord, error) {
+		var saved savedRecord
+		raw, err := browserCredentialStore{}.Load()
+		if err == nil {
+			err = json.Unmarshal(raw, &saved)
+		}
+		return saved, err
+	}
+	saved, err := load()
+	expires, _ := time.Parse(time.RFC3339, saved.Profile.Expires)
+	if err != nil || current.Subject == "" || saved.Profile.Tenant != current.Tenant || saved.Profile.Subject != current.Subject || fresh && time.Until(expires) < time.Minute {
+		profile, err := b.auth.Restore(ctx)
+		if err != nil {
+			return savedRecord{}, nil, err
+		}
+		if profile == nil {
+			return savedRecord{}, nil, errors.New("Sign in with Wendy first")
+		}
+		if saved, err = load(); err != nil {
+			return savedRecord{}, nil, err
+		}
+	}
+	// Another tab may have rotated the token since, so only the identity must match.
+	signedIn := b.auth.Profile()
+	if saved.Profile.Tenant != signedIn.Tenant || saved.Profile.Subject != signedIn.Subject || o.Tenant != "" && saved.Profile.Tenant != o.Tenant {
+		return savedRecord{}, nil, errors.New("Sign in with Wendy first")
+	}
+	seed, err := browserCredentialStore{}.LoadKey("operator-key:" + saved.Profile.Tenant + ":" + saved.Profile.Subject)
+	if err != nil {
+		return savedRecord{}, nil, errors.New("Saved operator key is invalid. Sign in again")
+	}
+	defer clear(seed)
+	key, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), seed)
+	if err != nil {
+		return savedRecord{}, nil, errors.New("Saved operator key is invalid. Sign in again")
+	}
+	block, _ := pem.Decode([]byte(saved.Certificate.PemCertificate))
+	if block == nil {
+		return savedRecord{}, nil, errors.New("Saved certificate is invalid. Sign in again")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return savedRecord{}, nil, errors.New("Saved certificate is invalid. Sign in again")
+	}
+	want, _ := x509.MarshalPKIXPublicKey(key.Public())
+	got, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
+	if err != nil || string(want) != string(got) {
+		return savedRecord{}, nil, errors.New("Saved certificate does not match the operator. Sign in again")
+	}
+	if now := time.Now(); now.After(leaf.NotAfter) || now.Before(leaf.NotBefore) {
+		return savedRecord{}, nil, errors.New("Saved certificate has expired or is not yet valid. Sign in again")
+	}
+	return saved, key, nil
+}
 
 // Only Wendy public HTTPS endpoints are eligible for the broker relay.
 func browserCloudDial(ctx context.Context, endpoint string) (net.Conn, error) {
