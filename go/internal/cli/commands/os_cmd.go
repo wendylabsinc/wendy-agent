@@ -497,7 +497,7 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 		for {
 			resp, err := stream.Recv()
 			if err == io.EOF {
-				p.Send(tui.SpinnerDoneMsg{})
+				p.Send(tui.SpinnerDoneMsg{Err: fmt.Errorf("OS update stream ended without completion: %w", io.ErrUnexpectedEOF)})
 				return
 			}
 			if err != nil {
@@ -742,7 +742,9 @@ func applyOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artifa
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	_, probeErr := conn.AgentService.GetOSUpdateStatus(probeCtx, &agentpb.GetOSUpdateStatusRequest{})
 	cancel()
-	recordCleared = status.Code(probeErr) != codes.Unimplemented
+	// A transport failure cannot establish support for clearing old receipts.
+	// Without a successful probe, require independent freshness/slot evidence.
+	recordCleared = probeErr == nil
 	return recordCleared, streamOSUpdate(ctx, conn, artifactURL, "")
 }
 
@@ -1483,7 +1485,7 @@ func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error 
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
-			return nil
+			return fmt.Errorf("OS update stream ended without completion: %w", io.ErrUnexpectedEOF)
 		}
 		if err != nil {
 			return err

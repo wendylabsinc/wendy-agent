@@ -1126,13 +1126,15 @@ func (s *fakeOSUpdateAgent) GetOSUpdateStatus(context.Context, *agentpb.GetOSUpd
 	return &agentpb.GetOSUpdateStatusResponse{}, s.statusErr
 }
 
-func (s *fakeOSUpdateAgent) UpdateOS(*agentpb.UpdateOSRequest, grpc.ServerStreamingServer[agentpb.UpdateOSResponse]) error {
+func (s *fakeOSUpdateAgent) UpdateOS(_ *agentpb.UpdateOSRequest, stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse]) error {
 	s.record("update")
-	return nil
+	return stream.Send(&agentpb.UpdateOSResponse{ResponseType: &agentpb.UpdateOSResponse_Completed_{
+		Completed: &agentpb.UpdateOSResponse_Completed{RebootRequired: true},
+	}})
 }
 
 // The probe must run before the update starts: afterwards the device is
-// rebooting. Only an agent without the status RPC keeps stale records.
+// rebooting. A failed probe cannot establish that the agent clears old records.
 func TestApplyOSUpdateAsksAboutRecordsBeforeStreaming(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -1140,7 +1142,7 @@ func TestApplyOSUpdateAsksAboutRecordsBeforeStreaming(t *testing.T) {
 		want      bool
 	}{
 		{"current agent", nil, true},
-		{"transient probe failure", status.Error(codes.Unavailable, "reset"), true},
+		{"transient probe failure", status.Error(codes.Unavailable, "reset"), false},
 		{"agent without the status RPC", status.Error(codes.Unimplemented, "unknown method"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
