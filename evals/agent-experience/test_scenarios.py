@@ -71,6 +71,16 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(set(sc.GROUPS), {"core", "setup", "simulator", "hardware", "robotics",
                                          "observability", "cloud"})
 
+    def test_cloud_group_scenarios_must_require_cloud(self):
+        with self.assertRaisesRegex(ValueError, "cloud-status"):
+            write_scenarios(self.root / "s.json", [dict(MINIMAL, id="cloud-status", group="cloud",
+                                                        environments=["cloud"], requires=["wifi"])])
+        with self.assertRaisesRegex(ValueError, "cloud-ping"):
+            write_scenarios(self.root / "s.json", [dict(MINIMAL, id="cloud-ping", group="cloud", environments=["cloud"])])
+        loaded = write_scenarios(self.root / "s.json", [dict(MINIMAL, id="cloud-ok", group="cloud",
+                                                             environments=["cloud"], requires=["cloud", "wifi"])])
+        self.assertEqual(loaded[0]["requires"], ["cloud", "wifi"])
+
     def test_readiness_reports_missing_captures_and_capabilities(self):
         scenario = write_scenarios(self.root / "s.json", [dict(
             MINIMAL, environments=["physical"], requires=["wifi"], captures=["write_thing", "wifi_connect"])])[0]

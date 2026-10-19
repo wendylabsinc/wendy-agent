@@ -278,7 +278,8 @@ def report(rows, output):
 
 def rescore(results_dir, tasks, scenarios):
     # Regrade saved attempts from their logs; originals are never modified and nothing is executed.
-    # Only metrics.tool_trace and tool_choice change: saved accounting (tokens, usage_complete, cost) is kept.
+    # metrics.tool_trace and tool_choice change; a scenario row also gets its status and success again,
+    # by the live run's rule. Saved accounting (tokens, usage_complete, cost) is kept.
     agents = json.loads((results_dir / "manifest.json").read_text())["config"]["agents"]
     expects = {False: {t["id"]: t for t in tasks}, True: {s["id"]: s for s in scenarios}}
     out = results_dir / ("rescored-" + time.strftime("%Y%m%d-%H%M%S"))
@@ -301,7 +302,8 @@ def rescore(results_dir, tasks, scenarios):
                                     group=row.get("group") if scenario else None, adapter=adapter)
                               if item.get("expect") else None)
         agent = row.get("stages", {}).get("agent")
-        if scenario and isinstance(agent, dict):
+        # A setup_error attempt never reached a verdict (it may have aborted after the agent ran).
+        if scenario and isinstance(agent, dict) and row.get("status") != "setup_error":
             row["status"], row["success"] = scenario_verdict(adapter, live, agent, row["tool_choice"])
         rows.append(row)
     (out / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))

@@ -94,6 +94,9 @@ def _scenario(item):
     _check(not isinstance(cap, bool) and isinstance(cap, int) and cap > 0, "max_tool_calls must be a positive integer")
     for key in ("canned", "captures", "allow_real", "requires"):
         _names(scenario[key], key)
+    # Cloud scenarios need Cloud access, which only a cloud:// target has (target_capabilities).
+    _check(scenario["group"] != "cloud" or "cloud" in scenario["requires"],
+           'a cloud-group scenario must list "cloud" in requires')
     _check(isinstance(scenario["files"], dict) and all(isinstance(v, str) for v in scenario["files"].values()),
            "files must map names to text")
     for name in scenario["files"]:

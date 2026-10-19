@@ -306,7 +306,7 @@ class MetricsTests(unittest.TestCase):
         def attempt(name, **extra):
             d = path / name
             d.mkdir()
-            dump(d / "result.json", {"task": "t", "agent": "c", "target": "sim", "metrics": {"tokens": None, "usage_complete": False},
+            dump(d / "result.json", {"id": name, "task": "t", "agent": "c", "target": "sim", "metrics": {"tokens": None, "usage_complete": False},
                                      "status": "failed", "success": True, "task_seconds": 1.0, "tool_choice": None, **extra})
             return d
         return attempt
@@ -379,6 +379,26 @@ class MetricsTests(unittest.TestCase):
             got = sorted((r["tool_choice"]["outcome"], r["success"], r["status"]) for r in rows)
             self.assertEqual(got, [("right", False, "mcp_unverified"), ("right", True, "passed"),
                                    ("wrong", False, "failed")])
+
+    def test_rescore_keeps_a_scenario_row_that_aborted_before_its_verdict(self):
+        # scenario_trial raised after run_process (e.g. bad prices): stages.agent exists, metrics is {}.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            make = self._rescore_dir(path)
+            agent = {"exit_code": 0, "timed_out": False, "interrupted": False, "seconds": 1.0}
+            init = {"type": "system", "subtype": "init", "mcp_servers": [{"name": "wendy"}]}
+            for name, saved in (("normal", {"status": "failed", "success": False}),
+                                ("aborted", {"status": "setup_error", "success": False, "metrics": {}})):
+                d = make(name, kind="scenario", group="core", task="s", stages={"agent": agent}, **saved)
+                (d / "agent.stdout").write_text(json.dumps(init) + "\n" + json.dumps({"type": "result", "result": "x"}) + "\n")
+                (d / "proxy.jsonl").write_text(json.dumps({"tool": "run"}) + "\n")
+            out = b.rescore(path, [], [{"id": "s", "expect": {"right": [{"tool": "run"}], "wrong": []}}])
+            rows = {r["id"]: r for r in (json.loads(l) for l in (out / "results.jsonl").read_text().splitlines())}
+            self.assertEqual((rows["aborted"]["status"], rows["aborted"]["success"]), ("setup_error", False))
+            self.assertEqual((rows["normal"]["status"], rows["normal"]["success"]), ("passed", True))
+            self.assertTrue((out / "summary.json").exists() and (out / "summary.md").exists())
+            summary = json.loads((out / "summary.json").read_text())[0]
+            self.assertEqual((summary["attempts"], summary["setup_errors"]), (1, 1))
 
     def test_rescore_looks_up_expect_by_kind(self):
         with tempfile.TemporaryDirectory() as directory:
