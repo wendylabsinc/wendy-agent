@@ -646,7 +646,8 @@ jobs:
             exit 0
           fi
           if [[ "${SLACK_READY}" != "true" ]]; then
-            echo "::warning::CI_SLACK_BOT_TOKEN or FEED_E2E_SLACK_CHANNEL is not configured; skipping Slack auth warning."
+            # Plain echo: fork and Dependabot PRs never get the secret.
+            echo "CI_SLACK_BOT_TOKEN or FEED_E2E_SLACK_CHANNEL is not configured; skipping Slack auth warning."
             exit 0
           fi
 
@@ -715,6 +716,8 @@ jobs:
           # SECURITY: deliberate - the shared Wendy CI token (chat:write, chat:write.public; it cannot read channels) replaces the webhook with the same reach as before: fork PRs get no secrets, and same-repo PR authors could already read any secret by editing this workflow.
           token: ${{ secrets.CI_SLACK_BOT_TOKEN }}
           errors: true
+          # One attempt, like the old webhook call, so a Slack outage cannot hold up the AI review.
+          retries: 0
           payload-file-path: ${{ steps.review-auth.outputs.slack_payload }}
 
       - name: Verify AI review harness
