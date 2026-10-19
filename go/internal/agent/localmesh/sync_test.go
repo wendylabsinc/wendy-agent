@@ -107,7 +107,7 @@ func TestSyncIdentityRequestIsPrincipalScoped(t *testing.T) {
 
 func TestBoundedReconcileDoesNotConsumeUnqueuedBundleHint(t *testing.T) {
 	source, chain, key, device, now := directoryFixture(t)
-	w, err := SignManifest(Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}, chain, key, now)
+	w, err := SignManifest(routeManifest(device, now), chain, key, now)
 	if err != nil {
 		t.Fatal(err)
 	}

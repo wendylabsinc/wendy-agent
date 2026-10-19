@@ -28,7 +28,7 @@ func TestDirectoryReconciliationProgressBeyondLinkQueue(t *testing.T) {
 		if _, err := cache.Put(creds.Certificate.Certificate, now); err != nil {
 			t.Fatal(err)
 		}
-		w, err := SignManifest(Manifest{Version: 1, Device: creds.Device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}, creds.Certificate.Certificate, creds.Signer, now)
+		w, err := SignManifest(routeManifest(creds.Device, now), creds.Certificate.Certificate, creds.Signer, now)
 		if err != nil {
 			t.Fatal(err)
 		}
