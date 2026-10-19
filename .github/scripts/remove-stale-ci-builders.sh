@@ -10,6 +10,7 @@
 # Only run this on a runner that executes one job at a time: any per-run
 # builder present before the job creates its own then belongs to a finished job.
 # Best effort: never fail the job, including when there is nothing to remove.
+# DRY_RUN=true only lists what would be removed.
 set -u
 
 docker buildx ls --no-trunc --format '{{.Name}}' 2>/dev/null |
@@ -19,6 +20,10 @@ docker buildx ls --no-trunc --format '{{.Name}}' 2>/dev/null |
     # The listing also contains node names (<builder>0); skip anything that is
     # not a builder.
     docker buildx inspect "$name" >/dev/null 2>&1 || continue
+    if [[ "${DRY_RUN:-false}" == true ]]; then
+      echo "Would remove stale builder $name"
+      continue
+    fi
     echo "Removing stale builder $name"
     docker buildx rm "$name" --force || true
   done
