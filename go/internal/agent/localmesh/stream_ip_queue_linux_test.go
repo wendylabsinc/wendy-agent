@@ -59,6 +59,36 @@ func TestStreamIPQueueProtectsAppSetupFromSameSourceFlood(t *testing.T) {
 	}
 }
 
+func TestStreamIPQueueKeepsAppFlightAndBothSendersACKs(t *testing.T) {
+	q := newStreamIPSendQueue()
+	now := time.Now()
+	packets := [][]byte{
+		queueTestAppUDP(TunnelMTU, 1, 49200, AppSessionPort),
+		queueTestAppUDP(80, 1, 49200, AppSessionPort),
+		queueTestIP(TunnelMTU, 2),
+		queueTestIP(80, 2),
+	}
+	for i, packet := range packets {
+		if !q.enqueue(uint32(i+1), packet, now) {
+			t.Fatalf("packet %d not admitted", i+1)
+		}
+	}
+	served := 0
+	seen := make(map[uint32]bool)
+	for {
+		packet, ok := q.pop(now, &served)
+		if !ok {
+			break
+		}
+		seen[packet.sequence] = true
+	}
+	for i := range packets {
+		if !seen[uint32(i+1)] {
+			t.Fatalf("an ACK displaced a bounded sender's waiting packet: missing=%d seen=%v", i+1, seen)
+		}
+	}
+}
+
 func TestStreamIPQueueAppSetupDisplacesOwnBulkAndPrioritizesResponse(t *testing.T) {
 	q := newStreamIPSendQueue()
 	q.recordWrite(TunnelMTU, 90*time.Millisecond)
@@ -187,8 +217,8 @@ func TestStreamIPQueueAlternatesSourcesAndBoundsFastBurst(t *testing.T) {
 func TestStreamIPQueueKeepsTwoFullSizeSourcesAtSlowRate(t *testing.T) {
 	q := newStreamIPSendQueue()
 	q.recordWrite(TunnelMTU, 90*time.Millisecond) // 14 KiB/s Pi-class link.
-	if got := q.snapshot().ByteLimit; got != 2*streamIPFramedBytes(TunnelMTU) {
-		t.Fatalf("slow-link byte budget = %d, want room for two full packets", got)
+	if got := q.snapshot().ByteLimit; got != streamIPMinByteBudget {
+		t.Fatalf("slow-link byte budget = %d, want room for two full packets and short ACKs", got)
 	}
 	now := time.Now()
 	served := 0
@@ -216,7 +246,7 @@ func TestStreamIPQueueKeepsTwoFullSizeSourcesAtSlowRate(t *testing.T) {
 			}
 		}
 	}
-	if stats := q.snapshot(); stats.AgeLimitMS < 270 || stats.AgeLimitMS > 300 || stats.MaxDequeuedWaitMS > 20 || stats.Bytes != 0 {
+	if stats := q.snapshot(); stats.AgeLimitMS < 310 || stats.AgeLimitMS > 330 || stats.MaxDequeuedWaitMS > 20 || stats.Bytes != 0 {
 		t.Fatalf("slow-link sojourn/byte bound lost: %+v", stats)
 	}
 }
@@ -282,11 +312,11 @@ func TestStreamIPQueueAdaptsAgeToObservedWriteRate(t *testing.T) {
 		t.Fatalf("initial age limit = %d ms", got)
 	}
 	q.recordWrite(1280, 50*time.Millisecond)
-	if got := q.snapshot().AgeLimitMS; got < 240 || got > 250 {
+	if got := q.snapshot().AgeLimitMS; got < 270 || got > 290 {
 		t.Fatalf("fast age limit = %d ms", got)
 	}
 	q.recordWrite(1280, 400*time.Millisecond)
-	if got := q.snapshot().AgeLimitMS; got < 1200 || got > 1300 {
+	if got := q.snapshot().AgeLimitMS; got < 1400 || got > 1500 {
 		t.Fatalf("slow rate did not allow the bounded queue to drain: %d ms", got)
 	}
 }

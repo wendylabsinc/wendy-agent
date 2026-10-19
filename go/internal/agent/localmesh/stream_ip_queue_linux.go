@@ -10,14 +10,14 @@ import (
 
 const (
 	// Budget about 150 ms of user-space bytes at the observed write rate.
-	// Keep room for one full packet from each of two contending senders even
+	// Keep room for one full packet and a short ACK from each of two senders even
 	// at the slowest observed rate. With only one packet slot, a busy sender
 	// could evict another sender's packet before the round-robin dequeue saw
 	// it. The age limit still drops stale packets before transmission.
 	// The socket and active packet are separate and require hardware timing.
 	streamIPByteBudget       = 8 * 1024
 	streamIPFullPacketBytes  = TunnelMTU + 2*(fragmentHeader+5)
-	streamIPMinByteBudget    = 2 * streamIPFullPacketBytes
+	streamIPMinByteBudget    = 2 * (streamIPFullPacketBytes + streamFastIPMax + fragmentHeader + 5)
 	streamIPSourceByteBudget = streamIPByteBudget / 2
 	streamIPInitialQueueAge  = 2 * time.Second
 	streamIPMaxQueueAge      = 5 * time.Second

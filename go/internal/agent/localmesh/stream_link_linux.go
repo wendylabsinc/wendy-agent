@@ -113,6 +113,8 @@ func OpenStreamHello(ctx context.Context, conn net.Conn, self, peer meshid.Devic
 // drops congested IP datagrams rather than blocking the Babel event loop or
 // accumulating unbounded latency on a slow BLE ACL.
 type streamNodeLink struct {
+	lastPriority bool // owned by the single writer: alternate priority with waiting IP
+
 	conn          net.Conn
 	once          sync.Once
 	controls      chan ControlMessage
@@ -329,17 +331,22 @@ func smallWholeIP(data []byte) bool {
 		binary.BigEndian.Uint16(data[7:9]) == 0 && validIP(data[fragmentHeader:])
 }
 
-// nextFrame keeps directory/Babel first, lets latency-sensitive IP pass a
-// burst of large packets, and serves bulk after at most four small packets.
+// nextFrame gives directory/Babel the first turn, then alternates it with
+// waiting IP. A control backlog must not expire every queued packet.
+// Within IP, bulk still gets a turn after at most four small packets.
 func (l *streamNodeLink) nextFrame(fastServed *int) (streamFrame, bool) {
 	for {
-		select {
-		case <-l.stop:
-			return streamFrame{}, false
-		case frame := <-l.priority:
-			return frame, true
-		default:
+		if !l.lastPriority {
+			select {
+			case <-l.stop:
+				return streamFrame{}, false
+			case frame := <-l.priority:
+				l.lastPriority = true
+				return frame, true
+			default:
+			}
 		}
+		l.lastPriority = false
 		if l.ipPackets != nil {
 			if packet, ok := l.ipPackets.pop(time.Now(), fastServed); ok {
 				return streamFrame{kind: streamWholeIP, data: packet.data, sequence: packet.sequence}, true
@@ -375,6 +382,7 @@ func (l *streamNodeLink) nextFrame(fastServed *int) (streamFrame, bool) {
 		case <-l.stop:
 			return streamFrame{}, false
 		case frame := <-l.priority:
+			l.lastPriority = true
 			return frame, true
 		case frame := <-l.fastIP:
 			*fastServed++

@@ -552,3 +552,25 @@ func TestStreamLinkSendIPv6RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamLinkControlBacklogCannotStarveRoutedIP(t *testing.T) {
+	l := &streamNodeLink{priority: make(chan streamFrame, 32), ipPackets: newStreamIPSendQueue(), stop: make(chan struct{})}
+	for i := 0; i < cap(l.priority); i++ {
+		l.priority <- streamFrame{kind: streamControl, data: []byte("proof")}
+	}
+	served := 0
+	for i := uint32(1); i <= 20; i++ {
+		if !l.ipPackets.enqueue(i, queueTestIP(1320, 1), time.Now()) {
+			t.Fatal("IP admission failed")
+		}
+		control, ok := l.nextFrame(&served)
+		if !ok || control.kind != streamControl {
+			t.Fatal("routing control lost its first turn")
+		}
+		l.priority <- control // sustained proof backlog, as during directory repair
+		packet, ok := l.nextFrame(&served)
+		if !ok || packet.kind != streamWholeIP || packet.sequence != i {
+			t.Fatalf("control backlog starved routed IP: kind=%d id=%d", packet.kind, packet.sequence)
+		}
+	}
+}
