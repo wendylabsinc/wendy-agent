@@ -3,10 +3,14 @@ package browserauth
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/mldsa"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"time"
 
@@ -21,10 +25,22 @@ type CredentialStore interface {
 	Save([]byte) error
 	Clear() error
 }
+
+// WrappedKeyStore is a CredentialStore that keeps the operator key out of the
+// session record (WDY-3920). SaveWrapped stores the session without the key and
+// wraps the key's ML-DSA seed under a key the store cannot export, with aad as
+// the additional data; LoadKey unwraps it. The browser worker implements it, as
+// the console does; Session writes version 1 records (key inline) only to
+// stores without it.
+type WrappedKeyStore interface {
+	CredentialStore
+	SaveWrapped(session, seed []byte, aad string) error
+	LoadKey(aad string) ([]byte, error)
+}
 type savedSession struct {
 	Version     int                    `json:"version"`
 	Issuer      string                 `json:"issuer"`
-	PrivateKey  string                 `json:"privateKey"`
+	PrivateKey  string                 `json:"privateKey,omitempty"`
 	Certificate config.CertificateInfo `json:"certificate"`
 	Tokens      token                  `json:"tokens"`
 	Profile     Profile                `json:"profile"`
@@ -34,11 +50,55 @@ func (s *Session) saveLocked() error {
 	if s.Store == nil {
 		return nil
 	}
-	raw, err := json.Marshal(savedSession{1, s.meta.Issuer, s.privatePEM, s.certificate, s.tokens, s.profile})
+	saved := savedSession{1, s.meta.Issuer, s.privatePEM, s.certificate, s.tokens, s.profile}
+	if wrapped, ok := s.Store.(WrappedKeyStore); ok {
+		return saveWrapped(wrapped, saved, s.key)
+	}
+	raw, err := json.Marshal(saved)
 	if err != nil {
 		return err
 	}
 	return s.Store.Save(raw)
+}
+
+// keyAAD binds a wrapped seed to its tenant and operator, as the console's
+// record id does: a seed moved into another operator's slot does not unwrap.
+func keyAAD(p Profile) string { return "operator-key:" + p.Tenant + ":" + p.Subject }
+
+// saveWrapped writes a version 2 record: the session without the operator key,
+// and the key's ML-DSA-65 seed for the store to wrap.
+func saveWrapped(store WrappedKeyStore, saved savedSession, key crypto.Signer) error {
+	sk, ok := key.(*mldsa.PrivateKey)
+	if !ok || sk.PublicKey().Parameters() != mldsa.MLDSA65() {
+		return errors.New("Operator key is not ML-DSA-65")
+	}
+	saved.Version, saved.PrivateKey, saved.Certificate.PemPrivateKey = 2, "", ""
+	raw, err := json.Marshal(saved)
+	if err != nil {
+		return err
+	}
+	seed := sk.Bytes()
+	defer clear(seed)
+	return store.SaveWrapped(raw, seed, keyAAD(saved.Profile))
+}
+
+// loadWrappedKey unwraps the operator's seed and returns the key as the
+// PKCS#8 PEM the rest of the session uses.
+func loadWrappedKey(store WrappedKeyStore, p Profile) (string, error) {
+	seed, err := store.LoadKey(keyAAD(p))
+	if err != nil {
+		return "", err
+	}
+	defer clear(seed)
+	sk, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), seed)
+	if err != nil {
+		return "", err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(sk)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})), nil
 }
 func (s *Session) refreshCloudToken(ctx context.Context) error {
 	expiry, _ := time.Parse(time.RFC3339, s.profile.Expires)
@@ -75,8 +135,18 @@ func (s *Session) Restore(ctx context.Context) (*Profile, error) {
 		return nil, nil
 	}
 	var saved savedSession
-	if len(raw) > 1<<20 || json.Unmarshal(raw, &saved) != nil || saved.Version != 1 || !s.validIssuer(saved.Issuer) || saved.Tokens.Refresh == "" || saved.Tokens.Access == "" || !canonicalUUID(saved.Profile.Tenant) || saved.Profile.Subject == "" {
+	if len(raw) > 1<<20 || json.Unmarshal(raw, &saved) != nil || saved.Version < 1 || saved.Version > 2 || !s.validIssuer(saved.Issuer) || saved.Tokens.Refresh == "" || saved.Tokens.Access == "" || !canonicalUUID(saved.Profile.Tenant) || saved.Profile.Subject == "" {
 		return nil, errors.New("Saved sign-in is invalid. Sign in again")
+	}
+	wrapped, canWrap := s.Store.(WrappedKeyStore)
+	if saved.Version == 2 {
+		if !canWrap || saved.PrivateKey != "" || saved.Certificate.PemPrivateKey != "" {
+			return nil, errors.New("Saved sign-in is invalid. Sign in again")
+		}
+		if saved.PrivateKey, err = loadWrappedKey(wrapped, saved.Profile); err != nil {
+			return nil, errors.New("Saved operator key is invalid. Sign in again")
+		}
+		saved.Certificate.PemPrivateKey = saved.PrivateKey
 	}
 	key, err := certs.ParseSigningPrivateKeyPEM([]byte(saved.PrivateKey))
 	if err != nil {
@@ -100,6 +170,14 @@ func (s *Session) Restore(ctx context.Context) (*Profile, error) {
 	}
 	if err != nil || !bytes.Equal(pub, got) || matches != 1 || saved.Certificate.PrincipalURI != expected || saved.Certificate.PemPrivateKey != saved.PrivateKey {
 		return nil, errors.New("Saved certificate does not match the operator. Sign in again")
+	}
+	if saved.Version == 1 && canWrap {
+		// A record from before wrapped custody holds the key in plaintext.
+		// Replacing it removes the plaintext, whatever the rest of the restore does.
+		if err = saveWrapped(wrapped, saved, key); err != nil {
+			return nil, fmt.Errorf("Could not protect the saved operator key: %w", err)
+		}
+		log.Print("Saved operator key moved into wrapped storage; the plaintext copy was removed")
 	}
 	if !time.Now().Before(leaf.NotAfter) || time.Now().Before(leaf.NotBefore) {
 		return nil, errors.New("Saved certificate has expired or is not yet valid. Sign in again")

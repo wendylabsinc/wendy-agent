@@ -7,6 +7,7 @@ on:
     paths:
       - 'go/**'
       - 'web-client/mcp-app/**'
+      - 'web-client/public/**'
       - 'web-client/package.json'
       - 'web-client/scripts/build-wasm.mjs'
       - 'go/simulator/go2/go2_sim/**'
@@ -26,6 +27,7 @@ on:
     paths:
       - 'go/**'
       - 'web-client/mcp-app/**'
+      - 'web-client/public/**'
       - 'web-client/package.json'
       - 'web-client/scripts/build-wasm.mjs'
       - 'go/simulator/go2/go2_sim/**'
