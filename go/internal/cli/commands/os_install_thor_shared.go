@@ -56,6 +56,14 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 	// failure never surprises the user mid-flash (WDY-1843). On a successful sudo
 	// re-exec this replaces the process and does not return. Windows elevates
 	// only the driver helper via UAC if either USB stage needs a binding repair.
+	// The local key must be created as the invoking user: the sudo re-exec
+	// below only loads it (localkey refuses to create one under sudo, where it
+	// would be root's), from the same config dir (ensureThorRootAccess pins it).
+	if !preOpts.localAccess.noLocalKey {
+		if _, err := loadLocalKey(); err != nil {
+			return err
+		}
+	}
 	if err := ensureThorRootAccess(); err != nil {
 		return err
 	}
@@ -94,6 +102,10 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 		return err
 	}
 	provJSON, err := resolveProvisioningJSON(ctx, preOpts, name)
+	if err != nil {
+		return err
+	}
+	trustedKeys, err := resolveTrustedKeysSeed(preOpts.localAccess, plan.version, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -173,7 +185,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 			if err != nil {
 				return false, err
 			}
-			return false, injectConfigPartition(runConfigImage, creds, name, provJSON, out, detail)
+			return false, injectConfigPartition(runConfigImage, creds, name, provJSON, trustedKeys, out, detail)
 		}},
 		{id: stepStage1, label: "Stage 1  RCM boot", run: func(out io.Writer, _ func(string)) (bool, error) {
 			return false, thorStageOne(fp, dev, out)
@@ -232,6 +244,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 	}
 
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed WendyOS %s — power-cycle the Thor out of recovery to boot it. (press the right button once)", plan.version)))
+	printOwnerKeys(os.Stdout, trustedKeys)
 	printFirstBootVerification(thorDeviceType, plan.version)
 	return nil
 }
@@ -250,22 +263,36 @@ func (w fatWriter) WriteFile(name string, data []byte, _ os.FileMode) error {
 	return err
 }
 
+func (w fatWriter) ReadFile(name string) ([]byte, error) {
+	f, err := w.fs.OpenFile("/"+name, os.O_RDONLY)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
 // injectConfigPartition populates the flashpack's FAT32 config image with the
 // same files a disk install writes to a drive's config partition — agent binary,
 // wendy.conf, provisioning.json, clock_floor — so first boot applies them via the
 // identical on-device path. Runs before stage-2, so a failure aborts with nothing
 // written to the Thor.
-func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte, out io.Writer, detail func(string)) error {
+func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceName string, provJSON, trustedKeys []byte, out io.Writer, detail func(string)) error {
 	// Freshen the agent like a disk install, but best-effort: resolveAgentArtifact
 	// is the only network step here, so an offline re-flash of a cached flashpack
 	// still provisions wifi/enrollment, falling back to the agent baked into the
 	// image.
 	detail("downloading agent")
+	// Without a downloaded agent the baked one boots; resolveTrustedKeysSeed
+	// already gated the image version.
 	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
 		fmt.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
 	} else {
 		detail("agent " + agentVer)
+		if err := checkSeedAgent(trustedKeys, agentVer); err != nil {
+			return err
+		}
 	}
 
 	d, err := diskfs.Open(img)
@@ -277,7 +304,7 @@ func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceN
 	if err != nil {
 		return fmt.Errorf("reading config filesystem: %w", err)
 	}
-	return writeConfigFilesTo(fatWriter{fs}, agentBinary, creds, deviceName, provJSON)
+	return writeConfigFilesTo(fatWriter{fs}, agentBinary, creds, deviceName, provJSON, trustedKeys)
 }
 
 // ---- flashpack plan / download (cross-platform) ----

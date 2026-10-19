@@ -148,6 +148,14 @@ func main() {
 	}
 
 	configpartition.Apply(logger, configPath)
+	// A device installed with owner keys runs local access "required" for good
+	// (WDY-3882): it never reopens the plaintext pre-enrollment path.
+	if configpartition.LocalAccessRequired(configPath) {
+		if prev := os.Getenv("WENDY_LOCAL_ACCESS"); prev != "" && prev != "required" {
+			logger.Warn("WENDY_LOCAL_ACCESS overridden: this device was installed with owner keys", zap.String("configured", prev))
+		}
+		os.Setenv("WENDY_LOCAL_ACCESS", "required") //nolint:errcheck
+	}
 
 	// Restore the mDNS advertisement for a device renamed via
 	// 'wendy device rename'. The boot-time identity units — and

@@ -15,6 +15,9 @@ type Options struct {
 	Storage    string `json:"storage,omitempty"`
 	Drive      string `json:"drive,omitempty"`
 	RootfsOnly bool   `json:"rootfs_only,omitempty"`
+	// NoLocalKey acknowledges that the install seeds no owner key (WDY-3882):
+	// installation jobs cannot seed one, so they refuse to run without it.
+	NoLocalKey bool `json:"no_local_key,omitempty"`
 }
 
 type Drive struct {

@@ -47,6 +47,7 @@ func installationOptionSchema() []mcpgo.ToolOption {
 		mcpgo.WithString("storage", mcpgo.Enum("sd", "nvme", "emmc")),
 		mcpgo.WithString("drive", mcpgo.Description("Exact host disk path from os_list_drives; only for raw-media writes")),
 		mcpgo.WithBoolean("rootfs_only", mcpgo.Description("Orin raw-media write only; leaves QSPI firmware unchanged")),
+		mcpgo.WithBoolean("no_local_key", mcpgo.Description("Install without an owner key: the device accepts unauthenticated connections until enrolled. Installation jobs refuse to start without it; only set it with the user's approval")),
 	}
 }
 
@@ -58,11 +59,13 @@ func installationOptions(req mcpgo.CallToolRequest) (onboarding.Options, error) 
 	if o.DeviceType == "" {
 		return o, errors.New("device_type is required")
 	}
-	if v, present := req.GetArguments()["rootfs_only"]; present {
-		var valid bool
-		o.RootfsOnly, valid = v.(bool)
-		if !valid {
-			return o, errors.New("rootfs_only must be a boolean")
+	for name, dest := range map[string]*bool{"rootfs_only": &o.RootfsOnly, "no_local_key": &o.NoLocalKey} {
+		if v, present := req.GetArguments()[name]; present {
+			b, valid := v.(bool)
+			if !valid {
+				return o, errors.New(name + " must be a boolean")
+			}
+			*dest = b
 		}
 	}
 	return o, nil
