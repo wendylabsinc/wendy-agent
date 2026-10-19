@@ -358,11 +358,36 @@ func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 	}
 	defer r.release(peer)
 	defer secure.Close()
+	r.rememberInboundRadio(raw, peer)
 	r.requestAdvertisementRefresh()
 	stopCheaperWatch := r.watchCheaperLink(ctx, peer, secure)
 	defer stopCheaperWatch()
 	if err = r.cfg.Node.AttachStream(ctx, peer, secure, LinkCost); err != nil && ctx.Err() == nil {
 		r.cfg.Logger.Debug("BLE link ended", zap.Stringer("peer", peer.UUID()), zap.Error(err))
+	}
+}
+
+// Discovery hints can match for many UUIDv7 devices. Remember an authenticated
+// inbound channel's actual radio too, so its next advertisement does not start
+// another TLS flight while this principal is already active. This uses the
+// accepted socket address, never an advertiser's claim about its identity.
+func (r *runtime) rememberInboundRadio(raw net.Conn, peer meshid.Device) {
+	radio, ok := raw.RemoteAddr().(l2addr)
+	if !ok {
+		return
+	}
+	kind := map[uint8]string{btAddrLEPublic: "public", btAddrLERandom: "random"}[radio.Type]
+	if _, address, err := parseAddress(radio.Address, kind, radio.PSM); err != nil || address == ([6]byte{}) {
+		return
+	}
+	key := (candidate{address: radio.Address, addressType: kind}).key()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.known == nil {
+		r.known = make(map[string]meshid.Device)
+	}
+	if _, exists := r.known[key]; exists || len(r.known) < maxPeerRetryHistory {
+		r.known[key] = peer
 	}
 }
 
