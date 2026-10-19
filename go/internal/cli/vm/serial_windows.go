@@ -21,6 +21,19 @@ type windowsSerial struct {
 	pending  sync.WaitGroup
 	once     sync.Once
 	closeErr error
+	// The kernel writes completion status through the OVERLAPPED after
+	// ReadFile/WriteFile return. On a goroutine stack, a stack move in that
+	// window sends the write to freed memory and the result reads as zero
+	// bytes, so each direction keeps its own here, in this heap object.
+	reader, writer serialOp
+}
+
+// serialOp serializes one direction; io.Copy issues one Read and one Write at
+// a time. ReadFile/WriteFile reset the reused event when each call begins.
+type serialOp struct {
+	mu    sync.Mutex
+	event windows.Handle // immutable after open, so Close may read it unlocked
+	ov    windows.Overlapped
 }
 
 func openHostSerial(c SerialConfig) (io.ReadWriteCloser, error) {
@@ -52,16 +65,37 @@ func openHostSerial(c SerialConfig) (io.ReadWriteCloser, error) {
 	if err := windows.SetCommTimeouts(h, &windows.CommTimeouts{ReadIntervalTimeout: ^uint32(0), ReadTotalTimeoutMultiplier: ^uint32(0), ReadTotalTimeoutConstant: 100, WriteTotalTimeoutConstant: 5000, WriteTotalTimeoutMultiplier: serialWriteTimeoutMultiplier(c.Baud)}); err != nil {
 		return fail(fmt.Errorf("configuring %s timeouts: %w", c.Port, err))
 	}
-	return &windowsSerial{handle: h}, nil
+	p := &windowsSerial{handle: h}
+	for _, op := range []*serialOp{&p.reader, &p.writer} {
+		if op.event, err = windows.CreateEvent(nil, 1, 0, nil); err != nil {
+			p.closeEvents()
+			return fail(fmt.Errorf("creating %s I/O event: %w", c.Port, err))
+		}
+	}
+	return p, nil
+}
+func (p *windowsSerial) closeEvents() {
+	for _, op := range []*serialOp{&p.reader, &p.writer} {
+		if op.event != 0 {
+			windows.CloseHandle(op.event)
+		}
+	}
 }
 func (p *windowsSerial) transfer(b []byte, write bool) (int, error) {
-	event, err := windows.CreateEvent(nil, 1, 0, nil)
-	if err != nil {
-		return 0, err
+	op := &p.reader
+	if write {
+		op = &p.writer
 	}
-	defer windows.CloseHandle(event)
-	ov := windows.Overlapped{HEvent: event}
+	op.mu.Lock()
+	defer op.mu.Unlock()
+	op.ov = windows.Overlapped{HEvent: op.event}
+	// The kernel fills or drains b asynchronously as well. Pinning makes
+	// every caller's buffer escape to the heap and holds it until completion.
+	var pin runtime.Pinner
+	pin.Pin(&b[0])
+	defer pin.Unpin()
 	var n uint32
+	var err error
 	p.mu.Lock()
 	if p.closing {
 		p.mu.Unlock()
@@ -69,17 +103,15 @@ func (p *windowsSerial) transfer(b []byte, write bool) (int, error) {
 	}
 	p.pending.Add(1)
 	if write {
-		err = windows.WriteFile(p.handle, b, &n, &ov)
+		err = windows.WriteFile(p.handle, b, &n, &op.ov)
 	} else {
-		err = windows.ReadFile(p.handle, b, &n, &ov)
+		err = windows.ReadFile(p.handle, b, &n, &op.ov)
 	}
 	p.mu.Unlock()
 	defer p.pending.Done()
 	if err == windows.ERROR_IO_PENDING {
-		err = windows.GetOverlappedResult(p.handle, &ov, &n, true)
+		err = windows.GetOverlappedResult(p.handle, &op.ov, &n, true)
 	}
-	// Keep the Go buffer live until the asynchronous kernel operation finishes.
-	runtime.KeepAlive(b)
 	if write && err == nil && int(n) != len(b) {
 		err = io.ErrShortWrite
 	}
@@ -96,7 +128,12 @@ func (p *windowsSerial) Read(b []byte) (int, error) {
 		}
 	}
 }
-func (p *windowsSerial) Write(b []byte) (int, error) { return p.transfer(b, true) }
+func (p *windowsSerial) Write(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	return p.transfer(b, true)
+}
 func (p *windowsSerial) Close() error {
 	p.once.Do(func() {
 		p.mu.Lock()
@@ -106,6 +143,8 @@ func (p *windowsSerial) Close() error {
 		p.mu.Unlock()
 		p.pending.Wait()
 		p.closeErr = windows.CloseHandle(p.handle)
+		// Only after every operation has completed: none can reach an event now.
+		p.closeEvents()
 	})
 	return p.closeErr
 }

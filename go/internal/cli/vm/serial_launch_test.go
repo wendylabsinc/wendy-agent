@@ -4,6 +4,7 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -15,8 +16,14 @@ import (
 )
 
 func TestSerialLaunchCleanup(t *testing.T) {
-	for _, scenario := range []string{"invalid-spec", "start-failure", "state-failure", "normal-exit", "peer-exit", "peer-loss", "disconnect", "cancel"} {
+	savedGrace := serialExitGrace
+	defer func() { serialExitGrace = savedGrace }()
+	for _, scenario := range []string{"invalid-spec", "start-failure", "state-failure", "normal-exit", "peer-exit", "slow-exit", "peer-loss", "disconnect", "cancel"} {
 		t.Run(scenario, func(t *testing.T) {
+			serialExitGrace = savedGrace
+			if scenario == "peer-loss" {
+				serialExitGrace = 300 * time.Millisecond
+			}
 			s := newTestStore(t)
 			spec := detachableSpec(t, s, "serial")
 			if err := s.ConfigureSerial("serial", &SerialConfig{"COM12", 1000000}); err != nil {
@@ -54,12 +61,18 @@ func TestSerialLaunchCleanup(t *testing.T) {
 				case "peer-exit":
 					conn.Close()
 					return exec.CommandContext(ctx, "sleep", "0.1")
+				case "slow-exit":
+					// QEMU closes its chardevs before process teardown, which a
+					// loaded host can stretch past a second.
+					conn.Close()
+					return exec.CommandContext(ctx, "sleep", "1.5")
 				case "peer-loss":
 					conn.Close()
 				case "disconnect":
 					peer.Close()
 				case "cancel":
-					cancel()
+					// Ctrl-C while the bridged VM runs, not before it starts.
+					time.AfterFunc(200*time.Millisecond, cancel)
 				}
 				return exec.CommandContext(ctx, "sleep", "30")
 			}
@@ -67,7 +80,7 @@ func TestSerialLaunchCleanup(t *testing.T) {
 				spec.FirmwareCode = ""
 			}
 			err := s.RunForeground(ctx, spec, nil, io.Discard, io.Discard)
-			if scenario == "normal-exit" || scenario == "peer-exit" {
+			if scenario == "normal-exit" || scenario == "peer-exit" || scenario == "slow-exit" {
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -76,6 +89,12 @@ func TestSerialLaunchCleanup(t *testing.T) {
 			}
 			if scenario == "disconnect" && !strings.Contains(err.Error(), "disconnected") {
 				t.Fatal(err)
+			}
+			if scenario == "peer-loss" && strings.Contains(err.Error(), "cable") {
+				t.Fatalf("QEMU-side loss blamed on the device: %v", err)
+			}
+			if scenario == "cancel" && strings.Contains(err.Error(), "starting") {
+				t.Fatalf("cancelled before launch: %v", err)
 			}
 			if held, err := s.runLockHeld("serial"); held || err != nil {
 				t.Fatalf("lock leaked: %v %v", held, err)
@@ -97,7 +116,8 @@ func TestSerialDetachedRejected(t *testing.T) {
 	if err := s.ConfigureSerial("serial", &SerialConfig{"COM12", 1000000}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StartDetached(spec); err == nil || !strings.Contains(err.Error(), "foreground") {
+	// This host can detach, so it is not Windows and can never use the mapping.
+	if _, err := s.StartDetached(spec); !errors.Is(err, errSerialHostUnsupported) || !strings.Contains(err.Error(), "wendy vm serial serial --clear") {
 		t.Fatal(err)
 	}
 }

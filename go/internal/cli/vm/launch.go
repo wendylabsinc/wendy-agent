@@ -52,6 +52,11 @@ func (s *Store) StartDetached(spec Spec) (State, error) {
 		return State{}, err
 	}
 	if serial != nil {
+		// Only Windows uses a mapping, and Windows cannot detach. A host that
+		// can detach has a mapping copied from elsewhere that it can never use.
+		if DetachSupported() {
+			return State{}, clearSerialHint(errSerialHostUnsupported, spec.Name)
+		}
 		return State{}, fmt.Errorf("managed serial passthrough requires Windows foreground mode; use 'wendy vm start %s' without --detach", spec.Name)
 	}
 
@@ -270,7 +275,14 @@ func (s *Store) RunForeground(ctx context.Context, spec Spec, stdin io.Reader, s
 	}
 	var bridge *serialBridge
 	if serial != nil {
+		// Before opening the port, which a Lite VM would hold for nothing.
+		if IsLiteProfile(spec.Profile) {
+			return clearSerialHint(errSerialLite, spec.Name)
+		}
 		bridge, err = startSerialBridge(*serial)
+		if errors.Is(err, errSerialHostUnsupported) {
+			return clearSerialHint(err, spec.Name)
+		}
 		if err != nil {
 			return err
 		}
@@ -358,13 +370,14 @@ func (s *Store) RunForeground(ctx context.Context, spec Spec, stdin io.Reader, s
 		if errors.As(err, &disconnected) {
 			// QEMU closes its socket before Wait observes a clean exit. Give
 			// that exit time to complete; never mask a physical COM failure.
-			timer := time.NewTimer(time.Second)
+			timer := time.NewTimer(serialExitGrace)
 			defer timer.Stop()
 			select {
 			case result := <-waited:
 				return result
 			case <-timer.C:
 			}
+			err = fmt.Errorf("%w, but did not exit; the VM was stopped, restart it", err)
 		}
 		_ = qemu.Process.Kill()
 		<-waited

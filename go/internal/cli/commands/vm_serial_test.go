@@ -62,3 +62,29 @@ func TestVMSerialInspectAndClear(t *testing.T) {
 		t.Fatalf("unsupported host: %v", err)
 	}
 }
+
+func TestVMSerialPicksVMWhenNameOmitted(t *testing.T) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	s, err := vm.NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateFrom("serial", strings.NewReader("disk"), 4, 4096, vm.Meta{}); err != nil {
+		t.Fatal(err)
+	}
+	originalInteractive, originalPicker := isInteractiveTerminalFn, pickVMNameFn
+	isInteractiveTerminalFn = func() bool { return true }
+	pickVMNameFn = func(string) (string, error) { return "serial", nil }
+	t.Cleanup(func() {
+		isInteractiveTerminalFn = originalInteractive
+		pickVMNameFn = originalPicker
+	})
+	cmd := newVMCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"serial"})
+	if err := cmd.Execute(); err != nil || strings.TrimSpace(out.String()) != "null" {
+		t.Fatalf("picked VM: %q %v", out.String(), err)
+	}
+}

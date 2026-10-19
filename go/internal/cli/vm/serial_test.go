@@ -2,6 +2,7 @@ package vm
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -40,11 +41,40 @@ func TestSerialPersistence(t *testing.T) {
 	if err := os.WriteFile(s.serialPath("serial"), []byte(`{"port":"COM12","baud":0}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReadSerial("serial"); err == nil {
-		t.Fatal("accepted invalid saved config")
+	if _, err := s.ReadSerial("serial"); err == nil || !strings.Contains(err.Error(), "wendy vm serial serial --clear") {
+		t.Fatalf("invalid saved config: %v", err)
+	}
+	if err := os.WriteFile(s.serialPath("serial"), []byte(`{`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReadSerial("serial"); err == nil || !strings.Contains(err.Error(), "wendy vm serial serial --clear") {
+		t.Fatalf("unreadable saved config: %v", err)
 	}
 	if err := s.ConfigureSerial("missing", &c); err == nil {
 		t.Fatal("configured missing VM")
+	}
+}
+func TestSerialRejectsLite(t *testing.T) {
+	s := newTestStore(t)
+	createTestVM(t, s, "lite", Meta{Profile: ProfileWendyLite})
+	c := SerialConfig{Port: "COM12", Baud: 115200}
+	if err := s.ConfigureSerial("lite", &c); err == nil {
+		t.Fatal("configured serial passthrough for a Wendy Lite VM")
+	}
+	// A copied or hand-written mapping must still not claim the COM port:
+	// the ESP32 emulator never connects to the bridge.
+	if err := writeJSON(s.serialPath("lite"), c); err != nil {
+		t.Fatal(err)
+	}
+	saved := openVMSerial
+	defer func() { openVMSerial = saved }()
+	openVMSerial = func(SerialConfig) (io.ReadWriteCloser, error) {
+		t.Error("opened the COM port for a Wendy Lite VM")
+		return nil, errors.New("unexpected open")
+	}
+	spec := Spec{Name: "lite", Profile: ProfileWendyLite, DiskPath: s.DiskPath("lite"), Net: NetConfig{Mode: NetUser, AgentPort: 50051}}
+	if err := s.RunForeground(context.Background(), spec, nil, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "wendy vm serial lite --clear") {
+		t.Fatal(err)
 	}
 }
 func TestSerialValidation(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"time"
 )
 
 // SerialConfig fixes the physical host line at this baud, 8N1, no handshake,
@@ -20,6 +21,21 @@ type SerialConfig struct {
 }
 
 var serialPortName = regexp.MustCompile(`^COM[1-9][0-9]*$`)
+
+var errSerialHostUnsupported = errors.New("managed VM serial passthrough requires a Windows host")
+
+// The ESP32 emulator has no USB host to attach the bridge to.
+var errSerialLite = errors.New("serial passthrough is not supported for Wendy Lite VMs")
+
+// serialExitGrace is how long QEMU may take to exit after closing its serial
+// socket. QEMU closes chardevs late in shutdown, after its disks, but process
+// teardown on a loaded host can still exceed a second.
+var serialExitGrace = 10 * time.Second
+
+// clearSerialHint names the fix for a mapping this VM or host cannot use.
+func clearSerialHint(err error, name string) error {
+	return fmt.Errorf("%w; remove the mapping with 'wendy vm serial %s --clear'", err, name)
+}
 
 func (c SerialConfig) Validate() error {
 	if !serialPortName.MatchString(c.Port) {
@@ -53,9 +69,12 @@ func (s *Store) ReadSerial(name string) (*SerialConfig, error) {
 	}
 	var c SerialConfig
 	if err := json.Unmarshal(b, &c); err != nil {
-		return nil, fmt.Errorf("reading VM serial configuration: %w", err)
+		return nil, clearSerialHint(fmt.Errorf("reading VM serial configuration: %w", err), name)
 	}
-	return &c, c.Validate()
+	if err := c.Validate(); err != nil {
+		return nil, clearSerialHint(fmt.Errorf("VM serial configuration: %w", err), name)
+	}
+	return &c, nil
 }
 
 // ConfigureSerial serializes changes with VM creation/start/removal and refuses
@@ -64,6 +83,9 @@ func (s *Store) ConfigureSerial(name string, c *SerialConfig) error {
 	if c != nil {
 		if err := c.Validate(); err != nil {
 			return err
+		}
+		if meta, ok := s.ReadMeta(name); ok && IsLiteProfile(meta.Profile) {
+			return errSerialLite
 		}
 	}
 	life, err := s.acquireLifecycleLock(name)
@@ -194,6 +216,12 @@ func (b *serialBridge) report(c SerialConfig, err error) {
 	}
 	if err == nil {
 		err = io.EOF
+	}
+	var closed qemuSerialDisconnect
+	if errors.As(err, &closed) {
+		// Normally QEMU exiting; RunForeground reports it only if QEMU stays up.
+		b.done <- fmt.Errorf("QEMU closed its VM serial connection to %s: %w", c.Port, err)
+		return
 	}
 	b.done <- fmt.Errorf("VM serial %s at %d baud disconnected or forwarding failed: %w; check the cable and Windows driver, then restart the VM", c.Port, c.Baud, err)
 }

@@ -3,14 +3,14 @@
 package vm
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"strings"
 )
 
+// RunForeground adds the VM name and the --clear fix to this error.
 func openHostSerial(SerialConfig) (io.ReadWriteCloser, error) {
-	return nil, fmt.Errorf("managed VM serial passthrough requires a Windows host; remove the mapping with 'wendy vm serial NAME --clear'")
+	return nil, errSerialHostUnsupported
 }
 
 func guardSerialProcess(*os.Process) (io.Closer, error) {
