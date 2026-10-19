@@ -733,7 +733,7 @@ func applyPreProvisioning(logger *zap.Logger, cfgDir, configPath string) {
 		return
 	}
 
-	if err := os.WriteFile(filepath.Join(configPath, "provisioning.json"), data, 0o600); err != nil {
+	if err := services.WriteProvisioningState(filepath.Join(configPath, "provisioning.json"), data); err != nil {
 		logger.Error("Failed to write provisioning.json from config partition", zap.Error(err))
 		return
 	}

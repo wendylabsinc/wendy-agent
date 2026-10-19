@@ -322,6 +322,20 @@ func TestApplyDeviceName_InvalidName(t *testing.T) {
 func TestApplyPreProvisioning_Success(t *testing.T) {
 	cfgDir := t.TempDir()
 	configPath := t.TempDir()
+	path := filepath.Join(configPath, "provisioning.json")
+	if err := os.WriteFile(path, []byte(`{"enrolled":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Hold the old inode open to detect truncation or inode reuse.
+	old, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	oldInfo, err := old.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	state := `{"enrolled":true,"cloudHost":"cloud.wendy.dev","orgId":1,"assetId":42,"keyPem":"fake-key","certPem":"fake-cert","chainPem":"fake-chain"}`
 	if err := os.WriteFile(filepath.Join(cfgDir, "provisioning.json"), []byte(state), 0o600); err != nil {
@@ -341,6 +355,13 @@ func TestApplyPreProvisioning_Success(t *testing.T) {
 	}
 	if string(got) != state {
 		t.Errorf("provisioning.json content = %q; want %q", got, state)
+	}
+	newInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(oldInfo, newInfo) {
+		t.Fatal("pre-provisioning overwrote the existing state instead of replacing it atomically")
 	}
 
 	for _, name := range []string{"device-key.pem", "device.pem", "ca.pem"} {

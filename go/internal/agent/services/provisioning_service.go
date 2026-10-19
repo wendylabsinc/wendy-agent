@@ -156,6 +156,8 @@ func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*tim
 	svc.resetRecoveryErr = svc.recoverCloudReset()
 	if svc.resetRecoveryErr == nil {
 		svc.loadState()
+	} else {
+		logger.Error("Enrollment state recovery failed", zap.Error(svc.resetRecoveryErr))
 	}
 	return svc
 }
@@ -498,14 +500,8 @@ func (s *ProvisioningService) statePath() string {
 // key is migrated to device-key.pem and removed from provisioning.json so that
 // subsequent reads use the dedicated file.
 func (s *ProvisioningService) loadState() {
-	data, err := os.ReadFile(s.statePath())
+	state, err := s.readProvisioningState()
 	if err != nil {
-		return
-	}
-
-	var state provisioningState
-	if err := json.Unmarshal(data, &state); err != nil {
-		s.logger.Warn("Failed to parse provisioning state", zap.Error(err))
 		return
 	}
 
@@ -529,10 +525,8 @@ func (s *ProvisioningService) loadState() {
 			if writeErr := os.WriteFile(keyPath, s.keyPEM, 0o400); writeErr == nil {
 				s.logger.Info("Migrated device key from provisioning.json to device-key.pem")
 				// Rewrite provisioning.json without the now-migrated key.
-				toSave := state
-				toSave.KeyPEM = ""
-				if saveData, marshalErr := json.MarshalIndent(toSave, "", "  "); marshalErr == nil {
-					_ = os.WriteFile(s.statePath(), saveData, 0o600)
+				if err := s.saveState(state); err != nil {
+					s.logger.Warn("Failed to persist migrated provisioning state", zap.Error(err))
 				}
 			} else {
 				s.logger.Warn("Failed to migrate device key to device-key.pem", zap.Error(writeErr))
@@ -587,8 +581,10 @@ func (s *ProvisioningService) writePEMFiles(keyPEM, certPEM, chainPEM string) er
 	return WritePEMFiles(s.configPath, keyPEM, certPEM, chainPEM)
 }
 
-// writeProvisioningState atomically replaces and syncs the existing state.
-func writeProvisioningState(path string, data []byte) error {
+// WriteProvisioningState atomically replaces and syncs the existing state.
+// All writers, including first-boot imports and legacy key migration, must use
+// this helper so an interrupted write cannot truncate the enrollment record.
+func WriteProvisioningState(path string, data []byte) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".provisioning-*")
 	if err != nil {
 		return err
@@ -637,5 +633,5 @@ func (s *ProvisioningService) saveState(state *provisioningState) error {
 		return fmt.Errorf("marshaling state: %w", err)
 	}
 
-	return writeProvisioningState(s.statePath(), data)
+	return WriteProvisioningState(s.statePath(), data)
 }
