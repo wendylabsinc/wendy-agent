@@ -212,20 +212,17 @@ type nanRecovery struct {
 }
 
 func (r nanRecovery) canReset() bool {
-	return r.ownsSession && (!r.ndiReset || !r.sessionReset)
+	return !r.ndiReset || (r.ownsSession && !r.sessionReset)
 }
 
 func (r nanRecovery) attempted() bool { return r.ndiReset || r.sessionReset }
 
 func (r *nanRecovery) next(noRX bool) nanResetAction {
-	if !r.ownsSession {
-		return resetNone
-	}
 	if !r.ndiReset {
 		r.ndiReset = true
 		return resetNDI
 	}
-	if noRX && !r.sessionReset {
+	if r.ownsSession && noRX && !r.sessionReset {
 		r.sessionReset = true
 		return resetOwnedSession
 	}
