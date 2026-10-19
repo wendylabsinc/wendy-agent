@@ -1,0 +1,205 @@
+name: Runner Janitor
+
+# Nightly housekeeping for CI machines that keep their disk between jobs
+# (WDY-3837). Where each CI machine gets cleaned:
+#
+# - wendy-developer-macos-26-01 (self-hosted Mac, WendyOS and
+#   wendy-demo-local-alpha jobs): this workflow.
+# - ci.wendy.sh (wendy-job-<N> runners): its NixOS configuration in
+#   wendylabsinc/ci prunes caches, garbage-collects the Nix store and podman
+#   images, and refuses jobs below a disk floor.
+# - RunsOn and GitHub-hosted runners: a fresh machine per job.
+#
+# Add a job here for any new persistent machine. A job runs on the machine it
+# cleans; a runner executes one job at a time, so nothing it cleans is in use.
+#
+# Each task is its own step and later steps still run when one fails; the last
+# step always checks free space. Add new tasks the same way.
+#
+# Only clean what CI creates and can rebuild. Never touch Tart or its VMs,
+# Docker volumes, Xcode or simulators, the Go module cache, or device and
+# authentication state.
+
+on:
+  schedule:
+    - cron: '30 1 * * *'  # 01:30 UTC, before the 02:00 Nightly OS Update
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Only report what would be cleaned'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-janitor
+  cancel-in-progress: false
+
+jobs:
+  mac:
+    name: Clean wendy-developer-macos-26-01
+    runs-on:
+      group: wendy-developer
+      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
+    timeout-minutes: 30
+    outputs:
+      runner: ${{ steps.before.outputs.runner }}
+      free-before: ${{ steps.before.outputs.free_gib }}
+      free-after: ${{ steps.after.outputs.free_gib }}
+    env:
+      DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+      WENDY_BUILD_CACHE_MAX_BYTES: '32212254720' # 30 GiB, as in the device jobs
+      SHARED_BUILDER_MAX_BYTES: '10737418240' # 10 GiB per shared builder
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Record free space before
+        id: before
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          df -h "$GITHUB_WORKSPACE"
+          free_gib=$(($(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }') / 1024 / 1024))
+          echo "free_gib=$free_gib" >> "$GITHUB_OUTPUT"
+          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Runner janitor on $RUNNER_NAME"
+            if [[ "$DRY_RUN" == true ]]; then echo "_Dry run: nothing is deleted._"; fi
+            echo
+            echo "- Free before: ${free_gib} GiB"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove leaked per-run builders
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            echo "::notice::Docker is not running; skipping builder cleanup."
+            exit 0
+          fi
+          .github/scripts/remove-stale-ci-builders.sh
+
+      - name: Trim shared builder caches
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          if ! docker info >/dev/null 2>&1; then
+            echo "::notice::Docker is not running; skipping builder caches."
+            exit 0
+          fi
+          # Builds that do not set WENDY_BUILDX_BUILDER use these builders, and
+          # nothing else bounds their caches. The CLI trims wendy-oci itself.
+          for builder in wendy wendy-mtls; do
+            docker buildx inspect "$builder" >/dev/null 2>&1 || continue
+            echo "== $builder"
+            docker buildx du --builder "$builder" | tail -n 3 || true
+            if [[ "$DRY_RUN" != true ]]; then
+              docker buildx prune --builder "$builder" \
+                --max-used-space "$SHARED_BUILDER_MAX_BYTES" --force
+            fi
+          done
+
+      - name: Remove dangling Docker images
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          if ! docker info >/dev/null 2>&1; then
+            echo "::notice::Docker is not running; skipping images."
+            exit 0
+          fi
+          echo "Dangling images: $(docker images --filter dangling=true --quiet | wc -l | tr -d ' ')"
+          if [[ "$DRY_RUN" != true ]]; then
+            docker image prune --force
+          fi
+
+      - name: Remove unused Go toolchains
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          current=$(awk '$1 == "go" { print $2; exit }' go.mod)
+          shopt -s nullglob
+          for dir in "$RUNNER_TOOL_CACHE"/go/*; do
+            version=$(basename "$dir")
+            [[ "$version" =~ ^[0-9]+(\.[0-9]+)+$ && "$version" != "$current" ]] || continue
+            if [[ "$DRY_RUN" == true ]]; then
+              echo "Would remove Go $version"
+            else
+              echo "Removing Go $version"
+              rm -rf "$dir"
+            fi
+          done
+
+      # Building the CLI also proves the Go build cache is healthy before the
+      # nightly needs it.
+      - name: Set up Go
+        if: ${{ !cancelled() }}
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build embedded MCP app
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/build-mcp-app
+
+      - name: Build CLI
+        if: ${{ !cancelled() }}
+        working-directory: go
+        run: make build-cli
+
+      - name: Trim Wendy build caches
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          ./go/bin/wendy cache list || true
+          if [[ "$DRY_RUN" != true ]]; then
+            ./go/bin/wendy cache dedup --max "$WENDY_BUILD_CACHE_MAX_BYTES"
+          fi
+
+      - name: Record free space after
+        id: after
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          free_gib=$(($(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }') / 1024 / 1024))
+          echo "free_gib=$free_gib" >> "$GITHUB_OUTPUT"
+          echo "- Free after: ${free_gib} GiB" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: ./.github/actions/check-runner-disk
+        if: ${{ !cancelled() }}
+
+  alarm:
+    name: Post alarm to Slack
+    needs: mac
+    # Also covers a run the Mac never picked up (offline or stuck runner).
+    if: ${{ always() && github.event_name == 'schedule' && needs.mac.result != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      # The Wendy CI Slack app's bot token and the channel (ID or #name) from
+      # the organization variable CI_SLACK_CHANNEL.
+      SLACK_READY: ${{ secrets.CI_SLACK_BOT_TOKEN != '' && vars.CI_SLACK_CHANNEL != '' }}
+    steps:
+      - name: Skip without Slack configuration
+        if: env.SLACK_READY != 'true'
+        run: echo "::warning::CI_SLACK_BOT_TOKEN or CI_SLACK_CHANNEL is not configured; skipping the Slack alarm."
+
+      - name: Post to #ci
+        if: env.SLACK_READY == 'true'
+        # SECURITY: the tag v4.0.0 resolves to exactly this commit (verified with the GitHub API on 2026-10-19).
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: chat.postMessage
+          # SECURITY: deliberate - one Wendy CI token (chat:write, chat:write.public; it cannot read channels) serves all CI alarms; this job only runs on scheduled runs of main.
+          token: ${{ secrets.CI_SLACK_BOT_TOKEN }}
+          errors: true
+          payload: |
+            channel: ${{ vars.CI_SLACK_CHANNEL }}
+            text: ":rotating_light: *Runner janitor ${{ needs.mac.result == 'failure' && 'failed' || format('did not finish ({0})', needs.mac.result) }}* on `${{ needs.mac.outputs.runner || 'wendy-macos-26' }}`. Free disk: ${{ needs.mac.outputs.free-after || needs.mac.outputs.free-before || 'unknown' }} GiB. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
