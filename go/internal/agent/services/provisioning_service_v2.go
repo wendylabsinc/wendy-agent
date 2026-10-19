@@ -38,6 +38,9 @@ func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.
 	if s.v1.resetRecoveryErr != nil {
 		return nil, status.Error(codes.Unavailable, "reset recovery blocked; explicit local recovery required")
 	}
+	if s.v1.resetCleanupErr != nil {
+		return nil, status.Error(codes.Unavailable, "reset resource cleanup incomplete; agent recovery is retrying")
+	}
 	if !s.v1.enrolled {
 		completion, err := s.v1.cloudCompletion()
 		if err != nil {

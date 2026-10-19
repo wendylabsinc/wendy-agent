@@ -402,6 +402,36 @@ func TestKernelProcessLifecycle(t *testing.T) {
 		}
 		assertDerivedLinkLocals(t, device, peer)
 		fmt.Println("RECLAIMED")
+	case "reset":
+		if err := CleanupStaleKernel(); err != nil {
+			t.Fatalf("unenrolled startup cleanup: %v", err)
+		}
+		links, err := netlink.LinkList()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, link := range links {
+			if link.Attrs().Name == InterfaceName || strings.HasPrefix(link.Attrs().Name, peerInterfacePrefix) {
+				t.Fatalf("reset retained mesh interface %s", link.Attrs().Name)
+			}
+		}
+		rules, err := netlink.RuleList(netlink.FAMILY_ALL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, rule := range rules {
+			if rule.Table == RouteTable {
+				t.Fatalf("reset retained mesh rule: %#v", rule)
+			}
+		}
+		routes, err := netlink.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
+		if err != nil || len(routes) != 0 {
+			t.Fatalf("reset retained mesh routes: %v, %v", routes, err)
+		}
+		if meshForwardingCommand("-C") == nil {
+			t.Fatal("reset retained transit forwarding grant")
+		}
+		fmt.Println("RESET CLEANED")
 	case "foreign":
 		foreign := netlink.Route{Table: RouteTable, Family: netlink.FAMILY_V6, Protocol: 187, Type: unix.RTN_UNREACHABLE, Dst: ipNet(netip.MustParsePrefix("fd45:b891:567f::1/128"))}
 		if err := netlink.RouteAdd(&foreign); err != nil {
@@ -411,6 +441,9 @@ func TestKernelProcessLifecycle(t *testing.T) {
 			t.Fatal("NewKernel adopted a route table it does not own")
 		} else {
 			fmt.Println("REFUSED", err)
+		}
+		if err := CleanupStaleKernel(); err == nil {
+			t.Fatal("reset cleanup adopted a foreign route")
 		}
 	default:
 		t.Fatalf("unknown mode %q", mode)
@@ -454,6 +487,14 @@ func TestKernelCrashRecoveryIsolatedNamespace(t *testing.T) {
 	}
 	if out, err = mode("recover"); err != nil || !strings.Contains(out, "RECLAIMED") {
 		t.Fatalf("a restart did not reclaim its own leftover state (err=%v):\n%s", err, out)
+	}
+	if out, err = mode("abandon"); err == nil || !strings.Contains(out, "ABANDONED") {
+		t.Fatalf("reset crash setup did not abandon state (err=%v):\n%s", err, out)
+	}
+	for range 2 {
+		if out, err = mode("reset"); err != nil || !strings.Contains(out, "RESET CLEANED") {
+			t.Fatalf("unenrolled recovery did not clean owned state idempotently (err=%v):\n%s", err, out)
+		}
 	}
 	if out, err = mode("foreign"); err != nil || !strings.Contains(out, "REFUSED") {
 		t.Fatalf("a foreign route in the reserved table was not refused (err=%v):\n%s", err, out)

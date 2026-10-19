@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -380,6 +381,16 @@ func main() {
 	// Optional startup work can block after resource-owning workers begin.
 	// Handle termination now so those workers can drain during startup too.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// A verified completed reset, including a recovered pending reset, has
+	// already erased its credentials. Reclaim owned kernel policy before
+	// exposing its receipt. A fresh unenrolled host has no such receipt and
+	// must not require mesh firewall tools just to begin enrollment.
+	if resetStatus, err := provisioningSvcV2.IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{}); err == nil {
+		recoverCompletedResetMesh(ctx, resetStatus.GetNotProvisioned().GetUnenrollmentCompletion(), 5*time.Second,
+			cleanupResetMesh, provisioningSvc.SetResetCleanupError, func(err error) {
+				logger.Error("Reset mesh cleanup incomplete; completion and enrollment remain unavailable", zap.Error(err))
+			})
+	}
 	defer cancel()
 	var meshUDPPolicyDone <-chan struct{}
 	if meshUDPReady {
@@ -953,7 +964,7 @@ func main() {
 	defer appUDPMessages.Close()
 	wg.Add(1)
 	go func() { defer wg.Done(); logUDPMessageState(ctx, logger, appUDPMessages) }()
-	var localMeshStart sync.Once
+	var localMeshLife meshLifetime
 	var localMeshMu sync.RWMutex
 	var localMeshSnapshot func() localmesh.NodeSnapshot
 	var localMeshAppClient *meshsession.Client
@@ -989,7 +1000,7 @@ func main() {
 			logger.Error("wendy net identity unavailable", zap.Error(err))
 			return
 		}
-		localMeshStart.Do(func() {
+		localMeshLife.Start(ctx, func(meshCtx context.Context, launch func(func())) {
 			appClient, err := meshsession.NewClient(credentials, appUDPMessages)
 			if err != nil {
 				logger.Error("wendy net app client unavailable", zap.Error(err))
@@ -998,15 +1009,13 @@ func main() {
 			localMeshMu.Lock()
 			localMeshAppClient = appClient
 			localMeshMu.Unlock()
-			go func() { <-ctx.Done(); _ = appClient.Close() }()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			launch(func() { <-meshCtx.Done(); _ = appClient.Close() })
+			launch(func() {
 				ticker := time.NewTicker(time.Second)
 				defer ticker.Stop()
 				for {
 					select {
-					case <-ctx.Done():
+					case <-meshCtx.Done():
 						return
 					case <-ticker.C:
 					}
@@ -1019,24 +1028,20 @@ func main() {
 						appClient.PruneRoutes(snapshot())
 					}
 				}
-			}()
+			})
 			sessionServer, err := meshsession.NewServer(credentials, meshIngress, appUDPMessages)
 			if err != nil {
 				logger.Error("wendy net app session unavailable", zap.Error(err))
 			} else {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					if err := sessionServer.Run(ctx, fmt.Sprintf(":%d", meshsession.Port)); err != nil && ctx.Err() == nil {
+				launch(func() {
+					if err := sessionServer.Run(meshCtx, fmt.Sprintf(":%d", meshsession.Port)); err != nil && meshCtx.Err() == nil {
 						logger.Error("wendy net app session stopped", zap.Error(err))
 					}
-				}()
+				})
 			}
 			name, _ := os.Hostname()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				runMeshSupervisor(ctx, 5*time.Second, func(ctx context.Context) error {
+			launch(func() {
+				runMeshSupervisor(meshCtx, 5*time.Second, func(ctx context.Context) error {
 					return runConfiguredNetCarriers(ctx, configPath, localmesh.TCPIdentity{
 						Name: name, AgentPort: uint16(mtlsPortNum),
 						Certificate: certPEM, Chain: chainPEM, Key: keyPEM,
@@ -1048,7 +1053,7 @@ func main() {
 				}, func(err error) {
 					logger.Error("configured wendy net stopped", zap.Error(err))
 				})
-			}()
+			})
 		})
 	}
 
@@ -1387,10 +1392,30 @@ func main() {
 	// mTLS server, tunnel broker, BLE peripheral, and HTTPS registry in place.
 	// Revoke Unitree sessions and keys before Unprovision reports success.
 	// A failed clear is retried when the agent restarts unenrolled.
-	provisioningSvc.BeforeUnprovisioned = func() {
+	provisioningSvc.BeforeUnprovisioned = func() error {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		stopErr := localMeshLife.Stop(stopCtx)
+		stopCancel()
+		localMeshMu.Lock()
+		localMeshSnapshot, localMeshCredentials, localMeshAppClient = nil, nil, nil
+		localMeshMu.Unlock()
+		meshDialer.UpdateIdentity("", "", "")
+		meshRoster.UpdateIdentity("", "", "", "")
+		_ = meshProxy.Close()
+		if udpProxy != nil {
+			_ = udpProxy.Close()
+		}
 		if err := unitreeSvc.Rebind(unitree.PairingOwner{}); err != nil {
 			logger.Error("Clearing Unitree pairings during unprovisioning failed", zap.Error(err))
 		}
+		if stopErr != nil {
+			// Do not reclaim kernel objects while an undrained worker may still
+			// use them. Reset stays unconfirmed; the scheduled restart retries.
+			return fmt.Errorf("waiting for mesh shutdown: %w", stopErr)
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		return errors.Join(meshSharing.Deactivate(), cleanupResetMesh(cleanupCtx))
 	}
 	provisioningSvc.OnUnprovisioned = func() {
 		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
@@ -1477,7 +1502,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		logger.Info("OTEL HTTP receiver listening", zap.String("port", otelHTTPPort))
-		if err := otelHTTPReceiver.Serve(otelHTTPLis); err != nil && err != http.ErrServerClosed {
+		if err := otelHTTPReceiver.Serve(otelHTTPLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("OTEL HTTP server error", zap.Error(err))
 		}
 	}()
@@ -1530,6 +1555,11 @@ func main() {
 		},
 		cancel: func() {
 			cancel()
+			meshStopCtx, meshStopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := localMeshLife.Stop(meshStopCtx); err != nil {
+				logger.Error("Local networking shutdown did not finish", zap.Error(err))
+			}
+			meshStopCancel()
 			_ = meshProxy.Close()
 			if udpProxy != nil {
 				_ = udpProxy.Close()

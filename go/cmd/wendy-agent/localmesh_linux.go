@@ -133,6 +133,8 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 	defer func() { runErr = errors.Join(runErr, sharing.Deactivate()) }()
 	return localmesh.RunConfiguredWithNode(runCtx, configDir, id, func(node *localmesh.Node, cfg *localmesh.TCPConfig) {
 		if node == nil {
+			// The final defer retries and propagates any retained sharing
+			// cleanup failure after all carriers and the node have drained.
 			_ = sharing.Deactivate()
 			catalog.Deactivate()
 			if stopProviders != nil {

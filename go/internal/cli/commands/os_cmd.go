@@ -783,10 +783,8 @@ func readOSUpdateBaseline(ctx context.Context, conn *grpcclient.AgentConnection)
 // reportOSUpdateOutcome queries the freshly booted device for the outcome of
 // the update (healthcheck verdict, rollback details) and prints it. It
 // returns a non-nil error when the update failed or a same-version result
-// cannot be verified, so the command exits non-zero without inventing a
-// rollback verdict.
+// cannot be verified. Reconnection retains the original authenticated target.
 func reportOSUpdateOutcome(ctx context.Context, prior *grpcclient.AgentConnection, preUpdateOSVersion string, baseline osUpdateBaseline) error {
-
 	var resp *agentpb.GetOSUpdateStatusResponse
 	var rpcErr error
 	var postUpdateOSVersion string
