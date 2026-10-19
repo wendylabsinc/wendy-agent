@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
-	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	litepb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"google.golang.org/protobuf/proto"
@@ -21,18 +21,14 @@ type alreadyEnrolledLiteDevice struct {
 }
 
 func TestLiteEnrollmentIdentityWorksWithMeshAndPreservesOlderFirmware(t *testing.T) {
-	tenant, err := meshid.ParseTenant("11111111-1111-4111-8111-111111111111")
-	if err != nil {
-		t.Fatal(err)
-	}
 	seen := map[string]bool{}
 	for range 2 {
 		id, err := liteEnrollmentDeviceID("80456b2d29b4", true)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := meshid.ParseDevice(tenant, id); err != nil {
-			t.Fatal(err)
+		if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id || parsed.Version() != 4 {
+			t.Fatalf("expected a canonical random mesh device UUID, got %q", id)
 		}
 		if seen[id] {
 			t.Fatal("re-enrollment reused its previous identity")

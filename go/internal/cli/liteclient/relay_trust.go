@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
