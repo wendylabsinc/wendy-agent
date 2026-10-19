@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"math/big"
 	"net"
@@ -436,5 +437,100 @@ func TestLadderChecksLocalPinUnderAliases(t *testing.T) {
 	_, _, err = dialAgentLadderWithCerts(ladderCtx(t), newDialTarget("box.local", startLocalOnlyAgent(t, owner)), nil)
 	if !errors.Is(err, errDeviceIdentityRefused) || !strings.Contains(err.Error(), "wendy device unpin box-alias") {
 		t.Fatalf("err = %v, want an identity refusal naming the alias", err)
+	}
+}
+
+// testCloudPKI is a CA and a device leaf naming asset 9 in org 7, plus an
+// operator certificate of org 7: the shape the cloud rung verifies.
+func testCloudPKI(t *testing.T) (caPEM, deviceCertPEM, deviceKeyPEM string, operator config.CertificateInfo) {
+	t.Helper()
+	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test tenant CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		KeyUsage: x509.KeyUsageCertSign, BasicConstraintsValid: true, IsCA: true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, caKey.Public(), caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, _ := x509.ParseCertificate(caDER)
+	leaf := func(serial int64, uri string, eku ...x509.ExtKeyUsage) (string, string) {
+		key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		u, _ := url.Parse(uri)
+		der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+			SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: uri},
+			NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(12 * time.Hour),
+			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: eku, URIs: []*url.URL{u},
+		}, ca, key.Public(), caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keyDER, _ := x509.MarshalECPrivateKey(key)
+		return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+			string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	}
+	caPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))
+	deviceCertPEM, deviceKeyPEM = leaf(2, "urn:wendy:org:7:asset:9", x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth)
+	opCert, opKey := leaf(3, "urn:wendy:org:7:user:alice", x509.ExtKeyUsageClientAuth)
+	return caPEM, deviceCertPEM, deviceKeyPEM, config.CertificateInfo{
+		OrganizationID: 7, PemCertificate: opCert, PemPrivateKey: opKey, PemCertificateChain: caPEM,
+	}
+}
+
+// A real enrolled-device server whose certificate the cloud rung verifies,
+// then a failed version probe (no AgentService): refused, never plaintext.
+func TestLadderNeverPlaintextAfterVerifiedCloudServer(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	setPinCache(t)
+	forbidPlaintext(t)
+	caPEM, certPEM, keyPEM, operator := testCloudPKI(t)
+	srv, err := mtls.NewServer(certPEM, caPEM, keyPEM, zap.NewNop(), time.Time{},
+		&interceptor.Authorizer{Logger: zap.NewNop(), Listener: interceptor.ListenerMTLS, OrgMode: interceptor.OrgModeOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := serveTest(t, srv) // no AgentService registered
+
+	_, _, err = dialAgentLadderWithCerts(ladderCtx(t), newDialTarget("box", addr), []config.CertificateInfo{operator})
+	if !errors.Is(err, errNoAuthenticatedEndpoint) || !strings.Contains(err.Error(), "authenticated over TLS") {
+		t.Fatalf("err = %v, want the verified-device refusal", err)
+	}
+}
+
+// A local-only device that completes its verified handshake and then closes
+// the connection without an alert is refusing the key.
+func TestLadderReadsCloseAfterVerifiedLocalHandshakeAsKeyRefused(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	setPinCache(t)
+	forbidPlaintext(t)
+	useLocalKey(t)
+	deviceKeyPEM, _ := certs.GenerateKeyPair()
+	certPEM, _ := mtls.SelfSignedCert(deviceKeyPEM, time.Now())
+	pair, err := tls.X509KeyPair([]byte(certPEM), []byte(deviceKeyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				_ = tls.Server(c, &tls.Config{Certificates: []tls.Certificate{pair}, ClientAuth: tls.RequireAnyClientCert, NextProtos: []string{"h2"}}).Handshake()
+				c.Close() // no alert: just gone
+			}()
+		}
+	}()
+
+	_, _, err = dialAgentLadderWithCerts(ladderCtx(t), newDialTarget("box", ln.Addr().String()), nil)
+	if !errors.Is(err, errProvisionedAgentUnauthorized) || !strings.Contains(err.Error(), "closed the connection after the TLS handshake") {
+		t.Fatalf("err = %v, want the key-refused reading", err)
 	}
 }
