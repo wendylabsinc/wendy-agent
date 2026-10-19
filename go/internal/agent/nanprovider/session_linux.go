@@ -61,7 +61,7 @@ func (p Provider) Run(parent context.Context) error {
 		return err
 	}
 	defer release()
-	reclaimed, err := reclaimOwnedNDI(ctx, id)
+	_, err = reclaimOwnedNDI(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -69,19 +69,21 @@ func (p Provider) Run(parent context.Context) error {
 	if err != nil && !absentNANStatus(status, err) {
 		return err
 	}
-	previouslyStarted := strings.Contains(status, "nan_started=1")
+	// A stopped nan0 still belongs to its existing creator. Recovering our
+	// private NDI also does not establish ownership of that shared interface.
+	present := err == nil
 	var currentSocket socketIdentity
-	if previouslyStarted {
+	if present {
 		currentSocket, err = nanControlSocketIdentity()
 		if err != nil {
-			return fmt.Errorf("started NAN control socket missing: %w", err)
+			return fmt.Errorf("existing NAN control socket missing: %w", err)
 		}
 	}
 	marked, err := sessionOwnerMatches(id, currentSocket)
 	if err != nil {
 		return err
 	}
-	plan := planSession(previouslyStarted, reclaimed, marked)
+	plan := planSession(present, marked)
 	if plan.own {
 		// Record ownership before START: a process killed during START must not
 		// leave an unclaimable nan0. The exclusive provider lock is held here.

@@ -37,18 +37,17 @@ func TestAbsentNANStatusRequiresExactHelperResponse(t *testing.T) {
 
 func TestSessionPlanPreservesExternalNANAndResetsCrashedProvider(t *testing.T) {
 	for _, tc := range []struct {
-		name                          string
-		started, reclaimedNDI, marked bool
-		want                          sessionPlan
+		name            string
+		present, marked bool
+		want            sessionPlan
 	}{
-		{"fresh session", false, false, false, sessionPlan{own: true}},
-		{"stale marker but NAN already absent", false, false, true, sessionPlan{own: true}},
-		{"external host shell session", true, false, false, sessionPlan{}},
-		{"crash left owned NDI", true, true, false, sessionPlan{own: true, reset: true}},
-		{"crash left nan0 without NDI", true, false, true, sessionPlan{own: true, reset: true}},
+		{"fresh session", false, false, sessionPlan{own: true}},
+		{"stale marker but NAN already absent", false, true, sessionPlan{own: true}},
+		{"existing external management interface", true, false, sessionPlan{}},
+		{"crashed owned management interface", true, true, sessionPlan{own: true, reset: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := planSession(tc.started, tc.reclaimedNDI, tc.marked); got != tc.want {
+			if got := planSession(tc.present, tc.marked); got != tc.want {
 				t.Fatalf("planSession = %+v, want %+v", got, tc.want)
 			}
 		})
@@ -111,7 +110,7 @@ func TestStaleMarkerWithNANAbsentIsReplacedAndCleared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan := planSession(false, false, marked); !plan.own || plan.reset {
+	if plan := planSession(false, marked); !plan.own || plan.reset {
 		t.Fatalf("unexpected absent-NAN plan: %+v", plan)
 	}
 	if err := markOwner(path, id, socketIdentity{}); err != nil {

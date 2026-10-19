@@ -50,9 +50,11 @@ type sessionPlan struct {
 	own, reset bool
 }
 
-func planSession(started, reclaimedNDI, marked bool) sessionPlan {
-	own := !started || reclaimedNDI || marked
-	return sessionPlan{own: own, reset: started && own}
+// Only absence or a matching management-interface marker grants ownership.
+// A private data interface is independent of whoever created nan0.
+func planSession(present, marked bool) sessionPlan {
+	own := !present || marked
+	return sessionPlan{own: own, reset: present && own}
 }
 
 func ownerContents(id meshid.Device, socket socketIdentity) string {

@@ -32,9 +32,28 @@ func init() {
 	if len(os.Args) < 2 {
 		fail(fmt.Errorf("missing helper command"))
 	}
+	if path := os.Getenv("WENDY_NAN_FIXTURE_COMMANDS"); path != "" {
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			fail(err)
+		}
+		_, err = fmt.Fprintln(file, os.Args[1])
+		closeErr := file.Close()
+		if err != nil {
+			fail(err)
+		}
+		if closeErr != nil {
+			fail(closeErr)
+		}
+	}
 	switch os.Args[1] {
 	case "status":
-		fmt.Println("nan_started=0")
+		state := os.Getenv("WENDY_NAN_FIXTURE_EXTERNAL")
+		if state == "" {
+			fmt.Println("nan0 is not present")
+			os.Exit(1)
+		}
+		fmt.Println("nan_started=" + state)
 	case "start", "schedule-default":
 	case "ndi-create":
 		if err := netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: ndiName}}); err != nil {
@@ -56,6 +75,9 @@ func init() {
 			}
 		}
 	case "stop":
+		if os.Getenv("WENDY_NAN_FIXTURE_EXTERNAL") != "" {
+			fail(fmt.Errorf("foreign-management-stop-fault"))
+		}
 		if _, err := netlink.LinkByName(ndiName); err == nil {
 			fail(fmt.Errorf("remove NDI before stopping NAN"))
 		}
@@ -77,11 +99,19 @@ func TestProviderRemovesNDIAfterPartialCreateFailure(t *testing.T) {
 		if cancelAfterCreate {
 			name = "parent cancels after interface creation"
 		}
-		t.Run(name, func(t *testing.T) { checkPartialCreateCleanup(t, cancelAfterCreate) })
+		t.Run(name, func(t *testing.T) { checkPartialCreateCleanup(t, cancelAfterCreate, "", false) })
 	}
 }
 
-func checkPartialCreateCleanup(t *testing.T, cancelAfterCreate bool) {
+func TestProviderPreservesExternalNANAfterPrivateNDIReclaim(t *testing.T) {
+	checkPartialCreateCleanup(t, false, "1", true)
+}
+
+func TestProviderPreservesInactiveExternalNAN(t *testing.T) {
+	checkPartialCreateCleanup(t, false, "0", false)
+}
+
+func checkPartialCreateCleanup(t *testing.T, cancelAfterCreate bool, externalState string, reclaimedNDI bool) {
 	t.Helper()
 	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
 		t.Skip("disposable privileged container only")
@@ -107,6 +137,9 @@ func checkPartialCreateCleanup(t *testing.T, cancelAfterCreate bool) {
 	}
 	t.Cleanup(func() { _ = os.Remove(partialCreateHelper) })
 	t.Setenv("WENDY_NAN_PARTIAL_CREATE_HELPER", "1")
+	t.Setenv("WENDY_NAN_FIXTURE_EXTERNAL", externalState)
+	commandsPath := filepath.Join(t.TempDir(), "commands")
+	t.Setenv("WENDY_NAN_FIXTURE_COMMANDS", commandsPath)
 	if err = os.MkdirAll(filepath.Dir(nanControlPath), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -116,6 +149,10 @@ func checkPartialCreateCleanup(t *testing.T, cancelAfterCreate bool) {
 	}
 	t.Cleanup(func() { _ = control.Close(); _ = os.Remove(nanControlPath) })
 	id := underlayDevice(t, 0x1234)
+	beforeSocket, err := nanControlSocketIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if link, err := netlink.LinkByName(ndiName); err == nil && link.Type() == "dummy" {
 			_ = netlink.LinkDel(link)
@@ -125,6 +162,19 @@ func checkPartialCreateCleanup(t *testing.T, cancelAfterCreate bool) {
 			_ = os.Remove(path)
 		}
 	})
+	if reclaimedNDI {
+		link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: ndiName}}
+		if err := netlink.LinkAdd(link); err != nil {
+			t.Fatal(err)
+		}
+		addr, err := netlink.ParseAddr("10.89.18.52/16")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := netlink.AddrReplace(link, addr); err != nil {
+			t.Fatal(err)
+		}
+	}
 	provider := Provider{Credentials: &localmesh.Credentials{Device: id}, Node: unusedPartialCreateNode{}}
 	if cancelAfterCreate {
 		t.Setenv("WENDY_NAN_PARTIAL_CREATE_WAIT", "1")
@@ -162,5 +212,18 @@ func checkPartialCreateCleanup(t *testing.T, cancelAfterCreate bool) {
 	}
 	if _, err = os.Lstat(sessionOwnerPath); !os.IsNotExist(err) {
 		t.Errorf("NAN cleanup could not finish after partial interface creation: %v", err)
+	}
+	if externalState != "" {
+		commands, err := os.ReadFile(commandsPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains("\n"+string(commands), "\nstop\n") {
+			t.Error("provider tried to stop an external NAN management interface")
+		}
+		afterSocket, err := nanControlSocketIdentity()
+		if err != nil || afterSocket != beforeSocket {
+			t.Errorf("external control socket changed: %v", err)
+		}
 	}
 }
