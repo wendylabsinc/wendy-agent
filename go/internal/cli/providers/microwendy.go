@@ -613,19 +613,21 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 		return nil, &AppRequirementsUnsupportedError{Device: device, Missing: "native apps"}
 	}
 
-	// ensures the ESP-IDF toolchain is available, install it if not
-	if err := espidftoolchain.EnsureVersion(ctx); err != nil {
-		return nil, err
-	}
-
-	// check if the project has been configured for the right target
 	target := di.DeviceType
 	if strings.ContainsAny(target, " \t\r\n") {
 		return nil, fmt.Errorf("invalid device target %q", target)
 	}
+	toolchain, err := espidftoolchain.LoadProjectToolchain(projectPath, target)
+	if err != nil {
+		return nil, err
+	}
+	if err := toolchain.Ensure(ctx); err != nil {
+		return nil, err
+	}
+
 	configuredTarget := espidftoolchain.ProjectTarget(projectPath)
 	if target != "" && target != configuredTarget {
-		cmd := espidftoolchain.IdfCommandContext(ctx, "set-target", target)
+		cmd := toolchain.Command(ctx, "set-target", target)
 		cmd.Dir = projectPath
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -659,7 +661,7 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 	}
 
 	// build the project
-	cmd := espidftoolchain.IdfCommandContext(ctx, "gen_project_binary") // build only the app binary, not the whole firmware image
+	cmd := toolchain.Command(ctx, "gen_project_binary") // build only the app binary, not the whole firmware image
 	cmd.Dir = projectPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
