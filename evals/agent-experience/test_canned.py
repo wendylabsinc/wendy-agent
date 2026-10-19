@@ -1,7 +1,9 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import canned
 import capture
@@ -90,6 +92,37 @@ class CannedTests(unittest.TestCase):
         self.assertEqual(len(data["replies"]), 1)
         self.assertEqual(data["captured_with"]["device_kind"], "simulator")
         self.assertEqual(data["captured_with"]["wendy_version"], "fake-wendy 0.0.0")
+
+    def _logged_capture(self, *extra, errors=""):
+        log = self.root / "mcp.log"
+        argv = ["--wendy", FAKE, "--device", "vm:test", "--set", "s", "--tool", "read_thing",
+                "--canned-dir", str(self.root), *extra]
+        with mock.patch.dict(os.environ, {"FAKE_MCP_LOG": str(log), "FAKE_MCP_ERROR_TOOLS": errors}):
+            code = capture.main(argv)
+        calls = [json.loads(line)["params"] for line in log.read_text().splitlines()
+                 if json.loads(line).get("method") == "tools/call"]
+        return code, calls
+
+    def test_capture_connects_to_the_device_before_the_tool(self):
+        # `mcp serve --device` connects asynchronously, so a tool called right after initialize
+        # would capture NOT_CONNECTED; the capture connects explicitly and waits for the reply.
+        code, calls = self._logged_capture()
+        self.assertEqual(code, 0)
+        self.assertEqual([(c["name"], c["arguments"]) for c in calls],
+                         [("device_connect", {"device": "vm:test"}), ("read_thing", {})])
+
+    def test_capture_without_connect_for_host_tools(self):
+        # device_connect boots a stopped VM, so host-side tools such as simulator_delete skip it.
+        code, calls = self._logged_capture("--no-connect")
+        self.assertEqual(code, 0)
+        self.assertEqual([c["name"] for c in calls], ["read_thing"])
+
+    def test_capture_never_saves_an_error_reply(self):
+        for failing in ("device_connect", "read_thing"):
+            with self.subTest(failing=failing):
+                code, _ = self._logged_capture(errors=failing)
+                self.assertEqual(code, 1)
+                self.assertFalse((self.root / "s" / "read_thing.json").exists())
 
     def _fake_cli(self, out):
         marker = self.root / "marker"

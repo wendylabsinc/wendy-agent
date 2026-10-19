@@ -34,8 +34,10 @@ def _sha256(path):
 
 
 def capture_mcp(args, canned_dir, provenance):
-    argv = [args.wendy, "mcp", "serve", "--tool-groups", "all", "--device", args.device]
-    with StdioMCP(argv, timeout=120) as mcp:
+    # Not `mcp serve --device`: its startup connection is asynchronous, so a call made right after
+    # initialize could capture NOT_CONNECTED. device_connect below waits for the connection.
+    argv = [args.wendy, "mcp", "serve", "--tool-groups", "all"]
+    with StdioMCP(argv, timeout=args.timeout) as mcp:
         mcp.initialize()
         tools = {t["name"]: t for t in mcp.list_tools()}
         if args.tool not in tools:
@@ -45,7 +47,16 @@ def capture_mcp(args, canned_dir, provenance):
         if not read_only and not args.yes:
             print(f"{args.tool} is not read-only; pass --yes to run it for real", file=sys.stderr)
             return 2
+        if not args.no_connect:
+            connected = mcp.call("device_connect", {"device": args.device})
+            if connected.get("isError"):
+                print(f"device_connect {args.device} failed: {json.dumps(connected)}", file=sys.stderr)
+                return 1
         result = mcp.call(args.tool, json.loads(args.args or "{}"))
+    if result.get("isError"):
+        # Canned calls never return an error to the agent (D7), so an error reply is never saved.
+        print(f"{args.tool} returned an error, nothing saved: {json.dumps(result)}", file=sys.stderr)
+        return 1
     path = Path(canned_dir) / args.set / f"{args.tool}.json"
     data = {"tool": args.tool, "replies": []}
     if path.is_file():
@@ -92,6 +103,9 @@ def main(argv=None):
     p.add_argument("--yes", action="store_true")
     p.add_argument("--canned-dir", default=str(DEFAULT_DIR))
     p.add_argument("--prefix-words", type=int)
+    p.add_argument("--no-connect", action="store_true",
+                   help="MCP mode: skip device_connect, for host-side tools (device_connect boots a stopped VM).")
+    p.add_argument("--timeout", type=float, default=120, help="MCP mode: seconds to wait for each reply.")
     args = p.parse_args(argv)
     resolved = shutil.which(args.wendy)
     if resolved is None:

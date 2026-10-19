@@ -35,7 +35,8 @@ def handle(message):
             reply(id, {"tools": TOOLS})
     elif method == "tools/call":
         text = json.dumps({"tool": params.get("name"), "arguments": params.get("arguments")})
-        reply(id, {"content": [{"type": "text", "text": text}], "isError": False})
+        failing = params.get("name") in (os.environ.get("FAKE_MCP_ERROR_TOOLS") or "").split(",")
+        reply(id, {"content": [{"type": "text", "text": text}], "isError": failing})
     else:
         sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": id,
                                      "error": {"code": -32601, "message": "method not found"}}) + "\n")
