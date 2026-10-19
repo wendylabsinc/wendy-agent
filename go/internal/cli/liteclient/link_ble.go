@@ -142,12 +142,12 @@ func openBLEStream(ctx context.Context, address string, psm uint16) (net.Conn, e
 
 // ConnectViaBLEWithPKIAuthentication verifies the Wendy-issued chain and the
 // selected device identity with the same verifier used by LAN and Cloud.
-func (c *WendyLiteClient) ConnectViaBLEWithPKIAuthentication(address string, psm uint16, cert tls.Certificate, chain, deviceID string) error {
-	return c.ConnectViaBLEWithPKIAuthenticationContext(context.Background(), address, psm, cert, chain, deviceID)
+func (c *WendyLiteClient) ConnectViaBLEWithPKIAuthentication(address string, psm uint16, cert tls.Certificate, chain, deviceID string, lite LiteDeviceCAChain) error {
+	return c.ConnectViaBLEWithPKIAuthenticationContext(context.Background(), address, psm, cert, chain, deviceID, lite)
 }
 
-func (c *WendyLiteClient) ConnectViaBLEWithPKIAuthenticationContext(ctx context.Context, address string, psm uint16, cert tls.Certificate, chain, deviceID string) error {
-	cfg, err := deviceTLSConfig(cert, chain, deviceID)
+func (c *WendyLiteClient) ConnectViaBLEWithPKIAuthenticationContext(ctx context.Context, address string, psm uint16, cert tls.Certificate, chain, deviceID string, lite LiteDeviceCAChain) error {
+	cfg, err := deviceTLSConfig(ctx, cert, chain, deviceID, lite)
 	if err != nil {
 		return err
 	}

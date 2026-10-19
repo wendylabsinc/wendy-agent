@@ -53,7 +53,7 @@ func orgAllowed(cliOrgs map[int32]bool, sourceOrg int32) error {
 	sort.Ints(have)
 	labels := make([]string, len(have))
 	for i, org := range have {
-		labels[i] = fmt.Sprintf("%d", org)
+		labels[i] = orgLabel("", int32(org))
 	}
 	yours := "no organizations"
 	if len(labels) == 1 {
@@ -61,7 +61,7 @@ func orgAllowed(cliOrgs map[int32]bool, sourceOrg int32) error {
 	} else if len(labels) > 1 {
 		yours = "organizations " + strings.Join(labels, ", ")
 	}
-	return fmt.Errorf("device is in organization %d, but you are logged in to %s; pairing is only allowed within an organization you belong to", sourceOrg, yours)
+	return fmt.Errorf("device is in organization %s, but you are logged in to %s; pairing is only allowed within an organization you belong to", orgLabel("", sourceOrg), yours)
 }
 
 // discoverWendyLiteSensorSources browses _wendy-lite._tcp and returns every
@@ -174,16 +174,32 @@ func pairingName(name string, source *models.DiscoveredDevice) string {
 
 func newDevicePairCmd() *cobra.Command {
 	var (
-		listOnly bool
-		name     string
-		sensors  []string
+		listOnly      bool
+		name          string
+		sensors       []string
+		unitreeTab    bool
+		unitreeIP     string
+		unitreeRegion string
 	)
 	cmd := &cobra.Command{
 		Use:   "pair",
-		Short: "Pair or forget Bluetooth, SensorLink, and IP camera devices",
-		Long:  "Discover, pair, and forget devices in the Bluetooth, SensorLink, and IP Cameras tabs. Bluetooth and IP cameras are discovered on the target device; SensorLink discovers sources on your local network. SensorLink devices must be in an organization you belong to.",
+		Short: "Pair or forget Bluetooth, SensorLink, IP cameras, and Unitree robots",
+		Long:  "Discover, pair, and forget devices in the Bluetooth, SensorLink, IP Cameras, and Unitree tabs. Bluetooth, IP cameras, and Unitree Go2 robots are discovered on the selected WendyOS device's network; SensorLink discovers sources on your local network. Unitree login retrieves your robot's key, which the selected WendyOS device stores and uses to connect. Use --ip to enter a robot's IPv4 address. SensorLink devices must be in an organization you belong to.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("ip") {
+				var err error
+				unitreeIP, err = unitreePairIPv4(unitreeIP)
+				if err != nil {
+					return fmt.Errorf("--ip: %w", err)
+				}
+			}
+			if unitreeRegion != "global" && unitreeRegion != "cn" {
+				return fmt.Errorf("--unitree-region must be global or cn")
+			}
+			if listOnly && (unitreeTab || cmd.Flags().Changed("ip") || cmd.Flags().Changed("unitree-region")) {
+				return fmt.Errorf("--list prints SensorLink pairings and cannot be combined with Unitree flags")
+			}
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
 			if err != nil {
@@ -218,9 +234,13 @@ func newDevicePairCmd() *cobra.Command {
 				&cameraPairHandler{ctx: pairCtx, client: conn.VideoService, preflight: func(ctx context.Context) error {
 					return cameraServicePreflight(ctx, conn, cameraNetworkManagement)
 				}},
+				&unitreePairHandler{ctx: pairCtx, client: conn.UnitreeService, region: unitreeRegion, initialIP: unitreeIP, transportError: unitreePairTransportError(conn)},
 			)
 			if cmd.Flags().Changed("name") || cmd.Flags().Changed("sensors") {
 				model.active = pairSensorLinkTab
+			}
+			if unitreeTab || cmd.Flags().Changed("ip") || cmd.Flags().Changed("unitree-region") {
+				model.active = pairUnitreeTab
 			}
 			if _, err := tea.NewProgram(model, tea.WithContext(pairCtx)).Run(); err != nil {
 				return fmt.Errorf("device pairing: %w", err)
@@ -231,6 +251,9 @@ func newDevicePairCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&listOnly, "list", false, "list current SensorLink pairings")
 	cmd.Flags().StringVar(&name, "name", "", "friendly name for a SensorLink pairing")
 	cmd.Flags().StringSliceVar(&sensors, "sensors", nil, "limit a SensorLink pairing to these sensor names (default: all)")
+	cmd.Flags().BoolVar(&unitreeTab, "unitree", false, "open the Unitree Go2 pairing tab")
+	cmd.Flags().StringVar(&unitreeIP, "ip", "", "Unitree Go2 IPv4 address on the selected WendyOS device's network")
+	cmd.Flags().StringVar(&unitreeRegion, "unitree-region", "global", "Unitree account region: global or cn")
 	return cmd
 }
 

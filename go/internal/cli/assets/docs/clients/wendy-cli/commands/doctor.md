@@ -94,5 +94,7 @@ project source, credentials, and subprocess output. Error messages and suggested
 fixes come from fixed product text, not arbitrary logs or validation errors.
 
 Doctor does not install or update software, modify configuration, deploy apps,
-start VMs, or move robots. CLI telemetry and routine update or configuration
-housekeeping are skipped for this command.
+start VMs, or move robots. To install a missing QEMU or ARM64 firmware, run
+`wendy run` or `wendy tour` in a terminal; they offer to install it. CLI
+telemetry and routine update or configuration housekeeping are skipped for this
+command.

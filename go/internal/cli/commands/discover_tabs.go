@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -46,6 +47,12 @@ func newDiscoverTabsModel(ctx context.Context, local discoverModel, auth *config
 	// straight onto it has to start that here instead.
 	if active == devicePickerSimulatorTab {
 		m.simStarted = true
+	}
+	if !vmDetachSupportedFn() {
+		vms := m.sim.vms
+		m.sim.picker.OnCreateItem = func() (string, bool) {
+			return simulatorForegroundHint(nextSimulatorName(*vms), true), false
+		}
 	}
 	if auth != nil {
 		m.cloud = newCloudDiscoverModel(ctx, auth, os.Getenv("WENDY_BROKER_URL"), false, false, nil)
@@ -181,7 +188,12 @@ func (m discoverTabsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		local, localCmd := m.updateLocal(msg)
 		m = local
 		cmds = append(cmds, localCmd)
-		sim, simCmd := m.updateSimulator(msg)
+		// The simulator picker shares the terminal with the tab header and footer.
+		simSize := msg
+		if msg.Height > 0 {
+			simSize.Height = max(1, msg.Height-3)
+		}
+		sim, simCmd := m.updateSimulator(simSize)
 		m = sim
 		cmds = append(cmds, simCmd)
 		if m.cloudAuth != nil {
@@ -252,8 +264,8 @@ func (m discoverTabsModel) View() string {
 	case devicePickerLocalTab:
 		return header + "\n\n" + m.local.View()
 	case devicePickerSimulatorTab:
-		return header + "\n\n" + m.sim.View() + "\n" + devicePickerOrgStyle.Render(
-			"  enter copy address, tab switch, q quit — start one with 'wendy vm start <name>'")
+		footer := devicePickerOrgStyle.Render("  enter copy address, tab switch, q quit")
+		return header + "\n\n" + m.sim.View() + "\n" + tui.CropANSIView(footer, 0, m.windowWidth)
 	}
 
 	var body strings.Builder

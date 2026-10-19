@@ -12,15 +12,14 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/liteenroll"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
-// A request-signing certificate is separate from the ECDSA TLS certificate:
-// Go TLS cannot present the ML-DSA-only credential required for tunnel reqsigs.
-// Until login can obtain both profiles, an explicitly supplied signing pair
-// must belong to exactly the same operator principal as the active session.
+// Tunnel request signatures use the primary operator identity. An explicitly
+// supplied signing pair must belong to the active session's operator principal.
 func tunnelPrincipalSigner(auth *config.AuthConfig) (func([]byte) ([]byte, error), error) {
 	return configuredTunnelSigner(auth, cloudrelay.PrincipalSigner)
 }
@@ -58,6 +57,7 @@ func liteRelayOptions(ctx context.Context, auth *config.AuthConfig, renew bool) 
 	if options.DeviceTrustChainPEM == "" {
 		return options, fmt.Errorf("selected Cloud session has no device CA chain; run 'wendy auth login'")
 	}
+	options.DeviceTrustFallback = liteDeviceCAChain(auth)
 	key, err := cert.PrivateKeyPEM()
 	if err != nil {
 		return options, err
@@ -72,6 +72,22 @@ func liteRelayOptions(ctx context.Context, auth *config.AuthConfig, renew bool) 
 	options.OperatorIdentity = cert
 	return options, nil
 }
+
+// liteDeviceCAChain loads the selected tenant's Lite Device CA chain for the
+// relay, LAN and BLE verifiers; discovery caches it per PKI endpoint and tenant.
+func liteDeviceCAChain(auth *config.AuthConfig) liteclient.LiteDeviceCAChain {
+	pkiEndpoint, tenantID := auth.PKIEndpoint, auth.Certificates[0].TenantUUID()
+	// Capture the test hook before a verifier starts background discovery, so
+	// later tests can replace it without racing an in-flight lookup.
+	discover := discoverLiteDeviceCAChain
+	return func(ctx context.Context) (string, error) {
+		return discover(ctx, pkiEndpoint, tenantID)
+	}
+}
+
+// discoverLiteDeviceCAChain is replaced in tests.
+var discoverLiteDeviceCAChain = liteenroll.DiscoverLiteDeviceCAChain
+
 func configuredTunnelSigner(auth *config.AuthConfig, signer func(string, []byte) (func([]byte) ([]byte, error), error)) (func([]byte) ([]byte, error), error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("no operator certificate")

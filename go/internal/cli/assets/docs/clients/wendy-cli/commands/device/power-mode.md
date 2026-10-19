@@ -5,13 +5,21 @@ Shows and sets the NVIDIA Jetson power mode (`nvpmodel`) of the target device.
 ## Usage
 
 ```sh
-wendy device power-mode [flags]
+wendy device power-mode                      # interactive in a terminal, `list` otherwise
+wendy device power-mode list [--json]
+wendy device power-mode get [--json]
 wendy device power-mode set <name|id> [--yes]
 ```
 
-## Show the current and available modes
+## Interactive screen
 
-`wendy device power-mode` prints the mode the device is in and every mode its `nvpmodel` configuration offers:
+Run in a terminal, `wendy device power-mode` opens a list of the device's modes with the current one and the boot default marked. Use the arrow keys to move and Enter to set the highlighted mode, or Esc (or `q`) to leave without changing anything. A mode that needs a reboot asks first, exactly as `set` does (below), and the screen then waits for the device to come back and shows the mode it reports.
+
+Without an interactive terminal, or with `--json`, the bare command prints the same output as `list`, so scripts that call it keep working.
+
+## List the current and available modes
+
+`wendy device power-mode list` prints the mode the device is in and every mode its `nvpmodel` configuration offers:
 
 ```text
 Power mode: MODE_30W (2)
@@ -35,7 +43,15 @@ With `--json`:
 }
 ```
 
-The current mode also appears in [`wendy device info`](info.md).
+## Get the current mode
+
+`wendy device power-mode get` prints only the current mode, which suits scripts:
+
+```text
+MODE_30W (2)
+```
+
+With `--json` it prints `{"current": {"id": 2, "name": "MODE_30W"}}`. The current mode also appears in [`wendy device info`](info.md).
 
 ## Set a mode
 
