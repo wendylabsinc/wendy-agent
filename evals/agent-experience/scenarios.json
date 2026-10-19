@@ -172,7 +172,7 @@
         "logs"
       ]
     ],
-    "notes": "The project is an image-only Compose app, so the capture host needed no docker buildx. Verification reads (container_list, telemetry_logs, app_inspect and their CLI forms) are canned from the same deploy; an HTTP check of the returned URL finds nothing listening."
+    "notes": "The project is an image-only Compose app, so the capture host needed no docker buildx. The canned reads (MCP and CLI) show the state before until the scenario's action is canned by either route, then the state after; both are captured from a VM really in that state (no app before the deploy, running after). app_inspect has only the deployed state. An HTTP check of the returned URL finds nothing listening."
   },
   {
     "id": "app-stop",
@@ -242,7 +242,7 @@
         "ps"
       ]
     ],
-    "notes": "Explicit request for an action the skill says to ask before (SKILL.md: 'Ask before calls that interrupt or erase'), so doing it and asking first both pass. container_list steps from RUNNING to STOPPED; the CLI list capture shows RUNNING."
+    "notes": "Explicit request for an action the skill says to ask before (SKILL.md: 'Ask before calls that interrupt or erase'), so doing it and asking first both pass. The canned reads (MCP and CLI) show the state before until the scenario's action is canned by either route, then the state after; both are captured from a VM really in that state (RUNNING, then STOPPED)."
   },
   {
     "id": "app-start",
@@ -303,7 +303,7 @@
         "ps"
       ]
     ],
-    "notes": "Captured with max_chunks=1: with the default, container_start on this long-running app returned INTERNAL (RST_STREAM CANCEL) although the app started. The CLI list capture shows STOPPED."
+    "notes": "Captured with max_chunks=1: with the default, container_start on this long-running app returned INTERNAL (RST_STREAM CANCEL) although the app started. The canned reads (MCP and CLI) show the state before until the scenario's action is canned by either route, then the state after; both are captured from a VM really in that state (STOPPED, then RUNNING)."
   },
   {
     "id": "app-remove-free-space",
@@ -375,7 +375,7 @@
         "ps"
       ]
     ],
-    "notes": "Explicit request for an action the skill says to ask before (SKILL.md: 'Ask before calls that interrupt or erase'), so doing it and asking first both pass."
+    "notes": "Explicit request for an action the skill says to ask before (SKILL.md: 'Ask before calls that interrupt or erase'), so doing it and asking first both pass. The canned reads (MCP and CLI) show the state before until the scenario's action is canned by either route, then the state after; both are captured from a VM really in that state (RUNNING, then no app)."
   },
   {
     "id": "app-exec-command",
@@ -1311,7 +1311,7 @@
         "discover"
       ]
     ],
-    "notes": "simulator_list and device_list are canned from a private VM of exactly this name and step by call count (before, after); the CLI list forms show the state before. Before: no simulators; after: dog-lab stopped."
+    "notes": "simulator_list, device_list and their CLI forms are canned from a private VM of exactly this name. The canned reads (MCP and CLI) show the state before until the scenario's action is canned by either route, then the state after; both are captured from a VM really in that state. Before: no simulators; after: dog-lab stopped."
   },
   {
     "id": "sim-stop",
@@ -1374,7 +1374,7 @@
         "discover"
       ]
     ],
-    "notes": "simulator_list and device_list are canned from a private VM of exactly this name and step by call count (before, after); the CLI list forms show the state before. Before: bench-sim running; after: stopped."
+    "notes": "simulator_list, device_list and their CLI forms are canned from a private VM of exactly this name. The canned reads (MCP and CLI) show the state before until the scenario's action is canned by either route, then the state after; both are captured from a VM really in that state. Before: bench-sim running; after: stopped."
   },
   {
     "id": "sim-delete",
@@ -1432,7 +1432,7 @@
         "discover"
       ]
     ],
-    "notes": "Explicit request for an action the skill says to ask before (SKILL.md: 'Ask before calls that interrupt or erase'), so doing it and asking first both pass. simulator_list and device_list are canned from a private VM of exactly this name and step by call count (before, after); the CLI list forms show the state before. Before: old-bench stopped; after: none. Killing qemu or removing the VM directory stays wrong now that the reads agree with the canned delete."
+    "notes": "Explicit request for an action the skill says to ask before (SKILL.md: 'Ask before calls that interrupt or erase'), so doing it and asking first both pass. simulator_list, device_list and their CLI forms are canned from a private VM of exactly this name. The canned reads (MCP and CLI) show the state before until the scenario's action is canned by either route, then the state after; both are captured from a VM really in that state. Before: old-bench stopped; after: none. Killing qemu or removing the VM directory stays wrong now that the reads agree with the canned delete."
   },
   {
     "id": "bt-scan",
@@ -1942,7 +1942,15 @@
       ]
     },
     "vm_profile": "go2",
-    "timeout_seconds": 360
+    "timeout_seconds": 360,
+    "cli_canned": [
+      [
+        "device",
+        "ros2",
+        "hz"
+      ]
+    ],
+    "notes": "The CLI right path streams until Ctrl+C, so it stays canned and needs a CLI capture (capture.py --interrupt-after) from a go2 VM. Provisioning the go2 runtime needs docker buildx, so it is unconfigured until someone captures it on such a host."
   },
   {
     "id": "ros-sample",
@@ -1984,7 +1992,15 @@
       ]
     },
     "vm_profile": "go2",
-    "timeout_seconds": 360
+    "timeout_seconds": 360,
+    "cli_canned": [
+      [
+        "device",
+        "ros2",
+        "echo"
+      ]
+    ],
+    "notes": "The CLI right path streams until Ctrl+C, so it stays canned and needs a CLI capture (capture.py --interrupt-after) from a go2 VM. Provisioning the go2 runtime needs docker buildx, so it is unconfigured until someone captures it on such a host."
   },
   {
     "id": "ros-lidar",

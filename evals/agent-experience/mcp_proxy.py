@@ -304,7 +304,9 @@ class _Proxy:
 def run_proxy(real_wendy, argv, scenario, stdin, stdout):
     policy = CannedPolicy(json.loads(Path(scenario["tools"]).read_text()), scenario.get("canned") or [],
                           scenario.get("allow_real") or [], scenario.get("block") or [])
-    store = CannedStore(scenario["canned_dir"], scenario["canned_set"], scenario.get("context") or {})
+    # After states key off canned calls in the proxy's own log and the CLI wrapper's.
+    store = CannedStore(scenario["canned_dir"], scenario["canned_set"], scenario.get("context") or {},
+                        proxy_log=scenario.get("proxy_log"), cli_log=scenario.get("cli_log"))
     log = open(scenario["proxy_log"], "a", encoding="utf-8")
     child = subprocess.Popen([real_wendy, *argv], stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
     proxy = _Proxy(policy, store, log, child, stdout)

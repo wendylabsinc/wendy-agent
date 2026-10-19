@@ -19,9 +19,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))  # the shim runs python -E and may start in any directory
 
 import grading  # noqa: E402
-from canned import load_cli_capture, render  # noqa: E402
+from canned import cli_reply, load_cli_capture, render  # noqa: E402
 from mcp_proxy import run_proxy  # noqa: E402
-from tool_trace import cli_path  # noqa: E402
+from tool_trace import cli_path, command_words  # noqa: E402
 
 
 def write_shim(directory, python=sys.executable):
@@ -41,22 +41,25 @@ def cli_allowed(argv, safe):
 def help_request(argv):
     """The real argv for a help lookup, or None when argv is not one.
 
-    Only the exact token --help before any "--" counts (later words are a device-side command's).
-    cobra answers it before any hook or RunE, but a value flag can swallow it (`os update
-    --artifact-url --help` runs the update), so the request is rebuilt from the command words alone.
-    Hidden "__" commands are never asked: some disable flag parsing, which hands --help to RunE.
+    The exact token --help or -h before any "--" counts (later words are a device-side command's).
+    It becomes `help WORDS`: cobra's help command only resolves the command and prints. Passing argv
+    on is unsafe: a value flag can swallow --help (`os update --artifact-url --help` runs the
+    update), and `device ros2 exec` stops flag parsing at its first word, so even `WORDS --help`
+    would forward --help to the device. No wendy command redefines -h. Hidden "__" commands stay
+    canned; nothing an agent needs help with.
     """
     head = argv[:argv.index("--")] if "--" in argv else argv
-    if "--help" not in head:
+    if not {"--help", "-h"} & set(head):
         return None
     words = cli_path(head)
     if any(word.startswith("__") for word in words):
         return None
-    return [*words, "--help"]
+    return ["help", *words]
 
 
 def cli_canned(argv, prefixes):
-    words = cli_path(argv)
+    # Flags skipped, so `vm --yes list` is canned like `vm list`; canning more is the safe direction.
+    words = command_words(argv)
     return any(isinstance(p, list) and p and words[:len(p)] == p for p in prefixes)
 
 
@@ -209,7 +212,10 @@ def main(argv):
         return code
     capture = None
     try:
-        capture = load_cli_capture(scenario["canned_dir"], scenario["canned_set"], cli_path(argv))
+        capture = load_cli_capture(scenario["canned_dir"], scenario["canned_set"], command_words(argv))
+        if capture:
+            # Before this call is logged, so a call never counts as its own earlier action.
+            capture = cli_reply(capture, scenario.get("proxy_log"), scenario.get("cli_log"))
     except Exception as exc:
         error = (error + "; " if error else "") + f"capture lookup failed: {exc!r}"
     code = (capture or {}).get("exit_code") or 0

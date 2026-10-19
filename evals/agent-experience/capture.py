@@ -10,7 +10,7 @@ from pathlib import Path
 
 import shutil
 
-from canned import scrub, scrub_output
+from canned import _ACTION as ACTION, scrub, scrub_output
 from mcp_client import StdioMCP
 from tool_trace import cli_path
 
@@ -63,7 +63,14 @@ def capture_mcp(args, canned_dir, provenance):
     if path.is_file():
         data = json.loads(path.read_text())
     data["captured_with"] = provenance
-    data["replies"].append(scrub(result))
+    if args.after:
+        # The state once one of these actions was canned; stepped like replies.
+        after = data.get("after") or {"actions": args.after, "replies": []}
+        after["actions"] = args.after
+        after["replies"].append(scrub(result))
+        data["after"] = after
+    else:
+        data["replies"].append(scrub(result))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
     print(path)
@@ -104,6 +111,9 @@ def capture_cli(args, canned_dir):
     if not args.yes:
         print("CLI commands are not classified read-only; pass --yes to run it for real", file=sys.stderr)
         return 2
+    if args.after and not (Path(canned_dir) / args.set / "cli" / ("-".join(prefix) + ".json")).is_file():
+        print("capture the before state of this command first, then its --after state", file=sys.stderr)
+        return 2
     try:
         code, stdout, stderr = _run_cli([args.wendy, "--device", args.device, *words], args.interrupt_after)
     except subprocess.TimeoutExpired:
@@ -111,8 +121,13 @@ def capture_cli(args, canned_dir):
               file=sys.stderr)
         return 1
     path = Path(canned_dir) / args.set / "cli" / ("-".join(prefix) + ".json")
-    data = {"argv_prefix": prefix, "stdout": scrub_output(stdout), "stderr": scrub_output(stderr),
-            "exit_code": code}
+    reply = {"stdout": scrub_output(stdout), "stderr": scrub_output(stderr), "exit_code": code}
+    if args.after:
+        # The before state is the capture itself, so it must exist first.
+        data = json.loads(path.read_text())
+        data["after"] = {"actions": args.after, **reply}
+    else:
+        data = {"argv_prefix": prefix, **reply}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
     print(path)
@@ -136,6 +151,9 @@ def main(argv=None):
     p.add_argument("--timeout", type=float, default=120, help="MCP mode: seconds to wait for each reply.")
     p.add_argument("--interrupt-after", type=float, metavar="SECONDS",
                    help="CLI mode: send SIGINT (Ctrl+C) after this long, for a command that streams until stopped.")
+    p.add_argument("--after", metavar="ACTIONS",
+                   help="Record the reply as the state after these comma-separated actions (tool:NAME or "
+                        "cli:WORDS) were canned, instead of the state before them.")
     # Everything after --cli is the command's, "--" included (argparse's REMAINDER stops at "--").
     argv = list(sys.argv[1:] if argv is None else argv)
     cli_words = None
@@ -145,6 +163,11 @@ def main(argv=None):
     args = p.parse_args(argv)
     if cli_words is not None:
         args.cli = cli_words
+    if args.after is not None:
+        args.after = [a.strip() for a in args.after.split(",") if a.strip()]
+        if not args.after or not all(ACTION.match(a) for a in args.after):
+            print("--after takes comma-separated tool:NAME or cli:WORDS actions", file=sys.stderr)
+            return 2
     resolved = shutil.which(args.wendy)
     if resolved is None:
         print(f"cannot resolve --wendy {args.wendy}", file=sys.stderr)

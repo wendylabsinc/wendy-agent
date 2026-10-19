@@ -136,6 +136,27 @@ def cli_path(argv):
     return words
 
 
+def command_words(argv):
+    """The words of a wendy argv with every flag token skipped (and --device's value), up to "--".
+
+    Looser than cli_path, which stops at the first flag: `vm --yes stop X` gives vm stop X. A flag's
+    value still counts as a word (`--profile go2` adds go2). For capture lookups and canned actions;
+    the allowlist keeps the strict cli_path.
+    """
+    words, i = [], 0
+    while i < len(argv):
+        word = argv[i]
+        if word == "--":
+            break
+        if word == "--device":
+            i += 2
+            continue
+        if not word.startswith("-"):
+            words.append(word)
+        i += 1
+    return words
+
+
 def entry(channel, name, arguments, source="transcript", canned=False, captured=None):
     return {"channel": channel, "name": name, "arguments": arguments, "source": source,
             "canned": canned, "captured": captured}

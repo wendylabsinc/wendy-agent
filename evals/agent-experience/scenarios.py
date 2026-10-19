@@ -258,7 +258,11 @@ def _is_camera(cap):
 
 
 def private_env(state):
-    return dict(os.environ, WENDY_ANALYTICS="false", WENDY_CONFIG_DIR=str(state), WENDY_SECRET_STORE="file")
+    env = dict(os.environ, WENDY_ANALYTICS="false", WENDY_CONFIG_DIR=str(state), WENDY_SECRET_STORE="file")
+    # A read without --device must not fall back to the developer's device or an agent socket.
+    for name in ("WENDY_DEVICE", "WENDY_AGENT_SOCKET"):
+        env.pop(name, None)
+    return env
 
 
 def detect_board(wendy, target, timeout=120):

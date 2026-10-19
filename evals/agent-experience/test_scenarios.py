@@ -14,6 +14,7 @@ from unittest import mock
 import benchmark as b
 import eval_wendy
 from fake_mcp_server import TOOLS
+import canned
 from grading import grade
 import scenarios as sc
 
@@ -455,6 +456,19 @@ class TrialTests(unittest.TestCase):
         self.assertTrue((self.run_state / "vms/wendy-eval-run").is_dir())
         self.assertEqual(rescored_outcome(self.output, self.config(), [self.scenario()]), "right")
 
+    def test_agent_environment_drops_device_overrides(self):
+        # An allowlisted read without --device would otherwise reach the developer's default device.
+        seen = self.root / "env.json"
+        command = [sys.executable, "-c",
+                   "import json, os, sys; json.dump({k: os.environ.get(k) for k in "
+                   "('WENDY_DEVICE', 'WENDY_AGENT_SOCKET', 'WENDY_CONFIG_DIR')}, open(sys.argv[1], 'w')); "
+                   "print(json.dumps({'type': 'done', 'text': 'ok'}))", str(seen)]
+        self.run_trial(self.config(command), self.scenario(),
+                       env={"WENDY_DEVICE": "10.0.0.9:50051", "WENDY_AGENT_SOCKET": "/run/wendy/agent.sock"})
+        values = json.loads(seen.read_text())
+        self.assertEqual((values["WENDY_DEVICE"], values["WENDY_AGENT_SOCKET"]), (None, None))
+        self.assertIn("/we-state-", values["WENDY_CONFIG_DIR"])
+
     def test_reset_mismatch_fails_cleanup_and_keeps_shared_vm(self):
         command = [sys.executable, "-c", "import json; print(json.dumps({'type': 'done', 'text': 'ok'}))"]
         row, _ = self.run_trial(self.config(command), self.scenario(),
@@ -838,11 +852,38 @@ class CatalogTests(unittest.TestCase):
                     self.assertNotIn("simulator", scenario["environments"])
 
     def test_every_simulator_scenario_is_captured(self):
+        # Except two whose streaming CLI right path needs a go2 VM, which needs docker buildx to build.
+        waiting = {"ros-rate": "CLI replies not captured: device ros2 hz",
+                   "ros-sample": "CLI replies not captured: device ros2 echo"}
         simulator = {"kind": "simulator", "capabilities": []}
         for scenario in self.catalog:
             if "simulator" in scenario["environments"]:
                 with self.subTest(scenario=scenario["id"]):
-                    self.assertIsNone(sc.scenario_readiness(scenario, simulator, sc.CANNED))
+                    self.assertEqual(sc.scenario_readiness(scenario, simulator, sc.CANNED),
+                                     waiting.get(scenario["id"]))
+
+    def test_reads_after_the_canned_action_show_the_after_state(self):
+        # An agent that acts first and then checks must see the new state, or a correct action looks
+        # failed and a recovery move (kill qemu, rm the VM dir) is graded wrong.
+        stories = {"deploy-project": ["tool:run", "cli:run"],
+                   "app-stop": ["tool:container_stop", "cli:device apps stop"],
+                   "app-start": ["tool:container_start", "cli:device apps start"],
+                   "app-remove-free-space": ["tool:container_delete", "cli:device apps remove"],
+                   "sim-create-go2": ["tool:simulator_create", "cli:vm create"],
+                   "sim-stop": ["tool:simulator_stop", "cli:vm stop"],
+                   "sim-delete": ["tool:simulator_delete", "cli:vm rm", "cli:vm remove"]}
+        reads = {"container_list", "telemetry_logs", "simulator_list", "device_list"}
+        by_id = {s["id"]: s for s in self.catalog}
+        for name, actions in stories.items():
+            scenario = by_id[name]
+            for tool in reads & set(scenario["canned"]):
+                with self.subTest(scenario=name, tool=tool):
+                    capture = canned.load_capture(sc.CANNED, scenario["canned_set"], tool)
+                    self.assertEqual(sorted(capture["after"]["actions"]), sorted(actions))
+            for words in scenario["cli_canned"]:
+                with self.subTest(scenario=name, words=words):
+                    capture = canned.load_cli_capture(sc.CANNED, scenario["canned_set"], words)
+                    self.assertEqual(sorted(capture["after"]["actions"]), sorted(actions))
 
 
 if __name__ == "__main__":

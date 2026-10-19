@@ -54,6 +54,65 @@ class CannedTests(unittest.TestCase):
         write(self.root, "s", "t", [text("{{vm_name}}")])
         self.assertIsNotNone(canned.load_capture(self.root, "s", "t"))
 
+    def test_after_state_is_validated_with_its_placeholders(self):
+        ok_mcp = {"actions": ["tool:container_stop", "cli:device apps stop"], "replies": [text("{{args.x}}")]}
+        write(self.root, "s", "t", [text("a")])
+        path = self.root / "s/t.json"
+        for after, valid in ((ok_mcp, True), (dict(ok_mcp, actions=[]), False),
+                             (dict(ok_mcp, actions=["container_stop"]), False),
+                             (dict(ok_mcp, actions=["cli:device --json list"]), False),
+                             (dict(ok_mcp, replies=[]), False), (dict(ok_mcp, extra=1), False),
+                             (dict(ok_mcp, replies=[text("{{bogus}}")]), False)):
+            path.write_text(json.dumps({"tool": "t", "replies": [text("a")], "after": after}))
+            with self.subTest(after=after):
+                if valid:
+                    self.assertEqual(canned.load_capture(self.root, "s", "t")["after"], after)
+                else:
+                    self.assertRaises(ValueError, canned.load_capture, self.root, "s", "t")
+        cli_dir = self.root / "s/cli"
+        cli_dir.mkdir()
+        ok_cli = {"actions": ["cli:vm stop"], "stdout": "{{vm_name}}", "stderr": "", "exit_code": 0}
+        for after, valid in ((ok_cli, True), (dict(ok_cli, exit_code="0"), False),
+                             ({k: v for k, v in ok_cli.items() if k != "stderr"}, False), (ok_mcp, False)):
+            (cli_dir / "vm-list.json").write_text(json.dumps(
+                {"argv_prefix": ["vm", "list"], "stdout": "", "stderr": "", "exit_code": 0, "after": after}))
+            with self.subTest(after=after):
+                if valid:
+                    self.assertEqual(canned.load_cli_capture(self.root, "s", ["vm", "list"])["after"], after)
+                else:
+                    self.assertRaises(ValueError, canned.load_cli_capture, self.root, "s", ["vm", "list"])
+
+    def test_actions_done_reads_both_logs_and_only_canned_calls(self):
+        proxy, cli = self.root / "proxy.jsonl", self.root / "cli.jsonl"
+        proxy.write_text(json.dumps({"tool": "container_stop", "canned": False}) + "\n{partial")
+        cli.write_text(json.dumps({"argv": ["--device", "X", "vm", "--yes", "stop", "b"], "canned": True}) + "\n")
+        self.assertFalse(canned.actions_done(["tool:container_stop"], proxy, cli))
+        self.assertTrue(canned.actions_done(["cli:vm stop"], proxy, cli))
+        self.assertFalse(canned.actions_done(["cli:vm rm"], proxy, cli))
+        self.assertFalse(canned.actions_done(["tool:x"], self.root / "missing", None))
+
+    def test_scrub_replaces_private_state_paths(self):
+        self.assertEqual(canned.scrub_output("disk at /tmp/we-cap-sims/vms/dog-lab/disk.img and /private/tmp/we-state-x1/a\n"),
+                         "disk at /tmp/wendy-state/vms/dog-lab/disk.img and /tmp/wendy-state/a\n")
+
+    def test_capture_after_flag_records_the_after_state(self):
+        base = ["--wendy", FAKE, "--device", "vm:test", "--set", "s", "--canned-dir", str(self.root)]
+        self.assertEqual(capture.main(base + ["--tool", "read_thing"]), 0)
+        self.assertEqual(capture.main(base + ["--after", "tool:write_thing", "--tool", "read_thing"]), 0)
+        data = json.loads((self.root / "s/read_thing.json").read_text())
+        self.assertEqual((len(data["replies"]), data["after"]["actions"], len(data["after"]["replies"])),
+                         (1, ["tool:write_thing"], 1))
+        self.assertEqual(capture.main(base + ["--after", "write_thing", "--tool", "read_thing"]), 2)
+        script, _ = self._fake_cli("after")
+        cli = self._cli_args(script, "--yes")
+        self.assertEqual(capture.main(cli + ["--after", "cli:vm stop", "--cli", "vm", "list"]), 2)  # no before yet
+        self.assertEqual(capture.main(cli + ["--cli", "vm", "list"]), 0)
+        self.assertEqual(capture.main(cli + ["--after", "tool:simulator_stop,cli:vm stop", "--cli", "vm", "list"]), 0)
+        data = json.loads((self.root / "s/cli/vm-list.json").read_text())
+        self.assertEqual(data["after"], {"actions": ["tool:simulator_stop", "cli:vm stop"], "stdout": "after\n",
+                                         "stderr": "", "exit_code": 0})
+        self.assertIsNotNone(canned.load_cli_capture(self.root, "s", ["vm", "list"]))
+
     def test_missing_argument_renders_empty(self):
         self.assertEqual(canned.render("a{{args.nope}}b", {"args": {}}), "ab")
 

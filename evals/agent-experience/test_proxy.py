@@ -85,6 +85,31 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual((record["tool"], record["arguments"], record["canned"], record["captured"], record["is_error"]),
                          ("write_thing", {"x": "y"}, True, True, False))
 
+    def test_canned_read_switches_to_its_after_state_once_the_action_is_canned(self):
+        before = {"content": [{"type": "text", "text": "running"}], "isError": False}
+        after = {"content": [{"type": "text", "text": "stopped"}], "isError": False}
+        (self.root / "canned/s/read_thing.json").write_text(json.dumps(
+            {"tool": "read_thing", "replies": [before],
+             "after": {"actions": ["tool:write_thing", "cli:thing stop"], "replies": [after]}}))
+        with self.proxy(canned=["read_thing"]) as mcp:
+            mcp.initialize()
+            self.assertEqual(mcp.call("read_thing", {}), before)
+            self.assertEqual(mcp.call("read_thing", {}), before)
+            self.assertEqual(mcp.call("write_thing", {}), CAPTURED)  # canned: the action happened
+            self.assertEqual(mcp.call("read_thing", {}), after)
+        self.assertNotIn("read_thing", self.fake_log.read_text() if self.fake_log.exists() else "")
+
+    def test_canned_read_sees_a_cli_canned_action(self):
+        after = {"content": [{"type": "text", "text": "stopped"}], "isError": False}
+        (self.root / "canned/s/read_thing.json").write_text(json.dumps(
+            {"tool": "read_thing", "replies": [CAPTURED],
+             "after": {"actions": ["cli:vm stop"], "replies": [after]}}))
+        (self.root / "cli.jsonl").write_text(
+            json.dumps({"argv": ["vm", "--yes", "stop", "bench-sim"], "canned": True}) + "\n")
+        with self.proxy(canned=["read_thing"]) as mcp:
+            mcp.initialize()
+            self.assertEqual(mcp.call("read_thing", {}), after)
+
     def test_unknown_tool_is_canned(self):
         with self.proxy() as mcp:
             mcp.initialize()

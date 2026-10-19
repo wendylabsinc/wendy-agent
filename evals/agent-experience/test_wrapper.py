@@ -126,12 +126,19 @@ class WrapperTests(unittest.TestCase):
             self.assertFalse(self.marker.exists(), matcher)
             self.assertIs(self.records()[-1]["canned"], True)
 
-    def test_help_runs_the_real_binary_as_a_bare_help_request(self):
-        # cobra answers --help before any hook or RunE runs. The command words are rebuilt without
-        # flags, so a value flag can't swallow --help: `os update --artifact-url --help` would update.
-        for argv, real in ((["os", "install", "--device-type", "rpi", "--force", "--help"], ["os", "install", "--help"]),
-                           (["--device", "X", "os", "update", "--artifact-url", "--help"], ["os", "update", "--help"]),
-                           (["--json", "vm", "rm", "box", "--help"], ["vm", "rm", "box", "--help"])):
+    def test_help_runs_the_real_help_command(self):
+        # Every help lookup becomes `wendy help WORDS`: cobra's help command only resolves and prints.
+        # Rebuilding as `WORDS --help` was not enough: `device ros2 exec` stops flag parsing at its
+        # first word and would forward --help to the device, and a value flag can swallow --help
+        # (`os update --artifact-url --help` runs the update).
+        cases = ((["os", "install", "--device-type", "rpi", "--force", "--help"], ["help", "os", "install"]),
+                 (["--device", "X", "os", "update", "--artifact-url", "--help"], ["help", "os", "update"]),
+                 (["--json", "vm", "rm", "box", "--help"], ["help", "vm", "rm", "box"]),
+                 (["device", "ros2", "exec", "run", "demo_nodes_cpp", "talker", "--help"],
+                  ["help", "device", "ros2", "exec", "run", "demo_nodes_cpp", "talker"]),
+                 (["os", "update", "-h"], ["help", "os", "update"]),
+                 (["wifi", "connect", "-h"], ["help", "wifi", "connect"]))
+        for argv, real in cases:
             self.marker.unlink(missing_ok=True)
             with self.subTest(argv=argv):
                 result = self.run_shim(*argv, cli_canned=[["vm"]], block=[{"cli": "os update", "block": True}])
@@ -141,13 +148,45 @@ class WrapperTests(unittest.TestCase):
                 self.assertEqual((record["argv"], record["canned"], record["help"]), (argv, False, True))
 
     def test_other_help_shapes_stay_canned(self):
-        for argv in (["os", "install", "--help=false"], ["os", "install", "-h"],
+        for argv in (["os", "install", "--help=false"], ["os", "install", "-help"],
                      ["device", "shell", "--", "nmcli", "--help"], ["__t234-write", "--help"]):
             with self.subTest(argv=argv):
                 result = self.run_shim(*argv)
                 self.assertEqual(result.returncode, 0)
                 self.assertFalse(self.marker.exists())
                 self.assertIs(self.records()[-1]["canned"], True)
+
+    def capture_after(self, words, before, after, actions):
+        folder = self.root / "canned" / "s" / "cli"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / ("-".join(words) + ".json")).write_text(json.dumps(
+            {"argv_prefix": words, "stdout": before, "stderr": "", "exit_code": 0,
+             "after": {"actions": actions, "stdout": after, "stderr": "", "exit_code": 0}}))
+
+    def test_cli_read_after_an_mcp_canned_action_shows_the_after_state(self):
+        self.capture_after(["device", "apps", "list"], "RUNNING\n", "STOPPED\n", ["tool:container_stop"])
+        listed = dict(cli_canned=[["device", "apps", "list"]])
+        self.assertEqual(self.run_shim("device", "apps", "list", **listed).stdout, "RUNNING\n")
+        # A real (not canned) call to the action's tool changes nothing.
+        self.proxy_log.write_text(json.dumps({"seq": 1, "tool": "container_stop", "canned": False}) + "\n")
+        self.assertEqual(self.run_shim("device", "apps", "list", **listed).stdout, "RUNNING\n")
+        with self.proxy_log.open("a") as log:
+            log.write(json.dumps({"seq": 2, "tool": "container_stop", "canned": True}) + "\n")
+        self.assertEqual(self.run_shim("device", "apps", "list", **listed).stdout, "STOPPED\n")
+
+    def test_cli_read_after_a_cli_canned_action_shows_the_after_state(self):
+        self.capture_after(["vm", "list"], "running\n", "stopped\n", ["tool:simulator_stop", "cli:vm stop"])
+        listed = dict(cli_canned=[["vm", "list"]])
+        self.assertEqual(self.run_shim("vm", "list", **listed).stdout, "running\n")
+        self.run_shim("vm", "--yes", "stop", "bench-sim", **listed)  # canned; flags don't hide the words
+        self.assertIs(self.records()[-1]["canned"], True)
+        self.assertEqual(self.run_shim("--json", "vm", "list", **listed).stdout, "stopped\n")
+
+    def test_cli_capture_lookup_skips_flags(self):
+        self.capture(["vm", "stop"], "Stopped VM.\n", 0)
+        for argv in (["vm", "--yes", "stop", "bench-sim"], ["--device", "X", "vm", "stop", "--force", "bench-sim"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_shim(*argv).stdout, "Stopped VM.\n")
 
     def test_cli_canned_cans_an_allowlisted_command_and_renders_placeholders(self):
         self.capture(["device", "list"], "Connecting to simulator {{vm_name}}...\n[\"{{device}}\"]\n", 0)
@@ -243,7 +282,7 @@ class WrapperTests(unittest.TestCase):
 
     def test_risky_shapes_never_run_real(self):
         for argv in (["--device", "X", "wifi", "connect", "Lab5G"], ["wifi", "connect", "--help=false"],
-                     ["wifi", "connect", "-h"], ["mcp", "setup"]):
+                     ["mcp", "setup"]):
             result = self.run_shim(*argv)
             self.assertEqual(result.returncode, 0, argv)
             self.assertFalse(self.marker.exists(), argv)
