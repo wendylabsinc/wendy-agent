@@ -84,8 +84,8 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if err != nil {
 		return err
 	}
-	if challenge.Enrolled {
-		return errLiteAlreadyEnrolled
+	if err := checkLiteEnrollmentIdentity(challenge); err != nil {
+		return err
 	}
 	trustProfile := liteenroll.TrustProfileFromChallenge(challenge)
 	if opts.deviceRoots != "" {
@@ -120,8 +120,8 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if err != nil {
 		return err
 	}
-	if challenge.Enrolled {
-		return errLiteAlreadyEnrolled
+	if err := checkLiteEnrollmentIdentity(challenge); err != nil {
+		return err
 	}
 	// The default TSA's pinned root and verified HTTPS anchor must reach the
 	// board even when it has built-in roots for another timestamp authority.
@@ -194,6 +194,16 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 		return fmt.Errorf("asset %s is reserved, but enrollment is not confirmed: %w", asset, err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Enrolled %s as asset %s. Broker presence is reported after the board establishes mTLS; check 'wendy cloud discover'.\n", name, asset)
+	return nil
+}
+
+func checkLiteEnrollmentIdentity(challenge *litepb.WendyComEnrollmentChallenge) error {
+	if challenge.GetEnrolled() {
+		return errLiteAlreadyEnrolled
+	}
+	if id := challenge.GetDeviceId(); id != "" {
+		return fmt.Errorf("this board has a pending enrollment for %s; wait for it to finish, or connect over USB and run 'wendy device unenroll' with that USB device selected before enrolling again", id)
+	}
 	return nil
 }
 

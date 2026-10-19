@@ -101,6 +101,40 @@ type unsupportedLiteEnrollmentDevice struct {
 	supported *bool
 }
 
+type pendingLiteEnrollmentDevice struct {
+	alreadyEnrolledLiteDevice
+	deviceID string
+}
+
+func (d *pendingLiteEnrollmentDevice) EnrollmentChallenge(statusOnly bool) (*litepb.WendyComEnrollmentChallenge, error) {
+	if !statusOnly {
+		panic("pending enrollment must not invalidate the existing time challenge")
+	}
+	return &litepb.WendyComEnrollmentChallenge{DeviceId: d.deviceID}, nil
+}
+
+func TestLiteEnrollmentPreservesPendingIdentityBeforeProvisioning(t *testing.T) {
+	old := connectLiteEnrollmentFn
+	t.Cleanup(func() { connectLiteEnrollmentFn = old })
+	for _, id := range []string{"lite-441bf6804824", "11111111-1111-4111-8111-111111111111"} {
+		t.Run(id, func(t *testing.T) {
+			device := &pendingLiteEnrollmentDevice{deviceID: id}
+			connectLiteEnrollmentFn = func(models.ExternalDevice) (liteEnrollmentDevice, error) { return device, nil }
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			// Reject before reading trust files, prompting, or reserving another
+			// asset whose UUID would conflict with the board's existing key.
+			err := runEnrollLiteDevice(cmd, liteUnenrollUSBTarget(), &config.AuthConfig{}, "\x1b[A", liteEnrollmentOptions{deviceRoots: "/missing.pem"})
+			if err == nil || !strings.Contains(err.Error(), "pending enrollment for "+id) || !strings.Contains(err.Error(), "wendy device unenroll") {
+				t.Fatalf("missing pending identity recovery instructions: %v", err)
+			}
+			if !device.closed {
+				t.Fatal("enrollment connection leaked")
+			}
+		})
+	}
+}
+
 func (d *unsupportedLiteEnrollmentDevice) EnrollmentChallenge(statusOnly bool) (*litepb.WendyComEnrollmentChallenge, error) {
 	if !statusOnly {
 		panic("unsupported firmware must not start an enrollment challenge")
