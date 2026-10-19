@@ -7,8 +7,13 @@ cd "$(dirname "$0")"
 
 FPM="$(cd ../.. && pwd)/packaging/linux/fpm"
 
-# The scripts do nothing without systemd; GitHub's Ubuntu runners have it.
+# The scripts do nothing without systemd; GitHub's Ubuntu runners have it, so
+# in CI a missing systemd would leave the suite testing nothing.
 if [ ! -d /run/systemd/system ]; then
+  if [ -n "${CI:-}" ]; then
+    echo "FAIL: /run/systemd/system is missing, so the package scripts would do nothing"
+    exit 1
+  fi
   echo "skip: /run/systemd/system is missing"
   exit 0
 fi
@@ -20,6 +25,7 @@ check() { if [ "$2" != "$3" ]; then echo "FAIL $1: expected [$2] got [$3]"; fail
 # is-active from $FAKE_ENABLED and $FAKE_ACTIVE.
 BIN="$(mktemp -d)"
 CALLS="$(mktemp)"
+trap 'rm -rf "$BIN" "$CALLS"' EXIT
 cat > "$BIN/systemctl" <<EOF
 #!/usr/bin/env bash
 case "\$1" in
@@ -31,11 +37,15 @@ echo "\$*" >> "$CALLS"
 EOF
 chmod +x "$BIN/systemctl"
 
-# run SCRIPT [ARGS...] prints the wendy-agent systemctl calls the script made.
+# run SCRIPT [ARGS...] prints the wendy-agent systemctl calls the script made,
+# then "exit N" if it failed: a failing package script aborts the dpkg or rpm
+# transaction, so every expectation below implies a clean exit.
 run() {
   : > "$CALLS"
-  PATH="$BIN:$PATH" bash "$FPM/$1" "${@:2}" >/dev/null
-  grep -E ' wendy-agent$' "$CALLS" | paste -sd ';' - || true
+  local status=0
+  PATH="$BIN:$PATH" bash "$FPM/$1" "${@:2}" >/dev/null || status=$?
+  { grep -E ' wendy-agent$' "$CALLS" || true; [ "$status" -eq 0 ] || echo "exit $status"; } |
+    paste -sd ';' -
 }
 
 # preremove: stop only on removal.
@@ -46,16 +56,20 @@ check "preremove.deb.deconfigure" "stop wendy-agent" "$(run wendy-agent-preremov
 check "preremove.rpm.erase" "stop wendy-agent" "$(run wendy-agent-preremove.sh 0)"
 check "preremove.rpm.upgrade" "" "$(run wendy-agent-preremove.sh 1)"
 
-# postinstall: an enabled agent is restarted even if an older preremove stopped it.
-check "postinstall.enabled" "restart wendy-agent" \
-  "$(FAKE_ENABLED=yes run wendy-agent-postinstall.sh configure 2026.10.17-000000)"
-check "postinstall.fresh" "enable --now wendy-agent" \
+# postinstall: an enabled agent is restarted even if an older preremove stopped
+# it. dpkg passes "configure [OLD-VERSION]"; rpm passes 1 on install, 2 on upgrade.
+check "postinstall.deb.upgrade" "restart wendy-agent" \
+  "$(FAKE_ENABLED=yes FAKE_ACTIVE=no run wendy-agent-postinstall.sh configure 2026.10.17-000000)"
+check "postinstall.deb.install" "enable --now wendy-agent" \
   "$(FAKE_ENABLED=no run wendy-agent-postinstall.sh configure)"
+check "postinstall.rpm.upgrade" "restart wendy-agent" \
+  "$(FAKE_ENABLED=yes run wendy-agent-postinstall.sh 2)"
+check "postinstall.rpm.install" "enable --now wendy-agent" \
+  "$(FAKE_ENABLED=no run wendy-agent-postinstall.sh 1)"
 
 # posttrans: start an enabled agent that an older rpm preremove stopped.
 check "posttrans.stopped" "start wendy-agent" "$(FAKE_ENABLED=yes FAKE_ACTIVE=no run wendy-agent-posttrans.sh)"
 check "posttrans.running" "" "$(FAKE_ENABLED=yes FAKE_ACTIVE=yes run wendy-agent-posttrans.sh)"
 check "posttrans.disabled" "" "$(FAKE_ENABLED=no FAKE_ACTIVE=no run wendy-agent-posttrans.sh)"
 
-rm -rf "$BIN" "$CALLS"
 exit "$fail"
