@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Logging
 
@@ -9,10 +10,12 @@ import Logging
 /// only the SE-wrapped blob lives in the Keychain (`KeychainStore`).
 struct ProvisioningStore {
     let configPath: URL
+    private let keychainStore: KeychainStore
     private let logger = Logger(label: "sh.wendy.agent.provisioning.store")
 
-    init(configPath: URL) {
+    init(configPath: URL, keychainStore: KeychainStore = KeychainStore()) {
         self.configPath = configPath
+        self.keychainStore = keychainStore
     }
 
     /// How the device's private key is stored: in the Secure Enclave (no key
@@ -76,13 +79,19 @@ struct ProvisioningStore {
                 backing = .softwarePEM(keyPEM)
             }
             if state.keyPem != nil {
-                var stripped = state
-                stripped.keyPem = nil
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                // Retain fields written by a newer agent while removing the
+                // migrated secret, matching the Go agent's state migration.
+                guard var stripped = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    return nil
+                }
+                stripped.removeValue(forKey: "keyPem")
                 try self.writeFile(
                     self.statePath,
-                    data: encoder.encode(stripped),
+                    data: JSONSerialization.data(
+                        withJSONObject: stripped,
+                        options: [.prettyPrinted, .sortedKeys]
+                    ),
                     permissions: 0o600
                 )
             } else {
@@ -169,7 +178,7 @@ struct ProvisioningStore {
         // Best-effort: also purge any Secure-Enclave-backed key blob so a
         // re-provision on this device starts clean. A missing Keychain item
         // is not an error here.
-        try? KeychainStore().remove(account: "device-key-se")
+        try? self.keychainStore.remove(account: "device-key-se")
     }
 
     /// Avoid replacing correct state. Symlinks and incorrect permissions must
@@ -218,28 +227,47 @@ struct ProvisioningStore {
         }
 
         do {
-            let handle = try FileHandle(forWritingTo: tmpURL)
-            do {
-                try handle.write(contentsOf: data)
-                try handle.close()
-            } catch {
-                try? handle.close()
-                throw error
-            }
-
             // umask may have masked bits from createFile's attributes; re-assert.
             try FileManager.default.setAttributes(
                 [.posixPermissions: permissions],
                 ofItemAtPath: tmpURL.path
             )
 
-            // Remove any existing destination first, then rename atomically
-            // within the directory so the final path never observes the old
-            // (or a partially-written) content.
-            if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
+            let handle = try FileHandle(forWritingTo: tmpURL)
+            do {
+                try handle.write(contentsOf: data)
+                try handle.synchronize()
+                try handle.close()
+            } catch {
+                try? handle.close()
+                throw error
             }
-            try FileManager.default.moveItem(at: tmpURL, to: url)
+
+            // Rename over the destination without unlinking it first. Readers
+            // see a complete old or new file, and an unexpected directory is
+            // rejected without recursively removing its contents.
+            let result = tmpURL.path.withCString { source in
+                url.path.withCString { destination in
+                    unsafe Darwin.rename(source, destination)
+                }
+            }
+            guard result == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            // Make the directory entry durable after the replacement.
+            let parent = unsafe Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+            guard parent >= 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            let synced = Darwin.fsync(parent)
+            let syncError = errno
+            let closed = Darwin.close(parent)
+            guard synced == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: syncError) ?? .EIO)
+            }
+            guard closed == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
         } catch {
             try? FileManager.default.removeItem(at: tmpURL)
             throw error

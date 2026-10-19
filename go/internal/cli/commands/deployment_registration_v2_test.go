@@ -249,6 +249,9 @@ func TestDeploymentProvisioningFallsBackOnlyForUnimplementedV2(t *testing.T) {
 			if code == codes.OK {
 				conn = deploymentTLSConnection(t, srv, legacy, srv.device.PrincipalUri)
 			}
+			if code == codes.Unimplemented {
+				conn = deploymentTLSConnection(t, srv, legacy, "urn:wendy:org:42:asset:9")
+			}
 			response, err := (deploymentProvisioningService{conn}).IsProvisioned(context.Background(), &agentpb.IsProvisionedRequest{})
 			if code == codes.Unimplemented {
 				if err != nil || legacy.calls != 1 || response.GetProvisioned().GetAssetId() != 9 {

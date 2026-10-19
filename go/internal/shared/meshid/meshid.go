@@ -1,14 +1,14 @@
-// Package meshid is the mesh identity contract: how a device principal becomes
-// a mesh address, how devices are ordered, and what enrollment arbitrates on.
+// Package meshid is the wendy net identity contract: how a device principal becomes
+// a wendy net address, how devices are ordered, and what enrollment arbitrates on.
 //
 // The authoritative device identity is the complete SPIFFE principal
-// "spiffe://wendy.sh/tenant/<tenant-uuid>/device/<device-uuid>". The mesh
+// "spiffe://wendy.sh/tenant/<tenant-uuid>/device/<device-uuid>". The wendy net
 // address is the ULA pool's six bytes followed by the device UUID's final ten
 // bytes, verbatim — no hashing, packing, bit removal, or UUID-version-specific
 // transformation, and no hash fallback for non-UUID identities.
 //
 // A Cloud asset UUID is a database record ID for asset-targeted RPCs. It is
-// not a mesh identity. The distinct types here exist so asset and device
+// not a wendy net identity. The distinct types here exist so asset and device
 // UUIDs cannot be interchanged by accident.
 package meshid
 
@@ -33,7 +33,7 @@ var MeshPrefix = netip.MustParsePrefix("fd45:b891:567f::/48")
 var meshPrefixBytes = [...]byte{0xfd, 0x45, 0xb8, 0x91, 0x56, 0x7f}
 
 // SuffixLen is the number of device UUID bytes enrollment must keep globally
-// unique: the UUID's final ten bytes, which alone determine the mesh address.
+// unique: the UUID's final ten bytes, which alone determine the wendy net address.
 const SuffixLen = 10
 
 var (
@@ -81,9 +81,9 @@ func (t Tenant) String() string {
 // IsValid distinguishes a parsed tenant UUID (including nil) from the zero value.
 func (t Tenant) IsValid() bool { return t.valid }
 
-// Device is the stable device component of a certificate principal: the mesh
+// Device is the stable device component of a certificate principal: the wendy net
 // identity used for addressing, peer pinning, and link ordering. Renewal
-// preserves the principal and mesh address; a newly enrolled identity has a
+// preserves the principal and wendy net address; a newly enrolled identity has a
 // newly derived address.
 type Device struct {
 	tenant Tenant
@@ -114,7 +114,7 @@ func ParseDevice(tenant Tenant, text string) (Device, error) {
 
 // DeviceFromPrincipal parses a complete device principal. The complete device
 // component must parse as a canonical UUID. Path-shaped PKI device names are
-// valid generic PKI identities but are reported as unsupported for this mesh
+// valid generic PKI identities but are reported as unsupported for this wendy net
 // scheme; nothing hashes them into an address.
 func DeviceFromPrincipal(principal string) (Device, error) {
 	identity, err := certs.ParseDevicePrincipal(principal)
@@ -127,12 +127,12 @@ func DeviceFromPrincipal(principal string) (Device, error) {
 	}
 	id, err := parseCanonical(identity.EntityID)
 	if err != nil {
-		return Device{}, fmt.Errorf("device component %q of %s is not a canonical UUID: unsupported for this mesh scheme", identity.EntityID, principal)
+		return Device{}, fmt.Errorf("device component %q of %s is not a canonical UUID: unsupported for wendy net", identity.EntityID, principal)
 	}
 	return Device{tenant, id}, nil
 }
 
-// DeviceFromCert extracts the mesh device identity from a leaf certificate.
+// DeviceFromCert extracts the wendy net device identity from a leaf certificate.
 // It checks identity kind and shape only: certificate trust and the expected
 // tenant scope must be verified by the caller before admission, and the full
 // principal stays available for authorization. An IP address or router ID
@@ -181,7 +181,7 @@ func MeshAddressFor(id uuid.UUID) netip.Addr {
 }
 
 // MeshAddress is the device's deterministic ULA, assigned /128 to the stable
-// mesh host interface and originated through Babel at metric zero.
+// wendy net host interface and originated through Babel at metric zero.
 func (d Device) MeshAddress() netip.Addr {
 	if !d.IsValid() {
 		return netip.Addr{}
@@ -221,7 +221,7 @@ func LinkLocalAddresses(self, peer Device) (netip.Addr, netip.Addr, error) {
 
 // Asset is a Cloud database record ID used for asset-targeted RPCs,
 // deployments, and relay authorization. It is deliberately a distinct type
-// from Device: an asset UUID is never a mesh address input or a pin key.
+// from Device: an asset UUID is never a wendy net address input or a pin key.
 type Asset struct{ id uuid.UUID }
 
 // ParseAsset parses a canonical Cloud asset UUID.

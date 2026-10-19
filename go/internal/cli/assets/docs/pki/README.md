@@ -155,7 +155,7 @@ This clears the local pin only — it never dials the device, so it works even w
 
 Both forms are accepted because the two stores are keyed differently. The identity-change refusals above name a hostname, and the hostname form clears it (a pin records its device's principal on the first connect after the SPIFFE cutover, which is how the hostname form still reaches the SPKI entry). The **SPKI** refusal (point 4 above) can only name the certificate identity, because that is what `known_devices.json` is keyed by — the tenant SPIFFE principal for a pki-core-issued device, the legacy URN for an old chain and there is often no hostname to offer: `wendy device list` and the device picker dial the device's IP, and an agent that never advertises `orgid` in its mDNS records leaves nothing locally that maps a name to an asset. Copy the identity out of the refusal and pass it back — it clears the SPKI entry and any `devicePins` entry naming the same asset.
 
-Unpinning by hostname also clears pins filed under the device's *other* names (the cloud roster's asset name, its mesh name), because one device is legitimately pinned under several — but only when those pins name the same organisation and asset. Those alternate names come from mDNS, which is unauthenticated, so a pin naming a *different* asset is a different device's pin and is left alone. Unpinning a local VM by its alias, `wendy device unpin vm:<name>`, clears only that VM's pin, never the `127.0.0.1` pin every other loopback address shares. Whatever is cleared is printed, one line per entry, so an unpin never removes trust state silently.
+Unpinning by hostname also clears pins filed under the device's *other* names (the cloud roster's asset name, its wendy net name), because one device is legitimately pinned under several — but only when those pins name the same organisation and asset. Those alternate names come from mDNS, which is unauthenticated, so a pin naming a *different* asset is a different device's pin and is left alone. Unpinning a local VM by its alias, `wendy device unpin vm:<name>`, clears only that VM's pin, never the `127.0.0.1` pin every other loopback address shares. Whatever is cleared is printed, one line per entry, so an unpin never removes trust state silently.
 
 ### Re-enrolling after an intentional reset or organization move
 
@@ -188,10 +188,10 @@ Agents whose certificates carry no asset identity at all are never treated as sw
 
 ## Multi-key pin lookup
 
-One device can answer to more than one name, and different surfaces record its pin under different ones: an ordinary connection records under the mDNS hostname actually dialed, cloud seeding records under the asset's roster name, and a mesh dial names the device by its mesh name. Resolving "does this dial have a pin" therefore checks, in order:
+One device can answer to more than one name, and different surfaces record its pin under different ones: an ordinary connection records under the mDNS hostname actually dialed, cloud seeding records under the asset's roster name, and a wendy net dial names the device by its wendy net name. Resolving "does this dial have a pin" therefore checks, in order:
 
 1. The name the caller dialed (`--device` value, saved default, or the device picker's name).
-2. The mesh name from the discovery-cache entry whose hostname matches (1), if the cache has one.
+2. The wendy net name from the discovery-cache entry whose hostname matches (1), if the cache has one.
 3. That entry's display name.
 
 Consulting an alias can only ever *find* a pin, never discard one: an attacker-chosen alias can at most impose a stricter constraint that the real device still satisfies, never a way to bypass one. The trust decision itself always rests on the certificate, never on which name resolved the lookup.
