@@ -21,6 +21,7 @@ import uuid
 
 from retry_guard import RetryGuard
 from grading import OUTCOMES, grade
+from mcp_client import StdioMCP
 from tool_trace import build_trace, read_jsonl
 
 HERE = Path(__file__).resolve().parent
@@ -366,6 +367,18 @@ def isolated_device_state(target):
     dump(state / "config.json", cfg)
     (state / "config.json").chmod(0o600)
     return state
+
+
+def list_all_tools(wendy, env):
+    """Every tool `wendy mcp serve` exposes with all groups enabled, via a throwaway simulator-style state dir."""
+    state = isolated_device_state({"kind": "simulator"})
+    try:
+        env = {**env, "WENDY_CONFIG_DIR": str(state), "WENDY_SECRET_STORE": "file"}
+        with StdioMCP([wendy, "mcp", "serve", "--tool-groups", "all"], env) as mcp:
+            mcp.initialize()
+            return mcp.list_tools()
+    finally:
+        shutil.rmtree(state, ignore_errors=True)
 
 
 def discard_device_state(state, cleanup_ok):
@@ -799,6 +812,9 @@ def main():
     for name in agents:
         argv = expand(config["agents"][name]["command"], {"wendy": wendy})
         snapshot[name + "_version"] = run_process([argv[0], "--version"], ROOT, output / (name + "-version"), 15)
+    tools = list_all_tools(wendy, dict(os.environ))
+    dump(output / "tools.json", tools)
+    snapshot["tools_sha256"] = hashlib.sha256((output / "tools.json").read_bytes()).hexdigest()
     revision, diff_sha256 = treatment_git(treatment_root)
     snapshot["argv"], snapshot["cwd"] = sys.argv, os.getcwd()
     snapshot["treatment"] = {"root": str(treatment_root),
