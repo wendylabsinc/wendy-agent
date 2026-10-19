@@ -26,19 +26,20 @@ import (
 )
 
 type nodePeer struct {
-	assembler  IPAssembler
-	id         babel.LinkID
-	device     meshid.Device
-	cost       uint16
-	transport  string
-	link       nodeLink
-	tun        *os.File
-	control    chan ControlMessage
-	catalog    chan ControlMessage
-	done       chan struct{}
-	sync       *Synchronizer
-	replies    []ControlMessage
-	replyBytes int
+	assembler      IPAssembler
+	id             babel.LinkID
+	device         meshid.Device
+	cost           uint16
+	transport      string
+	link           nodeLink
+	tun            *os.File
+	pendingBundles sync.Map // fingerprints queued or being written on this link
+	control        chan ControlMessage
+	catalog        chan ControlMessage
+	done           chan struct{}
+	sync           *Synchronizer
+	replies        []ControlMessage
+	replyBytes     int
 }
 
 type nodeLink interface {
@@ -479,15 +480,88 @@ func (n *Node) continueReconcilePeer(p *nodePeer, now time.Time) {
 	n.queue(p, p.sync.ContinueReconcile(now, cap(p.control)-len(p.control)))
 }
 
+func (n *Node) writePeerControl(p *nodePeer, m ControlMessage) error {
+	if m.Kind == "bundle" {
+		// Clear the original queued token even if normalization changes bytes
+		// or current trust makes this queued repair ineligible.
+		original := Fingerprint(m.Bundle)
+		defer p.pendingBundles.Delete(original)
+	}
+	if m.Kind == "bundle" {
+		// A leaf receives a whole chain instead of certificate hints. The
+		// queued leaf only names a principal to look up; current cache trust
+		// supplies the actual bytes, including after same-key renewal.
+		if n.cache == nil || len(m.Bundle) == 0 {
+			return nil
+		}
+		leaf, err := x509.ParseCertificate(m.Bundle[0])
+		if err != nil {
+			return nil
+		}
+		device, err := meshid.DeviceFromCert(leaf)
+		if err != nil {
+			return nil
+		}
+		chain, _, ok := n.cache.Get(device.Principal(), time.Now())
+		if !ok {
+			return nil
+		}
+		m.Bundle = chain
+	}
+	if m.Kind == "certificate" && m.Certificate != nil && m.Certificate.Chain != nil {
+		// Chain hints can wait behind a slow write across renewal too.
+		// Keep content-addressed requests/chunks independent, but name
+		// only the principal's current trusted chain in a new hint.
+		if n.cache == nil {
+			return nil
+		}
+		principal := m.Certificate.Chain.Principal
+		chain, _, ok := n.cache.Get(principal, time.Now())
+		if !ok {
+			return nil
+		}
+		m.Certificate = DescribeCertificates(principal, chain)
+		if m.Certificate == nil {
+			return nil
+		}
+	}
+	if m.Kind == "manifest" {
+		if m.Manifest == nil || n.directory == nil {
+			return nil
+		}
+		if _, ok := n.directory.CurrentRecordChain(*m.Manifest, time.Now()); !ok {
+			return nil
+		}
+	}
+	if err := p.link.WriteControl(m); err != nil {
+		return err
+	}
+	if m.Kind == "bundle" {
+		n.bundleHints.Written(p.device, m.Bundle, time.Now())
+	}
+	return nil
+}
+
 func (n *Node) queue(p *nodePeer, messages []ControlMessage) {
 	n.flushReplies(p)
 	if len(p.replies) != 0 {
 		return // Periodic reconciliation repairs bulk gossip after replies drain.
 	}
 	for _, m := range messages {
+		// A leaf can request an identity again while its large certificate
+		// bundle is still crossing BLE. Keep one queued/in-flight copy, so
+		// cache repair cannot accumulate duplicate bundles ahead of IP.
+		if m.Kind == "bundle" {
+			if _, pending := p.pendingBundles.LoadOrStore(Fingerprint(m.Bundle), struct{}{}); pending {
+				continue
+			}
+		}
 		select {
 		case p.control <- m:
 		default: /* periodic reconciliation repairs congestion */
+			if m.Kind == "bundle" {
+				p.pendingBundles.Delete(Fingerprint(m.Bundle))
+			}
 		}
 	}
 }
@@ -650,58 +724,10 @@ func (n *Node) writeControls(ctx context.Context, p *nodePeer) error {
 				urgent = 0
 			}
 		}
-		if m.Kind == "bundle" {
-			// A leaf receives a whole chain instead of certificate hints. The
-			// queued leaf only names a principal to look up; current cache trust
-			// supplies the actual bytes, including after same-key renewal.
-			if n.cache == nil || len(m.Bundle) == 0 {
-				continue
-			}
-			leaf, err := x509.ParseCertificate(m.Bundle[0])
-			if err != nil {
-				continue
-			}
-			device, err := meshid.DeviceFromCert(leaf)
-			if err != nil {
-				continue
-			}
-			chain, _, ok := n.cache.Get(device.Principal(), time.Now())
-			if !ok {
-				continue
-			}
-			m.Bundle = chain
-		}
-		if m.Kind == "certificate" && m.Certificate != nil && m.Certificate.Chain != nil {
-			// Chain hints can wait behind a slow write across renewal too.
-			// Keep content-addressed requests/chunks independent, but name
-			// only the principal's current trusted chain in a new hint.
-			if n.cache == nil {
-				continue
-			}
-			principal := m.Certificate.Chain.Principal
-			chain, _, ok := n.cache.Get(principal, time.Now())
-			if !ok {
-				continue
-			}
-			m.Certificate = DescribeCertificates(principal, chain)
-			if m.Certificate == nil {
-				continue
-			}
-		}
-		if m.Kind == "manifest" {
-			if m.Manifest == nil || n.directory == nil {
-				continue
-			}
-			if _, ok := n.directory.CurrentRecordChain(*m.Manifest, time.Now()); !ok {
-				continue
-			}
-		}
-		if err := p.link.WriteControl(m); err != nil {
+		if err := n.writePeerControl(p, m); err != nil {
 			return err
 		}
-		if m.Kind == "bundle" {
-			n.bundleHints.Written(p.device, m.Bundle, time.Now())
-		}
+
 	}
 }
 
