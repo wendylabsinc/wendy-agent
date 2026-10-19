@@ -33,7 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var meshVPNIsAvailable: Bool {
         self.meshVPNIsEnabled && MeshSystemExtensionInstaller.isBundled
     }
-    private let welcomeAndPermissions = WelcomeAndPermissions()
+    private let launchAgent = LaunchAgentSupervision()
+    private lazy var welcomeAndPermissions = WelcomeAndPermissions(launchAtLogin: self.launchAgent)
     private var statusMenuController: StatusMenuController?
     private var welcomeAndPermissionsWindow: NSWindow?
     // HACK: As an LSUIElement/accessory app, macOS sometimes restores the previously active app
@@ -43,16 +44,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     // See WDY-930: https://linear.app/wendylabsinc/issue/WDY-930/explore-more-packaging-and-process-architecture-options-for-wendy-on
     private var welcomeAndPermissionsPresentationTask: Task<Void, any Error>?
     private var isQuitting = false
+    /// Reopens the welcome window after a relaunch that the window's own
+    /// launch-at-login toggle caused.
+    private static let showWelcomeAfterRelaunchKey = "showWelcomeAndPermissionsAfterRelaunch"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let shouldAskForNetworkAccess =
-            !self.networkAccessIsManaged
-            && self.networkAccessPreferences.prepareForStartup(
-                existingInstallation: NetworkAccessPreferences.existingInstallation
-            )
-        self.welcomeAndPermissions.configureLaunchAtLoginOnStartup()
+        self.launchAgent.onRelaunchRequired = { [weak self] in
+            self?.relaunchForLaunchAgentChange()
+        }
 
         Task {
+            switch await self.launchAgent.prepareForLaunch() {
+            case .run:
+                break
+            case .quit:
+                NSApplication.shared.terminate(nil)
+                return
+            case .relaunch:
+                self.relaunch()
+                return
+            }
+
+            // Only the instance that runs the agent resolves the choice, so a
+            // launch that quits or relaunches does not consume the prompt.
+            let shouldAskForNetworkAccess =
+                !self.networkAccessIsManaged
+                && self.networkAccessPreferences.prepareForStartup(
+                    existingInstallation: NetworkAccessPreferences.existingInstallation
+                )
+
+            let defaults = UserDefaults.standard
+            let showWelcomeAfterRelaunch = defaults.bool(forKey: Self.showWelcomeAfterRelaunchKey)
+            defaults.removeObject(forKey: Self.showWelcomeAfterRelaunchKey)
+            if showWelcomeAfterRelaunch
+                || self.welcomeAndPermissions.shouldShowWelcomeAndPermissions
+            {
+                self.showWelcomeAndPermissionsWindow()
+            }
+
             self.statusMenuController = await StatusMenuController(
                 wendyAgent: self.wendyAgent,
                 localBuildService: self.localBuildService,
@@ -96,10 +125,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     "Failed to start WendyAgent: \(String(describing: error), privacy: .public)"
                 )
             }
-        }
-
-        if self.welcomeAndPermissions.shouldShowWelcomeAndPermissions {
-            self.showWelcomeAndPermissionsWindow()
         }
     }
 
@@ -237,6 +262,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         NSApplication.shared.terminate(nil)
     }
 
+    private func relaunchForLaunchAgentChange() {
+        if self.welcomeAndPermissionsWindow != nil {
+            UserDefaults.standard.set(true, forKey: Self.showWelcomeAfterRelaunchKey)
+        }
+        self.relaunch()
+    }
+
+    /// Reopens this bundle outside launchd once this process has exited. Like a
+    /// self-update, it skips the Quit teardown so deployed apps keep running
+    /// and are adopted by the new instance.
+    private func relaunch() {
+        do {
+            try AgentRelauncher(terminate: nil).scheduleRelaunch(of: Bundle.main.bundleURL)
+        } catch {
+            self.logger.error(
+                "Failed to schedule Wendy Agent relaunch: \(String(describing: error), privacy: .public)"
+            )
+            return
+        }
+        self.performUpdateQuit()
+    }
+
     private func openNetworkExtensionSettings() {
         guard
             let url = URL(
@@ -348,3 +395,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
     }
 }
+
+extension LaunchAgentSupervision: LaunchAtLoginSetting {}

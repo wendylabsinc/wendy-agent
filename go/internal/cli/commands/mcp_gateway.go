@@ -23,6 +23,9 @@ func newMCPGatewayCmd() *cobra.Command {
 		Long:  "Serve the Wendy robot panel and scoped robot tools. Defaults to stdio for a private MCP connection. --listen enables authenticated Streamable HTTP at /mcp. Configure robots, subject grants, and allowed apps in a gateway JSON file; HTTP additionally requires authentication configuration.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := enterLocalMCPChannel(); err != nil {
+				return err
+			}
 			if configPath == "" {
 				configPath = os.Getenv("WENDY_ROBOT_GATEWAY_CONFIG")
 			}

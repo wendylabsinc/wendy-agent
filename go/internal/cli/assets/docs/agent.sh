@@ -816,7 +816,9 @@ SCRIPT
 EOF
     fi
 
-    # Enable and start services (mirrors wendy-agent-postinstall.sh)
+    # Enable and start services, like wendy-agent-postinstall.sh. That uses
+    # restart to recover an agent an older package's preremove stopped; nothing
+    # stops it here, so try-restart leaves a deliberately stopped agent alone.
     $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
     if systemctl is-enabled wendy-agent >/dev/null 2>&1; then
       $SUDO systemctl try-restart wendy-agent >/dev/null 2>&1 || true

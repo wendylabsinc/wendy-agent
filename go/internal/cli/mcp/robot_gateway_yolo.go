@@ -27,7 +27,8 @@ var yoloFileRE = regexp.MustCompile(`^[A-Za-z0-9_./-]{1,256}\.onnx$`)
 
 func (g *RobotGateway) registerYOLOTools() {
 	name := mcpgo.WithString("name", mcpgo.Required(), mcpgo.MinLength(1), mcpgo.MaxLength(48), mcpgo.Description("Detector name. Stored as a chatgpt-yolo-<name> Wendy Data campaign."))
-	g.protocol.AddTool(gatewayTool("deploy_yolo_detector", "Start persistent YOLO detection on an explicit device camera using a public Hugging Face model repository. Supports YOLOv8/YOLO11 float32 ONNX raw detection exports with static batch-1 input and embedded class names. Resolves the repository revision to an immutable commit before deployment; never executes repository Python or .pt checkpoints. Activates the selected camera. Each detection records a one-second local episode with manual upload and requests a 128 MiB campaign quota. Only the device-wide storage quota is currently enforced. Each detection emits a Wendy Data notification. Subscribe to wendy.data.notification for ChatGPT delivery. Agent runtime and camera readiness must be inspected after deployment.", mutating(), robotArgument(), name,
+	g.protocol.AddTool(gatewayTool("deploy_yolo_detector", "Start or replace persistent YOLO detection on an explicit device camera using a public Hugging Face model repository. Supports YOLOv8/YOLO11 float32 ONNX raw detection exports with static batch-1 input and embedded class names. Resolves the repository revision to an immutable commit before deployment; never executes repository Python or .pt checkpoints. Activates the selected camera. Each detection records a one-second local episode with manual upload and requests a 128 MiB campaign quota. Only the device-wide storage quota is currently enforced. Each detection emits a Wendy Data notification. Subscribe to wendy.data.notification for ChatGPT delivery. Agent runtime and camera readiness must be inspected after deployment.", destructive(), robotArgument(), name,
+		mcpgo.WithOpenWorldHintAnnotation(true),
 		mcpgo.WithString("model_ref", mcpgo.Required(), mcpgo.MaxLength(300), mcpgo.Description("Hugging Face owner/repository, optionally @revision, or https://huggingface.co/owner/repository.")),
 		mcpgo.WithString("model_file", mcpgo.MaxLength(256), mcpgo.Description("Relative ONNX path. Optional when the repository has exactly one ONNX file.")),
 		mcpgo.WithString("revision", mcpgo.MaxLength(128), mcpgo.Description("Commit SHA, tag or branch. Defaults to main, resolved to an immutable commit.")),
@@ -45,7 +46,7 @@ func (g *RobotGateway) registerYOLOTools() {
 		scope, annotations := RobotEventsScope, readOnly()
 		description := "Inspect a ChatGPT-created YOLO campaign, its pinned model, camera sources, inference state and notification errors. Deployment alone does not establish readiness."
 		if tool == "stop_yolo_detector" {
-			scope, annotations = RobotTriggerScope, mutating()
+			scope, annotations = RobotTriggerScope, destructive()
 			description = "Stop inference for a ChatGPT-created YOLO detector on an explicit device. Previously recorded episodes remain on the device."
 		}
 		g.protocol.AddTool(gatewayTool(tool, description, annotations, robotArgument(), name), g.withRobot(scope, func(ctx context.Context, r *GatewayRobot, s *mcpServer, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

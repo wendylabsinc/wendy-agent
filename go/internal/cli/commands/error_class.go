@@ -21,6 +21,8 @@ var (
 	errTransferFailed        = errors.New("transfer failed")
 	errContainerStartFailed  = errors.New("container start failed")
 	errReadinessTimeout      = errors.New("readiness timed out")
+	errAppCrashed            = errors.New("app crashed")
+	errTerminated            = errors.New("run terminated")
 )
 
 // classifiedCommandError adds a category without changing the message or
@@ -59,6 +61,10 @@ func ErrorClass(err error) string {
 	var agentDown agentNotListeningError
 	var certErr cloudCertError
 	switch {
+	// A SIGTERM outranks whatever the interrupted operation reported: the run
+	// ended because a supervisor stopped it, not because that operation failed.
+	case errors.Is(err, errTerminated):
+		return "terminated"
 	case errors.Is(err, errDeviceIdentityRefused):
 		return "device_identity_mismatch"
 	case errors.As(err, &orgMismatch):
@@ -73,6 +79,8 @@ func ErrorClass(err error) string {
 			return "device_unreachable"
 		}
 		return "device_auth_required"
+	case errors.Is(err, errDeviceNotResolved):
+		return "device_not_resolved"
 	case errors.Is(err, errNoAuthenticatedEndpoint), errors.Is(err, errDeviceUnreachable), errors.As(err, &agentDown):
 		return "device_unreachable"
 	case errors.Is(err, config.ErrNotLoggedIn):
@@ -111,6 +119,8 @@ func ErrorClass(err error) string {
 		return "container_start_failed"
 	case errors.Is(err, errReadinessTimeout):
 		return "readiness_timeout"
+	case errors.Is(err, errAppCrashed):
+		return "app_crashed"
 	default:
 		return ""
 	}

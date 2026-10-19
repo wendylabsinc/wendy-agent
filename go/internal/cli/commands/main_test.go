@@ -1,8 +1,13 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"os"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 )
 
 // TestMain sandboxes HOME/USERPROFILE to a throwaway directory for the whole
@@ -11,11 +16,37 @@ import (
 // code paths would scaffold into the developer's real ~/Documents or mutate
 // ~/.wendy. Individual tests may still override HOME via t.Setenv. It also
 // clears WENDY_DEVICE, which the root command would otherwise apply.
+//
+// It also lets postStart openURL hooks reach browserOpen, which tests swap for
+// a recorder: `go test` has no interactive terminal, so the production gate
+// (defaultPostStartBrowserAllowed, tested directly) would otherwise suppress
+// every hook those tests observe. It sets WENDY_CLOUD_INSECURE for the fake
+// plaintext clouds (see below).
 func TestMain(m *testing.M) {
+	// UI initialization starts LAN discovery immediately, even if its returned
+	// tea.Cmd is never run. Default to a closed, empty stream so UI tests cannot
+	// leave live probes racing with another test's global stubs (or use the
+	// developer's LAN). Stream-specific tests install their own event fixtures;
+	// the discovery package tests the real engine with controlled backends.
+	lanStreamFn = func(context.Context, discovery.StreamOptions) <-chan discovery.LANEvent {
+		events := make(chan discovery.LANEvent)
+		close(events)
+		return events
+	}
+
+	postStartBrowserAllowed = func() bool { return true }
+	// A test that reaches the Linux QEMU or the EIM install offer without its
+	// own stub fails here instead of running sudo or Homebrew on the host.
+	installLinuxPackagesFn = func(context.Context, []string) error { return errors.New("test ran a Linux package manager") }
+	installEIMFn = func(context.Context) error { return errors.New("test ran Homebrew to install EIM") }
 	// A developer who exported WENDY_DEVICE (as the docs suggest) must not
 	// have it copied into deviceFlag by every test that executes the root
 	// command, and leak from there into later tests.
 	os.Unsetenv("WENDY_DEVICE")
+	// The fake clouds these tests start are plaintext gRPC servers, so the
+	// package opts in to plaintext the same way a developer would against a
+	// local dev cloud. The TLS default itself is pinned in clouddefaults.
+	os.Setenv(clouddefaults.CloudInsecureEnv, "true")
 	if tmp, err := os.MkdirTemp("", "wendy-commands-test-home-"); err == nil {
 		os.Setenv("HOME", tmp)
 		os.Setenv("USERPROFILE", tmp) // Windows: os.UserHomeDir consults this
