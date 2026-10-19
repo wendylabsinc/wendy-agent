@@ -167,6 +167,10 @@ func createMCPSimulator(ctx context.Context, store *vm.Store, opts wendymcp.Simu
 	if vm.IsLiteProfile(opts.Profile) {
 		return createLiteSimulator(ctx, store, opts)
 	}
+	diskBytes, err := vmDiskBytes(opts.DiskGiB)
+	if err != nil {
+		return nil, err
+	}
 	var profile *vm.RobotProfile
 	if opts.Profile != "generic" {
 		runtime, err := robotRuntimeForKind(opts.Profile)
@@ -202,10 +206,13 @@ func createMCPSimulator(ctx context.Context, store *vm.Store, opts wendymcp.Simu
 		return nil, err
 	}
 	defer stream.Close()
+	if err := checkVMImageSpace(store.DiskPath(opts.Name), stream.uncompressedSize); err != nil {
+		return nil, err
+	}
 	meta := vm.Meta{ImageVersion: version, ImageSource: source}
 	reader := simulatorContextReader{ctx: ctx, reader: stream}
-	if err := store.CreateFromWithRobotProfile(opts.Name, reader, stream.uncompressedSize, int64(opts.DiskGiB)<<30, meta, profile); err != nil {
-		return nil, err
+	if err := store.CreateFromWithRobotProfile(opts.Name, reader, stream.uncompressedSize, diskBytes, meta, profile); err != nil {
+		return nil, vmStorageError(err, store.DiskPath(opts.Name), stream.uncompressedSize, diskBytes)
 	}
 	return readMCPSimulator(store, opts.Name)
 }

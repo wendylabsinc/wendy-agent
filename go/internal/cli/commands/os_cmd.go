@@ -294,12 +294,10 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 			if err := requireReflashableOSVersion(versionResp.GetOsVersion()); err != nil {
 				return err
 			}
-			// Same rule for a local artifact path: a device reached over loopback
-			// sits behind a port forward, and the only address this side could
-			// advertise is one that inside the guest is the guest.
-			if len(args) > 0 && isLoopbackHost(conn.Host) {
-				return fmt.Errorf("%s reaches this machine over loopback, so it cannot fetch a locally served artifact; "+
-					"pass --pr or --artifact-url and let the device download it directly", conn.Host)
+			if len(args) > 0 {
+				if err := validateLocalOSArtifactConnection(ctx, conn); err != nil {
+					return err
+				}
 			}
 
 			// Step 2: Ensure the agent is at the latest release before updating the OS.
@@ -399,23 +397,18 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				defer cleanup()
 				artifactURL = servedURL
 				fmt.Printf("Serving artifact at: %s\n", artifactURL)
-				// A device on loopback has a port forward between us and it, so it
-				// has no WiFi to report yet is not offline: it reaches the internet
-				// through the host's NAT and can fetch the artifact itself.
-			} else if artifactURL != "" && !isLoopbackHost(conn.Host) && !deviceHasWiFi(ctx, conn) {
-				// Device has no WiFi connection — it cannot reach GCP directly.
-				// Download the artifact on the Mac and serve it over a local HTTP
-				// server so the device can fetch it from the Mac instead.
-				fmt.Println("Device is not connected to WiFi — downloading artifact to serve locally...")
-				localPath, err := downloadArtifactToTemp(artifactURL)
-				if err != nil {
-					return fmt.Errorf("downloading artifact: %w", err)
-				}
-
+			} else if artifactURL != "" && shouldServeOSArtifactLocally(ctx, conn, versionResp) {
+				// Check the route before downloading a multi-gigabyte image.
 				localIP, err := localIPForHost(ctx, conn.Host)
 				if err != nil {
 					return fmt.Errorf("determining local IP for device %s: %w", conn.Host, err)
 				}
+				fmt.Println("Device reports no WiFi or routable network address; downloading artifact to serve locally...")
+				localPath, err := downloadArtifactToTemp(artifactURL)
+				if err != nil {
+					return fmt.Errorf("downloading artifact: %w", err)
+				}
+				defer os.Remove(localPath)
 
 				servedURL, cleanup, err := serveLocalArtifact(localPath, localIP)
 				if err != nil {
@@ -458,13 +451,12 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				return err
 			}
 
-			deviceHost := conn.Host
 			fmt.Println("WendyOS update applied. Device is rebooting...")
-			if err := waitForDeviceOnline(ctx, deviceHost); err != nil {
+			if err := waitForDeviceOnline(ctx, conn); err != nil {
 				return err
 			}
 			fmt.Println("Device is back online.")
-			return reportOSUpdateOutcome(ctx, deviceHost, preUpdateOSVersion, recordCleared)
+			return reportOSUpdateOutcome(ctx, conn, preUpdateOSVersion, recordCleared)
 		},
 	}
 
@@ -644,19 +636,52 @@ func pickDeviceTypeAndGetLatestOTA(nightly bool) (string, error) {
 	return otaURL, nil
 }
 
-// pollDeviceOnline blocks until the device at addr responds to
-// GetAgentVersion or the context deadline is reached.
-func pollDeviceOnline(ctx context.Context, addr string) error {
+// dialOSUpdateAgent retains the target's transport and identity across an OS
+// reboot. A Cloud display name is not a LAN address, and a simulator or direct
+// connection may use a port other than the default agent port.
+func dialOSUpdateAgent(ctx context.Context, prior *grpcclient.AgentConnection) (*grpcclient.AgentConnection, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if prior == nil {
+		return nil, fmt.Errorf("cannot reconnect without the original device")
+	}
+	if prior.Reconnect != nil {
+		return prior.Reconnect(ctx)
+	}
+	if prior.SimulatorName != "" {
+		conn, _, err := connectSimulatorAgent(ctx, prior.SimulatorName, prior.Addr)
+		return conn, err
+	}
+	addr := prior.Addr
+	if addr == "" {
+		addr = hostPort(prior.Host, defaultAgentPort)
+	}
+	return connectWithAutoTLS(ctx, addr)
+}
+
+// pollDeviceOnline blocks until the same device responds to GetAgentVersion or
+// the context deadline is reached.
+func pollDeviceOnline(ctx context.Context, prior *grpcclient.AgentConnection) error {
 	// Give the device a few seconds to begin rebooting before polling.
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("timed out waiting for device to come back online")
+		return fmt.Errorf("waiting for device to come back online: %w", ctx.Err())
 	case <-time.After(5 * time.Second):
 	}
 	for {
-		probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
-		conn, err := connectWithAutoTLS(probeCtx, addr)
+		attemptTimeout := 3 * time.Second
+		if isCloudConnection(prior) {
+			// The pinned Cloud reconnect waits for the relay and agent. Bound
+			// each attempt and retry within the OS reboot's ten-minute budget.
+			attemptTimeout = 15 * time.Second
+		}
+		probeCtx, probeCancel := context.WithTimeout(ctx, attemptTimeout)
+		conn, err := dialOSUpdateAgent(probeCtx, prior)
 		probeCancel()
+		if errors.Is(err, errDeviceIdentityRefused) {
+			return err
+		}
 		if err == nil {
 			probeCtx2, probeCancel2 := context.WithTimeout(ctx, 3*time.Second)
 			_, probeErr := conn.AgentService.GetAgentVersion(probeCtx2, &agentpb.GetAgentVersionRequest{})
@@ -668,7 +693,7 @@ func pollDeviceOnline(ctx context.Context, addr string) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for device to come back online")
+			return fmt.Errorf("waiting for device to come back online: %w", ctx.Err())
 		case <-time.After(3 * time.Second):
 		}
 	}
@@ -678,19 +703,18 @@ func pollDeviceOnline(ctx context.Context, addr string) error {
 // or until a 10-minute timeout expires. Shows a spinner when running
 // interactively; polls silently otherwise. The budget must cover the rollback
 // path: two reboots plus the post-update healthcheck timeouts.
-func waitForDeviceOnline(ctx context.Context, host string) error {
-	addr := hostPort(host, defaultAgentPort)
+func waitForDeviceOnline(ctx context.Context, prior *grpcclient.AgentConnection) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	if !isInteractiveTerminal() {
-		return pollDeviceOnline(ctx, addr)
+		return pollDeviceOnline(ctx, prior)
 	}
 
 	spin := tui.NewSpinner("Waiting for device to come back online...")
 	p := tui.NewProgressProgram(spin)
 	go func() {
-		if err := pollDeviceOnline(ctx, addr); err != nil {
+		if err := pollDeviceOnline(ctx, prior); err != nil {
 			p.Send(tui.SpinnerDoneMsg{Err: err})
 		} else {
 			p.Send(tui.SpinnerDoneMsg{})
@@ -723,9 +747,7 @@ func applyOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artifa
 // the update (healthcheck verdict, rollback details) and prints it. It
 // returns a non-nil error when the update did not stick, so the command exits
 // non-zero. recordCleared comes from applyOSUpdate.
-func reportOSUpdateOutcome(ctx context.Context, host, preUpdateOSVersion string, recordCleared bool) error {
-	addr := hostPort(host, defaultAgentPort)
-
+func reportOSUpdateOutcome(ctx context.Context, prior *grpcclient.AgentConnection, preUpdateOSVersion string, recordCleared bool) error {
 	var resp *agentpb.GetOSUpdateStatusResponse
 	var rpcErr error
 	var postUpdateOSVersion string
@@ -735,7 +757,7 @@ func reportOSUpdateOutcome(ctx context.Context, host, preUpdateOSVersion string,
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		conn, err := connectWithAutoTLS(callCtx, addr)
+		conn, err := dialOSUpdateAgent(callCtx, prior)
 		if err == nil {
 			resp, rpcErr = conn.AgentService.GetOSUpdateStatus(callCtx, &agentpb.GetOSUpdateStatusRequest{})
 			if ver, verErr := conn.AgentService.GetAgentVersion(callCtx, &agentpb.GetAgentVersionRequest{}); verErr == nil {
@@ -746,6 +768,12 @@ func reportOSUpdateOutcome(ctx context.Context, host, preUpdateOSVersion string,
 			rpcErr = err
 		}
 		cancel()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if errors.Is(rpcErr, errDeviceIdentityRefused) {
+			return rpcErr
+		}
 
 		// Unimplemented is definitive (older agent); anything else transient
 		// is retried until the deadline.
@@ -761,7 +789,7 @@ func reportOSUpdateOutcome(ctx context.Context, host, preUpdateOSVersion string,
 
 	msg, outcomeErr := evaluateOSUpdateOutcome(resp, rpcErr, preUpdateOSVersion, postUpdateOSVersion, recordCleared, time.Now())
 	fmt.Println(msg)
-	reportDriverAddonsAfterUpdate(ctx, host)
+	reportDriverAddonsAfterUpdate(ctx, prior)
 	return outcomeErr
 }
 
@@ -1510,13 +1538,43 @@ func downloadArtifactToTemp(artifactURL string) (string, error) {
 	return tmpFile.Name(), nil
 }
 
-// deviceHasWiFi returns true if the device reports an active WiFi connection.
-// On error (e.g. older firmware that doesn't support the call) it returns true
-// so we fall back to the GCP URL rather than breaking the update flow.
-func deviceHasWiFi(ctx context.Context, conn *grpcclient.AgentConnection) bool {
-	status, err := conn.AgentService.GetWiFiStatus(ctx, &agentpb.GetWiFiStatusRequest{})
-	if err != nil {
-		return true
+// osUpdateThroughCloud also handles the legacy cloud command wrapper. Default
+// and picker selections retain their transport on conn, not in the context.
+func osUpdateThroughCloud(ctx context.Context, conn *grpcclient.AgentConnection) bool {
+	_, cloudCommand := cloudDeviceConfigFromContext(ctx)
+	return cloudCommand || isCloudConnection(conn)
+}
+
+func validateLocalOSArtifactConnection(ctx context.Context, conn *grpcclient.AgentConnection) error {
+	if osUpdateThroughCloud(ctx, conn) {
+		return fmt.Errorf("%s is connected through a cloud tunnel and cannot fetch a locally served artifact; use --artifact-url with a device-accessible URL, or connect directly over LAN or USB", conn.Host)
 	}
-	return status.GetConnected()
+	if isLoopbackHost(conn.Host) {
+		return fmt.Errorf("%s reaches this machine over loopback, so it cannot fetch a locally served artifact; "+
+			"pass --pr or --artifact-url and let the device download it directly", conn.Host)
+	}
+	return nil
+}
+
+// shouldServeOSArtifactLocally preserves the local fallback for isolated links.
+// WiFi is only one possible internet connection: cloud devices and NAT guests
+// should fetch the URL themselves, as should devices with an Ethernet address.
+// An address does not prove internet access; it is reason to try the URL rather
+// than downloading the image on the CLI based solely on disconnected WiFi.
+func shouldServeOSArtifactLocally(ctx context.Context, conn *grpcclient.AgentConnection, versionResp *agentpb.GetAgentVersionResponse) bool {
+	if osUpdateThroughCloud(ctx, conn) || isLoopbackHost(conn.Host) {
+		return false
+	}
+	for _, iface := range versionResp.GetNetworkInterfaces() {
+		for _, addr := range iface.GetIpAddresses() {
+			if ip := net.ParseIP(addr); ip != nil && ip.IsGlobalUnicast() {
+				return false
+			}
+		}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	wifi, err := conn.AgentService.GetWiFiStatus(probeCtx, &agentpb.GetWiFiStatusRequest{})
+	// Missing WiFi support or a failed probe leaves connectivity unknown.
+	return err == nil && !wifi.GetConnected()
 }

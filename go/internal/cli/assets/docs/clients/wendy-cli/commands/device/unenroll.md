@@ -39,11 +39,19 @@ wendy device unenroll --device <device-selector>
 
 For a WendyOS agent with numeric Cloud v1 enrollment, this clears the device's
 enrollment and provisioning state, restarts the agent, and removes its cloud
-enrollment. UUID/direct PKI local unenrollment is disabled until the reset
-approval and Cloud authorization protocol is implemented. The CLI rejects this
-path, including `--yes` and `--check`, before Cloud revocation or deletion. Use
-`--cloud-only` when you intend to remove only the Cloud enrollment; this leaves
-local device credentials intact. See the
+enrollment.
+
+For a WendyOS device with UUID/direct PKI enrollment, connect over the LAN
+(direct mTLS, not a Cloud tunnel). Cloud revokes the device certificate and
+deletes the asset; the device then verifies Cloud's signed reset authorization
+and the certificate's revocation before erasing its credentials, and can enroll
+again with the same device ID. If any check fails, the device keeps its keys
+and the same command can be retried. Agents without Cloud-authenticated reset
+support are refused before any Cloud change; update them with
+`wendy device update` first. `--check` only verifies the Cloud binding and the
+Agent's support. Use `--cloud-only` when you intend to remove only the Cloud
+enrollment; this leaves local device credentials intact. See
+[device unenrollment](../../../../device/unenrollment.mdx) and the
 [unenrollment compatibility requirements](./enroll.md#unenrollment-compatibility).
 
 For Wendy Lite, select the board's USB connection. The command checks firmware
@@ -70,8 +78,8 @@ removal directly, without opening a device connection.
 | `--device` | Device selector. In cloud mode, accepts a cloud asset ID, name, or PKI device ID. |
 | `--cloud-only` | Remove the cloud enrollment without connecting to the device. Available on `wendy device unenroll`. |
 | `--cloud-grpc` | Cloud gRPC endpoint for the stored session used to remove the enrollment. |
-| `--asset-id` | Reserved for direct WendyOS v2 unenrollment, which is currently disabled. Unavailable for cloud mode and Wendy Lite. |
-| `--check` | Reserved for direct WendyOS v2 unenrollment, which is currently disabled. Unavailable for cloud mode and Wendy Lite. |
+| `--asset-id` | Exact Cloud asset UUID for a WendyOS v2 device; must match its Cloud binding. Unavailable for cloud mode and Wendy Lite. |
+| `--check` | Verify the Cloud binding and the Agent's authenticated-reset support without changing anything. Unavailable for cloud mode and Wendy Lite. |
 | `--yes` | Skip confirmation. Required when running non-interactively. |
 
 ## Related

@@ -13,6 +13,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -77,6 +78,67 @@ func TestConnectSimulatorChoiceSurfacesAMissingQEMU(t *testing.T) {
 	_, err := connectSimulatorChoice(context.Background(), &simulatorChoice{Name: "sim"}, true)
 	if !errors.Is(err, errSimulatorUnavailable) {
 		t.Errorf("err = %v, want errSimulatorUnavailable so it never falls back to cloud", err)
+	}
+}
+
+func TestSimulatorWithoutDetachedSupport(t *testing.T) {
+	savedDetach, savedQEMU := vmDetachSupportedFn, ensureQEMUFn
+	vmDetachSupportedFn = func() bool { return false }
+	ensureQEMUFn = func(context.Context) error {
+		t.Fatal("foreground VM guidance and an already-running VM must not check QEMU")
+		return nil
+	}
+	t.Cleanup(func() { vmDetachSupportedFn, ensureQEMUFn = savedDetach, savedQEMU })
+
+	t.Run("create", func(t *testing.T) {
+		err := createSimulator("test1")
+		if !errors.Is(err, errSimulatorUnavailable) || !errors.Is(err, vm.ErrDetachUnsupported) {
+			t.Fatalf("error = %v, want unsupported simulator creation", err)
+		}
+		// The recovery commands are user-visible output, not error classification.
+		message := err.Error()
+		for _, want := range []string{"wendy vm create test1 --profile generic", "wendy vm start test1", "separate terminal", "WSL2"} {
+			if !strings.Contains(message, want) {
+				t.Errorf("error = %v, missing %q", err, want)
+			}
+		}
+	})
+
+	for _, running := range []bool{false, true} {
+		t.Run(fmt.Sprintf("running=%t", running), func(t *testing.T) {
+			setTempConfig(t, &config.Config{})
+			store, err := vm.NewStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(store.Dir("test1"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if running {
+				release, err := flock.Acquire(store.LockPath("test1"), time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+				if err := store.WriteState(vm.State{Name: "test1", PID: os.Getpid(), NetMode: vm.NetUser, AgentPort: 50103}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			addr, started, err := ensureSimulatorRunning(context.Background(), "test1")
+			if running {
+				if err != nil || started || addr != "127.0.0.1:50103" {
+					t.Fatalf("running foreground VM = %q, %t, %v", addr, started, err)
+				}
+				return
+			}
+			if !errors.Is(err, vm.ErrDetachUnsupported) || started || addr != "" {
+				t.Fatalf("stopped VM = %q, %t, %v, want named foreground command", addr, started, err)
+			}
+			message := err.Error()
+			if !strings.Contains(message, "wendy vm start test1") {
+				t.Fatalf("stopped VM recovery command missing from %q", message)
+			}
+		})
 	}
 }
 

@@ -23,6 +23,9 @@ type RelayOptions struct {
 	// DeviceTrustChainPEM comes from the selected Cloud session. Lite operator
 	// leaves use a separate authority and do not carry the device's CA chain.
 	DeviceTrustChainPEM string
+	// DeviceTrustFallback loads the tenant's Lite Device CA chain as untrusted
+	// intermediates; a Lite leaf must still chain to DeviceTrustChainPEM.
+	DeviceTrustFallback LiteDeviceCAChain
 	SignRequest         func([]byte) ([]byte, error)
 	Redial              func(context.Context, string) (*grpc.ClientConn, context.Context, error)
 }

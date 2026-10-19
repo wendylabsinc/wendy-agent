@@ -1,6 +1,6 @@
 {
   "name": "wendy-agentic-coding",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Wendy CLI setup, device installation, app deployment, ROS 2 verification, and Wendy Data campaigns, episodes, and application recording streams.",
   "author": {
     "name": "Wendy Labs",

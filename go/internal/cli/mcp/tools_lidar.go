@@ -39,7 +39,7 @@ func (s *mcpServer) registerLidarTool(srv *server.MCPServer) {
 		mcpgo.WithInteger("max_bytes", mcpgo.Min(2048), mcpgo.Max(100000), mcpgo.DefaultNumber(32000), mcpgo.Description("Result byte limit; oversized summaries omitted whole")),
 	}
 	opts = append(opts, readOnly()...)
-	opts = append(opts, localOnly()...)
+	opts = append(opts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("ros2_lidar_summary", opts...), s.handleLidarSummary)
 }
 

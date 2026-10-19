@@ -373,6 +373,9 @@ func restartAvahiDaemon(logger *zap.Logger, env []string) bool {
 // updateAvahiDeviceName rewrites the name/displayname/fqdn TXT records in the
 // avahi service file and reloads avahi-daemon so mDNS picks up the new name.
 func updateAvahiDeviceName(logger *zap.Logger, name string, env []string) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
 	const serviceFile = "/etc/avahi/services/wendyos-mdns.service"
 
 	data, err := os.ReadFile(serviceFile)
@@ -436,6 +439,9 @@ const defaultAvahiServiceDir = "/etc/avahi/services"
 // real. Left un-injected it prompts for polkit authorization on a developer
 // machine and blocks the package's tests for the length of that timeout.
 func updateAvahiService(logger *zap.Logger, serviceDir string, port int, tls bool, assetID, orgID int32, restartAvahi func() bool) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
 	entries, err := os.ReadDir(serviceDir)
 	if err != nil {
 		logger.Warn("Could not read avahi services dir", zap.String("path", serviceDir), zap.Error(err))
@@ -573,6 +579,9 @@ func updateOrgIDTXTRecord(block string, orgID int32) string {
 // independently of provisioning state. Consumer devices in this plan never
 // call it; it exists so the source-role wiring and the picker agree on the key.
 func UpdateAvahiSensorlink(logger *zap.Logger, on bool) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
 	entries, err := os.ReadDir(defaultAvahiServiceDir)
 	if err != nil {
 		logger.Warn("Could not read avahi services dir", zap.String("path", defaultAvahiServiceDir), zap.Error(err))
