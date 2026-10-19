@@ -261,9 +261,31 @@ release commit reproduces the pin.
 | `sign` | `{tenant?, bytes: Uint8Array}` | `{signature: Uint8Array}` with the operator key |
 | `auth-signout` | `{tenant?}` | `true`; no tenant signs out of every organization |
 
+Call `init` once, first, before any sign-in, `credential` or `sign` call; a
+second `init` fails. Without it the worker keeps the development dashboard's
+defaults and its `/api/wendy-auth` proxy. Every service URL must be explicit
+HTTPS (the Cloud gRPC authority on port 443). There is no host allowlist, by
+design: the page owns this worker's origin and its saved sign-ins, and a
+self-hosted deployment names its own services. Saved sign-ins from another
+auth host do not restore.
+
+`sign` takes the bytes as the request's second argument, a non-empty
+`Uint8Array`; anything else fails with `Nothing to sign`. The bytes are signed
+as given, with no prefix.
+
+An `issuer` for `auth-begin` must be a Wendy auth realm,
+`<auth_base>/realms/<name>` on the configured auth host. The system realm is
+rejected, compared without case. The callback must return from that same realm;
+`auth-complete` with a different `issuer` fails, and sign-in must start again.
+
 Each organization keeps its own saved sign-in, keyed by tenant and operator.
 The operator key never leaves the worker. Cloud device sessions still require
 the local browser relay.
+
+Upgrading from an older wendy-web: its single `session` slot moves to its
+organization's slot on first load, and the old slot is removed. No action is
+needed. A legacy record without a tenant and operator is dropped, so that
+operator signs in again.
 
 ## Validation
 
