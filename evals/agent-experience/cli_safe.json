@@ -1,0 +1,12 @@
+{"read_only": [
+  ["help"], ["docs"], ["info"],
+  ["device", "list"], ["device", "info"], ["device", "apps", "list"],
+  ["device", "hardware", "list"], ["device", "wifi", "list"], ["device", "wifi", "status"],
+  ["device", "camera", "list"], ["device", "audio", "list"], ["device", "volumes", "list"],
+  ["device", "drivers", "list"],
+  ["vm", "list"], ["vm", "robot", "status"],
+  ["cloud", "discover"], ["cloud", "status"],
+  ["project", "entitlements", "list"],
+  ["data", "sources"], ["data", "episodes"],
+  ["cache", "list"], ["analytics", "status"]
+]}
