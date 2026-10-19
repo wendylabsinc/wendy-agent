@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -187,5 +190,40 @@ func TestDetachedRunWaitsForDelayedStarted(t *testing.T) {
 				t.Fatal("did not return after acknowledgement")
 			}
 		})
+	}
+}
+
+func TestFastPathStartEventHasTransport(t *testing.T) {
+	isolateFingerprintCache(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &appconfig.AppConfig{AppID: "fastpath-start-event", Platform: "linux"}
+	opts := runOptions{detach: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	version := &agentpb.GetAgentVersionResponse{Os: "linux", CpuArchitecture: "arm64"}
+	inputs, err := singleServiceDesiredHash(dir, "", "linux/arm64", resolvedStagefileBackend(ctx),
+		map[string]string{"WENDY_PLATFORM": "generic", "WENDY_DEBUG": "false", "WENDY_HAS_CUDA": "false"}, mergeEnvEntries(resolveServiceEnv(cfg), opts.env), cfg, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveDeployFingerprint(cfg.AppID, deviceFingerprintKey(version), deployFingerprint{InputHash: inputs, LayerDiffIDs: []string{"layer"}})
+	client := &fastPathContainerClient{appName: cfg.AppID, state: agentpb.AppRunningState_STOPPED, presentLayers: map[string]bool{"layer": true}}
+	conn := &grpcclient.AgentConnection{ContainerService: client}
+	conn.CacheAgentVersion(version)
+	var events []map[string]string
+	analytics.SetTrackHookForTesting(func(event string, props map[string]string) {
+		if event == "app_started" {
+			events = append(events, props)
+		}
+	})
+	t.Cleanup(func() { analytics.SetTrackHookForTesting(nil) })
+	if err := runWithAgentRecorded(ctx, conn, dir, cfg, opts, newDeployMetrics(opts)); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0]["deploy_transport"] != "fastpath" {
+		t.Fatalf("start events = %v; want one event with fastpath transport", events)
 	}
 }

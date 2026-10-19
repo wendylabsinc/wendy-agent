@@ -2412,11 +2412,13 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 	}
 	mark("build-input fingerprint")
 	if fingerprintUsed && hashErr == nil {
+		// Started emits its progress event inside the fast path, before it returns.
+		metrics.transport = "fastpath"
 		if done, err := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
 			mark("fast-path (skipped build)")
-			metrics.transport = "fastpath"
 			return err
 		}
+		metrics.transport = ""
 	}
 
 	// A build will run below (the no-build fast path returned above), so make
