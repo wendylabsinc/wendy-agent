@@ -34,8 +34,7 @@ func reserveNDIRules(ctx context.Context, lockPath string, rules []ownedRule, re
 		return nil, err
 	}
 	if err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		lock.Close()
-		return nil, fmt.Errorf("NAN provider already running: %w", err)
+		return nil, errors.Join(fmt.Errorf("NAN provider already running: %w", err), lock.Close())
 	}
 	cleanup := func() {
 		for _, rule := range rules {
