@@ -71,7 +71,7 @@ func TestResolverFallsBackToRosterWithDeviceUUIDs(t *testing.T) {
 		OrgSlug: "acme",
 		Entries: []*cloudpbv2.MeshRosterEntry{
 			{Name: "calm-otter", AssetId: rosterAssetB},
-			{Name: "legacy-box", AssetId: rosterAssetA},
+			{Name: "legacy-box", AssetId: "42"},
 		},
 	})
 	r := NewMeshResolver(zaptest.NewLogger(t), roster, lanBrowse())

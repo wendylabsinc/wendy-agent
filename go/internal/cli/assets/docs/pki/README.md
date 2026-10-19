@@ -133,7 +133,7 @@ When one device dials another by its device UUID, the agent runs `VerifyPeerDevi
 
 A legacy asset-ID string selects the older asset pin: the certificate must identify the expected asset, and its scope must match the calling device's own scope when that scope is known. Only this legacy path permits an unknown calling scope; it still requires the exact asset identity and a valid certificate chain.
 
-The wendy net data plane still dials peers by their legacy asset ID with the asset pin at this stage; it moves to the UUID rule when it addresses peers by device UUID (WDY-3923).
+Wendy net uses the typed device principal for peer dials; Cloud's `asset_id` carries that same device UUID. Same-tenant operator credentials can also pin a device when delivering builds.
 
 ## Device identity pinning (default device)
 

@@ -30,12 +30,12 @@ import (
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
-// Delivery targets for these tests: canonical asset UUIDs, and the mesh
-// device the test roster resolves them to. Production resolves an asset
-// through the tenant roster; these tests resolve through testResolveTarget.
+// Delivery targets use the same UUID in the Cloud adapter and device principal.
+// Production obtains the tenant from its authenticated roster; these tests
+// resolve the two known device UUIDs through testResolveTarget.
 const testAssetUUIDB = "00000000-0000-4000-8000-000000000215"
 
-var testMeshDevice = mustTestDevice("3f2a7c9d-8b1e-4f6a-9c0d-1e2b3c4d5e6f")
+var testMeshDevice = mustTestDevice(testAssetUUID)
 
 func mustTestDevice(deviceUUID string) meshid.Device {
 	tenant, err := meshid.ParseTenant("11111111-2222-4333-8444-555555555555")
@@ -56,7 +56,7 @@ func testResolveTarget(assetUUID string) (DeliveryTarget, error) {
 	if assetUUID != testAssetUUID && assetUUID != testAssetUUIDB {
 		return DeliveryTarget{}, fmt.Errorf("asset %s is not in the test roster", assetUUID)
 	}
-	return DeliveryTarget{Device: testMeshDevice, AssetUUID: assetUUID}, nil
+	return DeliveryTarget{Device: mustTestDevice(assetUUID), AssetUUID: assetUUID}, nil
 }
 
 // fakeTargetAgent stands in for the target device's container service: a

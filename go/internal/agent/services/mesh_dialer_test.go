@@ -15,7 +15,7 @@ import (
 )
 
 var dialerTestTarget = DeliveryTarget{Device: testMeshDevice, AssetUUID: testAssetUUID}
-var dialerOtherTarget = DeliveryTarget{Device: mustTestDevice("3f2a7c9d-8b1e-4f6a-9c0d-1e2b3c4d5e70"), AssetUUID: testAssetUUIDB}
+var dialerOtherTarget = DeliveryTarget{Device: mustTestDevice(testAssetUUIDB), AssetUUID: testAssetUUIDB}
 
 func testDialer() (*MeshDialer, *dialerProbes) {
 	p := &dialerProbes{}
@@ -541,5 +541,18 @@ func TestMeshDialContextDialerDialsVerbatim(t *testing.T) {
 		}
 		conn.Close()
 		ln.Close()
+	}
+}
+
+func TestDialTargetRejectsMismatchedCloudUUIDBeforeDiscovery(t *testing.T) {
+	d, probes := testDialer()
+	target := dialerTestTarget
+	target.AssetUUID = testAssetUUIDB
+	if conn, _, err := d.DialTarget(context.Background(), target, 8080); err == nil {
+		conn.Close()
+		t.Fatal("accepted a Cloud UUID that differs from the device principal")
+	}
+	if probes.lookups != 0 || probes.lanDials != 0 || probes.brokerDials != 0 {
+		t.Fatalf("mismatched identity reached a transport: %+v", probes)
 	}
 }
