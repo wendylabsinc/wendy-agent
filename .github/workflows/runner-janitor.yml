@@ -89,10 +89,14 @@ jobs:
             exit 0
           fi
           out=$(.github/scripts/remove-stale-ci-builders.sh)
-          [[ -z "$out" ]] || printf '%s\n' "$out"
-          count=$(grep -c -E '^(Removing|Would remove) stale builder' <<<"$out" || true)
+          printf '%s\n' "$out"
+          if grep -q 'Could not list buildx builders' <<<"$out"; then
+            echo "• Leaked builders: could not list builders" >> "$findings"
+            exit 0
+          fi
+          count=$(sed -n -E 's/^Stale CI builders: ([0-9]+)$/\1/p' <<<"$out")
           verb=removed; [[ "$DRY_RUN" != true ]] || verb="to remove"
-          echo "• Leaked builders: $count $verb" >> "$findings"
+          echo "• Leaked builders: ${count:-?} $verb" >> "$findings"
 
       - name: Trim shared builder caches
         id: shared-builders
