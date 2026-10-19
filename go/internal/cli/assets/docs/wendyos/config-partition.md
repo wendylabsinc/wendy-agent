@@ -69,10 +69,9 @@ destination files whose contents and permissions already match. Malformed or
 incomplete handoffs are logged and removed. See [Credential persistence](../pki/README.md#credential-persistence)
 for the stored file layout and legacy-file handling.
 
-When the agent loads the enrollment, it also persists the certificate's device
-UUID in `/etc/wendyos/device-uuid` and rewrites the `_wendyos._udp` service's
-`id=` TXT record before restarting Avahi. This also happens after live
-re-enrollment. If neither a non-empty explicit hostname nor a device name
+This UUID/mDNS alignment also runs after live re-enrollment. The
+`_wendyos._udp` service's `id=` TXT record is updated before Avahi restarts.
+If neither a non-empty explicit hostname nor a device name
 exists, the agent first saves its current hostname in
 `/etc/wendy-agent/hostname` so changing the UUID does not rename the device
 at the next boot. A legacy asset certificate has no device UUID and leaves
