@@ -1,14 +1,14 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "HelloWorld",
     platforms: [.macOS(.v15)],
-    dependencies: [.package(path: "../../../distributions/swift")],
+    dependencies: [.package(path: "../../..")],
     targets: [
         .executableTarget(
             name: "HelloWorld",
-            dependencies: [.product(name: "WendyCore", package: "swift")]
+            dependencies: [.product(name: "WendyCore", package: "wendy-core")]
         ),
     ]
 )

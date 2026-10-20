@@ -1,6 +1,6 @@
 # Wendy Core
 
-`wendy-core` is the standalone, strict-SemVer release unit for the portable engine, selected modules, public contracts and included platform/subsystem implementations. Go is the chosen engine implementation. Core ships in language-consumable distributions. Wendy Swift, Wendy Python, Wendy Kotlin, etc. are separate SDK layers; they are not implemented here yet.
+`wendy-core` is the standalone, strict-SemVer release unit for the portable engine, selected modules, public contracts and included platform/subsystem implementations. Go is the chosen engine implementation. Core ships in language-consumable distributions. The ergonomic language SDKs build on them in their own repositories: [Wendy Swift](https://github.com/wendylabsinc/wendy-swift) and [Wendy Go](https://github.com/wendylabsinc/wendy-go); others are not started.
 
 The runnable contract currently exports **one operation**, `WendyHelloWorld()`, returning the integer **42**. Every incarnation reaches the same implementation in `core/core.go`. No device, Cloud, authentication, or platform-capability behavior is implemented.
 
@@ -18,14 +18,15 @@ cmd/wendy-core-wasm/     The same Go engine compiled for browsers
 include/WendyCore/       Public C headers: binding API + reserved platform SPI
 proto/                   Reserved structured Core schemas
 internal/bridge/         Private native-loader mechanics
+Package.swift            SwiftPM manifest of distributions/swift
 
 distributions/
   javascript/            One ESM npm package: Node native + browser WASM
   python/                Python-version-independent native wheels
-  swift/                 Standalone SwiftPM package
+  swift/                 SwiftPM product WendyCore, statically linked
   kotlin/                Kotlin/JVM Maven artifact
 
-bindings/                Future language SDKs, not Core incarnations
+bindings/                Binding patterns; SDKs live in their own repositories
 platform/                Included adapter families/variants; Core-versioned
 subsystems/              Reusable infrastructure behind explicit contracts
 documentation/           Contract, projection, versioning and release guides
@@ -59,7 +60,7 @@ Prerequisites: Go, a C compiler, Python 3.9+, `protoc`, and Clang. JavaScript te
 make check               # real Go/C tests, generated JS interface, metadata
 make javascript          # Node + actual browser, including installed npm artifact
 make python              # Python calls the native engine
-make swift               # SwiftPM calls the packaged native engine
+make swift               # Swift calls the statically linked engine (macOS also builds for iOS)
 JAVA_HOME=/path/to/jdk21 make kotlin
 make documentation       # Doxygen HTML/XML under .build/sdk/site
 ```
@@ -85,12 +86,13 @@ See [examples/README.md](examples/README.md) for small Go, C, Swift, Python, Kot
 | Target | C / Python / Node / Kotlin JVM | SwiftPM |
 |---|---|---|
 | Linux x64 (glibc 2.35+) | CI build/test target | CI build/test target |
-| Linux arm64 (glibc 2.39+) | CI build/test target | Not yet supported |
+| Linux arm64 (glibc 2.39+) | CI build/test target | CI build/test target |
 | macOS x64 / arm64 (15+) | CI build/test targets | CI build/test targets |
+| iOS 18+ / Simulator (arm64, x64) | — | CI build/link target (tests not run) |
 | Windows x64 | CI build/test target | Not yet supported |
 | Browser | Go/WASM, Chromium conformance | — |
 
-[Wendy Core CI](https://github.com/wendylabsinc/wendy-core/actions/workflows/ci.yml) builds and tests this matrix. A passing run verifies the HelloWorld bootstrap, not the proposed domains or platform capabilities. Alpine/musl, Windows arm64, Android, iOS, watchOS and other variants are not claimed by this bootstrap. Go callers use the native module directly; the native-binary matrix does not define every potential Go target.
+[Wendy Core CI](https://github.com/wendylabsinc/wendy-core/actions/workflows/ci.yml) builds and tests this matrix. A passing run verifies the HelloWorld bootstrap, not the proposed domains or platform capabilities. Alpine/musl, Windows arm64, Android, watchOS and other variants are not claimed by this bootstrap; iOS is claimed for Swift only. Go callers use the native module directly; the native-binary matrix does not define every potential Go target.
 
 ## Release boundary
 

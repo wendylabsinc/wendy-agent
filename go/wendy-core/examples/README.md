@@ -10,7 +10,7 @@ Core dependencies come from this checkout on disk, not a published registry. Bui
 
 - [Go](go/README.md) — local Go module, without a C round trip
 - [C](c/README.md) — local header and Go shared library
-- [Swift](swift/README.md) — local SwiftPM package
+- [Swift](swift/README.md) — this repository's SwiftPM package with locally built static binaries
 - [Python](python/README.md) — install the local Core package into a virtual environment
 - [Kotlin/JVM](kotlin/README.md) — local Core jar
 - [JavaScript](javascript/README.md) — local npm package, in Node and a browser
