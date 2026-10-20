@@ -108,6 +108,58 @@ kernel requirements. Linux images need IPv6 policy tables, dummy interfaces and
 TUN support; container UDP interception additionally needs TPROXY support. An
 agent update cannot supply kernel features compiled out of an installed image.
 
+## LAN and Wi-Fi Aware discovery
+
+Both carriers advertise the same enrolled device principal and tenant-scoped
+default mesh hint. The hint is the first eight bytes of SHA-256 over the exact
+UTF-8 string `tenant:<canonical-tenant-uuid>:default`, without a newline. It is
+an untrusted connection filter; QUIC mTLS still pins the complete principal.
+Separate named-mesh certificate authorization is not implemented.
+
+LAN discovery uses `_wendy-net._udp.local.` with TXT fields `protocol=quic-v1`,
+`principal=<SPIFFE URI>`, `mesh=<16 lowercase hex characters>` and `version=1`. The existing SRV
+port, host and address records are unchanged. Versionless advertisements retain
+their legacy v1 meaning. Readers reject unsupported or malformed explicit
+versions and duplicate keys; unknown additional TXT keys are allowed. The
+additive version field is compatible with older readers that ignore it.
+
+Synchronized Wi-Fi Aware discovery keeps service name `wendy.mesh.v1`. Its SSI
+is binary, with all offsets below measured in bytes:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | ASCII magic `WNAN` |
+| 4 | 1 | Binary payload version `0x01` |
+| 5 | 1 | Flags: bit 0 means mesh hint present; all other bits must be zero |
+| 6 | 16 | Tenant UUID, standard network-order UUID bytes |
+| 22 | 16 | Device UUID, standard network-order UUID bytes |
+| 38 | 8, optional | Raw mesh hint bytes, without hex encoding |
+
+The payload is exactly 38 bytes without a mesh or 46 bytes with one. Both UUIDs
+reconstruct `spiffe://wendy.sh/tenant/<tenant-uuid>/device/<device-uuid>`; the
+URI template is fixed by this protocol version. Explicit nil UUIDs preserve
+the existing identity contract. An all-zero hint is present if its flag is set;
+it is not an absent mesh. Current enabled providers advertise the default mesh.
+Mesh-less presence is representable but cannot initiate or accept a mesh path.
+
+Publication, subscription, NDP requests, NDP responses and counter confirmations
+all carry the same SSI. The supplicant control socket uses a hex rendering of
+these bytes; that representation is decoded before transmission on the radio.
+Discovery, incoming NDP requests and counter proposals must pass tenant and mesh
+checks before affecting peer selection or creating/accepting a path. Unsupported
+versions, unknown flags, invalid lengths and trailing bytes are rejected.
+
+This binary v1 replaces the previous textual `wendy-nan:1:<device-uuid>`
+advertisement. There is deliberately no legacy fallback: the old advertisement
+lacks the tenant and mesh needed for early filtering. Update NAN peers together;
+other carriers retain their existing wire compatibility. Discovery protocol
+versions are independent of the authenticated mesh ALPN/hello version.
+
+The full principal is now exposed to nearby NAN observers, as it already is on
+the LAN through mDNS. This filter avoids ordinary cross-tenant connection loops;
+it cannot prevent a sender from advertising a forged local-tenant claim. Only
+certificate verification authorizes the link.
+
 ## Wi-Fi Aware recovery
 
 Repeated failed data paths can trigger one retry of the router's private NAN

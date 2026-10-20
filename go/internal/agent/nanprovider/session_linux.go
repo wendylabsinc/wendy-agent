@@ -528,8 +528,8 @@ func (p Provider) attachPeer(ctx context.Context, id meshid.Device, peer radioPe
 		return err
 	}
 	defer releaseNeighbor()
-	// Presence SSI only proposes a device UUID. The enrolled certificate pins
-	// the full device principal during this QUIC handshake.
+	// Presence SSI proposes the full device principal and mesh scope. The
+	// enrolled certificate pins that principal during this QUIC handshake.
 	tlsConfig, err := p.Credentials.PeerTLSWithTickets(peer.Device, localmesh.LinkALPN, localmesh.LinkQUICSessionScope)
 	if err != nil {
 		return err

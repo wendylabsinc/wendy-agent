@@ -4,7 +4,6 @@ package nanprovider
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/nancontrol"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshdiscovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
@@ -299,7 +299,11 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 	}
 	local := iface.HardwareAddr.String()
 	defer drainRadio(control, rawEvents, local, "", logger)
-	ssi := hex.EncodeToString([]byte("wendy-nan:1:" + ident.UUID().String()))
+	mesh := meshdiscovery.DefaultHint(ident.Tenant())
+	ssi, err := encodePresence(presence{Device: ident, Mesh: &mesh})
+	if err != nil {
+		return err
+	}
 	// Permission changes update the socket receipt atomically with this snapshot.
 	unlockManagement, err := nancontrol.Lock(ctx)
 	if err != nil {
@@ -520,7 +524,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 			if v["subscribe_id"] != sub {
 				continue
 			}
-			peer, err := decodePresence(ident.Tenant(), v["ssi"])
+			peer, err := decodePresence(ident.Tenant(), mesh, v["ssi"])
 			if err != nil || peer == ident {
 				continue
 			}
@@ -546,7 +550,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 			if v["publish_inst_id"] != pub {
 				continue
 			}
-			peer, err := decodePresence(ident.Tenant(), v["ssi"])
+			peer, err := decodePresence(ident.Tenant(), mesh, v["ssi"])
 			if err != nil || !validMAC(nmi) || !shouldAccept(ident, peer, nmi, active) {
 				continue
 			}
@@ -584,7 +588,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 
 		case "NAN-NDP-COUNTER-REQUEST":
 			nmi := v["peer_nmi"]
-			peer, err := decodePresence(ident.Tenant(), v["ssi"])
+			peer, err := decodePresence(ident.Tenant(), mesh, v["ssi"])
 			link := active[nmi]
 			if err != nil || link == nil || !link.peer.Outgoing || link.peer.Device != peer || link.healthy || link.peer.NDI != "" {
 				continue

@@ -4,8 +4,6 @@ package localmesh
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -22,6 +20,7 @@ import (
 	"github.com/hashicorp/mdns"
 	"github.com/miekg/dns"
 	quic "github.com/quic-go/quic-go"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshdiscovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 	"golang.org/x/net/ipv4"
@@ -29,13 +28,14 @@ import (
 )
 
 const (
-	LANPort            = 43023
-	EthernetLinkCost   = uint16(64)
-	WiFiLinkCost       = uint16(128)
-	lanService         = "_wendy-net._udp"
-	lanProtocol        = "quic-v1"
-	maxLANIncoming     = 64
-	lanInterfacePeriod = 5 * time.Second
+	LANPort             = 43023
+	EthernetLinkCost    = uint16(64)
+	WiFiLinkCost        = uint16(128)
+	lanService          = "_wendy-net._udp"
+	lanDiscoveryVersion = "1"
+	lanProtocol         = "quic-v1"
+	maxLANIncoming      = 64
+	lanInterfacePeriod  = 5 * time.Second
 )
 
 // LANConfig enables discovery independently for physical Ethernet and
@@ -653,13 +653,12 @@ func attachLAN(ctx context.Context, cfg LANConfig, selected lanInterface, asset 
 }
 
 func lanMeshHash(tenant meshid.Tenant) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("tenant:%s:default", tenant)))
-	return hex.EncodeToString(sum[:8])
+	return meshdiscovery.DefaultHint(tenant).String()
 }
 func lanMDNSService(c *Credentials, selected lanInterface) (*mdns.MDNSService, error) {
 	instance := fmt.Sprintf("wendy-net-%s", c.Device.UUID())
 	host := fmt.Sprintf("wendy-net-%s-%d.local.", c.Device.UUID(), selected.iface.Index)
-	txt := []string{"protocol=" + lanProtocol, "principal=" + c.Device.Principal(), "mesh=" + lanMeshHash(c.Device.Tenant())}
+	txt := []string{"protocol=" + lanProtocol, "principal=" + c.Device.Principal(), "mesh=" + lanMeshHash(c.Device.Tenant()), "version=" + lanDiscoveryVersion}
 	return mdns.NewMDNSService(instance, lanService, "local.", host, LANPort, []net.IP{selected.ip}, txt)
 }
 
@@ -697,6 +696,11 @@ func parseLANEntry(entry *mdns.ServiceEntry, self meshid.Device) (meshid.Device,
 			return meshid.Device{}, nil, false
 		}
 		fields[key] = value
+	}
+	// Versionless advertisements still require this native UDP protocol and
+	// principal/mesh contract. Unknown explicit versions never reach setup.
+	if version, present := fields["version"]; present && version != lanDiscoveryVersion {
+		return meshid.Device{}, nil, false
 	}
 	device, err := meshid.DeviceFromPrincipal(fields["principal"])
 	if err != nil || device.Tenant() != self.Tenant() || fields["mesh"] != lanMeshHash(self.Tenant()) || fields["protocol"] != lanProtocol || device == self {

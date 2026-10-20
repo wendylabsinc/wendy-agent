@@ -11,7 +11,39 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshdiscovery"
 )
+
+func TestDiscoveryPublishesBinaryPresenceOnBothHandles(t *testing.T) {
+	id := testDevice(t, 1)
+	mesh := meshdiscovery.DefaultHint(id.Tenant())
+	ssi, err := encodePresence(presence{Device: id, Mesh: &mesh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &discoveryController{services: map[string]discoveryService{}}
+	lease, err := startDiscovery(c, filepath.Join(t.TempDir(), "discovery"), id, socketIdentity{ino: 1}, ssi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.release()
+	seen := 0
+	for _, command := range c.commands {
+		if !strings.HasPrefix(command, "NAN_PUBLISH ") && !strings.HasPrefix(command, "NAN_SUBSCRIBE ") {
+			continue
+		}
+		v := fields(command)
+		peer, err := decodePresence(id.Tenant(), mesh, v["ssi"])
+		if err != nil || peer != id || v["service_name"] != "wendy.mesh.v1" || len(v["ssi"]) != 92 {
+			t.Fatalf("invalid binary discovery command: %s (%v)", command, err)
+		}
+		seen++
+	}
+	if seen != 2 {
+		t.Fatalf("publish/subscribe presence count = %d", seen)
+	}
+}
 
 type discoveryController struct {
 	services                  map[string]discoveryService
