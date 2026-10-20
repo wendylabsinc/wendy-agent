@@ -1400,6 +1400,23 @@ func TestShouldPromptFlashMode(t *testing.T) {
 	}
 }
 
+// WDY-3974: the full Jetson flash goes over the recovery USB-C port; the
+// picker used to call it a UART flash.
+func TestT234FlashModeItemsNameTheUSBCTransport(t *testing.T) {
+	items := t234FlashModeItems()
+	if len(items) != 2 || items[0].Value != "rootfs" || items[1].Value != "full" {
+		t.Fatalf("flash modes = %+v; want rootfs then full", items)
+	}
+	for _, item := range items {
+		if strings.Contains(strings.ToUpper(item.Name+" "+item.Description), "UART") {
+			t.Errorf("flash mode %q mentions UART: %+v", item.Value, item)
+		}
+	}
+	if !strings.Contains(items[1].Name, "USB-C") {
+		t.Errorf("full flash label %q does not name USB-C", items[1].Name)
+	}
+}
+
 // TestFlashRetryAction covers installESP32Firmware's post-flash decision
 // rules. The load-bearing case is cancellation: tui.ProgressModel reports q,
 // Ctrl+C and SIGINT as context.Canceled, and the retry prompt defaults to Yes,
