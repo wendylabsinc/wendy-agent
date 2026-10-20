@@ -68,6 +68,15 @@ func (r *runtime) noteDialTimeout(asset string, timedOut bool) {
 		delete(r.dialTimeouts, asset)
 		return
 	}
+	// Radio addresses are untrusted and can rotate between advertisements.
+	// Bound diagnostic history just like the actual retry history; dropping
+	// a diagnostic entry must never affect connection admission or backoff.
+	if _, exists := r.dialTimeouts[asset]; !exists && len(r.dialTimeouts) >= maxPeerRetryHistory {
+		return
+	}
+	if r.dialTimeouts[asset] >= 3 {
+		return
+	}
 	r.dialTimeouts[asset]++
 	if r.dialTimeouts[asset] == 3 {
 		r.cfg.Logger.Warn("BLE peer has repeated dial timeouts", zap.String("radio", asset), zap.Int("consecutive_timeouts", r.dialTimeouts[asset]))
@@ -782,9 +791,10 @@ func (r *runtime) dialLink(ctx context.Context, peer candidate) {
 	}
 	stopCheaperWatch := r.watchCheaperLink(ctx, device, secure)
 	defer stopCheaperWatch()
-	// Handshake ran at the 15 ms tune; bulk must not. Relax to the
-	// steady-state interval now that TLS is established: one update per
-	// link from its dialer, best-effort, never fatal to the link.
+	// Reassert the steady-state interval after authentication. Controller
+	// scheduling and peer updates can change the negotiated interval, even
+	// when the initial and steady-state preferences are the same. This is
+	// best-effort and never fatal to an authenticated link.
 	if handleErr == nil {
 		relaxCtx, relaxCancel := context.WithTimeout(ctx, meshInitialTuneBudget)
 		relaxed, _, relaxErr := tuneMeshBeforeTLS(relaxCtx, func(updateCtx context.Context) (time.Duration, error) {
