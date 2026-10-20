@@ -26,7 +26,8 @@ jobs:
       matrix:
         include:
           - { target: linux-x64, os: ubuntu-22.04, manylinux: manylinux_2_35_x86_64, swift: true }
-          - { target: linux-arm64, os: ubuntu-24.04-arm, manylinux: manylinux_2_39_aarch64, swift: true }
+          # setup-swift installs x86_64 toolchains on Arm runners; use the official image.
+          - { target: linux-arm64, os: ubuntu-24.04-arm, manylinux: manylinux_2_39_aarch64, swift: true, swift-image: 'swift:6.2.1-noble' }
           - { target: darwin-x64, os: macos-15-intel, swift: true }
           - { target: darwin-arm64, os: macos-15, swift: true }
           - { target: win32-x64, os: windows-2022, swift: false }
@@ -91,7 +92,7 @@ jobs:
         run: |
           python scripts/build.py jni
           distributions/kotlin/gradlew -p distributions/kotlin test --no-daemon
-      - if: matrix.swift && runner.os == 'Linux'
+      - if: matrix.swift && runner.os == 'Linux' && !matrix.swift-image
         uses: swift-actions/setup-swift@v2
         with:
           swift-version: '6.2.1'
@@ -101,9 +102,16 @@ jobs:
           xcode-version: '26.3'
       - if: matrix.swift && runner.os == 'macOS'
         run: npm install --global xcodebuildmcp@2.7.0
-      - if: matrix.swift
+      - if: matrix.swift && !matrix.swift-image
         name: Build the static Swift binaries and test the root Swift package
         run: python scripts/tasks.py swift
+      - if: matrix.swift-image
+        name: Build the static Swift binaries and test the root Swift package in the Swift image
+        env:
+          SWIFT_IMAGE: ${{ matrix.swift-image }}
+        run: |
+          python scripts/build.py swift
+          docker run --rm -v "$PWD:/src" -w /src "$SWIFT_IMAGE" swift test --scratch-path /tmp/swift
       - name: Build a platform-specific, Python-version-independent wheel
         run: |
           python -m pip install build 'setuptools>=77' 'wheel>=0.45'
