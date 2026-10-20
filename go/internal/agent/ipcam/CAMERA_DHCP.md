@@ -44,10 +44,13 @@ DHCP releases are persisted and expired reservations become available again.
 Offers conservatively reserve an address for the advertised lease window too.
 Replies advertise only the remaining persisted lifetime, excluding time spent
 writing the file. Storage failures stop allocation and appear in status.
-Requests confirm only the exact address reserved for that client. A conflicting
-request is rejected; an unknown client checking a cached lease gets no reply
-and must discover an offer before obtaining a new address. Requests selecting
-another server are ignored.
+Requests confirm only the exact address reserved for that client. A REQUEST
+for an address that conflicts with the client's reservation receives a NAK.
+A selecting REQUEST naming this server also receives a NAK if its offer is no
+longer reserved. A non-selecting REQUEST from an unknown client checking a cached
+lease gets no reply, allowing it to retry its existing server. Requests naming
+another server are ignored. A NAK carries no assigned/server IP address and sets
+the broadcast flag.
 
 A camera's DECLINE reports that its offered address is already in use. The
 agent reserves that address without an owner for one lease window (12 hours),
@@ -92,6 +95,11 @@ fail closed. External edits are reread on each scan. On WendyOS the configuratio
 lives on the persistent `/data/etc/wendy-agent` bind mount and survives an OTA.
 Operators do not need to create or edit this file. Passive camera observation
 and ordinary network-camera discovery remain available with DHCP disabled.
+
+The internal allowlist format is one interface name per line; blank lines and
+lines beginning with `#` are ignored. Names contain 1–15 ASCII letters, digits,
+underscores, hyphens or dots, excluding `.` and `..`. The file is limited to 4096
+bytes. The agent sorts names before writing it.
 
 An older agent may have left a stale `10.98.x.1/24` address or NetworkManager
 profile on a former uplink. Disabling camera DHCP prevents new leases but does

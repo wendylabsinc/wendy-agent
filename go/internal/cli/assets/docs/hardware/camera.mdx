@@ -197,6 +197,26 @@ restarts and OS updates. These commands support `--device <device>` and `--json`
 No device-side file editing is required. Cameras on a network with its own DHCP
 server can be discovered with camera DHCP disabled.
 
+For automation, `wendy device camera dhcp status --json` returns an object with
+an `interfaces` array. Each interface can report:
+
+| Field | Meaning |
+| --- | --- |
+| `interface_name` | Kernel interface name |
+| `enabled` | Saved permission to serve, independently of current readiness |
+| `serving` | A DHCP server is currently active |
+| `present`, `carrier`, `up` | Interface exists, physical link is detected, and interface is administratively up |
+| `ipv4_addresses` | Current IPv4 addresses in CIDR notation |
+| `state` | `disabled`, `waiting`, `serving`, `degraded`, `blocked`, `missing`, or `unknown` |
+| `detail` | Reason for the current state, including inspection or lease-storage failures |
+
+The top-level `configuration_error` reports an invalid or insecure saved
+allowlist, which disables all camera DHCP permissions. `interface_error` reports
+failed interface inspection; it does not mean that the device has no interfaces.
+Unset fields, including false booleans and empty arrays, may be omitted from JSON.
+The corresponding agent RPCs are `GetCameraDHCPStatus` and `SetCameraDHCP`;
+the latter returns the same status shape after updating one interface.
+
 Cameras are picked up automatically as the agent's periodic discovery runs. To force a discovery round immediately and list the results in one step:
 
 ```bash
