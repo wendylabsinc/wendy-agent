@@ -2,11 +2,12 @@
 """The `wendy` shim for short tool-choice scenarios. It sits first on PATH and the prompt names it.
 
 `mcp serve` goes to the recording proxy; `chat` runs the real binary with its MCP command pointed
-back at the shim; a --help lookup runs the real binary as a bare help request; every other
+back at the shim (refused when the binary predates that hook); a --help lookup runs the real binary as a bare help request; every other
 subcommand is logged and runs for real only when it is on the read-only allowlist, not in the
 scenario's cli_canned, and no block matcher hits. Anything else is canned, with no visible error (D7).
 """
 import json
+import mmap
 import os
 from pathlib import Path
 import shlex
@@ -22,6 +23,19 @@ import grading  # noqa: E402
 from canned import cli_reply, load_cli_capture, render  # noqa: E402
 from mcp_proxy import run_proxy  # noqa: E402
 from tool_trace import cli_path, command_words  # noqa: E402
+
+
+CHAT_HOOK = b"WENDY_CHAT_MCP_COMMAND"
+
+
+def has_chat_hook(path):
+    """True when the binary's bytes name CHAT_HOOK. A chat built before the hook ignores it and starts
+    its own `mcp serve`, past the recording proxy. A byte search: chat is never run to find out."""
+    try:
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            return data.find(CHAT_HOOK) >= 0
+    except (OSError, ValueError):  # unreadable, or empty (mmap refuses a zero-length file)
+        return False
 
 
 def write_shim(directory, python=sys.executable):
@@ -184,6 +198,9 @@ def main(argv):
     if argv[:2] == ["mcp", "serve"]:
         return run_proxy(real, argv, scenario, sys.stdin.buffer, sys.stdout.buffer)
     if cli_path(argv)[:1] == ["chat"]:
+        if not has_chat_hook(real):
+            return _fail(f"{real} predates WENDY_CHAT_MCP_COMMAND, so its chat would start an unrecorded MCP server; "
+                         "rebuild it")
         os.execve(real, [real, *argv], {**os.environ, "WENDY_CHAT_MCP_COMMAND": scenario["shim"]})
     t = time.time()
     error = None

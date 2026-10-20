@@ -206,6 +206,28 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["chat"], str(self.shim))
         self.assertEqual(self.records(), [])
 
+    def test_chat_refuses_a_binary_without_the_mcp_hook(self):
+        # A chat that predates WENDY_CHAT_MCP_COMMAND starts its own `mcp serve`, past the proxy.
+        old = self.root / "old-wendy"
+        old.write_text(FAKE_REAL.replace('"$WENDY_CHAT_MCP_COMMAND"', '"none"'))
+        old.chmod(0o755)
+        self.assertNotIn(b"WENDY_CHAT_MCP_COMMAND", old.read_bytes())
+        result = self.run_shim("chat", "--prompt", "hi", real_wendy=str(old))
+        self.assertEqual((result.returncode, result.stdout), (2, ""))
+        self.assertEqual(len(result.stderr.strip().splitlines()), 1, result.stderr)
+        self.assertIn(str(old), result.stderr)
+        self.assertIn("predates WENDY_CHAT_MCP_COMMAND", result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.records(), [])
+        self.assertTrue(eval_wendy.has_chat_hook(self.fake))
+        empty = self.root / "empty"
+        empty.write_bytes(b"")
+        self.assertFalse(eval_wendy.has_chat_hook(empty))
+        self.assertFalse(eval_wendy.has_chat_hook(self.root / "missing"))
+        # The same binary still serves every other route.
+        self.assertEqual(self.run_shim("device", "list", real_wendy=str(old)).returncode, 0)
+        self.assertTrue(self.marker.exists())
+
     def test_missing_scenario_env_refuses(self):
         env = {k: v for k, v in os.environ.items() if k != "WENDY_EVAL_SCENARIO"}
         result = subprocess.run([str(self.shim), "device", "list"], env=env, capture_output=True,
