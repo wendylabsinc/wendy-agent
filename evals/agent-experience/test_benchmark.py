@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -219,6 +220,7 @@ class MetricsTests(unittest.TestCase):
                     "verify": [sys.executable, "-c", "from pathlib import Path; assert Path('answer').read_text()=='ok'"],
                     "cleanup": [sys.executable, "-c", "pass"]}
             result = b.trial(config, "fake", "sim", task, path, sys.executable)
+            self.addCleanup(shutil.rmtree, result["workspace"], True)
             self.assertTrue(result["success"])
             self.assertFalse(result["metrics"]["usage_complete"])
             self.assertTrue(result["cleanup_ok"])
@@ -292,8 +294,35 @@ class MetricsTests(unittest.TestCase):
             task = {"id": "fixture", "prompt": "p", "prepare": [sys.executable, "-c", "pass"],
                     "verify": [sys.executable, "-c", "pass"], "cleanup": [sys.executable, "-c", "pass"]}
             result = b.trial(config, "fake", "sim", task, Path(directory), sys.executable)
+            self.addCleanup(shutil.rmtree, result["workspace"], True)
             self.assertEqual(result["status"], "mcp_unverified")
             self.assertFalse(result["success"])
+
+    def test_trial_stages_a_plugin_per_attempt_and_flags_a_second_wendy_server(self):
+        # Each Claude attempt loads its own plugin copy without mcpServers; a second Wendy server in the
+        # init event still makes the attempt mcp_contaminated, and it never passes.
+        init = {"type": "system", "subtype": "init", "mcp_servers": [
+            {"name": "wendy"}, {"name": "plugin:wendy-agentic-coding:wendy"}]}
+        code = ("import json, sys; print(json.dumps(%r)); "
+                "print(json.dumps({'type': 'result', 'result': sys.argv[2], 'is_error': False}))" % init)
+        command = [sys.executable, "-c", code, "--plugin-dir", "{plugin_dir}"]
+        config = {"agents": {"fake": {"adapter": "claude", "model": "fixture", "command": command}},
+                  "targets": {"sim": {"kind": "simulator", "device": "vm:test"}}}
+        task = {"id": "fixture", "prompt": "p", "prepare": [sys.executable, "-c", "pass"],
+                "verify": [sys.executable, "-c", "pass"], "cleanup": [sys.executable, "-c", "pass"]}
+        with tempfile.TemporaryDirectory() as directory:
+            rows = [b.trial(config, "fake", "sim", task, Path(directory), sys.executable) for _ in range(2)]
+            plugins = []
+            for row in rows:
+                self.addCleanup(shutil.rmtree, row["workspace"], True)
+                self.assertEqual((row["status"], row["success"]), ("mcp_contaminated", False))
+                plugin = Path(row["metrics"]["final_text"])  # the plugin dir the agent was given
+                self.assertEqual(plugin, Path(directory) / f"fake-sim-fixture-{row['id']}" / "plugin")
+                self.assertNotIn("mcpServers", json.loads((plugin / ".claude-plugin/plugin.json").read_text()))
+                self.assertEqual(b.tree_sha256(plugin / "skills"),
+                                 b.tree_sha256(b.ROOT / "plugins/wendy-agentic-coding/skills"))
+                plugins.append(plugin)
+            self.assertNotEqual(*plugins)
 
     def test_treatment_git_records_none_outside_a_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
