@@ -2,10 +2,77 @@ package netgossip
 
 import (
 	"bytes"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestOneNeighbourHintsCannotReserveOtherNeighboursDownloadCapacity(t *testing.T) {
+	now := time.Now()
+	pool := NewPool()
+	noisy := pool.NewSession(Service)
+	source := NewPool().NewSession(Service)
+	requests := 0
+	for i := range maxPending {
+		have := source.Offer(fmt.Appendf(nil, "service-%d", i), now.Add(time.Minute), now)
+		want, _, err := noisy.Receive(*have, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want != nil {
+			requests++
+		}
+	}
+	if requests != maxPerPeer {
+		t.Fatalf("noisy neighbour acquired %d downloads", requests)
+	}
+	healthy := pool.NewSession(Manifest)
+	manifest := NewPool().NewSession(Manifest).Offer([]byte("healthy router manifest"), now.Add(time.Minute), now)
+	if want, _, err := healthy.Receive(*manifest, now); err != nil || want == nil {
+		t.Fatalf("unrequested service hints blocked an unrelated manifest: want=%v err=%v", want, err)
+	}
+}
+
+func TestBodiesAwaitingVerificationKeepTheirNeighbourQuota(t *testing.T) {
+	now := time.Now()
+	pool := NewPool()
+	receiver := pool.NewSession(Service)
+	sender := NewPool().NewSession(Service)
+	var first []byte
+	for i := range maxPerPeer {
+		body := fmt.Appendf(nil, "pending verification %d", i)
+		have := sender.Offer(body, now.Add(time.Minute), now)
+		want, _, err := receiver.Receive(*have, now)
+		if err != nil || want == nil {
+			t.Fatal("bounded download not requested", err)
+		}
+		data, _, err := sender.Receive(*want, now)
+		if err != nil || data == nil {
+			t.Fatal("missing body", err)
+		}
+		_, got, err := receiver.Receive(*data, now)
+		if err != nil || !bytes.Equal(got, body) {
+			t.Fatal("download failed", err)
+		}
+		if i == 0 {
+			first = got
+		}
+	}
+	have := sender.Offer([]byte("next body"), now.Add(time.Minute), now)
+	if want, _, err := receiver.Receive(*have, now); err != nil || want != nil {
+		t.Fatalf("unverified bodies released the neighbour quota: want=%v err=%v", want, err)
+	}
+	healthy := pool.NewSession(Manifest)
+	manifest := NewPool().NewSession(Manifest).Offer([]byte("independent manifest"), now.Add(time.Minute), now)
+	if want, _, err := healthy.Receive(*manifest, now); err != nil || want == nil {
+		t.Fatal("verification wait blocked another neighbour", err)
+	}
+	receiver.Resolve(first, now.Add(time.Minute), now, true)
+	if wants := receiver.Poll(now); len(wants) != 1 || wants[0].ID() != have.ID() {
+		t.Fatalf("verified body did not release one queued request: %v", wants)
+	}
+}
 
 func TestConcurrentNeighboursClaimOnlyOneDownload(t *testing.T) {
 	for _, kind := range []uint8{Manifest, Service} {

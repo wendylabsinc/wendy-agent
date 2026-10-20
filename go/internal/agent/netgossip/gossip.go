@@ -255,22 +255,19 @@ func (s *Session) claim(id ID, now time.Time) *Message {
 		return nil
 	}
 	f := p.pending[id]
-	if f == nil {
-		if len(p.pending) >= maxPending {
+	if f != nil {
+		if _, ok := f.suppliers[s.owner]; ok || len(f.suppliers) < maxSuppliers {
+			f.suppliers[s.owner] = s.seen[id]
+		}
+		if f.owner != 0 || (f.avoid == s.owner && len(f.suppliers) > 1) {
 			return nil
 		}
-		f = &fetch{suppliers: make(map[uint64]time.Time)}
-		p.pending[id] = f
-	}
-	if _, ok := f.suppliers[s.owner]; ok || len(f.suppliers) < maxSuppliers {
-		f.suppliers[s.owner] = s.seen[id]
-	}
-	if f.owner != 0 || (f.avoid == s.owner && len(f.suppliers) > 1) {
-		return nil
 	}
 	all, peer := 0, 0
 	for _, v := range p.pending {
-		if v.owner != 0 && !v.received {
+		// A completed body still owns its reservation while the adapter
+		// verifies it, including any missing-certificate exchange.
+		if v.owner != 0 {
 			all++
 			if v.owner == s.owner {
 				peer++
@@ -279,6 +276,15 @@ func (s *Session) claim(id ID, now time.Time) *Message {
 	}
 	if all >= maxInFlight || peer >= maxPerPeer {
 		return nil
+	}
+	if f == nil {
+		// Unrequested hints already live in the bounded session map. They
+		// must not reserve global pending capacity ahead of other neighbours.
+		if len(p.pending) >= maxPending {
+			return nil
+		}
+		f = &fetch{suppliers: map[uint64]time.Time{s.owner: s.seen[id]}}
+		p.pending[id] = f
 	}
 	p.request++
 	f.owner, f.request, f.progress = s.owner, p.request, now
