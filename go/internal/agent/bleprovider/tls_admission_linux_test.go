@@ -54,6 +54,11 @@ func TestTLSOutboundAllowsRemoteAdmissionAndCertificateFlight(t *testing.T) {
 		var r runtime
 		elapsed, err := r.handshakeOutbound(context.Background(), client)
 		if err != nil {
+			// Drain the simulated peer before failing the bubble. Its delayed
+			// write must finish even when the client has already timed out.
+			clientRaw.Close()
+			serverRaw.Close()
+			<-serverDone
 			t.Fatalf("remote admission plus progressing flight rejected after %s: %v", elapsed, err)
 		}
 		if elapsed < admissionDelay+flightDelay || !client.ConnectionState().HandshakeComplete {
