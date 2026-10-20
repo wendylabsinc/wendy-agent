@@ -267,12 +267,16 @@ var ErrCertificateNeeded = errors.New("certificate element needed")
 // ResolveCertificateChain admits a description only after finding all its
 // exact bytes and applying the unchanged principal-scoped chain verifier.
 func (c *IdentityCache) ResolveCertificateChain(description CertificateChain, now time.Time) (string, error) {
- if err := (CertificateMessage{Chain: &description}).Validate(); err != nil { return "", err }
- chain := make([][]byte, 0, len(description.Hashes))
- for _, hash := range description.Hashes {
-  data := c.certificate(hash, now)
-  if data == nil { return "", ErrCertificateNeeded }
-  chain = append(chain, data)
- }
- return c.put(chain, description.Principal, now)
+	if err := (CertificateMessage{Chain: &description}).Validate(); err != nil {
+		return "", err
+	}
+	chain := make([][]byte, 0, len(description.Hashes))
+	for _, hash := range description.Hashes {
+		data := c.certificate(hash, now)
+		if data == nil {
+			return "", ErrCertificateNeeded
+		}
+		chain = append(chain, data)
+	}
+	return c.put(chain, description.Principal, now)
 }
