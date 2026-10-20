@@ -50,8 +50,11 @@ that the default is set but unreachable instead of opening a picker.
 
 ## 4. Show Picker
 
-mDNS and BLE discover nearby [WendyOS](../../wendyos/),
-Wendy-Agent and [Wendy Lite](../../wendy-lite/) devices.
+mDNS and BLE advertisement scanning discover nearby [WendyOS](../../wendyos/),
+Wendy-Agent and [Wendy Lite](../../wendy-lite/) devices for the picker.
+This discovery is separate from the agent’s
+[wendy net BLE carrier](/docs/hardware/bluetooth#wendy-net-over-bluetooth),
+which maintains authenticated links between enrolled devices.
 A device picker is shown only when the terminal is interactive, so a user can
 select their target device for the current command invocation.
 

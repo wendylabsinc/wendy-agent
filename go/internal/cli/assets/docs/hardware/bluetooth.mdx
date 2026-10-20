@@ -30,6 +30,46 @@ You can also set it directly in `wendy.json`:
 
 Use `kernel` for low-level HCI socket access. Use `bluez` for standard Linux Bluetooth workflows through BlueZ.
 
+## Wendy net over Bluetooth
+
+The Wendy agent can use BLE as a low-bandwidth fallback link between enrolled
+wendy net devices. It discovers nearby peers automatically and carries routing
+and relay traffic over LE L2CAP credit-based channels secured with TLS 1.3.
+Compact advertisements identify the tenant and provide a peer hint; the agent
+verifies the complete device certificate and tenant before accepting a link.
+Manual Bluetooth pairing is not required.
+
+This carrier is separate from Bluetooth discovery in the CLI device picker and
+from the peripheral commands below. Apps do not need a Bluetooth entitlement
+for the agent's own wendy net links. An app that accesses a sensor or other
+Bluetooth peripheral still needs its entitlement.
+
+### Enable the BLE carrier
+
+BLE participation is off by default. On each participating device, merge this
+field into `/etc/wendy-agent/local-mesh.json`, preserving any existing carrier
+settings:
+
+```json
+{ "ble": true }
+```
+
+Keep the configuration owned by the agent's system user, with no group or other
+write access, and restart `wendyos-agent.service` after editing it. The file and
+its directory must meet those ownership and permission requirements; a missing
+file leaves wendy net disabled.
+
+Use a WendyOS image with full wendy net support: the Linux Bluetooth stack must
+support LE L2CAP channels, and BlueZ must expose the adapter and LE advertising
+manager. The system agent also needs its normal TUN/routing privileges and raw
+Bluetooth socket access (`CAP_NET_ADMIN` and `CAP_NET_RAW`). Granting an app a
+Bluetooth entitlement does not configure these system-agent capabilities.
+
+BLE has less capacity than the other carriers. Direct and multihop reliability,
+controller recovery and four-device operation remain under hardware validation.
+Keep an independent management connection during testing and inspect agent
+logs for discovery, authentication and controller errors.
+
 ## Scan for Devices
 
 Run the Bluetooth command without subcommands to open an interactive table for browsing and managing peripherals:
