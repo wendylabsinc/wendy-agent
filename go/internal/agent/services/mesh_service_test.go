@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -129,11 +130,11 @@ var testScope = certs.Scope{TenantUUID: meshTestTenant}
 
 type testIngress func(uint16) bool
 
-func (f testIngress) DialAuthorized(port uint16, dial func() (net.Conn, error)) (net.Conn, error) {
+func (f testIngress) DialAuthorized(port uint16, dial func(string) (net.Conn, error)) (net.Conn, error) {
 	if !f(port) {
 		return nil, meshingress.ErrPortDenied
 	}
-	return dial()
+	return dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
 }
 
 func newMeshServiceForTest(t *testing.T) (*MeshService, string) {

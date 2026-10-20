@@ -505,7 +505,7 @@ func (c *Client) applyMeshIngressPorts(containerName, appID, ip string, ports []
 				zap.Uint16("host_port", pm.Host), zap.Uint16("container_port", pm.Container), zap.Error(err))
 			continue
 		}
-		if err := c.meshIngress.Claim(containerName, pm.Host); err != nil {
+		if err := c.meshIngress.Claim(containerName, pm.Host, ip, pm.Container); err != nil {
 			_ = removeMeshIngressPortForward(pm.Host, ip, pm.Container)
 			return fmt.Errorf("wendy net ingress: claiming host port %d: %w", pm.Host, err)
 		}

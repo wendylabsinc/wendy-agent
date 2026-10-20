@@ -31,13 +31,9 @@ func EnableRouteLocalnet(bridge string) error {
 	return nil
 }
 
-// MeshPortsChainName is the nat-table chain that forwards a loopback
-// connection the agent itself dials into a meshed, isolated container's own
-// IP. MeshService.MeshDial (the serving side of a peer-initiated MeshDial)
-// always dials 127.0.0.1:<port> from the host network namespace — the agent
-// process is not inside any container's netns, so without this forward
-// nothing is ever listening on that loopback port and the dial fails with
-// "connection refused" for every isolated mesh app that publishes a port.
+// MeshPortsChainName is the NAT chain for host-local access to published
+// container ports. Wendy Net peer sessions dial the admitted container endpoint
+// directly; these loopback forwarding rules are not their authorization boundary.
 const MeshPortsChainName = "WENDY-MESH-PORTS"
 
 // The agent reconciles ingress while containerd and other startup services
@@ -203,7 +199,7 @@ func ownedIngressMasquerade(fields []string, containerIP string, port uint16) bo
 }
 
 // AddIngressPortForward idempotently installs the DNAT rule that lets
-// MeshService.MeshDial's 127.0.0.1:hostPort dial reach containerIP:containerPort
+// a host-local 127.0.0.1:hostPort dial reach containerIP:containerPort
 // instead, plus the companion POSTROUTING MASQUERADE rule the hairpinned
 // reply needs (see meshPortMasqueradeArgs). Any stale rule left over from a
 // previous container that published the same hostPort/containerPort is

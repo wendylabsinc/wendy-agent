@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,9 +22,9 @@ type countingAuthorizer struct {
 	calls atomic.Int32
 }
 
-type authorizerFunc func(uint16, func() (net.Conn, error)) (net.Conn, error)
+type authorizerFunc func(uint16, func(string) (net.Conn, error)) (net.Conn, error)
 
-func (f authorizerFunc) DialAuthorized(port uint16, dial func() (net.Conn, error)) (net.Conn, error) {
+func (f authorizerFunc) DialAuthorized(port uint16, dial func(string) (net.Conn, error)) (net.Conn, error) {
 	return f(port, dial)
 }
 
@@ -38,12 +39,12 @@ func (c *countingPacketConn) WriteTo(packet []byte, addr net.Addr) (int, error) 
 	return n, err
 }
 
-func (a *countingAuthorizer) DialAuthorized(port uint16, dial func() (net.Conn, error)) (net.Conn, error) {
+func (a *countingAuthorizer) DialAuthorized(port uint16, dial func(string) (net.Conn, error)) (net.Conn, error) {
 	a.calls.Add(1)
 	if port != a.port {
 		return nil, ErrDenied
 	}
-	return dial()
+	return dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
 }
 
 func TestPooledAppFlowsReauthorizeAndRouteCut(t *testing.T) {
@@ -232,7 +233,7 @@ func TestPooledPortACKTimeoutRetiresAndRetriesFreshSession(t *testing.T) {
 	var calls atomic.Int32
 	var stallAt atomic.Int32
 	stallAt.Store(2)
-	authorizer := authorizerFunc(func(got uint16, dial func() (net.Conn, error)) (net.Conn, error) {
+	authorizer := authorizerFunc(func(got uint16, dial func(string) (net.Conn, error)) (net.Conn, error) {
 		if got != port {
 			return nil, ErrDenied
 		}
@@ -246,7 +247,7 @@ func TestPooledPortACKTimeoutRetiresAndRetriesFreshSession(t *testing.T) {
 			// cannot answer its next app-port request before the bound.
 			time.Sleep(250 * time.Millisecond)
 		}
-		return dial()
+		return dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
 	})
 	server, err := NewServer(b, authorizer)
 	if err != nil {

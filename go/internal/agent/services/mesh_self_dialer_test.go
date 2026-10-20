@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -24,7 +25,10 @@ func TestOwnVIPUsesLiveIngressAndRevokesOnStop(t *testing.T) {
 			defer listener.Close()
 			port := uint16(listener.Addr().(*net.TCPAddr).Port)
 			d.SetSelfDialer(func(ctx context.Context, port uint16) (net.Conn, error) {
-				return registry.DialAuthorized(port, func() (net.Conn, error) {
+				return registry.DialAuthorized(port, func(address string) (net.Conn, error) {
+					if address != net.JoinHostPort("10.3.0.2", fmt.Sprint(port)) {
+						t.Fatalf("dial did not use admitted container endpoint: %s", address)
+					}
 					return (&net.Dialer{}).DialContext(ctx, "tcp4", listener.Addr().String())
 				})
 			})
@@ -49,7 +53,7 @@ func TestOwnVIPUsesLiveIngressAndRevokesOnStop(t *testing.T) {
 				}
 				t.Fatalf("unpublished port: %v", err)
 			}
-			if err := registry.Claim("publisher", port); err != nil {
+			if err := registry.Claim("publisher", port, "10.3.0.2", port); err != nil {
 				t.Fatal(err)
 			}
 			conn, mode, err := dial(context.Background())

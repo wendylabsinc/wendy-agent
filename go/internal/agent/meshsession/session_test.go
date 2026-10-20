@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -165,11 +166,11 @@ func TestAppQUICResumesWithinCredentialLifetime(t *testing.T) {
 	}
 }
 
-func (f allowPort) DialAuthorized(port uint16, dial func() (net.Conn, error)) (net.Conn, error) {
+func (f allowPort) DialAuthorized(port uint16, dial func(string) (net.Conn, error)) (net.Conn, error) {
 	if !f(port) {
 		return nil, ErrDenied
 	}
-	return dial()
+	return dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
 }
 
 func fixtureCredentials(t *testing.T) (*localmesh.Credentials, *localmesh.Credentials) {

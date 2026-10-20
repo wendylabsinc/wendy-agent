@@ -86,7 +86,7 @@ func (r *MeshRoster) loadIdentity() {
 	}
 	device, err := meshid.DeviceFromCert(leaves[0])
 	if err != nil {
-		r.logger.Warn("wendy net roster: certificate has no supported mesh device identity; sync stays disabled", zap.Error(err))
+		r.logger.Warn("Wendy Net roster: certificate has no supported net device identity; sync stays disabled", zap.Error(err))
 		return
 	}
 	r.identity = device.Principal()

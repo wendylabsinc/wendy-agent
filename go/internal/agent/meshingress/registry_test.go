@@ -13,10 +13,10 @@ func TestRegistryLifecycleAndOwnership(t *testing.T) {
 	if r.Allowed(8080) || r.Allowed(0) {
 		t.Fatal("empty registry authorized a port")
 	}
-	if err := r.Claim("app_a", 8080); err != nil {
+	if err := r.Claim("app_a", 8080, "10.3.0.2", 8080); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Claim("app_a", 8081); err != nil {
+	if err := r.Claim("app_a", 8081, "10.3.0.2", 8081); err != nil {
 		t.Fatal(err)
 	}
 	if !r.Allowed(8080) || !r.Allowed(8081) || r.Allowed(8082) {
@@ -25,7 +25,7 @@ func TestRegistryLifecycleAndOwnership(t *testing.T) {
 	if err := r.CheckAvailable("app_b", 8080); err == nil {
 		t.Fatal("second owner passed availability check")
 	}
-	if err := r.Claim("app_b", 8080); err == nil {
+	if err := r.Claim("app_b", 8080, "10.3.0.2", 8080); err == nil {
 		t.Fatal("second owner claimed published port")
 	}
 	r.Release("app_a")
@@ -33,13 +33,13 @@ func TestRegistryLifecycleAndOwnership(t *testing.T) {
 	if r.Allowed(8080) || r.Allowed(8081) {
 		t.Fatal("released owner remained authorized")
 	}
-	if err := r.Claim("app_b", 8080); err != nil {
+	if err := r.Claim("app_b", 8080, "10.3.0.2", 8080); err != nil {
 		t.Fatalf("new owner could not reuse released port: %v", err)
 	}
-	if err := r.Claim("", 8083); err == nil {
+	if err := r.Claim("", 8083, "10.3.0.2", 8083); err == nil {
 		t.Fatal("empty owner was accepted")
 	}
-	if err := r.Claim("app_b", 0); err == nil {
+	if err := r.Claim("app_b", 0, "10.3.0.2", 0); err == nil {
 		t.Fatal("port zero was accepted")
 	}
 }
@@ -47,10 +47,10 @@ func TestRegistryLifecycleAndOwnership(t *testing.T) {
 func TestDialAuthorizedKeepsForwardOwnedUntilDialCompletes(t *testing.T) {
 	r := NewRegistry()
 	called := false
-	if _, err := r.DialAuthorized(8080, func() (net.Conn, error) { called = true; return nil, nil }); !errors.Is(err, ErrPortDenied) || called {
+	if _, err := r.DialAuthorized(8080, func(address string) (net.Conn, error) { called = true; return nil, nil }); !errors.Is(err, ErrPortDenied) || called {
 		t.Fatal("unclaimed port reached the dial callback")
 	}
-	if err := r.Claim("app", 8080); err != nil {
+	if err := r.Claim("app", 8080, "10.3.0.2", 8080); err != nil {
 		t.Fatal(err)
 	}
 	entered := make(chan struct{})
@@ -60,7 +60,7 @@ func TestDialAuthorizedKeepsForwardOwnedUntilDialCompletes(t *testing.T) {
 		conn, peer := net.Pipe()
 		defer peer.Close()
 		defer conn.Close()
-		_, _ = r.DialAuthorized(8080, func() (net.Conn, error) {
+		_, _ = r.DialAuthorized(8080, func(address string) (net.Conn, error) {
 			close(entered)
 			<-unblock
 			return conn, nil
@@ -100,7 +100,7 @@ func TestRegistryConcurrentClaimsHaveOneOwner(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			owner := string(rune('a' + i))
-			results <- r.Claim(owner, 9000) == nil
+			results <- r.Claim(owner, 9000, "10.3.0.2", 9000) == nil
 		}(i)
 	}
 	wg.Wait()
@@ -117,13 +117,13 @@ func TestRegistryConcurrentClaimsHaveOneOwner(t *testing.T) {
 }
 func TestRegistryRecoveryChecksExactContainer(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Claim("container-a", 18080); err != nil {
+	if err := r.Claim("container-a", 18080, "10.3.0.2", 18080); err != nil {
 		t.Fatal(err)
 	}
 	if !r.OwnedBy("container-a", 18080) || r.OwnedBy("container-b", 18080) {
 		t.Fatal("container ownership did not identify exact running task")
 	}
-	if err := r.Claim("container-b", 18081); err != nil {
+	if err := r.Claim("container-b", 18081, "10.3.0.2", 18081); err != nil {
 		t.Fatal(err)
 	}
 	if r.OwnedBy("container-a", 18081) {
@@ -132,5 +132,45 @@ func TestRegistryRecoveryChecksExactContainer(t *testing.T) {
 	r.Release("container-a")
 	if r.OwnedBy("container-a", 18080) {
 		t.Fatal("stopped app retained catalog authorization")
+	}
+}
+
+func TestRegistryPinsVerifiedContainerEndpoint(t *testing.T) {
+	for _, bad := range []string{"", "localhost", "127.0.0.1", "0.0.0.0", "8.8.8.8", "224.0.0.1", "::1", "::ffff:10.3.0.2"} {
+		r := NewRegistry()
+		if err := r.Claim("app", 8080, bad, 80); err == nil || r.Allowed(8080) {
+			t.Fatalf("accepted endpoint %q", bad)
+		}
+	}
+	r := NewRegistry()
+	if err := r.Claim("app", 8080, "10.3.0.2", 0); err == nil {
+		t.Fatal("accepted zero container port")
+	}
+	for range 2 {
+		if err := r.Claim("app", 8080, "10.3.0.2", 80); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Claim("app", 8080, "10.3.0.3", 80); err == nil {
+		t.Fatal("live admission changed IP")
+	}
+	if err := r.Claim("app", 8080, "10.3.0.2", 81); err == nil {
+		t.Fatal("live admission changed port")
+	}
+	a, b := net.Pipe()
+	defer b.Close()
+	conn, err := r.DialAuthorized(8080, func(address string) (net.Conn, error) {
+		if address != "10.3.0.2:80" {
+			t.Fatalf("wrong admitted endpoint %q", address)
+		}
+		return a, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	r.Release("app")
+	if err := r.Claim("replacement", 8080, "10.3.0.3", 81); err != nil {
+		t.Fatal(err)
 	}
 }

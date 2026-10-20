@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"go.uber.org/zap"
@@ -41,14 +40,14 @@ type MeshService struct {
 	expectedScope certs.Scope
 	dialLocal     func(addr string, timeout time.Duration) (net.Conn, error) // swapped in tests
 	ingress       interface {
-		DialAuthorized(uint16, func() (net.Conn, error)) (net.Conn, error)
+		DialAuthorized(uint16, func(string) (net.Conn, error)) (net.Conn, error)
 	}
 }
 
 // SetIngressAuthorizer restricts the legacy LAN MeshDial path to ports owned
 // by live mesh-mode apps. A missing authorizer denies every port.
 func (s *MeshService) SetIngressAuthorizer(authorizer interface {
-	DialAuthorized(uint16, func() (net.Conn, error)) (net.Conn, error)
+	DialAuthorized(uint16, func(string) (net.Conn, error)) (net.Conn, error)
 }) {
 	s.ingress = authorizer
 }
@@ -88,10 +87,9 @@ func (s *MeshService) MeshDial(stream agentpbv2.WendyMeshService_MeshDialServer)
 	if s.ingress == nil {
 		return status.Error(codes.PermissionDenied, "wendy net ingress port is not published by a running app")
 	}
-	// Same SSRF stance as the broker path (tunnel_broker_client.go:207-213):
-	// only local services are reachable.
-	conn, err := s.ingress.DialAuthorized(uint16(open.Port), func() (net.Conn, error) {
-		return s.dialLocal(net.JoinHostPort("127.0.0.1", strconv.Itoa(int(open.Port))), 10*time.Second)
+	// Dial only the verified endpoint of the admitted running container.
+	conn, err := s.ingress.DialAuthorized(uint16(open.Port), func(address string) (net.Conn, error) {
+		return s.dialLocal(address, 10*time.Second)
 	})
 	if err != nil {
 		if errors.Is(err, meshingress.ErrPortDenied) {

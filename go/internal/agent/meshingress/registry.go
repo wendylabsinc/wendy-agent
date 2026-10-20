@@ -1,12 +1,13 @@
 // Package meshingress tracks the host TCP ports a running, isolated mesh app
 // has explicitly published. Peer sessions consult this registry before
-// connecting to a loopback port on the host.
+// connecting directly to its verified container endpoint.
 package meshingress
 
 import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 )
 
@@ -20,6 +21,7 @@ type Registry struct {
 	tcpByOwner map[string]map[*authorizedConn]struct{}
 	mu         sync.RWMutex
 	byPort     map[uint16]string
+	targets    map[uint16]netip.AddrPort
 	byOwner    map[string]map[uint16]struct{}
 }
 
@@ -48,21 +50,20 @@ func (r *Registry) OwnedBy(containerID string, port uint16) bool {
 	return r.byPort[port] == containerID
 }
 
-// DialAuthorized holds the authorization read lock until the local TCP dial
-// finishes. Without this, a stop could revoke the port and remove its DNAT
-// rule between an Allowed check and the dial, exposing an unrelated localhost
-// listener to the peer. The callback must dial only 127.0.0.1:port and must
-// have a bounded timeout; it runs while Release waits for the read lock.
-func (r *Registry) DialAuthorized(port uint16, dial func() (net.Conn, error)) (net.Conn, error) {
+// DialAuthorized holds the admission read lock across a bounded TCP dial.
+// The callback must dial the supplied verified CNI endpoint, never the host
+// port. Host firewall loss must not redirect an authorized app flow to a host
+// listener. Release waits for the dial and then revokes the admitted flow.
+func (r *Registry) DialAuthorized(port uint16, dial func(string) (net.Conn, error)) (net.Conn, error) {
 	if r == nil || port == 0 || dial == nil {
 		return nil, ErrPortDenied
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.byPort[port] == "" {
+	if r.byPort[port] == "" || !r.targets[port].IsValid() {
 		return nil, ErrPortDenied
 	}
-	conn, err := dial()
+	conn, err := dial(r.targets[port].String())
 	if err != nil {
 		return conn, err
 	}
@@ -130,27 +131,38 @@ func (r *Registry) CheckAvailable(containerID string, port uint16) error {
 }
 
 // Claim grants access only after the caller has successfully installed the
-// matching host port forward. Repeating a claim by the same owner is safe.
-func (r *Registry) Claim(containerID string, port uint16) error {
+// matching host port forward. The caller supplies its verified CNI address
+// and container port. Repeating the exact same admission is safe.
+func (r *Registry) Claim(containerID string, port uint16, containerIP string, containerPort uint16) error {
 	if r == nil {
 		return fmt.Errorf("wendy net ingress registry is unavailable")
 	}
 	if containerID == "" || port == 0 {
 		return fmt.Errorf("wendy net ingress needs a container ID and nonzero host port")
 	}
+	ip, err := netip.ParseAddr(containerIP)
+	if err != nil || !ip.Is4() || !ip.IsPrivate() || containerPort == 0 {
+		return fmt.Errorf("wendy net ingress needs a private IPv4 container endpoint")
+	}
+	target := netip.AddrPortFrom(ip, containerPort)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := checkOwner(r.byPort[port], containerID, port); err != nil {
 		return err
 	}
+	if r.byPort[port] != "" && r.targets[port] != target {
+		return fmt.Errorf("wendy net ingress host port %d cannot change its live container endpoint", port)
+	}
 	if r.byPort == nil {
 		r.byPort = make(map[uint16]string)
+		r.targets = make(map[uint16]netip.AddrPort)
 		r.byOwner = make(map[string]map[uint16]struct{})
 	}
 	if r.byOwner[containerID] == nil {
 		r.byOwner[containerID] = make(map[uint16]struct{})
 	}
 	r.byPort[port] = containerID
+	r.targets[port] = target
 	r.byOwner[containerID][port] = struct{}{}
 	return nil
 }
@@ -172,6 +184,7 @@ func (r *Registry) Release(containerID string) {
 	for port := range r.byOwner[containerID] {
 		if r.byPort[port] == containerID {
 			delete(r.byPort, port)
+			delete(r.targets, port)
 		}
 	}
 	delete(r.byOwner, containerID)

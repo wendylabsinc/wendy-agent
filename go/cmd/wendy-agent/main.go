@@ -1036,8 +1036,8 @@ func main() {
 	meshDialer.SetSelfDialer(func(dialCtx context.Context, port uint16) (net.Conn, error) {
 		bounded, cancel := context.WithTimeout(dialCtx, 5*time.Second)
 		defer cancel()
-		return meshIngress.DialAuthorized(port, func() (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(bounded, "tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
+		return meshIngress.DialAuthorized(port, func(address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(bounded, "tcp4", address)
 		})
 	})
 	meshDialer.SetLocalMeshDialer(func(dialCtx context.Context, peer meshid.Device, port uint16) (net.Conn, error) {
@@ -1275,9 +1275,10 @@ func main() {
 		if activeProvisioningIdentity.Changed(certPEM, chainPEM, keyPEM, orgID, assetID) {
 			// The persisted identity is already durable. Let the provisioning RPC
 			// finish, then restart so the app server, pool, and every carrier
-			// replace their credentials together.
+			// replace their credentials together. Cancellation enters normal shutdown,
+			// draining workers and deferred network cleanup before main returns.
 			logger.Info("Provisioning identity rotated; restarting agent")
-			time.AfterFunc(5*time.Second, func() { os.Exit(0) })
+			time.AfterFunc(5*time.Second, cancel)
 			return
 		}
 		startMTLSServer(certPEM, chainPEM, keyPEM)

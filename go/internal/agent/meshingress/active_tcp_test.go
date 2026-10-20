@@ -11,14 +11,14 @@ import (
 func TestReleaseRevokesExistingTCPWithoutClosingOtherOwner(t *testing.T) {
 	r := NewRegistry()
 	for owner, port := range map[string]uint16{"camera": 18080, "other": 18081} {
-		if err := r.Claim(owner, port); err != nil {
+		if err := r.Claim(owner, port, "10.3.0.2", port); err != nil {
 			t.Fatal(err)
 		}
 	}
 	dial := func(port uint16) (net.Conn, net.Conn) {
 		t.Helper()
 		a, b := net.Pipe()
-		conn, err := r.DialAuthorized(port, func() (net.Conn, error) { return a, nil })
+		conn, err := r.DialAuthorized(port, func(address string) (net.Conn, error) { return a, nil })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -42,12 +42,12 @@ func TestReleaseRevokesExistingTCPWithoutClosingOtherOwner(t *testing.T) {
 	if err := <-write; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.DialAuthorized(18080, func() (net.Conn, error) { t.Fatal("revoked port dialed"); return nil, nil }); !errors.Is(err, ErrPortDenied) {
+	if _, err := r.DialAuthorized(18080, func(address string) (net.Conn, error) { t.Fatal("revoked port dialed"); return nil, nil }); !errors.Is(err, ErrPortDenied) {
 		t.Fatal(err)
 	}
 	// Reclaiming the same owner must not let a late close of its old connection
 	// release the replacement's live connection.
-	if err := r.Claim("camera", 18080); err != nil {
+	if err := r.Claim("camera", 18080, "10.3.0.2", 18080); err != nil {
 		t.Fatal(err)
 	}
 	replacement, remoteReplacement := dial(18080)

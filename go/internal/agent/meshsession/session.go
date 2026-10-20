@@ -27,9 +27,9 @@ var ErrNoRoute = errors.New("no authenticated local wendy net route")
 var ErrDenied = errors.New("wendy net app ingress denied")
 
 // Authorizer admits only ingress ports belonging to running mesh-mode apps
-// and holds authorization until the loopback connection has been opened.
+// and holds authorization until its verified container endpoint is connected.
 type Authorizer interface {
-	DialAuthorized(port uint16, dial func() (net.Conn, error)) (net.Conn, error)
+	DialAuthorized(port uint16, dial func(string) (net.Conn, error)) (net.Conn, error)
 }
 
 func quicConfig() *quic.Config {
@@ -158,7 +158,7 @@ func requestPort(ctx context.Context, conn *quic.Conn, port uint16) (*quic.Strea
 }
 
 // Server accepts mutually authenticated app sessions. It rejects a requested
-// port before dialing loopback unless the live app registry owns that port.
+// port unless the live app registry owns its verified container endpoint.
 type Server struct {
 	credentials *localmesh.Credentials
 	authorizer  Authorizer
@@ -318,8 +318,8 @@ func (s *Server) serveStream(parent context.Context, conn *quic.Conn, stream *qu
 		return
 	}
 	port := binary.BigEndian.Uint16(hello[4:])
-	local, err := s.authorizer.DialAuthorized(port, func() (net.Conn, error) {
-		return net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), 5*time.Second)
+	local, err := s.authorizer.DialAuthorized(port, func(address string) (net.Conn, error) {
+		return net.DialTimeout("tcp4", address, 5*time.Second)
 	})
 	if err != nil {
 		deny(stream)

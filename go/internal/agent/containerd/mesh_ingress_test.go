@@ -36,7 +36,7 @@ func TestMeshIngressPublishesOnlySuccessfullyForwardedPorts(t *testing.T) {
 
 func TestMeshIngressConflictFailsBeforeChangingForward(t *testing.T) {
 	r := meshingress.NewRegistry()
-	if err := r.Claim("first", 8080); err != nil {
+	if err := r.Claim("first", 8080, "10.3.0.2", 8080); err != nil {
 		t.Fatal(err)
 	}
 	c := &Client{logger: zap.NewNop(), meshIngress: r}
@@ -111,14 +111,14 @@ func TestMeshIngressOldTaskExitCannotRevokeRestart(t *testing.T) {
 	r := meshingress.NewRegistry()
 	c := &Client{meshIngress: r}
 	first := c.beginMeshIngressRun("app")
-	if err := r.Claim("app", 8080); err != nil {
+	if err := r.Claim("app", 8080, "10.3.0.2", 8080); err != nil {
 		t.Fatal(err)
 	}
 	second := c.beginMeshIngressRun("app")
 	if r.Allowed(8080) {
 		t.Fatal("restart left the old task authorized")
 	}
-	if err := r.Claim("app", 8080); err != nil {
+	if err := r.Claim("app", 8080, "10.3.0.2", 8080); err != nil {
 		t.Fatal(err)
 	}
 	c.releaseMeshIngressRun("app", first)

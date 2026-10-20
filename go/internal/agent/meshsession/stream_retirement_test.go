@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,12 +23,12 @@ type retirementAuthorizer struct {
 	calls atomic.Int32
 }
 
-func (a *retirementAuthorizer) DialAuthorized(port uint16, dial func() (net.Conn, error)) (net.Conn, error) {
+func (a *retirementAuthorizer) DialAuthorized(port uint16, dial func(string) (net.Conn, error)) (net.Conn, error) {
 	a.calls.Add(1)
 	if port != a.port {
 		return nil, ErrDenied
 	}
-	return dial()
+	return dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
 }
 
 type retirementFixture struct {
