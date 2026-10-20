@@ -131,6 +131,38 @@ class LoadTests(unittest.TestCase):
         plain = write_scenarios(self.root / "s.json", [MINIMAL])[0]
         self.assertIsNone(sc.scenario_readiness(plain, sc.board_target("192.0.2.10:50051"), canned))
 
+    def test_robot_scenarios_need_the_agent_binary_and_docker_buildx(self):
+        robot = write_scenarios(self.root / "s.json", [dict(MINIMAL, id="robot", group="robotics", vm_profile="go2")])[0]
+        plain = write_scenarios(self.root / "p.json", [MINIMAL])[0]
+        canned, sim = self.root / "canned", {"kind": "simulator", "capabilities": []}
+        self.assertIsNone(sc.scenario_readiness(robot, sim, canned, prerequisites=lambda: []))
+        self.assertEqual(sc.scenario_readiness(robot, sim, canned, prerequisites=lambda: ["docker buildx"]),
+                         "robot VM prerequisites missing: docker buildx")
+        never = mock.Mock(side_effect=AssertionError("only a go2 or g1 run VM has prerequisites"))
+        self.assertIsNone(sc.scenario_readiness(plain, sim, canned, prerequisites=never))
+        # One check per coverage, however many robot scenarios and targets there are.
+        check = mock.Mock(return_value=["docker buildx"])
+        coverage = sc.scenario_coverage([robot, dict(robot, id="robot-2")], {"a": sim, "b": sim}, ["robot", "robot-2"],
+                                        ["a", "b"], canned, check)
+        self.assertEqual({c["reason"] for c in coverage}, {"robot VM prerequisites missing: docker buildx"})
+        self.assertEqual(check.call_count, 1)
+        # The check itself: the agent binary prepare installs, and `docker buildx version`.
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return mock.Mock(returncode=calls_code)
+        missing, present = self.root / "no-agent", self.root / "agent"
+        present.write_text("elf")
+        calls_code = 1
+        self.assertEqual(sc.robot_prerequisites({"agent_binary": str(missing)}, run=run),
+                         [f"agent binary {missing}", "docker buildx"])
+        self.assertEqual(calls, [["docker", "buildx", "version"]])
+        calls_code = 0
+        self.assertEqual(sc.robot_prerequisites({"agent_binary": str(present)}, run=run), [])
+        no_docker = mock.Mock(side_effect=FileNotFoundError("docker"))
+        self.assertEqual(sc.robot_prerequisites({"agent_binary": str(present)}, run=no_docker), ["docker buildx"])
+        self.assertEqual(sc.robot_agent_binary({}), str(b.ROOT / "go/bin/wendy-agent-linux-arm64"))
+
     def test_board_target_kind_from_selector(self):
         self.assertEqual(sc.board_target("192.0.2.10:50051"),
                          {"kind": "physical", "device": "192.0.2.10:50051", "capabilities": None, "fixtures": {},
@@ -362,6 +394,13 @@ class StateTests(unittest.TestCase):
         self.assertEqual({state for _, _, state in calls}, {str(run_vm["state"])})
         self.assertEqual(verified[0].task, "create-go2-simulator")
         self.assertEqual(verified[0].vm_name, run_vm["name"])
+        calls.clear()
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(b, "run_process", side_effect=run_process), \
+                mock.patch.object(sc.robot_fixtures, "verify"):
+            run_vm = sc.prepare_run_vm({"agent_binary": "/x/agent-arm64"}, "/x/wendy", Path(directory), "g1")
+            self.addCleanup(shutil.rmtree, run_vm["state"], True)
+        self.assertIn(["--binary", "/x/agent-arm64"], [argv[-2:] for argv, _, _ in calls])
 
 
 class TrialTests(unittest.TestCase):
@@ -619,6 +658,17 @@ class MainTests(unittest.TestCase):
         self.assertIn('"kind": "scenario"', text)
         self.assertIn("Plan only: 3 trials", text)
 
+    def test_plan_only_reports_robot_scenarios_without_their_prerequisites(self):
+        self.scenarios.write_text(json.dumps([MINIMAL, dict(MINIMAL, id="robot", group="robotics", vm_profile="g1")]))
+        with mock.patch.object(sc, "robot_prerequisites", return_value=["docker buildx"]) as check:
+            code, text = self.main("--scenario", "all", "--repetitions", "1")
+        self.assertEqual(code, 0)
+        coverage = json.loads(text[:text.index("\n}\n") + 2])["coverage"]
+        self.assertEqual({(c["task"], c["status"], c["reason"]) for c in coverage},
+                         {("probe", "ready", None), ("robot", "unconfigured", "robot VM prerequisites missing: docker buildx")})
+        self.assertIn("Plan only: 3 trials", text)  # probe for each of three agents; robot waits
+        self.assertEqual(check.call_args.args[0]["targets"]["simulator"]["kind"], "simulator")  # the run's config
+
     def test_device_adds_board_target_whose_capabilities_wait_for_execute(self):
         code, text = self.main("--scenario", "wifi", "--device", "192.0.2.10:50051", "--repetitions", "1")
         self.assertEqual(code, 0)
@@ -669,7 +719,7 @@ class ExecuteTests(unittest.TestCase):
             shutil.rmtree(run_vm["state"], True)
         return {"exit_code": 0}
 
-    def main(self, *argv, failures=(), capabilities=("wifi",), real_prepare=False, refuse=False):
+    def main(self, *argv, failures=(), capabilities=("wifi",), real_prepare=False, refuse=False, prepare=None):
         """refuse: the run must stop before running anything, so a missed check can't start a real agent."""
         path = self.root / "config.json"
         path.write_text(json.dumps(self.config))
@@ -677,7 +727,8 @@ class ExecuteTests(unittest.TestCase):
                   "profile": "generic", "stages": {}, "ready": True}
         out, err = io.StringIO(), io.StringIO()
         self.calls = {"prepare": [], "remove": []}
-        prepare = sc.prepare_run_vm if real_prepare else lambda *a, **k: self.calls["prepare"].append(a[3]) or run_vm
+        prepare = prepare or (sc.prepare_run_vm if real_prepare else
+                              lambda *a, **k: self.calls["prepare"].append(a[3]) or run_vm)
         patches = [mock.patch.object(sys, "argv", ["benchmark.py", "--config", str(path), "--scenarios", str(self.scenarios),
                                                    "--output", str(self.root / "results"), "--wendy", FAKE, *argv]),
                    mock.patch.object(b, "require_state_isolation"),
@@ -686,6 +737,7 @@ class ExecuteTests(unittest.TestCase):
                    mock.patch.object(sc, "prepare_run_vm", side_effect=prepare),
                    mock.patch.object(sc, "remove_run_vm", side_effect=self.remove),
                    mock.patch.object(sc, "vm_snapshot", return_value=[]),
+                   mock.patch.object(sc, "robot_prerequisites", return_value=[]),
                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)]
         if refuse:
             nothing = AssertionError("the run must be refused before anything runs")
@@ -731,6 +783,44 @@ class ExecuteTests(unittest.TestCase):
             self.main("--scenario", "probe", "--repetitions", "1", "--execute", real_prepare=True)
         self.assertEqual(len(self.calls["prepare"]), 1)
         self.assertEqual(self.calls["remove"], self.calls["prepare"])
+
+    def test_a_failed_robot_vm_turns_its_scenarios_into_setup_errors_and_the_run_goes_on(self):
+        self.scenarios.write_text(json.dumps([MINIMAL, dict(MINIMAL, id="dog", group="robotics", vm_profile="go2"),
+                                              dict(MINIMAL, id="humanoid", group="robotics", vm_profile="g1")]))
+        generic = {"state": self.run_state, "name": "wendy-eval-run", "device": "vm:wendy-eval-run",
+                   "profile": "generic", "stages": {}, "ready": True}
+        def prepare(config, wendy, output, profile, register=None):
+            self.calls["prepare"].append(profile)
+            if profile == "generic":
+                return generic
+            vm = dict(generic, name=f"wendy-eval-{profile}", device=f"vm:wendy-eval-{profile}", profile=profile,
+                      stages={"vm-create": {"exit_code": 0}, "vm-robot": {"exit_code": 1}}, ready=False)
+            register(vm)  # created before it failed, so it must still be removed
+            if profile == "g1":
+                raise RuntimeError("qemu exploded")
+            return vm
+        code, text = self.main("--scenario", "all", "--repetitions", "1", "--execute", prepare=prepare)
+        self.assertEqual(code, 1)
+        output = next((self.root / "results").iterdir())
+        rows = {r["task"]: r for r in map(json.loads, (output / "results.jsonl").read_text().splitlines())}
+        for row in rows.values():
+            if row.get("workspace"):
+                self.addCleanup(shutil.rmtree, row["workspace"], True)
+        self.assertEqual({t: r["status"] for t, r in rows.items()},
+                         {"probe": "passed", "dog": "setup_error", "humanoid": "setup_error"})
+        self.assertIn("vm-robot failed (exit 1)", rows["dog"]["stages"]["run-vm"]["error"])
+        self.assertIn("RuntimeError('qemu exploded')", rows["humanoid"]["stages"]["run-vm"]["error"])
+        self.assertIn("Preparing the shared go2 VM failed (vm-robot failed (exit 1); see", text)
+        self.assertIn("its scenario attempts are recorded as setup errors", text)
+        self.assertEqual(self.calls["prepare"], ["g1", "generic", "go2"])
+        self.assertEqual(self.calls["remove"], ["wendy-eval-g1", "wendy-eval-go2", "wendy-eval-run"])
+        summary = {r["task"]: r for r in json.loads((output / "summary.json").read_text())}
+        self.assertEqual((summary["dog"]["attempts"], summary["dog"]["setup_errors"]), (0, 1))
+        self.assertEqual(summary["probe"]["successes"], 1)
+        manifest = json.loads((output / "manifest.json").read_text())
+        self.assertEqual(set(manifest["run_vms"]), {"generic"})
+        self.assertEqual(set(manifest["unprepared_run_vms"]), {"go2", "g1"})
+        self.assertEqual(set(json.loads((output / "run_vms.json").read_text())), {"generic", "go2", "g1"})
 
     def test_unsafe_host_refuses_before_any_vm_or_board_call(self):
         code, text = self.main("--scenario", "all", "--device", "192.0.2.10:50051", "--execute",
@@ -958,7 +1048,7 @@ class CatalogTests(unittest.TestCase):
         for scenario in self.catalog:
             if "simulator" in scenario["environments"]:
                 with self.subTest(scenario=scenario["id"]):
-                    self.assertEqual(sc.scenario_readiness(scenario, simulator, sc.CANNED),
+                    self.assertEqual(sc.scenario_readiness(scenario, simulator, sc.CANNED, prerequisites=lambda: []),
                                      waiting.get(scenario["id"]))
 
     def test_reads_after_the_canned_action_show_the_after_state(self):

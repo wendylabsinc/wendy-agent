@@ -854,7 +854,8 @@ def main():
 
     def plan_all():
         try:
-            covered = sc.scenario_coverage(scenarios, config["targets"], selected_scenarios, targets, sc.CANNED)
+            covered = sc.scenario_coverage(scenarios, config["targets"], selected_scenarios, targets, sc.CANNED,
+                                           lambda: sc.robot_prerequisites(config))
         except ValueError as error:  # a capture that would fail mid-attempt
             parser.error(str(error))
         coverage = plan_coverage(tasks, config["targets"], selected_tasks, targets) + covered
@@ -990,16 +991,18 @@ def main():
     spend = config.get("prior_spend_usd", 0)
     if not isinstance(spend, (int, float)) or not math.isfinite(spend) or spend < 0:
         parser.error("prior_spend_usd must be a finite nonnegative number")
-    run_vms, shim = {}, None
+    run_vms, removed_vms, unprepared, shim = {}, {}, {}, None
 
-    def remove_run_vms():
-        removed = {profile: sc.remove_run_vm(run_vm, wendy, output) for profile, run_vm in run_vms.items()}
-        dump(output / "run_vms.json", {p: {"name": v["name"], "ready": v["ready"], "removal": removed[p]}
-                                       for p, v in run_vms.items()})
-        for profile, result in removed.items():
+    def remove_run_vms(profiles=None):
+        for profile in list(run_vms) if profiles is None else profiles:
+            run_vm = run_vms.pop(profile, None)
+            if run_vm is None:
+                continue
+            result = sc.remove_run_vm(run_vm, wendy, output)
+            removed_vms[profile] = {"name": run_vm["name"], "ready": run_vm["ready"], "removal": result}
             if result.get("exit_code") != 0:
                 print(f"Removing the shared {profile} VM failed; its state is kept at {result.get('device_state_retained')}.")
-        run_vms.clear()
+        dump(output / "run_vms.json", removed_vms)
 
     if selected_scenarios:
         import eval_wendy
@@ -1032,17 +1035,24 @@ def main():
         try:
             for profile in profiles:
                 print(f"Preparing the shared {profile} VM (unscored)", flush=True)
-                # Registered before anything is created, so an interrupt mid-preparation still removes it.
-                run_vms[profile] = sc.prepare_run_vm(config, wendy, output, profile,
-                                                     register=lambda vm, p=profile: run_vms.__setitem__(p, vm))
-                if not run_vms[profile]["ready"]:
-                    print(f"Preparing the shared {profile} VM failed; see {output / ('run-vm-' + profile)}.")
-                    remove_run_vms()
-                    return 1
+                try:
+                    # Registered before anything is created, so an interrupt mid-preparation still removes it.
+                    run_vms[profile] = sc.prepare_run_vm(config, wendy, output, profile,
+                                                         register=lambda vm, p=profile: run_vms.__setitem__(p, vm))
+                    why = None if run_vms[profile]["ready"] else sc.unready_reason(run_vms[profile])
+                except Exception as error:  # one profile's failure must not abort the others
+                    why = f"preparation raised {error!r}"
+                if why:
+                    # Its attempts become setup errors, outside every denominator; the other profiles run.
+                    unprepared[profile] = f"{why}; see {output / ('run-vm-' + profile)}"
+                    print(f"Preparing the shared {profile} VM failed ({unprepared[profile]}); "
+                          "its scenario attempts are recorded as setup errors.")
+                    remove_run_vms([profile])
         except BaseException:
             remove_run_vms()
             raise
     snapshot["run_vms"] = {p: {"name": v["name"], "device": v["device"]} for p, v in run_vms.items()}
+    snapshot["unprepared_run_vms"] = unprepared
     dump(output / "manifest.json", snapshot)
     rows = []
     try:
@@ -1053,9 +1063,12 @@ def main():
                 break
             print(f"[{i}/{len(plan)}] {agent} / {target} / {task['id']} "
                   f"({'scenario, ' if kind == 'scenario' else ''}agent limit {agent_timeout(config, task):g}s)", flush=True)
-            if kind == "scenario":
-                run_vm = run_vms.get(task["vm_profile"]) if config["targets"][target]["kind"] == "simulator" else None
-                row = sc.scenario_trial(config, agent, target, task, output, wendy, shim, run_vm,
+            on_vm = kind == "scenario" and config["targets"][target]["kind"] == "simulator"
+            if on_vm and task["vm_profile"] in unprepared:
+                row = sc.unprepared_attempt(config, agent, target, task, output, unprepared[task["vm_profile"]])
+            elif kind == "scenario":
+                row = sc.scenario_trial(config, agent, target, task, output, wendy, shim,
+                                        run_vms.get(task["vm_profile"]) if on_vm else None,
                                         output / "tools.json", sc.CANNED, treatment_root)
             else:
                 row = trial(config, agent, target, task, output, wendy, treatment_root)

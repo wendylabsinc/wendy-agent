@@ -6,6 +6,7 @@ logged. Python standard library only.
 """
 import contextlib
 import copy
+import functools
 import json
 import math
 import os
@@ -129,10 +130,32 @@ def load_scenarios(path):
     return scenarios
 
 
-def scenario_readiness(scenario, target, canned_dir):
+def robot_agent_binary(config):
+    """The ARM64 agent a go2 or g1 run VM installs: config agent_binary, else this checkout's build."""
+    return config.get("agent_binary") or str(b.ROOT / "go/bin/wendy-agent-linux-arm64")
+
+
+def robot_prerequisites(config, run=subprocess.run):
+    """What a go2 or g1 run VM needs that this host lacks ([] when nothing). Read-only and fast."""
+    missing = []
+    binary = robot_agent_binary(config)
+    if not os.path.isfile(binary):
+        missing.append(f"agent binary {binary}")
+    try:  # `vm robot start` builds the robot runtime image with buildx
+        buildx = run(["docker", "buildx", "version"], stdin=subprocess.DEVNULL, capture_output=True,
+                     timeout=20).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        buildx = False
+    if not buildx:
+        missing.append("docker buildx")
+    return missing
+
+
+def scenario_readiness(scenario, target, canned_dir, prerequisites=None):
     """None when the scenario can run on target, else the reason it is unconfigured.
 
-    An invalid capture raises ValueError here, before a run, rather than failing an attempt.
+    prerequisites() lists what a go2 or g1 run VM lacks on this host (default: robot_prerequisites with
+    no config). An invalid capture raises ValueError here, before a run, rather than failing an attempt.
     """
     required = set(scenario["requires"])
     if required:
@@ -142,6 +165,11 @@ def scenario_readiness(scenario, target, canned_dir):
         missing = sorted(required - set(capabilities))
         if missing:
             return "target capabilities required: " + ", ".join(missing)
+    reasons = []
+    if scenario["vm_profile"] != "generic" and target.get("kind") == "simulator":
+        missing = (prerequisites or (lambda: robot_prerequisites({})))()
+        if missing:
+            reasons.append("robot VM prerequisites missing: " + ", ".join(missing))
     uncaptured = []
     for tool in scenario["captures"]:
         try:
@@ -154,7 +182,8 @@ def scenario_readiness(scenario, target, canned_dir):
             raise ValueError(f"scenario {scenario['id']}: invalid capture for {tool}: {error!r}") from None
         if not replies:
             uncaptured.append(tool)
-    reasons = ["canned replies not captured: " + ", ".join(uncaptured)] if uncaptured else []
+    if uncaptured:
+        reasons.append("canned replies not captured: " + ", ".join(uncaptured))
     try:
         cli_missing = [" ".join(words) for words in scenario["cli_canned"]
                        if load_cli_capture(canned_dir, scenario["canned_set"], words) is None]
@@ -165,8 +194,9 @@ def scenario_readiness(scenario, target, canned_dir):
     return "; ".join(reasons) or None
 
 
-def scenario_coverage(scenarios, targets, selected, selected_targets, canned_dir):
+def scenario_coverage(scenarios, targets, selected, selected_targets, canned_dir, prerequisites=None):
     coverage = []
+    prerequisites = functools.cache(prerequisites or (lambda: robot_prerequisites({})))  # one check per plan
     for scenario in scenarios:
         if scenario["id"] not in selected:
             continue
@@ -175,7 +205,7 @@ def scenario_coverage(scenarios, targets, selected, selected_targets, canned_dir
             coverage.append({"task": scenario["id"], "kind": "scenario", "target": None,
                              "status": "unconfigured", "reason": "no matching target configured"})
         for name in matching:
-            reason = scenario_readiness(scenario, targets[name], canned_dir)
+            reason = scenario_readiness(scenario, targets[name], canned_dir, prerequisites)
             coverage.append({"task": scenario["id"], "kind": "scenario", "target": name,
                              "status": "unconfigured" if reason else "ready", "reason": reason})
     return coverage
@@ -324,10 +354,9 @@ def _run_vm_dir(output, profile):
     return directory
 
 
-def _robot_vm(wendy, name, profile, directory, env):
+def _robot_vm(wendy, name, profile, directory, env, agent_binary):
     # The same commands and readiness check as robot_diagnostics.prepare, with the ARM64 agent the
-    # robot tasks in tasks.json install.
-    agent_binary = str(b.ROOT / "go/bin/wendy-agent-linux-arm64")
+    # robot tasks in tasks.json install (robot_agent_binary).
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -374,7 +403,7 @@ def prepare_run_vm(config, wendy, output, profile, register=None):
         if profile == "generic":
             stages, ready = b.fixture_vm(config, {"wendy": wendy, "vm_name": name}, directory, directory, env)
         else:
-            stages, ready = _robot_vm(wendy, name, profile, directory, env)
+            stages, ready = _robot_vm(wendy, name, profile, directory, env, robot_agent_binary(config))
     except BaseException:
         if register is None:
             remove_run_vm(run_vm, wendy, output)
@@ -397,6 +426,14 @@ def remove_run_vm(run_vm, wendy, output):
     if not ok:
         result["device_state_retained"] = str(state)
     return result
+
+
+def unready_reason(run_vm):
+    """Why a prepared run VM is not ready: its first failed stage."""
+    for phase, stage in (run_vm.get("stages") or {}).items():
+        if isinstance(stage, dict) and stage.get("exit_code") != 0:
+            return f"{phase} failed" + (f": {stage['error']}" if stage.get("error") else f" (exit {stage.get('exit_code')})")
+    return "not ready"
 
 
 def attempt_state(target, run_vm):
@@ -435,6 +472,26 @@ def _tmp_root():
     return "/private/tmp" if sys.platform == "darwin" else "/tmp"
 
 
+def _row(config, agent_name, target_name, scenario, ident):
+    return {"id": ident, "kind": "scenario", "agent": agent_name, "target": target_name, "task": scenario["id"],
+            "group": scenario["group"], "target_config": config["targets"][target_name],
+            "model_requested": config["agents"][agent_name]["model"], "workspace": None,
+            "device_state_isolated": True, "device_selector": None, "agent_timeout_seconds": None,
+            "max_tool_calls": scenario["max_tool_calls"], "human_messages_after_start": 0, "human_approvals": 0,
+            "success": False, "status": "setup_error", "task_seconds": 0, "metrics": {}, "stages": {},
+            "tool_choice": None}
+
+
+def unprepared_attempt(config, agent_name, target_name, scenario, output, reason):
+    """A setup_error attempt that runs nothing, for a scenario whose shared run VM failed to prepare."""
+    row = _row(config, agent_name, target_name, scenario, uuid.uuid4().hex[:12])
+    row.update(stages={"run-vm": {"exit_code": 1, "error": reason}}, cleanup_ok=True)
+    directory = Path(output) / f"{agent_name}-{target_name}-{scenario['id']}-{row['id']}"
+    directory.mkdir()
+    b.dump(directory / "result.json", row)
+    return row
+
+
 def scenario_trial(config, agent_name, target_name, scenario, output, real_wendy, shim, run_vm, tools_path,
                    canned_dir, treatment_root=None):
     treatment_root = treatment_root or b.ROOT
@@ -449,12 +506,7 @@ def scenario_trial(config, agent_name, target_name, scenario, output, real_wendy
     workspace = Path(tempfile.mkdtemp(prefix="wendy-eval-"))
     device = run_vm["device"] if run_vm is not None else target["device"]
     scenario_config = directory / "scenario.json"
-    row = {"id": ident, "kind": "scenario", "agent": agent_name, "target": target_name, "task": scenario["id"],
-           "group": scenario["group"], "target_config": target, "model_requested": agent["model"],
-           "workspace": str(workspace), "device_state_isolated": True, "device_selector": device,
-           "agent_timeout_seconds": None, "max_tool_calls": scenario["max_tool_calls"],
-           "human_messages_after_start": 0, "human_approvals": 0, "success": False,
-           "status": "setup_error", "task_seconds": 0, "metrics": {}, "stages": {}, "tool_choice": None}
+    row = dict(_row(config, agent_name, target_name, scenario, ident), workspace=str(workspace), device_selector=device)
     state = logs = before = None
     try:
         # Everything that holds credentials or evidence is created in here, so the finally always
