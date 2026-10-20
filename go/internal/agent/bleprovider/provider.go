@@ -27,8 +27,9 @@ type Config struct {
 	Selection   *localmesh.PeerSelection // shared authenticated LAN and radio diversity policy
 	// Policy may be shared with other consumers of the same physical adapter.
 	// A nil policy creates the standard router BLE limits.
-	Policy *localmesh.ConnectionPolicy
-	Logger *zap.Logger
+	Policy     *localmesh.ConnectionPolicy
+	Candidates *localmesh.CandidateQueue // optional shared physical-adapter failure history
+	Logger     *zap.Logger
 	// Status receives local setup readiness and discovery failures/recovery,
 	// not peer reachability. Discovery failures preserve established links.
 	// The optional callback must return promptly.

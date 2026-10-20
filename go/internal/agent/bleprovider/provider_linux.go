@@ -198,7 +198,7 @@ func (r *runtime) reserveCandidate(peer candidate) *localmesh.ConnectionLease {
 }
 
 func (r *runtime) failedCandidate(peer candidate) {
-	r.candidates.Failed(peer.key(), time.Now())
+	r.candidateQueue().Failed(peer.key(), time.Now())
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.radioRetry == nil {
@@ -225,6 +225,13 @@ func (r *runtime) knownCandidate(peer candidate) (meshid.Device, bool) {
 	defer r.mu.Unlock()
 	device, ok := r.known[peer.key()]
 	return device, ok && deviceHint(device.UUID()) == peer.hint
+}
+
+func (r *runtime) candidateQueue() *localmesh.CandidateQueue {
+	if r.cfg.Candidates != nil {
+		return r.cfg.Candidates
+	}
+	return &r.candidates
 }
 
 func (r *runtime) connectionPolicy() *localmesh.ConnectionPolicy {
@@ -450,7 +457,7 @@ func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 	}
 	lease.Identify(peer)
 	if incomingCandidate != nil {
-		lease.ObserveReady(func() { r.candidates.Succeeded(key) })
+		lease.ObserveReady(func() { r.candidateQueue().Succeeded(key) })
 		defer func() {
 			if ctx.Err() == nil && !lease.Retired() && !r.hasCheaperLink(peer) {
 				r.failedCandidate(*incomingCandidate)
@@ -627,7 +634,7 @@ func (r *runtime) startCandidates(ctx context.Context, peers []candidate, now ti
 		byKey[peer.key()] = peer
 		keys = append(keys, peer.key())
 	}
-	for _, key := range r.candidates.Order(keys, now) {
+	for _, key := range r.candidateQueue().Order(keys, now) {
 		peer := byKey[key]
 		lease := r.reserveCandidate(peer)
 		if lease == nil {
@@ -637,7 +644,7 @@ func (r *runtime) startCandidates(ctx context.Context, peers []candidate, now ti
 			lease.Release()
 			break
 		}
-		lease.ObserveReady(func() { r.candidates.Succeeded(key) })
+		lease.ObserveReady(func() { r.candidateQueue().Succeeded(key) })
 		r.links.Add(1)
 		go func() {
 			defer r.links.Done()

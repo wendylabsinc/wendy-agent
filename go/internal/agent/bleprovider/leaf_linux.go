@@ -5,6 +5,7 @@ package bleprovider
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -13,60 +14,115 @@ import (
 	"go.uber.org/zap"
 )
 
-// RunLeaves dials only configured BLE endpoints, with one worker per device.
-// Signed leaf streams use a separate PSM and ALPN from router-to-router BLE.
+// RunLeaves schedules configured leaves within the router's physical adapter
+// budget. The leaf PSM and TLS protocol remain independent of router streams.
 func RunLeaves(ctx context.Context, node *localmesh.Node, peers []localmesh.LeafBLEPeer,
-	timeURL string, logger *zap.Logger, status func(localmesh.CarrierStatus)) error {
-	if len(peers) == 0 || len(peers) > 8 {
-		return fmt.Errorf("configure 1..8 BLE leaves")
+	timeURL string, policy *localmesh.ConnectionPolicy, candidates *localmesh.CandidateQueue,
+	logger *zap.Logger, status func(localmesh.CarrierStatus)) error {
+	if node == nil || policy == nil || len(peers) == 0 || len(peers) > 8 {
+		return fmt.Errorf("configure 1..8 BLE leaves with a shared adapter policy")
 	}
-	local, err := leafAdapterAddress(ctx)
-	if err != nil {
-		return err
+	if candidates == nil {
+		candidates = &localmesh.CandidateQueue{}
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	var workers sync.WaitGroup
-	defer workers.Wait()
-	defer cancel()
+	r := &leafRuntime{policy: policy, candidates: candidates, logger: logger, serve: func(ctx context.Context, peer meshid.Device, conn net.Conn) error {
+		return node.ServeLeafRadio(ctx, peer, conn, timeURL)
+	}}
 	for _, config := range peers {
 		peer, err := meshid.ParseDevice(node.Credentials.Device.Tenant(), config.Device)
 		if err != nil {
 			return err
 		}
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for ctx.Err() == nil {
-				dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-				conn, err := dialL2CAP(dialCtx, local, config.Address, config.AddressType, config.PSM)
-				cancel()
-				if err == nil {
-					err = node.ServeLeafRadio(ctx, peer, conn, timeURL)
-					_ = conn.Close()
-				}
-				if ctx.Err() != nil {
-					return
-				}
-				if logger != nil {
-					logger.Warn("BLE leaf disconnected", zap.String("device", config.Device), zap.Error(err))
-				}
-				timer := time.NewTimer(5 * time.Second)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return
-				case <-timer.C:
-				}
-			}
-		}()
+		r.peers = append(r.peers, leafCandidate{config: config, peer: peer})
 	}
-	// Ready means the configured dial workers are running, not that peers have
-	// authenticated. Live links remain visible in the node snapshot.
+	local, err := leafAdapterAddress(ctx)
+	if err != nil {
+		return err
+	}
+	r.dial = func(ctx context.Context, config localmesh.LeafBLEPeer) (net.Conn, error) {
+		return dialL2CAP(ctx, local, config.Address, config.AddressType, config.PSM)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer r.workers.Wait()
+	defer cancel()
 	if status != nil {
 		status(localmesh.CarrierStatus{Ready: true})
 	}
-	<-ctx.Done()
-	return nil
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		r.startCandidates(ctx, time.Now())
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+type leafCandidate struct {
+	config localmesh.LeafBLEPeer
+	peer   meshid.Device
+}
+
+func (p leafCandidate) key() string {
+	return (candidate{address: p.config.Address, addressType: p.config.AddressType}).key()
+}
+
+type leafRuntime struct {
+	policy     *localmesh.ConnectionPolicy
+	candidates *localmesh.CandidateQueue
+	peers      []leafCandidate
+	dial       func(context.Context, localmesh.LeafBLEPeer) (net.Conn, error)
+	serve      func(context.Context, meshid.Device, net.Conn) error
+	logger     *zap.Logger
+	workers    sync.WaitGroup
+	nextDial   time.Time // owned by the scheduling loop
+}
+
+func (r *leafRuntime) startCandidates(ctx context.Context, now time.Time) {
+	if ctx.Err() != nil || now.Before(r.nextDial) {
+		return
+	}
+	byKey := make(map[string]leafCandidate, len(r.peers))
+	keys := make([]string, 0, len(r.peers))
+	for _, peer := range r.peers {
+		key := peer.key()
+		if _, ok := byKey[key]; !ok {
+			keys = append(keys, key)
+		}
+		byKey[key] = peer
+	}
+	for _, key := range r.candidates.Order(keys, now) {
+		peer := byKey[key]
+		lease := r.policy.Reserve(key, peer.peer, true)
+		if lease == nil {
+			continue
+		}
+		r.nextDial = now.Add(globalDialPace)
+		lease.ObserveReady(func() { r.candidates.Succeeded(key) })
+		r.workers.Add(1)
+		go func() {
+			defer r.workers.Done()
+			defer lease.Release()
+			dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			conn, err := r.dial(dialCtx, peer.config)
+			cancel()
+			if err == nil {
+				stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+				err = r.serve(localmesh.WithCarrier(localmesh.WithConnectionLease(ctx, lease), "ble"), peer.peer, conn)
+				stop()
+				_ = conn.Close()
+			}
+			if ctx.Err() == nil && !lease.Retired() {
+				r.candidates.Failed(key, time.Now())
+				if r.logger != nil {
+					r.logger.Warn("BLE leaf disconnected", zap.String("device", peer.config.Device), zap.Error(err))
+				}
+			}
+		}()
+		return // One actual start per pacing interval; skipped peers are unpenalized.
+	}
 }
 
 // Leaf sockets also bind a concrete local controller. The leaf PSM is a remote

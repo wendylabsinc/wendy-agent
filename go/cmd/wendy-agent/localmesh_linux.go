@@ -78,6 +78,7 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 		if cfg.NAN {
 			names = append(names, "NAN")
 		}
+
 		if len(cfg.LeafBLEPeers) != 0 {
 			names = append(names, "Leaf BLE")
 		}
@@ -186,14 +187,18 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 				return provider.Run(ctx)
 			})
 		}
+		// Both consumers select the default physical adapter and share its limits.
+		blePolicy := localmesh.NewConnectionPolicy(node.Credentials.Device, false, localmesh.ConnectionLimits{Outgoing: localmesh.BLEMaxOutgoing, Attempts: localmesh.BLEMaxOutgoingAttempts, Total: localmesh.BLEMaxConnections})
+		bleCandidates := &localmesh.CandidateQueue{}
+
 		if len(cfg.LeafBLEPeers) != 0 {
 			start("Leaf BLE", func(ctx context.Context, status func(localmesh.CarrierStatus)) error {
-				return bleprovider.RunLeaves(ctx, node, cfg.LeafBLEPeers, cfg.LeafTimeURL, logger, status)
+				return bleprovider.RunLeaves(ctx, node, cfg.LeafBLEPeers, cfg.LeafTimeURL, blePolicy, bleCandidates, logger, status)
 			})
 		}
 
 		if cfg.BLE {
-			ble := bleprovider.Config{Credentials: node.Credentials, Node: node, Selection: selection, NetworkName: fmt.Sprintf("tenant:%s:default", node.Credentials.Device.Tenant()), Logger: logger}
+			ble := bleprovider.Config{Policy: blePolicy, Candidates: bleCandidates, Credentials: node.Credentials, Node: node, Selection: selection, NetworkName: fmt.Sprintf("tenant:%s:default", node.Credentials.Device.Tenant()), Logger: logger}
 			start("BLE", func(ctx context.Context, status func(localmesh.CarrierStatus)) error {
 				ble.Status = status
 				return bleprovider.Run(ctx, ble)

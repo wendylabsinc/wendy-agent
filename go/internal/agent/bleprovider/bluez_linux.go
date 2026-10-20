@@ -297,4 +297,6 @@ func cleanupBlueZ(bus *dbus.Conn, adapter dbus.ObjectPath, logger *zap.Logger) {
 	}
 }
 
-func (p candidate) key() string { return p.addressType + ":" + strings.ToUpper(p.address) }
+func (p candidate) key() string {
+	return strings.ToLower(strings.TrimSpace(p.addressType)) + ":" + strings.ToUpper(strings.TrimSpace(p.address))
+}
