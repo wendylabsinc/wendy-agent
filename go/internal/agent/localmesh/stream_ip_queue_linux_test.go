@@ -999,8 +999,12 @@ func TestStreamIPQueueEarlierTCPRetransmissionPreservesOtherFlows(t *testing.T) 
 			if !q.enqueue(1, queueTestTCP(1320, 1, 2260), now) || !q.enqueue(2, queueTestIP(1320, 2), now) {
 				t.Fatal("fixture not admitted")
 			}
-			if full && !q.enqueue(3, queueTestTCP(1320, 1, 3520), now) {
-				t.Fatal("second later segment not admitted")
+			if full {
+				for i, id := range []uint32{3, 5, 6} {
+					if !q.enqueue(id, queueTestTCP(1320, 1, 3520+uint32(i)*1260), now) {
+						t.Fatal("later segment not admitted before source share filled")
+					}
+				}
 			}
 			if !q.enqueue(4, queueTestTCP(1320, 1, 1000), now) {
 				t.Fatal("earlier retransmission lost")
@@ -1008,7 +1012,11 @@ func TestStreamIPQueueEarlierTCPRetransmissionPreservesOtherFlows(t *testing.T) 
 			served := 0
 			// Service the missing TCP prefix first, then the other sender, then the
 			// already admitted later segment. Capacity pressure may shed only its tail.
-			for _, want := range []uint32{4, 2, 1} {
+			wantIDs := []uint32{4, 2, 1}
+			if full {
+				wantIDs = append(wantIDs, 3, 5)
+			}
+			for _, want := range wantIDs {
 				p, ok := q.pop(now, &served)
 				if !ok || p.sequence != want {
 					t.Fatalf("got id=%d ok=%t want=%d", p.sequence, ok, want)
