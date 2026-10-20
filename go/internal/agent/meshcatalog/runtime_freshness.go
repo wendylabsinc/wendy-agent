@@ -172,8 +172,13 @@ func (r *Runtime) receiveFresh(p *catalogPeer, m inventoryMessage, now time.Time
 		return nil
 	}
 	if state.upstream != 0 {
-		if peer := r.peers[state.upstream]; peer != nil {
-			r.queue(peer, m)
+		if peer := r.peers[state.upstream]; peer == nil || !r.queue(peer, m) {
+			// Never forward a later chunk after losing part of this response:
+			// the requester would treat the hole as a protocol violation and
+			// close its healthy neighbour. Abandon this nonce; its existing
+			// freshness deadline leaves projection unready and triggers a new
+			// request, without resetting the shared routing/data connection.
+			delete(r.requests, chunk.Nonce)
 		}
 		return nil
 	}
