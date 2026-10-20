@@ -207,7 +207,7 @@ func TestLEUpdateDoesNotAcceptOldEventLengthCommand(t *testing.T) {
 
 func TestSteadyIntervalRelaxUses45ms(t *testing.T) {
 	got := leConnectionUpdateCommand(0x0800, meshSteadyIntervalUnits)
-	// interval min/max at bytes 6:10 must be 36 (45 ms); supervision stays 800.
+	// Interval min/max at bytes 6:10 must be 36 (45 ms); supervision stays 4 s.
 	if binary.LittleEndian.Uint16(got[6:8]) != 36 || binary.LittleEndian.Uint16(got[8:10]) != 36 {
 		t.Fatalf("steady command intervals=%x, want 36/36", got[6:10])
 	}

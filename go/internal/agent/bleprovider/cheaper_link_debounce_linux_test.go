@@ -5,7 +5,6 @@ package bleprovider
 import (
 	"context"
 	"fmt"
-	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 )
 

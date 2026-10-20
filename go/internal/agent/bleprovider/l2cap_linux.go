@@ -137,8 +137,8 @@ var l2capReceiveMTULadder = []int{65535, 32768, 16384, 8192, 4096, 2048}
 
 const l2capOptionsOpt = 1
 
-// settleLog receives settle outcomes; the provider wires its logger at
-// startup. Package default is nop so tests and fixtures stay quiet.
+// settleLog is an optional diagnostic hook. Socket setup uses its no-op
+// default; handshake telemetry independently reads the negotiated socket MTU.
 var settleLog func(mtu int, err error) = func(int, error) {}
 
 func reportSettle(mtu int, err error) {
