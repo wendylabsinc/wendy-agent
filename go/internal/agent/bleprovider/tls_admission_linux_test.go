@@ -4,13 +4,92 @@ package bleprovider
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"net"
 	goruntime "runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
+
+type admissionDelayedFirstWrite struct {
+	net.Conn
+	once  sync.Once
+	delay time.Duration
+}
+
+func (c *admissionDelayedFirstWrite) Write(p []byte) (int, error) {
+	c.once.Do(func() { time.Sleep(c.delay) })
+	return c.Conn.Write(p)
+}
+
+// The remote adapter can be finishing another peer's authentication before
+// admitting this one. Its wait and certificate-flight budgets are sequential.
+func TestTLSOutboundAllowsRemoteAdmissionAndCertificateFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		serverConfig, clientConfig := metricsTLSConfigs(t)
+		serverConfig.SessionTicketsDisabled = true
+		clientConfig.SessionTicketsDisabled = true
+		clientRaw, serverRaw := net.Pipe()
+		defer clientRaw.Close()
+		defer serverRaw.Close()
+		gate := newTLSHandshakeAdmission()
+		gate.slot <- struct{}{} // Another peer currently owns admission.
+		admissionDelay := meshTLSAdmissionWait - time.Second
+		flightDelay := meshTLSHandshakeTimeout - time.Second
+		go func() {
+			time.Sleep(admissionDelay)
+			<-gate.slot
+		}()
+		serverDone := make(chan error, 1)
+		go func() {
+			server := tls.Server(&admissionDelayedFirstWrite{Conn: serverRaw, delay: flightDelay}, serverConfig)
+			_, _, err := gate.run(context.Background(), meshTLSAdmissionWait, meshTLSHandshakeTimeout, server.HandshakeContext)
+			serverDone <- err
+		}()
+		client := tls.Client(clientRaw, clientConfig)
+		var r runtime
+		elapsed, err := r.handshakeOutbound(context.Background(), client)
+		if err != nil {
+			t.Fatalf("remote admission plus progressing flight rejected after %s: %v", elapsed, err)
+		}
+		if elapsed < admissionDelay+flightDelay || !client.ConnectionState().HandshakeComplete {
+			t.Fatalf("incomplete delayed authentication: elapsed=%s state=%+v", elapsed, client.ConnectionState())
+		}
+		if err := <-serverDone; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestTLSOutboundBudgetAndParentCancellationRemainBounded(t *testing.T) {
+	for _, parentDeadline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "authentication_bound", true: "parent_bound"}[parentDeadline], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				_, clientConfig := metricsTLSConfigs(t)
+				clientRaw, silentPeer := net.Pipe()
+				defer clientRaw.Close()
+				defer silentPeer.Close()
+				ctx := context.Background()
+				want := meshTLSAdmissionWait + meshTLSHandshakeTimeout
+				if parentDeadline {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+					defer cancel()
+					want = 2 * time.Second
+				}
+				var r runtime
+				elapsed, err := r.handshakeOutbound(ctx, tls.Client(clientRaw, clientConfig))
+				if !errors.Is(err, context.DeadlineExceeded) || elapsed != want {
+					t.Fatalf("silent peer: elapsed=%s err=%v, want deadline at %s", elapsed, err, want)
+				}
+			})
+		})
+	}
+}
 
 func TestTLSAdmissionConcurrentZeroValue(t *testing.T) {
 	var gate tlsHandshakeAdmission
