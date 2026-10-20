@@ -170,7 +170,7 @@ func (s *Synchronizer) recordBounded(w SignedManifest, now time.Time, slots int)
 			s.sent = map[string]bool{}
 		}
 		s.sent[fp] = true
-		out = append(out, ControlMessage{Kind: "certificate", Certificate: describeCertificates(w.Principal, chain)})
+		out = append(out, ControlMessage{Kind: "certificate", Certificate: DescribeCertificates(w.Principal, chain)})
 	}
 	w.Body = append(json.RawMessage(nil), w.Body...)
 	w.Signature = append([]byte(nil), w.Signature...)
@@ -236,7 +236,7 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 	case "identity-request":
 		chain, _, ok := s.cache.Get(m.Principal, now)
 		if ok {
-			replies = append(replies, ControlMessage{Kind: "certificate", Certificate: describeCertificates(m.Principal, chain)})
+			replies = append(replies, ControlMessage{Kind: "certificate", Certificate: DescribeCertificates(m.Principal, chain)})
 		}
 	case "bundle":
 		principal, e := s.cache.Put(m.Bundle, now)

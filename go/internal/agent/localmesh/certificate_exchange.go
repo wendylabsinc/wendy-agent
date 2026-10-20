@@ -34,6 +34,9 @@ type CertificateMessage struct {
 	Chunk   *CertificateChunk   `json:"chunk,omitempty"`
 }
 
+// Validate checks the bounded transfer envelope without granting trust.
+func (m CertificateMessage) Validate() error { return m.validate() }
+
 func (m CertificateMessage) validate() error {
 	fields := 0
 	if c := m.Chain; c != nil {
@@ -99,6 +102,9 @@ func (e *CertificateExchange) Close() {
 	e.cache.parts.release(e.owner)
 }
 
+// Pending reports bounded chain assembly owned by this protocol actor.
+func (e *CertificateExchange) Pending() bool { return len(e.pending) != 0 }
+
 func (e *CertificateExchange) Describe(principal string, now time.Time) *CertificateMessage {
 	if e.closed {
 		return nil
@@ -107,10 +113,11 @@ func (e *CertificateExchange) Describe(principal string, now time.Time) *Certifi
 	if !ok {
 		return nil
 	}
-	return describeCertificates(principal, chain)
+	return DescribeCertificates(principal, chain)
 }
 
-func describeCertificates(principal string, chain [][]byte) *CertificateMessage {
+// DescribeCertificates names exact chain bytes; it grants no identity or trust.
+func DescribeCertificates(principal string, chain [][]byte) *CertificateMessage {
 	c := &CertificateChain{Principal: principal}
 	for _, data := range chain {
 		if len(data) == 0 || len(data) > maxCertificateBytes {
@@ -251,4 +258,21 @@ func (p *CertificatePool) accept(owner uint64, chunk CertificateChunk, now time.
 	p.objects[chunk.Hash] = certificateObject{data: fetch.data, used: now, expires: now.Add(MaxLease)}
 	p.bytes += fetch.total
 	return 0, true, nil
+}
+
+// ErrCertificateNeeded means an advertised element is absent from both the
+// shared public-byte pool and this cache's current verified identities.
+var ErrCertificateNeeded = errors.New("certificate element needed")
+
+// ResolveCertificateChain admits a description only after finding all its
+// exact bytes and applying the unchanged principal-scoped chain verifier.
+func (c *IdentityCache) ResolveCertificateChain(description CertificateChain, now time.Time) (string, error) {
+ if err := (CertificateMessage{Chain: &description}).Validate(); err != nil { return "", err }
+ chain := make([][]byte, 0, len(description.Hashes))
+ for _, hash := range description.Hashes {
+  data := c.certificate(hash, now)
+  if data == nil { return "", ErrCertificateNeeded }
+  chain = append(chain, data)
+ }
+ return c.put(chain, description.Principal, now)
 }

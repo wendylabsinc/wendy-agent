@@ -82,6 +82,9 @@ bounded byte pool; only the first announcing supplier is asked. Disconnect
 releases its request immediately, and a silent supplier yields to another
 announcing neighbour after 30 seconds without progress. Routing and application
 frames can be transmitted between certificate chunks.
+Requested directory replies use a separate reserve of32 frames/64 KiB while
+the control writer is full. They drain before new gossip; admitted frames keep
+their original order. Protocol overload still closes the bounded peer link.
 
 The assembled chain is independently verified under current trust, principal,
 tenant, expiry and renewal rules before admitting its manifest. Hashes identify

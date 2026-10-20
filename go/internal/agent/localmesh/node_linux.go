@@ -26,13 +26,15 @@ import (
 )
 
 type nodePeer struct {
-	id      babel.LinkID
-	device  meshid.Device
-	cost    uint16
-	link    nodeLink
-	tun     *os.File
-	control chan ControlMessage
-	sync    *Synchronizer
+	id         babel.LinkID
+	device     meshid.Device
+	cost       uint16
+	link       nodeLink
+	tun        *os.File
+	control    chan ControlMessage
+	sync       *Synchronizer
+	replies    []ControlMessage
+	replyBytes int
 }
 
 type nodeLink interface {
@@ -272,7 +274,10 @@ func (n *Node) Run() error {
 					_ = p.link.Close()
 					continue
 				}
-				n.queue(p, replies)
+				if !n.queueReplies(p, replies) {
+					_ = p.link.Close()
+					continue
+				}
 				for _, record := range changed {
 					for id, dest := range n.peers {
 						if id != p.id {
@@ -364,7 +369,10 @@ func (n *Node) handle(e nodeEvent) error {
 			_ = p.link.Close()
 			return nil
 		}
-		n.queue(p, replies)
+		if !n.queueReplies(p, replies) {
+			_ = p.link.Close()
+			return nil
+		}
 		for _, record := range changed {
 			for id, dest := range n.peers {
 				if id != p.id {
@@ -386,6 +394,10 @@ func (n *Node) continueReconcilePeer(p *nodePeer, now time.Time) {
 }
 
 func (n *Node) queue(p *nodePeer, messages []ControlMessage) {
+	n.flushReplies(p)
+	if len(p.replies) != 0 {
+		return // Periodic reconciliation repairs bulk gossip after replies drain.
+	}
 	for _, m := range messages {
 		select {
 		case p.control <- m:
