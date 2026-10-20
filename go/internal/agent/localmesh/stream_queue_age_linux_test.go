@@ -25,7 +25,7 @@ func TestStreamIPQueueKeepsShortDatagramDuringControlContention(t *testing.T) {
 		t.Fatal("datagram not admitted")
 	}
 	served := 0
-	if p, ok := q.pop(now.Add(650*time.Millisecond), &served); !ok || p.sequence != 1 {
+	if p, ok := q.pop(now.Add(1500*time.Millisecond), &served); !ok || p.sequence != 1 {
 		t.Fatalf("short datagram expired behind ordinary control contention: %+v", q.snapshot())
 	}
 }
@@ -37,7 +37,7 @@ func TestStreamIPQueueDoesNotShortenAdmittedGrace(t *testing.T) {
 	q.enqueue(1, queueTestAppUDP(188, 1, 34975, AppSessionPort), now)
 	primeFastQueue(q)
 	served := 0
-	if p, ok := q.pop(now.Add(1500*time.Millisecond), &served); !ok || p.sequence != 1 {
+	if p, ok := q.pop(now.Add(2100*time.Millisecond), &served); !ok || p.sequence != 1 {
 		t.Fatalf("later fast writes retroactively expired admitted traffic: %+v", q.snapshot())
 	}
 }
@@ -51,7 +51,7 @@ func TestStreamIPQueueRemembersMeasuredSlowdownForWaitingPacket(t *testing.T) {
 	q.recordWrite(TunnelMTU, 700*time.Millisecond)
 	primeFastQueue(q)
 	served := 0
-	if p, ok := q.pop(now.Add(2*time.Second), &served); !ok || p.sequence != 1 {
+	if p, ok := q.pop(now.Add(3*time.Second), &served); !ok || p.sequence != 1 {
 		t.Fatal("recovered rate revoked the measured slow-write allowance")
 	}
 	if _, ok := q.pop(now.Add(5*time.Second), &served); ok {
@@ -84,7 +84,7 @@ func TestStreamLinkShortDatagramSurvivesControlWrite(t *testing.T) {
 	if err := link.SendIP(1, packet); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(650 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 	close(gate.release)
 	_ = b.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if kind, _ := readStreamTestFrame(t, b); kind != streamControl {

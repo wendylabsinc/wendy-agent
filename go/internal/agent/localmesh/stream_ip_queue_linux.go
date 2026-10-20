@@ -21,10 +21,6 @@ const (
 	streamIPSourceByteBudget = streamIPByteBudget / 2
 	streamIPInitialQueueAge  = 2 * time.Second
 	streamIPMaxQueueAge      = 5 * time.Second
-	// Socket acceptance can be much faster than RF drain while a control
-	// frame owns the writer. Give waiting packets at least two of the former
-	// 500ms target intervals; the byte cap still bounds queue occupancy.
-	streamIPMinQueueAge = time.Second
 )
 
 type streamIPPacket struct {
@@ -223,7 +219,9 @@ func (q *streamIPSendQueue) queueAgeLimit() time.Duration {
 	// the bounded queue ahead of it. At low BLE rates even one packet can
 	// take hundreds of milliseconds, exceeding the former 50ms age limit.
 	service := time.Duration(q.byteBudget()+streamIPFullPacketBytes) * time.Second / time.Duration(q.writeRateBytesPerSec)
-	return min(streamIPMaxQueueAge, max(streamIPMinQueueAge, service))
+	// Reuse startup grace as a floor: socket-fast writes do not predict a
+	// queued packet's service opportunity behind a measured 1.5s control write.
+	return min(streamIPMaxQueueAge, max(streamIPInitialQueueAge, service))
 }
 
 // Write completion is only a proxy for RF drain because the CoC socket can
