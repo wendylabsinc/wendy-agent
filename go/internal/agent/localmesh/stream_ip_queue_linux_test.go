@@ -194,7 +194,7 @@ func TestNodeSnapshotReadsLiveBLEQueueCounters(t *testing.T) {
 	if len(s.Links) != 1 || s.Links[0].SendQueue == nil || s.Links[0].SendQueue.Bytes != streamIPFramedBytes(1200) {
 		t.Fatalf("BLE queue missing from snapshot: %+v", s.Links)
 	}
-	for i := uint32(2); i <= 4; i++ {
+	for i := uint32(2); i <= 8; i++ {
 		q.enqueue(i, queueTestIP(1200, 1), time.Now())
 	}
 	second := n.Snapshot()
@@ -301,7 +301,7 @@ func TestStreamLinkSendsWaitingSourceThroughFullSizeFlood(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if stats := link.ipPackets.snapshot(); stats.Packets != 3 || stats.Bytes > stats.ByteLimit || link.ipPackets.sourceBytes(queueTestSource(2)) == 0 {
+	if stats := link.ipPackets.snapshot(); stats.Packets != 5 || stats.Bytes > stats.ByteLimit || link.ipPackets.sourceBytes(queueTestSource(2)) == 0 {
 		t.Fatalf("waiting source lost before write: %+v", stats)
 	}
 	close(gate.release)
