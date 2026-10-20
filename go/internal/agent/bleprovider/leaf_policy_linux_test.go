@@ -129,3 +129,28 @@ func TestBLELeafFailureReleasesBudgetAndSharesPenalty(t *testing.T) {
 		t.Fatal("router/leaf radio keys differ")
 	}
 }
+
+func TestBLELeafAndRouterShareDialPacing(t *testing.T) {
+	policy := localmesh.NewConnectionPolicy(selfFixture, false, localmesh.ConnectionLimits{Outgoing: 2, Attempts: 1, Total: 3})
+	pacer := &DialPacer{}
+	router := &runtime{cfg: Config{Policy: policy, Pacer: pacer}}
+	now := time.Now()
+	if !router.admitDial(now) {
+		t.Fatal("initial router start denied")
+	}
+	attempted := 0
+	leaf := &leafRuntime{policy: policy, candidates: &localmesh.CandidateQueue{}, pacer: pacer, peers: []leafCandidate{{config: localmesh.LeafBLEPeer{Address: "02:00:00:00:00:01", AddressType: "public"}, peer: lowFixture}}, dial: func(context.Context, localmesh.LeafBLEPeer) (net.Conn, error) {
+		attempted++
+		return nil, errors.New("fixture dial")
+	}}
+	leaf.startCandidates(context.Background(), now.Add(time.Second))
+	leaf.workers.Wait()
+	if attempted != 0 || policy.Counts().Total != 0 {
+		t.Fatal("leaf bypassed pacing or retained skipped reservation")
+	}
+	leaf.startCandidates(context.Background(), now.Add(globalDialPace))
+	leaf.workers.Wait()
+	if attempted != 1 || router.admitDial(now.Add(globalDialPace)) {
+		t.Fatal("consumers did not share adapter pacing")
+	}
+}

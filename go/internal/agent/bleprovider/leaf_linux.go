@@ -17,7 +17,7 @@ import (
 // RunLeaves schedules configured leaves within the router's physical adapter
 // budget. The leaf PSM and TLS protocol remain independent of router streams.
 func RunLeaves(ctx context.Context, node *localmesh.Node, peers []localmesh.LeafBLEPeer,
-	timeURL string, policy *localmesh.ConnectionPolicy, candidates *localmesh.CandidateQueue,
+	timeURL string, policy *localmesh.ConnectionPolicy, candidates *localmesh.CandidateQueue, pacer *DialPacer,
 	logger *zap.Logger, status func(localmesh.CarrierStatus)) error {
 	if node == nil || policy == nil || len(peers) == 0 || len(peers) > 8 {
 		return fmt.Errorf("configure 1..8 BLE leaves with a shared adapter policy")
@@ -25,7 +25,7 @@ func RunLeaves(ctx context.Context, node *localmesh.Node, peers []localmesh.Leaf
 	if candidates == nil {
 		candidates = &localmesh.CandidateQueue{}
 	}
-	r := &leafRuntime{policy: policy, candidates: candidates, logger: logger, serve: func(ctx context.Context, peer meshid.Device, conn net.Conn) error {
+	r := &leafRuntime{policy: policy, candidates: candidates, pacer: pacer, logger: logger, serve: func(ctx context.Context, peer meshid.Device, conn net.Conn) error {
 		return node.ServeLeafRadio(ctx, peer, conn, timeURL)
 	}}
 	for _, config := range peers {
@@ -72,6 +72,7 @@ func (p leafCandidate) key() string {
 type leafRuntime struct {
 	policy     *localmesh.ConnectionPolicy
 	candidates *localmesh.CandidateQueue
+	pacer      *DialPacer
 	peers      []leafCandidate
 	dial       func(context.Context, localmesh.LeafBLEPeer) (net.Conn, error)
 	serve      func(context.Context, meshid.Device, net.Conn) error
@@ -98,6 +99,10 @@ func (r *leafRuntime) startCandidates(ctx context.Context, now time.Time) {
 		lease := r.policy.Reserve(key, peer.peer, true)
 		if lease == nil {
 			continue
+		}
+		if r.pacer != nil && !r.pacer.Admit(now) {
+			lease.Release()
+			return
 		}
 		r.nextDial = now.Add(globalDialPace)
 		lease.ObserveReady(func() { r.candidates.Succeeded(key) })

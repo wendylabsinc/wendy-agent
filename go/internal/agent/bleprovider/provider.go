@@ -28,6 +28,7 @@ type Config struct {
 	// Policy may be shared with other consumers of the same physical adapter.
 	// A nil policy creates the standard router BLE limits.
 	Policy     *localmesh.ConnectionPolicy
+	Pacer      *DialPacer                // optional shared physical-adapter outbound start spacing
 	Candidates *localmesh.CandidateQueue // optional shared physical-adapter failure history
 	Logger     *zap.Logger
 	// Status receives local setup readiness and discovery failures/recovery,

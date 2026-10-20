@@ -104,16 +104,12 @@ func (r *runtime) cheaperLinkReason(asset meshid.Device) string {
 	return "legacy-checker"
 }
 
-// globalDialPace is the minimum spacing between outbound BLE dial attempts
-// on one device, across all peers. Per-peer backoff already exists; this
-// serializes formation and redial bursts that would otherwise start all of
-// a device's links (and their catalog sync bursts) in the same seconds.
-// Inbound accepts are never paced.
-const globalDialPace = 5 * time.Second
-
 // admitDial reports whether an outbound dial may start now, and if so moves
 // the device-wide pacing marker forward. Now is a parameter for tests.
 func (r *runtime) admitDial(now time.Time) bool {
+	if r.cfg.Pacer != nil {
+		return r.cfg.Pacer.Admit(now)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if now.Before(r.nextDial) {
