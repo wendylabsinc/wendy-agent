@@ -326,11 +326,13 @@ def main(argv=None):
         for r in result["rows"]:
             key = _key_of(r)
             r["confirmed"], r["unconfirmed"] = [], {}
+            if key not in first:
+                continue  # not flagged before the reruns, so nothing was rerun for it
             rerun = reruns[key[:2] + key[3:]]
-            for flag in r["flags"] if key in first else []:
+            for flag in r["flags"]:
                 if flag not in first[key]:
                     continue
-                added = sum(x.get("status") != "setup_error" and _key(x) == key for x in (rerun or {}).get("rows", []))
+                added = sum(x.get("status") != "setup_error" and _key(x) == key for x in rerun["rows"])
                 r["rerun_exit"] = rerun["exit"]
                 if not added:
                     r["unconfirmed"][flag] = (f"rerun failed: exit {rerun['exit']}" if rerun["exit"] not in (0, 1)

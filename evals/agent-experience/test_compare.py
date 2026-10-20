@@ -177,6 +177,20 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(by["sim"]["confirmed"], ["tool_choice"])
         self.assertEqual(by["board"]["unconfirmed"]["tool_choice"], "rerun added no attempts")
 
+    def test_confirm_leaves_unflagged_rows_alone(self):
+        # s1 regresses and is rerun; s2 is unchanged, so it has no rerun to look up.
+        base = [row("s1", "right")] * 3 + [row("s2", "right")] * 3
+        cand = [row("s1", "wrong")] * 3 + [row("s2", "right")] * 3
+        code, run, result, md, _ = self.confirm(cand, self.writer([row("s1", "wrong")]), base_rows=base)
+        self.assertEqual(code, 1)
+        self.assertEqual(run.call_count, 1)
+        by = {r["task"]: r for r in result["rows"]}
+        self.assertEqual((by["s1"]["confirmed"], by["s1"]["unconfirmed"]), (["tool_choice"], {}))
+        self.assertEqual((by["s2"]["flags"], by["s2"]["confirmed"], by["s2"]["unconfirmed"]), ([], [], {}))
+        self.assertNotIn("rerun_exit", by["s2"])
+        self.assertEqual(by["s2"]["candidate"]["attempts"], 3)
+        self.assertIn("tool_choice (confirmed)", md)
+
     def test_setup_error_only_side_is_visible_and_never_flagged(self):
         bad = dict(row("s1", None), status="setup_error")
         r = self.run_compare([row("s1", "right")] * 3, [bad] * 3)
