@@ -105,7 +105,8 @@ jobs:
         run: |
           set -euo pipefail
           docker info >/dev/null 2>&1 || exit 0
-          size() { docker buildx du --builder "$1" 2>/dev/null | awk '/^Total:/ { print $2 }'; }
+          # Best effort: a size that cannot be read is reported as "?".
+          size() { docker buildx du --builder "$1" 2>/dev/null | awk '/^Total:/ { print $2 }' || true; }
           # Builds that do not set WENDY_BUILDX_BUILDER use these builders, and
           # nothing else bounds their caches. The CLI trims wendy-oci itself.
           sizes=()
@@ -117,7 +118,8 @@ jobs:
             else
               docker buildx prune --builder "$builder" \
                 --max-used-space "${SHARED_BUILDER_MAX_GB}gb" --force
-              sizes+=("$builder ${before:-?} → $(size "$builder")")
+              after=$(size "$builder")
+              sizes+=("$builder ${before:-?} → ${after:-?}")
             fi
           done
           if ((${#sizes[@]})); then
@@ -173,11 +175,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-
-      - name: Build embedded MCP app
-        id: mcp-app
-        if: ${{ !cancelled() }}
-        uses: ./.github/actions/build-mcp-app
 
       - name: Build CLI
         id: cli
@@ -252,7 +249,9 @@ jobs:
   alarm:
     name: Post alarm to Slack
     needs: mac
-    # Also covers a run the Mac never picked up (offline or stuck runner).
+    # Also covers a run the Mac never picked up (offline or stuck runner), but
+    # late: GitHub fails a queued self-hosted job only after 24 hours, and
+    # timeout-minutes does not count while the job waits.
     if: ${{ always() && github.event_name == 'schedule' && needs.mac.result != 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -277,7 +276,7 @@ jobs:
           errors: true
           payload: |
             channel: ${{ vars.CI_SLACK_CHANNEL }}
-            text: ":rotating_light: *Runner janitor ${{ needs.mac.result == 'failure' && 'failed' || format('did not finish ({0})', needs.mac.result) }}* on `${{ needs.mac.outputs.runner || 'wendy-macos-26' }}`. Free disk: ${{ needs.mac.outputs.free-after || needs.mac.outputs.free-before || 'unknown' }} GiB. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
+            text: ":rotating_light: *Runner janitor ${{ !needs.mac.outputs.runner && 'did not run' || needs.mac.result == 'failure' && 'failed' || format('did not finish ({0})', needs.mac.result) }}* on `${{ needs.mac.outputs.runner || 'wendy-macos-26' }}`. Free disk: ${{ needs.mac.outputs.free-after || needs.mac.outputs.free-before || 'unknown' }} GiB. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
 
   feed:
     name: Post report to #feed-janitor
