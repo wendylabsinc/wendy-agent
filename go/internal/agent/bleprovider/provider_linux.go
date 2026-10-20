@@ -403,7 +403,7 @@ func (r *runtime) makeServerTLS() *tls.Config {
 			return nil
 		},
 	}
-	localmesh.NewTicketStore().Configure(config)
+	r.cfg.Credentials.ServerTicketStore(ALPN, "ble-tls").Configure(config)
 	return config
 }
 
