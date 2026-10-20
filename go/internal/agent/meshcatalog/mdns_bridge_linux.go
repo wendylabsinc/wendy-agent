@@ -17,13 +17,6 @@ import (
 
 var mdnsGroup = &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
 
-type mdnsQueryReply struct {
-	data    []byte
-	source  net.IP
-	ifindex int
-	err     error
-}
-
 // Run owns the app bridge's UDP 5353 socket. SO_BINDTODEVICE and packet
 // interface checks prevent an app's announcements from crossing bridge scope.
 // It never grants the app control over a system Avahi daemon.
@@ -69,31 +62,10 @@ func (b *MDNSBridge) Run(ctx context.Context) error {
 	if err := conn.SetMulticastTTL(255); err != nil {
 		return err
 	}
-	// Many app DNS-SD libraries unicast answers to a query's source port.
-	// Avahi also owns host UDP 5353, so SO_REUSEPORT can deliver that unicast
-	// reply to Avahi instead of this bridge. Give queries a dedicated port;
-	// retain the 5353 socket for app multicast and projected announcements.
-	queryPacket, err := (&net.ListenConfig{Control: control}).ListenPacket(ctx, "udp4", "0.0.0.0:0")
-	if err != nil {
-		return fmt.Errorf("listen app mDNS query replies: %w", err)
-	}
-	queryConn := ipv4.NewPacketConn(queryPacket)
-	if err := queryConn.SetControlMessage(ipv4.FlagInterface, true); err != nil {
-		queryPacket.Close()
-		return err
-	}
-	if err := queryConn.SetMulticastInterface(iface); err != nil {
-		queryPacket.Close()
-		return err
-	}
-	if err := queryConn.SetMulticastTTL(255); err != nil {
-		queryPacket.Close()
-		return err
-	}
-	replies := make(chan mdnsQueryReply, 128)
-	queryDone := make(chan struct{})
-	go readMDNSQueryReplies(queryConn, replies, queryDone)
-	defer func() { _ = queryPacket.Close(); <-queryDone }()
+	// Browse from the shared mDNS port with multicast-response questions.
+	// Ephemeral source ports select legacy unicast answers (RFC6762 §6.7),
+	// whose ten-second TTLs force frequent signed catalogue renewals. Multicast
+	// replies reach every joined socket, including this bridge and host Avahi.
 	defer func() {
 		_ = b.withdraw(time.Now())
 		b.sendGoodbyes(conn, b.projectionGoodbyes(nil))
@@ -106,11 +78,11 @@ func (b *MDNSBridge) Run(ctx context.Context) error {
 			return nil
 		}
 		if now := time.Now(); !now.Before(nextProbe) {
-			if err := b.sendQuery(queryConn, "_services._dns-sd._udp.local."); err != nil {
+			if err := b.sendQuery(conn, "_services._dns-sd._udp.local."); err != nil {
 				return err
 			}
 			for _, typ := range b.knownTypes(now) {
-				if err := b.sendQuery(queryConn, typ+".local."); err != nil {
+				if err := b.sendQuery(conn, typ+".local."); err != nil {
 					return err
 				}
 			}
@@ -128,7 +100,7 @@ func (b *MDNSBridge) Run(ctx context.Context) error {
 				var msg dns.Msg
 				if n > 0 && msg.Unpack(buffer[:n]) == nil {
 					if msg.Response {
-						if err := b.handleAppResponse(queryConn, &msg, udp.IP, cm.IfIndex); err != nil {
+						if err := b.handleAppResponse(conn, &msg, udp.IP, cm.IfIndex); err != nil {
 							return err
 						}
 					} else if len(msg.Question) > 0 {
@@ -138,25 +110,6 @@ func (b *MDNSBridge) Run(ctx context.Context) error {
 						}
 					}
 				}
-			}
-		}
-		for i := 0; i < cap(replies); i++ {
-			select {
-			case reply := <-replies:
-				if reply.err != nil {
-					return reply.err
-				}
-				if reply.ifindex != iface.Index || !reply.source.Equal(b.scope.AppIP) {
-					continue
-				}
-				var msg dns.Msg
-				if msg.Unpack(reply.data) == nil && msg.Response {
-					if err := b.handleAppResponse(queryConn, &msg, reply.source, reply.ifindex); err != nil {
-						return err
-					}
-				}
-			default:
-				i = cap(replies)
 			}
 		}
 		if err := b.sweep(time.Now()); err != nil {
@@ -183,35 +136,9 @@ func (b *MDNSBridge) Run(ctx context.Context) error {
 	}
 }
 
-func readMDNSQueryReplies(conn *ipv4.PacketConn, replies chan<- mdnsQueryReply, done chan<- struct{}) {
-	defer close(done)
-	buf := make([]byte, 9000)
-	for {
-		n, cm, source, err := conn.ReadFrom(buf)
-		if err != nil {
-			if !errors.Is(err, net.ErrClosed) {
-				select {
-				case replies <- mdnsQueryReply{err: err}:
-				default:
-				}
-			}
-			return
-		}
-		udp, ok := source.(*net.UDPAddr)
-		if !ok || cm == nil {
-			continue
-		}
-		reply := mdnsQueryReply{data: append([]byte(nil), buf[:n]...), source: udp.IP, ifindex: cm.IfIndex}
-		select {
-		case replies <- reply:
-		default:
-		}
-	}
-}
-
-func (b *MDNSBridge) handleAppResponse(queryConn *ipv4.PacketConn, msg *dns.Msg, source net.IP, ifindex int) error {
+func (b *MDNSBridge) handleAppResponse(conn *ipv4.PacketConn, msg *dns.Msg, source net.IP, ifindex int) error {
 	for _, typ := range b.learnTypes(msg, time.Now()) {
-		if err := b.sendQuery(queryConn, typ+".local."); err != nil {
+		if err := b.sendQuery(conn, typ+".local."); err != nil {
 			return err
 		}
 	}
