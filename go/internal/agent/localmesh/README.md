@@ -110,6 +110,15 @@ loss. `QueueDrops`/`SizeDrops` include IP and Babel refusals; `WholeFallbacks`
 counts size-refused whole attempts that try the fixed form. Counters reset on
 link replacement. Diagnostics are off by default and add no wire traffic.
 
+BLE first contact always performs a full TLS handshake because discovery has
+only a UUID hint. Once the certificate, tenant, UUID ordering, hint and ALPN
+checks succeed, its post-handshake ticket is collected into the verified full
+principal's existing bounded session cache. The first reconnect to that known
+peer can therefore resume. An unidentified radio never receives a cached ticket.
+Resumed links still recheck identity authorization; ticket expiry, eviction or
+credential replacement falls back to a full handshake. The previous connection
+must have processed its session ticket before disconnecting.
+
 Each authenticated QUIC neighbour link has one bounded reliable control stream
 and independent Babel/IP datagrams. TLS byte-stream adapters multiplex those
 frame types through one bounded priority writer, with separate bounded IP

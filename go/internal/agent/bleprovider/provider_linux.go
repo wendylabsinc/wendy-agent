@@ -670,13 +670,16 @@ func watchLinkContext(ctx context.Context, conn net.Conn) func() {
 // Reconnects additionally pin the previously authenticated full principal.
 func (r *runtime) clientTLS(peer candidate) (*tls.Config, *meshid.Device, error) {
 	var authenticated meshid.Device
+	firstContact := &firstContactSessionCache{}
 	config := &tls.Config{
 		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
 		Certificates:       []tls.Certificate{r.cfg.Credentials.Certificate},
 		InsecureSkipVerify: true, // VerifyConnection validates the device PKI below.
 		NextProtos:         []string{ALPN},
+		ClientSessionCache: firstContact,
 	}
 	if known, ok := r.knownCandidate(peer); ok {
+		firstContact = nil
 		var err error
 		config, err = r.cfg.Credentials.PeerTLSWithTickets(known, ALPN, "ble-tls")
 		if err != nil {
@@ -704,6 +707,15 @@ func (r *runtime) clientTLS(peer candidate) (*tls.Config, *meshid.Device, error)
 		}
 		if deviceHint(device.UUID()) != peer.hint {
 			return errors.New("BLE certificate does not match discovery hint")
+		}
+		if firstContact != nil && state.NegotiatedProtocol == ALPN {
+			// The verified principal, not the radio address or truncated hint,
+			// selects the cache scope and canonical key for post-handshake tickets.
+			// Cache setup failure only loses this optimization; TLS remains fully
+			// authenticated and the next connection can perform a full handshake.
+			if pinned, err := r.cfg.Credentials.PeerTLSWithTickets(device, ALPN, "ble-tls"); err == nil {
+				firstContact.bind(pinned)
+			}
 		}
 		authenticated = device
 		return nil
