@@ -17,7 +17,7 @@ const MaxMessageBytes = 64 << 10
 const maxPendingRecords = 128
 const maxPendingRecordBytes = 128 << 10
 
-var errPendingIdentities = errors.New("too many pending mesh service identities")
+var errPendingIdentities = errors.New("too many pending wendy net service identities")
 
 // Message is carried on a reliable, authenticated mesh control stream.
 // Signed records retain their origin proof across relays. Missing certificate
@@ -266,7 +266,7 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 			}
 			var record Record
 			if json.Unmarshal(m.Record.Body, &record) != nil {
-				return nil, nil, errors.New("invalid mesh service record body")
+				return nil, nil, errors.New("invalid wendy net service record body")
 			}
 			first := len(s.pending[record.Key.Device]) == 0
 			s.pending[record.Key.Device] = append(s.pending[record.Key.Device], cloneWire(*m.Record))

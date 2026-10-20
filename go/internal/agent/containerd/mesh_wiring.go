@@ -425,7 +425,7 @@ func (c *Client) applyMeshEgress(entitlements []appconfig.Entitlement, container
 		return fmt.Errorf("wendy net egress: setting route for app %q: %w", appID, err)
 	}
 	if err := hostnetwork.SetMeshMDNSRoute(netnsPath, "eth0"); err != nil {
-		return fmt.Errorf("mesh egress: setting mDNS route for app %q: %w", appID, err)
+		return fmt.Errorf("wendy net egress: setting mDNS route for app %q: %w", appID, err)
 	}
 
 	if err := hostnetwork.AddMeshRule(ip, params.cidr); err != nil {
@@ -539,7 +539,7 @@ func (c *Client) startMeshMDNS(containerName, appID, ip string, ports []appconfi
 	if err := c.meshMDNS.StartMeshApp(containerName, appID, ip, bridgeName(appID), ports); err != nil {
 		// Direct VIP traffic remains usable if an app multicast bridge cannot
 		// start. The catalog never publishes this app without its bridge.
-		c.logger.Warn("mesh app mDNS bridge unavailable", zap.String("app_id", appID), zap.Error(err))
+		c.logger.Warn("wendy net app mDNS bridge unavailable", zap.String("app_id", appID), zap.Error(err))
 	}
 	return nil
 }

@@ -21,7 +21,7 @@ type ReceiptStore struct {
 
 func NewReceiptStore(path string, limit int) (*ReceiptStore, error) {
 	if path == "" || limit < 1 || limit > 8192 {
-		return nil, errors.New("invalid mesh receipt store")
+		return nil, errors.New("invalid wendy net receipt store")
 	}
 	return &ReceiptStore{path: path, limit: limit}, nil
 }
@@ -43,7 +43,7 @@ func (s *ReceiptStore) Load() ([]Receipt, error) {
 		return nil, err
 	}
 	if int64(len(data)) > max {
-		return nil, errors.New("oversized mesh receipt file")
+		return nil, errors.New("oversized wendy net receipt file")
 	}
 	var disk struct {
 		Version  int       `json:"version"`
@@ -53,7 +53,7 @@ func (s *ReceiptStore) Load() ([]Receipt, error) {
 		return nil, err
 	}
 	if disk.Version != 1 || len(disk.Receipts) > s.limit {
-		return nil, errors.New("unsupported or oversized mesh receipt file")
+		return nil, errors.New("unsupported or oversized wendy net receipt file")
 	}
 	return disk.Receipts, nil
 }
@@ -62,7 +62,7 @@ func (s *ReceiptStore) Save(receipts []Receipt) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(receipts) > s.limit {
-		return errors.New("too many mesh receipts")
+		return errors.New("too many wendy net receipts")
 	}
 	data, err := json.Marshal(struct {
 		Version  int       `json:"version"`
@@ -72,7 +72,7 @@ func (s *ReceiptStore) Save(receipts []Receipt) error {
 		return err
 	}
 	if len(data) > s.limit*1024+1024 {
-		return errors.New("oversized mesh receipts")
+		return errors.New("oversized wendy net receipts")
 	}
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -100,7 +100,7 @@ func (s *ReceiptStore) Save(receipts []Receipt) error {
 		return err
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
-		return fmt.Errorf("replace mesh receipts: %w", err)
+		return fmt.Errorf("replace wendy net receipts: %w", err)
 	}
 	d, err := os.Open(dir)
 	if err != nil {

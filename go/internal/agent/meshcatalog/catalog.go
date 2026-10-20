@@ -54,26 +54,26 @@ func NewCatalog(mesh string, device meshid.Device, limit int, creds *localmesh.C
 	if !labelPattern.MatchString(mesh) || principal == "" ||
 		limit < 1 || limit > 8192 || creds == nil || creds.Device != device ||
 		cache == nil || authorize == nil || persist == nil {
-		return nil, errors.New("invalid mesh catalog configuration")
+		return nil, errors.New("invalid wendy net catalog configuration")
 	}
 	if len(receipts) > limit {
-		return nil, errors.New("too many persisted mesh service receipts")
+		return nil, errors.New("too many persisted wendy net service receipts")
 	}
 	history := make(map[Key]Receipt, len(receipts))
 	for _, r := range receipts {
 		if r.Key.Mesh != mesh ||
 			!labelPattern.MatchString(r.Key.ServiceID) || r.Generation == 0 || len(r.Hash) != 64 {
-			return nil, errors.New("invalid persisted mesh service receipt")
+			return nil, errors.New("invalid persisted wendy net service receipt")
 		}
 		if _, err := hex.DecodeString(r.Hash); err != nil {
-			return nil, errors.New("invalid persisted mesh service receipt hash")
+			return nil, errors.New("invalid persisted wendy net service receipt hash")
 		}
 		if err := (Record{Version: 1, Key: r.Key, Generation: r.Generation,
 			Issued: now.UnixMilli(), Expires: now.Add(time.Second).UnixMilli(), Withdraw: true}).Validate(now); err != nil {
-			return nil, fmt.Errorf("invalid persisted mesh service owner: %w", err)
+			return nil, fmt.Errorf("invalid persisted wendy net service owner: %w", err)
 		}
 		if _, found := history[r.Key]; found {
-			return nil, errors.New("duplicate persisted mesh service receipt")
+			return nil, errors.New("duplicate persisted wendy net service receipt")
 		}
 		// Own receipts are a durable generation high-water, even after the
 		// signed record and peers' replay windows expire. An app can advertise
@@ -83,7 +83,7 @@ func NewCatalog(mesh string, device meshid.Device, limit int, creds *localmesh.C
 		}
 	}
 	if _, err := cache.Put(creds.Certificate.Certificate, now); err != nil {
-		return nil, fmt.Errorf("cache own mesh certificate: %w", err)
+		return nil, fmt.Errorf("cache own wendy net certificate: %w", err)
 	}
 	return &Catalog{mesh: mesh, device: device, principal: principal, limit: limit, creds: creds,
 		cache: cache, authorize: authorize, persist: persist,
@@ -147,7 +147,7 @@ func (c *Catalog) Accept(w SignedRecord, now time.Time) (bool, error) {
 		return false, err
 	}
 	if r.Key.Mesh != c.mesh {
-		return false, errors.New("mesh service belongs to another scope")
+		return false, errors.New("wendy net service belongs to another scope")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -161,7 +161,7 @@ func (c *Catalog) Accept(w SignedRecord, now time.Time) (bool, error) {
 		}
 		if r.Generation == old.Generation {
 			if hash != old.Hash {
-				return false, errors.New("conflicting mesh service generation")
+				return false, errors.New("conflicting wendy net service generation")
 			}
 			// Receipts survive a restart, but signed records do not. Rebuild
 			// the live record from an identical, freshly verified peer copy.
@@ -170,16 +170,16 @@ func (c *Catalog) Accept(w SignedRecord, now time.Time) (bool, error) {
 				return false, nil
 			}
 			if len(c.entries) >= c.limit {
-				return false, errors.New("mesh catalog capacity reached")
+				return false, errors.New("wendy net catalog capacity reached")
 			}
 			c.entries[r.Key] = storedRecord{r, cloneWire(w), hash}
 			return true, nil
 		}
 	} else if len(c.history) >= c.limit {
-		return false, errors.New("mesh catalog receipt capacity reached")
+		return false, errors.New("wendy net catalog receipt capacity reached")
 	}
 	if _, found := c.entries[r.Key]; !found && len(c.entries) >= c.limit {
-		return false, errors.New("mesh catalog capacity reached")
+		return false, errors.New("wendy net catalog capacity reached")
 	}
 	next := make(map[Key]Receipt, len(c.history)+1)
 	for key, old := range c.history {
@@ -193,7 +193,7 @@ func (c *Catalog) Accept(w SignedRecord, now time.Time) (bool, error) {
 	}
 	next[r.Key] = Receipt{r.Key, r.Generation, hash, until}
 	if err := c.persist(sortedReceipts(next)); err != nil {
-		return false, fmt.Errorf("persist mesh service generation: %w", err)
+		return false, fmt.Errorf("persist wendy net service generation: %w", err)
 	}
 	c.history = next
 	c.entries[r.Key] = storedRecord{r, cloneWire(w), hash}
@@ -206,7 +206,7 @@ func (c *Catalog) nextGeneration(key Key, now time.Time) (uint64, error) {
 	c.prune(now)
 	r := c.history[key]
 	if r.Generation == ^uint64(0) {
-		return 0, errors.New("mesh service generation exhausted")
+		return 0, errors.New("wendy net service generation exhausted")
 	}
 	return r.Generation + 1, nil
 }
@@ -249,7 +249,7 @@ func (c *Catalog) Remove(appID, serviceID string, now time.Time) (SignedRecord, 
 	_, found := c.history[key]
 	c.mu.Unlock()
 	if !found {
-		return SignedRecord{}, errors.New("unknown local mesh service")
+		return SignedRecord{}, errors.New("unknown local wendy net service")
 	}
 	gen, err := c.nextGeneration(key, now)
 	if err != nil {

@@ -33,7 +33,7 @@ type Runtime struct {
 
 func NewRuntime(catalog *Catalog, snapshot func() localmesh.NodeSnapshot) (*Runtime, error) {
 	if catalog == nil || snapshot == nil {
-		return nil, errors.New("missing mesh catalog runtime dependency")
+		return nil, errors.New("missing wendy net catalog runtime dependency")
 	}
 	return &Runtime{catalog: catalog, snapshot: snapshot, fresh: make(map[meshid.Device]bool), pendingFresh: make(map[meshid.Device]string), wake: make(chan struct{}, 1), changes: make(chan SignedRecord, 128), peers: make(map[babel.LinkID]*catalogPeer), requests: make(map[string]*freshRequestState)}, nil
 }

@@ -32,9 +32,9 @@ const (
 )
 
 var (
-	ErrExpired        = errors.New("expired mesh service record")
-	ErrStale          = errors.New("stale mesh service generation")
-	ErrIdentityNeeded = errors.New("mesh service identity bundle needed")
+	ErrExpired        = errors.New("expired wendy net service record")
+	ErrStale          = errors.New("stale wendy net service generation")
+	ErrIdentityNeeded = errors.New("wendy net service identity bundle needed")
 	labelPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
 	typePattern       = regexp.MustCompile(`^_[A-Za-z0-9][A-Za-z0-9-]{0,14}\._tcp$`)
 )
@@ -71,40 +71,40 @@ type SignedRecord struct {
 func (r Record) Validate(now time.Time) error {
 	if r.Version != 1 || !labelPattern.MatchString(r.Key.Mesh) || appconfig.ValidateAppID(r.Key.AppID) != nil ||
 		!labelPattern.MatchString(r.Key.ServiceID) || r.Generation == 0 {
-		return errors.New("invalid mesh service owner or generation")
+		return errors.New("invalid wendy net service owner or generation")
 	}
 	if _, err := meshid.DeviceFromPrincipal(r.Key.Device); err != nil {
-		return errors.New("invalid mesh service owner principal")
+		return errors.New("invalid wendy net service owner principal")
 	}
 	issued, expires := time.UnixMilli(r.Issued), time.UnixMilli(r.Expires)
 	if !expires.After(now) {
 		return ErrExpired
 	}
 	if issued.After(now.Add(5*time.Second)) || !expires.After(issued) || expires.Sub(issued) > MaxLease {
-		return errors.New("invalid mesh service lease")
+		return errors.New("invalid wendy net service lease")
 	}
 	if r.Withdraw {
 		if r.HostPort != 0 || r.Type != "" || r.Instance != "" || len(r.TXT) != 0 {
-			return errors.New("mesh service withdrawal carries endpoint data")
+			return errors.New("wendy net service withdrawal carries endpoint data")
 		}
 		return nil
 	}
 	if !typePattern.MatchString(r.Type) || r.HostPort == 0 || len(r.Instance) == 0 || len(r.Instance) > 63 ||
 		strings.ContainsAny(r.Instance, "\x00\r\n") {
-		return errors.New("invalid mesh service endpoint")
+		return errors.New("invalid wendy net service endpoint")
 	}
 	if len(r.TXT) > MaxTXTEntries {
-		return errors.New("too many mesh service TXT entries")
+		return errors.New("too many wendy net service TXT entries")
 	}
 	total := 0
 	for _, item := range r.TXT {
 		if len(item) == 0 || len(item) > 255 || strings.ContainsAny(item, "\x00\r\n") {
-			return errors.New("invalid mesh service TXT entry")
+			return errors.New("invalid wendy net service TXT entry")
 		}
 		total += len(item) + 1
 	}
 	if total > MaxTXTBytes {
-		return errors.New("mesh service TXT too large")
+		return errors.New("wendy net service TXT too large")
 	}
 	return nil
 }
@@ -124,14 +124,14 @@ func Sign(r Record, chain [][]byte, signer crypto.Signer, now time.Time) (Signed
 		return out, err
 	}
 	if signer == nil || len(chain) == 0 {
-		return out, errors.New("missing mesh service signer")
+		return out, errors.New("missing wendy net service signer")
 	}
 	body, err := json.Marshal(r)
 	if err != nil {
 		return out, err
 	}
 	if len(body) > MaxRecordBytes {
-		return out, errors.New("oversized mesh service record")
+		return out, errors.New("oversized wendy net service record")
 	}
 	input, opts := signInput(signer.Public(), body)
 	sig, err := signer.Sign(rand.Reader, input, opts)
@@ -145,7 +145,7 @@ func verify(w SignedRecord, cache *localmesh.IdentityCache, now time.Time) (Reco
 	var r Record
 	if len(w.Body) == 0 || len(w.Body) > MaxRecordBytes || len(w.Signature) == 0 ||
 		len(w.Signature) > 2048 || len(w.Fingerprint) != 64 {
-		return r, "", errors.New("invalid mesh service envelope")
+		return r, "", errors.New("invalid wendy net service envelope")
 	}
 	if err := json.Unmarshal(w.Body, &r); err != nil {
 		return r, "", err
@@ -159,7 +159,7 @@ func verify(w SignedRecord, cache *localmesh.IdentityCache, now time.Time) (Reco
 	}
 	if id.Device.Principal() != r.Key.Device || localmesh.Fingerprint(chain) != w.Fingerprint ||
 		time.UnixMilli(r.Expires).After(id.NotAfter) {
-		return r, "", errors.New("mesh service origin or lease does not match certificate")
+		return r, "", errors.New("wendy net service origin or lease does not match certificate")
 	}
 	leaf, err := x509.ParseCertificate(chain[0])
 	if err != nil {
@@ -176,7 +176,7 @@ func verify(w SignedRecord, cache *localmesh.IdentityCache, now time.Time) (Reco
 		valid = rsa.VerifyPKCS1v15(key, crypto.SHA256, input, w.Signature) == nil
 	}
 	if !valid {
-		return r, "", errors.New("invalid mesh service signature")
+		return r, "", errors.New("invalid wendy net service signature")
 	}
 	h := sha256.Sum256(w.Body)
 	return r, hex.EncodeToString(h[:]), nil
@@ -201,7 +201,7 @@ func (s PublishSpec) record(key Key, generation uint64, now time.Time) (Record, 
 		lease = MaxLease
 	}
 	if lease < time.Second || lease > MaxLease {
-		return Record{}, fmt.Errorf("mesh service lease must be 1s..%s", MaxLease)
+		return Record{}, fmt.Errorf("wendy net service lease must be 1s..%s", MaxLease)
 	}
 	r := Record{Version: 1, Key: key, Generation: generation, Type: s.Type,
 		Instance: s.Instance, HostPort: s.HostPort, TXT: append([]string(nil), s.TXT...),

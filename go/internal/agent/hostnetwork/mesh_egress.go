@@ -120,7 +120,7 @@ func SetMeshRoute(netnsPath, serviceCIDR, gateway string) error {
 // not grant general multicast or Internet egress.
 func SetMeshMDNSRoute(netnsPath, iface string) error {
 	if netnsPath == "" || iface == "" {
-		return fmt.Errorf("mesh mDNS route needs a namespace and interface")
+		return fmt.Errorf("wendy net mDNS route needs a namespace and interface")
 	}
 	out, err := exec.Command("nsenter", "--net="+netnsPath, "--",
 		"ip", "route", "replace", "224.0.0.251/32", "dev", iface, "scope", "link").CombinedOutput()

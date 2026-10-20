@@ -58,7 +58,7 @@ func newMeshCatalogManager(dir string, ingress *meshingress.Registry, logger *za
 
 func (m *meshCatalogManager) Activate(ctx context.Context, credentials *localmesh.Credentials, snapshot func() localmesh.NodeSnapshot, vips *mesh.VIPTable, hub *localmesh.ControlHub) error {
 	if credentials == nil || snapshot == nil || hub == nil {
-		return errors.New("mesh catalog requires a running node")
+		return errors.New("wendy net catalog requires a running node")
 	}
 	stateDir := filepath.Join(m.dir, "local-mesh", "catalog-"+credentials.Device.UUID().String())
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
@@ -97,19 +97,19 @@ func (m *meshCatalogManager) Activate(ctx context.Context, credentials *localmes
 	if m.active != nil {
 		m.mu.Unlock()
 		cancel()
-		return errors.New("mesh catalog already active")
+		return errors.New("wendy net catalog already active")
 	}
 	m.active = a
 	for _, app := range m.apps {
 		if err := m.startBridge(a, app); err != nil {
-			m.logger.Warn("mesh app mDNS bridge unavailable", zap.String("app_id", app.appID), zap.Error(err))
+			m.logger.Warn("wendy net app mDNS bridge unavailable", zap.String("app_id", app.appID), zap.Error(err))
 		}
 	}
 	m.mu.Unlock()
 	go func() {
 		defer close(a.done)
 		if err := runtime.Run(activeCtx, hub); err != nil && activeCtx.Err() == nil {
-			m.logger.Error("mesh catalog synchronization stopped", zap.Error(err))
+			m.logger.Error("wendy net catalog synchronization stopped", zap.Error(err))
 		}
 	}()
 	go m.retryBridges(a)
@@ -145,7 +145,7 @@ func (m *meshCatalogManager) retryBridges(a *catalogActivation) {
 				}
 			}
 			if err := m.startBridge(a, app); err != nil {
-				m.logger.Debug("mesh app mDNS bridge retry failed", zap.String("app_id", app.appID), zap.Error(err))
+				m.logger.Debug("wendy net app mDNS bridge retry failed", zap.String("app_id", app.appID), zap.Error(err))
 			}
 		}
 		m.mu.Unlock()
@@ -173,19 +173,19 @@ func (m *meshCatalogManager) Deactivate() {
 	<-a.retryDone
 	<-a.done
 	if err := a.cache.Flush(time.Now()); err != nil {
-		m.logger.Warn("mesh catalog identity cache flush failed", zap.Error(err))
+		m.logger.Warn("wendy net catalog identity cache flush failed", zap.Error(err))
 	}
 }
 
 func (m *meshCatalogManager) StartMeshApp(containerName, appID, ip, bridge string, ports []appconfig.PortMapping) error {
 	address := net.ParseIP(ip)
 	if containerName == "" || appID == "" || address == nil || address.To4() == nil || bridge == "" {
-		return errors.New("invalid mesh app network for mDNS")
+		return errors.New("invalid wendy net app network for mDNS")
 	}
 	mapped := make(map[uint16]uint16, len(ports))
 	for _, port := range ports {
 		if port.Container == 0 || port.Host == 0 || mapped[port.Container] != 0 {
-			return errors.New("invalid or duplicate mesh app mDNS port")
+			return errors.New("invalid or duplicate wendy net app mDNS port")
 		}
 		mapped[port.Container] = port.Host
 	}
@@ -237,7 +237,7 @@ func (m *meshCatalogManager) startBridge(a *catalogActivation, app catalogApp) e
 	go func() {
 		defer close(done)
 		if err := bridge.Run(ctx); err != nil && ctx.Err() == nil {
-			m.logger.Warn("mesh app mDNS bridge stopped", zap.String("app_id", app.appID), zap.Error(err))
+			m.logger.Warn("wendy net app mDNS bridge stopped", zap.String("app_id", app.appID), zap.Error(err))
 		}
 	}()
 	return nil
